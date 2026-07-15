@@ -122,11 +122,135 @@ Produce:
 
 Cliff datasheets are the golden optical source. VKSDR is comparative evidence. Official PJRC Teensy 4.1 and Ethernet-kit documents are the Teensy and Ethernet golden sources. Licensing is retained as a provenance footnote for this personal, non-commercial project and is not a capability gate. Existing notices remain preserved.
 
+### P1 implementation contract
+
+P1 runs in two waves. `source-archive` lands the manifest and artifacts in the
+shared tree first. `functional-topology` and `should-cost` then run in parallel
+and may cite only the immutable source IDs from that manifest. The phase remains
+one commit checkpoint because no intermediate artifact is independently useful.
+
+The source matrix is finite. A retrieval may follow a document link from the
+named landing page, but it may not substitute another authority. The manifest
+records both the specified landing URL and the final artifact URL after
+redirects.
+
+| Source ID | Class | Required artifact | Fixed landing or artifact URL | P1 use |
+|---|---|---|---|---|
+| `PJRC-TEENSY41-PAGE` | golden | saved product page | `https://www.pjrc.com/store/teensy41.html` | board limits, power, dimensions, interfaces, schematic links |
+| `PJRC-TEENSY41-PINOUT` | golden | current two-sided pinout PDF | `https://www.pjrc.com/teensy/card11b_rev4_web.pdf` | pin and peripheral allocation |
+| `PJRC-IMXRT1060-RM` | golden | annotated reference manual, revision 3 | `https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf` | S/PDIF, DMA, clock and memory claims |
+| `PJRC-IMXRT1060-CEC` | golden | electrical datasheet, revision 4 | `https://www.pjrc.com/teensy/IMXRT1060CEC_rev4.pdf` | electrical limits |
+| `PJRC-ETHERNET-KIT` | golden | assembly guide PDF linked from the page | `https://www.pjrc.com/store/ethernet_kit.html` | native-Ethernet connector circuit and parts |
+| `CLIFF-OTJ5` | golden | OTJ-5/FCR684205T manufacturer datasheet, version 2.1 | `https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf` | optical transmitter circuit and limits |
+| `CLIFF-ORJ5` | golden | ORJ-5/FCR684205R manufacturer datasheet, version 2.0 | `https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf` | optical receiver circuit and limits |
+| `VKSDR-TOSLINK-SCHEMATICS` | comparative | published schematic archive | `https://vksdr.com/pmod/` | independent comparison of Cliff support circuitry |
+| `VKSDR-TOSLINK-KICAD` | comparative | published KiCad archive | `https://vksdr.com/pmod/` | footprint and placement comparison only |
+| `HAMMOND-1455N1201BK` | golden | dimension drawing and available STEP model | `https://www.hammfg.com/part/1455N1201BK` | enclosure and board envelope |
+| `PLATFORMIO-TEENSY41` | golden | saved board documentation page | `https://docs.platformio.org/en/latest/boards/teensy/teensy41.html` | target and upload configuration |
+| `PJRC-SPDIF-RX-SOURCE` | comparative | exact upstream source snapshot | `https://raw.githubusercontent.com/PaulStoffregen/Audio/master/input_spdif3.cpp` | existing receive/DMA implementation comparison |
+| `PJRC-SPDIF-TX-SOURCE` | comparative | exact upstream source snapshot | `https://raw.githubusercontent.com/PaulStoffregen/Audio/master/output_spdif3.cpp` | existing transmit/DMA implementation comparison |
+| `FARNELL-1455N1201BK` | dynamic | saved quote evidence | `https://uk.farnell.com/hammond/1455n1201bk/box-black-aluminium-end-plate/dp/9287876` | enclosure price and stock |
+| `CPC-CLIFF-OTJ5` | dynamic | saved quote evidence | `https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715` | transmitter price and stock |
+| `DIGIKEY-CLIFF-ORJ5` | dynamic | saved quote evidence | `https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094` | receiver price and stock |
+| `PCBWAY-2L-100` | dynamic | saved quote or price-page evidence | `https://www.pcbway.com/pcb_prototype/2_Layer_pcb/100x100mm.html` | two-layer prototype fabrication range |
+| `PCBWAY-4L-100` | dynamic | saved quote or price-page evidence | `https://www.pcbway.com/pcb_prototype/4_Layer_pcb/100x100mm.html` | automatic fallback cost delta |
+
+If an exact URL is unavailable or redirects to unrelated content, the agent
+records `unavailable` and does not replace it. A missing golden artifact blocks
+P1. A missing comparative artifact blocks only claims that cannot be re-derived
+from golden evidence. Dynamic prices may be replaced only by another named UK
+authorized distributor for the identical manufacturer part, with the deviation
+recorded in the cost README.
+
+The source archive has these exact text outputs:
+
+- `evidence/manifest/schema.json`: JSON Schema for source records;
+- `evidence/manifest/sources.json`: records in source-ID order;
+- `evidence/manifest/README.md`: retrieval and validation procedure;
+- `docs/reference/datasheets.md<source-id>/<retrieved-file>`: immutable downloaded bytes.
+
+Each source record contains `id`, `class`, `title`, `authority`, `revision`,
+`landing_url`, `artifact_url`, `retrieved_at`, `artifact_path`, `sha256`,
+`bytes`, `media_type`, `redistribution_note`, `status`, and `supersedes`.
+`class` is one of `golden`, `comparative`, `independently-derived`, or
+`dynamic`. `status` is one of `current`, `superseded`, or `unavailable`.
+Source IDs are immutable. A revision gets a new ID and names the prior ID in
+`supersedes`; records are never silently overwritten. Unavailable records use
+null artifact metadata and explain the retrieval failure in
+`redistribution_note`.
+
+Archive validation recalculates every artifact byte count and SHA-256, checks
+its media type is plausible, and confirms `git check-attr filter` reports
+`lfs`. It also rejects an artifact that is already an LFS pointer instead of
+the downloaded content. `sources.json`, its schema, Markdown, source snapshots,
+and generated CSV remain ordinary Git text.
+
+The topology wave has these exact outputs:
+
+- `docs/reference/functional-topology.md`: input modes, output modes, block and
+  channel flow, data/control/power paths, clock domains, buffering/DMA
+  ownership, and mode/fault state table;
+- `docs/reference/electrical-reference.md`: connector and signal tables for
+  optical RX/TX, USB, Ethernet, raw S/PDIF bypass/mux, and TX gating, with every
+  limit cited by source ID and unverified values labelled;
+- `docs/reference/pin-resource-map.md`: a conflict-checked Teensy allocation;
+- `docs/reference/two-layer-placement.md`: non-routing placement proof and the
+  explicit triggers for the four-layer fallback.
+
+The resource map fixes S/PDIF RX to Teensy pin 15 and S/PDIF TX to pin 14,
+reserves the Teensy 4.1 six-pin native-Ethernet header, and routes external USB
+only to the Teensy Micro-B connector through the internal cable. It reserves
+Program, pin 13 LED, USB host, SDIO, one complete I2C bus, one complete SPI bus,
+one UART pair, and one I2S/TDM interface until H1. Any conflict is a P1 failure,
+not a deferred layout choice.
+
+The placement proof uses the Hammond internal envelope, a board no larger than
+100 mm by 100 mm, rear-adjacent optical/Ethernet/USB connectors, no vias in the
+USB or Ethernet differential pairs, and a mostly continuous bottom ground
+plane. It states numerical preliminary length budgets, cable-bend volume,
+ground-plane interruptions, connector access, and every item still requiring
+H2 field-solver or layout validation. It is explicitly not manufacturing data.
+
+The cost wave has these exact outputs:
+
+- `evidence/cost/functional-bom.csv` using `group`, `manufacturer`, `mpn`,
+  `description`, `quantity_per_unit`, `supplier`, `supplier_sku`,
+  `price_break`, `unit_price_gbp_ex_vat`, `extended_price_gbp_ex_vat`,
+  `evidence_ids`, `confidence`, and `notes`;
+- `evidence/cost/should-cost.csv` using `scenario`, `group`, `low_gbp_ex_vat`,
+  `central_gbp_ex_vat`, `high_gbp_ex_vat`, `vat_gbp`, `freight_duty_gbp`,
+  `landed_gbp`, `evidence_ids`, `confidence`, and `assumptions`;
+- `evidence/cost/risk-register.csv` using `risk_id`, `category`, `description`,
+  `cause`, `consequence`, `likelihood_1_5`, `impact_1_5`, `score`,
+  `evidence_ids`, `mitigation`, `validation_gate`, `residual_likelihood`,
+  `residual_impact`, and `status`;
+- `evidence/cost/README.md`: arithmetic, currency, VAT, freight allocation,
+  confidence, and risk-scoring rules.
+
+All money is GBP. Foreign prices use the Bank of England daily rate for the
+retrieval date and preserve the original amount and currency in `notes`.
+UK VAT is 20%; landed totals state whether VAT is recoverable. Freight and any
+duty are separate and allocated over three assembled prototypes. Low, central,
+and high values are independently arithmetically reproducible. `confidence` is
+`high` for current identical-MPN supplier evidence, `medium` for current
+comparable evidence or a stated quantity extrapolation, and `low` for an
+engineering allowance.
+
+Risk score is likelihood times impact. The README defines each 1-through-5
+level. A score of 15 or more blocks the next phase; 8 through 12 requires a
+named mitigation and validation gate; 6 or less remains tracked. Residual
+fields are filled only after the mitigation has evidence. The register must
+cover DTS feasibility, real-time budget, memory-bank pressure, S/PDIF recovery,
+USB servicing, two-layer signal integrity, optical electrical limits, native
+Ethernet routing, power/backfeed, enclosure fit, assembly yield, sourcing, and
+cost volatility.
+
 ```yaml
 phase: P1
 unit: evidence-components
 seams: [evidence manifest, topology, functional BOM, risk register]
 contract-artifact: spec-only
+coordination: source-archive first; functional-topology and should-cost parallel after manifest validation
 fan-out:
   - name: source-archive
     owned-paths:
