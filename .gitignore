@@ -1,0 +1,23 @@
+# Root .gitignore for the public Aius mirror.
+#
+# The upstream never committed a root .gitignore; this one is derived for the
+# published copy. Its first job is to make it impossible to commit a real OTA
+# signing key by accident.
+
+# --- Secrets: never commit a real signing key or auth token ---
+# The deliberately-non-secret firmware/test/ota/test-only-signing-key.sec is
+# kept on purpose, so this pattern is scoped to the production key location.
+/firmware/config/ota-*-signing-key.sec
+.secrets/
+*.pem
+*.p12
+*.pfx
+
+# --- Local tooling / scratch ---
+.scratch/
+/publishing/
+
+# --- Build output ---
+.pio/
+firmware/.build/
+node_modules/
