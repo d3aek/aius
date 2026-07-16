@@ -2835,6 +2835,12 @@ nested-array order, notes, or policy text, then runs the cumulative
 `architecture` checkpoint. It does not reinterpret the tables or derive values
 from P1C2 fragments.
 
+Completed 2026-07-16. The live selection policy is byte-identical to its
+normative contract at SHA-256
+`42798d69fe09c74b37cfe0fff147d03f1cfc5e4995e04251ff2c0a1deffda689`.
+All 8/32/29 values and current evidence bases pass live `contract` and
+`architecture` validation, and the clean-room delivery audit passed.
+
 The exact P1C2 family slugs are:
 
 - selected critical candidates: `usb-c-receptacle`, `usb-a-receptacle`,
