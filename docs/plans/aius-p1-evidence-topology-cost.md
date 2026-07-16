@@ -1259,6 +1259,7 @@ Git/LFS placement and pinned-Prettier byte parity are correct.
 
 ```yaml
 phase: P1B2b
+status: completed
 unit: single-seed-source
 seams: [public authority, validated fragment]
 contract-artifact: both
@@ -1275,6 +1276,12 @@ commit-checkpoint:
   buildable: [validated processor and Ethernet evidence fragments]
   parent-commit: "docs(aius): archive processor and Ethernet evidence"
 ```
+
+Completed 2026-07-16 with shared retrieval timestamp
+`2026-07-16T05:28:48Z`. The revision 3 reference manual, revision 4 electrical
+datasheet, and PJRC-authored DigiKey-mirror Ethernet guide were acquired as
+current golden evidence. The combined checkpoint, pinned-Prettier parity, LFS
+placement, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B2c
