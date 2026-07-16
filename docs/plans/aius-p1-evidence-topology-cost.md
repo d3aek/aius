@@ -2926,8 +2926,78 @@ nearby part. Repeated candidates across connector families are intentional.
 | `expansion-usb-host` | 1. JST `BM04B-GHS-TBT` |
 | `expansion-gpio-adc` | 1. JST `BM04B-GHS-TBT` |
 | `remote-program-rtc` | 1. JST `BM03B-GHS-TBT` |
-| `test-fixture-header` | 1. Tag-Connect `TC2030-IDC-NL` |
-| `mechanical-cable-retainer` | 1. Panduit `TM1S4-C` |
+| `test-fixture-header` | 1. Tag-Connect `TC2030-IDC` |
+| `mechanical-cable-retainer` | 1. HellermannTyton `151-30300` |
+
+`TC2030-IDC-NL` was removed from the finite shortlist after its primary
+manufacturer evidence passed but every permitted UK acquisition channel failed:
+RS, Farnell, and CPC expose no exact page, DigiKey states that it does not carry
+the exact MPN, and Mouser exposes no exact page. The replacement
+`TC2030-IDC` is the self-retaining six-contact version documented by
+`https://www.tag-connect.com/product/tc2030-idc-6-pin-tag-connect-plug-of-nails-spring-pin-cable-with-legs`
+and
+`https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf`,
+with exact UK acquisition target
+`https://www.digikey.co.uk/en/products/detail/tag-connect-llc/TC2030-IDC/4571121`.
+It provides the four required signals plus two spares without loading a user
+connector. H2 must preserve the datasheet's four retaining holes, keepout, and
+finger-access clearance; this is an intentional placement tradeoff, not a
+footprint-equivalent substitution for the no-legs cable.
+
+For `test-fixture-header` only, rule 5's distributor-authorization evidence may
+be the ECIA TrustedParts Tag-Connect manufacturer directory at
+`https://www.trustedparts.com/en/manufacturers/tag-connect`, which names DigiKey
+as an authorized distributor. Tag-Connect exposes no public distributor locator
+or manufacturer-issued authorization list, while the exact DigiKey UK target is
+a Marketplace page describing an authorized partner. This literal exception
+does not make the DigiKey page self-authorizing, does not admit an unnamed
+Marketplace seller, does not change distributor order, and does not apply to any
+other family. Both the ECIA directory entry and the exact DigiKey UK target must
+remain reachable and identify the relevant manufacturer or exact MPN before the
+candidate can advance.
+
+Panduit `TM1S4-C` was removed from the finite shortlist because rule 1 requires
+a reachable primary datasheet and both indexed exact-MPN sheets,
+`https://www.panduit.com/content/dam/panduit/en/products/media/3/63/263/7263/110117263.pdf`
+and
+`https://www.panduit.com/content/dam/panduit/en/products/media/9/29/929/8929/98528929.pdf`,
+return HTTP 404. Its exact product URL currently redirects to a reachable page
+which identifies `TM1S4-C`, but neither that page nor Panduit's product-details
+endpoint exposes a reachable replacement datasheet, so the product page alone
+does not pass rule 1. HellermannTyton `151-30300`, product designation
+`CTM0-PA66-BK`, is documented by
+`https://www.hellermanntyton.co.uk/products/cable-tie-mounts/ctm0/151-30300`
+and
+`https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf`, with first
+qualifying UK target
+`https://uk.rs-online.com/web/p/cable-tie-mounts/2181463`. The exact part is an
+M3/#6 screw mount with a 3.8 mm hole, 14.7 mm by 9.4 mm by 6.9 mm body, support
+for cable ties up to 5.0 mm wide, PA66 UL94 V2 material, and explicit
+high-vibration application guidance. HellermannTyton's official locator at
+`https://www.hellermanntyton.co.uk/distributors` names RS Components for the
+project postcode `M20 5PG`, satisfying rule 5 without an authorization
+exception. P1D/H2 must still choose the PCB hole position, screw/washer/nut
+stack, and cable-tie MPN, preserve service slack, and define insertion and
+vibration acceptance loads against the Teensy, cable connectors, PCB, and
+Hammond enclosure. H4 must physically apply those loads and inspect the complete
+retention stack because the primary material publishes application guidance but
+no numeric assembly load rating; P1C2 records only that those checks are
+actionable.
+
+`mechanical-cable-retainer` has one literal documentation-shape exception. Its
+component and manufacturer-request authority remains the direct technical
+datasheet URL, but the manufacturer request uses
+`artifact_kinds: [datasheet, product-page]` and this exact note: `P1D must retain
+and validate the primary manufacturer technical datasheet and exact product
+page before this candidate can advance.` The datasheet supplies the exact MPN,
+mounting and body dimensions, material, flammability, and environmental data;
+the exact product page supplies the 5.0 mm maximum cable-tie width and explicit
+high-vibration application guidance. Neither artifact alone advances the
+component.
+
+The P1C2 clean-room re-audits passed for both the family-limited ECIA fixture
+authorization exception and the retainer's deterministic replacement,
+two-artifact evidence shape, and P1D/H2-to-H4 load-verification chain.
 
 Within that finite universe, the task applies this deterministic single-MPN
 acceptance and ranking rule:

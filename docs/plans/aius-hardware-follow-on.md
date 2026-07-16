@@ -220,12 +220,16 @@ Bring-up order:
 1. Visual inspection, continuity, shorts, and unpowered resistance.
 2. Current-limited power, rails, thermal scan, and consumption.
 3. Reset-safe states with Teensy absent, present, held reset, and rebooting.
-4. Rear USB-C to internal USB bridge.
-5. Native Ethernet link and traffic.
-6. Optical electrical loopback and module gating.
-7. Diagnostic raw S/PDIF bypass.
-8. Teensy S/PDIF RX and TX independently, then simultaneously.
-9. Carrier loss-of-lock, malformed-input, and recovery behaviour.
+4. Internal USB cable retention under the insertion, handling, and vibration
+   loads defined in P1D/H2; inspect mount torque, cable-tie restraint, service
+   slack, PCB strain, and load transfer into the Teensy, connectors, and
+   enclosure.
+5. Rear USB-C to internal USB bridge.
+6. Native Ethernet link and traffic.
+7. Optical electrical loopback and module gating.
+8. Diagnostic raw S/PDIF bypass.
+9. Teensy S/PDIF RX and TX independently, then simultaneously.
+10. Carrier loss-of-lock, malformed-input, and recovery behaviour.
 
 ```yaml
 phase: H4
