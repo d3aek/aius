@@ -2167,8 +2167,9 @@ this exhaustive mapping:
 Its root `evidence_ids` is the same exact sorted union as the functional root.
 Operating states, fault scenarios, and transitions have no per-row evidence
 member; the interface/state root set is their explicit document-level
-citation. Both schemas change their `evidenceIdentifiers` definition to
-`minItems: 1`, so no record that has an evidence member can omit a citation.
+citation. The functional schema changes `$defs.evidenceIds.minItems` to 1 and
+the interface/state schema changes `$defs.evidenceIdentifiers.minItems` to 1,
+so no record that has an evidence member can omit a citation.
 
 Every transition replaces `from_state` and `to_state` with `from_states` and
 `to_states` using the exact source/target table above. All transition fields
@@ -2179,17 +2180,51 @@ otherwise retain their base values except:
 - `active-to-carrier-loss.postconditions` becomes `processed-selected`,
   `tx-disabled`.
 
-These replacements are ordered. The builder's `--check` mode compares the two
-contract files and the two schema-valid fixtures to its pure derived bytes and
-never writes. `--write` is the sole writer for those four generated JSON files.
+These replacements are ordered. The four builder outputs are exactly:
 
-#### P1C0c1 — Canonical contract and transition-schema migration
+- `evidence/design/contracts/functional-topology.json`;
+- `evidence/design/contracts/interfaces-and-states.json`;
+- `scripts/fixtures/p1c-schema/functional-topology/valid.json`;
+- `scripts/fixtures/p1c-schema/interfaces-and-states/valid.json`.
+
+The immutable inputs are renamed to
+`scripts/fixtures/p1c-schema/functional-topology/base-v1.json` and
+`scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json`. Output bytes
+are produced by passing `json.dumps(document, ensure_ascii=False)` to the
+repository-pinned `node_modules/.bin/prettier --parser json`; the formatter's
+UTF-8 stdout is required to have no BOM, LF-only line endings, schema/object
+key order, and exactly one final LF. Formatter failure is a contract failure.
+
+The CLI is `build_p1c_architecture_contracts.py [--root <aius-root>]
+[--prettier <path>] (--write|--check)`. The Aius root defaults to the parent of
+`scripts/`; the formatter defaults to the first executable
+`node_modules/.bin/prettier` found while walking from the script toward the
+repository root. Exactly one mode is required. `--check` never writes and
+compares all four outputs byte-for-byte; `--write` replaces each mapped output
+with a same-directory `O_EXCL` temporary plus `os.replace`, in the listed
+order. Cleanup occurs only for a temporary created by that invocation, so a
+name collision cannot delete foreign data. Per-file replacement is atomic;
+the four-file operation is deliberately not claimed to be transactional.
+
+Success exits 0 and emits exactly `OK build-p1c-architecture-contracts`.
+Argument errors exit 2. Contract failures exit 1 with sorted diagnostics in
+the form `AIUS-P1C-CONTRACT-<CODE>: <Aius-relative-path>: <detail>`. Codes are
+`MISSING`, `PARSE`, `HASH`, `FORMATTER`, `STALE`, and `WRITE`. Missing/non-UTF-8
+or malformed bases, either SHA mismatch, missing/failing/non-UTF-8 formatter,
+missing or stale output, atomic collision, and replacement failure each have a
+focused regression. `--check` reports every independently stale/missing output;
+derivation stops after an invalid base or formatter result. `FORMATTER`
+diagnostics use `scripts/build_p1c_architecture_contracts.py` as their
+Aius-relative path and name the attempted executable in `detail`.
+
+#### P1C0c — Atomic contract, renderer, and validator migration
 
 ```yaml
-phase: P1C0c1
-unit: canonical-architecture-contract
-seams: [hashed P1C0a bases, generated normative JSON]
+phase: P1C0c
+unit: serial-contract-and-enforcement-integration
+seams: [hashed P1C0a bases, generated normative JSON, renderer columns, staged validator]
 contract-artifact: both
+execution-order: [architecture-contract-builder, architecture-contract-validator]
 fan-out:
   - name: architecture-contract-builder
     owned-paths:
@@ -2202,34 +2237,9 @@ fan-out:
       - scripts/test_interfaces_states_schema.py
       - scripts/fixtures/p1c-schema/functional-topology
       - scripts/fixtures/p1c-schema/interfaces-and-states
-review-intensity: active
-commit-checkpoint:
-  green:
-    - python3 scripts/test_build_p1c_architecture_contracts.py
-    - python3 scripts/test_functional_topology_schema.py
-    - python3 scripts/test_interfaces_states_schema.py
-    - python3 scripts/build_p1c_architecture_contracts.py --check
-    - node_modules/.bin/prettier --check "evidence/design/contracts/*.json" "scripts/fixtures/p1c-schema/{functional-topology,interfaces-and-states}/**/*.json"
-  buildable: [reproducible row-complete architecture contract]
-  parent-commit: "feat(aius): define canonical architecture rows"
-```
-
-The builder exports pure `build_functional_contract(base) -> object` and
-`build_interfaces_contract(base) -> object` functions. Tests prove base hash
-rejection, exhaustive evidence assignment, no unlisted semantic drift,
-transition key/order migration, every multi-origin set, and exact-byte
-write/check behavior. Schema negatives cover empty evidence arrays, legacy
-single transition endpoints, duplicate/empty endpoint sets, and wrong key
-order.
-
-#### P1C0c2 — Row-complete validator extension
-
-```yaml
-phase: P1C0c2
-unit: canonical-row-enforcement
-seams: [normative design contracts, staged validator]
-contract-artifact: both
-fan-out:
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+      - scripts/fixtures/render-p1
   - name: architecture-contract-validator
     owned-paths:
       - scripts/validate_p1.py
@@ -2238,15 +2248,40 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/test_validate_p1.py
+    - python3 scripts/test_build_p1c_architecture_contracts.py
+    - python3 scripts/test_functional_topology_schema.py
+    - python3 scripts/test_interfaces_states_schema.py
+    - python3 scripts/build_p1c_architecture_contracts.py --check
     - python3 scripts/test_render_p1.py
+    - python3 scripts/test_validate_p1.py
     - python3 scripts/validate_p1.py topology --stage contract
-  buildable: [row-complete executable architecture contract]
+    - node_modules/.bin/prettier --check "evidence/design/contracts/*.json" "scripts/fixtures/p1c-schema/{functional-topology,interfaces-and-states}/**/*.json" "scripts/fixtures/{render-p1,validate-p1}/**/*.json"
+  buildable: [reproducible row-complete architecture contract and executable enforcement]
   parent-commit: "feat(aius): enforce canonical architecture rows"
 ```
 
+The two work units are serial within one phase and one commit because migrating
+the transition member names makes an intermediate schema-only checkout
+unbuildable. The builder/schema/renderer owner finishes and hands off the
+shared working tree without Git mutation; the validator owner then binds the
+new committed-intent surface. The parent runs the combined checkpoint and
+clean-room delivery audit before the single phase commit.
+
+The builder exports pure `build_functional_contract(base) -> object` and
+`build_interfaces_contract(base) -> object` functions. Tests prove base hash
+rejection, exhaustive evidence assignment, no unlisted semantic drift,
+transition key/order migration, every multi-origin set, deterministic pinned-
+Prettier bytes, exact write/check behavior, and foreign temporary collision
+safety. Schema negatives cover empty evidence arrays, legacy single transition
+endpoints, duplicate/empty endpoint sets, and wrong key order. The renderer
+changes the transition columns and golden fixture from `from_state`/`to_state`
+to `from_states`/`to_states`, using its existing ordered-array `<br>` contract.
+
 `contract` now also requires and schema-validates both normative design
-contracts. `architecture-base` requires exact semantic equality between each
+contracts. It imports the two pure builder functions, loads the hashed bases,
+and compares the parsed normative values to the freshly derived objects; the
+separate builder `--check` owns exact formatted-byte parity. `architecture-base`
+requires exact semantic equality between each
 instance and its normative contract after the existing parse/schema/order
 gates; a scalar or ordered-array difference emits `CONTRACT` at the instance
 path. The validator still performs independent cross-reference and current
@@ -2271,8 +2306,7 @@ depends-on:
   - committed P1C0a schemas
   - committed P1C0b1 renderer
   - committed P1C0b2 validator
-  - committed P1C0c1 normative contracts
-  - committed P1C0c2 row enforcement
+  - committed P1C0c normative contracts and row enforcement
   - current evidence/manifest/sources.json
 fan-out:
   - name: functional-flow
