@@ -83,7 +83,7 @@ Commit this plan, the hardware follow-on, the cost model, Aius subtree instructi
 
 ```yaml
 phase: P0
-unit: documentation-contract
+unit: single-file-implementation
 seams: [capability gate, hardware follow-on, cost model, evidence policy]
 contract-artifact: spec-only
 fan-out:
@@ -256,7 +256,7 @@ cost volatility.
 
 ```yaml
 phase: P1
-unit: evidence-components
+unit: component-behind-interface
 seams: [evidence manifest, topology, functional BOM, risk register]
 contract-artifact: spec-only
 coordination: source-archive first; functional-topology and should-cost parallel after manifest validation
@@ -284,7 +284,7 @@ Commit the C ABI stubs before implementation fan-out. Generate deterministic, re
 
 ```yaml
 phase: P2
-unit: interface-and-fixtures
+unit: test-surface
 seams: [versioned codec ABI, arena contract, deterministic PCM manifest]
 contract-artifact: stubs-committed
 fan-out:
@@ -307,7 +307,7 @@ The corpus covers valid type I through III bursts, 14/16-bit and endian normaliz
 
 ```yaml
 phase: P3
-unit: parser-component
+unit: component-behind-interface
 seams: [AiusIec61937Parser, IEC fixture manifest]
 contract-artifact: both
 fan-out:
@@ -334,7 +334,7 @@ FFmpeg is a common-lineage differential implementation, not an independent oracl
 
 ```yaml
 phase: P4
-unit: decoder-component
+unit: component-behind-interface
 seams: [AiusDtsDecoder, AiusArena]
 contract-artifact: stubs-committed
 fan-out:
@@ -361,7 +361,7 @@ Report ITCM code, DTCM static and stack use, OCRAM/RAM2 and DMA buffers, USB buf
 
 ```yaml
 phase: P5
-unit: target-build
+unit: phase-task
 seams: [PlatformIO environment, resolved package lock, bank-level memory report]
 contract-artifact: both
 fan-out:
@@ -389,7 +389,7 @@ Implement the locked USB protocol, retained crash-report path, simulated device,
 
 ```yaml
 phase: P6
-unit: protocol-adapters
+unit: component-behind-interface
 seams: [capability protocol, structured diagnostic stream]
 contract-artifact: stubs-committed
 fan-out:
@@ -425,20 +425,41 @@ The persisted runner flashes the identified release build, streams the complete 
 
 ```yaml
 phase: P7
-unit: hardware-test-surface
+unit: test-surface
 seams: [USB capability protocol, target result manifest]
 contract-artifact: both
 fan-out:
   - name: target-runner
-    owned-paths: [evidence/capability-results]
+    owned-paths:
+      - evidence/capability-results/p7-run.json
+      - evidence/capability-results/p7-raw-results.jsonl
+      - evidence/capability-results/p7-performance.csv
+      - evidence/capability-results/p7-memory.json
+      - evidence/capability-results/p7-crash-report.json
+      - evidence/capability-results/p7-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [full valid corpus, malformed corpus, performance and memory gates]
-  buildable: [measured Teensy capability report]
-  parent-commit: "test(aius): record Teensy DTS capability result"
+  green: [structurally complete full valid/malformed corpus and performance/memory records]
+  branches:
+    pass:
+      command: python3 firmware/tools/device/run_capability.py --stage p7-gate --record evidence/capability-results/p7-verdict.json
+      expected-exit: 0
+      buildable: [measured passing Teensy capability report]
+      parent-commit: "test(aius): approve Teensy DTS capability result"
+    blocked:
+      command: python3 firmware/tools/device/run_capability.py --stage p7-gate --record evidence/capability-results/p7-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-P7-BLOCKED lines only
+      buildable: [complete measured Teensy capability report requiring software work]
+      parent-commit: "test(aius): record blocked Teensy DTS capability result"
 ```
 
-A clean-room delivery audit compares raw result artifacts against every threshold before declaring a pass.
+A clean-room delivery audit compares raw result artifacts against every threshold
+before declaring a pass. `p7-verdict.json` has ordered keys `schema_version`,
+`verdict`, `firmware_sha256`, `corpus_sha256`, `failed_gate_ids`, `notes`; its
+verdict is `pass` or `blocked`, failed IDs are sorted and empty only for pass,
+and it contains no timestamp. H1 accepts only a committed pass whose hashes
+match the recorded run.
 
 ## P8: Dedicated eight-hour soak
 
@@ -451,12 +472,25 @@ seams: [soak manifest, periodic telemetry, final verdict]
 contract-artifact: both
 fan-out:
   - name: soak-runner
-    owned-paths: [evidence/capability-results]
+    owned-paths:
+      - evidence/capability-results/p8-run.json
+      - evidence/capability-results/p8-telemetry.csv
+      - evidence/capability-results/p8-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [eight-hour zero-failure soak, clean-room result audit]
-  buildable: [final DTS capability decision]
-  parent-commit: "test(aius): complete Teensy DTS capability gate"
+  green: [structurally complete eight-hour telemetry and clean-room result audit]
+  branches:
+    pass:
+      command: python3 firmware/tools/device/run_capability.py --stage p8-gate --record evidence/capability-results/p8-verdict.json
+      expected-exit: 0
+      buildable: [passing final DTS capability decision]
+      parent-commit: "test(aius): complete Teensy DTS capability gate"
+    blocked:
+      command: python3 firmware/tools/device/run_capability.py --stage p8-gate --record evidence/capability-results/p8-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-P8-BLOCKED lines only
+      buildable: [complete soak evidence requiring software work]
+      parent-commit: "test(aius): record blocked Teensy DTS soak"
 ```
 
 ## Deferred decisions

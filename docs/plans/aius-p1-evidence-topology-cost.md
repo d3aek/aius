@@ -3658,15 +3658,65 @@ the stage.
 `bom_id`, `group`, `fixed_or_recurring`, `customer_supplied`, `optional`,
 `manufacturer`, `mpn`, `substitute_policy`, `description`, `quantity_per_unit`,
 `batch_quantity`, `supplier`, `supplier_sku`, `supplier_url`, `stock_state`,
-`retrieved_at`, `currency`, `fx_rate_to_gbp`, `fx_source_id`, `price_qty_1`,
-`price_qty_3`, `price_break_qty`, `price_break_unit`, `moq`, `order_multiple`,
-`unit_price_gbp_ex_vat`, `extended_gbp_ex_vat`, `low_gbp_ex_vat`,
+`retrieved_at`, `currency`, `fx_rate_to_gbp`, `fx_source_id`,
+`observed_price_quantity`, `observed_unit_price_gbp_ex_vat`,
+`purchase_quantity`, `moq`, `order_multiple`, `extended_gbp_ex_vat`,
+`low_gbp_ex_vat`,
 `central_gbp_ex_vat`, `high_gbp_ex_vat`, `vat_treatment`, `duty_treatment`,
 `freight_treatment`, `scenario_assumptions`, `evidence_ids`,
 `artifact_sha256`, `confidence`, `refresh_trigger`, and `notes`.
 It contains every functional group listed in the cost model. An electrical or
 safety-critical line may not use `UNSELECTED`; generic passives, assembly, and
 logistics may use a documented low-confidence engineering allowance.
+
+The exact group enum is `assembly`, `carrier-connectors`, `enclosure`,
+`ethernet`, `expansion`, `freight`, `mechanical`, `optical-io`, `passives`,
+`pcb-fabrication`, `spdif-control`, `teensy-module`, `teensy-sockets`, and
+`usb-data-power`. Row membership and quantities are not inferred by the CSV
+author: P1E0 commits `functional-bom-oracle.json` first. Its root keys are
+`schema_version`, `prototype_units`, `rows`, `notes`; values begin with `1.0.0`
+and integer 3. Each row keys `bom_id`, `group`, `component_id`, `source_id`,
+`fixed_or_recurring`, `customer_supplied`, `optional`, `quantity_per_unit`,
+`batch_quantity`, `description`, `substitute_policy`, `uk_source_id`,
+`price_policy`, `allowance_policy`, `evidence_ids`, `notes`. Rows sort by
+`bom_id`; component/source references and evidence resolve; exactly one of
+`component_id` or `source_id` is non-null except an explicit non-component
+allowance row, where both are null and `allowance_policy` is non-null. Component
+membership equals the
+complete closed `provisional-components.csv` set exactly once. The only
+non-component rows are `enclosure-1455n1201bk`, `pcb-fabrication`,
+`pcb-assembly`, `prototype-freight`, and customer-supplied optional
+`teensy-4-1`. Recurring component quantities and batch quantities are fixed by
+the committed P1D design bases; ordinary batch quantity is exactly
+`quantity_per_unit * 3`. The PCB row records vendor-minimum bare-board quantity,
+assembly records 3, freight records 1, and fixed rows use the explicit oracle
+quantity. No P1E phase may add, drop, regroup or requantity a row.
+
+For a current `uk-distributor-price-stock` source the projection is exact:
+manufacturer/MPN come from the selected component; `supplier` is source
+`authority`; `supplier_sku`, `stock_state`, `observed_price_quantity`,
+`observed_unit_price_gbp_ex_vat`, `moq`, and `order_multiple` copy the same-named
+observation values (`minimum_order_quantity` maps to `moq`); `supplier_url` is
+the common observation `source_url`; `retrieved_at` is the source timestamp;
+currency is `GBP`, FX rate is `1`, and FX source is empty. `purchase_quantity`
+is the least `moq + n * order_multiple` not less than `batch_quantity`.
+Extended cost is purchase quantity times observed unit price, rounded half up.
+`scenario_assumptions` states the observed price quantity, so it is not
+misrepresented as a quantity-three tier. Dynamic observations retain no page
+artifact, therefore `artifact_sha256` is empty unless the source actually names
+one retained artifact. Generic and non-component allowance rows receive no
+supplier projection and use their oracle allowance policy.
+
+CSV nullability is represented only by an empty field. Every oracle identity,
+classification, Boolean, quantity, description, substitution policy,
+low/central/high allowance, treatment, evidence, confidence, refresh trigger and
+notes projection is present. Manufacturer/MPN are empty only for generic or
+non-component rows. Supplier, stock, retrieval, observed-price, purchase, MOQ,
+order-multiple and extended-price fields are all present for a current UK
+source and all empty for a generic allowance, non-component allowance or
+UK-unavailable source except where the unavailable rule below gives a literal.
+`artifact_sha256` and FX source are empty precisely under the stated retained
+artifact and GBP rules. The closed P1Ea schema rejects every other empty field.
 
 `should-cost.csv` is tidy, with one estimate per row: `scenario`, `scope`,
 `assembled_units`, `group`, `basis_quantity`, `recurring_gbp_ex_vat`,
@@ -3699,8 +3749,9 @@ reconcile exactly.
 
 The UK-unavailable branch is exact. Its BOM row retains the selected
 manufacturer/MPN and request-linked description/quantity fields. `supplier`,
-`supplier_sku`, `supplier_url`, price-quantity fields,
-`unit_price_gbp_ex_vat`, `extended_gbp_ex_vat`, and `artifact_sha256` are empty;
+`supplier_sku`, `supplier_url`, `observed_price_quantity`,
+`observed_unit_price_gbp_ex_vat`, `purchase_quantity`,
+`extended_gbp_ex_vat`, and `artifact_sha256` are empty;
 `stock_state` is `unavailable`; `retrieved_at` is the unavailable source
 timestamp; `currency` is `GBP`; `fx_rate_to_gbp` is `1`; `fx_source_id` is
 empty. Low/central/high are non-empty documented engineering allowances,
@@ -3712,15 +3763,66 @@ sourcing row per UK-unavailable request with the same evidence ID and replacemen
 gate. Manufacturer unavailability blocks before P1E and has no cost fallback.
 
 ```yaml
+phase: P1E0a
+unit: test-surface
+seams: [closed BOM-row oracle schema, valid and invalid oracle fixtures]
+contract-artifact: spec-only
+fan-out:
+  - name: bom-row-oracle-schema
+    owned-paths:
+      - evidence/cost/functional-bom-oracle-schema.json
+      - scripts/validate_functional_bom_oracle.py
+      - scripts/test_functional_bom_oracle_schema.py
+      - scripts/fixtures/p1e-oracle/valid.json
+      - scripts/fixtures/p1e-oracle/invalid-cases.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_functional_bom_oracle_schema.py
+    - python3 scripts/validate_functional_bom_oracle.py --input scripts/fixtures/p1e-oracle/valid.json
+  buildable: [closed fixture-proven functional BOM row-oracle schema]
+  parent-commit: "feat(aius): define functional BOM row oracle"
+```
+
+```yaml
+phase: P1E0b
+unit: single-file-implementation
+seams: [closed component set, committed design bases, exact commercial row membership]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/provisional-components.csv
+  - evidence/design/basis/electrical-reference-basis.json
+  - evidence/design/basis/pin-resource-map-basis.json
+  - evidence/design/basis/two-layer-placement-basis.json
+  - evidence/cost/functional-bom-oracle-schema.json
+fan-out:
+  - name: functional-bom-row-oracle
+    owned-paths: [evidence/cost/functional-bom-oracle.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_functional_bom_oracle.py --input evidence/cost/functional-bom-oracle.json
+    - clean-room row-membership quantity and evidence audit
+  buildable: [exact evidence-linked functional BOM row oracle]
+  parent-commit: "docs(aius): lock functional BOM rows"
+```
+
+```yaml
 phase: P1Ea
 unit: test-surface
-seams: [three exact CSV row schemas, immutable base fixtures, staged contract validation]
+seams: [committed row oracle, three exact CSV row schemas, immutable base fixtures, staged contract validation]
 contract-artifact: spec-only
+depends-on:
+  - evidence/cost/functional-bom-oracle.json
 fan-out:
   - name: commercial-schema-surface
     owned-paths:
-      - evidence/cost/schemas
-      - scripts/fixtures/p1e-cost/base
+      - evidence/cost/schemas/functional-bom-schema.json
+      - evidence/cost/schemas/should-cost-schema.json
+      - evidence/cost/schemas/risk-register-schema.json
+      - scripts/fixtures/p1e-cost/base/functional-bom.csv
+      - scripts/fixtures/p1e-cost/base/should-cost.csv
+      - scripts/fixtures/p1e-cost/base/risk-register.csv
       - scripts/validate_p1e_cost_contract.py
       - scripts/test_validate_p1e_cost_contract.py
 review-intensity: active
@@ -3737,6 +3839,10 @@ phase: P1Eb
 unit: single-file-implementation
 seams: [closed BOM schema, selected components, unavailable-UK branch, cost arithmetic rules]
 contract-artifact: stubs-committed
+depends-on:
+  - evidence/cost/functional-bom-oracle.json
+  - evidence/cost/schemas/functional-bom-schema.json
+  - evidence/manifest/sources.json
 fan-out:
   - name: functional-bom
     owned-paths: [evidence/cost/functional-bom.csv]
@@ -3757,6 +3863,11 @@ phase: P1Ec
 unit: single-file-implementation
 seams: [committed BOM and rules, scenario cost, sourcing and engineering risk]
 contract-artifact: stubs-committed
+depends-on:
+  - evidence/cost/functional-bom.csv
+  - evidence/cost/README.md
+  - evidence/cost/schemas/should-cost-schema.json
+  - evidence/cost/schemas/risk-register-schema.json
 fan-out:
   - name: should-cost
     owned-paths: [evidence/cost/should-cost.csv]
@@ -3782,7 +3893,9 @@ fan-out:
     owned-paths:
       - scripts/validate_p1.py
       - scripts/test_validate_p1.py
-      - scripts/fixtures/validate-p1/cost
+      - scripts/fixtures/validate-p1/cost-cases.json
+coordination-owned-paths:
+  - evidence/cost/h0-verdict.json
 review-intensity: active
 commit-checkpoint:
   green:
@@ -3793,17 +3906,26 @@ commit-checkpoint:
     - clean-room pin-by-pin electrical and P1 promise audit
   branches:
     eligible:
-      command: python3 scripts/validate_p1.py cost --stage h0-gate
+      command: python3 scripts/validate_p1.py cost --stage h0-gate --record evidence/cost/h0-verdict.json
       expected-exit: 0
       buildable: [eligible hardware H0 architecture and auditable should-cost]
       parent-commit: "docs(aius): complete eligible H0 architecture and should-cost"
     blocked:
-      command: python3 scripts/validate_p1.py cost --stage h0-gate
+      command: python3 scripts/validate_p1.py cost --stage h0-gate --record evidence/cost/h0-verdict.json
       expected-exit: 3
       expected-diagnostics: sorted exact RISK_BLOCK lines only
       buildable: [structurally complete H0 evidence with explicit unresolved high-risk gate]
       parent-commit: "docs(aius): record blocked H0 architecture and should-cost"
 ```
+
+`h0-verdict.json` always commits for either branch. Its exact ordered keys are
+`schema_version`, `verdict`, `risk_ids`, `functional_bom_sha256`,
+`should_cost_sha256`, `risk_register_sha256`, `notes`. Values are `1.0.0`,
+`eligible` or `blocked`, the sorted blocking risk IDs (empty when eligible), the
+three lowercase input hashes and an empty note. `--record` validates the full
+structural stage first and atomically writes only that deterministic projection;
+it emits the same exit and exact diagnostics as the unrecorded gate. H1 accepts
+only a committed `eligible` verdict whose hashes match current inputs.
 
 `p1e-cost-validator-extension` runs only after all four cost artifacts exist. It
 adds the `cost` subcommand and its committed positive

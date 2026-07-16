@@ -128,14 +128,72 @@ Create the manufacturing schematic from the audited sources. It includes:
 
 The schematic contains a reset and failure-state truth table for Teensy absent, boot, reset, brownout, firmware crash, optical loss, unsupported burst, malformed input, USB unplug, raw-bypass request, and unpowered expansion. Hardware pulls keep the transmitter disabled and select the processed Teensy path during reset. Expansion outputs are high impedance or current-limited until firmware configures them.
 
-H1 is two serial checkpoints. The first commits the shared interface before any
-sheet worker starts; the second consumes that immutable baseline.
+H1 is three serial checkpoints. The first lands the reusable gate contract, the
+second commits the shared interface before any sheet worker starts, and the
+third consumes that immutable baseline.
+
+The hardware bridge consumes three deterministic verdict artifacts:
+`evidence/design/p1d-release.json`, `evidence/cost/h0-verdict.json`, and
+`evidence/capability-results/p7-verdict.json`. H1 requires their states to be
+`eligible`, `eligible`, and `pass`, respectively, and verifies every recorded
+input hash before dispatch. A shared hardware-gate validator and its closed
+fixtures land first so later failed physical outcomes can be committed without
+weakening their release gates.
+
+```yaml
+phase: H1a0
+unit: test-surface
+seams: [closed hardware-result schemas, structural validation, deterministic verdict exits]
+contract-artifact: spec-only
+fan-out:
+  - name: hardware-gate-validator
+    owned-paths:
+      - evidence/hardware/hardware-gate-schema.json
+      - scripts/validate_hardware.py
+      - scripts/test_validate_hardware.py
+      - scripts/fixtures/hardware-gates/cases.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_hardware.py
+  buildable: [fixture-proven structural and verdict gates for H1 through H5]
+  parent-commit: "feat(aius): define hardware result gates"
+```
+
+`validate_hardware.py` accepts `--stage` plus an optional `--record` path. Every
+stage first validates structure and references. Verdict stages return 0 for the
+named eligible/pass branch, 3 for a structurally valid blocked branch, and 4
+only for H2b's structurally valid `four-layer-required` branch. Diagnostics are
+sorted unique `AIUS-HW-BLOCKED:<stage>:<record-id>:<reason-code>` lines only.
+Exit 4 instead emits sorted unique
+`AIUS-HW-FOUR-LAYER:<criterion-id>:<reason-code>` lines only.
+`--record` atomically writes the exact deterministic verdict selected by the
+same evaluation; no timestamp or Git identity is permitted.
+
+H1a's `sheet-interfaces.json` is the explicit P1D-to-manufacturing projection.
+Its ordered keys are `schema_version`, `reference_release_sha256`,
+`reference_sheets`, `manufacturing_sheets`, `symbol_bindings`, `deviations`,
+`notes`. It copies every reference sheet ID and ordered hierarchical-pin tuple
+byte-semantically from `schematic-interface-v1.json`; manufacturing sheets use
+the same IDs and tuples with only the path root changed from
+`electronics/reference` to `electronics/carrier/sheets`. Symbol bindings copy
+the closed P1D component/source/support-circuit identities and pin counts.
+`deviations` is initially empty; a later non-empty deviation requires a new H1a
+commit and clean-room electrical review before any sheet resumes. The root and
+library are generated only from this mapping, never by inspecting sheet text.
 
 ```yaml
 phase: H1a
 unit: component-behind-interface
 seams: [canonical root, local symbol library, hierarchical sheet interfaces]
 contract-artifact: spec-only
+depends-on:
+  - evidence/design/p1d-release.json
+  - evidence/cost/h0-verdict.json
+  - evidence/capability-results/p7-verdict.json
+  - electronics/reference/schematic-interface-v1.json
+  - electronics/reference/reference-schematic-contract.json
+  - evidence/hardware/hardware-gate-schema.json
 fan-out:
   - name: manufacturing-schematic-interface
     owned-paths:
@@ -145,7 +203,9 @@ fan-out:
       - electronics/carrier/README.md
 review-intensity: active
 commit-checkpoint:
-  green: [closed interface-schema validation, local-symbol validation, standalone root ERC]
+  green:
+    - python3 scripts/validate_hardware.py --stage h1-interface
+    - scripts/kicad.sh sch erc electronics/carrier/aius-carrier.kicad_sch
   buildable: [committed root library and exact sheet-interface stubs]
   parent-commit: "design(aius): lock carrier schematic interfaces"
 ```
@@ -155,23 +215,31 @@ phase: H1b
 unit: single-file-implementation
 seams: [committed sheet interface, predeclared symbols, power and safe-state contracts]
 contract-artifact: stubs-committed
+depends-on:
+  - electronics/carrier/aius-carrier.kicad_sch
+  - electronics/carrier/aius-carrier.kicad_sym
+  - electronics/carrier/sheet-interfaces.json
+  - evidence/design/electrical-reference.json
+  - evidence/design/pin-resource-map.json
 fan-out:
   - name: power-usb
-    owned-paths: [electronics/carrier/sheets/power-usb]
+    owned-paths: [electronics/carrier/sheets/power-usb.kicad_sch]
   - name: optical-spdif
-    owned-paths: [electronics/carrier/sheets/optical-spdif]
+    owned-paths: [electronics/carrier/sheets/optical-spdif.kicad_sch]
   - name: ethernet
-    owned-paths: [electronics/carrier/sheets/ethernet]
+    owned-paths: [electronics/carrier/sheets/ethernet.kicad_sch]
   - name: teensy-expansion
-    owned-paths: [electronics/carrier/sheets/teensy-expansion]
+    owned-paths: [electronics/carrier/sheets/teensy-expansion.kicad_sch]
   - name: schematic-root-coordinator
     owned-paths:
       - electronics/carrier/aius-carrier.kicad_sch
-      - electronics/carrier/sheet-interfaces.json
-coordination: maximum three sheet agents; after all four workers return, the coordinator imports only reviewed sheets, closes interface status, and does not edit the shared symbol library; the parent commits the integrated phase
+coordination: maximum three sheet agents; after all four workers return, the coordinator imports only reviewed sheets and does not edit the immutable interface or shared symbol library; the parent commits the integrated phase
 review-intensity: active
 commit-checkpoint:
-  green: [KiCad ERC, interface parity, pin-by-pin datasheet audit, power calculations, clean-room electrical and FMEA review]
+  green:
+    - scripts/kicad.sh sch erc electronics/carrier/aius-carrier.kicad_sch
+    - python3 scripts/validate_hardware.py --stage h1-schematic
+    - clean-room pin-by-pin electrical power and FMEA review
   buildable: [reviewed manufacturing schematic]
   parent-commit: "feat(aius): complete carrier schematic"
 ```
@@ -207,14 +275,35 @@ phase: H2a
 unit: component-behind-interface
 seams: [enclosure guide, board outline, component and cable envelopes]
 contract-artifact: both
+depends-on:
+  - electronics/carrier/aius-carrier.kicad_sch
+  - electronics/carrier/sheet-interfaces.json
+  - evidence/design/two-layer-placement.json
+  - https://www.hammfg.com/part/1455N1201BK
+  - https://www.hammfg.com/part/1455N1201BK
 fan-out:
   - name: mechanical-placement
-    owned-paths: [mechanical]
+    owned-paths:
+      - mechanical/board-outline.json
+      - mechanical/component-placement.json
+      - mechanical/cable-envelope.json
+      - mechanical/h2a-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [outline and guide fit, placement collision, cable bend and insertion, assembly access]
-  buildable: [committed mechanically valid board outline and placement]
-  parent-commit: "design(aius): approve carrier mechanical placement"
+  green:
+    - python3 scripts/validate_hardware.py --stage h2a-structural
+  branches:
+    eligible:
+      command: python3 scripts/validate_hardware.py --stage h2a-gate --record mechanical/h2a-verdict.json
+      expected-exit: 0
+      buildable: [committed mechanically valid board outline and placement]
+      parent-commit: "design(aius): approve carrier mechanical placement"
+    blocked:
+      command: python3 scripts/validate_hardware.py --stage h2a-gate --record mechanical/h2a-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h2a-gate lines only
+      buildable: [committed mechanical evidence requiring placement redesign]
+      parent-commit: "design(aius): record blocked carrier placement"
 ```
 
 ```yaml
@@ -222,15 +311,47 @@ phase: H2b
 unit: phase-task
 seams: [committed placement, vendor stackup, impedance geometry, layer decision]
 contract-artifact: stubs-committed
+depends-on:
+  - mechanical/h2a-verdict.json
+  - mechanical/board-outline.json
+  - mechanical/component-placement.json
+  - electronics/carrier/aius-carrier.kicad_sch
 fan-out:
   - name: stackup-routing-study
-    owned-paths: [electronics/feasibility]
+    owned-paths:
+      - electronics/feasibility/vendor-stackup.json
+      - electronics/feasibility/impedance-calculations.json
+      - electronics/feasibility/routing-study.json
+      - electronics/feasibility/layer-decision.json
+      - electronics/feasibility/h2b-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [impedance calculation, route length/via proof, return-path review, two-layer feasibility verdict]
-  buildable: [approved stackup and layer decision on committed placement]
-  parent-commit: "design(aius): approve carrier stackup and routing feasibility"
+  green:
+    - python3 scripts/validate_hardware.py --stage h2b-structural
+  branches:
+    two-layer:
+      command: python3 scripts/validate_hardware.py --stage h2b-gate --record electronics/feasibility/h2b-verdict.json
+      expected-exit: 0
+      buildable: [approved two-layer stackup and routing contract]
+      parent-commit: "design(aius): approve two-layer carrier feasibility"
+    four-layer-required:
+      command: python3 scripts/validate_hardware.py --stage h2b-gate --record electronics/feasibility/h2b-verdict.json
+      expected-exit: 4
+      expected-diagnostics: sorted exact AIUS-HW-FOUR-LAYER lines only
+      buildable: [approved four-layer stackup after documented electrical failure]
+      parent-commit: "design(aius): require four-layer carrier stackup"
+    blocked:
+      command: python3 scripts/validate_hardware.py --stage h2b-gate --record electronics/feasibility/h2b-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h2b-gate lines only
+      buildable: [committed feasibility evidence requiring redesign]
+      parent-commit: "design(aius): record blocked carrier feasibility"
 ```
+
+H3a accepts only an H2b verdict of `two-layer` or `four-layer-required`; it
+rejects `blocked`. H4 accepts only `order-authorization.json` state `authorized`.
+H5a and H5b accept only an H4 verdict of `pass`. Every dependency check is
+content- and hash-based, not file-presence-only.
 
 ## H3: PCB, DFM, and quotation
 
@@ -253,12 +374,25 @@ phase: H3a
 unit: phase-task
 seams: [approved schematic, board outline, stackup, routed PCB]
 contract-artifact: both
+depends-on:
+  - electronics/carrier/aius-carrier.kicad_sch
+  - electronics/carrier/sheet-interfaces.json
+  - mechanical/board-outline.json
+  - mechanical/component-placement.json
+  - electronics/feasibility/h2b-verdict.json
 fan-out:
   - name: pcb-layout
-    owned-paths: [electronics/carrier/pcb]
+    owned-paths:
+      - electronics/carrier/aius-carrier.kicad_pcb
+      - electronics/carrier/aius-carrier.kicad_dru
+      - electronics/carrier/pcb-notes.md
 review-intensity: active
 commit-checkpoint:
-  green: [ERC, DRC, impedance, clearance, return-path, creepage, test-access, mechanical review]
+  green:
+    - scripts/kicad.sh sch erc electronics/carrier/aius-carrier.kicad_sch
+    - scripts/kicad.sh pcb drc electronics/carrier/aius-carrier.kicad_pcb
+    - python3 scripts/validate_hardware.py --stage h3-pcb
+    - clean-room electrical mechanical DFM and test-access review
   buildable: [finished fabrication-candidate PCB]
   parent-commit: "design(aius): complete carrier PCB"
 ```
@@ -268,9 +402,18 @@ phase: H3b
 unit: phase-task
 seams: [committed PCB, normalized fabrication outputs, assembly BOM]
 contract-artifact: stubs-committed
+depends-on:
+  - electronics/carrier/aius-carrier.kicad_pcb
+  - electronics/carrier/aius-carrier.kicad_dru
+  - electronics/feasibility/h2b-verdict.json
 fan-out:
   - name: manufacturing-output
-    owned-paths: [manufacturing]
+    owned-paths:
+      - manufacturing/aius-carrier-manufacturing.zip
+      - manufacturing/assembly-bom.csv
+      - manufacturing/positions.csv
+      - manufacturing/manifest.json
+      - manufacturing/checksums.sha256
 review-intensity: active
 commit-checkpoint:
   green: [DFM, DFA, two-clean-checkout reproducibility, normalized manifest and checksum parity, clean-room release audit]
@@ -283,14 +426,65 @@ phase: H3c
 unit: phase-task
 seams: [frozen manufacturing package, vendor quotation, landed cost model]
 contract-artifact: stubs-committed
+depends-on:
+  - manufacturing/aius-carrier-manufacturing.zip
+  - manufacturing/assembly-bom.csv
+  - manufacturing/positions.csv
+  - manufacturing/manifest.json
+  - manufacturing/checksums.sha256
 fan-out:
   - name: quotation
-    owned-paths: [evidence/cost]
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/quote.pdf
+      - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/preview.pdf
+      - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
+      - evidence/cost/prototype-quotation.json
+      - evidence/cost/landed-prototype-cost.csv
+      - evidence/cost/should-cost.csv
+      - evidence/cost/risk-register.csv
+      - evidence/cost/h3c-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [three-unit assembly quote, vendor-minimum bare-board quote, four-layer comparison, freight/VAT/duty reconciliation]
+  green:
+    - python3 scripts/validate_hardware.py --stage h3c-structural
+    - python3 scripts/validate_hardware.py --stage h3c-quote --record evidence/cost/h3c-verdict.json
   buildable: [quoted but unordered three-unit prototype package]
   parent-commit: "docs(aius): record prototype quotation"
+```
+
+H3c never places an order. After the quoted checkpoint, H3d pauses for explicit
+user acceptance of the exact landed amount and substitutions. The parent then
+records the answer in `order-authorization.json`, with ordered keys
+`schema_version`, `decision`, `quotation_sha256`, `authorized_quantity`,
+`shipping_postcode`, `notes`; decision is `authorized` or `cancelled`, quantity
+is 3 only when authorized, and postcode is `M20 5PG`. No automation infers this
+decision.
+
+```yaml
+phase: H3d
+unit: parent-only
+seams: [committed quote, explicit user decision, purchase authority]
+contract-artifact: spec-only
+depends-on:
+  - evidence/cost/h3c-verdict.json
+  - evidence/cost/prototype-quotation.json
+  - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
+coordination-owned-paths:
+  - evidence/cost/order-authorization.json
+review-intensity: active
+commit-checkpoint:
+  branches:
+    authorized:
+      command: python3 scripts/validate_hardware.py --stage h3d-authorization --decision authorized --record evidence/cost/order-authorization.json
+      expected-exit: 0
+      buildable: [explicit authority to order exactly three quoted EVT assemblies]
+      parent-commit: "docs(aius): authorize three-unit EVT order"
+    cancelled:
+      command: python3 scripts/validate_hardware.py --stage h3d-authorization --decision cancelled --record evidence/cost/order-authorization.json
+      expected-exit: 3
+      expected-diagnostics: ["AIUS-HW-BLOCKED:h3d-authorization:order:cancelled"]
+      buildable: [quoted package retained without purchase authority]
+      parent-commit: "docs(aius): decline EVT order"
 ```
 
 ## H4: Three-unit EVT
@@ -318,14 +512,37 @@ phase: H4
 unit: test-surface
 seams: [bring-up procedure, per-board record, defect and ECO log]
 contract-artifact: both
+depends-on:
+  - evidence/cost/order-authorization.json
+  - manufacturing/manifest.json
+  - manufacturing/checksums.sha256
 fan-out:
   - name: evt-execution
-    owned-paths: [evidence/evt-results]
+    owned-paths:
+      - evidence/evt-results/evt-plan.json
+      - evidence/evt-results/unit-01.json
+      - evidence/evt-results/unit-02.json
+      - evidence/evt-results/unit-03.json
+      - evidence/evt-results/measurements.csv
+      - evidence/evt-results/defects.json
+      - evidence/evt-results/eco-log.json
+      - evidence/evt-results/h4-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [three-board inspection, one full bring-up pass, regression repeat, ECO review]
-  buildable: [working EVT carrier]
-  parent-commit: "test(aius): record carrier EVT result"
+  green:
+    - python3 scripts/validate_hardware.py --stage h4-structural
+  branches:
+    pass:
+      command: python3 scripts/validate_hardware.py --stage h4-gate --record evidence/evt-results/h4-verdict.json
+      expected-exit: 0
+      buildable: [working EVT carrier with three inspections and one repeated full bring-up pass]
+      parent-commit: "test(aius): approve carrier EVT result"
+    blocked:
+      command: python3 scripts/validate_hardware.py --stage h4-gate --record evidence/evt-results/h4-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h4-gate lines only
+      buildable: [complete EVT evidence with defects and ECO gate]
+      parent-commit: "test(aius): record blocked carrier EVT result"
 ```
 
 ## H5: Full audio integration and release decision
@@ -343,12 +560,29 @@ phase: H5a
 unit: phase-task
 seams: [proven decoder/DSP modules, EVT carrier drivers, product state machine]
 contract-artifact: both
+depends-on:
+  - evidence/evt-results/h4-verdict.json
+  - evidence/capability-results/p7-verdict.json
+  - evidence/capability-results/p8-verdict.json
+  - electronics/carrier/sheet-interfaces.json
 fan-out:
   - name: firmware-integration
-    owned-paths: [firmware/src/product]
+    owned-paths:
+      - firmware/src/product/audio_pipeline.cpp
+      - firmware/src/product/audio_pipeline.h
+      - firmware/src/product/carrier_control.cpp
+      - firmware/src/product/carrier_control.h
+      - firmware/src/product/product_state_machine.cpp
+      - firmware/src/product/product_state_machine.h
+      - firmware/src/main.cpp
+      - firmware/test/product/test_product.cpp
 review-intensity: active
 commit-checkpoint:
-  green: [software regression suite, hardware-in-loop smoke matrix, reset and fault-state recovery]
+  green:
+    - platformio test -d firmware -e native
+    - platformio run -d firmware -e teensy41-release
+    - python3 scripts/validate_hardware.py --stage h5-firmware
+    - hardware-in-loop smoke matrix and reset/fault-state recovery
   buildable: [committed end-to-end product firmware candidate]
   parent-commit: "feat(aius): integrate product firmware"
 ```
@@ -358,14 +592,39 @@ phase: H5b
 unit: test-surface
 seams: [committed product firmware, end-to-end audio contract, DVT report, release decision]
 contract-artifact: stubs-committed
+depends-on:
+  - evidence/evt-results/h4-verdict.json
+  - firmware/src/product/audio_pipeline.cpp
+  - firmware/src/product/carrier_control.cpp
+  - firmware/src/product/product_state_machine.cpp
+  - firmware/src/main.cpp
 fan-out:
   - name: audio-system-validation
-    owned-paths: [evidence/system-results]
+    owned-paths:
+      - evidence/system-results/test-matrix.json
+      - evidence/system-results/audio-measurements.csv
+      - evidence/system-results/timing-memory.csv
+      - evidence/system-results/thermal-fault-results.json
+      - evidence/system-results/soak-results.json
+      - evidence/system-results/precompliance-results.json
+      - evidence/system-results/eco-log.json
+      - evidence/system-results/h5-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [audio matrix, timing and drift tests, thermal and fault tests, soak, release audit]
-  buildable: [validated personal-build design]
-  parent-commit: "test(aius): complete system validation"
+  green:
+    - python3 scripts/validate_hardware.py --stage h5-structural
+  branches:
+    pass:
+      command: python3 scripts/validate_hardware.py --stage h5-gate --record evidence/system-results/h5-verdict.json
+      expected-exit: 0
+      buildable: [validated personal-build design]
+      parent-commit: "test(aius): approve system validation"
+    blocked:
+      command: python3 scripts/validate_hardware.py --stage h5-gate --record evidence/system-results/h5-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h5-gate lines only
+      buildable: [complete system evidence with release blocked]
+      parent-commit: "test(aius): record blocked system validation"
 ```
 
 ## Release assumptions

@@ -261,9 +261,16 @@ commit-checkpoint:
   parent-commit: "docs(aius): reconcile expansion power topology"
 ```
 
-P1C5a deepens the builder output map so one transactional `--write` publishes
-both contract JSON files, both valid fixtures and both canonical review JSON
-mirrors; each contract/mirror pair is byte-identical. `--check` verifies all six.
+P1C5a deepens the builder output map so one `--write` covers both contract JSON
+files, both valid fixtures and both canonical review JSON mirrors; each
+contract/mirror pair is byte-identical. Replacement remains atomically safe per
+file, matching the existing builder: it writes and `fsync`s one same-directory
+temporary, calls `os.replace`, then advances in output-map order. There is no
+cross-file transaction. A failed replacement emits the existing sorted
+`AIUS-P1C-CONTRACT-WRITE` diagnostic, returns 1, leaves already replaced files
+at their new bytes and later files untouched, and removes its temporary. A
+rerun converges safely; `--check` reports every missing or stale member of a
+partial six-output set. `--check` verifies all six.
 The parent-generated exact paths are
 `evidence/design/contracts/functional-topology.json`,
 `evidence/design/contracts/interfaces-and-states.json`,
@@ -1236,8 +1243,74 @@ fan-out:
       - evidence/manifest/sources.json
       - evidence/manifest/assumptions.json
       - evidence/manifest/supplemental-clone-boundary.json
-      - evidence/manifest/requests
-      - evidence/design/components
+      - evidence/manifest/requests/REQ-CLIFF-RX-UK.json
+      - evidence/manifest/requests/REQ-CLIFF-TX-UK.json
+      - evidence/manifest/requests/REQ-ETHERNET-MAGJACK-MFR.json
+      - evidence/manifest/requests/REQ-ETHERNET-MAGJACK-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-GPIO-ADC-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-GPIO-ADC-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-I2C-CONTROL-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-I2C-CONTROL-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-I2C-ISOLATOR-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-I2C-ISOLATOR-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-I2S-TDM-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-I2S-TDM-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-POWER-PROTECTION-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-POWER-PROTECTION-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-SPI-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-SPI-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-UART-DEBUG-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-UART-DEBUG-UK.json
+      - evidence/manifest/requests/REQ-EXPANSION-USB-HOST-MFR.json
+      - evidence/manifest/requests/REQ-EXPANSION-USB-HOST-UK.json
+      - evidence/manifest/requests/REQ-INTERNAL-USB-CABLE-MFR.json
+      - evidence/manifest/requests/REQ-INTERNAL-USB-CABLE-UK.json
+      - evidence/manifest/requests/REQ-MECHANICAL-CABLE-RETAINER-MFR.json
+      - evidence/manifest/requests/REQ-MECHANICAL-CABLE-RETAINER-UK.json
+      - evidence/manifest/requests/REQ-REMOTE-PROGRAM-RTC-MFR.json
+      - evidence/manifest/requests/REQ-REMOTE-PROGRAM-RTC-UK.json
+      - evidence/manifest/requests/REQ-SPDIF-MUX-MFR.json
+      - evidence/manifest/requests/REQ-SPDIF-MUX-UK.json
+      - evidence/manifest/requests/REQ-SPDIF-TX-GATE-MFR.json
+      - evidence/manifest/requests/REQ-SPDIF-TX-GATE-UK.json
+      - evidence/manifest/requests/REQ-TEENSY-ETHERNET-SOCKET-MFR.json
+      - evidence/manifest/requests/REQ-TEENSY-ETHERNET-SOCKET-UK.json
+      - evidence/manifest/requests/REQ-TEENSY-SIDE-SOCKET-MFR.json
+      - evidence/manifest/requests/REQ-TEENSY-SIDE-SOCKET-UK.json
+      - evidence/manifest/requests/REQ-TEENSY-USB-HOST-SOCKET-MFR.json
+      - evidence/manifest/requests/REQ-TEENSY-USB-HOST-SOCKET-UK.json
+      - evidence/manifest/requests/REQ-TEST-FIXTURE-HEADER-MFR.json
+      - evidence/manifest/requests/REQ-TEST-FIXTURE-HEADER-UK.json
+      - evidence/manifest/requests/REQ-USB-A-RECEPTACLE-MFR.json
+      - evidence/manifest/requests/REQ-USB-A-RECEPTACLE-UK.json
+      - evidence/manifest/requests/REQ-USB-C-RECEPTACLE-MFR.json
+      - evidence/manifest/requests/REQ-USB-C-RECEPTACLE-UK.json
+      - evidence/manifest/requests/REQ-USB-ESD-MFR.json
+      - evidence/manifest/requests/REQ-USB-ESD-UK.json
+      - evidence/manifest/requests/REQ-USB-POWER-PROTECTION-MFR.json
+      - evidence/manifest/requests/REQ-USB-POWER-PROTECTION-UK.json
+      - evidence/design/components/ethernet-magjack.json
+      - evidence/design/components/expansion-gpio-adc.json
+      - evidence/design/components/expansion-i2c-control.json
+      - evidence/design/components/expansion-i2c-isolator.json
+      - evidence/design/components/expansion-i2s-tdm.json
+      - evidence/design/components/expansion-power-protection.json
+      - evidence/design/components/expansion-spi.json
+      - evidence/design/components/expansion-uart-debug.json
+      - evidence/design/components/expansion-usb-host.json
+      - evidence/design/components/internal-usb-cable.json
+      - evidence/design/components/mechanical-cable-retainer.json
+      - evidence/design/components/remote-program-rtc.json
+      - evidence/design/components/spdif-mux.json
+      - evidence/design/components/spdif-tx-gate.json
+      - evidence/design/components/teensy-ethernet-socket.json
+      - evidence/design/components/teensy-side-socket.json
+      - evidence/design/components/teensy-usb-host-socket.json
+      - evidence/design/components/test-fixture-header.json
+      - evidence/design/components/usb-a-receptacle.json
+      - evidence/design/components/usb-c-receptacle.json
+      - evidence/design/components/usb-esd.json
+      - evidence/design/components/usb-power-protection.json
       - evidence/manifest/supplemental-requests.json
       - evidence/design/provisional-components.csv
 review-intensity: active
@@ -1268,13 +1341,15 @@ P1D2 has two explicit committable branches after the common green set:
 
 ### P1D3a1 — Closed design schemas and base fixtures
 
-Create four closed schemas and disjoint valid/invalid fixtures before design
+Create six closed schemas and disjoint valid/invalid fixtures before design
 facts or shared generator code are authored:
 
 - `electrical-reference-schema.json`;
 - `pin-resource-map-schema.json`;
 - `two-layer-placement-schema.json`;
-- `reference-schematic-contract-schema.json`.
+- `reference-schematic-contract-schema.json`;
+- `design-basis-schema.json`;
+- `design-basis-fragment-schema.json`.
 
 Electrical signal rows use integer engineering units and fields
 `signal_id`, `parent_signal_id`, `kind`, `source`, `sinks`, `direction`,
@@ -1633,27 +1708,102 @@ Schematic field types and nullability are closed as follows:
 | ERC policy | `project_file_allowed` | boolean constant false |
 | ERC policy | `waiver_count`, `ignored_violation_count`, `accepted_error_count`, `accepted_warning_count` | integer constant zero |
 
+#### Normative design-basis contract
+
+Engineering choices are not made implicitly while projecting the three authored
+design documents. Each document first receives one committed normative basis at
+`evidence/design/basis/<document>-basis.json`, validated by
+`design-basis-schema.json`. Root keys are `schema_version`, `basis_id`,
+`target_path`, `target_sha256`, `target_document`, `field_derivations`,
+`evidence_ids`, `notes`. The schema version is `1.0.0`; basis IDs are exactly
+`electrical-reference-basis`, `pin-resource-map-basis` and
+`two-layer-placement-basis`; target paths are their three canonical design JSON
+paths. `target_document` is a complete schema-valid authored target, not a
+partial overlay, and `target_sha256` is the lowercase SHA-256 of its canonical
+Prettier bytes.
+
+A field-derivation row keys `json_pointer`, `method`, `expression`,
+`input_refs`, `evidence_ids`, `rationale`. Rows are sorted by JSON pointer and
+cover every scalar leaf in `target_document` exactly once, including every row
+ID, ordinal-bearing array position, fixed engineering value, status and note.
+`method` is `literal`, `copy`, `formula`, `measurement` or
+`engineering-choice`; `expression` and `rationale` are non-empty. `input_refs`
+is a sorted unique array of repository-relative path plus JSON Pointer strings;
+it is non-empty except for a literal. Evidence IDs are sorted, resolve to the
+closed source manifest, and are non-empty for copy, formula and measurement.
+An engineering choice names its accepted requirement or engineering-policy ID
+in `input_refs` and explains the bounded decision in `rationale`. Every target
+row therefore has an exact ID, order, value or formula, and evidence basis before
+canonical materialization begins.
+
+Large concerns are authored as fragments validated by
+`design-basis-fragment-schema.json`. Fragment root keys are `schema_version`,
+`fragment_id`, `target_document`, `target_sections`, `payload`,
+`field_derivations`, `evidence_ids`, `notes`. `target_sections` is a non-empty
+ordered subset of the literal assembly table below; payload keys and order match
+that subset exactly, and derivations cover every scalar payload leaf. Fragment
+IDs and ownership are closed:
+
+| Fragment | Target | Exact target sections |
+|---|---|---|
+| `electrical-support-circuits` | electrical | `support_circuits` |
+| `electrical-signals` | electrical | `signals` |
+| `electrical-power-rails` | electrical | `power_rails` |
+| `pin-allocations` | pin | `pins` |
+| `placement-envelope` | placement | `board`, `placements`, `keepouts` |
+| `placement-routing` | placement | `routes`, `ground_corridors`, `electrical_criteria` |
+| `placement-mechanical-verification` | placement | `cables`, `collision_checks`, `mechanical_criteria` |
+| `placement-layer-decision` | placement | `layer_decision` |
+
+The assembler rejects missing/extra fragments and overlapping sections. It
+forms `criteria` by concatenating electrical then mechanical criteria and sorting
+by `criterion_id`; it copies the other sections literally; it computes each
+target root requirement/evidence array as the sorted nested union and sets root
+notes empty. It then emits the complete basis wrapper and target hash. Thus
+every agent owns one bounded engineering concern and the parent owns only a
+fixed, tested assembly.
+
+The target byte contract is exact: canonicalizing `target_document` with the
+repository Prettier version must produce `target_sha256`; the materializer writes
+those bytes without adding or deriving fields. Cross-basis references are
+serial: the pin basis may reference the committed electrical basis, and the
+placement basis may reference both earlier bases. No later projector may alter
+an engineering value.
+
 #### One-way document lifecycle
 
 `scripts/fixtures/p1d-schema/reference-package/base-v1.json` contains all four
 exact placeholders. Builder operations are
-`bootstrap --write|--check` and
-`validate --stage placeholders|design-records|schematic-stubs-unlocked|schematic-stubs|schematic-sheets|schematic`,
+`bootstrap --write|--check`,
+`validate-basis-fragment --input <path>`,
+`assemble-basis <electrical-reference|pin-resource-map|two-layer-placement> --write|--check`,
+`validate-basis <electrical-reference|pin-resource-map|two-layer-placement> --input <path>`,
+`materialize-design-records --write|--check`, and
+`validate --stage placeholders|design-records-structural|design-records|schematic-stubs-unlocked|schematic-stubs|schematic-sheets|schematic`,
 `validate-document <electrical-reference|pin-resource-map|two-layer-placement|reference-schematic-contract>
 --input <path> --placeholder-package <path>`, plus
 `schematic-interface lock --write|--check`. `validate-document` is read-only: it
 substitutes the named authored input into the exact locked placeholder package,
 validates its schema, local invariants and P1 external references, and defers
-only cross-design-document references to the parent `design-records` stage.
-Bootstrap creates or byte-checks placeholders and refuses to overwrite authored
-state.
+only cross-design-document references to the parent design-record stages.
+`validate-basis-fragment` and `assemble-basis` enforce the closed fragment table,
+exact leaf coverage and deterministic assembly. `validate-basis` checks
+input/evidence resolution, target schema, hash and serial cross-basis references.
+`materialize-design-records`
+requires all three valid bases and writes or checks only their byte-locked target
+documents. Bootstrap creates or byte-checks placeholders and refuses to
+overwrite authored state.
 
 The six validation states are one-way:
 
 1. `placeholders` requires four exact JSON placeholders and no reference KiCad
    files.
-2. `design-records` requires electrical, pin and placement authored, the
-   schematic contract still the exact placeholder, and no reference KiCad files.
+2. `design-records-structural` requires three valid bases, their byte-identical
+   electrical, pin and placement targets, the schematic contract still the exact
+   placeholder, no reference KiCad files, and all cross-document references and
+   arithmetic valid. It accepts recorded engineering failures.
+   `design-records` adds the release gate: it exits 0 only for an eligible design
+   and exits 3 for a structurally valid blocked design.
 3. `schematic-stubs-unlocked` adds the root, local symbol library, README and
    four interface-only sheets. It validates every ordered hierarchical pin,
    every local symbol and every KiCad-standard symbol against the precommitted
@@ -1706,21 +1856,26 @@ fan-out:
       - evidence/design/reference-schematic-contract-schema.json
       - electronics/reference/reference-schematic-contract.json
       - scripts/fixtures/p1d-schema/reference-schematic-contract
+  - name: design-basis-schema
+    owned-paths:
+      - evidence/design/design-basis-schema.json
+      - evidence/design/design-basis-fragment-schema.json
+      - scripts/fixtures/p1d-schema/design-basis
   - name: p1d3-schema-test-coordinator
     owned-paths:
       - scripts/test_p1d_schemas.py
       - scripts/fixtures/p1d-schema/reference-package
-coordination: four disjoint schema tasks run with maximum three concurrent; test coordinator runs last
+coordination: five disjoint schema tasks run with maximum three concurrent; test coordinator runs last
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_p1d_schemas.py
-    - node_modules/.bin/prettier --check evidence/design/electrical-reference-schema.json evidence/design/electrical-reference.json evidence/design/pin-resource-map-schema.json evidence/design/pin-resource-map.json evidence/design/two-layer-placement-schema.json evidence/design/two-layer-placement.json evidence/design/reference-schematic-contract-schema.json electronics/reference/reference-schematic-contract.json
+    - node_modules/.bin/prettier --check evidence/design/electrical-reference-schema.json evidence/design/electrical-reference.json evidence/design/pin-resource-map-schema.json evidence/design/pin-resource-map.json evidence/design/two-layer-placement-schema.json evidence/design/two-layer-placement.json evidence/design/reference-schematic-contract-schema.json evidence/design/design-basis-schema.json evidence/design/design-basis-fragment-schema.json electronics/reference/reference-schematic-contract.json
   buildable: [closed independently fixture-proven design schemas]
   parent-commit: "feat(aius): define electrical reference schemas"
 ```
 
-One coordinator owns `scripts/test_p1d_schemas.py` after the four disjoint schema
+One coordinator owns `scripts/test_p1d_schemas.py` after the five disjoint schema
 tasks return. It registers all fixture directories without modifying their
 owned files.
 
@@ -1906,57 +2061,255 @@ commit-checkpoint:
   parent-commit: "feat(aius): render two-layer placement"
 ```
 
-### P1D3b — Evidence-derived design records
+### P1D3b0 — Evidence-derived normative design bases
 
-Three disjoint agents replace one placeholder canonical JSON document with an
-authored document against the committed schemas. The parent runs the committed
-renderers after all three return, so agents share neither code nor generated
-review documents.
+The substantive engineering synthesis is seven serial checkpoints. Each worker
+authors one bounded fragment; the parent runs only the committed fixed assembler.
+The ordering makes every cross-concern dependency a committed input.
+
+```yaml
+phase: P1D3b0a
+unit: single-file-implementation
+seams: [closed source manifest, selected components, support-circuit inventory]
+contract-artifact: spec-only
+depends-on:
+  - evidence/manifest/sources.json
+  - evidence/design/selection-policy.json
+  - evidence/design/contracts/functional-topology.json
+  - evidence/design/contracts/interfaces-and-states.json
+  - evidence/design/design-basis-fragment-schema.json
+fan-out:
+  - name: electrical-support-circuit-basis
+    owned-paths: [evidence/design/basis/fragments/electrical-support-circuits.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/electrical-support-circuits.json
+    - clean-room support-circuit topology and evidence review
+  buildable: [closed support-circuit inventory and values]
+  parent-commit: "design(aius): establish support-circuit basis"
+```
+
+```yaml
+phase: P1D3b0b
+unit: single-file-implementation
+seams: [committed support circuits, signal compatibility, power budgets]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/basis/fragments/electrical-support-circuits.json
+  - evidence/design/contracts/functional-topology.json
+  - evidence/design/contracts/interfaces-and-states.json
+fan-out:
+  - name: electrical-signal-basis
+    owned-paths: [evidence/design/basis/fragments/electrical-signals.json]
+  - name: electrical-power-basis
+    owned-paths: [evidence/design/basis/fragments/electrical-power-rails.json]
+coordination-owned-paths:
+  - evidence/design/basis/electrical-reference-basis.json
+coordination: maximum two disjoint fragment agents; parent validates both then runs assemble-basis electrical-reference --write and --check
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/electrical-signals.json
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/electrical-power-rails.json
+    - python3 scripts/build_p1d_reference_contract.py assemble-basis electrical-reference --write
+    - python3 scripts/build_p1d_reference_contract.py assemble-basis electrical-reference --check
+    - python3 scripts/build_p1d_reference_contract.py validate-basis electrical-reference --input evidence/design/basis/electrical-reference-basis.json
+    - clean-room signal-threshold and power-budget review
+  buildable: [complete field-by-field electrical design basis]
+  parent-commit: "design(aius): establish electrical design basis"
+```
+
+```yaml
+phase: P1D3b0c
+unit: single-file-implementation
+seams: [committed electrical basis, PJRC pin evidence, pin-allocation basis]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/basis/electrical-reference-basis.json
+  - https://www.pjrc.com/teensy/card11a_rev4_web.pdf
+  - https://www.pjrc.com/teensy/card11b_rev4_web.pdf
+  - https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf
+fan-out:
+  - name: pin-resource-design-basis
+    owned-paths: [evidence/design/basis/fragments/pin-allocations.json]
+coordination-owned-paths:
+  - evidence/design/basis/pin-resource-map-basis.json
+coordination: parent validates the fragment then runs assemble-basis pin-resource-map --write and --check
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/pin-allocations.json
+    - python3 scripts/build_p1d_reference_contract.py assemble-basis pin-resource-map --write
+    - python3 scripts/build_p1d_reference_contract.py assemble-basis pin-resource-map --check
+    - python3 scripts/build_p1d_reference_contract.py validate-basis pin-resource-map --input evidence/design/basis/pin-resource-map-basis.json
+    - clean-room pin-mux DMA and reservation review
+  buildable: [complete field-by-field pin allocation basis]
+  parent-commit: "design(aius): establish pin allocation basis"
+```
+
+```yaml
+phase: P1D3b0d
+unit: single-file-implementation
+seams: [enclosure guide, component geometry, board placement and keepouts]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/basis/electrical-reference-basis.json
+  - evidence/design/basis/pin-resource-map-basis.json
+  - https://www.hammfg.com/part/1455N1201BK
+  - https://www.hammfg.com/part/1455N1201BK
+fan-out:
+  - name: placement-envelope-basis
+    owned-paths: [evidence/design/basis/fragments/placement-envelope.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-envelope.json
+    - clean-room enclosure placement and keepout review
+  buildable: [exact board placement and keepout basis]
+  parent-commit: "design(aius): establish placement envelope basis"
+```
+
+```yaml
+phase: P1D3b0e
+unit: single-file-implementation
+seams: [committed placement envelope, USB and Ethernet routing, return path]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/basis/fragments/placement-envelope.json
+  - evidence/design/basis/electrical-reference-basis.json
+fan-out:
+  - name: placement-routing-basis
+    owned-paths: [evidence/design/basis/fragments/placement-routing.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-routing.json
+    - clean-room impedance length via and return-path review
+  buildable: [exact route corridor and electrical-criterion basis]
+  parent-commit: "design(aius): establish routing feasibility basis"
+```
+
+```yaml
+phase: P1D3b0f
+unit: single-file-implementation
+seams: [committed placement envelope, cable geometry, collision and access criteria]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/basis/fragments/placement-envelope.json
+  - evidence/design/components/internal-usb-cable.json
+  - evidence/design/components/mechanical-cable-retainer.json
+fan-out:
+  - name: placement-mechanical-verification-basis
+    owned-paths: [evidence/design/basis/fragments/placement-mechanical-verification.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-mechanical-verification.json
+    - clean-room cable collision insertion and service review
+  buildable: [exact cable collision and mechanical-criterion basis]
+  parent-commit: "design(aius): establish mechanical verification basis"
+```
+
+```yaml
+phase: P1D3b0g
+unit: single-file-implementation
+seams: [committed electrical and mechanical criteria, deterministic layer decision]
+contract-artifact: spec-only
+depends-on:
+  - evidence/design/basis/fragments/placement-envelope.json
+  - evidence/design/basis/fragments/placement-routing.json
+  - evidence/design/basis/fragments/placement-mechanical-verification.json
+fan-out:
+  - name: placement-layer-decision-basis
+    owned-paths: [evidence/design/basis/fragments/placement-layer-decision.json]
+coordination-owned-paths:
+  - evidence/design/basis/two-layer-placement-basis.json
+coordination: parent validates the layer fragment then runs assemble-basis two-layer-placement --write and --check
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-layer-decision.json
+    - python3 scripts/build_p1d_reference_contract.py assemble-basis two-layer-placement --write
+    - python3 scripts/build_p1d_reference_contract.py assemble-basis two-layer-placement --check
+    - python3 scripts/build_p1d_reference_contract.py validate-basis two-layer-placement --input evidence/design/basis/two-layer-placement-basis.json
+    - clean-room bidirectional failure and layer-decision review
+  buildable: [complete field-by-field two-layer placement basis]
+  parent-commit: "design(aius): establish placement design basis"
+```
+
+### P1D3b — Materialized design records and verdict
+
+The parent performs the mechanical projection only after all three basis commits.
+It materializes byte-locked canonical JSON, renders the four review outputs and
+records one of two committable outcomes. No agent invents or changes a target
+value during this phase.
 
 ```yaml
 phase: P1D3b
-unit: single-file-implementation
-seams: [supplemental evidence, closed design schemas, deterministic renderers]
-contract-artifact: stubs-committed
-fan-out:
-  - name: electrical-reference
-    owned-paths: [evidence/design/electrical-reference.json]
-    worker-green:
-      - python3 scripts/build_p1d_reference_contract.py validate-document electrical-reference --input evidence/design/electrical-reference.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
-  - name: pin-resource-map
-    owned-paths: [evidence/design/pin-resource-map.json]
-    worker-green:
-      - python3 scripts/build_p1d_reference_contract.py validate-document pin-resource-map --input evidence/design/pin-resource-map.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
-  - name: two-layer-placement
-    owned-paths: [evidence/design/two-layer-placement.json]
-    worker-green:
-      - python3 scripts/build_p1d_reference_contract.py validate-document two-layer-placement --input evidence/design/two-layer-placement.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
+unit: parent-only
+seams: [three committed normative bases, byte-locked design records, explicit design verdict]
+contract-artifact: both
+depends-on:
+  - evidence/design/basis/electrical-reference-basis.json
+  - evidence/design/basis/pin-resource-map-basis.json
+  - evidence/design/basis/two-layer-placement-basis.json
 coordination-owned-paths:
+  - evidence/design/electrical-reference.json
+  - evidence/design/pin-resource-map.json
+  - evidence/design/two-layer-placement.json
   - docs/reference/electrical-reference.md
   - docs/reference/pin-resource-map.csv
   - docs/reference/pin-resource-map.md
   - docs/reference/two-layer-placement.md
-coordination: parent alone validates design-records stage, runs the three write commands for the four generated paths, then checks parity; author agents never edit generated paths
+coordination: parent alone runs committed materializer, renderers and verdict gate; basis agents never edit target or generated paths
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/build_p1d_reference_contract.py validate --stage design-records
+    - python3 scripts/build_p1d_reference_contract.py materialize-design-records --write
+    - python3 scripts/build_p1d_reference_contract.py materialize-design-records --check
+    - python3 scripts/build_p1d_reference_contract.py validate --stage design-records-structural
     - python3 scripts/render_p1.py electrical-reference --write
     - python3 scripts/render_p1.py pin-resource-map --write
     - python3 scripts/render_p1.py two-layer-placement --write
     - python3 scripts/render_p1.py electrical-reference --check
     - python3 scripts/render_p1.py pin-resource-map --check
     - python3 scripts/render_p1.py two-layer-placement --check
-  buildable: [evidence-closed electrical, pin and placement records]
-  parent-commit: "docs(aius): establish electrical design records"
+  branches:
+    eligible:
+      command: python3 scripts/build_p1d_reference_contract.py validate --stage design-records
+      expected-exit: 0
+      buildable: [evidence-closed electrical pin and placement records eligible for P1D3c]
+      parent-commit: "design(aius): approve electrical design records"
+    blocked:
+      command: python3 scripts/build_p1d_reference_contract.py validate --stage design-records
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-P1D-DESIGN-BLOCKED lines only
+      buildable: [structurally complete evidence-closed blocked design records]
+      parent-commit: "design(aius): record blocked electrical design"
 ```
+
+Each blocked diagnostic is exactly
+`AIUS-P1D-DESIGN-BLOCKED:<document>:<row-kind>:<row-id>:<status>`. The set is the
+sorted unique projection of every blocking support-circuit, signal, rail, pin,
+mechanical row or layer decision under the rules above. An eligible
+four-layer-required electrical route is not blocking. Any other diagnostic or
+exit status fails the checkpoint. The blocked branch commits the bases,
+canonical records and rendered reviews, records the expected diagnostics in the
+phase note, and stops before P1D3c0.
 
 ### P1D3c0 — Committed schematic interface
 
 `electronics/reference/schematic-interface-v1.json` is a closed object with
-keys `schema_version`, `sheets`, `local_symbol_ids`, `standard_symbol_ids`. A
-sheet has `sheet_id`, `path`, `pins`; a pin has `name`, `direction`,
-`electrical_type`, `binding`.
+keys `schema_version`, `sheets`, `local_symbol_ids`, `standard_symbol_ids`,
+`symbol_bindings`. A sheet has `sheet_id`, `path`, `pins`; a pin has `name`,
+`direction`, `electrical_type`, `binding`. A symbol binding keys `symbol_id`,
+`component_ids`, `source_ids`, `support_circuit_ids`, `pin_count`,
+`evidence_ids`. The arrays are sorted unique; component/source/evidence
+references resolve; at least one component or source resolves; support circuits
+resolve to the committed electrical basis; pin count is a positive integer
+proved by the retained component evidence. Binding rows are in local-symbol
+inventory order and cover that inventory exactly once.
 Sheet order is power-usb, optical-spdif, ethernet, teensy-expansion. Direction is
 `into-sheet`, `out-of-sheet` or `bidirectional`; electrical type is `input`,
 `output`, `bidirectional`, `passive`, `power-input` or `power-output`. Binding is
@@ -2003,7 +2356,8 @@ The exact ordered pin tuples are:
 | teensy-expansion | `DIGITAL_GROUND` | bidirectional | passive | `domain:digital-ground` |
 
 The exact lexically ordered local-symbol inventory is
-`selected-ethernet-magjack`, `selected-ethernet-socket`,
+`selected-cliff-rx`, `selected-cliff-tx`, `selected-ethernet-magjack`,
+`selected-ethernet-socket`,
 `selected-expansion-gpio-adc`, `selected-expansion-i2c-control`,
 `selected-expansion-i2c-isolator`, `selected-expansion-i2s-tdm`,
 `selected-expansion-power-protection`, `selected-expansion-spi`,
@@ -2013,8 +2367,41 @@ The exact lexically ordered local-symbol inventory is
 `selected-spdif-tx-gate`, `selected-test-fixture-header`,
 `selected-usb-c-receptacle`, `selected-usb-esd`,
 `selected-usb-host-socket`, `selected-usb-power-protection`,
-`teensy-4-1-module`, `vksdr-toslink-rx-module`,
-`vksdr-toslink-tx-module`.
+`teensy-4-1-module`.
+
+The component/support-circuit binding is closed before any KiCad worker starts:
+
+| Local symbol | Component or source | Required support circuit |
+|---|---|---|
+| `selected-cliff-rx` | component `cliff-rx` / MPN `ORJ5` | `optical-rx-interface` |
+| `selected-cliff-tx` | component `cliff-tx` / MPN `OTJ5` | `optical-tx-interface` |
+| `selected-ethernet-magjack` | component `ethernet-magjack` | `ethernet-interface` |
+| `selected-ethernet-socket` | component `teensy-ethernet-socket` | `ethernet-interface` |
+| `selected-expansion-gpio-adc` | component `expansion-gpio-adc` | `expansion-gpio-adc-interface` |
+| `selected-expansion-i2c-control` | component `expansion-i2c-control` | `expansion-i2c-control-interface` |
+| `selected-expansion-i2c-isolator` | component `expansion-i2c-isolator` | `expansion-i2c-isolation` |
+| `selected-expansion-i2s-tdm` | component `expansion-i2s-tdm` | `expansion-i2s-tdm-interface` |
+| `selected-expansion-power-protection` | component `expansion-power-protection` | `expansion-power-protection` |
+| `selected-expansion-spi` | component `expansion-spi` | `expansion-spi-interface` |
+| `selected-expansion-uart-debug` | component `expansion-uart-debug` | `expansion-uart-debug-interface` |
+| `selected-expansion-usb-host` | component `expansion-usb-host` | `expansion-usb-host-interface` |
+| `selected-internal-usb-a-receptacle` | component `usb-a-receptacle` | `internal-usb-service` |
+| `selected-remote-program-rtc-header` | component `remote-program-rtc` | `remote-program-rtc-interface` |
+| `selected-side-socket` | component `teensy-side-socket` | `teensy-module-interface` |
+| `selected-spdif-bypass-mux` | component `spdif-mux` | `spdif-bypass-selection` |
+| `selected-spdif-tx-gate` | component `spdif-tx-gate` | `spdif-transmit-gate` |
+| `selected-test-fixture-header` | component `test-fixture-header` | `test-fixture-interface` |
+| `selected-usb-c-receptacle` | component `usb-c-receptacle` | `usb-device-entry` |
+| `selected-usb-esd` | component `usb-esd` | `usb-device-protection` |
+| `selected-usb-host-socket` | component `teensy-usb-host-socket` | `teensy-usb-host-interface` |
+| `selected-usb-power-protection` | component `usb-power-protection` | `usb-power-protection` |
+| `teensy-4-1-module` | source `PJRC-TEENSY41-PAGE` | `teensy-module-interface` |
+
+The `cliff-rx`/`ORJ5` and `cliff-tx`/`OTJ5` rows are the selected optical parts;
+VKSDR is retained only as circuit evidence and is not represented as a fitted
+module. The electrical basis must contain every required support-circuit ID in
+this table. P1D3c0 copies the component/source IDs and exact evidence-derived pin
+counts into `symbol_bindings`; it does not infer a module abstraction.
 
 The expansion symbols bind one-to-one to their committed component-selection
 records and evidence-derived connector pin counts: `selected-expansion-gpio-adc`
@@ -2195,6 +2582,7 @@ fan-out:
       - scripts/validate_p1d_release.sh
       - scripts/test_validate_p1d_release.py
       - evidence/manifest/README.md
+      - evidence/design/p1d-release.json
 review-intensity: active
 commit-checkpoint:
   green:
@@ -2226,6 +2614,15 @@ fail-fast shell semantics, and runs once in exact checkpoint order from
 `validate_evidence.py` through the doc-index check; the Python wrapper test,
 ShellCheck and wrapper invocation are outer proof commands and are not called by
 the wrapper. It stops at the first non-zero command and propagates that status.
+Only after every check passes it atomically writes `p1d-release.json`, with exact
+ordered keys `schema_version`, `release_state`, `design_record_sha256`,
+`schematic_contract_sha256`, `interface_sha256`, `notes`; values are `1.0.0`,
+`eligible`, a lexically keyed object containing the SHA-256 of the three
+canonical design records, the schematic-contract SHA-256, the
+schematic-interface SHA-256, and an empty note. It contains no timestamp or Git
+identity, so identical inputs produce identical bytes. Any failed command leaves
+the verdict absent: the wrapper removes a prior verdict before its first check
+and creates no replacement until the complete sequence passes.
 Its Python test uses command shims to prove order, CWD independence, argument
 rejection and every fail-fast boundary; an empty or self-recursive wrapper fails.
 
