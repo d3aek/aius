@@ -2700,6 +2700,13 @@ rejection, immutability/repeatability, format drift,
 missing/malformed/hash-mismatched base, write failure, parent creation, and
 foreign temporary collision ownership.
 
+Completed 2026-07-16. The raw-hash-locked base at SHA-256
+`73b8b769e9137c29068120cebc4f13d419e1eb65484b4dac9a19e5403a7a7bc2`
+reproducibly derives the normative selection-policy contract. The contract has
+exactly eight policies, 32 requirements, and 29 family rows. Fifteen builder
+tests, 31 selection-schema tests, byte-exact builder `--check`, pinned Prettier
+3.8.3, and the clean-room delivery audit pass.
+
 #### P1C0e2 — Exact selection-policy validator
 
 ```yaml
