@@ -1563,8 +1563,9 @@ direction, powered and unpowered behavior, current-limit or isolation method,
 and backfeed rule. Power-domain rows contain ID, source, consumers, and
 backfeed rule. State and fault rows contain entry condition, path select,
 TX state, output payload, expansion state, recovery/exit condition, nullable
-recovery measurement gate, and notes. Transition rows contain ID, source and
-sink states, preconditions, ordered actions, and postconditions.
+recovery measurement gate, and notes. Transition rows contain ID, ordered
+non-empty source- and target-state sets, triggers, preconditions, ordered
+actions, postconditions, and notes.
 
 The exact interface inventory IDs are `rear-usb-c`, `internal-usb-a`,
 `teensy-micro-b`, `toslink-rx`, `toslink-tx`, `ethernet-rj45`,
@@ -1593,7 +1594,7 @@ member contracts are:
 | power domain | locked `id`; cross-referenced `source`; unique `consumers`; non-empty `backfeed_rule`; unique `evidence_ids`; string `notes` |
 | operating state | locked `id`; non-empty `entry_condition`; `path_select`, `tx_state`, `output_payload`, and `expansion_state` from locked tokens; non-empty `exit_condition`; string `notes` |
 | fault scenario | locked `id`; non-empty `trigger`; four locked outcome tokens; Boolean `hardware_pull_required` and `watchdog_required`; nullable `debounce_measurement_gate` as P6 or P7; nullable `residual_interval_measurement_gate` as P7; ordered unique `actions`; locked `recovery_state`; string `notes` |
-| transition | locked `id`, `from_state`, and `to_state`; unique non-empty locked `triggers`; unique `preconditions`; ordered non-empty `actions`; unique non-empty `postconditions`; string `notes` |
+| transition | locked `id`; ordered unique non-empty locked `from_states` and `to_states`; unique non-empty locked `triggers`; unique `preconditions`; ordered non-empty `actions`; unique non-empty `postconditions`; string `notes` |
 
 Outcome tokens are: path `processed` or `raw`; TX `disabled`, `enabled-pcm`,
 `enabled-raw`, or `unchanged`; payload `none`, `pcm-silence-48k`,
@@ -1632,6 +1633,24 @@ Exact transition IDs are `power-on-to-reset`, `reset-to-boot`,
 | `usb-unplug-to-power-off` | `usb-unplug` |
 
 No other transition trigger token is schema-valid.
+
+The transition source/target sets are exact and resolve the earlier ambiguous
+multi-origin and format-dependent rows:
+
+| Transition ID | `from_states` | `to_states` |
+| --- | --- | --- |
+| `power-on-to-reset` | `power-off` | `powered-reset` |
+| `reset-to-boot` | `powered-reset` | `boot-muted` |
+| `boot-to-waiting` | `boot-muted` | `waiting-for-carrier` |
+| `waiting-to-pcm` | `waiting-for-carrier` | `pcm-active` |
+| `waiting-to-dts` | `waiting-for-carrier` | `dts-active` |
+| `active-to-carrier-loss` | `pcm-active`, `dts-active`, `unsupported-muted`, `diagnostic-bypass` | `waiting-for-carrier` |
+| `active-to-unsupported` | `pcm-active`, `dts-active` | `unsupported-muted` |
+| `unsupported-to-active` | `unsupported-muted` | `pcm-active`, `dts-active` |
+| `active-to-diagnostic-bypass` | `pcm-active`, `dts-active`, `unsupported-muted` | `diagnostic-bypass` |
+| `diagnostic-bypass-to-waiting` | `diagnostic-bypass` | `waiting-for-carrier` |
+| `watchdog-to-reset` | `boot-muted`, `waiting-for-carrier`, `pcm-active`, `dts-active`, `unsupported-muted`, `diagnostic-bypass`, `fault-muted` | `powered-reset` |
+| `usb-unplug-to-power-off` | `powered-reset`, `boot-muted`, `waiting-for-carrier`, `pcm-active`, `dts-active`, `unsupported-muted`, `diagnostic-bypass`, `fault-muted` | `power-off` |
 
 The following exact fault/scenario IDs are mandatory and have these safe outcomes:
 
@@ -1978,12 +1997,15 @@ Stage inputs use these abbreviations: `FT` is
 `evidence/manifest/requests/*.json`; `SRC` is
 `evidence/manifest/sources.json`; `FT.md` and `IS.md` are their mapped review
 views; `C.csv` is `evidence/design/provisional-components.csv`; and `R.json` is
-`evidence/manifest/supplemental-requests.json`.
+`evidence/manifest/supplemental-requests.json`. `FTC` and `ISC` are the two
+P1C0c normative contracts under `evidence/design/contracts/`; before P1C0c1
+lands they are not part of the executable surface, and afterwards the amended
+rows below require them cumulatively.
 
 | Stage | Required inputs/outputs | Permitted missing | Exact validation contract |
 | --- | --- | --- | --- |
-| `contract` | the five P1C schemas | all instances and generated outputs | Draft/schema self-check, root/member key order declared by each schema, and schema version constants |
-| `architecture-base` | `FT`, `IS`, `SRC`, `FT.md`, `IS.md` | `SP`, `C/*`, `R/*`, `C.csv`, `R.json` | prior stage; instance schemas; locked root/member order and exact ID/order sets; all topology, clock, buffer, state, fault, transition, control, power, and flow cross-references and locked outcomes; every evidence ID resolves to a `current` `SRC` record; exact P1C0b1 Markdown byte parity |
+| `contract` | the five P1C schemas and, after P1C0c1, both `evidence/design/contracts/*.json` normative contracts | all instances and generated outputs | Draft/schema self-check, root/member key order declared by each schema, schema version constants, normative-contract instance validation, and P1C0c1 builder parity |
+| `architecture-base` | `FT`, `IS`, `SRC`, `FT.md`, `IS.md` and both normative contracts | `SP`, `C/*`, `R/*`, `C.csv`, `R.json` | prior stage; instance schemas; locked root/member order and exact ID/order sets; exact ordered semantic equality to the normative contracts; all topology, clock, buffer, state, fault, transition, control, power, and flow cross-references and locked outcomes; every evidence ID resolves to a `current` `SRC` record; exact P1C0b1 Markdown byte parity |
 | `architecture` | architecture-base inputs plus `SP` | `C/*`, `R/*`, `C.csv`, `R.json` | prior stage; policy schema/order; exact ordered family set and component filenames; unique policy/requirement/family IDs; requirement and family equality; every requirement basis resolves to a current source or declared engineering policy; namespaces do not overlap; critical/status/generic/request/dependent-feature rules from the locked P1C matrix |
 | `selection-fragments --family F` | architecture inputs and `C/F.json`; also the two policy-named `R/*` files when status is `selected`, `candidate-pending-evidence`, or `candidate-evidence-unavailable` | all sibling files and both aggregates; target requests when status is `generic-allowance` or `unresolved` | prior stage; target filename/family equality; component schema/order; policy requirement equality and allowed status; status/null/generic matrix; unique alternatives; request schema/order, ID/kind/family/requirements/manufacturer/MPN/source equality; request/source status rules. Sibling fragments are ignored so one task cannot block another |
 | `selection-fragments` | architecture inputs plus exactly one `C/<family>.json` for every locked family and the status-derived request set | `C.csv`, `R.json` | all scoped checks plus exact `*.json` basename sets in both directories; each `selected`, `candidate-pending-evidence`, or `candidate-evidence-unavailable` component has exactly its policy-named manufacturer and UK requests; `generic-allowance` and `unresolved` components have none; critical `unresolved` or `candidate-evidence-unavailable` status blocks while `candidate-pending-evidence` remains the expected P1D queue |
@@ -2036,13 +2058,222 @@ component-set request gating. The clean-room delivery audit passed.
 A stale foreign `docs/README.md` generated index was reported at the checkpoint;
 repository policy classifies it as nonblocking and excludes it from this phase.
 
+### P1C0c — Canonical row contracts and complete semantic enforcement
+
+The first P1C1a clean-room gate returned `BLOCKED` on 2026-07-16. The schemas
+and validator locked record shapes and ID sets but did not lock most row values;
+generic transition IDs had ambiguous single source/target fields; evidence
+arrays could be empty; nested-array order was not contractual; and the two
+parallel tasks lacked explicit dependency and parent-validation boundaries.
+P1C0c1 and P1C0c2 close those gaps before either P1C1a instance is authored.
+
+#### Normative architecture-contract derivation
+
+The normative base snapshots are the two P1C0a valid fixtures as committed at
+`2645ac96e`:
+
+| Base snapshot | SHA-256 |
+| --- | --- |
+| `functional-topology/valid.json` | `17e07765a7ef2de03e0722f3b393f8dafde48ec2d854b381c47d51073b0d3257` |
+| `interfaces-and-states/valid.json` | `31ea644c922515c0fa6193e67a7432b8b911083af96d3290a1b34959800fcd84` |
+
+P1C0c1 preserves those bytes as immutable `base-v1.json` inputs under the same
+fixture subtrees. `scripts/build_p1c_architecture_contracts.py` validates both
+hashes and applies only the transformations declared below. It writes the new
+schema-valid fixture and the corresponding normative design contract with
+identical JSON values:
+
+- `evidence/design/contracts/functional-topology.json`;
+- `evidence/design/contracts/interfaces-and-states.json`.
+
+All root keys, rows, scalar values, notes, nested arrays, and row order not
+explicitly transformed below remain byte-semantically identical to the named
+base snapshot. This rule makes every row value finite: an unlisted change is a
+contract failure. JSON object keys use the schema order; every array retains
+the exact base order or the exact replacement order below.
+
+Evidence-bundle names are derivation shorthand only; the JSON contains their
+ordered source-ID arrays. Each bundle is non-empty and sorted by source ID:
+
+| Bundle | Exact source IDs |
+| --- | --- |
+| `EV-AUDIO` | `PJRC-IMXRT1060-RM`, `PJRC-SPDIF-RX-SOURCE`, `PJRC-SPDIF-TX-SOURCE` |
+| `EV-CORE` | `PJRC-IMXRT1060-RM`, `PJRC-TEENSY41-PAGE`, `PJRC-TEENSY41-SCHEMATIC` |
+| `EV-ETH` | `PJRC-ETHERNET-KIT`, `PJRC-IMXRT1060-RM` |
+| `EV-EXP` | `PJRC-IMXRT1060-RM`, `PJRC-TEENSY41-PINOUT` |
+| `EV-OPTICAL` | `CLIFF-ORJ5`, `CLIFF-OTJ5`, `VKSDR-TOSLINK-SCHEMATICS` |
+| `EV-PIN` | `PJRC-TEENSY41-PINOUT` |
+| `EV-RX` | `CLIFF-ORJ5`, `PJRC-SPDIF-RX-SOURCE`, `VKSDR-TOSLINK-SCHEMATICS` |
+| `EV-SYSTEM` | `PJRC-ETHERNET-KIT`, `PJRC-TEENSY41-SCHEMATIC` |
+| `EV-TX` | `CLIFF-OTJ5`, `PJRC-SPDIF-TX-SOURCE`, `VKSDR-TOSLINK-SCHEMATICS` |
+| `EV-USB` | `PJRC-TEENSY41-SCHEMATIC` |
+
+The functional contract replaces every record `evidence_ids` array according
+to this exhaustive mapping:
+
+| Collection | Bundle | Exact row IDs |
+| --- | --- | --- |
+| modes | `EV-AUDIO` | `pcm-processed`, `dts-processed`, `unsupported-muted` |
+| modes | `EV-OPTICAL` | `diagnostic-raw-bypass` |
+| modes | `EV-CORE` | `fault-muted` |
+| blocks | `EV-USB` | `power-entry`, `usb-bridge` |
+| blocks | `EV-CORE` | `teensy` |
+| blocks | `EV-RX` | `optical-rx`, `spdif-capture` |
+| blocks | `EV-AUDIO` | `input-classifier`, `dts-decoder`, `pcm-normalizer`, `downmix-eq` |
+| blocks | `EV-TX` | `spdif-transmit`, `optical-tx` |
+| blocks | `EV-OPTICAL` | `raw-bypass-mux`, `tx-gate` |
+| blocks | `EV-ETH` | `ethernet` |
+| blocks | `EV-EXP` | `expansion` |
+| flows | `EV-RX` | `optical-to-capture`, `capture-to-classifier` |
+| flows | `EV-AUDIO` | `classifier-to-dts`, `classifier-to-pcm`, `dts-to-normalizer`, `pcm-to-normalizer`, `normalizer-to-dsp`, `dsp-to-transmit` |
+| flows | `EV-TX` | `transmit-to-mux`, `gate-to-optical` |
+| flows | `EV-OPTICAL` | `optical-to-raw-mux`, `mux-to-gate`, `path-select-control`, `tx-enable-control` |
+| flows | `EV-CORE` | `watchdog-reset-control`, `teensy-power`, `carrier-3v3` |
+| flows | `EV-USB` | `usb-vbus-entry`, `protected-vbus` |
+| flows | `EV-EXP` | `expansion-power` |
+| clock domains | `EV-RX` | `spdif-recovered` |
+| clock domains | `EV-AUDIO` | `audio-processing` |
+| clock domains | `EV-TX` | `spdif-transmit-clock` |
+| clock domains | `EV-USB` | `usb-device-clock` |
+| clock domains | `EV-ETH` | `ethernet-rmii-clock` |
+
+The functional root `evidence_ids` is the sorted union of those bundle values:
+`CLIFF-ORJ5`, `CLIFF-OTJ5`, `PJRC-ETHERNET-KIT`, `PJRC-IMXRT1060-RM`,
+`PJRC-SPDIF-RX-SOURCE`, `PJRC-SPDIF-TX-SOURCE`, `PJRC-TEENSY41-PAGE`,
+`PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC`, and
+`VKSDR-TOSLINK-SCHEMATICS`. Buffers and latency boundaries have no per-row
+evidence member; this root set is their explicit document-level citation.
+
+The interface/state contract replaces every per-row `evidence_ids` array by
+this exhaustive mapping:
+
+| Collection | Bundle | Exact row IDs |
+| --- | --- | --- |
+| connectors | `EV-USB` | `rear-usb-c`, `internal-usb-a`, `teensy-micro-b` |
+| connectors | `EV-RX` | `toslink-rx` |
+| connectors | `EV-TX` | `toslink-tx` |
+| connectors | `EV-ETH` | `ethernet-rj45` |
+| connectors | `EV-PIN` | `microsd-access`, `remote-program-rtc` |
+| connectors | `EV-EXP` | `test-fixture` |
+| controls | `EV-OPTICAL` | `spdif-path-select`, `optical-tx-enable` |
+| controls | `EV-CORE` | `teensy-reset`, `teensy-watchdog`, `status-led` |
+| controls | `EV-PIN` | `program-control` |
+| expansion interfaces | `EV-EXP` | all six locked `expansion-*` rows |
+| power domains | `EV-USB` | `usb-vbus-raw`, `protected-5v` |
+| power domains | `EV-CORE` | `teensy-3v3`, `digital-ground` |
+| power domains | `EV-SYSTEM` | `chassis-shield` |
+| power domains | `EV-EXP` | `expansion-3v3`, `expansion-usb-host-vbus` |
+
+Its root `evidence_ids` is the same exact sorted union as the functional root.
+Operating states, fault scenarios, and transitions have no per-row evidence
+member; the interface/state root set is their explicit document-level
+citation. Both schemas change their `evidenceIdentifiers` definition to
+`minItems: 1`, so no record that has an evidence member can omit a citation.
+
+Every transition replaces `from_state` and `to_state` with `from_states` and
+`to_states` using the exact source/target table above. All transition fields
+otherwise retain their base values except:
+
+- `active-to-carrier-loss.actions` becomes `disable-tx`, `wait-muted`,
+  `select-processed`, `clear-pipeline`;
+- `active-to-carrier-loss.postconditions` becomes `processed-selected`,
+  `tx-disabled`.
+
+These replacements are ordered. The builder's `--check` mode compares the two
+contract files and the two schema-valid fixtures to its pure derived bytes and
+never writes. `--write` is the sole writer for those four generated JSON files.
+
+#### P1C0c1 — Canonical contract and transition-schema migration
+
+```yaml
+phase: P1C0c1
+unit: canonical-architecture-contract
+seams: [hashed P1C0a bases, generated normative JSON]
+contract-artifact: both
+fan-out:
+  - name: architecture-contract-builder
+    owned-paths:
+      - evidence/design/functional-topology-schema.json
+      - evidence/design/interfaces-and-states-schema.json
+      - evidence/design/contracts
+      - scripts/build_p1c_architecture_contracts.py
+      - scripts/test_build_p1c_architecture_contracts.py
+      - scripts/test_functional_topology_schema.py
+      - scripts/test_interfaces_states_schema.py
+      - scripts/fixtures/p1c-schema/functional-topology
+      - scripts/fixtures/p1c-schema/interfaces-and-states
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_build_p1c_architecture_contracts.py
+    - python3 scripts/test_functional_topology_schema.py
+    - python3 scripts/test_interfaces_states_schema.py
+    - python3 scripts/build_p1c_architecture_contracts.py --check
+    - node_modules/.bin/prettier --check "evidence/design/contracts/*.json" "scripts/fixtures/p1c-schema/{functional-topology,interfaces-and-states}/**/*.json"
+  buildable: [reproducible row-complete architecture contract]
+  parent-commit: "feat(aius): define canonical architecture rows"
+```
+
+The builder exports pure `build_functional_contract(base) -> object` and
+`build_interfaces_contract(base) -> object` functions. Tests prove base hash
+rejection, exhaustive evidence assignment, no unlisted semantic drift,
+transition key/order migration, every multi-origin set, and exact-byte
+write/check behavior. Schema negatives cover empty evidence arrays, legacy
+single transition endpoints, duplicate/empty endpoint sets, and wrong key
+order.
+
+#### P1C0c2 — Row-complete validator extension
+
+```yaml
+phase: P1C0c2
+unit: canonical-row-enforcement
+seams: [normative design contracts, staged validator]
+contract-artifact: both
+fan-out:
+  - name: architecture-contract-validator
+    owned-paths:
+      - scripts/validate_p1.py
+      - scripts/test_validate_p1.py
+      - scripts/fixtures/validate-p1
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/test_render_p1.py
+    - python3 scripts/validate_p1.py topology --stage contract
+  buildable: [row-complete executable architecture contract]
+  parent-commit: "feat(aius): enforce canonical architecture rows"
+```
+
+`contract` now also requires and schema-validates both normative design
+contracts. `architecture-base` requires exact semantic equality between each
+instance and its normative contract after the existing parse/schema/order
+gates; a scalar or ordered-array difference emits `CONTRACT` at the instance
+path. The validator still performs independent cross-reference and current
+evidence resolution, so equality never substitutes for source validity.
+
+Focused negatives mutate one value in every semantic family: mode, block,
+flow, clock, buffer, latency boundary, connector, control, expansion interface,
+power domain, operating state, fault scenario, transition source/target,
+transition actions, and document/record evidence. Transition reference checks
+resolve every member of `from_states` and `to_states`. The fixture matrix gains
+canonical rows for each family and the parent checkpoint remains green only
+after the previous 37 tests and these additions all pass.
+
 ### P1C1a — Functional topology and interface/state truth tables
 
 ```yaml
 phase: P1C1a
-unit: architecture-instance
+unit: parallel-disjoint-architecture-instances
 seams: [functional flow, failure-state outputs]
 contract-artifact: both
+depends-on:
+  - committed P1C0a schemas
+  - committed P1C0b1 renderer
+  - committed P1C0b2 validator
+  - committed P1C0c1 normative contracts
+  - committed P1C0c2 row enforcement
+  - current evidence/manifest/sources.json
 fan-out:
   - name: functional-flow
     owned-paths:
@@ -2061,6 +2292,16 @@ commit-checkpoint:
   buildable: [locked architecture IDs, flow ownership, and safe-state truth tables]
   parent-commit: "docs(aius): lock functional and failure-state topology"
 ```
+
+Each task copies the JSON value of its corresponding normative contract to its
+instance path without changing object keys, row order, nested-array order,
+notes, or citations, then runs its own renderer with `--write` followed by
+`--check`. The functional task must not invoke `architecture-base` while the
+interface/state pair is absent, and vice versa. After both disjoint handoffs,
+the parent alone runs `validate_p1.py topology --stage architecture-base`, the
+two renderer checks, the clean-room delivery audit, and the phase commit. No
+task derives values from the sibling instance; the committed normative
+contracts are the sole shared input.
 
 ### P1C1b — Requirement and expected-family policy
 
