@@ -821,6 +821,7 @@ semantics:
 | `minimum` | number | numeric value greater than or equal to `value` |
 | `exclusive-minimum` | number | numeric value greater than `value` |
 | `const` | scalar | exact equality, with Boolean distinct from integer/number |
+| `pattern` | non-empty anchored regular-expression string | string matches the expression; P1B1c uses Python `re.fullmatch` and rejects invalid expressions |
 
 `nullable: true` additionally permits null before the constraint is applied;
 `nullable: false` rejects null. The schema validates the descriptor structure
@@ -902,8 +903,9 @@ according to source ID. Exact value/unit rules are:
 | `lead_time_days` | positive integer or null | `days` |
 
 `boe-gbp-fx` records exactly `rate_date`, `gbp_per_usd`, and `gbp_per_eur`.
-`rate_date` is a `YYYY-MM-DD` string with null unit. Rates are positive numbers
-with units `GBP/USD` and `GBP/EUR` respectively.
+`rate_date` is a non-null string with null unit and exact pattern
+`^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])$`. Rates are positive
+numbers with units `GBP/USD` and `GBP/EUR` respectively.
 
 The values file is a top-level scalar map with exactly the descriptor keys; it
 never contains observation metadata. `record` requires one
@@ -920,7 +922,10 @@ The P1B1b clean-room gate first returned `BLOCKED` on 2026-07-15 because a
 profile name alone left P1B1c without machine-readable field rules and the
 contract assigned generator assertions before that generator existed. The
 descriptor contract and test ownership above resolve both findings; a fresh
-clean-room verdict remains required before implementation.
+clean-room verdict remains required before implementation. Implementation then
+found that the original descriptor vocabulary could not encode the required
+`rate_date` shape without duplicating policy in P1B1c. The `pattern` constraint
+above resolves that gap and requires another fresh clean-room verdict.
 
 ```yaml
 phase: P1B1b
