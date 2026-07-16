@@ -624,15 +624,18 @@ fixed project name `aius-kicad`, network mode `none`, repository bind mount at
 
 `kicad.sh` resolves the repository from its own checked-in location, exports the
 absolute bind path only for Compose interpolation, and invokes exactly
-`docker compose -f <absolute-compose-path> run --rm kicad kicad-cli "$@"`.
-It works from any current directory and supports `AIUS_DOCKER_BIN` only for its
-wrapper test.
+`docker compose --project-name aius-kicad -f <absolute-compose-path> run --rm
+kicad kicad-cli "$@"`. The explicit CLI project name defeats any ambient
+`COMPOSE_PROJECT_NAME`. It works from any current directory and supports
+`AIUS_DOCKER_BIN` only for its wrapper test.
 
 The test uses a fake Docker executable to assert the absolute Compose path,
-`run --rm`, service, forwarded arguments, and identical behavior from the repo
-root and an unrelated directory. It also parses `docker compose config --format
-json` to assert image digest, project name, network, bind target, cache volume,
-and working directory.
+explicit project-name option, `run --rm`, service, forwarded arguments, and
+identical behavior from the repo root and an unrelated directory. It sets a
+hostile ambient `COMPOSE_PROJECT_NAME` and proves the exact argv still pins
+`aius-kicad`. It also parses `docker compose config --format json` to assert
+image digest, project name, network, bind target, cache volume, and working
+directory.
 
 ```yaml
 phase: P1A5
