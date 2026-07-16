@@ -753,6 +753,7 @@ policy statements, commands, diagnostic behavior, and media rules remain exact.
 
 ```yaml
 phase: P1B1a
+status: completed
 unit: acquisition-policy-media
 seams: [private research retention, evidence media]
 contract-artifact: both
@@ -773,6 +774,9 @@ commit-checkpoint:
   buildable: [explicit private-research evidence policy and complete seed media map]
   parent-commit: "feat(aius): prepare seed evidence media"
 ```
+
+Completed 2026-07-15. The four contract suites pass 23, 24, 15, and 30 tests.
+The clean-room delivery audit passed with no discrepancies.
 
 ### P1B1b — Exact seed realization contract
 

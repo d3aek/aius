@@ -130,6 +130,7 @@ class MediaRule:
 MEDIA_RULES = {
     ".pdf": MediaRule("application/pdf", "lfs", "pdf"),
     ".zip": MediaRule("application/zip", "lfs", "zip"),
+    ".png": MediaRule("image/png", "lfs", "png"),
     ".html": MediaRule("text/html", "git", "html"),
     ".htm": MediaRule("text/html", "git", "html"),
     ".mhtml": MediaRule("multipart/related", "lfs", "mhtml"),
@@ -156,6 +157,7 @@ MEDIA_RULES = {
     ".hpp": MediaRule("text/x-c++", "git", "text"),
     ".hh": MediaRule("text/x-c++", "git", "text"),
     ".hxx": MediaRule("text/x-c++", "git", "text"),
+    ".rst": MediaRule("text/x-rst", "git", "text"),
     ".txt": MediaRule("text/plain", "git", "text"),
     ".md": MediaRule("text/markdown", "git", "text"),
 }
@@ -625,6 +627,9 @@ def _signature_failure(rule: MediaRule, payload: bytes) -> str | None:
         if rule.kind == "zip":
             prefixes = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
             return None if payload.startswith(prefixes) else "ZIP signature is missing"
+        if rule.kind == "png":
+            signature = b"\x89PNG\r\n\x1a\n"
+            return None if payload.startswith(signature) else "PNG signature is missing"
         if rule.kind == "mhtml":
             header = payload[:4096].decode("ascii").lower()
             if "mime-version:" not in header:

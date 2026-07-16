@@ -37,6 +37,7 @@ REQUIRED_GOLDEN_IDS = (
 MEDIA_FIXTURES = {
     ".pdf": ("application/pdf", "lfs", b"%PDF-1.7\nfixture\n"),
     ".zip": ("application/zip", "lfs", b"PK\x03\x04fixture"),
+    ".png": ("image/png", "lfs", b"\x89PNG\r\n\x1a\nfixture"),
     ".html": ("text/html", "git", b"\xef\xbb\xbf  <!DOCTYPE HTML><html></html>"),
     ".htm": ("text/html", "git", b"<html></html>"),
     ".mhtml": (
@@ -69,6 +70,7 @@ MEDIA_FIXTURES = {
     ".hpp": ("text/x-c++", "git", b"int fixture();\n"),
     ".hh": ("text/x-c++", "git", b"int fixture();\n"),
     ".hxx": ("text/x-c++", "git", b"int fixture();\n"),
+    ".rst": ("text/x-rst", "git", "Résumé\n======\n".encode("utf-8")),
     ".txt": ("text/plain", "git", b"fixture\n"),
     ".md": ("text/markdown", "git", b"# Fixture\n"),
 }
@@ -772,17 +774,22 @@ class ValidatorFixtureTests(unittest.TestCase):
         completed = self.fixture.run()
         self.assert_diagnostic(completed, "LFS_POINTER", "sources[0].artifacts[0]")
 
-    def test_invalid_artifact_utf8_is_validation_exit_one(self) -> None:
-        self.fixture.add_artifact("CLIFF-ORJ5", ".txt", payload=b"\xff")
-        completed = self.fixture.run()
-        self.assert_diagnostic(
-            completed, "ARTIFACT_SIGNATURE", "sources[0].artifacts[0]"
-        )
+    def test_text_media_rejects_invalid_utf8(self) -> None:
+        for index, suffix in enumerate((".txt", ".rst")):
+            if index:
+                self.fixture = self._replace_fixture()
+            with self.subTest(suffix=suffix):
+                self.fixture.add_artifact("CLIFF-ORJ5", suffix, payload=b"\xff")
+                completed = self.fixture.run()
+                self.assert_diagnostic(
+                    completed, "ARTIFACT_SIGNATURE", "sources[0].artifacts[0]"
+                )
 
     def test_each_content_check_rejects_an_invalid_payload(self) -> None:
         invalid_payloads = {
             ".pdf": b"not-pdf",
             ".zip": b"not-zip",
+            ".png": b"\x89PNG\r\n\x1a",
             ".html": b"plain text",
             ".mhtml": b"MIME-Version: 1.0\r\n",
             ".step": b"ISO-10303-21;\nDATA;",
@@ -794,6 +801,7 @@ class ValidatorFixtureTests(unittest.TestCase):
             ".json": b"{invalid",
             ".csv": b"\n",
             ".c": b"text\x00with-nul",
+            ".rst": b"text\x00with-nul",
         }
         for index, (suffix, payload) in enumerate(invalid_payloads.items()):
             if index:

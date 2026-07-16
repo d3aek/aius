@@ -142,14 +142,30 @@ EXPECTED_H2_HEADINGS = (
 )
 
 POLICY_STATEMENTS = (
-    "**Binary evidence:** Store redistributable binary evidence under "
+    "**Binary evidence:** Store public, directly retrievable binary evidence "
+    "retained for personal noncommercial research under "
     "`docs/reference/datasheets.md<source-id>/`; Git LFS must report `filter=lfs`.",
     "**Reviewable source snapshots:** Store source snapshots under "
     "`evidence/source-snapshots/<source-id>/` as normal Git text.",
-    "**External references:** Do not commit non-redistributable bytes; record "
-    "`storage: external-reference` with a null path.",
+    "**External references:** Do not commit bytes behind access controls or an "
+    "express retention prohibition; record `storage: external-reference` with "
+    "a null path.",
     "**Text contracts:** Keep schemas, manifests, observations, scripts, "
     "Markdown, CSV, JSON, KiCad sources, and patches in normal Git.",
+)
+EXPECTED_EXTERNAL_REFERENCE_SECTION = (
+    "Public retrieval does not infer permission to republish. Publicly retrievable\n"
+    "evidence retained in this private checkout is solely for personal,\n"
+    "noncommercial research, and its `redistribution_note` must state that no\n"
+    "permission is inferred and the bytes must not be republished.\n\n"
+    "Inspect material behind access controls or an express retention prohibition\n"
+    "locally without adding its bytes to the checkout. Record the final URL with\n"
+    "`storage: external-reference` and a null path. Record the locally observed\n"
+    "SHA-256 and byte count together when they are available, or leave both null.\n"
+    "Commit only the normalized facts needed by an Aius claim and state the access\n"
+    "or retention restriction.\n\n"
+    "An external reference describes what was inspected. It does not claim that a\n"
+    "fresh checkout can reproduce those bytes."
 )
 
 RUNNABLE_COMMANDS = "\n".join(
@@ -398,6 +414,13 @@ class ReadmeContractTests(unittest.TestCase):
         self.assertEqual(statements, POLICY_STATEMENTS)
         for statement in POLICY_STATEMENTS:
             self.assertEqual(README.count(statement), 1)
+
+    def test_external_reference_workflow_is_exact(self) -> None:
+        _, sections = _readme_sections(README)
+        self.assertEqual(
+            sections["External-reference workflow"],
+            EXPECTED_EXTERNAL_REFERENCE_SECTION,
+        )
 
     def test_runnable_validation_section_is_exact(self) -> None:
         _, sections = _readme_sections(README)
