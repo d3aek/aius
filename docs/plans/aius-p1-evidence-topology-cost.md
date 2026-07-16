@@ -2898,8 +2898,38 @@ exact note: `Authorized-distributor acquisition target only; P1C2 makes no
 stock, price, lead-time, or availability claim.` Its URL identifies only the
 page P1D should observe; the URL itself is not availability evidence.
 
-For every non-Cliff selected family, the task applies this deterministic
-single-MPN acceptance and ranking rule:
+For every non-Cliff selected family, candidate discovery is forbidden outside
+the following finite ordered shortlist. An MPN spelling below is literal; a
+task may reject it but may not substitute a series, suffix, package, plating, or
+nearby part. Repeated candidates across connector families are intentional.
+
+| Family | Ordered candidate shortlist |
+| --- | --- |
+| `usb-c-receptacle` | 1. GCT `USB4105-GF-A` |
+| `usb-a-receptacle` | 1. TE Connectivity `292303-1` |
+| `internal-usb-cable` | 1. StarTech.com `UUSBHAUB6IN` |
+| `usb-esd` | 1. Texas Instruments `TPD2EUSB30ADRTR` |
+| `usb-power-protection` | 1. Texas Instruments `TPS2553DBVR` |
+| `spdif-mux` | 1. Texas Instruments `SN74LVC1G3157DBVR` |
+| `spdif-tx-gate` | 1. Texas Instruments `SN74LVC1G125DBVR` |
+| `ethernet-magjack` | 1. Link-PP `LPJ4012AHNL`; 2. Cetus `J1B1211CCD` |
+| `teensy-side-socket` | 1. Samtec `SSW-124-02-G-S` |
+| `teensy-ethernet-socket` | 1. Samtec `MMS-103-01-L-DV` |
+| `teensy-usb-host-socket` | 1. Samtec `SSW-105-02-G-S` |
+| `expansion-power-protection` | 1. Texas Instruments `TPS2553DBVR` |
+| `expansion-i2c-isolator` | 1. Texas Instruments `TCA9517ADGKR` |
+| `expansion-i2c-control` | 1. JST `BM04B-GHS-TBT` |
+| `expansion-spi` | 1. JST `BM06B-GHS-TBT` |
+| `expansion-uart-debug` | 1. JST `BM04B-GHS-TBT` |
+| `expansion-i2s-tdm` | 1. JST `BM05B-GHS-TBT` |
+| `expansion-usb-host` | 1. JST `BM04B-GHS-TBT` |
+| `expansion-gpio-adc` | 1. JST `BM04B-GHS-TBT` |
+| `remote-program-rtc` | 1. JST `BM03B-GHS-TBT` |
+| `test-fixture-header` | 1. Tag-Connect `TC2030-IDC-NL` |
+| `mechanical-cable-retainer` | 1. Panduit `TM1S4-C` |
+
+Within that finite universe, the task applies this deterministic single-MPN
+acceptance and ranking rule:
 
 1. Consider only an exact orderable MPN which a currently reachable primary
    manufacturer HTTPS page identifies and for which that manufacturer exposes
@@ -2910,17 +2940,31 @@ single-MPN acceptance and ranking rule:
    task actionable, including electrical ratings, package or mechanical
    dimensions, and footprint information where those gates apply. This is only
    a research-screening condition; P1C2 records no claim that a gate passed.
-3. Rank remaining candidates by: no observed conflict with an assigned
-   requirement; then documented footprint and repeatable small-run assembly
-   feasibility; then documented enclosure/mechanical fit where assigned; then
-   primary-document completeness; then lexicographically smallest normalized
-   `(manufacturer, MPN)` as the final tie-break. Use the manufacturer's exact
-   displayed spelling and MPN in the records.
-4. Use the primary manufacturer page or datasheet URL as both component and
-   manufacturer-request authority. Select a UK acquisition-target URL only
-   when the distributor is named by the manufacturer's distributor locator or
-   authorization material and the distributor page identifies the same exact
-   MPN. This selection makes no current commerce claim.
+3. Test candidates in listed order. Select the first candidate which survives
+   steps 1 and 2; do not compare a later candidate against a surviving earlier
+   candidate. Use the manufacturer and MPN spelling in the shortlist.
+4. For the component and manufacturer-request authority, use the stable direct
+   English primary-manufacturer datasheet HTTPS URL which lists the exact MPN.
+   If several current revisions are linked, use the highest explicit revision;
+   if revision is still tied or absent, use the lexicographically smallest
+   normalized URL. Use an exact-MPN primary product page only when the
+   manufacturer exposes the current datasheet through that page but does not
+   publish a stable direct datasheet URL. Strip fragments, session identifiers,
+   and tracking query parameters before the lexical tie-break.
+5. A qualifying UK acquisition target must identify the same exact MPN and its
+   distributor must be named by the manufacturer's distributor locator or
+   authorization material. Test distributors in this order: RS UK, Farnell UK,
+   CPC Farnell UK, DigiKey UK, Mouser UK. Within the first distributor having a
+   qualifying reachable exact-MPN page, choose the lexicographically smallest
+   normalized HTTPS URL after stripping fragments, session identifiers, and
+   tracking query parameters. This selection makes no current commerce claim.
+
+If no shortlisted MPN satisfies the primary-material rule or has a qualifying
+UK acquisition target, the task creates no component or request records and
+returns a blocked handoff listing the failed candidate and failed rule. Neither
+critical nor noncritical tasks may fabricate an `unresolved` record at P1C2;
+the entire P1C2 boundary remains blocked until a reviewed shortlist amendment
+lands and the task is rerun.
 
 The two seed selections are literal-locked as follows:
 
@@ -2932,7 +2976,12 @@ The two seed selections are literal-locked as follows:
 Their exact component rationales are respectively `Existing current seed
 evidence CLIFF-ORJ5 supports the locked Cliff ORJ5 receiver candidate.` and
 `Existing current seed evidence CLIFF-OTJ5 supports the locked Cliff OTJ5
-transmitter candidate.` Their UK requests follow the pending UK defaults above.
+transmitter candidate.` Their UK requests follow the pending UK defaults above,
+with acquisition targets literal-locked to
+`https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094`
+for `cliff-rx` and
+`https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715`
+for `cliff-tx`.
 
 Every generic component record uses its policy `block` and exact requirements
 array, `manufacturer: null`, `mpn: null`, `alternatives: []`,
