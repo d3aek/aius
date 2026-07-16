@@ -1935,6 +1935,7 @@ temporary collision can never be deleted.
 
 ```yaml
 phase: P1C0b2
+status: completed
 unit: staged-contract-validator
 seams: [canonical JSON, P1C0b1 pure byte renderers]
 contract-artifact: both
@@ -2023,6 +2024,17 @@ Every row has at least one focused negative test. Canonical fixture trees may
 share immutable files through test helpers, but each stage has an explicit
 positive test and no test reads the live design instances as its expected
 result.
+
+Completed 2026-07-16. The six cumulative topology stages, scoped-family mode,
+stable diagnostics, schema/order/reference/evidence/policy/selection checks,
+and direct generated-byte parity are implemented. Thirty-seven validator tests
+and all 17 renderer tests pass; the live `contract` stage is green. Delivery
+hardening added dependency stop-gates, exact component/request linkage,
+matching-MPN manufacturer evidence with only the two locked Cliff seed pairs,
+safe fault/transition negatives, unresolved-family coverage, and incomplete
+component-set request gating. The clean-room delivery audit passed.
+A stale foreign `docs/README.md` generated index was reported at the checkpoint;
+repository policy classifies it as nonblocking and excludes it from this phase.
 
 ### P1C1a — Functional topology and interface/state truth tables
 
