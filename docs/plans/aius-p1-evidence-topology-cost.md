@@ -2277,9 +2277,11 @@ endpoints, duplicate/empty endpoint sets, and wrong key order. The renderer
 changes the transition columns and golden fixture from `from_state`/`to_state`
 to `from_states`/`to_states`, using its existing ordered-array `<br>` contract.
 
-`contract` now also requires and schema-validates both normative design
-contracts and both exact `base-v1.json` inputs. It reads each base as raw bytes,
-verifies the locked SHA-256 before derivation, then imports the two pure builder
+`contract` now also requires both normative design contracts and both exact
+`base-v1.json` inputs. It schema-validates only the derived normative contracts;
+the historical bases intentionally retain the old evidence and transition
+shape. It reads each base as raw bytes, verifies the locked SHA-256, parses it
+as UTF-8 JSON without applying the migrated schema, then imports the two pure builder
 functions and compares the parsed normative values to the freshly derived
 objects; the
 separate builder `--check` owns exact formatted-byte parity. `architecture-base`
