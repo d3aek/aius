@@ -1028,7 +1028,12 @@ assumption fragment is one assumption-record object. Rendering first creates
 strict compact UTF-8 JSON with sorted object keys, `ensure_ascii=False`, and
 `allow_nan=False`, then sends those bytes to the exact worktree
 `node_modules/.bin/prettier --parser json --config <git-root>/.prettierrc.json`
-process. Production discovers the enclosing Git root, requires Prettier version
+process. Production runs
+`git -C <resolved-aius-root> rev-parse --show-toplevel`, requires exactly one
+absolute UTF-8 path resolving to a directory, and selects only
+`<git-root>/node_modules/.bin/prettier` and `<git-root>/.prettierrc.json`.
+Missing, unusable, or wrong-root controls fail as exit `2` before publish and
+are covered with isolated-Git regressions. Production requires Prettier version
 exactly `3.8.3`, uses a 30-second subprocess timeout, accepts only exit `0`,
 requires UTF-8 stdout containing the same JSON value, one terminal LF and no
 other trailing bytes, and treats missing/wrong-version/timeout/nonzero/invalid
@@ -1046,9 +1051,10 @@ objects, scalar arrays, object arrays, nested arrays, and representative source,
 observation, assumption, and top-level aggregate shapes. The test requires byte
 equality among the committed fixture, production rendering of its parsed value,
 and Prettier output, then rerenders the result to prove idempotence. Every
-committed fragment is also required to equal production rendering of its parsed
-value. The checkpoint runs the pinned Prettier `--check` command on the fixture
-and every present fragment. Input JSON rejects `NaN`, `Infinity`, and
+present regular `evidence/manifest/fragments/*.json` file, whether tracked,
+staged, or untracked, is also required to equal production rendering of its
+parsed value. The checkpoint runs the pinned Prettier `--check` command on the
+fixture and every present fragment. Input JSON rejects `NaN`, `Infinity`, and
 `-Infinity`. `record` validates values solely by walking its realization
 descriptor in order; it has no profile-name branch or second field-rule table.
 
@@ -1180,7 +1186,7 @@ commit-checkpoint:
     - python3 scripts/test_seed_evidence.py
     - python3 scripts/test_seed_realization.py
     - python3 scripts/test_validate_evidence.py
-    - pnpm exec prettier --check scripts/fixtures/seed-renderer.json
+    - pnpm exec prettier --check scripts/fixtures/seed-renderer.json "evidence/manifest/fragments/*.json"
   buildable: [reproducible per-source acquisition and deterministic aggregation]
   parent-commit: "feat(aius): orchestrate seed evidence acquisition"
 ```
