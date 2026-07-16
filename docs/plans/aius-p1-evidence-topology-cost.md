@@ -1028,8 +1028,10 @@ plus one terminal newline. Input JSON rejects `NaN`, `Infinity`, and
 descriptor in order; it has no profile-name branch or second field-rule table.
 
 Before reading or writing, every path is lexically confined beneath the
-resolved Aius root. Every existing component is checked with `lstat`; symlinks
-are always rejected, intermediate components must be directories, and
+resolved Aius root. An explicit `--root` final path component is checked with
+`lstat` before resolution and is rejected if it is a symlink. Every existing
+component beneath the root is checked with `lstat`; symlinks are always
+rejected, intermediate components must be directories, and
 input/aggregate files must be regular files. Per-source commands refuse to
 overwrite any artifact, source fragment, or assumption fragment, including a
 symlink or non-regular entry. Fragment-directory scans inspect every direct
@@ -1109,7 +1111,12 @@ with aggregate media diagnostics. Transaction tests inject at least one real
 rollback-operation failure, not only a publish or cleanup failure, and require
 its deterministic transaction diagnostic. The golden-block assembly regression
 provides all 22 valid fragment filenames so execution reaches the dedicated
-golden-unavailable branch before failing.
+golden-unavailable branch before failing. Separate regressions cover unavailable
+comparative and dynamic assumptions; a 21-of-22 regular fragment directory with
+no other invalid entry reaches the missing-ID diagnostic; and a complete
+aggregate containing at least two unavailable assumption-policy sources proves
+non-empty assumption validation, ID sorting, canonical rendering, plus isolated
+missing and extra assumption-fragment diagnostics.
 
 The P1B1c clean-room gate returned `BLOCKED` on 2026-07-15 because retrieval
 time, revision rendering, transactional boundaries, symlink safety, redirect
@@ -1122,7 +1129,11 @@ gap. The second delivery audit returned `BLOCKED` because the aggregate
 unreadable branch still duplicated validator rules, rollback-failure reporting
 was not directly exercised, and the golden-block test failed earlier on missing
 fragments. The nullable-payload seam and reachability requirements above close
-those findings.
+those findings. The third delivery audit returned `BLOCKED` because comparative
+unavailability, an isolated missing-fragment set, and non-empty assumption
+aggregation were not actually exercised, while a symlink supplied directly as
+`--root` was resolved before inspection. The explicit root check and separate
+reachable regressions above close those findings.
 
 ```yaml
 phase: P1B1c
