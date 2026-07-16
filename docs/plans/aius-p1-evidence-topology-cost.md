@@ -2406,6 +2406,79 @@ committed normative contracts, and the two Markdown review artifacts are
 renderer-derived. Both renderer parity checks and the cumulative
 `architecture-base` validator pass.
 
+### P1C0c2 — USB and RTC power-topology correction
+
+The P1C0e1 clean-room gate found two contradictions in the locked interface
+contract. The internal USB path carried protected VBUS to the Teensy while the
+`teensy-micro-b` connector was incorrectly modelled as data-only, and the RTC
+battery signal had no backup-power domain. The immutable P1C0a base remains
+unchanged and hash-locked; the existing pure interface builder gains this
+explicit forward migration.
+
+The `teensy-micro-b` connector retains its ID and order but changes to this
+exact value: `location: module`, `role: power-data`, signals `USB2-D+`,
+`USB2-D-`, `VBUS`, power domains `protected-5v`, `digital-ground`, mating
+constraint "The internal USB cable is the sole Teensy VUSB feed; no VIN or
+second VUSB feed is fitted.", evidence `PJRC-TEENSY41-SCHEMATIC`, and notes
+"Module USB power-and-data entry." The `protected-vbus` functional flow remains
+the sole normal power flow into `teensy`.
+
+The `remote-program-rtc` connector retains its ID, order, location, role,
+signals, mating constraint, and notes. Its ordered power domains become
+`teensy-3v3`, `rtc-backup`, `digital-ground`, and its evidence becomes
+`PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC`.
+
+A new `rtc-backup` power-domain row is inserted immediately after `teensy-3v3`
+with the exact ordered fields: `id: rtc-backup`, `source:
+remote-program-rtc`, consumers `teensy`, backfeed rule "The RTC backup input is
+isolated from teensy-3v3 and cannot power the core.", evidence
+`PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC`, and notes "External RTC
+backup battery domain." The interface schema already permits the row shape;
+the builder evidence bundle, exact ID-order oracle, cross-reference checks, and
+focused tests must all include it.
+
+```yaml
+phase: P1C0c2
+unit: architecture-contract-correction
+seams: [immutable interface base, USB/RTC migration, normative instance]
+contract-artifact: both
+depends-on:
+  - committed P1C0c builder and raw-hash-locked interface base
+  - committed P1C1a normative instance and renderer view
+  - current PJRC-TEENSY41-PINOUT and PJRC-TEENSY41-SCHEMATIC evidence
+fan-out:
+  - name: correct-usb-rtc-topology
+    owned-paths:
+      - scripts/build_p1c_architecture_contracts.py
+      - scripts/test_build_p1c_architecture_contracts.py
+      - scripts/validate_p1.py
+      - scripts/test_validate_p1.py
+      - evidence/design/contracts/interfaces-and-states.json
+      - scripts/fixtures/p1c-schema/interfaces-and-states/valid.json
+      - evidence/design/interfaces-and-states.json
+      - docs/reference/interfaces-and-states.md
+review-intensity: intensive
+commit-checkpoint:
+  green:
+    - python3 scripts/test_build_p1c_architecture_contracts.py
+    - python3 scripts/test_interfaces_states_schema.py
+    - python3 scripts/test_render_p1.py
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/build_p1c_architecture_contracts.py --check
+    - python3 scripts/render_p1.py interfaces-and-states --check
+    - python3 scripts/validate_p1.py topology --stage architecture-base
+  buildable: [one coherent sole-USB-power path and isolated RTC backup domain]
+  parent-commit: "fix(aius): correct usb and rtc power topology"
+```
+
+The migration rejects a base whose connector or power-domain ID order differs
+from the locked historical input, deep-copies before editing, and preserves all
+unmentioned bytes semantically. Focused negatives cover the old data-only USB
+row, missing/wrong RTC domain position, wrong source/consumer/backfeed rule,
+missing connector-domain reference, evidence drift, and an attempt to make RTC
+backup a core-power source. P1C0e1 cannot start until this correction is
+committed and its clean-room delivery audit passes.
+
 ### P1C0e — Normative selection-policy contract and enforcement
 
 The clean-room P1C1b gate found that the schema and family set did not lock
@@ -2520,6 +2593,12 @@ phase: P1C0e1
 unit: selection-contract-builder
 seams: [immutable policy base, derived normative selection contract]
 contract-artifact: both
+depends-on:
+  - committed P1C0c2 USB/RTC architecture correction
+  - committed evidence/design/selection-policy-schema.json
+  - current evidence/manifest/sources.json
+  - committed validator family/status/request/source constants
+  - repository-pinned Prettier 3.8.3 tooling
 fan-out:
   - name: build-selection-contract
     owned-paths:
@@ -2531,21 +2610,41 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_build_p1c_selection_policy_contract.py
+    - python3 scripts/test_selection_schemas.py
     - python3 scripts/build_p1c_selection_policy_contract.py --check
+    - node_modules/.bin/prettier --check scripts/fixtures/p1c-schema/selection-policy/base-v1.json evidence/design/contracts/selection-policy.json
   buildable: [reproducible exact selection-policy value]
   parent-commit: "feat(aius): derive normative selection policy"
 ```
 
-The immutable base contains the eight exact policy rows, 32 exact requirement
-rows, and 29 minimal family rows from the tables above. Its raw SHA-256 is
-locked in the builder and later validator. The pure builder deep-copies the
-base, rejects any wrong registry or family order, derives every non-discretionary
-family field, and emits the schema-valid normative contract using pinned
-Prettier 3.8.3 and the existing exclusive same-directory atomic-write pattern.
-`--check` is byte-exact and non-mutating. Tests cover both acceptance examples,
-all group derivations, order and membership rejection, immutability/repeatability,
-format drift, missing/malformed/hash-mismatched base, write failure, and foreign
-temporary collision ownership.
+The immutable base has exact root keys `schema_version`,
+`engineering_policies`, `requirements`, `families`, in that order, and exact
+schema version `1.0.0`. Policy and requirement rows use their full schema key
+sets and key order. Each minimal family row has only `family`, `requirements`,
+`dependent_feature`, `notes`, in that order. The base contains the eight exact
+policy rows, 32 exact requirement rows, and 29 minimal family rows from the
+tables above. It is authored once in the phase commit, formatted by repository
+Prettier 3.8.3 before its SHA-256 is locked, and never rewritten by the builder.
+
+The CLI is exactly
+`build_p1c_selection_policy_contract.py [--root PATH] [--prettier PATH]
+(--write|--check)`. It adopts `build_p1c_architecture_contracts.py` root and
+Prettier discovery, `AIUS-P1C-CONTRACT-{MISSING,HASH,PARSE,FORMATTER,STALE,WRITE}`
+diagnostics, sorted stderr emission, exit codes, formatter byte/value/order
+checks, 0600 same-directory `O_EXCL` temporary, `fsync`, atomic replace,
+ownership-aware cleanup, and parent creation. The only deliberate differences
+are one input base, one contract output, temporary prefix
+`.selection-policy.json.aius-p1c-<token>.tmp`, and success line
+`OK build-p1c-selection-policy-contract`.
+
+Its raw SHA-256 is locked in the builder and later validator. The pure builder
+deep-copies the base, rejects any wrong root, registry, row-key, or family
+order, derives every non-discretionary family field, and emits the schema-valid
+normative contract. `--check` is byte-exact and non-mutating. Tests cover both
+acceptance examples, all group derivations, root/row key order and membership
+rejection, immutability/repeatability, format drift,
+missing/malformed/hash-mismatched base, write failure, parent creation, and
+foreign temporary collision ownership.
 
 #### P1C0e2 — Exact selection-policy validator
 
