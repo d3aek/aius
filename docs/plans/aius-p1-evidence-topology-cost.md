@@ -159,6 +159,7 @@ does not reimplement those rules.
 
 ```yaml
 phase: P1A1
+status: completed
 unit: source-schema
 seams: [source records, seed identities]
 contract-artifact: both
@@ -178,6 +179,10 @@ commit-checkpoint:
   buildable: [source record contract]
   parent-commit: "feat(aius): define evidence source schema"
 ```
+
+Completed 2026-07-15. The focused suite passes 23 tests, including malformed
+URI, unbounded-integer, unsatisfiable-bound, conditional, artifact, seed-oracle,
+and supersession cases. The clean-room delivery audit passed.
 
 ### P1A2 — Request, component, and assumption contracts
 
