@@ -1056,12 +1056,16 @@ never silently discarded.
 
 `validate_evidence.py` exposes
 `validate_artifact_payload(root, relative_path, payload, media_type, storage)`.
-It performs the existing suffix/media/storage, Git attribute, LFS-pointer,
-signature, and UTF-8/content checks against the final project-relative path and
-returns a sorted tuple of `Diagnostic` without printing or requiring aggregate
-sources. It raises `ControlError` only for an unusable root/Git environment.
-The aggregate validator and the new fragment adapter both use this public
-function; neither duplicates the media table or signature rules. P1B1c first
+`payload` is bytes when content is readable and `None` when the aggregate reader
+cannot supply content. The function always performs the existing
+suffix/media/storage and Git-attribute checks against the final
+project-relative path; with bytes it additionally performs the LFS-pointer,
+signature, and UTF-8/content checks. It returns a sorted tuple of `Diagnostic`
+without printing or requiring aggregate sources and raises `ControlError` only
+for an unusable root/Git environment. The aggregate validator, including its
+unreadable-payload branch, and the new fragment adapter both use this public
+function; neither duplicates the media table, storage, Git-attribute, or
+signature rules. P1B1c first
 validates source/assumption objects with the existing schemas and collection
 helper, then applies immutable seed, realization, descriptor, secure local-byte,
 hash/size, and public artifact-payload checks.
@@ -1100,8 +1104,12 @@ snapshot storage, fixed/hash/commit revisions, filename/object identity,
 descriptor-only validation of every dynamic profile, invalid JSON constants,
 golden exit `3`, comparative/dynamic assumptions, missing/extra/duplicate
 fragments, canonical sorting/rendering, and check drift. The validator test
-covers both public artifact-payload callers and parity with aggregate media
-diagnostics.
+covers both public artifact-payload callers, null-payload behavior, and parity
+with aggregate media diagnostics. Transaction tests inject at least one real
+rollback-operation failure, not only a publish or cleanup failure, and require
+its deterministic transaction diagnostic. The golden-block assembly regression
+provides all 22 valid fragment filenames so execution reaches the dedicated
+golden-unavailable branch before failing.
 
 The P1B1c clean-room gate returned `BLOCKED` on 2026-07-15 because retrieval
 time, revision rendering, transactional boundaries, symlink safety, redirect
@@ -1110,7 +1118,11 @@ not complete contracts. The rules above resolve those findings; a fresh
 clean-room verdict remains required before implementation. The first delivery
 audit then returned `BLOCKED` because streamed response-read failures escaped as
 internal exit `2`; the explicit regression above closes that classification
-gap.
+gap. The second delivery audit returned `BLOCKED` because the aggregate
+unreadable branch still duplicated validator rules, rollback-failure reporting
+was not directly exercised, and the golden-block test failed earlier on missing
+fragments. The nullable-payload seam and reachability requirements above close
+those findings.
 
 ```yaml
 phase: P1B1c
