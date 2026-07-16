@@ -108,8 +108,6 @@ CLONE_BOUNDARY_SCHEMA = {
     },
     "type": "array",
     "items": {"$ref": "#/$defs/row"},
-    "minItems": 15,
-    "maxItems": 15,
     "uniqueItems": True,
 }
 
@@ -198,12 +196,12 @@ def _expected_pairs_from_seeds(seeds: list[object]) -> tuple[tuple[object, str],
     return tuple(pairs)
 
 
-def validate_clone_boundary(boundary: object, seeds: object) -> None:
-    """Validate the embedded schema, exact oracle, ordering, and seed agreement."""
+def validate_clone_boundary_rows(boundary: object) -> None:
+    """Validate reusable clone-boundary row shape, invariants, and IDs."""
 
     validate(boundary, CLONE_BOUNDARY_SCHEMA)
-    if not isinstance(boundary, list) or not isinstance(seeds, list):
-        raise AssertionError("clone boundary and seed sources must be arrays")
+    if not isinstance(boundary, list):
+        raise AssertionError("clone boundary must be an array")
 
     pairs = _classification_pairs(boundary)
     source_ids = tuple(pair[0] for pair in pairs)
@@ -211,6 +209,16 @@ def validate_clone_boundary(boundary: object, seeds: object) -> None:
         raise AssertionError("clone-boundary source IDs are not sorted")
     if len(source_ids) != len(set(source_ids)):
         raise AssertionError("clone-boundary source IDs are not unique")
+
+
+def validate_clone_boundary(boundary: object, seeds: object) -> None:
+    """Validate the reusable rows, exact seed oracle, and seed agreement."""
+
+    validate_clone_boundary_rows(boundary)
+    if not isinstance(boundary, list) or not isinstance(seeds, list):
+        raise AssertionError("clone boundary and seed sources must be arrays")
+
+    pairs = _classification_pairs(boundary)
     if pairs != CLASSIFICATION_ORACLE:
         raise AssertionError(
             f"clone-boundary oracle mismatch: expected {CLASSIFICATION_ORACLE!r}, got {pairs!r}"
@@ -243,6 +251,63 @@ class CloneBoundaryContractTests(unittest.TestCase):
 
     def test_committed_boundary_matches_schema_oracle_and_seed_classes(self) -> None:
         validate_clone_boundary(CLONE_BOUNDARY, SEED_SOURCES)
+
+    def test_reusable_helper_accepts_empty_and_supplemental_boundaries(self) -> None:
+        supplemental = [
+            {
+                "source_id": "SUPPLEMENTAL-DERIVED",
+                "classification": "independently-re-derived",
+                "reused_material": [],
+                "derived_claims": ["Electrical limits were independently derived."],
+                "prohibited_use": ["Do not treat the source as an official design."],
+                "notes": "",
+            },
+            {
+                "source_id": "SUPPLEMENTAL-UNRESOLVED",
+                "classification": "unresolved",
+                "reused_material": [],
+                "derived_claims": ["The unresolved claim is recorded explicitly."],
+                "prohibited_use": ["Do not use until the assumption is resolved."],
+                "notes": "Awaiting evidence.",
+            },
+        ]
+
+        validate_clone_boundary_rows([])
+        validate_clone_boundary_rows(supplemental)
+
+    def test_reusable_helper_rejects_malformed_reordered_and_duplicate_rows(self) -> None:
+        supplemental = [
+            {
+                "source_id": "SUPPLEMENTAL-A",
+                "classification": "independently-re-derived",
+                "reused_material": [],
+                "derived_claims": ["A derived claim."],
+                "prohibited_use": ["A prohibited use."],
+                "notes": "",
+            },
+            {
+                "source_id": "SUPPLEMENTAL-B",
+                "classification": "unresolved",
+                "reused_material": [],
+                "derived_claims": ["Another derived claim."],
+                "prohibited_use": ["Another prohibited use."],
+                "notes": "Open assumption required.",
+            },
+        ]
+
+        malformed = copy.deepcopy(supplemental)
+        del malformed[0]["derived_claims"]
+        with self.assertRaises(ValidationError):
+            validate_clone_boundary_rows(malformed)
+
+        reordered = list(reversed(copy.deepcopy(supplemental)))
+        with self.assertRaises(AssertionError):
+            validate_clone_boundary_rows(reordered)
+
+        duplicate_id = copy.deepcopy(supplemental)
+        duplicate_id[1]["source_id"] = duplicate_id[0]["source_id"]
+        with self.assertRaises(AssertionError):
+            validate_clone_boundary_rows(duplicate_id)
 
     def test_every_row_field_is_required_and_additional_fields_are_rejected(self) -> None:
         self.assertIsInstance(CLONE_BOUNDARY, list)

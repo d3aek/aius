@@ -111,6 +111,8 @@ def _assumption(status: str = "open") -> dict[str, object]:
         "owner": "hardware",
         "validation_gate": "P1D electrical review",
         "evidence_ids": [],
+        "source_ids": [],
+        "claim_scope": [],
         "status": status,
         "resolution": None,
     }
@@ -425,6 +427,41 @@ class AssumptionSchemaTests(SelectionSchemaTestCase):
         assumption = _assumption("resolved")
         assumption["evidence_ids"] = ["SAME-EVIDENCE", "SAME-EVIDENCE"]
         self.assert_invalid([assumption], ASSUMPTION_SCHEMA)
+
+    def test_source_ids_are_unique_identifiers_and_may_be_empty(self) -> None:
+        validate([_assumption()], ASSUMPTION_SCHEMA)
+        assumption = _assumption()
+        assumption["source_ids"] = ["EXAMPLE-SOURCE"]
+        validate([assumption], ASSUMPTION_SCHEMA)
+
+        for value in (
+            "EXAMPLE-SOURCE",
+            [""],
+            ["   "],
+            ["bad-source-id"],
+            ["EXAMPLE-SOURCE", "EXAMPLE-SOURCE"],
+        ):
+            assumption = _assumption()
+            assumption["source_ids"] = value
+            with self.subTest(value=value):
+                self.assert_invalid([assumption], ASSUMPTION_SCHEMA)
+
+    def test_claim_scope_is_unique_non_empty_strings_and_may_be_empty(self) -> None:
+        validate([_assumption()], ASSUMPTION_SCHEMA)
+        assumption = _assumption()
+        assumption["claim_scope"] = ["Example claim"]
+        validate([assumption], ASSUMPTION_SCHEMA)
+
+        for value in (
+            "Example claim",
+            [""],
+            ["   "],
+            ["Example claim", "Example claim"],
+        ):
+            assumption = _assumption()
+            assumption["claim_scope"] = value
+            with self.subTest(value=value):
+                self.assert_invalid([assumption], ASSUMPTION_SCHEMA)
 
     def test_open_forbids_non_null_resolution(self) -> None:
         assumption = _assumption("open")

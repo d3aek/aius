@@ -390,6 +390,7 @@ there is no free-text join.
 
 ```yaml
 phase: P1A4a
+status: completed
 unit: validator-contract-migration
 seams: [structured assumptions, reusable clone-boundary rows]
 contract-artifact: both
@@ -409,6 +410,9 @@ commit-checkpoint:
   buildable: [machine-checkable validator input contracts]
   parent-commit: "docs(aius): prepare evidence validator contracts"
 ```
+
+Completed 2026-07-15. The P1A1, P1A2, and P1A3 suites pass 23, 24, and 14
+tests respectively. The clean-room delivery audit passed with no discrepancies.
 
 #### P1A4b — Evidence validator implementation
 

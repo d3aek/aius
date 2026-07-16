@@ -21,9 +21,27 @@
       },
       "uniqueItems": true
     },
+    "claimScope": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
     "assumptionRecord": {
       "type": "object",
-      "required": ["id", "claim", "consequence", "owner", "validation_gate", "evidence_ids", "status", "resolution"],
+      "required": [
+        "id",
+        "claim",
+        "consequence",
+        "owner",
+        "validation_gate",
+        "evidence_ids",
+        "source_ids",
+        "claim_scope",
+        "status",
+        "resolution"
+      ],
       "properties": {
         "id": {
           "$ref": "#/$defs/assumptionIdentifier"
@@ -42,6 +60,12 @@
         },
         "evidence_ids": {
           "$ref": "#/$defs/evidenceIdentifiers"
+        },
+        "source_ids": {
+          "$ref": "#/$defs/evidenceIdentifiers"
+        },
+        "claim_scope": {
+          "$ref": "#/$defs/claimScope"
         },
         "status": {
           "enum": ["open", "resolved"]
