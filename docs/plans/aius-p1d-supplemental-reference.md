@@ -132,10 +132,14 @@ are positive piece counts; the selected quantity must be orderable. The common
 basis is `P1D uk-distributor-price-stock normalized field <key> from the approved
 supplemental request, realization, and live page.`
 
-Identity, distributor and URL fields are non-null strings. MPN, distributor,
-product initial URL, authorization authority/method/initial URL, currency and
-VAT flag use `const`. Supplier SKU and final URLs use non-empty/HTTPS patterns.
-Stock state uses the four-value enum. Stock quantity is a nullable integer with
+Identity, distributor and URL fields are non-null strings. The shared profile
+uses the literal pattern/enum descriptors committed in the oracle; per-row
+validation separately requires MPN equal request `selected_mpn`, distributor
+equal realization `authority`, product initial URL equal realization
+`observation_url`, and authorization authority/method/initial URL equal the
+realization tuple. Only currency `GBP` and VAT flag `false` are profile-level
+constants. Supplier SKU and final URLs use non-empty/HTTPS patterns. Stock state
+uses the four-value enum. Stock quantity is a nullable integer with
 minimum zero; price quantity, MOQ and order multiple are integers with minimum
 one; unit price is a number with minimum zero. Cross-field validation enforces
 the state/quantity matrix, `price_quantity >= minimum_order_quantity`, and
@@ -289,23 +293,46 @@ the separate authorization tuple, and the locked profile.
 
 The oracle also defines the source constructor. ID is request `source_id`;
 authority is realization `authority`; requirements become `claim_scope`;
-landing URL is request `authority_url`; status is `current`; supersedes is null.
-Manufacturer title is `<manufacturer> <MPN> primary manufacturer evidence`,
-purpose is `Satisfy <request-id> for <family>.`, class is `golden`, revision is
-`sha256:<digest>`, where digest is SHA-256 over the ASCII concatenation of each
-lowercase artifact SHA-256 hex value in realization order, and redistribution note is
-`Retained for personal noncommercial research; no republication permission is
-inferred.` It contains one embedded MPN observation with key
+landing URL is request `authority_url`; supersedes is null. For a current
+manufacturer source, title is `<manufacturer> <MPN> primary manufacturer
+evidence`, purpose is `Satisfy <request-id> for <family>.`, class is `golden`,
+status is `current`, and revision is `sha256:<digest>`. With one retained
+artifact, `<digest>` is that artifact's lowercase SHA-256. With multiple
+artifacts, it is SHA-256 over the ASCII concatenation of their lowercase
+SHA-256 values in realization order. The redistribution note is `Retained for
+personal noncommercial research; no republication permission is inferred.` It
+contains one embedded MPN observation with key
 `manufacturer_part_number`, request MPN value, null unit, basis
 `Selected MPN identified by the retained primary manufacturer evidence for
 <request-id>.`, acquisition timestamp, and request authority URL.
 
-UK title is `normalized UK distributor price and stock observation`, purpose is
-`Record a UK authorized-distributor price and stock observation for
-<manufacturer> <MPN>.`, class is `dynamic`, revision is
-`observed:<YYYY-MM-DD>`, and its redistribution note is the locked normalized
-observation note above. All generated source objects otherwise follow the
-existing source-schema key order.
+For a current UK source, title is `normalized UK distributor price and stock
+observation`, purpose is `Record a UK authorized-distributor price and stock
+observation for <manufacturer> <MPN>.`, class is `dynamic`, status is `current`,
+revision is `observed:<YYYY-MM-DD>`, and the redistribution note is the locked
+normalized observation note above.
+
+Both current constructors emit the 14 source keys in the exact source-schema
+order listed below; outcome selects status, revision, artifacts, observations
+and redistribution note before validation, so no unconditional current value is
+applied to an unavailable record.
+
+For either class, `supplemental unavailable` emits one literal source object in
+existing source-schema key order: `id`, `class`, `title`, `authority`,
+`revision`, `purpose`, `claim_scope`, `landing_url`, `retrieved_at`, `status`,
+`supersedes`, `redistribution_note`, `artifacts`, `observations`. It preserves
+the class-specific title and purpose above; sets class to `golden` for a
+manufacturer or `dynamic` for UK; sets revision to
+`unavailable:<retrieved-at UTC date>`; uses the command's exact UTC timestamp;
+sets status `unavailable`, supersedes null, redistribution note `No local copy
+is retained; no republication permission is inferred.`, and observations to an
+empty array. Its sole artifact has exact key order `name`, `final_url`,
+`storage`, `path`, `sha256`, `bytes`, `media_type`, `retrieval_status`, `note`
+and literal values `unavailable`, the request `authority_url`,
+`external-reference`, null, null, null, null, `unavailable`, and the non-empty
+CLI note. Manufacturer and UK unavailable records differ only in their locked
+class, title and purpose. No current-only field or observation survives this
+outcome.
 
 The literal 46-row oracle is committed with this plan at
 `evidence/manifest/supplemental-realization.json`, SHA-256
@@ -365,18 +392,62 @@ authorization status is unresolved rejects `record` and accepts only
 acquisition/record/UK-unavailable failure, exit 2 means CLI usage, and exit 3
 means a durably published manufacturer-unavailable design blocker.
 
+P1D0b is four serial, independently green checkpoints because all CLI concerns
+deepen the same engine. No two agents edit these shared paths concurrently.
+
 ```yaml
-phase: P1D0b
-unit: supplemental-cli-adapter
-seams: [existing acquisition engine, one request, supplemental fragment]
+phase: P1D0b1
+unit: manufacturer-acquisition-adapter
+seams: [existing acquisition engine, manufacturer realization, supplemental source publication]
 contract-artifact: spec-only
 fan-out:
-  - name: supplemental-acquisition-cli
+  - name: supplemental-manufacturer-acquisition
     owned-paths:
       - scripts/seed_evidence.py
       - scripts/test_seed_evidence.py
       - scripts/test_supplemental_evidence.py
-      - evidence/manifest/README.md
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_seed_evidence.py
+    - python3 scripts/test_supplemental_evidence.py
+    - python3 scripts/test_validate_evidence.py
+  buildable: [seed-compatible fixture-proven manufacturer acquisition and source publication]
+  parent-commit: "feat(aius): add supplemental manufacturer acquisition"
+```
+
+```yaml
+phase: P1D0b2
+unit: uk-observation-adapter
+seams: [UK realization, locked observation profile, authorization tuple]
+contract-artifact: stubs-committed
+fan-out:
+  - name: supplemental-uk-observation
+    owned-paths:
+      - scripts/seed_evidence.py
+      - scripts/test_seed_evidence.py
+      - scripts/test_supplemental_evidence.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_seed_evidence.py
+    - python3 scripts/test_supplemental_evidence.py
+    - python3 scripts/test_validate_evidence.py
+  buildable: [fixture-proven UK recording and per-row profile validation]
+  parent-commit: "feat(aius): add supplemental UK observations"
+```
+
+```yaml
+phase: P1D0b3
+unit: supplemental-failure-and-check-adapter
+seams: [literal unavailable source, optional assumption, isolated fragment check]
+contract-artifact: stubs-committed
+fan-out:
+  - name: supplemental-unavailable-and-check
+    owned-paths:
+      - scripts/seed_evidence.py
+      - scripts/test_seed_evidence.py
+      - scripts/test_supplemental_evidence.py
 review-intensity: active
 commit-checkpoint:
   green:
@@ -384,8 +455,25 @@ commit-checkpoint:
     - python3 scripts/test_supplemental_evidence.py
     - python3 scripts/test_validate_evidence.py
     - python3 scripts/test_validate_p1.py
-  buildable: [seed-compatible, fixture-proven per-request supplemental CLI]
-  parent-commit: "feat(aius): add supplemental evidence acquisition"
+  buildable: [fixture-proven unavailable outcomes exit contracts and isolated checks]
+  parent-commit: "feat(aius): close supplemental failure paths"
+```
+
+```yaml
+phase: P1D0b4
+unit: supplemental-cli-documentation
+seams: [committed CLI, operator protocol]
+contract-artifact: implementation-only
+fan-out:
+  - name: supplemental-cli-documentation
+    owned-paths: [evidence/manifest/README.md]
+review-intensity: passive
+commit-checkpoint:
+  green:
+    - python3 scripts/test_seed_evidence.py
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [documented supplemental CLI]
+  parent-commit: "docs(aius): document supplemental acquisition"
 ```
 
 Tests cover all realization rows, property order, artifact-kind binding,
@@ -672,17 +760,32 @@ All four roots begin with `schema_version`, constant `1.0.0`, then
 additional properties. Internal IDs match
 `^[a-z0-9]+(?:-[a-z0-9]+)*$`, evidence IDs match
 `^[A-Z0-9]+(?:-[A-Z0-9]+)*$`, and requirements match
-`^REQT-[A-Z0-9]+(?:-[A-Z0-9]+)*$`. Identifier arrays are unique and sorted;
-record arrays sort by their first ID field. Root requirement/evidence arrays are
+`^REQT-[A-Z0-9]+(?:-[A-Z0-9]+)*$`. Identifier arrays are unique and sorted
+unless an explicitly listed semantic order overrides lexical order; record
+arrays sort by their first ID field. Root requirement/evidence arrays are
 the exact sorted nested unions and resolve against selection policy and sources.
 Cross-row order, uniqueness, arithmetic and references are enforced by
 `test_p1d_schemas.py` because the repository subset validator does not implement
 them. Engineering row status is `pass` or `fail`; a failure has non-empty notes
 and blocks P1D3/P1D4 release.
 
+Every key listed for a root or row is required and appears in the listed order.
+Unless a field is explicitly described as nullable, it is non-null. Every
+`notes` field is a string, every status is the stated enum, every ID/reference
+field is a string, and every plural `*_ids`/`sinks`/`consumers`/`endpoint_refs`
+field is a sorted unique string array. Every non-null internal reference must
+resolve in the same package or the named P1 aggregate.
+
 Placeholders have empty factual arrays, empty requirement/evidence arrays and
-empty notes. Nullable root objects are null. An authored document contains the
-complete evidence-derived facts; it never uses placeholder values.
+empty notes. The only nullable root objects are placement `board`, placement
+`layer_decision`, schematic `root_schematic`, and schematic `erc_policy`; each
+is null in its placeholder. Electrical has empty `support_circuits`, `signals`
+and `power_rails`; pin has empty `pins`; placement has empty `placements`,
+`keepouts`, `routes`, `ground_corridors`, `cables`, `collision_checks` and
+`criteria`; schematic has empty `sheets`, `symbol_libraries`, `net_bindings` and
+`test_points`. An authored document contains the complete evidence-derived
+facts, makes all four nullable root objects non-null in their owning document,
+and never uses placeholder values.
 
 #### Electrical-reference contract
 
@@ -693,6 +796,24 @@ A support-circuit row keys `circuit_id`, `kind`, `description`,
 `requirement_ids`, `evidence_ids`, `status`, `notes`; kind is `power`,
 `protection`, `interface`, `logic`, `isolation`, `passive-network`, `module` or
 `test`. Description and evidence are non-empty; requirements may be empty.
+
+Electrical field types and nullability are closed as follows:
+
+| Object | Fields | Type and nullability |
+|---|---|---|
+| support circuit | `circuit_id`, `kind`, `description`, `status`, `notes` | non-null string |
+| support circuit | `requirement_ids`, `evidence_ids` | string array; evidence non-empty |
+| signal | `signal_id`, `kind`, `direction`, `voltage_domain`, `default_state`, `status`, `notes` | non-null string |
+| signal | `parent_signal_id` | internal-ID string or null; null except differential legs |
+| signal | `source` | non-empty string or null; null if and only if direction is bidirectional |
+| signal | `sinks` | non-empty string array; at least two for bidirectional |
+| signal | `source_vol_max_mv`, `source_voh_min_mv`, `sink_vil_max_mv`, `sink_vih_min_mv`, `low_margin_mv`, `high_margin_mv` | integer or null under the all-six rule below |
+| signal | `max_source_current_ua`, `max_sink_current_ua`, `required_bandwidth_kbps`, `supported_bandwidth_kbps` | non-negative integer, never null |
+| signal | `support_circuit_ids`, `requirement_ids`, `evidence_ids` | string array; support circuits and evidence non-empty |
+| power rail | `rail_id`, `source`, `default_state`, `status`, `notes` | non-null string; source is non-empty |
+| power rail | `consumers` | non-empty string array |
+| power rail | `minimum_mv`, `nominal_mv`, `maximum_mv`, `continuous_load_ma`, `peak_load_ma`, `source_limit_ma`, `reverse_leakage_ua` | non-negative integer, never null |
+| power rail | `support_circuit_ids`, `requirement_ids`, `evidence_ids` | string array; support circuits and evidence non-empty |
 
 A signal row has the 23 keys listed above in that exact order. `kind` is
 `single-ended-digital`, `differential-pair`, `differential-leg`, `control` or
@@ -733,6 +854,12 @@ Root key order is `schema_version`, `document_state`, `pins`, `evidence_ids`,
 `voltage_domain`, `dma_request`, `clock_root`, `shared_bus`,
 `reservation_owner`, `status`, `evidence_ids`, `notes`.
 
+Pin field types are: `signal_id`, `physical_pin`, `direction`,
+`voltage_domain`, `status`, and `notes` are non-null strings; `pad_mux`,
+`peripheral`, `instance_signal`, `clock_root`, `shared_bus`, and
+`reservation_owner` are non-empty strings or null; `dma_request` is a
+non-negative integer or null; and `evidence_ids` is a non-empty string array.
+
 Physical pin is a non-empty string; numbered Teensy pins use decimal spelling.
 Mux/peripheral/instance/clock/bus are non-empty or null. Direction is
 `input-to-teensy`, `output-from-teensy`, `bidirectional`, `power` or `ground`;
@@ -757,7 +884,51 @@ Root key order is `schema_version`, `document_state`, `board`, `placements`,
 `keepouts`, `routes`, `ground_corridors`, `cables`, `collision_checks`,
 `criteria`, `layer_decision`, `requirement_ids`, `evidence_ids`, `notes`.
 Geometry is integer micrometres, impedance integer milliohms and rotation integer
-millidegrees.
+millidegrees. At `rear-left-board-bottom`, X increases to the right, Y toward
+the enclosure front and Z upward; board copper spans Z 0 through thickness, so
+bottom-side bodies may have negative Z.
+
+Placement field types and nullability are closed as follows:
+
+| Object | Fields | Type and nullability |
+|---|---|---|
+| board | `board_id`, `enclosure_mpn`, `datum`, `status`, `notes` | non-null string |
+| board | `outline_width_um`, `outline_height_um`, `thickness_um`, `guide_clearance_um` | non-negative integer |
+| board | `evidence_ids` | non-empty string array |
+| placement | `placement_id`, `item_id`, `kind`, `side`, `status`, `notes` | non-null string; item resolves to a component/module or named mechanical item |
+| placement | `x_min_um`, `y_min_um`, `x_max_um`, `y_max_um` | non-negative integer |
+| placement | `z_min_um`, `z_max_um`, `rotation_mdeg` | signed integer; extents remain ordered |
+| placement | `panel_datum` | `rear-interior` or null |
+| placement | `connector_face_setback_um` | non-negative integer or null; non-null iff panel datum is non-null |
+| placement | `evidence_ids` | non-empty string array |
+| keepout | `keepout_id`, `owner_id`, `kind`, `status`, `notes` | non-null string; owner resolves to a placement, route, cable or board |
+| keepout | `x_min_um`, `y_min_um`, `x_max_um`, `y_max_um` | non-negative integer |
+| keepout | `z_min_um`, `z_max_um` | signed integer; extents remain ordered |
+| keepout | `applies_to`, `evidence_ids` | non-empty string array |
+| route | `route_id`, `interface`, `source_placement_id`, `sink_placement_id`, `layer`, `ground_corridor_id`, `status`, `notes` | non-null string; placement and corridor references resolve |
+| route | `maximum_length_um`, `estimated_length_um`, `via_count`, `target_diff_impedance_mohm`, `impedance_tolerance_mohm` | non-negative integer |
+| route | `evidence_ids` | non-empty string array |
+| ground corridor | `corridor_id`, `reference_layer`, `status`, `notes` | non-null string |
+| ground corridor | `continuous` | boolean |
+| ground corridor | `minimum_width_um`, `split_count`, `neck_count`, `via_transition_count` | non-negative integer |
+| ground corridor | `route_ids`, `evidence_ids` | non-empty string array; routes resolve |
+| cable | `cable_id`, `component_id`, `source_placement_id`, `sink_placement_id`, `insertion_axis`, `status`, `notes` | non-null string; component and placements resolve |
+| cable | `x_min_um`, `y_min_um`, `x_max_um`, `y_max_um`, `minimum_bend_radius_um`, `service_slack_um` | non-negative integer |
+| cable | `z_min_um`, `z_max_um` | signed integer; extents remain ordered |
+| cable | `retainer_placement_id` | internal-ID string or null; resolves to a mechanical placement when non-null |
+| cable | `evidence_ids` | non-empty string array |
+| collision check | `check_id`, `subject_id`, `obstacle_id`, `status`, `notes` | non-null string; subject/obstacle resolve |
+| collision check | `required_clearance_um`, `measured_clearance_um` | non-negative integer |
+| collision check | `evidence_ids` | non-empty string array |
+| criterion | `criterion_id`, `category`, `metric`, `unit`, `status`, `failure_action`, `notes` | non-null string |
+| criterion | `actual_value` | integer for `um`/`count`/`mohm`, boolean for `boolean`; never null |
+| criterion | `minimum_value`, `maximum_value` | same scalar type as actual or null; at least one non-null |
+| criterion | `requirement_ids`, `evidence_ids` | string arrays; evidence non-empty |
+| layer decision | `evaluated_layer_count` | integer constant 2 |
+| layer decision | `selected_layer_count` | integer 2 or 4, or null only for blocked mechanical result |
+| layer decision | `electrical_failure_ids`, `mechanical_failure_ids` | string arrays exactly projecting failed criteria |
+| layer decision | `release_state`, `decision`, `rationale`, `notes` | non-null string; rationale non-empty |
+| layer decision | `evidence_ids` | non-empty string array |
 
 Board keys `board_id`, `enclosure_mpn`, `datum`, `outline_width_um`,
 `outline_height_um`, `thickness_um`, `guide_clearance_um`, `evidence_ids`,
@@ -798,7 +969,8 @@ Cable keys `cable_id`, `component_id`, `source_placement_id`,
 `sink_placement_id`, `x_min_um`, `y_min_um`, `z_min_um`, `x_max_um`,
 `y_max_um`, `z_max_um`, `minimum_bend_radius_um`,
 `service_slack_um`, `insertion_axis`, `retainer_placement_id`, `evidence_ids`,
-`status`, `notes`; insertion axis is signed X/Y/Z. Collision keys `check_id`,
+`status`, `notes`; insertion axis is exactly `positive-x`, `negative-x`,
+`positive-y`, `negative-y`, `positive-z` or `negative-z`. Collision keys `check_id`,
 `subject_id`, `obstacle_id`, `required_clearance_um`,
 `measured_clearance_um`, `evidence_ids`, `status`, `notes`; pass requires
 measured at least required.
@@ -811,6 +983,9 @@ metric is `board-outline`, `guide-fit`, `rear-face-setback`, `route-length`,
 `insertion-access` or `collision-clearance`; unit is `um`, `count`, `mohm` or
 `boolean`. At least one bound is non-null. Electrical failure action is
 `select-four-layer`; mechanical is `block-mechanical-redesign`.
+For numeric units, pass means actual is at least each non-null minimum and at
+most each non-null maximum. For boolean, every non-null bound equals actual; if
+both bounds are present they must equal each other.
 
 Layer-decision keys `evaluated_layer_count`, `selected_layer_count`,
 `electrical_failure_ids`, `mechanical_failure_ids`, `release_state`, `decision`,
@@ -843,10 +1018,19 @@ against authored design and P1 aggregate records.
 Symbol-library keys `library_id`, `kind`, `path`, `symbol_ids`, `evidence_ids`,
 `status`, `notes`; kind is `local` or `kicad-standard`, with a `.kicad_sym` path
 only for local. Net-binding keys `net_id`, `sheet_id`, `kind`, `signal_id`,
-`power_rail_id`, `endpoint_refs`, `safe_default`, `test_point_ids`,
+`power_rail_id`, `reference_domain_id`, `endpoint_refs`, `safe_default`, `test_point_ids`,
 `evidence_ids`, `status`, `notes`; kind is `signal`, `power`, `ground` or
-`shield`, exactly one signal/rail reference is non-null, endpoints have at least
-two entries, and safe default is null or `processed-path`, `disabled`,
+`shield`. Its reference matrix is exact:
+
+| `kind` | `signal_id` | `power_rail_id` | `reference_domain_id` |
+|---|---|---|---|
+| `signal` | non-null, resolves to signal | null | null |
+| `power` | null | non-null, resolves to power rail | null |
+| `ground` | null | null | `digital-ground` |
+| `shield` | null | null | `chassis-shield` |
+
+Exactly one of the three reference fields is non-null according to this matrix.
+Endpoints have at least two entries, and safe default is null or `processed-path`, `disabled`,
 `asserted`, `deasserted`, `high-impedance`, `not-applicable`. Every authored
 signal/rail is bound and Teensy signals agree with the pin map.
 
@@ -863,17 +1047,63 @@ ERC-policy keys `command`, `project_file_allowed`, `waiver_count`,
 four zero counts and pass. Validation rejects `.kicad_pro`, unlisted schematics
 and missing listed files.
 
+Schematic field types and nullability are closed as follows:
+
+| Object | Fields | Type and nullability |
+|---|---|---|
+| root schematic | `path`, `title`, `status`, `notes` | non-null string |
+| root schematic | `hierarchical_sheet_ids`, `symbol_library_ids`, `evidence_ids` | non-empty string array; every ID resolves; sheet IDs use the stated semantic order |
+| sheet | `sheet_id`, `path`, `title`, `status`, `notes` | non-null string |
+| sheet | `support_circuit_ids`, `component_ids`, `signal_ids`, `power_rail_ids`, `requirement_ids`, `evidence_ids` | non-empty string array; every ID resolves |
+| symbol library | `library_id`, `kind`, `status`, `notes` | non-null string |
+| symbol library | `path` | project-relative `.kicad_sym` string for local; null for standard |
+| symbol library | `symbol_ids`, `evidence_ids` | non-empty string array |
+| net binding | `net_id`, `sheet_id`, `kind`, `status`, `notes` | non-null string; sheet resolves |
+| net binding | `signal_id`, `power_rail_id`, `reference_domain_id` | string or null exactly as the kind matrix requires |
+| net binding | `endpoint_refs` | string array with at least two entries |
+| net binding | `safe_default` | listed string or null |
+| net binding | `test_point_ids`, `evidence_ids` | string array; evidence non-empty and references resolve |
+| test point | `test_point_id`, `sheet_id`, `net_id`, `purpose`, `status`, `notes` | non-null string; sheet/net references resolve |
+| test point | `required` | boolean |
+| test point | `requirement_ids`, `evidence_ids` | string array; evidence non-empty |
+| ERC policy | `command`, `status`, `notes` | non-null string |
+| ERC policy | `project_file_allowed` | boolean constant false |
+| ERC policy | `waiver_count`, `ignored_violation_count`, `accepted_error_count`, `accepted_warning_count` | integer constant zero |
+
 #### One-way document lifecycle
 
 `scripts/fixtures/p1d-schema/reference-package/base-v1.json` contains all four
 exact placeholders. Builder operations are
 `bootstrap --write|--check` and
-`validate --stage placeholders|design-records|schematic`. Bootstrap creates or
-byte-checks placeholders and refuses to overwrite authored state. Placeholder
-stage requires four exact placeholders; design-records requires electrical,
-pin and placement authored with schematic still exact placeholder; schematic
-requires all authored. Renderers reject placeholders. No authored-to-placeholder
-transition exists; tests cover every legal transition and downgrade refusal.
+`validate --stage placeholders|design-records|schematic-stubs|schematic-sheets|schematic`,
+plus `schematic-interface lock --write|--check`. Bootstrap creates or
+byte-checks placeholders and refuses to overwrite authored state.
+
+The five validation states are one-way:
+
+1. `placeholders` requires four exact JSON placeholders and no reference KiCad
+   files.
+2. `design-records` requires electrical, pin and placement authored, the
+   schematic contract still the exact placeholder, and no reference KiCad files.
+3. `schematic-stubs` adds the root, local symbol library, README and four
+   interface-only sheets. The parent runs `schematic-interface lock --write`,
+   which creates
+   `scripts/fixtures/p1d-schema/reference-package/schematic-interface-v1.json`
+   with exact SHA-256 values for those seven files and refuses if that lock
+   already exists. Validation requires exact locked bytes and the schematic
+   contract remains the placeholder.
+4. `schematic-sheets` requires the root, library and README to retain their
+   locked hashes, every one of the four sheet hashes to differ from its locked
+   stub hash, every sheet to preserve its locked hierarchical interface, and the
+   schematic contract to remain the placeholder.
+5. `schematic` requires the `schematic-sheets` conditions and all four JSON
+   documents authored.
+
+`schematic-interface lock --check` never writes. Bootstrap refuses when any
+reference KiCad file or lock exists, so it cannot downgrade a schematic state;
+the lock command cannot relock implemented sheets. Renderers reject
+placeholders. Tests cover every legal transition, partial sheet replacement,
+root/library/interface drift, attempted relock, and every downgrade refusal.
 
 ```yaml
 phase: P1D3a1
@@ -919,40 +1149,113 @@ One coordinator owns `scripts/test_p1d_schemas.py` after the four disjoint schem
 tasks return. It registers all fixture directories without modifying their
 owned files.
 
-### P1D3a2 — Contract builder and deterministic renderers
+### P1D3a2 — Contract builder
 
-The serial coordinator creates the valid base package, validates canonical JSON
-and emits electrical Markdown, pin CSV plus Markdown, and placement Markdown.
-Renderer fixtures cover every escaping and ordering boundary. `render_p1.py`
-adds exact subcommands `electrical-reference`, `pin-resource-map`, and
-`two-layer-placement`, each with `--write` and `--check`.
+The builder creates the valid base package and enforces the one-way lifecycle.
 
 ```yaml
 phase: P1D3a2
-unit: design-contract-generator
-seams: [closed schemas, canonical package, deterministic review artifacts]
+unit: design-contract-builder
+seams: [closed schemas, canonical package, one-way document lifecycle]
 contract-artifact: stubs-committed
 fan-out:
   - name: p1d3-contract-builder
     owned-paths:
-      - evidence/design/contracts/p1d-reference-package.json
       - scripts/build_p1d_reference_contract.py
       - scripts/test_build_p1d_reference_contract.py
-  - name: p1d3-review-renderers
-    owned-paths:
-      - scripts/render_p1.py
-      - scripts/test_render_p1.py
-      - scripts/fixtures/render-p1/p1d-reference
-coordination: two disjoint agents consume the committed schema stubs; neither edits canonical design JSON
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_build_p1d_reference_contract.py
-    - python3 scripts/test_render_p1.py
     - python3 scripts/build_p1d_reference_contract.py bootstrap --check
     - python3 scripts/build_p1d_reference_contract.py validate --stage placeholders
-  buildable: [fixture-proven closed design contracts and deterministic renderers]
-  parent-commit: "feat(aius): define electrical reference contracts"
+  buildable: [fixture-proven closed design package and lifecycle]
+  parent-commit: "feat(aius): build electrical reference contracts"
+```
+
+The three renderer concerns then land serially because each deepens the existing
+`render_p1.py`/`test_render_p1.py` pair. The coordinator dispatches one bounded
+agent, tests and commits it, then dispatches the next from that baseline. Each
+renderer has `--write` and `--check`; neither mode accepts a placeholder.
+
+The four exact outputs are:
+
+- `docs/reference/electrical-reference.md`;
+- `docs/reference/pin-resource-map.csv`;
+- `docs/reference/pin-resource-map.md`;
+- `docs/reference/two-layer-placement.md`.
+
+All text is UTF-8, LF-only, with exactly one final LF. Markdown section order is
+fixed: electrical uses title, Metadata, Support circuits, Signals, Power rails,
+Coverage, Notes; pin uses title, Metadata, Pin resources, Reservation coverage,
+Evidence, Notes; placement uses title, Metadata, Board, Placements, Keepouts,
+Routes, Ground corridors, Cables, Collision checks, Criteria, Layer decision,
+Coverage, Notes. Table columns follow the source row's locked key order. A
+Markdown cell normalizes CRLF to LF, rejects bare CR, escapes backslash before
+pipe (`\\` then `\|`), replaces LF with `<br>`, and wraps identifier/path fields
+in backticks after rejecting embedded backticks.
+
+The pin CSV header is exactly the 14 pin fields in their locked order. It uses
+RFC 4180 quoting with LF record terminators: comma, quote, CR or LF requires
+quotes; a quote doubles; null is empty; booleans are lowercase; arrays join with
+semicolon after rejecting semicolons inside an element. Fixtures cover empty,
+nullable, delimiter, quote, line-ending, backslash, pipe, backtick, Unicode,
+ordering and final-newline boundaries.
+
+```yaml
+phase: P1D3a3
+unit: electrical-reference-renderer
+seams: [authored electrical JSON, deterministic Markdown]
+contract-artifact: spec-only
+fan-out:
+  - name: electrical-reference-renderer
+    owned-paths:
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+      - scripts/fixtures/render-p1/electrical-reference
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/test_render_p1.py]
+  buildable: [fixture-proven electrical Markdown renderer]
+  parent-commit: "feat(aius): render electrical reference"
+```
+
+```yaml
+phase: P1D3a4
+unit: pin-resource-renderer
+seams: [authored pin JSON, deterministic CSV and Markdown]
+contract-artifact: stubs-committed
+fan-out:
+  - name: pin-resource-renderer
+    owned-paths:
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+      - scripts/fixtures/render-p1/pin-resource-map
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/test_render_p1.py]
+  buildable: [fixture-proven pin CSV and Markdown renderer]
+  parent-commit: "feat(aius): render pin resource map"
+```
+
+```yaml
+phase: P1D3a5
+unit: two-layer-placement-renderer
+seams: [authored placement JSON, deterministic Markdown]
+contract-artifact: stubs-committed
+fan-out:
+  - name: two-layer-placement-renderer
+    owned-paths:
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+      - scripts/fixtures/render-p1/two-layer-placement
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_render_p1.py
+    - python3 scripts/build_p1d_reference_contract.py validate --stage placeholders
+  buildable: [all fixture-proven deterministic P1D renderers]
+  parent-commit: "feat(aius): render two-layer placement"
 ```
 
 ### P1D3b — Evidence-derived design records
@@ -974,11 +1277,19 @@ fan-out:
     owned-paths: [evidence/design/pin-resource-map.json]
   - name: two-layer-placement
     owned-paths: [evidence/design/two-layer-placement.json]
-coordination: parent validates design-records stage, writes four generated review files, then checks parity
+coordination-owned-paths:
+  - docs/reference/electrical-reference.md
+  - docs/reference/pin-resource-map.csv
+  - docs/reference/pin-resource-map.md
+  - docs/reference/two-layer-placement.md
+coordination: parent alone validates design-records stage, runs the three write commands for the four generated paths, then checks parity; author agents never edit generated paths
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/build_p1d_reference_contract.py validate --stage design-records
+    - python3 scripts/render_p1.py electrical-reference --write
+    - python3 scripts/render_p1.py pin-resource-map --write
+    - python3 scripts/render_p1.py two-layer-placement --write
     - python3 scripts/render_p1.py electrical-reference --check
     - python3 scripts/render_p1.py pin-resource-map --check
     - python3 scripts/render_p1.py two-layer-placement --check
@@ -1011,12 +1322,16 @@ fan-out:
     owned-paths: [electronics/reference/ethernet.kicad_sch]
   - name: teensy-expansion-sheet-stub
     owned-paths: [electronics/reference/teensy-expansion.kicad_sch]
-coordination: maximum three concurrent; root shell contract is fixed in the plan and sheet agents do not edit root or library
+coordination-owned-paths:
+  - scripts/fixtures/p1d-schema/reference-package/schematic-interface-v1.json
+coordination: maximum three concurrent; root shell contract is fixed in the plan and sheet agents do not edit root or library; after all return the parent alone locks the seven file hashes and validates the stub stage
 review-intensity: active
 commit-checkpoint:
   green:
+    - python3 scripts/build_p1d_reference_contract.py schematic-interface lock --write
+    - python3 scripts/build_p1d_reference_contract.py schematic-interface lock --check
     - scripts/kicad.sh sch erc electronics/reference/aius-reference.kicad_sch
-    - python3 scripts/build_p1d_reference_contract.py validate --stage design-records
+    - python3 scripts/build_p1d_reference_contract.py validate --stage schematic-stubs
   buildable: [interface-complete zero-warning ERC-clean schematic shell]
   parent-commit: "design(aius): establish reference schematic shell"
 ```
@@ -1046,7 +1361,7 @@ review-intensity: active
 commit-checkpoint:
   green:
     - scripts/kicad.sh sch erc electronics/reference/aius-reference.kicad_sch
-    - python3 scripts/build_p1d_reference_contract.py validate --stage design-records
+    - python3 scripts/build_p1d_reference_contract.py validate --stage schematic-sheets
   buildable: [complete zero-warning ERC-clean hierarchical sheets]
   parent-commit: "design(aius): implement reference schematic sheets"
 ```
@@ -1082,10 +1397,13 @@ exact schemas and JSON/CSV/Markdown parity, signal and power requirement
 coverage, pin uniqueness, evidence closure, layer/mechanical verdict semantics,
 schematic contract membership and supplemental lifecycle closure.
 
+P1D4 is two serial checkpoints so the cumulative validator and operator-facing
+release surface remain separate concerns.
+
 ```yaml
-phase: P1D4
-unit: final-validation-surface
-seams: [complete P1D package, cumulative validator, external ERC gate]
+phase: P1D4a
+unit: final-validator
+seams: [complete P1D package, cumulative topology stage]
 contract-artifact: spec-only
 fan-out:
   - name: p1d-final-validator
@@ -1093,6 +1411,24 @@ fan-out:
       - scripts/validate_p1.py
       - scripts/test_validate_p1.py
       - scripts/fixtures/validate-p1/final
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/validate_evidence.py
+    - python3 scripts/validate_p1.py topology --stage final
+  buildable: [fixture-proven cumulative final validator]
+  parent-commit: "feat(aius): validate final reference package"
+```
+
+```yaml
+phase: P1D4b
+unit: release-wrapper-and-operator-docs
+seams: [final validator, deterministic projections, external ERC gate]
+contract-artifact: stubs-committed
+fan-out:
+  - name: p1d-release-wrapper
+    owned-paths:
       - scripts/validate_p1d_release.sh
       - evidence/manifest/README.md
 review-intensity: active
@@ -1116,6 +1452,7 @@ commit-checkpoint:
   parent-commit: "docs(aius): release electrical reference package"
 ```
 
-After these checks pass, one clean-room delivery reviewer receives only this
-plan and the current code. Missing promises are fixed; intentional divergence
-is recorded in this plan's phase notes. The parent then lands and pushes P1D4.
+After the P1D4b worker returns and these checks pass, one clean-room delivery
+reviewer receives only this plan and the current code. Missing promises are
+fixed; intentional divergence is recorded in this plan's phase notes. The
+parent then lands and pushes P1D4b.

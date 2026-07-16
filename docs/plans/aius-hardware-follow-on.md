@@ -125,28 +125,53 @@ Create the manufacturing schematic from the audited sources. It includes:
 
 The schematic contains a reset and failure-state truth table for Teensy absent, boot, reset, brownout, firmware crash, optical loss, unsupported burst, malformed input, USB unplug, raw-bypass request, and unpowered expansion. Hardware pulls keep the transmitter disabled and select the processed Teensy path during reset. Expansion outputs are high impedance or current-limited until firmware configures them.
 
+H1 is two serial checkpoints. The first commits the shared interface before any
+sheet worker starts; the second consumes that immutable baseline.
+
 ```yaml
-phase: H1
-unit: schematic-components
-seams: [power tree, optical interface, USB bridge, Ethernet interface, safe-state controls]
+phase: H1a
+unit: manufacturing-schematic-interface
+seams: [canonical root, local symbol library, hierarchical sheet interfaces]
 contract-artifact: both
 fan-out:
-  - name: power-usb
-    owned-paths: [electronics/sheets/power-usb]
-  - name: optical-spdif
-    owned-paths: [electronics/sheets/optical-spdif]
-  - name: ethernet
-    owned-paths: [electronics/sheets/ethernet]
-  - name: teensy-expansion
-    owned-paths: [electronics/sheets/teensy-expansion]
+  - name: manufacturing-schematic-interface
+    owned-paths:
+      - electronics/carrier/aius-carrier.kicad_sch
+      - electronics/carrier/aius-carrier.kicad_sym
+      - electronics/carrier/sheet-interfaces.json
+      - electronics/carrier/README.md
 review-intensity: active
 commit-checkpoint:
-  green: [KiCad ERC, pin-by-pin datasheet audit, power calculations, clean-room electrical and FMEA review]
+  green: [closed interface-schema validation, local-symbol validation, standalone root ERC]
+  buildable: [committed root library and exact sheet-interface stubs]
+  parent-commit: "design(aius): lock carrier schematic interfaces"
+```
+
+```yaml
+phase: H1b
+unit: single-manufacturing-schematic-sheet
+seams: [committed sheet interface, predeclared symbols, power and safe-state contracts]
+contract-artifact: stubs-committed
+fan-out:
+  - name: power-usb
+    owned-paths: [electronics/carrier/sheets/power-usb]
+  - name: optical-spdif
+    owned-paths: [electronics/carrier/sheets/optical-spdif]
+  - name: ethernet
+    owned-paths: [electronics/carrier/sheets/ethernet]
+  - name: teensy-expansion
+    owned-paths: [electronics/carrier/sheets/teensy-expansion]
+  - name: schematic-root-coordinator
+    owned-paths:
+      - electronics/carrier/aius-carrier.kicad_sch
+      - electronics/carrier/sheet-interfaces.json
+coordination: maximum three sheet agents; after all four workers return, the coordinator imports only reviewed sheets, closes interface status, and does not edit the shared symbol library; the parent commits the integrated phase
+review-intensity: active
+commit-checkpoint:
+  green: [KiCad ERC, interface parity, pin-by-pin datasheet audit, power calculations, clean-room electrical and FMEA review]
   buildable: [reviewed manufacturing schematic]
   parent-commit: "feat(aius): complete carrier schematic"
 ```
-
-The schematic coordinator imports reviewed hierarchical sheets into the canonical Aius KiCad project only after their owned-path reviews pass.
 
 ## H2: Two-layer feasibility gate
 
@@ -199,23 +224,52 @@ Generate the manufacturing package twice from clean checkouts. Compare normalize
 
 Update the cost model from the actual BOM, fabrication settings, assembly quotation, component substitutions, freight, VAT, and duty. Review PCBWay's rendered preview and every substitution before order approval.
 
+H3 is serial because manufacturing outputs consume the finished PCB, and the
+quotation consumes the frozen manufacturing package.
+
 ```yaml
-phase: H3
-unit: pcb-and-release-package
-seams: [routed PCB, manufacturing manifest, assembly BOM, landed quotation]
+phase: H3a
+unit: pcb-layout
+seams: [approved schematic, board outline, stackup, routed PCB]
 contract-artifact: both
 fan-out:
   - name: pcb-layout
-    owned-paths: [electronics/aius-carrier]
+    owned-paths: [electronics/carrier/pcb]
+review-intensity: active
+commit-checkpoint:
+  green: [ERC, DRC, impedance, clearance, return-path, creepage, test-access, mechanical review]
+  buildable: [finished fabrication-candidate PCB]
+  parent-commit: "design(aius): complete carrier PCB"
+```
+
+```yaml
+phase: H3b
+unit: manufacturing-package
+seams: [committed PCB, normalized fabrication outputs, assembly BOM]
+contract-artifact: stubs-committed
+fan-out:
   - name: manufacturing-output
     owned-paths: [manufacturing]
+review-intensity: active
+commit-checkpoint:
+  green: [DFM, DFA, two-clean-checkout reproducibility, normalized manifest and checksum parity, clean-room release audit]
+  buildable: [frozen unordered manufacturing package]
+  parent-commit: "design(aius): generate carrier manufacturing package"
+```
+
+```yaml
+phase: H3c
+unit: landed-prototype-quotation
+seams: [frozen manufacturing package, vendor quotation, landed cost model]
+contract-artifact: stubs-committed
+fan-out:
   - name: quotation
     owned-paths: [evidence/cost]
 review-intensity: active
 commit-checkpoint:
-  green: [ERC, DRC, DFM, DFA, mechanical review, reproducibility, clean-room release audit]
+  green: [three-unit assembly quote, vendor-minimum bare-board quote, four-layer comparison, freight/VAT/duty reconciliation]
   buildable: [quoted but unordered three-unit prototype package]
-  parent-commit: "design(aius): complete prototype release package"
+  parent-commit: "docs(aius): record prototype quotation"
 ```
 
 ## H4: Three-unit EVT

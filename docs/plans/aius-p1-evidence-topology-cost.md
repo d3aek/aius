@@ -3293,7 +3293,8 @@ commit-checkpoint:
 
 Completed 2026-07-16. The 48-request aggregate has SHA-256
 `b0035d9373fb0848b89d7e8c01a6d2b733e2d44a6bdb5004b3f88b1e715eb890` and
-binds 46 non-satisfied requests to 138 unique P1D-owned paths. The first commit
+binds 46 non-satisfied requests. The committed P1D realization oracle expands
+those requests to 127 unique owned paths. The first commit
 attempt exposed a contract gap: renderer parity and `handoff` validation passed,
 but the repository hook rejected multiline short arrays. The hook was not
 bypassed. The renderer contract and pure formatter were deepened together, with
