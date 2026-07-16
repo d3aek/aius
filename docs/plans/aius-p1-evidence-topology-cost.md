@@ -619,8 +619,11 @@ The Compose service uses
 `kicad/kicad:10.0.4@sha256:770e2fa006695077b5ba218742d5c3137896af91257b2ca971243fa56b01bb86`,
 fixed project name `aius-kicad`, network mode `none`, repository bind mount at
 `/workspace`, working directory `/workspace/src/hardware/aius`, and named volume
-`aius-kicad-cache` at `/home/kicad/.cache`. The image runs as its built-in
-`kicad` UID/GID 1000 user. No container is kept resident.
+`aius-kicad-cache` at `/home/kicad`. The pinned image provides that directory as
+UID/GID 1000 mode `0700`; Docker's empty-volume copy initialization therefore
+preserves writable ownership while persisting KiCad cache and user state. The
+service remains `user: 1000:1000`; no root bootstrap or privilege drop is
+permitted. No container is kept resident.
 
 `kicad.sh` resolves the repository from its own checked-in location, exports the
 absolute bind path only for Compose interpolation, and invokes exactly
@@ -634,8 +637,9 @@ explicit project-name option, `run --rm`, service, forwarded arguments, and
 identical behavior from the repo root and an unrelated directory. It sets a
 hostile ambient `COMPOSE_PROJECT_NAME` and proves the exact argv still pins
 `aius-kicad`. It also parses `docker compose config --format json` to assert
-image digest, project name, network, bind target, cache volume, and working
-directory.
+image digest, project name, network, bind target, `/home/kicad` volume target,
+`1000:1000` user, and working directory. The real `kicad.sh version` checkpoint
+must exit `0`, print version `10.0.4`, and contain no cache permission warning.
 
 ```yaml
 phase: P1A5
