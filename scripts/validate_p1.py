@@ -510,10 +510,106 @@ class JsonInput:
     parsed: bool
 
 
+def check_power_references(
+    interfaces: object,
+    *,
+    path: Path = INTERFACES,
+) -> tuple[Diagnostic, ...]:
+    """Check the closed power-reference universe and selected family endpoint."""
+    if not isinstance(interfaces, dict):
+        return ()
+    power_domains = interfaces.get("power_domains")
+    if not isinstance(power_domains, list):
+        return ()
+
+    base_targets = (
+        set(FUNCTIONAL_IDS["blocks"])
+        | set(INTERFACES_IDS["connectors"])
+        | set(INTERFACES_IDS["expansion_interfaces"])
+        | set(INTERFACES_IDS["power_domains"])
+        | {"carrier", "enclosure"}
+    )
+    selected_family = "expansion-power-protection"
+    diagnostics: list[Diagnostic] = []
+    final_consumer_present = False
+    exact_source_present = False
+
+    def check_value(field: str, value: object) -> None:
+        if isinstance(value, str) and value in base_targets:
+            return
+        if isinstance(value, str) and value in FAMILIES:
+            diagnostics.append(
+                Diagnostic(
+                    "CONTRACT",
+                    path.as_posix(),
+                    f"{field} forbids component family {value!r}",
+                )
+            )
+            return
+        diagnostics.append(
+            Diagnostic(
+                "REFERENCE",
+                path.as_posix(),
+                f"{field} does not resolve: {value!r}",
+            )
+        )
+
+    for index, row in enumerate(power_domains):
+        if not isinstance(row, dict):
+            continue
+        domain_id = row.get("id")
+        source_field = f"power_domains[{index}].source"
+        if "source" in row:
+            source = row["source"]
+            allowed_source = (
+                domain_id == "expansion-3v3" and source == selected_family
+            )
+            if allowed_source:
+                exact_source_present = True
+            else:
+                check_value(source_field, source)
+
+        consumers = row.get("consumers")
+        if not isinstance(consumers, list):
+            continue
+        consumer_field = f"power_domains[{index}].consumers"
+        for consumer_index, consumer in enumerate(consumers):
+            allowed_consumer = (
+                domain_id == "teensy-3v3"
+                and consumer_index == len(consumers) - 1
+                and consumer == selected_family
+            )
+            if allowed_consumer:
+                final_consumer_present = True
+            else:
+                check_value(consumer_field, consumer)
+
+    if exact_source_present and not final_consumer_present:
+        diagnostics.append(
+            Diagnostic(
+                "CONTRACT",
+                path.as_posix(),
+                "power-domain endpoint pair is incomplete: teensy-3v3.consumers "
+                "must end with 'expansion-power-protection'",
+            )
+        )
+    if final_consumer_present and not exact_source_present:
+        diagnostics.append(
+            Diagnostic(
+                "CONTRACT",
+                path.as_posix(),
+                "power-domain endpoint pair is incomplete: expansion-3v3.source "
+                "must be 'expansion-power-protection'",
+            )
+        )
+    return tuple(diagnostics)
+
+
 class Validator:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.diagnostics: set[Diagnostic] = set()
+        self.repeated_diagnostics: list[Diagnostic] = []
         self.json_inputs: dict[Path, JsonInput] = {}
         self.schemas: dict[Path, object] = {}
         self.schema_usable: dict[Path, bool] = {}
@@ -527,6 +623,19 @@ class Validator:
 
     def add(self, code: str, path: Path, detail: str) -> None:
         self.diagnostics.add(Diagnostic(code, path.as_posix(), detail))
+
+    def add_occurrence_diagnostics(
+        self,
+        diagnostics: tuple[Diagnostic, ...],
+    ) -> None:
+        for diagnostic in diagnostics:
+            if diagnostic in self.diagnostics:
+                self.repeated_diagnostics.append(diagnostic)
+            else:
+                self.diagnostics.add(diagnostic)
+
+    def sorted_diagnostics(self) -> list[Diagnostic]:
+        return sorted((*self.diagnostics, *self.repeated_diagnostics))
 
     def load_json(self, path: Path) -> JsonInput:
         if path in self.json_inputs:
@@ -944,16 +1053,15 @@ class Validator:
                     self._check_ref(FUNCTIONAL, f"{collection}[{index}].{field}", row[field], blocks)
 
         owner_targets = blocks | connectors | expansions
-        power_targets = blocks | connectors | expansions | power_domains | {"carrier", "enclosure"}
         for index, row in enumerate(interfaces["connectors"]):
             self._check_many_refs(INTERFACES, f"connectors[{index}].power_domains", row["power_domains"], power_domains)
         for index, row in enumerate(interfaces["controls"]):
             self._check_ref(INTERFACES, f"controls[{index}].owner", row["owner"], owner_targets)
         for index, row in enumerate(interfaces["expansion_interfaces"]):
             self._check_many_refs(INTERFACES, f"expansion_interfaces[{index}].power_domains", row["power_domains"], power_domains)
-        for index, row in enumerate(interfaces["power_domains"]):
-            self._check_ref(INTERFACES, f"power_domains[{index}].source", row["source"], power_targets)
-            self._check_many_refs(INTERFACES, f"power_domains[{index}].consumers", row["consumers"], power_targets)
+        self.add_occurrence_diagnostics(
+            check_power_references(interfaces, path=INTERFACES)
+        )
         for index, row in enumerate(interfaces["fault_scenarios"]):
             self._check_ref(INTERFACES, f"fault_scenarios[{index}].recovery_state", row["recovery_state"], states)
         for index, row in enumerate(interfaces["transitions"]):
@@ -1422,18 +1530,60 @@ def _parser() -> argparse.ArgumentParser:
     topology = subparsers.add_parser("topology")
     topology.add_argument("--stage", choices=STAGES, required=True)
     topology.add_argument("--family")
+    power_references = subparsers.add_parser("power-references")
+    power_references.add_argument("--interfaces", required=True)
     return parser
+
+
+def _rooted_interfaces_path(
+    parser: argparse.ArgumentParser,
+    root: Path,
+    supplied: str,
+) -> tuple[Path, Path]:
+    resolved_root = root.resolve()
+    supplied_path = Path(supplied)
+    candidate = supplied_path if supplied_path.is_absolute() else resolved_root / supplied_path
+    resolved_candidate = candidate.resolve()
+    try:
+        relative = resolved_candidate.relative_to(resolved_root)
+    except ValueError:
+        parser.error("--interfaces must remain beneath the Aius root")
+    if relative == Path("."):
+        parser.error("--interfaces must remain beneath the Aius root")
+    return resolved_root, relative
 
 
 def run(argv: list[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
+    root = Path(arguments.root) if arguments.root is not None else Path(__file__).resolve().parents[1]
+    if arguments.command == "power-references":
+        resolved_root, interfaces_path = _rooted_interfaces_path(
+            parser,
+            root,
+            arguments.interfaces,
+        )
+        validator = Validator(resolved_root)
+        loaded = validator.load_json(interfaces_path)
+        power_diagnostics: tuple[Diagnostic, ...] = ()
+        if loaded.parsed:
+            power_diagnostics = check_power_references(
+                loaded.value,
+                path=interfaces_path,
+            )
+        diagnostics = sorted((*validator.diagnostics, *power_diagnostics))
+        if diagnostics:
+            for diagnostic in diagnostics:
+                print(diagnostic.render(), file=sys.stderr)
+            return 1
+        print(f"OK power-references {interfaces_path.as_posix()}")
+        return 0
+
     if arguments.family is not None and arguments.stage != "selection-fragments":
         parser.error("--family is permitted only with topology --stage selection-fragments")
     if arguments.family is not None and arguments.family not in FAMILIES:
         parser.error(f"unknown P1C family: {arguments.family}")
 
-    root = Path(arguments.root) if arguments.root is not None else Path(__file__).resolve().parents[1]
     validator = Validator(root)
     validator.load_schemas()
     validator.check_contracts()
@@ -1450,8 +1600,9 @@ def run(argv: list[str] | None = None) -> int:
     if stage_index >= STAGES.index("handoff"):
         validator.check_handoff()
 
-    if validator.diagnostics:
-        for diagnostic in sorted(validator.diagnostics):
+    diagnostics = validator.sorted_diagnostics()
+    if diagnostics:
+        for diagnostic in diagnostics:
             print(diagnostic.render(), file=sys.stderr)
         return 1
     suffix = f" {arguments.family}" if arguments.family is not None else ""

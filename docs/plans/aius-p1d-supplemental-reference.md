@@ -20,13 +20,9 @@ current tree.
 
 ## Pre-build gate status
 
-Clean-room Gate 11 at commit `ae817c1d4` returned `BLOCKED` while explicitly
-confirming P1C5a0 implementation readiness. It found one H2b schema-path typo,
-false P2/P6 stub declarations, ambiguous H4 input/output CLI semantics, a
-rewritable final purchase preflight, and a non-deterministic EVT equipment list.
-This revision incorporates those findings.
-Implementation remains blocked until a fresh clean-room review passes the
-amended plans, literal realization oracle and current code.
+Clean-room Gate 12 at commit `a4b724316` returned `PASS` with no findings. It
+confirmed the amended plans, literal realization oracle, current code, phase
+sizing and deterministic checkpoints, and authorized P1C5a0 implementation.
 
 ## Execution constraints
 
@@ -285,7 +281,7 @@ absent/absent topology remains valid.
 | exact source present but final consumer absent | `CONTRACT`; detail `power-domain endpoint pair is incomplete: teensy-3v3.consumers must end with 'expansion-power-protection'` |
 | exact final consumer present but source differs | `CONTRACT`; detail `power-domain endpoint pair is incomplete: expansion-3v3.source must be 'expansion-power-protection'` |
 | `expansion-power-protection` occurs in any additional source or consumer position | one `CONTRACT` per occurrence; detail `<field> forbids component family 'expansion-power-protection'` |
-| any other ID in the validator's exact closed `FAMILIES` tuple occurs in a power source or consumer | one `CONTRACT` per occurrence; detail `<field> forbids component family '<id>'` |
+| an ID that occurs only in the validator's exact closed `FAMILIES` tuple occurs in a power source or consumer | one `CONTRACT` per occurrence; detail `<field> forbids component family '<id>'` |
 | a token outside blocks, connectors, expansion interfaces, power domains, `carrier`, `enclosure` and `FAMILIES` occurs | the existing `REFERENCE`; detail `<field> does not resolve: '<token>'` |
 
 Here `<field>` is exactly `power_domains[<document-index>].source` or
@@ -295,6 +291,17 @@ partial pairs, each allowed-endpoint value in a forbidden domain, an exact pair
 plus an extra occurrence, one different known family as source and consumer,
 and one unknown source and consumer. The topology handoff test proves the
 public stage and normal handoff call the same helper.
+
+Topology-target identity takes precedence when an ID occurs in both `FAMILIES`
+and the current blocks, connectors, expansion interfaces or power domains. The
+family-only forbidden set is therefore `FAMILIES - topology targets`; for
+example, current connector or expansion-interface references remain valid even
+when their IDs also classify a component family.
+
+P1C5a0 completed on 2026-07-16. The public oracle, shared helper, closed
+decision table and occurrence-preserving diagnostics are implemented. The
+clean-room delivery re-audit returned `PASS` with 87 full-suite tests, 16
+focused tests and the handoff command green.
 
 ### P1C5a — Topology schema and migration correction
 

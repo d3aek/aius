@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import shutil
 import subprocess
@@ -387,6 +389,26 @@ def _run(root: Path, stage: str, family: str | None = None) -> subprocess.Comple
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
+def _run_power_references(
+    root: Path,
+    interfaces: str | Path,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(root),
+            "power-references",
+            "--interfaces",
+            str(interfaces),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _codes(result: subprocess.CompletedProcess[str]) -> list[str]:
     return [
         line.split(":", 1)[0].removeprefix("AIUS-P1-")
@@ -629,6 +651,327 @@ class CliAndInputDiagnosticTests(ValidatorTestCase):
         result = self.assert_code("architecture-base", "MISSING")
         lines = [line for line in result.stderr.splitlines() if line.startswith("AIUS-P1-")]
         self.assertEqual(lines, sorted(lines))
+
+
+class PowerReferenceCliTests(ValidatorTestCase):
+    relative_path = Path("focused/interfaces.json")
+
+    def write_interfaces(self, interfaces: object | None = None) -> None:
+        _write_json(
+            self.fixture.path(self.relative_path.as_posix()),
+            self.fixture.interfaces if interfaces is None else interfaces,
+        )
+
+    def run_interfaces(
+        self,
+        interfaces: object | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        self.write_interfaces(interfaces)
+        return _run_power_references(self.fixture.root, self.relative_path)
+
+    def assert_power_ok(self, interfaces: object | None = None) -> None:
+        result = self.run_interfaces(interfaces)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            result.stdout,
+            f"OK power-references {self.relative_path.as_posix()}\n",
+        )
+        self.assertEqual(result.stderr, "")
+
+    def assert_power_diagnostics(
+        self,
+        interfaces: object,
+        expected: list[str],
+    ) -> None:
+        result = self.run_interfaces(interfaces)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.splitlines(), expected)
+
+    def future_pair(self) -> dict[str, object]:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        teensy = next(
+            row for row in interfaces["power_domains"] if row["id"] == "teensy-3v3"
+        )
+        expansion = next(
+            row for row in interfaces["power_domains"] if row["id"] == "expansion-3v3"
+        )
+        teensy["consumers"].append("expansion-power-protection")
+        expansion["source"] = "expansion-power-protection"
+        return interfaces
+
+    def diagnostic(self, code: str, detail: str) -> str:
+        return (
+            f"AIUS-P1-{code}: {self.relative_path.as_posix()}: {detail}"
+        )
+
+    def test_absent_pair_and_future_exact_pair_pass(self) -> None:
+        self.assert_power_ok()
+        self.assert_power_ok(self.future_pair())
+
+    def test_exact_source_without_final_consumer_reports_exact_contract(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        expansion = next(
+            row for row in interfaces["power_domains"] if row["id"] == "expansion-3v3"
+        )
+        expansion["source"] = "expansion-power-protection"
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "CONTRACT",
+                    "power-domain endpoint pair is incomplete: teensy-3v3.consumers "
+                    "must end with 'expansion-power-protection'",
+                )
+            ],
+        )
+
+    def test_final_consumer_without_exact_source_reports_exact_contract(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        teensy = next(
+            row for row in interfaces["power_domains"] if row["id"] == "teensy-3v3"
+        )
+        teensy["consumers"].append("expansion-power-protection")
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "CONTRACT",
+                    "power-domain endpoint pair is incomplete: expansion-3v3.source "
+                    "must be 'expansion-power-protection'",
+                )
+            ],
+        )
+
+    def test_allowed_endpoint_value_is_forbidden_as_an_unrelated_source(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces["power_domains"][0]["source"] = "expansion-power-protection"
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "CONTRACT",
+                    "power_domains[0].source forbids component family "
+                    "'expansion-power-protection'",
+                )
+            ],
+        )
+
+    def test_allowed_endpoint_value_is_forbidden_as_an_unrelated_consumer(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces["power_domains"][0]["consumers"].append(
+            "expansion-power-protection"
+        )
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "CONTRACT",
+                    "power_domains[0].consumers forbids component family "
+                    "'expansion-power-protection'",
+                )
+            ],
+        )
+
+    def test_exact_pair_plus_an_extra_occurrence_reports_only_the_extra(self) -> None:
+        interfaces = self.future_pair()
+        interfaces["power_domains"][4]["consumers"].append(
+            "expansion-power-protection"
+        )
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "CONTRACT",
+                    "power_domains[4].consumers forbids component family "
+                    "'expansion-power-protection'",
+                )
+            ],
+        )
+
+    def test_each_duplicate_forbidden_occurrence_has_its_own_diagnostic(self) -> None:
+        interfaces = self.future_pair()
+        interfaces["power_domains"][0]["consumers"].extend(
+            ["expansion-power-protection", "expansion-power-protection"]
+        )
+        diagnostic = self.diagnostic(
+            "CONTRACT",
+            "power_domains[0].consumers forbids component family "
+            "'expansion-power-protection'",
+        )
+        self.assert_power_diagnostics(interfaces, [diagnostic, diagnostic])
+
+    def test_other_known_family_is_forbidden_as_source_and_consumer(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces["power_domains"][0]["source"] = "usb-c-receptacle"
+        interfaces["power_domains"][1]["consumers"].append("usb-c-receptacle")
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "CONTRACT",
+                    "power_domains[0].source forbids component family "
+                    "'usb-c-receptacle'",
+                ),
+                self.diagnostic(
+                    "CONTRACT",
+                    "power_domains[1].consumers forbids component family "
+                    "'usb-c-receptacle'",
+                ),
+            ],
+        )
+
+    def test_unknown_source_and_consumer_keep_exact_reference_diagnostics(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces["power_domains"][0]["source"] = "unknown-source"
+        interfaces["power_domains"][1]["consumers"].append("unknown-consumer")
+        self.assert_power_diagnostics(
+            interfaces,
+            [
+                self.diagnostic(
+                    "REFERENCE",
+                    "power_domains[0].source does not resolve: 'unknown-source'",
+                ),
+                self.diagnostic(
+                    "REFERENCE",
+                    "power_domains[1].consumers does not resolve: 'unknown-consumer'",
+                ),
+            ],
+        )
+
+    def test_mixed_diagnostics_use_existing_sort_order(self) -> None:
+        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces["power_domains"][5]["source"] = "unknown-source"
+        interfaces["power_domains"][1]["consumers"].append("usb-c-receptacle")
+        interfaces["power_domains"][0]["consumers"].append(
+            "expansion-power-protection"
+        )
+        result = self.run_interfaces(interfaces)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        lines = result.stderr.splitlines()
+        self.assertEqual(lines, sorted(lines))
+        self.assertEqual(_codes(result), ["CONTRACT", "CONTRACT", "REFERENCE"])
+
+    def test_relative_and_absolute_inputs_print_aius_relative_path(self) -> None:
+        self.write_interfaces()
+        for supplied in (
+            self.relative_path,
+            self.fixture.path(self.relative_path.as_posix()),
+            Path("focused") / ".." / "focused" / "interfaces.json",
+        ):
+            with self.subTest(supplied=supplied):
+                result = _run_power_references(self.fixture.root, supplied)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(
+                    result.stdout,
+                    f"OK power-references {self.relative_path.as_posix()}\n",
+                )
+                self.assertEqual(result.stderr, "")
+
+    def test_absolute_relative_and_symlink_escapes_are_argument_errors(self) -> None:
+        escape = self.fixture.path("escape")
+        escape.symlink_to(self.fixture.root.parent, target_is_directory=True)
+        for supplied in (
+            self.fixture.root.parent / "outside.json",
+            Path("..") / "outside.json",
+            Path("escape") / "outside.json",
+        ):
+            with self.subTest(supplied=supplied):
+                result = _run_power_references(self.fixture.root, supplied)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("must remain beneath the Aius root", result.stderr)
+
+    def test_interfaces_argument_is_required(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(VALIDATOR),
+                "--root",
+                str(self.fixture.root),
+                "power-references",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("the following arguments are required: --interfaces", result.stderr)
+
+    def test_missing_and_parse_failures_keep_existing_diagnostics(self) -> None:
+        missing = _run_power_references(self.fixture.root, self.relative_path)
+        self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+        self.assertEqual(
+            missing.stderr,
+            self.diagnostic("MISSING", "required input is missing") + "\n",
+        )
+
+        malformed = self.fixture.path(self.relative_path.as_posix())
+        malformed.parent.mkdir(parents=True, exist_ok=True)
+        malformed.write_text("{\n", encoding="utf-8")
+        parsed = _run_power_references(self.fixture.root, self.relative_path)
+        self.assertEqual(parsed.returncode, 1, parsed.stdout + parsed.stderr)
+        self.assertEqual(_codes(parsed), ["PARSE"])
+        self.assertIn(
+            f"AIUS-P1-PARSE: {self.relative_path.as_posix()}:",
+            parsed.stderr,
+        )
+
+    def test_topology_and_public_cli_call_the_same_public_helper(self) -> None:
+        self.write_interfaces()
+        actual = validator_module.check_power_references
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(
+            validator_module,
+            "check_power_references",
+            wraps=actual,
+        ) as helper, contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            public_status = validator_module.run(
+                [
+                    "--root",
+                    str(self.fixture.root),
+                    "power-references",
+                    "--interfaces",
+                    self.relative_path.as_posix(),
+                ]
+            )
+            topology_status = validator_module.run(
+                ["--root", str(self.fixture.root), "topology", "--stage", "handoff"]
+            )
+
+        self.assertEqual(public_status, 0, stderr.getvalue())
+        self.assertEqual(topology_status, 0, stderr.getvalue())
+        self.assertEqual(helper.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["path"] for call in helper.call_args_list],
+            [self.relative_path, validator_module.INTERFACES],
+        )
+
+    def test_topology_preserves_one_diagnostic_per_forbidden_occurrence(self) -> None:
+        diagnostic = validator_module.Diagnostic(
+            "CONTRACT",
+            validator_module.INTERFACES.as_posix(),
+            "power_domains[0].consumers forbids component family "
+            "'expansion-power-protection'",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(
+            validator_module,
+            "check_power_references",
+            return_value=(diagnostic, diagnostic),
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = validator_module.run(
+                ["--root", str(self.fixture.root), "topology", "--stage", "handoff"]
+            )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(
+            stderr.getvalue().splitlines(),
+            [diagnostic.render(), diagnostic.render()],
+        )
 
 
 class ContractStageDiagnosticTests(ValidatorTestCase):
