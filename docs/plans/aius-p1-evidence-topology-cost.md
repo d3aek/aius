@@ -2888,10 +2888,11 @@ null`, and `notes: ""`. Except for the two Cliff seed selections, it uses
 `status: candidate-pending-evidence` and this exact rationale:
 `Provisional single-MPN candidate chosen under the P1C2 primary-source ranking;
 all assigned verification gates remain open.` Both request records repeat the
-same exact requirements, selected manufacturer, and selected MPN. Every
-manufacturer request uses `artifact_kinds: [datasheet]`, `retention: archive`,
-`status: pending`, `evidence_ids: []`, and this exact note: `P1D must retain and
-validate the primary manufacturer datasheet before this candidate can advance.`
+same exact requirements, selected manufacturer, and selected MPN. Except for
+the literal USB-C exception below, every manufacturer request uses
+`artifact_kinds: [datasheet]`, `retention: archive`, `status: pending`,
+`evidence_ids: []`, and this exact note: `P1D must retain and validate the
+primary manufacturer datasheet before this candidate can advance.`
 Every UK request uses `artifact_kinds: [price-observation]`, `retention:
 normalized-observation-only`, `status: pending`, `evidence_ids: []`, and this
 exact note: `Authorized-distributor acquisition target only; P1C2 makes no
@@ -2933,9 +2934,10 @@ acceptance and ranking rule:
 
 1. Consider only an exact orderable MPN which a currently reachable primary
    manufacturer HTTPS page identifies and for which that manufacturer exposes
-   a currently reachable datasheet. Reject a family-series page, ambiguous
-   suffix, obsolete/discontinued/NRND part, distributor-only candidate, or a
-   candidate which contradicts any assigned requirement.
+   a currently reachable datasheet. Reject a family-series page which does not
+   identify the exact MPN, an ambiguous suffix, obsolete/discontinued/NRND part,
+   distributor-only candidate, or a candidate which contradicts any assigned
+   requirement.
 2. Require the primary material to make every assigned P1D/H1/H2 verification
    task actionable, including electrical ratings, package or mechanical
    dimensions, and footprint information where those gates apply. This is only
@@ -2965,6 +2967,19 @@ returns a blocked handoff listing the failed candidate and failed rule. Neither
 critical nor noncritical tasks may fabricate an `unresolved` record at P1C2;
 the entire P1C2 boundary remains blocked until a reviewed shortlist amendment
 lands and the task is rerun.
+
+`usb-c-receptacle` has one literal documentation-shape exception. GCT's current
+`https://gct.co/connector/usb4105` primary series page identifies exact MPN
+`USB4105-GF-A` and links both the current USB4105 product specification and the
+ordering/footprint drawing. Neither document alone binds every requirement to
+the exact suffix. Therefore its component and manufacturer-request authority
+is exactly `https://gct.co/connector/usb4105`, its manufacturer request uses
+`artifact_kinds: [datasheet, drawing]`, and its exact manufacturer-request note
+is `P1D must retain and validate the linked primary manufacturer product
+specification and drawing before this candidate can advance.` This exception
+does not authorize a series-only selection: the authority page itself must
+continue to list `USB4105-GF-A`, and both linked documents remain required P1D
+artifacts.
 
 The two seed selections are literal-locked as follows:
 
