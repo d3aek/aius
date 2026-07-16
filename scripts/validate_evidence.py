@@ -212,6 +212,19 @@ def _control_exists(path: Path) -> bool:
     return True
 
 
+def _resolve_aius_root(root: Path) -> Path:
+    try:
+        status = root.lstat()
+    except OSError as error:
+        raise ControlError(f"Aius root is not a directory: {root}: {error}") from error
+    if stat.S_ISLNK(status.st_mode):
+        raise ControlError(f"Aius root may not be a symlink: {root}")
+    resolved = root.resolve()
+    if not resolved.is_dir():
+        raise ControlError(f"Aius root is not a directory: {resolved}")
+    return resolved
+
+
 def _relative_subject(root: Path, path: Path) -> str:
     try:
         return path.relative_to(root).as_posix()
@@ -680,6 +693,89 @@ def _signature_failure(rule: MediaRule, payload: bytes) -> str | None:
     return None
 
 
+def validate_artifact_payload(
+    root: Path,
+    relative_path: str,
+    payload: bytes | None,
+    media_type: str,
+    storage: str,
+) -> tuple[Diagnostic, ...]:
+    """Validate artifact media and placement, plus readable payload content."""
+
+    resolved_root = _resolve_aius_root(root)
+
+    diagnostics: set[Diagnostic] = set()
+
+    def add(code: str, message: str) -> None:
+        diagnostics.add(Diagnostic(code, relative_path, message))
+
+    relative = PurePosixPath(relative_path)
+    raw_parts = relative_path.split("/")
+    drive_path = (
+        len(relative_path) >= 3
+        and relative_path[0].isalpha()
+        and relative_path[1] == ":"
+        and relative_path[2] in {"/", "\\"}
+    )
+    if (
+        relative.is_absolute()
+        or drive_path
+        or any(part in {"", ".", ".."} for part in raw_parts)
+    ):
+        add("ARTIFACT_PATH", "artifact path is not safely project-relative")
+        return tuple(sorted(diagnostics))
+
+    candidate = resolved_root.joinpath(*relative.parts)
+    try:
+        candidate.relative_to(resolved_root)
+    except ValueError:
+        add("ARTIFACT_PATH", "artifact path escapes the Aius root")
+        return tuple(sorted(diagnostics))
+
+    suffix = relative.suffix
+    rule = MEDIA_RULES.get(suffix)
+    if rule is None:
+        add(
+            "ARTIFACT_MEDIA_TYPE",
+            f"unknown case-sensitive artifact suffix {suffix!r}",
+        )
+    else:
+        if media_type != rule.media_type:
+            add(
+                "ARTIFACT_MEDIA_TYPE",
+                f"media type must be {rule.media_type!r} for suffix {suffix!r}",
+            )
+        if storage != rule.storage:
+            add(
+                "ARTIFACT_STORAGE",
+                f"suffix {suffix!r} requires storage {rule.storage!r}",
+            )
+
+    if storage not in {"git", "lfs"}:
+        add("ARTIFACT_STORAGE", "payload storage must be 'git' or 'lfs'")
+    else:
+        git_context = GitContext.discover(resolved_root)
+        observed_filter = git_context.filter_attribute(candidate)
+        expected_filter = "lfs" if storage == "lfs" else "unspecified"
+        if observed_filter != expected_filter:
+            add(
+                "GIT_ATTRIBUTE",
+                f"filter is {observed_filter!r}; expected {expected_filter!r}",
+            )
+
+    if (
+        payload is not None
+        and storage == "lfs"
+        and payload.startswith(LFS_POINTER_PREFIX)
+    ):
+        add("LFS_POINTER", "checked-out artifact is Git LFS pointer text")
+    if rule is not None and payload is not None:
+        failure = _signature_failure(rule, payload)
+        if failure is not None:
+            add("ARTIFACT_SIGNATURE", failure)
+    return tuple(sorted(diagnostics))
+
+
 def _validate_artifacts(
     root: Path,
     sources: object,
@@ -721,44 +817,17 @@ def _validate_artifacts(
                     f"{storage} artifact is outside {expected_prefix.as_posix()}/",
                 )
 
-            artifact_path, payload, safe_for_attribute = _read_artifact(
+            _artifact_path, payload, _safe_for_attribute = _read_artifact(
                 root, relative_text, subject, diagnostics
             )
-
-            suffix = relative.suffix
-            rule = MEDIA_RULES.get(suffix)
-            if rule is None:
-                diagnostics.add(
-                    "ARTIFACT_MEDIA_TYPE",
-                    subject,
-                    f"unknown case-sensitive artifact suffix {suffix!r}",
-                )
-            else:
-                if artifact.get("media_type") != rule.media_type:
-                    diagnostics.add(
-                        "ARTIFACT_MEDIA_TYPE",
-                        subject,
-                        f"media type must be {rule.media_type!r} for suffix {suffix!r}",
-                    )
-                if storage != rule.storage:
-                    diagnostics.add(
-                        "ARTIFACT_STORAGE",
-                        subject,
-                        f"suffix {suffix!r} requires storage {rule.storage!r}",
-                    )
-
-            if safe_for_attribute:
-                if git_context is None:
-                    git_context = GitContext.discover(root)
-                observed_filter = git_context.filter_attribute(artifact_path)
-                expected_filter = "lfs" if storage == "lfs" else "unspecified"
-                if observed_filter != expected_filter:
-                    diagnostics.add(
-                        "GIT_ATTRIBUTE",
-                        subject,
-                        f"filter is {observed_filter!r}; expected {expected_filter!r}",
-                    )
-
+            for item in validate_artifact_payload(
+                root,
+                relative_text,
+                payload,
+                str(artifact.get("media_type")),
+                str(storage),
+            ):
+                diagnostics.add(item.code, subject, item.message)
             if payload is None:
                 continue
             if artifact.get("bytes") != len(payload):
@@ -774,14 +843,6 @@ def _validate_artifacts(
                     subject,
                     f"recorded {artifact.get('sha256')!r}; found {digest}",
                 )
-            if storage == "lfs" and payload.startswith(LFS_POINTER_PREFIX):
-                diagnostics.add(
-                    "LFS_POINTER", subject, "checked-out artifact is Git LFS pointer text"
-                )
-            if rule is not None:
-                failure = _signature_failure(rule, payload)
-                if failure is not None:
-                    diagnostics.add("ARTIFACT_SIGNATURE", subject, failure)
     return git_context
 
 
@@ -805,7 +866,7 @@ def _explicit_baseline(root: Path, value: str) -> object:
 
 
 def validate_root(root: Path, baseline_argument: str | None) -> int:
-    root = root.resolve()
+    root = _resolve_aius_root(root)
     manifest_root = root / "evidence" / "manifest"
     source_schema_path = manifest_root / "source-schema.json"
     seed_path = manifest_root / "seed-sources.json"

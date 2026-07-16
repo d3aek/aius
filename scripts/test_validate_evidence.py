@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from validate_evidence import ControlError, validate_artifact_payload
+
 
 SCRIPT_ROOT = Path(__file__).resolve().parent
 AIUS_ROOT = SCRIPT_ROOT.parent
@@ -774,6 +776,90 @@ class ValidatorFixtureTests(unittest.TestCase):
         completed = self.fixture.run()
         self.assert_diagnostic(completed, "LFS_POINTER", "sources[0].artifacts[0]")
 
+    def test_public_payload_seam_matches_aggregate_media_diagnostics(self) -> None:
+        artifact = self.fixture.add_artifact(
+            "CLIFF-ORJ5",
+            ".pdf",
+            payload=b"not a PDF",
+            media_type="application/octet-stream",
+        )
+        direct = validate_artifact_payload(
+            self.fixture.root,
+            str(artifact["path"]),
+            b"not a PDF",
+            "application/octet-stream",
+            "lfs",
+        )
+        self.assertEqual(
+            [(item.code, item.message) for item in direct],
+            [
+                (
+                    "ARTIFACT_MEDIA_TYPE",
+                    "media type must be 'application/pdf' for suffix '.pdf'",
+                ),
+                ("ARTIFACT_SIGNATURE", "PDF signature is missing"),
+            ],
+        )
+        completed = self.fixture.run()
+        aggregate = {
+            (line.split(" ", 3)[1], line.split(": ", 1)[1])
+            for line in completed.stderr.splitlines()
+            if line.startswith("ERROR ARTIFACT_")
+        }
+        self.assertEqual(aggregate, set((item.code, item.message) for item in direct))
+
+    def test_public_payload_seam_requires_git_placement_without_aggregate(self) -> None:
+        relative = "docs/reference/datasheets.mdCLIFF-ORJ5/direct.pdf"
+        (self.fixture.worktree / ".gitattributes").write_text("", encoding="utf-8")
+        diagnostics = validate_artifact_payload(
+            self.fixture.root,
+            relative,
+            MEDIA_FIXTURES[".pdf"][2],
+            "application/pdf",
+            "lfs",
+        )
+        self.assertEqual(
+            [(item.code, item.subject) for item in diagnostics],
+            [("GIT_ATTRIBUTE", relative)],
+        )
+
+    def test_public_null_payload_owns_unreadable_aggregate_media_parity(self) -> None:
+        artifact = self.fixture.add_artifact(
+            "CLIFF-ORJ5",
+            ".pdf",
+            media_type="application/octet-stream",
+        )
+        relative = str(artifact["path"])
+        (self.fixture.root / relative).unlink()
+        (self.fixture.worktree / ".gitattributes").write_text("", encoding="utf-8")
+        direct = validate_artifact_payload(
+            self.fixture.root,
+            relative,
+            None,
+            "application/octet-stream",
+            "lfs",
+        )
+        self.assertEqual(
+            [(item.code, item.message) for item in direct],
+            [
+                (
+                    "ARTIFACT_MEDIA_TYPE",
+                    "media type must be 'application/pdf' for suffix '.pdf'",
+                ),
+                ("GIT_ATTRIBUTE", "filter is 'unspecified'; expected 'lfs'"),
+            ],
+        )
+        completed = self.fixture.run()
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        aggregate = {
+            (line.split(" ", 3)[1], line.split(": ", 1)[1])
+            for line in completed.stderr.splitlines()
+            if line.startswith("ERROR ARTIFACT_MEDIA_TYPE ")
+            or line.startswith("ERROR GIT_ATTRIBUTE ")
+        }
+        self.assertEqual(aggregate, set((item.code, item.message) for item in direct))
+        self.assertNotIn("ARTIFACT_SIGNATURE", completed.stderr)
+
     def test_text_media_rejects_invalid_utf8(self) -> None:
         for index, suffix in enumerate((".txt", ".rst")):
             if index:
@@ -865,6 +951,28 @@ class ValidatorFixtureTests(unittest.TestCase):
             arguments=["--root", os.fspath(self.fixture.root)],
         )
         self.assertEqual(completed.returncode, 2, completed.stderr)
+
+    def test_explicit_root_symlink_is_rejected_before_resolution(self) -> None:
+        root_link = Path(self.fixture._temporary.name) / "aius-root-link"
+        root_link.symlink_to(self.fixture.root, target_is_directory=True)
+        completed = self.fixture.run(
+            arguments=[
+                "--root",
+                os.fspath(root_link),
+                "--baseline",
+                "baseline.json",
+            ]
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("Aius root may not be a symlink", completed.stderr)
+        with self.assertRaisesRegex(ControlError, "may not be a symlink"):
+            validate_artifact_payload(
+                root_link,
+                "docs/reference/datasheets.mdCLIFF-ORJ5/direct.pdf",
+                MEDIA_FIXTURES[".pdf"][2],
+                "application/pdf",
+                "lfs",
+            )
 
     def test_schema_meta_failure_and_baseline_collection_invariant_subjects(self) -> None:
         schema_path = self.fixture.manifest / "source-schema.json"

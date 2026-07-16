@@ -1137,6 +1137,7 @@ reachable regressions above close those findings.
 
 ```yaml
 phase: P1B1c
+status: completed
 unit: seed-evidence-orchestration
 seams: [authority retrieval, source fragment, assumption fragment, aggregate]
 contract-artifact: both
@@ -1156,6 +1157,13 @@ commit-checkpoint:
   buildable: [reproducible per-source acquisition and deterministic aggregation]
   parent-commit: "feat(aius): orchestrate seed evidence acquisition"
 ```
+
+Completed 2026-07-15. The orchestration, realization, and validator checkpoints
+pass 28, 13, and 34 tests. Successive delivery audits exposed and closed normal
+stream-read classification, fragment identity, cleanup/rollback proof,
+nullable-payload validator reuse, golden-block reachability, assumption
+aggregation, missing-fragment isolation, and root-symlink gaps. The final
+clean-room acceptance audit passed with no contract discrepancies.
 
 ### P1B2 — Non-dynamic acquisition waves
 
