@@ -81,7 +81,7 @@ Archive current supplier pages or quotations under `docs/reference/datasheets.md
 
 The normative CSV fields, tidy scenario representation, decimal rounding,
 Bank of England conversion rule, batch/per-unit reconciliation, and risk schema
-are defined by [P1E](aius-p1-evidence-topology-cost.md#p1e-functional-bom-should-cost-and-risk).
+are defined by the [P1 implementation contract](aius-p1-evidence-topology-cost.md).
 The requirements below map to those machine-validated fields and do not define
 an alternate file format.
 

@@ -2,7 +2,7 @@
 title: Aius P1 evidence topology and cost implementation
 type: plans
 scope: aius
-status: active
+status: in-progress
 tags: [aius, evidence, topology, cost, hardware]
 updated: 2026-07-15
 toc: true
@@ -14,8 +14,9 @@ This is the normative implementation contract for capability phase P1 and
 hardware phase H0. It replaces the original broad P1/H0 fan-out while retaining
 their product topology, evidence policy, and cost boundary.
 
-P1 is complete only after P1A through P1E are committed and pushed. Completion
-also completes H0. H1 remains blocked until capability phase P7 passes.
+P1 is complete only after P1A1 through P1A5 and P1B through P1E are committed
+and pushed. Completion also completes H0. H1 remains blocked until capability
+phase P7 passes.
 
 ## Evidence representation
 
@@ -87,7 +88,260 @@ does not block a claim re-derived from golden evidence. Dynamic failures remain
 explicitly unavailable and force a low-confidence allowance or a new named UK
 authorized-distributor source ID.
 
-## P1A: Evidence contract and validators
+## P1A — Evidence contract and validators
+
+P1A is implemented as five independently committed subphases. The original
+combined P1A outline later in this section is non-normative.
+
+### P1A1 — Source-record contract
+
+Create exactly:
+
+- `evidence/manifest/source-schema.json`;
+- `evidence/manifest/seed-sources.json`;
+- `evidence/manifest/sources.json` as an empty array;
+- `scripts/jsonschema_subset.py`;
+- `scripts/test_source_schema.py`.
+
+The schema uses JSON Schema Draft 2020-12 and `additionalProperties: false` at
+every object level. `jsonschema_subset.py` is a standard-library-only evaluator
+for the exact committed keyword set: `$schema`, `$id`, `$defs`, `$ref`, `type`,
+`required`, `properties`, `additionalProperties`, `enum`, `const`, `pattern`,
+`format`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minimum`, `anyOf`,
+`allOf`, `if`, `then`, and `else`. It rejects any unrecognized schema keyword.
+`test_source_schema.py` meta-checks the schema with that evaluator and exercises
+valid and invalid source/seed examples.
+
+A source record requires `id`, `class`, `title`, `authority`, `revision`,
+`purpose`, `claim_scope`, `landing_url`, `retrieved_at`, `status`, `supersedes`,
+`redistribution_note`, `artifacts`, and `observations`. IDs match
+`^[A-Z0-9]+(?:-[A-Z0-9]+)*$`. `class` is `golden`, `comparative`,
+`independently-derived`, or `dynamic`; `status` is `current`, `superseded`, or
+`unavailable`. URLs are HTTPS. Timestamps use UTC RFC 3339 seconds.
+
+An artifact requires `name`, `final_url`, `storage`, `path`, `sha256`, `bytes`,
+`media_type`, `retrieval_status`, and `note`. `storage` is `lfs`, `git`, or
+`external-reference`; `retrieval_status` is `current`, `superseded`, or
+`unavailable`.
+
+- Current `lfs` or `git` artifacts require non-null URL, project-relative path,
+  lowercase 64-hex SHA-256, positive byte count, and media type.
+- `external-reference` requires a null path. Hash and size are both null or
+  both present; no checkout-reproducibility claim is made.
+- `unavailable` requires `external-reference`, null path/hash/size/media type,
+  and a non-empty note.
+- A superseded source has no current artifacts. A current record may name one
+  prior ID in `supersedes`; that prior record must exist with
+  `status: superseded`. Chains are acyclic.
+- A source has at least one artifact or one observation. An unavailable source
+  has an unavailable artifact and no factual observation.
+
+An observation requires `key`, scalar `value`, nullable `unit`, non-empty
+`basis`, `observed_at`, and HTTPS `source_url`.
+
+Each seed record contains the immutable tuple `id`, `class`, `authority`,
+`landing_url`, plus `required_object`, `purpose`, `claim_scope`, and `required`.
+The seed matrix in this plan is copied without source selection.
+
+```yaml
+phase: P1A1
+unit: source-schema
+seams: [source records, seed identities]
+contract-artifact: both
+fan-out:
+  - name: source-record-contract
+    owned-paths:
+      - evidence/manifest/source-schema.json
+      - evidence/manifest/seed-sources.json
+      - evidence/manifest/sources.json
+      - scripts/jsonschema_subset.py
+      - scripts/test_source_schema.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_source_schema.py
+    - the repo tooling tool doc-index -- --check
+  buildable: [source record contract]
+  parent-commit: "feat(aius): define evidence source schema"
+```
+
+### P1A2 — Request, component, and assumption contracts
+
+Create exactly:
+
+- `evidence/manifest/source-request-schema.json`;
+- `evidence/design/component-schema.json`;
+- `evidence/manifest/assumption-schema.json`;
+- `evidence/manifest/assumptions.json` as an empty array;
+- `scripts/test_selection_schemas.py`.
+
+All schemas use Draft 2020-12 and reject additional properties. A source request
+requires `request_id`, `family`, non-empty `requirements`, `authority_url`,
+nullable `selected_manufacturer`, `selected_mpn`, and `source_id`, non-empty
+`artifact_kinds`, `status`, `evidence_ids`, and `notes`. Status is `pending`,
+`satisfied`, or `unavailable`; `satisfied` requires the three selected fields
+and at least one evidence ID, while `pending` requires them null.
+
+A component requires `block`, non-empty `requirements`, nullable `manufacturer`
+and `mpn`, `alternatives` with zero to two manufacturer/MPN/authority objects,
+`selection_rationale`, `authority_url`, `source_request_id`, `status`, and
+`notes`. Status is `selected`, `generic-allowance`, or `unresolved`.
+`selected` requires manufacturer, MPN, authority URL, and rationale;
+`generic-allowance` requires null manufacturer/MPN and a value/package/tolerance
+policy in rationale.
+
+An assumption requires `id`, `claim`, `consequence`, `owner`,
+`validation_gate`, `evidence_ids`, `status`, and `resolution`. Status is `open`
+or `resolved`; resolved requires a non-empty resolution and evidence IDs.
+
+```yaml
+phase: P1A2
+unit: selection-schemas
+seams: [source request, component choice, unresolved assumption]
+contract-artifact: both
+fan-out:
+  - name: selection-contracts
+    owned-paths:
+      - evidence/manifest/source-request-schema.json
+      - evidence/design/component-schema.json
+      - evidence/manifest/assumption-schema.json
+      - evidence/manifest/assumptions.json
+      - scripts/test_selection_schemas.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_selection_schemas.py
+  buildable: [selection and assumption contracts]
+  parent-commit: "feat(aius): define evidence selection schemas"
+```
+
+### P1A3 — Evidence policy artifacts
+
+Create exactly `evidence/manifest/README.md`,
+`evidence/manifest/clone-boundary.json`, and
+`scripts/test_evidence_policy.py`. The clone-boundary file contains one
+row per non-dynamic seed source with `source_id`, `classification`,
+`reused_material`, `derived_claims`, `prohibited_use`, and `notes`.
+Classification is `official-reuse`, `independently-re-derived`,
+`comparative-only`, or `unresolved`. The README documents retrieval, temporary
+inspection of external references, hashing, LFS placement, supersession,
+failure recording, and validator commands.
+
+```yaml
+phase: P1A3
+unit: evidence-policy
+seams: [retrieval policy, clone boundary]
+contract-artifact: both
+fan-out:
+  - name: evidence-policy
+    owned-paths:
+      - evidence/manifest/README.md
+      - evidence/manifest/clone-boundary.json
+      - scripts/test_evidence_policy.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_evidence_policy.py
+    - the repo tooling tool doc-index -- --check
+  buildable: [documented evidence policy]
+  parent-commit: "docs(aius): define evidence handling policy"
+```
+
+### P1A4 — Evidence validator
+
+Create exactly `scripts/validate_evidence.py` and
+`scripts/test_validate_evidence.py`. The validator accepts
+`--root <checkout>`, optional `--baseline <sources.json>`, and `--self-test`.
+Without `--baseline`, it reads the previous committed `sources.json` with
+`git show HEAD:<path>` when present. It compares the immutable tuple
+`id,class,authority,landing_url`; a changed tuple fails and a new revision needs
+a new ID. Seed identities are always compared to `seed-sources.json`.
+
+Validation deterministically checks both the schema and its cross-record rules:
+
+- every required golden seed is current; an unavailable golden source fails;
+- unavailable comparative or dynamic sources pass only with an open assumption
+  naming their claim scope; independently-derived sources require an evidence ID;
+- current checkout artifacts match byte count and SHA-256;
+- extension and signature agree for PDF, ZIP, HTML, STEP, KiCad, JSON, CSV, C,
+  C++, and plain text; unlisted media types fail until the map is amended;
+- `lfs` paths report `filter=lfs`, `git` paths do not, and LFS artifacts are not
+  pointer text in the working tree;
+- every non-dynamic source has exactly one clone-boundary row and no unknown row
+  exists;
+- supersession references exist and are acyclic.
+
+The test script creates isolated fixture trees and covers one passing record plus
+each failure above, multi-artifact records, external references with and without
+local digests, unavailable artifacts, changed immutable identity, and a valid
+supersession chain. It exits non-zero if any expected diagnostic is absent.
+
+```yaml
+phase: P1A4
+unit: evidence-validator
+seams: [checkout validation, immutable baseline]
+contract-artifact: both
+fan-out:
+  - name: evidence-validator
+    owned-paths:
+      - scripts/validate_evidence.py
+      - scripts/test_validate_evidence.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_evidence.py
+    - python3 scripts/validate_evidence.py --self-test
+  buildable: [deterministic evidence validator]
+  parent-commit: "feat(aius): validate evidence repository"
+```
+
+### P1A5 — Reproducible KiCad runner
+
+Create exactly `compose.yaml`, `scripts/kicad.sh`, and
+`scripts/test_kicad_wrapper.sh`.
+
+The Compose service uses
+`kicad/kicad:10.0.4@sha256:770e2fa006695077b5ba218742d5c3137896af91257b2ca971243fa56b01bb86`,
+fixed project name `aius-kicad`, network mode `none`, repository bind mount at
+`/workspace`, working directory `/workspace/src/hardware/aius`, and named volume
+`aius-kicad-cache` at `/home/kicad/.cache`. The image runs as its built-in
+`kicad` UID/GID 1000 user. No container is kept resident.
+
+`kicad.sh` resolves the repository from its own checked-in location, exports the
+absolute bind path only for Compose interpolation, and invokes exactly
+`docker compose -f <absolute-compose-path> run --rm kicad kicad-cli "$@"`.
+It works from any current directory and supports `AIUS_DOCKER_BIN` only for its
+wrapper test.
+
+The test uses a fake Docker executable to assert the absolute Compose path,
+`run --rm`, service, forwarded arguments, and identical behavior from the repo
+root and an unrelated directory. It also parses `docker compose config --format
+json` to assert image digest, project name, network, bind target, cache volume,
+and working directory.
+
+```yaml
+phase: P1A5
+unit: kicad-runner
+seams: [ephemeral KiCad CLI, persistent cache]
+contract-artifact: both
+fan-out:
+  - name: kicad-runner
+    owned-paths:
+      - compose.yaml
+      - scripts/kicad.sh
+      - scripts/test_kicad_wrapper.sh
+review-intensity: active
+commit-checkpoint:
+  green:
+    - docker compose -f compose.yaml config --quiet
+    - shellcheck scripts/kicad.sh scripts/test_kicad_wrapper.sh
+    - scripts/test_kicad_wrapper.sh
+    - scripts/kicad.sh version
+  buildable: [digest-pinned ephemeral KiCad CLI from any working directory]
+  parent-commit: "build(aius): add reproducible KiCad runner"
+```
+
+### Original combined P1A outline (superseded)
 
 Create:
 
@@ -132,7 +386,7 @@ commit-checkpoint:
   parent-commit: "feat(aius): establish evidence validation contract"
 ```
 
-## P1B: Seed evidence acquisition
+## P1B — Seed evidence acquisition
 
 Acquisition agents write only their source directories and one record per file
 under `evidence/manifest/fragments/`. `manifest-coordinator` runs after all
@@ -220,7 +474,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_p1.py evidence
+    - python3 scripts/validate_evidence.py
   buildable: [auditable seed evidence checkout]
   parent-commit: "docs(aius): archive seed design evidence"
 ```
@@ -229,7 +483,7 @@ The orchestrator quotes the exact source IDs and disjoint paths above in every
 spawn. Agents run in waves of at most three. Source snapshots resolve the PJRC
 Audio repository HEAD once, record the commit SHA, and use immutable raw URLs.
 
-## P1C: Functional topology and bounded component selection
+## P1C — Functional topology and bounded component selection
 
 Create three independent contract artifacts:
 
@@ -325,7 +579,7 @@ commit-checkpoint:
   parent-commit: "docs(aius): lock functional topology and component candidates"
 ```
 
-## P1D: Supplemental evidence and electrical reference
+## P1D — Supplemental evidence and electrical reference
 
 Component-family acquisition agents archive only the approved source requests
 and write disjoint fragments. The manifest coordinator appends validated records
@@ -398,15 +652,15 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_p1.py evidence
+    - python3 scripts/validate_evidence.py
     - python3 scripts/validate_p1.py topology --stage final
-    - docker compose run --rm kicad kicad-cli sch erc electronics/reference/aius-reference.kicad_sch
+    - scripts/kicad.sh sch erc electronics/reference/aius-reference.kicad_sch
     - the repo tooling tool doc-index -- --check
   buildable: [audited non-manufacturing electrical reference package]
   parent-commit: "docs(aius): establish electrical reference package"
 ```
 
-## P1E: Functional BOM, should-cost, and risk
+## P1E — Functional BOM, should-cost, and risk
 
 `functional-bom.csv` fields are:
 
@@ -469,7 +723,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_p1.py evidence
+    - python3 scripts/validate_evidence.py
     - python3 scripts/validate_p1.py topology --stage final
     - python3 scripts/validate_p1.py cost
     - the repo tooling tool doc-index -- --check
