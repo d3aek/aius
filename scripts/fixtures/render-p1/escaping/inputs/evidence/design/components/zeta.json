@@ -1,0 +1,18 @@
+{
+  "block": "zeta",
+  "requirements": ["REQT-Z"],
+  "manufacturer": null,
+  "mpn": null,
+  "alternatives": [],
+  "selection_rationale": null,
+  "authority_url": null,
+  "manufacturer_request_id": null,
+  "availability_request_id": null,
+  "generic_policy": {
+    "tolerance": "±1%",
+    "package": "0603, metric",
+    "value": "10k\""
+  },
+  "status": "generic-allowance",
+  "notes": "Ω"
+}

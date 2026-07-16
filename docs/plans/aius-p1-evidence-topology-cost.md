@@ -1845,6 +1845,7 @@ not concurrent fan-out.
 
 ```yaml
 phase: P1C0b1
+status: completed
 unit: review-view-renderer
 seams: [canonical JSON, pure byte renderers]
 contract-artifact: both
@@ -1921,6 +1922,14 @@ the version is `1.0.0`, requests sort ascending by `request_id`, and every
 request's key order is the source-request schema's required-key order. It is
 `json.dumps(..., ensure_ascii=False, indent=2)` encoded as UTF-8 without BOM
 with exactly one final LF.
+
+Completed 2026-07-16. All four pure renderers, the exact write/check CLI, and
+the deterministic Markdown, CSV, and request-aggregate goldens are implemented.
+Seventeen focused tests pass, including malformed input, stale/missing output,
+escaping, Unicode, and atomic temporary-name collision coverage. Authored JSON
+fixtures pass pinned Prettier; generated golden bytes remain the renderer's
+contract. The clean-room delivery audit passed after verifying that a foreign
+temporary collision can never be deleted.
 
 #### P1C0b2 — Staged validator
 

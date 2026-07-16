@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0.0",
+  "modes": [
+    {
+      "id": "mode-a",
+      "input_formats": ["pcm|stereo", "iec\\61937"],
+      "output_format": "pcm-stereo-48k",
+      "active_blocks": ["block-a", "block-b"],
+      "error_mode": "fault-muted",
+      "evidence_ids": ["SRC-Ω"],
+      "notes": "line 1\r\nline 2\rline 3\nline 4"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "block-a",
+      "kind": "firmware",
+      "owner": "teensy-firmware",
+      "power_domain": null,
+      "clock_domain": "clock-a",
+      "evidence_ids": [],
+      "notes": { "z": "pipe|", "a": "slash\\" }
+    }
+  ],
+  "flows": [
+    {
+      "id": "flow-data",
+      "kind": "data",
+      "source_id": "block-a",
+      "sink_id": "block-b",
+      "payload": "PCM Ω",
+      "enabled_modes": ["mode-a"],
+      "control_id": null,
+      "evidence_ids": ["SRC-1"],
+      "notes": "data"
+    },
+    {
+      "id": "flow-control",
+      "kind": "control",
+      "source_id": "block-b",
+      "sink_id": "block-a",
+      "payload": "select",
+      "enabled_modes": [],
+      "control_id": "ctrl|a",
+      "evidence_ids": [],
+      "notes": "control"
+    },
+    {
+      "id": "flow-power",
+      "kind": "power",
+      "source_id": "source",
+      "sink_id": "block-a",
+      "payload": "5V",
+      "enabled_modes": ["mode-a"],
+      "control_id": null,
+      "evidence_ids": [],
+      "notes": "power"
+    }
+  ],
+  "clock_domains": [
+    {
+      "id": "clock-a",
+      "source_id": "block-a",
+      "consumer_ids": ["block-a", "block-b"],
+      "synchronous_with": [],
+      "frequency_status": "deferred",
+      "evidence_ids": ["SRC-1"],
+      "notes": "clock"
+    }
+  ],
+  "buffers": [
+    {
+      "id": "buffer-a",
+      "owner": "block-a",
+      "producer": "block-a",
+      "consumer": "block-b",
+      "storage_class": "ring-buffer",
+      "overflow_policy": "drop-and-mute",
+      "measurement_gate": "P6",
+      "notes": "buffer"
+    }
+  ],
+  "latency_boundaries": [
+    {
+      "id": "latency-a",
+      "source": "block-a",
+      "sink": "block-b",
+      "budget_status": "deferred",
+      "measurement_gate": "P7",
+      "notes": "latency"
+    }
+  ],
+  "evidence_ids": ["SRC-2", "SRC-1"]
+}
