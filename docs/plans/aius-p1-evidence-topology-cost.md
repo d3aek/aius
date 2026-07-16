@@ -1964,7 +1964,10 @@ check. Contract failure emits one or more sorted
 `AIUS-P1-<CODE>: <repo-relative-path>: <detail>` diagnostics to stderr and
 exits 1; argument errors exit 2. Validation collects independent failures but
 must not continue a dependent semantic check after its input failed parsing or
-schema validation.
+schema validation. Missing input uses `MISSING`; unreadable, non-UTF-8, or
+malformed JSON uses `PARSE`; and a parsed instance rejected by its declared
+schema uses `INSTANCE`. `SCHEMA` is reserved for a schema document that fails
+Draft 2020-12 self-validation or a locked schema-version contract.
 
 Stage inputs use these abbreviations: `FT` is
 `evidence/design/functional-topology.json`; `IS` is
@@ -1999,6 +2002,8 @@ The finite fixture matrix is:
 | --- | --- | --- | --- |
 | invalid schema or version constant | `contract` | `SCHEMA` | `contract/valid` |
 | missing required stage input | each stage | `MISSING` | that stage's `valid` tree |
+| required JSON is unreadable, non-UTF-8, or malformed | applicable first stage | `PARSE` | that stage's `valid` tree |
+| parsed instance fails its declared schema | applicable first stage | `INSTANCE` | that stage's `valid` tree |
 | root or record key order differs | applicable first stage | `ORDER` | that stage's `valid` tree |
 | locked ID membership/order differs | `architecture-base` | `IDSET` | `architecture-base/valid` |
 | topology/state/control/power reference is unresolved | `architecture-base` | `REFERENCE` | `architecture-base/valid` |
