@@ -3310,6 +3310,16 @@ implementer may derive or silently widen this queue.
 
 ## P1D — Supplemental evidence and electrical reference
 
+The normative P1D contract is now
+[`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
+supersedes the historical draft below after a clean-room review found that the
+draft mixed acquisition and design waves, widened seed-only fragment
+directories, duplicated observations, omitted realization and lifecycle
+contracts, and treated mechanical failure as a layer-count decision. No task may
+implement the historical block.
+
+## Historical P1D draft — superseded, do not implement
+
 Component-family acquisition agents archive only the approved source requests
 and write disjoint fragments. The manifest coordinator appends validated records
 without rewriting seed IDs. Four design agents then produce:
