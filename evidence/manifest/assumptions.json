@@ -1,1 +1,74 @@
-[]
+[
+  {
+    "claim": "Seed source BOE-GBP-DAILY-FX is unavailable for: GBP currency conversion",
+    "claim_scope": ["GBP currency conversion"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-BOE-GBP-DAILY-FX",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["BOE-GBP-DAILY-FX"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source CPC-CLIFF-OTJ5 is unavailable for: optical transmitter price; optical transmitter stock",
+    "claim_scope": ["optical transmitter price", "optical transmitter stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-CPC-CLIFF-OTJ5",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["CPC-CLIFF-OTJ5"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source DIGIKEY-CLIFF-ORJ5 is unavailable for: optical receiver price; optical receiver stock",
+    "claim_scope": ["optical receiver price", "optical receiver stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-DIGIKEY-CLIFF-ORJ5",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["DIGIKEY-CLIFF-ORJ5"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source DIGIKEY-TEENSY41 is unavailable for: Teensy 4.1 module price; Teensy 4.1 module stock",
+    "claim_scope": ["Teensy 4.1 module price", "Teensy 4.1 module stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-DIGIKEY-TEENSY41",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["DIGIKEY-TEENSY41"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PCBWAY-2L-100 is unavailable for: two-layer PCB fabrication price",
+    "claim_scope": ["two-layer PCB fabrication price"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PCBWAY-2L-100",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PCBWAY-2L-100"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PCBWAY-4L-100 is unavailable for: four-layer PCB fabrication price",
+    "claim_scope": ["four-layer PCB fabrication price"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PCBWAY-4L-100",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PCBWAY-4L-100"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  }
+]

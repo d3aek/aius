@@ -1461,6 +1461,7 @@ full validator. It does not manually edit records or assumptions.
 
 ```yaml
 phase: P1B4
+status: completed
 unit: seed-manifest-coordinator
 seams: [validated fragments, aggregate manifests]
 contract-artifact: both
@@ -1478,6 +1479,15 @@ commit-checkpoint:
   buildable: [auditable complete seed evidence checkout]
   parent-commit: "docs(aius): archive seed design evidence"
 ```
+
+Completed 2026-07-16. Deterministic assembly produced 22 canonical source
+records and six canonical open assumptions. All 11 golden sources are current;
+the six unavailable sources are dynamic only. Aggregate parity, the full
+validator, 32 seed tests, 34 validator tests, pinned-Prettier parity, owned-path
+scope, and clean-room delivery audit passed. The documentation index check
+reported an already-dirty stale generated `docs/README.md`; repository policy
+classifies that foreign generated-index condition as nonblocking and excludes
+it from this authored commit.
 
 ## P1C — Functional topology and bounded component selection
 
