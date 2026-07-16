@@ -11,7 +11,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import validate_p1 as validator_module
 from render_p1 import (
     render_components,
     render_functional_topology,
@@ -30,6 +32,8 @@ FUNCTIONAL_BASE = "scripts/fixtures/p1c-schema/functional-topology/base-v1.json"
 INTERFACES_BASE = "scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json"
 FUNCTIONAL_CONTRACT = "evidence/design/contracts/functional-topology.json"
 INTERFACES_CONTRACT = "evidence/design/contracts/interfaces-and-states.json"
+SELECTION_BASE = "scripts/fixtures/p1c-schema/selection-policy/base-v1.json"
+SELECTION_CONTRACT = "evidence/design/contracts/selection-policy.json"
 
 SCHEMAS = (
     "evidence/design/functional-topology-schema.json",
@@ -109,67 +113,11 @@ def _source(
     }
 
 
-def _policy() -> dict[str, object]:
-    families = []
-    for family in FAMILIES:
-        generic = family in GENERIC_FAMILIES
-        critical = family in CRITICAL_FAMILIES
-        manufacturer_source = None if generic else f"AIUS-{family.upper()}-MFR"
-        if family == "cliff-rx":
-            manufacturer_source = "CLIFF-ORJ5"
-        elif family == "cliff-tx":
-            manufacturer_source = "CLIFF-OTJ5"
-        families.append(
-            {
-                "family": family,
-                "component_file": f"components/{family}.json",
-                "critical": critical,
-                "generic_eligible": generic,
-                "allowed_statuses": (
-                    ["generic-allowance"]
-                    if generic
-                    else SELECTED_STATUSES
-                    if critical
-                    else SELECTED_STATUSES + ["unresolved"]
-                ),
-                "requirements": ["REQT-BASE"],
-                "manufacturer_request_id": None if generic else f"REQ-{family.upper()}-MFR",
-                "availability_request_id": None if generic else f"REQ-{family.upper()}-UK",
-                "manufacturer_source_id": manufacturer_source,
-                "availability_source_id": None if generic else f"AIUS-{family.upper()}-UK",
-                "dependent_feature": f"{family}-feature",
-                "notes": "",
-            }
-        )
-    return {
-        "schema_version": "1.0.0",
-        "engineering_policies": [
-            {
-                "id": "EP-BASE",
-                "scope": "product-topology",
-                "rule": "Use the locked P1C topology and selection queue.",
-                "validation_gate": "P1D electrical review",
-                "notes": "",
-            }
-        ],
-        "requirements": [
-            {
-                "id": "REQT-BASE",
-                "statement": "The family satisfies its declared P1C contract.",
-                "basis_ids": ["EP-BASE"],
-                "verification_stage": "P1D-electrical",
-                "notes": "",
-            }
-        ],
-        "families": families,
-    }
-
-
-def _component(family: str) -> dict[str, object]:
+def _component(family: str, policy: dict[str, object]) -> dict[str, object]:
     if family in GENERIC_FAMILIES:
         return {
             "block": family,
-            "requirements": ["REQT-BASE"],
+            "requirements": copy.deepcopy(policy["requirements"]),
             "manufacturer": None,
             "mpn": None,
             "alternatives": [],
@@ -191,14 +139,14 @@ def _component(family: str) -> dict[str, object]:
     }.get(family, f"MPN-{family.upper()}")
     return {
         "block": family,
-        "requirements": ["REQT-BASE"],
+        "requirements": copy.deepcopy(policy["requirements"]),
         "manufacturer": "Example Manufacturer",
         "mpn": selected_mpn,
         "alternatives": [],
         "selection_rationale": "Provisional candidate for the declared family.",
         "authority_url": f"https://manufacturer.example/{family}",
-        "manufacturer_request_id": f"REQ-{family.upper()}-MFR",
-        "availability_request_id": f"REQ-{family.upper()}-UK",
+        "manufacturer_request_id": policy["manufacturer_request_id"],
+        "availability_request_id": policy["availability_request_id"],
         "generic_policy": None,
         "status": "candidate-pending-evidence",
         "notes": "",
@@ -240,9 +188,22 @@ class FixtureTree:
         self.interfaces = copy.deepcopy(
             _read_json(SCHEMA_FIXTURES / "interfaces-and-states" / "valid.json")
         )
-        self.policy = _policy()
-        self.components = {family: _component(family) for family in FAMILIES}
+        self.policy_base = copy.deepcopy(_read_json(AIUS_ROOT / SELECTION_BASE))
+        self.policy = copy.deepcopy(_read_json(AIUS_ROOT / SELECTION_CONTRACT))
+        self.policy_families = {
+            row["family"]: row for row in self.policy["families"]
+        }
+        self.components = {
+            family: _component(family, self.policy_families[family])
+            for family in FAMILIES
+        }
         self.requests: dict[str, dict[str, object]] = {}
+        policy_basis_ids = {
+            basis_id
+            for requirement in self.policy["requirements"]
+            for basis_id in requirement["basis_ids"]
+            if not basis_id.startswith("EP-")
+        }
         self.sources = [
             _source(identifier)
             for identifier in sorted(
@@ -251,6 +212,7 @@ class FixtureTree:
                     for collection in (self.functional, self.interfaces)
                     for evidence_id in collection["evidence_ids"]
                 }
+                | policy_basis_ids
             )
         ]
         self._copy_schemas()
@@ -282,8 +244,10 @@ class FixtureTree:
         for relative in (
             FUNCTIONAL_BASE,
             INTERFACES_BASE,
+            SELECTION_BASE,
             FUNCTIONAL_CONTRACT,
             INTERFACES_CONTRACT,
+            SELECTION_CONTRACT,
         ):
             target = self.path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -299,12 +263,11 @@ class FixtureTree:
 
     def write_fragments(self) -> None:
         self.requests = {}
-        families = {row["family"]: row for row in self.policy["families"]}
         for family, component in self.components.items():
             _write_json(self.path(f"evidence/design/components/{family}.json"), component)
             if component["status"] not in SELECTED_STATUSES:
                 continue
-            policy = families[family]
+            policy = self.policy_families[family]
             for request_kind, source_field in (
                 ("manufacturer-evidence", "manufacturer_source_id"),
                 ("uk-availability", "availability_source_id"),
@@ -454,6 +417,36 @@ class ValidatorTestCase(unittest.TestCase):
 
 
 class PositiveStageTests(ValidatorTestCase):
+    def test_fixture_uses_normative_policy_requirements_and_external_bases(self) -> None:
+        expected_external_bases = {
+            basis_id
+            for requirement in self.fixture.policy["requirements"]
+            for basis_id in requirement["basis_ids"]
+            if not basis_id.startswith("EP-")
+        }
+        expected_source_ids = sorted(
+            expected_external_bases
+            | set(self.fixture.functional["evidence_ids"])
+            | set(self.fixture.interfaces["evidence_ids"])
+        )
+        self.assertEqual(
+            [source["id"] for source in self.fixture.sources],
+            expected_source_ids,
+        )
+        self.assertTrue(
+            all(source["status"] == "current" for source in self.fixture.sources)
+        )
+        for family, component in self.fixture.components.items():
+            self.assertEqual(
+                component["requirements"],
+                self.fixture.policy_families[family]["requirements"],
+            )
+        for request in self.fixture.requests.values():
+            self.assertEqual(
+                request["requirements"],
+                self.fixture.policy_families[request["family"]]["requirements"],
+            )
+
     def test_fixture_matrix_is_finite_and_covers_every_contract_code(self) -> None:
         rows = _read_json(MATRIX)
         self.assertTrue(all(row.get("canonical_positive_fixture") for row in rows))
@@ -640,7 +633,7 @@ class CliAndInputDiagnosticTests(ValidatorTestCase):
 
 class ContractStageDiagnosticTests(ValidatorTestCase):
     def test_each_historical_base_is_required(self) -> None:
-        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE):
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE, SELECTION_BASE):
             with self.subTest(relative=relative):
                 with FixtureTree() as fixture:
                     fixture.path(relative).unlink()
@@ -649,7 +642,7 @@ class ContractStageDiagnosticTests(ValidatorTestCase):
                     self.assertEqual(_codes(result), ["MISSING"])
 
     def test_each_malformed_historical_base_reports_contract_and_parse(self) -> None:
-        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE):
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE, SELECTION_BASE):
             with self.subTest(relative=relative):
                 with FixtureTree() as fixture:
                     fixture.path(relative).write_bytes(b"{\n")
@@ -659,14 +652,17 @@ class ContractStageDiagnosticTests(ValidatorTestCase):
                     self.assertIn("PARSE", _codes(result))
 
     def test_non_utf8_historical_base_reports_contract_and_parse(self) -> None:
-        self.fixture.path(FUNCTIONAL_BASE).write_bytes(b"\xff")
-        result = _run(self.fixture.root, "contract")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("CONTRACT", _codes(result))
-        self.assertIn("PARSE", _codes(result))
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE, SELECTION_BASE):
+            with self.subTest(relative=relative), FixtureTree() as fixture:
+                fixture.path(relative).write_bytes(b"\xff")
+                result = _run(fixture.root, "contract")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("CONTRACT", _codes(result))
+                self.assertIn("PARSE", _codes(result))
+                self.assertIn(relative, result.stderr)
 
     def test_each_parseable_base_raw_hash_mismatch_uses_contract(self) -> None:
-        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE):
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE, SELECTION_BASE):
             with self.subTest(relative=relative):
                 with FixtureTree() as fixture:
                     path = fixture.path(relative)
@@ -680,6 +676,7 @@ class ContractStageDiagnosticTests(ValidatorTestCase):
         cases = (
             (FUNCTIONAL_BASE, FUNCTIONAL_CONTRACT, "modes"),
             (INTERFACES_BASE, INTERFACES_CONTRACT, "connectors"),
+            (SELECTION_BASE, SELECTION_CONTRACT, "engineering_policies"),
         )
         for base_relative, contract_relative, collection in cases:
             with self.subTest(base=base_relative):
@@ -726,6 +723,104 @@ class ContractStageDiagnosticTests(ValidatorTestCase):
         }
         _write_json(self.fixture.path(FUNCTIONAL_CONTRACT), contract)
         self.assert_code("contract", "ORDER")
+
+    def test_selection_normative_semantic_drift_from_pure_builder_uses_contract(self) -> None:
+        contract = _read_json(self.fixture.path(SELECTION_CONTRACT))
+        contract["engineering_policies"][0]["notes"] += " Drift."
+        _write_json(self.fixture.path(SELECTION_CONTRACT), contract)
+        result = self.assert_code("contract", "CONTRACT")
+        self.assertIn(SELECTION_CONTRACT, result.stderr)
+
+    def test_selection_base_hash_mismatch_stops_derivation(self) -> None:
+        path = self.fixture.path(SELECTION_BASE)
+        path.write_bytes(path.read_bytes() + b" ")
+        contract = _read_json(self.fixture.path(SELECTION_CONTRACT))
+        contract["engineering_policies"][0]["notes"] += " Drift ignored."
+        _write_json(self.fixture.path(SELECTION_CONTRACT), contract)
+        result = self.assert_code("contract", "CONTRACT")
+        self.assertIn(SELECTION_BASE, result.stderr)
+        self.assertNotIn(SELECTION_CONTRACT, result.stderr)
+
+    def test_selection_missing_normative_contract_uses_missing(self) -> None:
+        self.fixture.path(SELECTION_CONTRACT).unlink()
+        result = self.assert_code("contract", "MISSING")
+        self.assertIn(SELECTION_CONTRACT, result.stderr)
+
+    def test_selection_malformed_and_non_utf8_normative_contract_use_parse(self) -> None:
+        for payload in (b"{\n", b"\xff"):
+            with self.subTest(payload=payload), FixtureTree() as fixture:
+                fixture.path(SELECTION_CONTRACT).write_bytes(payload)
+                result = _run(fixture.root, "contract")
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(_codes(result), ["PARSE"])
+                self.assertIn(SELECTION_CONTRACT, result.stderr)
+
+    def test_selection_schema_invalid_normative_contract_stops_equality(self) -> None:
+        contract = _read_json(self.fixture.path(SELECTION_CONTRACT))
+        contract["schema_version"] = "2.0.0"
+        _write_json(self.fixture.path(SELECTION_CONTRACT), contract)
+        result = self.assert_code("contract", "INSTANCE")
+        self.assertNotIn("CONTRACT", _codes(result))
+
+    def test_selection_pure_builder_rejection_uses_locked_base_contract(self) -> None:
+        validator = validator_module.Validator(self.fixture.root)
+        validator.load_schemas()
+        with patch.object(
+            validator_module,
+            "build_selection_contract",
+            side_effect=ValueError("forced rejection"),
+        ):
+            validator.check_contracts()
+        rendered = [diagnostic.render() for diagnostic in sorted(validator.diagnostics)]
+        self.assertTrue(
+            any(
+                "AIUS-P1-CONTRACT: " + SELECTION_BASE
+                in line
+                and "pure builder rejected locked base: forced rejection" in line
+                for line in rendered
+            ),
+            rendered,
+        )
+
+    def test_selection_unreadable_base_uses_parse_without_hash_or_derivation(self) -> None:
+        validator = validator_module.Validator(self.fixture.root)
+        target = self.fixture.path(SELECTION_BASE)
+        original = Path.read_bytes
+
+        def read_bytes(path: Path) -> bytes:
+            if path == target:
+                raise OSError("forced unreadable base")
+            return original(path)
+
+        with patch.object(Path, "read_bytes", read_bytes):
+            value = validator._load_historical_base(
+                validator_module.SELECTION_BASE,
+                validator_module.SELECTION_BASE_HASH,
+            )
+        self.assertIsNone(value)
+        diagnostics = sorted(validator.diagnostics)
+        self.assertEqual([diagnostic.code for diagnostic in diagnostics], ["PARSE"])
+        self.assertEqual(diagnostics[0].path, SELECTION_BASE)
+
+    def test_selection_unreadable_normative_contract_uses_parse(self) -> None:
+        validator = validator_module.Validator(self.fixture.root)
+        validator.load_schemas()
+        target = self.fixture.path(SELECTION_CONTRACT)
+        original = Path.read_text
+
+        def read_text(path: Path, *args: object, **kwargs: object) -> str:
+            if path == target:
+                raise OSError("forced unreadable contract")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read_text):
+            validator.check_contracts()
+        diagnostics = [
+            diagnostic
+            for diagnostic in sorted(validator.diagnostics)
+            if diagnostic.path == SELECTION_CONTRACT
+        ]
+        self.assertEqual([diagnostic.code for diagnostic in diagnostics], ["PARSE"])
 
 
 class ContractAndArchitectureDiagnosticTests(ValidatorTestCase):
@@ -1078,6 +1173,111 @@ class ContractAndArchitectureDiagnosticTests(ValidatorTestCase):
 
 
 class PolicyDiagnosticTests(ValidatorTestCase):
+    def test_policy_semantic_drift_always_uses_contract(self) -> None:
+        current = self.fixture.policy["engineering_policies"][0]["scope"]
+        self.fixture.policy["engineering_policies"][0]["scope"] = (
+            "sourcing" if current != "sourcing" else "safe-default"
+        )
+        self.fixture.write_policy()
+        result = self.assert_code("architecture", "CONTRACT")
+        self.assertIn("evidence/design/selection-policy.json", result.stderr)
+
+    def test_engineering_policy_mutation_matrix_preserves_independent_checks(self) -> None:
+        with FixtureTree() as fixture:
+            rows = fixture.policy["engineering_policies"]
+            rows[0], rows[1] = rows[1], rows[0]
+            fixture.write_policy()
+            result = _run(fixture.root, "architecture")
+            self.assertIn("CONTRACT", _codes(result), result.stderr)
+            self.assertIn("ORDER", _codes(result), result.stderr)
+
+        for field in ("scope", "rule", "validation_gate", "notes"):
+            with self.subTest(field=field), FixtureTree() as fixture:
+                row = fixture.policy["engineering_policies"][0]
+                if field == "scope":
+                    row[field] = "sourcing"
+                else:
+                    row[field] += " Drift."
+                fixture.write_policy()
+                result = _run(fixture.root, "architecture")
+                self.assertIn("CONTRACT", _codes(result), result.stderr)
+
+    def test_requirement_mutation_matrix_preserves_independent_checks(self) -> None:
+        with FixtureTree() as fixture:
+            rows = fixture.policy["requirements"]
+            rows[0], rows[1] = rows[1], rows[0]
+            fixture.write_policy()
+            result = _run(fixture.root, "architecture")
+            self.assertIn("CONTRACT", _codes(result), result.stderr)
+            self.assertIn("ORDER", _codes(result), result.stderr)
+
+        fields = {
+            "statement": lambda fixture, row: row["statement"] + " Drift.",
+            "basis_ids": lambda fixture, row: copy.deepcopy(
+                fixture.policy["requirements"][1]["basis_ids"]
+            ),
+            "verification_stage": lambda fixture, row: (
+                "P1E-sourcing"
+                if row["verification_stage"] != "P1E-sourcing"
+                else "P1D-electrical"
+            ),
+            "notes": lambda fixture, row: row["notes"] + " Drift.",
+        }
+        for field, mutate in fields.items():
+            with self.subTest(field=field), FixtureTree() as fixture:
+                row = fixture.policy["requirements"][0]
+                row[field] = mutate(fixture, row)
+                fixture.write_policy()
+                result = _run(fixture.root, "architecture")
+                self.assertIn("CONTRACT", _codes(result), result.stderr)
+
+    def test_family_authored_field_mutation_matrix_preserves_independent_checks(self) -> None:
+        with FixtureTree() as fixture:
+            rows = fixture.policy["families"]
+            rows[0], rows[1] = rows[1], rows[0]
+            fixture.write_policy()
+            result = _run(fixture.root, "architecture")
+            self.assertIn("CONTRACT", _codes(result), result.stderr)
+            self.assertIn("POLICY", _codes(result), result.stderr)
+
+        fields = {
+            "requirements": lambda fixture, row: copy.deepcopy(
+                fixture.policy["families"][1]["requirements"]
+            ),
+            "dependent_feature": lambda fixture, row: row["dependent_feature"] + "-drift",
+            "notes": lambda fixture, row: row["notes"] + " Drift.",
+        }
+        for field, mutate in fields.items():
+            with self.subTest(field=field), FixtureTree() as fixture:
+                row = fixture.policy["families"][0]
+                row[field] = mutate(fixture, row)
+                fixture.write_policy()
+                result = _run(fixture.root, "architecture")
+                self.assertIn("CONTRACT", _codes(result), result.stderr)
+
+    def test_each_derived_family_field_mutation_uses_contract(self) -> None:
+        mutations = {
+            "component_file": "components/usb-a-receptacle.json",
+            "critical": False,
+            "generic_eligible": True,
+            "allowed_statuses": ["selected"],
+            "manufacturer_request_id": "REQ-USB-A-RECEPTACLE-MFR",
+            "availability_request_id": "REQ-USB-A-RECEPTACLE-UK",
+            "manufacturer_source_id": "AIUS-USB-A-RECEPTACLE-MFR",
+            "availability_source_id": "AIUS-USB-A-RECEPTACLE-UK",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field), FixtureTree() as fixture:
+                fixture.policy["families"][0][field] = copy.deepcopy(value)
+                fixture.write_policy()
+                result = _run(fixture.root, "architecture")
+                codes = _codes(result)
+                self.assertIn("CONTRACT", codes, result.stderr)
+                self.assertTrue(
+                    {"POLICY", "INSTANCE"} & set(codes),
+                    result.stderr,
+                )
+
     def test_family_order_basis_and_dependent_feature_contracts_use_policy(self) -> None:
         self.fixture.policy["families"][0], self.fixture.policy["families"][1] = (
             self.fixture.policy["families"][1],
@@ -1102,7 +1302,8 @@ class PolicyDiagnosticTests(ValidatorTestCase):
             self.assertIn("POLICY", _codes(result))
 
     def test_source_and_engineering_policy_namespace_overlap_uses_policy(self) -> None:
-        self.fixture.sources.append(_source("EP-BASE"))
+        policy_id = self.fixture.policy["engineering_policies"][0]["id"]
+        self.fixture.sources.append(_source(policy_id))
         self.fixture.sources.sort(key=lambda row: row["id"])
         _write_json(self.fixture.path("evidence/manifest/sources.json"), self.fixture.sources)
         self.assert_code("architecture", "POLICY")

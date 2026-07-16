@@ -2795,6 +2795,15 @@ suite is the phase gate for architecture-stage equality, while live
 The live `--stage architecture` command is intentionally deferred to P1C1b,
 after that phase copies the normative value to the instance path.
 
+Completed 2026-07-16. `contract` now verifies the locked selection base hash,
+schema-valid normative contract, and fresh pure-builder derivation;
+`architecture` enforces exact ordered policy semantics while retaining all
+independent diagnostics. Validator fixtures use the normative 8/32/29 policy
+and per-family requirements throughout later stages. Seventy-one validator,
+15 selection-builder, and 31 selection-schema tests pass, as do builder
+`--check`, live `contract`, hash verification, and the clean-room delivery
+audit. No live selection-policy instance was created in this phase.
+
 ### P1C1b — Requirement and expected-family policy
 
 ```yaml

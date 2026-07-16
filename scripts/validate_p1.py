@@ -16,6 +16,7 @@ from build_p1c_architecture_contracts import (
     build_functional_contract,
     build_interfaces_contract,
 )
+from build_p1c_selection_policy_contract import build_selection_contract
 from render_p1 import (
     render_components,
     render_functional_topology,
@@ -52,10 +53,13 @@ REQUEST_AGGREGATE = Path("evidence/manifest/supplemental-requests.json")
 
 FUNCTIONAL_CONTRACT = Path("evidence/design/contracts/functional-topology.json")
 INTERFACES_CONTRACT = Path("evidence/design/contracts/interfaces-and-states.json")
+SELECTION_CONTRACT = Path("evidence/design/contracts/selection-policy.json")
 FUNCTIONAL_BASE = Path("scripts/fixtures/p1c-schema/functional-topology/base-v1.json")
 INTERFACES_BASE = Path("scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json")
+SELECTION_BASE = Path("scripts/fixtures/p1c-schema/selection-policy/base-v1.json")
 FUNCTIONAL_BASE_HASH = "17e07765a7ef2de03e0722f3b393f8dafde48ec2d854b381c47d51073b0d3257"
 INTERFACES_BASE_HASH = "31ea644c922515c0fa6193e67a7432b8b911083af96d3290a1b34959800fcd84"
+SELECTION_BASE_HASH = "73b8b769e9137c29068120cebc4f13d419e1eb65484b4dac9a19e5403a7a7bc2"
 
 FUNCTIONAL_ROOT_KEYS = (
     "schema_version",
@@ -637,6 +641,15 @@ class Validator:
                 INTERFACES_BASE_HASH,
                 build_interfaces_contract,
             ),
+            (
+                SELECTION_CONTRACT,
+                POLICY_SCHEMA,
+                POLICY_ROOT_KEYS,
+                POLICY_RECORDS,
+                SELECTION_BASE,
+                SELECTION_BASE_HASH,
+                build_selection_contract,
+            ),
         )
         for contract_path, schema_path, root_keys, records, base_path, base_hash, builder in specifications:
             contract = self.validate_instance(contract_path, schema_path)
@@ -1021,6 +1034,9 @@ class Validator:
     def check_policy(self) -> object | None:
         policy = self.validate_instance(POLICY, POLICY_SCHEMA)
         if policy is None or not isinstance(policy, dict):
+            loaded = self.json_inputs.get(POLICY)
+            if loaded is not None and loaded.parsed:
+                self._check_normative_contract(POLICY, loaded.value, SELECTION_CONTRACT)
             return None
         self.check_document_order(POLICY, policy, POLICY_ROOT_KEYS, POLICY_RECORDS)
         self._check_registry_order_and_uniqueness(policy)
@@ -1035,6 +1051,7 @@ class Validator:
         }
         self._check_family_contract(policy)
         self._check_requirement_bases(policy)
+        self._check_normative_contract(POLICY, policy, SELECTION_CONTRACT)
         return policy
 
     def _check_registry_order_and_uniqueness(self, policy: Mapping[str, object]) -> None:
