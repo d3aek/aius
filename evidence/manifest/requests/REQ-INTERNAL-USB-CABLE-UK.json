@@ -1,0 +1,21 @@
+{
+  "request_id": "REQ-INTERNAL-USB-CABLE-UK",
+  "request_kind": "uk-availability",
+  "family": "internal-usb-cable",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-INTERNAL-CABLE"
+  ],
+  "authority_url": "https://uk.rs-online.com/web/p/usb-cables/1862845",
+  "selected_manufacturer": "StarTech.com",
+  "selected_mpn": "UUSBHAUB6IN",
+  "source_id": "AIUS-INTERNAL-USB-CABLE-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "pending",
+  "evidence_ids": [],
+  "notes": "Authorized-distributor acquisition target only; P1C2 makes no stock, price, lead-time, or availability claim."
+}

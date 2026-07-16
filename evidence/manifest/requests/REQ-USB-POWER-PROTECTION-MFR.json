@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-USB-POWER-PROTECTION-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "usb-power-protection",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-POWER-PROTECTION"
+  ],
+  "authority_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+  "selected_manufacturer": "Texas Instruments",
+  "selected_mpn": "TPS2553DBVR",
+  "source_id": "AIUS-USB-POWER-PROTECTION-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "pending",
+  "evidence_ids": [],
+  "notes": "P1D must retain and validate the primary manufacturer datasheet before this candidate can advance."
+}

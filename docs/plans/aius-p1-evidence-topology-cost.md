@@ -3122,6 +3122,7 @@ the aggregate check, and the pinned formatter check pass.
 
 ```yaml
 phase: P1C2
+status: completed
 unit: single-atomic-family
 seams: [selection-policy family, component/request pair]
 contract-artifact: both
@@ -3203,6 +3204,16 @@ commit-checkpoint:
   buildable: [complete atomic candidate set and finite supplemental source queue]
   parent-commit: "docs(aius): select provisional component candidates"
 ```
+
+Completed 2026-07-16. The boundary contains exactly 29 component fragments and
+48 request fragments: 22 pending selected candidates, two literal Cliff seed
+selections, and five generic allowances. All 29 scoped checks, the aggregate
+`selection-fragments` stage, pinned Prettier, and two independent clean-room
+delivery audits pass. The finite shortlist required reviewed replacements for
+the unavailable magjack, fixture cable, and cable retainer; each replacement and
+every documentation-shape exception is recorded above. No retained source byte,
+source-manifest entry, schema, policy, validator, dependency, or LFS rule changed
+in this metadata-only phase.
 
 ### P1C3 — Deterministic provisional component view
 

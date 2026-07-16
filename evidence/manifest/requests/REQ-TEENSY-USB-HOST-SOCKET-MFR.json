@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-TEENSY-USB-HOST-SOCKET-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "teensy-usb-host-socket",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-USB-HOST-SOCKET"
+  ],
+  "authority_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+  "selected_manufacturer": "Samtec",
+  "selected_mpn": "SSW-105-02-G-S",
+  "source_id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+  "artifact_kinds": ["datasheet", "drawing", "product-page"],
+  "retention": "archive",
+  "status": "pending",
+  "evidence_ids": [],
+  "notes": "P1D must retain and validate the exact-MPN Samtec product page, every applicable part-specific current series print linked by that page, and the applicable current Samtec product specification before this candidate can advance."
+}

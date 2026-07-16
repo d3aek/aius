@@ -1,0 +1,21 @@
+{
+  "block": "spdif-mux",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "REQT-OPTICAL-PROCESSED-DEFAULT"
+  ],
+  "manufacturer": "Texas Instruments",
+  "mpn": "SN74LVC1G3157DBVR",
+  "alternatives": [],
+  "selection_rationale": "Provisional single-MPN candidate chosen under the P1C2 primary-source ranking; all assigned verification gates remain open.",
+  "authority_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+  "manufacturer_request_id": "REQ-SPDIF-MUX-MFR",
+  "availability_request_id": "REQ-SPDIF-MUX-UK",
+  "generic_policy": null,
+  "status": "candidate-pending-evidence",
+  "notes": ""
+}

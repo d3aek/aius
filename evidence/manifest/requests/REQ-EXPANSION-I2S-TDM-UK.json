@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-EXPANSION-I2S-TDM-UK",
+  "request_kind": "uk-availability",
+  "family": "expansion-i2s-tdm",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+  ],
+  "authority_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+  "selected_manufacturer": "JST",
+  "selected_mpn": "BM05B-GHS-TBT",
+  "source_id": "AIUS-EXPANSION-I2S-TDM-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "pending",
+  "evidence_ids": [],
+  "notes": "Authorized-distributor acquisition target only; P1C2 makes no stock, price, lead-time, or availability claim."
+}

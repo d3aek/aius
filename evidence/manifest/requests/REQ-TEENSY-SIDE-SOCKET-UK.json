@@ -1,0 +1,21 @@
+{
+  "request_id": "REQ-TEENSY-SIDE-SOCKET-UK",
+  "request_kind": "uk-availability",
+  "family": "teensy-side-socket",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-SIDE-SOCKET"
+  ],
+  "authority_url": "https://www.digikey.co.uk/en/products/detail/samtec-inc/SSW-124-02-G-S/2190757",
+  "selected_manufacturer": "Samtec",
+  "selected_mpn": "SSW-124-02-G-S",
+  "source_id": "AIUS-TEENSY-SIDE-SOCKET-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "pending",
+  "evidence_ids": [],
+  "notes": "Authorized-distributor acquisition target only; P1C2 makes no stock, price, lead-time, or availability claim."
+}
