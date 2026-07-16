@@ -21,18 +21,22 @@ phase P7 passes.
 ## Evidence representation
 
 Binary datasheets, drawings, CAD, reference-design archives, saved quotations,
-and PDF or MHTML page captures live under `docs/reference/datasheets.md<source-id>/` and
-use Git LFS. Reviewable HTML source snapshots are text snapshots, not page
-captures.
+images, and PDF or MHTML page captures live under
+`docs/reference/datasheets.md<source-id>/` and use Git LFS. Reviewable HTML and reStructuredText
+source snapshots are text snapshots, not page captures.
 Reviewable source snapshots live under `evidence/source-snapshots/<source-id>/`
 and remain normal Git. Authored schemas, scripts, Markdown, JSON, CSV, KiCad
 sources, and patches remain normal Git.
 
-Retrievable evidence without redistribution permission is inspected but not
-committed. Its manifest artifact uses `storage: external-reference`, a null
-`path`, the final URL, retrieval time, locally observed byte count and SHA-256
-when available, and a normalized observation containing only the facts used.
-The validator never claims such evidence is reproducible from the checkout.
+Publicly retrievable evidence may be retained in this private checkout solely
+for the user's personal, noncommercial research even when no redistribution
+licence is stated. Its `redistribution_note` must say that no permission is
+inferred and the bytes must not be republished. Evidence behind access controls
+or an express retention prohibition is inspected but not committed; its
+manifest artifact uses `storage: external-reference`, a null path, the final
+URL, retrieval time, locally observed byte count and SHA-256 when available,
+and a normalized observation containing only the facts used. The validator
+never claims external-reference evidence is reproducible from the checkout.
 
 Each record in `evidence/manifest/sources.json` has:
 
@@ -548,6 +552,7 @@ content check is a validation error:
 | Suffix | Media type | Content check |
 | --- | --- | --- |
 | `.pdf` | `application/pdf` | starts with `%PDF-` |
+| `.png` | `image/png` | starts with bytes `89 50 4e 47 0d 0a 1a 0a` |
 | `.zip` | `application/zip` | starts with `PK\\x03\\x04`, `PK\\x05\\x06`, or `PK\\x07\\x08` |
 | `.html`, `.htm` | `text/html` | UTF-8; after optional BOM and leading ASCII whitespace, first 1024 characters contain case-insensitive `<!doctype html` or `<html` |
 | `.mhtml` | `multipart/related` | first 4096 ASCII bytes contain case-insensitive `MIME-Version:` and `Content-Type: multipart/related` headers |
@@ -563,10 +568,12 @@ content check is a validation error:
 | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | `text/x-c++` | UTF-8 with no NUL |
 | `.txt` | `text/plain` | UTF-8 with no NUL |
 | `.md` | `text/markdown` | UTF-8 with no NUL |
+| `.rst` | `text/x-rst` | UTF-8 with no NUL |
 
 All UTF-8 checks accept one leading UTF-8 BOM. Binary signatures are byte
-prefixes. PDF, ZIP, MHTML, and STEP require `storage: lfs`; every reviewable
-HTML, text, source, JSON, CSV, and KiCad suffix requires `storage: git`.
+prefixes. PDF, PNG, ZIP, MHTML, and STEP require `storage: lfs`; every reviewable
+HTML, reStructuredText, text, source, JSON, CSV, and KiCad suffix requires
+`storage: git`.
 
 The test script creates isolated temporary Aius trees inside temporary Git
 worktrees with explicit baselines and `.gitattributes`. It covers one passing
@@ -716,100 +723,455 @@ commit-checkpoint:
 
 ## P1B — Seed evidence acquisition
 
-Acquisition agents write only their source directories and one record per file
-under `evidence/manifest/fragments/`. `manifest-coordinator` runs after all
-acquisition agents and alone writes `sources.json`; it does not retrieve or
-reinterpret evidence.
+P1B is complete only after P1B1a through P1B1c, P1B2a through P1B2e, P1B3a
+through P1B3c, and P1B4 are committed and pushed. Each acquisition agent owns
+one source ID. Every wave is independently checked, audited, committed, and
+pushed before the next wave begins; the manifest coordinator runs last and does
+not retrieve or reinterpret evidence.
+
+### P1B1a — Acquisition policy and media migration
+
+Modify exactly `evidence/manifest/README.md`, `scripts/test_evidence_policy.py`,
+`scripts/validate_evidence.py`, and `scripts/test_validate_evidence.py`.
+
+The README keeps its existing headings and replaces two exact directory-policy
+statements with:
+
+- `**Binary evidence:** Store public, directly retrievable binary evidence retained for personal noncommercial research under \`docs/reference/datasheets.md<source-id>/\`; Git LFS must report \`filter=lfs\`.`
+- `**External references:** Do not commit bytes behind access controls or an express retention prohibition; record \`storage: external-reference\` with a null path.`
+
+The external-reference workflow states that public retrieval does not infer
+permission to republish and requires that limitation in `redistribution_note`.
+The validator adds exactly two media rules to the P1A4 table:
+
+- `.png`, `image/png`, `storage: lfs`, with the eight-byte PNG signature
+  `89 50 4e 47 0d 0a 1a 0a`;
+- `.rst`, `text/x-rst`, `storage: git`, valid UTF-8 with no NUL.
+
+The validator fixtures add valid and invalid cases for both suffixes. All prior
+policy statements, commands, diagnostic behavior, and media rules remain exact.
 
 ```yaml
-phase: P1B
-unit: bounded-source-family
-seams: [manifest fragments, immutable source IDs]
+phase: P1B1a
+unit: acquisition-policy-media
+seams: [private research retention, evidence media]
 contract-artifact: both
 fan-out:
-  - name: teensy-board-evidence
+  - name: acquisition-policy-media
     owned-paths:
-      - docs/reference/datasheets.mdPJRC-TEENSY41-PAGE
-      - docs/reference/datasheets.mdPJRC-TEENSY41-SCHEMATIC
-      - docs/reference/datasheets.mdPJRC-TEENSY41-PINOUT
-      - evidence/manifest/fragments/PJRC-TEENSY41-PAGE.json
-      - evidence/manifest/fragments/PJRC-TEENSY41-SCHEMATIC.json
-      - evidence/manifest/fragments/PJRC-TEENSY41-PINOUT.json
-  - name: imxrt-evidence
-    owned-paths:
-      - docs/reference/datasheets.mdPJRC-IMXRT1060-RM
-      - docs/reference/datasheets.mdPJRC-IMXRT1060-CEC
-      - evidence/manifest/fragments/PJRC-IMXRT1060-RM.json
-      - evidence/manifest/fragments/PJRC-IMXRT1060-CEC.json
-  - name: ethernet-kit-evidence
-    owned-paths:
-      - docs/reference/datasheets.mdPJRC-ETHERNET-KIT
-      - evidence/manifest/fragments/PJRC-ETHERNET-KIT.json
-  - name: cliff-optical-evidence
-    owned-paths:
-      - docs/reference/datasheets.mdCLIFF-OTJ5
-      - docs/reference/datasheets.mdCLIFF-ORJ5
-      - evidence/manifest/fragments/CLIFF-OTJ5.json
-      - evidence/manifest/fragments/CLIFF-ORJ5.json
-  - name: vksdr-comparative-evidence
-    owned-paths:
-      - docs/reference/datasheets.mdVKSDR-TOSLINK-SCHEMATICS
-      - docs/reference/datasheets.mdVKSDR-TOSLINK-KICAD
-      - evidence/manifest/fragments/VKSDR-TOSLINK-SCHEMATICS.json
-      - evidence/manifest/fragments/VKSDR-TOSLINK-KICAD.json
-  - name: mechanical-evidence
-    owned-paths:
-      - docs/reference/datasheets.mdHAMMOND-1455N1201BK-DRAWING
-      - docs/reference/datasheets.mdHAMMOND-1455N1201BK-STEP
-      - evidence/manifest/fragments/HAMMOND-1455N1201BK-DRAWING.json
-      - evidence/manifest/fragments/HAMMOND-1455N1201BK-STEP.json
-  - name: platformio-evidence
-    owned-paths:
-      - docs/reference/datasheets.mdPLATFORMIO-TEENSY41
-      - evidence/manifest/fragments/PLATFORMIO-TEENSY41.json
-  - name: source-snapshots
-    owned-paths:
-      - evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE
-      - evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE
-      - evidence/manifest/fragments/PJRC-SPDIF-RX-SOURCE.json
-      - evidence/manifest/fragments/PJRC-SPDIF-TX-SOURCE.json
-  - name: enclosure-price-observation
-    owned-paths:
-      - evidence/observations/seed/FARNELL-1455N1201BK.json
-      - evidence/manifest/fragments/FARNELL-1455N1201BK.json
-  - name: optical-price-observations
-    owned-paths:
-      - evidence/observations/seed/CPC-CLIFF-OTJ5.json
-      - evidence/observations/seed/DIGIKEY-CLIFF-ORJ5.json
-      - evidence/manifest/fragments/CPC-CLIFF-OTJ5.json
-      - evidence/manifest/fragments/DIGIKEY-CLIFF-ORJ5.json
-  - name: teensy-price-observation
-    owned-paths:
-      - evidence/observations/seed/DIGIKEY-TEENSY41.json
-      - evidence/manifest/fragments/DIGIKEY-TEENSY41.json
-  - name: pcb-price-observations
-    owned-paths:
-      - evidence/observations/seed/PCBWAY-2L-100.json
-      - evidence/observations/seed/PCBWAY-4L-100.json
-      - evidence/manifest/fragments/PCBWAY-2L-100.json
-      - evidence/manifest/fragments/PCBWAY-4L-100.json
-  - name: fx-observation
-    owned-paths:
-      - evidence/observations/seed/BOE-GBP-DAILY-FX.json
-      - evidence/manifest/fragments/BOE-GBP-DAILY-FX.json
-  - name: manifest-coordinator
-    owned-paths: [evidence/manifest/sources.json]
+      - evidence/manifest/README.md
+      - scripts/test_evidence_policy.py
+      - scripts/validate_evidence.py
+      - scripts/test_validate_evidence.py
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_evidence.py
-  buildable: [auditable seed evidence checkout]
-  parent-commit: "docs(aius): archive seed design evidence"
+    - python3 scripts/test_source_schema.py
+    - python3 scripts/test_selection_schemas.py
+    - python3 scripts/test_evidence_policy.py
+    - python3 scripts/test_validate_evidence.py
+  buildable: [explicit private-research evidence policy and complete seed media map]
+  parent-commit: "feat(aius): prepare seed evidence media"
 ```
 
-The orchestrator quotes the exact source IDs and disjoint paths above in every
-spawn. Agents run in waves of at most three. Source snapshots resolve the PJRC
-Audio repository HEAD once, record the commit SHA, and use immutable raw URLs.
+### P1B1b — Exact seed realization contract
+
+Create exactly `evidence/manifest/seed-realization-schema.json`,
+`evidence/manifest/seed-realization.json`, and
+`scripts/test_seed_realization.py`. The schema is Draft 2020-12, rejects extra
+properties, and uses the P1A1 identifier, path, URL, SHA, and string contracts.
+The realization file is a top-level array sorted by `source_id` with exactly the
+22 seed IDs and no duplicates.
+
+Each row requires `source_id`, `mode`, `revision_strategy`, `revision_value`,
+`failure_policy`, `retention`, `artifacts`, and `observation_profile`.
+`mode` is `artifact`, `snapshot`, or `dynamic`; `failure_policy` is
+`golden-block` or `assumption`; retention is exactly
+`personal-noncommercial-no-republication` for local evidence and
+`normalized-observation-only` for dynamic evidence. An artifact entry requires
+`name`, `retrieval_url`, `expected_final_url`, `path`, `storage`, and
+`media_type`; name equals the path basename. Artifact paths are exact
+project-relative paths and storage is `lfs` or `git`. Revision strategy is
+`fixed`, `sha256`, `commit`, or `observation-date`; fixed and commit strategies
+require a non-empty value, while sha256 and observation-date require null. A
+non-dynamic row has one or more artifacts and null observation profile. A
+dynamic row has no artifacts, `revision_strategy: observation-date`, null
+revision value, and one of the profiles below. Golden rows use `golden-block`;
+comparative and dynamic rows use `assumption`.
+
+The exact non-dynamic realization oracle is:
+
+| Source ID | Revision | Exact artifact realization |
+| --- | --- | --- |
+| `PJRC-TEENSY41-PAGE` | `sha256` | Git `evidence/source-snapshots/PJRC-TEENSY41-PAGE/teensy41.html`, `text/html`, from/final `https://www.pjrc.com/store/teensy41.html` |
+| `PJRC-TEENSY41-SCHEMATIC` | `sha256` | LFS `https://www.pjrc.com/teensy/schematic.html`, `image/png`, from/final `https://www.pjrc.com/teensy/schematic41.png` |
+| `PJRC-TEENSY41-PINOUT` | fixed `rev4` | LFS `card11a_rev4_web.pdf` from/final `https://www.pjrc.com/teensy/card11a_rev4_web.pdf` and LFS `card11b_rev4_web.pdf` from/final `https://www.pjrc.com/teensy/card11b_rev4_web.pdf`, both `application/pdf` under `https://www.pjrc.com/teensy/pinout.html` |
+| `PJRC-IMXRT1060-RM` | fixed `rev3` | LFS `https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf`, `application/pdf`, from/final `https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf` |
+| `PJRC-IMXRT1060-CEC` | fixed `rev4` | LFS `https://www.pjrc.com/teensy/IMXRT1060CEC_rev4.pdf`, `application/pdf`, from/final `https://www.pjrc.com/teensy/IMXRT1060CEC_rev4.pdf` |
+| `PJRC-ETHERNET-KIT` | `sha256` | LFS `https://www.pjrc.com/store/ethernet_kit.html`, `application/pdf`, from/final `https://media.digikey.com/pdf/Data%20Sheets/Sparkfun%20PDFs/Ethernet_Kit_for_Teensy_4.1_Web.pdf`; note that the document is PJRC-authored but mirror-hosted |
+| `CLIFF-ORJ5` | fixed `2.0` | LFS `https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf`, `application/pdf`, from/final `https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf` |
+| `CLIFF-OTJ5` | fixed `2.1` | LFS `https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf`, `application/pdf`, from/final `https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf` |
+| `HAMMOND-1455N1201BK-DRAWING` | `sha256` | LFS `https://www.hammfg.com/part/1455N1201BK`, `application/pdf`, from/final `https://www.hammfg.com/files/parts/pdf/1455N1201BK.pdf` |
+| `HAMMOND-1455N1201BK-STEP` | fixed `archive-v1697661986` | LFS `https://www.hammfg.com/part/1455N1201BK`, `application/zip`, from/final `https://www.hammfg.com/files/parts/stp/1455N1201BK.zip?v=1697661986` |
+| `PLATFORMIO-TEENSY41` | commit `54a797fb5440a069d4790d495499552e5a7edb35` | Git `evidence/source-snapshots/PLATFORMIO-TEENSY41/teensy41.rst`, `text/x-rst`, from/final `https://raw.githubusercontent.com/platformio/platformio-docs/54a797fb5440a069d4790d495499552e5a7edb35/boards/teensy/teensy41.rst` |
+| `PJRC-SPDIF-RX-SOURCE` | commit `3039be2773e86daf1f381a1e8bdc1e6a55ed11f1` | Git `evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp`, `text/x-c++`, from/final `https://raw.githubusercontent.com/PaulStoffregen/Audio/3039be2773e86daf1f381a1e8bdc1e6a55ed11f1/input_spdif3.cpp` |
+| `PJRC-SPDIF-TX-SOURCE` | commit `3039be2773e86daf1f381a1e8bdc1e6a55ed11f1` | Git `evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp`, `text/x-c++`, from/final `https://raw.githubusercontent.com/PaulStoffregen/Audio/3039be2773e86daf1f381a1e8bdc1e6a55ed11f1/output_spdif3.cpp` |
+| `VKSDR-TOSLINK-SCHEMATICS` | `sha256` | LFS `docs/reference/datasheets.mdVKSDR-TOSLINK-SCHEMATICS/toslink_schematics.zip`, `application/zip`, retrieve `https://vksdr.com/content/files/2022/11/toslink_schematics.zip`, expect final `https://storage.ghost.io/c/e5/f8/e5f82b1b-0848-44d9-95b4-b4a61ecb3633/content/files/2022/11/toslink_schematics.zip` |
+| `VKSDR-TOSLINK-KICAD` | `sha256` | LFS `docs/reference/datasheets.mdVKSDR-TOSLINK-KICAD/toslink_kicad.zip`, `application/zip`, retrieve `https://vksdr.com/content/files/2022/11/toslink_kicad.zip`, expect final `https://storage.ghost.io/c/e5/f8/e5f82b1b-0848-44d9-95b4-b4a61ecb3633/content/files/2022/11/toslink_kicad.zip` |
+
+The pinout's front-side URL is an explicit same-authority companion linked by
+the Teensy 4.1 product page; it is the only artifact not reachable from the
+seeded back-side PDF itself. The PJRC Audio commit was resolved once from
+`https://github.com/PaulStoffregen/Audio.git` default branch `master`; both
+snapshots must record that same commit in `revision`.
+
+The exact dynamic oracle is:
+
+| Source IDs | Observation profile |
+| --- | --- |
+| `FARNELL-1455N1201BK`, `CPC-CLIFF-OTJ5`, `DIGIKEY-CLIFF-ORJ5`, `DIGIKEY-TEENSY41` | `uk-distributor-price-stock` |
+| `PCBWAY-2L-100`, `PCBWAY-4L-100` | `pcbway-prototype-quote` |
+| `BOE-GBP-DAILY-FX` | `boe-gbp-fx` |
+
+`uk-distributor-price-stock` observations occur in this exact key order:
+`manufacturer_part_number`, `supplier_sku`, `stock_state`, `stock_quantity`,
+`price_quantity`, `unit_price_ex_vat`, `minimum_order_quantity`,
+`order_multiple`, and `price_includes_vat`, with these exact value/unit rules:
+
+| Key | Value | Unit |
+| --- | --- | --- |
+| `manufacturer_part_number`, `supplier_sku` | non-empty string | null |
+| `stock_state` | `in-stock`, `out-of-stock`, `backorder`, or `unknown` | null |
+| `stock_quantity` | non-negative integer or null | `pieces` |
+| `price_quantity`, `minimum_order_quantity`, `order_multiple` | positive integer | `pieces` |
+| `unit_price_ex_vat` | non-negative number | `GBP` |
+| `price_includes_vat` | Boolean | null |
+
+`pcbway-prototype-quote` records exactly `layer_count`, `board_width_mm`,
+`board_height_mm`, `quantity`, `material`, `finished_thickness_mm`,
+`copper_weight_oz`, `solder_mask`, `silkscreen`, `surface_finish`,
+`fabrication_total`, `shipping_included`, `tax_included`, and
+`lead_time_days`. Locked inputs are 100 by 100 mm, quantity 5, FR-4, 1.6 mm,
+1 oz, green mask, white silkscreen, and lead-free HASL; layer count is 2 or 4
+according to source ID. Exact value/unit rules are:
+
+| Key | Value | Unit |
+| --- | --- | --- |
+| `layer_count` | integer 2 or 4, matching source ID | `layers` |
+| `board_width_mm`, `board_height_mm` | number exactly 100 | `mm` |
+| `quantity` | integer exactly 5 | `pieces` |
+| `material` | string `FR-4` | null |
+| `finished_thickness_mm` | number exactly 1.6 | `mm` |
+| `copper_weight_oz` | number exactly 1 | `oz/ft^2` |
+| `solder_mask` | string `green` | null |
+| `silkscreen` | string `white` | null |
+| `surface_finish` | string `lead-free HASL` | null |
+| `fabrication_total` | non-negative number | `USD` |
+| `shipping_included`, `tax_included` | Boolean | null |
+| `lead_time_days` | positive integer or null | `days` |
+
+`boe-gbp-fx` records exactly `rate_date`, `gbp_per_usd`, and `gbp_per_eur`.
+`rate_date` is a `YYYY-MM-DD` string with null unit. Rates are positive numbers
+with units `GBP/USD` and `GBP/EUR` respectively.
+
+The values file is a top-level scalar map with exactly the profile keys above;
+it never contains observation metadata. `record` requires one
+`--observed-at YYYY-MM-DDTHH:MM:SSZ` argument. Every generated observation uses
+that timestamp, the immutable seed `landing_url` as `source_url`, and exact basis
+`P1B <profile> normalized field <key> from the fixed seed landing page.` Source
+`retrieved_at` equals the shared timestamp and revision uses its UTC date. The
+test embeds the 22-row oracle, exact artifact tuples, revision values, profile
+mapping, and every generated key/value/unit/basis/timestamp/source-URL rule.
+
+```yaml
+phase: P1B1b
+unit: seed-realization-contract
+seams: [seed identity, artifact realization, dynamic observation profile]
+contract-artifact: both
+fan-out:
+  - name: seed-realization-contract
+    owned-paths:
+      - evidence/manifest/seed-realization-schema.json
+      - evidence/manifest/seed-realization.json
+      - scripts/test_seed_realization.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_seed_realization.py
+  buildable: [machine-checkable realization for every seed source]
+  parent-commit: "feat(aius): define seed evidence realization"
+```
+
+### P1B1c — Reproducible acquisition and assembly
+
+Create exactly `scripts/seed_evidence.py` and
+`scripts/test_seed_evidence.py`. The standard-library CLI accepts `--root` with
+the same semantics as `validate_evidence.py` and provides:
+
+- `acquire <source-id>` for non-dynamic rows: retrieve only the realization
+  URLs, follow HTTPS redirects, require the exact expected final URL, write the
+  exact path atomically, calculate bytes/SHA-256, require the media signature and
+  Git attribute through the existing validator, and write one schema-valid
+  source record to `evidence/manifest/fragments/<ID>.json`;
+- `record <source-id> --values <json> --observed-at <UTC>` for dynamic rows:
+  accept exactly the scalar-map profile keys/types above, generate every unit,
+  basis, timestamp, and source URL by the locked rules, embed observations in the
+  source fragment, and never create a standalone observation file;
+- `unavailable <source-id> --note <text>`: write an unavailable source fragment.
+  For comparative/dynamic sources it also writes exactly one open assumption to
+  `evidence/manifest/assumption-fragments/<ID>.json`, with ID
+  `ASM-UNAVAILABLE-<ID>`, exact source ID and claim scope, no evidence IDs, owner
+  `P1B`, and validation gate `Replace unavailable seed evidence`. Golden use
+  writes the fragment but exits `3`, which blocks the wave and all later phases;
+- `check-fragment <ID>...`: validate each named source record, immutable seed
+  tuple, realization, local bytes/media/Git placement, observation profile, and
+  required failure assumption without requiring other fragments;
+- `assemble --write`: require exactly the 22 fragment IDs and no extras, reject
+  duplicate record IDs, validate every fragment, require exactly the permitted
+  assumption fragments and no extras, sort both arrays by ID, and atomically
+  render `sources.json` and `assumptions.json` as UTF-8 JSON with two-space
+  indentation and one terminal newline;
+- `assemble --check`: render in memory and require byte equality with both
+  committed aggregate files.
+
+The acquisition command uses a descriptive user agent, finite timeouts, and no
+authority fallback. A transport, redirect, signature, or write failure leaves no
+partial evidence or fragment. Fixed revisions use the realization value;
+`sha256` revisions are `sha256:<artifact-sha256>` for one artifact or
+`sha256:<sha256-of-concatenated-lowercase-artifact-digests>` for several;
+dynamic revisions are `observed:<YYYY-MM-DD>`. Source title is the seed
+`required_object`; purpose and claim scope copy the seed exactly. Every local
+artifact note and source `redistribution_note` state personal noncommercial
+retention and no republication permission inferred.
+
+The internal retrieval function accepts an opener dependency for tests;
+production constructs the standard-library HTTPS opener and exposes no
+environment override for URLs or expected redirects.
+
+An unavailable fragment has `revision: unavailable:<YYYY-MM-DD>`, source status
+`unavailable`, no observations, and exactly one artifact named `unavailable`
+with the seed landing URL, `storage: external-reference`, null path/hash/bytes/
+media type, retrieval status `unavailable`, and the CLI note. The generated
+assumption claim is `Seed source <ID> is unavailable for: <claim_scope joined by
+"; ">`; consequence is `Dependent P1 claims remain provisional until the source
+is replaced.`; status is `open` and resolution is null.
+
+Tests use an in-process fake HTTPS opener with deterministic redirect responses
+and isolated Git trees to cover all CLI commands, atomic failure, exact
+final-URL rejection, artifact and snapshot storage, fixed/hash/commit revisions,
+every dynamic profile, golden exit `3`, comparative/dynamic assumptions,
+missing/extra/duplicate fragments, deterministic sorting/rendering, and check
+drift.
+
+```yaml
+phase: P1B1c
+unit: seed-evidence-orchestration
+seams: [authority retrieval, source fragment, assumption fragment, aggregate]
+contract-artifact: both
+fan-out:
+  - name: seed-evidence-orchestration
+    owned-paths:
+      - scripts/seed_evidence.py
+      - scripts/test_seed_evidence.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_seed_evidence.py
+    - python3 scripts/test_seed_realization.py
+  buildable: [reproducible per-source acquisition and deterministic aggregation]
+  parent-commit: "feat(aius): orchestrate seed evidence acquisition"
+```
+
+### P1B2 — Non-dynamic acquisition waves
+
+Each agent runs `seed_evidence.py acquire <ID>` and then
+`seed_evidence.py check-fragment <ID>`. Agents write only the exact realization
+directory and fragment below. Comparative agents additionally own their
+assumption-fragment path solely for the `unavailable` branch. A golden failure
+is recorded, audited, committed, and stops P1B; it is never substituted.
+
+```yaml
+phase: P1B2a
+unit: single-seed-source
+seams: [public authority, validated fragment]
+contract-artifact: both
+fan-out:
+  - name: acquire-pjrc-teensy41-page
+    owned-paths: [evidence/source-snapshots/PJRC-TEENSY41-PAGE, evidence/manifest/fragments/PJRC-TEENSY41-PAGE.json]
+  - name: acquire-pjrc-teensy41-schematic
+    owned-paths: [docs/reference/datasheets.mdPJRC-TEENSY41-SCHEMATIC, evidence/manifest/fragments/PJRC-TEENSY41-SCHEMATIC.json]
+  - name: acquire-pjrc-teensy41-pinout
+    owned-paths: [docs/reference/datasheets.mdPJRC-TEENSY41-PINOUT, evidence/manifest/fragments/PJRC-TEENSY41-PINOUT.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment PJRC-TEENSY41-PAGE PJRC-TEENSY41-SCHEMATIC PJRC-TEENSY41-PINOUT]
+  buildable: [validated Teensy board evidence fragments]
+  parent-commit: "docs(aius): archive Teensy board evidence"
+```
+
+```yaml
+phase: P1B2b
+unit: single-seed-source
+seams: [public authority, validated fragment]
+contract-artifact: both
+fan-out:
+  - name: acquire-pjrc-imxrt-rm
+    owned-paths: [docs/reference/datasheets.mdPJRC-IMXRT1060-RM, evidence/manifest/fragments/PJRC-IMXRT1060-RM.json]
+  - name: acquire-pjrc-imxrt-cec
+    owned-paths: [docs/reference/datasheets.mdPJRC-IMXRT1060-CEC, evidence/manifest/fragments/PJRC-IMXRT1060-CEC.json]
+  - name: acquire-pjrc-ethernet-kit
+    owned-paths: [docs/reference/datasheets.mdPJRC-ETHERNET-KIT, evidence/manifest/fragments/PJRC-ETHERNET-KIT.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment PJRC-IMXRT1060-RM PJRC-IMXRT1060-CEC PJRC-ETHERNET-KIT]
+  buildable: [validated processor and Ethernet evidence fragments]
+  parent-commit: "docs(aius): archive processor and Ethernet evidence"
+```
+
+```yaml
+phase: P1B2c
+unit: single-seed-source
+seams: [public authority, validated fragment]
+contract-artifact: both
+fan-out:
+  - name: acquire-cliff-orj5
+    owned-paths: [docs/reference/datasheets.mdCLIFF-ORJ5, evidence/manifest/fragments/CLIFF-ORJ5.json]
+  - name: acquire-cliff-otj5
+    owned-paths: [docs/reference/datasheets.mdCLIFF-OTJ5, evidence/manifest/fragments/CLIFF-OTJ5.json]
+  - name: acquire-hammond-drawing
+    owned-paths: [docs/reference/datasheets.mdHAMMOND-1455N1201BK-DRAWING, evidence/manifest/fragments/HAMMOND-1455N1201BK-DRAWING.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment CLIFF-ORJ5 CLIFF-OTJ5 HAMMOND-1455N1201BK-DRAWING]
+  buildable: [validated optical and enclosure-drawing fragments]
+  parent-commit: "docs(aius): archive optical and enclosure evidence"
+```
+
+```yaml
+phase: P1B2d
+unit: single-seed-source
+seams: [public authority, validated fragment]
+contract-artifact: both
+fan-out:
+  - name: acquire-hammond-step
+    owned-paths: [docs/reference/datasheets.mdHAMMOND-1455N1201BK-STEP, evidence/manifest/fragments/HAMMOND-1455N1201BK-STEP.json]
+  - name: acquire-platformio-teensy41
+    owned-paths: [evidence/source-snapshots/PLATFORMIO-TEENSY41, evidence/manifest/fragments/PLATFORMIO-TEENSY41.json]
+  - name: acquire-pjrc-spdif-rx
+    owned-paths: [evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE, evidence/manifest/fragments/PJRC-SPDIF-RX-SOURCE.json, evidence/manifest/assumption-fragments/PJRC-SPDIF-RX-SOURCE.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment HAMMOND-1455N1201BK-STEP PLATFORMIO-TEENSY41 PJRC-SPDIF-RX-SOURCE]
+  buildable: [validated mechanical, PlatformIO, and receive-source fragments]
+  parent-commit: "docs(aius): archive mechanical and software evidence"
+```
+
+```yaml
+phase: P1B2e
+unit: single-seed-source
+seams: [public authority, validated fragment]
+contract-artifact: both
+fan-out:
+  - name: acquire-pjrc-spdif-tx
+    owned-paths: [evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE, evidence/manifest/fragments/PJRC-SPDIF-TX-SOURCE.json, evidence/manifest/assumption-fragments/PJRC-SPDIF-TX-SOURCE.json]
+  - name: acquire-vksdr-schematics
+    owned-paths: [docs/reference/datasheets.mdVKSDR-TOSLINK-SCHEMATICS, evidence/manifest/fragments/VKSDR-TOSLINK-SCHEMATICS.json, evidence/manifest/assumption-fragments/VKSDR-TOSLINK-SCHEMATICS.json]
+  - name: acquire-vksdr-kicad
+    owned-paths: [docs/reference/datasheets.mdVKSDR-TOSLINK-KICAD, evidence/manifest/fragments/VKSDR-TOSLINK-KICAD.json, evidence/manifest/assumption-fragments/VKSDR-TOSLINK-KICAD.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment PJRC-SPDIF-TX-SOURCE VKSDR-TOSLINK-SCHEMATICS VKSDR-TOSLINK-KICAD]
+  buildable: [validated transmit-source and comparative optical fragments]
+  parent-commit: "docs(aius): archive comparative optical evidence"
+```
+
+### P1B3 — Dynamic observation waves
+
+Each agent reads only its fixed landing page, creates a scratch scalar-map JSON
+with the exact profile fields, runs `seed_evidence.py record --observed-at` with
+one explicit UTC timestamp, and then runs `check-fragment`. If the page cannot
+yield the locked facts, it runs
+`unavailable`; the generated open assumption is committed with the fragment.
+No standalone observation file is created.
+
+```yaml
+phase: P1B3a
+unit: single-dynamic-source
+seams: [live page, normalized observations]
+contract-artifact: both
+fan-out:
+  - name: observe-farnell-enclosure
+    owned-paths: [evidence/manifest/fragments/FARNELL-1455N1201BK.json, evidence/manifest/assumption-fragments/FARNELL-1455N1201BK.json]
+  - name: observe-cpc-otj5
+    owned-paths: [evidence/manifest/fragments/CPC-CLIFF-OTJ5.json, evidence/manifest/assumption-fragments/CPC-CLIFF-OTJ5.json]
+  - name: observe-digikey-orj5
+    owned-paths: [evidence/manifest/fragments/DIGIKEY-CLIFF-ORJ5.json, evidence/manifest/assumption-fragments/DIGIKEY-CLIFF-ORJ5.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment FARNELL-1455N1201BK CPC-CLIFF-OTJ5 DIGIKEY-CLIFF-ORJ5]
+  buildable: [validated enclosure and optical price observations]
+  parent-commit: "docs(aius): record enclosure and optical prices"
+```
+
+```yaml
+phase: P1B3b
+unit: single-dynamic-source
+seams: [live page, normalized observations]
+contract-artifact: both
+fan-out:
+  - name: observe-digikey-teensy41
+    owned-paths: [evidence/manifest/fragments/DIGIKEY-TEENSY41.json, evidence/manifest/assumption-fragments/DIGIKEY-TEENSY41.json]
+  - name: observe-pcbway-2l
+    owned-paths: [evidence/manifest/fragments/PCBWAY-2L-100.json, evidence/manifest/assumption-fragments/PCBWAY-2L-100.json]
+  - name: observe-pcbway-4l
+    owned-paths: [evidence/manifest/fragments/PCBWAY-4L-100.json, evidence/manifest/assumption-fragments/PCBWAY-4L-100.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment DIGIKEY-TEENSY41 PCBWAY-2L-100 PCBWAY-4L-100]
+  buildable: [validated Teensy and PCB quote observations]
+  parent-commit: "docs(aius): record Teensy and PCB prices"
+```
+
+```yaml
+phase: P1B3c
+unit: single-dynamic-source
+seams: [official series, normalized rates]
+contract-artifact: both
+fan-out:
+  - name: observe-boe-fx
+    owned-paths: [evidence/manifest/fragments/BOE-GBP-DAILY-FX.json, evidence/manifest/assumption-fragments/BOE-GBP-DAILY-FX.json]
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/seed_evidence.py check-fragment BOE-GBP-DAILY-FX]
+  buildable: [validated official FX observations]
+  parent-commit: "docs(aius): record official GBP rates"
+```
+
+### P1B4 — Aggregate seed manifest
+
+The coordinator runs only after every prior wave is committed. It owns only the
+two aggregate files, runs `seed_evidence.py assemble --write`, then the check and
+full validator. It does not manually edit records or assumptions.
+
+```yaml
+phase: P1B4
+unit: seed-manifest-coordinator
+seams: [validated fragments, aggregate manifests]
+contract-artifact: both
+fan-out:
+  - name: seed-manifest-coordinator
+    owned-paths:
+      - evidence/manifest/sources.json
+      - evidence/manifest/assumptions.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py assemble --check
+    - python3 scripts/validate_evidence.py
+    - the repo tooling tool doc-index -- --check
+  buildable: [auditable complete seed evidence checkout]
+  parent-commit: "docs(aius): archive seed design evidence"
+```
 
 ## P1C — Functional topology and bounded component selection
 
