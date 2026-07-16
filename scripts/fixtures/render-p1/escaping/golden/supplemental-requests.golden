@@ -5,38 +5,27 @@
       "request_id": "REQ-A",
       "request_kind": "manufacturer-evidence",
       "family": "alpha",
-      "requirements": [
-        "REQT-A"
-      ],
+      "requirements": ["REQT-A"],
       "authority_url": "https://example.test/a",
       "selected_manufacturer": "Acme, Inc.",
       "selected_mpn": "A\"1",
       "source_id": "SRC-A",
-      "artifact_kinds": [
-        "drawing",
-        "datasheet"
-      ],
+      "artifact_kinds": ["drawing", "datasheet"],
       "retention": "archive",
       "status": "satisfied",
-      "evidence_ids": [
-        "SRC-A"
-      ],
+      "evidence_ids": ["SRC-A"],
       "notes": "line 1\nline 2 Ω"
     },
     {
       "request_id": "REQ-Z",
       "request_kind": "uk-availability",
       "family": "zeta",
-      "requirements": [
-        "REQT-Z"
-      ],
+      "requirements": ["REQT-Z"],
       "authority_url": "https://example.test/z",
       "selected_manufacturer": "Zed",
       "selected_mpn": "Z-1",
       "source_id": "SRC-Z",
-      "artifact_kinds": [
-        "price-observation"
-      ],
+      "artifact_kinds": ["price-observation"],
       "retention": "normalized-observation-only",
       "status": "pending",
       "evidence_ids": [],

@@ -3264,7 +3264,7 @@ joined to the commit.
 
 ```yaml
 phase: P1C4
-status: in-progress
+status: completed
 unit: supplemental-request-coordinator
 seams: [validated requests, explicit P1D acquisition fan-out]
 contract-artifact: both
@@ -3289,14 +3289,18 @@ commit-checkpoint:
   parent-commit: "docs(aius): bind supplemental evidence acquisition"
 ```
 
-Integration recovery 2026-07-16. The first boundary commit attempt exposed a
-contract gap: renderer parity and `handoff` validation passed, but the repository
-hook rejected the generated JSON because its multiline short arrays were not
-pinned-Prettier compatible. P1C4 remains in progress and the hook must not be
-bypassed. The existing renderer module is deepened to emit the same deterministic
-request order and key order with Prettier-compatible short-array layout; its
-golden and focused tests change in the same boundary. The aggregate is then
-regenerated and every earlier mapping/delivery check reruns.
+Completed 2026-07-16. The 48-request aggregate has SHA-256
+`b0035d9373fb0848b89d7e8c01a6d2b733e2d44a6bdb5004b3f88b1e715eb890` and
+binds 46 non-satisfied requests to 138 unique P1D-owned paths. The first commit
+attempt exposed a contract gap: renderer parity and `handoff` validation passed,
+but the repository hook rejected multiline short arrays. The hook was not
+bypassed. The renderer contract and pure formatter were deepened together, with
+public-renderer regressions at the empty, short, long, 120-character, and
+121-character cases. All 24 focused tests, renderer write/check, cumulative
+`handoff`, pinned Prettier, mapping and diff checks, and the clean-room delivery
+audit pass. The documentation-index check still exits 2 for foreign stale
+`docs/README.md`; both generated indexes remain untouched and excluded under
+repository policy.
 
 P1C4 started only after P1C3 was committed. It generated the sorted request
 aggregate and replaced the P1D placeholder with one explicit task and exact

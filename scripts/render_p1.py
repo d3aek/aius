@@ -193,6 +193,8 @@ REQUEST_KEYS = (
     "notes",
 )
 
+JSON_LINE_WIDTH = 120
+
 
 class InputError(RuntimeError):
     """A required renderer input is missing, unreadable, or malformed."""
@@ -385,8 +387,65 @@ def render_supplemental_requests(
         {key: request[key] for key in REQUEST_KEYS}
         for request in sorted(requests, key=lambda row: row["request_id"])
     ]
-    aggregate = {"schema_version": "1.0.0", "requests": ordered_requests}
-    return (json.dumps(aggregate, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+    lines = [
+        "{",
+        '  "schema_version": "1.0.0",',
+        '  "requests": [',
+    ]
+    for request_index, request in enumerate(ordered_requests):
+        lines.append("    {")
+        for key_index, key in enumerate(REQUEST_KEYS):
+            value = request[key]
+            trailing_comma = key_index < len(REQUEST_KEYS) - 1
+            if isinstance(value, list):
+                lines.extend(
+                    _format_scalar_array_property(
+                        key,
+                        value,
+                        indent=6,
+                        trailing_comma=trailing_comma,
+                    )
+                )
+            else:
+                comma = "," if trailing_comma else ""
+                lines.append(
+                    f'{" " * 6}{json.dumps(key, ensure_ascii=False)}: '
+                    f"{json.dumps(value, ensure_ascii=False)}{comma}"
+                )
+        request_comma = "," if request_index < len(ordered_requests) - 1 else ""
+        lines.append(f"    }}{request_comma}")
+    lines.extend(("  ]", "}"))
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _format_scalar_array_property(
+    key: str,
+    values: Sequence[object],
+    *,
+    indent: int,
+    trailing_comma: bool,
+) -> list[str]:
+    prefix = f'{" " * indent}{json.dumps(key, ensure_ascii=False)}: '
+    comma = "," if trailing_comma else ""
+    compact = json.dumps(
+        values,
+        ensure_ascii=False,
+        separators=(", ", ": "),
+    )
+    inline = f"{prefix}{compact}{comma}"
+    if not values or len(inline) <= JSON_LINE_WIDTH:
+        return [inline]
+
+    item_indent = " " * (indent + 2)
+    lines = [f"{prefix}["]
+    for index, value in enumerate(values):
+        item_comma = "," if index < len(values) - 1 else ""
+        lines.append(
+            f"{item_indent}{json.dumps(value, ensure_ascii=False)}{item_comma}"
+        )
+    lines.append(f'{" " * indent}]{comma}')
+    return lines
 
 
 def _parser() -> argparse.ArgumentParser:

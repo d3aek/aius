@@ -56,6 +56,13 @@ def _requests() -> list[object]:
     return [json.loads(path.read_text(encoding="utf-8")) for path in directory.glob("*.json")]
 
 
+def _request_with_requirements(requirements: list[str]) -> dict[str, object]:
+    request = copy.deepcopy(_requests()[0])
+    request["request_id"] = "REQ-FORMAT"
+    request["requirements"] = requirements
+    return request
+
+
 class PureRendererTests(unittest.TestCase):
     def test_all_renderers_match_adversarial_golden_bytes(self) -> None:
         policy = _json("evidence/design/selection-policy.json")
@@ -161,6 +168,56 @@ class PureRendererTests(unittest.TestCase):
             list(parsed["requests"][0].keys()),
         )
         self.assertEqual(["schema_version", "requests"], list(parsed.keys()))
+
+    def test_supplemental_requests_keeps_empty_scalar_array_inline(self) -> None:
+        rendered = render_p1.render_supplemental_requests(
+            [_request_with_requirements([])]
+        ).decode("utf-8")
+        self.assertIn('      "requirements": [],\n', rendered)
+
+    def test_supplemental_requests_keeps_short_scalar_array_inline(self) -> None:
+        rendered = render_p1.render_supplemental_requests(
+            [_request_with_requirements(["REQT-A", "REQT-Ω"])]
+        ).decode("utf-8")
+        self.assertIn(
+            '      "requirements": ["REQT-A", "REQT-Ω"],\n',
+            rendered,
+        )
+
+    def test_supplemental_requests_expands_long_scalar_array(self) -> None:
+        value = "x" * 100
+        rendered = render_p1.render_supplemental_requests(
+            [_request_with_requirements([value])]
+        ).decode("utf-8")
+        self.assertIn(
+            f'      "requirements": [\n        "{value}"\n      ],\n',
+            rendered,
+        )
+        self.assertNotIn(f'      "requirements": ["{value}"],\n', rendered)
+
+    def test_supplemental_requests_keeps_120_character_property_line_inline(self) -> None:
+        value = "x" * 93
+        expected = f'      "requirements": ["{value}"],'
+        self.assertEqual(120, len(expected))
+
+        rendered = render_p1.render_supplemental_requests(
+            [_request_with_requirements([value])]
+        ).decode("utf-8")
+        self.assertIn(expected + "\n", rendered)
+
+    def test_supplemental_requests_expands_121_character_property_line(self) -> None:
+        value = "x" * 94
+        compact = f'      "requirements": ["{value}"],'
+        self.assertEqual(121, len(compact))
+
+        rendered = render_p1.render_supplemental_requests(
+            [_request_with_requirements([value])]
+        ).decode("utf-8")
+        self.assertIn(
+            f'      "requirements": [\n        "{value}"\n      ],\n',
+            rendered,
+        )
+        self.assertNotIn(compact + "\n", rendered)
 
 
 class CliTests(unittest.TestCase):
