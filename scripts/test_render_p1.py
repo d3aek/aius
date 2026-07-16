@@ -234,6 +234,40 @@ class CliTests(unittest.TestCase):
                 self.assertTrue(temporary.name.startswith(f".{target.name}.aius-"))
                 self.assertFalse(temporary.exists())
 
+    def test_write_creates_each_missing_mapped_output_parent(self) -> None:
+        for command, (relative, _) in COMMANDS.items():
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "aius"
+                root.mkdir()
+                sentinel = root / "unrelated.keep"
+                sentinel.write_bytes(b"untouched")
+                target = root / relative
+                self.assertFalse(target.parent.exists())
+
+                render_p1._atomic_write(root, relative, b"generated\n", os.replace)
+
+                self.assertEqual(b"generated\n", target.read_bytes())
+                self.assertEqual(b"untouched", sentinel.read_bytes())
+                self.assertEqual([], list(target.parent.glob(f".{target.name}.aius-*.tmp")))
+
+    def test_output_parent_creation_failure_is_a_write_error(self) -> None:
+        command = "functional-topology"
+        relative, _ = COMMANDS[command]
+        with mock.patch.object(
+            Path,
+            "mkdir",
+            side_effect=OSError("injected directory failure"),
+        ):
+            result, stdout, stderr = self._run(command, "--write")
+
+        self.assertEqual((1, ""), (result, stdout))
+        self.assertEqual(
+            f"AIUS-P1-RENDER-WRITE: {relative.as_posix()}: "
+            "injected directory failure\n",
+            stderr,
+        )
+        self.assertFalse((self.root / relative).exists())
+
     def test_missing_output_has_exact_diagnostic_and_check_does_not_create_it(self) -> None:
         relative, _ = COMMANDS["functional-topology"]
         result, stdout, stderr = self._run("functional-topology", "--check")
@@ -244,6 +278,7 @@ class CliTests(unittest.TestCase):
             stderr,
         )
         self.assertFalse((self.root / relative).exists())
+        self.assertFalse((self.root / relative).parent.exists())
 
     def test_stale_output_has_exact_diagnostic_and_check_does_not_change_it(self) -> None:
         relative, _ = COMMANDS["interfaces-and-states"]

@@ -2351,6 +2351,13 @@ exclusive temporary. A directory-creation failure remains
 missing parent for each command family, preserves unrelated siblings, and
 retains the existing foreign-temporary collision guarantee.
 
+Completed 2026-07-16. Atomic writes now create only the mapped output parent
+chain before allocating the exclusive same-directory temporary. Nineteen
+renderer tests cover all four missing-parent mappings, directory-creation
+failure diagnostics, check-mode non-creation, unrelated siblings, and foreign
+temporary collisions. The 50 validator tests and live `contract` checkpoint
+also pass.
+
 ### P1C1a — Functional topology and interface/state truth tables
 
 ```yaml

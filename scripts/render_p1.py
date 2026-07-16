@@ -464,6 +464,10 @@ def _atomic_write(
     replace: Callable[[str, str], object],
 ) -> None:
     target = root / relative
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise WriteError(relative, str(error)) from error
     temporary = target.with_name(f".{target.name}.aius-{secrets.token_hex(8)}.tmp")
     descriptor: int | None = None
     owns_temporary = False
