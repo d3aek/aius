@@ -82,5 +82,113 @@
     "earliest_stage": "applicable-output-stage",
     "code": "PARITY",
     "canonical_positive_fixture": "architecture-base/valid, selection/valid, handoff/valid"
+  },
+  {
+    "mutation": "immutable base raw hash or pure builder derivation differs",
+    "earliest_stage": "contract",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "contract/valid"
+  },
+  {
+    "mutation": "mode semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "block semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "flow semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "clock domain semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "buffer semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "latency boundary semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "connector semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "control semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "expansion interface semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "power domain semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "operating state semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "fault scenario semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "transition source semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "transition target semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "transition actions semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "document evidence semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
+  },
+  {
+    "mutation": "record evidence semantic value differs from normative contract",
+    "earliest_stage": "architecture-base",
+    "code": "CONTRACT",
+    "canonical_positive_fixture": "architecture-base/valid"
   }
 ]

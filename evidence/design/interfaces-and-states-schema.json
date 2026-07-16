@@ -15,6 +15,7 @@
       "items": {
         "$ref": "#/$defs/evidenceIdentifier"
       },
+      "minItems": 1,
       "uniqueItems": true
     },
     "nonEmptyUniqueStrings": {
@@ -723,7 +724,7 @@
     },
     "transition": {
       "type": "object",
-      "required": ["id", "from_state", "to_state", "triggers", "preconditions", "actions", "postconditions", "notes"],
+      "required": ["id", "from_states", "to_states", "triggers", "preconditions", "actions", "postconditions", "notes"],
       "properties": {
         "id": {
           "enum": [
@@ -741,11 +742,21 @@
             "usb-unplug-to-power-off"
           ]
         },
-        "from_state": {
-          "$ref": "#/$defs/operatingStateIdentifier"
+        "from_states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operatingStateIdentifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
         },
-        "to_state": {
-          "$ref": "#/$defs/operatingStateIdentifier"
+        "to_states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/operatingStateIdentifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
         },
         "triggers": {
           "type": "array",
@@ -808,6 +819,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["power-off"]
+              },
+              "to_states": {
+                "const": ["powered-reset"]
+              },
               "triggers": {
                 "const": ["power-applied"]
               }
@@ -825,6 +842,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["powered-reset"]
+              },
+              "to_states": {
+                "const": ["boot-muted"]
+              },
               "triggers": {
                 "const": ["reset-released"]
               }
@@ -842,6 +865,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["boot-muted"]
+              },
+              "to_states": {
+                "const": ["waiting-for-carrier"]
+              },
               "triggers": {
                 "const": ["pipeline-ready"]
               }
@@ -859,6 +888,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["waiting-for-carrier"]
+              },
+              "to_states": {
+                "const": ["pcm-active"]
+              },
               "triggers": {
                 "const": ["pcm-detected"]
               }
@@ -876,6 +911,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["waiting-for-carrier"]
+              },
+              "to_states": {
+                "const": ["dts-active"]
+              },
               "triggers": {
                 "const": ["dts-detected"]
               }
@@ -893,6 +934,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["pcm-active", "dts-active", "unsupported-muted", "diagnostic-bypass"]
+              },
+              "to_states": {
+                "const": ["waiting-for-carrier"]
+              },
               "triggers": {
                 "const": ["optical-carrier-loss"]
               }
@@ -910,6 +957,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["pcm-active", "dts-active"]
+              },
+              "to_states": {
+                "const": ["unsupported-muted"]
+              },
               "triggers": {
                 "const": ["unsupported-burst", "malformed-input"]
               }
@@ -927,6 +980,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["unsupported-muted"]
+              },
+              "to_states": {
+                "const": ["pcm-active", "dts-active"]
+              },
               "triggers": {
                 "const": ["supported-format-detected"]
               }
@@ -944,6 +1003,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["pcm-active", "dts-active", "unsupported-muted"]
+              },
+              "to_states": {
+                "const": ["diagnostic-bypass"]
+              },
               "triggers": {
                 "const": ["raw-bypass-request"]
               }
@@ -961,6 +1026,12 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": ["diagnostic-bypass"]
+              },
+              "to_states": {
+                "const": ["waiting-for-carrier"]
+              },
               "triggers": {
                 "const": ["raw-bypass-release"]
               }
@@ -978,6 +1049,20 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": [
+                  "boot-muted",
+                  "waiting-for-carrier",
+                  "pcm-active",
+                  "dts-active",
+                  "unsupported-muted",
+                  "diagnostic-bypass",
+                  "fault-muted"
+                ]
+              },
+              "to_states": {
+                "const": ["powered-reset"]
+              },
               "triggers": {
                 "const": ["watchdog-expired"]
               }
@@ -995,6 +1080,21 @@
           },
           "then": {
             "properties": {
+              "from_states": {
+                "const": [
+                  "powered-reset",
+                  "boot-muted",
+                  "waiting-for-carrier",
+                  "pcm-active",
+                  "dts-active",
+                  "unsupported-muted",
+                  "diagnostic-bypass",
+                  "fault-muted"
+                ]
+              },
+              "to_states": {
+                "const": ["power-off"]
+              },
               "triggers": {
                 "const": ["usb-unplug"]
               }

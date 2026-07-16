@@ -1,0 +1,10 @@
+{
+  "id": "active-to-carrier-loss",
+  "from_states": ["pcm-active", "pcm-active"],
+  "to_states": ["waiting-for-carrier"],
+  "triggers": ["optical-carrier-loss"],
+  "preconditions": ["carrier-present"],
+  "actions": ["disable-tx", "wait-muted", "select-processed", "clear-pipeline"],
+  "postconditions": ["processed-selected", "tx-disabled"],
+  "notes": "Endpoint sets cannot repeat a state."
+}

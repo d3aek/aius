@@ -8,7 +8,7 @@
       "signals": ["USB2-D+", "USB2-D-", "CC1", "CC2", "VBUS"],
       "power_domains": ["usb-vbus-raw", "digital-ground", "chassis-shield"],
       "mating_constraint": "USB-C plug clearance is retained at the rear panel.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Sink-only USB 2.0 device entry."
     },
     {
@@ -18,7 +18,7 @@
       "signals": ["USB2-D+", "USB2-D-", "VBUS"],
       "power_domains": ["protected-5v", "digital-ground"],
       "mating_constraint": "Internal cable and plug remain inside the enclosure envelope.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Internal service connection."
     },
     {
@@ -28,7 +28,7 @@
       "signals": ["USB2-D+", "USB2-D-"],
       "power_domains": ["digital-ground"],
       "mating_constraint": "No second VIN or VUSB power feed is fitted.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Module USB data access."
     },
     {
@@ -38,7 +38,7 @@
       "signals": ["OPTICAL-RX"],
       "power_domains": ["teensy-3v3", "digital-ground"],
       "mating_constraint": "TOSLINK plug clearance is retained at the rear panel.",
-      "evidence_ids": ["CLIFF-ORJ5"],
+      "evidence_ids": ["CLIFF-ORJ5", "PJRC-SPDIF-RX-SOURCE", "VKSDR-TOSLINK-SCHEMATICS"],
       "notes": "Optical S/PDIF input."
     },
     {
@@ -48,7 +48,7 @@
       "signals": ["OPTICAL-TX"],
       "power_domains": ["teensy-3v3", "digital-ground"],
       "mating_constraint": "TOSLINK plug clearance is retained at the rear panel.",
-      "evidence_ids": ["CLIFF-OTJ5"],
+      "evidence_ids": ["CLIFF-OTJ5", "PJRC-SPDIF-TX-SOURCE", "VKSDR-TOSLINK-SCHEMATICS"],
       "notes": "Optical S/PDIF output."
     },
     {
@@ -58,7 +58,7 @@
       "signals": ["ETH-TX", "ETH-RX", "ETH-LED"],
       "power_domains": ["teensy-3v3", "digital-ground", "chassis-shield"],
       "mating_constraint": "RJ45 latch and cable clearance are retained at the rear panel.",
-      "evidence_ids": ["PJRC-ETHERNET-KIT"],
+      "evidence_ids": ["PJRC-ETHERNET-KIT", "PJRC-IMXRT1060-RM"],
       "notes": "Teensy 4.1 native Ethernet interface."
     },
     {
@@ -68,7 +68,7 @@
       "signals": ["MICROSD"],
       "power_domains": ["teensy-3v3", "digital-ground"],
       "mating_constraint": "Card insertion and removal remain possible without opening the enclosure.",
-      "evidence_ids": ["PJRC-TEENSY41-PAGE"],
+      "evidence_ids": ["PJRC-TEENSY41-PINOUT"],
       "notes": "Access to the Teensy microSD socket."
     },
     {
@@ -88,7 +88,7 @@
       "signals": ["TEST-CONTROL", "TEST-DATA"],
       "power_domains": ["teensy-3v3", "digital-ground"],
       "mating_constraint": "The production fixture mates without stressing user connectors.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Manufacturing test interface."
     }
   ],
@@ -99,7 +99,7 @@
       "active_level": "high",
       "reset_default": "processed",
       "safe_value": "processed",
-      "evidence_ids": [],
+      "evidence_ids": ["CLIFF-ORJ5", "CLIFF-OTJ5", "VKSDR-TOSLINK-SCHEMATICS"],
       "notes": "Hardware default selects the processed path."
     },
     {
@@ -108,7 +108,7 @@
       "active_level": "high",
       "reset_default": "disabled",
       "safe_value": "disabled",
-      "evidence_ids": [],
+      "evidence_ids": ["CLIFF-ORJ5", "CLIFF-OTJ5", "VKSDR-TOSLINK-SCHEMATICS"],
       "notes": "Hardware default disables optical transmission."
     },
     {
@@ -117,7 +117,7 @@
       "active_level": "low",
       "reset_default": "asserted",
       "safe_value": "asserted",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Reset assertion establishes safe outputs."
     },
     {
@@ -126,7 +126,7 @@
       "active_level": "high",
       "reset_default": "deasserted",
       "safe_value": "asserted",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Firmware arms the watchdog before TX may be enabled."
     },
     {
@@ -144,7 +144,7 @@
       "active_level": "high",
       "reset_default": "low",
       "safe_value": "low",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Diagnostic status indication."
     }
   ],
@@ -158,7 +158,7 @@
       "unpowered_behavior": "Both exported signals remain high impedance.",
       "protection_method": "Powered-off-high-impedance isolating interface.",
       "backfeed_rule": "No signal or power path may sustain an unpowered rail.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Expansion control bus."
     },
     {
@@ -170,7 +170,7 @@
       "unpowered_behavior": "Outputs remain high impedance and inputs do not source the rail.",
       "protection_method": "Series resistance bounds clamp current on exported CMOS signals.",
       "backfeed_rule": "Clamp current remains bounded and cannot sustain the rail.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Expansion SPI bus."
     },
     {
@@ -182,7 +182,7 @@
       "unpowered_behavior": "The exported output remains high impedance.",
       "protection_method": "Series resistance bounds clamp current.",
       "backfeed_rule": "Signal current cannot sustain an unpowered rail.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Expansion debug UART."
     },
     {
@@ -194,7 +194,7 @@
       "unpowered_behavior": "Outputs remain high impedance.",
       "protection_method": "Series resistance bounds clamp current.",
       "backfeed_rule": "Signal current cannot sustain an unpowered rail.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Expansion digital-audio interface."
     },
     {
@@ -206,7 +206,7 @@
       "unpowered_behavior": "Reverse current is blocked and signals do not sustain VBUS.",
       "protection_method": "Reverse-blocking current-limited power switch.",
       "backfeed_rule": "Neither side may reverse-power the other while unpowered.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Expansion USB host interface."
     },
     {
@@ -218,7 +218,7 @@
       "unpowered_behavior": "Unconfigured pins remain high impedance.",
       "protection_method": "Series resistance bounds clamp current on exported CMOS signals.",
       "backfeed_rule": "Clamp current remains bounded and cannot sustain the rail.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "General-purpose expansion signals."
     }
   ],
@@ -228,7 +228,7 @@
       "source": "rear-usb-c",
       "consumers": ["power-entry"],
       "backfeed_rule": "The product never sources USB VBUS.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Single external 5 V source."
     },
     {
@@ -236,7 +236,7 @@
       "source": "power-entry",
       "consumers": ["teensy", "internal-usb-a"],
       "backfeed_rule": "Reverse current to raw VBUS is blocked.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Protected internal 5 V rail."
     },
     {
@@ -244,7 +244,7 @@
       "source": "teensy",
       "consumers": ["optical-rx", "raw-bypass-mux", "tx-gate", "optical-tx"],
       "backfeed_rule": "No external interface may sustain the Teensy 3.3 V rail.",
-      "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Core 3.3 V logic domain."
     },
     {
@@ -252,7 +252,7 @@
       "source": "rear-usb-c",
       "consumers": ["carrier", "teensy", "expansion"],
       "backfeed_rule": "Grounding does not create a secondary supply path.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Digital reference domain."
     },
     {
@@ -260,7 +260,7 @@
       "source": "enclosure",
       "consumers": ["rear-usb-c", "ethernet-rj45"],
       "backfeed_rule": "Cable shields do not carry functional supply current.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-ETHERNET-KIT", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Chassis and connector shield domain."
     },
     {
@@ -268,7 +268,7 @@
       "source": "protected-5v",
       "consumers": ["expansion"],
       "backfeed_rule": "Reverse power flow is blocked when either side is unpowered.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Protected expansion logic rail."
     },
     {
@@ -276,7 +276,7 @@
       "source": "protected-5v",
       "consumers": ["expansion-usb-host"],
       "backfeed_rule": "The host switch blocks reverse power flow.",
-      "evidence_ids": [],
+      "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
       "notes": "Current-limited expansion USB host supply."
     }
   ],
@@ -542,8 +542,8 @@
   "transitions": [
     {
       "id": "power-on-to-reset",
-      "from_state": "power-off",
-      "to_state": "powered-reset",
+      "from_states": ["power-off"],
+      "to_states": ["powered-reset"],
       "triggers": ["power-applied"],
       "preconditions": ["rails-valid"],
       "actions": ["assert-reset", "disable-tx", "select-processed"],
@@ -552,8 +552,8 @@
     },
     {
       "id": "reset-to-boot",
-      "from_state": "powered-reset",
-      "to_state": "boot-muted",
+      "from_states": ["powered-reset"],
+      "to_states": ["boot-muted"],
       "triggers": ["reset-released"],
       "preconditions": ["rails-valid", "tx-disabled"],
       "actions": ["clear-pipeline", "hold-expansion-safe"],
@@ -562,8 +562,8 @@
     },
     {
       "id": "boot-to-waiting",
-      "from_state": "boot-muted",
-      "to_state": "waiting-for-carrier",
+      "from_states": ["boot-muted"],
+      "to_states": ["waiting-for-carrier"],
       "triggers": ["pipeline-ready"],
       "preconditions": ["watchdog-armed", "pipeline-primed"],
       "actions": ["disable-tx"],
@@ -572,8 +572,8 @@
     },
     {
       "id": "waiting-to-pcm",
-      "from_state": "waiting-for-carrier",
-      "to_state": "pcm-active",
+      "from_states": ["waiting-for-carrier"],
+      "to_states": ["pcm-active"],
       "triggers": ["pcm-detected"],
       "preconditions": ["carrier-present", "format-supported", "pipeline-primed"],
       "actions": ["enable-tx-pcm"],
@@ -582,8 +582,8 @@
     },
     {
       "id": "waiting-to-dts",
-      "from_state": "waiting-for-carrier",
-      "to_state": "dts-active",
+      "from_states": ["waiting-for-carrier"],
+      "to_states": ["dts-active"],
       "triggers": ["dts-detected"],
       "preconditions": ["carrier-present", "format-supported", "pipeline-primed"],
       "actions": ["enable-tx-pcm"],
@@ -592,18 +592,18 @@
     },
     {
       "id": "active-to-carrier-loss",
-      "from_state": "pcm-active",
-      "to_state": "waiting-for-carrier",
+      "from_states": ["pcm-active", "dts-active", "unsupported-muted", "diagnostic-bypass"],
+      "to_states": ["waiting-for-carrier"],
       "triggers": ["optical-carrier-loss"],
       "preconditions": ["carrier-present"],
-      "actions": ["disable-tx", "clear-pipeline"],
-      "postconditions": ["tx-disabled"],
+      "actions": ["disable-tx", "wait-muted", "select-processed", "clear-pipeline"],
+      "postconditions": ["processed-selected", "tx-disabled"],
       "notes": "Carrier loss disables TX after qualification."
     },
     {
       "id": "active-to-unsupported",
-      "from_state": "pcm-active",
-      "to_state": "unsupported-muted",
+      "from_states": ["pcm-active", "dts-active"],
+      "to_states": ["unsupported-muted"],
       "triggers": ["unsupported-burst", "malformed-input"],
       "preconditions": ["carrier-present"],
       "actions": ["clear-pipeline", "prime-pcm-silence", "enable-tx-pcm"],
@@ -612,8 +612,8 @@
     },
     {
       "id": "unsupported-to-active",
-      "from_state": "unsupported-muted",
-      "to_state": "pcm-active",
+      "from_states": ["unsupported-muted"],
+      "to_states": ["pcm-active", "dts-active"],
       "triggers": ["supported-format-detected"],
       "preconditions": ["carrier-present", "format-supported", "pipeline-primed"],
       "actions": ["enable-tx-pcm"],
@@ -622,8 +622,8 @@
     },
     {
       "id": "active-to-diagnostic-bypass",
-      "from_state": "pcm-active",
-      "to_state": "diagnostic-bypass",
+      "from_states": ["pcm-active", "dts-active", "unsupported-muted"],
+      "to_states": ["diagnostic-bypass"],
       "triggers": ["raw-bypass-request"],
       "preconditions": ["diagnostic-authorized", "output-muted", "tx-disabled"],
       "actions": ["disable-tx", "wait-muted", "select-raw", "enable-tx-raw"],
@@ -632,8 +632,8 @@
     },
     {
       "id": "diagnostic-bypass-to-waiting",
-      "from_state": "diagnostic-bypass",
-      "to_state": "waiting-for-carrier",
+      "from_states": ["diagnostic-bypass"],
+      "to_states": ["waiting-for-carrier"],
       "triggers": ["raw-bypass-release"],
       "preconditions": ["output-muted", "tx-disabled"],
       "actions": ["disable-tx", "wait-muted", "select-processed", "clear-pipeline"],
@@ -642,8 +642,16 @@
     },
     {
       "id": "watchdog-to-reset",
-      "from_state": "fault-muted",
-      "to_state": "powered-reset",
+      "from_states": [
+        "boot-muted",
+        "waiting-for-carrier",
+        "pcm-active",
+        "dts-active",
+        "unsupported-muted",
+        "diagnostic-bypass",
+        "fault-muted"
+      ],
+      "to_states": ["powered-reset"],
       "triggers": ["watchdog-expired"],
       "preconditions": ["watchdog-armed"],
       "actions": ["assert-reset", "disable-tx", "hold-expansion-safe"],
@@ -652,8 +660,17 @@
     },
     {
       "id": "usb-unplug-to-power-off",
-      "from_state": "fault-muted",
-      "to_state": "power-off",
+      "from_states": [
+        "powered-reset",
+        "boot-muted",
+        "waiting-for-carrier",
+        "pcm-active",
+        "dts-active",
+        "unsupported-muted",
+        "diagnostic-bypass",
+        "fault-muted"
+      ],
+      "to_states": ["power-off"],
       "triggers": ["usb-unplug"],
       "preconditions": [],
       "actions": ["disable-tx", "hold-expansion-safe"],
@@ -665,8 +682,12 @@
     "CLIFF-ORJ5",
     "CLIFF-OTJ5",
     "PJRC-ETHERNET-KIT",
+    "PJRC-IMXRT1060-RM",
+    "PJRC-SPDIF-RX-SOURCE",
+    "PJRC-SPDIF-TX-SOURCE",
     "PJRC-TEENSY41-PAGE",
     "PJRC-TEENSY41-PINOUT",
-    "PJRC-TEENSY41-SCHEMATIC"
+    "PJRC-TEENSY41-SCHEMATIC",
+    "VKSDR-TOSLINK-SCHEMATICS"
   ]
 }

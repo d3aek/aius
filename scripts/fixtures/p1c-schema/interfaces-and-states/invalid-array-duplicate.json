@@ -5,6 +5,6 @@
   "signals": ["VBUS", "VBUS"],
   "power_domains": ["usb-vbus-raw"],
   "mating_constraint": "Rear-panel clearance is retained.",
-  "evidence_ids": [],
+  "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
   "notes": "Signals must be unique."
 }

@@ -2221,6 +2221,7 @@ Aius-relative path and name the attempted executable in `detail`.
 
 ```yaml
 phase: P1C0c
+status: completed
 unit: serial-contract-and-enforcement-integration
 seams: [hashed P1C0a bases, generated normative JSON, renderer columns, staged validator]
 contract-artifact: both
@@ -2306,6 +2307,16 @@ transition actions, and document/record evidence. Transition reference checks
 resolve every member of `from_states` and `to_states`. The fixture matrix gains
 canonical rows for each family and the parent checkpoint remains green only
 after the previous 37 tests and these additions all pass.
+
+Completed 2026-07-16. The two locked historical hashes reproduce byte-identical
+normative contracts and schema-valid fixtures through the pinned-Prettier
+builder. Non-empty evidence, plural transition endpoints, renderer columns,
+raw base integrity, pure-builder parity, exact architecture semantics, and all
+cross-references are enforced. Thirteen builder, 33 schema, 17 renderer, and 50
+validator tests pass; builder `--check`, live `contract`, pinned Prettier 3.8.3,
+and the clean-room delivery audit are green.
+A stale foreign `docs/README.md` generated index remains excluded as a
+nonblocking repository condition.
 
 ### P1C1a — Functional topology and interface/state truth tables
 

@@ -1,0 +1,10 @@
+{
+  "id": "power-on-to-reset",
+  "to_states": ["powered-reset"],
+  "from_states": ["power-off"],
+  "triggers": ["power-applied"],
+  "preconditions": ["rails-valid"],
+  "actions": ["assert-reset", "disable-tx", "select-processed"],
+  "postconditions": ["processed-selected", "tx-disabled", "expansion-safe"],
+  "notes": "Values are valid but member order is not canonical."
+}

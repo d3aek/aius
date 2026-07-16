@@ -7,6 +7,6 @@
   "unpowered_behavior": "Unpowered behavior.",
   "protection_method": "Protection method.",
   "backfeed_rule": "Backfeed is blocked.",
-  "evidence_ids": [],
+  "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
   "notes": "A connector ID cannot occupy the expansion partition."
 }

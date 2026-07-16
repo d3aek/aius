@@ -400,6 +400,7 @@ class SchemaVocabularyTests(FunctionalTopologySchemaTestCase):
     def test_schema_property_and_required_order_is_normative(self) -> None:
         self.assertEqual(tuple(SCHEMA["properties"]), ROOT_KEYS)
         self.assertEqual(tuple(SCHEMA["required"]), ROOT_KEYS)
+        self.assertEqual(1, SCHEMA["$defs"]["evidenceIds"]["minItems"])
         for collection, definition_name in RECORD_DEFS.items():
             definition = SCHEMA["$defs"][definition_name]
             with self.subTest(collection=collection):
@@ -420,6 +421,7 @@ class FixtureTests(FunctionalTopologySchemaTestCase):
             "clock-domain-empty-consumers.json": "clockDomain",
             "buffer-unknown-gate.json": "buffer",
             "latency-boundary-numeric-budget.json": "latencyBoundary",
+            "evidence-empty.json": "mode",
         }
         for filename, definition in cases.items():
             with self.subTest(filename=filename):
@@ -569,7 +571,7 @@ class ArrayAndCoverageTests(FunctionalTopologySchemaTestCase):
         topology["evidence_ids"] = ["EVIDENCE-A", "EVIDENCE-A"]
         self.assert_invalid(topology)
 
-    def test_only_input_formats_and_clock_consumers_must_be_non_empty(self) -> None:
+    def test_required_non_empty_arrays_reject_empty_values(self) -> None:
         for collection, field in (
             ("modes", "input_formats"),
             ("clock_domains", "consumer_ids"),
@@ -579,14 +581,21 @@ class ArrayAndCoverageTests(FunctionalTopologySchemaTestCase):
             with self.subTest(collection=collection, field=field):
                 self.assert_invalid(topology)
 
+        for collection in EVIDENCE_LOCATIONS:
+            topology = self.topology()
+            topology[collection][0]["evidence_ids"] = []
+            with self.subTest(collection=collection, field="evidence_ids"):
+                self.assert_invalid(topology)
+
+        topology = self.topology()
+        topology["evidence_ids"] = []
+        self.assert_invalid(topology)
+
+    def test_only_non_evidence_optional_arrays_may_be_empty(self) -> None:
         topology = self.topology()
         topology["modes"][0]["active_blocks"] = []
-        topology["modes"][0]["evidence_ids"] = []
         topology["flows"][0]["enabled_modes"] = []
-        topology["flows"][0]["evidence_ids"] = []
         topology["clock_domains"][0]["synchronous_with"] = []
-        topology["clock_domains"][0]["evidence_ids"] = []
-        topology["evidence_ids"] = []
         validate(topology, SCHEMA)
 
     def test_every_locked_id_collection_requires_the_exact_set_once(self) -> None:

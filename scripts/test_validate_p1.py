@@ -26,6 +26,11 @@ VALIDATOR = SCRIPT_ROOT / "validate_p1.py"
 SCHEMA_FIXTURES = SCRIPT_ROOT / "fixtures" / "p1c-schema"
 MATRIX = SCRIPT_ROOT / "fixtures" / "validate-p1" / "matrix.json"
 
+FUNCTIONAL_BASE = "scripts/fixtures/p1c-schema/functional-topology/base-v1.json"
+INTERFACES_BASE = "scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json"
+FUNCTIONAL_CONTRACT = "evidence/design/contracts/functional-topology.json"
+INTERFACES_CONTRACT = "evidence/design/contracts/interfaces-and-states.json"
+
 SCHEMAS = (
     "evidence/design/functional-topology-schema.json",
     "evidence/design/interfaces-and-states-schema.json",
@@ -249,6 +254,7 @@ class FixtureTree:
             )
         ]
         self._copy_schemas()
+        self._copy_contract_inputs()
         self.write_architecture()
         self.write_policy()
         self.write_fragments()
@@ -268,6 +274,17 @@ class FixtureTree:
 
     def _copy_schemas(self) -> None:
         for relative in SCHEMAS:
+            target = self.path(relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(AIUS_ROOT / relative, target)
+
+    def _copy_contract_inputs(self) -> None:
+        for relative in (
+            FUNCTIONAL_BASE,
+            INTERFACES_BASE,
+            FUNCTIONAL_CONTRACT,
+            INTERFACES_CONTRACT,
+        ):
             target = self.path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(AIUS_ROOT / relative, target)
@@ -459,6 +476,27 @@ class PositiveStageTests(ValidatorTestCase):
                 "PARITY",
             },
         )
+        mutations = {row["mutation"] for row in rows}
+        for family in (
+            "mode",
+            "block",
+            "flow",
+            "clock domain",
+            "buffer",
+            "latency boundary",
+            "connector",
+            "control",
+            "expansion interface",
+            "power domain",
+            "operating state",
+            "fault scenario",
+            "transition source",
+            "transition target",
+            "transition actions",
+            "document evidence",
+            "record evidence",
+        ):
+            self.assertIn(f"{family} semantic value differs from normative contract", mutations)
 
     def test_each_stage_and_scoped_fragment_has_an_explicit_positive_case(self) -> None:
         for stage in (
@@ -600,6 +638,96 @@ class CliAndInputDiagnosticTests(ValidatorTestCase):
         self.assertEqual(lines, sorted(lines))
 
 
+class ContractStageDiagnosticTests(ValidatorTestCase):
+    def test_each_historical_base_is_required(self) -> None:
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE):
+            with self.subTest(relative=relative):
+                with FixtureTree() as fixture:
+                    fixture.path(relative).unlink()
+                    result = _run(fixture.root, "contract")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertEqual(_codes(result), ["MISSING"])
+
+    def test_each_malformed_historical_base_reports_contract_and_parse(self) -> None:
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE):
+            with self.subTest(relative=relative):
+                with FixtureTree() as fixture:
+                    fixture.path(relative).write_bytes(b"{\n")
+                    result = _run(fixture.root, "contract")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CONTRACT", _codes(result))
+                    self.assertIn("PARSE", _codes(result))
+
+    def test_non_utf8_historical_base_reports_contract_and_parse(self) -> None:
+        self.fixture.path(FUNCTIONAL_BASE).write_bytes(b"\xff")
+        result = _run(self.fixture.root, "contract")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("CONTRACT", _codes(result))
+        self.assertIn("PARSE", _codes(result))
+
+    def test_each_parseable_base_raw_hash_mismatch_uses_contract(self) -> None:
+        for relative in (FUNCTIONAL_BASE, INTERFACES_BASE):
+            with self.subTest(relative=relative):
+                with FixtureTree() as fixture:
+                    path = fixture.path(relative)
+                    path.write_bytes(path.read_bytes() + b" ")
+                    result = _run(fixture.root, "contract")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CONTRACT", _codes(result))
+                    self.assertNotIn("PARSE", _codes(result))
+
+    def test_joint_base_and_normative_edit_cannot_redefine_the_contract(self) -> None:
+        cases = (
+            (FUNCTIONAL_BASE, FUNCTIONAL_CONTRACT, "modes"),
+            (INTERFACES_BASE, INTERFACES_CONTRACT, "connectors"),
+        )
+        for base_relative, contract_relative, collection in cases:
+            with self.subTest(base=base_relative):
+                with FixtureTree() as fixture:
+                    base = _read_json(fixture.path(base_relative))
+                    contract = _read_json(fixture.path(contract_relative))
+                    base[collection][0]["notes"] += " Joint edit."
+                    contract[collection][0]["notes"] += " Joint edit."
+                    _write_json(fixture.path(base_relative), base)
+                    _write_json(fixture.path(contract_relative), contract)
+                    result = _run(fixture.root, "contract")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CONTRACT", _codes(result))
+                    self.assertIn(base_relative, result.stderr)
+
+    def test_normative_contracts_are_validated_by_the_migrated_schemas(self) -> None:
+        cases = (
+            (FUNCTIONAL_CONTRACT, "modes"),
+            (INTERFACES_CONTRACT, "connectors"),
+        )
+        for relative, collection in cases:
+            with self.subTest(relative=relative):
+                with FixtureTree() as fixture:
+                    contract = _read_json(fixture.path(relative))
+                    contract[collection][0]["evidence_ids"] = []
+                    _write_json(fixture.path(relative), contract)
+                    result = _run(fixture.root, "contract")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("INSTANCE", _codes(result))
+                    self.assertNotIn("CONTRACT", _codes(result))
+
+    def test_normative_semantic_drift_from_pure_builder_uses_contract(self) -> None:
+        contract = _read_json(self.fixture.path(FUNCTIONAL_CONTRACT))
+        contract["buffers"][0]["notes"] += " Drift."
+        _write_json(self.fixture.path(FUNCTIONAL_CONTRACT), contract)
+        result = self.assert_code("contract", "CONTRACT")
+        self.assertIn(FUNCTIONAL_CONTRACT, result.stderr)
+
+    def test_normative_record_key_order_uses_order(self) -> None:
+        contract = _read_json(self.fixture.path(FUNCTIONAL_CONTRACT))
+        contract["modes"][0] = {
+            key: contract["modes"][0][key]
+            for key in reversed(tuple(contract["modes"][0]))
+        }
+        _write_json(self.fixture.path(FUNCTIONAL_CONTRACT), contract)
+        self.assert_code("contract", "ORDER")
+
+
 class ContractAndArchitectureDiagnosticTests(ValidatorTestCase):
     def test_invalid_schema_version_constant_uses_schema(self) -> None:
         path = self.fixture.path("evidence/design/functional-topology-schema.json")
@@ -641,6 +769,111 @@ class ContractAndArchitectureDiagnosticTests(ValidatorTestCase):
         self.fixture.write_architecture()
         self.fixture.render_architecture()
         self.assert_code("architecture-base", "REFERENCE")
+
+    def test_every_plural_transition_endpoint_member_is_reference_checked(self) -> None:
+        schema_path = self.fixture.path(
+            "evidence/design/interfaces-and-states-schema.json"
+        )
+        schema = _read_json(schema_path)
+        schema["$defs"]["operatingStateIdentifier"]["enum"].append("missing-state")
+        constraints = schema["$defs"]["transition"]["allOf"]
+        schema["$defs"]["transition"]["allOf"] = [
+            constraint
+            for constraint in constraints
+            if constraint["if"]["properties"]["id"]["const"]
+            != "active-to-carrier-loss"
+        ]
+        _write_json(schema_path, schema)
+        self.fixture.interfaces["transitions"][5]["from_states"][1] = (
+            "missing-state"
+        )
+        self.fixture.write_architecture()
+        self.fixture.render_architecture()
+        result = self.assert_code("architecture-base", "REFERENCE")
+        self.assertIn("transitions[5].from_states", result.stderr)
+
+    def test_each_architecture_record_family_has_exact_semantic_equality(self) -> None:
+        cases = (
+            ("functional", "modes"),
+            ("functional", "blocks"),
+            ("functional", "flows"),
+            ("functional", "clock_domains"),
+            ("functional", "buffers"),
+            ("functional", "latency_boundaries"),
+            ("interfaces", "connectors"),
+            ("interfaces", "controls"),
+            ("interfaces", "expansion_interfaces"),
+            ("interfaces", "power_domains"),
+            ("interfaces", "operating_states"),
+            ("interfaces", "fault_scenarios"),
+        )
+        for document_name, collection in cases:
+            with self.subTest(document=document_name, collection=collection):
+                with FixtureTree() as fixture:
+                    document = getattr(fixture, document_name)
+                    document[collection][0]["notes"] += " Semantic drift."
+                    fixture.write_architecture()
+                    fixture.render_architecture()
+                    result = _run(fixture.root, "architecture-base")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CONTRACT", _codes(result), result.stderr)
+
+    def test_transition_sources_targets_and_actions_have_ordered_semantic_equality(self) -> None:
+        cases = (
+            ("active-to-carrier-loss", "from_states"),
+            ("unsupported-to-active", "to_states"),
+            ("active-to-carrier-loss", "actions"),
+        )
+        for transition_id, field in cases:
+            with self.subTest(transition=transition_id, field=field):
+                with FixtureTree() as fixture:
+                    if field in {"from_states", "to_states"}:
+                        schema_path = fixture.path(
+                            "evidence/design/interfaces-and-states-schema.json"
+                        )
+                        schema = _read_json(schema_path)
+                        constraints = schema["$defs"]["transition"]["allOf"]
+                        schema["$defs"]["transition"]["allOf"] = [
+                            constraint
+                            for constraint in constraints
+                            if constraint["if"]["properties"]["id"]["const"]
+                            != transition_id
+                        ]
+                        _write_json(schema_path, schema)
+                    transition = next(
+                        row
+                        for row in fixture.interfaces["transitions"]
+                        if row["id"] == transition_id
+                    )
+                    transition[field] = list(reversed(transition[field]))
+                    fixture.write_architecture()
+                    fixture.render_architecture()
+                    result = _run(fixture.root, "architecture-base")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CONTRACT", _codes(result), result.stderr)
+
+    def test_document_and_record_evidence_order_have_semantic_equality(self) -> None:
+        for scope in ("document", "record"):
+            with self.subTest(scope=scope):
+                with FixtureTree() as fixture:
+                    if scope == "document":
+                        fixture.functional["evidence_ids"].reverse()
+                    else:
+                        fixture.functional["modes"][0]["evidence_ids"].reverse()
+                    fixture.write_architecture()
+                    fixture.render_architecture()
+                    result = _run(fixture.root, "architecture-base")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("CONTRACT", _codes(result), result.stderr)
+
+    def test_record_evidence_is_resolved_independently_of_root_evidence(self) -> None:
+        self.fixture.functional["modes"][0]["evidence_ids"].append(
+            "MISSING-ROW-EVIDENCE"
+        )
+        self.fixture.write_architecture()
+        self.fixture.render_architecture()
+        result = self.assert_code("architecture-base", "EVIDENCE")
+        self.assertIn("modes[0].evidence_ids", result.stderr)
 
     def test_wrong_locked_flow_kind_uses_contract(self) -> None:
         self.fixture.functional["flows"][0]["kind"] = "control"

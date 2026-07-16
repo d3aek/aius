@@ -40,9 +40,9 @@
 
 ## Transitions
 
-| id | from_state | to_state | triggers | preconditions | actions | postconditions | notes |
+| id | from_states | to_states | triggers | preconditions | actions | postconditions | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| transition-a | state-a | state-b | trigger-a |  | disable-tx<br>wait-muted | tx-disabled | transition |
+| transition-a | state-a<br>state-c | state-b<br>state-d | trigger-a |  | disable-tx<br>wait-muted | tx-disabled | transition |
 
 ## Evidence
 

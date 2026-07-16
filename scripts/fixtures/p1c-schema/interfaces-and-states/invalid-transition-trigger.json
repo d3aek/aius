@@ -1,7 +1,7 @@
 {
   "id": "power-on-to-reset",
-  "from_state": "power-off",
-  "to_state": "powered-reset",
+  "from_states": ["power-off"],
+  "to_states": ["powered-reset"],
   "triggers": ["reset-released"],
   "preconditions": ["rails-valid"],
   "actions": ["assert-reset"],

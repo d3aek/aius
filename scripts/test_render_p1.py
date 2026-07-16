@@ -119,6 +119,11 @@ class PureRendererTests(unittest.TestCase):
         self.assertIn('{"a":"slash\\\\\\\\","z":"pipe\\|"}', rendered)
         self.assertIn("line 1<br>line 2<br>line 3<br>line 4", rendered)
 
+        interfaces = render_p1.render_interfaces_and_states(
+            _json("evidence/design/interfaces-and-states.json")
+        ).decode("utf-8")
+        self.assertIn("state-a<br>state-c | state-b<br>state-d", interfaces)
+
     def test_flow_sections_filter_kind_without_reordering_rows(self) -> None:
         document = _json("evidence/design/functional-topology.json")
         duplicate = copy.deepcopy(document["flows"][0])

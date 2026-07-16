@@ -116,8 +116,8 @@ COLLECTIONS = {
         "transition",
         (
             "id",
-            "from_state",
-            "to_state",
+            "from_states",
+            "to_states",
             "triggers",
             "preconditions",
             "actions",
@@ -219,6 +219,59 @@ TRANSITION_TRIGGERS = {
     "usb-unplug-to-power-off": ("usb-unplug",),
 }
 
+TRANSITION_ENDPOINTS = {
+    "power-on-to-reset": (("power-off",), ("powered-reset",)),
+    "reset-to-boot": (("powered-reset",), ("boot-muted",)),
+    "boot-to-waiting": (("boot-muted",), ("waiting-for-carrier",)),
+    "waiting-to-pcm": (("waiting-for-carrier",), ("pcm-active",)),
+    "waiting-to-dts": (("waiting-for-carrier",), ("dts-active",)),
+    "active-to-carrier-loss": (
+        ("pcm-active", "dts-active", "unsupported-muted", "diagnostic-bypass"),
+        ("waiting-for-carrier",),
+    ),
+    "active-to-unsupported": (
+        ("pcm-active", "dts-active"),
+        ("unsupported-muted",),
+    ),
+    "unsupported-to-active": (
+        ("unsupported-muted",),
+        ("pcm-active", "dts-active"),
+    ),
+    "active-to-diagnostic-bypass": (
+        ("pcm-active", "dts-active", "unsupported-muted"),
+        ("diagnostic-bypass",),
+    ),
+    "diagnostic-bypass-to-waiting": (
+        ("diagnostic-bypass",),
+        ("waiting-for-carrier",),
+    ),
+    "watchdog-to-reset": (
+        (
+            "boot-muted",
+            "waiting-for-carrier",
+            "pcm-active",
+            "dts-active",
+            "unsupported-muted",
+            "diagnostic-bypass",
+            "fault-muted",
+        ),
+        ("powered-reset",),
+    ),
+    "usb-unplug-to-power-off": (
+        (
+            "powered-reset",
+            "boot-muted",
+            "waiting-for-carrier",
+            "pcm-active",
+            "dts-active",
+            "unsupported-muted",
+            "diagnostic-bypass",
+            "fault-muted",
+        ),
+        ("power-off",),
+    ),
+}
+
 FAULT_OUTCOMES = {
     "teensy-absent": (
         ("processed",),
@@ -309,6 +362,7 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
         check_schema(SCHEMA)
         validate(VALID, SCHEMA)
         self.assertEqual(VALID["schema_version"], "1.0.0")
+        self.assertEqual(1, SCHEMA["$defs"]["evidenceIdentifiers"]["minItems"])
 
     def test_schema_and_fixture_preserve_locked_property_and_row_order(self) -> None:
         self.assertEqual(tuple(SCHEMA["required"]), ROOT_FIELDS)
@@ -331,6 +385,10 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
             "invalid-expansion-connector-id.json": "expansionInterface",
             "invalid-fault-outcome.json": "faultScenario",
             "invalid-transition-trigger.json": "transition",
+            "invalid-transition-legacy-endpoints.json": "transition",
+            "invalid-transition-empty-endpoints.json": "transition",
+            "invalid-transition-duplicate-endpoints.json": "transition",
+            "invalid-evidence-empty.json": "connector",
             "invalid-additional-property.json": "operatingState",
             "invalid-missing-required.json": "control",
             "invalid-nullability.json": "faultScenario",
@@ -339,6 +397,13 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
         for name, definition in fixtures.items():
             with self.subTest(name=name):
                 self.assert_definition_invalid(_load_json(FIXTURE_ROOT / name), definition)
+
+        wrong_order = _load_json(FIXTURE_ROOT / "invalid-transition-wrong-key-order.json")
+        validate(wrong_order, SCHEMA["$defs"]["transition"], root_schema=SCHEMA)
+        self.assertNotEqual(
+            tuple(wrong_order),
+            COLLECTIONS["transitions"][1],
+        )
 
     def test_root_required_types_version_and_additional_properties(self) -> None:
         for field in ROOT_FIELDS:
@@ -437,8 +502,8 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
             ("fault_scenarios", 0, "recovery_state", "recover"),
             ("fault_scenarios", 0, "notes", None),
             ("transitions", 0, "id", "unknown-transition"),
-            ("transitions", 0, "from_state", "unknown-state"),
-            ("transitions", 0, "to_state", "unknown-state"),
+            ("transitions", 0, "from_states", ["unknown-state"]),
+            ("transitions", 0, "to_states", ["unknown-state"]),
             ("transitions", 0, "triggers", "power-applied"),
             ("transitions", 0, "preconditions", "rails-valid"),
             ("transitions", 0, "actions", "assert-reset"),
@@ -500,6 +565,8 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
             ("transitions", 0, "triggers", "power-applied"),
             ("transitions", 0, "preconditions", "rails-valid"),
             ("transitions", 0, "postconditions", "tx-disabled"),
+            ("transitions", 5, "from_states", "pcm-active"),
+            ("transitions", 7, "to_states", "pcm-active"),
         )
         for collection, index, field, value in duplicate_cases:
             mutated = copy.deepcopy(VALID)
@@ -515,6 +582,8 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
             ("connectors", "signals"),
             ("expansion_interfaces", "signals"),
             ("transitions", "triggers"),
+            ("transitions", "from_states"),
+            ("transitions", "to_states"),
             ("transitions", "actions"),
             ("transitions", "postconditions"),
         ):
@@ -525,12 +594,8 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
 
         permitted_empty_arrays = (
             ("connectors", 0, "power_domains"),
-            ("connectors", 0, "evidence_ids"),
-            ("controls", 0, "evidence_ids"),
             ("expansion_interfaces", 0, "power_domains"),
-            ("expansion_interfaces", 0, "evidence_ids"),
             ("power_domains", 0, "consumers"),
-            ("power_domains", 0, "evidence_ids"),
             ("fault_scenarios", 0, "actions"),
             ("transitions", 0, "preconditions"),
         )
@@ -546,6 +611,21 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
             "assert-reset",
         ]
         validate(repeated_ordered_action, SCHEMA)
+
+        for collection in (
+            "connectors",
+            "controls",
+            "expansion_interfaces",
+            "power_domains",
+        ):
+            mutated = copy.deepcopy(VALID)
+            mutated[collection][0]["evidence_ids"] = []
+            with self.subTest(collection=collection, empty="evidence_ids"):
+                self.assert_document_invalid(mutated)
+
+        root_evidence = copy.deepcopy(VALID)
+        root_evidence["evidence_ids"] = []
+        self.assert_document_invalid(root_evidence)
 
     def test_nullable_measurement_gates_accept_only_locked_values(self) -> None:
         for debounce, residual in ((None, None), ("P6", "P7"), ("P7", "P7")):
@@ -661,6 +741,25 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
         unknown = copy.deepcopy(VALID)
         unknown["transitions"][0]["triggers"] = ["unknown-trigger"]
         self.assert_document_invalid(unknown)
+
+    def test_every_transition_has_exact_ordered_endpoint_sets(self) -> None:
+        for transition_id, (from_states, to_states) in TRANSITION_ENDPOINTS.items():
+            index = self.record_index("transitions", transition_id)
+            transition = VALID["transitions"][index]
+            self.assertEqual(from_states, tuple(transition["from_states"]))
+            self.assertEqual(to_states, tuple(transition["to_states"]))
+
+            for field, expected in (
+                ("from_states", from_states),
+                ("to_states", to_states),
+            ):
+                mutated = copy.deepcopy(VALID)
+                replacement = ["power-off"]
+                if tuple(replacement) == expected:
+                    replacement = ["fault-muted"]
+                mutated["transitions"][index][field] = replacement
+                with self.subTest(transition=transition_id, field=field):
+                    self.assert_document_invalid(mutated)
 
     def test_locked_safe_action_precondition_and_postcondition_tokens(self) -> None:
         safe_values = (

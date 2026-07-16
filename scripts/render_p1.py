@@ -150,8 +150,8 @@ FAULT_SCENARIO_KEYS = (
 )
 TRANSITION_KEYS = (
     "id",
-    "from_state",
-    "to_state",
+    "from_states",
+    "to_states",
     "triggers",
     "preconditions",
     "actions",

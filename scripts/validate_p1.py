@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Iterable, Mapping, Sequence
@@ -11,6 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jsonschema_subset import DRAFT_2020_12, SchemaError, ValidationError, check_schema, validate
+from build_p1c_architecture_contracts import (
+    build_functional_contract,
+    build_interfaces_contract,
+)
 from render_p1 import (
     render_components,
     render_functional_topology,
@@ -44,6 +49,13 @@ FUNCTIONAL_MARKDOWN = Path("docs/reference/functional-topology.md")
 INTERFACES_MARKDOWN = Path("docs/reference/interfaces-and-states.md")
 COMPONENT_CSV = Path("evidence/design/provisional-components.csv")
 REQUEST_AGGREGATE = Path("evidence/manifest/supplemental-requests.json")
+
+FUNCTIONAL_CONTRACT = Path("evidence/design/contracts/functional-topology.json")
+INTERFACES_CONTRACT = Path("evidence/design/contracts/interfaces-and-states.json")
+FUNCTIONAL_BASE = Path("scripts/fixtures/p1c-schema/functional-topology/base-v1.json")
+INTERFACES_BASE = Path("scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json")
+FUNCTIONAL_BASE_HASH = "17e07765a7ef2de03e0722f3b393f8dafde48ec2d854b381c47d51073b0d3257"
+INTERFACES_BASE_HASH = "31ea644c922515c0fa6193e67a7432b8b911083af96d3290a1b34959800fcd84"
 
 FUNCTIONAL_ROOT_KEYS = (
     "schema_version",
@@ -145,7 +157,7 @@ INTERFACES_RECORDS = {
     ),
     "transitions": (
         "transition",
-        ("id", "from_state", "to_state", "triggers", "preconditions", "actions", "postconditions", "notes"),
+        ("id", "from_states", "to_states", "triggers", "preconditions", "actions", "postconditions", "notes"),
     ),
 }
 
@@ -479,6 +491,7 @@ class Validator:
         self.schemas: dict[Path, object] = {}
         self.schema_usable: dict[Path, bool] = {}
         self.instance_valid: dict[Path, bool] = {}
+        self.normative_contracts: dict[Path, object] = {}
         self.sources_by_id: dict[str, Mapping[str, object]] | None = None
         self.policy_families: dict[str, Mapping[str, object]] | None = None
         self.components: dict[str, Mapping[str, object]] = {}
@@ -581,6 +594,74 @@ class Validator:
         self.instance_valid[path] = True
         return loaded.value
 
+    def check_contracts(self) -> None:
+        specifications = (
+            (
+                FUNCTIONAL_CONTRACT,
+                FUNCTIONAL_SCHEMA,
+                FUNCTIONAL_ROOT_KEYS,
+                FUNCTIONAL_RECORDS,
+                FUNCTIONAL_BASE,
+                FUNCTIONAL_BASE_HASH,
+                build_functional_contract,
+            ),
+            (
+                INTERFACES_CONTRACT,
+                INTERFACES_SCHEMA,
+                INTERFACES_ROOT_KEYS,
+                INTERFACES_RECORDS,
+                INTERFACES_BASE,
+                INTERFACES_BASE_HASH,
+                build_interfaces_contract,
+            ),
+        )
+        for contract_path, schema_path, root_keys, records, base_path, base_hash, builder in specifications:
+            contract = self.validate_instance(contract_path, schema_path)
+            if contract is not None:
+                self.check_document_order(contract_path, contract, root_keys, records)
+                self.normative_contracts[contract_path] = contract
+
+            base = self._load_historical_base(base_path, base_hash)
+            if base is None or contract is None:
+                continue
+            try:
+                derived = builder(base)
+            except (KeyError, TypeError, ValueError) as error:
+                self.add("CONTRACT", base_path, f"pure builder rejected locked base: {error}")
+                continue
+            if derived != contract:
+                self.add("CONTRACT", contract_path, "normative value differs from pure builder derivation")
+
+    def _load_historical_base(self, path: Path, expected_hash: str) -> object | None:
+        try:
+            raw = (self.root / path).read_bytes()
+        except FileNotFoundError:
+            self.add("MISSING", path, "required immutable base is missing")
+            return None
+        except OSError as error:
+            self.add("PARSE", path, str(error))
+            return None
+
+        actual_hash = hashlib.sha256(raw).hexdigest()
+        hash_valid = actual_hash == expected_hash
+        if not hash_valid:
+            self.add(
+                "CONTRACT",
+                path,
+                f"raw SHA-256 {actual_hash} does not match locked {expected_hash}",
+            )
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            self.add("PARSE", path, f"invalid UTF-8: {error}")
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as error:
+            self.add("PARSE", path, f"malformed historical JSON: {error}")
+            return None
+        return parsed if hash_valid else None
+
     def check_document_order(
         self,
         path: Path,
@@ -619,6 +700,7 @@ class Validator:
         if functional is not None:
             self.check_document_order(FUNCTIONAL, functional, FUNCTIONAL_ROOT_KEYS, FUNCTIONAL_RECORDS)
             self.check_ids(FUNCTIONAL, functional, FUNCTIONAL_IDS)
+            self._check_normative_contract(FUNCTIONAL, functional, FUNCTIONAL_CONTRACT)
             self._check_flow_contract(functional)
             self._check_parity(
                 FUNCTIONAL_MARKDOWN,
@@ -630,6 +712,7 @@ class Validator:
         if interfaces is not None:
             self.check_document_order(INTERFACES, interfaces, INTERFACES_ROOT_KEYS, INTERFACES_RECORDS)
             self.check_ids(INTERFACES, interfaces, INTERFACES_IDS)
+            self._check_normative_contract(INTERFACES, interfaces, INTERFACES_CONTRACT)
             self._check_fault_and_transition_contract(interfaces)
             self._check_parity(
                 INTERFACES_MARKDOWN,
@@ -648,6 +731,11 @@ class Validator:
                 if interfaces is not None:
                     self._check_document_evidence(INTERFACES, interfaces)
         return functional, interfaces
+
+    def _check_normative_contract(self, path: Path, document: object, contract_path: Path) -> None:
+        contract = self.normative_contracts.get(contract_path)
+        if contract is not None and document != contract:
+            self.add("CONTRACT", path, f"ordered semantic value differs from {contract_path.as_posix()}")
 
     def _require_file(self, path: Path) -> bool:
         try:
@@ -769,8 +857,18 @@ class Validator:
         for index, row in enumerate(interfaces["fault_scenarios"]):
             self._check_ref(INTERFACES, f"fault_scenarios[{index}].recovery_state", row["recovery_state"], states)
         for index, row in enumerate(interfaces["transitions"]):
-            self._check_ref(INTERFACES, f"transitions[{index}].from_state", row["from_state"], states)
-            self._check_ref(INTERFACES, f"transitions[{index}].to_state", row["to_state"], states)
+            self._check_many_refs(
+                INTERFACES,
+                f"transitions[{index}].from_states",
+                row["from_states"],
+                states,
+            )
+            self._check_many_refs(
+                INTERFACES,
+                f"transitions[{index}].to_states",
+                row["to_states"],
+                states,
+            )
 
     def _check_ref(
         self,
@@ -1234,6 +1332,7 @@ def run(argv: list[str] | None = None) -> int:
     root = Path(arguments.root) if arguments.root is not None else Path(__file__).resolve().parents[1]
     validator = Validator(root)
     validator.load_schemas()
+    validator.check_contracts()
     stage_index = STAGES.index(arguments.stage)
     policy: object | None = None
     if stage_index >= STAGES.index("architecture-base"):

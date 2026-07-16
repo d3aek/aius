@@ -1,0 +1,10 @@
+{
+  "id": "power-on-to-reset",
+  "from_states": [],
+  "to_states": ["powered-reset"],
+  "triggers": ["power-applied"],
+  "preconditions": ["rails-valid"],
+  "actions": ["assert-reset", "disable-tx", "select-processed"],
+  "postconditions": ["processed-selected", "tx-disabled", "expansion-safe"],
+  "notes": "Every transition has at least one source and target."
+}

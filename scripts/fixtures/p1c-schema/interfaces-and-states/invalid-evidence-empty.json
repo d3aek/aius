@@ -1,0 +1,10 @@
+{
+  "id": "rear-usb-c",
+  "location": "rear",
+  "role": "power-data",
+  "signals": ["USB2-D+", "USB2-D-", "CC1", "CC2", "VBUS"],
+  "power_domains": ["usb-vbus-raw", "digital-ground", "chassis-shield"],
+  "mating_constraint": "USB-C plug clearance is retained at the rear panel.",
+  "evidence_ids": [],
+  "notes": "Sink-only USB 2.0 device entry."
+}

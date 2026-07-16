@@ -79,8 +79,8 @@
   "transitions": [
     {
       "id": "transition-a",
-      "from_state": "state-a",
-      "to_state": "state-b",
+      "from_states": ["state-a", "state-c"],
+      "to_states": ["state-b", "state-d"],
       "triggers": ["trigger-a"],
       "preconditions": [],
       "actions": ["disable-tx", "wait-muted"],
