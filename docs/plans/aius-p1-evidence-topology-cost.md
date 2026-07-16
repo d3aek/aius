@@ -1497,7 +1497,7 @@ schemas or deterministic CSV renderer, ran selectors before their architecture
 inputs, combined multiple MPNs into single records, and allowed free-text
 requirements without evidence or policy bases. It also exposed a stale P1A test
 that still required the now-populated assumptions aggregate to be empty. The
-P1C0 through P1C3 contract below replaces that combined outline.
+P1C0 through P1C4 contract below replaces that combined outline.
 
 ### Locked P1C architecture and safety decisions
 
@@ -1511,22 +1511,65 @@ views. The functional topology must contain these block IDs:
 and sole-source power flows; recovered-S/PDIF, processing, transmit, USB, and
 Ethernet clock domains; DMA/buffer owners; and latency boundaries whose numeric
 budgets remain explicitly deferred to P6/P7 rather than invented in P1C.
+Exact clock-domain IDs are `spdif-recovered`, `audio-processing`,
+`spdif-transmit-clock`, `usb-device-clock`, and `ethernet-rmii-clock`. Exact
+buffer IDs are `spdif-rx-dma`, `compressed-burst-ring`, `decoded-pcm-pool`,
+`dsp-output-ring`, and `spdif-tx-dma`. Exact latency-boundary IDs are
+`capture`, `burst-assembly`, `decode`, `dsp`, and `transmit-queue`.
 
-The interface/state contract must inventory rear USB-C, internal USB-A and
-Teensy Micro-B, both TOSLINK ports, Ethernet, microSD access, Program, status
-LED, remote Program/RTC, keyed I2C/control, SPI, UART/debug, I2S/TDM, USB-host,
-GPIO/ADC, and manufacturing-test interfaces. It must inventory raw USB VBUS,
-protected 5 V, Teensy 3.3 V, digital ground, chassis/shield, and expansion power
-domains. The following scenarios are mandatory and have these safe outcomes:
+The functional JSON root fields, in order, are `schema_version`, `modes`,
+`blocks`, `flows`, `clock_domains`, `buffers`, `latency_boundaries`, and
+`evidence_ids`. Mode rows contain `id`, input/output formats, active block IDs,
+error mode, evidence IDs, and notes. Block rows contain `id`, kind, owner,
+power-domain ID, nullable clock-domain ID, evidence IDs, and notes. Flow rows
+contain `id`, `kind` (`data`, `control`, or `power`), source and sink IDs,
+payload, enabled mode IDs, nullable controlling control ID, evidence IDs, and
+notes. Clock rows identify source, consumers, and synchronous relationships.
+Buffer rows identify owner, producer, consumer, storage class, overflow policy,
+and measurement gate. Latency rows identify endpoints, `deferred` budget
+status, P6/P7 measurement gate, and notes.
 
-| Scenario | Path select | Optical TX | Expansion | Additional contract |
+The interface/state JSON root fields, in order, are `schema_version`,
+`connectors`, `controls`, `expansion_interfaces`, `power_domains`,
+`operating_states`, `fault_scenarios`, `transitions`, and `evidence_ids`.
+Connector rows contain ID, location, role, signals, power-domain IDs, mating
+constraint, evidence IDs, and notes. Control rows contain ID, owner, active
+level, reset default, safe value, evidence IDs, and notes. Expansion rows add
+direction, powered and unpowered behavior, current-limit or isolation method,
+and backfeed rule. Power-domain rows contain ID, source, consumers, and
+backfeed rule. State and fault rows contain entry condition, path select,
+TX state, output payload, expansion state, recovery/exit condition, nullable
+recovery measurement gate, and notes. Transition rows contain ID, source and
+sink states, preconditions, ordered actions, and postconditions.
+
+The exact connector/interface IDs are `rear-usb-c`, `internal-usb-a`,
+`teensy-micro-b`, `toslink-rx`, `toslink-tx`, `ethernet-rj45`,
+`microsd-access`, `program-control`, `status-led`, `remote-program-rtc`,
+`expansion-i2c-control`, `expansion-spi`, `expansion-uart-debug`,
+`expansion-i2s-tdm`, `expansion-usb-host`, `expansion-gpio-adc`, and
+`test-fixture`. Control IDs are `spdif-path-select`, `optical-tx-enable`,
+`teensy-reset`, `teensy-watchdog`, `program`, and `status-led-control`.
+Power-domain IDs are `usb-vbus-raw`, `protected-5v`, `teensy-3v3`,
+`digital-ground`, `chassis-shield`, `expansion-3v3`, and
+`expansion-usb-host-vbus`. Operating-state IDs are `power-off`,
+`powered-reset`, `boot-muted`, `waiting-for-carrier`, `pcm-active`,
+`dts-active`, `unsupported-muted`, `diagnostic-bypass`, and `fault-muted`.
+
+The following exact fault/scenario IDs are mandatory and have these safe outcomes:
+
+| Scenario ID | Path select | Optical TX | Expansion | Additional contract |
 | --- | --- | --- | --- | --- |
-| Teensy absent, boot, reset, brownout, USB unplug | processed | disabled | high impedance or current-limited | Hardware pulls establish the state without firmware. |
-| Firmware crash | processed after watchdog reset | disabled after watchdog reset | high impedance or current-limited after reset | Record the bounded pre-reset residual interval; arm the independent watchdog before TX enable. |
-| Optical carrier loss | processed | disabled after debounce | unchanged safe configuration | Preserve the downstream DAC's optical-carrier power trigger. |
-| Unsupported burst or malformed input | processed | valid 48 kHz PCM silence only | unchanged safe configuration | Raw compressed data never reaches the DAC. |
-| Raw-bypass request | raw only after an explicit diagnostic request | disabled while switching, then explicitly enabled | unchanged safe configuration | Switch only while muted; reset always returns to processed and disabled. |
-| Unpowered expansion | processed | normal core policy | high impedance or current-limited | No back-power path and no loss of core processing. |
+| `teensy-absent` | processed | disabled | high impedance or current-limited | Hardware pulls establish the state without firmware. |
+| `boot` | processed | disabled until watchdog and output pipeline are ready | high impedance or current-limited | Firmware arms the watchdog before it may enable TX. |
+| `reset` | processed | disabled | high impedance or current-limited | Hardware pulls establish the state without firmware. |
+| `brownout` | processed | disabled after reset assertion | high impedance or current-limited | Recovery requires a clean reset and boot sequence. |
+| `firmware-crash` | processed after watchdog reset | disabled after watchdog reset | high impedance or current-limited after reset | Record the bounded pre-reset residual interval. |
+| `optical-carrier-loss` | processed | disabled after debounce | unchanged safe configuration | Preserve the downstream DAC's optical-carrier power trigger. |
+| `unsupported-burst` | processed | valid 48 kHz PCM silence only | unchanged safe configuration | Raw compressed data never reaches the DAC. |
+| `malformed-input` | processed | valid 48 kHz PCM silence only | unchanged safe configuration | Raw malformed data never reaches the DAC. |
+| `usb-unplug` | processed | disabled as rails collapse | high impedance or current-limited | No secondary supply or backfeed may sustain a rail. |
+| `raw-bypass-request` | raw only after an explicit diagnostic request | disabled while switching, then explicitly enabled | unchanged safe configuration | Switch only while muted; reset returns to processed and disabled. |
+| `unpowered-expansion` | processed | normal core policy | high impedance or current-limited | No expansion power-rail backfeed; signal clamp current is bounded. |
 
 USB-C is a sink-only USB 2.0 device entry with one 5 V source, separate CC1/CC2
 pull-downs, no source role, no Power Delivery, and no second VIN/VUSB feed. The
@@ -1534,6 +1577,14 @@ power candidate must bound inrush, overload, thermal fault, input loss, and
 reverse-current/backfeed behavior. USB ESD must be appropriate for high-speed
 D+/D- and the two-layer 90-ohm route. P1C records the preliminary current
 envelope and defers final USB power compliance arithmetic to P1D.
+
+Expansion 3.3 V and USB-host VBUS use a selected protection device that blocks
+reverse power flow when either side is unpowered. I2C uses a selected isolating
+or powered-off-high-impedance device. Remaining exported single-ended CMOS
+outputs use the `expansion-io-series-resistor` allowance to bound clamp current;
+inputs must be high impedance while unconfigured. P1D must validate the actual
+powered-off leakage and clamp-current limits before these candidates become
+selected.
 
 The optical receiver, mux, gate, and transmitter use a 3.3 V logic domain. The
 selection policy must account for ORJ5's 2.4 V minimum high output and OTJ5's
@@ -1546,16 +1597,58 @@ centre-tap capacitor. Connector requirements include lifecycle, manufacturer
 authority, UK authorized-distributor availability to be verified in P1D, MOQ,
 mating geometry, and Hammond-derived enclosure/cable clearance.
 
-Every requirement is a stable requirement ID declared in
+Functional Markdown section order is `Modes`, `Blocks`, `Data flows`,
+`Control flows`, `Power flows`, `Clock domains`, `Buffers and DMA ownership`,
+`Latency boundaries`, and `Evidence`. Interface/state Markdown section order
+is `Connectors`, `Controls`, `Expansion interfaces`, `Power domains`,
+`Operating states`, `Fault scenarios`, `Transitions`, and `Evidence`.
+
+Every requirement is a stable requirement ID matching
+`^REQT-[A-Z0-9]+(?:-[A-Z0-9]+)*$` and declared in
 `evidence/design/selection-policy.json`. Each requirement cites at least one
 current seed evidence ID or a declared engineering-policy ID. Component and
 source-request records repeat only those IDs; cross-validation resolves the
-text and rejects unsupported additions. A selected MPN remains
-`candidate-pending-evidence` with a pending source request until P1D archives
-and validates its source. `selected` is reserved for a satisfied request.
-Generic allowances have one uniform value/package/tolerance and no source
-request. An unresolved critical family blocks P1C. Alternatives are unique and
-must not repeat the selected manufacturer/MPN.
+text and rejects unsupported additions. Engineering-policy IDs match
+`^EP-[A-Z0-9]+(?:-[A-Z0-9]+)*$` and have scope `product-topology`,
+`safe-default`, `manufacturability`, `sourcing`, or
+`provisional-design-choice`, plus an explicit later validation gate.
+Engineering policies may state project choices; they may not assert external
+component capability, standards compliance, safety rating, lifecycle, price,
+or availability. A provisional numeric design choice must use the
+`provisional-design-choice` scope and remain blocked on its P1D validation gate.
+The selection-policy JSON root fields, in order, are `schema_version`,
+`engineering_policies`, `requirements`, and `families`. Policy rows contain
+`id`, `scope`, `rule`, `validation_gate`, and notes. Requirement rows contain
+`id`, statement, non-empty basis IDs, `verification_stage`, and notes. Family
+rows contain slug, critical flag, allowed status set, exact requirement IDs,
+manufacturer and availability request IDs when applicable, generic eligibility,
+dependent feature, and notes. Basis IDs must resolve to a current seed source or
+a declared engineering policy; source and policy namespaces may not overlap.
+
+Each selected candidate has one manufacturer-evidence request and one separate
+UK-availability request. Requests add `request_kind` with value
+`manufacturer-evidence` or `uk-availability`. The component record stores
+`manufacturer_request_id` and `availability_request_id`; its authority URL
+equals the manufacturer request URL. Exact status mapping is:
+
+| Component status | Manufacturer request | Required component fields | P1C/P1D meaning |
+| --- | --- | --- | --- |
+| `candidate-pending-evidence` | `pending` | manufacturer, MPN, rationale, authority, both request IDs; generic policy null | Provisional candidate; P1D must acquire manufacturer evidence. |
+| `selected` | `satisfied` with at least one current evidence ID | same selected fields; generic policy null | Electrical candidate is supported by archived manufacturer evidence. |
+| `candidate-evidence-unavailable` | `unavailable` with a non-empty note | same selected fields; generic policy null | Critical family blocks; noncritical family remains an explicit risk. |
+| `generic-allowance` | no requests | selected fields and request IDs null; one complete generic policy | Uniform engineering allowance only. |
+| `unresolved` | no requests | selected fields, request IDs, and generic policy null; non-empty rationale | Allowed only for a noncritical family and blocks its dependent feature. |
+
+The UK-availability request is independently `pending`, `satisfied`, or
+`unavailable` and never promotes or demotes electrical selection status. It is
+consumed by P1D/P1E sourcing and confidence gates. Cliff RX and TX are the only
+P1C2 records initially `selected`: their manufacturer requests are satisfied by
+`CLIFF-ORJ5` and `CLIFF-OTJ5` respectively, while their new UK-availability
+requests remain pending. All other selected candidates start
+`candidate-pending-evidence` with both requests pending. Generic allowances
+have one uniform value/package/tolerance and no requests. An unresolved or
+manufacturer-unavailable critical family blocks P1C. Alternatives are unique
+and must not repeat the selected manufacturer/MPN.
 
 ### P1C0a — Schema and policy vocabulary
 
@@ -1565,18 +1658,28 @@ unit: schema-contract
 seams: [canonical architecture JSON, atomic selection records]
 contract-artifact: both
 fan-out:
-  - name: p1c-schema-contract
+  - name: functional-topology-schema
+    owned-paths:
+      - evidence/design/functional-topology-schema.json
+      - scripts/fixtures/p1c-schema/functional-topology
+      - scripts/test_functional_topology_schema.py
+  - name: interfaces-states-schema
+    owned-paths:
+      - evidence/design/interfaces-and-states-schema.json
+      - scripts/fixtures/p1c-schema/interfaces-and-states
+      - scripts/test_interfaces_states_schema.py
+  - name: selection-status-schema
     owned-paths:
       - evidence/design/component-schema.json
-      - evidence/design/functional-topology-schema.json
-      - evidence/design/interfaces-and-states-schema.json
       - evidence/design/selection-policy-schema.json
       - evidence/manifest/source-request-schema.json
-      - scripts/fixtures/p1c-schema
+      - scripts/fixtures/p1c-schema/selection
       - scripts/test_selection_schemas.py
 review-intensity: active
 commit-checkpoint:
   green:
+    - python3 scripts/test_functional_topology_schema.py
+    - python3 scripts/test_interfaces_states_schema.py
     - python3 scripts/test_selection_schemas.py
     - node_modules/.bin/prettier --check "evidence/**/*.json" "scripts/fixtures/p1c-schema/**/*.json"
   buildable: [machine-readable P1C artifact and status vocabulary]
@@ -1618,16 +1721,17 @@ commit-checkpoint:
 ```
 
 `validate_p1.py` supports topology stages `contract`, `architecture-base`,
-`architecture`, `selection-fragments`, and `selection`. It validates schemas,
+`architecture`, `selection-fragments`, `selection`, and `handoff`. It validates schemas,
 mandatory IDs, exact expected file sets, citations, cross-document references,
 component/request equality, status transitions, critical-family resolution,
 and generated-view parity. Negative fixtures cover every invariant.
 
 `render_p1.py` has independent `functional-topology`,
-`interfaces-and-states`, and `components` write/check commands. It is the only
+`interfaces-and-states`, `components`, and `supplemental-requests` write/check
+commands. It is the only
 writer for the two Markdown views and CSV. Markdown sections and tables have
 stable schema-defined ordering. The component CSV is UTF-8 RFC 4180 with LF,
-header order `block,status,critical,manufacturer,mpn,requirements,alternatives,selection_rationale,authority_url,source_request_id,generic_value,generic_package,generic_tolerance,notes`, rows sorted by `block`, compact sorted JSON for array/object cells, and empty strings for nulls. Tests include golden fixtures, escaping/newline cases, semantic parity, and stale-output rejection.
+header order `block,status,critical,manufacturer,mpn,requirements,alternatives,selection_rationale,authority_url,manufacturer_request_id,availability_request_id,generic_value,generic_package,generic_tolerance,notes`, rows sorted by `block`, compact sorted JSON for array/object cells, and empty strings for nulls. Tests include golden fixtures, escaping/newline cases, semantic parity, and stale-output rejection.
 
 ### P1C1a — Functional topology and interface/state truth tables
 
@@ -1678,14 +1782,16 @@ The exact P1C2 family slugs are:
 - selected critical candidates: `usb-c-receptacle`, `usb-a-receptacle`,
   `internal-usb-cable`, `usb-esd`, `usb-power-protection`, `cliff-rx`,
   `cliff-tx`, `spdif-mux`, `spdif-tx-gate`, `ethernet-magjack`,
-  `teensy-side-socket`, `teensy-ethernet-socket`, and
-  `teensy-usb-host-socket`;
+  `teensy-side-socket`, `teensy-ethernet-socket`,
+  `teensy-usb-host-socket`, `expansion-power-protection`, and
+  `expansion-i2c-isolator`;
 - selected noncritical candidates: `expansion-i2c-control`, `expansion-spi`,
   `expansion-uart-debug`, `expansion-i2s-tdm`, `expansion-usb-host`,
   `expansion-gpio-adc`, `remote-program-rtc`, `test-fixture-header`, and
   `mechanical-cable-retainer`;
 - generic allowances: `usb-c-cc-pulldown`, `logic-decoupling-capacitor`,
-  `logic-control-pulldown`, and `ethernet-center-tap-capacitor`.
+  `logic-control-pulldown`, `ethernet-center-tap-capacitor`, and
+  `expansion-io-series-resistor`.
 
 P1C1b must use exactly this set. Changing it requires a reviewed plan amendment,
 not an implementer-local split or merge.
@@ -1694,8 +1800,9 @@ not an implementer-local split or merge.
 
 Each selected-candidate task owns
 `evidence/design/components/<family>.json` and
-`evidence/manifest/requests/REQ-<FAMILY>.json`. Each generic task owns only its
-component record. The coordinator spawns one bounded task per slug from the
+`evidence/manifest/requests/REQ-<FAMILY>-MFR.json` plus
+`evidence/manifest/requests/REQ-<FAMILY>-UK.json`. Each generic task owns only
+its component record. The coordinator spawns one bounded task per slug from the
 locked list above; no task selects more than one MPN. At most three disjoint
 tasks run concurrently. Each task runs
 `validate_p1.py topology --stage selection-fragments --family <slug>` before
@@ -1709,49 +1816,53 @@ seams: [selection-policy family, component/request pair]
 contract-artifact: both
 fan-out:
   - name: select-usb-c-receptacle
-    owned-paths: [evidence/design/components/usb-c-receptacle.json, evidence/manifest/requests/REQ-USB-C-RECEPTACLE.json]
+    owned-paths: [evidence/design/components/usb-c-receptacle.json, evidence/manifest/requests/REQ-USB-C-RECEPTACLE-MFR.json, evidence/manifest/requests/REQ-USB-C-RECEPTACLE-UK.json]
   - name: select-usb-a-receptacle
-    owned-paths: [evidence/design/components/usb-a-receptacle.json, evidence/manifest/requests/REQ-USB-A-RECEPTACLE.json]
+    owned-paths: [evidence/design/components/usb-a-receptacle.json, evidence/manifest/requests/REQ-USB-A-RECEPTACLE-MFR.json, evidence/manifest/requests/REQ-USB-A-RECEPTACLE-UK.json]
   - name: select-internal-usb-cable
-    owned-paths: [evidence/design/components/internal-usb-cable.json, evidence/manifest/requests/REQ-INTERNAL-USB-CABLE.json]
+    owned-paths: [evidence/design/components/internal-usb-cable.json, evidence/manifest/requests/REQ-INTERNAL-USB-CABLE-MFR.json, evidence/manifest/requests/REQ-INTERNAL-USB-CABLE-UK.json]
   - name: select-usb-esd
-    owned-paths: [evidence/design/components/usb-esd.json, evidence/manifest/requests/REQ-USB-ESD.json]
+    owned-paths: [evidence/design/components/usb-esd.json, evidence/manifest/requests/REQ-USB-ESD-MFR.json, evidence/manifest/requests/REQ-USB-ESD-UK.json]
   - name: select-usb-power-protection
-    owned-paths: [evidence/design/components/usb-power-protection.json, evidence/manifest/requests/REQ-USB-POWER-PROTECTION.json]
+    owned-paths: [evidence/design/components/usb-power-protection.json, evidence/manifest/requests/REQ-USB-POWER-PROTECTION-MFR.json, evidence/manifest/requests/REQ-USB-POWER-PROTECTION-UK.json]
   - name: select-cliff-rx
-    owned-paths: [evidence/design/components/cliff-rx.json, evidence/manifest/requests/REQ-CLIFF-RX.json]
+    owned-paths: [evidence/design/components/cliff-rx.json, evidence/manifest/requests/REQ-CLIFF-RX-MFR.json, evidence/manifest/requests/REQ-CLIFF-RX-UK.json]
   - name: select-cliff-tx
-    owned-paths: [evidence/design/components/cliff-tx.json, evidence/manifest/requests/REQ-CLIFF-TX.json]
+    owned-paths: [evidence/design/components/cliff-tx.json, evidence/manifest/requests/REQ-CLIFF-TX-MFR.json, evidence/manifest/requests/REQ-CLIFF-TX-UK.json]
   - name: select-spdif-mux
-    owned-paths: [evidence/design/components/spdif-mux.json, evidence/manifest/requests/REQ-SPDIF-MUX.json]
+    owned-paths: [evidence/design/components/spdif-mux.json, evidence/manifest/requests/REQ-SPDIF-MUX-MFR.json, evidence/manifest/requests/REQ-SPDIF-MUX-UK.json]
   - name: select-spdif-tx-gate
-    owned-paths: [evidence/design/components/spdif-tx-gate.json, evidence/manifest/requests/REQ-SPDIF-TX-GATE.json]
+    owned-paths: [evidence/design/components/spdif-tx-gate.json, evidence/manifest/requests/REQ-SPDIF-TX-GATE-MFR.json, evidence/manifest/requests/REQ-SPDIF-TX-GATE-UK.json]
   - name: select-ethernet-magjack
-    owned-paths: [evidence/design/components/ethernet-magjack.json, evidence/manifest/requests/REQ-ETHERNET-MAGJACK.json]
+    owned-paths: [evidence/design/components/ethernet-magjack.json, evidence/manifest/requests/REQ-ETHERNET-MAGJACK-MFR.json, evidence/manifest/requests/REQ-ETHERNET-MAGJACK-UK.json]
   - name: select-teensy-side-socket
-    owned-paths: [evidence/design/components/teensy-side-socket.json, evidence/manifest/requests/REQ-TEENSY-SIDE-SOCKET.json]
+    owned-paths: [evidence/design/components/teensy-side-socket.json, evidence/manifest/requests/REQ-TEENSY-SIDE-SOCKET-MFR.json, evidence/manifest/requests/REQ-TEENSY-SIDE-SOCKET-UK.json]
   - name: select-teensy-ethernet-socket
-    owned-paths: [evidence/design/components/teensy-ethernet-socket.json, evidence/manifest/requests/REQ-TEENSY-ETHERNET-SOCKET.json]
+    owned-paths: [evidence/design/components/teensy-ethernet-socket.json, evidence/manifest/requests/REQ-TEENSY-ETHERNET-SOCKET-MFR.json, evidence/manifest/requests/REQ-TEENSY-ETHERNET-SOCKET-UK.json]
   - name: select-teensy-usb-host-socket
-    owned-paths: [evidence/design/components/teensy-usb-host-socket.json, evidence/manifest/requests/REQ-TEENSY-USB-HOST-SOCKET.json]
+    owned-paths: [evidence/design/components/teensy-usb-host-socket.json, evidence/manifest/requests/REQ-TEENSY-USB-HOST-SOCKET-MFR.json, evidence/manifest/requests/REQ-TEENSY-USB-HOST-SOCKET-UK.json]
+  - name: select-expansion-power-protection
+    owned-paths: [evidence/design/components/expansion-power-protection.json, evidence/manifest/requests/REQ-EXPANSION-POWER-PROTECTION-MFR.json, evidence/manifest/requests/REQ-EXPANSION-POWER-PROTECTION-UK.json]
+  - name: select-expansion-i2c-isolator
+    owned-paths: [evidence/design/components/expansion-i2c-isolator.json, evidence/manifest/requests/REQ-EXPANSION-I2C-ISOLATOR-MFR.json, evidence/manifest/requests/REQ-EXPANSION-I2C-ISOLATOR-UK.json]
   - name: select-expansion-i2c-control
-    owned-paths: [evidence/design/components/expansion-i2c-control.json, evidence/manifest/requests/REQ-EXPANSION-I2C-CONTROL.json]
+    owned-paths: [evidence/design/components/expansion-i2c-control.json, evidence/manifest/requests/REQ-EXPANSION-I2C-CONTROL-MFR.json, evidence/manifest/requests/REQ-EXPANSION-I2C-CONTROL-UK.json]
   - name: select-expansion-spi
-    owned-paths: [evidence/design/components/expansion-spi.json, evidence/manifest/requests/REQ-EXPANSION-SPI.json]
+    owned-paths: [evidence/design/components/expansion-spi.json, evidence/manifest/requests/REQ-EXPANSION-SPI-MFR.json, evidence/manifest/requests/REQ-EXPANSION-SPI-UK.json]
   - name: select-expansion-uart-debug
-    owned-paths: [evidence/design/components/expansion-uart-debug.json, evidence/manifest/requests/REQ-EXPANSION-UART-DEBUG.json]
+    owned-paths: [evidence/design/components/expansion-uart-debug.json, evidence/manifest/requests/REQ-EXPANSION-UART-DEBUG-MFR.json, evidence/manifest/requests/REQ-EXPANSION-UART-DEBUG-UK.json]
   - name: select-expansion-i2s-tdm
-    owned-paths: [evidence/design/components/expansion-i2s-tdm.json, evidence/manifest/requests/REQ-EXPANSION-I2S-TDM.json]
+    owned-paths: [evidence/design/components/expansion-i2s-tdm.json, evidence/manifest/requests/REQ-EXPANSION-I2S-TDM-MFR.json, evidence/manifest/requests/REQ-EXPANSION-I2S-TDM-UK.json]
   - name: select-expansion-usb-host
-    owned-paths: [evidence/design/components/expansion-usb-host.json, evidence/manifest/requests/REQ-EXPANSION-USB-HOST.json]
+    owned-paths: [evidence/design/components/expansion-usb-host.json, evidence/manifest/requests/REQ-EXPANSION-USB-HOST-MFR.json, evidence/manifest/requests/REQ-EXPANSION-USB-HOST-UK.json]
   - name: select-expansion-gpio-adc
-    owned-paths: [evidence/design/components/expansion-gpio-adc.json, evidence/manifest/requests/REQ-EXPANSION-GPIO-ADC.json]
+    owned-paths: [evidence/design/components/expansion-gpio-adc.json, evidence/manifest/requests/REQ-EXPANSION-GPIO-ADC-MFR.json, evidence/manifest/requests/REQ-EXPANSION-GPIO-ADC-UK.json]
   - name: select-remote-program-rtc
-    owned-paths: [evidence/design/components/remote-program-rtc.json, evidence/manifest/requests/REQ-REMOTE-PROGRAM-RTC.json]
+    owned-paths: [evidence/design/components/remote-program-rtc.json, evidence/manifest/requests/REQ-REMOTE-PROGRAM-RTC-MFR.json, evidence/manifest/requests/REQ-REMOTE-PROGRAM-RTC-UK.json]
   - name: select-test-fixture-header
-    owned-paths: [evidence/design/components/test-fixture-header.json, evidence/manifest/requests/REQ-TEST-FIXTURE-HEADER.json]
+    owned-paths: [evidence/design/components/test-fixture-header.json, evidence/manifest/requests/REQ-TEST-FIXTURE-HEADER-MFR.json, evidence/manifest/requests/REQ-TEST-FIXTURE-HEADER-UK.json]
   - name: select-mechanical-cable-retainer
-    owned-paths: [evidence/design/components/mechanical-cable-retainer.json, evidence/manifest/requests/REQ-MECHANICAL-CABLE-RETAINER.json]
+    owned-paths: [evidence/design/components/mechanical-cable-retainer.json, evidence/manifest/requests/REQ-MECHANICAL-CABLE-RETAINER-MFR.json, evidence/manifest/requests/REQ-MECHANICAL-CABLE-RETAINER-UK.json]
   - name: allow-usb-c-cc-pulldown
     owned-paths: [evidence/design/components/usb-c-cc-pulldown.json]
   - name: allow-logic-decoupling-capacitor
@@ -1760,6 +1871,8 @@ fan-out:
     owned-paths: [evidence/design/components/logic-control-pulldown.json]
   - name: allow-ethernet-center-tap-capacitor
     owned-paths: [evidence/design/components/ethernet-center-tap-capacitor.json]
+  - name: allow-expansion-io-series-resistor
+    owned-paths: [evidence/design/components/expansion-io-series-resistor.json]
 review-intensity: active
 commit-checkpoint:
   green:
@@ -1785,13 +1898,43 @@ commit-checkpoint:
     - python3 scripts/render_p1.py components --check
     - python3 scripts/validate_p1.py topology --stage selection
     - the repo tooling tool doc-index -- --check
-  buildable: [locked functional topology and finite supplemental source queue]
+  buildable: [deterministic provisional component review view]
   parent-commit: "docs(aius): lock functional topology and component candidates"
 ```
 
 P1C3 runs only after every P1C2 handoff is committed. An already-dirty or stale
 foreign generated documentation index remains nonblocking under repository
 policy and is recorded in the phase note rather than joined to the commit.
+
+### P1C4 — Exact P1D acquisition handoff
+
+```yaml
+phase: P1C4
+unit: supplemental-request-coordinator
+seams: [validated requests, explicit P1D acquisition fan-out]
+contract-artifact: both
+fan-out:
+  - name: p1d-handoff-coordinator
+    owned-paths:
+      - evidence/manifest/supplemental-requests.json
+      - docs/plans/aius-p1-evidence-topology-cost.md
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/render_p1.py supplemental-requests --write
+    - python3 scripts/render_p1.py supplemental-requests --check
+    - python3 scripts/validate_p1.py topology --stage handoff
+    - the repo tooling tool doc-index -- --check
+  buildable: [exact manufacturer and UK-availability acquisition queue for P1D]
+  parent-commit: "docs(aius): bind supplemental evidence acquisition"
+```
+
+P1C4 runs only after P1C3 is committed. It generates the sorted request
+aggregate, then replaces the P1D placeholder fan-out below with one explicit
+task and exact owned paths per non-satisfied request. Satisfied Cliff
+manufacturer requests are absent from acquisition fan-out but remain in the
+aggregate. The plan file is an explicit owned path for this integration phase;
+no later implementer is allowed to derive or silently widen the queue.
 
 ## P1D — Supplemental evidence and electrical reference
 
@@ -1834,7 +1977,7 @@ Failure of any criterion automatically selects four layers for H2; it is not a
 reviewer preference. The placement is a measured feasibility artifact, not PCB
 manufacturing data.
 
-P1C updates the P1D fan-out in this plan with one exact source ID, artifact
+P1C4 updates the P1D fan-out in this plan with one exact source ID, artifact
 directory, and fragment path per approved request before its checkpoint lands.
 Each P1D acquisition agent receives one request only. The P1D clean-room gate
 fails if any `<request-id>` placeholder remains; source acquisition and design
