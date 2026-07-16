@@ -3313,6 +3313,12 @@ implementer may derive or silently widen this queue.
 
 ## P1D — Supplemental evidence and electrical reference
 
+Pre-P1D correction checkpoint P1C5a completed on 2026-07-16. The functional
+expansion-power payload and protected expansion-rail topology are reconciled in
+the normative contracts, fixtures, review mirrors and rendered references. The
+clean-room delivery re-audit passed the builder, schema, validator, byte-parity
+and handoff checkpoints. P1C5b remains pending.
+
 The normative P1D contract is now
 [`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
 supersedes the historical draft below after a clean-room review found that the

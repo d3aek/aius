@@ -43,7 +43,15 @@ def _load(relative: Path) -> object:
 FUNCTIONAL_BASE = _load(builder.FUNCTIONAL_BASE)
 INTERFACES_BASE = _load(builder.INTERFACES_BASE)
 FUNCTIONAL_GENERATED_HASH = (
-    "c2169ccab183b835c494ab52a0e6c288403c2ea69e3b94816d28e474a8606aae"
+    "b5e56ef6d6e9c67f7cbb0ed048a8be8d6b2ea89be553c7a5f72e9657ffb1a9a9"
+)
+OUTPUTS = (
+    builder.FUNCTIONAL_CONTRACT,
+    builder.INTERFACES_CONTRACT,
+    builder.FUNCTIONAL_VALID,
+    builder.INTERFACES_VALID,
+    builder.FUNCTIONAL_MIRROR,
+    builder.INTERFACES_MIRROR,
 )
 
 
@@ -86,6 +94,38 @@ class PureBuilderTests(unittest.TestCase):
         self.assertEqual(_load(builder.INTERFACES_CONTRACT), first[1])
         self.assertEqual(_load(builder.FUNCTIONAL_VALID), first[0])
         self.assertEqual(_load(builder.INTERFACES_VALID), first[1])
+        self.assertEqual(_load(builder.FUNCTIONAL_MIRROR), first[0])
+        self.assertEqual(_load(builder.INTERFACES_MIRROR), first[1])
+
+    def test_functional_expansion_power_migration_is_exact(self) -> None:
+        functional = builder.build_functional_contract(FUNCTIONAL_BASE)
+
+        self.assertEqual(
+            {
+                "id": "expansion-power",
+                "kind": "power",
+                "source_id": "teensy",
+                "sink_id": "expansion",
+                "payload": "expansion-3v3",
+                "enabled_modes": [],
+                "control_id": None,
+                "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
+                "notes": "",
+            },
+            _row_by_id(functional, "flows", "expansion-power"),
+        )
+
+    def test_functional_migration_rejects_reordered_base_without_mutation(self) -> None:
+        base = copy.deepcopy(FUNCTIONAL_BASE)
+        base["flows"][0], base["flows"][1] = base["flows"][1], base["flows"][0]
+        before = copy.deepcopy(base)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "flows do not have the exact locked ID order",
+        ):
+            builder.build_functional_contract(base)
+        self.assertEqual(before, base)
 
     def test_teensy_micro_b_replacement_is_exact(self) -> None:
         interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
@@ -117,6 +157,34 @@ class PureBuilderTests(unittest.TestCase):
         self.assertEqual(
             ["teensy", "internal-usb-a", "teensy-micro-b"],
             _row_by_id(interfaces, "power_domains", "protected-5v")["consumers"],
+        )
+
+    def test_expansion_power_domains_are_exact_and_ordered(self) -> None:
+        interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
+
+        self.assertEqual(
+            [
+                "optical-rx",
+                "raw-bypass-mux",
+                "tx-gate",
+                "optical-tx",
+                "ethernet",
+                "expansion-power-protection",
+            ],
+            _row_by_id(interfaces, "power_domains", "teensy-3v3")["consumers"],
+        )
+        self.assertEqual(
+            {
+                "id": "expansion-3v3",
+                "source": "expansion-power-protection",
+                "consumers": ["expansion"],
+                "backfeed_rule": (
+                    "Reverse power flow is blocked when either side is unpowered."
+                ),
+                "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],
+                "notes": "Protected expansion logic rail.",
+            },
+            _row_by_id(interfaces, "power_domains", "expansion-3v3"),
         )
 
     def test_remote_rtc_connector_domains_and_evidence_are_exact(self) -> None:
@@ -208,19 +276,30 @@ class PureBuilderTests(unittest.TestCase):
                     builder.build_interfaces_contract(base)
                 self.assertEqual(before, base)
 
-    def test_functional_generated_outputs_keep_locked_bytes(self) -> None:
+    def test_generated_output_triplets_keep_locked_bytes(self) -> None:
         outputs = (
             AIUS_ROOT / builder.FUNCTIONAL_CONTRACT,
             AIUS_ROOT / builder.FUNCTIONAL_VALID,
+            AIUS_ROOT / builder.FUNCTIONAL_MIRROR,
         )
 
-        self.assertEqual(outputs[0].read_bytes(), outputs[1].read_bytes())
+        self.assertEqual(1, len({output.read_bytes() for output in outputs}))
         for output in outputs:
             with self.subTest(output=output):
                 self.assertEqual(
                     FUNCTIONAL_GENERATED_HASH,
                     hashlib.sha256(output.read_bytes()).hexdigest(),
                 )
+
+        interface_outputs = (
+            AIUS_ROOT / builder.INTERFACES_CONTRACT,
+            AIUS_ROOT / builder.INTERFACES_VALID,
+            AIUS_ROOT / builder.INTERFACES_MIRROR,
+        )
+        self.assertEqual(
+            1,
+            len({output.read_bytes() for output in interface_outputs}),
+        )
 
     def test_every_evidence_assignment_is_exhaustive_and_exact(self) -> None:
         functional = builder.build_functional_contract(FUNCTIONAL_BASE)
@@ -255,6 +334,9 @@ class PureBuilderTests(unittest.TestCase):
                 row["evidence_ids"] = copy.deepcopy(
                     base_by_id[row["id"]]["evidence_ids"]
                 )
+        _row_by_id(normalized_functional, "flows", "expansion-power")[
+            "payload"
+        ] = _row_by_id(FUNCTIONAL_BASE, "flows", "expansion-power")["payload"]
         self.assertEqual(FUNCTIONAL_BASE, normalized_functional)
 
         interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
@@ -303,6 +385,16 @@ class PureBuilderTests(unittest.TestCase):
                 "consumers"
             ]
         )
+        power_domains_by_id["teensy-3v3"]["consumers"] = copy.deepcopy(
+            _row_by_id(INTERFACES_BASE, "power_domains", "teensy-3v3")[
+                "consumers"
+            ]
+        )
+        power_domains_by_id["expansion-3v3"]["source"] = _row_by_id(
+            INTERFACES_BASE,
+            "power_domains",
+            "expansion-3v3",
+        )["source"]
         normalized_interfaces["power_domains"] = [
             row
             for row in normalized_interfaces["power_domains"]
@@ -392,22 +484,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual("OK build-p1c-architecture-contracts\n", stdout)
         self.assertEqual("", stderr)
 
-        for relative in (
-            builder.FUNCTIONAL_CONTRACT,
-            builder.INTERFACES_CONTRACT,
-            builder.FUNCTIONAL_VALID,
-            builder.INTERFACES_VALID,
-        ):
+        for relative in OUTPUTS:
             self.assertEqual((AIUS_ROOT / relative).read_bytes(), (self.root / relative).read_bytes())
 
         before = {
             relative: (self.root / relative).stat()
-            for relative in (
-                builder.FUNCTIONAL_CONTRACT,
-                builder.INTERFACES_CONTRACT,
-                builder.FUNCTIONAL_VALID,
-                builder.INTERFACES_VALID,
-            )
+            for relative in OUTPUTS
         }
         result, stdout, stderr = self._run("--check")
         self.assertEqual((0, "OK build-p1c-architecture-contracts\n", ""), (result, stdout, stderr))
@@ -421,7 +503,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual((1, ""), (result, stdout))
         lines = stderr.splitlines()
         self.assertEqual(sorted(lines), lines)
-        self.assertEqual(4, len(lines))
+        self.assertEqual(6, len(lines))
         self.assertTrue(all("AIUS-P1C-CONTRACT-MISSING" in line for line in lines))
 
         self._run("--write")
@@ -537,6 +619,80 @@ class CliTests(unittest.TestCase):
         self.assertIn("injected replacement failure", stderr)
         self.assertEqual(b"old output\n", target.read_bytes())
         self.assertEqual([], list(target.parent.glob(f".{target.name}.aius-p1c-*.tmp")))
+
+    def test_each_replace_failure_keeps_earlier_outputs_and_skips_later_outputs(
+        self,
+    ) -> None:
+        result, stdout, stderr = self._run("--write")
+        self.assertEqual(
+            (0, "OK build-p1c-architecture-contracts\n", ""),
+            (result, stdout, stderr),
+        )
+        expected = {
+            relative: (self.root / relative).read_bytes() for relative in OUTPUTS
+        }
+
+        for failed_index, failed in enumerate(OUTPUTS):
+            old = {
+                relative: f"old {failed_index} {relative.as_posix()}\n".encode()
+                for relative in OUTPUTS
+            }
+            for relative, payload in old.items():
+                (self.root / relative).write_bytes(payload)
+            replaced = []
+
+            def fail_replace(source: str, destination: str) -> None:
+                relative = Path(destination).relative_to(self.root)
+                replaced.append(relative)
+                if relative == failed:
+                    raise OSError("injected replacement failure")
+                os.replace(source, destination)
+
+            result, stdout, stderr = self._run(
+                "--write",
+                replace=fail_replace,
+            )
+
+            with self.subTest(failed=failed):
+                self.assertEqual((1, ""), (result, stdout))
+                self.assertEqual(list(OUTPUTS[: failed_index + 1]), replaced)
+                self.assertEqual(
+                    (
+                        "AIUS-P1C-CONTRACT-WRITE: "
+                        f"{failed.as_posix()}: injected replacement failure\n"
+                    ),
+                    stderr,
+                )
+                for relative in OUTPUTS[:failed_index]:
+                    self.assertEqual(
+                        expected[relative],
+                        (self.root / relative).read_bytes(),
+                    )
+                for relative in OUTPUTS[failed_index:]:
+                    self.assertEqual(
+                        old[relative],
+                        (self.root / relative).read_bytes(),
+                    )
+                failed_target = self.root / failed
+                self.assertEqual(
+                    [],
+                    list(
+                        failed_target.parent.glob(
+                            f".{failed_target.name}.aius-p1c-*.tmp"
+                        )
+                    ),
+                )
+
+            result, stdout, stderr = self._run("--write")
+            self.assertEqual(
+                (0, "OK build-p1c-architecture-contracts\n", ""),
+                (result, stdout, stderr),
+            )
+            for relative in OUTPUTS:
+                self.assertEqual(
+                    expected[relative],
+                    (self.root / relative).read_bytes(),
+                )
 
     def test_exactly_one_mode_is_required_by_argparse(self) -> None:
         for modes in ((), ("--write", "--check")):

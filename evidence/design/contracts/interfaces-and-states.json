@@ -242,7 +242,7 @@
     {
       "id": "teensy-3v3",
       "source": "teensy",
-      "consumers": ["optical-rx", "raw-bypass-mux", "tx-gate", "optical-tx"],
+      "consumers": ["optical-rx", "raw-bypass-mux", "tx-gate", "optical-tx", "ethernet", "expansion-power-protection"],
       "backfeed_rule": "No external interface may sustain the Teensy 3.3 V rail.",
       "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Core 3.3 V logic domain."
@@ -273,7 +273,7 @@
     },
     {
       "id": "expansion-3v3",
-      "source": "protected-5v",
+      "source": "expansion-power-protection",
       "consumers": ["expansion"],
       "backfeed_rule": "Reverse power flow is blocked when either side is unpowered.",
       "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"],

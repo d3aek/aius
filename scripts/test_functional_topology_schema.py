@@ -369,6 +369,7 @@ class SchemaVocabularyTests(FunctionalTopologySchemaTestCase):
                 "usb-vbus",
                 "protected-5v",
                 "teensy-3v3",
+                "expansion-3v3",
             ),
             ("clockDomain", "frequency_status"): (
                 "evidence-locked",
@@ -418,6 +419,8 @@ class FixtureTests(FunctionalTopologySchemaTestCase):
             "mode-unknown-format.json": "mode",
             "block-null-kind.json": "block",
             "flow-additional-property.json": "flow",
+            "flow-expansion-payload-wrong-id.json": "flow",
+            "flow-expansion-power-stale-payload.json": "flow",
             "clock-domain-empty-consumers.json": "clockDomain",
             "buffer-unknown-gate.json": "buffer",
             "latency-boundary-numeric-budget.json": "latencyBoundary",
@@ -520,6 +523,44 @@ class EnumAndNullabilityTests(FunctionalTopologySchemaTestCase):
 
         topology = self.topology()
         topology["schema_version"] = "1.0.1"
+        self.assert_invalid(topology)
+
+    def test_expansion_3v3_payload_is_reserved_for_expansion_power(self) -> None:
+        payloads = tuple(SCHEMA["$defs"]["flow"]["properties"]["payload"]["enum"])
+        self.assertEqual("expansion-3v3", payloads[-1])
+
+        for payload in payloads[:-1]:
+            topology = self.topology()
+            expansion_power = next(
+                row for row in topology["flows"] if row["id"] == "expansion-power"
+            )
+            expansion_power["payload"] = payload
+            with self.subTest(expansion_power_payload=payload):
+                self.assert_invalid(topology)
+
+            topology = self.topology()
+            expansion_power = next(
+                row for row in topology["flows"] if row["id"] == "expansion-power"
+            )
+            expansion_power["payload"] = "expansion-3v3"
+            carrier_3v3 = next(
+                row for row in topology["flows"] if row["id"] == "carrier-3v3"
+            )
+            carrier_3v3["payload"] = payload
+            with self.subTest(carrier_payload=payload):
+                validate(topology, SCHEMA)
+
+        topology = self.topology()
+        expansion_power = next(
+            row for row in topology["flows"] if row["id"] == "expansion-power"
+        )
+        expansion_power["payload"] = "expansion-3v3"
+        validate(topology, SCHEMA)
+
+        carrier_3v3 = next(
+            row for row in topology["flows"] if row["id"] == "carrier-3v3"
+        )
+        carrier_3v3["payload"] = "expansion-3v3"
         self.assert_invalid(topology)
 
     def test_only_power_clock_and_control_references_are_nullable(self) -> None:

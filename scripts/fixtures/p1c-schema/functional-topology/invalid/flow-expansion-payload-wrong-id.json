@@ -1,0 +1,11 @@
+{
+  "id": "carrier-3v3",
+  "kind": "power",
+  "source_id": "teensy",
+  "sink_id": "ethernet",
+  "payload": "expansion-3v3",
+  "enabled_modes": [],
+  "control_id": null,
+  "evidence_ids": ["PJRC-IMXRT1060-RM"],
+  "notes": ""
+}

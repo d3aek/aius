@@ -688,8 +688,24 @@ class PowerReferenceCliTests(ValidatorTestCase):
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.stderr.splitlines(), expected)
 
-    def future_pair(self) -> dict[str, object]:
+    def absent_pair(self) -> dict[str, object]:
         interfaces = copy.deepcopy(self.fixture.interfaces)
+        teensy = next(
+            row for row in interfaces["power_domains"] if row["id"] == "teensy-3v3"
+        )
+        expansion = next(
+            row for row in interfaces["power_domains"] if row["id"] == "expansion-3v3"
+        )
+        teensy["consumers"] = [
+            consumer
+            for consumer in teensy["consumers"]
+            if consumer != "expansion-power-protection"
+        ]
+        expansion["source"] = "protected-5v"
+        return interfaces
+
+    def future_pair(self) -> dict[str, object]:
+        interfaces = self.absent_pair()
         teensy = next(
             row for row in interfaces["power_domains"] if row["id"] == "teensy-3v3"
         )
@@ -706,11 +722,11 @@ class PowerReferenceCliTests(ValidatorTestCase):
         )
 
     def test_absent_pair_and_future_exact_pair_pass(self) -> None:
-        self.assert_power_ok()
+        self.assert_power_ok(self.absent_pair())
         self.assert_power_ok(self.future_pair())
 
     def test_exact_source_without_final_consumer_reports_exact_contract(self) -> None:
-        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces = self.absent_pair()
         expansion = next(
             row for row in interfaces["power_domains"] if row["id"] == "expansion-3v3"
         )
@@ -727,7 +743,7 @@ class PowerReferenceCliTests(ValidatorTestCase):
         )
 
     def test_final_consumer_without_exact_source_reports_exact_contract(self) -> None:
-        interfaces = copy.deepcopy(self.fixture.interfaces)
+        interfaces = self.absent_pair()
         teensy = next(
             row for row in interfaces["power_domains"] if row["id"] == "teensy-3v3"
         )

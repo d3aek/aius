@@ -318,6 +318,7 @@ fan-out:
       - scripts/fixtures/p1c-schema/functional-topology/invalid
       - scripts/build_p1c_architecture_contracts.py
       - scripts/test_build_p1c_architecture_contracts.py
+      - scripts/test_validate_p1.py
 coordination: parent runs committed builders and renderers to update generated contracts, valid fixtures, JSON mirrors, and Markdown; immutable base fixtures are untouched
 review-intensity: active
 commit-checkpoint:
@@ -328,6 +329,7 @@ commit-checkpoint:
     - python3 scripts/test_build_p1c_architecture_contracts.py
     - python3 scripts/test_functional_topology_schema.py
     - python3 scripts/test_interfaces_states_schema.py
+    - python3 scripts/test_validate_p1.py
     - python3 scripts/build_p1c_architecture_contracts.py --check
     - python3 scripts/render_p1.py functional-topology --check
     - python3 scripts/render_p1.py interfaces-and-states --check
@@ -356,6 +358,17 @@ The parent-generated exact paths are
 `docs/reference/functional-topology.md`, and
 `docs/reference/interfaces-and-states.md`. The parent alone runs the committed
 builder and renderers; no manual copy step exists.
+
+The P1C5a delivery audit found that materializing the previously future endpoint
+pair invalidates P1C5a0 test constructors that assumed the live fixture omitted
+it. P1C5a therefore owns the compatibility-only fixture-constructor update in
+`test_validate_p1.py`; production P1C5a0 behavior remains unchanged, and the
+full prior validator suite is an explicit checkpoint.
+
+P1C5a completed on 2026-07-16. The clean-room delivery re-audit returned
+`PASS`; builder, schema and validator suites passed 23, 18, 18 and 87 tests,
+respectively, and all six JSON outputs, both rendered reviews, byte checks and
+the topology handoff were green.
 
 ### P1C5b — USB-C request-kind correction
 

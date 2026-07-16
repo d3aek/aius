@@ -65,7 +65,7 @@
 | protected-vbus | power | usb-bridge | teensy | protected-5v |  |  | PJRC-TEENSY41-SCHEMATIC |  |
 | teensy-power | power | teensy | optical-rx | teensy-3v3 |  |  | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC |  |
 | carrier-3v3 | power | teensy | ethernet | teensy-3v3 |  |  | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC |  |
-| expansion-power | power | teensy | expansion | teensy-3v3 |  |  | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT |  |
+| expansion-power | power | teensy | expansion | expansion-3v3 |  |  | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT |  |
 
 ## Clock domains
 

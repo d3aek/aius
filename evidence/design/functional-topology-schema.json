@@ -223,7 +223,8 @@
             "reset",
             "usb-vbus",
             "protected-5v",
-            "teensy-3v3"
+            "teensy-3v3",
+            "expansion-3v3"
           ]
         },
         "enabled_modes": {
@@ -243,7 +244,47 @@
           "type": "string"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "expansion-power"
+              }
+            }
+          },
+          "then": {
+            "required": ["payload"],
+            "properties": {
+              "payload": {
+                "const": "expansion-3v3"
+              }
+            }
+          },
+          "else": {
+            "required": ["payload"],
+            "properties": {
+              "payload": {
+                "enum": [
+                  "optical-spdif",
+                  "logic-spdif",
+                  "iec61937-dts-core",
+                  "pcm-native",
+                  "pcm-stereo-48k",
+                  "path-select",
+                  "tx-enable",
+                  "reset",
+                  "usb-vbus",
+                  "protected-5v",
+                  "teensy-3v3"
+                ]
+              }
+            }
+          }
+        }
+      ]
     },
     "clockDomain": {
       "type": "object",

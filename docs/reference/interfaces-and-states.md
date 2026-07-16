@@ -44,11 +44,11 @@
 | --- | --- | --- | --- | --- | --- |
 | usb-vbus-raw | rear-usb-c | power-entry | The product never sources USB VBUS. | PJRC-TEENSY41-SCHEMATIC | Single external 5 V source. |
 | protected-5v | power-entry | teensy<br>internal-usb-a<br>teensy-micro-b | Reverse current to raw VBUS is blocked. | PJRC-TEENSY41-SCHEMATIC | Protected internal 5 V rail. |
-| teensy-3v3 | teensy | optical-rx<br>raw-bypass-mux<br>tx-gate<br>optical-tx | No external interface may sustain the Teensy 3.3 V rail. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC | Core 3.3 V logic domain. |
+| teensy-3v3 | teensy | optical-rx<br>raw-bypass-mux<br>tx-gate<br>optical-tx<br>ethernet<br>expansion-power-protection | No external interface may sustain the Teensy 3.3 V rail. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC | Core 3.3 V logic domain. |
 | rtc-backup | remote-program-rtc | teensy | The RTC backup input is isolated from teensy-3v3 and cannot power the core. | PJRC-TEENSY41-PINOUT<br>PJRC-TEENSY41-SCHEMATIC | External RTC backup battery domain. |
 | digital-ground | rear-usb-c | carrier<br>teensy<br>expansion | Grounding does not create a secondary supply path. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC | Digital reference domain. |
 | chassis-shield | enclosure | rear-usb-c<br>ethernet-rj45 | Cable shields do not carry functional supply current. | PJRC-ETHERNET-KIT<br>PJRC-TEENSY41-SCHEMATIC | Chassis and connector shield domain. |
-| expansion-3v3 | protected-5v | expansion | Reverse power flow is blocked when either side is unpowered. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT | Protected expansion logic rail. |
+| expansion-3v3 | expansion-power-protection | expansion | Reverse power flow is blocked when either side is unpowered. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT | Protected expansion logic rail. |
 | expansion-usb-host-vbus | protected-5v | expansion-usb-host | The host switch blocks reverse power flow. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT | Current-limited expansion USB host supply. |
 
 ## Operating states

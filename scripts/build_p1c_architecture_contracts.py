@@ -31,6 +31,8 @@ FUNCTIONAL_VALID = Path("scripts/fixtures/p1c-schema/functional-topology/valid.j
 INTERFACES_VALID = Path(
     "scripts/fixtures/p1c-schema/interfaces-and-states/valid.json"
 )
+FUNCTIONAL_MIRROR = Path("evidence/design/functional-topology.json")
+INTERFACES_MIRROR = Path("evidence/design/interfaces-and-states.json")
 
 EVIDENCE_BUNDLES = {
     "EV-AUDIO": (
@@ -347,6 +349,17 @@ def _migrate_usb_rtc_power_topology(document: dict[str, object]) -> None:
         "internal-usb-a",
         "teensy-micro-b",
     ]
+    teensy_3v3 = power_domains[power_domain_index["teensy-3v3"]]
+    teensy_3v3["consumers"] = [
+        "optical-rx",
+        "raw-bypass-mux",
+        "tx-gate",
+        "optical-tx",
+        "ethernet",
+        "expansion-power-protection",
+    ]
+    expansion_3v3 = power_domains[power_domain_index["expansion-3v3"]]
+    expansion_3v3["source"] = "expansion-power-protection"
     rtc_backup = {
         "id": "rtc-backup",
         "source": "remote-program-rtc",
@@ -365,6 +378,13 @@ def build_functional_contract(base: object) -> object:
     """Return the functional contract derived from the immutable P1C0a base."""
 
     document = _copy_document(base, "functional-topology")
+    flows = _locked_rows(
+        document,
+        "flows",
+        tuple(FUNCTIONAL_EVIDENCE["flows"]),
+    )
+    expansion_power = next(row for row in flows if row["id"] == "expansion-power")
+    expansion_power["payload"] = "expansion-3v3"
     _assign_evidence(document, FUNCTIONAL_EVIDENCE)
     return document
 
@@ -580,6 +600,8 @@ def _derive_and_format(
         INTERFACES_CONTRACT: interfaces_bytes,
         FUNCTIONAL_VALID: functional_bytes,
         INTERFACES_VALID: interfaces_bytes,
+        FUNCTIONAL_MIRROR: functional_bytes,
+        INTERFACES_MIRROR: interfaces_bytes,
     }, []
 
 
