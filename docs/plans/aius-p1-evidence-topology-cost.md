@@ -1998,13 +1998,13 @@ Stage inputs use these abbreviations: `FT` is
 `evidence/manifest/sources.json`; `FT.md` and `IS.md` are their mapped review
 views; `C.csv` is `evidence/design/provisional-components.csv`; and `R.json` is
 `evidence/manifest/supplemental-requests.json`. `FTC` and `ISC` are the two
-P1C0c normative contracts under `evidence/design/contracts/`; before P1C0c1
+P1C0c normative contracts under `evidence/design/contracts/`; before P1C0c
 lands they are not part of the executable surface, and afterwards the amended
 rows below require them cumulatively.
 
 | Stage | Required inputs/outputs | Permitted missing | Exact validation contract |
 | --- | --- | --- | --- |
-| `contract` | the five P1C schemas and, after P1C0c1, both `evidence/design/contracts/*.json` normative contracts | all instances and generated outputs | Draft/schema self-check, root/member key order declared by each schema, schema version constants, normative-contract instance validation, and P1C0c1 builder parity |
+| `contract` | the five P1C schemas and, after P1C0c, both `evidence/design/contracts/*.json` normative contracts plus `scripts/fixtures/p1c-schema/functional-topology/base-v1.json` and `scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json` | all instances and generated outputs | Draft/schema self-check, root/member key order declared by each schema, schema version constants, raw base SHA-256 enforcement, normative-contract instance validation, and P1C0c builder parity |
 | `architecture-base` | `FT`, `IS`, `SRC`, `FT.md`, `IS.md` and both normative contracts | `SP`, `C/*`, `R/*`, `C.csv`, `R.json` | prior stage; instance schemas; locked root/member order and exact ID/order sets; exact ordered semantic equality to the normative contracts; all topology, clock, buffer, state, fault, transition, control, power, and flow cross-references and locked outcomes; every evidence ID resolves to a `current` `SRC` record; exact P1C0b1 Markdown byte parity |
 | `architecture` | architecture-base inputs plus `SP` | `C/*`, `R/*`, `C.csv`, `R.json` | prior stage; policy schema/order; exact ordered family set and component filenames; unique policy/requirement/family IDs; requirement and family equality; every requirement basis resolves to a current source or declared engineering policy; namespaces do not overlap; critical/status/generic/request/dependent-feature rules from the locked P1C matrix |
 | `selection-fragments --family F` | architecture inputs and `C/F.json`; also the two policy-named `R/*` files when status is `selected`, `candidate-pending-evidence`, or `candidate-evidence-unavailable` | all sibling files and both aggregates; target requests when status is `generic-allowance` or `unresolved` | prior stage; target filename/family equality; component schema/order; policy requirement equality and allowed status; status/null/generic matrix; unique alternatives; request schema/order, ID/kind/family/requirements/manufacturer/MPN/source equality; request/source status rules. Sibling fragments are ignored so one task cannot block another |
@@ -2065,7 +2065,7 @@ and validator locked record shapes and ID sets but did not lock most row values;
 generic transition IDs had ambiguous single source/target fields; evidence
 arrays could be empty; nested-array order was not contractual; and the two
 parallel tasks lacked explicit dependency and parent-validation boundaries.
-P1C0c1 and P1C0c2 close those gaps before either P1C1a instance is authored.
+P1C0c closes those gaps before either P1C1a instance is authored.
 
 #### Normative architecture-contract derivation
 
@@ -2077,7 +2077,7 @@ The normative base snapshots are the two P1C0a valid fixtures as committed at
 | `functional-topology/valid.json` | `17e07765a7ef2de03e0722f3b393f8dafde48ec2d854b381c47d51073b0d3257` |
 | `interfaces-and-states/valid.json` | `31ea644c922515c0fa6193e67a7432b8b911083af96d3290a1b34959800fcd84` |
 
-P1C0c1 preserves those bytes as immutable `base-v1.json` inputs under the same
+P1C0c preserves those bytes as immutable `base-v1.json` inputs under the same
 fixture subtrees. `scripts/build_p1c_architecture_contracts.py` validates both
 hashes and applies only the transformations declared below. It writes the new
 schema-valid fixture and the corresponding normative design contract with
@@ -2278,14 +2278,24 @@ changes the transition columns and golden fixture from `from_state`/`to_state`
 to `from_states`/`to_states`, using its existing ordered-array `<br>` contract.
 
 `contract` now also requires and schema-validates both normative design
-contracts. It imports the two pure builder functions, loads the hashed bases,
-and compares the parsed normative values to the freshly derived objects; the
+contracts and both exact `base-v1.json` inputs. It reads each base as raw bytes,
+verifies the locked SHA-256 before derivation, then imports the two pure builder
+functions and compares the parsed normative values to the freshly derived
+objects; the
 separate builder `--check` owns exact formatted-byte parity. `architecture-base`
 requires exact semantic equality between each
 instance and its normative contract after the existing parse/schema/order
 gates; a scalar or ordered-array difference emits `CONTRACT` at the instance
 path. The validator still performs independent cross-reference and current
 evidence resolution, so equality never substitutes for source validity.
+
+Validator diagnostics use the existing vocabulary: an absent base is
+`MISSING`; unreadable bytes are `PARSE`; raw hash mismatch is `CONTRACT`; and
+non-UTF-8 or malformed JSON is both `CONTRACT` for the necessarily wrong hash
+and `PARSE` for content. Derivation stops unless the base hash and parse both
+pass. Focused contract-stage negatives cover each base missing, malformed, and
+parseable-but-hash-mismatched, plus a jointly edited base and normative contract
+that must still fail `CONTRACT`.
 
 Focused negatives mutate one value in every semantic family: mode, block,
 flow, clock, buffer, latency boundary, connector, control, expansion interface,
