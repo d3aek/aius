@@ -393,6 +393,12 @@ commit-checkpoint:
   parent-commit: "docs(aius): retain USB-C manufacturer identity page"
 ```
 
+P1C5b completed on 2026-07-16. The GCT request and regenerated aggregate retain
+`product-page` after `datasheet` and `drawing`; the aggregate SHA-256 is
+`b675f0c6652b862cbe343534c04e16a1ad56ebae2e3395dc32a8696252c43f6a`.
+The clean-room delivery audit returned `PASS`; 24 renderer tests, aggregate
+parity, topology handoff and exact-file formatting were green.
+
 The one-CS and layer-policy text corrections are committed in the plan amendment
 before P1C5a dispatch. The parent records checkpoint completion in both normative
 plans at each commit.
