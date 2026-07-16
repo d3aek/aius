@@ -1168,7 +1168,7 @@ reachable regressions above close those findings.
 
 ```yaml
 phase: P1B1c
-status: in-progress
+status: completed
 unit: seed-evidence-orchestration
 seams: [authority retrieval, source fragment, assumption fragment, aggregate]
 contract-artifact: both
@@ -1205,6 +1205,11 @@ regressions satisfy both the Python orchestration and repository-format contract
 The attempted custom-printer contract was rejected by its clean-room gate
 because it would duplicate Prettier's width, Unicode, numeric, and nested-shape
 semantics. The pinned subprocess seam above makes Prettier the only printer.
+
+Renderer hardening completed 2026-07-16. The orchestration/renderer,
+realization, and validator suites pass 32, 13, and 34 tests; the pinned Prettier
+checkpoint passes the persistent fixture and every present P1B2a fragment. The
+clean-room renderer delivery audit passed with no discrepancies.
 
 ### P1B2 — Non-dynamic acquisition waves
 

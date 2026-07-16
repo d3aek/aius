@@ -9,6 +9,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,12 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 AIUS_ROOT = SCRIPT_ROOT.parent
 MANIFEST_ROOT = AIUS_ROOT / "evidence" / "manifest"
 TIMESTAMP = "2026-07-16T12:34:56Z"
+RENDERER_FIXTURE = SCRIPT_ROOT / "fixtures" / "seed-renderer.json"
+P1B2A_FRAGMENT_NAMES = {
+    "PJRC-TEENSY41-PAGE.json",
+    "PJRC-TEENSY41-PINOUT.json",
+    "PJRC-TEENSY41-SCHEMATIC.json",
+}
 
 
 def _load(path: Path) -> object:
@@ -93,6 +100,57 @@ class SequenceOpener:
         if not self.responses:
             raise AssertionError("fake opener has no response")
         return self.responses.pop(0)
+
+
+class FormatterRunner:
+    def __init__(
+        self,
+        git_root: Path,
+        *,
+        git_output: bytes | None = None,
+        version_output: bytes = b"3.8.3\n",
+        version_status: int = 0,
+        format_output: bytes | None = None,
+        format_status: int = 0,
+        timeout_stage: str | None = None,
+    ) -> None:
+        self.git_root = git_root
+        self.git_output = (
+            (os.fspath(git_root) + "\n").encode("utf-8")
+            if git_output is None
+            else git_output
+        )
+        self.version_output = version_output
+        self.version_status = version_status
+        self.format_output = format_output
+        self.format_status = format_status
+        self.timeout_stage = timeout_stage
+        self.calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        self.calls.append((command, kwargs))
+        if command[0] == "git":
+            stage = "git"
+            status = 0
+            stdout = self.git_output
+        elif "--version" in command:
+            stage = "version"
+            status = self.version_status
+            stdout = self.version_output
+        else:
+            stage = "format"
+            status = self.format_status
+            payload = kwargs.get("input")
+            assert isinstance(payload, bytes)
+            stdout = (
+                seed_evidence._test_formatter(self.git_root, payload)
+                if self.format_output is None
+                else self.format_output
+            )
+        if self.timeout_stage == stage:
+            raise subprocess.TimeoutExpired(command, 30)
+        stderr = b"injected process failure" if status else b""
+        return subprocess.CompletedProcess(command, status, stdout, stderr)
 
 
 class RealizationOpener:
@@ -169,6 +227,7 @@ class Fixture:
         opener: object | None = None,
         replace=os.replace,
         root: Path | None = None,
+        formatter: seed_evidence.Formatter = seed_evidence._test_formatter,
     ) -> tuple[int, str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -177,6 +236,7 @@ class Fixture:
                 ["--root", os.fspath(self.root if root is None else root), *arguments],
                 opener=opener,
                 replace=replace,
+                formatter=formatter,
             )
         return result, stdout.getvalue(), stderr.getvalue()
 
@@ -223,6 +283,15 @@ class Fixture:
             result[key] = value
         return result
 
+    def install_formatter_controls(self) -> tuple[Path, Path]:
+        executable = self.root / "node_modules" / ".bin" / "prettier"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        config = self.root / ".prettierrc.json"
+        config.write_text('{"printWidth": 120}\n', encoding="utf-8")
+        return executable, config
+
     def populate(self, *, skip: set[str] | None = None) -> None:
         skipped = set() if skip is None else skip
         for realization in self.realizations:
@@ -250,6 +319,55 @@ class Fixture:
                 raise AssertionError(f"populate {source_id} failed: {error}")
 
 
+class ProductionRendererTests(unittest.TestCase):
+    def test_persistent_fixture_and_every_present_fragment_match_real_prettier(self) -> None:
+        fixture_bytes = RENDERER_FIXTURE.read_bytes()
+        fixture_value = seed_evidence._decode_json(
+            fixture_bytes,
+            "persistent renderer fixture",
+        )
+        rendered = seed_evidence._render_json(
+            AIUS_ROOT,
+            fixture_value,
+            seed_evidence._production_formatter,
+        )
+        self.assertEqual(rendered, fixture_bytes)
+        rerendered = seed_evidence._render_json(
+            AIUS_ROOT,
+            seed_evidence._decode_json(rendered, "rendered fixture"),
+            seed_evidence._production_formatter,
+        )
+        self.assertEqual(rerendered, rendered)
+        boundary_lengths = {
+            line.split('"', 2)[1]: len(line)
+            for line in fixture_bytes.decode("utf-8").splitlines()
+            if '"line_1' in line
+        }
+        self.assertEqual(
+            boundary_lengths,
+            {"line_119": 119, "line_120": 120, "line_121": 121},
+        )
+
+        fragment_root = AIUS_ROOT / "evidence" / "manifest" / "fragments"
+        present = sorted(fragment_root.glob("*.json"))
+        self.assertTrue(P1B2A_FRAGMENT_NAMES.issubset({path.name for path in present}))
+        for path in present:
+            with self.subTest(fragment=path.name):
+                mode = path.lstat().st_mode
+                self.assertTrue(stat.S_ISREG(mode))
+                self.assertFalse(stat.S_ISLNK(mode))
+                payload = path.read_bytes()
+                value = seed_evidence._decode_json(payload, path.name)
+                self.assertEqual(
+                    seed_evidence._render_json(
+                        AIUS_ROOT,
+                        value,
+                        seed_evidence._production_formatter,
+                    ),
+                    payload,
+                )
+
+
 class SeedEvidenceTests(unittest.TestCase):
     fixture: Fixture
 
@@ -275,6 +393,219 @@ class SeedEvidenceTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn(text, stderr)
         self.assertTrue(all(line.startswith("ERROR:") for line in stderr.splitlines()))
+
+    def test_injected_renderer_strict_checks_fail_before_publish(self) -> None:
+        with self.assertRaisesRegex(seed_evidence.ControlError, "sorted object-key"):
+            seed_evidence._render_json(
+                self.fixture.root,
+                {"a": 1, "z": 2},
+                lambda root, payload: b'{"z":2,"a":1}\n',
+            )
+        direct_cases = (
+            (lambda root, payload: b"\xff", "not UTF-8"),
+            (lambda root, payload: b"{}\n", "changed the JSON value"),
+            (lambda root, payload: payload + b" \n", "exactly one terminal LF"),
+            (lambda root, payload: "not bytes", "must be bytes"),
+        )
+        for formatter, expected in direct_cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(seed_evidence.ControlError, expected):
+                    seed_evidence._render_json(
+                        self.fixture.root,
+                        {"a": 1},
+                        formatter,
+                    )
+
+        values = json.dumps(self.fixture.valid_values("BOE-GBP-DAILY-FX"))
+        result = self.fixture.run(
+            [
+                "record",
+                "BOE-GBP-DAILY-FX",
+                "--values",
+                values,
+                "--observed-at",
+                TIMESTAMP,
+            ],
+            formatter=lambda root, payload: b"{}\n",
+        )
+        self.assert_failure(result, "formatter output changed the JSON value", code=2)
+        self.assertFalse(
+            (self.fixture.manifest / "fragments" / "BOE-GBP-DAILY-FX.json").exists()
+        )
+
+    def test_production_renderer_control_failures_are_exit_two_before_publish(self) -> None:
+        values = json.dumps(self.fixture.valid_values("BOE-GBP-DAILY-FX"))
+        arguments = [
+            "record",
+            "BOE-GBP-DAILY-FX",
+            "--values",
+            values,
+            "--observed-at",
+            TIMESTAMP,
+        ]
+        result = self.fixture.run(
+            arguments,
+            formatter=seed_evidence._production_formatter,
+        )
+        self.assert_failure(result, "pinned Prettier is missing", code=2)
+
+        self.reset_fixture()
+        _, config = self.fixture.install_formatter_controls()
+        outside_config = Path(self.fixture.temporary.name) / "outside-config.json"
+        outside_config.write_text("{}\n", encoding="utf-8")
+        config.unlink()
+        config.symlink_to(outside_config)
+        result = self.fixture.run(
+            arguments,
+            formatter=seed_evidence._production_formatter,
+        )
+        self.assert_failure(result, "regular non-symlink", code=2)
+
+        self.reset_fixture()
+        self.fixture.install_formatter_controls()
+        runner = FormatterRunner(self.fixture.root, version_output=b"3.8.2\n")
+        formatter = lambda root, payload: seed_evidence._production_formatter(
+            root,
+            payload,
+            runner=runner,
+        )
+        result = self.fixture.run(arguments, formatter=formatter)
+        self.assert_failure(result, "version must be exactly 3.8.3", code=2)
+        self.assertFalse(
+            (self.fixture.manifest / "fragments" / "BOE-GBP-DAILY-FX.json").exists()
+        )
+
+        other_root = Path(self.fixture.temporary.name) / "wrong-worktree"
+        other_root.mkdir()
+        failure_runners = (
+            (
+                FormatterRunner(
+                    self.fixture.root,
+                    git_output=(os.fspath(other_root) + "\n").encode("utf-8"),
+                ),
+                "wrong worktree",
+            ),
+            (
+                FormatterRunner(self.fixture.root, git_output=b"relative-root\n"),
+                "absolute path",
+            ),
+            (
+                FormatterRunner(self.fixture.root, git_output=b"\xff\n"),
+                "non-UTF-8",
+            ),
+            (
+                FormatterRunner(
+                    self.fixture.root,
+                    git_output=(
+                        os.fspath(self.fixture.root) + "\n" + os.fspath(other_root) + "\n"
+                    ).encode("utf-8"),
+                ),
+                "exactly one absolute path",
+            ),
+            (FormatterRunner(self.fixture.root, timeout_stage="format"), "timed out"),
+            (FormatterRunner(self.fixture.root, format_status=7), "exited 7"),
+            (
+                FormatterRunner(self.fixture.root, format_output=b"{}\n"),
+                "changed the JSON value",
+            ),
+        )
+        for active_runner, expected in failure_runners:
+            with self.subTest(control_failure=expected):
+                active_formatter = (
+                    lambda root, payload, selected=active_runner: seed_evidence._production_formatter(
+                        root,
+                        payload,
+                        runner=selected,
+                    )
+                )
+                result = self.fixture.run(arguments, formatter=active_formatter)
+                self.assert_failure(result, expected, code=2)
+                self.assertFalse(
+                    (
+                        self.fixture.manifest
+                        / "fragments"
+                        / "BOE-GBP-DAILY-FX.json"
+                    ).exists()
+                )
+
+    def test_production_renderer_exact_process_seam_and_failure_modes(self) -> None:
+        executable, config = self.fixture.install_formatter_controls()
+        runner = FormatterRunner(self.fixture.root)
+        formatter = lambda root, payload: seed_evidence._production_formatter(
+            root,
+            payload,
+            runner=runner,
+        )
+        value = {"alpha": [1, 2], "unicode": "漢字 😀"}
+        rendered = seed_evidence._render_json(self.fixture.root, value, formatter)
+        self.assertEqual(
+            rendered,
+            seed_evidence._test_formatter(
+                self.fixture.root,
+                seed_evidence._compact_json(value),
+            ),
+        )
+        self.assertEqual(
+            runner.calls[0][0],
+            [
+                "git",
+                "-C",
+                os.fspath(self.fixture.root),
+                "rev-parse",
+                "--show-toplevel",
+            ],
+        )
+        self.assertEqual(
+            runner.calls[1][0],
+            [os.fspath(executable), "--version"],
+        )
+        self.assertEqual(
+            runner.calls[2][0],
+            [
+                os.fspath(executable),
+                "--parser",
+                "json",
+                "--config",
+                os.fspath(config),
+            ],
+        )
+        self.assertTrue(
+            all(call[1]["timeout"] == 30 for call in runner.calls)
+        )
+        self.assertEqual(runner.calls[2][1]["input"], seed_evidence._compact_json(value))
+
+        other_root = Path(self.fixture.temporary.name) / "other-worktree"
+        other_root.mkdir()
+        failure_runners = (
+            (
+                FormatterRunner(
+                    self.fixture.root,
+                    git_output=(os.fspath(other_root) + "\n").encode("utf-8"),
+                ),
+                "wrong worktree",
+            ),
+            (FormatterRunner(self.fixture.root, timeout_stage="format"), "timed out"),
+            (FormatterRunner(self.fixture.root, format_status=7), "exited 7"),
+            (
+                FormatterRunner(self.fixture.root, format_output=b"not JSON\n"),
+                "not strict JSON",
+            ),
+        )
+        for active_runner, expected in failure_runners:
+            with self.subTest(expected=expected):
+                active_formatter = (
+                    lambda root, payload, selected=active_runner: seed_evidence._production_formatter(
+                        root,
+                        payload,
+                        runner=selected,
+                    )
+                )
+                with self.assertRaisesRegex(seed_evidence.ControlError, expected):
+                    seed_evidence._render_json(
+                        self.fixture.root,
+                        value,
+                        active_formatter,
+                    )
 
     def test_acquire_renders_fixed_hash_commit_and_manual_redirect_sources(self) -> None:
         for source_id in (
@@ -935,7 +1266,14 @@ class SeedEvidenceTests(unittest.TestCase):
         ]
         expected.sort(key=lambda row: row["id"])
         aggregate_path = self.fixture.manifest / "assumptions.json"
-        self.assertEqual(aggregate_path.read_bytes(), seed_evidence._canonical_json(expected))
+        self.assertEqual(
+            aggregate_path.read_bytes(),
+            seed_evidence._render_json(
+                self.fixture.root,
+                expected,
+                seed_evidence._test_formatter,
+            ),
+        )
         self.assertEqual(
             [row["id"] for row in _load(aggregate_path)],
             sorted(row["id"] for row in expected),

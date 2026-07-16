@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -41,6 +42,11 @@ UNAVAILABLE_NOTE = (
 UNAVAILABLE_CONSEQUENCE = (
     "Dependent P1 claims remain provisional until the source is replaced."
 )
+PRETTIER_VERSION = "3.8.3"
+FORMATTER_TIMEOUT_SECONDS = 30
+
+Formatter = Callable[[Path, bytes], bytes]
+ProcessRunner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
 class DataError(RuntimeError):
@@ -83,7 +89,100 @@ class State:
         return {str(row["source_id"]): row for row in self.realizations}
 
 
-def _canonical_json(value: object) -> bytes:
+def _compact_json(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ControlError(f"cannot serialize strict JSON: {error}") from error
+
+
+def _strict_rendered_json(payload: bytes) -> object:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ControlError(f"formatter output is not UTF-8: {error}") from error
+
+    def invalid_constant(value: str) -> object:
+        raise ValueError(f"invalid JSON constant {value}")
+
+    def pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in values:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    decoder = json.JSONDecoder(
+        parse_constant=invalid_constant,
+        object_pairs_hook=pairs,
+    )
+    try:
+        value, end = decoder.raw_decode(text)
+    except (json.JSONDecodeError, ValueError) as error:
+        raise ControlError(f"formatter output is not strict JSON: {error}") from error
+    if text[end:] != "\n":
+        raise ControlError("formatter output must have exactly one terminal LF")
+    return value
+
+
+def _same_json_value(left: object, right: object) -> bool:
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        return left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return set(left) == set(right) and all(
+            _same_json_value(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _same_json_value(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return type(left) is type(right) and left == right
+
+
+def _object_keys_are_sorted(value: object) -> bool:
+    if isinstance(value, dict):
+        return list(value) == sorted(value) and all(
+            _object_keys_are_sorted(item) for item in value.values()
+        )
+    if isinstance(value, list):
+        return all(_object_keys_are_sorted(item) for item in value)
+    return True
+
+
+def _render_json(root: Path, value: object, formatter: Formatter) -> bytes:
+    compact = _compact_json(value)
+    expected = _decode_json(compact, "compact renderer input")
+    try:
+        rendered = formatter(root, compact)
+    except ControlError:
+        raise
+    except Exception as error:
+        raise ControlError(f"formatter failed: {error}") from error
+    if not isinstance(rendered, bytes):
+        raise ControlError("formatter output must be bytes")
+    observed = _strict_rendered_json(rendered)
+    if not _same_json_value(expected, observed):
+        raise ControlError("formatter output changed the JSON value")
+    if not _object_keys_are_sorted(observed):
+        raise ControlError("formatter output changed sorted object-key order")
+    return rendered
+
+
+def _test_formatter(root: Path, payload: bytes) -> bytes:
+    """Deterministic in-process formatter for isolated orchestration tests."""
+
+    del root
+    value = _decode_json(payload, "test formatter input")
     return (
         json.dumps(
             value,
@@ -94,6 +193,124 @@ def _canonical_json(value: object) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _completed_process(
+    runner: ProcessRunner,
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    payload: bytes | None = None,
+    label: str,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        completed = runner(
+            command,
+            cwd=None if cwd is None else os.fspath(cwd),
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=FORMATTER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ControlError(f"{label} timed out after 30 seconds") from error
+    except OSError as error:
+        raise ControlError(f"cannot run {label}: {error}") from error
+    if not isinstance(completed.stdout, bytes) or not isinstance(
+        completed.stderr, bytes
+    ):
+        raise ControlError(f"{label} returned non-byte process output")
+    if completed.returncode != 0:
+        try:
+            detail = completed.stderr.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            detail = "non-UTF-8 stderr"
+        suffix = f": {detail}" if detail else ""
+        raise ControlError(f"{label} exited {completed.returncode}{suffix}")
+    return completed
+
+
+def _git_root(root: Path, runner: ProcessRunner) -> Path:
+    completed = _completed_process(
+        runner,
+        ["git", "-C", os.fspath(root), "rev-parse", "--show-toplevel"],
+        label="Git root discovery",
+    )
+    try:
+        output = completed.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ControlError("Git root discovery returned non-UTF-8 output") from error
+    if not output.endswith("\n") or output.count("\n") != 1 or "\r" in output:
+        raise ControlError("Git root discovery must return exactly one absolute path")
+    candidate = Path(output[:-1])
+    if not candidate.is_absolute():
+        raise ControlError("Git root discovery did not return an absolute path")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise ControlError(f"Git root discovery returned an unusable path: {error}") from error
+    if not resolved.is_dir():
+        raise ControlError("Git root discovery path is not a directory")
+    try:
+        root.relative_to(resolved)
+    except ValueError as error:
+        raise ControlError("Git root discovery returned the wrong worktree") from error
+    return resolved
+
+
+def _regular_control(path: Path, label: str, *, executable: bool = False) -> None:
+    try:
+        status = path.lstat()
+    except OSError as error:
+        raise ControlError(f"{label} is missing or unusable: {error}") from error
+    if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
+        raise ControlError(f"{label} must be a regular non-symlink file: {path}")
+    if executable and not os.access(path, os.X_OK):
+        raise ControlError(f"{label} is not executable: {path}")
+
+
+def _production_formatter(
+    root: Path,
+    payload: bytes,
+    *,
+    runner: ProcessRunner = subprocess.run,
+) -> bytes:
+    git_root = _git_root(root, runner)
+    executable = git_root / "node_modules" / ".bin" / "prettier"
+    config = git_root / ".prettierrc.json"
+    _regular_control(executable, "pinned Prettier", executable=True)
+    _regular_control(config, "Prettier config")
+
+    version = _completed_process(
+        runner,
+        [os.fspath(executable), "--version"],
+        cwd=git_root,
+        label="Prettier version check",
+    )
+    try:
+        version_text = version.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ControlError("Prettier version output is not UTF-8") from error
+    if version_text not in {PRETTIER_VERSION, PRETTIER_VERSION + "\n"}:
+        raise ControlError(
+            f"Prettier version must be exactly {PRETTIER_VERSION}; got {version_text!r}"
+        )
+
+    rendered = _completed_process(
+        runner,
+        [
+            os.fspath(executable),
+            "--parser",
+            "json",
+            "--config",
+            os.fspath(config),
+        ],
+        cwd=git_root,
+        payload=payload,
+        label="Prettier formatter",
+    )
+    return rendered.stdout
 
 
 def _safe_relative(relative_text: str) -> PurePosixPath:
@@ -954,6 +1171,7 @@ def _acquire(
     retrieved_at: str,
     opener: object,
     replace: Callable[[str, str], object],
+    formatter: Formatter,
 ) -> int:
     seed, realization = _select(state, source_id)
     if realization["mode"] == "dynamic":
@@ -1012,7 +1230,9 @@ def _acquire(
     outputs = {
         _root_path(state.root, path): payload for path, payload in payloads.items()
     }
-    outputs[_root_path(state.root, fragment_relative)] = _canonical_json(source)
+    outputs[_root_path(state.root, fragment_relative)] = _render_json(
+        state.root, source, formatter
+    )
     _publish_new(state.root, outputs, replace)
     return 0
 
@@ -1023,6 +1243,7 @@ def _record(
     values_text: str,
     observed_at: str,
     replace: Callable[[str, str], object],
+    formatter: Formatter,
 ) -> int:
     seed, realization = _select(state, source_id)
     if realization["mode"] != "dynamic":
@@ -1043,7 +1264,11 @@ def _record(
     _ensure_directory(state.root, "evidence/manifest/fragments")
     fragment_relative = _fragment_path(source_id)
     target = _reject_target(state.root, fragment_relative)
-    _publish_new(state.root, {target: _canonical_json(source)}, replace)
+    _publish_new(
+        state.root,
+        {target: _render_json(state.root, source, formatter)},
+        replace,
+    )
     return 0
 
 
@@ -1053,6 +1278,7 @@ def _unavailable(
     note: str,
     retrieved_at: str,
     replace: Callable[[str, str], object],
+    formatter: Formatter,
 ) -> int:
     seed, realization = _select(state, source_id)
     if not note.strip():
@@ -1082,14 +1308,16 @@ def _unavailable(
         ],
         observations=[],
     )
-    outputs = {fragment_target: _canonical_json(source)}
+    outputs = {fragment_target: _render_json(state.root, source, formatter)}
     assumption: dict[str, object] | None = None
     if realization["failure_policy"] == "assumption":
         _ensure_directory(state.root, "evidence/manifest/assumption-fragments")
         assumption_relative = _assumption_fragment_path(source_id)
         assumption_target = _reject_target(state.root, assumption_relative)
         assumption = _expected_assumption(seed)
-        outputs[assumption_target] = _canonical_json(assumption)
+        outputs[assumption_target] = _render_json(
+            state.root, assumption, formatter
+        )
     _validate_source(state, source_id, source, assumption)
     _publish_new(state.root, outputs, replace)
     return 3 if realization["failure_policy"] == "golden-block" else 1
@@ -1293,11 +1521,16 @@ def _assemble(
     state: State,
     mode: str,
     replace: Callable[[str, str], object],
+    formatter: Formatter,
 ) -> int:
     sources, assumptions = _assemble_data(state)
     rendered = {
-        "evidence/manifest/sources.json": _canonical_json(sources),
-        "evidence/manifest/assumptions.json": _canonical_json(assumptions),
+        "evidence/manifest/sources.json": _render_json(
+            state.root, sources, formatter
+        ),
+        "evidence/manifest/assumptions.json": _render_json(
+            state.root, assumptions, formatter
+        ),
     }
     if mode == "check":
         errors: list[str] = []
@@ -1350,6 +1583,7 @@ def run(
     *,
     opener: object | None = None,
     replace: Callable[[str, str], object] = os.replace,
+    formatter: Formatter | None = None,
 ) -> int:
     arguments = _parser().parse_args(argv)
     root = (
@@ -1359,6 +1593,7 @@ def run(
     )
     try:
         state = _load_state(root)
+        selected_formatter = _production_formatter if formatter is None else formatter
         if arguments.command == "acquire":
             return _acquire(
                 state,
@@ -1366,6 +1601,7 @@ def run(
                 arguments.retrieved_at,
                 opener if opener is not None else _production_opener(),
                 replace,
+                selected_formatter,
             )
         if arguments.command == "record":
             return _record(
@@ -1374,6 +1610,7 @@ def run(
                 arguments.values,
                 arguments.observed_at,
                 replace,
+                selected_formatter,
             )
         if arguments.command == "unavailable":
             result = _unavailable(
@@ -1382,6 +1619,7 @@ def run(
                 arguments.note,
                 arguments.retrieved_at,
                 replace,
+                selected_formatter,
             )
             print(
                 f"ERROR: seed source {arguments.source_id} was recorded unavailable",
@@ -1391,7 +1629,12 @@ def run(
         if arguments.command == "check-fragment":
             return _check_fragments(state, arguments.source_ids)
         if arguments.command == "assemble":
-            return _assemble(state, "write" if arguments.write else "check", replace)
+            return _assemble(
+                state,
+                "write" if arguments.write else "check",
+                replace,
+                selected_formatter,
+            )
         raise ControlError(f"unknown command: {arguments.command}")
     except DataError as error:
         for message in sorted(set(error.messages)):
