@@ -800,8 +800,35 @@ project-relative paths and storage is `lfs` or `git`. Revision strategy is
 require a non-empty value, while sha256 and observation-date require null. A
 non-dynamic row has one or more artifacts and null observation profile. A
 dynamic row has no artifacts, `revision_strategy: observation-date`, null
-revision value, and one of the profiles below. Golden rows use `golden-block`;
-comparative and dynamic rows use `assumption`.
+revision value, and one of the profile descriptors below. Golden rows use
+`golden-block`; comparative and dynamic rows use `assumption`.
+
+An observation profile descriptor has exactly `name` and `fields`. `fields` is
+an ordered, non-empty array whose entries have exactly `key`, `value_type`,
+`nullable`, `constraint`, `unit`, and `basis`. Keys are unique within the
+descriptor. `value_type` is `string`, `integer`, `number`, or `boolean` and
+means the corresponding JSON scalar type; Boolean never satisfies integer or
+number. `unit` is a non-empty string or null. `basis` is exactly
+`P1B <profile-name> normalized field <key> from the fixed seed landing page.`
+The constraint has exactly `kind` and `value`, with these machine-readable
+semantics:
+
+| Kind | Value | Rule |
+| --- | --- | --- |
+| `none` | null | any scalar of `value_type` |
+| `non-empty` | null | a string containing at least one non-whitespace character |
+| `enum` | non-empty array of unique scalars | exact membership, with Boolean distinct from integer/number |
+| `minimum` | number | numeric value greater than or equal to `value` |
+| `exclusive-minimum` | number | numeric value greater than `value` |
+| `const` | scalar | exact equality, with Boolean distinct from integer/number |
+
+`nullable: true` additionally permits null before the constraint is applied;
+`nullable: false` rejects null. The schema validates the descriptor structure
+and constraint value shape using only the supported Draft 2020-12 subset. The
+realization contract test owns the exact profile oracle and proves that each
+table below maps to the descriptor rules. P1B1c consumes these descriptors as
+the sole source of field order, type, nullability, constraint, unit, and basis;
+it must not carry a second hard-coded profile-rule table.
 
 The exact non-dynamic realization oracle is:
 
@@ -878,14 +905,22 @@ according to source ID. Exact value/unit rules are:
 `rate_date` is a `YYYY-MM-DD` string with null unit. Rates are positive numbers
 with units `GBP/USD` and `GBP/EUR` respectively.
 
-The values file is a top-level scalar map with exactly the profile keys above;
-it never contains observation metadata. `record` requires one
+The values file is a top-level scalar map with exactly the descriptor keys; it
+never contains observation metadata. `record` requires one
 `--observed-at YYYY-MM-DDTHH:MM:SSZ` argument. Every generated observation uses
-that timestamp, the immutable seed `landing_url` as `source_url`, and exact basis
-`P1B <profile> normalized field <key> from the fixed seed landing page.` Source
-`retrieved_at` equals the shared timestamp and revision uses its UTC date. The
-test embeds the 22-row oracle, exact artifact tuples, revision values, profile
-mapping, and every generated key/value/unit/basis/timestamp/source-URL rule.
+that timestamp, the immutable seed `landing_url` as `source_url`, and the
+descriptor's exact basis. Source `retrieved_at` equals the shared timestamp and
+revision uses its UTC date. The P1B1b test embeds the 22-row oracle, exact
+artifact tuples, revision values, profile mapping, and every descriptor
+key/type/nullability/constraint/unit/basis rule. Generated observation value,
+timestamp, source-URL, and descriptor-consumption assertions belong to
+`scripts/test_seed_evidence.py` after the P1B1c generator exists.
+
+The P1B1b clean-room gate first returned `BLOCKED` on 2026-07-15 because a
+profile name alone left P1B1c without machine-readable field rules and the
+contract assigned generator assertions before that generator existed. The
+descriptor contract and test ownership above resolve both findings; a fresh
+clean-room verdict remains required before implementation.
 
 ```yaml
 phase: P1B1b
