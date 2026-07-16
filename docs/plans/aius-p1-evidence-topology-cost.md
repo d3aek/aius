@@ -1524,7 +1524,7 @@ Functional member contracts are:
 
 | Record | Required members and value domains |
 | --- | --- |
-| mode | `id` from the five locked mode IDs; `input_formats` as a unique non-empty array of `pcm-stereo`, `iec61937-dts-core`, or `none`; `output_format` as `pcm-stereo-48k`, `raw-spdif`, or `none`; unique `active_blocks`; `error_mode`; unique `evidence_ids`; string `notes` |
+| mode | `id` from the five locked mode IDs; `input_formats` as a unique non-empty array of `pcm-stereo`, `iec61937-dts-core`, or `none`; `output_format` as `pcm-stereo-48k`, `raw-spdif`, or `none`; unique `active_blocks`; `error_mode` as `unsupported-muted` or `fault-muted`; unique `evidence_ids`; string `notes` |
 | block | locked `id`; `kind` as `hardware`, `firmware`, `software`, or `boundary`; `owner` as `carrier`, `teensy-hardware`, `teensy-firmware`, or `external`; nullable locked `power_domain`; nullable locked `clock_domain`; unique `evidence_ids`; string `notes` |
 | flow | locked `id`; `kind` as `data`, `control`, or `power`; cross-referenced `source_id` and `sink_id`; `payload` from the locked payload tokens; unique `enabled_modes`; nullable locked `control_id`; unique `evidence_ids`; string `notes` |
 | clock domain | locked `id`; cross-referenced `source_id`; unique non-empty `consumer_ids`; unique `synchronous_with`; `frequency_status` as `evidence-locked`, `software-derived`, or `deferred`; unique `evidence_ids`; string `notes` |
@@ -1593,7 +1593,7 @@ member contracts are:
 | power domain | locked `id`; cross-referenced `source`; unique `consumers`; non-empty `backfeed_rule`; unique `evidence_ids`; string `notes` |
 | operating state | locked `id`; non-empty `entry_condition`; `path_select`, `tx_state`, `output_payload`, and `expansion_state` from locked tokens; non-empty `exit_condition`; string `notes` |
 | fault scenario | locked `id`; non-empty `trigger`; four locked outcome tokens; Boolean `hardware_pull_required` and `watchdog_required`; nullable `debounce_measurement_gate` as P6 or P7; nullable `residual_interval_measurement_gate` as P7; ordered unique `actions`; locked `recovery_state`; string `notes` |
-| transition | locked `id`, `from_state`, and `to_state`; locked `trigger`; unique `preconditions`; ordered non-empty `actions`; unique non-empty `postconditions`; string `notes` |
+| transition | locked `id`, `from_state`, and `to_state`; unique non-empty locked `triggers`; unique `preconditions`; ordered non-empty `actions`; unique non-empty `postconditions`; string `notes` |
 
 Outcome tokens are: path `processed` or `raw`; TX `disabled`, `enabled-pcm`,
 `enabled-raw`, or `unchanged`; payload `none`, `pcm-silence-48k`,
@@ -1614,8 +1614,24 @@ Exact transition IDs are `power-on-to-reset`, `reset-to-boot`,
 `active-to-carrier-loss`, `active-to-unsupported`,
 `unsupported-to-active`, `active-to-diagnostic-bypass`,
 `diagnostic-bypass-to-waiting`, `watchdog-to-reset`, and
-`usb-unplug-to-power-off`. Transition trigger tokens use the corresponding
-scenario or state-event slug and are schema-enumerated, not free text.
+`usb-unplug-to-power-off`. Their exact trigger mapping is:
+
+| Transition ID | Trigger tokens |
+| --- | --- |
+| `power-on-to-reset` | `power-applied` |
+| `reset-to-boot` | `reset-released` |
+| `boot-to-waiting` | `pipeline-ready` |
+| `waiting-to-pcm` | `pcm-detected` |
+| `waiting-to-dts` | `dts-detected` |
+| `active-to-carrier-loss` | `optical-carrier-loss` |
+| `active-to-unsupported` | `unsupported-burst`, `malformed-input` |
+| `unsupported-to-active` | `supported-format-detected` |
+| `active-to-diagnostic-bypass` | `raw-bypass-request` |
+| `diagnostic-bypass-to-waiting` | `raw-bypass-release` |
+| `watchdog-to-reset` | `watchdog-expired` |
+| `usb-unplug-to-power-off` | `usb-unplug` |
+
+No other transition trigger token is schema-valid.
 
 The following exact fault/scenario IDs are mandatory and have these safe outcomes:
 
@@ -1689,6 +1705,31 @@ a declared engineering policy; source and policy namespaces may not overlap.
 `verification_stage` is one of `P1D-electrical`, `P1D-mechanical`,
 `P1E-sourcing`, `H1-schematic`, or `H2-placement`; dependent features are
 non-empty slugs and are instantiated by P1C1b.
+
+The ordered component key set is `block`, `requirements`, `manufacturer`,
+`mpn`, `alternatives`, `selection_rationale`, `authority_url`,
+`manufacturer_request_id`, `availability_request_id`, `generic_policy`,
+`status`, and `notes`. `block` is a slug; `requirements` is a unique non-empty
+array of requirement IDs; manufacturer, MPN, rationale, HTTPS authority, and
+both request IDs are nullable non-empty values governed by the status matrix;
+alternatives retain the P1A2 object shape but are cross-checked for uniqueness;
+generic policy is nullable and otherwise contains exactly non-empty `value`,
+`package`, and `tolerance`; status is one of the five statuses in the matrix;
+notes is a string. Additional properties are rejected.
+
+The ordered selection-policy family key set is `family`, `component_file`,
+`critical`, `generic_eligible`, `allowed_statuses`, `requirements`,
+`manufacturer_request_id`, `availability_request_id`,
+`manufacturer_source_id`, `availability_source_id`, `dependent_feature`, and
+`notes`. Family and dependent feature are slugs; `component_file` is exactly
+`components/<family>.json`; the two flags are Boolean; statuses and requirements
+are unique non-empty arrays of their locked IDs; request/source fields are
+nullable identifier strings; notes is a string. When `generic_eligible` is
+true, all four request/source fields are null and allowed statuses is exactly
+`generic-allowance`. Otherwise all four request/source fields are non-null and
+use the deterministic conventions below. Critical families exclude
+`unresolved` and treat `candidate-evidence-unavailable` as blocking;
+noncritical selected families may include `unresolved`.
 
 Each selected candidate has one manufacturer-evidence request and one separate
 UK-availability request. Requests add `request_kind` with value
