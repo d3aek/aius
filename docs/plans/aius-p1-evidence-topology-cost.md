@@ -2913,7 +2913,7 @@ nearby part. Repeated candidates across connector families are intentional.
 | `usb-power-protection` | 1. Texas Instruments `TPS2553DBVR` |
 | `spdif-mux` | 1. Texas Instruments `SN74LVC1G3157DBVR` |
 | `spdif-tx-gate` | 1. Texas Instruments `SN74LVC1G125DBVR` |
-| `ethernet-magjack` | 1. Link-PP `LPJ4012AHNL`; 2. Cetus `J1B1211CCD` |
+| `ethernet-magjack` | 1. Link-PP `LPJ4012AHNL`; 2. Cetus `J1B1211CCD`; 3. Pulse Electronics `J0011D21BNL` |
 | `teensy-side-socket` | 1. Samtec `SSW-124-02-G-S` |
 | `teensy-ethernet-socket` | 1. Samtec `MMS-103-01-L-DV` |
 | `teensy-usb-host-socket` | 1. Samtec `SSW-105-02-G-S` |
