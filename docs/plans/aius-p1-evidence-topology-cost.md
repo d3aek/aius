@@ -955,11 +955,14 @@ source fragments and aggregate manifest.
 
 ### P1B1c — Reproducible acquisition and assembly
 
-Create `scripts/seed_evidence.py` and `scripts/test_seed_evidence.py`, and extend
+Create `scripts/seed_evidence.py`, `scripts/test_seed_evidence.py`, and
+`scripts/fixtures/seed-renderer.json`, and extend
 `scripts/validate_evidence.py` plus `scripts/test_validate_evidence.py` with the
-public artifact-payload seam defined below. The standard-library CLI accepts
-`--root` with the same default and resolution semantics as
-`validate_evidence.py` and provides:
+public artifact-payload seam defined below. The Python acquisition, validation,
+network, and transaction logic uses only the standard library; canonical JSON
+rendering deliberately uses the repository's pinned Prettier 3.8.3 executable
+as the single formatting authority. The CLI accepts `--root` with the same
+default and resolution semantics as `validate_evidence.py` and provides:
 
 - `acquire <source-id> --retrieved-at <UTC>` for non-dynamic rows: retrieve only
   the realization URLs, enforce the redirect contract below, stage every exact
@@ -1021,18 +1024,33 @@ normalization, environment override, authority fallback, credential prompt, or
 proxy-specific alternate URL.
 
 Each source fragment is one source-record object, not a one-element array. Each
-assumption fragment is one assumption-record object. Generated JSON is UTF-8,
-sorts object keys, uses two-space indentation and LF, rejects non-finite numbers,
-and has one terminal newline. To match the repository's pinned Prettier
-`printWidth: 120` contract without a runtime Node dependency, scalar arrays are
-rendered on the containing line only when that complete line is at most 120
-characters; otherwise arrays use one item per indented line. Arrays containing
-objects or arrays are always multiline except when empty. The contract test
-compares representative source, observation, assumption, and aggregate renders
-to exact golden bytes and the checkpoint runs Prettier `--check` on generated
-fixtures. Input JSON rejects `NaN`, `Infinity`, and `-Infinity`. `record`
-validates values solely by walking its realization descriptor in order; it has
-no profile-name branch or second field-rule table.
+assumption fragment is one assumption-record object. Rendering first creates
+strict compact UTF-8 JSON with sorted object keys, `ensure_ascii=False`, and
+`allow_nan=False`, then sends those bytes to the exact worktree
+`node_modules/.bin/prettier --parser json --config <git-root>/.prettierrc.json`
+process. Production discovers the enclosing Git root, requires Prettier version
+exactly `3.8.3`, uses a 30-second subprocess timeout, accepts only exit `0`,
+requires UTF-8 stdout containing the same JSON value, one terminal LF and no
+other trailing bytes, and treats missing/wrong-version/timeout/nonzero/invalid
+output as control exit `2` before any publish. Object-key sorting therefore
+remains deterministic while Prettier alone owns width, escaping, Unicode,
+numeric, and nested-shape layout.
+
+The render function accepts a formatter dependency. Broad isolated CLI tests
+use an in-process deterministic test formatter; a dedicated production test
+uses the real pinned executable and persistent
+`scripts/fixtures/seed-renderer.json`. The fixture contains exact 119, 120, and
+121-column cases; quotes, backslashes, controls, BMP and non-BMP Unicode, wide
+characters; integers, decimals, exponents, and negative zero; empty arrays and
+objects, scalar arrays, object arrays, nested arrays, and representative source,
+observation, assumption, and top-level aggregate shapes. The test requires byte
+equality among the committed fixture, production rendering of its parsed value,
+and Prettier output, then rerenders the result to prove idempotence. Every
+committed fragment is also required to equal production rendering of its parsed
+value. The checkpoint runs the pinned Prettier `--check` command on the fixture
+and every present fragment. Input JSON rejects `NaN`, `Infinity`, and
+`-Infinity`. `record` validates values solely by walking its realization
+descriptor in order; it has no profile-name branch or second field-rule table.
 
 Before reading or writing, every path is lexically confined beneath the
 resolved Aius root. An explicit `--root` final path component is checked with
@@ -1153,6 +1171,7 @@ fan-out:
     owned-paths:
       - scripts/seed_evidence.py
       - scripts/test_seed_evidence.py
+      - scripts/fixtures/seed-renderer.json
       - scripts/validate_evidence.py
       - scripts/test_validate_evidence.py
 review-intensity: active
@@ -1161,6 +1180,7 @@ commit-checkpoint:
     - python3 scripts/test_seed_evidence.py
     - python3 scripts/test_seed_realization.py
     - python3 scripts/test_validate_evidence.py
+    - pnpm exec prettier --check scripts/fixtures/seed-renderer.json
   buildable: [reproducible per-source acquisition and deterministic aggregation]
   parent-commit: "feat(aius): orchestrate seed evidence acquisition"
 ```
@@ -1175,7 +1195,10 @@ clean-room acceptance audit passed with no contract discrepancies.
 Reopened 2026-07-16 when the first real fragments showed that Python's default
 indented scalar-array layout fails the repository's mandatory Prettier hook.
 P1B2a evidence remains uncommitted until the renderer and its exact-byte
-regressions satisfy both the standard-library and repository-format contracts.
+regressions satisfy both the Python orchestration and repository-format contracts.
+The attempted custom-printer contract was rejected by its clean-room gate
+because it would duplicate Prettier's width, Unicode, numeric, and nested-shape
+semantics. The pinned subprocess seam above makes Prettier the only printer.
 
 ### P1B2 — Non-dynamic acquisition waves
 
