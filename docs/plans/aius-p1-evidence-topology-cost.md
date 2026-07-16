@@ -2873,11 +2873,103 @@ tasks run concurrently. Each task runs
 handoff. Primary manufacturer material is required for the authority URL;
 current distributor availability is recorded as a P1D request, not inferred.
 
+P1C2 is a metadata-only selection pass. The selection policy, both schemas,
+the cumulative validator, `evidence/manifest/sources.json`, the two retained
+Cliff seed artifacts, the evidence policy in this plan, and the root
+`.gitattributes` LFS rule are read-only dependencies. A P1C2 task retains no
+new source bytes and does not modify `sources.json`. Any later retention of a
+datasheet, drawing, product page, or other source is a separately owned P1D
+acquisition task which must update the manifest and place binary bytes under
+the existing Git LFS rule.
+
+Every selected-candidate component record uses the requirements array exactly
+as ordered in `selection-policy.json`, `alternatives: []`, `generic_policy:
+null`, and `notes: ""`. Except for the two Cliff seed selections, it uses
+`status: candidate-pending-evidence` and this exact rationale:
+`Provisional single-MPN candidate chosen under the P1C2 primary-source ranking;
+all assigned verification gates remain open.` Both request records repeat the
+same exact requirements, selected manufacturer, and selected MPN. Every
+manufacturer request uses `artifact_kinds: [datasheet]`, `retention: archive`,
+`status: pending`, `evidence_ids: []`, and this exact note: `P1D must retain and
+validate the primary manufacturer datasheet before this candidate can advance.`
+Every UK request uses `artifact_kinds: [price-observation]`, `retention:
+normalized-observation-only`, `status: pending`, `evidence_ids: []`, and this
+exact note: `Authorized-distributor acquisition target only; P1C2 makes no
+stock, price, lead-time, or availability claim.` Its URL identifies only the
+page P1D should observe; the URL itself is not availability evidence.
+
+For every non-Cliff selected family, the task applies this deterministic
+single-MPN acceptance and ranking rule:
+
+1. Consider only an exact orderable MPN which a currently reachable primary
+   manufacturer HTTPS page identifies and for which that manufacturer exposes
+   a currently reachable datasheet. Reject a family-series page, ambiguous
+   suffix, obsolete/discontinued/NRND part, distributor-only candidate, or a
+   candidate which contradicts any assigned requirement.
+2. Require the primary material to make every assigned P1D/H1/H2 verification
+   task actionable, including electrical ratings, package or mechanical
+   dimensions, and footprint information where those gates apply. This is only
+   a research-screening condition; P1C2 records no claim that a gate passed.
+3. Rank remaining candidates by: no observed conflict with an assigned
+   requirement; then documented footprint and repeatable small-run assembly
+   feasibility; then documented enclosure/mechanical fit where assigned; then
+   primary-document completeness; then lexicographically smallest normalized
+   `(manufacturer, MPN)` as the final tie-break. Use the manufacturer's exact
+   displayed spelling and MPN in the records.
+4. Use the primary manufacturer page or datasheet URL as both component and
+   manufacturer-request authority. Select a UK acquisition-target URL only
+   when the distributor is named by the manufacturer's distributor locator or
+   authorization material and the distributor page identifies the same exact
+   MPN. This selection makes no current commerce claim.
+
+The two seed selections are literal-locked as follows:
+
+| Family | Manufacturer | MPN | Authority URL | Component status | Manufacturer request |
+| --- | --- | --- | --- | --- | --- |
+| `cliff-rx` | `Cliff Electronic Components` | `ORJ5` | `https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf` | `selected` | source/evidence ID `CLIFF-ORJ5`, `artifact_kinds: [datasheet]`, `retention: archive`, `status: satisfied`, `notes: ""` |
+| `cliff-tx` | `Cliff Electronic Components` | `OTJ5` | `https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf` | `selected` | source/evidence ID `CLIFF-OTJ5`, `artifact_kinds: [datasheet]`, `retention: archive`, `status: satisfied`, `notes: ""` |
+
+Their exact component rationales are respectively `Existing current seed
+evidence CLIFF-ORJ5 supports the locked Cliff ORJ5 receiver candidate.` and
+`Existing current seed evidence CLIFF-OTJ5 supports the locked Cliff OTJ5
+transmitter candidate.` Their UK requests follow the pending UK defaults above.
+
+Every generic component record uses its policy `block` and exact requirements
+array, `manufacturer: null`, `mpn: null`, `alternatives: []`,
+`selection_rationale: null`, `authority_url: null`, both request IDs null,
+`status: generic-allowance`, and `notes: ""`. Its generic tuple is literal:
+
+| Family | Value | Package | Tolerance |
+| --- | --- | --- | --- |
+| `usb-c-cc-pulldown` | `5.1 kOhm` | `0402` | `1%` |
+| `logic-decoupling-capacitor` | `100 nF` | `0402` | `10%` |
+| `logic-control-pulldown` | `10 kOhm` | `0402` | `1%` |
+| `ethernet-center-tap-capacitor` | `100 nF` | `0402` | `10%` |
+| `expansion-io-series-resistor` | `1 kOhm` | `0402` | `1%` |
+
+The 29 owned path sets below are disjoint. Tasks may read but never edit the
+locked dependencies, run at concurrency no greater than three, do not run
+mutating Git commands, and never stop a process they did not start. Because the
+aggregate `selection-fragments` stage intentionally rejects an incomplete
+family set, individual handoffs remain uncommitted working-tree changes. The
+parent integrates them in one boundary commit only after all 29 scoped checks,
+the aggregate check, and the pinned formatter check pass.
+
 ```yaml
 phase: P1C2
 unit: single-atomic-family
 seams: [selection-policy family, component/request pair]
 contract-artifact: both
+depends-on:
+  - evidence/design/selection-policy.json
+  - evidence/design/component-schema.json
+  - evidence/manifest/source-request-schema.json
+  - scripts/validate_p1.py
+  - evidence/manifest/sources.json
+  - https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf
+  - https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf
+  - docs/plans/aius-p1-evidence-topology-cost.md
+  - .gitattributes
 fan-out:
   - name: select-usb-c-receptacle
     owned-paths: [evidence/design/components/usb-c-receptacle.json, evidence/manifest/requests/REQ-USB-C-RECEPTACLE-MFR.json, evidence/manifest/requests/REQ-USB-C-RECEPTACLE-UK.json]
@@ -2940,7 +3032,9 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
+    - all 29 family-scoped selection-fragments checks
     - python3 scripts/validate_p1.py topology --stage selection-fragments
+    - node_modules/.bin/prettier --check "evidence/design/components/*.json" "evidence/manifest/requests/*.json"
   buildable: [complete atomic candidate set and finite supplemental source queue]
   parent-commit: "docs(aius): select provisional component candidates"
 ```
@@ -2966,9 +3060,10 @@ commit-checkpoint:
   parent-commit: "docs(aius): lock functional topology and component candidates"
 ```
 
-P1C3 runs only after every P1C2 handoff is committed. An already-dirty or stale
-foreign generated documentation index remains nonblocking under repository
-policy and is recorded in the phase note rather than joined to the commit.
+P1C3 runs only after all 29 P1C2 handoffs are integrated in the single committed
+P1C2 boundary. An already-dirty or stale foreign generated documentation index
+remains nonblocking under repository policy and is recorded in the phase note
+rather than joined to the commit.
 
 ### P1C4 — Exact P1D acquisition handoff
 
