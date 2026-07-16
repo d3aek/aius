@@ -2421,7 +2421,9 @@ exact value: `location: module`, `role: power-data`, signals `USB2-D+`,
 constraint "The internal USB cable is the sole Teensy VUSB feed; no VIN or
 second VUSB feed is fitted.", evidence `PJRC-TEENSY41-SCHEMATIC`, and notes
 "Module USB power-and-data entry." The `protected-vbus` functional flow remains
-the sole normal power flow into `teensy`.
+the sole normal power flow into `teensy`. The `protected-5v` power-domain row
+retains its position and all other fields, but its ordered consumers become
+`teensy`, `internal-usb-a`, `teensy-micro-b`.
 
 The `remote-program-rtc` connector retains its ID, order, location, role,
 signals, mating constraint, and notes. Its ordered power domains become
@@ -2447,17 +2449,23 @@ depends-on:
   - committed P1C1a normative instance and renderer view
   - current PJRC-TEENSY41-PINOUT and PJRC-TEENSY41-SCHEMATIC evidence
 fan-out:
-  - name: correct-usb-rtc-topology
+  - name: migrate-usb-rtc-contract
     owned-paths:
       - scripts/build_p1c_architecture_contracts.py
       - scripts/test_build_p1c_architecture_contracts.py
+      - evidence/design/contracts/functional-topology.json
+      - evidence/design/contracts/interfaces-and-states.json
+      - scripts/fixtures/p1c-schema/functional-topology/valid.json
+      - scripts/fixtures/p1c-schema/interfaces-and-states/valid.json
+  - name: enforce-usb-rtc-contract
+    owned-paths:
       - scripts/validate_p1.py
       - scripts/test_validate_p1.py
-      - evidence/design/contracts/interfaces-and-states.json
-      - scripts/fixtures/p1c-schema/interfaces-and-states/valid.json
+  - name: materialize-usb-rtc-instance
+    owned-paths:
       - evidence/design/interfaces-and-states.json
       - docs/reference/interfaces-and-states.md
-review-intensity: intensive
+review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_build_p1c_architecture_contracts.py
@@ -2471,13 +2479,28 @@ commit-checkpoint:
   parent-commit: "fix(aius): correct usb and rtc power topology"
 ```
 
-The migration rejects a base whose connector or power-domain ID order differs
-from the locked historical input, deep-copies before editing, and preserves all
-unmentioned bytes semantically. Focused negatives cover the old data-only USB
-row, missing/wrong RTC domain position, wrong source/consumer/backfeed rule,
-missing connector-domain reference, evidence drift, and an attempt to make RTC
-backup a core-power source. P1C0e1 cannot start until this correction is
-committed and its clean-room delivery audit passes.
+The three tasks execute serially in listed order and remain one atomic phase
+commit. `migrate-usb-rtc-contract` updates the pure builder and tests first,
+runs `build_p1c_architecture_contracts.py --write` and `--check`, and owns all
+four outputs that command replaces. Its tests and direct before/after byte
+comparison prove the functional contract and functional valid fixture remain
+byte-identical. The migration rejects a base whose connector or power-domain
+ID order differs from the locked historical input, deep-copies before editing,
+and preserves all unmentioned values semantically.
+
+`enforce-usb-rtc-contract` then updates the exact ID/order and semantic
+validator oracles against the generated contract. `materialize-usb-rtc-instance`
+copies the exact JSON value of the generated interface contract to the live
+instance, runs `render_p1.py interfaces-and-states --write`, then its own
+`--check`; it does not run the cumulative validator. The parent alone runs the
+full checkpoint after all three handoffs.
+
+Focused negatives cover the old data-only USB row, omitted or reordered
+`protected-5v` consumers, missing/wrong RTC domain position, wrong
+source/consumer/backfeed rule, missing connector-domain reference, evidence
+drift, and an attempt to make RTC backup a core-power source. P1C0e1 cannot
+start until this correction is committed and its clean-room delivery audit
+passes.
 
 ### P1C0e — Normative selection-policy contract and enforcement
 
