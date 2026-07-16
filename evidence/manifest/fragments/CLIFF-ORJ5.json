@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": 781104,
+      "final_url": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+      "media_type": "application/pdf",
+      "name": "FCR684205R.pdf",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+      "retrieval_status": "current",
+      "sha256": "59c25d7f71fa019de4ca9df4cb5366d1e573120baf0109039e4c359a702744d4",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "Cliff Electronic Components",
+  "claim_scope": ["optical receiver circuit", "optical receiver electrical limits"],
+  "class": "golden",
+  "id": "CLIFF-ORJ5",
+  "landing_url": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+  "observations": [],
+  "purpose": "Establish the optical receiver circuit and electrical limits.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T05:36:51Z",
+  "revision": "2.0",
+  "status": "current",
+  "supersedes": null,
+  "title": "FCR684205R version 2.0 datasheet"
+}
