@@ -194,24 +194,52 @@ Create exactly:
 - `evidence/manifest/assumptions.json` as an empty array;
 - `scripts/test_selection_schemas.py`.
 
-All schemas use Draft 2020-12 and reject additional properties. A source request
-requires `request_id`, `family`, non-empty `requirements`, `authority_url`,
-nullable `selected_manufacturer`, `selected_mpn`, and `source_id`, non-empty
-`artifact_kinds`, `status`, `evidence_ids`, and `notes`. Status is `pending`,
-`satisfied`, or `unavailable`; `satisfied` requires the three selected fields
-and at least one evidence ID, while `pending` requires them null.
+All schemas use Draft 2020-12 and reject additional properties. Every array
+called out as non-empty contains unique non-empty strings. Evidence and source
+IDs use the P1A1 identifier pattern. Family and block slugs match
+`^[a-z0-9]+(?:-[a-z0-9]+)*$`; request IDs match
+`^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*$`; assumption IDs match
+`^ASM-[A-Z0-9]+(?:-[A-Z0-9]+)*$`. URLs are HTTPS.
+
+A source request requires `request_id`, `family`, non-empty `requirements`,
+`authority_url`, `selected_manufacturer`, `selected_mpn`, `source_id`, non-empty
+`artifact_kinds`, `status`, `evidence_ids`, and `notes`. The four selected
+fields are non-empty strings except the HTTPS URL. `artifact_kinds` uses only
+`datasheet`, `drawing`, `cad`, `product-page`, `price-observation`,
+`source-snapshot`, or `reference-design`.
+
+- `pending` means the component and authority are selected but the artifact has
+  not been acquired; it requires all selected fields and zero evidence IDs.
+- `satisfied` requires all selected fields and at least one evidence ID.
+- `unavailable` requires all selected fields, zero evidence IDs, and non-empty
+  notes describing the failed acquisition.
 
 A component requires `block`, non-empty `requirements`, nullable `manufacturer`
-and `mpn`, `alternatives` with zero to two manufacturer/MPN/authority objects,
-`selection_rationale`, `authority_url`, `source_request_id`, `status`, and
-`notes`. Status is `selected`, `generic-allowance`, or `unresolved`.
-`selected` requires manufacturer, MPN, authority URL, and rationale;
-`generic-allowance` requires null manufacturer/MPN and a value/package/tolerance
-policy in rationale.
+and `mpn`, `alternatives`, nullable `selection_rationale`, `authority_url`,
+`source_request_id`, `generic_policy`, `status`, and string `notes`.
+`authority_url`, `source_request_id`, and `generic_policy` are nullable.
+`alternatives` has zero to two objects, each requiring non-empty `manufacturer`,
+`mpn`, `selection_rationale`, and HTTPS `authority_url`, with no extra fields.
 
-An assumption requires `id`, `claim`, `consequence`, `owner`,
-`validation_gate`, `evidence_ids`, `status`, and `resolution`. Status is `open`
-or `resolved`; resolved requires a non-empty resolution and evidence IDs.
+- `selected` requires non-empty manufacturer, MPN, rationale, HTTPS authority,
+  and request ID; `generic_policy` is null.
+- `generic-allowance` requires null manufacturer, MPN, authority, and request
+  ID; non-empty rationale; and a `generic_policy` object with exactly the three
+  non-empty strings `value`, `package`, and `tolerance`.
+- `unresolved` requires null manufacturer, MPN, authority, request ID, and
+  generic policy, plus non-empty rationale explaining what remains unresolved.
+
+An assumption requires `id`, non-empty `claim`, `consequence`, `owner`, and
+`validation_gate`, unique `evidence_ids`, `status`, and nullable `resolution`.
+Status is `open` or `resolved`. `open` requires null resolution and permits zero
+or more evidence IDs. `resolved` requires non-empty resolution and at least one
+evidence ID.
+
+`test_selection_schemas.py` meta-checks all three schemas, validates the empty
+assumption array, covers every status with a valid record, and rejects invalid
+identifiers, empty/duplicate arrays, additional properties, a third
+alternative, every missing conditional field, every forbidden non-null field,
+and incomplete generic policies.
 
 ```yaml
 phase: P1A2
