@@ -1432,6 +1432,9 @@ phase: P1B3c
 unit: single-dynamic-source
 seams: [official series, normalized rates]
 contract-artifact: both
+execution-parameters:
+  observed-at: "2026-07-16T06:53:36Z"
+  unavailable-note: "Automated observation from the fixed landing page failed during P1B3c."
 fan-out:
   - name: observe-boe-fx
     owned-paths: [evidence/manifest/fragments/BOE-GBP-DAILY-FX.json, evidence/manifest/assumption-fragments/BOE-GBP-DAILY-FX.json]
