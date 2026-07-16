@@ -2990,12 +2990,27 @@ manufacturer-request authorities are respectively
 `https://www.samtec.com/products/mms-103-01-l-dv`, and
 `https://www.samtec.com/products/ssw-105-02-g-s` for `teensy-side-socket`,
 `teensy-ethernet-socket`, and `teensy-usb-host-socket`. Each manufacturer
-request uses `artifact_kinds: [drawing, product-page]` and this exact note:
-`P1D must retain and validate the exact-MPN Samtec product page and its linked
-current series print before this candidate can advance.` The exact-MPN page and
-series print must jointly make every assigned dimension, pitch, row/contact
-count, termination, retention, and current-rating check actionable; neither
-artifact alone advances the component.
+request uses `artifact_kinds: [datasheet, drawing, product-page]` and this exact
+note: `P1D must retain and validate the exact-MPN Samtec product page, every
+applicable part-specific current series print linked by that page, and the
+applicable current Samtec product specification before this candidate can
+advance.` The applicable specification URLs are
+`https://suddendocs.samtec.com/productspecs/tsw-sxx.pdf` for
+`teensy-side-socket` and `teensy-usb-host-socket`, and
+`https://suddendocs.samtec.com/productspecs/mms-tmm.pdf` for
+`teensy-ethernet-socket`. The applicable SSW print URL is
+`https://suddendocs.samtec.com/prints/ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf`.
+The two MMS through-hole print URLs
+`https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-xx-xxx-mkt1.pdf` and
+`https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-xx-xxx-mkt2.pdf` are both
+applicable to `MMS-103-01-L-DV` and mandatory; a selector may not choose only
+one. The exact-MPN page, every applicable print, and product specification must
+jointly make every assigned dimension, pitch, row/contact count, termination,
+retention, and current-rating check actionable; omitting any required artifact
+leaves the component pending.
+
+The P1C2 clean-room exception re-audit passed after these exact sources and the
+all-applicable-artifacts rule replaced the underspecified two-artifact contract.
 
 The two seed selections are literal-locked as follows:
 
