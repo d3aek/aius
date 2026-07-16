@@ -1938,9 +1938,18 @@ other cells preserve their scalar text. Generic fields come from the nullable
 
 The supplemental aggregate has root keys `schema_version`, then `requests`;
 the version is `1.0.0`, requests sort ascending by `request_id`, and every
-request's key order is the source-request schema's required-key order. It is
-`json.dumps(..., ensure_ascii=False, indent=2)` encoded as UTF-8 without BOM
-with exactly one final LF.
+request's key order is the source-request schema's required-key order. Its pure
+in-memory standard-library formatter uses two-space indentation and a locked
+120-column width. A scalar array is compact JSON with `ensure_ascii=False` and
+comma-space separators and remains inline when the complete property line,
+including indentation and trailing comma, is at most 120 Python string
+characters; otherwise it renders one scalar per line at the next indentation
+level. Empty arrays are always inline. Root and request objects remain
+multiline. The renderer is encoded as UTF-8 without BOM, uses LF only, and ends
+in exactly one LF. `render_supplemental_requests` must not invoke Node,
+Prettier, a subprocess, the filesystem, or environment-dependent formatting.
+Focused tests lock short, long, empty, exactly-120-character, and
+121-character array cases in addition to the adversarial golden bytes.
 
 Completed 2026-07-16. All four pure renderers, the exact write/check CLI, and
 the deterministic Markdown, CSV, and request-aggregate goldens are implemented.
@@ -3255,6 +3264,7 @@ joined to the commit.
 
 ```yaml
 phase: P1C4
+status: in-progress
 unit: supplemental-request-coordinator
 seams: [validated requests, explicit P1D acquisition fan-out]
 contract-artifact: both
@@ -3263,23 +3273,36 @@ fan-out:
     owned-paths:
       - evidence/manifest/supplemental-requests.json
       - docs/plans/aius-p1-evidence-topology-cost.md
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+      - scripts/fixtures/render-p1/escaping/golden/supplemental-requests.golden
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/render_p1.py supplemental-requests --write
     - python3 scripts/render_p1.py supplemental-requests --check
+    - python3 scripts/test_render_p1.py
     - python3 scripts/validate_p1.py topology --stage handoff
+    - node_modules/.bin/prettier --check evidence/manifest/supplemental-requests.json
     - the repo tooling tool doc-index -- --check
   buildable: [exact manufacturer and UK-availability acquisition queue for P1D]
   parent-commit: "docs(aius): bind supplemental evidence acquisition"
 ```
 
-P1C4 runs only after P1C3 is committed. It generates the sorted request
-aggregate, then replaces the P1D placeholder fan-out below with one explicit
-task and exact owned paths per non-satisfied request. Satisfied Cliff
-manufacturer requests are absent from acquisition fan-out but remain in the
-aggregate. The plan file is an explicit owned path for this integration phase;
-no later implementer is allowed to derive or silently widen the queue.
+Integration recovery 2026-07-16. The first boundary commit attempt exposed a
+contract gap: renderer parity and `handoff` validation passed, but the repository
+hook rejected the generated JSON because its multiline short arrays were not
+pinned-Prettier compatible. P1C4 remains in progress and the hook must not be
+bypassed. The existing renderer module is deepened to emit the same deterministic
+request order and key order with Prettier-compatible short-array layout; its
+golden and focused tests change in the same boundary. The aggregate is then
+regenerated and every earlier mapping/delivery check reruns.
+
+P1C4 started only after P1C3 was committed. It generated the sorted request
+aggregate and replaced the P1D placeholder with one explicit task and exact
+owned paths per non-satisfied request. Satisfied Cliff manufacturer requests are
+absent from acquisition fan-out but remain in the aggregate. No later
+implementer may derive or silently widen this queue.
 
 ## P1D — Supplemental evidence and electrical reference
 
@@ -3322,14 +3345,17 @@ Failure of any criterion automatically selects four layers for H2; it is not a
 reviewer preference. The placement is a measured feasibility artifact, not PCB
 manufacturing data.
 
-P1C4 updates the P1D fan-out in this plan with one exact source ID, artifact
-directory, and fragment path per approved request before its checkpoint lands.
-Each P1D acquisition agent receives one request only. The P1D clean-room gate
-fails if any `<request-id>` placeholder remains; source acquisition and design
-work do not start in the same wave. The supplemental manifest coordinator also
-creates `supplemental-clone-boundary.json` with exactly every non-seed,
-non-dynamic source added by those requests, using the reusable P1A4a row
-contract and the P1A4b classification rules.
+P1C4 updated the P1D fan-out in this plan with one exact source ID, artifact
+directory, and fragment path per approved request before its checkpoint landed.
+For every non-satisfied request `R`, the exact task name is
+the literal `component-evidence-` prefix followed by lowercase `R.request_id`,
+and all three owned paths contain the exact `R.source_id`. Each P1D acquisition
+agent receives that one request only. The P1D clean-room gate fails if any
+templated task name or source path remains; source acquisition and design work
+do not start in the same wave. The supplemental manifest coordinator also creates
+`supplemental-clone-boundary.json` with exactly every non-seed, non-dynamic
+source added by those requests, using the reusable P1A4a row contract and the
+P1A4b classification rules.
 
 ```yaml
 phase: P1D
@@ -3337,11 +3363,236 @@ unit: electrical-reference-component
 seams: [supplemental evidence, reference schematic, pin resources, placement]
 contract-artifact: both
 fan-out:
-  - name: component-evidence-<request-id>
+  - name: component-evidence-req-cliff-rx-uk
     owned-paths:
-      - docs/reference/datasheets.md<exact-source-id>
-      - evidence/observations/components/<exact-source-id>.json
-      - evidence/manifest/fragments/<exact-source-id>.json
+      - docs/reference/datasheets.mdAIUS-CLIFF-RX-UK
+      - evidence/observations/components/AIUS-CLIFF-RX-UK.json
+      - evidence/manifest/fragments/AIUS-CLIFF-RX-UK.json
+  - name: component-evidence-req-cliff-tx-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-CLIFF-TX-UK
+      - evidence/observations/components/AIUS-CLIFF-TX-UK.json
+      - evidence/manifest/fragments/AIUS-CLIFF-TX-UK.json
+  - name: component-evidence-req-ethernet-magjack-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-ETHERNET-MAGJACK-MFR
+      - evidence/observations/components/AIUS-ETHERNET-MAGJACK-MFR.json
+      - evidence/manifest/fragments/AIUS-ETHERNET-MAGJACK-MFR.json
+  - name: component-evidence-req-ethernet-magjack-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-ETHERNET-MAGJACK-UK
+      - evidence/observations/components/AIUS-ETHERNET-MAGJACK-UK.json
+      - evidence/manifest/fragments/AIUS-ETHERNET-MAGJACK-UK.json
+  - name: component-evidence-req-expansion-gpio-adc-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-GPIO-ADC-MFR
+      - evidence/observations/components/AIUS-EXPANSION-GPIO-ADC-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-GPIO-ADC-MFR.json
+  - name: component-evidence-req-expansion-gpio-adc-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-GPIO-ADC-UK
+      - evidence/observations/components/AIUS-EXPANSION-GPIO-ADC-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-GPIO-ADC-UK.json
+  - name: component-evidence-req-expansion-i2c-control-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-I2C-CONTROL-MFR
+      - evidence/observations/components/AIUS-EXPANSION-I2C-CONTROL-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-I2C-CONTROL-MFR.json
+  - name: component-evidence-req-expansion-i2c-control-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-I2C-CONTROL-UK
+      - evidence/observations/components/AIUS-EXPANSION-I2C-CONTROL-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-I2C-CONTROL-UK.json
+  - name: component-evidence-req-expansion-i2c-isolator-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-I2C-ISOLATOR-MFR
+      - evidence/observations/components/AIUS-EXPANSION-I2C-ISOLATOR-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-I2C-ISOLATOR-MFR.json
+  - name: component-evidence-req-expansion-i2c-isolator-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-I2C-ISOLATOR-UK
+      - evidence/observations/components/AIUS-EXPANSION-I2C-ISOLATOR-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-I2C-ISOLATOR-UK.json
+  - name: component-evidence-req-expansion-i2s-tdm-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-I2S-TDM-MFR
+      - evidence/observations/components/AIUS-EXPANSION-I2S-TDM-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-I2S-TDM-MFR.json
+  - name: component-evidence-req-expansion-i2s-tdm-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-I2S-TDM-UK
+      - evidence/observations/components/AIUS-EXPANSION-I2S-TDM-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-I2S-TDM-UK.json
+  - name: component-evidence-req-expansion-power-protection-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-POWER-PROTECTION-MFR
+      - evidence/observations/components/AIUS-EXPANSION-POWER-PROTECTION-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-POWER-PROTECTION-MFR.json
+  - name: component-evidence-req-expansion-power-protection-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-POWER-PROTECTION-UK
+      - evidence/observations/components/AIUS-EXPANSION-POWER-PROTECTION-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-POWER-PROTECTION-UK.json
+  - name: component-evidence-req-expansion-spi-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-SPI-MFR
+      - evidence/observations/components/AIUS-EXPANSION-SPI-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-SPI-MFR.json
+  - name: component-evidence-req-expansion-spi-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-SPI-UK
+      - evidence/observations/components/AIUS-EXPANSION-SPI-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-SPI-UK.json
+  - name: component-evidence-req-expansion-uart-debug-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-UART-DEBUG-MFR
+      - evidence/observations/components/AIUS-EXPANSION-UART-DEBUG-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-UART-DEBUG-MFR.json
+  - name: component-evidence-req-expansion-uart-debug-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-UART-DEBUG-UK
+      - evidence/observations/components/AIUS-EXPANSION-UART-DEBUG-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-UART-DEBUG-UK.json
+  - name: component-evidence-req-expansion-usb-host-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-USB-HOST-MFR
+      - evidence/observations/components/AIUS-EXPANSION-USB-HOST-MFR.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-USB-HOST-MFR.json
+  - name: component-evidence-req-expansion-usb-host-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-EXPANSION-USB-HOST-UK
+      - evidence/observations/components/AIUS-EXPANSION-USB-HOST-UK.json
+      - evidence/manifest/fragments/AIUS-EXPANSION-USB-HOST-UK.json
+  - name: component-evidence-req-internal-usb-cable-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-INTERNAL-USB-CABLE-MFR
+      - evidence/observations/components/AIUS-INTERNAL-USB-CABLE-MFR.json
+      - evidence/manifest/fragments/AIUS-INTERNAL-USB-CABLE-MFR.json
+  - name: component-evidence-req-internal-usb-cable-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-INTERNAL-USB-CABLE-UK
+      - evidence/observations/components/AIUS-INTERNAL-USB-CABLE-UK.json
+      - evidence/manifest/fragments/AIUS-INTERNAL-USB-CABLE-UK.json
+  - name: component-evidence-req-mechanical-cable-retainer-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-MECHANICAL-CABLE-RETAINER-MFR
+      - evidence/observations/components/AIUS-MECHANICAL-CABLE-RETAINER-MFR.json
+      - evidence/manifest/fragments/AIUS-MECHANICAL-CABLE-RETAINER-MFR.json
+  - name: component-evidence-req-mechanical-cable-retainer-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-MECHANICAL-CABLE-RETAINER-UK
+      - evidence/observations/components/AIUS-MECHANICAL-CABLE-RETAINER-UK.json
+      - evidence/manifest/fragments/AIUS-MECHANICAL-CABLE-RETAINER-UK.json
+  - name: component-evidence-req-remote-program-rtc-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-REMOTE-PROGRAM-RTC-MFR
+      - evidence/observations/components/AIUS-REMOTE-PROGRAM-RTC-MFR.json
+      - evidence/manifest/fragments/AIUS-REMOTE-PROGRAM-RTC-MFR.json
+  - name: component-evidence-req-remote-program-rtc-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-REMOTE-PROGRAM-RTC-UK
+      - evidence/observations/components/AIUS-REMOTE-PROGRAM-RTC-UK.json
+      - evidence/manifest/fragments/AIUS-REMOTE-PROGRAM-RTC-UK.json
+  - name: component-evidence-req-spdif-mux-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-SPDIF-MUX-MFR
+      - evidence/observations/components/AIUS-SPDIF-MUX-MFR.json
+      - evidence/manifest/fragments/AIUS-SPDIF-MUX-MFR.json
+  - name: component-evidence-req-spdif-mux-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-SPDIF-MUX-UK
+      - evidence/observations/components/AIUS-SPDIF-MUX-UK.json
+      - evidence/manifest/fragments/AIUS-SPDIF-MUX-UK.json
+  - name: component-evidence-req-spdif-tx-gate-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-SPDIF-TX-GATE-MFR
+      - evidence/observations/components/AIUS-SPDIF-TX-GATE-MFR.json
+      - evidence/manifest/fragments/AIUS-SPDIF-TX-GATE-MFR.json
+  - name: component-evidence-req-spdif-tx-gate-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-SPDIF-TX-GATE-UK
+      - evidence/observations/components/AIUS-SPDIF-TX-GATE-UK.json
+      - evidence/manifest/fragments/AIUS-SPDIF-TX-GATE-UK.json
+  - name: component-evidence-req-teensy-ethernet-socket-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEENSY-ETHERNET-SOCKET-MFR
+      - evidence/observations/components/AIUS-TEENSY-ETHERNET-SOCKET-MFR.json
+      - evidence/manifest/fragments/AIUS-TEENSY-ETHERNET-SOCKET-MFR.json
+  - name: component-evidence-req-teensy-ethernet-socket-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEENSY-ETHERNET-SOCKET-UK
+      - evidence/observations/components/AIUS-TEENSY-ETHERNET-SOCKET-UK.json
+      - evidence/manifest/fragments/AIUS-TEENSY-ETHERNET-SOCKET-UK.json
+  - name: component-evidence-req-teensy-side-socket-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEENSY-SIDE-SOCKET-MFR
+      - evidence/observations/components/AIUS-TEENSY-SIDE-SOCKET-MFR.json
+      - evidence/manifest/fragments/AIUS-TEENSY-SIDE-SOCKET-MFR.json
+  - name: component-evidence-req-teensy-side-socket-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEENSY-SIDE-SOCKET-UK
+      - evidence/observations/components/AIUS-TEENSY-SIDE-SOCKET-UK.json
+      - evidence/manifest/fragments/AIUS-TEENSY-SIDE-SOCKET-UK.json
+  - name: component-evidence-req-teensy-usb-host-socket-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEENSY-USB-HOST-SOCKET-MFR
+      - evidence/observations/components/AIUS-TEENSY-USB-HOST-SOCKET-MFR.json
+      - evidence/manifest/fragments/AIUS-TEENSY-USB-HOST-SOCKET-MFR.json
+  - name: component-evidence-req-teensy-usb-host-socket-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEENSY-USB-HOST-SOCKET-UK
+      - evidence/observations/components/AIUS-TEENSY-USB-HOST-SOCKET-UK.json
+      - evidence/manifest/fragments/AIUS-TEENSY-USB-HOST-SOCKET-UK.json
+  - name: component-evidence-req-test-fixture-header-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEST-FIXTURE-HEADER-MFR
+      - evidence/observations/components/AIUS-TEST-FIXTURE-HEADER-MFR.json
+      - evidence/manifest/fragments/AIUS-TEST-FIXTURE-HEADER-MFR.json
+  - name: component-evidence-req-test-fixture-header-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-TEST-FIXTURE-HEADER-UK
+      - evidence/observations/components/AIUS-TEST-FIXTURE-HEADER-UK.json
+      - evidence/manifest/fragments/AIUS-TEST-FIXTURE-HEADER-UK.json
+  - name: component-evidence-req-usb-a-receptacle-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-A-RECEPTACLE-MFR
+      - evidence/observations/components/AIUS-USB-A-RECEPTACLE-MFR.json
+      - evidence/manifest/fragments/AIUS-USB-A-RECEPTACLE-MFR.json
+  - name: component-evidence-req-usb-a-receptacle-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-A-RECEPTACLE-UK
+      - evidence/observations/components/AIUS-USB-A-RECEPTACLE-UK.json
+      - evidence/manifest/fragments/AIUS-USB-A-RECEPTACLE-UK.json
+  - name: component-evidence-req-usb-c-receptacle-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-C-RECEPTACLE-MFR
+      - evidence/observations/components/AIUS-USB-C-RECEPTACLE-MFR.json
+      - evidence/manifest/fragments/AIUS-USB-C-RECEPTACLE-MFR.json
+  - name: component-evidence-req-usb-c-receptacle-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-C-RECEPTACLE-UK
+      - evidence/observations/components/AIUS-USB-C-RECEPTACLE-UK.json
+      - evidence/manifest/fragments/AIUS-USB-C-RECEPTACLE-UK.json
+  - name: component-evidence-req-usb-esd-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-ESD-MFR
+      - evidence/observations/components/AIUS-USB-ESD-MFR.json
+      - evidence/manifest/fragments/AIUS-USB-ESD-MFR.json
+  - name: component-evidence-req-usb-esd-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-ESD-UK
+      - evidence/observations/components/AIUS-USB-ESD-UK.json
+      - evidence/manifest/fragments/AIUS-USB-ESD-UK.json
+  - name: component-evidence-req-usb-power-protection-mfr
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-POWER-PROTECTION-MFR
+      - evidence/observations/components/AIUS-USB-POWER-PROTECTION-MFR.json
+      - evidence/manifest/fragments/AIUS-USB-POWER-PROTECTION-MFR.json
+  - name: component-evidence-req-usb-power-protection-uk
+    owned-paths:
+      - docs/reference/datasheets.mdAIUS-USB-POWER-PROTECTION-UK
+      - evidence/observations/components/AIUS-USB-POWER-PROTECTION-UK.json
+      - evidence/manifest/fragments/AIUS-USB-POWER-PROTECTION-UK.json
   - name: supplemental-manifest-coordinator
     owned-paths:
       - evidence/manifest/sources.json
