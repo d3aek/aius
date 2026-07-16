@@ -330,6 +330,7 @@ the committed seed classes and clone-boundary coverage agree.
 
 ```yaml
 phase: P1A3
+status: completed
 unit: evidence-policy
 seams: [retrieval policy, clone boundary]
 contract-artifact: both
@@ -347,6 +348,9 @@ commit-checkpoint:
   buildable: [documented evidence policy]
   parent-commit: "docs(aius): define evidence handling policy"
 ```
+
+Completed 2026-07-15. The focused suite passes 12 tests; all 45 prior schema
+tests remain green. The clean-room delivery audit passed.
 
 ### P1A4 — Evidence validator
 
