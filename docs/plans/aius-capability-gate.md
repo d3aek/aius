@@ -100,7 +100,11 @@ fan-out:
       - .gitattributes
 review-intensity: active
 commit-checkpoint:
-  green: [doc-index validation, LFS attribute verification, clean-room contract audit]
+  historical-only: true
+  green:
+    - the repo tooling tool doc-index -- --check
+    - python3 scripts/test_evidence_policy.py
+  review-focus: [capability contract, hardware follow-on contract, cost contract, LFS policy]
   buildable: [decision-complete capability and hardware contracts]
   parent-commit: "docs(aius): establish capability and hardware plans"
 ```
@@ -271,7 +275,8 @@ fan-out:
     owned-paths: [evidence/cost]
 review-intensity: active
 commit-checkpoint:
-  green: [source hash verification, LFS verification, provenance audit, cost arithmetic]
+  historical-only: true
+  superseded-by: [P1A, P1B, P1C, P1D, P1E]
   buildable: [auditable evidence and topology package]
   parent-commit: "docs(aius): establish evidence topology and should-cost"
 ```
@@ -292,12 +297,25 @@ fan-out:
     owned-paths: [firmware/lib/aius_codec_api]
   - name: pcm-generator
     owned-paths: [firmware/tools/pcm_corpus]
+  - name: native-test-entrypoint
+    owned-paths: [firmware/scripts/test.sh]
 review-intensity: active
 commit-checkpoint:
-  green: [ABI compile tests, arena boundary tests, PCM checksum regeneration]
+  green:
+    - firmware/scripts/test.sh --environment native --suite codec-api
+    - python3 firmware/tools/pcm_corpus/generate.py --check
   buildable: [portable ABI and source corpus]
   parent-commit: "feat(aius): define portable codec contract"
 ```
+
+The native test entrypoint is foreground-only, resolves the Aius root from its
+own path, and accepts exactly `--environment native --suite <suite>` plus
+`--runs <positive-integer>` only for a fuzz suite. It rejects unknown suites or
+arguments with exit 2 and propagates the selected test executable's exit. P2
+lands `codec-api`; P3 adds `iec61937` and `iec61937-fuzz`; P4 adds `dts`,
+`dts-sanitized`, and `dts-fuzz`; P6 adds `capability-protocol`. Each phase's
+tests command-shim the entrypoint and prove CWD independence, exact executable
+argv, bounded fuzz run count and exit propagation.
 
 ## P3: IEC 61937 parser and corpus
 
@@ -319,7 +337,9 @@ fan-out:
     owned-paths: [firmware/test/iec61937]
 review-intensity: active
 commit-checkpoint:
-  green: [unit tests, chunk-boundary properties, malformed-input fuzzing]
+  green:
+    - firmware/scripts/test.sh --environment native --suite iec61937
+    - firmware/scripts/test.sh --environment native --suite iec61937-fuzz --runs 10000
   buildable: [host IEC 61937 parser]
   parent-commit: "feat(aius): add IEC 61937 DTS parser"
 ```
@@ -348,7 +368,11 @@ fan-out:
     owned-paths: [firmware/tools/differential]
 review-intensity: active
 commit-checkpoint:
-  green: [host tests, sanitizers, fuzzing, differential report]
+  green:
+    - firmware/scripts/test.sh --environment native --suite dts
+    - firmware/scripts/test.sh --environment native --suite dts-sanitized
+    - firmware/scripts/test.sh --environment native --suite dts-fuzz --runs 10000
+    - python3 firmware/tools/differential/run.py --check-report
   buildable: [portable DTS Core decoder]
   parent-commit: "feat(aius): add portable DTS Core decoder"
 ```
@@ -387,10 +411,26 @@ fan-out:
     owned-paths: [firmware/tools/memory]
 review-intensity: active
 commit-checkpoint:
-  green: [native tests, online cross-build, offline rebuild, checksum parity, memory gate]
+  green:
+    - scripts/test.sh Aius.Firmware
+    - firmware/scripts/build.sh --environment teensy41-release --check
+    - firmware/scripts/build.sh --environment teensy41-release --offline --rebuild --check-reproducible
+    - python3 firmware/tools/memory/validate.py --manifest firmware/build/capability-release-manifest.json
   buildable: [flashable Teensy capability firmware]
   parent-commit: "build(aius): add reproducible Teensy target"
 ```
+
+`build.sh` is foreground-only and root-independent. `--check` verifies the
+named environment's current image, linker map and release manifest without
+writing. `--offline --rebuild --check-reproducible` creates an isolated build
+directory, disables package-network access, resolves only the persisted cache,
+and compares image, linker-map and manifest hashes with the online release;
+missing cache content fails instead of downloading. The memory validator reads
+the bound linker map through the release manifest and applies the exact bank
+arithmetic above. Wrapper tests cover every argument combination, clean and
+dirty cache, missing artifact, hash drift, CWD independence and exit
+propagation; `scripts/test.sh Aius.Firmware` invokes the native and target
+wrappers in that exact order.
 
 ## P6: USB capability harness
 
@@ -410,7 +450,10 @@ fan-out:
     owned-paths: [firmware/test/protocol]
 review-intensity: active
 commit-checkpoint:
-  green: [simulated-device tests, golden protocol vectors, Teensy build]
+  green:
+    - firmware/scripts/test.sh --environment native --suite capability-protocol
+    - scripts/test.sh Aius.Firmware
+    - firmware/scripts/build.sh --environment teensy41-release --check
   buildable: [USB capability firmware and host runner]
   parent-commit: "feat(aius): add USB capability harness"
 ```
@@ -750,7 +793,9 @@ fan-out:
       - evidence/capability-results/p8-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [structurally complete eight-hour telemetry and clean-room result audit]
+  green:
+    - python3 firmware/tools/device/run_capability.py --stage p8-structural
+  review-focus: [eight-hour telemetry completeness, raw-result-to-verdict projection]
   branches:
     pass:
       command: python3 firmware/tools/device/run_capability.py --stage p8-gate --record evidence/capability-results/p8-verdict.json
@@ -764,6 +809,13 @@ commit-checkpoint:
       buildable: [complete soak evidence requiring software work]
       parent-commit: "test(aius): record blocked Teensy DTS soak"
 ```
+
+`p8-structural` is read-only and validates the closed run/verdict JSON schemas,
+the exact telemetry header and sequence continuity, recorded board/cable/port,
+firmware and runner hashes, eight-hour monotonic duration, and raw-result
+membership before any verdict projection. `review-focus` is a non-executable
+clean-room delivery-audit condition; only the listed command and branch command
+determine automated exits, and findings are fixed or recorded before commit.
 
 ## Deferred decisions
 

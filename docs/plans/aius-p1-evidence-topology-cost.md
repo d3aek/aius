@@ -3823,10 +3823,15 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/validate_functional_bom_oracle.py --input evidence/cost/functional-bom-oracle.json
-    - clean-room row-membership quantity and evidence audit
+  review-focus: [row membership, quantity projection, retained evidence]
   buildable: [exact evidence-linked functional BOM row oracle]
   parent-commit: "docs(aius): lock functional BOM rows"
 ```
+
+`review-focus` is a non-executable clean-room delivery-audit condition, not a
+green command. The parent records PASS or numbered findings in the phase note;
+only the listed commands determine automated green status, and findings are
+fixed or explicitly retained before commit.
 
 P1Ea is four serial schema-sized commits. Each schema agent owns one schema and
 its immutable base fixture. The final coordinator owns only the shared staged
@@ -3983,7 +3988,7 @@ commit-checkpoint:
     - python3 scripts/validate_p1.py topology --stage final
     - python3 scripts/validate_p1.py cost --stage structural
     - the repo tooling tool doc-index -- --check
-    - clean-room pin-by-pin electrical and P1 promise audit
+  review-focus: [pin-by-pin electrical contract, P1 promise-to-artifact delivery]
   branches:
     eligible:
       command: python3 scripts/validate_p1.py cost --stage h0-gate --record evidence/cost/h0-verdict.json

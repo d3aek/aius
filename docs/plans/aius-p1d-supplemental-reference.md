@@ -20,13 +20,13 @@ current tree.
 
 ## Pre-build gate status
 
-The first clean-room review of commit `eedf99281` returned `BLOCKED`. It found
-schema-incompatible artifact-kind placement, an incomplete realization oracle,
-P1C power/request drift, no committable manufacturer-unavailable branch,
-underspecified P1D3 schemas, oversized tasks, and false stub declarations. This
-revision incorporates those findings. Implementation remains blocked until a
-fresh clean-room review passes the amended plans, literal realization oracle and
-current code.
+Clean-room Gate 10 at commit `6e78fb98b` returned `BLOCKED` after confirming the
+current validator baseline and realization oracle. It found no public
+future-power-reference oracle, conflicting schematic paths, incomplete release,
+purchase and EVT hash binding, prose-only checkpoints, false stub declarations,
+and oversized H2b/H4 execution tasks. This revision incorporates those findings.
+Implementation remains blocked until a fresh clean-room review passes the
+amended plans, literal realization oracle and current code.
 
 ## Execution constraints
 
@@ -243,7 +243,7 @@ rail position emits `CONTRACT`.
 phase: P1C5a0
 unit: test-surface
 seams: [power-reference universe, selected component-family endpoint, handoff diagnostics]
-contract-artifact: both
+contract-artifact: spec-only
 fan-out:
   - name: p1c5-power-reference-validator
     owned-paths:
@@ -262,6 +262,39 @@ Focused tests construct the future exact source/consumer pair and require a
 clean reference pass, then independently prove rejection of an unknown family,
 the known family on an unrelated power domain, a missing Teensy consumer, and a
 mismatched expansion source. P1C5a0 changes no generated topology bytes.
+
+The executable oracle is a new public CLI surface:
+`python3 scripts/validate_p1.py power-references --interfaces
+<path>`. `--interfaces` is required, is resolved against the Aius root when
+relative, and may be absolute only when it remains beneath that root. This
+surface parses only the supplied interfaces document and calls the same public
+`check_power_references` helper used by `topology`; it deliberately skips schema,
+normative-contract and rendered-byte parity so the future pair can be proved
+before P1C5a materializes it. Parse/missing failures retain the existing
+diagnostics and exit 1; argument errors exit 2. Success prints exactly
+`OK power-references <Aius-relative-path>` and exits 0.
+
+The helper applies this closed decision table. Pair completeness is evaluated
+only when at least one of the two allowed endpoints is present, so the current
+absent/absent topology remains valid.
+
+| Input condition | Exact result |
+|---|---|
+| family absent from both allowed endpoints and every other power position | pass |
+| family is final `teensy-3v3.consumers` member and exact `expansion-3v3.source` | pass |
+| exact source present but final consumer absent | `CONTRACT`; detail `power-domain endpoint pair is incomplete: teensy-3v3.consumers must end with 'expansion-power-protection'` |
+| exact final consumer present but source differs | `CONTRACT`; detail `power-domain endpoint pair is incomplete: expansion-3v3.source must be 'expansion-power-protection'` |
+| `expansion-power-protection` occurs in any additional source or consumer position | one `CONTRACT` per occurrence; detail `<field> forbids component family 'expansion-power-protection'` |
+| any other ID in the validator's exact closed `FAMILIES` tuple occurs in a power source or consumer | one `CONTRACT` per occurrence; detail `<field> forbids component family '<id>'` |
+| a token outside blocks, connectors, expansion interfaces, power domains, `carrier`, `enclosure` and `FAMILIES` occurs | the existing `REFERENCE`; detail `<field> does not resolve: '<token>'` |
+
+Here `<field>` is exactly `power_domains[<document-index>].source` or
+`power_domains[<document-index>].consumers`. Diagnostics are sorted by the
+existing `Diagnostic` ordering. Tests cover absent/absent, the exact pair, both
+partial pairs, each allowed-endpoint value in a forbidden domain, an exact pair
+plus an extra occurrence, one different known family as source and consumer,
+and one unknown source and consumer. The topology handoff test proves the
+public stage and normal handoff call the same helper.
 
 ### P1C5a — Topology schema and migration correction
 
@@ -1268,10 +1301,45 @@ aggregates, and records any manufacturer blocker. No design task starts if a
 critical manufacturer source is unavailable.
 
 ```yaml
+phase: P1D2a
+unit: test-surface
+seams: [closed supplemental realization, selected family set, exact formatter argv]
+contract-artifact: spec-only
+depends-on:
+  - evidence/manifest/supplemental-realization.json
+  - scripts/validate_p1.py
+fan-out:
+  - name: p1d2-format-checker
+    owned-paths:
+      - scripts/check_p1d2_format.py
+      - scripts/test_check_p1d2_format.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_check_p1d2_format.py
+  buildable: [fixture-proven exact supplemental lifecycle formatting command]
+  parent-commit: "test(aius): pin supplemental formatting inputs"
+```
+
+`check_p1d2_format.py` accepts no arguments, resolves the Aius and repository
+roots from its own path, and invokes the repository-pinned
+`node_modules/.bin/prettier --check` once. Its closed sorted argv contains
+`sources.json`, `assumptions.json`, `supplemental-clone-boundary.json`, and
+`supplemental-requests.json`; one request path for every unique request ID in
+the 46-row realization; and one component path for every exact family in the
+validator's closed `FAMILIES` tuple. It rejects duplicate realization request
+IDs, a realization count other than 46, a missing expected input, an extra
+request/component JSON member, or any path escape before invoking Prettier.
+The test command-shims Prettier and proves exact argv, lexical ordering, CWD
+independence, exit propagation and every rejection branch.
+
+```yaml
 phase: P1D2
 unit: parent-only
 seams: [validated supplemental fragments, immutable seed set, lifecycle projection]
 contract-artifact: both
+depends-on:
+  - scripts/check_p1d2_format.py
 fan-out:
   - name: p1d2-integration
     owned-paths:
@@ -1357,7 +1425,7 @@ commit-checkpoint:
     - python3 scripts/validate_p1.py topology --stage supplemental-lifecycle
     - python3 scripts/render_p1.py supplemental-requests --check
     - python3 scripts/render_p1.py components --check
-    - exact-path pinned Prettier checks
+    - python3 scripts/check_p1d2_format.py
   buildable: [closed supplemental source, request and component lifecycle in either design-gate branch]
   parent-commit: "docs(aius): assemble supplemental component evidence"
 ```
@@ -1938,6 +2006,17 @@ commit-checkpoint:
   parent-commit: "feat(aius): build electrical reference contracts"
 ```
 
+Every `build_p1d_reference_contract.py` option that accepts a path uses one
+locked rule: an absolute path is accepted only beneath the resolved Aius root;
+a relative path is interpreted as Aius-root-relative, never caller-CWD-relative.
+Output and placeholder-package paths use the same rule. Diagnostics render the
+normalized Aius-relative path. `test_build_p1d_reference_contract.py` invokes
+every path-bearing subcommand from the repository root and an unrelated nested
+working directory, then proves identical bytes/diagnostics; it also proves
+absolute in-root acceptance and rejects `..`, absolute escape, symlink escape,
+missing and directory-valued inputs with usage exit 2. Thus commands such as
+`--input evidence/design/...` below are executable from any working directory.
+
 The three renderer concerns land serially because each deepens the existing
 `render_p1.py`/`test_render_p1.py` pair. Before each renderer dispatch, a separate
 checkpoint commits its authored input and adversarial expected bytes. The
@@ -2120,7 +2199,7 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/electrical-support-circuits.json
-    - clean-room support-circuit topology and evidence review
+  review-focus: [support-circuit topology, component values, retained evidence]
   buildable: [closed support-circuit inventory and values]
   parent-commit: "design(aius): establish support-circuit basis"
 ```
@@ -2150,7 +2229,7 @@ commit-checkpoint:
     - python3 scripts/build_p1d_reference_contract.py assemble-basis electrical-reference --write
     - python3 scripts/build_p1d_reference_contract.py assemble-basis electrical-reference --check
     - python3 scripts/build_p1d_reference_contract.py validate-basis electrical-reference --input evidence/design/basis/electrical-reference-basis.json
-    - clean-room signal-threshold and power-budget review
+  review-focus: [signal thresholds, interface margins, power budgets]
   buildable: [complete field-by-field electrical design basis]
   parent-commit: "design(aius): establish electrical design basis"
 ```
@@ -2178,7 +2257,7 @@ commit-checkpoint:
     - python3 scripts/build_p1d_reference_contract.py assemble-basis pin-resource-map --write
     - python3 scripts/build_p1d_reference_contract.py assemble-basis pin-resource-map --check
     - python3 scripts/build_p1d_reference_contract.py validate-basis pin-resource-map --input evidence/design/basis/pin-resource-map-basis.json
-    - clean-room pin-mux DMA and reservation review
+  review-focus: [pin mux, DMA ownership, peripheral and reservation conflicts]
   buildable: [complete field-by-field pin allocation basis]
   parent-commit: "design(aius): establish pin allocation basis"
 ```
@@ -2200,7 +2279,7 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-envelope.json
-    - clean-room enclosure placement and keepout review
+  review-focus: [enclosure datum, placement envelope, keepouts]
   buildable: [exact board placement and keepout basis]
   parent-commit: "design(aius): establish placement envelope basis"
 ```
@@ -2220,7 +2299,7 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-routing.json
-    - clean-room impedance length via and return-path review
+  review-focus: [impedance, length, via budget, return path]
   buildable: [exact route corridor and electrical-criterion basis]
   parent-commit: "design(aius): establish routing feasibility basis"
 ```
@@ -2241,7 +2320,7 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/build_p1d_reference_contract.py validate-basis-fragment --input evidence/design/basis/fragments/placement-mechanical-verification.json
-    - clean-room cable collision insertion and service review
+  review-focus: [cable collision, insertion access, service access]
   buildable: [exact cable collision and mechanical-criterion basis]
   parent-commit: "design(aius): establish mechanical verification basis"
 ```
@@ -2268,10 +2347,18 @@ commit-checkpoint:
     - python3 scripts/build_p1d_reference_contract.py assemble-basis two-layer-placement --write
     - python3 scripts/build_p1d_reference_contract.py assemble-basis two-layer-placement --check
     - python3 scripts/build_p1d_reference_contract.py validate-basis two-layer-placement --input evidence/design/basis/two-layer-placement-basis.json
-    - clean-room bidirectional failure and layer-decision review
+  review-focus: [electrical versus mechanical failure classification, layer decision]
   buildable: [complete field-by-field two-layer placement basis]
   parent-commit: "design(aius): establish placement design basis"
 ```
+
+`review-focus` is a non-executable clean-room delivery-audit requirement, not a
+green command. At each P1D3b0 boundary the parent supplies only this plan, the
+owned fragment, its committed dependencies and current validators to a reviewer.
+The reviewer returns PASS or numbered findings against the named focus; findings
+are fixed or recorded before the exact executable commands can form a commit
+boundary. The phase note records the review result, while process exit status is
+derived only from the listed commands.
 
 ### P1D3b — Materialized design records and verdict
 
@@ -2507,7 +2594,7 @@ never edit the shared symbol library. No `.kicad_pro` is created.
 phase: P1D3c1
 unit: single-file-implementation
 seams: [hierarchical pins, predeclared symbols, four sheet interfaces]
-contract-artifact: stubs-committed
+contract-artifact: spec-only
 fan-out:
   - name: schematic-root-shell
     owned-paths:
@@ -2662,28 +2749,65 @@ The release wrapper accepts zero arguments and returns usage exit 2 otherwise.
 It resolves the Aius root from its own path, so execution is independent of the
 caller working directory. It is foreground-only, network-free, uses strict
 fail-fast shell semantics, and runs once in exact checkpoint order from
-`validate_evidence.py` through the doc-index check; the Python wrapper test,
-ShellCheck and wrapper invocation are outer proof commands and are not called by
-the wrapper. It stops at the first non-zero command and propagates that status.
+`validate_evidence.py` through the KiCad ERC check. The repository-wide
+doc-index check remains an outer documentation proof and is not a release input;
+the Python wrapper test, ShellCheck and wrapper invocation are also outer proof
+commands and are not called by the wrapper. It stops at the first non-zero
+command and propagates that status.
 Only after every check passes it atomically writes `p1d-release.json`, with exact
-ordered keys `schema_version`, `release_state`, `design_record_sha256`,
+ordered keys `schema_version`, `release_state`, `input_sha256`, `design_record_sha256`,
 `schematic_contract_sha256`, `interface_sha256`, `schematic_file_sha256`,
 `notes`; values are `1.0.0`,
-`eligible`, a lexically keyed object containing the SHA-256 of the three
+`eligible`, the closed release-input map below, a lexically keyed object containing the SHA-256 of the three
 canonical design records under exact keys `electrical-reference`,
 `pin-resource-map`, and `two-layer-placement`, the schematic-contract SHA-256, the
 schematic-interface SHA-256, a closed lexically keyed file-hash object, and an
-empty note. `schematic_file_sha256` has exactly these repo-relative keys:
+empty note. `schematic_file_sha256` has exactly these Aius-relative keys:
 `electronics/reference/aius-reference.kicad_sch`,
 `electronics/reference/aius-reference.kicad_sym`,
-`electronics/reference/sheets/ethernet.kicad_sch`,
-`electronics/reference/sheets/optical-spdif.kicad_sch`,
-`electronics/reference/sheets/power-usb.kicad_sch`, and
-`electronics/reference/sheets/teensy-expansion.kicad_sch`. Each value is the
+`electronics/reference/ethernet.kicad_sch`,
+`electronics/reference/optical-spdif.kicad_sch`,
+`electronics/reference/power-usb.kicad_sch`, and
+`electronics/reference/teensy-expansion.kicad_sch`. Each value is the
 lowercase SHA-256 of the committed bytes after the successful ERC check. The
 wrapper test mutates each file in turn and proves that regeneration changes
 only its keyed hash and that every absent, extra, stale or non-lowercase entry
 is rejected. H1 verifies this object transitively before projecting its bridge.
+
+`input_sha256` is a closed lexically keyed map from repository-relative path to the
+lowercase SHA-256 of current bytes. Its key set is every regular non-symlink file
+under these exact directory roots, recursively:
+`evidence/manifest`, `evidence/design`
+except `evidence/design/p1d-release.json`,
+`docs/reference/datasheets.md`,
+`evidence/source-snapshots`,
+`docs/reference`, `electronics/reference`,
+`scripts/fixtures/p1c-schema`,
+`scripts/fixtures/p1d-schema`, and
+`scripts/fixtures/render-p1`; plus these exact files:
+`compose.yaml`,
+`scripts/jsonschema_subset.py`,
+`scripts/build_p1c_architecture_contracts.py`,
+`scripts/build_p1c_selection_policy_contract.py`,
+`scripts/build_p1d_reference_contract.py`,
+`scripts/kicad.sh`,
+`scripts/render_p1.py`,
+`scripts/validate_evidence.py`,
+`scripts/validate_p1.py`,
+`scripts/validate_p1d_release.sh`, `.gitattributes`,
+`package.json`, and `pnpm-lock.yaml`. A missing root/file, symlink,
+non-regular entry, path escape,
+duplicate normalized key, uppercase digest, absent current key, or extra current
+key fails release generation. The wrapper hashes hydrated file bytes, not an LFS
+pointer obtained through Git. Its test enumerates the computed set, mutates each
+member in turn, adds an extra file beneath each recursive root, and proves the
+closed map changes or rejects exactly as specified. H1 independently recomputes
+this complete map before accepting the P1D release; it never trusts stored hashes
+without reading the bound inputs. This deliberately binds all evidence,
+lifecycle/request/component aggregates, normative bases, rendered reviews,
+schematic inputs, fixtures, validators and locked tool configuration consumed by
+the release checks.
+
 The release contains no timestamp or Git
 identity, so identical inputs produce identical bytes. Any failed command leaves
 the verdict absent: the wrapper removes a prior verdict before its first check
