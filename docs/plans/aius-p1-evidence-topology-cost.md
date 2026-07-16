@@ -2318,6 +2318,39 @@ and the clean-room delivery audit are green.
 A stale foreign `docs/README.md` generated index remains excluded as a
 nonblocking repository condition.
 
+### P1C0d — Renderer output-parent hardening
+
+The reopened P1C1a gate found that `docs/reference/` does not yet exist while
+the renderer assumed every mapped output parent existed. P1C1a tasks must be
+independently runnable, so no hidden parent pre-fan-out setup is permitted.
+
+```yaml
+phase: P1C0d
+unit: parent-only
+seams: [mapped renderer output, absent parent directory]
+contract-artifact: code
+fan-out:
+  - name: parent-renderer-hardening
+    owned-paths:
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_render_p1.py
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/validate_p1.py topology --stage contract
+  buildable: [independently writable mapped review outputs]
+  parent-commit: "fix(aius): create renderer output parents"
+```
+
+`--write` creates only the mapped output's parent chain with
+`mkdir(parents=True, exist_ok=True)` before allocating its same-directory
+exclusive temporary. A directory-creation failure remains
+`AIUS-P1-RENDER-WRITE`; `--check` never creates a directory. TDD covers a
+missing parent for each command family, preserves unrelated siblings, and
+retains the existing foreign-temporary collision guarantee.
+
 ### P1C1a — Functional topology and interface/state truth tables
 
 ```yaml
@@ -2330,6 +2363,7 @@ depends-on:
   - committed P1C0b1 renderer
   - committed P1C0b2 validator
   - committed P1C0c normative contracts and row enforcement
+  - committed P1C0d renderer output-parent hardening
   - current evidence/manifest/sources.json
 fan-out:
   - name: functional-flow
