@@ -2889,7 +2889,7 @@ null`, and `notes: ""`. Except for the two Cliff seed selections, it uses
 `Provisional single-MPN candidate chosen under the P1C2 primary-source ranking;
 all assigned verification gates remain open.` Both request records repeat the
 same exact requirements, selected manufacturer, and selected MPN. Except for
-the literal USB-C exception below, every manufacturer request uses
+the literal documentation-shape exceptions below, every manufacturer request uses
 `artifact_kinds: [datasheet]`, `retention: archive`, `status: pending`,
 `evidence_ids: []`, and this exact note: `P1D must retain and validate the
 primary manufacturer datasheet before this candidate can advance.`
@@ -2980,6 +2980,22 @@ specification and drawing before this candidate can advance.` This exception
 does not authorize a series-only selection: the authority page itself must
 continue to list `USB4105-GF-A`, and both linked documents remain required P1D
 artifacts.
+
+The three Samtec socket families also have one literal documentation-shape
+exception. Samtec identifies each complete configurable MPN on its exact-MPN
+primary product page, while the linked prints describe the series option grammar
+and geometry rather than repeating every configured MPN. Their component and
+manufacturer-request authorities are respectively
+`https://www.samtec.com/products/ssw-124-02-g-s`,
+`https://www.samtec.com/products/mms-103-01-l-dv`, and
+`https://www.samtec.com/products/ssw-105-02-g-s` for `teensy-side-socket`,
+`teensy-ethernet-socket`, and `teensy-usb-host-socket`. Each manufacturer
+request uses `artifact_kinds: [drawing, product-page]` and this exact note:
+`P1D must retain and validate the exact-MPN Samtec product page and its linked
+current series print before this candidate can advance.` The exact-MPN page and
+series print must jointly make every assigned dimension, pitch, row/contact
+count, termination, retention, and current-rating check actionable; neither
+artifact alone advances the component.
 
 The two seed selections are literal-locked as follows:
 
