@@ -30,7 +30,7 @@ The carrier contains:
 - rear PCB-mounted USB-C device receptacle with CC pull-downs and ESD protection;
 - a short controlled 90 ohm D+/D- route to an adjacent internal PCB-mounted USB-A receptacle;
 - one standard approximately 100 mm USB-A male to Micro-B male cable carrying both data and the sole 5 V supply to the Teensy;
-- keyed expansion for I2C display/encoder/buttons/LEDs, SPI with two chip-selects, UART/debug, I2S/TDM, USB host, GPIO/ADC, and a possible trigger/relay output;
+- keyed expansion for I2C display/encoder/buttons/LEDs, one six-circuit SPI interface carrying SCK, MOSI, MISO, one chip select, 3.3 V and ground, UART/debug, I2S/TDM, USB host, GPIO/ADC, and a possible trigger/relay output;
 - access to microSD, Program, status LED, and a remote Program/RTC header;
 - test points and a manufacturing/bring-up interface.
 
@@ -38,7 +38,10 @@ There is one power source. The carrier receives 5 V from rear USB-C and passes t
 
 ## PCB and mechanical decision
 
-Use a two-layer PCB by default and escalate to four layers only when the H2 feasibility gate records a failed criterion.
+Use a two-layer PCB by default. Escalate to four layers only for a recorded
+electrical return-path, impedance or routing failure that a four-layer stackup
+actually resolves. Outline, panel, cable, access or collision failures block
+mechanical redesign and cannot be cleared by changing layer count.
 
 The two-layer contract is:
 
@@ -160,7 +163,11 @@ Before detailed routing:
 9. Confirm the full board remains no larger than 100 x 100 mm.
 10. Run a mechanical interference and assembly-access review.
 
-Escalate to four layers if any criterion fails. Record the failed criterion, proposed four-layer stackup, corrected return-path design, and cost delta in the plan and cost model before continuing.
+Escalate to four layers only if an electrical route, impedance or return-path
+criterion fails while every mechanical criterion passes. Record the failed
+electrical criterion, proposed four-layer stackup, corrected return-path design,
+and cost delta in the plan and cost model before continuing. A mechanical
+failure blocks placement redesign instead.
 
 ```yaml
 phase: H2

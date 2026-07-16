@@ -1539,7 +1539,8 @@ Exact flow IDs are `optical-to-capture`, `capture-to-classifier`,
 `usb-vbus-entry`, `protected-vbus`, `teensy-power`, `carrier-3v3`, and
 `expansion-power`. Exact payload tokens are `optical-spdif`, `logic-spdif`,
 `iec61937-dts-core`, `pcm-native`, `pcm-stereo-48k`, `path-select`,
-`tx-enable`, `reset`, `usb-vbus`, `protected-5v`, and `teensy-3v3`.
+`tx-enable`, `reset`, `usb-vbus`, `protected-5v`, `teensy-3v3`, and
+`expansion-3v3`. The final token is used only by `expansion-power`.
 
 The functional JSON root fields, in order, are `schema_version`, `modes`,
 `blocks`, `flows`, `clock_domains`, `buffers`, `latency_boundaries`, and
@@ -1789,10 +1790,11 @@ they use existing current seed IDs `CLIFF-ORJ5` and `CLIFF-OTJ5`.
 
 For either request kind, `pending` has no evidence IDs; `satisfied` has at least
 one current evidence ID matching its source ID and selected MPN; `unavailable`
-has no evidence IDs and a non-empty failure note. Manufacturer evidence may be
-golden, comparative, or supplemental but must archive a manufacturer artifact.
-UK evidence is a current dynamic normalized observation and never archives the
-page. Request IDs are exactly `REQ-<UPPERCASE-FAMILY>-MFR` and
+has no evidence IDs and a non-empty failure note. Manufacturer evidence is
+exactly `golden` and must archive the request-bound manufacturer artifacts. UK
+evidence is a current `dynamic` normalized observation and never archives the
+page. `comparative` and the non-schema token `supplemental` never satisfy a
+manufacturer request. Request IDs are exactly `REQ-<UPPERCASE-FAMILY>-MFR` and
 `REQ-<UPPERCASE-FAMILY>-UK`; component and filename cross-validation is exact.
 
 ### P1C0a — Schema and policy vocabulary
