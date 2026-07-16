@@ -2339,7 +2339,7 @@ independently runnable, so no hidden parent pre-fan-out setup is permitted.
 phase: P1C0d
 unit: parent-only
 seams: [mapped renderer output, absent parent directory]
-contract-artifact: code
+contract-artifact: spec-only
 fan-out:
   - name: parent-renderer-hardening
     owned-paths:
@@ -2724,7 +2724,7 @@ tests, 31 selection-schema tests, byte-exact builder `--check`, pinned Prettier
 phase: P1C0e2
 unit: selection-contract-validator
 seams: [normative selection contract, P1C1b instance]
-contract-artifact: code
+contract-artifact: stubs-committed
 depends-on: [committed P1C0e1 builder, base, and normative contract]
 fan-out:
   - name: enforce-selection-contract
@@ -3775,7 +3775,7 @@ commit-checkpoint:
 ```yaml
 phase: P1Ed
 unit: commercial-validator-integration
-seams: [closed commercial artifacts, cumulative P1 validator]
+seams: [closed commercial artifacts, cumulative P1 validator, explicit H0 verdict]
 contract-artifact: both
 fan-out:
   - name: p1e-cost-validator-extension
@@ -3788,11 +3788,21 @@ commit-checkpoint:
   green:
     - python3 scripts/validate_evidence.py
     - python3 scripts/validate_p1.py topology --stage final
-    - python3 scripts/validate_p1.py cost
+    - python3 scripts/validate_p1.py cost --stage structural
     - the repo tooling tool doc-index -- --check
     - clean-room pin-by-pin electrical and P1 promise audit
-  buildable: [completed hardware H0 architecture and auditable should-cost]
-  parent-commit: "docs(aius): complete H0 architecture and should-cost"
+  branches:
+    eligible:
+      command: python3 scripts/validate_p1.py cost --stage h0-gate
+      expected-exit: 0
+      buildable: [eligible hardware H0 architecture and auditable should-cost]
+      parent-commit: "docs(aius): complete eligible H0 architecture and should-cost"
+    blocked:
+      command: python3 scripts/validate_p1.py cost --stage h0-gate
+      expected-exit: 3
+      expected-diagnostics: sorted exact RISK_BLOCK lines only
+      buildable: [structurally complete H0 evidence with explicit unresolved high-risk gate]
+      parent-commit: "docs(aius): record blocked H0 architecture and should-cost"
 ```
 
 `p1e-cost-validator-extension` runs only after all four cost artifacts exist. It
@@ -3803,6 +3813,15 @@ line and scenario reconciliation, evidence/source resolution, score and
 blocking thresholds, null residual-score rule, three-unit allocation, and
 UTF-8/RFC-4180 parsing. It owns no cost data and runs only after the disjoint
 cost-data agents hand off.
+
+`cost --stage structural` validates every schema, relationship and calculation
+without converting an engineering risk into malformed data. `cost --stage
+h0-gate` is cumulative: it exits 0 only when no score/residual-score gate is
+blocking. Otherwise it exits 3 and emits only one lexically sorted line per
+blocker, exactly `RISK_BLOCK <risk-id>: score <score> remains open`. Both
+branches are committable and preserve the full risk evidence. The blocked branch
+records its exact diagnostics in the P1Ed phase note and does not declare H0
+complete or authorize H1.
 
 The P1E delivery audit sees only this contract and the checkout. It checks every
 electrical claim against a named source, every P1 output against its schema, all

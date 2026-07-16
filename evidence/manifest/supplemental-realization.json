@@ -1,5 +1,6 @@
 {
   "schema_version": "1.0.0",
+  "owned_path_root": "src/hardware/aius",
   "observation_profiles": [
     {
       "name": "uk-distributor-price-stock",

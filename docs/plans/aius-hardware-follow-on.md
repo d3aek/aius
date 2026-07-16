@@ -78,9 +78,10 @@ The stock enclosure is Hammond 1455N1201BK. The front panel remains blank. Rear-
 H0 is implemented by P1A through P1E in the normative [P1 evidence, topology,
 and cost implementation plan](aius-p1-evidence-topology-cost.md). That contract
 adds the connector/control and expansion inventories, staged source handoff,
-machine-checked schemas, and committed checkpoints. Its P1E checkpoint completes
-H0; the original single-checkpoint outline below is retained as outcome history
-and is not executed separately.
+machine-checked schemas, and committed checkpoints. Only P1Ed's eligible branch
+completes H0; its blocked branch preserves evidence without authorizing H1. The
+original single-checkpoint outline below is retained as outcome history and is
+not executed separately.
 
 Complete the functional topology, connector and control inventory, power and clock domains, operating/fault states, pin/resource map, expansion map, preliminary placement, reference provenance, functional BOM, and risk register.
 
@@ -107,7 +108,9 @@ commit-checkpoint:
   parent-commit: "docs(aius): lock carrier architecture"
 ```
 
-H1 cannot start until the software gate's P7 phase passes. H0 evidence work may proceed earlier because it does not commit manufacturing effort.
+H1 cannot start until both P1Ed has committed an eligible H0 result and the
+software gate's P7 phase has passed. H0 evidence work may proceed before P7
+because it does not commit manufacturing effort.
 
 ## H1: Electrical system schematic
 

@@ -216,6 +216,14 @@ stale expansion statement. The correction is exact:
 - `REQ-USB-C-RECEPTACLE-MFR` adds `product-page` so the GCT identity page used to
   resolve its datasheet and drawing is retained and auditable.
 
+The power migration values are literal. `teensy-3v3.consumers` becomes, in
+order, `optical-rx`, `raw-bypass-mux`, `tx-gate`, `optical-tx`, `ethernet`,
+`expansion-power-protection`. `expansion-3v3.source` becomes
+`expansion-power-protection`; its sole consumer remains `expansion`.
+`protected-5v` remains unchanged by P1C5. The functional `expansion-power` row
+retains its source/sink and changes only payload from `teensy-3v3` to
+`expansion-3v3`.
+
 The P1C0a base fixtures remain hash-locked historical inputs. Corrections are
 new explicit migrations in the existing builder and are proved by exact builder
 tests; no task rewrites an immutable base.
@@ -298,14 +306,16 @@ plans at each commit.
 
 ### P1D0a — Realization schema around the precommitted oracle
 
-`supplemental-realization.json` has `schema_version`, `observation_profiles`, then
-`realizations`. It contains exactly the 46 non-satisfied requests, sorted by
+`supplemental-realization.json` has `schema_version`, `owned_path_root`,
+`observation_profiles`, then `realizations`. `owned_path_root` is the literal
+`src/hardware/aius`. It contains exactly the 46 non-satisfied requests, sorted by
 `request_id`. Every row binds `request_id`, literal `task_name`, exact
 `owned_paths`, `source_id`, `authority`, `revision_strategy`, `revision_value`,
 `observation_url`, `authorization`, `clone_boundary`, `artifacts`, `observation_profile`,
 `failure_policy`, `retention`, and `notes`.
-The schema expands every path; it rejects templates, substitutions and a path
-that does not contain the row's exact source ID.
+The schema rejects templates, substitutions and a path that does not contain the
+row's exact source ID. Dispatch ownership is the confinement-checked join of the
+literal root and each literal row path; no other prefix or derivation is allowed.
 
 A manufacturer row has `sha256` revision strategy, null revision value, null
 observation fields and one or more artifacts. Each artifact binds
@@ -362,7 +372,7 @@ outcome.
 
 The literal 46-row oracle is committed with this plan at
 `evidence/manifest/supplemental-realization.json`, SHA-256
-`610803f29a83b944f95bd385ad6b0355afeb18ebfce8e28466ddf02f83c91d74`.
+`ffbb364de79d734c4ba50885095f58319a56687b0bda93669e4753ba689d493d`.
 Its 35 retained artifacts and all 24 authorization tuples were selected by
 the contract review, not by the schema implementer. P1C5b changes the one known
 predecessor mismatch, the GCT request's missing `product-page` kind, before this
@@ -620,8 +630,9 @@ commit-checkpoint:
 Each row is one short-lived agent and one request. Owned paths are the exact
 literal `realization.owned_paths`: the source fragment, assumption fragment,
 then every `artifacts[].path` in artifact order. No task owns a directory root,
-unused storage root or derived filename. UK rows therefore own exactly two
-files. Each wave uses one parent-issued UTC timestamp, runs all scoped
+unused storage root or derived filename. The repository-relative agent path is
+the confinement-checked join of literal top-level `owned_path_root` and that row
+value. UK rows therefore own exactly two files. Each wave uses one parent-issued UTC timestamp, runs all scoped
 `check-fragment` commands, then lands one commit before the next wave.
 
 | Wave | Request | Source | Type |
@@ -673,8 +684,9 @@ files. Each wave uses one parent-issued UTC timestamp, runs all scoped
 | 15 | `REQ-USB-POWER-PROTECTION-MFR` | `AIUS-USB-POWER-PROTECTION-MFR` | manufacturer |
 | 16 | `REQ-USB-POWER-PROTECTION-UK` | `AIUS-USB-POWER-PROTECTION-UK` | UK |
 
-The oracle is the sole ownership authority. Dispatch reads each literal
-`task_name` and `owned_paths`; it performs no path derivation.
+The oracle is the sole ownership authority. Dispatch reads literal `task_name`,
+`owned_path_root` and `owned_paths`; its only path operation is the validated
+literal join.
 
 The wave procedure is exact:
 
@@ -1294,8 +1306,13 @@ arrays sort by their first ID field. Root requirement/evidence arrays are
 the exact sorted nested unions and resolve against selection policy and sources.
 Cross-row order, uniqueness, arithmetic and references are enforced by
 `test_p1d_schemas.py` because the repository subset validator does not implement
-them. Engineering row status is `pass` or `fail`; a failure has non-empty notes
-and blocks P1D3/P1D4 release.
+them. Except for the pin-specific allocation enum defined below, engineering-row
+status is `pass` or `fail`; every failure and every pin `conflict` has non-empty
+notes. A failed support circuit, signal, power rail, board, placement, keepout,
+route, ground corridor, cable, collision check or schematic row, or a conflicting
+pin, blocks P1D3/P1D4. Criterion rows are the sole exception: electrical-only
+criterion failures select four layers and proceed, while any mechanical
+criterion failure blocks, exactly as defined by the layer-decision matrix.
 
 Every key listed for a root or row is required and appears in the listed order.
 Unless a field is explicitly described as nullable, it is non-null. Every
@@ -1620,17 +1637,20 @@ The six validation states are one-way:
 2. `design-records` requires electrical, pin and placement authored, the
    schematic contract still the exact placeholder, and no reference KiCad files.
 3. `schematic-stubs-unlocked` adds the root, local symbol library, README and
-   four interface-only sheets. It validates every ordered hierarchical pin and
-   local symbol against the precommitted interface contract, requires the
+   four interface-only sheets. It validates every ordered hierarchical pin,
+   every local symbol and every KiCad-standard symbol against the precommitted
+   interface contract, rejects symbols outside their exact union, requires the
    schematic contract placeholder, and requires no stub lock.
 4. `schematic-stubs` additionally requires
    `scripts/fixtures/p1d-schema/reference-package/schematic-stub-lock-v1.json`
-   with exact SHA-256 values for those seven files and exact locked interface
-   tuples. The parent creates it only after ERC and the unlocked stage pass.
+   with exact SHA-256 values for those seven files, exact locked interface
+   tuples and both ordered symbol inventories. The parent creates it only after
+   ERC and the unlocked stage pass.
 5. `schematic-sheets` requires the root, library and README to retain their
    locked hashes, every one of the four sheet hashes to differ from its locked
-   stub hash, every sheet to preserve its locked hierarchical interface, and the
-   schematic contract to remain the placeholder.
+   stub hash, every sheet to preserve its locked hierarchical interface and use
+   only the locked symbol union, and the schematic contract to remain the
+   placeholder.
 6. `schematic` requires the `schematic-sheets` conditions and all four JSON
    documents authored.
 
@@ -1916,8 +1936,9 @@ commit-checkpoint:
 ### P1D3c0 — Committed schematic interface
 
 `electronics/reference/schematic-interface-v1.json` is a closed object with
-keys `schema_version`, `sheets`, `local_symbol_ids`. A sheet has `sheet_id`,
-`path`, `pins`; a pin has `name`, `direction`, `electrical_type`, `binding`.
+keys `schema_version`, `sheets`, `local_symbol_ids`, `standard_symbol_ids`. A
+sheet has `sheet_id`, `path`, `pins`; a pin has `name`, `direction`,
+`electrical_type`, `binding`.
 Sheet order is power-usb, optical-spdif, ethernet, teensy-expansion. Direction is
 `into-sheet`, `out-of-sheet` or `bidirectional`; electrical type is `input`,
 `output`, `bidirectional`, `passive`, `power-input` or `power-output`. Binding is
@@ -1963,11 +1984,25 @@ The exact ordered pin tuples are:
 | teensy-expansion | `TEENSY_3V3` | out-of-sheet | power-output | `rail:teensy-3v3` |
 | teensy-expansion | `DIGITAL_GROUND` | bidirectional | passive | `domain:digital-ground` |
 
-The exact ordered local-symbol inventory is `teensy-4-1-module`,
-`vksdr-toslink-rx-module`, `vksdr-toslink-tx-module`,
-`selected-ethernet-magjack`. All other symbols must be named KiCad-standard
-symbols already recorded by the schematic contract; sheet workers cannot add a
-local symbol.
+The exact lexically ordered local-symbol inventory is
+`selected-ethernet-magjack`, `selected-ethernet-socket`,
+`selected-expansion-header`, `selected-expansion-i2c-isolator`,
+`selected-expansion-power-protection`, `selected-internal-usb-a-receptacle`,
+`selected-remote-program-rtc-header`, `selected-side-socket`,
+`selected-spdif-bypass-mux`, `selected-spdif-tx-gate`,
+`selected-test-fixture-header`, `selected-usb-c-receptacle`,
+`selected-usb-esd`, `selected-usb-host-socket`,
+`selected-usb-power-protection`, `teensy-4-1-module`,
+`vksdr-toslink-rx-module`, `vksdr-toslink-tx-module`.
+
+The exact lexically ordered KiCad-standard inventory is
+`Connector:TestPoint`, `Device:C`, `Device:C_Polarized`, `Device:D_TVS`,
+`Device:Ferrite_Bead`, `Device:LED`, `Device:Net-Tie_2`, `Device:Polyfuse`,
+`Device:R`, `power:+3V3`, `power:+5V`, `power:Earth_Protective`, `power:GND`,
+`power:PWR_FLAG`. P1D3c1 and P1D3c2 reject every symbol outside the union and
+require every actual symbol/library reference to use the exact spelling. Both
+ordered inventories are copied into the immutable stub lock; the schematic
+placeholder is never used as an inventory source.
 
 ```yaml
 phase: P1D3c0
@@ -1991,9 +2026,9 @@ commit-checkpoint:
 ### P1D3c1 — ERC-clean schematic shell
 
 This phase starts after P1D3b and P1D3c0. The root shell and every stub consume
-the committed ordered interface. The root shell predeclares every local symbol;
-sheet agents create interface-only stubs and never edit the shared symbol
-library. No `.kicad_pro` is created.
+the committed ordered interface and both symbol inventories. The root shell
+predeclares every local symbol; sheet agents create interface-only stubs and
+never edit the shared symbol library. No `.kicad_pro` is created.
 
 ```yaml
 phase: P1D3c1
