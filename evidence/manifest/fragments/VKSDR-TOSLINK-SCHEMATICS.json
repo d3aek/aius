@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": 15248,
+      "final_url": "https://storage.ghost.io/c/e5/f8/e5f82b1b-0848-44d9-95b4-b4a61ecb3633/content/files/2022/11/toslink_schematics.zip",
+      "media_type": "application/zip",
+      "name": "toslink_schematics.zip",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "docs/reference/datasheets.mdVKSDR-TOSLINK-SCHEMATICS/toslink_schematics.zip",
+      "retrieval_status": "current",
+      "sha256": "0af0fd57db6d436a75905efce572c19acfabc418a904be309b2ae983f0bed292",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "VKSDR",
+  "claim_scope": ["Cliff optical support circuit comparison"],
+  "class": "comparative",
+  "id": "VKSDR-TOSLINK-SCHEMATICS",
+  "landing_url": "https://vksdr.com/pmod/",
+  "observations": [],
+  "purpose": "Compare Cliff optical support circuitry without treating it as golden evidence.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T05:57:35Z",
+  "revision": "sha256:0af0fd57db6d436a75905efce572c19acfabc418a904be309b2ae983f0bed292",
+  "status": "current",
+  "supersedes": null,
+  "title": "published schematic archive"
+}

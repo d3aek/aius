@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": 24654,
+      "final_url": "https://storage.ghost.io/c/e5/f8/e5f82b1b-0848-44d9-95b4-b4a61ecb3633/content/files/2022/11/toslink_kicad.zip",
+      "media_type": "application/zip",
+      "name": "toslink_kicad.zip",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "docs/reference/datasheets.mdVKSDR-TOSLINK-KICAD/toslink_kicad.zip",
+      "retrieval_status": "current",
+      "sha256": "37e971a4ab239d67d8b48e88fa3c8ceb786c8524d3bd48ce39ec346497b56db9",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "VKSDR",
+  "claim_scope": ["optical footprint comparison", "optical placement comparison"],
+  "class": "comparative",
+  "id": "VKSDR-TOSLINK-KICAD",
+  "landing_url": "https://vksdr.com/pmod/",
+  "observations": [],
+  "purpose": "Compare footprint and placement choices without reusing them as authoritative design evidence.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T05:57:35Z",
+  "revision": "sha256:37e971a4ab239d67d8b48e88fa3c8ceb786c8524d3bd48ce39ec346497b56db9",
+  "status": "current",
+  "supersedes": null,
+  "title": "published KiCad archive"
+}

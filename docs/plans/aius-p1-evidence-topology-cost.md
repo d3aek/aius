@@ -1337,6 +1337,7 @@ artifact integrity, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B2e
+status: completed
 unit: single-seed-source
 seams: [public authority, validated fragment]
 contract-artifact: both
@@ -1353,6 +1354,12 @@ commit-checkpoint:
   buildable: [validated transmit-source and comparative optical fragments]
   parent-commit: "docs(aius): archive comparative optical evidence"
 ```
+
+Completed 2026-07-16 with shared retrieval timestamp
+`2026-07-16T05:57:35Z`. The pinned PJRC S/PDIF transmit source and both VKSDR
+comparative optical archives were acquired as current evidence. The combined
+checkpoint, pinned-Prettier parity, source and archive integrity, LFS placement,
+and clean-room delivery audit passed.
 
 ### P1B3 — Dynamic observation waves
 
