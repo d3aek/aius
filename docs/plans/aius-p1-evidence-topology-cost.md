@@ -1311,6 +1311,7 @@ passed.
 
 ```yaml
 phase: P1B2d
+status: completed
 unit: single-seed-source
 seams: [public authority, validated fragment]
 contract-artifact: both
@@ -1327,6 +1328,12 @@ commit-checkpoint:
   buildable: [validated mechanical, PlatformIO, and receive-source fragments]
   parent-commit: "docs(aius): archive mechanical and software evidence"
 ```
+
+Completed 2026-07-16 with shared retrieval timestamp
+`2026-07-16T05:45:03Z`. The Hammond STEP archive, pinned PlatformIO Teensy 4.1
+board definition, and pinned PJRC S/PDIF receive source were acquired as current
+evidence. The combined checkpoint, pinned-Prettier parity, storage placement,
+artifact integrity, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B2e
