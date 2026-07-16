@@ -107,6 +107,12 @@ commit-checkpoint:
 
 ## P1: Evidence, topology, and functional BOM
 
+The normative P1 contract is [Aius P1 evidence, topology, and cost
+implementation](aius-p1-evidence-topology-cost.md). It splits this original
+outcome brief into committed P1A through P1E checkpoints, resolves evidence and
+Git LFS representation, and defines the validator commands. Where this original
+brief conflicts with that contract, the P1 implementation plan governs.
+
 Archive the authoritative datasheets, errata, reference schematics, source-design packages, mechanical files, and dynamic supplier evidence below `docs/reference/datasheets.md`. Binary artifacts and generated binary fixtures use Git LFS. Text manifests, scripts, Markdown, KiCad sources, CSV, JSON, and patches remain normal Git text.
 
 Every saved artifact receives a manifest record containing its project-relative path, description and use, source URL, manufacturer and revision, retrieval time, SHA-256, file size, licence or redistribution note, and current or superseded status.
@@ -122,7 +128,10 @@ Produce:
 
 Cliff datasheets are the golden optical source. VKSDR is comparative evidence. Official PJRC Teensy 4.1 and Ethernet-kit documents are the Teensy and Ethernet golden sources. Licensing is retained as a provenance footnote for this personal, non-commercial project and is not a capability gate. Existing notices remain preserved.
 
-### P1 implementation contract
+### Original P1 outcome brief (superseded)
+
+This subsection is retained only as decision history. It is not an executable
+phase contract.
 
 P1 runs in two waves. `source-archive` lands the manifest and artifacts in the
 shared tree first. `functional-topology` and `should-cost` then run in parallel

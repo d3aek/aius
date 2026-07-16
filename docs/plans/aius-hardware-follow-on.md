@@ -72,6 +72,13 @@ The stock enclosure is Hammond 1455N1201BK. The front panel remains blank. Rear-
 
 ## H0: Requirements, evidence, and architecture gate
 
+H0 is implemented by P1A through P1E in the normative [P1 evidence, topology,
+and cost implementation plan](aius-p1-evidence-topology-cost.md). That contract
+adds the connector/control and expansion inventories, staged source handoff,
+machine-checked schemas, and committed checkpoints. Its P1E checkpoint completes
+H0; the original single-checkpoint outline below is retained as outcome history
+and is not executed separately.
+
 Complete the functional topology, connector and control inventory, power and clock domains, operating/fault states, pin/resource map, expansion map, preliminary placement, reference provenance, functional BOM, and risk register.
 
 All saved research artifacts live below `docs/reference/datasheets.md` and follow the evidence and Git LFS policy in the capability plan. Reference/evidence schematics are explicitly not manufacturing schematics.

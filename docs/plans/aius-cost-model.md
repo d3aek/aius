@@ -79,6 +79,12 @@ Archive current supplier pages or quotations under `docs/reference/datasheets.md
 
 ## Costed functional BOM requirements
 
+The normative CSV fields, tidy scenario representation, decimal rounding,
+Bank of England conversion rule, batch/per-unit reconciliation, and risk schema
+are defined by [P1E](aius-p1-evidence-topology-cost.md#p1e-functional-bom-should-cost-and-risk).
+The requirements below map to those machine-validated fields and do not define
+an alternate file format.
+
 Every BOM line records:
 
 - functional block and provisional or selected manufacturer part number;
