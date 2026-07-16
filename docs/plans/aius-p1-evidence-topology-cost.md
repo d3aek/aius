@@ -108,7 +108,8 @@ every object level. `jsonschema_subset.py` is a standard-library-only evaluator
 for the exact committed keyword set: `$schema`, `$id`, `$defs`, `$ref`, `type`,
 `required`, `properties`, `additionalProperties`, `enum`, `const`, `pattern`,
 `format`, `items`, `minItems`, `maxItems`, `uniqueItems`, `minimum`, `anyOf`,
-`allOf`, `if`, `then`, and `else`. It rejects any unrecognized schema keyword.
+`allOf`, `contains`, `minContains`, `maxContains`, `if`, `then`, and `else`.
+It rejects any unrecognized schema keyword.
 `test_source_schema.py` meta-checks the schema with that evaluator and exercises
 valid and invalid source/seed examples.
 
