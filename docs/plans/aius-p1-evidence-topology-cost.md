@@ -1372,6 +1372,7 @@ No standalone observation file is created.
 
 ```yaml
 phase: P1B3a
+status: completed
 unit: single-dynamic-source
 seams: [live page, normalized observations]
 contract-artifact: both
@@ -1388,6 +1389,15 @@ commit-checkpoint:
   buildable: [validated enclosure and optical price observations]
   parent-commit: "docs(aius): record enclosure and optical prices"
 ```
+
+Completed 2026-07-16 with shared observation timestamp
+`2026-07-16T06:25:44Z`. Farnell yielded a complete current enclosure price and
+stock observation. CPC and DigiKey returned access-denied responses from their
+fixed pages, so their canonical unavailable records and open assumptions were
+retained. An earlier wave at `2026-07-16T06:15:53Z` was rejected after delivery
+audit found live-data drift and a false unavailable result; none of its values
+were retained. The replacement combined checkpoint, pinned-Prettier parity,
+owned-path audit, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B3b
