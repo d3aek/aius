@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.net/schemas/aius/component-schema.json",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "requestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$",
+      "format": "uri"
+    },
+    "nullableNonEmptyString": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableHttpsUrl": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableRequestIdentifier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/requestIdentifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "alternative": {
+      "type": "object",
+      "required": ["manufacturer", "mpn", "selection_rationale", "authority_url"],
+      "properties": {
+        "manufacturer": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "mpn": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "selection_rationale": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_url": {
+          "$ref": "#/$defs/httpsUrl"
+        }
+      },
+      "additionalProperties": false
+    },
+    "genericPolicy": {
+      "type": "object",
+      "required": ["value", "package", "tolerance"],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "package": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "tolerance": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "nullableGenericPolicy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/genericPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "block",
+    "requirements",
+    "manufacturer",
+    "mpn",
+    "alternatives",
+    "selection_rationale",
+    "authority_url",
+    "source_request_id",
+    "generic_policy",
+    "status",
+    "notes"
+  ],
+  "properties": {
+    "block": {
+      "$ref": "#/$defs/slug"
+    },
+    "requirements": {
+      "$ref": "#/$defs/requirements"
+    },
+    "manufacturer": {
+      "$ref": "#/$defs/nullableNonEmptyString"
+    },
+    "mpn": {
+      "$ref": "#/$defs/nullableNonEmptyString"
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/alternative"
+      },
+      "maxItems": 2
+    },
+    "selection_rationale": {
+      "$ref": "#/$defs/nullableNonEmptyString"
+    },
+    "authority_url": {
+      "$ref": "#/$defs/nullableHttpsUrl"
+    },
+    "source_request_id": {
+      "$ref": "#/$defs/nullableRequestIdentifier"
+    },
+    "generic_policy": {
+      "$ref": "#/$defs/nullableGenericPolicy"
+    },
+    "status": {
+      "enum": ["selected", "generic-allowance", "unresolved"]
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "selected"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "manufacturer": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "mpn": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "selection_rationale": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "authority_url": {
+            "$ref": "#/$defs/httpsUrl"
+          },
+          "source_request_id": {
+            "$ref": "#/$defs/requestIdentifier"
+          },
+          "generic_policy": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "generic-allowance"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "manufacturer": {
+            "const": null
+          },
+          "mpn": {
+            "const": null
+          },
+          "selection_rationale": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "authority_url": {
+            "const": null
+          },
+          "source_request_id": {
+            "const": null
+          },
+          "generic_policy": {
+            "$ref": "#/$defs/genericPolicy"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unresolved"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "manufacturer": {
+            "const": null
+          },
+          "mpn": {
+            "const": null
+          },
+          "selection_rationale": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "authority_url": {
+            "const": null
+          },
+          "source_request_id": {
+            "const": null
+          },
+          "generic_policy": {
+            "const": null
+          }
+        }
+      }
+    }
+  ]
+}

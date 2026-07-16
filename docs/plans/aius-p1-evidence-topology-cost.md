@@ -243,6 +243,7 @@ and incomplete generic policies.
 
 ```yaml
 phase: P1A2
+status: completed
 unit: selection-schemas
 seams: [source request, component choice, unresolved assumption]
 contract-artifact: both
@@ -261,6 +262,9 @@ commit-checkpoint:
   buildable: [selection and assumption contracts]
   parent-commit: "feat(aius): define evidence selection schemas"
 ```
+
+Completed 2026-07-15. The focused suite passes 22 tests and the P1A1 suite
+remains green at 23 tests. The clean-room delivery audit passed.
 
 ### P1A3 — Evidence policy artifacts
 
