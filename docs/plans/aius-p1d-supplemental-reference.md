@@ -232,7 +232,7 @@ tests; no task rewrites an immutable base.
 
 ```yaml
 phase: P1C5a
-unit: topology-contract-migration
+unit: refactor-target
 seams: [functional payload vocabulary, deterministic P1C builder, power-domain migration]
 contract-artifact: spec-only
 fan-out:
@@ -279,7 +279,7 @@ builder and renderers; no manual copy step exists.
 
 ```yaml
 phase: P1C5b
-unit: single-request-correction
+unit: single-file-implementation
 seams: [selected GCT identity, retained artifact kinds, request aggregate]
 contract-artifact: spec-only
 fan-out:
@@ -380,7 +380,7 @@ phase dispatches.
 
 ```yaml
 phase: P1D0a
-unit: realization-schema-test-surface
+unit: test-surface
 seams: [supplemental requests, fixed realizations, source constructor]
 contract-artifact: spec-only
 fan-out:
@@ -436,7 +436,7 @@ deepen the same engine. No two agents edit these shared paths concurrently.
 
 ```yaml
 phase: P1D0b1
-unit: manufacturer-acquisition-adapter
+unit: component-behind-interface
 seams: [existing acquisition engine, manufacturer realization, supplemental source publication]
 contract-artifact: spec-only
 fan-out:
@@ -457,7 +457,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D0b2
-unit: uk-observation-adapter
+unit: component-behind-interface
 seams: [UK realization, locked observation profile, authorization tuple]
 contract-artifact: stubs-committed
 fan-out:
@@ -478,7 +478,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D0b3
-unit: supplemental-failure-and-check-adapter
+unit: component-behind-interface
 seams: [literal unavailable source, optional assumption, isolated fragment check]
 contract-artifact: stubs-committed
 fan-out:
@@ -542,7 +542,7 @@ checkpoints.
 
 ```yaml
 phase: P1D0c
-unit: deterministic-assembler
+unit: component-behind-interface
 seams: [seed aggregate, supplemental fragments, lifecycle state, review aggregates]
 contract-artifact: spec-only
 fan-out:
@@ -571,7 +571,7 @@ tree and a complete fixture tree, and rejects partial or colliding collections.
 
 ```yaml
 phase: P1D0d
-unit: evidence-validator-surface
+unit: test-surface
 seams: [source schema, seed fragments, supplemental fragments, clone boundaries]
 contract-artifact: spec-only
 fan-out:
@@ -605,7 +605,7 @@ remains the separate design gate and rejects a critical
 
 ```yaml
 phase: P1D0e
-unit: p1-lifecycle-validator-surface
+unit: test-surface
 seams: [request state, component state, source class, deterministic design gate]
 contract-artifact: spec-only
 fan-out:
@@ -627,13 +627,17 @@ commit-checkpoint:
 
 ## P1D1 — Supplemental acquisition waves
 
-Each row is one short-lived agent and one request. Owned paths are the exact
-literal `realization.owned_paths`: the source fragment, assumption fragment,
-then every `artifacts[].path` in artifact order. No task owns a directory root,
-unused storage root or derived filename. The repository-relative agent path is
-the confinement-checked join of literal top-level `owned_path_root` and that row
-value. UK rows therefore own exactly two files. Each wave uses one parent-issued UTC timestamp, runs all scoped
-`check-fragment` commands, then lands one commit before the next wave.
+Each row is one short-lived agent and one request. Oracle
+`realization.owned_paths` values are relative to literal `owned_path_root` and
+contain the source fragment, assumption fragment, then every `artifacts[].path`
+in artifact order. Every phase `fan-out[].owned-paths` entry and spawn prompt
+contains the repository-relative confinement-checked join
+`<realization-path>`; the joined declarations are mechanically
+checked against the oracle and are not literal copies of
+`realization.owned_paths`. No task owns a directory root, unused storage root or
+derived filename. UK rows therefore own exactly two files. Each wave uses one
+parent-issued UTC timestamp, runs all scoped `check-fragment` commands, then
+lands one commit before the next wave.
 
 | Wave | Request | Source | Type |
 |---:|---|---|---|
@@ -685,8 +689,9 @@ value. UK rows therefore own exactly two files. Each wave uses one parent-issued
 | 16 | `REQ-USB-POWER-PROTECTION-UK` | `AIUS-USB-POWER-PROTECTION-UK` | UK |
 
 The oracle is the sole ownership authority. Dispatch reads literal `task_name`,
-`owned_path_root` and `owned_paths`; its only path operation is the validated
-literal join.
+`owned_path_root` and `owned_paths`, verifies every repository-relative declared
+path against the joined oracle set, and copies those declarations verbatim into
+spawn prompts.
 
 The wave procedure is exact:
 
@@ -710,7 +715,7 @@ phase and no scalar fan-out shorthand.
 
 ```yaml
 phase: P1D1.01
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -741,7 +746,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.02
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -772,7 +777,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.03
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -804,7 +809,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.04
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -835,7 +840,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.05
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -867,7 +872,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.06
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -898,7 +903,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.07
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -930,7 +935,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.08
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -962,7 +967,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.09
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -994,7 +999,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.10
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1025,7 +1030,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.11
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1064,7 +1069,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.12
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1098,7 +1103,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.13
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1130,7 +1135,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.14
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1163,7 +1168,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.15
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1195,7 +1200,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D1.16
-unit: single-supplemental-request
+unit: single-file-implementation
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
 fan-out:
@@ -1309,10 +1314,12 @@ Cross-row order, uniqueness, arithmetic and references are enforced by
 them. Except for the pin-specific allocation enum defined below, engineering-row
 status is `pass` or `fail`; every failure and every pin `conflict` has non-empty
 notes. A failed support circuit, signal, power rail, board, placement, keepout,
-route, ground corridor, cable, collision check or schematic row, or a conflicting
-pin, blocks P1D3/P1D4. Criterion rows are the sole exception: electrical-only
-criterion failures select four layers and proceed, while any mechanical
-criterion failure blocks, exactly as defined by the layer-decision matrix.
+cable, collision check or schematic row, or a conflicting pin, blocks
+P1D3/P1D4. A failed route or ground corridor is permitted only when every such
+failure is covered by failed electrical criteria, `mechanical_failure_ids` is
+empty, and the layer decision is exactly
+4/proceed/`four-layer-required`; otherwise it blocks. Any mechanical criterion
+or mechanical-row failure blocks redesign.
 
 Every key listed for a root or row is required and appears in the listed order.
 Unless a field is explicitly described as nullable, it is non-null. Every
@@ -1468,7 +1475,7 @@ Placement field types and nullability are closed as follows:
 | criterion | `criterion_id`, `category`, `metric`, `unit`, `status`, `failure_action`, `notes` | non-null string |
 | criterion | `actual_value` | integer for `um`/`count`/`mohm`, boolean for `boolean`; never null |
 | criterion | `minimum_value`, `maximum_value` | same scalar type as actual or null; at least one non-null |
-| criterion | `requirement_ids`, `evidence_ids` | string arrays; evidence non-empty |
+| criterion | `affected_row_ids`, `requirement_ids`, `evidence_ids` | non-empty string arrays; internal rows and evidence resolve |
 | layer decision | `evaluated_layer_count` | integer constant 2 |
 | layer decision | `selected_layer_count` | integer 2 or 4, or null only for blocked mechanical result |
 | layer decision | `electrical_failure_ids`, `mechanical_failure_ids` | string arrays exactly projecting failed criteria |
@@ -1522,7 +1529,8 @@ measured at least required.
 
 Criterion keys `criterion_id`, `category`, `metric`, `actual_value`,
 `minimum_value`, `maximum_value`, `unit`, `status`, `failure_action`,
-`requirement_ids`, `evidence_ids`, `notes`. Category is electrical/mechanical;
+`affected_row_ids`, `requirement_ids`, `evidence_ids`, `notes`. Category is
+electrical/mechanical;
 metric is `board-outline`, `guide-fit`, `rear-face-setback`, `route-length`,
 `via-count`, `differential-impedance`, `ground-continuity`, `cable-clearance`,
 `insertion-access` or `collision-clearance`; unit is `um`, `count`, `mohm` or
@@ -1530,7 +1538,10 @@ metric is `board-outline`, `guide-fit`, `rear-face-setback`, `route-length`,
 `select-four-layer`; mechanical is `block-mechanical-redesign`.
 For numeric units, pass means actual is at least each non-null minimum and at
 most each non-null maximum. For boolean, every non-null bound equals actual; if
-both bounds are present they must equal each other.
+both bounds are present they must equal each other. Electrical criteria have
+non-empty `affected_row_ids` resolving only to route or ground-corridor rows;
+mechanical criteria have non-empty `affected_row_ids` resolving only to board,
+placement, keepout, cable or collision-check rows.
 
 Layer-decision keys `evaluated_layer_count`, `selected_layer_count`,
 `electrical_failure_ids`, `mechanical_failure_ids`, `release_state`, `decision`,
@@ -1538,7 +1549,14 @@ Layer-decision keys `evaluated_layer_count`, `selected_layer_count`,
 2/proceed/`two-layer-pass`; electrical-only failures select
 4/proceed/`four-layer-required`; any mechanical failure selects
 null/blocked/`mechanical-redesign-required`. Failure arrays exactly equal failed
-criterion IDs and mechanical dominates.
+criterion IDs and mechanical dominates. The set of failed route and
+ground-corridor row IDs must equal the union of `affected_row_ids` across failed
+electrical criteria. Each failed route or ground-corridor row is therefore
+referenced by at least one failed electrical criterion, and each failed
+electrical criterion references at least one failed route or ground-corridor
+row. This bidirectional projection, an empty `mechanical_failure_ids` array and
+the exact 4/proceed/`four-layer-required` decision are all required to permit
+those row failures; any mismatch blocks P1D3/P1D4.
 
 #### Reference-schematic contract
 
@@ -1664,7 +1682,7 @@ attempted relock, and every downgrade refusal.
 
 ```yaml
 phase: P1D3a1
-unit: schema-test-surface
+unit: test-surface
 seams: [electrical rows, pin rows, placement geometry, schematic acceptance]
 contract-artifact: spec-only
 fan-out:
@@ -1712,7 +1730,7 @@ The builder creates the valid base package and enforces the one-way lifecycle.
 
 ```yaml
 phase: P1D3a2
-unit: design-contract-builder
+unit: component-behind-interface
 seams: [closed schemas, canonical package, one-way document lifecycle]
 contract-artifact: stubs-committed
 fan-out:
@@ -1789,7 +1807,7 @@ files are literal final bytes, not templates or hashes.
 
 ```yaml
 phase: P1D3a3g
-unit: electrical-renderer-byte-contract
+unit: test-surface
 seams: [authored electrical fixture, exact Markdown bytes]
 contract-artifact: spec-only
 fan-out:
@@ -1805,7 +1823,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D3a3
-unit: electrical-reference-renderer
+unit: component-behind-interface
 seams: [authored electrical JSON, deterministic Markdown]
 contract-artifact: stubs-committed
 fan-out:
@@ -1822,7 +1840,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D3a4g
-unit: pin-renderer-byte-contract
+unit: test-surface
 seams: [authored pin fixture, exact CSV and Markdown bytes]
 contract-artifact: spec-only
 fan-out:
@@ -1838,7 +1856,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D3a4
-unit: pin-resource-renderer
+unit: component-behind-interface
 seams: [authored pin JSON, deterministic CSV and Markdown]
 contract-artifact: stubs-committed
 fan-out:
@@ -1855,7 +1873,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D3a5g
-unit: placement-renderer-byte-contract
+unit: test-surface
 seams: [authored placement fixture, exact Markdown bytes]
 contract-artifact: spec-only
 fan-out:
@@ -1871,7 +1889,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D3a5
-unit: two-layer-placement-renderer
+unit: component-behind-interface
 seams: [authored placement JSON, deterministic Markdown]
 contract-artifact: stubs-committed
 fan-out:
@@ -1897,7 +1915,7 @@ review documents.
 
 ```yaml
 phase: P1D3b
-unit: single-design-record
+unit: single-file-implementation
 seams: [supplemental evidence, closed design schemas, deterministic renderers]
 contract-artifact: stubs-committed
 fan-out:
@@ -1986,14 +2004,31 @@ The exact ordered pin tuples are:
 
 The exact lexically ordered local-symbol inventory is
 `selected-ethernet-magjack`, `selected-ethernet-socket`,
-`selected-expansion-header`, `selected-expansion-i2c-isolator`,
-`selected-expansion-power-protection`, `selected-internal-usb-a-receptacle`,
-`selected-remote-program-rtc-header`, `selected-side-socket`,
-`selected-spdif-bypass-mux`, `selected-spdif-tx-gate`,
-`selected-test-fixture-header`, `selected-usb-c-receptacle`,
-`selected-usb-esd`, `selected-usb-host-socket`,
-`selected-usb-power-protection`, `teensy-4-1-module`,
-`vksdr-toslink-rx-module`, `vksdr-toslink-tx-module`.
+`selected-expansion-gpio-adc`, `selected-expansion-i2c-control`,
+`selected-expansion-i2c-isolator`, `selected-expansion-i2s-tdm`,
+`selected-expansion-power-protection`, `selected-expansion-spi`,
+`selected-expansion-uart-debug`, `selected-expansion-usb-host`,
+`selected-internal-usb-a-receptacle`, `selected-remote-program-rtc-header`,
+`selected-side-socket`, `selected-spdif-bypass-mux`,
+`selected-spdif-tx-gate`, `selected-test-fixture-header`,
+`selected-usb-c-receptacle`, `selected-usb-esd`,
+`selected-usb-host-socket`, `selected-usb-power-protection`,
+`teensy-4-1-module`, `vksdr-toslink-rx-module`,
+`vksdr-toslink-tx-module`.
+
+The expansion symbols bind one-to-one to their committed component-selection
+records and evidence-derived connector pin counts: `selected-expansion-gpio-adc`
+to `expansion-gpio-adc`/`BM04B-GHS-TBT`/4,
+`selected-expansion-i2c-control` to
+`expansion-i2c-control`/`BM04B-GHS-TBT`/4,
+`selected-expansion-i2s-tdm` to
+`expansion-i2s-tdm`/`BM05B-GHS-TBT`/5, `selected-expansion-spi` to
+`expansion-spi`/`BM06B-GHS-TBT`/6, `selected-expansion-uart-debug` to
+`expansion-uart-debug`/`BM04B-GHS-TBT`/4, and
+`selected-expansion-usb-host` to
+`expansion-usb-host`/`BM04B-GHS-TBT`/4. The P1D4 builder verifies each component
+ID, selected MPN and pin count against the closed P1C3 selection and P1D1
+manufacturer evidence before it may emit the corresponding local symbol.
 
 The exact lexically ordered KiCad-standard inventory is
 `Connector:TestPoint`, `Device:C`, `Device:C_Polarized`, `Device:D_TVS`,
@@ -2006,7 +2041,7 @@ placeholder is never used as an inventory source.
 
 ```yaml
 phase: P1D3c0
-unit: schematic-interface-contract
+unit: test-surface
 seams: [four hierarchical interfaces, local symbol inventory]
 contract-artifact: spec-only
 fan-out:
@@ -2032,7 +2067,7 @@ never edit the shared symbol library. No `.kicad_pro` is created.
 
 ```yaml
 phase: P1D3c1
-unit: single-schematic-shell-file
+unit: single-file-implementation
 seams: [hierarchical pins, predeclared symbols, four sheet interfaces]
 contract-artifact: stubs-committed
 fan-out:
@@ -2072,7 +2107,7 @@ needed.
 
 ```yaml
 phase: P1D3c2
-unit: single-hierarchical-sheet
+unit: single-file-implementation
 seams: [committed sheet interface, authored design records, predeclared symbol library]
 contract-artifact: stubs-committed
 fan-out:
@@ -2101,7 +2136,7 @@ finished KiCad files. It does not edit KiCad sources.
 
 ```yaml
 phase: P1D3c3
-unit: single-contract-document
+unit: single-file-implementation
 seams: [finished schematic files, electrical/pin/placement references, ERC policy]
 contract-artifact: stubs-committed
 fan-out:
@@ -2130,7 +2165,7 @@ release surface remain separate concerns.
 
 ```yaml
 phase: P1D4a
-unit: final-validator
+unit: test-surface
 seams: [complete P1D package, cumulative topology stage]
 contract-artifact: spec-only
 fan-out:
@@ -2151,7 +2186,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1D4b
-unit: release-wrapper-and-operator-docs
+unit: component-behind-interface
 seams: [final validator, deterministic projections, external ERC gate]
 contract-artifact: stubs-committed
 fan-out:

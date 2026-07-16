@@ -89,7 +89,7 @@ All saved research artifacts live below `docs/reference/datasheets.md` and follo
 
 ```yaml
 phase: H0
-unit: documentation-contract
+unit: single-file-implementation
 seams: [product topology, electrical evidence, functional BOM, risk register]
 contract-artifact: spec-only
 fan-out:
@@ -133,7 +133,7 @@ sheet worker starts; the second consumes that immutable baseline.
 
 ```yaml
 phase: H1a
-unit: manufacturing-schematic-interface
+unit: component-behind-interface
 seams: [canonical root, local symbol library, hierarchical sheet interfaces]
 contract-artifact: spec-only
 fan-out:
@@ -152,7 +152,7 @@ commit-checkpoint:
 
 ```yaml
 phase: H1b
-unit: single-manufacturing-schematic-sheet
+unit: single-file-implementation
 seams: [committed sheet interface, predeclared symbols, power and safe-state contracts]
 contract-artifact: stubs-committed
 fan-out:
@@ -204,7 +204,7 @@ failure blocks placement redesign instead.
 
 ```yaml
 phase: H2a
-unit: mechanical-envelope-and-placement
+unit: component-behind-interface
 seams: [enclosure guide, board outline, component and cable envelopes]
 contract-artifact: both
 fan-out:
@@ -219,7 +219,7 @@ commit-checkpoint:
 
 ```yaml
 phase: H2b
-unit: stackup-and-routing-feasibility
+unit: phase-task
 seams: [committed placement, vendor stackup, impedance geometry, layer decision]
 contract-artifact: stubs-committed
 fan-out:
@@ -250,7 +250,7 @@ quotation consumes the frozen manufacturing package.
 
 ```yaml
 phase: H3a
-unit: pcb-layout
+unit: phase-task
 seams: [approved schematic, board outline, stackup, routed PCB]
 contract-artifact: both
 fan-out:
@@ -265,7 +265,7 @@ commit-checkpoint:
 
 ```yaml
 phase: H3b
-unit: manufacturing-package
+unit: phase-task
 seams: [committed PCB, normalized fabrication outputs, assembly BOM]
 contract-artifact: stubs-committed
 fan-out:
@@ -280,7 +280,7 @@ commit-checkpoint:
 
 ```yaml
 phase: H3c
-unit: landed-prototype-quotation
+unit: phase-task
 seams: [frozen manufacturing package, vendor quotation, landed cost model]
 contract-artifact: stubs-committed
 fan-out:
@@ -315,7 +315,7 @@ Bring-up order:
 
 ```yaml
 phase: H4
-unit: hardware-test-surface
+unit: test-surface
 seams: [bring-up procedure, per-board record, defect and ECO log]
 contract-artifact: both
 fan-out:
@@ -340,7 +340,7 @@ Complete thermal, fault, long-soak, enclosure, basic pre-compliance EMC, product
 
 ```yaml
 phase: H5a
-unit: product-firmware-integration
+unit: phase-task
 seams: [proven decoder/DSP modules, EVT carrier drivers, product state machine]
 contract-artifact: both
 fan-out:
@@ -355,7 +355,7 @@ commit-checkpoint:
 
 ```yaml
 phase: H5b
-unit: system-validation-surface
+unit: test-surface
 seams: [committed product firmware, end-to-end audio contract, DVT report, release decision]
 contract-artifact: stubs-committed
 fan-out:

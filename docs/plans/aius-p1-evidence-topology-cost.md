@@ -170,7 +170,7 @@ does not reimplement those rules.
 ```yaml
 phase: P1A1
 status: completed
-unit: source-schema
+unit: test-surface
 seams: [source records, seed identities]
 contract-artifact: both
 fan-out:
@@ -254,7 +254,7 @@ and incomplete generic policies.
 ```yaml
 phase: P1A2
 status: completed
-unit: selection-schemas
+unit: test-surface
 seams: [source request, component choice, unresolved assumption]
 contract-artifact: both
 fan-out:
@@ -342,7 +342,7 @@ the committed seed classes and clone-boundary coverage agree.
 ```yaml
 phase: P1A3
 status: completed
-unit: evidence-policy
+unit: single-file-implementation
 seams: [retrieval policy, clone boundary]
 contract-artifact: both
 fan-out:
@@ -395,7 +395,7 @@ there is no free-text join.
 ```yaml
 phase: P1A4a
 status: completed
-unit: validator-contract-migration
+unit: refactor-target
 seams: [structured assumptions, reusable clone-boundary rows]
 contract-artifact: both
 fan-out:
@@ -589,7 +589,7 @@ and subject; the script exits non-zero if an expected diagnostic is absent.
 ```yaml
 phase: P1A4b
 status: completed
-unit: evidence-validator
+unit: test-surface
 seams: [checkout validation, immutable baseline]
 contract-artifact: both
 fan-out:
@@ -651,7 +651,7 @@ must exit `0`, print version `10.0.4`, and contain no cache permission warning.
 ```yaml
 phase: P1A5
 status: completed
-unit: kicad-runner
+unit: component-behind-interface
 seams: [ephemeral KiCad CLI, persistent cache]
 contract-artifact: both
 fan-out:
@@ -699,7 +699,7 @@ placement, and clone-boundary/assumption coverage.
 
 ```yaml
 phase: P1A
-unit: evidence-contract
+unit: test-surface
 seams: [manifest schema, staged validator]
 contract-artifact: both
 fan-out:
@@ -754,7 +754,7 @@ policy statements, commands, diagnostic behavior, and media rules remain exact.
 ```yaml
 phase: P1B1a
 status: completed
-unit: acquisition-policy-media
+unit: vertical-slice
 seams: [private research retention, evidence media]
 contract-artifact: both
 fan-out:
@@ -930,7 +930,7 @@ above resolves that gap and requires another fresh clean-room verdict.
 ```yaml
 phase: P1B1b
 status: completed
-unit: seed-realization-contract
+unit: test-surface
 seams: [seed identity, artifact realization, dynamic observation profile]
 contract-artifact: both
 fan-out:
@@ -1169,7 +1169,7 @@ reachable regressions above close those findings.
 ```yaml
 phase: P1B1c
 status: completed
-unit: seed-evidence-orchestration
+unit: phase-task
 seams: [authority retrieval, source fragment, assumption fragment, aggregate]
 contract-artifact: both
 fan-out:
@@ -1234,7 +1234,7 @@ without writing an unavailable claim.
 ```yaml
 phase: P1B2a
 status: completed
-unit: single-seed-source
+unit: single-file-implementation
 seams: [public authority, validated fragment]
 contract-artifact: both
 fan-out:
@@ -1260,7 +1260,7 @@ Git/LFS placement and pinned-Prettier byte parity are correct.
 ```yaml
 phase: P1B2b
 status: completed
-unit: single-seed-source
+unit: single-file-implementation
 seams: [public authority, validated fragment]
 contract-artifact: both
 fan-out:
@@ -1286,7 +1286,7 @@ placement, and clean-room delivery audit passed.
 ```yaml
 phase: P1B2c
 status: completed
-unit: single-seed-source
+unit: single-file-implementation
 seams: [public authority, validated fragment]
 contract-artifact: both
 fan-out:
@@ -1312,7 +1312,7 @@ passed.
 ```yaml
 phase: P1B2d
 status: completed
-unit: single-seed-source
+unit: single-file-implementation
 seams: [public authority, validated fragment]
 contract-artifact: both
 fan-out:
@@ -1338,7 +1338,7 @@ artifact integrity, and clean-room delivery audit passed.
 ```yaml
 phase: P1B2e
 status: completed
-unit: single-seed-source
+unit: single-file-implementation
 seams: [public authority, validated fragment]
 contract-artifact: both
 fan-out:
@@ -1373,7 +1373,7 @@ No standalone observation file is created.
 ```yaml
 phase: P1B3a
 status: completed
-unit: single-dynamic-source
+unit: single-file-implementation
 seams: [live page, normalized observations]
 contract-artifact: both
 fan-out:
@@ -1402,7 +1402,7 @@ owned-path audit, and clean-room delivery audit passed.
 ```yaml
 phase: P1B3b
 status: completed
-unit: single-dynamic-source
+unit: single-file-implementation
 seams: [live page, normalized observations]
 contract-artifact: both
 fan-out:
@@ -1430,7 +1430,7 @@ owned-path audit, and clean-room delivery audit passed.
 ```yaml
 phase: P1B3c
 status: completed
-unit: single-dynamic-source
+unit: single-file-implementation
 seams: [official series, normalized rates]
 contract-artifact: both
 execution-parameters:
@@ -1462,7 +1462,7 @@ full validator. It does not manually edit records or assumptions.
 ```yaml
 phase: P1B4
 status: completed
-unit: seed-manifest-coordinator
+unit: phase-task
 seams: [validated fragments, aggregate manifests]
 contract-artifact: both
 fan-out:
@@ -1807,7 +1807,7 @@ schema authority. Existing assumption records remain schema-compatible.
 ```yaml
 phase: P1C0a
 status: completed
-unit: schema-contract
+unit: test-surface
 seams: [canonical architecture JSON, atomic selection records]
 contract-artifact: both
 fan-out:
@@ -1867,7 +1867,7 @@ not concurrent fan-out.
 ```yaml
 phase: P1C0b1
 status: completed
-unit: review-view-renderer
+unit: component-behind-interface
 seams: [canonical JSON, pure byte renderers]
 contract-artifact: both
 fan-out:
@@ -1966,7 +1966,7 @@ temporary collision can never be deleted.
 ```yaml
 phase: P1C0b2
 status: completed
-unit: staged-contract-validator
+unit: test-surface
 seams: [canonical JSON, P1C0b1 pure byte renderers]
 contract-artifact: both
 fan-out:
@@ -2233,7 +2233,7 @@ Aius-relative path and name the attempted executable in `detail`.
 ```yaml
 phase: P1C0c
 status: completed
-unit: serial-contract-and-enforcement-integration
+unit: phase-task
 seams: [hashed P1C0a bases, generated normative JSON, renderer columns, staged validator]
 contract-artifact: both
 execution-order: [architecture-contract-builder, architecture-contract-validator]
@@ -2373,7 +2373,7 @@ also pass.
 
 ```yaml
 phase: P1C1a
-unit: parallel-disjoint-architecture-instances
+unit: vertical-slice
 seams: [functional flow, failure-state outputs]
 contract-artifact: both
 depends-on:
@@ -2455,7 +2455,7 @@ cross-reference checks, and focused tests must all include it.
 
 ```yaml
 phase: P1C0c2
-unit: architecture-contract-correction
+unit: refactor-target
 seams: [immutable interface base, USB/RTC migration, normative instance]
 contract-artifact: both
 depends-on:
@@ -2655,7 +2655,7 @@ request/source fields.
 
 ```yaml
 phase: P1C0e1
-unit: selection-contract-builder
+unit: component-behind-interface
 seams: [immutable policy base, derived normative selection contract]
 contract-artifact: both
 depends-on:
@@ -2722,7 +2722,7 @@ tests, 31 selection-schema tests, byte-exact builder `--check`, pinned Prettier
 
 ```yaml
 phase: P1C0e2
-unit: selection-contract-validator
+unit: test-surface
 seams: [normative selection contract, P1C1b instance]
 contract-artifact: stubs-committed
 depends-on: [committed P1C0e1 builder, base, and normative contract]
@@ -2819,7 +2819,7 @@ audit. No live selection-policy instance was created in this phase.
 
 ```yaml
 phase: P1C1b
-unit: selection-policy
+unit: single-file-implementation
 seams: [locked architecture, atomic selector inputs]
 contract-artifact: both
 depends-on:
@@ -3134,7 +3134,7 @@ the aggregate check, and the pinned formatter check pass.
 ```yaml
 phase: P1C2
 status: completed
-unit: single-atomic-family
+unit: single-file-implementation
 seams: [selection-policy family, component/request pair]
 contract-artifact: both
 depends-on:
@@ -3231,7 +3231,7 @@ in this metadata-only phase.
 ```yaml
 phase: P1C3
 status: completed
-unit: component-selection-coordinator
+unit: phase-task
 seams: [validated atomic records, generated CSV]
 contract-artifact: both
 fan-out:
@@ -3267,7 +3267,7 @@ joined to the commit.
 ```yaml
 phase: P1C4
 status: completed
-unit: supplemental-request-coordinator
+unit: phase-task
 seams: [validated requests, explicit P1D acquisition fan-out]
 contract-artifact: both
 fan-out:
@@ -3376,7 +3376,7 @@ P1A4b classification rules.
 
 ```yaml
 phase: P1D
-unit: electrical-reference-component
+unit: component-behind-interface
 seams: [supplemental evidence, reference schematic, pin resources, placement]
 contract-artifact: both
 fan-out:
@@ -3713,7 +3713,7 @@ gate. Manufacturer unavailability blocks before P1E and has no cost fallback.
 
 ```yaml
 phase: P1Ea
-unit: closed-commercial-schema-surface
+unit: test-surface
 seams: [three exact CSV row schemas, immutable base fixtures, staged contract validation]
 contract-artifact: spec-only
 fan-out:
@@ -3734,7 +3734,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1Eb
-unit: bom-or-commercial-rules
+unit: single-file-implementation
 seams: [closed BOM schema, selected components, unavailable-UK branch, cost arithmetic rules]
 contract-artifact: stubs-committed
 fan-out:
@@ -3754,7 +3754,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1Ec
-unit: one-dependent-commercial-output
+unit: single-file-implementation
 seams: [committed BOM and rules, scenario cost, sourcing and engineering risk]
 contract-artifact: stubs-committed
 fan-out:
@@ -3774,7 +3774,7 @@ commit-checkpoint:
 
 ```yaml
 phase: P1Ed
-unit: commercial-validator-integration
+unit: test-surface
 seams: [closed commercial artifacts, cumulative P1 validator, explicit H0 verdict]
 contract-artifact: both
 fan-out:
