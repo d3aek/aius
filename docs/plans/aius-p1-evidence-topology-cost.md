@@ -3682,8 +3682,8 @@ duty costs divide the three assembled units, not surplus bare boards.
 `residual_likelihood`, `residual_impact`, `residual_score`, and `status`.
 Score is likelihood times impact. Residual score is null until mitigation
 evidence exists, then equals residual likelihood times residual impact. A score
-of 15 or more blocks; 8 through 12 requires mitigation and gate; 6 or less is
-tracked. The README defines all five likelihood and impact levels.
+of 15 through 25 blocks; 8 through 14 requires mitigation and gate; 1 through 7
+is tracked. The README defines all five likelihood and impact levels.
 The register has at least one row for DTS feasibility, real-time budget,
 memory-bank pressure, S/PDIF recovery, USB servicing, two-layer signal
 integrity, optical electrical limits, native-Ethernet routing, power/backfeed,
@@ -3697,20 +3697,87 @@ unless evidence says a line is outside scope. Freight, duty, VAT, and
 contingency remain separate. The batch and per-unit low/central/high totals must
 reconcile exactly.
 
+The UK-unavailable branch is exact. Its BOM row retains the selected
+manufacturer/MPN and request-linked description/quantity fields. `supplier`,
+`supplier_sku`, `supplier_url`, price-quantity fields,
+`unit_price_gbp_ex_vat`, `extended_gbp_ex_vat`, and `artifact_sha256` are empty;
+`stock_state` is `unavailable`; `retrieved_at` is the unavailable source
+timestamp; `currency` is `GBP`; `fx_rate_to_gbp` is `1`; `fx_source_id` is
+empty. Low/central/high are non-empty documented engineering allowances,
+`confidence` is `low`, `scenario_assumptions` names the unavailable request,
+`refresh_trigger` is `Replace unavailable supplemental evidence`, and
+`evidence_ids` contains that source ID. Should-cost consumes those three
+allowances without fabricating supplier price or stock. Risk contains one open
+sourcing row per UK-unavailable request with the same evidence ID and replacement
+gate. Manufacturer unavailability blocks before P1E and has no cost fallback.
+
 ```yaml
-phase: P1E
-unit: commercial-contract
-seams: [functional BOM, scenario cost, risk register]
-contract-artifact: both
+phase: P1Ea
+unit: closed-commercial-schema-surface
+seams: [three exact CSV row schemas, immutable base fixtures, staged contract validation]
+contract-artifact: spec-only
+fan-out:
+  - name: commercial-schema-surface
+    owned-paths:
+      - evidence/cost/schemas
+      - scripts/fixtures/p1e-cost/base
+      - scripts/validate_p1e_cost_contract.py
+      - scripts/test_validate_p1e_cost_contract.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_p1e_cost_contract.py
+    - python3 scripts/validate_p1e_cost_contract.py --stage schemas
+  buildable: [closed RFC-4180 schemas and immutable commercial base fixtures]
+  parent-commit: "feat(aius): define commercial data contracts"
+```
+
+```yaml
+phase: P1Eb
+unit: bom-or-commercial-rules
+seams: [closed BOM schema, selected components, unavailable-UK branch, cost arithmetic rules]
+contract-artifact: stubs-committed
 fan-out:
   - name: functional-bom
     owned-paths: [evidence/cost/functional-bom.csv]
+  - name: cost-rules
+    owned-paths: [evidence/cost/README.md]
+coordination: two disjoint agents consume the committed schemas; neither authors should-cost or risk
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_p1e_cost_contract.py --stage bom-rules
+    - python3 scripts/test_validate_p1e_cost_contract.py
+  buildable: [schema-valid evidence-linked BOM and locked arithmetic/risk rules]
+  parent-commit: "docs(aius): establish functional BOM and cost rules"
+```
+
+```yaml
+phase: P1Ec
+unit: one-dependent-commercial-output
+seams: [committed BOM and rules, scenario cost, sourcing and engineering risk]
+contract-artifact: stubs-committed
+fan-out:
   - name: should-cost
     owned-paths: [evidence/cost/should-cost.csv]
   - name: risk-register
     owned-paths: [evidence/cost/risk-register.csv]
-  - name: cost-rules
-    owned-paths: [evidence/cost/README.md]
+coordination: two disjoint agents consume the committed BOM/rules; should-cost never runs concurrently with its BOM producer
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_p1e_cost_contract.py --stage cost-risk
+    - python3 scripts/test_validate_p1e_cost_contract.py
+  buildable: [reconciled should-cost and complete risk register]
+  parent-commit: "docs(aius): establish should-cost and risk register"
+```
+
+```yaml
+phase: P1Ed
+unit: commercial-validator-integration
+seams: [closed commercial artifacts, cumulative P1 validator]
+contract-artifact: both
+fan-out:
   - name: p1e-cost-validator-extension
     owned-paths:
       - scripts/validate_p1.py
@@ -3728,8 +3795,8 @@ commit-checkpoint:
   parent-commit: "docs(aius): complete H0 architecture and should-cost"
 ```
 
-`p1e-cost-validator-extension` is a serial integration task after the four
-cost artifacts exist. It adds the `cost` subcommand and its committed positive
+`p1e-cost-validator-extension` runs only after all four cost artifacts exist. It
+adds the `cost` subcommand and its committed positive
 and negative fixture tree. The contract covers the exact CSV headers above,
 required functional groups and risk categories, decimal half-up arithmetic,
 line and scenario reconciliation, evidence/source resolution, score and

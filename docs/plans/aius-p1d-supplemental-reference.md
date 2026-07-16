@@ -92,6 +92,21 @@ request's `artifact_kinds`. Repeated files of one kind are permitted. Dynamic
 success has no artifacts. The canonical unavailable external-reference artifact
 is structural failure metadata and is exempt from request-kind equality.
 
+Every manufacturer realization also contains `clone_boundary` with exact keys
+`current`, then `unavailable`; a UK realization contains null. Each nested row
+uses the existing order `source_id`, `classification`, `reused_material`,
+`derived_claims`, `prohibited_use`, `notes`. The current row is literal
+`official-reuse` with reused material `Retained primary manufacturer evidence.`,
+derived claim `Aius requirements are bounded by the retained primary
+manufacturer evidence.`, prohibited use `Do not treat the manufacturer material
+as a complete Aius design.`, and empty notes. The unavailable row is literal
+`unresolved`, has no reused material, derived claim `The manufacturer claim
+remains unresolved.`, prohibited use `Do not select or release the component
+until current manufacturer evidence replaces the unavailable source.`, and note
+`The fixed manufacturer source is unavailable.` Both rows use the realization's
+exact `source_id`; the assembler selects and copies one row without synthesizing
+prose.
+
 ### UK observation profile
 
 The profile is `uk-distributor-price-stock`. Every observation in one acquisition
@@ -238,9 +253,19 @@ commit-checkpoint:
   parent-commit: "docs(aius): reconcile expansion power topology"
 ```
 
-The parent-generated exact paths are the two generated contract JSON files, the
-two valid fixtures, the two review JSON mirrors, and the two reference Markdown
-files already owned by their committed generators.
+P1C5a deepens the builder output map so one transactional `--write` publishes
+both contract JSON files, both valid fixtures and both canonical review JSON
+mirrors; each contract/mirror pair is byte-identical. `--check` verifies all six.
+The parent-generated exact paths are
+`evidence/design/contracts/functional-topology.json`,
+`evidence/design/contracts/interfaces-and-states.json`,
+`scripts/fixtures/p1c-schema/functional-topology/valid.json`,
+`scripts/fixtures/p1c-schema/interfaces-and-states/valid.json`,
+`evidence/design/functional-topology.json`,
+`evidence/design/interfaces-and-states.json`,
+`docs/reference/functional-topology.md`, and
+`docs/reference/interfaces-and-states.md`. The parent alone runs the committed
+builder and renderers; no manual copy step exists.
 
 ### P1C5b — USB-C request-kind correction
 
@@ -277,7 +302,7 @@ plans at each commit.
 `realizations`. It contains exactly the 46 non-satisfied requests, sorted by
 `request_id`. Every row binds `request_id`, literal `task_name`, exact
 `owned_paths`, `source_id`, `authority`, `revision_strategy`, `revision_value`,
-`observation_url`, `authorization`, `artifacts`, `observation_profile`,
+`observation_url`, `authorization`, `clone_boundary`, `artifacts`, `observation_profile`,
 `failure_policy`, `retention`, and `notes`.
 The schema expands every path; it rejects templates, substitutions and a path
 that does not contain the row's exact source ID.
@@ -287,9 +312,10 @@ observation fields and one or more artifacts. Each artifact binds
 `artifact_kind`, safe basename, initial URL, expected final URL,
 project-relative path, `lfs` or `git` storage, and media type.
 At least one initial URL equals the request authority URL or the row retains that
-authority page as `product-page`. A UK row has `observation-date` revision
+authority page as `product-page`. It has both literal clone-boundary outcomes
+defined above. A UK row has `observation-date` revision
 strategy, null revision value, no artifacts, the exact request commerce URL,
-the separate authorization tuple, and the locked profile.
+the separate authorization tuple, null clone boundary, and the locked profile.
 
 The oracle also defines the source constructor. ID is request `source_id`;
 authority is realization `authority`; requirements become `claim_scope`;
@@ -336,7 +362,7 @@ outcome.
 
 The literal 46-row oracle is committed with this plan at
 `evidence/manifest/supplemental-realization.json`, SHA-256
-`2c77f910ee5254441ecca2abf7d8a312fd255777ba662b45560524f5f531e581`.
+`610803f29a83b944f95bd385ad6b0355afeb18ebfce8e28466ddf02f83c91d74`.
 Its 35 retained artifacts and all 24 authorization tuples were selected by
 the contract review, not by the schema implementer. P1C5b changes the one known
 predecessor mismatch, the GCT request's missing `product-page` kind, before this
@@ -388,11 +414,14 @@ No command bypasses an access control or substitutes browser-captured bytes.
 The pre-recorded GCT and TE access hazards therefore use the ordinary
 golden-block unavailable path if exact retrieval fails. A UK row whose
 authorization status is unresolved rejects `record` and accepts only
-`unavailable`. Exit 0 means successful publication/check, exit 1 means handled
-acquisition/record/UK-unavailable failure, exit 2 means CLI usage, and exit 3
-means a durably published manufacturer-unavailable design blocker.
+`unavailable`. Exit 0 means a successful current publication, UK-unavailable
+publication, or check. Exit 1 means acquisition/record failed without publishing
+new output and permits the caller's explicit unavailable fallback. Exit 2 means
+CLI usage. Exit 3 means a durably published manufacturer-unavailable design
+blocker. Publication I/O, invariant or rollback failure is exit 1 and never
+leaves partial new output.
 
-P1D0b is four serial, independently green checkpoints because all CLI concerns
+P1D0b is three serial, independently green checkpoints because all CLI concerns
 deepen the same engine. No two agents edit these shared paths concurrently.
 
 ```yaml
@@ -448,6 +477,7 @@ fan-out:
       - scripts/seed_evidence.py
       - scripts/test_seed_evidence.py
       - scripts/test_supplemental_evidence.py
+      - evidence/manifest/README.md
 review-intensity: active
 commit-checkpoint:
   green:
@@ -457,23 +487,6 @@ commit-checkpoint:
     - python3 scripts/test_validate_p1.py
   buildable: [fixture-proven unavailable outcomes exit contracts and isolated checks]
   parent-commit: "feat(aius): close supplemental failure paths"
-```
-
-```yaml
-phase: P1D0b4
-unit: supplemental-cli-documentation
-seams: [committed CLI, operator protocol]
-contract-artifact: implementation-only
-fan-out:
-  - name: supplemental-cli-documentation
-    owned-paths: [evidence/manifest/README.md]
-review-intensity: passive
-commit-checkpoint:
-  green:
-    - python3 scripts/test_seed_evidence.py
-    - python3 scripts/test_supplemental_evidence.py
-  buildable: [documented supplemental CLI]
-  parent-commit: "docs(aius): document supplemental acquisition"
 ```
 
 Tests cover all realization rows, property order, artifact-kind binding,
@@ -488,6 +501,21 @@ Add `supplemental assemble --write|--check`. The assembler requires exactly 22
 seed and 46 supplemental source fragments, rejects every collision or extra,
 derives the exact unavailable-assumption set, and constructs all outputs in
 memory before a sorted transactional publish:
+
+Lifecycle projection copies every request byte-semantically except its outcome
+fields. A current source sets request status `satisfied`, evidence IDs to the
+single request `source_id`, and notes to empty. An unavailable source sets status
+`unavailable`, evidence IDs empty, and notes equal to its canonical unavailable
+artifact note. A current/unavailable manufacturer outcome changes only the
+matching component `status` to `selected`/`candidate-evidence-unavailable`;
+every other component field is byte-semantically preserved. UK outcomes never
+change a component field. The two already-satisfied Cliff manufacturer requests
+and their components remain byte-for-byte unchanged.
+
+For each manufacturer source, the assembler selects `clone_boundary.current` or
+`clone_boundary.unavailable` according to source status and copies that literal
+row. UK nulls produce no row. `supplemental-clone-boundary.json` is sorted by
+`source_id`; no classification or boundary prose is synthesized.
 
 - `manifest/sources.json` and `manifest/assumptions.json`;
 - `manifest/supplemental-clone-boundary.json` for non-dynamic supplemental
@@ -590,11 +618,11 @@ commit-checkpoint:
 ## P1D1 — Supplemental acquisition waves
 
 Each row is one short-lived agent and one request. Owned paths are the exact
-supplemental source and optional assumption fragment shown below. Manufacturer
-rows additionally own both retained roots shown; the realization determines
-which exact files are created. UK rows retain no page bytes. Each wave uses one
-parent-issued UTC timestamp, runs all scoped `check-fragment` commands, then
-lands one commit before the next wave.
+literal `realization.owned_paths`: the source fragment, assumption fragment,
+then every `artifacts[].path` in artifact order. No task owns a directory root,
+unused storage root or derived filename. UK rows therefore own exactly two
+files. Each wave uses one parent-issued UTC timestamp, runs all scoped
+`check-fragment` commands, then lands one commit before the next wave.
 
 | Wave | Request | Source | Type |
 |---:|---|---|---|
@@ -645,32 +673,532 @@ lands one commit before the next wave.
 | 15 | `REQ-USB-POWER-PROTECTION-MFR` | `AIUS-USB-POWER-PROTECTION-MFR` | manufacturer |
 | 16 | `REQ-USB-POWER-PROTECTION-UK` | `AIUS-USB-POWER-PROTECTION-UK` | UK |
 
-For source `S`, every task owns exactly
-`evidence/manifest/supplemental-fragments/S.json` and
-`evidence/manifest/supplemental-assumption-fragments/S.json`. A manufacturer
-task also owns `docs/reference/datasheets.mdS/` and `evidence/source-snapshots/S/`.
-These four roots are the only formula in the plan; the 46 literal request/source
-pairs above are the finite review oracle. P1D0a expands the formula into each
-row's literal `task_name` and `owned_paths`; P1D1 dispatch reads those committed
-values and performs no path derivation.
+The oracle is the sole ownership authority. Dispatch reads each literal
+`task_name` and `owned_paths`; it performs no path derivation.
 
-Each wave is a separate checkpoint phase named `P1D1.01` through `P1D1.16`.
-There is no 16-wave uncommitted phase.
+The wave procedure is exact:
+
+1. Manufacturer: run `supplemental acquire`. Exit 0 is current. On exit 1,
+   run `supplemental unavailable` with note `Automated acquisition from the
+   fixed realization URL failed during P1D1.NN.` and the wave timestamp; that
+   command must exit 3. Exit 3 directly from acquire is also an already-durable
+   blocker. Any other exit blocks the wave.
+2. Confirmed UK: run `supplemental record` with the observed strict JSON and
+   final URLs. Exit 0 is current. Inability to assemble the observation or exit
+   1 invokes `supplemental unavailable` with the same literal wave note and
+   timestamp; that command must exit 0. Any other exit blocks the wave.
+3. Unresolved UK: skip record and run `supplemental unavailable` directly with
+   the same literal wave note and timestamp; it must exit 0.
+4. Run the row's `supplemental check-fragment`; only exit 0 completes the task.
+   A current or lifecycle-valid unavailable outcome may commit. Access-control
+   bypass, part/URL substitution and unretained browser bytes remain forbidden.
+
+Each wave below is a separate checkpoint. There is no multi-wave uncommitted
+phase and no scalar fan-out shorthand.
 
 ```yaml
-phase: P1D1.01-P1D1.16
+phase: P1D1.01
 unit: single-supplemental-request
 seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
 contract-artifact: both
-fan-out: 46 literal tasks in the 16-wave table, maximum 3 concurrent
-coordination: no shared authored files; parent allocates timestamp and commits each wave
+fan-out:
+  - name: component-evidence-req-cliff-rx-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-CLIFF-RX-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-CLIFF-RX-UK.json
+  - name: component-evidence-req-cliff-tx-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-CLIFF-TX-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-CLIFF-TX-UK.json
+  - name: component-evidence-req-ethernet-magjack-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-ETHERNET-MAGJACK-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-ETHERNET-MAGJACK-MFR.json
+      - https://productfinder.pulseeng.com/products/datasheets/J403.pdf
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
 review-intensity: active
 commit-checkpoint:
   green:
-    - scoped supplemental check-fragment for every row in the wave
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-CLIFF-RX-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-CLIFF-TX-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-ETHERNET-MAGJACK-MFR
     - python3 scripts/test_supplemental_evidence.py
-  buildable: [durable independently validated source outcomes for the completed wave]
-  parent-commit: "docs(aius): archive supplemental evidence wave NN"
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 01"
+```
+
+```yaml
+phase: P1D1.02
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-ethernet-magjack-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-ETHERNET-MAGJACK-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-ETHERNET-MAGJACK-UK.json
+  - name: component-evidence-req-expansion-gpio-adc-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-GPIO-ADC-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-GPIO-ADC-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+  - name: component-evidence-req-expansion-gpio-adc-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-GPIO-ADC-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-GPIO-ADC-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-ETHERNET-MAGJACK-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-GPIO-ADC-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-GPIO-ADC-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 02"
+```
+
+```yaml
+phase: P1D1.03
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-expansion-i2c-control-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-I2C-CONTROL-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-I2C-CONTROL-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+  - name: component-evidence-req-expansion-i2c-control-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-I2C-CONTROL-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-I2C-CONTROL-UK.json
+  - name: component-evidence-req-expansion-i2c-isolator-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-I2C-ISOLATOR-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-I2C-ISOLATOR-MFR.json
+      - https://www.ti.com/lit/ds/symlink/tca9517a.pdf
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-I2C-CONTROL-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-I2C-CONTROL-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-I2C-ISOLATOR-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 03"
+```
+
+```yaml
+phase: P1D1.04
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-expansion-i2c-isolator-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-I2C-ISOLATOR-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-I2C-ISOLATOR-UK.json
+  - name: component-evidence-req-expansion-i2s-tdm-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-I2S-TDM-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-I2S-TDM-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+  - name: component-evidence-req-expansion-i2s-tdm-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-I2S-TDM-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-I2S-TDM-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-I2C-ISOLATOR-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-I2S-TDM-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-I2S-TDM-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 04"
+```
+
+```yaml
+phase: P1D1.05
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-expansion-power-protection-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-POWER-PROTECTION-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-POWER-PROTECTION-MFR.json
+      - https://www.ti.com/lit/ds/symlink/tps2553.pdf
+  - name: component-evidence-req-expansion-power-protection-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-POWER-PROTECTION-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-POWER-PROTECTION-UK.json
+  - name: component-evidence-req-expansion-spi-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-SPI-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-SPI-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-POWER-PROTECTION-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-POWER-PROTECTION-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-SPI-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 05"
+```
+
+```yaml
+phase: P1D1.06
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-expansion-spi-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-SPI-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-SPI-UK.json
+  - name: component-evidence-req-expansion-uart-debug-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-UART-DEBUG-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-UART-DEBUG-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+  - name: component-evidence-req-expansion-uart-debug-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-UART-DEBUG-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-UART-DEBUG-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-SPI-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-UART-DEBUG-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-UART-DEBUG-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 06"
+```
+
+```yaml
+phase: P1D1.07
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-expansion-usb-host-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-USB-HOST-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-USB-HOST-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+  - name: component-evidence-req-expansion-usb-host-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-EXPANSION-USB-HOST-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-EXPANSION-USB-HOST-UK.json
+  - name: component-evidence-req-internal-usb-cable-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-INTERNAL-USB-CABLE-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-INTERNAL-USB-CABLE-MFR.json
+      - https://www.startech.com/en-us/cables/uusbhaub6in
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-USB-HOST-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-EXPANSION-USB-HOST-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-INTERNAL-USB-CABLE-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 07"
+```
+
+```yaml
+phase: P1D1.08
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-internal-usb-cable-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-INTERNAL-USB-CABLE-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-INTERNAL-USB-CABLE-UK.json
+  - name: component-evidence-req-mechanical-cable-retainer-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-MECHANICAL-CABLE-RETAINER-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-MECHANICAL-CABLE-RETAINER-MFR.json
+      - https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300
+      - evidence/source-snapshots/AIUS-MECHANICAL-CABLE-RETAINER-MFR/151-30300.html
+  - name: component-evidence-req-mechanical-cable-retainer-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-MECHANICAL-CABLE-RETAINER-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-MECHANICAL-CABLE-RETAINER-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-INTERNAL-USB-CABLE-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-MECHANICAL-CABLE-RETAINER-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-MECHANICAL-CABLE-RETAINER-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 08"
+```
+
+```yaml
+phase: P1D1.09
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-remote-program-rtc-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-REMOTE-PROGRAM-RTC-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-REMOTE-PROGRAM-RTC-MFR.json
+      - https://www.jst-mfg.com/product/pdf/eng/eGH.pdf
+  - name: component-evidence-req-remote-program-rtc-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-REMOTE-PROGRAM-RTC-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-REMOTE-PROGRAM-RTC-UK.json
+  - name: component-evidence-req-spdif-mux-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-SPDIF-MUX-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-SPDIF-MUX-MFR.json
+      - https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-REMOTE-PROGRAM-RTC-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-REMOTE-PROGRAM-RTC-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-SPDIF-MUX-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 09"
+```
+
+```yaml
+phase: P1D1.10
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-spdif-mux-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-SPDIF-MUX-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-SPDIF-MUX-UK.json
+  - name: component-evidence-req-spdif-tx-gate-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-SPDIF-TX-GATE-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-SPDIF-TX-GATE-MFR.json
+      - https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf
+  - name: component-evidence-req-spdif-tx-gate-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-SPDIF-TX-GATE-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-SPDIF-TX-GATE-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-SPDIF-MUX-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-SPDIF-TX-GATE-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-SPDIF-TX-GATE-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 10"
+```
+
+```yaml
+phase: P1D1.11
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-teensy-ethernet-socket-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEENSY-ETHERNET-SOCKET-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEENSY-ETHERNET-SOCKET-MFR.json
+      - https://www.samtec.com/products/tmm
+      - https://www.samtec.com/products/mms
+      - https://www.samtec.com/products/mms-103-01-l-dv
+      - https://www.samtec.com/products/mms-103-01-l-dv
+      - evidence/source-snapshots/AIUS-TEENSY-ETHERNET-SOCKET-MFR/mms-103-01-l-dv.html
+  - name: component-evidence-req-teensy-ethernet-socket-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEENSY-ETHERNET-SOCKET-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEENSY-ETHERNET-SOCKET-UK.json
+  - name: component-evidence-req-teensy-side-socket-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEENSY-SIDE-SOCKET-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEENSY-SIDE-SOCKET-MFR.json
+      - https://www.samtec.com/products/tsw
+      - https://www.samtec.com/products/ssw
+      - https://www.samtec.com/products/ssw-124-02-g-s
+      - evidence/source-snapshots/AIUS-TEENSY-SIDE-SOCKET-MFR/ssw-124-02-g-s.html
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEENSY-ETHERNET-SOCKET-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEENSY-ETHERNET-SOCKET-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEENSY-SIDE-SOCKET-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 11"
+```
+
+```yaml
+phase: P1D1.12
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-teensy-side-socket-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEENSY-SIDE-SOCKET-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEENSY-SIDE-SOCKET-UK.json
+  - name: component-evidence-req-teensy-usb-host-socket-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEENSY-USB-HOST-SOCKET-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEENSY-USB-HOST-SOCKET-MFR.json
+      - https://www.samtec.com/products/tsw
+      - https://www.samtec.com/products/ssw
+      - https://www.samtec.com/products/ssw-105-02-g-s
+      - evidence/source-snapshots/AIUS-TEENSY-USB-HOST-SOCKET-MFR/ssw-105-02-g-s.html
+  - name: component-evidence-req-teensy-usb-host-socket-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEENSY-USB-HOST-SOCKET-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEENSY-USB-HOST-SOCKET-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEENSY-SIDE-SOCKET-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEENSY-USB-HOST-SOCKET-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEENSY-USB-HOST-SOCKET-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 12"
+```
+
+```yaml
+phase: P1D1.13
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-test-fixture-header-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEST-FIXTURE-HEADER-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEST-FIXTURE-HEADER-MFR.json
+      - https://www.tag-connect.com/product/tc2030-idc-6-pin-no-legs
+  - name: component-evidence-req-test-fixture-header-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-TEST-FIXTURE-HEADER-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-TEST-FIXTURE-HEADER-UK.json
+  - name: component-evidence-req-usb-a-receptacle-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-A-RECEPTACLE-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-A-RECEPTACLE-MFR.json
+      - docs/reference/datasheets.mdAIUS-USB-A-RECEPTACLE-MFR/292303-1.datasheet.pdf
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEST-FIXTURE-HEADER-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-TEST-FIXTURE-HEADER-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-A-RECEPTACLE-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 13"
+```
+
+```yaml
+phase: P1D1.14
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-usb-a-receptacle-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-A-RECEPTACLE-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-A-RECEPTACLE-UK.json
+  - name: component-evidence-req-usb-c-receptacle-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-C-RECEPTACLE-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-C-RECEPTACLE-MFR.json
+      - docs/reference/datasheets.mdAIUS-USB-C-RECEPTACLE-MFR/usb4105-spec.pdf
+      - docs/reference/datasheets.mdAIUS-USB-C-RECEPTACLE-MFR/usb4105.pdf
+      - evidence/source-snapshots/AIUS-USB-C-RECEPTACLE-MFR/usb4105.html
+  - name: component-evidence-req-usb-c-receptacle-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-C-RECEPTACLE-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-C-RECEPTACLE-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-A-RECEPTACLE-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-C-RECEPTACLE-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-C-RECEPTACLE-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 14"
+```
+
+```yaml
+phase: P1D1.15
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-usb-esd-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-ESD-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-ESD-MFR.json
+      - https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf
+  - name: component-evidence-req-usb-esd-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-ESD-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-ESD-UK.json
+  - name: component-evidence-req-usb-power-protection-mfr
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-POWER-PROTECTION-MFR.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-POWER-PROTECTION-MFR.json
+      - https://www.ti.com/lit/ds/symlink/tps2553.pdf
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-ESD-MFR
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-ESD-UK
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-POWER-PROTECTION-MFR
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 15"
+```
+
+```yaml
+phase: P1D1.16
+unit: single-supplemental-request
+seams: [fixed realization row, bounded acquisition or normalized observation, isolated fragment check]
+contract-artifact: both
+fan-out:
+  - name: component-evidence-req-usb-power-protection-uk
+    owned-paths:
+      - evidence/manifest/supplemental-fragments/AIUS-USB-POWER-PROTECTION-UK.json
+      - evidence/manifest/supplemental-assumption-fragments/AIUS-USB-POWER-PROTECTION-UK.json
+coordination: maximum three concurrent; parent allocates one UTC timestamp; every worker follows the locked current/unavailable procedure; parent commits only after all listed fragment checks pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/seed_evidence.py supplemental check-fragment REQ-USB-POWER-PROTECTION-UK
+    - python3 scripts/test_supplemental_evidence.py
+  buildable: [durable independently validated source outcomes for this wave]
+  parent-commit: "docs(aius): archive supplemental evidence wave 16"
 ```
 
 ## P1D2 — Serial integration and lifecycle closure
@@ -1075,35 +1603,44 @@ Schematic field types and nullability are closed as follows:
 `scripts/fixtures/p1d-schema/reference-package/base-v1.json` contains all four
 exact placeholders. Builder operations are
 `bootstrap --write|--check` and
-`validate --stage placeholders|design-records|schematic-stubs|schematic-sheets|schematic`,
-plus `schematic-interface lock --write|--check`. Bootstrap creates or
-byte-checks placeholders and refuses to overwrite authored state.
+`validate --stage placeholders|design-records|schematic-stubs-unlocked|schematic-stubs|schematic-sheets|schematic`,
+`validate-document <electrical-reference|pin-resource-map|two-layer-placement|reference-schematic-contract>
+--input <path> --placeholder-package <path>`, plus
+`schematic-interface lock --write|--check`. `validate-document` is read-only: it
+substitutes the named authored input into the exact locked placeholder package,
+validates its schema, local invariants and P1 external references, and defers
+only cross-design-document references to the parent `design-records` stage.
+Bootstrap creates or byte-checks placeholders and refuses to overwrite authored
+state.
 
-The five validation states are one-way:
+The six validation states are one-way:
 
 1. `placeholders` requires four exact JSON placeholders and no reference KiCad
    files.
 2. `design-records` requires electrical, pin and placement authored, the
    schematic contract still the exact placeholder, and no reference KiCad files.
-3. `schematic-stubs` adds the root, local symbol library, README and four
-   interface-only sheets. The parent runs `schematic-interface lock --write`,
-   which creates
-   `scripts/fixtures/p1d-schema/reference-package/schematic-interface-v1.json`
-   with exact SHA-256 values for those seven files and refuses if that lock
-   already exists. Validation requires exact locked bytes and the schematic
-   contract remains the placeholder.
-4. `schematic-sheets` requires the root, library and README to retain their
+3. `schematic-stubs-unlocked` adds the root, local symbol library, README and
+   four interface-only sheets. It validates every ordered hierarchical pin and
+   local symbol against the precommitted interface contract, requires the
+   schematic contract placeholder, and requires no stub lock.
+4. `schematic-stubs` additionally requires
+   `scripts/fixtures/p1d-schema/reference-package/schematic-stub-lock-v1.json`
+   with exact SHA-256 values for those seven files and exact locked interface
+   tuples. The parent creates it only after ERC and the unlocked stage pass.
+5. `schematic-sheets` requires the root, library and README to retain their
    locked hashes, every one of the four sheet hashes to differ from its locked
    stub hash, every sheet to preserve its locked hierarchical interface, and the
    schematic contract to remain the placeholder.
-5. `schematic` requires the `schematic-sheets` conditions and all four JSON
+6. `schematic` requires the `schematic-sheets` conditions and all four JSON
    documents authored.
 
 `schematic-interface lock --check` never writes. Bootstrap refuses when any
 reference KiCad file or lock exists, so it cannot downgrade a schematic state;
-the lock command cannot relock implemented sheets. Renderers reject
-placeholders. Tests cover every legal transition, partial sheet replacement,
-root/library/interface drift, attempted relock, and every downgrade refusal.
+the lock command cannot relock implemented sheets. `lock --write` first performs
+the complete unlocked structural validation and publishes atomically only if it
+passes. Renderers reject placeholders. Tests cover every legal transition,
+partial sheet replacement, root/library/interface drift, failed pre-lock proof,
+attempted relock, and every downgrade refusal.
 
 ```yaml
 phase: P1D3a1
@@ -1173,10 +1710,11 @@ commit-checkpoint:
   parent-commit: "feat(aius): build electrical reference contracts"
 ```
 
-The three renderer concerns then land serially because each deepens the existing
-`render_p1.py`/`test_render_p1.py` pair. The coordinator dispatches one bounded
-agent, tests and commits it, then dispatches the next from that baseline. Each
-renderer has `--write` and `--check`; neither mode accepts a placeholder.
+The three renderer concerns land serially because each deepens the existing
+`render_p1.py`/`test_render_p1.py` pair. Before each renderer dispatch, a separate
+checkpoint commits its authored input and adversarial expected bytes. The
+renderer worker may not edit those golden files. Each renderer has `--write` and
+`--check`; neither mode accepts a placeholder.
 
 The four exact outputs are:
 
@@ -1185,39 +1723,97 @@ The four exact outputs are:
 - `docs/reference/pin-resource-map.md`;
 - `docs/reference/two-layer-placement.md`.
 
-All text is UTF-8, LF-only, with exactly one final LF. Markdown section order is
-fixed: electrical uses title, Metadata, Support circuits, Signals, Power rails,
-Coverage, Notes; pin uses title, Metadata, Pin resources, Reservation coverage,
-Evidence, Notes; placement uses title, Metadata, Board, Placements, Keepouts,
-Routes, Ground corridors, Cables, Collision checks, Criteria, Layer decision,
-Coverage, Notes. Table columns follow the source row's locked key order. A
-Markdown cell normalizes CRLF to LF, rejects bare CR, escapes backslash before
-pipe (`\\` then `\|`), replaces LF with `<br>`, and wraps identifier/path fields
-in backticks after rejecting embedded backticks.
+Markdown reuses the committed `GENERATED_NOTICE`, `_scalar_text`,
+`_markdown_escape`, `_markdown_scalar`, `_markdown_cell`, `_table`, and
+`_render_markdown` rules byte-for-byte. First lines are exactly `# Aius
+electrical reference`, `# Aius pin resource map`, or `# Aius two-layer
+placement`, then a blank line and `<!-- Generated by scripts/render_p1.py; do not
+edit. -->`. Every section is preceded by one blank line, `## <heading>`, one
+blank line, then `| <raw key> |` headers, `| --- |` separators and data rows; an
+empty collection still emits header and separator. Headers are never wrapped in
+backticks, and the exact backtick-wrapped field set is empty for every table.
 
-The pin CSV header is exactly the 14 pin fields in their locked order. It uses
-RFC 4180 quoting with LF record terminators: comma, quote, CR or LF requires
-quotes; a quote doubles; null is empty; booleans are lowercase; arrays join with
-semicolon after rejecting semicolons inside an element. Fixtures cover empty,
-nullable, delimiter, quote, line-ending, backslash, pipe, backtick, Unicode,
-ordering and final-newline boundaries.
+Cells reuse the existing rules: null is empty, Boolean is lowercase, strings are
+literal scalar text, numbers use compact JSON, a list joins individually rendered
+items with `<br>`, and a nested object uses sorted compact JSON. Backslash becomes
+`\\`, pipe becomes `\|`, and CRLF, bare CR and LF each become `<br>`. Output is
+UTF-8 with LF line endings and exactly one final LF.
+
+Electrical sections and columns are exact: Metadata has `schema_version`,
+`document_state`; Support circuits, Signals and Power rails use each row's full
+locked key order above; Coverage has `requirement_ids`, `evidence_ids` from one
+root row; Notes has `notes` from one root row. Pin sections are Metadata with the
+same two keys; Pin resources with all 14 locked keys; Reservation coverage with
+`reservation_owner`, `signal_ids`, one row per non-null owner sorted by owner and
+lexically sorted signal IDs; Evidence with `evidence_id`, one row per root ID;
+and Notes with root `notes`. Placement sections are Metadata; Board; Placements;
+Keepouts; Routes; Ground corridors; Cables; Collision checks; Criteria; Layer
+decision; Coverage; Notes. Metadata/Coverage/Notes use the same keys as above;
+every factual section uses its full locked object key order, and a null Board or
+Layer decision produces no data row.
+
+The pin CSV header is the 14 pin fields in locked order. It reuses `_csv_cell`
+and Python `csv.writer(dialect="excel", lineterminator="\\n",
+quoting=csv.QUOTE_MINIMAL)`: null is empty, Boolean is lowercase, dict/list is
+sorted compact JSON, every other scalar is `str(value)`, quote is doubled, and
+comma/quote/CR/LF triggers quoting. Goldens cover empty/null, delimiter, quote,
+all line endings, backslash, pipe, backtick, Unicode, list/object, ordering and
+final-newline boundaries.
+
+Golden directory membership is exact: `electrical-reference/` contains
+`input.json`, `expected.md`; `pin-resource-map/` contains `input.json`,
+`expected.csv`, `expected.md`; `two-layer-placement/` contains `input.json`,
+`expected.md`. Each input is one complete schema-valid authored document that
+contains every adversarial scalar boundary applicable to that document. Expected
+files are literal final bytes, not templates or hashes.
+
+```yaml
+phase: P1D3a3g
+unit: electrical-renderer-byte-contract
+seams: [authored electrical fixture, exact Markdown bytes]
+contract-artifact: spec-only
+fan-out:
+  - name: electrical-renderer-golden
+    owned-paths: [scripts/fixtures/render-p1/electrical-reference]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-document electrical-reference --input scripts/fixtures/render-p1/electrical-reference/input.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
+  buildable: [committed complete electrical renderer input and exact expected Markdown]
+  parent-commit: "test(aius): lock electrical renderer bytes"
+```
 
 ```yaml
 phase: P1D3a3
 unit: electrical-reference-renderer
 seams: [authored electrical JSON, deterministic Markdown]
-contract-artifact: spec-only
+contract-artifact: stubs-committed
 fan-out:
   - name: electrical-reference-renderer
     owned-paths:
       - scripts/render_p1.py
       - scripts/test_render_p1.py
-      - scripts/fixtures/render-p1/electrical-reference
 review-intensity: active
 commit-checkpoint:
   green: [python3 scripts/test_render_p1.py]
   buildable: [fixture-proven electrical Markdown renderer]
   parent-commit: "feat(aius): render electrical reference"
+```
+
+```yaml
+phase: P1D3a4g
+unit: pin-renderer-byte-contract
+seams: [authored pin fixture, exact CSV and Markdown bytes]
+contract-artifact: spec-only
+fan-out:
+  - name: pin-renderer-golden
+    owned-paths: [scripts/fixtures/render-p1/pin-resource-map]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-document pin-resource-map --input scripts/fixtures/render-p1/pin-resource-map/input.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
+  buildable: [committed complete pin renderer input and exact expected CSV and Markdown]
+  parent-commit: "test(aius): lock pin renderer bytes"
 ```
 
 ```yaml
@@ -1230,12 +1826,27 @@ fan-out:
     owned-paths:
       - scripts/render_p1.py
       - scripts/test_render_p1.py
-      - scripts/fixtures/render-p1/pin-resource-map
 review-intensity: active
 commit-checkpoint:
   green: [python3 scripts/test_render_p1.py]
   buildable: [fixture-proven pin CSV and Markdown renderer]
   parent-commit: "feat(aius): render pin resource map"
+```
+
+```yaml
+phase: P1D3a5g
+unit: placement-renderer-byte-contract
+seams: [authored placement fixture, exact Markdown bytes]
+contract-artifact: spec-only
+fan-out:
+  - name: placement-renderer-golden
+    owned-paths: [scripts/fixtures/render-p1/two-layer-placement]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/build_p1d_reference_contract.py validate-document two-layer-placement --input scripts/fixtures/render-p1/two-layer-placement/input.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
+  buildable: [committed complete placement renderer input and exact expected Markdown]
+  parent-commit: "test(aius): lock placement renderer bytes"
 ```
 
 ```yaml
@@ -1248,7 +1859,6 @@ fan-out:
     owned-paths:
       - scripts/render_p1.py
       - scripts/test_render_p1.py
-      - scripts/fixtures/render-p1/two-layer-placement
 review-intensity: active
 commit-checkpoint:
   green:
@@ -1273,10 +1883,16 @@ contract-artifact: stubs-committed
 fan-out:
   - name: electrical-reference
     owned-paths: [evidence/design/electrical-reference.json]
+    worker-green:
+      - python3 scripts/build_p1d_reference_contract.py validate-document electrical-reference --input evidence/design/electrical-reference.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
   - name: pin-resource-map
     owned-paths: [evidence/design/pin-resource-map.json]
+    worker-green:
+      - python3 scripts/build_p1d_reference_contract.py validate-document pin-resource-map --input evidence/design/pin-resource-map.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
   - name: two-layer-placement
     owned-paths: [evidence/design/two-layer-placement.json]
+    worker-green:
+      - python3 scripts/build_p1d_reference_contract.py validate-document two-layer-placement --input evidence/design/two-layer-placement.json --placeholder-package scripts/fixtures/p1d-schema/reference-package/base-v1.json
 coordination-owned-paths:
   - docs/reference/electrical-reference.md
   - docs/reference/pin-resource-map.csv
@@ -1297,17 +1913,93 @@ commit-checkpoint:
   parent-commit: "docs(aius): establish electrical design records"
 ```
 
+### P1D3c0 — Committed schematic interface
+
+`electronics/reference/schematic-interface-v1.json` is a closed object with
+keys `schema_version`, `sheets`, `local_symbol_ids`. A sheet has `sheet_id`,
+`path`, `pins`; a pin has `name`, `direction`, `electrical_type`, `binding`.
+Sheet order is power-usb, optical-spdif, ethernet, teensy-expansion. Direction is
+`into-sheet`, `out-of-sheet` or `bidirectional`; electrical type is `input`,
+`output`, `bidirectional`, `passive`, `power-input` or `power-output`. Binding is
+exactly `signal:<signal-id>`, `rail:<rail-id>` or `domain:<domain-id>`.
+
+The exact ordered pin tuples are:
+
+| Sheet | Name | Direction | Electrical type | Binding |
+|---|---|---|---|---|
+| power-usb | `USB_DEV_DP` | bidirectional | bidirectional | `signal:usb-device-dp` |
+| power-usb | `USB_DEV_DM` | bidirectional | bidirectional | `signal:usb-device-dm` |
+| power-usb | `PROTECTED_5V` | out-of-sheet | power-output | `rail:protected-5v` |
+| power-usb | `DIGITAL_GROUND` | bidirectional | passive | `domain:digital-ground` |
+| power-usb | `CHASSIS_SHIELD` | bidirectional | passive | `domain:chassis-shield` |
+| optical-spdif | `SPDIF_RX_LOGIC` | out-of-sheet | output | `signal:spdif-rx-logic` |
+| optical-spdif | `SPDIF_TX_LOGIC` | into-sheet | input | `signal:spdif-tx-logic` |
+| optical-spdif | `SPDIF_PATH_SELECT` | into-sheet | input | `signal:spdif-path-select` |
+| optical-spdif | `OPTICAL_TX_ENABLE` | into-sheet | input | `signal:optical-tx-enable` |
+| optical-spdif | `TEENSY_3V3` | into-sheet | power-input | `rail:teensy-3v3` |
+| optical-spdif | `DIGITAL_GROUND` | bidirectional | passive | `domain:digital-ground` |
+| ethernet | `ETH_TX_P` | into-sheet | input | `signal:ethernet-tx-p` |
+| ethernet | `ETH_TX_N` | into-sheet | input | `signal:ethernet-tx-n` |
+| ethernet | `ETH_RX_P` | out-of-sheet | output | `signal:ethernet-rx-p` |
+| ethernet | `ETH_RX_N` | out-of-sheet | output | `signal:ethernet-rx-n` |
+| ethernet | `ETH_LED_LINK` | into-sheet | input | `signal:ethernet-led-link` |
+| ethernet | `ETH_LED_ACTIVITY` | into-sheet | input | `signal:ethernet-led-activity` |
+| ethernet | `TEENSY_3V3` | into-sheet | power-input | `rail:teensy-3v3` |
+| ethernet | `DIGITAL_GROUND` | bidirectional | passive | `domain:digital-ground` |
+| ethernet | `CHASSIS_SHIELD` | bidirectional | passive | `domain:chassis-shield` |
+| teensy-expansion | `USB_DEV_DP` | bidirectional | bidirectional | `signal:usb-device-dp` |
+| teensy-expansion | `USB_DEV_DM` | bidirectional | bidirectional | `signal:usb-device-dm` |
+| teensy-expansion | `PROTECTED_5V` | into-sheet | power-input | `rail:protected-5v` |
+| teensy-expansion | `SPDIF_RX_LOGIC` | into-sheet | input | `signal:spdif-rx-logic` |
+| teensy-expansion | `SPDIF_TX_LOGIC` | out-of-sheet | output | `signal:spdif-tx-logic` |
+| teensy-expansion | `SPDIF_PATH_SELECT` | out-of-sheet | output | `signal:spdif-path-select` |
+| teensy-expansion | `OPTICAL_TX_ENABLE` | out-of-sheet | output | `signal:optical-tx-enable` |
+| teensy-expansion | `ETH_TX_P` | out-of-sheet | output | `signal:ethernet-tx-p` |
+| teensy-expansion | `ETH_TX_N` | out-of-sheet | output | `signal:ethernet-tx-n` |
+| teensy-expansion | `ETH_RX_P` | into-sheet | input | `signal:ethernet-rx-p` |
+| teensy-expansion | `ETH_RX_N` | into-sheet | input | `signal:ethernet-rx-n` |
+| teensy-expansion | `ETH_LED_LINK` | out-of-sheet | output | `signal:ethernet-led-link` |
+| teensy-expansion | `ETH_LED_ACTIVITY` | out-of-sheet | output | `signal:ethernet-led-activity` |
+| teensy-expansion | `TEENSY_3V3` | out-of-sheet | power-output | `rail:teensy-3v3` |
+| teensy-expansion | `DIGITAL_GROUND` | bidirectional | passive | `domain:digital-ground` |
+
+The exact ordered local-symbol inventory is `teensy-4-1-module`,
+`vksdr-toslink-rx-module`, `vksdr-toslink-tx-module`,
+`selected-ethernet-magjack`. All other symbols must be named KiCad-standard
+symbols already recorded by the schematic contract; sheet workers cannot add a
+local symbol.
+
+```yaml
+phase: P1D3c0
+unit: schematic-interface-contract
+seams: [four hierarchical interfaces, local symbol inventory]
+contract-artifact: spec-only
+fan-out:
+  - name: schematic-interface-contract
+    owned-paths:
+      - electronics/reference/schematic-interface-v1.json
+      - electronics/reference/schematic-interface-schema.json
+      - scripts/fixtures/p1d-schema/schematic-interface
+      - scripts/test_p1d_schematic_interface.py
+review-intensity: active
+commit-checkpoint:
+  green: [python3 scripts/test_p1d_schematic_interface.py]
+  buildable: [closed fixture-proven sheet and symbol interface]
+  parent-commit: "design(aius): lock reference schematic interfaces"
+```
+
 ### P1D3c1 — ERC-clean schematic shell
 
-This phase starts after P1D3b. The root shell predeclares all hierarchical pins
-and every local symbol needed by later sheets; sheet agents create interface-only
-stubs and never edit the shared symbol library. No `.kicad_pro` is created.
+This phase starts after P1D3b and P1D3c0. The root shell and every stub consume
+the committed ordered interface. The root shell predeclares every local symbol;
+sheet agents create interface-only stubs and never edit the shared symbol
+library. No `.kicad_pro` is created.
 
 ```yaml
 phase: P1D3c1
 unit: single-schematic-shell-file
 seams: [hierarchical pins, predeclared symbols, four sheet interfaces]
-contract-artifact: spec-only
+contract-artifact: stubs-committed
 fan-out:
   - name: schematic-root-shell
     owned-paths:
@@ -1323,14 +2015,15 @@ fan-out:
   - name: teensy-expansion-sheet-stub
     owned-paths: [electronics/reference/teensy-expansion.kicad_sch]
 coordination-owned-paths:
-  - scripts/fixtures/p1d-schema/reference-package/schematic-interface-v1.json
-coordination: maximum three concurrent; root shell contract is fixed in the plan and sheet agents do not edit root or library; after all return the parent alone locks the seven file hashes and validates the stub stage
+  - scripts/fixtures/p1d-schema/reference-package/schematic-stub-lock-v1.json
+coordination: maximum three concurrent; every worker consumes schematic-interface-v1.json and sheet agents do not edit root or library; after all return the parent proves ERC and the unlocked stage before atomically locking the seven file hashes
 review-intensity: active
 commit-checkpoint:
   green:
+    - scripts/kicad.sh sch erc electronics/reference/aius-reference.kicad_sch
+    - python3 scripts/build_p1d_reference_contract.py validate --stage schematic-stubs-unlocked
     - python3 scripts/build_p1d_reference_contract.py schematic-interface lock --write
     - python3 scripts/build_p1d_reference_contract.py schematic-interface lock --check
-    - scripts/kicad.sh sch erc electronics/reference/aius-reference.kicad_sch
     - python3 scripts/build_p1d_reference_contract.py validate --stage schematic-stubs
   buildable: [interface-complete zero-warning ERC-clean schematic shell]
   parent-commit: "design(aius): establish reference schematic shell"
@@ -1430,10 +2123,13 @@ fan-out:
   - name: p1d-release-wrapper
     owned-paths:
       - scripts/validate_p1d_release.sh
+      - scripts/test_validate_p1d_release.py
       - evidence/manifest/README.md
 review-intensity: active
 commit-checkpoint:
   green:
+    - python3 scripts/test_validate_p1d_release.py
+    - shellcheck scripts/validate_p1d_release.sh
     - python3 scripts/test_validate_p1.py
     - python3 scripts/validate_evidence.py
     - python3 scripts/validate_p1.py topology --stage final
@@ -1448,9 +2144,20 @@ commit-checkpoint:
     - scripts/kicad.sh sch erc electronics/reference/aius-reference.kicad_sch
     - node_modules/.bin/prettier --check evidence/design/electrical-reference-schema.json evidence/design/electrical-reference.json evidence/design/pin-resource-map-schema.json evidence/design/pin-resource-map.json evidence/design/two-layer-placement-schema.json evidence/design/two-layer-placement.json evidence/design/reference-schematic-contract-schema.json electronics/reference/reference-schematic-contract.json
     - the repo tooling tool doc-index -- --check
+    - scripts/validate_p1d_release.sh
   buildable: [audited non-manufacturing electrical reference package]
   parent-commit: "docs(aius): release electrical reference package"
 ```
+
+The release wrapper accepts zero arguments and returns usage exit 2 otherwise.
+It resolves the Aius root from its own path, so execution is independent of the
+caller working directory. It is foreground-only, network-free, uses strict
+fail-fast shell semantics, and runs once in exact checkpoint order from
+`validate_evidence.py` through the doc-index check; the Python wrapper test,
+ShellCheck and wrapper invocation are outer proof commands and are not called by
+the wrapper. It stops at the first non-zero command and propagates that status.
+Its Python test uses command shims to prove order, CWD independence, argument
+rejection and every fail-fast boundary; an empty or self-recursive wrapper fails.
 
 After the P1D4b worker returns and these checks pass, one clean-room delivery
 reviewer receives only this plan and the current code. Missing promises are

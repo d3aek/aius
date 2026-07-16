@@ -29,8 +29,8 @@ The carrier contains:
 - native Teensy Ethernet connection to an integrated magjack;
 - rear PCB-mounted USB-C device receptacle with CC pull-downs and ESD protection;
 - a short controlled 90 ohm D+/D- route to an adjacent internal PCB-mounted USB-A receptacle;
-- one standard approximately 100 mm USB-A male to Micro-B male cable carrying both data and the sole 5 V supply to the Teensy;
-- keyed expansion for I2C display/encoder/buttons/LEDs, one six-circuit SPI interface carrying SCK, MOSI, MISO, one chip select, 3.3 V and ground, UART/debug, I2S/TDM, USB host, GPIO/ADC, and a possible trigger/relay output;
+- one selected USB-A male to Micro-B male cable carrying both data and the sole 5 V supply to the Teensy, with its evidence-derived length, bend envelope and service slack;
+- keyed expansion for I2C display/encoder/buttons/LEDs, one six-circuit SPI interface carrying SCK, MOSI, MISO, one chip select, 3.3 V and ground, UART/debug, I2S/TDM, USB host, and GPIO/ADC; a trigger or relay output is an optional allocation of `expansion-gpio-adc`, not another interface;
 - access to microSD, Program, status LED, and a remote Program/RTC header;
 - test points and a manufacturing/bring-up interface.
 
@@ -132,7 +132,7 @@ sheet worker starts; the second consumes that immutable baseline.
 phase: H1a
 unit: manufacturing-schematic-interface
 seams: [canonical root, local symbol library, hierarchical sheet interfaces]
-contract-artifact: both
+contract-artifact: spec-only
 fan-out:
   - name: manufacturing-schematic-interface
     owned-paths:
@@ -175,18 +175,23 @@ commit-checkpoint:
 
 ## H2: Two-layer feasibility gate
 
-Before detailed routing:
+Mechanical placement completes first:
 
-1. Obtain PCBWay's actual two-layer material and impedance capabilities.
-2. Set the exact enclosure-guide board outline and verify board thickness.
-3. Place Teensy, Ethernet magjack, USB-C, internal USB-A, both optical modules, expansion, and test access.
-4. Reserve the approximately 100 mm internal USB cable volume, bend radius, connector insertion path, and retention.
-5. Calculate and record manufacturable 90 ohm USB and 100 ohm Ethernet geometries.
-6. Route both high-speed pairs provisionally on top without vias.
-7. Demonstrate a continuous bottom-ground return under both pairs and their connector transitions.
-8. Route or escape all remaining nets without plane cuts or unacceptable return-path necks.
-9. Confirm the full board remains no larger than 100 x 100 mm.
-10. Run a mechanical interference and assembly-access review.
+1. Set the exact enclosure-guide board outline and verify board thickness.
+2. Place Teensy, Ethernet magjack, USB-C, internal USB-A, both optical modules,
+   expansion, and test access.
+3. Reserve the selected cable's evidence-derived length, bend envelope, service
+   slack, connector insertion path, and retention.
+4. Confirm the full board remains no larger than 100 x 100 mm.
+5. Run mechanical interference and assembly-access review.
+
+Only after that checkpoint, the routing study:
+
+1. Obtains PCBWay's actual two-layer material and impedance capabilities.
+2. Calculates and records manufacturable 90 ohm USB and 100 ohm Ethernet geometries.
+3. Routes both high-speed pairs provisionally on top without vias.
+4. Demonstrates a continuous bottom-ground return under both pairs and connector transitions.
+5. Routes or escapes all remaining nets without plane cuts or unacceptable return-path necks.
 
 Escalate to four layers only if an electrical route, impedance or return-path
 criterion fails while every mechanical criterion passes. Record the failed
@@ -195,20 +200,33 @@ and cost delta in the plan and cost model before continuing. A mechanical
 failure blocks placement redesign instead.
 
 ```yaml
-phase: H2
-unit: placement-and-stackup
-seams: [board outline, placement contract, impedance geometry, layer decision]
+phase: H2a
+unit: mechanical-envelope-and-placement
+seams: [enclosure guide, board outline, component and cable envelopes]
 contract-artifact: both
 fan-out:
   - name: mechanical-placement
     owned-paths: [mechanical]
+review-intensity: active
+commit-checkpoint:
+  green: [outline and guide fit, placement collision, cable bend and insertion, assembly access]
+  buildable: [committed mechanically valid board outline and placement]
+  parent-commit: "design(aius): approve carrier mechanical placement"
+```
+
+```yaml
+phase: H2b
+unit: stackup-and-routing-feasibility
+seams: [committed placement, vendor stackup, impedance geometry, layer decision]
+contract-artifact: stubs-committed
+fan-out:
   - name: stackup-routing-study
     owned-paths: [electronics/feasibility]
 review-intensity: active
 commit-checkpoint:
-  green: [mechanical review, impedance calculation, return-path review, two-layer feasibility verdict]
-  buildable: [approved board outline placement and stackup]
-  parent-commit: "design(aius): approve carrier stackup and placement"
+  green: [impedance calculation, route length/via proof, return-path review, two-layer feasibility verdict]
+  buildable: [approved stackup and layer decision on committed placement]
+  parent-commit: "design(aius): approve carrier stackup and routing feasibility"
 ```
 
 ## H3: PCB, DFM, and quotation
@@ -318,15 +336,28 @@ Test stereo PCM input, DTS Core 5.1, format transitions, optical loss, source sa
 Complete thermal, fault, long-soak, enclosure, basic pre-compliance EMC, production-test, and repeatability checks. Record every ECO and refresh the cost model with actual yield, parts, assembly, rework, freight, and enclosure results.
 
 ```yaml
-phase: H5
-unit: system-test-surface
-seams: [end-to-end audio contract, DVT report, release decision]
+phase: H5a
+unit: product-firmware-integration
+seams: [proven decoder/DSP modules, EVT carrier drivers, product state machine]
 contract-artifact: both
 fan-out:
-  - name: audio-integration
-    owned-paths: [evidence/system-results]
   - name: firmware-integration
     owned-paths: [firmware/src/product]
+review-intensity: active
+commit-checkpoint:
+  green: [software regression suite, hardware-in-loop smoke matrix, reset and fault-state recovery]
+  buildable: [committed end-to-end product firmware candidate]
+  parent-commit: "feat(aius): integrate product firmware"
+```
+
+```yaml
+phase: H5b
+unit: system-validation-surface
+seams: [committed product firmware, end-to-end audio contract, DVT report, release decision]
+contract-artifact: stubs-committed
+fan-out:
+  - name: audio-system-validation
+    owned-paths: [evidence/system-results]
 review-intensity: active
 commit-checkpoint:
   green: [audio matrix, timing and drift tests, thermal and fault tests, soak, release audit]

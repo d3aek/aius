@@ -231,6 +231,7 @@
         "initial_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
         "basis": "Cliff's official UK distributor page explicitly lists DigiKey."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -256,6 +257,7 @@
         "initial_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
         "basis": "Cliff's official UK distributor page explicitly lists CPC Combined Precision Components and Farnell."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -276,6 +278,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-ETHERNET-MAGJACK-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-ETHERNET-MAGJACK-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -311,6 +333,7 @@
         "initial_url": "https://www.pulseelectronics.com/wp-content/uploads/2020/10/network-product-guide.pdf",
         "basis": "Pulse's official guide lists Digi-Key for North America but does not establish authorization for the UK commerce source."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -331,6 +354,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-GPIO-ADC-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-GPIO-ADC-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -366,6 +409,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -386,6 +430,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -421,6 +485,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -441,6 +506,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-I2C-ISOLATOR-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-I2C-ISOLATOR-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -476,6 +561,7 @@
         "initial_url": "https://www.ti.com/ordering-resources/faqs/purchasing-online/authorized-distributors.html?eloquaCampaignId=2759",
         "basis": "TI's official Authorized Distributors page explicitly lists Digi-Key Electronics."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -496,6 +582,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-I2S-TDM-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-I2S-TDM-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -531,6 +637,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -551,6 +658,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-POWER-PROTECTION-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-POWER-PROTECTION-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -586,6 +713,7 @@
         "initial_url": "https://www.ti.com/ordering-resources/faqs/purchasing-online/authorized-distributors.html?eloquaCampaignId=2759",
         "basis": "TI's official Authorized Distributors page explicitly lists Digi-Key Electronics."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -606,6 +734,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-SPI-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-SPI-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -641,6 +789,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -661,6 +810,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-UART-DEBUG-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-UART-DEBUG-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -696,6 +865,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -716,6 +886,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-EXPANSION-USB-HOST-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-EXPANSION-USB-HOST-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -751,6 +941,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -771,6 +962,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-INTERNAL-USB-CABLE-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-INTERNAL-USB-CABLE-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -806,6 +1017,7 @@
         "initial_url": "https://www.startech.com/en-gb/where-to-buy",
         "basis": "StarTech's official locator did not expose evidence tying RS to the exact product."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -827,6 +1039,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -871,6 +1103,7 @@
         "initial_url": "https://www.hellermanntyton.co.uk/distributors?searchzipcode=M20%205PG&searchcountry=United%20Kingdom&searchradius=250&localShopSearch=RS%20Components%20Ltd&send=",
         "basis": "HellermannTyton's official locator, queried for M20 5PG within 250 miles and preferred distributor RS Components Ltd, returns RS branches including Stockport."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -891,6 +1124,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-REMOTE-PROGRAM-RTC-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-REMOTE-PROGRAM-RTC-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -926,6 +1179,7 @@
         "initial_url": "https://www.jst.co.uk/contact.php",
         "basis": "JST UK's official catalogue-distributor list explicitly names RS Components Ltd."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -946,6 +1200,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-SPDIF-MUX-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-SPDIF-MUX-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -981,6 +1255,7 @@
         "initial_url": "https://www.ti.com/ordering-resources/faqs/purchasing-online/authorized-distributors.html?eloquaCampaignId=2759",
         "basis": "TI's official Authorized Distributors page explicitly lists Digi-Key Electronics."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1001,6 +1276,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-SPDIF-TX-GATE-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-SPDIF-TX-GATE-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1036,6 +1331,7 @@
         "initial_url": "https://www.ti.com/ordering-resources/faqs/purchasing-online/authorized-distributors.html?eloquaCampaignId=2759",
         "basis": "TI's official Authorized Distributors page explicitly lists Digi-Key Electronics."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1060,6 +1356,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1131,6 +1447,7 @@
         "initial_url": "https://www.samtec.com/about/location/global-distributors",
         "basis": "Samtec's official Authorized Global Distribution Partners page explicitly lists RS Components."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1154,6 +1471,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-TEENSY-SIDE-SOCKET-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-TEENSY-SIDE-SOCKET-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1216,6 +1553,7 @@
         "initial_url": "https://www.samtec.com/about/location/global-distributors",
         "basis": "Samtec's official Authorized Global Distribution Partners page explicitly lists DigiKey."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1239,6 +1577,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1301,6 +1659,7 @@
         "initial_url": "https://www.samtec.com/about/location/global-distributors",
         "basis": "Samtec's official Authorized Global Distribution Partners page explicitly lists RS Components."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1321,6 +1680,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1356,6 +1735,7 @@
         "initial_url": "https://www.trustedparts.com/en/manufacturers/tag-connect",
         "basis": "Sole permitted exception: ECIA TrustedParts identifies DigiKey as an authorized EMEA distributor for Tag-Connect and includes TC2030-IDC."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1376,6 +1756,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-USB-A-RECEPTACLE-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-USB-A-RECEPTACLE-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1411,6 +1811,7 @@
         "initial_url": "https://www.te.com/en/customer-support/authorized-distributors.html?iso=gbr",
         "basis": "TE Connectivity's official UK-filtered authorized-distributor locator explicitly lists RS Components."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1433,6 +1834,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-USB-C-RECEPTACLE-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-USB-C-RECEPTACLE-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1486,6 +1907,7 @@
         "initial_url": "https://gct.co/rep-distributor/gb",
         "basis": "GCT's official United Kingdom representative and distributor page explicitly lists Farnell - Element14."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1506,6 +1928,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-USB-ESD-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-USB-ESD-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1541,6 +1983,7 @@
         "initial_url": "https://www.ti.com/ordering-resources/faqs/purchasing-online/authorized-distributors.html?eloquaCampaignId=2759",
         "basis": "TI's official Authorized Distributors page explicitly lists Digi-Key Electronics."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
@@ -1561,6 +2004,26 @@
       "revision_value": null,
       "observation_url": null,
       "authorization": null,
+      "clone_boundary": {
+        "current": {
+          "source_id": "AIUS-USB-POWER-PROTECTION-MFR",
+          "classification": "official-reuse",
+          "reused_material": ["Retained primary manufacturer evidence."],
+          "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+          "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+          "notes": ""
+        },
+        "unavailable": {
+          "source_id": "AIUS-USB-POWER-PROTECTION-MFR",
+          "classification": "unresolved",
+          "reused_material": [],
+          "derived_claims": ["The manufacturer claim remains unresolved."],
+          "prohibited_use": [
+            "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+          ],
+          "notes": "The fixed manufacturer source is unavailable."
+        }
+      },
       "artifacts": [
         {
           "artifact_kind": "datasheet",
@@ -1596,6 +2059,7 @@
         "initial_url": "https://www.ti.com/ordering-resources/faqs/purchasing-online/authorized-distributors.html?eloquaCampaignId=2759",
         "basis": "TI's official Authorized Distributors page explicitly lists Digi-Key Electronics."
       },
+      "clone_boundary": null,
       "artifacts": [],
       "observation_profile": "uk-distributor-price-stock",
       "failure_policy": "assumption",
