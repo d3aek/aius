@@ -4,7 +4,7 @@ type: plans
 scope: aius
 status: draft
 tags: [aius, hardware, pcb, teensy, spdif, ethernet]
-updated: 2026-07-15
+updated: 2026-07-16
 toc: true
 ---
 
@@ -128,9 +128,10 @@ Create the manufacturing schematic from the audited sources. It includes:
 
 The schematic contains a reset and failure-state truth table for Teensy absent, boot, reset, brownout, firmware crash, optical loss, unsupported burst, malformed input, USB unplug, raw-bypass request, and unpowered expansion. Hardware pulls keep the transmitter disabled and select the processed Teensy path during reset. Expansion outputs are high impedance or current-limited until firmware configures them.
 
-H1 is four serial checkpoints. The first lands the reusable gate contract, the
-second commits the shared interface, the third commits ERC-clean interface-only
-sheet stubs, and the fourth replaces those immutable-interface stubs.
+H1 begins with eight serial schema-sized checkpoints. Each stage-family task
+owns only its closed schema and, where evaluation is already knowable, its
+projection oracle. A final coordinator builds the shared validator bundle.
+Interface, stub and schematic checkpoints then consume that committed bundle.
 
 The hardware bridge consumes three deterministic verdict artifacts:
 `evidence/design/p1d-release.json`, `evidence/cost/h0-verdict.json`, and
@@ -141,12 +142,134 @@ fixtures land first so later failed physical outcomes can be committed without
 weakening their release gates.
 
 ```yaml
-phase: H1a0
-unit: test-surface
-seams: [closed hardware-result schemas, structural validation, deterministic verdict exits]
+phase: H1a0a
+unit: single-file-implementation
+seams: [closed H1 bridge schema]
 contract-artifact: spec-only
 fan-out:
-  - name: hardware-gate-validator
+  - name: h1-bridge-schema
+    owned-paths: [evidence/hardware/schemas/h1-interface-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed H1 gate-input and sheet-interface contract]
+  parent-commit: "feat(aius): define H1 bridge schema"
+```
+
+```yaml
+phase: H1a0b
+unit: test-surface
+seams: [closed H2a result schema, deterministic mechanical projection oracle]
+contract-artifact: both
+fan-out:
+  - name: h2a-gate-contract
+    owned-paths:
+      - evidence/hardware/schemas/h2a-schema.json
+      - evidence/hardware/oracles/h2a-gate-oracle.json
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation and oracle completeness]
+  buildable: [closed deterministic H2a contract]
+  parent-commit: "feat(aius): define H2a gate contract"
+```
+
+```yaml
+phase: H1a0c
+unit: test-surface
+seams: [closed H2b result schema, deterministic layer projection oracle]
+contract-artifact: both
+fan-out:
+  - name: h2b-gate-contract
+    owned-paths:
+      - evidence/hardware/schemas/h2b-schema.json
+      - evidence/hardware/oracles/h2b-gate-oracle.json
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation and oracle completeness]
+  buildable: [closed deterministic H2b contract]
+  parent-commit: "feat(aius): define H2b gate contract"
+```
+
+```yaml
+phase: H1a0d
+unit: single-file-implementation
+seams: [closed deterministic manufacturing-package contract]
+contract-artifact: spec-only
+fan-out:
+  - name: manufacturing-package-schema
+    owned-paths: [evidence/hardware/schemas/manufacturing-package-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed manifest CSV archive and checksum contract]
+  parent-commit: "feat(aius): define manufacturing package schema"
+```
+
+```yaml
+phase: H1a0e
+unit: test-surface
+seams: [closed H3 quotation schema, deterministic quotation projection oracle]
+contract-artifact: both
+fan-out:
+  - name: h3c-gate-contract
+    owned-paths:
+      - evidence/hardware/schemas/h3c-schema.json
+      - evidence/hardware/oracles/h3c-gate-oracle.json
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation and oracle completeness]
+  buildable: [closed deterministic H3 quotation contract]
+  parent-commit: "feat(aius): define H3 quotation gate contract"
+```
+
+```yaml
+phase: H1a0f
+unit: single-file-implementation
+seams: [closed H4 structural-result family]
+contract-artifact: spec-only
+fan-out:
+  - name: h4-result-schema
+    owned-paths: [evidence/hardware/schemas/h4-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed H4 result family awaiting fixed EVT criteria]
+  parent-commit: "feat(aius): define H4 result schema"
+```
+
+```yaml
+phase: H1a0g
+unit: single-file-implementation
+seams: [closed H5 structural-result family]
+contract-artifact: spec-only
+fan-out:
+  - name: h5-result-schema
+    owned-paths: [evidence/hardware/schemas/h5-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed H5 result family awaiting fixed system criteria]
+  parent-commit: "feat(aius): define H5 result schema"
+```
+
+```yaml
+phase: H1a0h
+unit: test-surface
+seams: [seven committed stage schemas, shared structural validator and fixtures]
+contract-artifact: both
+depends-on:
+  - evidence/hardware/schemas/h1-interface-schema.json
+  - evidence/hardware/schemas/h2a-schema.json
+  - evidence/hardware/schemas/h2b-schema.json
+  - evidence/hardware/schemas/manufacturing-package-schema.json
+  - evidence/hardware/schemas/h3c-schema.json
+  - evidence/hardware/schemas/h4-schema.json
+  - evidence/hardware/schemas/h5-schema.json
+  - evidence/hardware/oracles/h2a-gate-oracle.json
+  - evidence/hardware/oracles/h2b-gate-oracle.json
+  - evidence/hardware/oracles/h3c-gate-oracle.json
+fan-out:
+  - name: hardware-gate-coordinator
     owned-paths:
       - evidence/hardware/hardware-gate-schema.json
       - scripts/validate_hardware.py
@@ -156,12 +279,14 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_validate_hardware.py
-  buildable: [fixture-proven structural and verdict gates for H1 through H5]
-  parent-commit: "feat(aius): define hardware result gates"
+  buildable: [fixture-proven structural and deterministic early hardware gates]
+  parent-commit: "feat(aius): integrate hardware result gates"
 ```
 
-`hardware-gate-schema.json` is a closed bundle with definitions for every JSON
-and CSV family consumed by the named stages. All JSON roots begin
+`hardware-gate-schema.json` is a closed bundle built only from the seven
+committed stage-family schemas. The tables below define the generated JSON and
+CSV families those stages validate; the bridge, criteria and authorization
+shapes are defined in their owning phase sections. All JSON roots begin
 `schema_version` with constant `1.0.0`, reject additional properties, use sorted
 unique IDs, and end with string `notes`. The ordered artifact contracts are:
 
@@ -170,16 +295,17 @@ unique IDs, and end with string `notes`. The ordered artifact contracts are:
 | `board-outline.json` | `schema_version`, `board`, `evidence_ids`, `notes`; board is the exact P1D board row |
 | `component-placement.json` | `schema_version`, `placements`, `keepouts`, `evidence_ids`, `notes`; rows are the exact P1D placement/keepout rows |
 | `cable-envelope.json` | `schema_version`, `cables`, `collision_checks`, `criteria`, `evidence_ids`, `notes`; rows are the exact P1D cable/collision/mechanical-criterion rows |
-| `vendor-stackup.json` | `schema_version`, `vendor`, `layer_count`, `material`, `finished_thickness_um`, `copper_weight_um`, `dielectric_height_um`, `dielectric_constant`, `minimum_trace_um`, `minimum_gap_um`, `evidence_ids`, `notes` |
+| `vendor-stackup.json` | `schema_version`, `vendor`, `layer_count`, `material`, `finished_thickness_um`, `copper_weight_um`, `dielectric_height_um`, `dielectric_constant`, `minimum_trace_um`, `minimum_gap_um`, `status`, `evidence_ids`, `notes`; status is `available` or `unavailable`, and unavailable retains evidence while numeric capability fields are null |
 | `impedance-calculations.json` | `schema_version`, `calculations`, `evidence_ids`, `notes`; rows key `calculation_id`, `interface`, `target_mohm`, `tolerance_mohm`, `trace_width_um`, `gap_um`, `reference_plane`, `calculated_mohm`, `method`, `evidence_ids`, `status`, `notes` |
 | `routing-study.json` | `schema_version`, `routes`, `ground_corridors`, `criteria`, `evidence_ids`, `notes`; rows reuse exact P1D route/corridor/electrical-criterion shapes |
-| `layer-decision.json` | `schema_version`, then the exact P1D layer-decision keys, then `notes` |
-| `prototype-quotation.json` | `schema_version`, `vendor`, `configuration_sha256`, `bare_board_quantity`, `assembled_quantity`, `two_layer_gbp_ex_vat`, `four_layer_gbp_ex_vat`, `assembly_gbp_ex_vat`, `components_gbp_ex_vat`, `freight_gbp`, `vat_gbp`, `duty_gbp`, `landed_gbp`, `currency`, `substitutions`, `evidence_ids`, `notes` |
-| `evt-plan.json` | `schema_version`, `procedure_ids`, `acceptance_ids`, `firmware_sha256`, `equipment_ids`, `notes` |
+| `layer-decision.json` | `schema_version`, followed once by the exact P1D layer-decision keys |
+| `order-configuration.json` | `schema_version`, `vendor`, `board_configuration`, `assembly_configuration`, `shipping_postcode`, `quote_artifact_sha256`, `preview_artifact_sha256`, `notes`; both configuration objects are closed lexically keyed scalar maps and postcode is `M20 5PG` |
+| `prototype-quotation.json` | `schema_version`, `vendor`, `configuration_sha256`, `bare_board_quantity`, `assembled_quantity`, `two_layer_gbp_ex_vat`, `four_layer_gbp_ex_vat`, `assembly_gbp_ex_vat`, `components_gbp_ex_vat`, `freight_gbp`, `vat_gbp`, `duty_gbp`, `landed_gbp`, `currency`, `quotation_status`, `substitutions`, `evidence_ids`, `notes`; status is `complete` or `incomplete`; substitution rows key `substitution_id`, `requested_mpn`, `proposed_mpn`, `decision`, `evidence_ids`, `notes`, with decision `approved`, `rejected` or `pending` |
+| `evt-plan.json` | `schema_version`, `procedure_contract_sha256`, `gate_oracle_sha256`, `procedure_ids`, `acceptance_ids`, `firmware_sha256`, `equipment_ids`, `notes` |
 | EVT unit file | `schema_version`, `unit_id`, `board_serial`, `inspection_status`, `procedure_results`, `defect_ids`, `eco_ids`, `notes`; procedure rows key `procedure_id`, `status`, `measurement_ids`, `evidence_ids`, `notes` |
 | `defects.json` | `schema_version`, `defects`, `notes`; rows key `defect_id`, `unit_ids`, `severity`, `description`, `evidence_ids`, `status`, `notes` |
 | either `eco-log.json` | `schema_version`, `ecos`, `notes`; rows key `eco_id`, `source_defect_ids`, `description`, `affected_artifact_ids`, `verification_status`, `evidence_ids`, `notes` |
-| `test-matrix.json` | `schema_version`, `cases`, `notes`; rows key `case_id`, `input_format`, `fault_mode`, `expected_state`, `measurement_ids`, `status`, `notes` |
+| `test-matrix.json` | `schema_version`, `test_contract_sha256`, `gate_oracle_sha256`, `cases`, `notes`; rows key `case_id`, `input_format`, `fault_mode`, `expected_state`, `measurement_ids`, `status`, `notes` |
 | `thermal-fault-results.json` | `schema_version`, `results`, `notes`; rows key `result_id`, `case_id`, `metric`, `value`, `unit`, `minimum`, `maximum`, `status`, `evidence_ids`, `notes` |
 | `soak-results.json` | `schema_version`, `duration_seconds`, `sample_count`, `reset_count`, `error_count`, `maximum_temperature_c`, `status`, `evidence_ids`, `notes` |
 | `precompliance-results.json` | `schema_version`, `tests`, `notes`; rows key `test_id`, `method`, `limit`, `measured`, `unit`, `status`, `evidence_ids`, `notes` |
@@ -194,6 +320,26 @@ CSV headers are exact:
 and `landed-prototype-cost.csv` is
 `cost_id,category,quantity,unit_gbp_ex_vat,extended_gbp_ex_vat,vat_gbp,freight_gbp,duty_gbp,landed_gbp,evidence_ids,notes`.
 
+The manufacturing-package schema is also closed. `assembly-bom.csv` has exact
+RFC-4180 header
+`reference,quantity,value,manufacturer,mpn,footprint,dnp,substitute_policy,notes`;
+references are unique, sorted naturally, and every fitted schematic reference
+appears exactly once. `positions.csv` has exact header
+`reference,value,footprint,side,x_mm,y_mm,rotation_deg,notes`; fitted placement
+references match the BOM exactly, side is `top` or `bottom`, and decimal fields
+use the fixed KiCad-origin projection recorded in the manifest.
+`manufacturing/manifest.json` keys `schema_version`, `board_sha256`,
+`design_rules_sha256`, `schematic_sha256`, `layer_decision_sha256`,
+`generator_sha256`, `archive_members`, `outputs`, `notes`. Archive-member rows
+key `path`, `sha256`, `bytes`, `media_type`, `role`, sort by path, and enumerate
+every normalized ZIP member. Output rows have the same keys and enumerate only
+`assembly-bom.csv` and `positions.csv`. The manifest cannot hash itself or the
+containing ZIP. `checksums.sha256` instead contains exactly four lowercase
+SHA-256 lines, in path order, for `aius-carrier-manufacturing.zip`,
+`assembly-bom.csv`, `manifest.json`, and `positions.csv`; it does not hash
+itself. ZIP member order, permissions, compression method and timestamps are
+fixed by the checked-in generator, so two clean generations are byte-identical.
+
 Every ordinary verdict record keys `schema_version`, `stage`, `verdict`,
 `input_sha256`, `failures`, `notes`. `input_sha256` is a lexically keyed object
 of lowercase hashes; failure rows key `record_id`, `reason_code`, sort by both
@@ -204,19 +350,78 @@ codes are:
 |---|---|---|---|
 | `h2a-gate` | `board-outline`, `cable-envelope`, `component-placement` | `eligible`, `blocked` | `assembly-access`, `cable-bend`, `guide-fit`, `insertion-access`, `outline-over-limit`, `placement-collision` |
 | `h2b-gate` | `h2a-verdict`, `impedance-calculations`, `layer-decision`, `routing-study`, `vendor-stackup` | `two-layer`, `four-layer-required`, `blocked` | `impedance-unmet`, `mechanical-input-blocked`, `plane-cut`, `return-path`, `route-length`, `vendor-stackup-unavailable`, `via-count` |
-| `h3c-quote` | `landed-prototype-cost`, `manufacturing-manifest`, `prototype-quotation`, `risk-register`, `should-cost` | `quoted`, `blocked` | `landed-cost-unreconciled`, `quantity-mismatch`, `quote-incomplete`, `substitution-unapproved` |
-| `h4-gate` | `defects`, `eco-log`, `manufacturing-manifest`, `measurements`, `order-authorization`, `unit-01`, `unit-02`, `unit-03` | `pass`, `blocked` | `eco-open`, `ethernet`, `inspection`, `optical`, `power-rail`, `recovery`, `regression`, `reset-safe-state`, `short-circuit`, `spdif`, `thermal`, `usb` |
-| `h5-gate` | `audio-measurements`, `eco-log`, `firmware-release`, `h4-verdict`, `precompliance-results`, `soak-results`, `test-matrix`, `thermal-fault-results`, `timing-memory` | `pass`, `blocked` | `audio-matrix`, `buffer-recovery`, `clock-drift`, `eco-open`, `emc`, `fault`, `headroom`, `latency`, `production-test`, `repeatability`, `soak`, `thermal`, `word-integrity` |
+| `h3c-quote` | `h2b-verdict`, `landed-prototype-cost`, `manufacturing-manifest`, `order-configuration`, `prototype-quotation`, `risk-register`, `should-cost` | `quoted`, `blocked` | `landed-cost-unreconciled`, `quantity-mismatch`, `quote-incomplete`, `substitution-unapproved` |
+| `h4-gate` | `defects`, `eco-log`, `evt-plan`, `h4-gate-oracle`, `h4-procedure-contract`, `manufacturing-checksums`, `manufacturing-manifest`, `measurements`, `order-authorization`, `unit-01`, `unit-02`, `unit-03` | `pass`, `blocked` | `eco-open`, `ethernet`, `inspection`, `optical`, `power-rail`, `recovery`, `regression`, `reset-safe-state`, `short-circuit`, `spdif`, `thermal`, `usb` |
+| `h5-gate` | `audio-measurements`, `eco-log`, `firmware-release`, `h4-verdict`, `h5-gate-oracle`, `h5-test-contract`, `precompliance-results`, `soak-results`, `test-matrix`, `thermal-fault-results`, `timing-memory` | `pass`, `blocked` | `audio-matrix`, `buffer-recovery`, `clock-drift`, `eco-open`, `emc`, `fault`, `headroom`, `latency`, `production-test`, `repeatability`, `soak`, `thermal`, `word-integrity` |
+
+Every projection oracle keys `schema_version`, `stage`, `rules`,
+`verdict_rules`, `notes`. Rule rows key `order`, `reason_code`, `source_key`,
+`row_collection`, `record_id_field`, `predicate`, `arguments`, `notes`.
+`row_collection` and `record_id_field` are JSON Pointer strings or the literal
+`$record`; arguments are a closed scalar object. The only predicates are
+`fixed-inequality`, `field-not-equal`, `field-nonempty`, `status-not-pass`,
+`inclusive-range-fail`, `sum-mismatch`, `count-mismatch`, and
+`hash-mismatch`; their evaluation is defined by the fixture-proven coordinator,
+not arbitrary expressions. Rules evaluate in numeric order, all matches are
+collected, exact duplicate `(record_id, reason_code)` pairs retain the first
+match, and the retained set sorts by record ID then reason code. Structure and
+reference failures exit 1 before any rule. There is no hidden reason-code
+precedence.
+
+The H2a oracle contains these exact source projections:
+
+| Reason | Source rows and condition | Record ID |
+|---|---|---|
+| `outline-over-limit` | board row; width or height greater than 100000 um | `board_id` |
+| `guide-fit` | mechanical criterion with metric `guide-fit` and status not `pass` | `criterion_id` |
+| `insertion-access` | mechanical criterion with metric `insertion-access` and status not `pass` | `criterion_id` |
+| `assembly-access` | keepout kind `tool-access` or `test-access` with status not `pass` | `keepout_id` |
+| `cable-bend` | cable row, or keepout kind `cable-bend`, with status not `pass` | `cable_id` or `keepout_id` |
+| `placement-collision` | placement, keepout other than the three kinds above, or collision-check row with status not `pass` | the row's canonical ID |
+
+H2a is `eligible` only for an empty failure set and otherwise `blocked`. The
+H2b oracle first projects `mechanical-input-blocked` with fixed record ID
+`h2a-verdict` when H2a is not eligible, and
+`vendor-stackup-unavailable` with fixed record ID `vendor-stackup` when vendor
+status is unavailable. It then maps failed impedance-calculation rows to
+`impedance-unmet`; route length above maximum to `route-length`; route via
+count above zero to `via-count`; ground-corridor split count above zero to
+`plane-cut`; and a false `continuous`, non-zero `neck_count`, or non-zero
+`via_transition_count` to `return-path`. Record IDs are respectively
+`calculation_id`, `route_id`, or `corridor_id`. Mechanical-input or unavailable
+vendor failures select `blocked`. Otherwise any electrical failure selects
+`four-layer-required`; an empty set selects `two-layer`. All electrical
+failures remain persisted in the four-layer verdict.
+
+The H3c oracle uses fixed IDs `quotation`, `quotation-quantity`, and
+`landed-cost`. It projects `quote-incomplete` when `quotation_status` is not
+`complete`; `quantity-mismatch` when assembled quantity is not exactly 3 or
+bare-board quantity is below 3; and `landed-cost-unreconciled` when the quote
+landed value differs from the decimal half-up sum of its component, assembly,
+selected-layer board, freight, VAT and duty fields or from
+`landed-prototype-cost.csv`. Each substitution whose decision is not
+`approved` projects `substitution-unapproved` with its `substitution_id`.
+An empty set selects `quoted`; otherwise the result is `blocked`.
+
+H4 and H5 do not invent limits in this early bundle. Their later committed
+criteria contracts use the same closed oracle-row shape and bind each allowed
+reason code to an exact source artifact, record ID, unit, inclusive bounds and
+required status. A missing required result is a failure, not a structural
+omission. H4/H5 evaluation is unavailable until those criteria and their
+generated projection oracles have committed in H4b and H5b1 respectively.
 
 Structural stages consume the identically named artifact family without writing
 a verdict and return 1 on schema/reference failure. `h1-interface`, `h1-stubs`,
-`h1-schematic`, `h3-pcb`, `h3c-quotation`, `h3c-structural`,
-`h5-firmware-interface`, `h5-firmware-components`, and `h5-firmware` have no
+`h1-schematic`, `h3-pcb`, `h3-manufacturing`, `h3c-quotation`,
+`h3c-structural`, `h4-contract`, `h5-contract`, `h5-firmware-interface`,
+`h5-firmware-components`, and `h5-firmware` have no
 committable failing verdict;
 they must be corrected before their design commit. `h1-stubs --lock` writes only
 the exact stub-lock shape below. `h3d-authorization --decision` writes only the
-exact authorization shape defined in H3d. The fixture corpus exercises every
-field, reason code, verdict, hash mismatch, diagnostic and exit.
+exact authorization shape defined in H3d. The H1a0h fixture corpus exercises
+every early-stage field, reason code, verdict, hash mismatch, diagnostic and
+exit plus H4/H5 structural shapes. H4b and H5b1 extend it with every fixed
+physical-test reason code before those gates become executable.
 
 `validate_hardware.py` accepts `--stage` plus an optional `--record` path. Every
 stage first validates structure and references. Verdict stages return 0 for the
@@ -224,14 +429,20 @@ named eligible/pass branch, 3 for a structurally valid blocked branch, and 4
 only for H2b's structurally valid `four-layer-required` branch. Diagnostics are
 sorted unique `AIUS-HW-BLOCKED:<stage>:<record-id>:<reason-code>` lines only.
 Exit 4 instead emits sorted unique
-`AIUS-HW-FOUR-LAYER:<criterion-id>:<reason-code>` lines only.
+`AIUS-HW-FOUR-LAYER:<record-id>:<reason-code>` lines only.
 `--record` atomically writes the exact deterministic verdict selected by the
 same evaluation; no timestamp or Git identity is permitted.
+The validator rejects `h4-gate` until the H4 criteria and oracle hashes resolve,
+and rejects `h5-gate` until the equivalent H5 inputs resolve.
 
 H1a's `sheet-interfaces.json` is the explicit P1D-to-manufacturing projection.
-Its ordered keys are `schema_version`, `reference_release_sha256`,
+Its ordered keys are `schema_version`, `p1d_release_sha256`,
+`h0_verdict_sha256`, `p7_verdict_sha256`, `schematic_interface_sha256`,
+`reference_schematic_contract_sha256`,
 `reference_sheets`, `manufacturing_sheets`, `symbol_bindings`, `deviations`,
-`notes`. It copies every reference sheet ID and ordered hierarchical-pin tuple
+`notes`. The validator requires the three gate states, recomputes each gate
+hash, and transitively verifies every input hash inside those verdicts before
+writing the bridge. It copies every reference sheet ID and ordered hierarchical-pin tuple
 byte-semantically from `schematic-interface-v1.json`; manufacturing sheets use
 the same IDs and tuples with only the path root changed from
 `electronics/reference` to `electronics/carrier/sheets`. Symbol bindings copy
@@ -400,7 +611,7 @@ commit-checkpoint:
     blocked:
       command: python3 scripts/validate_hardware.py --stage h2a-gate --record mechanical/h2a-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h2a-gate lines only
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h2a-gate:<record-id>:<reason-code> lines only
       buildable: [committed mechanical evidence requiring placement redesign]
       parent-commit: "design(aius): record blocked carrier placement"
 ```
@@ -436,13 +647,13 @@ commit-checkpoint:
     four-layer-required:
       command: python3 scripts/validate_hardware.py --stage h2b-gate --record electronics/feasibility/h2b-verdict.json
       expected-exit: 4
-      expected-diagnostics: sorted exact AIUS-HW-FOUR-LAYER lines only
+      expected-diagnostics: sorted exact AIUS-HW-FOUR-LAYER:<record-id>:<reason-code> lines only
       buildable: [approved four-layer stackup after documented electrical failure]
       parent-commit: "design(aius): require four-layer carrier stackup"
     blocked:
       command: python3 scripts/validate_hardware.py --stage h2b-gate --record electronics/feasibility/h2b-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h2b-gate lines only
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h2b-gate:<record-id>:<reason-code> lines only
       buildable: [committed feasibility evidence requiring redesign]
       parent-commit: "design(aius): record blocked carrier feasibility"
 ```
@@ -497,14 +708,39 @@ commit-checkpoint:
 ```
 
 ```yaml
-phase: H3b
-unit: phase-task
-seams: [committed PCB, normalized fabrication outputs, assembly BOM]
-contract-artifact: stubs-committed
+phase: H3b1
+unit: test-surface
+seams: [committed PCB, deterministic package-generator interface and fixture proof]
+contract-artifact: both
 depends-on:
   - electronics/carrier/aius-carrier.kicad_pcb
   - electronics/carrier/aius-carrier.kicad_dru
   - electronics/feasibility/h2b-verdict.json
+  - evidence/hardware/schemas/manufacturing-package-schema.json
+fan-out:
+  - name: manufacturing-package-generator
+    owned-paths:
+      - scripts/build_manufacturing_package.py
+      - scripts/test_build_manufacturing_package.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_build_manufacturing_package.py
+  buildable: [fixture-proven deterministic manufacturing-package generator]
+  parent-commit: "feat(aius): add manufacturing package generator"
+```
+
+```yaml
+phase: H3b2
+unit: component-behind-interface
+seams: [committed deterministic generator, normalized fabrication outputs]
+contract-artifact: stubs-committed
+depends-on:
+  - scripts/build_manufacturing_package.py
+  - electronics/carrier/aius-carrier.kicad_pcb
+  - electronics/carrier/aius-carrier.kicad_dru
+  - electronics/feasibility/h2b-verdict.json
+  - evidence/hardware/schemas/manufacturing-package-schema.json
 fan-out:
   - name: manufacturing-output
     owned-paths:
@@ -515,8 +751,12 @@ fan-out:
       - manufacturing/checksums.sha256
 review-intensity: active
 commit-checkpoint:
-  green: [DFM, DFA, two-clean-checkout reproducibility, normalized manifest and checksum parity, clean-room release audit]
-  buildable: [frozen unordered manufacturing package]
+  green:
+    - python3 scripts/build_manufacturing_package.py --write
+    - python3 scripts/build_manufacturing_package.py --check
+    - python3 scripts/validate_hardware.py --stage h3-manufacturing
+    - clean-room DFM DFA and release audit
+  buildable: [deterministic frozen manufacturing package]
   parent-commit: "design(aius): generate carrier manufacturing package"
 ```
 
@@ -536,7 +776,7 @@ fan-out:
     owned-paths:
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/quote.pdf
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/preview.pdf
-      - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
+      - evidence/cost/order-configuration.json
       - evidence/cost/prototype-quotation.json
 review-intensity: active
 commit-checkpoint:
@@ -552,8 +792,9 @@ unit: phase-task
 seams: [committed quotation, landed-cost normalization, H0 cost and risk refresh]
 contract-artifact: stubs-committed
 depends-on:
+  - electronics/feasibility/h2b-verdict.json
+  - evidence/cost/order-configuration.json
   - evidence/cost/prototype-quotation.json
-  - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
   - evidence/cost/functional-bom.csv
 fan-out:
   - name: quotation-cost-normalization
@@ -575,6 +816,8 @@ unit: single-file-implementation
 seams: [retained quotation, reconciled cost and risk, deterministic quote verdict]
 contract-artifact: stubs-committed
 depends-on:
+  - electronics/feasibility/h2b-verdict.json
+  - evidence/cost/order-configuration.json
   - evidence/cost/prototype-quotation.json
   - evidence/cost/landed-prototype-cost.csv
   - evidence/cost/should-cost.csv
@@ -589,12 +832,12 @@ commit-checkpoint:
     quoted:
       command: python3 scripts/validate_hardware.py --stage h3c-quote --record evidence/cost/h3c-verdict.json
       expected-exit: 0
-      buildable: [quoted but unordered three-unit prototype package]
+      buildable: [quoted three-unit prototype package without purchase authority]
       parent-commit: "docs(aius): approve prototype quotation for user review"
     blocked:
       command: python3 scripts/validate_hardware.py --stage h3c-quote --record evidence/cost/h3c-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h3c-quote lines only
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h3c-quote:<record-id>:<reason-code> lines only
       buildable: [complete quotation evidence blocked from user acceptance]
       parent-commit: "docs(aius): record blocked prototype quotation"
 ```
@@ -616,7 +859,7 @@ contract-artifact: spec-only
 depends-on:
   - evidence/cost/h3c-verdict.json
   - evidence/cost/prototype-quotation.json
-  - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
+  - evidence/cost/order-configuration.json
 fan-out:
   - name: order-authorization-recorder
     owned-paths: [evidence/cost/order-authorization.json]
@@ -658,29 +901,166 @@ Bring-up order:
 10. Carrier loss-of-lock, malformed-input, and recovery behaviour.
 
 ```yaml
-phase: H4
-unit: test-surface
-seams: [bring-up procedure, per-board record, defect and ECO log]
-contract-artifact: both
+phase: H4a
+unit: single-file-implementation
+seams: [frozen manufacturing package, fixed EVT procedures and acceptance limits]
+contract-artifact: spec-only
 depends-on:
   - evidence/cost/order-authorization.json
   - manufacturing/manifest.json
   - manufacturing/checksums.sha256
+  - electronics/carrier/aius-carrier.kicad_sch
+  - electronics/carrier/aius-carrier.kicad_pcb
 fan-out:
-  - name: evt-execution
+  - name: evt-procedure-contract
+    owned-paths: [evidence/hardware/criteria/h4-procedure-contract.json]
+review-intensity: active
+commit-checkpoint:
+  green: [closed-schema validation and clean-room electrical acceptance-limit audit]
+  buildable: [immutable pre-execution EVT procedure and acceptance contract]
+  parent-commit: "test(aius): lock EVT acceptance contract"
+```
+
+`h4-procedure-contract.json` keys `schema_version`, `manufacturing_sha256`,
+`schematic_sha256`, `pcb_sha256`, `procedures`, `acceptance`, `notes`.
+Procedure IDs are exactly `evt-01-visual-continuity`,
+`evt-02-current-limited-power`, `evt-03-reset-safe-states`,
+`evt-04-usb-cable-mechanical`, `evt-05-usb-bridge`,
+`evt-06-native-ethernet`, `evt-07-optical-loopback-gating`,
+`evt-08-raw-spdif-bypass`, `evt-09-spdif-rx-tx-simultaneous`, and
+`evt-10-carrier-recovery`, in that order. Procedure rows key `procedure_id`,
+`steps`, `equipment_ids`, `acceptance_ids`, `notes`. Acceptance rows key
+`acceptance_id`, `procedure_id`, `source_artifact`, `metric`, `unit`,
+`minimum`, `maximum`, `required_status`, `reason_code`, `evidence_ids`,
+`rationale`, `notes`; exactly one or both inclusive decimal bounds are present,
+or a non-numeric required status is present. Reason codes are limited to the
+H4 enum. Every procedure has at least one acceptance row, every permitted H4
+reason code except the aggregate `eco-open` and `regression` codes has at least
+one row, and every numerical limit cites the schematic,
+datasheet or manufacturing record from which it was derived. The contract has
+no result or pass/fail observations and becomes immutable before any unit test.
+
+```yaml
+phase: H4b
+unit: test-surface
+seams: [immutable EVT criteria, deterministic H4 projection oracle]
+contract-artifact: both
+depends-on:
+  - evidence/hardware/criteria/h4-procedure-contract.json
+  - evidence/hardware/schemas/h4-schema.json
+fan-out:
+  - name: h4-gate-oracle
     owned-paths:
-      - evidence/evt-results/evt-plan.json
+      - evidence/hardware/oracles/h4-gate-oracle.json
+      - scripts/fixtures/hardware-gates/h4-contract-cases.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_hardware.py --stage h4-contract
+  buildable: [fixture-proven H4 projection with no authored observations]
+  parent-commit: "test(aius): bind EVT gate projections"
+```
+
+The H4 oracle contains exactly one rule per acceptance row. Its source key and
+record-ID field come from that row; missing results, status mismatch, or a value
+outside either inclusive bound projects the row's fixed reason code and
+`acceptance_id`. It adds `eco-open` for each ECO whose verification status is
+not closed and `regression` for each required procedure absent from any of the
+three unit records. All other reason codes arise only from an acceptance row.
+
+```yaml
+phase: H4c1
+unit: single-file-implementation
+seams: [immutable procedure and projection oracle, executable EVT plan]
+contract-artifact: spec-only
+depends-on:
+  - evidence/cost/order-authorization.json
+  - manufacturing/manifest.json
+  - manufacturing/checksums.sha256
+  - evidence/hardware/criteria/h4-procedure-contract.json
+  - evidence/hardware/oracles/h4-gate-oracle.json
+fan-out:
+  - name: evt-plan
+    owned-paths: [evidence/evt-results/evt-plan.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_hardware.py --stage h4-plan
+  buildable: [hash-bound executable EVT plan with no observations]
+  parent-commit: "test(aius): establish EVT execution plan"
+```
+
+```yaml
+phase: H4c2
+unit: test-surface
+seams: [committed EVT plan, three unit records and shared measurements]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/evt-results/evt-plan.json
+  - evidence/hardware/criteria/h4-procedure-contract.json
+  - evidence/hardware/oracles/h4-gate-oracle.json
+fan-out:
+  - name: evt-unit-execution
+    owned-paths:
       - evidence/evt-results/unit-01.json
       - evidence/evt-results/unit-02.json
       - evidence/evt-results/unit-03.json
       - evidence/evt-results/measurements.csv
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_hardware.py --stage h4-units
+  buildable: [three structurally complete EVT unit and measurement records]
+  parent-commit: "test(aius): record EVT unit measurements"
+```
+
+```yaml
+phase: H4c3
+unit: component-behind-interface
+seams: [committed unit evidence, normalized defect and ECO disposition]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/evt-results/evt-plan.json
+  - evidence/evt-results/unit-01.json
+  - evidence/evt-results/unit-02.json
+  - evidence/evt-results/unit-03.json
+  - evidence/evt-results/measurements.csv
+fan-out:
+  - name: evt-defect-disposition
+    owned-paths:
       - evidence/evt-results/defects.json
       - evidence/evt-results/eco-log.json
-      - evidence/evt-results/h4-verdict.json
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/validate_hardware.py --stage h4-structural
+  buildable: [complete EVT evidence and explicit defect disposition]
+  parent-commit: "test(aius): classify EVT defects and ECOs"
+```
+
+```yaml
+phase: H4c4
+unit: single-file-implementation
+seams: [complete EVT evidence, deterministic H4 verdict]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/evt-results/evt-plan.json
+  - evidence/evt-results/unit-01.json
+  - evidence/evt-results/unit-02.json
+  - evidence/evt-results/unit-03.json
+  - evidence/evt-results/measurements.csv
+  - evidence/evt-results/defects.json
+  - evidence/evt-results/eco-log.json
+  - evidence/hardware/criteria/h4-procedure-contract.json
+  - evidence/hardware/oracles/h4-gate-oracle.json
+  - manufacturing/manifest.json
+  - manufacturing/checksums.sha256
+  - evidence/cost/order-authorization.json
+fan-out:
+  - name: h4-verdict
+    owned-paths: [evidence/evt-results/h4-verdict.json]
+review-intensity: active
+commit-checkpoint:
   branches:
     pass:
       command: python3 scripts/validate_hardware.py --stage h4-gate --record evidence/evt-results/h4-verdict.json
@@ -690,7 +1070,7 @@ commit-checkpoint:
     blocked:
       command: python3 scripts/validate_hardware.py --stage h4-gate --record evidence/evt-results/h4-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h4-gate lines only
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h4-gate:<record-id>:<reason-code> lines only
       buildable: [complete EVT evidence with defects and ECO gate]
       parent-commit: "test(aius): record blocked carrier EVT result"
 ```
@@ -799,9 +1179,75 @@ commit-checkpoint:
 the manifest contains no timestamp.
 
 ```yaml
-phase: H5b
+phase: H5b0
+unit: single-file-implementation
+seams: [committed product firmware, fixed system cases and measurement limits]
+contract-artifact: spec-only
+depends-on:
+  - evidence/evt-results/h4-verdict.json
+  - firmware/build/release-manifest.json
+  - firmware/contracts/product-contract.json
+  - evidence/hardware/schemas/h5-schema.json
+fan-out:
+  - name: system-test-contract
+    owned-paths: [evidence/hardware/criteria/h5-test-contract.json]
+review-intensity: active
+commit-checkpoint:
+  green: [closed-schema validation and clean-room audio timing thermal and fault-limit audit]
+  buildable: [immutable pre-execution system test and acceptance contract]
+  parent-commit: "test(aius): lock system acceptance contract"
+```
+
+`h5-test-contract.json` keys `schema_version`, `firmware_release_sha256`,
+`h4_verdict_sha256`, `product_contract_sha256`, `cases`, `acceptance`, `notes`.
+Case IDs are exactly `sys-01-pcm-stereo`, `sys-02-dts-5-1`,
+`sys-03-format-transition`, `sys-04-optical-loss`,
+`sys-05-sample-rate-change`, `sys-06-unsupported-burst`,
+`sys-07-reset-brownout`, `sys-08-ethernet-concurrency`,
+`sys-09-control-change`, `sys-10-buffer-recovery`,
+`sys-11-clock-jitter`, `sys-12-thermal-fault`, `sys-13-soak`,
+`sys-14-precompliance`, and `sys-15-production-repeatability`, in that order.
+Case rows key `case_id`, `input_format`, `fault_mode`, `expected_state`,
+`acceptance_ids`, `notes`. Acceptance rows use the H4 acceptance-row shape with
+`case_id` replacing `procedure_id`; their reason codes are limited to the H5
+enum. Every case and every permitted H5 reason code except the aggregate
+`eco-open` code has at least one acceptance row. Each numerical word-integrity,
+drift, latency, headroom, thermal, soak,
+EMC and repeatability limit cites its engineering source and states its unit and
+inclusive range. The contract has no observations and is immutable before any
+H5 measurement.
+
+```yaml
+phase: H5b1
 unit: test-surface
-seams: [committed product firmware, end-to-end audio contract, DVT report, release decision]
+seams: [immutable system criteria, deterministic H5 projection oracle]
+contract-artifact: both
+depends-on:
+  - evidence/hardware/criteria/h5-test-contract.json
+  - evidence/hardware/schemas/h5-schema.json
+fan-out:
+  - name: h5-gate-oracle
+    owned-paths:
+      - evidence/hardware/oracles/h5-gate-oracle.json
+      - scripts/fixtures/hardware-gates/h5-contract-cases.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_hardware.py --stage h5-contract
+  buildable: [fixture-proven H5 projection with no authored observations]
+  parent-commit: "test(aius): bind system gate projections"
+```
+
+The H5 oracle contains exactly one rule per acceptance row. Missing cases or
+measurements, status mismatch, or values outside inclusive bounds project the
+fixed acceptance ID and reason code. It additionally maps each non-closed ECO
+to `eco-open` using its ECO ID. An empty failure set selects `pass`; any failure
+selects `blocked`. No execution phase may add a case, reason code or limit.
+
+```yaml
+phase: H5b2a
+unit: test-surface
+seams: [immutable end-to-end criteria and oracle, audio and timing measurements]
 contract-artifact: stubs-committed
 depends-on:
   - evidence/evt-results/h4-verdict.json
@@ -810,21 +1256,91 @@ depends-on:
   - firmware/src/product/product_state_machine.cpp
   - firmware/src/main.cpp
   - firmware/build/release-manifest.json
+  - evidence/hardware/criteria/h5-test-contract.json
+  - evidence/hardware/oracles/h5-gate-oracle.json
 fan-out:
-  - name: audio-system-validation
+  - name: audio-timing-validation
     owned-paths:
       - evidence/system-results/test-matrix.json
       - evidence/system-results/audio-measurements.csv
       - evidence/system-results/timing-memory.csv
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_hardware.py --stage h5-audio-timing
+  buildable: [complete audio timing clock buffer and headroom observations]
+  parent-commit: "test(aius): record system audio and timing results"
+```
+
+```yaml
+phase: H5b2b
+unit: test-surface
+seams: [immutable end-to-end criteria and oracle, environmental and precompliance results]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/system-results/test-matrix.json
+  - evidence/hardware/criteria/h5-test-contract.json
+  - evidence/hardware/oracles/h5-gate-oracle.json
+fan-out:
+  - name: environmental-validation
+    owned-paths:
       - evidence/system-results/thermal-fault-results.json
       - evidence/system-results/soak-results.json
       - evidence/system-results/precompliance-results.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_hardware.py --stage h5-environmental
+  buildable: [complete thermal fault soak and precompliance observations]
+  parent-commit: "test(aius): record system environmental results"
+```
+
+```yaml
+phase: H5b2c
+unit: single-file-implementation
+seams: [complete system observations, explicit ECO disposition]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/system-results/test-matrix.json
+  - evidence/system-results/audio-measurements.csv
+  - evidence/system-results/timing-memory.csv
+  - evidence/system-results/thermal-fault-results.json
+  - evidence/system-results/soak-results.json
+  - evidence/system-results/precompliance-results.json
+fan-out:
+  - name: system-eco-disposition
+    owned-paths:
       - evidence/system-results/eco-log.json
-      - evidence/system-results/h5-verdict.json
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/validate_hardware.py --stage h5-structural
+  buildable: [complete system evidence and explicit ECO disposition]
+  parent-commit: "test(aius): classify system ECOs"
+```
+
+```yaml
+phase: H5b2d
+unit: single-file-implementation
+seams: [complete system evidence, deterministic release verdict]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/evt-results/h4-verdict.json
+  - firmware/build/release-manifest.json
+  - evidence/hardware/criteria/h5-test-contract.json
+  - evidence/hardware/oracles/h5-gate-oracle.json
+  - evidence/system-results/test-matrix.json
+  - evidence/system-results/audio-measurements.csv
+  - evidence/system-results/timing-memory.csv
+  - evidence/system-results/thermal-fault-results.json
+  - evidence/system-results/soak-results.json
+  - evidence/system-results/precompliance-results.json
+  - evidence/system-results/eco-log.json
+fan-out:
+  - name: h5-verdict
+    owned-paths: [evidence/system-results/h5-verdict.json]
+review-intensity: active
+commit-checkpoint:
   branches:
     pass:
       command: python3 scripts/validate_hardware.py --stage h5-gate --record evidence/system-results/h5-verdict.json
@@ -834,7 +1350,7 @@ commit-checkpoint:
     blocked:
       command: python3 scripts/validate_hardware.py --stage h5-gate --record evidence/system-results/h5-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h5-gate lines only
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h5-gate:<record-id>:<reason-code> lines only
       buildable: [complete system evidence with release blocked]
       parent-commit: "test(aius): record blocked system validation"
 ```

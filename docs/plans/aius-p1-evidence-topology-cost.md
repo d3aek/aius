@@ -3828,22 +3828,78 @@ commit-checkpoint:
   parent-commit: "docs(aius): lock functional BOM rows"
 ```
 
+P1Ea is four serial schema-sized commits. Each schema agent owns one schema and
+its immutable base fixture. The final coordinator owns only the shared staged
+validator and cross-schema fixture tests.
+
 ```yaml
-phase: P1Ea
+phase: P1Ea1
 unit: test-surface
-seams: [committed row oracle, three exact CSV row schemas, immutable base fixtures, staged contract validation]
-contract-artifact: spec-only
+seams: [committed row oracle, exact functional BOM schema, immutable BOM fixture]
+contract-artifact: both
 depends-on:
   - evidence/cost/functional-bom-oracle.json
 fan-out:
-  - name: commercial-schema-surface
+  - name: functional-bom-schema-surface
     owned-paths:
       - evidence/cost/schemas/functional-bom-schema.json
-      - evidence/cost/schemas/should-cost-schema.json
-      - evidence/cost/schemas/risk-register-schema.json
       - scripts/fixtures/p1e-cost/base/functional-bom.csv
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation and fixture parse]
+  buildable: [closed functional BOM schema and immutable base fixture]
+  parent-commit: "feat(aius): define functional BOM data contract"
+```
+
+```yaml
+phase: P1Ea2
+unit: test-surface
+seams: [exact should-cost schema, immutable should-cost fixture]
+contract-artifact: both
+fan-out:
+  - name: should-cost-schema-surface
+    owned-paths:
+      - evidence/cost/schemas/should-cost-schema.json
       - scripts/fixtures/p1e-cost/base/should-cost.csv
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation and fixture parse]
+  buildable: [closed should-cost schema and immutable base fixture]
+  parent-commit: "feat(aius): define should-cost data contract"
+```
+
+```yaml
+phase: P1Ea3
+unit: test-surface
+seams: [exact risk-register schema, immutable risk fixture]
+contract-artifact: both
+fan-out:
+  - name: risk-register-schema-surface
+    owned-paths:
+      - evidence/cost/schemas/risk-register-schema.json
       - scripts/fixtures/p1e-cost/base/risk-register.csv
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation and fixture parse]
+  buildable: [closed risk-register schema and immutable base fixture]
+  parent-commit: "feat(aius): define risk-register data contract"
+```
+
+```yaml
+phase: P1Ea4
+unit: test-surface
+seams: [three committed schemas, staged cross-schema validation]
+contract-artifact: both
+depends-on:
+  - evidence/cost/schemas/functional-bom-schema.json
+  - evidence/cost/schemas/should-cost-schema.json
+  - evidence/cost/schemas/risk-register-schema.json
+  - scripts/fixtures/p1e-cost/base/functional-bom.csv
+  - scripts/fixtures/p1e-cost/base/should-cost.csv
+  - scripts/fixtures/p1e-cost/base/risk-register.csv
+fan-out:
+  - name: commercial-schema-coordinator
+    owned-paths:
       - scripts/validate_p1e_cost_contract.py
       - scripts/test_validate_p1e_cost_contract.py
 review-intensity: active
@@ -3851,8 +3907,8 @@ commit-checkpoint:
   green:
     - python3 scripts/test_validate_p1e_cost_contract.py
     - python3 scripts/validate_p1e_cost_contract.py --stage schemas
-  buildable: [closed RFC-4180 schemas and immutable commercial base fixtures]
-  parent-commit: "feat(aius): define commercial data contracts"
+  buildable: [fixture-proven RFC-4180 commercial contract set]
+  parent-commit: "feat(aius): integrate commercial data contracts"
 ```
 
 ```yaml
@@ -3934,7 +3990,7 @@ commit-checkpoint:
     blocked:
       command: python3 scripts/validate_p1.py cost --stage h0-gate --record evidence/cost/h0-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact RISK_BLOCK lines only
+      expected-diagnostics: sorted exact RISK_BLOCK:<risk_id>:<effective_score> lines only
       buildable: [structurally complete H0 evidence with explicit unresolved high-risk gate]
       parent-commit: "docs(aius): record blocked H0 architecture and should-cost"
 ```
@@ -3961,7 +4017,7 @@ cost-data agents hand off.
 without converting an engineering risk into malformed data. `cost --stage
 h0-gate` is cumulative: it exits 0 only when no score/residual-score gate is
 blocking. Otherwise it exits 3 and emits only one lexically sorted line per
-blocker, exactly `RISK_BLOCK <risk-id>: score <score> remains open`. Both
+blocker, exactly `RISK_BLOCK:<risk_id>:<effective_score>`. Both
 branches are committable and preserve the full risk evidence. The blocked branch
 records its exact diagnostics in the P1Ed phase note and does not declare H0
 complete or authorize H1.

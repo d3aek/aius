@@ -4,7 +4,7 @@ type: plans
 scope: aius
 status: draft
 tags: [aius, hardware, teensy, dts, spdif, platformio]
-updated: 2026-07-15
+updated: 2026-07-16
 toc: true
 ---
 
@@ -417,29 +417,58 @@ objects reject additional properties and use `schema_version: "1.0.0"`.
 600000000 and result count is the sum of both case counts. Each
 `p7-raw-results.jsonl` line keys `schema_version`, `sequence`, `case_id`,
 `category`, `input_sha256`, `target_result`, `host_pcm_sha256`,
-`target_pcm_sha256`, `sample_count`, `channel_count`, `recovery_case_id`,
+`target_pcm_sha256`, `host_sample_count`, `target_sample_count`,
+`host_channel_count`, `target_channel_count`, `recovery_case_id`,
 `diagnostic_code`, `metrics_ref`, `notes`; category is `valid` or `malformed`,
-target result is `ok`, `typed-failure` or `crash-report`, sequences are contiguous
-from zero, and nullable fields follow the target-result/category matrix in the
-schema.
+target result is `ok`, `typed-failure` or `crash-report`, and sequences are
+contiguous from zero. Every key is present. The exact nullability matrix is:
+
+| Category/result | Host PCM hash/counts | Target PCM hash/counts | `recovery_case_id` | `diagnostic_code` | `metrics_ref` |
+|---|---|---|---|---|---|
+| `valid` / `ok` | non-null | non-null | null | null | non-null |
+| `valid` / `typed-failure` | non-null | null | null | non-null | non-null |
+| `valid` / `crash-report` | non-null | null | null | null | null |
+| `malformed` / `typed-failure` | null | null | non-null next valid case | non-null | non-null |
+| `malformed` / `crash-report` | null | null | non-null next valid case | null | null |
+
+`malformed` / `ok` is forbidden. A crash-report row resolves by sequence and
+case ID to exactly one crash report. A typed failure has no crash report.
 
 `p7-performance.csv` has exact RFC-4180 header
 `case_id,cache_state,frame_duration_us,normalization_us,parse_us,decode_us,decode_ratio,allocation_count`;
 cache state is `cold` or `warm`, times and allocation count are non-negative
-integers, and decode ratio is decimal `decode_us / frame_duration_us`.
+integers, and frame duration is positive. `decode_ratio` is
+`decode_us / frame_duration_us`, rounded half up to six decimal places for the
+CSV only. Gate comparisons use the integer numerator and denominator, never the
+rounded field or binary floating point. Warm valid `ok` rows sort by exact
+rational ratio using cross multiplication, then case ID. For `n` rows, p99 is
+the one-based row `ceil(99 * n / 100)`; an empty set fails
+`result-completeness`. `decode-p99` fails when the selected row has
+`2 * decode_us > frame_duration_us`; `worst-frame` fails when any row has
+`20 * decode_us > 13 * frame_duration_us`.
 `p7-memory.json` keys `schema_version`, `banks`, `notes`; bank rows key
 `bank_id`, `capacity_bytes`, `static_bytes`, `peak_bytes`, `headroom_bytes`,
-`headroom_percent`, `evidence_ids`, `notes`, with exact arithmetic and one row
-for every linker-map memory bank. `p7-crash-report.json` keys `schema_version`,
+`headroom_percent`, `evidence_ids`, `notes`. Each row requires
+`0 <= static_bytes <= peak_bytes <= capacity_bytes`, `headroom_bytes` is
+`capacity_bytes - peak_bytes`, and `headroom_percent` is that fraction times
+100 rounded half up to two decimal places. The gate uses the exact integer test
+`headroom_bytes * 100 >= capacity_bytes * 25`, not the rounded percentage.
+There is one row for every linker-map memory bank. `p7-crash-report.json` keys `schema_version`,
 `reports`, `notes`; report rows key `sequence`, `case_id`, `crash_code`,
 `registers`, `stack_sha256`, `recovered`, `notes`, where registers are a closed
 lexically keyed map of lowercase hexadecimal strings and reports sort by
 sequence. An empty report array is the valid no-crash result.
 
-`p7-verdict.json` keys `schema_version`, `verdict`, `firmware_sha256`,
-`corpus_sha256`, `failed_gate_ids`, `notes`; version is `1.0.0`, verdict is
-`pass` or `blocked`, failed IDs are sorted and empty only for pass, and notes is
-empty. Exact gate IDs and projections are:
+`p7-verdict.json` keys `schema_version`, `verdict`, `input_sha256`,
+`failed_gate_ids`, `notes`; version is `1.0.0`, verdict is `pass` or `blocked`,
+failed IDs are sorted and empty only for pass, and notes is empty.
+`input_sha256` is a closed lexically keyed object with keys
+`capability-release-manifest`, `corpus`, `crash-report`, `ffmpeg-report`,
+`firmware`, `host-reference`, `memory`, `p7-cases`, `performance`,
+`raw-results`, `run`, and `runner`. Each lowercase hash is recomputed from
+the canonical dependency or persisted artifact. This makes any changed P7
+supporting evidence invalidate H1, not only changed firmware or corpus. Exact
+gate IDs and projections are:
 
 | Gate ID | Failing projection |
 |---|---|
@@ -458,20 +487,114 @@ empty. Exact gate IDs and projections are:
 The gate emits one sorted unique exact line `AIUS-P7-BLOCKED:<gate-id>` for each
 failed gate and no other diagnostic at exit 3.
 
+P6b is seven serial schema-sized commits. A schema task owns one closed schema;
+the final coordinator owns only the shared fixture matrix and test harness.
+
 ```yaml
-phase: P6b
-unit: test-surface
-seams: [six closed P7 artifact schemas, exact gate projections, verdict diagnostics]
+phase: P6b1
+unit: single-file-implementation
+seams: [closed P7 run schema]
 contract-artifact: spec-only
 fan-out:
-  - name: p7-result-contract
+  - name: p7-run-schema
+    owned-paths: [firmware/contracts/p7-run-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed P7 run contract]
+  parent-commit: "test(aius): define P7 run schema"
+```
+
+```yaml
+phase: P6b2
+unit: single-file-implementation
+seams: [closed P7 result-line schema and nullability matrix]
+contract-artifact: spec-only
+fan-out:
+  - name: p7-result-line-schema
+    owned-paths: [firmware/contracts/p7-result-line-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed P7 result-line contract]
+  parent-commit: "test(aius): define P7 result-line schema"
+```
+
+```yaml
+phase: P6b3
+unit: single-file-implementation
+seams: [closed P7 performance schema and exact ratio arithmetic]
+contract-artifact: spec-only
+fan-out:
+  - name: p7-performance-schema
+    owned-paths: [firmware/contracts/p7-performance-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed P7 performance contract]
+  parent-commit: "test(aius): define P7 performance schema"
+```
+
+```yaml
+phase: P6b4
+unit: single-file-implementation
+seams: [closed P7 memory schema and exact headroom arithmetic]
+contract-artifact: spec-only
+fan-out:
+  - name: p7-memory-schema
+    owned-paths: [firmware/contracts/p7-memory-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed P7 memory contract]
+  parent-commit: "test(aius): define P7 memory schema"
+```
+
+```yaml
+phase: P6b5
+unit: single-file-implementation
+seams: [closed P7 crash-report schema]
+contract-artifact: spec-only
+fan-out:
+  - name: p7-crash-schema
+    owned-paths: [firmware/contracts/p7-crash-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed P7 crash-report contract]
+  parent-commit: "test(aius): define P7 crash-report schema"
+```
+
+```yaml
+phase: P6b6
+unit: single-file-implementation
+seams: [closed P7 verdict schema and complete evidence hashes]
+contract-artifact: spec-only
+fan-out:
+  - name: p7-verdict-schema
+    owned-paths: [firmware/contracts/p7-verdict-schema.json]
+review-intensity: active
+commit-checkpoint:
+  green: [schema meta-validation]
+  buildable: [closed P7 verdict contract]
+  parent-commit: "test(aius): define P7 verdict schema"
+```
+
+```yaml
+phase: P6b7
+unit: test-surface
+seams: [six committed schemas, complete valid and invalid fixture matrix]
+contract-artifact: both
+depends-on:
+  - firmware/contracts/p7-run-schema.json
+  - firmware/contracts/p7-result-line-schema.json
+  - firmware/contracts/p7-performance-schema.json
+  - firmware/contracts/p7-memory-schema.json
+  - firmware/contracts/p7-crash-schema.json
+  - firmware/contracts/p7-verdict-schema.json
+fan-out:
+  - name: p7-result-contract-coordinator
     owned-paths:
-      - firmware/contracts/p7-run-schema.json
-      - firmware/contracts/p7-result-line-schema.json
-      - firmware/contracts/p7-performance-schema.json
-      - firmware/contracts/p7-memory-schema.json
-      - firmware/contracts/p7-crash-schema.json
-      - firmware/contracts/p7-verdict-schema.json
       - firmware/test/result-contract/p7-cases.json
       - firmware/test/result-contract/test_p7_result_contract.py
 review-intensity: active
@@ -479,12 +602,24 @@ commit-checkpoint:
   green:
     - python3 firmware/test/result-contract/test_p7_result_contract.py
   buildable: [fixture-proven P7 persisted-result and verdict contract]
-  parent-commit: "test(aius): define P7 result contract"
+  parent-commit: "test(aius): integrate P7 result contracts"
 ```
 
 ## P7: USB-only Teensy proof
 
 This phase starts when the user connects the stock Teensy 4.1 directly to the build server with a known data-capable USB cable. Nothing else connects to the board. The Program button remains physically accessible.
+
+The canonical execution inputs are exactly
+`firmware/build/teensy41-release/firmware.hex`,
+`firmware/build/capability-release-manifest.json`,
+`firmware/tools/iec_corpus/manifest.json`,
+`firmware/tools/device/run_capability.py`,
+`firmware/tools/differential/host-reference.json`,
+`firmware/tools/differential/ffmpeg-report.json`, and
+`firmware/test/result-contract/p7-cases.json`. The release manifest binds the
+firmware bytes and toolchain; the case manifest binds every corpus input and
+expected category; host-reference and FFmpeg reports bind every named valid
+case. The runner refuses an undeclared input or a hash mismatch.
 
 The persisted runner flashes the identified release build, streams the complete corpus, and records raw results. Acceptance requires:
 
@@ -500,9 +635,9 @@ The persisted runner flashes the identified release build, streams the complete 
 - every failure produces a typed result or retained crash report.
 
 ```yaml
-phase: P7
+phase: P7a
 unit: test-surface
-seams: [USB capability protocol, target result manifest]
+seams: [USB capability protocol, immutable raw target evidence]
 contract-artifact: both
 depends-on:
   - firmware/contracts/p7-run-schema.json
@@ -511,6 +646,13 @@ depends-on:
   - firmware/contracts/p7-memory-schema.json
   - firmware/contracts/p7-crash-schema.json
   - firmware/contracts/p7-verdict-schema.json
+  - firmware/test/result-contract/p7-cases.json
+  - firmware/build/teensy41-release/firmware.hex
+  - firmware/build/capability-release-manifest.json
+  - firmware/tools/iec_corpus/manifest.json
+  - firmware/tools/device/run_capability.py
+  - firmware/tools/differential/host-reference.json
+  - firmware/tools/differential/ffmpeg-report.json
 fan-out:
   - name: target-runner
     owned-paths:
@@ -519,11 +661,39 @@ fan-out:
       - evidence/capability-results/p7-performance.csv
       - evidence/capability-results/p7-memory.json
       - evidence/capability-results/p7-crash-report.json
-      - evidence/capability-results/p7-verdict.json
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 firmware/test/result-contract/test_p7_result_contract.py --artifacts evidence/capability-results
+    - python3 firmware/tools/device/run_capability.py --stage p7-run
+    - python3 firmware/test/result-contract/test_p7_result_contract.py --stage structural --artifacts evidence/capability-results
+  buildable: [complete structurally valid Teensy capability evidence without a verdict]
+  parent-commit: "test(aius): record Teensy capability evidence"
+```
+
+```yaml
+phase: P7b
+unit: single-file-implementation
+seams: [immutable raw target evidence, deterministic capability verdict]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/capability-results/p7-run.json
+  - evidence/capability-results/p7-raw-results.jsonl
+  - evidence/capability-results/p7-performance.csv
+  - evidence/capability-results/p7-memory.json
+  - evidence/capability-results/p7-crash-report.json
+  - firmware/contracts/p7-verdict-schema.json
+  - firmware/test/result-contract/p7-cases.json
+  - firmware/build/teensy41-release/firmware.hex
+  - firmware/build/capability-release-manifest.json
+  - firmware/tools/iec_corpus/manifest.json
+  - firmware/tools/device/run_capability.py
+  - firmware/tools/differential/host-reference.json
+  - firmware/tools/differential/ffmpeg-report.json
+fan-out:
+  - name: p7-verdict
+    owned-paths: [evidence/capability-results/p7-verdict.json]
+review-intensity: active
+commit-checkpoint:
   branches:
     pass:
       command: python3 firmware/tools/device/run_capability.py --stage p7-gate --record evidence/capability-results/p7-verdict.json
