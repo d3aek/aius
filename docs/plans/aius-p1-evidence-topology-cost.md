@@ -1167,11 +1167,23 @@ clean-room acceptance audit passed with no contract discrepancies.
 
 ### P1B2 — Non-dynamic acquisition waves
 
-Each agent runs `seed_evidence.py acquire <ID>` and then
-`seed_evidence.py check-fragment <ID>`. Agents write only the exact realization
-directory and fragment below. Comparative agents additionally own their
-assumption-fragment path solely for the `unavailable` branch. A golden failure
-is recorded, audited, committed, and stops P1B; it is never substituted.
+Immediately before each P1B2 wave spawns, the coordinator captures one actual
+UTC-seconds timestamp and passes the exact same value to every agent in that
+wave. Each agent runs
+`seed_evidence.py acquire <ID> --retrieved-at <wave-UTC>` and then
+`seed_evidence.py check-fragment <ID>`; agents never consult or choose a wall
+clock. The phase completion note records the shared timestamp.
+
+Agents write only the exact realization directory and fragment below.
+Comparative agents additionally own their assumption-fragment path solely for
+the `unavailable` branch. If `acquire` exits `1`, the same agent records the
+failure with
+`seed_evidence.py unavailable <ID> --note "Automated acquisition from the fixed realization URL failed during <phase>." --retrieved-at <wave-UTC>`,
+accepts the policy exit `1` for comparative or `3` for golden, and runs
+`check-fragment`. It does not retry through a different URL, user agent, tool,
+or authority. A golden failure is recorded, audited, committed, and stops P1B;
+it is never substituted. Any other exit is a control defect and blocks the wave
+without writing an unavailable claim.
 
 ```yaml
 phase: P1B2a
