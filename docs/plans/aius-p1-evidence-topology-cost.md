@@ -2401,6 +2401,11 @@ two renderer checks, the clean-room delivery audit, and the phase commit. No
 task derives values from the sibling instance; the committed normative
 contracts are the sole shared input.
 
+Completed 2026-07-16. Both architecture instances are byte-identical to their
+committed normative contracts, and the two Markdown review artifacts are
+renderer-derived. Both renderer parity checks and the cumulative
+`architecture-base` validator pass.
+
 ### P1C1b — Requirement and expected-family policy
 
 ```yaml
