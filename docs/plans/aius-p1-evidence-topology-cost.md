@@ -929,6 +929,7 @@ above resolves that gap and requires another fresh clean-room verdict.
 
 ```yaml
 phase: P1B1b
+status: completed
 unit: seed-realization-contract
 seams: [seed identity, artifact realization, dynamic observation profile]
 contract-artifact: both
@@ -945,6 +946,12 @@ commit-checkpoint:
   buildable: [machine-checkable realization for every seed source]
   parent-commit: "feat(aius): define seed evidence realization"
 ```
+
+Completed 2026-07-15. The exact realization checkpoint passes 13 tests and the
+existing source/seed schema suite passes 23 tests. The clean-room delivery audit
+passed with no contract discrepancies. Full evidence validation remains
+intentionally red on missing golden sources until P1B acquisition populates the
+source fragments and aggregate manifest.
 
 ### P1B1c — Reproducible acquisition and assembly
 
