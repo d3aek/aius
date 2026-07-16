@@ -458,9 +458,46 @@ The validator accepts `--root <aius-root>`, optional
 - exit `0` means valid. Exit `1` covers schema and cross-record violations in
   any syntactically valid JSON, including a wrong top-level type, plus
   artifact-content violations. Exit `2` covers only invalid invocation,
-  filesystem I/O, text-decoding or JSON-syntax failure, or an unusable Git
-  environment. Validation diagnostics are emitted to stderr as
+  control-file filesystem I/O, control-file UTF-8 decoding or JSON-syntax
+  failure, or an unusable Git environment. A control file is a schema, manifest,
+  clone-boundary file, assumption file, or explicit baseline. Artifact-payload
+  decoding and signature failures are validation failures with exit `1`.
+  Validation diagnostics are emitted to stderr as
   `ERROR <code> <subject>: <message>`, sorted by `(code, subject, message)`.
+
+The complete validation-code and subject vocabulary is:
+
+| Code | Validation class | Canonical subject |
+| --- | --- | --- |
+| `MANIFEST_SCHEMA` | schema meta-check or instance-schema failure, including any syntactically valid baseline shape failure | control-file path relative to `--root`; literal `baseline` for every explicit or Git-loaded baseline |
+| `SOURCE_COLLECTION` | imported P1A1 sortedness, uniqueness, artifact-name, or supersession failure | `evidence/manifest/sources.json` |
+| `BASELINE` | schema-valid baseline collection invariant, deleted baseline ID, or changed immutable tuple | literal `baseline` for collection-wide failures; source ID for deletion or identity failure |
+| `SEED_IDENTITY` | source tuple differs from the matching immutable seed tuple | source ID |
+| `REQUIRED_SOURCE` | required golden source is missing or not current | source ID |
+| `ASSUMPTION_REFERENCE` | unresolved `source_ids`/`evidence_ids` entry or evidence names an unavailable source | `assumptions[<index>].<field>[<index>]` |
+| `SOURCE_ASSUMPTION` | unavailable comparative/dynamic or unresolved supplemental source lacks its exact open assumption | source ID |
+| `DERIVED_EVIDENCE` | current independently-derived source is absent from every assumption `evidence_ids` | source ID |
+| `CLONE_BOUNDARY` | boundary row schema/order/uniqueness, coverage, overlap, class, or presence failure | boundary path relative to `--root` for file-wide failures; source ID for row/coverage failures |
+| `ARTIFACT_PATH` | missing, non-regular, symlinked, escaping, or wrong-directory artifact path | `sources[<source-index>].artifacts[<artifact-index>]` |
+| `ARTIFACT_STORAGE` | suffix requires a different `git`/`lfs` storage mode | artifact index subject above |
+| `ARTIFACT_BYTES` | byte-count mismatch | artifact index subject above |
+| `ARTIFACT_SHA256` | SHA-256 mismatch | artifact index subject above |
+| `ARTIFACT_MEDIA_TYPE` | unknown suffix or declared media-type mismatch | artifact index subject above |
+| `ARTIFACT_SIGNATURE` | byte/text signature, UTF-8 payload, JSON, or CSV content failure | artifact index subject above |
+| `GIT_ATTRIBUTE` | parsed filter value differs from the required value | artifact index subject above |
+| `LFS_POINTER` | checked-out LFS artifact is pointer text | artifact index subject above |
+
+Imported `SourceCollectionError.errors` entries each become one
+`SOURCE_COLLECTION` diagnostic with the error string unchanged. Imported
+clone-boundary `ValidationError` or `AssertionError` becomes one
+`CLONE_BOUNDARY` diagnostic for that file; explicit coverage and classification
+checks use the affected source ID. The baseline is first validated against the
+P1A1 source-collection schema; its syntactically valid shape failures use
+`MANIFEST_SCHEMA`/`baseline`. Its imported collection errors use
+`BASELINE`/`baseline` with the error string unchanged. All other checks emit one
+diagnostic per failed predicate. Exact duplicate `(code, subject, message)`
+triples are deduplicated before the required sort; distinct messages for the
+same code and subject are retained.
 
 Validation loads and validates `source-schema.json`, `seed-sources.json`,
 `sources.json`, `assumption-schema.json`, `assumptions.json`, and
@@ -473,7 +510,9 @@ If there are non-seed, non-dynamic source records, the validator also requires
 `supplemental-clone-boundary.json`, validates it with
 `validate_clone_boundary_rows`, and requires its IDs to equal exactly that
 supplemental source set. The file must be absent or an empty valid array when no
-such source exists. Supplemental IDs may not overlap seeds. A golden,
+such source exists. A missing file when the supplemental set is non-empty is a
+`CLONE_BOUNDARY` validation failure with exit `1`, not a control-file I/O
+failure. Supplemental IDs may not overlap seeds. A golden,
 comparative, or independently-derived source respectively requires
 `official-reuse`, `comparative-only`, or `independently-re-derived`.
 `unresolved` is allowed instead only when exactly one open assumption has
