@@ -3844,9 +3844,10 @@ fan-out:
     owned-paths:
       - evidence/cost/schemas/functional-bom-schema.json
       - scripts/fixtures/p1e-cost/base/functional-bom.csv
+      - scripts/test_functional_bom_cost_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation and fixture parse]
+  green: [python3 scripts/test_functional_bom_cost_schema.py]
   buildable: [closed functional BOM schema and immutable base fixture]
   parent-commit: "feat(aius): define functional BOM data contract"
 ```
@@ -3861,9 +3862,10 @@ fan-out:
     owned-paths:
       - evidence/cost/schemas/should-cost-schema.json
       - scripts/fixtures/p1e-cost/base/should-cost.csv
+      - scripts/test_should_cost_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation and fixture parse]
+  green: [python3 scripts/test_should_cost_schema.py]
   buildable: [closed should-cost schema and immutable base fixture]
   parent-commit: "feat(aius): define should-cost data contract"
 ```
@@ -3878,9 +3880,10 @@ fan-out:
     owned-paths:
       - evidence/cost/schemas/risk-register-schema.json
       - scripts/fixtures/p1e-cost/base/risk-register.csv
+      - scripts/test_risk_register_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation and fixture parse]
+  green: [python3 scripts/test_risk_register_schema.py]
   buildable: [closed risk-register schema and immutable base fixture]
   parent-commit: "feat(aius): define risk-register data contract"
 ```

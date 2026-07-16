@@ -228,6 +228,41 @@ The P1C0a base fixtures remain hash-locked historical inputs. Corrections are
 new explicit migrations in the existing builder and are proved by exact builder
 tests; no task rewrites an immutable base.
 
+### P1C5a0 — Component-family power-reference validation
+
+The handoff validator must accept the one selected component family that is a
+topology power-path endpoint before generated topology begins using it. The
+reference universe adds only `expansion-power-protection`. It is legal only as
+the final ordered consumer of `teensy-3v3` and as the source of
+`expansion-3v3`; it remains illegal as any other rail source/consumer and no
+other component-family ID becomes a power reference. Unknown families still
+emit the existing sorted `REFERENCE` diagnostic. A known family in a forbidden
+rail position emits `CONTRACT`.
+
+```yaml
+phase: P1C5a0
+unit: test-surface
+seams: [power-reference universe, selected component-family endpoint, handoff diagnostics]
+contract-artifact: both
+fan-out:
+  - name: p1c5-power-reference-validator
+    owned-paths:
+      - scripts/validate_p1.py
+      - scripts/test_validate_p1.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/validate_p1.py topology --stage handoff
+  buildable: [current topology remains valid and focused future component-family references are fixture-proven]
+  parent-commit: "feat(aius): validate component power endpoints"
+```
+
+Focused tests construct the future exact source/consumer pair and require a
+clean reference pass, then independently prove rejection of an unknown family,
+the known family on an unrelated power domain, a missing Teensy consumer, and a
+mismatched expansion source. P1C5a0 changes no generated topology bytes.
+
 ### P1C5a — Topology schema and migration correction
 
 ```yaml
@@ -2632,11 +2667,24 @@ ShellCheck and wrapper invocation are outer proof commands and are not called by
 the wrapper. It stops at the first non-zero command and propagates that status.
 Only after every check passes it atomically writes `p1d-release.json`, with exact
 ordered keys `schema_version`, `release_state`, `design_record_sha256`,
-`schematic_contract_sha256`, `interface_sha256`, `notes`; values are `1.0.0`,
+`schematic_contract_sha256`, `interface_sha256`, `schematic_file_sha256`,
+`notes`; values are `1.0.0`,
 `eligible`, a lexically keyed object containing the SHA-256 of the three
 canonical design records under exact keys `electrical-reference`,
 `pin-resource-map`, and `two-layer-placement`, the schematic-contract SHA-256, the
-schematic-interface SHA-256, and an empty note. It contains no timestamp or Git
+schematic-interface SHA-256, a closed lexically keyed file-hash object, and an
+empty note. `schematic_file_sha256` has exactly these repo-relative keys:
+`electronics/reference/aius-reference.kicad_sch`,
+`electronics/reference/aius-reference.kicad_sym`,
+`electronics/reference/sheets/ethernet.kicad_sch`,
+`electronics/reference/sheets/optical-spdif.kicad_sch`,
+`electronics/reference/sheets/power-usb.kicad_sch`, and
+`electronics/reference/sheets/teensy-expansion.kicad_sch`. Each value is the
+lowercase SHA-256 of the committed bytes after the successful ERC check. The
+wrapper test mutates each file in turn and proves that regeneration changes
+only its keyed hash and that every absent, extra, stale or non-lowercase entry
+is rejected. H1 verifies this object transitively before projecting its bridge.
+The release contains no timestamp or Git
 identity, so identical inputs produce identical bytes. Any failed command leaves
 the verdict absent: the wrapper removes a prior verdict before its first check
 and creates no replacement until the complete sequence passes.

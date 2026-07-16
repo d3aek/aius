@@ -359,6 +359,15 @@ Create the VS Code PlatformIO project and pinned build-server wrapper. Produce r
 
 Report ITCM code, DTCM static and stack use, OCRAM/RAM2 and DMA buffers, USB buffers, arena peak, and unused headroom separately. A combined-RAM percentage cannot conceal pressure in a required bank. Static plus reserved runtime memory must leave at least 25% justified headroom in every relevant bank before hardware testing.
 
+P5 registers the exact repository target `Aius.Firmware` in `scripts/test.sh`.
+That target invokes only the persisted Aius wrappers: native tests through
+`firmware/scripts/test.sh --environment native` and the
+cross-build through
+`firmware/scripts/build.sh --environment teensy41-release`.
+The latter accepts `--check` to verify the current release binary and manifest
+without rewriting them. Later phases call the repository target, never a bare
+`platformio` command.
+
 ```yaml
 phase: P5
 unit: phase-task
@@ -497,10 +506,12 @@ seams: [closed P7 run schema]
 contract-artifact: spec-only
 fan-out:
   - name: p7-run-schema
-    owned-paths: [firmware/contracts/p7-run-schema.json]
+    owned-paths:
+      - firmware/contracts/p7-run-schema.json
+      - firmware/test/result-contract/test_p7_run_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation]
+  green: [python3 firmware/test/result-contract/test_p7_run_schema.py]
   buildable: [closed P7 run contract]
   parent-commit: "test(aius): define P7 run schema"
 ```
@@ -512,10 +523,12 @@ seams: [closed P7 result-line schema and nullability matrix]
 contract-artifact: spec-only
 fan-out:
   - name: p7-result-line-schema
-    owned-paths: [firmware/contracts/p7-result-line-schema.json]
+    owned-paths:
+      - firmware/contracts/p7-result-line-schema.json
+      - firmware/test/result-contract/test_p7_result_line_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation]
+  green: [python3 firmware/test/result-contract/test_p7_result_line_schema.py]
   buildable: [closed P7 result-line contract]
   parent-commit: "test(aius): define P7 result-line schema"
 ```
@@ -527,10 +540,12 @@ seams: [closed P7 performance schema and exact ratio arithmetic]
 contract-artifact: spec-only
 fan-out:
   - name: p7-performance-schema
-    owned-paths: [firmware/contracts/p7-performance-schema.json]
+    owned-paths:
+      - firmware/contracts/p7-performance-schema.json
+      - firmware/test/result-contract/test_p7_performance_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation]
+  green: [python3 firmware/test/result-contract/test_p7_performance_schema.py]
   buildable: [closed P7 performance contract]
   parent-commit: "test(aius): define P7 performance schema"
 ```
@@ -542,10 +557,12 @@ seams: [closed P7 memory schema and exact headroom arithmetic]
 contract-artifact: spec-only
 fan-out:
   - name: p7-memory-schema
-    owned-paths: [firmware/contracts/p7-memory-schema.json]
+    owned-paths:
+      - firmware/contracts/p7-memory-schema.json
+      - firmware/test/result-contract/test_p7_memory_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation]
+  green: [python3 firmware/test/result-contract/test_p7_memory_schema.py]
   buildable: [closed P7 memory contract]
   parent-commit: "test(aius): define P7 memory schema"
 ```
@@ -557,10 +574,12 @@ seams: [closed P7 crash-report schema]
 contract-artifact: spec-only
 fan-out:
   - name: p7-crash-schema
-    owned-paths: [firmware/contracts/p7-crash-schema.json]
+    owned-paths:
+      - firmware/contracts/p7-crash-schema.json
+      - firmware/test/result-contract/test_p7_crash_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation]
+  green: [python3 firmware/test/result-contract/test_p7_crash_schema.py]
   buildable: [closed P7 crash-report contract]
   parent-commit: "test(aius): define P7 crash-report schema"
 ```
@@ -572,10 +591,12 @@ seams: [closed P7 verdict schema and complete evidence hashes]
 contract-artifact: spec-only
 fan-out:
   - name: p7-verdict-schema
-    owned-paths: [firmware/contracts/p7-verdict-schema.json]
+    owned-paths:
+      - firmware/contracts/p7-verdict-schema.json
+      - firmware/test/result-contract/test_p7_verdict_schema.py
 review-intensity: active
 commit-checkpoint:
-  green: [schema meta-validation]
+  green: [python3 firmware/test/result-contract/test_p7_verdict_schema.py]
   buildable: [closed P7 verdict contract]
   parent-commit: "test(aius): define P7 verdict schema"
 ```
