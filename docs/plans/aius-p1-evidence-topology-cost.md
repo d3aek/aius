@@ -2741,6 +2741,60 @@ requirement order/statement/basis/stage/notes, and family requirements,
 dependent feature, notes, and each derived field. A jointly edited base and
 contract still fails the locked raw hash.
 
+Contract-stage diagnostics are exact:
+
+| Condition | Required diagnostic and path | Stop behavior |
+| --- | --- | --- |
+| Missing policy base | `MISSING` at `scripts/fixtures/p1c-schema/selection-policy/base-v1.json` | No policy derivation. |
+| Unreadable policy-base bytes | `PARSE` at the policy-base path | No hash or derivation. |
+| Parseable policy-base hash mismatch | `CONTRACT` at the policy-base path | Parse may complete for diagnostics; no derivation. |
+| Non-UTF-8 or malformed policy base | `CONTRACT` for the necessarily wrong raw hash and `PARSE` at the policy-base path | No derivation. |
+| Missing normative policy contract | `MISSING` at `evidence/design/contracts/selection-policy.json` | No equality comparison. |
+| Unreadable, non-UTF-8, or malformed normative policy contract | `PARSE` at the normative-contract path | No schema or equality comparison. |
+| Schema-invalid normative policy contract | `INSTANCE` at the normative-contract path | No equality comparison. |
+| Pure builder rejects the hash-valid parsed base | `CONTRACT` at the policy-base path with `pure builder rejected locked base` detail | No equality comparison. |
+| Schema-valid normative value differs from fresh derivation | `CONTRACT` at the normative-contract path | Independent order checks may co-emit. |
+
+Architecture-stage ordered semantic drift always emits `CONTRACT` at
+`evidence/design/selection-policy.json`. Existing independent `ORDER`,
+`POLICY`, `INSTANCE`, and basis-currentness diagnostics remain active and may
+co-emit; exact equality is never a stop-gate that hides them.
+
+The validator fixture migrates completely from invented `EP-BASE` and
+`REQT-BASE` semantics. It copies both the policy base and normative contract
+into each fixture tree, initializes `self.policy` as a deep copy of the
+normative contract, indexes its family rows, and assigns every component and
+request the exact requirement array for its family. Its current source set is
+the sorted union of architecture evidence IDs and every non-`EP-` policy basis
+ID. Tests referring to a policy ID use a real normative policy ID. The fixture
+must stay green at `architecture` and every later stage without weakening
+component/request linkage.
+
+The focused architecture mutation matrix asserts `CONTRACT` independently for
+every row below, even when another diagnostic also appears:
+
+| Mutation | Additional required diagnostic |
+| --- | --- |
+| Swap two engineering-policy registry rows | `ORDER` |
+| Change engineering-policy `scope`, `rule`, `validation_gate`, or `notes`, one case per field | none |
+| Swap two requirement registry rows | `ORDER` |
+| Change requirement `statement`, ordered `basis_ids`, `verification_stage`, or `notes`, one case per field | none; unresolved bases may also emit `POLICY` |
+| Swap two family registry rows | `POLICY` |
+| Change family `requirements`, `dependent_feature`, or `notes`, one case per field | none; linkage or uniqueness checks may also emit `POLICY` |
+| Change derived `component_file`, `critical`, `generic_eligible`, `allowed_statuses`, `manufacturer_request_id`, `availability_request_id`, `manufacturer_source_id`, or `availability_source_id`, one case per field | existing `POLICY` or `INSTANCE` as applicable |
+
+Here `policy order` and `requirement order` mean registry-row order; ordered
+arrays remain value-contractual and are covered by the field mutations. The
+joint-edit negative changes a parseable base and makes the normative contract
+match its freshly derived value, but must still emit `CONTRACT` at the base
+because its raw SHA-256 no longer matches the locked hash.
+
+P1C0e2 does not create the live selection-policy instance. The validator test
+suite is the phase gate for architecture-stage equality, while live
+`validate_p1.py topology --stage contract` proves base/contract enforcement.
+The live `--stage architecture` command is intentionally deferred to P1C1b,
+after that phase copies the normative value to the instance path.
+
 ### P1C1b — Requirement and expected-family policy
 
 ```yaml
