@@ -1516,6 +1516,30 @@ Exact clock-domain IDs are `spdif-recovered`, `audio-processing`,
 buffer IDs are `spdif-rx-dma`, `compressed-burst-ring`, `decoded-pcm-pool`,
 `dsp-output-ring`, and `spdif-tx-dma`. Exact latency-boundary IDs are
 `capture`, `burst-assembly`, `decode`, `dsp`, and `transmit-queue`.
+`schema_version` is the constant string `1.0.0`. Every object rejects additional
+properties. Array order is canonical in the order declared by the plan or, for
+non-enumerated rows, ascending by ID.
+
+Functional member contracts are:
+
+| Record | Required members and value domains |
+| --- | --- |
+| mode | `id` from the five locked mode IDs; `input_formats` as a unique non-empty array of `pcm-stereo`, `iec61937-dts-core`, or `none`; `output_format` as `pcm-stereo-48k`, `raw-spdif`, or `none`; unique `active_blocks`; `error_mode`; unique `evidence_ids`; string `notes` |
+| block | locked `id`; `kind` as `hardware`, `firmware`, `software`, or `boundary`; `owner` as `carrier`, `teensy-hardware`, `teensy-firmware`, or `external`; nullable locked `power_domain`; nullable locked `clock_domain`; unique `evidence_ids`; string `notes` |
+| flow | locked `id`; `kind` as `data`, `control`, or `power`; cross-referenced `source_id` and `sink_id`; `payload` from the locked payload tokens; unique `enabled_modes`; nullable locked `control_id`; unique `evidence_ids`; string `notes` |
+| clock domain | locked `id`; cross-referenced `source_id`; unique non-empty `consumer_ids`; unique `synchronous_with`; `frequency_status` as `evidence-locked`, `software-derived`, or `deferred`; unique `evidence_ids`; string `notes` |
+| buffer | locked `id`; block IDs in `owner`, `producer`, and `consumer`; `storage_class` as `dma-ring`, `ring-buffer`, or `block-pool`; `overflow_policy` as `drop-and-mute`, `reset-pipeline-and-mute`, or `backpressure`; `measurement_gate` from P3 through P7; string `notes` |
+| latency boundary | locked `id`; block IDs in `source` and `sink`; `budget_status` constant `deferred`; `measurement_gate` as P6 or P7; string `notes` |
+
+Exact flow IDs are `optical-to-capture`, `capture-to-classifier`,
+`classifier-to-dts`, `classifier-to-pcm`, `dts-to-normalizer`,
+`pcm-to-normalizer`, `normalizer-to-dsp`, `dsp-to-transmit`,
+`transmit-to-mux`, `optical-to-raw-mux`, `mux-to-gate`, `gate-to-optical`,
+`path-select-control`, `tx-enable-control`, `watchdog-reset-control`,
+`usb-vbus-entry`, `protected-vbus`, `teensy-power`, `carrier-3v3`, and
+`expansion-power`. Exact payload tokens are `optical-spdif`, `logic-spdif`,
+`iec61937-dts-core`, `pcm-native`, `pcm-stereo-48k`, `path-select`,
+`tx-enable`, `reset`, `usb-vbus`, `protected-5v`, and `teensy-3v3`.
 
 The functional JSON root fields, in order, are `schema_version`, `modes`,
 `blocks`, `flows`, `clock_domains`, `buffers`, `latency_boundaries`, and
@@ -1554,6 +1578,44 @@ Power-domain IDs are `usb-vbus-raw`, `protected-5v`, `teensy-3v3`,
 `expansion-usb-host-vbus`. Operating-state IDs are `power-off`,
 `powered-reset`, `boot-muted`, `waiting-for-carrier`, `pcm-active`,
 `dts-active`, `unsupported-muted`, `diagnostic-bypass`, and `fault-muted`.
+
+ID partitions are strict: connector IDs are `rear-usb-c`, `internal-usb-a`,
+`teensy-micro-b`, `toslink-rx`, `toslink-tx`, `ethernet-rj45`,
+`microsd-access`, `remote-program-rtc`, and `test-fixture`; expansion IDs are
+the six `expansion-*` IDs; control IDs occur only in `controls`. Interface/state
+member contracts are:
+
+| Record | Required members and value domains |
+| --- | --- |
+| connector | locked `id`; `location` as `rear`, `internal`, `module`, or `user-access`; `role` as `power-data`, `data`, `optical`, `network`, `storage-access`, `control`, or `test`; unique non-empty `signals`; unique `power_domains`; non-empty `mating_constraint`; unique `evidence_ids`; string `notes` |
+| control | locked `id`; cross-referenced `owner`; `active_level` as `high`, `low`, or `not-applicable`; `reset_default` and `safe_value` from the safe-value tokens; unique `evidence_ids`; string `notes` |
+| expansion interface | locked `id`; `direction` as `input`, `output`, or `bidirectional`; unique non-empty `signals`; unique `power_domains`; non-empty `powered_behavior`, `unpowered_behavior`, `protection_method`, and `backfeed_rule`; unique `evidence_ids`; string `notes` |
+| power domain | locked `id`; cross-referenced `source`; unique `consumers`; non-empty `backfeed_rule`; unique `evidence_ids`; string `notes` |
+| operating state | locked `id`; non-empty `entry_condition`; `path_select`, `tx_state`, `output_payload`, and `expansion_state` from locked tokens; non-empty `exit_condition`; string `notes` |
+| fault scenario | locked `id`; non-empty `trigger`; four locked outcome tokens; Boolean `hardware_pull_required` and `watchdog_required`; nullable `debounce_measurement_gate` as P6 or P7; nullable `residual_interval_measurement_gate` as P7; ordered unique `actions`; locked `recovery_state`; string `notes` |
+| transition | locked `id`, `from_state`, and `to_state`; locked `trigger`; unique `preconditions`; ordered non-empty `actions`; unique non-empty `postconditions`; string `notes` |
+
+Outcome tokens are: path `processed` or `raw`; TX `disabled`, `enabled-pcm`,
+`enabled-raw`, or `unchanged`; payload `none`, `pcm-silence-48k`,
+`processed-pcm-48k`, `raw-spdif`, or `unchanged`; expansion
+`high-impedance`, `current-limited`, `active`, or `unchanged`. Safe-value tokens
+are those outcome tokens plus `asserted`, `deasserted`, `low`, and `high`.
+Action tokens are `disable-tx`, `wait-muted`, `select-processed`, `select-raw`,
+`clear-pipeline`, `prime-pcm-silence`, `enable-tx-pcm`, `enable-tx-raw`,
+`assert-reset`, and `hold-expansion-safe`. Precondition tokens are
+`rails-valid`, `watchdog-armed`, `pipeline-primed`, `carrier-present`,
+`format-supported`, `output-muted`, `tx-disabled`, and
+`diagnostic-authorized`. Postcondition tokens are `processed-selected`,
+`raw-selected`, `tx-disabled`, `tx-pcm-enabled`, `tx-raw-enabled`, and
+`expansion-safe`.
+
+Exact transition IDs are `power-on-to-reset`, `reset-to-boot`,
+`boot-to-waiting`, `waiting-to-pcm`, `waiting-to-dts`,
+`active-to-carrier-loss`, `active-to-unsupported`,
+`unsupported-to-active`, `active-to-diagnostic-bypass`,
+`diagnostic-bypass-to-waiting`, `watchdog-to-reset`, and
+`usb-unplug-to-power-off`. Transition trigger tokens use the corresponding
+scenario or state-event slug and are schema-enumerated, not free text.
 
 The following exact fault/scenario IDs are mandatory and have these safe outcomes:
 
@@ -1624,6 +1686,9 @@ rows contain slug, critical flag, allowed status set, exact requirement IDs,
 manufacturer and availability request IDs when applicable, generic eligibility,
 dependent feature, and notes. Basis IDs must resolve to a current seed source or
 a declared engineering policy; source and policy namespaces may not overlap.
+`verification_stage` is one of `P1D-electrical`, `P1D-mechanical`,
+`P1E-sourcing`, `H1-schematic`, or `H2-placement`; dependent features are
+non-empty slugs and are instantiated by P1C1b.
 
 Each selected candidate has one manufacturer-evidence request and one separate
 UK-availability request. Requests add `request_kind` with value
@@ -1650,7 +1715,32 @@ have one uniform value/package/tolerance and no requests. An unresolved or
 manufacturer-unavailable critical family blocks P1C. Alternatives are unique
 and must not repeat the selected manufacturer/MPN.
 
+All source-request fields are required: `request_id`, `request_kind`, `family`,
+`requirements`, `authority_url`, `selected_manufacturer`, `selected_mpn`,
+`source_id`, `artifact_kinds`, `retention`, `status`, `evidence_ids`, and
+`notes`. A manufacturer request uses a primary manufacturer HTTPS URL,
+`retention: archive`, and artifact kinds drawn only from `datasheet`, `drawing`,
+`cad`, `product-page`, and `reference-design`. Its source ID is
+`AIUS-<UPPERCASE-FAMILY>-MFR`. A UK-availability request uses a UK authorized
+distributor HTTPS URL, `retention: normalized-observation-only`, exact artifact
+kind `price-observation`, and source ID `AIUS-<UPPERCASE-FAMILY>-UK`.
+The two satisfied Cliff manufacturer requests are the only source-ID exceptions:
+they use existing current seed IDs `CLIFF-ORJ5` and `CLIFF-OTJ5`.
+
+For either request kind, `pending` has no evidence IDs; `satisfied` has at least
+one current evidence ID matching its source ID and selected MPN; `unavailable`
+has no evidence IDs and a non-empty failure note. Manufacturer evidence may be
+golden, comparative, or supplemental but must archive a manufacturer artifact.
+UK evidence is a current dynamic normalized observation and never archives the
+page. Request IDs are exactly `REQ-<UPPERCASE-FAMILY>-MFR` and
+`REQ-<UPPERCASE-FAMILY>-UK`; component and filename cross-validation is exact.
+
 ### P1C0a — Schema and policy vocabulary
+
+P1C0a is an intentional forward schema migration. It supersedes the original
+P1A2 source-request and component field/status contract; the P1A2 section
+remains historical evidence of its completed checkpoint, not the post-P1C
+schema authority. Existing assumption records remain schema-compatible.
 
 ```yaml
 phase: P1C0a
@@ -1689,8 +1779,12 @@ commit-checkpoint:
 The stale empty-assumptions assertion is replaced by schema validation plus the
 same aggregate-to-fragment parity invariant used by P1B. The new schemas require
 the mandatory IDs and scenario coverage above. The selection-policy schema owns
-the exact family set, critical/generic eligibility, requirement matrix,
-engineering-policy registry, request/source IDs, and file slugs.
+the fully named structural fields, ID patterns, status/request rules, basis
+resolution types, and additional-property rejection. It does not invent the
+policy instance. P1C1b owns and commits the exact requirement and engineering
+policy registries, per-family mappings, allowed-status sets, dependent-feature
+values, request/source IDs, and file slugs. The `architecture` validator stage
+then enforces that instance against the exact family list in this plan.
 
 ### P1C0b — Validator and deterministic renderers
 
