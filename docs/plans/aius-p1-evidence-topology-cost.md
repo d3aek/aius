@@ -47,7 +47,7 @@ Each artifact has `name`, `final_url`, `storage`, `path`, `sha256`, `bytes`,
 `unavailable`. A revision or distributor fallback receives a new source ID and
 uses `supersedes`; an existing ID never changes authority or meaning.
 
-`evidence/manifest/clone-boundary.md` classifies every external design as
+`evidence/manifest/clone-boundary.json` classifies every external design as
 official reuse, independently re-derived, comparative-only, or unresolved.
 `evidence/manifest/assumptions.json` records unresolved claim, consequence,
 owner, validation gate, evidence IDs, and status. These are checkpoint outputs,
@@ -270,13 +270,63 @@ remains green at 23 tests. The clean-room delivery audit passed.
 
 Create exactly `evidence/manifest/README.md`,
 `evidence/manifest/clone-boundary.json`, and
-`scripts/test_evidence_policy.py`. The clone-boundary file contains one
-row per non-dynamic seed source with `source_id`, `classification`,
-`reused_material`, `derived_claims`, `prohibited_use`, and `notes`.
-Classification is `official-reuse`, `independently-re-derived`,
-`comparative-only`, or `unresolved`. The README documents retrieval, temporary
-inspection of external references, hashing, LFS placement, supersession,
-failure recording, and validator commands.
+`scripts/test_evidence_policy.py`.
+
+`clone-boundary.json` is a top-level array sorted by `source_id`, with unique
+IDs and exactly the 15 non-dynamic seed sources. Each row rejects additional
+properties and contains `source_id`, `classification`, `reused_material`,
+`derived_claims`, `prohibited_use`, and `notes`. The three list fields contain
+unique non-empty strings; `derived_claims` and `prohibited_use` are non-empty,
+while `reused_material` may be empty. `notes` is a string. Classification is
+`official-reuse`, `independently-re-derived`, `comparative-only`, or
+`unresolved`. An `official-reuse` row has non-empty `reused_material`; a
+`comparative-only` row has an empty `reused_material` list.
+
+The exact classification oracle is:
+
+- `official-reuse`: `CLIFF-ORJ5`, `CLIFF-OTJ5`,
+  `HAMMOND-1455N1201BK-DRAWING`, `HAMMOND-1455N1201BK-STEP`,
+  `PJRC-ETHERNET-KIT`, `PJRC-IMXRT1060-CEC`, `PJRC-IMXRT1060-RM`,
+  `PJRC-TEENSY41-PAGE`, `PJRC-TEENSY41-PINOUT`,
+  `PJRC-TEENSY41-SCHEMATIC`, and `PLATFORMIO-TEENSY41`;
+- `comparative-only`: `PJRC-SPDIF-RX-SOURCE`, `PJRC-SPDIF-TX-SOURCE`,
+  `VKSDR-TOSLINK-KICAD`, and `VKSDR-TOSLINK-SCHEMATICS`.
+
+No seed source is independently re-derived or unresolved. Those enum values are
+reserved for supplemental sources and must not appear in the P1A3 file.
+
+The README has exactly these H2 headings, in order:
+
+1. `Directory boundary`
+2. `Retrieval workflow`
+3. `External-reference workflow`
+4. `Hash and media validation`
+5. `Git LFS verification`
+6. `Supersession`
+7. `Failure recording`
+8. `Runnable validation`
+9. `Future validation`
+
+The directory section contains these exact machine-checked policy statements:
+
+- `**Binary evidence:** Store redistributable binary evidence under \`docs/reference/datasheets.md<source-id>/\`; Git LFS must report \`filter=lfs\`.`
+- `**Reviewable source snapshots:** Store source snapshots under \`evidence/source-snapshots/<source-id>/\` as normal Git text.`
+- `**External references:** Do not commit non-redistributable bytes; record \`storage: external-reference\` with a null path.`
+- `**Text contracts:** Keep schemas, manifests, observations, scripts, Markdown, CSV, JSON, KiCad sources, and patches in normal Git.`
+
+`Runnable validation` contains exactly the three commands available at P1A3:
+
+```bash
+python3 scripts/test_source_schema.py
+python3 scripts/test_selection_schemas.py
+python3 scripts/test_evidence_policy.py
+```
+
+`Future validation` labels
+`python3 scripts/validate_evidence.py` as unavailable until
+P1A4. The test embeds the clone-boundary schema and classification oracle,
+asserts the exact H2 order, statements, and command blocks, and verifies that
+the committed seed classes and clone-boundary coverage agree.
 
 ```yaml
 phase: P1A3
