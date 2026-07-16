@@ -1,0 +1,121 @@
+{
+  "schema_version": "1.0.0",
+  "engineering_policies": [
+    {
+      "id": "EP-PRODUCT-TOPOLOGY",
+      "scope": "product-topology",
+      "rule": "Use one protected USB power entry.",
+      "validation_gate": "H1 schematic review",
+      "notes": ""
+    },
+    {
+      "id": "EP-SAFE-DEFAULT",
+      "scope": "safe-default",
+      "rule": "Keep optical transmit disabled through reset.",
+      "validation_gate": "P1D electrical review",
+      "notes": ""
+    },
+    {
+      "id": "EP-MANUFACTURABILITY",
+      "scope": "manufacturability",
+      "rule": "Use assembly-compatible package geometry.",
+      "validation_gate": "H2 placement review",
+      "notes": ""
+    },
+    {
+      "id": "EP-SOURCING",
+      "scope": "sourcing",
+      "rule": "Require an authorized UK distributor observation.",
+      "validation_gate": "P1E sourcing review",
+      "notes": ""
+    },
+    {
+      "id": "EP-PROVISIONAL-CURRENT",
+      "scope": "provisional-design-choice",
+      "rule": "Use the preliminary current envelope until measured.",
+      "validation_gate": "P1D electrical review",
+      "notes": ""
+    }
+  ],
+  "requirements": [
+    {
+      "id": "REQT-POWER-REVERSE-CURRENT",
+      "statement": "The power entry blocks reverse current.",
+      "basis_ids": ["EP-SAFE-DEFAULT"],
+      "verification_stage": "P1D-electrical",
+      "notes": ""
+    },
+    {
+      "id": "REQT-ENCLOSURE-CLEARANCE",
+      "statement": "The connector clears the enclosure and cable envelope.",
+      "basis_ids": ["HAMMOND-1455N1201BK-DRAWING"],
+      "verification_stage": "P1D-mechanical",
+      "notes": ""
+    },
+    {
+      "id": "REQT-UK-AVAILABILITY",
+      "statement": "The selected part has a current UK availability observation.",
+      "basis_ids": ["EP-SOURCING"],
+      "verification_stage": "P1E-sourcing",
+      "notes": ""
+    },
+    {
+      "id": "REQT-OPTICAL-RX-LOGIC-HIGH",
+      "statement": "The optical receiver output meets the logic-high threshold.",
+      "basis_ids": ["CLIFF-ORJ5", "EP-PROVISIONAL-CURRENT"],
+      "verification_stage": "H1-schematic",
+      "notes": ""
+    },
+    {
+      "id": "REQT-LOGIC-DECOUPLING",
+      "statement": "Each logic supply has local decoupling.",
+      "basis_ids": ["EP-MANUFACTURABILITY"],
+      "verification_stage": "H2-placement",
+      "notes": ""
+    }
+  ],
+  "families": [
+    {
+      "family": "power-protection",
+      "component_file": "components/power-protection.json",
+      "critical": true,
+      "generic_eligible": false,
+      "allowed_statuses": ["candidate-pending-evidence", "selected", "candidate-evidence-unavailable"],
+      "requirements": ["REQT-POWER-REVERSE-CURRENT"],
+      "manufacturer_request_id": "REQ-POWER-PROTECTION-MFR",
+      "availability_request_id": "REQ-POWER-PROTECTION-UK",
+      "manufacturer_source_id": "AIUS-POWER-PROTECTION-MFR",
+      "availability_source_id": "AIUS-POWER-PROTECTION-UK",
+      "dependent_feature": "protected-power-entry",
+      "notes": ""
+    },
+    {
+      "family": "optical-rx",
+      "component_file": "components/optical-rx.json",
+      "critical": false,
+      "generic_eligible": false,
+      "allowed_statuses": ["candidate-pending-evidence", "selected", "candidate-evidence-unavailable", "unresolved"],
+      "requirements": ["REQT-OPTICAL-RX-LOGIC-HIGH", "REQT-UK-AVAILABILITY"],
+      "manufacturer_request_id": "REQ-OPTICAL-RX-MFR",
+      "availability_request_id": "REQ-OPTICAL-RX-UK",
+      "manufacturer_source_id": "CLIFF-ORJ5",
+      "availability_source_id": "AIUS-OPTICAL-RX-UK",
+      "dependent_feature": "optical-input",
+      "notes": ""
+    },
+    {
+      "family": "logic-decoupling-capacitor",
+      "component_file": "components/logic-decoupling-capacitor.json",
+      "critical": false,
+      "generic_eligible": true,
+      "allowed_statuses": ["generic-allowance"],
+      "requirements": ["REQT-LOGIC-DECOUPLING"],
+      "manufacturer_request_id": null,
+      "availability_request_id": null,
+      "manufacturer_source_id": null,
+      "availability_source_id": null,
+      "dependent_feature": "logic-decoupling",
+      "notes": ""
+    }
+  ]
+}

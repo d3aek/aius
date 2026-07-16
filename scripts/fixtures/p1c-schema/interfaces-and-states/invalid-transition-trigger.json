@@ -1,0 +1,10 @@
+{
+  "id": "power-on-to-reset",
+  "from_state": "power-off",
+  "to_state": "powered-reset",
+  "triggers": ["reset-released"],
+  "preconditions": ["rails-valid"],
+  "actions": ["assert-reset"],
+  "postconditions": ["tx-disabled"],
+  "notes": "The trigger does not match the locked transition mapping."
+}

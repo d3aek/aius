@@ -1,0 +1,15 @@
+{
+  "id": "raw-bypass-request",
+  "trigger": "An authorized diagnostic request is received.",
+  "path_select": "processed",
+  "tx_state": "enabled-raw",
+  "output_payload": "raw-spdif",
+  "expansion_state": "unchanged",
+  "hardware_pull_required": false,
+  "watchdog_required": false,
+  "debounce_measurement_gate": null,
+  "residual_interval_measurement_gate": null,
+  "actions": ["disable-tx", "wait-muted", "select-raw", "enable-tx-raw"],
+  "recovery_state": "diagnostic-bypass",
+  "notes": "Raw bypass cannot retain the processed selection."
+}

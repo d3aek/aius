@@ -10,9 +10,17 @@
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
     },
-    "requestIdentifier": {
+    "requirementIdentifier": {
       "type": "string",
-      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+      "pattern": "^REQT-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "manufacturerRequestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*-MFR$"
+    },
+    "availabilityRequestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*-UK$"
     },
     "httpsUrl": {
       "type": "string",
@@ -20,39 +28,21 @@
       "format": "uri"
     },
     "nullableNonEmptyString": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "anyOf": [{ "$ref": "#/$defs/nonEmptyString" }, { "type": "null" }]
     },
     "nullableHttpsUrl": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/httpsUrl"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "anyOf": [{ "$ref": "#/$defs/httpsUrl" }, { "type": "null" }]
     },
-    "nullableRequestIdentifier": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/requestIdentifier"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "nullableManufacturerRequestIdentifier": {
+      "anyOf": [{ "$ref": "#/$defs/manufacturerRequestIdentifier" }, { "type": "null" }]
+    },
+    "nullableAvailabilityRequestIdentifier": {
+      "anyOf": [{ "$ref": "#/$defs/availabilityRequestIdentifier" }, { "type": "null" }]
     },
     "requirements": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/nonEmptyString"
+        "$ref": "#/$defs/requirementIdentifier"
       },
       "minItems": 1,
       "uniqueItems": true
@@ -93,14 +83,7 @@
       "additionalProperties": false
     },
     "nullableGenericPolicy": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/genericPolicy"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "anyOf": [{ "$ref": "#/$defs/genericPolicy" }, { "type": "null" }]
     }
   },
   "type": "object",
@@ -112,7 +95,8 @@
     "alternatives",
     "selection_rationale",
     "authority_url",
-    "source_request_id",
+    "manufacturer_request_id",
+    "availability_request_id",
     "generic_policy",
     "status",
     "notes"
@@ -135,7 +119,8 @@
       "items": {
         "$ref": "#/$defs/alternative"
       },
-      "maxItems": 2
+      "maxItems": 2,
+      "uniqueItems": true
     },
     "selection_rationale": {
       "$ref": "#/$defs/nullableNonEmptyString"
@@ -143,14 +128,23 @@
     "authority_url": {
       "$ref": "#/$defs/nullableHttpsUrl"
     },
-    "source_request_id": {
-      "$ref": "#/$defs/nullableRequestIdentifier"
+    "manufacturer_request_id": {
+      "$ref": "#/$defs/nullableManufacturerRequestIdentifier"
+    },
+    "availability_request_id": {
+      "$ref": "#/$defs/nullableAvailabilityRequestIdentifier"
     },
     "generic_policy": {
       "$ref": "#/$defs/nullableGenericPolicy"
     },
     "status": {
-      "enum": ["selected", "generic-allowance", "unresolved"]
+      "enum": [
+        "candidate-pending-evidence",
+        "selected",
+        "candidate-evidence-unavailable",
+        "generic-allowance",
+        "unresolved"
+      ]
     },
     "notes": {
       "type": "string"
@@ -162,7 +156,7 @@
       "if": {
         "properties": {
           "status": {
-            "const": "selected"
+            "enum": ["candidate-pending-evidence", "selected", "candidate-evidence-unavailable"]
           }
         },
         "required": ["status"]
@@ -181,8 +175,11 @@
           "authority_url": {
             "$ref": "#/$defs/httpsUrl"
           },
-          "source_request_id": {
-            "$ref": "#/$defs/requestIdentifier"
+          "manufacturer_request_id": {
+            "$ref": "#/$defs/manufacturerRequestIdentifier"
+          },
+          "availability_request_id": {
+            "$ref": "#/$defs/availabilityRequestIdentifier"
           },
           "generic_policy": {
             "const": null
@@ -208,12 +205,15 @@
             "const": null
           },
           "selection_rationale": {
-            "$ref": "#/$defs/nonEmptyString"
+            "const": null
           },
           "authority_url": {
             "const": null
           },
-          "source_request_id": {
+          "manufacturer_request_id": {
+            "const": null
+          },
+          "availability_request_id": {
             "const": null
           },
           "generic_policy": {
@@ -245,7 +245,10 @@
           "authority_url": {
             "const": null
           },
-          "source_request_id": {
+          "manufacturer_request_id": {
+            "const": null
+          },
+          "availability_request_id": {
             "const": null
           },
           "generic_policy": {

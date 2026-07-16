@@ -1,0 +1,12 @@
+{
+  "id": "rear-usb-c",
+  "direction": "bidirectional",
+  "signals": ["USB2-D+", "USB2-D-"],
+  "power_domains": ["usb-vbus-raw"],
+  "powered_behavior": "Powered behavior.",
+  "unpowered_behavior": "Unpowered behavior.",
+  "protection_method": "Protection method.",
+  "backfeed_rule": "Backfeed is blocked.",
+  "evidence_ids": [],
+  "notes": "A connector ID cannot occupy the expansion partition."
+}

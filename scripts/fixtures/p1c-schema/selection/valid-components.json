@@ -1,0 +1,83 @@
+[
+  {
+    "block": "power-protection",
+    "requirements": ["REQT-POWER-REVERSE-CURRENT"],
+    "manufacturer": "Example Semiconductor",
+    "mpn": "EX1234",
+    "alternatives": [],
+    "selection_rationale": "Provisional candidate satisfies the recorded requirements.",
+    "authority_url": "https://manufacturer.example/components/ex1234",
+    "manufacturer_request_id": "REQ-POWER-PROTECTION-MFR",
+    "availability_request_id": "REQ-POWER-PROTECTION-UK",
+    "generic_policy": null,
+    "status": "candidate-pending-evidence",
+    "notes": ""
+  },
+  {
+    "block": "optical-rx",
+    "requirements": ["REQT-OPTICAL-RX-LOGIC-HIGH"],
+    "manufacturer": "Cliff Electronic Components",
+    "mpn": "ORJ5",
+    "alternatives": [
+      {
+        "manufacturer": "Alternative Optics",
+        "mpn": "ALT-RX",
+        "selection_rationale": "Meets the same optical and logic requirements.",
+        "authority_url": "https://manufacturer.example/components/alt-rx"
+      }
+    ],
+    "selection_rationale": "The archived manufacturer drawing supports this selection.",
+    "authority_url": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+    "manufacturer_request_id": "REQ-OPTICAL-RX-MFR",
+    "availability_request_id": "REQ-OPTICAL-RX-UK",
+    "generic_policy": null,
+    "status": "selected",
+    "notes": ""
+  },
+  {
+    "block": "ethernet-magjack",
+    "requirements": ["REQT-ETHERNET-MAGJACK-PINOUT"],
+    "manufacturer": "Example Connectors",
+    "mpn": "MAG-1",
+    "alternatives": [],
+    "selection_rationale": "The candidate remains explicit despite unavailable evidence.",
+    "authority_url": "https://manufacturer.example/components/mag-1",
+    "manufacturer_request_id": "REQ-ETHERNET-MAGJACK-MFR",
+    "availability_request_id": "REQ-ETHERNET-MAGJACK-UK",
+    "generic_policy": null,
+    "status": "candidate-evidence-unavailable",
+    "notes": "Manufacturer evidence could not be acquired."
+  },
+  {
+    "block": "logic-decoupling-capacitor",
+    "requirements": ["REQT-LOGIC-DECOUPLING"],
+    "manufacturer": null,
+    "mpn": null,
+    "alternatives": [],
+    "selection_rationale": null,
+    "authority_url": null,
+    "manufacturer_request_id": null,
+    "availability_request_id": null,
+    "generic_policy": {
+      "value": "100 nF",
+      "package": "0603",
+      "tolerance": "10%"
+    },
+    "status": "generic-allowance",
+    "notes": ""
+  },
+  {
+    "block": "status-indicator",
+    "requirements": ["REQT-STATUS-INDICATOR"],
+    "manufacturer": null,
+    "mpn": null,
+    "alternatives": [],
+    "selection_rationale": "The dependent feature remains blocked pending a safe choice.",
+    "authority_url": null,
+    "manufacturer_request_id": null,
+    "availability_request_id": null,
+    "generic_policy": null,
+    "status": "unresolved",
+    "notes": ""
+  }
+]

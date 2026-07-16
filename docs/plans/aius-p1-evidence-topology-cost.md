@@ -1785,6 +1785,7 @@ schema authority. Existing assumption records remain schema-compatible.
 
 ```yaml
 phase: P1C0a
+status: completed
 unit: schema-contract
 seams: [canonical architecture JSON, atomic selection records]
 contract-artifact: both
@@ -1826,6 +1827,13 @@ policy instance. P1C1b owns and commits the exact requirement and engineering
 policy registries, per-family mappings, allowed-status sets, dependent-feature
 values, request/source IDs, and file slugs. The `architecture` validator stage
 then enforces that instance against the exact family list in this plan.
+
+Completed 2026-07-16. The three disjoint schema owners delivered the canonical
+functional topology, interface/state, component, source-request, and selection
+policy contracts plus focused fixtures. Sixteen functional, 15 interface/state,
+and 31 selection/status tests pass; the current six assumptions exactly match
+their fragments; broad pinned-Prettier parity and the clean-room delivery audit
+passed.
 
 ### P1C0b — Validator and deterministic renderers
 

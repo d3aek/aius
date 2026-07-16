@@ -1,0 +1,15 @@
+{
+  "request_id": "REQ-POWER-PROTECTION-UK",
+  "request_kind": "uk-availability",
+  "family": "power-protection",
+  "requirements": ["REQT-POWER-REVERSE-CURRENT"],
+  "authority_url": "https://uk-distributor.example/products/ex1234",
+  "selected_manufacturer": "Example Semiconductor",
+  "selected_mpn": "EX1234",
+  "source_id": "AIUS-POWER-PROTECTION-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "pending",
+  "evidence_ids": [],
+  "notes": ""
+}

@@ -10,9 +10,32 @@
       "type": "string",
       "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$"
     },
-    "requestIdentifier": {
+    "requirementIdentifier": {
       "type": "string",
-      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+      "pattern": "^REQT-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "manufacturerRequestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*-MFR$"
+    },
+    "availabilityRequestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*-UK$"
+    },
+    "manufacturerSourceIdentifier": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^AIUS-[A-Z0-9]+(?:-[A-Z0-9]+)*-MFR$"
+        },
+        {
+          "enum": ["CLIFF-ORJ5", "CLIFF-OTJ5"]
+        }
+      ]
+    },
+    "availabilitySourceIdentifier": {
+      "type": "string",
+      "pattern": "^AIUS-[A-Z0-9]+(?:-[A-Z0-9]+)*-UK$"
     },
     "slug": {
       "type": "string",
@@ -23,10 +46,10 @@
       "pattern": "^https://[^\\s]+$",
       "format": "uri"
     },
-    "nonEmptyUniqueStrings": {
+    "requirements": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/nonEmptyString"
+        "$ref": "#/$defs/requirementIdentifier"
       },
       "minItems": 1,
       "uniqueItems": true
@@ -42,6 +65,7 @@
   "type": "object",
   "required": [
     "request_id",
+    "request_kind",
     "family",
     "requirements",
     "authority_url",
@@ -49,19 +73,26 @@
     "selected_mpn",
     "source_id",
     "artifact_kinds",
+    "retention",
     "status",
     "evidence_ids",
     "notes"
   ],
   "properties": {
     "request_id": {
-      "$ref": "#/$defs/requestIdentifier"
+      "anyOf": [
+        { "$ref": "#/$defs/manufacturerRequestIdentifier" },
+        { "$ref": "#/$defs/availabilityRequestIdentifier" }
+      ]
+    },
+    "request_kind": {
+      "enum": ["manufacturer-evidence", "uk-availability"]
     },
     "family": {
       "$ref": "#/$defs/slug"
     },
     "requirements": {
-      "$ref": "#/$defs/nonEmptyUniqueStrings"
+      "$ref": "#/$defs/requirements"
     },
     "authority_url": {
       "$ref": "#/$defs/httpsUrl"
@@ -78,18 +109,13 @@
     "artifact_kinds": {
       "type": "array",
       "items": {
-        "enum": [
-          "datasheet",
-          "drawing",
-          "cad",
-          "product-page",
-          "price-observation",
-          "source-snapshot",
-          "reference-design"
-        ]
+        "enum": ["datasheet", "drawing", "cad", "product-page", "reference-design", "price-observation"]
       },
       "minItems": 1,
       "uniqueItems": true
+    },
+    "retention": {
+      "enum": ["archive", "normalized-observation-only"]
     },
     "status": {
       "enum": ["pending", "satisfied", "unavailable"]
@@ -103,6 +129,63 @@
   },
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "request_kind": {
+            "const": "manufacturer-evidence"
+          }
+        },
+        "required": ["request_kind"]
+      },
+      "then": {
+        "properties": {
+          "request_id": {
+            "$ref": "#/$defs/manufacturerRequestIdentifier"
+          },
+          "source_id": {
+            "$ref": "#/$defs/manufacturerSourceIdentifier"
+          },
+          "artifact_kinds": {
+            "type": "array",
+            "items": {
+              "enum": ["datasheet", "drawing", "cad", "product-page", "reference-design"]
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "retention": {
+            "const": "archive"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "request_kind": {
+            "const": "uk-availability"
+          }
+        },
+        "required": ["request_kind"]
+      },
+      "then": {
+        "properties": {
+          "request_id": {
+            "$ref": "#/$defs/availabilityRequestIdentifier"
+          },
+          "source_id": {
+            "$ref": "#/$defs/availabilitySourceIdentifier"
+          },
+          "artifact_kinds": {
+            "const": ["price-observation"]
+          },
+          "retention": {
+            "const": "normalized-observation-only"
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {
