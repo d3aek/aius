@@ -643,6 +643,7 @@ must exit `0`, print version `10.0.4`, and contain no cache permission warning.
 
 ```yaml
 phase: P1A5
+status: completed
 unit: kicad-runner
 seams: [ephemeral KiCad CLI, persistent cache]
 contract-artifact: both
@@ -662,6 +663,11 @@ commit-checkpoint:
   buildable: [digest-pinned ephemeral KiCad CLI from any working directory]
   parent-commit: "build(aius): add reproducible KiCad runner"
 ```
+
+Completed 2026-07-15. Compose rendering, ShellCheck, the hostile-environment
+wrapper suite, and the real digest-pinned KiCad run pass. The real run reports
+`10.0.4` without cache permission warnings and leaves no project container. The
+clean-room delivery audit passed with no discrepancies.
 
 ### Original combined P1A outline (superseded)
 
