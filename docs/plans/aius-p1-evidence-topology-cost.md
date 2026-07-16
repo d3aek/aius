@@ -2435,9 +2435,9 @@ with the exact ordered fields: `id: rtc-backup`, `source:
 remote-program-rtc`, consumers `teensy`, backfeed rule "The RTC backup input is
 isolated from teensy-3v3 and cannot power the core.", evidence
 `PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC`, and notes "External RTC
-backup battery domain." The interface schema already permits the row shape;
-the builder evidence bundle, exact ID-order oracle, cross-reference checks, and
-focused tests must all include it.
+backup battery domain." The interface schema's ordered power-domain enum gains
+`rtc-backup` immediately after `teensy-3v3`; the builder evidence bundle, exact
+ID-order oracle, cross-reference checks, and focused tests must all include it.
 
 ```yaml
 phase: P1C0c2
@@ -2449,6 +2449,10 @@ depends-on:
   - committed P1C1a normative instance and renderer view
   - current PJRC-TEENSY41-PINOUT and PJRC-TEENSY41-SCHEMATIC evidence
 fan-out:
+  - name: migrate-usb-rtc-schema
+    owned-paths:
+      - evidence/design/interfaces-and-states-schema.json
+      - scripts/test_interfaces_states_schema.py
   - name: migrate-usb-rtc-contract
     owned-paths:
       - scripts/build_p1c_architecture_contracts.py
@@ -2479,21 +2483,24 @@ commit-checkpoint:
   parent-commit: "fix(aius): correct usb and rtc power topology"
 ```
 
-The three tasks execute serially in listed order and remain one atomic phase
-commit. `migrate-usb-rtc-contract` updates the pure builder and tests first,
-runs `build_p1c_architecture_contracts.py --write` and `--check`, and owns all
-four outputs that command replaces. Its tests and direct before/after byte
+The four tasks execute serially in listed order and remain one atomic phase
+commit. `migrate-usb-rtc-schema` first adds only the exact ordered enum member;
+its focused schema tests reject omission, wrong insertion order, and an unknown
+power-domain ID while accepting the newly generated valid fixture.
+`migrate-usb-rtc-contract` then updates the pure builder and tests, runs
+`build_p1c_architecture_contracts.py --write` and `--check`, and owns all four
+outputs that command replaces. Its tests and direct before/after byte
 comparison prove the functional contract and functional valid fixture remain
 byte-identical. The migration rejects a base whose connector or power-domain
 ID order differs from the locked historical input, deep-copies before editing,
 and preserves all unmentioned values semantically.
 
-`enforce-usb-rtc-contract` then updates the exact ID/order and semantic
+`enforce-usb-rtc-contract` next updates the exact ID/order and semantic
 validator oracles against the generated contract. `materialize-usb-rtc-instance`
 copies the exact JSON value of the generated interface contract to the live
 instance, runs `render_p1.py interfaces-and-states --write`, then its own
 `--check`; it does not run the cumulative validator. The parent alone runs the
-full checkpoint after all three handoffs.
+full checkpoint after all four handoffs.
 
 Focused negatives cover the old data-only USB row, omitted or reordered
 `protected-5v` consumers, missing/wrong RTC domain position, wrong
