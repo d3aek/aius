@@ -2491,8 +2491,16 @@ commit. `migrate-usb-rtc-schema` first adds the exact ordered enum member,
 updates both collection cardinality bounds to 8, and adds the exact ordered
 membership clause. Its focused schema tests reject enum omission/order,
 cardinality 7 or 9, missing/reordered `contains`, and an unknown power-domain ID
-while accepting an in-memory eight-row migrated instance. It does not edit the
-generated fixture owned by the next task.
+while accepting an in-memory eight-row migrated instance. The schema-test
+module must remain independently green against either the pre-builder seven-row
+generated fixture or the post-builder eight-row fixture. A pure idempotent test
+helper deep-copies the loaded fixture: for the exact seven-row pre-builder shape
+it applies all locked Micro-B, protected-5v, remote-RTC, and rtc-backup changes;
+for the exact eight-row post-builder shape it verifies those values and returns
+an unchanged copy; any other shape fails the test setup. A focused regression
+constructs the exact seven-row pre-builder shape, migrates it, and validates it
+without reading a rewritten builder output. The task does not edit the generated
+fixture owned by the next task.
 `migrate-usb-rtc-contract` then updates the pure builder and tests, runs
 `build_p1c_architecture_contracts.py --write` and `--check`, and owns all four
 outputs that command replaces. Its tests and direct before/after byte
