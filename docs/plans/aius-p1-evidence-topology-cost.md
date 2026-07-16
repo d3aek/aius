@@ -4,7 +4,7 @@ type: plans
 scope: aius
 status: in-progress
 tags: [aius, evidence, topology, cost, hardware]
-updated: 2026-07-15
+updated: 2026-07-16
 toc: true
 ---
 
@@ -1491,99 +1491,307 @@ it from this authored commit.
 
 ## P1C — Functional topology and bounded component selection
 
-Create three independent contract artifacts:
+The first P1C clean-room gate returned `BLOCKED` on 2026-07-16. The original
+combined phase referenced a nonexistent validator, had no topology/state
+schemas or deterministic CSV renderer, ran selectors before their architecture
+inputs, combined multiple MPNs into single records, and allowed free-text
+requirements without evidence or policy bases. It also exposed a stale P1A test
+that still required the now-populated assumptions aggregate to be empty. The
+P1C0 through P1C3 contract below replaces that combined outline.
 
-- `docs/reference/functional-topology.md`: source/sink modes, blocks, channel
-  flow, data/control/power paths, clock domains, DMA/buffer ownership, and
-  latency boundaries;
-- `docs/reference/interfaces-and-states.md`: connector, control, expansion,
-  power-domain, operating-state, and fault-state inventories with safe outputs;
-- one schema-valid record in `evidence/design/components/` and one source request
-  in `evidence/manifest/requests/` for each selected electrical component
-  family, followed by coordinator-generated
-  `evidence/design/provisional-components.csv`;
+### Locked P1C architecture and safety decisions
 
-Selection is bounded to USB-C receptacle, internal USB-A receptacle, internal
-cable, USB ESD, 5 V protection/backfeed control, Cliff RX/TX, S/PDIF mux,
-transmitter gate/buffer, native-Ethernet magjack, Ethernet termination parts,
-socket headers, keyed expansion headers, and mechanical hardware. Each row has
-`block`, `requirements`, selected manufacturer and MPN, at most two alternatives,
-selection rationale, authority URL, source-request ID, status, and notes.
-Unselected safety- or signal-critical families block P1C. Generic passives may
-use a stated value/package/tolerance policy and an engineering allowance.
+The canonical architecture is JSON; Markdown and CSV are generated review
+views. The functional topology must contain these block IDs:
+`power-entry`, `usb-bridge`, `teensy`, `optical-rx`, `spdif-capture`,
+`input-classifier`, `dts-decoder`, `pcm-normalizer`, `downmix-eq`,
+`spdif-transmit`, `raw-bypass-mux`, `tx-gate`, `optical-tx`, `ethernet`, and
+`expansion`. It must contain modes `pcm-processed`, `dts-processed`,
+`diagnostic-raw-bypass`, `unsupported-muted`, and `fault-muted`; data, control,
+and sole-source power flows; recovered-S/PDIF, processing, transmit, USB, and
+Ethernet clock domains; DMA/buffer owners; and latency boundaries whose numeric
+budgets remain explicitly deferred to P6/P7 rather than invented in P1C.
+
+The interface/state contract must inventory rear USB-C, internal USB-A and
+Teensy Micro-B, both TOSLINK ports, Ethernet, microSD access, Program, status
+LED, remote Program/RTC, keyed I2C/control, SPI, UART/debug, I2S/TDM, USB-host,
+GPIO/ADC, and manufacturing-test interfaces. It must inventory raw USB VBUS,
+protected 5 V, Teensy 3.3 V, digital ground, chassis/shield, and expansion power
+domains. The following scenarios are mandatory and have these safe outcomes:
+
+| Scenario | Path select | Optical TX | Expansion | Additional contract |
+| --- | --- | --- | --- | --- |
+| Teensy absent, boot, reset, brownout, USB unplug | processed | disabled | high impedance or current-limited | Hardware pulls establish the state without firmware. |
+| Firmware crash | processed after watchdog reset | disabled after watchdog reset | high impedance or current-limited after reset | Record the bounded pre-reset residual interval; arm the independent watchdog before TX enable. |
+| Optical carrier loss | processed | disabled after debounce | unchanged safe configuration | Preserve the downstream DAC's optical-carrier power trigger. |
+| Unsupported burst or malformed input | processed | valid 48 kHz PCM silence only | unchanged safe configuration | Raw compressed data never reaches the DAC. |
+| Raw-bypass request | raw only after an explicit diagnostic request | disabled while switching, then explicitly enabled | unchanged safe configuration | Switch only while muted; reset always returns to processed and disabled. |
+| Unpowered expansion | processed | normal core policy | high impedance or current-limited | No back-power path and no loss of core processing. |
+
+USB-C is a sink-only USB 2.0 device entry with one 5 V source, separate CC1/CC2
+pull-downs, no source role, no Power Delivery, and no second VIN/VUSB feed. The
+power candidate must bound inrush, overload, thermal fault, input loss, and
+reverse-current/backfeed behavior. USB ESD must be appropriate for high-speed
+D+/D- and the two-layer 90-ohm route. P1C records the preliminary current
+envelope and defers final USB power compliance arithmetic to P1D.
+
+The optical receiver, mux, gate, and transmitter use a 3.3 V logic domain. The
+selection policy must account for ORJ5's 2.4 V minimum high output and OTJ5's
+2.0 V minimum high input, require at least 16 Mbit/s logic bandwidth, prevent
+driver contention, pull the mux to the processed path, pull TX enable inactive,
+and permit selection changes only while TX is disabled. Ethernet selection is
+for the Teensy 4.1 native DP83825 interface and must bind magjack turns ratio,
+pinout, centre taps, isolation, LEDs, shield, and the PJRC reference's 0.1 uF
+centre-tap capacitor. Connector requirements include lifecycle, manufacturer
+authority, UK authorized-distributor availability to be verified in P1D, MOQ,
+mating geometry, and Hammond-derived enclosure/cable clearance.
+
+Every requirement is a stable requirement ID declared in
+`evidence/design/selection-policy.json`. Each requirement cites at least one
+current seed evidence ID or a declared engineering-policy ID. Component and
+source-request records repeat only those IDs; cross-validation resolves the
+text and rejects unsupported additions. A selected MPN remains
+`candidate-pending-evidence` with a pending source request until P1D archives
+and validates its source. `selected` is reserved for a satisfied request.
+Generic allowances have one uniform value/package/tolerance and no source
+request. An unresolved critical family blocks P1C. Alternatives are unique and
+must not repeat the selected manufacturer/MPN.
+
+### P1C0a — Schema and policy vocabulary
 
 ```yaml
-phase: P1C
-unit: architecture-contract
-seams: [functional flow, interface states, component source requests]
+phase: P1C0a
+unit: schema-contract
+seams: [canonical architecture JSON, atomic selection records]
+contract-artifact: both
+fan-out:
+  - name: p1c-schema-contract
+    owned-paths:
+      - evidence/design/component-schema.json
+      - evidence/design/functional-topology-schema.json
+      - evidence/design/interfaces-and-states-schema.json
+      - evidence/design/selection-policy-schema.json
+      - evidence/manifest/source-request-schema.json
+      - scripts/fixtures/p1c-schema
+      - scripts/test_selection_schemas.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_selection_schemas.py
+    - node_modules/.bin/prettier --check "evidence/**/*.json" "scripts/fixtures/p1c-schema/**/*.json"
+  buildable: [machine-readable P1C artifact and status vocabulary]
+  parent-commit: "feat(aius): define P1C architecture contracts"
+```
+
+The stale empty-assumptions assertion is replaced by schema validation plus the
+same aggregate-to-fragment parity invariant used by P1B. The new schemas require
+the mandatory IDs and scenario coverage above. The selection-policy schema owns
+the exact family set, critical/generic eligibility, requirement matrix,
+engineering-policy registry, request/source IDs, and file slugs.
+
+### P1C0b — Validator and deterministic renderers
+
+```yaml
+phase: P1C0b
+unit: enforcement-tooling
+seams: [canonical JSON, generated review views]
+contract-artifact: both
+fan-out:
+  - name: p1-validator
+    owned-paths:
+      - scripts/validate_p1.py
+      - scripts/test_validate_p1.py
+      - scripts/fixtures/validate-p1
+  - name: p1-renderer
+    owned-paths:
+      - scripts/render_p1.py
+      - scripts/test_render_p1.py
+      - scripts/fixtures/render-p1
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/test_render_p1.py
+    - python3 scripts/validate_p1.py topology --stage contract
+  buildable: [executable P1C contract and reproducible review-view generation]
+  parent-commit: "feat(aius): enforce P1C architecture contracts"
+```
+
+`validate_p1.py` supports topology stages `contract`, `architecture-base`,
+`architecture`, `selection-fragments`, and `selection`. It validates schemas,
+mandatory IDs, exact expected file sets, citations, cross-document references,
+component/request equality, status transitions, critical-family resolution,
+and generated-view parity. Negative fixtures cover every invariant.
+
+`render_p1.py` has independent `functional-topology`,
+`interfaces-and-states`, and `components` write/check commands. It is the only
+writer for the two Markdown views and CSV. Markdown sections and tables have
+stable schema-defined ordering. The component CSV is UTF-8 RFC 4180 with LF,
+header order `block,status,critical,manufacturer,mpn,requirements,alternatives,selection_rationale,authority_url,source_request_id,generic_value,generic_package,generic_tolerance,notes`, rows sorted by `block`, compact sorted JSON for array/object cells, and empty strings for nulls. Tests include golden fixtures, escaping/newline cases, semantic parity, and stale-output rejection.
+
+### P1C1a — Functional topology and interface/state truth tables
+
+```yaml
+phase: P1C1a
+unit: architecture-instance
+seams: [functional flow, failure-state outputs]
 contract-artifact: both
 fan-out:
   - name: functional-flow
-    owned-paths: [docs/reference/functional-topology.md]
+    owned-paths:
+      - evidence/design/functional-topology.json
+      - docs/reference/functional-topology.md
   - name: interfaces-states
-    owned-paths: [docs/reference/interfaces-and-states.md]
+    owned-paths:
+      - evidence/design/interfaces-and-states.json
+      - docs/reference/interfaces-and-states.md
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/render_p1.py functional-topology --check
+    - python3 scripts/render_p1.py interfaces-and-states --check
+    - python3 scripts/validate_p1.py topology --stage architecture-base
+  buildable: [locked architecture IDs, flow ownership, and safe-state truth tables]
+  parent-commit: "docs(aius): lock functional and failure-state topology"
+```
+
+### P1C1b — Requirement and expected-family policy
+
+```yaml
+phase: P1C1b
+unit: selection-policy
+seams: [locked architecture, atomic selector inputs]
+contract-artifact: both
+fan-out:
+  - name: selection-policy
+    owned-paths: [evidence/design/selection-policy.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_p1.py topology --stage architecture
+  buildable: [finite evidence-backed atomic selection queue]
+  parent-commit: "docs(aius): bind component selection requirements"
+```
+
+The exact P1C2 family slugs are:
+
+- selected critical candidates: `usb-c-receptacle`, `usb-a-receptacle`,
+  `internal-usb-cable`, `usb-esd`, `usb-power-protection`, `cliff-rx`,
+  `cliff-tx`, `spdif-mux`, `spdif-tx-gate`, `ethernet-magjack`,
+  `teensy-side-socket`, `teensy-ethernet-socket`, and
+  `teensy-usb-host-socket`;
+- selected noncritical candidates: `expansion-i2c-control`, `expansion-spi`,
+  `expansion-uart-debug`, `expansion-i2s-tdm`, `expansion-usb-host`,
+  `expansion-gpio-adc`, `remote-program-rtc`, `test-fixture-header`, and
+  `mechanical-cable-retainer`;
+- generic allowances: `usb-c-cc-pulldown`, `logic-decoupling-capacitor`,
+  `logic-control-pulldown`, and `ethernet-center-tap-capacitor`.
+
+P1C1b must use exactly this set. Changing it requires a reviewed plan amendment,
+not an implementer-local split or merge.
+
+### P1C2 — Atomic component candidates and source requests
+
+Each selected-candidate task owns
+`evidence/design/components/<family>.json` and
+`evidence/manifest/requests/REQ-<FAMILY>.json`. Each generic task owns only its
+component record. The coordinator spawns one bounded task per slug from the
+locked list above; no task selects more than one MPN. At most three disjoint
+tasks run concurrently. Each task runs
+`validate_p1.py topology --stage selection-fragments --family <slug>` before
+handoff. Primary manufacturer material is required for the authority URL;
+current distributor availability is recorded as a P1D request, not inferred.
+
+```yaml
+phase: P1C2
+unit: single-atomic-family
+seams: [selection-policy family, component/request pair]
+contract-artifact: both
+fan-out:
   - name: select-usb-c-receptacle
-    owned-paths:
-      - evidence/design/components/usb-c-receptacle.json
-      - evidence/manifest/requests/REQ-USB-C-RECEPTACLE.json
+    owned-paths: [evidence/design/components/usb-c-receptacle.json, evidence/manifest/requests/REQ-USB-C-RECEPTACLE.json]
   - name: select-usb-a-receptacle
-    owned-paths:
-      - evidence/design/components/usb-a-receptacle.json
-      - evidence/manifest/requests/REQ-USB-A-RECEPTACLE.json
+    owned-paths: [evidence/design/components/usb-a-receptacle.json, evidence/manifest/requests/REQ-USB-A-RECEPTACLE.json]
   - name: select-internal-usb-cable
-    owned-paths:
-      - evidence/design/components/internal-usb-cable.json
-      - evidence/manifest/requests/REQ-INTERNAL-USB-CABLE.json
+    owned-paths: [evidence/design/components/internal-usb-cable.json, evidence/manifest/requests/REQ-INTERNAL-USB-CABLE.json]
   - name: select-usb-esd
-    owned-paths:
-      - evidence/design/components/usb-esd.json
-      - evidence/manifest/requests/REQ-USB-ESD.json
+    owned-paths: [evidence/design/components/usb-esd.json, evidence/manifest/requests/REQ-USB-ESD.json]
   - name: select-usb-power-protection
-    owned-paths:
-      - evidence/design/components/usb-power-protection.json
-      - evidence/manifest/requests/REQ-USB-POWER-PROTECTION.json
-  - name: select-cliff-optics
-    owned-paths:
-      - evidence/design/components/cliff-optics.json
-      - evidence/manifest/requests/REQ-CLIFF-OPTICS.json
+    owned-paths: [evidence/design/components/usb-power-protection.json, evidence/manifest/requests/REQ-USB-POWER-PROTECTION.json]
+  - name: select-cliff-rx
+    owned-paths: [evidence/design/components/cliff-rx.json, evidence/manifest/requests/REQ-CLIFF-RX.json]
+  - name: select-cliff-tx
+    owned-paths: [evidence/design/components/cliff-tx.json, evidence/manifest/requests/REQ-CLIFF-TX.json]
   - name: select-spdif-mux
-    owned-paths:
-      - evidence/design/components/spdif-mux.json
-      - evidence/manifest/requests/REQ-SPDIF-MUX.json
+    owned-paths: [evidence/design/components/spdif-mux.json, evidence/manifest/requests/REQ-SPDIF-MUX.json]
   - name: select-spdif-tx-gate
-    owned-paths:
-      - evidence/design/components/spdif-tx-gate.json
-      - evidence/manifest/requests/REQ-SPDIF-TX-GATE.json
+    owned-paths: [evidence/design/components/spdif-tx-gate.json, evidence/manifest/requests/REQ-SPDIF-TX-GATE.json]
   - name: select-ethernet-magjack
-    owned-paths:
-      - evidence/design/components/ethernet-magjack.json
-      - evidence/manifest/requests/REQ-ETHERNET-MAGJACK.json
-  - name: select-ethernet-termination
-    owned-paths:
-      - evidence/design/components/ethernet-termination.json
-      - evidence/manifest/requests/REQ-ETHERNET-TERMINATION.json
-  - name: select-teensy-sockets
-    owned-paths:
-      - evidence/design/components/teensy-sockets.json
-      - evidence/manifest/requests/REQ-TEENSY-SOCKETS.json
-  - name: select-expansion-connectors
-    owned-paths:
-      - evidence/design/components/expansion-connectors.json
-      - evidence/manifest/requests/REQ-EXPANSION-CONNECTORS.json
-  - name: select-mechanical-hardware
-    owned-paths:
-      - evidence/design/components/mechanical-hardware.json
-      - evidence/manifest/requests/REQ-MECHANICAL-HARDWARE.json
+    owned-paths: [evidence/design/components/ethernet-magjack.json, evidence/manifest/requests/REQ-ETHERNET-MAGJACK.json]
+  - name: select-teensy-side-socket
+    owned-paths: [evidence/design/components/teensy-side-socket.json, evidence/manifest/requests/REQ-TEENSY-SIDE-SOCKET.json]
+  - name: select-teensy-ethernet-socket
+    owned-paths: [evidence/design/components/teensy-ethernet-socket.json, evidence/manifest/requests/REQ-TEENSY-ETHERNET-SOCKET.json]
+  - name: select-teensy-usb-host-socket
+    owned-paths: [evidence/design/components/teensy-usb-host-socket.json, evidence/manifest/requests/REQ-TEENSY-USB-HOST-SOCKET.json]
+  - name: select-expansion-i2c-control
+    owned-paths: [evidence/design/components/expansion-i2c-control.json, evidence/manifest/requests/REQ-EXPANSION-I2C-CONTROL.json]
+  - name: select-expansion-spi
+    owned-paths: [evidence/design/components/expansion-spi.json, evidence/manifest/requests/REQ-EXPANSION-SPI.json]
+  - name: select-expansion-uart-debug
+    owned-paths: [evidence/design/components/expansion-uart-debug.json, evidence/manifest/requests/REQ-EXPANSION-UART-DEBUG.json]
+  - name: select-expansion-i2s-tdm
+    owned-paths: [evidence/design/components/expansion-i2s-tdm.json, evidence/manifest/requests/REQ-EXPANSION-I2S-TDM.json]
+  - name: select-expansion-usb-host
+    owned-paths: [evidence/design/components/expansion-usb-host.json, evidence/manifest/requests/REQ-EXPANSION-USB-HOST.json]
+  - name: select-expansion-gpio-adc
+    owned-paths: [evidence/design/components/expansion-gpio-adc.json, evidence/manifest/requests/REQ-EXPANSION-GPIO-ADC.json]
+  - name: select-remote-program-rtc
+    owned-paths: [evidence/design/components/remote-program-rtc.json, evidence/manifest/requests/REQ-REMOTE-PROGRAM-RTC.json]
+  - name: select-test-fixture-header
+    owned-paths: [evidence/design/components/test-fixture-header.json, evidence/manifest/requests/REQ-TEST-FIXTURE-HEADER.json]
+  - name: select-mechanical-cable-retainer
+    owned-paths: [evidence/design/components/mechanical-cable-retainer.json, evidence/manifest/requests/REQ-MECHANICAL-CABLE-RETAINER.json]
+  - name: allow-usb-c-cc-pulldown
+    owned-paths: [evidence/design/components/usb-c-cc-pulldown.json]
+  - name: allow-logic-decoupling-capacitor
+    owned-paths: [evidence/design/components/logic-decoupling-capacitor.json]
+  - name: allow-logic-control-pulldown
+    owned-paths: [evidence/design/components/logic-control-pulldown.json]
+  - name: allow-ethernet-center-tap-capacitor
+    owned-paths: [evidence/design/components/ethernet-center-tap-capacitor.json]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_p1.py topology --stage selection-fragments
+  buildable: [complete atomic candidate set and finite supplemental source queue]
+  parent-commit: "docs(aius): select provisional component candidates"
+```
+
+### P1C3 — Deterministic provisional component view
+
+```yaml
+phase: P1C3
+unit: component-selection-coordinator
+seams: [validated atomic records, generated CSV]
+contract-artifact: both
+fan-out:
   - name: component-selection-coordinator
     owned-paths: [evidence/design/provisional-components.csv]
 review-intensity: active
 commit-checkpoint:
   green:
+    - python3 scripts/render_p1.py components --write
+    - python3 scripts/render_p1.py components --check
     - python3 scripts/validate_p1.py topology --stage selection
     - the repo tooling tool doc-index -- --check
   buildable: [locked functional topology and finite supplemental source queue]
   parent-commit: "docs(aius): lock functional topology and component candidates"
 ```
+
+P1C3 runs only after every P1C2 handoff is committed. An already-dirty or stale
+foreign generated documentation index remains nonblocking under repository
+policy and is recorded in the phase note rather than joined to the commit.
 
 ## P1D — Supplemental evidence and electrical reference
 
