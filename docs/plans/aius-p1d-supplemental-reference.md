@@ -20,11 +20,11 @@ current tree.
 
 ## Pre-build gate status
 
-Clean-room Gate 10 at commit `6e78fb98b` returned `BLOCKED` after confirming the
-current validator baseline and realization oracle. It found no public
-future-power-reference oracle, conflicting schematic paths, incomplete release,
-purchase and EVT hash binding, prose-only checkpoints, false stub declarations,
-and oversized H2b/H4 execution tasks. This revision incorporates those findings.
+Clean-room Gate 11 at commit `ae817c1d4` returned `BLOCKED` while explicitly
+confirming P1C5a0 implementation readiness. It found one H2b schema-path typo,
+false P2/P6 stub declarations, ambiguous H4 input/output CLI semantics, a
+rewritable final purchase preflight, and a non-deterministic EVT equipment list.
+This revision incorporates those findings.
 Implementation remains blocked until a fresh clean-room review passes the
 amended plans, literal realization oracle and current code.
 

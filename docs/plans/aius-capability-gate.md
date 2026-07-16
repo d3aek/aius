@@ -288,32 +288,63 @@ An independent reviewer checks every reference-schematic pin and electrical clai
 Commit the C ABI stubs before implementation fan-out. Generate deterministic, redistributable multichannel PCM sources independently of DTS tooling, including independent tones, impulses, silence, phase inversions, and channel-identification sequences. Record generator command, tool revision, input and output hashes, expected channel metadata, and redistribution status.
 
 ```yaml
-phase: P2
+phase: P2a
+unit: test-surface
+seams: [versioned C ABI headers, arena boundary, native test entrypoint]
+contract-artifact: spec-only
+fan-out:
+  - name: codec-api-stubs
+    owned-paths:
+      - firmware/lib/aius_codec_api/include/aius_codec.h
+      - firmware/lib/aius_codec_api/include/aius_arena.h
+      - firmware/contracts/codec-api-v1.json
+      - firmware/test/codec-api/test_codec_api_contract.c
+      - firmware/scripts/test.sh
+review-intensity: active
+commit-checkpoint:
+  green:
+    - shellcheck firmware/scripts/test.sh
+    - firmware/scripts/test.sh --environment native --suite codec-api-contract
+  buildable: [committed compile-proven codec and arena stubs]
+  parent-commit: "feat(aius): commit portable codec stubs"
+```
+
+```yaml
+phase: P2b
 unit: test-surface
 seams: [versioned codec ABI, arena contract, deterministic PCM manifest]
 contract-artifact: stubs-committed
+depends-on:
+  - firmware/lib/aius_codec_api/include/aius_codec.h
+  - firmware/lib/aius_codec_api/include/aius_arena.h
+  - firmware/contracts/codec-api-v1.json
+  - firmware/scripts/test.sh
 fan-out:
-  - name: codec-contract
-    owned-paths: [firmware/lib/aius_codec_api]
+  - name: codec-contract-implementation
+    owned-paths:
+      - firmware/lib/aius_codec_api/src
+      - firmware/test/codec-api/test_codec_api.c
   - name: pcm-generator
     owned-paths: [firmware/tools/pcm_corpus]
-  - name: native-test-entrypoint
+  - name: codec-test-entrypoint-extension
     owned-paths: [firmware/scripts/test.sh]
 review-intensity: active
 commit-checkpoint:
   green:
+    - shellcheck firmware/scripts/test.sh
     - firmware/scripts/test.sh --environment native --suite codec-api
     - python3 firmware/tools/pcm_corpus/generate.py --check
   buildable: [portable ABI and source corpus]
   parent-commit: "feat(aius): define portable codec contract"
 ```
 
-The native test entrypoint is foreground-only, resolves the Aius root from its
+The P2a native test entrypoint is foreground-only, resolves the Aius root from its
 own path, and accepts exactly `--environment native --suite <suite>` plus
 `--runs <positive-integer>` only for a fuzz suite. It rejects unknown suites or
-arguments with exit 2 and propagates the selected test executable's exit. P2
-lands `codec-api`; P3 adds `iec61937` and `iec61937-fuzz`; P4 adds `dts`,
-`dts-sanitized`, and `dts-fuzz`; P6 adds `capability-protocol`. Each phase's
+arguments with exit 2 and propagates the selected test executable's exit. P2a
+lands `codec-api-contract`; P2b adds `codec-api`; P3 adds `iec61937` and `iec61937-fuzz`; P4 adds `dts`,
+`dts-sanitized`, and `dts-fuzz`; P6a0 adds `capability-protocol-contract` and
+P6a1 adds `capability-protocol`. Each phase's
 tests command-shim the entrypoint and prove CWD independence, exact executable
 argv, bounded fuzz run count and exit propagation.
 
@@ -335,9 +366,12 @@ fan-out:
     owned-paths: [firmware/tools/iec_corpus]
   - name: parser-tests
     owned-paths: [firmware/test/iec61937]
+  - name: parser-test-entrypoint-extension
+    owned-paths: [firmware/scripts/test.sh]
 review-intensity: active
 commit-checkpoint:
   green:
+    - shellcheck firmware/scripts/test.sh
     - firmware/scripts/test.sh --environment native --suite iec61937
     - firmware/scripts/test.sh --environment native --suite iec61937-fuzz --runs 10000
   buildable: [host IEC 61937 parser]
@@ -366,9 +400,12 @@ fan-out:
     owned-paths: [firmware/test/dts]
   - name: differential-runner
     owned-paths: [firmware/tools/differential]
+  - name: dts-test-entrypoint-extension
+    owned-paths: [firmware/scripts/test.sh]
 review-intensity: active
 commit-checkpoint:
   green:
+    - shellcheck firmware/scripts/test.sh
     - firmware/scripts/test.sh --environment native --suite dts
     - firmware/scripts/test.sh --environment native --suite dts-sanitized
     - firmware/scripts/test.sh --environment native --suite dts-fuzz --runs 10000
@@ -437,20 +474,53 @@ wrappers in that exact order.
 Implement the locked USB protocol, retained crash-report path, simulated device, host controller, and golden byte vectors. The host runner persists raw commands, results, version identity, build hash, metrics, and errors so a test can be audited without rerunning it.
 
 ```yaml
-phase: P6
-unit: component-behind-interface
-seams: [capability protocol, structured diagnostic stream]
-contract-artifact: stubs-committed
+phase: P6a0
+unit: test-surface
+seams: [versioned USB capability protocol, golden wire vectors, compile-proven device interface]
+contract-artifact: spec-only
+depends-on:
+  - firmware/scripts/test.sh
 fan-out:
-  - name: device-protocol
-    owned-paths: [firmware/src/capability]
-  - name: host-controller
-    owned-paths: [firmware/tools/device]
-  - name: protocol-tests
-    owned-paths: [firmware/test/protocol]
+  - name: capability-protocol-stubs
+    owned-paths:
+      - firmware/src/capability/capability_protocol.h
+      - firmware/contracts/capability-protocol-v1.json
+      - firmware/test/protocol/golden/protocol-v1.json
+      - firmware/test/protocol/test_protocol_contract.cpp
+      - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
   green:
+    - shellcheck firmware/scripts/test.sh
+    - firmware/scripts/test.sh --environment native --suite capability-protocol-contract
+  buildable: [committed capability protocol stubs and exact wire vectors]
+  parent-commit: "feat(aius): commit capability protocol stubs"
+```
+
+```yaml
+phase: P6a1
+unit: component-behind-interface
+seams: [capability protocol, structured diagnostic stream]
+contract-artifact: stubs-committed
+depends-on:
+  - firmware/src/capability/capability_protocol.h
+  - firmware/contracts/capability-protocol-v1.json
+  - firmware/test/protocol/golden/protocol-v1.json
+fan-out:
+  - name: device-protocol
+    owned-paths:
+      - firmware/src/capability/capability_protocol.cpp
+      - firmware/src/capability/capability_runner.cpp
+  - name: host-controller
+    owned-paths: [firmware/tools/device]
+  - name: protocol-tests
+    owned-paths: [firmware/test/protocol/runtime]
+  - name: capability-test-entrypoint-extension
+    owned-paths: [firmware/scripts/test.sh]
+review-intensity: active
+commit-checkpoint:
+  green:
+    - shellcheck firmware/scripts/test.sh
     - firmware/scripts/test.sh --environment native --suite capability-protocol
     - scripts/test.sh Aius.Firmware
     - firmware/scripts/build.sh --environment teensy41-release --check

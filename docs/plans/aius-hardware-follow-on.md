@@ -427,8 +427,9 @@ unique IDs, and end with string `notes`. The ordered artifact contracts are:
 | `prototype-quotation.json` | `schema_version`, `vendor`, `configuration_sha256`, `bare_board_quantity`, `assembled_quantity`, `two_layer_gbp_ex_vat`, `four_layer_gbp_ex_vat`, `assembly_gbp_ex_vat`, `components_gbp_ex_vat`, `freight_gbp`, `vat_gbp`, `duty_gbp`, `landed_gbp`, `currency`, `quotation_status`, `substitutions`, `evidence_ids`, `notes`; status is `complete` or `incomplete`; substitution rows key `substitution_id`, `requested_mpn`, `proposed_mpn`, `decision`, `evidence_ids`, `notes`, with decision `approved`, `rejected` or `pending` |
 | `order-authorization.json` | `schema_version`, `decision`, `order_configuration_sha256`, `quotation_sha256`, `h3c_verdict_sha256`, `quote_artifact_sha256`, `preview_artifact_sha256`, `manufacturing_manifest_sha256`, `manufacturing_checksums_sha256`, `manufacturing_archive_sha256`, `authorized_quantity`, `shipping_postcode`, `notes` |
 | `prepurchase-verdict.json` | `schema_version`, `state`, `input_sha256`, `authorized_quantity`, `shipping_postcode`, `notes`; state is exactly `ready`, and `input_sha256` has exact lexical keys `authorization`, `h3c-verdict`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-configuration`, `preview-artifact`, `prototype-quotation`, `quote-artifact` |
-| `order-receipt.json` | `schema_version`, `vendor`, `vendor_order_id`, `invoice_id`, `prepurchase_verdict_sha256`, `order_authorization_sha256`, `order_configuration_sha256`, `order_confirmation_sha256`, `invoice_sha256`, `manufacturing_archive_sha256`, `ordered_quantity`, `shipping_postcode`, `state`, `notes`; state is exactly `placed` and both external IDs are non-empty |
-| `evt-plan.json` | `schema_version`, `order_authorization_sha256`, `order_receipt_sha256`, `manufacturing_manifest_sha256`, `manufacturing_checksums_sha256`, `manufacturing_archive_sha256`, `procedure_contract_sha256`, `gate_oracle_sha256`, `p7_verdict_sha256`, `firmware_release_sha256`, `firmware_image_sha256`, `procedure_ids`, `acceptance_ids`, `equipment_ids`, `notes` |
+| `purchase-execution-authorization.json` | `schema_version`, `decision`, `prepurchase_verdict_sha256`, `authorized_quantity`, `shipping_postcode`, `notes`; decision is `place` or `cancelled`, and only `place` authorizes H3e2 |
+| `order-receipt.json` | `schema_version`, `vendor`, `vendor_order_id`, `invoice_id`, `prepurchase_verdict_sha256`, `purchase_execution_authorization_sha256`, `order_authorization_sha256`, `order_configuration_sha256`, `order_confirmation_sha256`, `invoice_sha256`, `manufacturing_archive_sha256`, `ordered_quantity`, `shipping_postcode`, `state`, `notes`; state is exactly `placed` and both external IDs are non-empty |
+| `evt-plan.json` | `schema_version`, `order_authorization_sha256`, `purchase_execution_authorization_sha256`, `order_receipt_sha256`, `manufacturing_manifest_sha256`, `manufacturing_checksums_sha256`, `manufacturing_archive_sha256`, `procedure_contract_sha256`, `gate_oracle_sha256`, `p7_verdict_sha256`, `firmware_release_sha256`, `firmware_image_sha256`, `procedure_ids`, `acceptance_ids`, `equipment_ids`, `notes` |
 | `unit-roster.json` | `schema_version`, `units`, `notes`; rows key `unit_id`, `board_serial`, `receipt_evidence_ids`, `notes`, with exact unit IDs `unit-01`, `unit-02`, `unit-03` and unique non-empty board serials |
 | EVT procedure capture | `schema_version`, `procedure_id`, `unit_results`, `measurements`, `notes`; one file per locked procedure; unit rows key `unit_id`, `status`, `measurement_ids`, `evidence_ids`, `notes`, with exactly one row for each roster unit; measurement rows use the final `measurements.csv` columns and are restricted to that procedure |
 | EVT unit file | `schema_version`, `unit_id`, `board_serial`, `inspection_status`, `procedure_results`, `notes`; procedure rows key `procedure_id`, `status`, `measurement_ids`, `evidence_ids`, `notes` |
@@ -480,7 +481,7 @@ codes are:
 | `h2a-gate` | `board-outline`, `cable-envelope`, `component-placement` | `eligible`, `blocked` | `assembly-access`, `cable-bend`, `guide-fit`, `insertion-access`, `outline-over-limit`, `placement-collision` |
 | `h2b-gate` | `h2a-verdict`, `impedance-calculations`, `layer-decision`, `routing-study`, `vendor-stackup` | `two-layer`, `four-layer-required`, `blocked` | `impedance-unmet`, `mechanical-input-blocked`, `plane-cut`, `return-path`, `route-length`, `vendor-stackup-unavailable`, `via-count` |
 | `h3c-quote` | `h2b-verdict`, `landed-prototype-cost`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-configuration`, `preview-artifact`, `prototype-quotation`, `quote-artifact`, `risk-register`, `should-cost` | `quoted`, `blocked` | `landed-cost-unreconciled`, `quantity-mismatch`, `quote-incomplete`, `substitution-unapproved` |
-| `h4-gate` | `capability-firmware`, `capability-release-manifest`, `defects`, `eco-log`, `evt-plan`, `h3c-verdict`, `h4-gate-oracle`, `h4-procedure-contract`, `invoice-artifact`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `measurements`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `p7-verdict`, `prepurchase-verdict`, `preview-artifact`, `procedure-captures`, `prototype-quotation`, `quote-artifact`, `unit-01`, `unit-02`, `unit-03`, `unit-roster` | `pass`, `blocked` | `eco-open`, `ethernet`, `inspection`, `optical`, `power-rail`, `recovery`, `regression`, `reset-safe-state`, `short-circuit`, `spdif`, `thermal`, `usb` |
+| `h4-gate` | `capability-firmware`, `capability-release-manifest`, `defects`, `eco-log`, `evt-plan`, `h3c-verdict`, `h4-gate-oracle`, `h4-procedure-contract`, `invoice-artifact`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `measurements`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `p7-verdict`, `prepurchase-verdict`, `preview-artifact`, `procedure-captures`, `prototype-quotation`, `purchase-execution-authorization`, `quote-artifact`, `unit-01`, `unit-02`, `unit-03`, `unit-roster` | `pass`, `blocked` | `eco-open`, `ethernet`, `inspection`, `optical`, `power-rail`, `recovery`, `regression`, `reset-safe-state`, `short-circuit`, `spdif`, `thermal`, `usb` |
 | `h5-gate` | `audio-measurements`, `eco-log`, `firmware-release`, `h4-verdict`, `h5-gate-oracle`, `h5-test-contract`, `precompliance-results`, `soak-results`, `test-matrix`, `thermal-fault-results`, `timing-memory` | `pass`, `blocked` | `audio-matrix`, `buffer-recovery`, `clock-drift`, `eco-open`, `emc`, `fault`, `headroom`, `latency`, `production-test`, `repeatability`, `soak`, `thermal`, `word-integrity` |
 
 Every verdict invocation first reruns every structural stage named by its input
@@ -559,19 +560,35 @@ every early-stage field, reason code, verdict, hash mismatch, diagnostic and
 exit plus H4/H5 structural shapes. H4b and H5b1 extend it with every fixed
 physical-test reason code before those gates become executable.
 
-`validate_hardware.py` accepts `--stage` plus an optional `--record` path. Every
-stage first validates structure and references. Verdict stages return 0 for the
+`validate_hardware.py` accepts `--stage`; read-only single-record stages accept
+optional `--input`, while deterministic projection stages accept optional
+`--record`. Every stage first validates structure and references. Verdict stages return 0 for the
 named eligible/pass branch, 3 for a structurally valid blocked branch, and 4
 only for H2b's structurally valid `four-layer-required` branch. Diagnostics are
 sorted unique `AIUS-HW-BLOCKED:<stage>:<record-id>:<reason-code>` lines only.
 Exit 4 instead emits sorted unique
 `AIUS-HW-FOUR-LAYER:<record-id>:<reason-code>` lines only.
-`--record` atomically writes the exact deterministic verdict selected by the
-same evaluation; no timestamp or Git identity is permitted.
+`--record` is valid only for ordinary verdict stages, `h1-stubs --lock`,
+`h3d-authorization --decision`, and `h3e-prepurchase`; it atomically writes the
+exact deterministic projection selected by the same evaluation, and no
+timestamp or Git identity is permitted. Every other use is argument exit 2.
+`--input` never writes: it selects the authored physical/design record to
+validate and is valid only for `h4-criteria`, `h4-procedure`, `h5-criteria`,
+`h3e-execution-authorization`, `h3e-order`, and
+`h3e-prepurchase-current`. `h3e-prepurchase-current` additionally requires
+`--execution-authorization <path>`; that option is invalid for every other
+stage. When an input is omitted,
+those stages read their canonical path. A path supplied to any path option uses
+the repository-root-constrained resolution contract and rejects escape or a
+directory with exit 2.
 The validator rejects `h4-gate` until the H4 criteria and oracle hashes resolve,
 and rejects `h5-gate` until the equivalent H5 inputs resolve.
+`h3e-execution-authorization` and `h3e-prepurchase-current` are read-only
+authorization gates: schema/reference failure exits 1, an authorized exact match
+exits 0, and cancelled/stale authority exits 3 with the exact diagnostic defined
+in its phase/table row.
 
-Every non-verdict structural stage is read-only, returns 0 with no diagnostic on
+Every other non-projection structural stage is read-only, returns 0 with no diagnostic on
 success, and returns 1 with sorted unique exact lines
 `AIUS-HW-STRUCTURAL:<stage>:<artifact-key>:<code>` on failure. The closed code
 enum is `arithmetic`, `duplicate`, `hash`, `membership`, `missing`, `order`,
@@ -590,9 +607,11 @@ partial projection. Exact stage inputs and checks are:
 | `h3c-cost` | `functional-bom`, `h2b-verdict`, `landed-prototype-cost`, `order-configuration`, `prototype-quotation`, `should-cost` | selected-layer and quantity projections match; decimal half-up line/scenario arithmetic reconciles quote, landed cost and should-cost |
 | `h3c-risk` | `landed-prototype-cost`, `prototype-quotation`, `risk-register`, `should-cost` | every quotation/cost change has the required sourcing/cost risk row; scores, residuals, evidence and mitigation gates obey the P1E contract |
 | `h3e-prepurchase` | `h3c-verdict`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-authorization`, `order-configuration`, `preview-artifact`, `prototype-quotation`, `quote-artifact` | authorization is current and authorized; every direct hash, archive checksum, quantity and postcode reconciles; emitted verdict input map hashes current bytes |
-| `h3e-order` | `invoice-artifact`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `prepurchase-verdict` | current prepurchase gate still passes; external IDs are non-empty; receipt hashes current confirmation/invoice bytes and repeats exact quantity/postcode/package identity |
-| `h4-criteria` | `h3c-verdict`, `h4-procedure-contract`, `invoice-artifact`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `pcb`, `prepurchase-verdict`, `preview-artifact`, `prototype-quotation`, `quote-artifact`, `schematic` | every direct and transitive hash is current; procedure/acceptance IDs and membership are exact; all bounds, predicates, evidence and reason-code coverage satisfy the closed H4 schema |
-| `h4-plan` | `capability-firmware`, `capability-release-manifest`, `evt-plan`, `h3c-verdict`, `h4-gate-oracle`, `h4-procedure-contract`, `invoice-artifact`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `p7-verdict`, `prepurchase-verdict`, `preview-artifact`, `prototype-quotation`, `quote-artifact` | H3e order identity and every authorization/package/quote hash remain current; capability release and firmware image hashes reconcile transitively with P7; procedure and acceptance arrays equal the criteria contract in order; equipment IDs are non-empty and unique |
+| `h3e-execution-authorization` | `prepurchase-verdict`, `purchase-execution-authorization` | authored decision/hash record uses the closed schema; stored preflight hash equals current committed preflight bytes; quantity/postcode match; `cancelled` exits 3 and `place` exits 0 |
+| `h3e-prepurchase-current` | all `h3e-prepurchase` inputs, `prepurchase-verdict`, `purchase-execution-authorization` | read-only recomputation exactly equals committed preflight bytes; current preflight SHA-256 equals the user's execution-authorization hash; decision is `place`; quantity/postcode agree; any difference exits 3 with `AIUS-HW-BLOCKED:h3e-prepurchase-current:order:renew-authorization` and performs no vendor action |
+| `h3e-order` | `invoice-artifact`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `prepurchase-verdict`, `purchase-execution-authorization` | current-prepurchase gate passes first; external IDs are non-empty; receipt hashes current confirmation/invoice bytes and repeats exact approved hash, quantity, postcode and package identity |
+| `h4-criteria` | `h3c-verdict`, `h4-procedure-contract`, `invoice-artifact`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `pcb`, `prepurchase-verdict`, `preview-artifact`, `prototype-quotation`, `purchase-execution-authorization`, `quote-artifact`, `schematic` | every direct and transitive hash is current; procedure/acceptance IDs and membership are exact; all bounds, predicates, evidence and reason-code coverage satisfy the closed H4 schema |
+| `h4-plan` | `capability-firmware`, `capability-release-manifest`, `evt-plan`, `h3c-verdict`, `h4-gate-oracle`, `h4-procedure-contract`, `invoice-artifact`, `manufacturing-archive`, `manufacturing-checksums`, `manufacturing-manifest`, `order-authorization`, `order-configuration`, `order-confirmation-artifact`, `order-receipt`, `p7-verdict`, `prepurchase-verdict`, `preview-artifact`, `prototype-quotation`, `purchase-execution-authorization`, `quote-artifact` | H3e order identity and every authorization/package/quote hash remain current; capability release and firmware image hashes reconcile transitively with P7; procedure and acceptance arrays equal the criteria contract in order; equipment IDs are the exact stable ordered union of committed procedure rows |
 | `h4-roster` | `evt-plan`, `order-receipt`, `unit-roster` | plan gate reruns first; exact three unit IDs, unique non-empty serials and receipt evidence references are current and ordered |
 | `h4-procedure` | `evt-plan`, one exact procedure capture, `unit-roster` | plan gate reruns first; capture procedure ID matches the requested locked ID; exactly three roster unit rows exist; every measurement belongs to that procedure and IDs/order/schema are exact |
 | `h4-units` | ten exact procedure captures, `evt-plan`, `measurements`, `unit-01`, `unit-02`, `unit-03`, `unit-roster` | plan gate reruns first; outputs are byte-semantic projections of roster/captures; every procedure occurs once per unit; measurement IDs are unique and resolve; every acceptance has the required observation or status |
@@ -803,7 +822,7 @@ seams: [committed mechanical verdict, retained vendor capability, closed stackup
 contract-artifact: stubs-committed
 depends-on:
   - mechanical/h2a-verdict.json
-  - evidence/hardware/schemas/h2b-contract-schema.json
+  - evidence/hardware/schemas/h2b-schema.json
 fan-out:
   - name: vendor-stackup
     owned-paths: [electronics/feasibility/vendor-stackup.json]
@@ -1200,18 +1219,52 @@ commit-checkpoint:
 
 H3e1 is read-only with respect to the vendor. After its commit, the parent
 presents the exact landed amount, substitutions, quantity, postcode and
-`prepurchase-verdict.json` SHA-256, then stops. H3e2 may dispatch only after the
-user gives a new explicit instruction to place that exact order. Prior H3d
-authorization, silence, a timeout, or a general instruction to continue is not
-purchase execution authority.
+`prepurchase-verdict.json` SHA-256, then stops. The user must reply with `place`
+or `cancelled` and the exact displayed SHA-256; silence, a timeout, prior H3d
+authorization, or a general instruction to continue is not purchase execution
+authority.
+
+```yaml
+phase: H3e1a
+unit: single-file-implementation
+seams: [committed preflight bytes, explicit user decision and hash, immutable execution authority]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/cost/prepurchase-verdict.json
+fan-out:
+  - name: purchase-execution-authorization-recorder
+    owned-paths: [evidence/cost/purchase-execution-authorization.json]
+coordination: dispatch pauses until the user supplies literal place or cancelled plus the exact displayed preflight SHA-256; the recorder copies those values and cannot infer or update either
+review-intensity: active
+commit-checkpoint:
+  branches:
+    place:
+      command: python3 scripts/validate_hardware.py --stage h3e-execution-authorization --input evidence/cost/purchase-execution-authorization.json
+      expected-exit: 0
+      buildable: [explicit authority to execute only the byte-identical committed preflight]
+      parent-commit: "docs(aius): authorize exact EVT purchase execution"
+    cancelled:
+      command: python3 scripts/validate_hardware.py --stage h3e-execution-authorization --input evidence/cost/purchase-execution-authorization.json
+      expected-exit: 3
+      expected-diagnostics: ["AIUS-HW-BLOCKED:h3e-execution-authorization:order:cancelled"]
+      buildable: [preflight retained without purchase execution authority]
+      parent-commit: "docs(aius): cancel EVT purchase execution"
+```
+
+The H3e1a recorder copies `decision` and `prepurchase_verdict_sha256` literally
+from the user's answer, and copies quantity/postcode byte-semantically from the
+committed preflight. It cannot recompute or silently replace the user-supplied
+hash. The read-only stage independently hashes current preflight bytes and
+rejects any disagreement before the phase can commit.
 
 ```yaml
 phase: H3e2
 unit: component-behind-interface
-seams: [fresh purchase preflight, explicit user instruction, retained vendor order identity]
+seams: [fresh byte-identical purchase preflight, committed explicit execution authority, retained vendor order identity]
 contract-artifact: stubs-committed
 depends-on:
   - evidence/cost/prepurchase-verdict.json
+  - evidence/cost/purchase-execution-authorization.json
   - evidence/cost/order-authorization.json
   - evidence/cost/order-configuration.json
   - manufacturing/aius-carrier-manufacturing.zip
@@ -1221,12 +1274,12 @@ fan-out:
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-ORDER/order-confirmation.pdf
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-ORDER/invoice.pdf
       - evidence/cost/order-receipt.json
-coordination: immediately before the irreversible vendor action, rerun h3e-prepurchase against current bytes and require exit 0, then require the user's new exact-order instruction in the active turn; execute no substitution, quantity, postcode or price change
+coordination: immediately before the irreversible vendor action, run the read-only h3e-prepurchase-current command and require exit 0; execute no substitution, quantity, postcode or price change, and stop for renewed H3e1/H3e1a user authority on any mismatch
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h3e-prepurchase --record evidence/cost/prepurchase-verdict.json
-    - python3 scripts/validate_hardware.py --stage h3e-order --record evidence/cost/order-receipt.json
+    - python3 scripts/validate_hardware.py --stage h3e-prepurchase-current --input evidence/cost/prepurchase-verdict.json --execution-authorization evidence/cost/purchase-execution-authorization.json
+    - python3 scripts/validate_hardware.py --stage h3e-order --input evidence/cost/order-receipt.json
   buildable: [retained confirmation and invoice bound to the exact authorized manufacturing package]
   parent-commit: "docs(aius): retain EVT order receipt"
 ```
@@ -1234,9 +1287,10 @@ commit-checkpoint:
 The H3e2 worker performs one vendor order attempt only. It records no receipt
 before a successful placement and never retries a failed or ambiguous payment
 without another user instruction. `order-receipt.json` binds the current
-preflight, authorization and configuration plus both retained LFS artifacts;
+preflight, purchase-execution authorization, H3d authorization and configuration
+plus both retained LFS artifacts;
 the validator reopens every transitive H3c/manufacturing dependency and requires
-the external order quantity and postcode to equal the authorization exactly.
+the external order quantity and postcode to equal both authorizations exactly.
 
 ## H4: Three-unit EVT
 
@@ -1261,6 +1315,11 @@ Bring-up order:
 9. Teensy S/PDIF RX and TX independently, then simultaneously.
 10. Carrier loss-of-lock, malformed-input, and recovery behaviour.
 
+H4a is an authored design checkpoint: its worker writes the criteria contract
+from committed electrical/manufacturing evidence, then the read-only
+`h4-criteria --input` command validates it. The validator never invents a limit,
+step, equipment ID or evidence reference.
+
 ```yaml
 phase: H4a
 unit: single-file-implementation
@@ -1271,6 +1330,7 @@ depends-on:
   - evidence/cost/order-configuration.json
   - evidence/cost/order-authorization.json
   - evidence/cost/prepurchase-verdict.json
+  - evidence/cost/purchase-execution-authorization.json
   - evidence/cost/order-receipt.json
   - evidence/cost/prototype-quotation.json
   - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/quote.pdf
@@ -1288,7 +1348,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-criteria --record evidence/hardware/criteria/h4-procedure-contract.json
+    - python3 scripts/validate_hardware.py --stage h4-criteria --input evidence/hardware/criteria/h4-procedure-contract.json
   review-focus: [electrical safety, measurement method, acceptance limits, retained authoritative evidence]
   buildable: [immutable pre-execution EVT procedure and acceptance contract]
   parent-commit: "test(aius): lock EVT acceptance contract"
@@ -1296,7 +1356,8 @@ commit-checkpoint:
 
 `h4-procedure-contract.json` keys `schema_version`, `h3c_verdict_sha256`,
 `order_configuration_sha256`, `order_authorization_sha256`,
-`order_receipt_sha256`, `quote_artifact_sha256`, `preview_artifact_sha256`,
+`purchase_execution_authorization_sha256`, `order_receipt_sha256`,
+`quote_artifact_sha256`, `preview_artifact_sha256`,
 `manufacturing_manifest_sha256`, `manufacturing_checksums_sha256`,
 `manufacturing_archive_sha256`, `schematic_sha256`, `pcb_sha256`, `procedures`,
 `acceptance`, `notes`.
@@ -1306,7 +1367,8 @@ Procedure IDs are exactly `evt-01-visual-continuity`,
 `evt-06-native-ethernet`, `evt-07-optical-loopback-gating`,
 `evt-08-raw-spdif-bypass`, `evt-09-spdif-rx-tx-simultaneous`, and
 `evt-10-carrier-recovery`, in that order. Procedure rows key `procedure_id`,
-`steps`, `equipment_ids`, `acceptance_ids`, `notes`. Acceptance rows key
+`steps`, `equipment_ids`, `acceptance_ids`, `notes`; `equipment_ids` and
+`acceptance_ids` are ordered unique arrays. Acceptance rows key
 `acceptance_id`, `procedure_id`, `source_artifact`, `source_key`,
 `row_collection`, `record_id_field`, `metric`, `unit`, `minimum`, `maximum`,
 `required_status`, `reason_code`, `predicate`, `arguments`, `evidence_ids`,
@@ -1361,6 +1423,7 @@ depends-on:
   - evidence/cost/order-configuration.json
   - evidence/cost/order-authorization.json
   - evidence/cost/prepurchase-verdict.json
+  - evidence/cost/purchase-execution-authorization.json
   - evidence/cost/order-receipt.json
   - evidence/cost/prototype-quotation.json
   - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/quote.pdf
@@ -1390,13 +1453,27 @@ Every H4 plan hash is recomputed from current bytes. The three manufacturing
 hashes bind the manifest, checksum file and ZIP independently. The firmware
 fields bind `capability-release-manifest.json`, its named
 `teensy41-release/firmware.hex` image, and `p7-verdict.json`; the validator also
-recomputes the corresponding P7 input hashes. The order hash reopens H3e through
-the receipt, preflight, authorization, H3c verdict, order configuration, quote
+recomputes the corresponding P7 input hashes. The order hashes reopen H3e through
+the receipt, purchase-execution authorization, preflight, H3d authorization,
+H3c verdict, order configuration, quote
 and preview. Therefore a changed firmware, quotation, package, authorization or
 receipt invalidates `h4-plan`. Every `h4-roster`, `h4-procedure` and `h4-units`
 invocation reruns this current plan gate before accepting or projecting an
 observation. `h4-structural` and `h4-gate` do the same before reading downstream
 results, so no later checkpoint can rely on a formerly valid plan.
+
+`evt-plan.json.equipment_ids` is the stable ordered union of the committed
+procedure rows: scan procedures in their locked order, scan each row's ordered
+unique `equipment_ids` left to right, and append an ID only at its first
+occurrence. No lexical resort is applied. `h4-plan` rejects a missing, extra,
+duplicate, reordered or stale plan ID and tests each case, including a procedure
+contract edit that changes the recomputed union.
+
+Each H4c2a-j worker performs exactly one locked physical procedure on all three
+roster units, authors only its procedure-capture JSON from observed results, and
+then runs the read-only `h4-procedure --input` validation. No validator writes a
+physical observation. An incomplete procedure remains an explicit failing or
+blocked capture; it is never filled from a later phase.
 
 ```yaml
 phase: H4c2r
@@ -1433,7 +1510,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-01-visual-continuity --record evidence/evt-results/procedures/evt-01-visual-continuity.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-01-visual-continuity --input evidence/evt-results/procedures/evt-01-visual-continuity.json
   buildable: [three-unit visual and continuity evidence]
   parent-commit: "test(aius): record EVT visual continuity"
 ```
@@ -1450,7 +1527,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-02-current-limited-power --record evidence/evt-results/procedures/evt-02-current-limited-power.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-02-current-limited-power --input evidence/evt-results/procedures/evt-02-current-limited-power.json
   buildable: [three-unit current-limited power evidence]
   parent-commit: "test(aius): record EVT current-limited power"
 ```
@@ -1467,7 +1544,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-03-reset-safe-states --record evidence/evt-results/procedures/evt-03-reset-safe-states.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-03-reset-safe-states --input evidence/evt-results/procedures/evt-03-reset-safe-states.json
   buildable: [three-unit reset-safe-state evidence]
   parent-commit: "test(aius): record EVT reset-safe states"
 ```
@@ -1484,7 +1561,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-04-usb-cable-mechanical --record evidence/evt-results/procedures/evt-04-usb-cable-mechanical.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-04-usb-cable-mechanical --input evidence/evt-results/procedures/evt-04-usb-cable-mechanical.json
   buildable: [three-unit USB cable mechanical evidence]
   parent-commit: "test(aius): record EVT USB cable mechanics"
 ```
@@ -1501,7 +1578,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-05-usb-bridge --record evidence/evt-results/procedures/evt-05-usb-bridge.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-05-usb-bridge --input evidence/evt-results/procedures/evt-05-usb-bridge.json
   buildable: [three-unit rear USB-C bridge evidence]
   parent-commit: "test(aius): record EVT USB bridge"
 ```
@@ -1518,7 +1595,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-06-native-ethernet --record evidence/evt-results/procedures/evt-06-native-ethernet.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-06-native-ethernet --input evidence/evt-results/procedures/evt-06-native-ethernet.json
   buildable: [three-unit native Ethernet evidence]
   parent-commit: "test(aius): record EVT Ethernet"
 ```
@@ -1535,7 +1612,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-07-optical-loopback-gating --record evidence/evt-results/procedures/evt-07-optical-loopback-gating.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-07-optical-loopback-gating --input evidence/evt-results/procedures/evt-07-optical-loopback-gating.json
   buildable: [three-unit optical loopback and gating evidence]
   parent-commit: "test(aius): record EVT optical loopback"
 ```
@@ -1552,7 +1629,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-08-raw-spdif-bypass --record evidence/evt-results/procedures/evt-08-raw-spdif-bypass.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-08-raw-spdif-bypass --input evidence/evt-results/procedures/evt-08-raw-spdif-bypass.json
   buildable: [three-unit raw S/PDIF bypass evidence]
   parent-commit: "test(aius): record EVT raw bypass"
 ```
@@ -1569,7 +1646,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-09-spdif-rx-tx-simultaneous --record evidence/evt-results/procedures/evt-09-spdif-rx-tx-simultaneous.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-09-spdif-rx-tx-simultaneous --input evidence/evt-results/procedures/evt-09-spdif-rx-tx-simultaneous.json
   buildable: [three-unit simultaneous S/PDIF evidence]
   parent-commit: "test(aius): record EVT simultaneous S/PDIF"
 ```
@@ -1586,7 +1663,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-10-carrier-recovery --record evidence/evt-results/procedures/evt-10-carrier-recovery.json
+    - python3 scripts/validate_hardware.py --stage h4-procedure --procedure evt-10-carrier-recovery --input evidence/evt-results/procedures/evt-10-carrier-recovery.json
   buildable: [three-unit carrier recovery evidence]
   parent-commit: "test(aius): record EVT carrier recovery"
 ```
@@ -1700,6 +1777,7 @@ depends-on:
   - evidence/cost/h3c-verdict.json
   - evidence/cost/order-configuration.json
   - evidence/cost/prepurchase-verdict.json
+  - evidence/cost/purchase-execution-authorization.json
   - evidence/cost/prototype-quotation.json
   - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/quote.pdf
   - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/preview.pdf
@@ -1851,7 +1929,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
-    - python3 scripts/validate_hardware.py --stage h5-criteria --record evidence/hardware/criteria/h5-test-contract.json
+    - python3 scripts/validate_hardware.py --stage h5-criteria --input evidence/hardware/criteria/h5-test-contract.json
   review-focus: [audio limits, timing and memory limits, thermal limits, fault and precompliance methods]
   buildable: [immutable pre-execution system test and acceptance contract]
   parent-commit: "test(aius): lock system acceptance contract"
