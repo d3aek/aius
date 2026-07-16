@@ -3219,6 +3219,7 @@ in this metadata-only phase.
 
 ```yaml
 phase: P1C3
+status: completed
 unit: component-selection-coordinator
 seams: [validated atomic records, generated CSV]
 contract-artifact: both
@@ -3236,10 +3237,19 @@ commit-checkpoint:
   parent-commit: "docs(aius): lock functional topology and component candidates"
 ```
 
-P1C3 runs only after all 29 P1C2 handoffs are integrated in the single committed
-P1C2 boundary. An already-dirty or stale foreign generated documentation index
-remains nonblocking under repository policy and is recorded in the phase note
-rather than joined to the commit.
+Completed 2026-07-16. The deterministic 15-column review view contains all 29
+component families and has SHA-256
+`dec3b1f714f45c780f16121a73868b39dc2cbbb651c46ac80b12b222c87ae4f3`.
+Renderer byte parity, cumulative `selection` validation, diff checks, and the
+clean-room delivery audit pass. The documentation-index check exits 2 because
+foreign-modified `docs/README.md` is stale; `docs/README.md` and `docs/TODO.md`
+remain untouched and the repository's generated-index policy makes that result
+nonblocking for this boundary.
+
+P1C3 ran only after all 29 P1C2 handoffs were integrated in the single committed
+P1C2 boundary. The already-dirty foreign generated documentation index was
+nonblocking under repository policy, was recorded in the phase note, and was not
+joined to the commit.
 
 ### P1C4 — Exact P1D acquisition handoff
 
