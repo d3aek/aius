@@ -1401,6 +1401,7 @@ owned-path audit, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B3b
+status: completed
 unit: single-dynamic-source
 seams: [live page, normalized observations]
 contract-artifact: both
@@ -1417,6 +1418,14 @@ commit-checkpoint:
   buildable: [validated Teensy and PCB quote observations]
   parent-commit: "docs(aius): record Teensy and PCB prices"
 ```
+
+Completed 2026-07-16 with shared observation timestamp
+`2026-07-16T06:39:46Z`. DigiKey returned an access-denied response. Both PCBWay
+landing pages were readable but exposed default quantity-10 prices rather than
+complete quotes for the locked quantity-5 inputs, and did not bind all required
+inclusion fields. All three sources therefore retain canonical unavailable
+records and open assumptions. The combined checkpoint, pinned-Prettier parity,
+owned-path audit, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B3c
