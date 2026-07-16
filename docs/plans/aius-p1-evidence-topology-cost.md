@@ -1429,6 +1429,7 @@ owned-path audit, and clean-room delivery audit passed.
 
 ```yaml
 phase: P1B3c
+status: completed
 unit: single-dynamic-source
 seams: [official series, normalized rates]
 contract-artifact: both
@@ -1444,6 +1445,13 @@ commit-checkpoint:
   buildable: [validated official FX observations]
   parent-commit: "docs(aius): record official GBP rates"
 ```
+
+Completed 2026-07-16 with observation timestamp `2026-07-16T06:53:36Z`.
+The fixed Bank of England page quoted EUR and USD per pound, opposite the locked
+GBP-per-currency fields. Because recording those fields would require an
+unapproved reciprocal calculation, the canonical unavailable record and open
+assumption were retained. The checkpoint, pinned-Prettier parity, owned-path
+audit, and clean-room delivery audit passed.
 
 ### P1B4 — Aggregate seed manifest
 
