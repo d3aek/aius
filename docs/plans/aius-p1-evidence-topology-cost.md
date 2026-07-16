@@ -21,7 +21,9 @@ phase P7 passes.
 ## Evidence representation
 
 Binary datasheets, drawings, CAD, reference-design archives, saved quotations,
-and page captures live under `docs/reference/datasheets.md<source-id>/` and use Git LFS.
+and PDF or MHTML page captures live under `docs/reference/datasheets.md<source-id>/` and
+use Git LFS. Reviewable HTML source snapshots are text snapshots, not page
+captures.
 Reviewable source snapshots live under `evidence/source-snapshots/<source-id>/`
 and remain normal Git. Authored schemas, scripts, Markdown, JSON, CSV, KiCad
 sources, and patches remain normal Git.
@@ -47,8 +49,12 @@ Each artifact has `name`, `final_url`, `storage`, `path`, `sha256`, `bytes`,
 `unavailable`. A revision or distributor fallback receives a new source ID and
 uses `supersedes`; an existing ID never changes authority or meaning.
 
-`evidence/manifest/clone-boundary.json` classifies every external design as
-official reuse, independently re-derived, comparative-only, or unresolved.
+`evidence/manifest/clone-boundary.json` classifies exactly the 15 non-dynamic
+seed sources as official reuse, independently re-derived, comparative-only, or
+unresolved. Future non-seed, non-dynamic sources use the same row contract in
+`evidence/manifest/supplemental-clone-boundary.json`; P1D creates that file when
+the first such source is approved. Together the two files classify every
+external design source without weakening the immutable seed oracle.
 `evidence/manifest/assumptions.json` records unresolved claim, consequence,
 owner, validation gate, evidence IDs, and status. These are checkpoint outputs,
 not prose hidden in source records.
@@ -293,7 +299,8 @@ The exact classification oracle is:
   `VKSDR-TOSLINK-KICAD`, and `VKSDR-TOSLINK-SCHEMATICS`.
 
 No seed source is independently re-derived or unresolved. Those enum values are
-reserved for supplemental sources and must not appear in the P1A3 file.
+reserved for `supplemental-clone-boundary.json` and must not appear in the P1A3
+file.
 
 The README has exactly these H2 headings, in order:
 
@@ -354,48 +361,202 @@ tests remain green. The clean-room delivery audit passed.
 
 ### P1A4 — Evidence validator
 
-Create exactly `scripts/validate_evidence.py` and
-`scripts/test_validate_evidence.py`. The validator accepts
-`--root <checkout>`, optional `--baseline <sources.json>`, and `--self-test`.
-Without `--baseline`, it reads the previous committed `sources.json` with
-`git show HEAD:<path>` when present. It compares the immutable tuple
-`id,class,authority,landing_url`; a changed tuple fails and a new revision needs
-a new ID. Seed identities are always compared to `seed-sources.json`.
+P1A4 is two committed tasks. P1A4a migrates the P1A2/P1A3 contracts; P1A4b
+implements the validator only after that green baseline is pushed.
 
-Validation deterministically checks both the schema and its cross-record rules:
+#### P1A4a — Validator contract migration
 
-- every required golden seed is current; an unavailable golden source fails;
-- unavailable comparative or dynamic sources pass only with an open assumption
-  naming their claim scope; independently-derived sources require an evidence ID;
-- current checkout artifacts match byte count and SHA-256;
-- extension and signature agree for PDF, ZIP, HTML, STEP, KiCad, JSON, CSV, C,
-  C++, and plain text; unlisted media types fail until the map is amended;
-- `lfs` paths report `filter=lfs`, `git` paths do not, and LFS artifacts are not
-  pointer text in the working tree;
-- every non-dynamic source has exactly one clone-boundary row and no unknown row
-  exists;
-- supersession references exist and are acyclic.
+Modify exactly `evidence/manifest/assumption-schema.json`,
+`scripts/test_selection_schemas.py`, and `scripts/test_evidence_policy.py`. The
+policy test removes fixed array-length
+keywords from its reusable clone-boundary row schema and exports
+`validate_clone_boundary_rows(boundary)`, which validates row shape, sorted
+unique IDs, and classification invariants. The existing
+`validate_clone_boundary(boundary, seeds)` calls that helper and still enforces
+the exact 15-row seed oracle. The P1A3 test adds passing empty and supplemental
+row fixtures plus malformed, reordered, and duplicate supplemental fixtures for
+the reusable helper; no supplemental manifest file is created in P1A4a.
 
-The test script creates isolated fixture trees and covers one passing record plus
-each failure above, multi-artifact records, external references with and without
-local digests, unavailable artifacts, changed immutable identity, and a valid
-supersession chain. It exits non-zero if any expected diagnostic is absent.
+Every assumption additionally requires `source_ids` and `claim_scope` arrays.
+`source_ids` contains unique P1A1 identifiers; `claim_scope` contains unique
+non-empty strings. Both arrays may be empty. An assumption `evidence_ids` entry
+must resolve to a source whose status is not `unavailable`; a `source_ids` entry
+must resolve to any source. An unavailable comparative or dynamic source passes
+only when exactly one open assumption has `source_ids` equal to `[source.id]` and
+`claim_scope` exactly equal, including order, to the source's `claim_scope`.
+Every current independently-derived source ID must occur in `evidence_ids` of at
+least one assumption. These rules define the evidence ID as a source-record ID;
+there is no free-text join.
 
 ```yaml
-phase: P1A4
+phase: P1A4a
+unit: validator-contract-migration
+seams: [structured assumptions, reusable clone-boundary rows]
+contract-artifact: both
+fan-out:
+  - name: validator-contract-migration
+    owned-paths:
+      - evidence/manifest/assumption-schema.json
+      - scripts/test_evidence_policy.py
+      - scripts/test_selection_schemas.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_source_schema.py
+    - python3 scripts/test_selection_schemas.py
+    - python3 scripts/test_evidence_policy.py
+    - the repo tooling tool doc-index -- --check
+  buildable: [machine-checkable validator input contracts]
+  parent-commit: "docs(aius): prepare evidence validator contracts"
+```
+
+#### P1A4b — Evidence validator implementation
+
+Create exactly `scripts/validate_evidence.py` and
+`scripts/test_validate_evidence.py` against the committed P1A4a contracts, then
+update `evidence/manifest/README.md` and `scripts/test_evidence_policy.py` in the
+same checkpoint so every documented command exists.
+
+The README retains the P1A3 headings. `Runnable validation` contains, in order,
+the three P1A3 commands followed by:
+
+```bash
+python3 scripts/test_validate_evidence.py
+python3 scripts/validate_evidence.py --self-test
+```
+
+`Future validation` says that the following repository-content check is
+available but expected to report missing required golden sources until P1B:
+
+```bash
+python3 scripts/validate_evidence.py
+```
+
+The validator accepts `--root <aius-root>`, optional
+`--baseline <sources.json>`, and `--self-test`:
+
+- `--root` is the Aius project root containing `evidence/` and `scripts/`; it
+  defaults to the parent of the validator's `scripts/` directory and is resolved
+  without following a manifest-provided path;
+- a relative explicit baseline is resolved beneath `--root`; an absolute
+  baseline is accepted; it must be a regular JSON file. An explicit baseline
+  always takes precedence over Git;
+- without an explicit baseline, the validator finds the enclosing worktree with
+  `git -C <aius-root> rev-parse --show-toplevel` and reads
+  `HEAD:evidence/manifest/sources.json`. A missing path is an
+  empty baseline; any other Git failure is an environment error;
+- every baseline ID must remain present with the identical
+  `id,class,authority,landing_url` tuple. New IDs are allowed. Seed identities
+  are always compared to `seed-sources.json`;
+- `--self-test` is mutually exclusive with `--root` and `--baseline`, runs the
+  sibling `test_validate_evidence.py` with the active Python interpreter, and
+  returns that process's status;
+- exit `0` means valid. Exit `1` covers schema and cross-record violations in
+  any syntactically valid JSON, including a wrong top-level type, plus
+  artifact-content violations. Exit `2` covers only invalid invocation,
+  filesystem I/O, text-decoding or JSON-syntax failure, or an unusable Git
+  environment. Validation diagnostics are emitted to stderr as
+  `ERROR <code> <subject>: <message>`, sorted by `(code, subject, message)`.
+
+Validation loads and validates `source-schema.json`, `seed-sources.json`,
+`sources.json`, `assumption-schema.json`, `assumptions.json`, and
+`clone-boundary.json`. It imports `validate_source_collection` from
+`test_source_schema.py` and `validate_clone_boundary` from
+`test_evidence_policy.py` as the existing cross-record entry points. The seed
+clone boundary must cover exactly the 15 non-dynamic seed records.
+
+If there are non-seed, non-dynamic source records, the validator also requires
+`supplemental-clone-boundary.json`, validates it with
+`validate_clone_boundary_rows`, and requires its IDs to equal exactly that
+supplemental source set. The file must be absent or an empty valid array when no
+such source exists. Supplemental IDs may not overlap seeds. A golden,
+comparative, or independently-derived source respectively requires
+`official-reuse`, `comparative-only`, or `independently-re-derived`.
+`unresolved` is allowed instead only when exactly one open assumption has
+`source_ids` equal to `[source.id]` and `claim_scope` exactly equal to the
+source's claim scope. Dynamic sources appear in neither boundary file.
+
+Validation also checks:
+
+- every seed with `required: true` and `class: golden` has a matching current
+  source; an unavailable required golden source fails;
+- the structured assumption and independently-derived evidence joins above;
+- every local artifact with `storage` `git` or `lfs` and
+  `retrieval_status: current` is a non-symlink regular file. No path component
+  may be a symlink, and the resolved path must remain beneath `--root`;
+- current local artifacts match their recorded byte count and SHA-256. External
+  references are never dereferenced, including when their locally observed
+  digest and size are recorded;
+- `lfs` artifacts live below `docs/reference/datasheets.md<source-id>/`; `git` artifacts
+  live below `evidence/source-snapshots/<source-id>/`;
+- `git -C <worktree> check-attr filter -- <worktree-relative-path>` reports the
+  exact value `lfs` for `storage: lfs` and `unspecified` for `storage: git`.
+  Missing Git, a non-worktree root, an unparseable response, or command failure
+  is an environment error. The Git LFS executable is not invoked. An LFS file
+  whose bytes start exactly with
+  `version https://git-lfs.github.com/spec/v1\n` is a pointer and fails;
+- supersession references exist and are acyclic through the imported P1A1
+  validator.
+
+Media validation uses the artifact path's case-sensitive lowercase suffix. A
+suffix not in this exact table, a different declared media type, or a failed
+content check is a validation error:
+
+| Suffix | Media type | Content check |
+| --- | --- | --- |
+| `.pdf` | `application/pdf` | starts with `%PDF-` |
+| `.zip` | `application/zip` | starts with `PK\\x03\\x04`, `PK\\x05\\x06`, or `PK\\x07\\x08` |
+| `.html`, `.htm` | `text/html` | UTF-8; after optional BOM and leading ASCII whitespace, first 1024 characters contain case-insensitive `<!doctype html` or `<html` |
+| `.mhtml` | `multipart/related` | first 4096 ASCII bytes contain case-insensitive `MIME-Version:` and `Content-Type: multipart/related` headers |
+| `.step`, `.stp` | `model/step` | UTF-8; trimmed text starts `ISO-10303-21;` and ends `END-ISO-10303-21;` |
+| `.kicad_sch` | `application/x-kicad-schematic` | UTF-8; trimmed text starts `(kicad_sch` |
+| `.kicad_pcb` | `application/x-kicad-pcb` | UTF-8; trimmed text starts `(kicad_pcb` |
+| `.kicad_sym` | `application/x-kicad-symbol-library` | UTF-8; trimmed text starts `(kicad_symbol_lib` |
+| `.kicad_mod` | `application/x-kicad-footprint` | UTF-8; trimmed text starts `(footprint` |
+| `.kicad_pro` | `application/json` | UTF-8 JSON object |
+| `.json` | `application/json` | valid UTF-8 JSON |
+| `.csv` | `text/csv` | UTF-8 parsed by `csv.reader` with at least one non-empty row |
+| `.c`, `.h` | `text/x-c` | UTF-8 with no NUL |
+| `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | `text/x-c++` | UTF-8 with no NUL |
+| `.txt` | `text/plain` | UTF-8 with no NUL |
+| `.md` | `text/markdown` | UTF-8 with no NUL |
+
+All UTF-8 checks accept one leading UTF-8 BOM. Binary signatures are byte
+prefixes. PDF, ZIP, MHTML, and STEP require `storage: lfs`; every reviewable
+HTML, text, source, JSON, CSV, and KiCad suffix requires `storage: git`.
+
+The test script creates isolated temporary Aius trees inside temporary Git
+worktrees with explicit baselines and `.gitattributes`. It covers one passing
+multi-artifact collection plus every rule and exit class above, external
+references with and without local digests, unavailable artifacts, changed and
+deleted immutable identities, new IDs, a valid supersession chain, deterministic
+diagnostic ordering, default-root and explicit-root behavior, the missing-HEAD
+baseline case, seed/supplemental boundary coverage and classification, and
+self-test dispatch. The exit matrix includes a syntactically valid wrong
+top-level type and requires exit `1`. A diagnostic test asserts the exact code
+and subject; the script exits non-zero if an expected diagnostic is absent.
+
+```yaml
+phase: P1A4b
 unit: evidence-validator
 seams: [checkout validation, immutable baseline]
 contract-artifact: both
 fan-out:
   - name: evidence-validator
     owned-paths:
+      - evidence/manifest/README.md
       - scripts/validate_evidence.py
       - scripts/test_validate_evidence.py
+      - scripts/test_evidence_policy.py
 review-intensity: active
 commit-checkpoint:
   green:
+    - python3 scripts/test_source_schema.py
+    - python3 scripts/test_selection_schemas.py
+    - python3 scripts/test_evidence_policy.py
     - python3 scripts/test_validate_evidence.py
     - python3 scripts/validate_evidence.py --self-test
+    - the repo tooling tool doc-index -- --check
   buildable: [deterministic evidence validator]
   parent-commit: "feat(aius): validate evidence repository"
 ```
@@ -729,7 +890,10 @@ P1C updates the P1D fan-out in this plan with one exact source ID, artifact
 directory, and fragment path per approved request before its checkpoint lands.
 Each P1D acquisition agent receives one request only. The P1D clean-room gate
 fails if any `<request-id>` placeholder remains; source acquisition and design
-work do not start in the same wave.
+work do not start in the same wave. The supplemental manifest coordinator also
+creates `supplemental-clone-boundary.json` with exactly every non-seed,
+non-dynamic source added by those requests, using the reusable P1A4a row
+contract and the P1A4b classification rules.
 
 ```yaml
 phase: P1D
@@ -743,7 +907,9 @@ fan-out:
       - evidence/observations/components/<exact-source-id>.json
       - evidence/manifest/fragments/<exact-source-id>.json
   - name: supplemental-manifest-coordinator
-    owned-paths: [evidence/manifest/sources.json]
+    owned-paths:
+      - evidence/manifest/sources.json
+      - evidence/manifest/supplemental-clone-boundary.json
   - name: electrical-tables
     owned-paths: [docs/reference/electrical-reference.md]
   - name: reference-schematic
