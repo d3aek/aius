@@ -3692,6 +3692,21 @@ the committed P1D design bases; ordinary batch quantity is exactly
 assembly records 3, freight records 1, and fixed rows use the explicit oracle
 quantity. No P1E phase may add, drop, regroup or requantity a row.
 
+`price_policy` and `allowance_policy` are closed object-or-null fields and
+exactly one is non-null. A price policy keys `mode`, `source_id`,
+`quantity_basis`, `notes`, with values `observed-uk-source`, the row's
+`uk_source_id`, `single-observed-break`, and empty notes. An allowance policy
+keys `mode`, `low_gbp_ex_vat`, `central_gbp_ex_vat`, `high_gbp_ex_vat`,
+`basis`, `refresh_trigger`, `evidence_ids`, `notes`; mode is
+`engineering-range` or `zero-customer-supplied`; money is non-negative decimal
+with low <= central <= high; basis and refresh trigger are non-empty; evidence
+resolves; notes is empty. Zero-customer-supplied requires all three money values
+zero. A current price row projects its rounded extended price identically into
+low, central and high and leaves allowance policy null. An allowance row copies
+the three allowance-policy values exactly and leaves all observed-price and
+extended-price fields empty. Scenario-level contingency, not hidden BOM price
+variation, carries priced-row uncertainty.
+
 For a current `uk-distributor-price-stock` source the projection is exact:
 manufacturer/MPN come from the selected component; `supplier` is source
 `authority`; `supplier_sku`, `stock_state`, `observed_price_quantity`,
@@ -3699,7 +3714,8 @@ manufacturer/MPN come from the selected component; `supplier` is source
 observation values (`minimum_order_quantity` maps to `moq`); `supplier_url` is
 the common observation `source_url`; `retrieved_at` is the source timestamp;
 currency is `GBP`, FX rate is `1`, and FX source is empty. `purchase_quantity`
-is the least `moq + n * order_multiple` not less than `batch_quantity`.
+is the least integer `q >= max(batch_quantity, moq)` for which
+`q % order_multiple == 0`.
 Extended cost is purchase quantity times observed unit price, rounded half up.
 `scenario_assumptions` states the observed price quantity, so it is not
 misrepresented as a quantity-three tier. Dynamic observations retain no page
@@ -3733,7 +3749,12 @@ duty costs divide the three assembled units, not surplus bare boards.
 Score is likelihood times impact. Residual score is null until mitigation
 evidence exists, then equals residual likelihood times residual impact. A score
 of 15 through 25 blocks; 8 through 14 requires mitigation and gate; 1 through 7
-is tracked. The README defines all five likelihood and impact levels.
+is tracked. Gate evaluation uses `effective_score = residual_score` when
+residual score is non-empty, otherwise initial `score`; the initial score remains
+auditable but does not continue to block after evidenced mitigation lowers the
+residual score. Each blocking diagnostic is exactly
+`RISK_BLOCK:<risk_id>:<effective_score>`, sorted by risk ID, with no other text.
+The README defines all five likelihood and impact levels.
 The register has at least one row for DTS feasibility, real-time budget,
 memory-bank pressure, S/PDIF recovery, USB servicing, two-layer signal
 integrity, optical electrical limits, native-Ethernet routing, power/backfeed,

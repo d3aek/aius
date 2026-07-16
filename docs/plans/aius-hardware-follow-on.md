@@ -128,9 +128,9 @@ Create the manufacturing schematic from the audited sources. It includes:
 
 The schematic contains a reset and failure-state truth table for Teensy absent, boot, reset, brownout, firmware crash, optical loss, unsupported burst, malformed input, USB unplug, raw-bypass request, and unpowered expansion. Hardware pulls keep the transmitter disabled and select the processed Teensy path during reset. Expansion outputs are high impedance or current-limited until firmware configures them.
 
-H1 is three serial checkpoints. The first lands the reusable gate contract, the
-second commits the shared interface before any sheet worker starts, and the
-third consumes that immutable baseline.
+H1 is four serial checkpoints. The first lands the reusable gate contract, the
+second commits the shared interface, the third commits ERC-clean interface-only
+sheet stubs, and the fourth replaces those immutable-interface stubs.
 
 The hardware bridge consumes three deterministic verdict artifacts:
 `evidence/design/p1d-release.json`, `evidence/cost/h0-verdict.json`, and
@@ -159,6 +159,64 @@ commit-checkpoint:
   buildable: [fixture-proven structural and verdict gates for H1 through H5]
   parent-commit: "feat(aius): define hardware result gates"
 ```
+
+`hardware-gate-schema.json` is a closed bundle with definitions for every JSON
+and CSV family consumed by the named stages. All JSON roots begin
+`schema_version` with constant `1.0.0`, reject additional properties, use sorted
+unique IDs, and end with string `notes`. The ordered artifact contracts are:
+
+| Artifact | Exact ordered fields |
+|---|---|
+| `board-outline.json` | `schema_version`, `board`, `evidence_ids`, `notes`; board is the exact P1D board row |
+| `component-placement.json` | `schema_version`, `placements`, `keepouts`, `evidence_ids`, `notes`; rows are the exact P1D placement/keepout rows |
+| `cable-envelope.json` | `schema_version`, `cables`, `collision_checks`, `criteria`, `evidence_ids`, `notes`; rows are the exact P1D cable/collision/mechanical-criterion rows |
+| `vendor-stackup.json` | `schema_version`, `vendor`, `layer_count`, `material`, `finished_thickness_um`, `copper_weight_um`, `dielectric_height_um`, `dielectric_constant`, `minimum_trace_um`, `minimum_gap_um`, `evidence_ids`, `notes` |
+| `impedance-calculations.json` | `schema_version`, `calculations`, `evidence_ids`, `notes`; rows key `calculation_id`, `interface`, `target_mohm`, `tolerance_mohm`, `trace_width_um`, `gap_um`, `reference_plane`, `calculated_mohm`, `method`, `evidence_ids`, `status`, `notes` |
+| `routing-study.json` | `schema_version`, `routes`, `ground_corridors`, `criteria`, `evidence_ids`, `notes`; rows reuse exact P1D route/corridor/electrical-criterion shapes |
+| `layer-decision.json` | `schema_version`, then the exact P1D layer-decision keys, then `notes` |
+| `prototype-quotation.json` | `schema_version`, `vendor`, `configuration_sha256`, `bare_board_quantity`, `assembled_quantity`, `two_layer_gbp_ex_vat`, `four_layer_gbp_ex_vat`, `assembly_gbp_ex_vat`, `components_gbp_ex_vat`, `freight_gbp`, `vat_gbp`, `duty_gbp`, `landed_gbp`, `currency`, `substitutions`, `evidence_ids`, `notes` |
+| `evt-plan.json` | `schema_version`, `procedure_ids`, `acceptance_ids`, `firmware_sha256`, `equipment_ids`, `notes` |
+| EVT unit file | `schema_version`, `unit_id`, `board_serial`, `inspection_status`, `procedure_results`, `defect_ids`, `eco_ids`, `notes`; procedure rows key `procedure_id`, `status`, `measurement_ids`, `evidence_ids`, `notes` |
+| `defects.json` | `schema_version`, `defects`, `notes`; rows key `defect_id`, `unit_ids`, `severity`, `description`, `evidence_ids`, `status`, `notes` |
+| either `eco-log.json` | `schema_version`, `ecos`, `notes`; rows key `eco_id`, `source_defect_ids`, `description`, `affected_artifact_ids`, `verification_status`, `evidence_ids`, `notes` |
+| `test-matrix.json` | `schema_version`, `cases`, `notes`; rows key `case_id`, `input_format`, `fault_mode`, `expected_state`, `measurement_ids`, `status`, `notes` |
+| `thermal-fault-results.json` | `schema_version`, `results`, `notes`; rows key `result_id`, `case_id`, `metric`, `value`, `unit`, `minimum`, `maximum`, `status`, `evidence_ids`, `notes` |
+| `soak-results.json` | `schema_version`, `duration_seconds`, `sample_count`, `reset_count`, `error_count`, `maximum_temperature_c`, `status`, `evidence_ids`, `notes` |
+| `precompliance-results.json` | `schema_version`, `tests`, `notes`; rows key `test_id`, `method`, `limit`, `measured`, `unit`, `status`, `evidence_ids`, `notes` |
+
+CSV headers are exact:
+`measurements.csv` is
+`measurement_id,unit_id,procedure_id,metric,value,unit,minimum,maximum,status,evidence_ids,notes`;
+`audio-measurements.csv` is
+`measurement_id,case_id,channel,metric,value,unit,minimum,maximum,status,evidence_ids,notes`;
+`timing-memory.csv` is
+`measurement_id,case_id,metric,value,unit,limit,status,evidence_ids,notes`;
+and `landed-prototype-cost.csv` is
+`cost_id,category,quantity,unit_gbp_ex_vat,extended_gbp_ex_vat,vat_gbp,freight_gbp,duty_gbp,landed_gbp,evidence_ids,notes`.
+
+Every ordinary verdict record keys `schema_version`, `stage`, `verdict`,
+`input_sha256`, `failures`, `notes`. `input_sha256` is a lexically keyed object
+of lowercase hashes; failure rows key `record_id`, `reason_code`, sort by both
+fields, and project one diagnostic each. Exact stage/hash keys/verdicts/reason
+codes are:
+
+| Stage | Exact `input_sha256` keys | Verdict enum | Reason-code enum |
+|---|---|---|---|
+| `h2a-gate` | `board-outline`, `cable-envelope`, `component-placement` | `eligible`, `blocked` | `assembly-access`, `cable-bend`, `guide-fit`, `insertion-access`, `outline-over-limit`, `placement-collision` |
+| `h2b-gate` | `h2a-verdict`, `impedance-calculations`, `layer-decision`, `routing-study`, `vendor-stackup` | `two-layer`, `four-layer-required`, `blocked` | `impedance-unmet`, `mechanical-input-blocked`, `plane-cut`, `return-path`, `route-length`, `vendor-stackup-unavailable`, `via-count` |
+| `h3c-quote` | `landed-prototype-cost`, `manufacturing-manifest`, `prototype-quotation`, `risk-register`, `should-cost` | `quoted`, `blocked` | `landed-cost-unreconciled`, `quantity-mismatch`, `quote-incomplete`, `substitution-unapproved` |
+| `h4-gate` | `defects`, `eco-log`, `manufacturing-manifest`, `measurements`, `order-authorization`, `unit-01`, `unit-02`, `unit-03` | `pass`, `blocked` | `eco-open`, `ethernet`, `inspection`, `optical`, `power-rail`, `recovery`, `regression`, `reset-safe-state`, `short-circuit`, `spdif`, `thermal`, `usb` |
+| `h5-gate` | `audio-measurements`, `eco-log`, `firmware-release`, `h4-verdict`, `precompliance-results`, `soak-results`, `test-matrix`, `thermal-fault-results`, `timing-memory` | `pass`, `blocked` | `audio-matrix`, `buffer-recovery`, `clock-drift`, `eco-open`, `emc`, `fault`, `headroom`, `latency`, `production-test`, `repeatability`, `soak`, `thermal`, `word-integrity` |
+
+Structural stages consume the identically named artifact family without writing
+a verdict and return 1 on schema/reference failure. `h1-interface`, `h1-stubs`,
+`h1-schematic`, `h3-pcb`, `h3c-quotation`, `h3c-structural`,
+`h5-firmware-interface`, `h5-firmware-components`, and `h5-firmware` have no
+committable failing verdict;
+they must be corrected before their design commit. `h1-stubs --lock` writes only
+the exact stub-lock shape below. `h3d-authorization --decision` writes only the
+exact authorization shape defined in H3d. The fixture corpus exercises every
+field, reason code, verdict, hash mismatch, diagnostic and exit.
 
 `validate_hardware.py` accepts `--stage` plus an optional `--record` path. Every
 stage first validates structure and references. Verdict stages return 0 for the
@@ -205,10 +263,46 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/validate_hardware.py --stage h1-interface
-    - scripts/kicad.sh sch erc electronics/carrier/aius-carrier.kicad_sch
-  buildable: [committed root library and exact sheet-interface stubs]
+  buildable: [committed root library and exact manufacturing sheet-interface contract]
   parent-commit: "design(aius): lock carrier schematic interfaces"
 ```
+
+```yaml
+phase: H1a1
+unit: single-file-implementation
+seams: [committed sheet interface, interface-only KiCad sheets, one-way stub lock]
+contract-artifact: stubs-committed
+depends-on:
+  - electronics/carrier/aius-carrier.kicad_sch
+  - electronics/carrier/aius-carrier.kicad_sym
+  - electronics/carrier/sheet-interfaces.json
+fan-out:
+  - name: power-usb-sheet-stub
+    owned-paths: [electronics/carrier/sheets/power-usb.kicad_sch]
+  - name: optical-spdif-sheet-stub
+    owned-paths: [electronics/carrier/sheets/optical-spdif.kicad_sch]
+  - name: ethernet-sheet-stub
+    owned-paths: [electronics/carrier/sheets/ethernet.kicad_sch]
+  - name: teensy-expansion-sheet-stub
+    owned-paths: [electronics/carrier/sheets/teensy-expansion.kicad_sch]
+coordination-owned-paths:
+  - electronics/carrier/sheet-stub-lock.json
+coordination: maximum three stub workers; parent runs ERC and h1-stubs validation, then writes the deterministic lock only after both pass
+review-intensity: active
+commit-checkpoint:
+  green:
+    - scripts/kicad.sh sch erc electronics/carrier/aius-carrier.kicad_sch
+    - python3 scripts/validate_hardware.py --stage h1-stubs --lock electronics/carrier/sheet-stub-lock.json
+  buildable: [committed interface-complete ERC-clean manufacturing sheet stubs]
+  parent-commit: "design(aius): commit carrier sheet stubs"
+```
+
+`sheet-stub-lock.json` keys are `schema_version`, `root_sha256`,
+`library_sha256`, `interface_sha256`, `sheet_sha256`, `notes`; the sheet hash
+object has exact lexical keys `ethernet`, `optical-spdif`, `power-usb`,
+`teensy-expansion`. H1b validation requires the first three hashes unchanged,
+all four implemented sheets different from their locked stub hashes, and every
+ordered hierarchical pin unchanged. It rejects partial replacement.
 
 ```yaml
 phase: H1b
@@ -219,6 +313,11 @@ depends-on:
   - electronics/carrier/aius-carrier.kicad_sch
   - electronics/carrier/aius-carrier.kicad_sym
   - electronics/carrier/sheet-interfaces.json
+  - electronics/carrier/sheet-stub-lock.json
+  - electronics/carrier/sheets/power-usb.kicad_sch
+  - electronics/carrier/sheets/optical-spdif.kicad_sch
+  - electronics/carrier/sheets/ethernet.kicad_sch
+  - electronics/carrier/sheets/teensy-expansion.kicad_sch
   - evidence/design/electrical-reference.json
   - evidence/design/pin-resource-map.json
 fan-out:
@@ -422,9 +521,9 @@ commit-checkpoint:
 ```
 
 ```yaml
-phase: H3c
+phase: H3c1
 unit: phase-task
-seams: [frozen manufacturing package, vendor quotation, landed cost model]
+seams: [frozen manufacturing package, vendor quotation capture, normalized quotation]
 contract-artifact: stubs-committed
 depends-on:
   - manufacturing/aius-carrier-manufacturing.zip
@@ -433,28 +532,77 @@ depends-on:
   - manufacturing/manifest.json
   - manufacturing/checksums.sha256
 fan-out:
-  - name: quotation
+  - name: quotation-acquisition
     owned-paths:
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/quote.pdf
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/preview.pdf
       - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
       - evidence/cost/prototype-quotation.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_hardware.py --stage h3c-quotation
+  buildable: [retained normalized vendor quotation without purchase authority]
+  parent-commit: "docs(aius): retain prototype quotation"
+```
+
+```yaml
+phase: H3c2
+unit: phase-task
+seams: [committed quotation, landed-cost normalization, H0 cost and risk refresh]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/cost/prototype-quotation.json
+  - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
+  - evidence/cost/functional-bom.csv
+fan-out:
+  - name: quotation-cost-normalization
+    owned-paths:
       - evidence/cost/landed-prototype-cost.csv
       - evidence/cost/should-cost.csv
       - evidence/cost/risk-register.csv
-      - evidence/cost/h3c-verdict.json
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/validate_hardware.py --stage h3c-structural
-    - python3 scripts/validate_hardware.py --stage h3c-quote --record evidence/cost/h3c-verdict.json
-  buildable: [quoted but unordered three-unit prototype package]
-  parent-commit: "docs(aius): record prototype quotation"
+  buildable: [quotation-reconciled landed cost should-cost and risk]
+  parent-commit: "docs(aius): reconcile prototype landed cost"
+```
+
+```yaml
+phase: H3c3
+unit: single-file-implementation
+seams: [retained quotation, reconciled cost and risk, deterministic quote verdict]
+contract-artifact: stubs-committed
+depends-on:
+  - evidence/cost/prototype-quotation.json
+  - evidence/cost/landed-prototype-cost.csv
+  - evidence/cost/should-cost.csv
+  - evidence/cost/risk-register.csv
+  - manufacturing/manifest.json
+fan-out:
+  - name: quotation-verdict
+    owned-paths: [evidence/cost/h3c-verdict.json]
+review-intensity: active
+commit-checkpoint:
+  branches:
+    quoted:
+      command: python3 scripts/validate_hardware.py --stage h3c-quote --record evidence/cost/h3c-verdict.json
+      expected-exit: 0
+      buildable: [quoted but unordered three-unit prototype package]
+      parent-commit: "docs(aius): approve prototype quotation for user review"
+    blocked:
+      command: python3 scripts/validate_hardware.py --stage h3c-quote --record evidence/cost/h3c-verdict.json
+      expected-exit: 3
+      expected-diagnostics: sorted exact AIUS-HW-BLOCKED:h3c-quote lines only
+      buildable: [complete quotation evidence blocked from user acceptance]
+      parent-commit: "docs(aius): record blocked prototype quotation"
 ```
 
 H3c never places an order. After the quoted checkpoint, H3d pauses for explicit
-user acceptance of the exact landed amount and substitutions. The parent then
-records the answer in `order-authorization.json`, with ordered keys
+user acceptance of the exact landed amount and substitutions. One bounded
+recorder receives that explicit answer and writes `order-authorization.json`,
+with ordered keys
 `schema_version`, `decision`, `quotation_sha256`, `authorized_quantity`,
 `shipping_postcode`, `notes`; decision is `authorized` or `cancelled`, quantity
 is 3 only when authorized, and postcode is `M20 5PG`. No automation infers this
@@ -462,15 +610,17 @@ decision.
 
 ```yaml
 phase: H3d
-unit: parent-only
+unit: single-file-implementation
 seams: [committed quote, explicit user decision, purchase authority]
 contract-artifact: spec-only
 depends-on:
   - evidence/cost/h3c-verdict.json
   - evidence/cost/prototype-quotation.json
   - docs/reference/datasheets.mdAIUS-PCBWAY-EVT-QUOTE/order-configuration.json
-coordination-owned-paths:
-  - evidence/cost/order-authorization.json
+fan-out:
+  - name: order-authorization-recorder
+    owned-paths: [evidence/cost/order-authorization.json]
+coordination: dispatch pauses until the user supplies the literal authorized or cancelled decision; the recorder cannot choose or broaden it
 review-intensity: active
 commit-checkpoint:
   branches:
@@ -556,9 +706,9 @@ Test stereo PCM input, DTS Core 5.1, format transitions, optical loss, source sa
 Complete thermal, fault, long-soak, enclosure, basic pre-compliance EMC, production-test, and repeatability checks. Record every ECO and refresh the cost model with actual yield, parts, assembly, rework, freight, and enclosure results.
 
 ```yaml
-phase: H5a
-unit: phase-task
-seams: [proven decoder/DSP modules, EVT carrier drivers, product state machine]
+phase: H5a0
+unit: component-behind-interface
+seams: [proven decoder/DSP interfaces, carrier pin/state contract, product state-machine interface]
 contract-artifact: both
 depends-on:
   - evidence/evt-results/h4-verdict.json
@@ -566,16 +716,71 @@ depends-on:
   - evidence/capability-results/p8-verdict.json
   - electronics/carrier/sheet-interfaces.json
 fan-out:
-  - name: firmware-integration
+  - name: product-firmware-interface
     owned-paths:
-      - firmware/src/product/audio_pipeline.cpp
       - firmware/src/product/audio_pipeline.h
-      - firmware/src/product/carrier_control.cpp
       - firmware/src/product/carrier_control.h
-      - firmware/src/product/product_state_machine.cpp
       - firmware/src/product/product_state_machine.h
+      - firmware/contracts/product-contract.json
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/validate_hardware.py --stage h5-firmware-interface
+  buildable: [committed immutable product firmware interfaces]
+  parent-commit: "feat(aius): define product firmware interfaces"
+```
+
+`product-contract.json` keys are `schema_version`, `audio_pipeline`,
+`carrier_control`, `product_state_machine`, `evidence_ids`, `notes`. Each of the
+three interface objects keys `header_sha256`, `input_types`, `output_types`,
+`state_ids`, `fault_ids`, `notes`; type and ID arrays are sorted projections of
+the capability protocol, H1 sheet interface and P1C operating/fault states.
+Headers and contract are immutable through H5a1/H5a2.
+
+```yaml
+phase: H5a1
+unit: component-behind-interface
+seams: [immutable product headers, three disjoint implementations]
+contract-artifact: stubs-committed
+depends-on:
+  - firmware/src/product/audio_pipeline.h
+  - firmware/src/product/carrier_control.h
+  - firmware/src/product/product_state_machine.h
+  - firmware/contracts/product-contract.json
+fan-out:
+  - name: audio-pipeline-implementation
+    owned-paths: [firmware/src/product/audio_pipeline.cpp]
+  - name: carrier-control-implementation
+    owned-paths: [firmware/src/product/carrier_control.cpp]
+  - name: product-state-machine-implementation
+    owned-paths: [firmware/src/product/product_state_machine.cpp]
+coordination: maximum three component agents; none edits an interface header or another component
+review-intensity: active
+commit-checkpoint:
+  green:
+    - platformio test -d firmware -e native
+    - platformio run -d firmware -e teensy41-release
+    - python3 scripts/validate_hardware.py --stage h5-firmware-components
+  buildable: [three buildable product components behind immutable interfaces]
+  parent-commit: "feat(aius): implement product firmware components"
+```
+
+```yaml
+phase: H5a2
+unit: phase-task
+seams: [three committed product components, firmware entry point, integration regression, release manifest]
+contract-artifact: stubs-committed
+depends-on:
+  - firmware/src/product/audio_pipeline.cpp
+  - firmware/src/product/carrier_control.cpp
+  - firmware/src/product/product_state_machine.cpp
+  - firmware/contracts/product-contract.json
+fan-out:
+  - name: product-firmware-integration
+    owned-paths:
       - firmware/src/main.cpp
       - firmware/test/product/test_product.cpp
+      - firmware/build/release-manifest.json
 review-intensity: active
 commit-checkpoint:
   green:
@@ -586,6 +791,12 @@ commit-checkpoint:
   buildable: [committed end-to-end product firmware candidate]
   parent-commit: "feat(aius): integrate product firmware"
 ```
+
+`release-manifest.json` keys are `schema_version`, `firmware_sha256`,
+`build_environment`, `source_sha256`, `product_contract_sha256`,
+`h4_verdict_sha256`, `p7_verdict_sha256`, `p8_verdict_sha256`,
+`sheet_interface_sha256`, `notes`; source hashes are a lexically keyed object and
+the manifest contains no timestamp.
 
 ```yaml
 phase: H5b
@@ -598,6 +809,7 @@ depends-on:
   - firmware/src/product/carrier_control.cpp
   - firmware/src/product/product_state_machine.cpp
   - firmware/src/main.cpp
+  - firmware/build/release-manifest.json
 fan-out:
   - name: audio-system-validation
     owned-paths:

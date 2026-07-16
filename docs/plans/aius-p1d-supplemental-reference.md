@@ -2240,29 +2240,31 @@ commit-checkpoint:
 
 ### P1D3b — Materialized design records and verdict
 
-The parent performs the mechanical projection only after all three basis commits.
-It materializes byte-locked canonical JSON, renders the four review outputs and
-records one of two committable outcomes. No agent invents or changes a target
-value during this phase.
+One bounded integration worker performs the mechanical projection only after all
+three basis commits. It materializes byte-locked canonical JSON, renders the
+four review outputs and records one of two committable outcomes. It does not
+invent or change a target value during this phase.
 
 ```yaml
 phase: P1D3b
-unit: parent-only
+unit: phase-task
 seams: [three committed normative bases, byte-locked design records, explicit design verdict]
 contract-artifact: both
 depends-on:
   - evidence/design/basis/electrical-reference-basis.json
   - evidence/design/basis/pin-resource-map-basis.json
   - evidence/design/basis/two-layer-placement-basis.json
-coordination-owned-paths:
-  - evidence/design/electrical-reference.json
-  - evidence/design/pin-resource-map.json
-  - evidence/design/two-layer-placement.json
-  - docs/reference/electrical-reference.md
-  - docs/reference/pin-resource-map.csv
-  - docs/reference/pin-resource-map.md
-  - docs/reference/two-layer-placement.md
-coordination: parent alone runs committed materializer, renderers and verdict gate; basis agents never edit target or generated paths
+fan-out:
+  - name: design-record-materialization
+    owned-paths:
+      - evidence/design/electrical-reference.json
+      - evidence/design/pin-resource-map.json
+      - evidence/design/two-layer-placement.json
+      - docs/reference/electrical-reference.md
+      - docs/reference/pin-resource-map.csv
+      - docs/reference/pin-resource-map.md
+      - docs/reference/two-layer-placement.md
+coordination: one bounded integration worker runs only the committed materializer, renderers and verdict gate; basis agents never edit target or generated paths
 review-intensity: active
 commit-checkpoint:
   green:
@@ -2297,6 +2299,20 @@ four-layer-required electrical route is not blocking. Any other diagnostic or
 exit status fails the checkpoint. The blocked branch commits the bases,
 canonical records and rendered reviews, records the expected diagnostics in the
 phase note, and stops before P1D3c0.
+
+Document tokens are exactly `electrical-reference`, `pin-resource-map`, and
+`two-layer-placement`. Row-kind/ID/status projections are exactly:
+`support-circuit`/`circuit_id`/`fail`, `signal`/`signal_id`/`fail`,
+`power-rail`/`rail_id`/`fail`, `pin`/`signal_id`/`conflict`,
+`board`/`board_id`/`fail`, `placement`/`placement_id`/`fail`,
+`keepout`/`keepout_id`/`fail`, `route`/`route_id`/`fail`,
+`ground-corridor`/`corridor_id`/`fail`, `cable`/`cable_id`/`fail`,
+`collision-check`/`check_id`/`fail`, and
+`criterion`/`criterion_id`/`fail`. A mechanically blocked layer-decision object
+adds the synthetic projection
+`two-layer-placement:layer-decision:layer-decision:blocked`; no field is read as
+an ID or status from that object. Duplicate projections collapse before lexical
+sorting.
 
 ### P1D3c0 — Committed schematic interface
 
@@ -2618,7 +2634,8 @@ Only after every check passes it atomically writes `p1d-release.json`, with exac
 ordered keys `schema_version`, `release_state`, `design_record_sha256`,
 `schematic_contract_sha256`, `interface_sha256`, `notes`; values are `1.0.0`,
 `eligible`, a lexically keyed object containing the SHA-256 of the three
-canonical design records, the schematic-contract SHA-256, the
+canonical design records under exact keys `electrical-reference`,
+`pin-resource-map`, and `two-layer-placement`, the schematic-contract SHA-256, the
 schematic-interface SHA-256, and an empty note. It contains no timestamp or Git
 identity, so identical inputs produce identical bytes. Any failed command leaves
 the verdict absent: the wrapper removes a prior verdict before its first check

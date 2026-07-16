@@ -406,6 +406,82 @@ commit-checkpoint:
   parent-commit: "feat(aius): add USB capability harness"
 ```
 
+## P6b: P7 persisted-result contract
+
+Before hardware execution, commit closed schemas for every P7 artifact. All JSON
+objects reject additional properties and use `schema_version: "1.0.0"`.
+`p7-run.json` keys are `schema_version`, `board_id`, `firmware_sha256`,
+`corpus_sha256`, `runner_sha256`, `host_reference_sha256`,
+`ffmpeg_report_sha256`, `cpu_hz`, `usb_path`, `started_at`, `completed_at`,
+`valid_case_count`, `malformed_case_count`, `result_count`, `notes`; CPU is
+600000000 and result count is the sum of both case counts. Each
+`p7-raw-results.jsonl` line keys `schema_version`, `sequence`, `case_id`,
+`category`, `input_sha256`, `target_result`, `host_pcm_sha256`,
+`target_pcm_sha256`, `sample_count`, `channel_count`, `recovery_case_id`,
+`diagnostic_code`, `metrics_ref`, `notes`; category is `valid` or `malformed`,
+target result is `ok`, `typed-failure` or `crash-report`, sequences are contiguous
+from zero, and nullable fields follow the target-result/category matrix in the
+schema.
+
+`p7-performance.csv` has exact RFC-4180 header
+`case_id,cache_state,frame_duration_us,normalization_us,parse_us,decode_us,decode_ratio,allocation_count`;
+cache state is `cold` or `warm`, times and allocation count are non-negative
+integers, and decode ratio is decimal `decode_us / frame_duration_us`.
+`p7-memory.json` keys `schema_version`, `banks`, `notes`; bank rows key
+`bank_id`, `capacity_bytes`, `static_bytes`, `peak_bytes`, `headroom_bytes`,
+`headroom_percent`, `evidence_ids`, `notes`, with exact arithmetic and one row
+for every linker-map memory bank. `p7-crash-report.json` keys `schema_version`,
+`reports`, `notes`; report rows key `sequence`, `case_id`, `crash_code`,
+`registers`, `stack_sha256`, `recovered`, `notes`, where registers are a closed
+lexically keyed map of lowercase hexadecimal strings and reports sort by
+sequence. An empty report array is the valid no-crash result.
+
+`p7-verdict.json` keys `schema_version`, `verdict`, `firmware_sha256`,
+`corpus_sha256`, `failed_gate_ids`, `notes`; version is `1.0.0`, verdict is
+`pass` or `blocked`, failed IDs are sorted and empty only for pass, and notes is
+empty. Exact gate IDs and projections are:
+
+| Gate ID | Failing projection |
+|---|---|
+| `result-completeness` | counts, sequences, hashes or case membership do not reconcile |
+| `pcm-bit-exact` | any valid target PCM hash/sample/channel tuple differs from the host tuple |
+| `ffmpeg-differential` | the referenced pinned-FFmpeg report is absent, stale or failed |
+| `timing-separation` | any result lacks separate normalization, parse or decode timing |
+| `release-clock` | CPU is not exactly 600000000 Hz or build is not the recorded release hash |
+| `decode-p99` | warm valid-case decode-ratio p99 is greater than 0.50 |
+| `worst-frame` | any valid-case decode ratio is greater than 0.65 |
+| `memory-headroom` | any bank has headroom below 25.00 percent |
+| `decode-allocation` | any ordinary valid decode has allocation count non-zero |
+| `malformed-recovery` | a malformed case does not recover at its recorded next valid case without reset |
+| `typed-failure` | any non-ok result has neither a typed diagnostic nor a matching crash report |
+
+The gate emits one sorted unique exact line `AIUS-P7-BLOCKED:<gate-id>` for each
+failed gate and no other diagnostic at exit 3.
+
+```yaml
+phase: P6b
+unit: test-surface
+seams: [six closed P7 artifact schemas, exact gate projections, verdict diagnostics]
+contract-artifact: spec-only
+fan-out:
+  - name: p7-result-contract
+    owned-paths:
+      - firmware/contracts/p7-run-schema.json
+      - firmware/contracts/p7-result-line-schema.json
+      - firmware/contracts/p7-performance-schema.json
+      - firmware/contracts/p7-memory-schema.json
+      - firmware/contracts/p7-crash-schema.json
+      - firmware/contracts/p7-verdict-schema.json
+      - firmware/test/result-contract/p7-cases.json
+      - firmware/test/result-contract/test_p7_result_contract.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 firmware/test/result-contract/test_p7_result_contract.py
+  buildable: [fixture-proven P7 persisted-result and verdict contract]
+  parent-commit: "test(aius): define P7 result contract"
+```
+
 ## P7: USB-only Teensy proof
 
 This phase starts when the user connects the stock Teensy 4.1 directly to the build server with a known data-capable USB cable. Nothing else connects to the board. The Program button remains physically accessible.
@@ -428,6 +504,13 @@ phase: P7
 unit: test-surface
 seams: [USB capability protocol, target result manifest]
 contract-artifact: both
+depends-on:
+  - firmware/contracts/p7-run-schema.json
+  - firmware/contracts/p7-result-line-schema.json
+  - firmware/contracts/p7-performance-schema.json
+  - firmware/contracts/p7-memory-schema.json
+  - firmware/contracts/p7-crash-schema.json
+  - firmware/contracts/p7-verdict-schema.json
 fan-out:
   - name: target-runner
     owned-paths:
@@ -439,7 +522,8 @@ fan-out:
       - evidence/capability-results/p7-verdict.json
 review-intensity: active
 commit-checkpoint:
-  green: [structurally complete full valid/malformed corpus and performance/memory records]
+  green:
+    - python3 firmware/test/result-contract/test_p7_result_contract.py --artifacts evidence/capability-results
   branches:
     pass:
       command: python3 firmware/tools/device/run_capability.py --stage p7-gate --record evidence/capability-results/p7-verdict.json
@@ -449,17 +533,14 @@ commit-checkpoint:
     blocked:
       command: python3 firmware/tools/device/run_capability.py --stage p7-gate --record evidence/capability-results/p7-verdict.json
       expected-exit: 3
-      expected-diagnostics: sorted exact AIUS-P7-BLOCKED lines only
+      expected-diagnostics: sorted exact AIUS-P7-BLOCKED:<gate-id> lines only
       buildable: [complete measured Teensy capability report requiring software work]
       parent-commit: "test(aius): record blocked Teensy DTS capability result"
 ```
 
 A clean-room delivery audit compares raw result artifacts against every threshold
-before declaring a pass. `p7-verdict.json` has ordered keys `schema_version`,
-`verdict`, `firmware_sha256`, `corpus_sha256`, `failed_gate_ids`, `notes`; its
-verdict is `pass` or `blocked`, failed IDs are sorted and empty only for pass,
-and it contains no timestamp. H1 accepts only a committed pass whose hashes
-match the recorded run.
+before declaring a pass. H1 accepts only a committed pass whose hashes match the
+recorded run.
 
 ## P8: Dedicated eight-hour soak
 
