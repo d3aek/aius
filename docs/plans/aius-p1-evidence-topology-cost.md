@@ -1037,7 +1037,8 @@ entry: `fragments/` must exist and contain exactly the 22 regular, non-symlink
 `<ID>.json` files; a missing `assumption-fragments/` means empty, otherwise every
 direct entry must be a regular, non-symlink `<ID>.json` permitted by an
 unavailable comparative/dynamic source. Hidden, temporary, nested, and other
-entries are errors.
+entries are errors. Each fragment object's `id` must match its filename ID;
+swapping otherwise-valid source objects between filenames is an error.
 
 Writes stage unique adjacent temporary regular files with exclusive creation,
 flush and `fsync` their contents, re-check parent/target safety, publish with
@@ -1050,6 +1051,8 @@ regular aggregate files; a handled failure restores both prior byte streams (or
 their prior absence) and removes backups/temps. These guarantees are
 process-failure transactional, not power-loss atomic across multiple files.
 Tests inject failures at each publish boundary and require rollback plus cleanup.
+A cleanup or rollback failure is itself reported as a transaction failure and is
+never silently discarded.
 
 `validate_evidence.py` exposes
 `validate_artifact_payload(root, relative_path, payload, media_type, storage)`.
@@ -1092,7 +1095,8 @@ Tests use an in-process fake HTTPS opener with deterministic redirect responses
 and isolated Git trees to cover all CLI commands, exact timestamps and exit
 codes, HTTPS/status/redirect/encoding/size limits, rollback at every publish
 boundary, target and ancestor symlinks, non-regular and temporary entries, exact
-final-URL rejection, artifact and snapshot storage, fixed/hash/commit revisions,
+final-URL rejection, streamed-read failure as acquisition exit `1`, artifact and
+snapshot storage, fixed/hash/commit revisions, filename/object identity,
 descriptor-only validation of every dynamic profile, invalid JSON constants,
 golden exit `3`, comparative/dynamic assumptions, missing/extra/duplicate
 fragments, canonical sorting/rendering, and check drift. The validator test
@@ -1103,7 +1107,10 @@ The P1B1c clean-room gate returned `BLOCKED` on 2026-07-15 because retrieval
 time, revision rendering, transactional boundaries, symlink safety, redirect
 limits, fragment rendering, isolated artifact validation, and exit behavior were
 not complete contracts. The rules above resolve those findings; a fresh
-clean-room verdict remains required before implementation.
+clean-room verdict remains required before implementation. The first delivery
+audit then returned `BLOCKED` because streamed response-read failures escaped as
+internal exit `2`; the explicit regression above closes that classification
+gap.
 
 ```yaml
 phase: P1B1c
