@@ -2406,6 +2406,181 @@ committed normative contracts, and the two Markdown review artifacts are
 renderer-derived. Both renderer parity checks and the cumulative
 `architecture-base` validator pass.
 
+### P1C0e — Normative selection-policy contract and enforcement
+
+The clean-room P1C1b gate found that the schema and family set did not lock
+policy semantics. A schema-valid implementer could invent one requirement for
+all families and still pass `architecture`. P1C0e makes the policy value
+decision-complete before P1C1b creates its instance.
+
+The ordered engineering-policy registry is the following exact table. Every
+`notes` value is the empty string.
+
+| ID | Scope | Rule | Validation gate |
+| --- | --- | --- | --- |
+| `EP-MANUFACTURABILITY-SMALL-RUN` | `manufacturability` | Prefer packages, footprints, and connector geometries compatible with repeatable small-run assembly, inspection, rework, and hand-machined enclosure openings. | H2 placement and assembly review |
+| `EP-PRODUCT-SINGLE-POWER-ENTRY` | `product-topology` | Use rear USB-C VBUS as the sole normal power entry; do not fit a second VIN/VUSB feed or permit an expansion rail to power the core. | H1 schematic power-path review |
+| `EP-PROVISIONAL-GENERIC-PASSIVES` | `provisional-design-choice` | Use the locked provisional value, package, and tolerance tuple for each generic allowance until its later electrical or schematic gate passes. | P1D electrical analysis and H1 schematic review |
+| `EP-PROVISIONAL-TWO-LAYER-BOARD` | `provisional-design-choice` | Keep the backplane compatible with the approved two-layer stack-up unless measured or routed evidence at P1D/H2 requires four layers. | H2 placement and routing review |
+| `EP-SAFE-EXPANSION-UNPOWERED` | `safe-default` | An unpowered expansion must not sustain any core or expansion rail; exported signals shall be high impedance or current limited. | P1D powered-off leakage and clamp-current validation |
+| `EP-SAFE-OPTICAL-DEFAULTS` | `safe-default` | Default the S/PDIF path to processed audio and hold optical transmit disabled through absence, reset, boot, switching, brownout, and watchdog recovery. | H1 schematic pull-state review and P7 fault-injection test |
+| `EP-SOURCING-MANUFACTURER-AUTHORITY` | `sourcing` | A non-generic candidate requires retained primary manufacturer evidence before it can be selected. | P1E sourcing evidence review |
+| `EP-SOURCING-UK-AVAILABILITY` | `sourcing` | A non-generic candidate requires a separately recorded UK authorized-distributor availability observation. | P1E UK availability review |
+
+The ordered requirement registry is the following exact table. `basis_ids`
+are ordered as shown and every `notes` value is the empty string.
+
+| ID | Statement | `basis_ids` | Verification stage |
+| --- | --- | --- | --- |
+| `REQT-COMMON-ENCLOSURE-CLEARANCE` | The selected part and its mating cable or module shall fit the Hammond 1455N1201BK internal envelope and preserve the documented rear or user-access clearance. | `HAMMOND-1455N1201BK-DRAWING`, `HAMMOND-1455N1201BK-STEP` | `P1D-mechanical` |
+| `REQT-COMMON-MANUFACTURABILITY` | The selected package, footprint, retention method, and assembly process shall remain feasible for a repeatable small run on the provisional two-layer board. | `EP-MANUFACTURABILITY-SMALL-RUN`, `EP-PROVISIONAL-TWO-LAYER-BOARD` | `H2-placement` |
+| `REQT-COMMON-MANUFACTURER-EVIDENCE` | The selected non-generic candidate shall have retained primary manufacturer evidence covering every requirement assigned to its family. | `EP-SOURCING-MANUFACTURER-AUTHORITY` | `P1E-sourcing` |
+| `REQT-COMMON-UK-AVAILABILITY` | The selected non-generic candidate shall have a separately recorded current UK authorized-distributor availability observation. | `EP-SOURCING-UK-AVAILABILITY` | `P1E-sourcing` |
+| `REQT-ETHERNET-CENTER-TAP-CAPACITOR` | Use a 100 nF, 0402, 10% generic capacitor at the Ethernet transformer centre-tap node identified by the PJRC reference. | `EP-PROVISIONAL-GENERIC-PASSIVES`, `PJRC-ETHERNET-KIT` | `H1-schematic` |
+| `REQT-ETHERNET-MAGJACK` | The magjack shall match the Teensy 4.1 native DP83825 magnetics requirements for turns ratio, pinout, centre taps, isolation, LEDs, and shield connection. | `PJRC-ETHERNET-KIT`, `PJRC-TEENSY41-SCHEMATIC` | `H1-schematic` |
+| `REQT-EXPANSION-GPIO-ADC-CONNECTOR` | Provide a keyed four-circuit 3.3 V expansion connector carrying one GPIO, one ADC input, 3.3 V, and ground with documented mating geometry. | `EP-MANUFACTURABILITY-SMALL-RUN`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-EXPANSION-I2C-CONTROL-CONNECTOR` | Provide a keyed four-circuit expansion connector carrying I2C SCL, I2C SDA, expansion 3.3 V, and ground with documented mating geometry. | `EP-MANUFACTURABILITY-SMALL-RUN`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-EXPANSION-I2C-ISOLATION` | The interface shall support the 3.3 V control bus and present powered-off high impedance in both directions without sustaining either rail. | `EP-SAFE-EXPANSION-UNPOWERED`, `PJRC-IMXRT1060-RM` | `P1D-electrical` |
+| `REQT-EXPANSION-I2S-TDM-CONNECTOR` | Provide a keyed five-circuit expansion connector carrying I2S BCLK, LRCLK, data, expansion 3.3 V, and ground with documented mating geometry. | `EP-MANUFACTURABILITY-SMALL-RUN`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-EXPANSION-IO-SERIES-RESISTOR` | Use a 1 kOhm, 0402, 1% generic series resistor on each exported single-ended CMOS signal that relies on bounded clamp current. | `EP-PROVISIONAL-GENERIC-PASSIVES`, `EP-SAFE-EXPANSION-UNPOWERED` | `P1D-electrical` |
+| `REQT-EXPANSION-POWER-PROTECTION` | The selected protection device shall block reverse current, limit fault current, and meet powered-off leakage limits when used on either protected expansion rail. | `EP-PRODUCT-SINGLE-POWER-ENTRY`, `EP-SAFE-EXPANSION-UNPOWERED` | `P1D-electrical` |
+| `REQT-EXPANSION-SPI-CONNECTOR` | Provide a keyed six-circuit expansion connector carrying SPI SCK, MOSI, MISO, CS, expansion 3.3 V, and ground with documented mating geometry. | `EP-MANUFACTURABILITY-SMALL-RUN`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-EXPANSION-UART-DEBUG-CONNECTOR` | Provide a keyed four-circuit expansion connector carrying UART TX, UART RX, expansion 3.3 V, and ground with documented mating geometry. | `EP-MANUFACTURABILITY-SMALL-RUN`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-EXPANSION-USB-HOST-CONNECTOR` | Provide a keyed four-circuit USB 2.0 host connector carrying D+, D-, protected VBUS, and ground with documented current rating and mating geometry. | `EP-SAFE-EXPANSION-UNPOWERED`, `PJRC-IMXRT1060-RM`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-LOGIC-CONTROL-PULLDOWN` | Use a 10 kOhm, 0402, 1% generic pull-down for the S/PDIF path-select and optical-transmit-enable hardware-safe defaults. | `EP-PROVISIONAL-GENERIC-PASSIVES`, `EP-SAFE-OPTICAL-DEFAULTS` | `P1D-electrical` |
+| `REQT-LOGIC-DECOUPLING` | Use a 100 nF, 0402, 10% generic local decoupling capacitor at each selected 3.3 V logic device supply. | `EP-MANUFACTURABILITY-SMALL-RUN`, `EP-PROVISIONAL-GENERIC-PASSIVES` | `H2-placement` |
+| `REQT-MECHANICAL-CABLE-RETAINER` | The retainer shall secure the internal USB-A-to-Micro-B cable against insertion and vibration load without stressing the Teensy module or enclosure. | `EP-MANUFACTURABILITY-SMALL-RUN`, `HAMMOND-1455N1201BK-DRAWING`, `HAMMOND-1455N1201BK-STEP` | `P1D-mechanical` |
+| `REQT-OPTICAL-BANDWIDTH` | Every active logic element between the optical receiver and transmitter shall support at least 16 Mbit/s. | `CLIFF-ORJ5`, `CLIFF-OTJ5`, `PJRC-SPDIF-RX-SOURCE`, `PJRC-SPDIF-TX-SOURCE` | `P1D-electrical` |
+| `REQT-OPTICAL-LOGIC-COMPATIBILITY` | The 3.3 V optical path shall accept the ORJ5 2.4 V minimum high output and drive the OTJ5 2.0 V minimum high input with documented margin. | `CLIFF-ORJ5`, `CLIFF-OTJ5`, `PJRC-IMXRT1060-CEC` | `P1D-electrical` |
+| `REQT-OPTICAL-PROCESSED-DEFAULT` | Hardware pulls and gating shall select the processed S/PDIF path, prevent driver contention, hold transmit disabled during selection changes, and return disabled after reset. | `EP-SAFE-OPTICAL-DEFAULTS` | `H1-schematic` |
+| `REQT-REMOTE-PROGRAM-RTC` | Provide a rear-service interface for PROGRAM and RTC battery with ground reference, correct Teensy pinout, documented mating geometry, and no second core power path. | `EP-PRODUCT-SINGLE-POWER-ENTRY`, `PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC` | `H1-schematic` |
+| `REQT-TEENSY-ETHERNET-SOCKET` | The socket interface shall reproduce the PJRC native Ethernet header pin order, mating height, and mechanical retention. | `PJRC-ETHERNET-KIT`, `PJRC-TEENSY41-PINOUT` | `H1-schematic` |
+| `REQT-TEENSY-SIDE-SOCKET` | The two side socket rows shall mate the Teensy 4.1 pin field, preserve underside clearance, permit module removal, and retain microSD access. | `HAMMOND-1455N1201BK-DRAWING`, `PJRC-TEENSY41-PAGE`, `PJRC-TEENSY41-PINOUT` | `H2-placement` |
+| `REQT-TEENSY-USB-HOST-SOCKET` | The socket shall match the Teensy 4.1 USB-host pads and pinout, carry D+, D-, VBUS, and ground, and prevent reverse supply into an unpowered domain. | `EP-SAFE-EXPANSION-UNPOWERED`, `PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC` | `H1-schematic` |
+| `REQT-TEST-FIXTURE-HEADER` | The fixture header shall expose test control, test data, 3.3 V, and ground with keyed repeatable mating that does not load user connectors. | `EP-MANUFACTURABILITY-SMALL-RUN`, `PJRC-IMXRT1060-RM`, `PJRC-TEENSY41-PINOUT` | `H2-placement` |
+| `REQT-USB-A-RECEPTACLE` | The internal USB-A receptacle shall carry USB 2.0 D+, D-, protected VBUS, and ground and accept the internal cable within the enclosure envelope. | `HAMMOND-1455N1201BK-DRAWING`, `PJRC-TEENSY41-SCHEMATIC` | `H1-schematic` |
+| `REQT-USB-C-CC-PULLDOWN` | Use one independent 5.1 kOhm, 0402, 1% generic pull-down from each USB-C CC pin to ground. | `EP-PRODUCT-SINGLE-POWER-ENTRY`, `EP-PROVISIONAL-GENERIC-PASSIVES` | `P1D-electrical` |
+| `REQT-USB-C-RECEPTACLE` | The rear USB-C receptacle shall expose USB 2.0 D+, D-, independent CC1 and CC2, VBUS, ground, and shield with documented footprint, shell, and mating geometry. | `EP-PRODUCT-SINGLE-POWER-ENTRY`, `HAMMOND-1455N1201BK-DRAWING`, `PJRC-TEENSY41-SCHEMATIC` | `H1-schematic` |
+| `REQT-USB-ESD` | The ESD device shall protect both USB D+ and D- with low capacitance and flow-through routing compatible with USB 2.0 high speed and the provisional two-layer 90 ohm differential route. | `EP-PROVISIONAL-TWO-LAYER-BOARD`, `PJRC-IMXRT1060-CEC`, `PJRC-IMXRT1060-RM` | `P1D-electrical` |
+| `REQT-USB-INTERNAL-CABLE` | The internal USB-A-plug-to-Micro-B-plug cable shall carry D+, D-, VBUS, and ground, support USB 2.0 high speed, fit the enclosure envelope, and accept the cable retainer. | `HAMMOND-1455N1201BK-DRAWING`, `PJRC-TEENSY41-SCHEMATIC` | `P1D-mechanical` |
+| `REQT-USB-POWER-PROTECTION` | The sole VBUS protection path shall bound inrush, overload, thermal fault, input loss, and reverse-current or backfeed behavior. | `EP-PRODUCT-SINGLE-POWER-ENTRY`, `PJRC-TEENSY41-SCHEMATIC` | `P1D-electrical` |
+
+The base records the following exact family order, sorted requirement arrays,
+dependent feature, and empty `notes`. The builder derives the other fields
+without discretion: `component_file` is `components/<family>.json`; group
+membership sets `critical`, `generic_eligible`, and the exact allowed-status
+array already locked above; non-generic request/source IDs use the deterministic
+conventions; `cliff-rx` and `cliff-tx` use `CLIFF-ORJ5` and `CLIFF-OTJ5` for
+their manufacturer source; generic request/source fields are null.
+
+| Family | Exact requirements | Dependent feature |
+| --- | --- | --- |
+| `usb-c-receptacle` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-USB-C-RECEPTACLE` | `rear-usb-device-entry` |
+| `usb-a-receptacle` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-USB-A-RECEPTACLE` | `internal-usb-service-port` |
+| `internal-usb-cable` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-USB-INTERNAL-CABLE` | `internal-usb-device-link` |
+| `usb-esd` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-USB-ESD` | `usb-device-esd-protection` |
+| `usb-power-protection` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-USB-POWER-PROTECTION` | `protected-usb-power-entry` |
+| `cliff-rx` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-OPTICAL-BANDWIDTH`, `REQT-OPTICAL-LOGIC-COMPATIBILITY` | `optical-input-reception` |
+| `cliff-tx` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-OPTICAL-BANDWIDTH`, `REQT-OPTICAL-LOGIC-COMPATIBILITY` | `optical-output-transmission` |
+| `spdif-mux` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-OPTICAL-BANDWIDTH`, `REQT-OPTICAL-LOGIC-COMPATIBILITY`, `REQT-OPTICAL-PROCESSED-DEFAULT` | `diagnostic-spdif-selection` |
+| `spdif-tx-gate` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-OPTICAL-BANDWIDTH`, `REQT-OPTICAL-LOGIC-COMPATIBILITY`, `REQT-OPTICAL-PROCESSED-DEFAULT` | `safe-optical-transmit-enable` |
+| `ethernet-magjack` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-ETHERNET-MAGJACK` | `native-ethernet-port` |
+| `teensy-side-socket` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-TEENSY-SIDE-SOCKET` | `removable-teensy-mounting` |
+| `teensy-ethernet-socket` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-TEENSY-ETHERNET-SOCKET` | `teensy-native-ethernet-link` |
+| `teensy-usb-host-socket` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-TEENSY-USB-HOST-SOCKET` | `teensy-usb-host-link` |
+| `expansion-power-protection` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-POWER-PROTECTION` | `protected-expansion-power` |
+| `expansion-i2c-isolator` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-I2C-ISOLATION` | `isolated-expansion-control-bus` |
+| `expansion-i2c-control` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-I2C-CONTROL-CONNECTOR` | `expansion-i2c-connector` |
+| `expansion-spi` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-SPI-CONNECTOR` | `expansion-spi-connector` |
+| `expansion-uart-debug` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-UART-DEBUG-CONNECTOR` | `expansion-debug-connector` |
+| `expansion-i2s-tdm` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-I2S-TDM-CONNECTOR` | `expansion-audio-connector` |
+| `expansion-usb-host` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-USB-HOST-CONNECTOR` | `expansion-usb-host-connector` |
+| `expansion-gpio-adc` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-EXPANSION-GPIO-ADC-CONNECTOR` | `expansion-gpio-adc-connector` |
+| `remote-program-rtc` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-REMOTE-PROGRAM-RTC` | `remote-program-rtc-service` |
+| `test-fixture-header` | `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-TEST-FIXTURE-HEADER` | `production-test-interface` |
+| `mechanical-cable-retainer` | `REQT-COMMON-ENCLOSURE-CLEARANCE`, `REQT-COMMON-MANUFACTURABILITY`, `REQT-COMMON-MANUFACTURER-EVIDENCE`, `REQT-COMMON-UK-AVAILABILITY`, `REQT-MECHANICAL-CABLE-RETAINER` | `internal-usb-cable-retention` |
+| `usb-c-cc-pulldown` | `REQT-USB-C-CC-PULLDOWN` | `usb-c-sink-advertisement` |
+| `logic-decoupling-capacitor` | `REQT-LOGIC-DECOUPLING` | `local-logic-decoupling` |
+| `logic-control-pulldown` | `REQT-LOGIC-CONTROL-PULLDOWN` | `hardware-safe-logic-defaults` |
+| `ethernet-center-tap-capacitor` | `REQT-ETHERNET-CENTER-TAP-CAPACITOR` | `ethernet-center-tap-filter` |
+| `expansion-io-series-resistor` | `REQT-EXPANSION-IO-SERIES-RESISTOR` | `bounded-expansion-clamp-current` |
+
+The builder acceptance examples are exact. `usb-c-receptacle` derives critical
+`true`, generic `false`, statuses `candidate-pending-evidence`, `selected`, and
+`candidate-evidence-unavailable`, request IDs `REQ-USB-C-RECEPTACLE-MFR` and
+`REQ-USB-C-RECEPTACLE-UK`, and sources `AIUS-USB-C-RECEPTACLE-MFR` and
+`AIUS-USB-C-RECEPTACLE-UK`. `logic-decoupling-capacitor` derives critical
+`false`, generic `true`, sole status `generic-allowance`, and four null
+request/source fields.
+
+#### P1C0e1 — Selection contract builder
+
+```yaml
+phase: P1C0e1
+unit: selection-contract-builder
+seams: [immutable policy base, derived normative selection contract]
+contract-artifact: both
+fan-out:
+  - name: build-selection-contract
+    owned-paths:
+      - evidence/design/contracts/selection-policy.json
+      - scripts/fixtures/p1c-schema/selection-policy/base-v1.json
+      - scripts/build_p1c_selection_policy_contract.py
+      - scripts/test_build_p1c_selection_policy_contract.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_build_p1c_selection_policy_contract.py
+    - python3 scripts/build_p1c_selection_policy_contract.py --check
+  buildable: [reproducible exact selection-policy value]
+  parent-commit: "feat(aius): derive normative selection policy"
+```
+
+The immutable base contains the eight exact policy rows, 32 exact requirement
+rows, and 29 minimal family rows from the tables above. Its raw SHA-256 is
+locked in the builder and later validator. The pure builder deep-copies the
+base, rejects any wrong registry or family order, derives every non-discretionary
+family field, and emits the schema-valid normative contract using pinned
+Prettier 3.8.3 and the existing exclusive same-directory atomic-write pattern.
+`--check` is byte-exact and non-mutating. Tests cover both acceptance examples,
+all group derivations, order and membership rejection, immutability/repeatability,
+format drift, missing/malformed/hash-mismatched base, write failure, and foreign
+temporary collision ownership.
+
+#### P1C0e2 — Exact selection-policy validator
+
+```yaml
+phase: P1C0e2
+unit: selection-contract-validator
+seams: [normative selection contract, P1C1b instance]
+contract-artifact: code
+depends-on: [committed P1C0e1 builder, base, and normative contract]
+fan-out:
+  - name: enforce-selection-contract
+    owned-paths:
+      - scripts/validate_p1.py
+      - scripts/test_validate_p1.py
+review-intensity: active
+commit-checkpoint:
+  green:
+    - python3 scripts/test_build_p1c_selection_policy_contract.py
+    - python3 scripts/test_validate_p1.py
+    - python3 scripts/build_p1c_selection_policy_contract.py --check
+    - python3 scripts/validate_p1.py topology --stage contract
+  buildable: [exact selection-policy semantic oracle]
+  parent-commit: "feat(aius): enforce normative selection policy"
+```
+
+`contract` requires the raw-hash-locked base and schema-valid normative
+contract, imports the pure builder, and rejects semantic drift from its fresh
+derivation. `architecture` keeps all independent structural, naming, status,
+basis-currentness, and declared-versus-used checks, then also requires exact
+ordered semantic equality between the P1C1b instance and normative contract.
+Focused negatives independently mutate policy order/scope/rule/gate/notes,
+requirement order/statement/basis/stage/notes, and family requirements,
+dependent feature, notes, and each derived field. A jointly edited base and
+contract still fails the locked raw hash.
+
 ### P1C1b — Requirement and expected-family policy
 
 ```yaml
@@ -2413,6 +2588,12 @@ phase: P1C1b
 unit: selection-policy
 seams: [locked architecture, atomic selector inputs]
 contract-artifact: both
+depends-on:
+  - committed P1C1a architecture instances and renderer views
+  - current evidence/manifest/sources.json
+  - committed selection-policy-schema.json
+  - committed P1C0e1 normative selection contract
+  - committed P1C0e2 cumulative validator enforcement
 fan-out:
   - name: selection-policy
     owned-paths: [evidence/design/selection-policy.json]
@@ -2423,6 +2604,13 @@ commit-checkpoint:
   buildable: [finite evidence-backed atomic selection queue]
   parent-commit: "docs(aius): bind component selection requirements"
 ```
+
+P1C1b copies the exact JSON value of
+`evidence/design/contracts/selection-policy.json` to
+`evidence/design/selection-policy.json` without changing keys, row order,
+nested-array order, notes, or policy text, then runs the cumulative
+`architecture` checkpoint. It does not reinterpret the tables or derive values
+from P1C2 fragments.
 
 The exact P1C2 family slugs are:
 
