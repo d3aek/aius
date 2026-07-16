@@ -1566,13 +1566,13 @@ TX state, output payload, expansion state, recovery/exit condition, nullable
 recovery measurement gate, and notes. Transition rows contain ID, source and
 sink states, preconditions, ordered actions, and postconditions.
 
-The exact connector/interface IDs are `rear-usb-c`, `internal-usb-a`,
+The exact interface inventory IDs are `rear-usb-c`, `internal-usb-a`,
 `teensy-micro-b`, `toslink-rx`, `toslink-tx`, `ethernet-rj45`,
 `microsd-access`, `program-control`, `status-led`, `remote-program-rtc`,
 `expansion-i2c-control`, `expansion-spi`, `expansion-uart-debug`,
 `expansion-i2s-tdm`, `expansion-usb-host`, `expansion-gpio-adc`, and
 `test-fixture`. Control IDs are `spdif-path-select`, `optical-tx-enable`,
-`teensy-reset`, `teensy-watchdog`, `program`, and `status-led-control`.
+`teensy-reset`, `teensy-watchdog`, `program-control`, and `status-led`.
 Power-domain IDs are `usb-vbus-raw`, `protected-5v`, `teensy-3v3`,
 `digital-ground`, `chassis-shield`, `expansion-3v3`, and
 `expansion-usb-host-vbus`. Operating-state IDs are `power-off`,
