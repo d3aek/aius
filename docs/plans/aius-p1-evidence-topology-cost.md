@@ -3322,6 +3322,11 @@ retained in its manufacturer request and the regenerated supplemental aggregate;
 its clean-room delivery audit passed renderer, parity, handoff and formatting
 checks.
 
+P1D0a completed on 2026-07-16. The supplemental realization schema, exact
+constructor fixtures, executable cross-document contract and manifest policy
+documentation passed clean-room delivery audit with the 46-row oracle hash
+unchanged. The normative detail and phase note are in the supplemental plan.
+
 The normative P1D contract is now
 [`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
 supersedes the historical draft below after a clean-room review found that the

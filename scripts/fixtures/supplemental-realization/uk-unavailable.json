@@ -1,0 +1,40 @@
+{
+  "request_id": "REQ-CLIFF-RX-UK",
+  "retrieved_at": "2026-07-17T01:02:03Z",
+  "note": "The authorized UK distributor observation could not be normalized.",
+  "expected_source": {
+    "id": "AIUS-CLIFF-RX-UK",
+    "class": "dynamic",
+    "title": "normalized UK distributor price and stock observation",
+    "authority": "DigiKey",
+    "revision": "unavailable:2026-07-17",
+    "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components ORJ5.",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "retrieved_at": "2026-07-17T01:02:03Z",
+    "status": "unavailable",
+    "supersedes": null,
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "artifacts": [
+      {
+        "name": "unavailable",
+        "final_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "storage": "external-reference",
+        "path": null,
+        "sha256": null,
+        "bytes": null,
+        "media_type": null,
+        "retrieval_status": "unavailable",
+        "note": "The authorized UK distributor observation could not be normalized."
+      }
+    ],
+    "observations": []
+  }
+}

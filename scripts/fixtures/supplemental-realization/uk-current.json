@@ -1,0 +1,185 @@
+{
+  "request_id": "REQ-CLIFF-RX-UK",
+  "observed_at": "2026-07-16T12:34:56Z",
+  "product_final_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+  "authorization_final_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+  "values": {
+    "manufacturer_part_number": "ORJ5",
+    "supplier_sku": "15283094",
+    "distributor": "DigiKey",
+    "product_initial_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "product_final_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "authorization_authority": "Cliff Electronic Components",
+    "authorization_method": "manufacturer-page",
+    "authorization_initial_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+    "authorization_final_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+    "stock_state": "in-stock",
+    "stock_quantity": 250,
+    "price_quantity": 10,
+    "unit_price_ex_vat": 1.23,
+    "currency": "GBP",
+    "minimum_order_quantity": 1,
+    "order_multiple": 1,
+    "price_includes_vat": false
+  },
+  "expected_source": {
+    "id": "AIUS-CLIFF-RX-UK",
+    "class": "dynamic",
+    "title": "normalized UK distributor price and stock observation",
+    "authority": "DigiKey",
+    "revision": "observed:2026-07-16",
+    "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components ORJ5.",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "status": "current",
+    "supersedes": null,
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "artifacts": [],
+    "observations": [
+      {
+        "key": "manufacturer_part_number",
+        "value": "ORJ5",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "supplier_sku",
+        "value": "15283094",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "distributor",
+        "value": "DigiKey",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "product_initial_url",
+        "value": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "product_final_url",
+        "value": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "authorization_authority",
+        "value": "Cliff Electronic Components",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "key": "authorization_method",
+        "value": "manufacturer-page",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "key": "authorization_initial_url",
+        "value": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "key": "authorization_final_url",
+        "value": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "key": "stock_state",
+        "value": "in-stock",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "stock_quantity",
+        "value": 250,
+        "unit": "pieces",
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "price_quantity",
+        "value": 10,
+        "unit": "pieces",
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "unit_price_ex_vat",
+        "value": 1.23,
+        "unit": "GBP",
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "currency",
+        "value": "GBP",
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "minimum_order_quantity",
+        "value": 1,
+        "unit": "pieces",
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "order_multiple",
+        "value": 1,
+        "unit": "pieces",
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "key": "price_includes_vat",
+        "value": false,
+        "unit": null,
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      }
+    ]
+  }
+}

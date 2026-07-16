@@ -153,7 +153,9 @@ constants. Supplier SKU and final URLs use non-empty/HTTPS patterns. Stock state
 uses the four-value enum. Stock quantity is a nullable integer with
 minimum zero; price quantity, MOQ and order multiple are integers with minimum
 one; unit price is a number with minimum zero. Cross-field validation enforces
-the state/quantity matrix, `price_quantity >= minimum_order_quantity`, and
+the state/quantity matrix: `in-stock` requires a non-null integer greater than
+or equal to one; `out-of-stock` requires literal zero; `backorder` and `unknown`
+require null. It also enforces `price_quantity >= minimum_order_quantity` and
 `price_quantity % order_multiple == 0`.
 
 Authorization is independently bound to the distributor. Tag-Connect is the
@@ -500,6 +502,15 @@ commit-checkpoint:
   buildable: [offline-validated exact 46-request acquisition oracle]
   parent-commit: "docs(aius): lock supplemental evidence realizations"
 ```
+
+P1D0a completed on 2026-07-16. The immutable 46-row oracle retains SHA-256
+`ffbb364de79d734c4ba50885095f58319a56687b0bda93669e4753ba689d493d`.
+The final clean-room audit returned `PASS` after closing synchronized artifact
+source-directory and template/substitution bypasses; 33 realization tests, 15
+evidence-policy compatibility tests, exact formatting and topology handoff were
+green. The unchanged `test_source_schema.py` empty-source expectation remains a
+known baseline failure outside this phase; its test, schema and source manifest
+have no P1D0a diff.
 
 ### P1D0b — Per-request acquisition and validation
 

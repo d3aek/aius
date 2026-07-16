@@ -26,6 +26,17 @@ Store reviewable upstream text under the source ID in
 `evidence/source-snapshots/`. Record normalized dynamic facts as observations;
 do not save a distributor page as a reproducible artifact.
 
+`supplemental-realization.json` is the immutable, sorted acquisition oracle for
+the 46 non-satisfied supplemental requests. Its schema fixes the Aius-owned
+dispatch root, manufacturer and UK row shapes, artifact controls, authorization
+tuples, clone-boundary outcomes, and the ordered UK observation profile.
+
+Every owned path is relative to the literal `src/hardware/aius` root and must
+contain its row's exact source ID. Manufacturer rows retain primary evidence;
+UK rows retain normalized observations only. The constructor fixtures under
+`scripts/fixtures/supplemental-realization/` lock the exact current and
+unavailable source-record shapes for both classes.
+
 ## External-reference workflow
 
 Public retrieval does not infer permission to republish. Publicly retrievable

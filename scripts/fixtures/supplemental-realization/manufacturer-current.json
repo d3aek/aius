@@ -1,0 +1,68 @@
+{
+  "request_id": "REQ-MECHANICAL-CABLE-RETAINER-MFR",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "artifact_results": [
+    {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 4096
+    },
+    {
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bytes": 2048
+    }
+  ],
+  "expected_source": {
+    "id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+    "class": "golden",
+    "title": "HellermannTyton 151-30300 primary manufacturer evidence",
+    "authority": "HellermannTyton",
+    "revision": "sha256:fa0dafbf43f1f551e536353e9d1a942a8e86e41a0b58dfeaf264ef217f6b862a",
+    "purpose": "Satisfy REQ-MECHANICAL-CABLE-RETAINER-MFR for mechanical-cable-retainer.",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-MECHANICAL-CABLE-RETAINER"
+    ],
+    "landing_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "status": "current",
+    "supersedes": null,
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "artifacts": [
+      {
+        "name": "TDS_151-30300_com.pdf",
+        "final_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+        "storage": "lfs",
+        "path": "https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "bytes": 4096,
+        "media_type": "application/pdf",
+        "retrieval_status": "current",
+        "note": ""
+      },
+      {
+        "name": "151-30300.html",
+        "final_url": "https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300",
+        "storage": "git",
+        "path": "evidence/source-snapshots/AIUS-MECHANICAL-CABLE-RETAINER-MFR/151-30300.html",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bytes": 2048,
+        "media_type": "text/html",
+        "retrieval_status": "current",
+        "note": ""
+      }
+    ],
+    "observations": [
+      {
+        "key": "manufacturer_part_number",
+        "value": "151-30300",
+        "unit": null,
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-MECHANICAL-CABLE-RETAINER-MFR.",
+        "observed_at": "2026-07-16T12:34:56Z",
+        "source_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf"
+      }
+    ]
+  }
+}
