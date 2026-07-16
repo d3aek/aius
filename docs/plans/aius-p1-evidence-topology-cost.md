@@ -114,10 +114,13 @@ valid and invalid source/seed examples.
 
 A source record requires `id`, `class`, `title`, `authority`, `revision`,
 `purpose`, `claim_scope`, `landing_url`, `retrieved_at`, `status`, `supersedes`,
-`redistribution_note`, `artifacts`, and `observations`. IDs match
+`redistribution_note`, `artifacts`, and `observations`. `sources.json` is a
+top-level array sorted by `id` with unique IDs. IDs match
 `^[A-Z0-9]+(?:-[A-Z0-9]+)*$`. `class` is `golden`, `comparative`,
 `independently-derived`, or `dynamic`; `status` is `current`, `superseded`, or
-`unavailable`. URLs are HTTPS. Timestamps use UTC RFC 3339 seconds.
+`unavailable`. Titles, authorities, revisions, purposes, and redistribution
+notes are non-empty strings. `claim_scope` is a non-empty array of unique,
+non-empty strings. URLs are HTTPS. Timestamps use UTC RFC 3339 seconds.
 
 An artifact requires `name`, `final_url`, `storage`, `path`, `sha256`, `bytes`,
 `media_type`, `retrieval_status`, and `note`. `storage` is `lfs`, `git`, or
@@ -130,18 +133,28 @@ An artifact requires `name`, `final_url`, `storage`, `path`, `sha256`, `bytes`,
   both present; no checkout-reproducibility claim is made.
 - `unavailable` requires `external-reference`, null path/hash/size/media type,
   and a non-empty note.
-- A superseded source has no current artifacts. A current record may name one
-  prior ID in `supersedes`; that prior record must exist with
-  `status: superseded`. Chains are acyclic.
+- `supersedes` has type string or null. A current record may name one prior ID;
+  a superseded or unavailable record requires null. A named prior record must
+  exist with `status: superseded`. Chains are acyclic. A superseded source has
+  no current artifacts.
 - A source has at least one artifact or one observation. An unavailable source
   has an unavailable artifact and no factual observation.
 
 An observation requires `key`, scalar `value`, nullable `unit`, non-empty
 `basis`, `observed_at`, and HTTPS `source_url`.
 
-Each seed record contains the immutable tuple `id`, `class`, `authority`,
-`landing_url`, plus `required_object`, `purpose`, `claim_scope`, and `required`.
-The seed matrix in this plan is copied without source selection.
+`seed-sources.json` is a top-level array sorted by `id` with unique IDs and
+exactly 22 records. Each record contains only the immutable tuple `id`, `class`,
+`authority`, and HTTPS `landing_url`, plus non-empty `required_object` and
+`purpose`, non-empty unique-string-array `claim_scope`, and Boolean `required`.
+`test_source_schema.py` contains the 22 expected immutable tuples copied from
+the matrix above and fails on a missing, extra, reordered, or changed tuple.
+
+JSON Schema enforces record-local rules. `test_source_schema.py` also exposes
+`validate_source_collection(sources, seeds)` for sortedness, uniqueness,
+artifact-name uniqueness, supersession references, and cycle detection. P1A4
+imports this function as the reusable cross-record validation entry point; it
+does not reimplement those rules.
 
 ```yaml
 phase: P1A1
