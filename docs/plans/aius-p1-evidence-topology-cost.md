@@ -1021,11 +1021,18 @@ normalization, environment override, authority fallback, credential prompt, or
 proxy-specific alternate URL.
 
 Each source fragment is one source-record object, not a one-element array. Each
-assumption fragment is one assumption-record object. Generated JSON uses
-`json.dumps(..., ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2)`
-plus one terminal newline. Input JSON rejects `NaN`, `Infinity`, and
-`-Infinity`. `record` validates values solely by walking its realization
-descriptor in order; it has no profile-name branch or second field-rule table.
+assumption fragment is one assumption-record object. Generated JSON is UTF-8,
+sorts object keys, uses two-space indentation and LF, rejects non-finite numbers,
+and has one terminal newline. To match the repository's pinned Prettier
+`printWidth: 120` contract without a runtime Node dependency, scalar arrays are
+rendered on the containing line only when that complete line is at most 120
+characters; otherwise arrays use one item per indented line. Arrays containing
+objects or arrays are always multiline except when empty. The contract test
+compares representative source, observation, assumption, and aggregate renders
+to exact golden bytes and the checkpoint runs Prettier `--check` on generated
+fixtures. Input JSON rejects `NaN`, `Infinity`, and `-Infinity`. `record`
+validates values solely by walking its realization descriptor in order; it has
+no profile-name branch or second field-rule table.
 
 Before reading or writing, every path is lexically confined beneath the
 resolved Aius root. An explicit `--root` final path component is checked with
@@ -1137,7 +1144,7 @@ reachable regressions above close those findings.
 
 ```yaml
 phase: P1B1c
-status: completed
+status: in-progress
 unit: seed-evidence-orchestration
 seams: [authority retrieval, source fragment, assumption fragment, aggregate]
 contract-artifact: both
@@ -1164,6 +1171,11 @@ stream-read classification, fragment identity, cleanup/rollback proof,
 nullable-payload validator reuse, golden-block reachability, assumption
 aggregation, missing-fragment isolation, and root-symlink gaps. The final
 clean-room acceptance audit passed with no contract discrepancies.
+
+Reopened 2026-07-16 when the first real fragments showed that Python's default
+indented scalar-array layout fails the repository's mandatory Prettier hook.
+P1B2a evidence remains uncommitted until the renderer and its exact-byte
+regressions satisfy both the standard-library and repository-format contracts.
 
 ### P1B2 — Non-dynamic acquisition waves
 
