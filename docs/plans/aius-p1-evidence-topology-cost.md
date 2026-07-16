@@ -2436,8 +2436,11 @@ remote-program-rtc`, consumers `teensy`, backfeed rule "The RTC backup input is
 isolated from teensy-3v3 and cannot power the core.", evidence
 `PJRC-TEENSY41-PINOUT`, `PJRC-TEENSY41-SCHEMATIC`, and notes "External RTC
 backup battery domain." The interface schema's ordered power-domain enum gains
-`rtc-backup` immediately after `teensy-3v3`; the builder evidence bundle, exact
-ID-order oracle, cross-reference checks, and focused tests must all include it.
+`rtc-backup` immediately after `teensy-3v3`. Its `powerDomains` collection
+changes from exact `minItems`/`maxItems` 7 to 8 and gains an eighth `contains`
+clause for `rtc-backup`, inserted immediately after the existing
+`teensy-3v3` clause. The builder evidence bundle, exact ID-order oracle,
+cross-reference checks, and focused tests must all include it.
 
 ```yaml
 phase: P1C0c2
@@ -2484,9 +2487,12 @@ commit-checkpoint:
 ```
 
 The four tasks execute serially in listed order and remain one atomic phase
-commit. `migrate-usb-rtc-schema` first adds only the exact ordered enum member;
-its focused schema tests reject omission, wrong insertion order, and an unknown
-power-domain ID while accepting the newly generated valid fixture.
+commit. `migrate-usb-rtc-schema` first adds the exact ordered enum member,
+updates both collection cardinality bounds to 8, and adds the exact ordered
+membership clause. Its focused schema tests reject enum omission/order,
+cardinality 7 or 9, missing/reordered `contains`, and an unknown power-domain ID
+while accepting an in-memory eight-row migrated instance. It does not edit the
+generated fixture owned by the next task.
 `migrate-usb-rtc-contract` then updates the pure builder and tests, runs
 `build_p1c_architecture_contracts.py --write` and `--check`, and owns all four
 outputs that command replaces. Its tests and direct before/after byte
