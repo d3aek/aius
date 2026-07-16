@@ -1233,6 +1233,7 @@ without writing an unavailable claim.
 
 ```yaml
 phase: P1B2a
+status: completed
 unit: single-seed-source
 seams: [public authority, validated fragment]
 contract-artifact: both
@@ -1249,6 +1250,12 @@ commit-checkpoint:
   buildable: [validated Teensy board evidence fragments]
   parent-commit: "docs(aius): archive Teensy board evidence"
 ```
+
+Completed 2026-07-16 with shared retrieval timestamp
+`2026-07-16T04:46:15Z`. The product-page HTML, schematic PNG, and both revision
+4 pinout PDFs were acquired from their exact realization URLs as current golden
+evidence. The combined fragment checkpoint and clean-room delivery audit passed;
+Git/LFS placement and pinned-Prettier byte parity are correct.
 
 ```yaml
 phase: P1B2b

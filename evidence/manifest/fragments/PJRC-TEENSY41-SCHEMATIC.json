@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": 150704,
+      "final_url": "https://www.pjrc.com/teensy/schematic41.png",
+      "media_type": "image/png",
+      "name": "schematic41.png",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "https://www.pjrc.com/teensy/schematic.html",
+      "retrieval_status": "current",
+      "sha256": "8c5d04dad66906ca9ff4de95a6db3102620eef971f92c7598dc5f522a701c132",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "PJRC",
+  "claim_scope": ["Teensy 4.1 circuit topology"],
+  "class": "golden",
+  "id": "PJRC-TEENSY41-SCHEMATIC",
+  "landing_url": "https://www.pjrc.com/store/teensy41.html",
+  "observations": [],
+  "purpose": "Establish the official Teensy 4.1 board-level circuit topology.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T04:46:15Z",
+  "revision": "sha256:8c5d04dad66906ca9ff4de95a6db3102620eef971f92c7598dc5f522a701c132",
+  "status": "current",
+  "supersedes": null,
+  "title": "schematic linked by the product page"
+}
