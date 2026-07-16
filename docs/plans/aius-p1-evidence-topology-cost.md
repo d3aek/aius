@@ -955,64 +955,155 @@ source fragments and aggregate manifest.
 
 ### P1B1c — Reproducible acquisition and assembly
 
-Create exactly `scripts/seed_evidence.py` and
-`scripts/test_seed_evidence.py`. The standard-library CLI accepts `--root` with
-the same semantics as `validate_evidence.py` and provides:
+Create `scripts/seed_evidence.py` and `scripts/test_seed_evidence.py`, and extend
+`scripts/validate_evidence.py` plus `scripts/test_validate_evidence.py` with the
+public artifact-payload seam defined below. The standard-library CLI accepts
+`--root` with the same default and resolution semantics as
+`validate_evidence.py` and provides:
 
-- `acquire <source-id>` for non-dynamic rows: retrieve only the realization
-  URLs, follow HTTPS redirects, require the exact expected final URL, write the
-  exact path atomically, calculate bytes/SHA-256, require the media signature and
-  Git attribute through the existing validator, and write one schema-valid
-  source record to `evidence/manifest/fragments/<ID>.json`;
+- `acquire <source-id> --retrieved-at <UTC>` for non-dynamic rows: retrieve only
+  the realization URLs, enforce the redirect contract below, stage every exact
+  artifact, calculate bytes/SHA-256, require media and Git placement through the
+  public validator seam, and transactionally publish the artifacts plus one
+  schema-valid source object at
+  `evidence/manifest/fragments/<ID>.json`;
 - `record <source-id> --values <json> --observed-at <UTC>` for dynamic rows:
-  accept exactly the scalar-map profile keys/types above, generate every unit,
-  basis, timestamp, and source URL by the locked rules, embed observations in the
-  source fragment, and never create a standalone observation file;
-- `unavailable <source-id> --note <text>`: write an unavailable source fragment.
-  For comparative/dynamic sources it also writes exactly one open assumption to
+  accept exactly the scalar-map descriptor keys and types, generate every unit,
+  basis, timestamp, and source URL from the descriptor and seed, embed
+  observations in the source fragment, and never create a standalone
+  observation file;
+- `unavailable <source-id> --note <text> --retrieved-at <UTC>`: write an
+  unavailable source fragment. For comparative/dynamic sources it also writes
+  exactly one open assumption to
   `evidence/manifest/assumption-fragments/<ID>.json`, with ID
   `ASM-UNAVAILABLE-<ID>`, exact source ID and claim scope, no evidence IDs, owner
   `P1B`, and validation gate `Replace unavailable seed evidence`. Golden use
   writes the fragment but exits `3`, which blocks the wave and all later phases;
-- `check-fragment <ID>...`: validate each named source record, immutable seed
-  tuple, realization, local bytes/media/Git placement, observation profile, and
-  required failure assumption without requiring other fragments;
+- `check-fragment <ID>...`: validate each named source object, immutable seed
+  tuple, realization, local bytes/media/Git placement, observation descriptor,
+  and required failure assumption without requiring other fragments;
 - `assemble --write`: require exactly the 22 fragment IDs and no extras, reject
   duplicate record IDs, validate every fragment, require exactly the permitted
-  assumption fragments and no extras, sort both arrays by ID, and atomically
-  render `sources.json` and `assumptions.json` as UTF-8 JSON with two-space
-  indentation and one terminal newline;
+  assumption fragments and no extras, sort both arrays by ID, and
+  transactionally render `sources.json` and `assumptions.json`;
 - `assemble --check`: render in memory and require byte equality with both
   committed aggregate files.
 
-The acquisition command uses a descriptive user agent, finite timeouts, and no
-authority fallback. A transport, redirect, signature, or write failure leaves no
-partial evidence or fragment. Fixed revisions use the realization value;
-`sha256` revisions are `sha256:<artifact-sha256>` for one artifact or
-`sha256:<sha256-of-concatenated-lowercase-artifact-digests>` for several;
-dynamic revisions are `observed:<YYYY-MM-DD>`. Source title is the seed
-`required_object`; purpose and claim scope copy the seed exactly. Every local
-artifact note and source `redistribution_note` state personal noncommercial
-retention and no republication permission inferred.
+All timestamp arguments must be real calendar times in exact
+`YYYY-MM-DDTHH:MM:SSZ` form. The supplied timestamp is the source
+`retrieved_at`; no command consults the wall clock. Fixed revisions are exactly
+the realization value; commit revisions are
+`commit:<lowercase-realization-value>`; `sha256` revisions are
+`sha256:<artifact-sha256>` for one artifact or
+`sha256:<sha256-of-concatenated-lowercase-artifact-digests>` for several, with
+digests concatenated in realization artifact order; dynamic revisions are
+`observed:<YYYY-MM-DD>`. Every generated source copies `id`, `class`,
+`authority`, `landing_url`, `purpose`, and `claim_scope` from its seed, uses the
+seed `required_object` as title, and has null `supersedes`. Acquired and recorded
+sources are current. Acquired artifacts remain in realization order and have no
+observations; recorded sources have no artifacts and observations in descriptor
+order. Every acquired artifact note and its source `redistribution_note` use
+exact text
+`Retained for personal noncommercial research; no republication permission is inferred.`
+A recorded dynamic source uses exact redistribution note
+`Normalized observation only; no source page is retained.` An unavailable
+source uses exact redistribution note
+`No local copy is retained; no republication permission is inferred.`
 
-The internal retrieval function accepts an opener dependency for tests;
-production constructs the standard-library HTTPS opener and exposes no
-environment override for URLs or expected redirects.
+The acquisition command sends user agent `Aius-evidence/1.0`, uses a 30-second
+open/read timeout, requests identity encoding, permits at most five redirects,
+and accepts redirect status only 301, 302, 303, 307, or 308. The initial URL,
+every redirect target, and the response final URL must be HTTPS. The terminal
+status must be 200, `Content-Encoding` must be absent or `identity`, and the
+payload must not exceed 256 MiB by header or streamed bytes. The response
+`geturl()` string must equal `expected_final_url` byte for byte; there is no URL
+normalization, environment override, authority fallback, credential prompt, or
+proxy-specific alternate URL.
 
-An unavailable fragment has `revision: unavailable:<YYYY-MM-DD>`, source status
-`unavailable`, no observations, and exactly one artifact named `unavailable`
-with the seed landing URL, `storage: external-reference`, null path/hash/bytes/
-media type, retrieval status `unavailable`, and the CLI note. The generated
-assumption claim is `Seed source <ID> is unavailable for: <claim_scope joined by
-"; ">`; consequence is `Dependent P1 claims remain provisional until the source
-is replaced.`; status is `open` and resolution is null.
+Each source fragment is one source-record object, not a one-element array. Each
+assumption fragment is one assumption-record object. Generated JSON uses
+`json.dumps(..., ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2)`
+plus one terminal newline. Input JSON rejects `NaN`, `Infinity`, and
+`-Infinity`. `record` validates values solely by walking its realization
+descriptor in order; it has no profile-name branch or second field-rule table.
+
+Before reading or writing, every path is lexically confined beneath the
+resolved Aius root. Every existing component is checked with `lstat`; symlinks
+are always rejected, intermediate components must be directories, and
+input/aggregate files must be regular files. Per-source commands refuse to
+overwrite any artifact, source fragment, or assumption fragment, including a
+symlink or non-regular entry. Fragment-directory scans inspect every direct
+entry: `fragments/` must exist and contain exactly the 22 regular, non-symlink
+`<ID>.json` files; a missing `assumption-fragments/` means empty, otherwise every
+direct entry must be a regular, non-symlink `<ID>.json` permitted by an
+unavailable comparative/dynamic source. Hidden, temporary, nested, and other
+entries are errors.
+
+Writes stage unique adjacent temporary regular files with exclusive creation,
+flush and `fsync` their contents, re-check parent/target safety, publish with
+`os.replace`, `fsync` the affected directories, and remove staged files on any
+handled failure. Acquisition stages every artifact and its fragment before any
+publish; unavailable comparative/dynamic handling stages source and assumption
+together. A handled publish failure rolls back all outputs from that command,
+leaving no new target. `assemble --write` is allowed to replace only the two
+regular aggregate files; a handled failure restores both prior byte streams (or
+their prior absence) and removes backups/temps. These guarantees are
+process-failure transactional, not power-loss atomic across multiple files.
+Tests inject failures at each publish boundary and require rollback plus cleanup.
+
+`validate_evidence.py` exposes
+`validate_artifact_payload(root, relative_path, payload, media_type, storage)`.
+It performs the existing suffix/media/storage, Git attribute, LFS-pointer,
+signature, and UTF-8/content checks against the final project-relative path and
+returns a sorted tuple of `Diagnostic` without printing or requiring aggregate
+sources. It raises `ControlError` only for an unusable root/Git environment.
+The aggregate validator and the new fragment adapter both use this public
+function; neither duplicates the media table or signature rules. P1B1c first
+validates source/assumption objects with the existing schemas and collection
+helper, then applies immutable seed, realization, descriptor, secure local-byte,
+hash/size, and public artifact-payload checks.
+
+The internal retrieval function accepts an opener dependency whose `open` does
+not auto-follow redirects. Production constructs a standard-library opener with
+automatic redirects and environment proxy discovery disabled; the retriever
+resolves each `Location` with `urljoin`, validates it, and performs the next
+request itself. No environment value can override URLs or expected redirects.
+Test-only transaction helpers also accept a replace-function dependency so
+every rollback edge is deterministically reachable.
+
+An unavailable fragment has `revision: unavailable:<YYYY-MM-DD>` from the
+required timestamp, source status `unavailable`, no observations, and exactly
+one artifact named `unavailable` with the seed landing URL,
+`storage: external-reference`, null path/hash/bytes/media type, retrieval status
+`unavailable`, and the non-whitespace CLI note. The generated assumption claim
+is `Seed source <ID> is unavailable for: <claim_scope joined by "; ">`;
+consequence is
+`Dependent P1 claims remain provisional until the source is replaced.`; status
+is `open` and resolution is null.
+
+Exit status is `0` for a silent success, `1` for acquisition, record,
+validation, transaction, aggregate-drift, or unavailable comparative/dynamic
+failure, `2` for argparse usage, invalid control/schema/root/Git state, or an
+unexpected internal exception, and `3` only after a golden unavailable fragment
+has been durably written. Errors go to stderr with one deterministic `ERROR:`
+line per failure and no traceback; data-validation diagnostics are sorted.
 
 Tests use an in-process fake HTTPS opener with deterministic redirect responses
-and isolated Git trees to cover all CLI commands, atomic failure, exact
+and isolated Git trees to cover all CLI commands, exact timestamps and exit
+codes, HTTPS/status/redirect/encoding/size limits, rollback at every publish
+boundary, target and ancestor symlinks, non-regular and temporary entries, exact
 final-URL rejection, artifact and snapshot storage, fixed/hash/commit revisions,
-every dynamic profile, golden exit `3`, comparative/dynamic assumptions,
-missing/extra/duplicate fragments, deterministic sorting/rendering, and check
-drift.
+descriptor-only validation of every dynamic profile, invalid JSON constants,
+golden exit `3`, comparative/dynamic assumptions, missing/extra/duplicate
+fragments, canonical sorting/rendering, and check drift. The validator test
+covers both public artifact-payload callers and parity with aggregate media
+diagnostics.
+
+The P1B1c clean-room gate returned `BLOCKED` on 2026-07-15 because retrieval
+time, revision rendering, transactional boundaries, symlink safety, redirect
+limits, fragment rendering, isolated artifact validation, and exit behavior were
+not complete contracts. The rules above resolve those findings; a fresh
+clean-room verdict remains required before implementation.
 
 ```yaml
 phase: P1B1c
@@ -1024,11 +1115,14 @@ fan-out:
     owned-paths:
       - scripts/seed_evidence.py
       - scripts/test_seed_evidence.py
+      - scripts/validate_evidence.py
+      - scripts/test_validate_evidence.py
 review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_seed_evidence.py
     - python3 scripts/test_seed_realization.py
+    - python3 scripts/test_validate_evidence.py
   buildable: [reproducible per-source acquisition and deterministic aggregation]
   parent-commit: "feat(aius): orchestrate seed evidence acquisition"
 ```
