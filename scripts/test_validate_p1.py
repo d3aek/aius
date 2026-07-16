@@ -764,6 +764,146 @@ class ContractAndArchitectureDiagnosticTests(ValidatorTestCase):
         self.fixture.render_architecture()
         self.assert_code("architecture-base", "IDSET")
 
+    def test_migrated_power_domain_id_order_is_locked(self) -> None:
+        domains = self.fixture.interfaces["power_domains"]
+        domains[2], domains[3] = domains[3], domains[2]
+        self.fixture.write_architecture()
+        self.fixture.render_architecture()
+        self.assert_code("architecture-base", "IDSET")
+
+    def test_old_data_only_teensy_usb_contract_is_rejected(self) -> None:
+        connector = next(
+            row
+            for row in self.fixture.interfaces["connectors"]
+            if row["id"] == "teensy-micro-b"
+        )
+        connector.update(
+            {
+                "role": "data",
+                "signals": ["USB2-D+", "USB2-D-"],
+                "power_domains": ["digital-ground"],
+                "mating_constraint": "No second VIN or VUSB power feed is fitted.",
+                "notes": "Module USB data access.",
+            }
+        )
+        self.fixture.write_architecture()
+        self.fixture.render_architecture()
+        result = self.assert_code("architecture-base", "CONTRACT")
+        self.assertIn(
+            "teensy-micro-b differs from the locked USB power-data contract",
+            result.stderr,
+        )
+
+    def test_protected_5v_consumers_are_exact_and_ordered(self) -> None:
+        mutations = (
+            ["teensy", "internal-usb-a"],
+            ["internal-usb-a", "teensy", "teensy-micro-b"],
+        )
+        for consumers in mutations:
+            with self.subTest(consumers=consumers), FixtureTree() as fixture:
+                domain = next(
+                    row
+                    for row in fixture.interfaces["power_domains"]
+                    if row["id"] == "protected-5v"
+                )
+                domain["consumers"] = consumers
+                fixture.write_architecture()
+                fixture.render_architecture()
+                result = _run(fixture.root, "architecture-base")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("CONTRACT", _codes(result), result.stderr)
+                self.assertIn(
+                    "protected-5v consumers differ from the locked sole-feed contract",
+                    result.stderr,
+                )
+
+    def test_remote_program_rtc_domains_and_evidence_are_exact(self) -> None:
+        mutations = (
+            ("power_domains", ["teensy-3v3", "digital-ground"]),
+            ("evidence_ids", ["PJRC-TEENSY41-PINOUT"]),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field), FixtureTree() as fixture:
+                connector = next(
+                    row
+                    for row in fixture.interfaces["connectors"]
+                    if row["id"] == "remote-program-rtc"
+                )
+                connector[field] = value
+                fixture.write_architecture()
+                fixture.render_architecture()
+                result = _run(fixture.root, "architecture-base")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("CONTRACT", _codes(result), result.stderr)
+                self.assertIn(
+                    f"remote-program-rtc {field} differs from the locked RTC service contract",
+                    result.stderr,
+                )
+
+    def test_rtc_backup_position_and_semantics_are_locked(self) -> None:
+        with FixtureTree() as fixture:
+            domains = fixture.interfaces["power_domains"]
+            domains[3], domains[4] = domains[4], domains[3]
+            fixture.write_architecture()
+            fixture.render_architecture()
+            result = _run(fixture.root, "architecture-base")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("IDSET", _codes(result), result.stderr)
+
+        mutations = (
+            ("source", "power-entry"),
+            ("consumers", ["optical-rx"]),
+            ("backfeed_rule", "RTC backup may sustain the core."),
+            ("evidence_ids", ["PJRC-TEENSY41-PINOUT"]),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field), FixtureTree() as fixture:
+                domain = next(
+                    row
+                    for row in fixture.interfaces["power_domains"]
+                    if row["id"] == "rtc-backup"
+                )
+                domain[field] = value
+                fixture.write_architecture()
+                fixture.render_architecture()
+                result = _run(fixture.root, "architecture-base")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("CONTRACT", _codes(result), result.stderr)
+                self.assertIn(
+                    f"rtc-backup {field} differs from the locked isolated backup-power contract",
+                    result.stderr,
+                )
+
+    def test_connector_power_domain_reference_is_checked(self) -> None:
+        schema_path = self.fixture.path(
+            "evidence/design/interfaces-and-states-schema.json"
+        )
+        schema = _read_json(schema_path)
+        schema["$defs"]["powerDomainIdentifier"]["enum"].append("missing-domain")
+        _write_json(schema_path, schema)
+        connector = next(
+            row
+            for row in self.fixture.interfaces["connectors"]
+            if row["id"] == "remote-program-rtc"
+        )
+        connector["power_domains"][1] = "missing-domain"
+        self.fixture.write_architecture()
+        self.fixture.render_architecture()
+        result = self.assert_code("architecture-base", "REFERENCE")
+        self.assertIn("connectors[7].power_domains", result.stderr)
+
+    def test_rtc_backup_cannot_source_a_core_power_domain(self) -> None:
+        domain = next(
+            row
+            for row in self.fixture.interfaces["power_domains"]
+            if row["id"] == "teensy-3v3"
+        )
+        domain["source"] = "rtc-backup"
+        self.fixture.write_architecture()
+        self.fixture.render_architecture()
+        result = self.assert_code("architecture-base", "CONTRACT")
+        self.assertIn("rtc-backup cannot source a core power domain", result.stderr)
+
     def test_unresolved_control_owner_uses_reference(self) -> None:
         self.fixture.interfaces["controls"][0]["owner"] = "missing-owner"
         self.fixture.write_architecture()

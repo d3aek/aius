@@ -2523,6 +2523,16 @@ drift, and an attempt to make RTC backup a core-power source. P1C0e1 cannot
 start until this correction is committed and its clean-room delivery audit
 passes.
 
+Completed 2026-07-16. The interface contract, schema, live instance, and review
+Markdown now model the internal Micro-B connector as the sole protected VUSB
+entry and add an isolated RTC backup domain. The immutable base and both
+functional generated files remain unchanged; the functional outputs retain
+SHA-256 `c2169ccab183b835c494ab52a0e6c288403c2ea69e3b94816d28e474a8606aae`.
+Nineteen builder, 18 interface-schema, 19 renderer, and 57 validator tests pass,
+as do builder/render byte checks and cumulative `architecture-base` validation.
+The schema-task regression independently covers both pre-builder seven-row and
+post-builder eight-row fixtures. The clean-room delivery audit passed.
+
 ### P1C0e — Normative selection-policy contract and enforcement
 
 The clean-room P1C1b gate found that the schema and family set did not lock

@@ -31,6 +31,7 @@
         "usb-vbus-raw",
         "protected-5v",
         "teensy-3v3",
+        "rtc-backup",
         "digital-ground",
         "chassis-shield",
         "expansion-3v3",
@@ -1348,8 +1349,8 @@
       "items": {
         "$ref": "#/$defs/powerDomain"
       },
-      "minItems": 7,
-      "maxItems": 7,
+      "minItems": 8,
+      "maxItems": 8,
       "allOf": [
         {
           "contains": {
@@ -1376,6 +1377,16 @@
             "properties": {
               "id": {
                 "const": "teensy-3v3"
+              }
+            },
+            "required": ["id"]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "id": {
+                "const": "rtc-backup"
               }
             },
             "required": ["id"]

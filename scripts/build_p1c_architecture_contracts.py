@@ -47,6 +47,7 @@ EVIDENCE_BUNDLES = {
     "EV-EXP": ("PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PINOUT"),
     "EV-OPTICAL": ("CLIFF-ORJ5", "CLIFF-OTJ5", "VKSDR-TOSLINK-SCHEMATICS"),
     "EV-PIN": ("PJRC-TEENSY41-PINOUT",),
+    "EV-RTC": ("PJRC-TEENSY41-PINOUT", "PJRC-TEENSY41-SCHEMATIC"),
     "EV-RX": (
         "CLIFF-ORJ5",
         "PJRC-SPDIF-RX-SOURCE",
@@ -129,7 +130,7 @@ INTERFACES_EVIDENCE = {
         "toslink-tx": "EV-TX",
         "ethernet-rj45": "EV-ETH",
         "microsd-access": "EV-PIN",
-        "remote-program-rtc": "EV-PIN",
+        "remote-program-rtc": "EV-RTC",
         "test-fixture": "EV-EXP",
     },
     "controls": {
@@ -152,12 +153,35 @@ INTERFACES_EVIDENCE = {
         "usb-vbus-raw": "EV-USB",
         "protected-5v": "EV-USB",
         "teensy-3v3": "EV-CORE",
+        "rtc-backup": "EV-RTC",
         "digital-ground": "EV-CORE",
         "chassis-shield": "EV-SYSTEM",
         "expansion-3v3": "EV-EXP",
         "expansion-usb-host-vbus": "EV-EXP",
     },
 }
+
+LOCKED_CONNECTOR_IDS = (
+    "rear-usb-c",
+    "internal-usb-a",
+    "teensy-micro-b",
+    "toslink-rx",
+    "toslink-tx",
+    "ethernet-rj45",
+    "microsd-access",
+    "remote-program-rtc",
+    "test-fixture",
+)
+
+LOCKED_POWER_DOMAIN_IDS = (
+    "usb-vbus-raw",
+    "protected-5v",
+    "teensy-3v3",
+    "digital-ground",
+    "chassis-shield",
+    "expansion-3v3",
+    "expansion-usb-host-vbus",
+)
 
 TRANSITION_ENDPOINTS = {
     "power-on-to-reset": (("power-off",), ("powered-reset",)),
@@ -270,6 +294,73 @@ def _assign_evidence(
     document["evidence_ids"] = list(ROOT_EVIDENCE_IDS)
 
 
+def _locked_rows(
+    document: dict[str, object],
+    collection: str,
+    expected_ids: tuple[str, ...],
+) -> list[dict[str, object]]:
+    rows = document.get(collection)
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError(f"{collection} must be an array of objects")
+    if tuple(row.get("id") for row in rows) != expected_ids:
+        raise ValueError(f"{collection} do not have the exact locked ID order")
+    return rows
+
+
+def _migrate_usb_rtc_power_topology(document: dict[str, object]) -> None:
+    connectors = _locked_rows(document, "connectors", LOCKED_CONNECTOR_IDS)
+    power_domains = _locked_rows(
+        document,
+        "power_domains",
+        LOCKED_POWER_DOMAIN_IDS,
+    )
+
+    connector_index = {row["id"]: index for index, row in enumerate(connectors)}
+    connectors[connector_index["teensy-micro-b"]] = {
+        "id": "teensy-micro-b",
+        "location": "module",
+        "role": "power-data",
+        "signals": ["USB2-D+", "USB2-D-", "VBUS"],
+        "power_domains": ["protected-5v", "digital-ground"],
+        "mating_constraint": (
+            "The internal USB cable is the sole Teensy VUSB feed; no VIN or second "
+            "VUSB feed is fitted."
+        ),
+        "evidence_ids": list(EVIDENCE_BUNDLES["EV-USB"]),
+        "notes": "Module USB power-and-data entry.",
+    }
+
+    remote_program_rtc = connectors[connector_index["remote-program-rtc"]]
+    remote_program_rtc["power_domains"] = [
+        "teensy-3v3",
+        "rtc-backup",
+        "digital-ground",
+    ]
+    remote_program_rtc["evidence_ids"] = list(EVIDENCE_BUNDLES["EV-RTC"])
+
+    power_domain_index = {
+        row["id"]: index for index, row in enumerate(power_domains)
+    }
+    protected_5v = power_domains[power_domain_index["protected-5v"]]
+    protected_5v["consumers"] = [
+        "teensy",
+        "internal-usb-a",
+        "teensy-micro-b",
+    ]
+    rtc_backup = {
+        "id": "rtc-backup",
+        "source": "remote-program-rtc",
+        "consumers": ["teensy"],
+        "backfeed_rule": (
+            "The RTC backup input is isolated from teensy-3v3 and cannot power the "
+            "core."
+        ),
+        "evidence_ids": list(EVIDENCE_BUNDLES["EV-RTC"]),
+        "notes": "External RTC backup battery domain.",
+    }
+    power_domains.insert(power_domain_index["teensy-3v3"] + 1, rtc_backup)
+
+
 def build_functional_contract(base: object) -> object:
     """Return the functional contract derived from the immutable P1C0a base."""
 
@@ -282,6 +373,7 @@ def build_interfaces_contract(base: object) -> object:
     """Return the interface/state contract derived from the immutable P1C0a base."""
 
     document = _copy_document(base, "interfaces-and-states")
+    _migrate_usb_rtc_power_topology(document)
     _assign_evidence(document, INTERFACES_EVIDENCE)
     transitions = document.get("transitions")
     if not isinstance(transitions, list) or not all(

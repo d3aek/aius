@@ -24,12 +24,12 @@
     {
       "id": "teensy-micro-b",
       "location": "module",
-      "role": "data",
-      "signals": ["USB2-D+", "USB2-D-"],
-      "power_domains": ["digital-ground"],
-      "mating_constraint": "No second VIN or VUSB power feed is fitted.",
+      "role": "power-data",
+      "signals": ["USB2-D+", "USB2-D-", "VBUS"],
+      "power_domains": ["protected-5v", "digital-ground"],
+      "mating_constraint": "The internal USB cable is the sole Teensy VUSB feed; no VIN or second VUSB feed is fitted.",
       "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
-      "notes": "Module USB data access."
+      "notes": "Module USB power-and-data entry."
     },
     {
       "id": "toslink-rx",
@@ -76,9 +76,9 @@
       "location": "rear",
       "role": "control",
       "signals": ["PROGRAM", "RTC-BATTERY"],
-      "power_domains": ["teensy-3v3", "digital-ground"],
+      "power_domains": ["teensy-3v3", "rtc-backup", "digital-ground"],
       "mating_constraint": "Service actuation does not require enclosure removal.",
-      "evidence_ids": ["PJRC-TEENSY41-PINOUT"],
+      "evidence_ids": ["PJRC-TEENSY41-PINOUT", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Remote program and RTC service interface."
     },
     {
@@ -234,7 +234,7 @@
     {
       "id": "protected-5v",
       "source": "power-entry",
-      "consumers": ["teensy", "internal-usb-a"],
+      "consumers": ["teensy", "internal-usb-a", "teensy-micro-b"],
       "backfeed_rule": "Reverse current to raw VBUS is blocked.",
       "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Protected internal 5 V rail."
@@ -246,6 +246,14 @@
       "backfeed_rule": "No external interface may sustain the Teensy 3.3 V rail.",
       "evidence_ids": ["PJRC-IMXRT1060-RM", "PJRC-TEENSY41-PAGE", "PJRC-TEENSY41-SCHEMATIC"],
       "notes": "Core 3.3 V logic domain."
+    },
+    {
+      "id": "rtc-backup",
+      "source": "remote-program-rtc",
+      "consumers": ["teensy"],
+      "backfeed_rule": "The RTC backup input is isolated from teensy-3v3 and cannot power the core.",
+      "evidence_ids": ["PJRC-TEENSY41-PINOUT", "PJRC-TEENSY41-SCHEMATIC"],
+      "notes": "External RTC backup battery domain."
     },
     {
       "id": "digital-ground",

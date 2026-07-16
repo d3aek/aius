@@ -22,7 +22,7 @@ def _load_json(path: Path) -> object:
 
 
 SCHEMA = _load_json(SCHEMA_PATH)
-VALID = _load_json(FIXTURE_ROOT / "valid.json")
+LOADED_VALID = _load_json(FIXTURE_ROOT / "valid.json")
 
 ROOT_FIELDS = (
     "schema_version",
@@ -159,6 +159,7 @@ EXPECTED_IDS = {
         "usb-vbus-raw",
         "protected-5v",
         "teensy-3v3",
+        "rtc-backup",
         "digital-ground",
         "chassis-shield",
         "expansion-3v3",
@@ -203,6 +204,177 @@ EXPECTED_IDS = {
         "usb-unplug-to-power-off",
     ),
 }
+
+POWER_DOMAIN_IDENTIFIER_ENUM = (
+    "usb-vbus-raw",
+    "protected-5v",
+    "teensy-3v3",
+    "rtc-backup",
+    "digital-ground",
+    "chassis-shield",
+    "expansion-3v3",
+    "expansion-usb-host-vbus",
+)
+
+PRE_BUILDER_POWER_DOMAIN_IDS = (
+    "usb-vbus-raw",
+    "protected-5v",
+    "teensy-3v3",
+    "digital-ground",
+    "chassis-shield",
+    "expansion-3v3",
+    "expansion-usb-host-vbus",
+)
+
+PRE_BUILDER_MICRO_B = {
+    "id": "teensy-micro-b",
+    "location": "module",
+    "role": "data",
+    "signals": ["USB2-D+", "USB2-D-"],
+    "power_domains": ["digital-ground"],
+    "mating_constraint": "No second VIN or VUSB power feed is fitted.",
+    "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+    "notes": "Module USB data access.",
+}
+
+POST_BUILDER_MICRO_B = {
+    "id": "teensy-micro-b",
+    "location": "module",
+    "role": "power-data",
+    "signals": ["USB2-D+", "USB2-D-", "VBUS"],
+    "power_domains": ["protected-5v", "digital-ground"],
+    "mating_constraint": (
+        "The internal USB cable is the sole Teensy VUSB feed; no VIN or second "
+        "VUSB feed is fitted."
+    ),
+    "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+    "notes": "Module USB power-and-data entry.",
+}
+
+PRE_BUILDER_PROTECTED_5V = {
+    "id": "protected-5v",
+    "source": "power-entry",
+    "consumers": ["teensy", "internal-usb-a"],
+    "backfeed_rule": "Reverse current to raw VBUS is blocked.",
+    "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+    "notes": "Protected internal 5 V rail.",
+}
+
+POST_BUILDER_PROTECTED_5V = {
+    "id": "protected-5v",
+    "source": "power-entry",
+    "consumers": ["teensy", "internal-usb-a", "teensy-micro-b"],
+    "backfeed_rule": "Reverse current to raw VBUS is blocked.",
+    "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+    "notes": "Protected internal 5 V rail.",
+}
+
+PRE_BUILDER_REMOTE_RTC = {
+    "id": "remote-program-rtc",
+    "location": "rear",
+    "role": "control",
+    "signals": ["PROGRAM", "RTC-BATTERY"],
+    "power_domains": ["teensy-3v3", "digital-ground"],
+    "mating_constraint": "Service actuation does not require enclosure removal.",
+    "evidence_ids": ["PJRC-TEENSY41-PINOUT"],
+    "notes": "Remote program and RTC service interface.",
+}
+
+POST_BUILDER_REMOTE_RTC = {
+    "id": "remote-program-rtc",
+    "location": "rear",
+    "role": "control",
+    "signals": ["PROGRAM", "RTC-BATTERY"],
+    "power_domains": ["teensy-3v3", "rtc-backup", "digital-ground"],
+    "mating_constraint": "Service actuation does not require enclosure removal.",
+    "evidence_ids": [
+        "PJRC-TEENSY41-PINOUT",
+        "PJRC-TEENSY41-SCHEMATIC",
+    ],
+    "notes": "Remote program and RTC service interface.",
+}
+
+POST_BUILDER_RTC_BACKUP = {
+    "id": "rtc-backup",
+    "source": "remote-program-rtc",
+    "consumers": ["teensy"],
+    "backfeed_rule": (
+        "The RTC backup input is isolated from teensy-3v3 and cannot power the core."
+    ),
+    "evidence_ids": [
+        "PJRC-TEENSY41-PINOUT",
+        "PJRC-TEENSY41-SCHEMATIC",
+    ],
+    "notes": "External RTC backup battery domain.",
+}
+
+
+def _locked_row_index(
+    rows: list[dict[str, object]],
+    row_id: str,
+    expected: dict[str, object],
+) -> int:
+    matches = [index for index, row in enumerate(rows) if row.get("id") == row_id]
+    if len(matches) != 1:
+        raise ValueError(f"expected exactly one {row_id!r} row")
+    index = matches[0]
+    row = rows[index]
+    if tuple(row) != tuple(expected) or row != expected:
+        raise ValueError(f"{row_id!r} does not match its locked handoff value")
+    return index
+
+
+def _migrate_usb_rtc_fixture(document: object) -> dict[str, object]:
+    if not isinstance(document, dict):
+        raise ValueError("interface fixture must be an object")
+    migrated = copy.deepcopy(document)
+    connectors = migrated.get("connectors")
+    power_domains = migrated.get("power_domains")
+    if not isinstance(connectors, list) or not all(
+        isinstance(row, dict) for row in connectors
+    ):
+        raise ValueError("connectors must be an array of objects")
+    if not isinstance(power_domains, list) or not all(
+        isinstance(row, dict) for row in power_domains
+    ):
+        raise ValueError("power_domains must be an array of objects")
+    if tuple(row.get("id") for row in connectors) != EXPECTED_IDS["connectors"]:
+        raise ValueError("connectors do not have the exact locked ID order")
+
+    power_domain_ids = tuple(row.get("id") for row in power_domains)
+    if power_domain_ids == PRE_BUILDER_POWER_DOMAIN_IDS:
+        micro_b_index = _locked_row_index(
+            connectors, "teensy-micro-b", PRE_BUILDER_MICRO_B
+        )
+        remote_rtc_index = _locked_row_index(
+            connectors, "remote-program-rtc", PRE_BUILDER_REMOTE_RTC
+        )
+        protected_5v_index = _locked_row_index(
+            power_domains, "protected-5v", PRE_BUILDER_PROTECTED_5V
+        )
+        teensy_3v3_index = next(
+            index
+            for index, row in enumerate(power_domains)
+            if row["id"] == "teensy-3v3"
+        )
+        connectors[micro_b_index] = copy.deepcopy(POST_BUILDER_MICRO_B)
+        connectors[remote_rtc_index] = copy.deepcopy(POST_BUILDER_REMOTE_RTC)
+        power_domains[protected_5v_index] = copy.deepcopy(POST_BUILDER_PROTECTED_5V)
+        power_domains.insert(
+            teensy_3v3_index + 1,
+            copy.deepcopy(POST_BUILDER_RTC_BACKUP),
+        )
+    elif power_domain_ids != POWER_DOMAIN_IDENTIFIER_ENUM:
+        raise ValueError("power_domains do not match a locked handoff ID order")
+
+    _locked_row_index(connectors, "teensy-micro-b", POST_BUILDER_MICRO_B)
+    _locked_row_index(connectors, "remote-program-rtc", POST_BUILDER_REMOTE_RTC)
+    _locked_row_index(power_domains, "protected-5v", POST_BUILDER_PROTECTED_5V)
+    _locked_row_index(power_domains, "rtc-backup", POST_BUILDER_RTC_BACKUP)
+    return migrated
+
+
+VALID = _migrate_usb_rtc_fixture(LOADED_VALID)
 
 TRANSITION_TRIGGERS = {
     "power-on-to-reset": ("power-applied",),
@@ -358,11 +530,152 @@ class InterfacesAndStatesSchemaTests(unittest.TestCase):
             if record["id"] == record_id
         )
 
+    def assert_power_domain_schema_contract(self, schema: object) -> None:
+        definition = schema["$defs"]["powerDomains"]
+        self.assertEqual(8, definition["minItems"])
+        self.assertEqual(8, definition["maxItems"])
+        contains_ids = tuple(
+            clause["contains"]["properties"]["id"]["const"]
+            for clause in definition["allOf"]
+        )
+        self.assertEqual(contains_ids, POWER_DOMAIN_IDENTIFIER_ENUM)
+        self.assertEqual(
+            tuple(schema["$defs"]["powerDomainIdentifier"]["enum"]),
+            POWER_DOMAIN_IDENTIFIER_ENUM,
+        )
+
     def test_committed_schema_and_canonical_fixture(self) -> None:
         check_schema(SCHEMA)
         validate(VALID, SCHEMA)
         self.assertEqual(VALID["schema_version"], "1.0.0")
         self.assertEqual(1, SCHEMA["$defs"]["evidenceIdentifiers"]["minItems"])
+
+    def test_fixture_helper_migrates_pre_builder_and_noops_post_builder(self) -> None:
+        loaded_before = copy.deepcopy(LOADED_VALID)
+        canonical_post = _migrate_usb_rtc_fixture(LOADED_VALID)
+        self.assertEqual(LOADED_VALID, loaded_before)
+        self.assertEqual(VALID, canonical_post)
+
+        post_builder = copy.deepcopy(canonical_post)
+        post_builder_before = copy.deepcopy(post_builder)
+        post_result = _migrate_usb_rtc_fixture(post_builder)
+        self.assertEqual(post_builder, post_builder_before)
+        self.assertEqual(post_result, post_builder_before)
+        self.assertIsNot(post_result, post_builder)
+
+        pre_builder = copy.deepcopy(canonical_post)
+        connector_index = {
+            row["id"]: index for index, row in enumerate(pre_builder["connectors"])
+        }
+        pre_builder["connectors"][connector_index["teensy-micro-b"]] = (
+            copy.deepcopy(PRE_BUILDER_MICRO_B)
+        )
+        pre_builder["connectors"][connector_index["remote-program-rtc"]] = (
+            copy.deepcopy(PRE_BUILDER_REMOTE_RTC)
+        )
+        pre_builder["power_domains"] = [
+            row for row in pre_builder["power_domains"] if row["id"] != "rtc-backup"
+        ]
+        protected_index = next(
+            index
+            for index, row in enumerate(pre_builder["power_domains"])
+            if row["id"] == "protected-5v"
+        )
+        pre_builder["power_domains"][protected_index] = copy.deepcopy(
+            PRE_BUILDER_PROTECTED_5V
+        )
+        pre_builder_before = copy.deepcopy(pre_builder)
+        migrated = _migrate_usb_rtc_fixture(pre_builder)
+        self.assertEqual(pre_builder, pre_builder_before)
+        self.assertEqual(migrated, canonical_post)
+        validate(migrated, SCHEMA)
+
+        seven_row_loaded_valid_equivalent = copy.deepcopy(pre_builder_before)
+        seven_row_before = copy.deepcopy(seven_row_loaded_valid_equivalent)
+        module_valid_from_seven_rows = _migrate_usb_rtc_fixture(
+            seven_row_loaded_valid_equivalent
+        )
+        self.assertEqual(seven_row_loaded_valid_equivalent, seven_row_before)
+        self.assertEqual(module_valid_from_seven_rows, canonical_post)
+
+        wrong_ids = copy.deepcopy(pre_builder)
+        wrong_ids["power_domains"][3]["id"] = "unexpected-domain"
+        with self.assertRaises(ValueError):
+            _migrate_usb_rtc_fixture(wrong_ids)
+
+        wrong_pre_value = copy.deepcopy(pre_builder)
+        wrong_pre_value["connectors"][connector_index["teensy-micro-b"]][
+            "notes"
+        ] = "Drifted pre-builder value."
+        with self.assertRaises(ValueError):
+            _migrate_usb_rtc_fixture(wrong_pre_value)
+
+        wrong_post_value = copy.deepcopy(canonical_post)
+        rtc_index = next(
+            index
+            for index, row in enumerate(wrong_post_value["power_domains"])
+            if row["id"] == "rtc-backup"
+        )
+        wrong_post_value["power_domains"][rtc_index][
+            "backfeed_rule"
+        ] = "Drifted post-builder value."
+        with self.assertRaises(ValueError):
+            _migrate_usb_rtc_fixture(wrong_post_value)
+
+    def test_rtc_backup_power_domain_forward_migration_contract(self) -> None:
+        migrated = copy.deepcopy(VALID)
+        self.assert_power_domain_schema_contract(SCHEMA)
+        validate(migrated, SCHEMA)
+
+        seven_rows = copy.deepcopy(migrated)
+        seven_rows["power_domains"].pop(
+            self.record_index("power_domains", "rtc-backup")
+        )
+        self.assert_document_invalid(seven_rows)
+        nine_rows = copy.deepcopy(migrated)
+        nine_rows["power_domains"].append(
+            copy.deepcopy(nine_rows["power_domains"][-1])
+        )
+        self.assert_document_invalid(nine_rows)
+
+        contract_mutations = []
+        omitted_enum = copy.deepcopy(SCHEMA)
+        omitted_enum["$defs"]["powerDomainIdentifier"]["enum"].remove("rtc-backup")
+        contract_mutations.append(omitted_enum)
+        reordered_enum = copy.deepcopy(SCHEMA)
+        enum = reordered_enum["$defs"]["powerDomainIdentifier"]["enum"]
+        enum[3], enum[4] = enum[4], enum[3]
+        contract_mutations.append(reordered_enum)
+        for bound in ("minItems", "maxItems"):
+            for value in (7, 9):
+                wrong_bound = copy.deepcopy(SCHEMA)
+                wrong_bound["$defs"]["powerDomains"][bound] = value
+                contract_mutations.append(wrong_bound)
+        missing_contains = copy.deepcopy(SCHEMA)
+        missing_contains["$defs"]["powerDomains"]["allOf"].pop(3)
+        contract_mutations.append(missing_contains)
+        reordered_contains = copy.deepcopy(SCHEMA)
+        contains = reordered_contains["$defs"]["powerDomains"]["allOf"]
+        contains[3], contains[4] = contains[4], contains[3]
+        contract_mutations.append(reordered_contains)
+        for mutated in contract_mutations:
+            with self.assertRaises(AssertionError):
+                self.assert_power_domain_schema_contract(mutated)
+
+        connector = next(
+            row
+            for row in migrated["connectors"]
+            if row["id"] == "remote-program-rtc"
+        )
+        unknown_connector = copy.deepcopy(connector)
+        unknown_connector["power_domains"][1] = "unknown-rail"
+        self.assert_definition_invalid(unknown_connector, "connector")
+        rtc_domain = next(
+            row for row in migrated["power_domains"] if row["id"] == "rtc-backup"
+        )
+        unknown_domain = copy.deepcopy(rtc_domain)
+        unknown_domain["id"] = "unknown-rail"
+        self.assert_definition_invalid(unknown_domain, "powerDomain")
 
     def test_schema_and_fixture_preserve_locked_property_and_row_order(self) -> None:
         self.assertEqual(tuple(SCHEMA["required"]), ROOT_FIELDS)

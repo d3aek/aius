@@ -8,12 +8,12 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | rear-usb-c | rear | power-data | USB2-D+<br>USB2-D-<br>CC1<br>CC2<br>VBUS | usb-vbus-raw<br>digital-ground<br>chassis-shield | USB-C plug clearance is retained at the rear panel. | PJRC-TEENSY41-SCHEMATIC | Sink-only USB 2.0 device entry. |
 | internal-usb-a | internal | power-data | USB2-D+<br>USB2-D-<br>VBUS | protected-5v<br>digital-ground | Internal cable and plug remain inside the enclosure envelope. | PJRC-TEENSY41-SCHEMATIC | Internal service connection. |
-| teensy-micro-b | module | data | USB2-D+<br>USB2-D- | digital-ground | No second VIN or VUSB power feed is fitted. | PJRC-TEENSY41-SCHEMATIC | Module USB data access. |
+| teensy-micro-b | module | power-data | USB2-D+<br>USB2-D-<br>VBUS | protected-5v<br>digital-ground | The internal USB cable is the sole Teensy VUSB feed; no VIN or second VUSB feed is fitted. | PJRC-TEENSY41-SCHEMATIC | Module USB power-and-data entry. |
 | toslink-rx | rear | optical | OPTICAL-RX | teensy-3v3<br>digital-ground | TOSLINK plug clearance is retained at the rear panel. | CLIFF-ORJ5<br>PJRC-SPDIF-RX-SOURCE<br>VKSDR-TOSLINK-SCHEMATICS | Optical S/PDIF input. |
 | toslink-tx | rear | optical | OPTICAL-TX | teensy-3v3<br>digital-ground | TOSLINK plug clearance is retained at the rear panel. | CLIFF-OTJ5<br>PJRC-SPDIF-TX-SOURCE<br>VKSDR-TOSLINK-SCHEMATICS | Optical S/PDIF output. |
 | ethernet-rj45 | rear | network | ETH-TX<br>ETH-RX<br>ETH-LED | teensy-3v3<br>digital-ground<br>chassis-shield | RJ45 latch and cable clearance are retained at the rear panel. | PJRC-ETHERNET-KIT<br>PJRC-IMXRT1060-RM | Teensy 4.1 native Ethernet interface. |
 | microsd-access | user-access | storage-access | MICROSD | teensy-3v3<br>digital-ground | Card insertion and removal remain possible without opening the enclosure. | PJRC-TEENSY41-PINOUT | Access to the Teensy microSD socket. |
-| remote-program-rtc | rear | control | PROGRAM<br>RTC-BATTERY | teensy-3v3<br>digital-ground | Service actuation does not require enclosure removal. | PJRC-TEENSY41-PINOUT | Remote program and RTC service interface. |
+| remote-program-rtc | rear | control | PROGRAM<br>RTC-BATTERY | teensy-3v3<br>rtc-backup<br>digital-ground | Service actuation does not require enclosure removal. | PJRC-TEENSY41-PINOUT<br>PJRC-TEENSY41-SCHEMATIC | Remote program and RTC service interface. |
 | test-fixture | internal | test | TEST-CONTROL<br>TEST-DATA | teensy-3v3<br>digital-ground | The production fixture mates without stressing user connectors. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT | Manufacturing test interface. |
 
 ## Controls
@@ -43,8 +43,9 @@
 | id | source | consumers | backfeed_rule | evidence_ids | notes |
 | --- | --- | --- | --- | --- | --- |
 | usb-vbus-raw | rear-usb-c | power-entry | The product never sources USB VBUS. | PJRC-TEENSY41-SCHEMATIC | Single external 5 V source. |
-| protected-5v | power-entry | teensy<br>internal-usb-a | Reverse current to raw VBUS is blocked. | PJRC-TEENSY41-SCHEMATIC | Protected internal 5 V rail. |
+| protected-5v | power-entry | teensy<br>internal-usb-a<br>teensy-micro-b | Reverse current to raw VBUS is blocked. | PJRC-TEENSY41-SCHEMATIC | Protected internal 5 V rail. |
 | teensy-3v3 | teensy | optical-rx<br>raw-bypass-mux<br>tx-gate<br>optical-tx | No external interface may sustain the Teensy 3.3 V rail. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC | Core 3.3 V logic domain. |
+| rtc-backup | remote-program-rtc | teensy | The RTC backup input is isolated from teensy-3v3 and cannot power the core. | PJRC-TEENSY41-PINOUT<br>PJRC-TEENSY41-SCHEMATIC | External RTC backup battery domain. |
 | digital-ground | rear-usb-c | carrier<br>teensy<br>expansion | Grounding does not create a secondary supply path. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PAGE<br>PJRC-TEENSY41-SCHEMATIC | Digital reference domain. |
 | chassis-shield | enclosure | rear-usb-c<br>ethernet-rj45 | Cable shields do not carry functional supply current. | PJRC-ETHERNET-KIT<br>PJRC-TEENSY41-SCHEMATIC | Chassis and connector shield domain. |
 | expansion-3v3 | protected-5v | expansion | Reverse power flow is blocked when either side is unpowered. | PJRC-IMXRT1060-RM<br>PJRC-TEENSY41-PINOUT | Protected expansion logic rail. |

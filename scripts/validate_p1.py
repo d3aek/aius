@@ -333,6 +333,7 @@ INTERFACES_IDS = {
         "usb-vbus-raw",
         "protected-5v",
         "teensy-3v3",
+        "rtc-backup",
         "digital-ground",
         "chassis-shield",
         "expansion-3v3",
@@ -376,6 +377,28 @@ INTERFACES_IDS = {
         "watchdog-to-reset",
         "usb-unplug-to-power-off",
     ),
+}
+
+TEENSY_USB_CONTRACT = {
+    "location": "module",
+    "role": "power-data",
+    "signals": ("USB2-D+", "USB2-D-", "VBUS"),
+    "power_domains": ("protected-5v", "digital-ground"),
+    "mating_constraint": "The internal USB cable is the sole Teensy VUSB feed; no VIN or second VUSB feed is fitted.",
+    "evidence_ids": ("PJRC-TEENSY41-SCHEMATIC",),
+    "notes": "Module USB power-and-data entry.",
+}
+PROTECTED_5V_CONSUMERS = ("teensy", "internal-usb-a", "teensy-micro-b")
+REMOTE_PROGRAM_RTC_CONTRACT = {
+    "power_domains": ("teensy-3v3", "rtc-backup", "digital-ground"),
+    "evidence_ids": ("PJRC-TEENSY41-PINOUT", "PJRC-TEENSY41-SCHEMATIC"),
+}
+RTC_BACKUP_CONTRACT = {
+    "source": "remote-program-rtc",
+    "consumers": ("teensy",),
+    "backfeed_rule": "The RTC backup input is isolated from teensy-3v3 and cannot power the core.",
+    "evidence_ids": ("PJRC-TEENSY41-PINOUT", "PJRC-TEENSY41-SCHEMATIC"),
+    "notes": "External RTC backup battery domain.",
 }
 
 TRANSITION_TRIGGERS = {
@@ -713,6 +736,7 @@ class Validator:
             self.check_document_order(INTERFACES, interfaces, INTERFACES_ROOT_KEYS, INTERFACES_RECORDS)
             self.check_ids(INTERFACES, interfaces, INTERFACES_IDS)
             self._check_normative_contract(INTERFACES, interfaces, INTERFACES_CONTRACT)
+            self._check_usb_rtc_contract(interfaces)
             self._check_fault_and_transition_contract(interfaces)
             self._check_parity(
                 INTERFACES_MARKDOWN,
@@ -777,6 +801,69 @@ class Validator:
             identifier = row.get("id")
             if identifier in FLOW_KINDS and row.get("kind") != FLOW_KINDS[identifier]:
                 self.add("CONTRACT", FUNCTIONAL, f"flow {identifier!r} has the wrong locked kind")
+
+    def _check_usb_rtc_contract(self, interfaces: object) -> None:
+        if not isinstance(interfaces, dict):
+            return
+        connectors = {
+            row.get("id"): row
+            for row in interfaces.get("connectors", ())
+            if isinstance(row, dict)
+        }
+        domains = {
+            row.get("id"): row
+            for row in interfaces.get("power_domains", ())
+            if isinstance(row, dict)
+        }
+
+        teensy_usb = connectors.get("teensy-micro-b")
+        if isinstance(teensy_usb, dict) and any(
+            self._contract_value(teensy_usb.get(field)) != expected
+            for field, expected in TEENSY_USB_CONTRACT.items()
+        ):
+            self.add(
+                "CONTRACT",
+                INTERFACES,
+                "teensy-micro-b differs from the locked USB power-data contract",
+            )
+
+        protected_5v = domains.get("protected-5v")
+        if isinstance(protected_5v, dict) and self._contract_value(
+            protected_5v.get("consumers")
+        ) != PROTECTED_5V_CONSUMERS:
+            self.add(
+                "CONTRACT",
+                INTERFACES,
+                "protected-5v consumers differ from the locked sole-feed contract",
+            )
+
+        remote_rtc = connectors.get("remote-program-rtc")
+        if isinstance(remote_rtc, dict):
+            for field, expected in REMOTE_PROGRAM_RTC_CONTRACT.items():
+                if self._contract_value(remote_rtc.get(field)) != expected:
+                    self.add(
+                        "CONTRACT",
+                        INTERFACES,
+                        f"remote-program-rtc {field} differs from the locked RTC service contract",
+                    )
+
+        rtc_backup = domains.get("rtc-backup")
+        if isinstance(rtc_backup, dict):
+            for field, expected in RTC_BACKUP_CONTRACT.items():
+                if self._contract_value(rtc_backup.get(field)) != expected:
+                    self.add(
+                        "CONTRACT",
+                        INTERFACES,
+                        f"rtc-backup {field} differs from the locked isolated backup-power contract",
+                    )
+
+        teensy_3v3 = domains.get("teensy-3v3")
+        if isinstance(teensy_3v3, dict) and teensy_3v3.get("source") == "rtc-backup":
+            self.add("CONTRACT", INTERFACES, "rtc-backup cannot source a core power domain")
+
+    @staticmethod
+    def _contract_value(value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
     def _check_fault_and_transition_contract(self, interfaces: object) -> None:
         if not isinstance(interfaces, dict):

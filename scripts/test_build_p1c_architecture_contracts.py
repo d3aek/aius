@@ -42,6 +42,16 @@ def _load(relative: Path) -> object:
 
 FUNCTIONAL_BASE = _load(builder.FUNCTIONAL_BASE)
 INTERFACES_BASE = _load(builder.INTERFACES_BASE)
+FUNCTIONAL_GENERATED_HASH = (
+    "c2169ccab183b835c494ab52a0e6c288403c2ea69e3b94816d28e474a8606aae"
+)
+
+
+def _row_by_id(document: object, collection: str, row_id: str) -> dict[str, object]:
+    assert isinstance(document, dict)
+    rows = document[collection]
+    assert isinstance(rows, list)
+    return next(row for row in rows if row["id"] == row_id)
 
 
 class PureBuilderTests(unittest.TestCase):
@@ -76,6 +86,141 @@ class PureBuilderTests(unittest.TestCase):
         self.assertEqual(_load(builder.INTERFACES_CONTRACT), first[1])
         self.assertEqual(_load(builder.FUNCTIONAL_VALID), first[0])
         self.assertEqual(_load(builder.INTERFACES_VALID), first[1])
+
+    def test_teensy_micro_b_replacement_is_exact(self) -> None:
+        interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
+
+        self.assertEqual(
+            list(builder.LOCKED_CONNECTOR_IDS),
+            [row["id"] for row in interfaces["connectors"]],
+        )
+        self.assertEqual(
+            {
+                "id": "teensy-micro-b",
+                "location": "module",
+                "role": "power-data",
+                "signals": ["USB2-D+", "USB2-D-", "VBUS"],
+                "power_domains": ["protected-5v", "digital-ground"],
+                "mating_constraint": (
+                    "The internal USB cable is the sole Teensy VUSB feed; no VIN "
+                    "or second VUSB feed is fitted."
+                ),
+                "evidence_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+                "notes": "Module USB power-and-data entry.",
+            },
+            _row_by_id(interfaces, "connectors", "teensy-micro-b"),
+        )
+
+    def test_protected_5v_consumers_are_exact_and_ordered(self) -> None:
+        interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
+
+        self.assertEqual(
+            ["teensy", "internal-usb-a", "teensy-micro-b"],
+            _row_by_id(interfaces, "power_domains", "protected-5v")["consumers"],
+        )
+
+    def test_remote_rtc_connector_domains_and_evidence_are_exact(self) -> None:
+        interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
+
+        self.assertEqual(
+            {
+                "id": "remote-program-rtc",
+                "location": "rear",
+                "role": "control",
+                "signals": ["PROGRAM", "RTC-BATTERY"],
+                "power_domains": [
+                    "teensy-3v3",
+                    "rtc-backup",
+                    "digital-ground",
+                ],
+                "mating_constraint": (
+                    "Service actuation does not require enclosure removal."
+                ),
+                "evidence_ids": [
+                    "PJRC-TEENSY41-PINOUT",
+                    "PJRC-TEENSY41-SCHEMATIC",
+                ],
+                "notes": "Remote program and RTC service interface.",
+            },
+            _row_by_id(interfaces, "connectors", "remote-program-rtc"),
+        )
+
+    def test_rtc_backup_domain_has_exact_position_and_value(self) -> None:
+        interfaces = builder.build_interfaces_contract(INTERFACES_BASE)
+        rtc_backup = _row_by_id(interfaces, "power_domains", "rtc-backup")
+
+        self.assertEqual(
+            [
+                "usb-vbus-raw",
+                "protected-5v",
+                "teensy-3v3",
+                "rtc-backup",
+                "digital-ground",
+                "chassis-shield",
+                "expansion-3v3",
+                "expansion-usb-host-vbus",
+            ],
+            [row["id"] for row in interfaces["power_domains"]],
+        )
+        self.assertEqual(
+            (
+                "id",
+                "source",
+                "consumers",
+                "backfeed_rule",
+                "evidence_ids",
+                "notes",
+            ),
+            tuple(rtc_backup),
+        )
+        self.assertEqual(
+            {
+                "id": "rtc-backup",
+                "source": "remote-program-rtc",
+                "consumers": ["teensy"],
+                "backfeed_rule": (
+                    "The RTC backup input is isolated from teensy-3v3 and cannot "
+                    "power the core."
+                ),
+                "evidence_ids": [
+                    "PJRC-TEENSY41-PINOUT",
+                    "PJRC-TEENSY41-SCHEMATIC",
+                ],
+                "notes": "External RTC backup battery domain.",
+            },
+            rtc_backup,
+        )
+
+    def test_interface_migration_rejects_reordered_base_without_mutation(self) -> None:
+        for collection in ("connectors", "power_domains"):
+            base = copy.deepcopy(INTERFACES_BASE)
+            base[collection][0], base[collection][1] = (
+                base[collection][1],
+                base[collection][0],
+            )
+            before = copy.deepcopy(base)
+
+            with self.subTest(collection=collection):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"{collection} do not have the exact locked ID order",
+                ):
+                    builder.build_interfaces_contract(base)
+                self.assertEqual(before, base)
+
+    def test_functional_generated_outputs_keep_locked_bytes(self) -> None:
+        outputs = (
+            AIUS_ROOT / builder.FUNCTIONAL_CONTRACT,
+            AIUS_ROOT / builder.FUNCTIONAL_VALID,
+        )
+
+        self.assertEqual(outputs[0].read_bytes(), outputs[1].read_bytes())
+        for output in outputs:
+            with self.subTest(output=output):
+                self.assertEqual(
+                    FUNCTIONAL_GENERATED_HASH,
+                    hashlib.sha256(output.read_bytes()).hexdigest(),
+                )
 
     def test_every_evidence_assignment_is_exhaustive_and_exact(self) -> None:
         functional = builder.build_functional_contract(FUNCTIONAL_BASE)
@@ -120,12 +265,49 @@ class PureBuilderTests(unittest.TestCase):
         for collection in builder.INTERFACES_EVIDENCE:
             base_by_id = {row["id"]: row for row in INTERFACES_BASE[collection]}
             for row in normalized_interfaces[collection]:
-                row["evidence_ids"] = copy.deepcopy(
-                    base_by_id[row["id"]]["evidence_ids"]
-                )
+                if row["id"] in base_by_id:
+                    row["evidence_ids"] = copy.deepcopy(
+                        base_by_id[row["id"]]["evidence_ids"]
+                    )
         normalized_interfaces["transitions"] = copy.deepcopy(
             INTERFACES_BASE["transitions"]
         )
+        connectors_by_id = {
+            row["id"]: row for row in normalized_interfaces["connectors"]
+        }
+        base_connectors_by_id = {
+            row["id"]: row for row in INTERFACES_BASE["connectors"]
+        }
+        for row_id, fields in (
+            (
+                "teensy-micro-b",
+                (
+                    "role",
+                    "signals",
+                    "power_domains",
+                    "mating_constraint",
+                    "notes",
+                ),
+            ),
+            ("remote-program-rtc", ("power_domains",)),
+        ):
+            for field in fields:
+                connectors_by_id[row_id][field] = copy.deepcopy(
+                    base_connectors_by_id[row_id][field]
+                )
+        power_domains_by_id = {
+            row["id"]: row for row in normalized_interfaces["power_domains"]
+        }
+        power_domains_by_id["protected-5v"]["consumers"] = copy.deepcopy(
+            _row_by_id(INTERFACES_BASE, "power_domains", "protected-5v")[
+                "consumers"
+            ]
+        )
+        normalized_interfaces["power_domains"] = [
+            row
+            for row in normalized_interfaces["power_domains"]
+            if row["id"] != "rtc-backup"
+        ]
         self.assertEqual(INTERFACES_BASE, normalized_interfaces)
 
         for base_row, derived_row in zip(
