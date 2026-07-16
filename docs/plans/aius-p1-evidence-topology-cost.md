@@ -581,6 +581,7 @@ and subject; the script exits non-zero if an expected diagnostic is absent.
 
 ```yaml
 phase: P1A4b
+status: completed
 unit: evidence-validator
 seams: [checkout validation, immutable baseline]
 contract-artifact: both
@@ -603,6 +604,11 @@ commit-checkpoint:
   buildable: [deterministic evidence validator]
   parent-commit: "feat(aius): validate evidence repository"
 ```
+
+Completed 2026-07-15. The four contract suites pass 23, 24, 14, and 30 tests;
+`validate_evidence.py --self-test` also passes all 30 validator fixtures. The
+default repository check reports only the 11 intentionally unacquired required
+golden sources. The clean-room delivery audit passed with no discrepancies.
 
 ### P1A5 — Reproducible KiCad runner
 

@@ -157,6 +157,8 @@ RUNNABLE_COMMANDS = "\n".join(
         "python3 scripts/test_source_schema.py",
         "python3 scripts/test_selection_schemas.py",
         "python3 scripts/test_evidence_policy.py",
+        "python3 scripts/test_validate_evidence.py",
+        "python3 scripts/validate_evidence.py --self-test",
     )
 )
 FUTURE_COMMAND = "python3 scripts/validate_evidence.py"
@@ -165,7 +167,8 @@ EXPECTED_RUNNABLE_SECTION = (
     f"```bash\n{RUNNABLE_COMMANDS}\n```"
 )
 EXPECTED_FUTURE_SECTION = (
-    "The following command is unavailable until P1A4:\n\n"
+    "The following repository-content check is available but expected to report "
+    "missing required golden sources until P1B:\n\n"
     f"```bash\n{FUTURE_COMMAND}\n```"
 )
 
@@ -400,7 +403,7 @@ class ReadmeContractTests(unittest.TestCase):
         _, sections = _readme_sections(README)
         self.assertEqual(sections["Runnable validation"], EXPECTED_RUNNABLE_SECTION)
 
-    def test_future_validation_section_is_exact_and_unavailable_until_p1a4(self) -> None:
+    def test_future_validation_section_is_exact_and_sets_the_p1b_oracle(self) -> None:
         _, sections = _readme_sections(README)
         self.assertEqual(sections["Future validation"], EXPECTED_FUTURE_SECTION)
 

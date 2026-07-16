@@ -76,11 +76,13 @@ Run all policy contract tests from the repository root:
 python3 scripts/test_source_schema.py
 python3 scripts/test_selection_schemas.py
 python3 scripts/test_evidence_policy.py
+python3 scripts/test_validate_evidence.py
+python3 scripts/validate_evidence.py --self-test
 ```
 
 ## Future validation
 
-The following command is unavailable until P1A4:
+The following repository-content check is available but expected to report missing required golden sources until P1B:
 
 ```bash
 python3 scripts/validate_evidence.py
