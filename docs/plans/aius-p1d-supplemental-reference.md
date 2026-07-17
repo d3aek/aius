@@ -1386,6 +1386,17 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 06"
 ```
 
+P1D1.06 completed on 2026-07-17 at the shared
+`2026-07-17T07:05:33Z` timestamp. The JST UART-debug manufacturer source is
+current and retains the 146,619-byte `eGH.pdf` with SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`.
+Independent later reads of both exact RS pages returned stock quantities that
+did not reproduce the initial observations, and no contemporaneous independent
+evidence existed, so both UK sources are canonically unavailable with their
+exact open sourcing assumptions; no volatile commercial facts were accepted.
+All three fragment checks, the corrected active delivery audit and the
+hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.07
 unit: single-file-implementation
