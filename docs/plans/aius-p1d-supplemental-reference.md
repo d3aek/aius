@@ -1615,6 +1615,22 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 11"
 ```
 
+P1D1.11 completed on 2026-07-17 at the shared
+`2026-07-17T08:39:26Z` timestamp. Both Samtec manufacturer sources are current:
+the Ethernet-socket source retains four PDFs and one byte-exact HTML snapshot
+with composite revision
+`c2f459b2cdf5e8fa8a081648bdbceaf2db0c7e920a2fedcf009066bb8c47e370`;
+the side-socket source retains three PDFs and one byte-exact HTML snapshot with
+composite revision
+`46fd5465e24fe5fdab0e123ca88db6cd6aadb70015388d0c24aa5b6b3ac59833`.
+Independent retrieval matched all seven PDF byte streams. Normalized live HTML
+differed only in generated security/session fields and supported the exact MPNs.
+The Ethernet-socket UK source is canonically unavailable because the exact RS
+page exposed none of the required commerce fields; the exact Samtec page still
+confirmed RS authorization but could not substitute for them. All three
+fragment checks, active delivery audit and the hash-stable 45-test supplemental
+suite passed.
+
 ```yaml
 phase: P1D1.12
 unit: single-file-implementation
