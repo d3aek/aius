@@ -475,6 +475,8 @@ The complete validation-code and subject vocabulary is:
 | --- | --- | --- |
 | `MANIFEST_SCHEMA` | schema meta-check or instance-schema failure, including any syntactically valid baseline shape failure | control-file path relative to `--root`; literal `baseline` for every explicit or Git-loaded baseline |
 | `SOURCE_COLLECTION` | imported P1A1 sortedness, uniqueness, artifact-name, or supersession failure | `evidence/manifest/sources.json` |
+| `FRAGMENT_COLLECTION` | fragment-directory safety, exact membership, identity, collision, or aggregate-parity failure | affected directory, fragment path, source ID, or aggregate path as fixed by P1D0d |
+| `REALIZATION_BINDING` | supplemental source metadata or artifact realization mismatch | supplemental source ID |
 | `BASELINE` | schema-valid baseline collection invariant, deleted baseline ID, or changed immutable tuple | literal `baseline` for collection-wide failures; source ID for deletion or identity failure |
 | `SEED_IDENTITY` | source tuple differs from the matching immutable seed tuple | source ID |
 | `REQUIRED_SOURCE` | required golden source is missing or not current | source ID |

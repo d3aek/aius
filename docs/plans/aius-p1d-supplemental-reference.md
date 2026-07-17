@@ -753,8 +753,74 @@ standalone production fixture check and scoped diff checks.
 
 The evidence validator learns the separate supplemental directories, exact
 source/assumption set rules, realization-to-source artifact-position binding,
-and supplemental clone-boundary membership. It accepts the current seed-only
-tree and a complete fixture tree, and rejects partial or colliding collections.
+and supplemental clone-boundary membership. It accepts exactly two collection
+states.
+
+In **seed-only** state, `fragments/` contains exactly the 22 seed source IDs and
+`assumption-fragments/` contains exactly the assumptions derived from those
+validated seed source statuses and failure policies. Both supplemental fragment
+directories are absent. `supplemental-clone-boundary.json` is absent or the
+literal empty array. `sources.json` and `assumptions.json` deep-equal their
+respective fragment records sorted by record ID.
+
+In **complete** state, the seed directories retain those exact sets,
+`supplemental-fragments/` contains exactly all 46 realization source IDs, and
+`supplemental-assumption-fragments/` contains exactly the status-derived UK
+assumption set. The latter directory may be absent only when that expected set
+is empty. Complete mode activates when either supplemental fragment directory
+exists, the supplemental boundary contains a row, or either aggregate contains
+a realization source or assumption ID. Any activation signal requires every
+complete-mode member. `sources.json` and `assumptions.json` deep-equal the
+record-ID-sorted concatenation of the seed and supplemental fragments.
+
+Every present fragment directory is a regular non-symlink directory containing
+only safe canonical JSON names. A source fragment filename is its source-record
+`id`. An assumption fragment filename is its exact single cited `source_ids[0]`;
+the assumption record `id` remains its canonical `ASM-...` value. Seed and
+supplemental source IDs, assumption IDs and owned filenames are pairwise
+collision-free. Missing, extra, unsafe, non-object, filename-identity and
+aggregate-parity failures are validation exit 1. Unreadable fragment bytes,
+non-UTF-8 or malformed JSON remain control-file exit 2 under the existing
+global rule.
+
+For each current manufacturer source, artifact count and every position's
+`name`, `final_url`, `path`, `storage` and `media_type` exactly equal the
+realization's `name`, `expected_final_url`, `path`, `storage` and `media_type`.
+The ordered unique realization `artifact_kind` values equal the request's
+`artifact_kinds`. Recorded byte count and SHA-256 remain bound to the payload by
+the existing artifact diagnostics. A current UK source has no artifacts. An
+unavailable source instead has the exact canonical single metadata-only
+external-reference artifact and is exempt from current positional equality.
+
+The supplemental boundary has exactly one row for each of the 22 manufacturer
+sources and none for UK. Rows sort by `source_id` and each deep-equals the
+realization's literal `clone_boundary.current` or `.unavailable` row selected by
+the validated source status. No boundary field or prose is synthesized.
+
+New syntactically valid failures have these exact diagnostics:
+
+| Predicate | Code and subject | Canonical message |
+| --- | --- | --- |
+| required directory absent | `FRAGMENT_COLLECTION`, directory path | `required fragment directory is missing` |
+| present directory symlink or non-directory | `FRAGMENT_COLLECTION`, directory path | `fragment path is not a regular non-symlink directory` |
+| unsafe or non-JSON entry | `FRAGMENT_COLLECTION`, entry path | `unexpected or unsafe fragment entry` |
+| exact ID set differs | `FRAGMENT_COLLECTION`, directory path | `fragment IDs differ; missing=<sorted repr>; extra=<sorted repr>` |
+| source filename and record differ | `FRAGMENT_COLLECTION`, fragment path | `filename source ID <repr> does not match record ID <repr>` |
+| assumption filename and citation differ | `FRAGMENT_COLLECTION`, fragment path | `filename source ID <repr> does not match canonical assumption source <repr>` |
+| seed/supplemental ID collision | `FRAGMENT_COLLECTION`, colliding ID | `ID appears in both seed and supplemental fragments` |
+| aggregate differs from fragments | `FRAGMENT_COLLECTION`, aggregate path | `aggregate differs from sorted fragment collection` |
+| current artifact count differs | `REALIZATION_BINDING`, source ID | `current artifact count differs from realization` |
+| current artifact field differs | `REALIZATION_BINDING`, source ID | `artifact[<index>] field <field repr> differs from realization` |
+| ordered artifact kinds differ | `REALIZATION_BINDING`, source ID | `ordered artifact kinds differ from request` |
+| current UK source has artifacts | `REALIZATION_BINDING`, source ID | `current UK source must not contain artifacts` |
+| unavailable artifact is noncanonical | `REALIZATION_BINDING`, source ID | `unavailable source artifact differs from canonical metadata` |
+| boundary ID set/order differs | `CLONE_BOUNDARY`, supplemental boundary path | `supplemental boundary source IDs differ; missing=<sorted repr>; extra=<sorted repr>` or `supplemental boundary source IDs are not sorted` |
+| boundary row differs from selected realization outcome | `CLONE_BOUNDARY`, source ID | `supplemental boundary row differs from realization outcome <status repr>` |
+| UK row appears in boundary | `CLONE_BOUNDARY`, source ID | `UK source must not appear in supplemental clone boundary` |
+
+The existing schema, source-collection, assumption, payload, Git/LFS and
+baseline diagnostics remain unchanged. Each distinct failed predicate emits one
+deduplicated sorted diagnostic.
 
 ```yaml
 phase: P1D0d
@@ -773,9 +839,23 @@ commit-checkpoint:
     - python3 scripts/test_validate_evidence.py
     - python3 scripts/validate_evidence.py
     - python3 scripts/test_seed_evidence.py
+    - python3 scripts/test_supplemental_evidence.py
+    - python3 scripts/seed_evidence.py --root scripts/fixtures/supplemental-assembly/valid supplemental assemble --check
+    - python3 scripts/validate_evidence.py --root scripts/fixtures/supplemental-assembly/valid --baseline evidence/manifest/sources.json
   buildable: [seed-compatible supplemental evidence validator]
   parent-commit: "feat(aius): validate supplemental evidence collections"
 ```
+
+Parameterized tests lock seed-only and complete acceptance; every activation
+signal; every missing, extra, unsafe, colliding, malformed and identity boundary
+across all four directories; both aggregate parity failures; every current and
+unavailable realization artifact binding field and position; unavailable
+exemption; payload hash/size binding; exact boundary membership, ordering,
+literal outcome equality and UK exclusion; and exact code, subject, message and
+exit class. The complete fixture adds the immutable seed
+`clone-boundary.json`, passes the direct validator command above and remains
+green through the P1D0c assembler check. Existing seed validation and P1D0c
+assembly behavior remain unchanged.
 
 ### P1D0e — P1 lifecycle validation
 
