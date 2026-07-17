@@ -1878,21 +1878,37 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_check_p1d2_format.py
+    - python3 scripts/check_p1d2_format.py
   buildable: [fixture-proven exact supplemental lifecycle formatting command]
   parent-commit: "test(aius): pin supplemental formatting inputs"
 ```
 
 `check_p1d2_format.py` accepts no arguments, resolves the Aius and repository
-roots from its own path, and invokes the repository-pinned
-`node_modules/.bin/prettier --check` once. Its closed sorted argv contains
-`sources.json`, `assumptions.json`, `supplemental-clone-boundary.json`, and
+roots from its own path, and invokes the absolute repository-pinned
+`<repo-root>/node_modules/.bin/prettier` once, without a shell and with the
+repository root as subprocess CWD. Arguments are `--check` followed by 79
+globally lexically sorted repository-relative POSIX paths, for an exact argv
+length of 81 including the executable. The operand set contains `sources.json`,
+`assumptions.json`, `supplemental-clone-boundary.json`, and
 `supplemental-requests.json`; one request path for every unique request ID in
 the 46-row realization; and one component path for every exact family in the
-validator's closed `FAMILIES` tuple. It rejects duplicate realization request
-IDs, a realization count other than 46, a missing expected input, an extra
-request/component JSON member, or any path escape before invoking Prettier.
-The test command-shims Prettier and proves exact argv, lexical ordering, CWD
-independence, exit propagation and every rejection branch.
+validator's closed `FAMILIES` tuple.
+
+Request-directory membership is a separate invariant: its exact 48 lifecycle
+request IDs derive from `CRITICAL_FAMILIES + NONCRITICAL_FAMILIES`, including
+the two manufacturer requests intentionally absent from the 46-row
+realization. Request and component candidates must be lexical direct children
+of their exact directories; their resolved targets must remain beneath those
+directories. Every formatter operand must exist and resolve beneath the Aius
+root. The checker rejects an extra CLI argument, duplicate realization request
+IDs, realization counts of 45 or 47, a missing static/request/component input,
+an extra request/component JSON member, traversal, or symlink escape before
+invoking Prettier.
+
+The test command-shims Prettier and proves the exact single call, 81-element
+argv, global lexical operand ordering, repository-root CWD, invocation from an
+unrelated caller CWD, representative nonzero exit propagation and every listed
+preflight rejection branch.
 
 ```yaml
 phase: P1D2
