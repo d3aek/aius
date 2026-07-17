@@ -1913,6 +1913,13 @@ argv, global lexical operand ordering, repository-root CWD, invocation from an
 unrelated caller CWD, representative nonzero exit propagation and every listed
 preflight rejection branch.
 
+P1D2a completed on 2026-07-17. The checker and its isolated filesystem fixture
+implement the exact 46-operand-request/48-member-request split, 29-component
+set, four aggregate inputs, containment preflight and single 81-element pinned
+Prettier invocation. The 21-test focused suite and active clean-room delivery
+audit passed. As contracted, the live invocation remains deferred until P1D2
+creates `supplemental-clone-boundary.json`.
+
 ```yaml
 phase: P1D2
 unit: parent-only
