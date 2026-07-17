@@ -1808,6 +1808,22 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 15"
 ```
 
+P1D1.15 completed on 2026-07-17 at the shared
+`2026-07-17T10:06:21Z` timestamp. Both Texas Instruments manufacturer sources
+are current. The USB ESD source retains the 2,257,950-byte
+`tpd2eusb30a.pdf` with SHA-256
+`a2c0dd845043a5bbfe610f673879c29e38649544385dea51dbe0a4c49df39136`;
+the USB power-protection source retains the 2,091,645-byte `tps2553.pdf`
+with SHA-256
+`56c62cd42a9b37ef3b680ab08b4921c3ec8cc997760ee403287dc4c1971852db`.
+Independent retrieval matched both retained PDF byte streams and confirmed the
+exact selected orderable MPNs. The USB ESD UK source is canonically unavailable
+because the exact DigiKey product page returned HTTP 403, so the strict
+commerce observation was not supportable. The exact TI authorization page
+remained current and listed Digi-Key Electronics but could not substitute for
+the missing product facts. All three fragment checks, the active delivery audit
+and the hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.16
 unit: single-file-implementation

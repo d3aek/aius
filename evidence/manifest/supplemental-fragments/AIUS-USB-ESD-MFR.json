@@ -1,0 +1,42 @@
+{
+  "artifacts": [
+    {
+      "bytes": 2257950,
+      "final_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+      "media_type": "application/pdf",
+      "name": "tpd2eusb30a.pdf",
+      "note": "",
+      "path": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+      "retrieval_status": "current",
+      "sha256": "a2c0dd845043a5bbfe610f673879c29e38649544385dea51dbe0a4c49df39136",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "Texas Instruments",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-ESD"
+  ],
+  "class": "golden",
+  "id": "AIUS-USB-ESD-MFR",
+  "landing_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-USB-ESD-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T10:06:21Z",
+      "source_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+      "unit": null,
+      "value": "TPD2EUSB30ADRTR"
+    }
+  ],
+  "purpose": "Satisfy REQ-USB-ESD-MFR for usb-esd.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T10:06:21Z",
+  "revision": "sha256:a2c0dd845043a5bbfe610f673879c29e38649544385dea51dbe0a4c49df39136",
+  "status": "current",
+  "supersedes": null,
+  "title": "Texas Instruments TPD2EUSB30ADRTR primary manufacturer evidence"
+}
