@@ -602,6 +602,11 @@ commit-checkpoint:
   parent-commit: "feat(aius): add supplemental UK observations"
 ```
 
+P1D0b2 completed on 2026-07-16. `supplemental record` publishes exact normalized
+dynamic sources for confirmed UK rows without network access and rejects both
+unresolved authorizations. The clean-room delivery audit returned `PASS`; 33
+realization, 26 supplemental, 32 seed and 34 evidence-validator tests were green.
+
 ```yaml
 phase: P1D0b3
 unit: component-behind-interface

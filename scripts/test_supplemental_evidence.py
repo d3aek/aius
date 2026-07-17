@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixture-proven P1D0b1 supplemental manufacturer acquisition tests."""
+"""Fixture-proven P1D0b1/b2 supplemental evidence tests."""
 
 from __future__ import annotations
 
@@ -26,6 +26,12 @@ TIMESTAMP = "2026-07-16T12:34:56Z"
 MULTI_REQUEST = "REQ-TEENSY-ETHERNET-SOCKET-MFR"
 SINGLE_REQUEST = "REQ-ETHERNET-MAGJACK-MFR"
 UK_REQUEST = "REQ-CLIFF-RX-UK"
+UNRESOLVED_REQUESTS = (
+    "REQ-ETHERNET-MAGJACK-UK",
+    "REQ-INTERNAL-USB-CABLE-UK",
+)
+PRODUCT_FINAL_URL = "https://example.com/commerce/final"
+AUTHORIZATION_FINAL_URL = "https://example.com/authorization/final"
 
 
 def _load(path: Path) -> object:
@@ -155,8 +161,13 @@ class Fixture:
         requests = _load(self.manifest / "supplemental-requests.json")
         assert isinstance(realization, dict) and isinstance(requests, dict)
         self.rows = realization["realizations"]
+        self.profiles = realization["observation_profiles"]
         self.requests = requests["requests"]
-        assert isinstance(self.rows, list) and isinstance(self.requests, list)
+        assert (
+            isinstance(self.rows, list)
+            and isinstance(self.profiles, list)
+            and isinstance(self.requests, list)
+        )
         self.opener = OracleOpener(self.rows)
 
     def close(self) -> None:
@@ -194,6 +205,80 @@ class Fixture:
     def fragment_path(self, request_id: str) -> Path:
         source_id = self.request(request_id)["source_id"]
         return self.manifest / "supplemental-fragments" / f"{source_id}.json"
+
+    def fragment(self, request_id: str) -> dict[str, object]:
+        value = _load(self.fragment_path(request_id))
+        assert isinstance(value, dict)
+        return value
+
+    def profile(self) -> dict[str, object]:
+        self.assert_profile_count()
+        profile = self.profiles[0]
+        assert isinstance(profile, dict)
+        return profile
+
+    def assert_profile_count(self) -> None:
+        if len(self.profiles) != 1:
+            raise AssertionError("fixture must contain exactly one observation profile")
+
+    def valid_values(
+        self,
+        request_id: str,
+        *,
+        stock_state: str = "in-stock",
+        stock_quantity: int | None = 12,
+        price_quantity: int = 12,
+        minimum_order_quantity: int = 1,
+        order_multiple: int = 1,
+    ) -> dict[str, object]:
+        request = self.request(request_id)
+        row = self.row(request_id)
+        authorization = row["authorization"]
+        assert isinstance(authorization, dict)
+        return {
+            "manufacturer_part_number": request["selected_mpn"],
+            "supplier_sku": f"SKU-{request_id}",
+            "distributor": row["authority"],
+            "product_initial_url": row["observation_url"],
+            "product_final_url": PRODUCT_FINAL_URL,
+            "authorization_authority": authorization["authority"],
+            "authorization_method": authorization["method"],
+            "authorization_initial_url": authorization["initial_url"],
+            "authorization_final_url": AUTHORIZATION_FINAL_URL,
+            "stock_state": stock_state,
+            "stock_quantity": stock_quantity,
+            "price_quantity": price_quantity,
+            "unit_price_ex_vat": 1.25,
+            "currency": "GBP",
+            "minimum_order_quantity": minimum_order_quantity,
+            "order_multiple": order_multiple,
+            "price_includes_vat": False,
+        }
+
+    def record_arguments(
+        self,
+        request_id: str,
+        values: dict[str, object] | None = None,
+        *,
+        product_final_url: str = PRODUCT_FINAL_URL,
+        authorization_final_url: str = AUTHORIZATION_FINAL_URL,
+        observed_at: str = TIMESTAMP,
+    ) -> list[str]:
+        return [
+            "record",
+            request_id,
+            "--values",
+            json.dumps(
+                self.valid_values(request_id) if values is None else values,
+                allow_nan=False,
+            ),
+            "--product-final-url",
+            product_final_url,
+            "--authorization-final-url",
+            authorization_final_url,
+            "--observed-at",
+            observed_at,
+        ]
 
     def output_paths(self, request_id: str) -> list[Path]:
         row = self.row(request_id)
@@ -371,20 +456,8 @@ class SupplementalEvidenceTests(unittest.TestCase):
                 self.assert_failure(result, message)
                 self.assertEqual(self.fixture.opener.requests, [])
 
-    def test_later_serial_commands_are_deterministic_nonfunctional_stubs(self) -> None:
+    def test_p1d0b3_commands_remain_deterministic_nonfunctional_stubs(self) -> None:
         commands = (
-            [
-                "record",
-                UK_REQUEST,
-                "--values",
-                "{}",
-                "--product-final-url",
-                "https://example.com/product",
-                "--authorization-final-url",
-                "https://example.com/authorization",
-                "--observed-at",
-                TIMESTAMP,
-            ],
             [
                 "unavailable",
                 SINGLE_REQUEST,
@@ -401,21 +474,442 @@ class SupplementalEvidenceTests(unittest.TestCase):
                 self.assert_failure(result, "later P1D0b checkpoint")
                 self.assertEqual(self.fixture.opener.requests, [])
 
-    def test_supplemental_cli_usage_errors_are_exit_two(self) -> None:
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            with self.assertRaises(SystemExit) as raised:
-                seed_evidence.run(
-                    [
-                        "--root",
-                        os.fspath(self.fixture.root),
-                        "supplemental",
-                        "acquire",
-                        SINGLE_REQUEST,
-                    ]
+    def test_exact_profile_matches_locked_17_field_contract(self) -> None:
+        profile = self.fixture.profile()
+        expected = seed_evidence._expected_uk_observation_profile()
+        self.assertEqual(profile, expected)
+        self.assertEqual(tuple(profile), seed_evidence.SUPPLEMENTAL_PROFILE_KEYS)
+        self.assertEqual(len(profile["fields"]), 17)
+        self.assertEqual(
+            [field["key"] for field in profile["fields"]],
+            [spec[0] for spec in seed_evidence.UK_OBSERVATION_FIELD_SPECS],
+        )
+        for field in profile["fields"]:
+            self.assertEqual(tuple(field), seed_evidence.SUPPLEMENTAL_FIELD_KEYS)
+            self.assertEqual(tuple(field["constraint"]), ("kind", "value"))
+
+    def test_all_24_uk_rows_record_or_reject_by_locked_authorization(self) -> None:
+        uk_rows = [row for row in self.fixture.rows if row["observation_profile"]]
+        self.assertEqual(len(uk_rows), 24)
+        unresolved: list[str] = []
+        for row in uk_rows:
+            request_id = str(row["request_id"])
+            authorization = row["authorization"]
+            assert isinstance(authorization, dict)
+            result = self.fixture.run(self.fixture.record_arguments(request_id))
+            with self.subTest(request_id=request_id):
+                if authorization["status"] == "unresolved":
+                    unresolved.append(request_id)
+                    self.assert_failure(result, "authorization is unresolved")
+                    self.assertFalse(self.fixture.fragment_path(request_id).exists())
+                    continue
+                self.assertEqual(result, (0, "", ""), result[2])
+                source = self.fixture.fragment(request_id)
+                expected = seed_evidence._supplemental_current_uk_source(
+                    self.fixture.request(request_id),
+                    row,
+                    self.fixture.profile(),
+                    self.fixture.valid_values(request_id),
+                    PRODUCT_FINAL_URL,
+                    AUTHORIZATION_FINAL_URL,
+                    TIMESTAMP,
                 )
-        self.assertEqual(raised.exception.code, 2)
-        self.assertIn("--retrieved-at", stderr.getvalue())
+                self.assertEqual(source, expected)
+                self.assertTrue(seed_evidence._object_keys_are_sorted(source))
+        self.assertEqual(tuple(unresolved), UNRESOLVED_REQUESTS)
+        self.assertEqual(self.fixture.opener.requests, [])
+
+    def test_dynamic_constructor_order_metadata_and_role_source_urls_are_exact(self) -> None:
+        row = self.fixture.row(UK_REQUEST)
+        request = self.fixture.request(UK_REQUEST)
+        values = self.fixture.valid_values(UK_REQUEST)
+        source = seed_evidence._supplemental_current_uk_source(
+            request,
+            row,
+            self.fixture.profile(),
+            values,
+            PRODUCT_FINAL_URL,
+            AUTHORIZATION_FINAL_URL,
+            TIMESTAMP,
+        )
+        self.assertEqual(tuple(source), seed_evidence.SUPPLEMENTAL_SOURCE_KEYS)
+        self.assertEqual(source["class"], "dynamic")
+        self.assertEqual(source["revision"], "observed:2026-07-16")
+        self.assertEqual(source["landing_url"], request["authority_url"])
+        self.assertEqual(source["authority"], row["authority"])
+        self.assertEqual(source["artifacts"], [])
+        self.assertEqual(source["redistribution_note"], seed_evidence.DYNAMIC_NOTE)
+        observations = source["observations"]
+        self.assertEqual(
+            [observation["key"] for observation in observations],
+            [field["key"] for field in self.fixture.profile()["fields"]],
+        )
+        for field, observation in zip(
+            self.fixture.profile()["fields"], observations, strict=True
+        ):
+            self.assertEqual(
+                tuple(observation), seed_evidence.SUPPLEMENTAL_OBSERVATION_KEYS
+            )
+            self.assertEqual(observation["unit"], field["unit"])
+            self.assertEqual(observation["basis"], field["basis"])
+            self.assertEqual(observation["observed_at"], TIMESTAMP)
+            expected_url = (
+                PRODUCT_FINAL_URL
+                if field["source_role"] == "product"
+                else AUTHORIZATION_FINAL_URL
+            )
+            self.assertEqual(observation["source_url"], expected_url)
+
+    def test_record_accepts_every_stock_state_at_its_exact_quantity_boundary(self) -> None:
+        cases = (
+            ("in-stock", 1),
+            ("out-of-stock", 0),
+            ("backorder", None),
+            ("unknown", None),
+        )
+        for index, (stock_state, stock_quantity) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            values = self.fixture.valid_values(
+                UK_REQUEST,
+                stock_state=stock_state,
+                stock_quantity=stock_quantity,
+            )
+            result = self.fixture.run(
+                self.fixture.record_arguments(UK_REQUEST, values)
+            )
+            with self.subTest(stock_state=stock_state):
+                self.assertEqual(result, (0, "", ""), result[2])
+
+    def test_record_accepts_selected_quantity_at_moq_and_multiple_boundaries(self) -> None:
+        values = self.fixture.valid_values(
+            UK_REQUEST,
+            price_quantity=6,
+            minimum_order_quantity=5,
+            order_multiple=3,
+        )
+        result = self.fixture.run(self.fixture.record_arguments(UK_REQUEST, values))
+        self.assertEqual(result, (0, "", ""), result[2])
+
+    def test_record_rejects_strict_json_shape_and_every_field_type(self) -> None:
+        valid = self.fixture.valid_values(UK_REQUEST)
+        wrong_types = {
+            "manufacturer_part_number": 1,
+            "supplier_sku": 1,
+            "distributor": 1,
+            "product_initial_url": 1,
+            "product_final_url": 1,
+            "authorization_authority": 1,
+            "authorization_method": 1,
+            "authorization_initial_url": 1,
+            "authorization_final_url": 1,
+            "stock_state": 1,
+            "stock_quantity": "1",
+            "price_quantity": True,
+            "unit_price_ex_vat": True,
+            "currency": 1,
+            "minimum_order_quantity": True,
+            "order_multiple": True,
+            "price_includes_vat": "false",
+        }
+        cases: list[tuple[str, str, str]] = [
+            ("nonfinite", "NaN", "invalid JSON constant"),
+            ("duplicate", '{"x":1,"x":2}', "duplicate JSON key"),
+            ("array", "[]", "must be a JSON object"),
+            ("nested", '{"x":{}}', "only JSON scalars"),
+            (
+                "missing",
+                json.dumps({key: value for key, value in valid.items() if key != "supplier_sku"}),
+                "observation keys differ",
+            ),
+            (
+                "extra",
+                json.dumps({**valid, "extra": 1}),
+                "observation keys differ",
+            ),
+        ]
+        cases.extend(
+            (
+                key,
+                json.dumps({**valid, key: wrong_value}),
+                f"{key!r} must be",
+            )
+            for key, wrong_value in wrong_types.items()
+        )
+        for index, (name, values_text, message) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            arguments = self.fixture.record_arguments(UK_REQUEST)
+            arguments[3] = values_text
+            result = self.fixture.run(arguments)
+            with self.subTest(case=name):
+                self.assert_failure(result, message)
+                self.assert_no_outputs(UK_REQUEST)
+
+    def test_record_identity_timestamp_and_exit_contracts(self) -> None:
+        cases = (
+            (SINGLE_REQUEST, TIMESTAMP, "does not support record"),
+            ("REQ-CLIFF-RX-MFR", TIMESTAMP, "has no acquisition realization"),
+            ("REQ-NOT-REAL-UK", TIMESTAMP, "unknown supplemental request ID"),
+            (UK_REQUEST, "2026-02-30T12:34:56Z", "timestamp"),
+            (UK_REQUEST, "2026-07-16T12:34:56+00:00", "timestamp"),
+        )
+        for index, (request_id, observed_at, message) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            values = (
+                self.fixture.valid_values(UK_REQUEST)
+                if request_id != UK_REQUEST
+                else self.fixture.valid_values(request_id)
+            )
+            result = self.fixture.run(
+                self.fixture.record_arguments(
+                    request_id,
+                    values,
+                    observed_at=observed_at,
+                )
+            )
+            with self.subTest(request_id=request_id, observed_at=observed_at):
+                self.assert_failure(result, message, code=1)
+                self.assertEqual(self.fixture.opener.requests, [])
+
+    def test_record_existing_target_and_symlink_boundaries_reject(self) -> None:
+        for index, kind in enumerate(
+            ("fragment", "fragment-symlink", "fragment-directory")
+        ):
+            if index:
+                self.reset_fixture()
+            outside = Path(self.fixture.temporary.name) / f"outside-record-{kind}"
+            target = self.fixture.fragment_path(UK_REQUEST)
+            if kind == "fragment":
+                target.parent.mkdir(parents=True)
+                target.write_text("foreign\n", encoding="utf-8")
+            elif kind == "fragment-symlink":
+                target.parent.mkdir(parents=True)
+                outside.write_text("outside\n", encoding="utf-8")
+                target.symlink_to(outside)
+            else:
+                outside.mkdir()
+                target.parent.symlink_to(outside, target_is_directory=True)
+            result = self.fixture.run(self.fixture.record_arguments(UK_REQUEST))
+            with self.subTest(kind=kind):
+                self.assert_failure(
+                    result,
+                    "unsafe" if kind == "fragment-directory" else "overwrite",
+                )
+                if kind == "fragment":
+                    self.assertEqual(target.read_text(encoding="utf-8"), "foreign\n")
+                elif kind == "fragment-symlink":
+                    self.assertTrue(target.is_symlink())
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+                else:
+                    self.assertEqual(list(outside.iterdir()), [])
+                self.assertEqual(list(self.fixture.root.rglob("*.tmp")), [])
+
+    def test_record_publication_failure_rolls_back_and_cleans_temporary(self) -> None:
+        def replace(source: str, target: str) -> None:
+            del source, target
+            raise OSError("injected supplemental record publish failure")
+
+        result = self.fixture.run(
+            self.fixture.record_arguments(UK_REQUEST),
+            replace=replace,
+        )
+        self.assert_failure(result, "publish failed")
+        self.assert_no_outputs(UK_REQUEST)
+
+    def test_record_renderer_failure_precedes_publication(self) -> None:
+        def formatter(root: Path, payload: bytes) -> bytes:
+            del root, payload
+            raise seed_evidence.ControlError("injected record renderer failure")
+
+        result = self.fixture.run(
+            self.fixture.record_arguments(UK_REQUEST),
+            formatter=formatter,
+        )
+        self.assert_failure(result, "injected record renderer failure", code=2)
+        self.assert_no_outputs(UK_REQUEST)
+
+    def test_record_fragment_matches_real_pinned_prettier_bytes(self) -> None:
+        def real_formatter(root: Path, payload: bytes) -> bytes:
+            del root
+            return seed_evidence._production_formatter(AIUS_ROOT, payload)
+
+        result = self.fixture.run(
+            self.fixture.record_arguments(UK_REQUEST),
+            formatter=real_formatter,
+        )
+        self.assertEqual(result, (0, "", ""), result[2])
+        path = self.fixture.fragment_path(UK_REQUEST)
+        source = self.fixture.fragment(UK_REQUEST)
+        self.assertTrue(seed_evidence._object_keys_are_sorted(source))
+        expected = seed_evidence._render_json(
+            AIUS_ROOT,
+            source,
+            seed_evidence._production_formatter,
+        )
+        self.assertEqual(path.read_bytes(), expected)
+
+    def test_record_rejects_every_constraint_and_cross_field_failure(self) -> None:
+        valid = self.fixture.valid_values(UK_REQUEST)
+        mutations: tuple[tuple[str, dict[str, object], str], ...] = (
+            ("empty-sku", {"supplier_sku": " "}, "does not match its pattern"),
+            ("stock-enum", {"stock_state": "available"}, "outside its enum"),
+            ("stock-minimum", {"stock_quantity": -1}, "below its minimum"),
+            ("price-minimum", {"price_quantity": 0}, "below its minimum"),
+            ("unit-price-minimum", {"unit_price_ex_vat": -0.01}, "below its minimum"),
+            ("currency", {"currency": "USD"}, "does not equal its constant"),
+            ("moq-minimum", {"minimum_order_quantity": 0}, "below its minimum"),
+            ("multiple-minimum", {"order_multiple": 0}, "below its minimum"),
+            ("vat", {"price_includes_vat": True}, "does not equal its constant"),
+            (
+                "in-stock-null",
+                {"stock_state": "in-stock", "stock_quantity": None},
+                "requires stock_quantity >= 1",
+            ),
+            (
+                "in-stock-zero",
+                {"stock_state": "in-stock", "stock_quantity": 0},
+                "requires stock_quantity >= 1",
+            ),
+            (
+                "out-of-stock-positive",
+                {"stock_state": "out-of-stock", "stock_quantity": 1},
+                "requires stock_quantity 0",
+            ),
+            (
+                "out-of-stock-null",
+                {"stock_state": "out-of-stock", "stock_quantity": None},
+                "requires stock_quantity 0",
+            ),
+            (
+                "backorder-quantity",
+                {"stock_state": "backorder", "stock_quantity": 0},
+                "requires null stock_quantity",
+            ),
+            (
+                "unknown-quantity",
+                {"stock_state": "unknown", "stock_quantity": 0},
+                "requires null stock_quantity",
+            ),
+            (
+                "below-moq",
+                {"price_quantity": 2, "minimum_order_quantity": 3},
+                "greater than or equal",
+            ),
+            (
+                "order-multiple",
+                {"price_quantity": 5, "order_multiple": 2},
+                "divisible by order_multiple",
+            ),
+        )
+        for index, (name, changes, message) in enumerate(mutations):
+            if index:
+                self.reset_fixture()
+            result = self.fixture.run(
+                self.fixture.record_arguments(UK_REQUEST, {**valid, **changes})
+            )
+            with self.subTest(case=name):
+                self.assert_failure(result, message)
+                self.assert_no_outputs(UK_REQUEST)
+
+    def test_record_rejects_every_request_realization_and_final_url_mismatch(self) -> None:
+        valid = self.fixture.valid_values(UK_REQUEST)
+        bound_fields = (
+            "manufacturer_part_number",
+            "distributor",
+            "product_initial_url",
+            "product_final_url",
+            "authorization_authority",
+            "authorization_method",
+            "authorization_initial_url",
+            "authorization_final_url",
+        )
+        for index, key in enumerate(bound_fields):
+            if index:
+                self.reset_fixture()
+            if key.endswith("url"):
+                wrong_value = "https://example.com/wrong"
+            elif key == "authorization_method":
+                wrong_value = "manufacturer-locator"
+            else:
+                wrong_value = "wrong"
+            values = {**valid, key: wrong_value}
+            result = self.fixture.run(
+                self.fixture.record_arguments(UK_REQUEST, values)
+            )
+            with self.subTest(key=key):
+                self.assert_failure(result, "binding")
+                self.assert_no_outputs(UK_REQUEST)
+
+        for name, option, message in (
+            ("product-http", "product", "product final URL must be HTTPS"),
+            (
+                "authorization-http",
+                "authorization",
+                "authorization final URL must be HTTPS",
+            ),
+        ):
+            self.reset_fixture()
+            arguments = self.fixture.record_arguments(
+                UK_REQUEST,
+                {
+                    **valid,
+                    "product_final_url": "http://example.com/product"
+                    if option == "product"
+                    else PRODUCT_FINAL_URL,
+                    "authorization_final_url": "http://example.com/authorization"
+                    if option == "authorization"
+                    else AUTHORIZATION_FINAL_URL,
+                },
+                product_final_url=(
+                    "http://example.com/product"
+                    if option == "product"
+                    else PRODUCT_FINAL_URL
+                ),
+                authorization_final_url=(
+                    "http://example.com/authorization"
+                    if option == "authorization"
+                    else AUTHORIZATION_FINAL_URL
+                ),
+            )
+            result = self.fixture.run(arguments)
+            with self.subTest(case=name):
+                self.assert_failure(result, message)
+                self.assert_no_outputs(UK_REQUEST)
+
+    def test_supplemental_cli_usage_errors_are_exit_two(self) -> None:
+        cases = (
+            (["acquire", SINGLE_REQUEST], "--retrieved-at"),
+            (
+                [
+                    "record",
+                    UK_REQUEST,
+                    "--values",
+                    "{}",
+                    "--product-final-url",
+                    PRODUCT_FINAL_URL,
+                    "--observed-at",
+                    TIMESTAMP,
+                ],
+                "--authorization-final-url",
+            ),
+        )
+        for arguments, message in cases:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as raised:
+                    seed_evidence.run(
+                        [
+                            "--root",
+                            os.fspath(self.fixture.root),
+                            "supplemental",
+                            *arguments,
+                        ]
+                    )
+            with self.subTest(command=arguments[0]):
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
 
     def test_control_schema_join_and_immutable_oracle_fail_as_exit_two(self) -> None:
         cases = (

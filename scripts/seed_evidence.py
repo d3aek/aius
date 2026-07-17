@@ -84,6 +84,96 @@ SUPPLEMENTAL_OBSERVATION_KEYS = (
     "observed_at",
     "source_url",
 )
+SUPPLEMENTAL_PROFILE_KEYS = ("name", "fields")
+SUPPLEMENTAL_FIELD_KEYS = (
+    "key",
+    "value_type",
+    "nullable",
+    "constraint",
+    "unit",
+    "source_role",
+    "basis",
+)
+UK_OBSERVATION_PROFILE_NAME = "uk-distributor-price-stock"
+UK_OBSERVATION_FIELD_SPECS = (
+    (
+        "manufacturer_part_number",
+        "string",
+        False,
+        "pattern",
+        r"^\S(?:.*\S)?$",
+        None,
+        "product",
+    ),
+    ("supplier_sku", "string", False, "pattern", r"^\S(?:.*\S)?$", None, "product"),
+    ("distributor", "string", False, "pattern", r"^\S(?:.*\S)?$", None, "product"),
+    ("product_initial_url", "string", False, "pattern", r"^https://\S+$", None, "product"),
+    ("product_final_url", "string", False, "pattern", r"^https://\S+$", None, "product"),
+    (
+        "authorization_authority",
+        "string",
+        False,
+        "pattern",
+        r"^\S(?:.*\S)?$",
+        None,
+        "authorization",
+    ),
+    (
+        "authorization_method",
+        "string",
+        False,
+        "enum",
+        (
+            "manufacturer-page",
+            "manufacturer-locator",
+            "ecia-trustedparts-exception",
+        ),
+        None,
+        "authorization",
+    ),
+    (
+        "authorization_initial_url",
+        "string",
+        False,
+        "pattern",
+        r"^https://\S+$",
+        None,
+        "authorization",
+    ),
+    (
+        "authorization_final_url",
+        "string",
+        False,
+        "pattern",
+        r"^https://\S+$",
+        None,
+        "authorization",
+    ),
+    (
+        "stock_state",
+        "string",
+        False,
+        "enum",
+        ("in-stock", "out-of-stock", "backorder", "unknown"),
+        None,
+        "product",
+    ),
+    ("stock_quantity", "integer", True, "minimum", 0, "pieces", "product"),
+    ("price_quantity", "integer", False, "minimum", 1, "pieces", "product"),
+    ("unit_price_ex_vat", "number", False, "minimum", 0, "GBP", "product"),
+    ("currency", "string", False, "const", "GBP", None, "product"),
+    (
+        "minimum_order_quantity",
+        "integer",
+        False,
+        "minimum",
+        1,
+        "pieces",
+        "product",
+    ),
+    ("order_multiple", "integer", False, "minimum", 1, "pieces", "product"),
+    ("price_includes_vat", "boolean", False, "const", False, None, "product"),
+)
 
 Formatter = Callable[[Path, bytes], bytes]
 ProcessRunner = Callable[..., subprocess.CompletedProcess[bytes]]
@@ -134,6 +224,7 @@ class SupplementalState:
     root: Path
     requests: tuple[dict[str, object], ...]
     realizations: tuple[dict[str, object], ...]
+    observation_profiles: tuple[dict[str, object], ...]
     source_schema: dict[str, object]
 
     @property
@@ -143,6 +234,10 @@ class SupplementalState:
     @property
     def realizations_by_id(self) -> dict[str, dict[str, object]]:
         return {str(row["request_id"]): row for row in self.realizations}
+
+    @property
+    def observation_profiles_by_name(self) -> dict[str, dict[str, object]]:
+        return {str(row["name"]): row for row in self.observation_profiles}
 
 
 def _compact_json(value: object) -> bytes:
@@ -561,6 +656,31 @@ def _load_state(root_argument: Path) -> State:
     )
 
 
+def _expected_uk_observation_profile() -> dict[str, object]:
+    fields: list[dict[str, object]] = []
+    for key, value_type, nullable, kind, value, unit, source_role in (
+        UK_OBSERVATION_FIELD_SPECS
+    ):
+        fields.append(
+            {
+                "key": key,
+                "value_type": value_type,
+                "nullable": nullable,
+                "constraint": {
+                    "kind": kind,
+                    "value": list(value) if isinstance(value, tuple) else value,
+                },
+                "unit": unit,
+                "source_role": source_role,
+                "basis": (
+                    f"P1D {UK_OBSERVATION_PROFILE_NAME} normalized field {key} "
+                    "from the approved supplemental request, realization, and live page."
+                ),
+            }
+        )
+    return {"name": UK_OBSERVATION_PROFILE_NAME, "fields": fields}
+
+
 def _load_supplemental_state(root_argument: Path) -> SupplementalState:
     argument_status = _lstat(root_argument)
     if argument_status is not None and stat.S_ISLNK(argument_status.st_mode):
@@ -623,8 +743,37 @@ def _load_supplemental_state(root_argument: Path) -> SupplementalState:
         raise ControlError("supplemental realization differs from the immutable P1D0a oracle")
     if not isinstance(realization_document, dict):
         raise ControlError("supplemental realization control must be an object")
+    if tuple(realization_document) != (
+        "schema_version",
+        "owned_path_root",
+        "observation_profiles",
+        "realizations",
+    ):
+        raise ControlError("supplemental realization root property order differs")
     if realization_document.get("owned_path_root") != SUPPLEMENTAL_OWNED_PATH_ROOT:
         raise ControlError("supplemental realization owned path root differs")
+    observation_profiles = realization_document.get("observation_profiles")
+    if (
+        not isinstance(observation_profiles, list)
+        or len(observation_profiles) != 1
+        or not isinstance(observation_profiles[0], dict)
+    ):
+        raise ControlError("supplemental observation profile set differs")
+    profile = observation_profiles[0]
+    fields = profile.get("fields")
+    if (
+        tuple(profile) != SUPPLEMENTAL_PROFILE_KEYS
+        or not isinstance(fields, list)
+        or any(
+            not isinstance(field, dict)
+            or tuple(field) != SUPPLEMENTAL_FIELD_KEYS
+            or not isinstance(field.get("constraint"), dict)
+            or tuple(field["constraint"]) != ("kind", "value")
+            for field in fields
+        )
+        or profile != _expected_uk_observation_profile()
+    ):
+        raise ControlError("supplemental UK observation profile differs")
     realizations = realization_document.get("realizations")
     if not isinstance(realizations, list) or not all(
         isinstance(row, dict) for row in realizations
@@ -692,8 +841,25 @@ def _load_supplemental_state(root_argument: Path) -> SupplementalState:
                 )
         elif request["request_kind"] == "uk-availability":
             uk_count += 1
-            if artifacts or row["observation_profile"] is None:
+            authorization = row["authorization"]
+            if (
+                artifacts
+                or row["revision_strategy"] != "observation-date"
+                or row["revision_value"] is not None
+                or row["observation_url"] != request["authority_url"]
+                or not isinstance(authorization, dict)
+                or row["clone_boundary"] is not None
+                or row["observation_profile"] != UK_OBSERVATION_PROFILE_NAME
+                or row["failure_policy"] != "assumption"
+                or row["retention"] != "normalized-observation-only"
+            ):
                 raise ControlError(f"{request_id}: UK realization differs")
+            is_tag_connect = request["selected_manufacturer"] == "Tag-Connect"
+            is_exception = (
+                authorization.get("method") == "ecia-trustedparts-exception"
+            )
+            if is_tag_connect != is_exception:
+                raise ControlError(f"{request_id}: authorization exception differs")
         else:
             raise ControlError(f"{request_id}: unknown supplemental request kind")
     if manufacturer_count != 22 or uk_count != 24:
@@ -702,6 +868,7 @@ def _load_supplemental_state(root_argument: Path) -> SupplementalState:
         root,
         tuple(requests),
         tuple(realizations),
+        tuple(observation_profiles),
         source_schema,
     )
 
@@ -977,6 +1144,187 @@ def _supplemental_current_manufacturer_source(
     if any(tuple(artifact) != SUPPLEMENTAL_ARTIFACT_KEYS for artifact in artifacts):
         raise DataError("supplemental source artifact property order differs")
     if tuple(source["observations"][0]) != SUPPLEMENTAL_OBSERVATION_KEYS:
+        raise DataError("supplemental source observation property order differs")
+    return source
+
+
+def _supplemental_observation_profile(
+    state: SupplementalState,
+    realization: Mapping[str, object],
+) -> dict[str, object]:
+    profile_name = realization.get("observation_profile")
+    if not isinstance(profile_name, str):
+        raise ControlError("UK realization has no observation profile")
+    profile = state.observation_profiles_by_name.get(profile_name)
+    if profile is None:
+        raise ControlError(f"unknown supplemental observation profile: {profile_name!r}")
+    return profile
+
+
+def _validate_uk_value_bindings(
+    request: Mapping[str, object],
+    realization: Mapping[str, object],
+    values: Mapping[str, object],
+    product_final_url: str,
+    authorization_final_url: str,
+) -> None:
+    authorization = realization.get("authorization")
+    if not isinstance(authorization, dict):
+        raise ControlError("UK realization authorization is invalid")
+    expected = {
+        "manufacturer_part_number": request["selected_mpn"],
+        "distributor": realization["authority"],
+        "product_initial_url": realization["observation_url"],
+        "product_final_url": product_final_url,
+        "authorization_authority": authorization["authority"],
+        "authorization_method": authorization["method"],
+        "authorization_initial_url": authorization["initial_url"],
+        "authorization_final_url": authorization_final_url,
+    }
+    for key, expected_value in expected.items():
+        if values.get(key) != expected_value:
+            raise DataError(
+                f"observation value {key!r} differs from its request or realization binding"
+            )
+
+
+def _validate_uk_cross_fields(values: Mapping[str, object]) -> None:
+    state = values["stock_state"]
+    quantity = values["stock_quantity"]
+    if state == "in-stock" and (
+        not isinstance(quantity, int) or isinstance(quantity, bool) or quantity < 1
+    ):
+        raise DataError("stock_state 'in-stock' requires stock_quantity >= 1")
+    if state == "out-of-stock" and quantity != 0:
+        raise DataError("stock_state 'out-of-stock' requires stock_quantity 0")
+    if state in {"backorder", "unknown"} and quantity is not None:
+        raise DataError(f"stock_state {state!r} requires null stock_quantity")
+
+    price_quantity = values["price_quantity"]
+    minimum_order_quantity = values["minimum_order_quantity"]
+    order_multiple = values["order_multiple"]
+    assert isinstance(price_quantity, int) and not isinstance(price_quantity, bool)
+    assert isinstance(minimum_order_quantity, int) and not isinstance(
+        minimum_order_quantity, bool
+    )
+    assert isinstance(order_multiple, int) and not isinstance(order_multiple, bool)
+    if price_quantity < minimum_order_quantity:
+        raise DataError(
+            "price_quantity must be greater than or equal to minimum_order_quantity"
+        )
+    if price_quantity % order_multiple != 0:
+        raise DataError("price_quantity must be divisible by order_multiple")
+
+
+def _supplemental_uk_observations(
+    profile: Mapping[str, object],
+    values: Mapping[str, object],
+    product_final_url: str,
+    authorization_final_url: str,
+    observed_at: str,
+) -> list[dict[str, object]]:
+    fields = profile.get("fields")
+    if not isinstance(fields, list):
+        raise ControlError("supplemental observation profile has no fields")
+    keys = [str(field["key"]) for field in fields if isinstance(field, dict)]
+    if len(keys) != len(fields):
+        raise ControlError("supplemental observation profile contains a non-object field")
+    if set(values) != set(keys) or len(values) != len(keys):
+        missing = sorted(set(keys) - set(values))
+        extra = sorted(set(values) - set(keys))
+        raise DataError(f"observation keys differ; missing={missing!r}, extra={extra!r}")
+
+    observations: list[dict[str, object]] = []
+    source_urls = {
+        "product": product_final_url,
+        "authorization": authorization_final_url,
+    }
+    for field in fields:
+        assert isinstance(field, dict)
+        key = str(field["key"])
+        value = values[key]
+        _validate_field_value(field, value)
+        source_role = field.get("source_role")
+        if source_role not in source_urls:
+            raise ControlError(
+                f"observation field {key!r} has unknown source role {source_role!r}"
+            )
+        observations.append(
+            {
+                "key": key,
+                "value": value,
+                "unit": field["unit"],
+                "basis": field["basis"],
+                "observed_at": observed_at,
+                "source_url": source_urls[str(source_role)],
+            }
+        )
+    _validate_uk_cross_fields(values)
+    return observations
+
+
+def _supplemental_current_uk_source(
+    request: Mapping[str, object],
+    realization: Mapping[str, object],
+    profile: Mapping[str, object],
+    values: Mapping[str, object],
+    product_final_url: str,
+    authorization_final_url: str,
+    observed_at: str,
+) -> dict[str, object]:
+    request_id = str(request["request_id"])
+    if request["request_kind"] != "uk-availability":
+        raise DataError(
+            f"manufacturer supplemental request {request_id} does not support record"
+        )
+    authorization = realization.get("authorization")
+    if not isinstance(authorization, dict):
+        raise ControlError(f"{request_id}: UK authorization tuple is invalid")
+    if authorization.get("status") != "confirmed":
+        raise DataError(
+            f"{request_id}: authorization is unresolved; use supplemental unavailable"
+        )
+    product_final_url = _https_url(product_final_url, "product final URL")
+    authorization_final_url = _https_url(
+        authorization_final_url,
+        "authorization final URL",
+    )
+    observations = _supplemental_uk_observations(
+        profile,
+        values,
+        product_final_url,
+        authorization_final_url,
+        observed_at,
+    )
+    _validate_uk_value_bindings(
+        request,
+        realization,
+        values,
+        product_final_url,
+        authorization_final_url,
+    )
+    source = {
+        "id": request["source_id"],
+        "class": "dynamic",
+        "title": "normalized UK distributor price and stock observation",
+        "authority": realization["authority"],
+        "revision": _expected_revision(realization, [], observed_at),
+        "purpose": (
+            "Record a UK authorized-distributor price and stock observation for "
+            f"{request['selected_manufacturer']} {request['selected_mpn']}."
+        ),
+        "claim_scope": request["requirements"],
+        "landing_url": request["authority_url"],
+        "retrieved_at": observed_at,
+        "status": "current",
+        "supersedes": None,
+        "redistribution_note": DYNAMIC_NOTE,
+        "artifacts": [],
+        "observations": observations,
+    }
+    if tuple(source) != SUPPLEMENTAL_SOURCE_KEYS:
+        raise DataError("supplemental source constructor property order differs")
+    if any(tuple(row) != SUPPLEMENTAL_OBSERVATION_KEYS for row in observations):
         raise DataError("supplemental source observation property order differs")
     return source
 
@@ -1530,6 +1878,67 @@ def _validate_supplemental_manufacturer_source(
         raise DataError("supplemental manufacturer source differs from its constructor")
 
 
+def _validate_supplemental_uk_source(
+    state: SupplementalState,
+    request: Mapping[str, object],
+    realization: Mapping[str, object],
+    source: object,
+) -> None:
+    source_record_schema = state.source_schema["$defs"]["sourceRecord"]
+    _schema(
+        source,
+        source_record_schema,
+        state.source_schema,
+        f"supplemental source {request['source_id']}",
+    )
+    if not isinstance(source, dict):
+        raise DataError("supplemental UK source must be an object")
+    if tuple(source) != SUPPLEMENTAL_SOURCE_KEYS:
+        raise DataError("supplemental UK source property order differs")
+    observed_at = source.get("retrieved_at")
+    if not isinstance(observed_at, str):
+        raise DataError("supplemental UK source has no timestamp")
+    _timestamp(observed_at)
+    profile = _supplemental_observation_profile(state, realization)
+    fields = profile["fields"]
+    observations = source.get("observations")
+    if not isinstance(fields, list) or not isinstance(observations, list):
+        raise DataError("supplemental UK source observations are invalid")
+    if len(observations) != len(fields):
+        raise DataError("supplemental UK source observation count differs")
+    values: dict[str, object] = {}
+    for index, (field, observation) in enumerate(
+        zip(fields, observations, strict=True)
+    ):
+        if not isinstance(field, dict) or not isinstance(observation, dict):
+            raise DataError(f"supplemental UK observation {index} is invalid")
+        if tuple(observation) != SUPPLEMENTAL_OBSERVATION_KEYS:
+            raise DataError(
+                f"supplemental UK observation {index} property order differs"
+            )
+        key = str(field["key"])
+        if observation.get("key") != key:
+            raise DataError("supplemental UK observation order differs from profile")
+        values[key] = observation.get("value")
+    product_final_url = values.get("product_final_url")
+    authorization_final_url = values.get("authorization_final_url")
+    if not isinstance(product_final_url, str) or not isinstance(
+        authorization_final_url, str
+    ):
+        raise DataError("supplemental UK final URLs are invalid")
+    expected_source = _supplemental_current_uk_source(
+        request,
+        realization,
+        profile,
+        values,
+        product_final_url,
+        authorization_final_url,
+        observed_at,
+    )
+    if source != expected_source:
+        raise DataError("supplemental UK source differs from its constructor")
+
+
 def _supplemental_acquire(
     state: SupplementalState,
     request_id: str,
@@ -1606,6 +2015,52 @@ def _supplemental_acquire(
         formatter,
     )
     _publish_new(state.root, outputs, replace)
+    return 0
+
+
+def _supplemental_record(
+    state: SupplementalState,
+    request_id: str,
+    values_text: str,
+    product_final_url: str,
+    authorization_final_url: str,
+    observed_at: str,
+    replace: Callable[[str, str], object],
+    formatter: Formatter,
+) -> int:
+    request, realization = _select_supplemental(state, request_id)
+    if request["request_kind"] != "uk-availability":
+        raise DataError(
+            f"manufacturer supplemental request {request_id} does not support record"
+        )
+    authorization = realization.get("authorization")
+    if not isinstance(authorization, dict):
+        raise ControlError(f"{request_id}: UK authorization tuple is invalid")
+    if authorization.get("status") != "confirmed":
+        raise DataError(
+            f"{request_id}: authorization is unresolved; use supplemental unavailable"
+        )
+    observed_at = _timestamp(observed_at)
+    values = _parse_values(values_text)
+    profile = _supplemental_observation_profile(state, realization)
+    source = _supplemental_current_uk_source(
+        request,
+        realization,
+        profile,
+        values,
+        product_final_url,
+        authorization_final_url,
+        observed_at,
+    )
+    _validate_supplemental_uk_source(state, request, realization, source)
+    _ensure_directory(state.root, "evidence/manifest/supplemental-fragments")
+    fragment_relative = _supplemental_fragment_path(str(request["source_id"]))
+    target = _reject_target(state.root, fragment_relative)
+    _publish_new(
+        state.root,
+        {target: _render_json(state.root, source, formatter)},
+        replace,
+    )
     return 0
 
 
@@ -2070,6 +2525,17 @@ def run(
                     arguments.request_id,
                     arguments.retrieved_at,
                     opener if opener is not None else _production_opener(),
+                    replace,
+                    selected_formatter,
+                )
+            if arguments.supplemental_command == "record":
+                return _supplemental_record(
+                    supplemental_state,
+                    arguments.request_id,
+                    arguments.values,
+                    arguments.product_final_url,
+                    arguments.authorization_final_url,
+                    arguments.observed_at,
                     replace,
                     selected_formatter,
                 )

@@ -3332,6 +3332,10 @@ fixture-proven supplemental manufacturer acquisition and atomic fragment
 publication without changing seed behavior. Its clean-room delivery audit and
 all realization, acquisition, seed and evidence-validator suites passed.
 
+P1D0b2 completed on 2026-07-16. The same engine now records exact normalized UK
+observations for confirmed authorization rows without network access; its
+clean-room delivery audit and all compatibility suites passed.
+
 The normative P1D contract is now
 [`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
 supersedes the historical draft below after a clean-room review found that the
