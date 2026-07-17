@@ -1,17 +1,5 @@
 {
-  "artifacts": [
-    {
-      "bytes": null,
-      "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
-      "media_type": null,
-      "name": "unavailable",
-      "note": "Automated acquisition from the fixed realization URL failed during P1D1.02.",
-      "path": null,
-      "retrieval_status": "unavailable",
-      "sha256": null,
-      "storage": "external-reference"
-    }
-  ],
+  "artifacts": [],
   "authority": "RS",
   "claim_scope": [
     "REQT-COMMON-MANUFACTURABILITY",
@@ -22,12 +10,149 @@
   "class": "dynamic",
   "id": "AIUS-EXPANSION-GPIO-ADC-UK",
   "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
-  "observations": [],
+  "observations": [
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "BM04B-GHS-TBT"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+      "key": "supplier_sku",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "752-1769"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+      "key": "distributor",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "RS"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+      "key": "product_initial_url",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+      "key": "product_final_url",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+      "key": "authorization_authority",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://www.jst.co.uk/contact.php",
+      "unit": null,
+      "value": "J.S.T. (U.K.) Ltd"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+      "key": "authorization_method",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://www.jst.co.uk/contact.php",
+      "unit": null,
+      "value": "manufacturer-page"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+      "key": "authorization_initial_url",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://www.jst.co.uk/contact.php",
+      "unit": null,
+      "value": "https://www.jst.co.uk/contact.php"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+      "key": "authorization_final_url",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://www.jst.co.uk/contact.php",
+      "unit": null,
+      "value": "https://www.jst.co.uk/contact.php"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+      "key": "stock_state",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "in-stock"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+      "key": "stock_quantity",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": "pieces",
+      "value": 1885
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+      "key": "price_quantity",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": "pieces",
+      "value": 5
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+      "key": "unit_price_ex_vat",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": "GBP",
+      "value": 0.586
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+      "key": "currency",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": "GBP"
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+      "key": "minimum_order_quantity",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": "pieces",
+      "value": 5
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+      "key": "order_multiple",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": "pieces",
+      "value": 5
+    },
+    {
+      "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+      "key": "price_includes_vat",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "unit": null,
+      "value": false
+    }
+  ],
   "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
-  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
-  "retrieved_at": "2026-07-17T05:59:20Z",
-  "revision": "unavailable:2026-07-17",
-  "status": "unavailable",
+  "redistribution_note": "Normalized observation only; no source page is retained.",
+  "retrieved_at": "2026-07-17T06:11:36Z",
+  "revision": "observed:2026-07-17",
+  "status": "current",
   "supersedes": null,
   "title": "normalized UK distributor price and stock observation"
 }

@@ -1208,12 +1208,17 @@ P1D1.02 completed on 2026-07-17 at the shared
 146,619-byte `eGH.pdf` as LFS with SHA-256
 `b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`
 and exact MPN `BM04B-GHS-TBT`. The pre-locked unresolved Ethernet-magjack UK
-request and the RS GPIO/ADC request both published canonical unavailable source
-and assumption pairs; a normal RS request returned Access Denied and no bypass
-or commerce observation was used. These UK outcomes close their lifecycles as
-sourcing risks and do not create a manufacturer design blocker. All three
-fragment checks, active delivery audit and the hash-stable 45-test supplemental
-suite passed.
+request published a canonical unavailable source and assumption pair. The RS
+GPIO/ADC request initially did the same after a normal request returned Access
+Denied; no bypass or commerce observation was used. At
+`2026-07-17T06:11:36Z`, Wave 03 reached the identical locked RS URL and MPN and
+supported the complete 17-field observation. A separate corrective checkpoint
+therefore replaced the stale GPIO/ADC unavailable source with current evidence
+at that real timestamp and removed its open assumption. The original access
+failure remains recorded here as history; only the Ethernet-magjack UK sourcing
+risk remains open. All original fragment checks, active delivery audit and the
+hash-stable 45-test supplemental suite passed, and the corrected GPIO/ADC
+fragment passed its isolated check.
 
 ```yaml
 phase: P1D1.03
