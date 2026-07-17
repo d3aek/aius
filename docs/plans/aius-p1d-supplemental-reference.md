@@ -1764,6 +1764,18 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 14"
 ```
 
+P1D1.14 completed on 2026-07-17 at the shared
+`2026-07-17T09:46:59Z` timestamp. Both UK sources are canonically unavailable:
+the exact RS and TE URLs returned HTTP 403 for the USB-A row, while the exact
+Farnell request failed without an HTTP response and the exact GCT distributor
+page returned HTTP 403 for the USB-C row. Neither strict 17-field commerce
+observation was supportable. The USB-C manufacturer source is the required
+golden unavailable blocker. Both fixed PDFs remained retrievable, but the
+mandatory exact GCT product page returned a Cloudflare challenge; atomic
+acquisition therefore retained none of the partial artifacts and published no
+assumption. All three fragment checks, the active delivery audit and the
+hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.15
 unit: single-file-implementation
