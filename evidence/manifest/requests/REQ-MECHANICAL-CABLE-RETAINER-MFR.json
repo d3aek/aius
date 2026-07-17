@@ -15,7 +15,7 @@
   "source_id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
   "artifact_kinds": ["datasheet", "product-page"],
   "retention": "archive",
-  "status": "pending",
-  "evidence_ids": [],
-  "notes": "P1D must retain and validate the primary manufacturer technical datasheet and exact product page before this candidate can advance."
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-MECHANICAL-CABLE-RETAINER-MFR"],
+  "notes": ""
 }

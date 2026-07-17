@@ -16,7 +16,7 @@
   "source_id": "AIUS-CLIFF-TX-UK",
   "artifact_kinds": ["price-observation"],
   "retention": "normalized-observation-only",
-  "status": "pending",
-  "evidence_ids": [],
-  "notes": "Authorized-distributor acquisition target only; P1C2 makes no stock, price, lead-time, or availability claim."
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-CLIFF-TX-UK"],
+  "notes": ""
 }

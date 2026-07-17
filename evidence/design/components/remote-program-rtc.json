@@ -15,6 +15,6 @@
   "manufacturer_request_id": "REQ-REMOTE-PROGRAM-RTC-MFR",
   "availability_request_id": "REQ-REMOTE-PROGRAM-RTC-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }

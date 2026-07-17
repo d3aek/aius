@@ -15,6 +15,6 @@
   "manufacturer_request_id": "REQ-USB-A-RECEPTACLE-MFR",
   "availability_request_id": "REQ-USB-A-RECEPTACLE-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "candidate-evidence-unavailable",
   "notes": ""
 }

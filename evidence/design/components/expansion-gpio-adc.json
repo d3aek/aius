@@ -14,6 +14,6 @@
   "manufacturer_request_id": "REQ-EXPANSION-GPIO-ADC-MFR",
   "availability_request_id": "REQ-EXPANSION-GPIO-ADC-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }

@@ -15,7 +15,7 @@
   "source_id": "AIUS-USB-C-RECEPTACLE-MFR",
   "artifact_kinds": ["datasheet", "drawing", "product-page"],
   "retention": "archive",
-  "status": "pending",
+  "status": "unavailable",
   "evidence_ids": [],
-  "notes": "P1D must retain and validate the linked primary manufacturer product specification and drawing before this candidate can advance."
+  "notes": "Automated acquisition from the fixed realization URL failed during P1D1.14."
 }

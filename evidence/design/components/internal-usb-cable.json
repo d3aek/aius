@@ -15,6 +15,6 @@
   "manufacturer_request_id": "REQ-INTERNAL-USB-CABLE-MFR",
   "availability_request_id": "REQ-INTERNAL-USB-CABLE-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }

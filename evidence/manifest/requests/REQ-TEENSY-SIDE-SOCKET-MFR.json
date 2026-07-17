@@ -15,7 +15,7 @@
   "source_id": "AIUS-TEENSY-SIDE-SOCKET-MFR",
   "artifact_kinds": ["datasheet", "drawing", "product-page"],
   "retention": "archive",
-  "status": "pending",
-  "evidence_ids": [],
-  "notes": "P1D must retain and validate the exact-MPN Samtec product page, every applicable part-specific current series print linked by that page, and the applicable current Samtec product specification before this candidate can advance."
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-TEENSY-SIDE-SOCKET-MFR"],
+  "notes": ""
 }

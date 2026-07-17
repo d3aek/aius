@@ -2036,6 +2036,24 @@ P1D2 has two explicit committable branches after the common green set:
   selection returns to a new reviewed P1C candidate checkpoint before P1D1
   resumes.
 
+P1D2 completed on 2026-07-17 in the blocked branch. Deterministic assembly
+published exactly 73 owned outputs: 46 requests, 22 components and five
+aggregates. The closed lifecycle contains 68 sources, 23 assumptions, 22 clone
+boundaries, 48 supplemental requests and 29 components; 29 requests are
+satisfied, 19 are unavailable, 20 affected components are selected and two are
+`candidate-evidence-unavailable`. The full common-green command set and active
+clean-room delivery audit passed with no supplemental-lifecycle diagnostics.
+Handoff returned exit 1 with empty stdout and exactly these sorted stderr
+diagnostics:
+
+```text
+AIUS-P1-COMPONENT: evidence/design/components/usb-a-receptacle.json: critical family is blocked by status 'candidate-evidence-unavailable'
+AIUS-P1-COMPONENT: evidence/design/components/usb-c-receptacle.json: critical family is blocked by status 'candidate-evidence-unavailable'
+```
+
+P1D3 did not dispatch. Work resumes only through a new reviewed P1C replacement
+candidate checkpoint.
+
 ## P1D3 — Electrical reference contract and package
 
 ### P1D3a1 — Closed design schemas and base fixtures

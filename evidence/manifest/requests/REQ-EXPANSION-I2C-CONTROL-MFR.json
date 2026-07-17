@@ -14,7 +14,7 @@
   "source_id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
   "artifact_kinds": ["datasheet"],
   "retention": "archive",
-  "status": "pending",
-  "evidence_ids": [],
-  "notes": "P1D must retain and validate the primary manufacturer datasheet before this candidate can advance."
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-EXPANSION-I2C-CONTROL-MFR"],
+  "notes": ""
 }

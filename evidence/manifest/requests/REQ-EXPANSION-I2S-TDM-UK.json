@@ -14,7 +14,7 @@
   "source_id": "AIUS-EXPANSION-I2S-TDM-UK",
   "artifact_kinds": ["price-observation"],
   "retention": "normalized-observation-only",
-  "status": "pending",
-  "evidence_ids": [],
-  "notes": "Authorized-distributor acquisition target only; P1C2 makes no stock, price, lead-time, or availability claim."
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-EXPANSION-I2S-TDM-UK"],
+  "notes": ""
 }

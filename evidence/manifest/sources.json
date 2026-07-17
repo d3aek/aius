@@ -1,5 +1,2725 @@
 [
   {
+    "artifacts": [],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-CLIFF-RX-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "ORJ5"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "4654-FCR684205R-ND"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "DigiKey"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "Cliff Electronic Components"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": "pieces",
+        "value": 1076
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": "pieces",
+        "value": 1
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": "GBP",
+        "value": 3.67
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": "pieces",
+        "value": 1
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": "pieces",
+        "value": 1
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components ORJ5.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T05:39:53Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [],
+    "authority": "CPC/Farnell",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-CLIFF-TX-UK",
+    "landing_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "OTJ5"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "CN20715"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "CPC/Farnell"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "Cliff Electronic Components"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://www.cliffuk.co.uk/distributors/UK.htm",
+        "unit": null,
+        "value": "https://www.cliffuk.co.uk/distributors/UK.htm"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": "pieces",
+        "value": 55
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": "pieces",
+        "value": 1
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": "GBP",
+        "value": 1.23
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": "pieces",
+        "value": 1
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": "pieces",
+        "value": 1
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components OTJ5.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T05:39:53Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 820303,
+        "final_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+        "media_type": "application/pdf",
+        "name": "DATASHEET_J403.pdf",
+        "note": "",
+        "path": "https://productfinder.pulseeng.com/products/datasheets/J403.pdf",
+        "retrieval_status": "current",
+        "sha256": "af3c35c67a15382616b7ea07fa5095118468b70bc8a6d6b0fdc6ccbd70bb69bd",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Pulse Electronics",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-ETHERNET-MAGJACK"
+    ],
+    "class": "golden",
+    "id": "AIUS-ETHERNET-MAGJACK-MFR",
+    "landing_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-ETHERNET-MAGJACK-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T05:39:53Z",
+        "source_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+        "unit": null,
+        "value": "J0011D21BNL"
+      }
+    ],
+    "purpose": "Satisfy REQ-ETHERNET-MAGJACK-MFR for ethernet-magjack.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T05:39:53Z",
+    "revision": "sha256:af3c35c67a15382616b7ea07fa5095118468b70bc8a6d6b0fdc6ccbd70bb69bd",
+    "status": "current",
+    "supersedes": null,
+    "title": "Pulse Electronics J0011D21BNL primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/pulse-electronics/J0011D21BNL/1036874",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.02.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-ETHERNET-MAGJACK"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-ETHERNET-MAGJACK-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/pulse-electronics/J0011D21BNL/1036874",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Pulse Electronics J0011D21BNL.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T05:59:20Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-GPIO-ADC-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-GPIO-ADC-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T05:59:20Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-GPIO-ADC-MFR for expansion-gpio-adc.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T05:59:20Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-GPIO-ADC-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "752-1769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "RS"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "J.S.T. (U.K.) Ltd"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 1885
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "GBP",
+        "value": 0.586
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T06:11:36Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-I2C-CONTROL-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-I2C-CONTROL-MFR for expansion-i2c-control.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:11:36Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-I2C-CONTROL-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "752-1769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "RS"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "J.S.T. (U.K.) Ltd"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 1885
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "GBP",
+        "value": 0.586
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T06:11:36Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 1119704,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+        "media_type": "application/pdf",
+        "name": "tca9517a.pdf",
+        "note": "",
+        "path": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+        "retrieval_status": "current",
+        "sha256": "ad2d7dc5994583006aa21b67ee9f18507a2698ad9366285dff56816f065790c6",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-ISOLATION"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-I2C-ISOLATOR-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-I2C-ISOLATOR-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:11:36Z",
+        "source_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+        "unit": null,
+        "value": "TCA9517ADGKR"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-I2C-ISOLATOR-MFR for expansion-i2c-isolator.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:11:36Z",
+    "revision": "sha256:ad2d7dc5994583006aa21b67ee9f18507a2698ad9366285dff56816f065790c6",
+    "status": "current",
+    "supersedes": null,
+    "title": "Texas Instruments TCA9517ADGKR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TCA9517ADGKR/5143217",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.04.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-ISOLATION"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-I2C-ISOLATOR-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TCA9517ADGKR/5143217",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TCA9517ADGKR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:33:17Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-I2S-TDM-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-I2S-TDM-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM05B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-I2S-TDM-MFR for expansion-i2s-tdm.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:33:17Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM05B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-I2S-TDM-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "BM05B-GHS-TBT"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "752-1778"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "RS"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521778"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521778"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "J.S.T. (U.K.) Ltd"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": "pieces",
+        "value": 2460
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": "GBP",
+        "value": 0.6
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T06:33:17Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM05B-GHS-TBT.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T06:33:17Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 2091645,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "media_type": "application/pdf",
+        "name": "tps2553.pdf",
+        "note": "",
+        "path": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "retrieval_status": "current",
+        "sha256": "56c62cd42a9b37ef3b680ab08b4921c3ec8cc997760ee403287dc4c1971852db",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-POWER-PROTECTION"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-POWER-PROTECTION-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-POWER-PROTECTION-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:49:42Z",
+        "source_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "unit": null,
+        "value": "TPS2553DBVR"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-POWER-PROTECTION-MFR for expansion-power-protection.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:49:42Z",
+    "revision": "sha256:56c62cd42a9b37ef3b680ab08b4921c3ec8cc997760ee403287dc4c1971852db",
+    "status": "current",
+    "supersedes": null,
+    "title": "Texas Instruments TPS2553DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.05.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-POWER-PROTECTION"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-POWER-PROTECTION-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPS2553DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:49:42Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-SPI-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-SPI-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-SPI-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T06:49:42Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM06B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-SPI-MFR for expansion-spi.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T06:49:42Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM06B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/1667367",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.06.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-SPI-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-SPI-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/1667367",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM06B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:05:33Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-UART-DEBUG-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-UART-DEBUG-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T07:05:33Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-UART-DEBUG-MFR for expansion-uart-debug.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:05:33Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.06.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-UART-DEBUG-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:05:33Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-USB-HOST-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-USB-HOST-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-USB-HOST-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-EXPANSION-USB-HOST-MFR for expansion-usb-host.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:26:11Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-USB-HOST-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-USB-HOST-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "BM04B-GHS-TBT"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "752-1769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "RS"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521769"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "J.S.T. (U.K.) Ltd"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 1885
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "GBP",
+        "value": 0.586
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T07:26:11Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 72119,
+        "final_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+        "media_type": "application/pdf",
+        "name": "uusbhaub6in_datasheet.pdf",
+        "note": "",
+        "path": "https://www.startech.com/en-us/cables/uusbhaub6in",
+        "retrieval_status": "current",
+        "sha256": "db45eb386e94b1e3346c396d4bfe69763ee745d76128404d693d69e92ee78577",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "StarTech.com",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-INTERNAL-CABLE"
+    ],
+    "class": "golden",
+    "id": "AIUS-INTERNAL-USB-CABLE-MFR",
+    "landing_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-INTERNAL-USB-CABLE-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T07:26:11Z",
+        "source_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+        "unit": null,
+        "value": "UUSBHAUB6IN"
+      }
+    ],
+    "purpose": "Satisfy REQ-INTERNAL-USB-CABLE-MFR for internal-usb-cable.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:26:11Z",
+    "revision": "sha256:db45eb386e94b1e3346c396d4bfe69763ee745d76128404d693d69e92ee78577",
+    "status": "current",
+    "supersedes": null,
+    "title": "StarTech.com UUSBHAUB6IN primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/usb-cables/1862845",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.08.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-INTERNAL-CABLE"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-INTERNAL-USB-CABLE-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/usb-cables/1862845",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for StarTech.com UUSBHAUB6IN.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:41:05Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 72455,
+        "final_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+        "media_type": "application/pdf",
+        "name": "TDS_151-30300_com.pdf",
+        "note": "",
+        "path": "https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300",
+        "retrieval_status": "current",
+        "sha256": "96e9b86e40ebe699139aa1ae81e9feb377de76f35649ec6ddb99596e463ac9c8",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 214584,
+        "final_url": "https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300",
+        "media_type": "text/html",
+        "name": "151-30300.html",
+        "note": "",
+        "path": "evidence/source-snapshots/AIUS-MECHANICAL-CABLE-RETAINER-MFR/151-30300.html",
+        "retrieval_status": "current",
+        "sha256": "a434dcad2355226e488d205df87b946fabb6ca35bc875913cf7db92b800c65b1",
+        "storage": "git"
+      }
+    ],
+    "authority": "HellermannTyton",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-MECHANICAL-CABLE-RETAINER"
+    ],
+    "class": "golden",
+    "id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+    "landing_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-MECHANICAL-CABLE-RETAINER-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T07:41:05Z",
+        "source_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+        "unit": null,
+        "value": "151-30300"
+      }
+    ],
+    "purpose": "Satisfy REQ-MECHANICAL-CABLE-RETAINER-MFR for mechanical-cable-retainer.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:41:05Z",
+    "revision": "sha256:3860d980460deeaa288f5016aa3e4c74ba259ce4b15271ef477672576dc3c107",
+    "status": "current",
+    "supersedes": null,
+    "title": "HellermannTyton 151-30300 primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/cable-tie-mounts/2181463",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.08.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-MECHANICAL-CABLE-RETAINER"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-MECHANICAL-CABLE-RETAINER-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/cable-tie-mounts/2181463",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for HellermannTyton 151-30300.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T07:41:05Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 146619,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": "application/pdf",
+        "name": "eGH.pdf",
+        "note": "",
+        "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "retrieval_status": "current",
+        "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-REMOTE-PROGRAM-RTC"
+    ],
+    "class": "golden",
+    "id": "AIUS-REMOTE-PROGRAM-RTC-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-REMOTE-PROGRAM-RTC-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "unit": null,
+        "value": "BM03B-GHS-TBT"
+      }
+    ],
+    "purpose": "Satisfy REQ-REMOTE-PROGRAM-RTC-MFR for remote-program-rtc.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:04:56Z",
+    "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+    "status": "current",
+    "supersedes": null,
+    "title": "JST BM03B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-REMOTE-PROGRAM-RTC"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-REMOTE-PROGRAM-RTC-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+    "observations": [
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field manufacturer_part_number from the approved supplemental request, realization, and live page.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "BM03B-GHS-TBT"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field supplier_sku from the approved supplemental request, realization, and live page.",
+        "key": "supplier_sku",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "752-1765"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field distributor from the approved supplemental request, realization, and live page.",
+        "key": "distributor",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "RS"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "product_initial_url",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521765"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field product_final_url from the approved supplemental request, realization, and live page.",
+        "key": "product_final_url",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "https://uk.rs-online.com/web/p/pcb-headers/7521765"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_authority from the approved supplemental request, realization, and live page.",
+        "key": "authorization_authority",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "J.S.T. (U.K.) Ltd"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_method from the approved supplemental request, realization, and live page.",
+        "key": "authorization_method",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "manufacturer-page"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_initial_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_initial_url",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field authorization_final_url from the approved supplemental request, realization, and live page.",
+        "key": "authorization_final_url",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://www.jst.co.uk/contact.php",
+        "unit": null,
+        "value": "https://www.jst.co.uk/contact.php"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_state from the approved supplemental request, realization, and live page.",
+        "key": "stock_state",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "in-stock"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field stock_quantity from the approved supplemental request, realization, and live page.",
+        "key": "stock_quantity",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": "pieces",
+        "value": 3385
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_quantity from the approved supplemental request, realization, and live page.",
+        "key": "price_quantity",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field unit_price_ex_vat from the approved supplemental request, realization, and live page.",
+        "key": "unit_price_ex_vat",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": "GBP",
+        "value": 0.548
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field currency from the approved supplemental request, realization, and live page.",
+        "key": "currency",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": "GBP"
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field minimum_order_quantity from the approved supplemental request, realization, and live page.",
+        "key": "minimum_order_quantity",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field order_multiple from the approved supplemental request, realization, and live page.",
+        "key": "order_multiple",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": "pieces",
+        "value": 5
+      },
+      {
+        "basis": "P1D uk-distributor-price-stock normalized field price_includes_vat from the approved supplemental request, realization, and live page.",
+        "key": "price_includes_vat",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "unit": null,
+        "value": false
+      }
+    ],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM03B-GHS-TBT.",
+    "redistribution_note": "Normalized observation only; no source page is retained.",
+    "retrieved_at": "2026-07-17T08:04:56Z",
+    "revision": "observed:2026-07-17",
+    "status": "current",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 3411562,
+        "final_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+        "media_type": "application/pdf",
+        "name": "sn74lvc1g3157.pdf",
+        "note": "",
+        "path": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+        "retrieval_status": "current",
+        "sha256": "2a39b0f597c54e20e3f595aad0f8be74b45cfd0062a593f792ad5ac8c34ab87d",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "golden",
+    "id": "AIUS-SPDIF-MUX-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-SPDIF-MUX-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T08:04:56Z",
+        "source_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+        "unit": null,
+        "value": "SN74LVC1G3157DBVR"
+      }
+    ],
+    "purpose": "Satisfy REQ-SPDIF-MUX-MFR for spdif-mux.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:04:56Z",
+    "revision": "sha256:2a39b0f597c54e20e3f595aad0f8be74b45cfd0062a593f792ad5ac8c34ab87d",
+    "status": "current",
+    "supersedes": null,
+    "title": "Texas Instruments SN74LVC1G3157DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G3157DBVR/562896",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.10.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-SPDIF-MUX-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G3157DBVR/562896",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments SN74LVC1G3157DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:22:46Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 2654721,
+        "final_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+        "media_type": "application/pdf",
+        "name": "sn74lvc1g125.pdf",
+        "note": "",
+        "path": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+        "retrieval_status": "current",
+        "sha256": "6cb9a94830cfaabca892d7698190eced47f3ee8a87d3aa2d26eeb87a56dad292",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "golden",
+    "id": "AIUS-SPDIF-TX-GATE-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-SPDIF-TX-GATE-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T08:22:46Z",
+        "source_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+        "unit": null,
+        "value": "SN74LVC1G125DBVR"
+      }
+    ],
+    "purpose": "Satisfy REQ-SPDIF-TX-GATE-MFR for spdif-tx-gate.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:22:46Z",
+    "revision": "sha256:6cb9a94830cfaabca892d7698190eced47f3ee8a87d3aa2d26eeb87a56dad292",
+    "status": "current",
+    "supersedes": null,
+    "title": "Texas Instruments SN74LVC1G125DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G125DBVR/385720",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.10.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-SPDIF-TX-GATE-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G125DBVR/385720",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments SN74LVC1G125DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:22:46Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 739222,
+        "final_url": "https://suddendocs.samtec.com/productspecs/mms-tmm.pdf",
+        "media_type": "application/pdf",
+        "name": "mms-tmm.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/tmm",
+        "retrieval_status": "current",
+        "sha256": "f7cc75253302d6b4d6a48469f1841f095a4ff2f4e2b9c9a12f9dd0796024ee10",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 515216,
+        "final_url": "https://suddendocs.samtec.com/catalog_english/mms.pdf",
+        "media_type": "application/pdf",
+        "name": "mms.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/mms",
+        "retrieval_status": "current",
+        "sha256": "8500181e673b139b5615b470c6338117194451c0e07a300ff76b7d592e06d531",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 103380,
+        "final_url": "https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-xx-xxx-mkt1.pdf",
+        "media_type": "application/pdf",
+        "name": "mms-1xx-01-xxx-xx-xxx-mkt1.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/mms-103-01-l-dv",
+        "retrieval_status": "current",
+        "sha256": "30bb4524f0d8cf2d6a6d172414c798c89f351345e588efa821b4bba32d7bd73c",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 80457,
+        "final_url": "https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-xx-xxx-mkt2.pdf",
+        "media_type": "application/pdf",
+        "name": "mms-1xx-01-xxx-xx-xxx-mkt2.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/mms-103-01-l-dv",
+        "retrieval_status": "current",
+        "sha256": "3f67945a664c612113060bd1c76b408ef9ee22900a056b394d9a9da424671bd5",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 143971,
+        "final_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+        "media_type": "text/html",
+        "name": "mms-103-01-l-dv.html",
+        "note": "",
+        "path": "evidence/source-snapshots/AIUS-TEENSY-ETHERNET-SOCKET-MFR/mms-103-01-l-dv.html",
+        "retrieval_status": "current",
+        "sha256": "e342a6d722f9371e8e3f02adab85bc6e3db37f0b7e7868e804305526bb340faa",
+        "storage": "git"
+      }
+    ],
+    "authority": "Samtec",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-ETHERNET-SOCKET"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+    "landing_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEENSY-ETHERNET-SOCKET-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T08:39:26Z",
+        "source_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+        "unit": null,
+        "value": "MMS-103-01-L-DV"
+      }
+    ],
+    "purpose": "Satisfy REQ-TEENSY-ETHERNET-SOCKET-MFR for teensy-ethernet-socket.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:39:26Z",
+    "revision": "sha256:c2f459b2cdf5e8fa8a081648bdbceaf2db0c7e920a2fedcf009066bb8c47e370",
+    "status": "current",
+    "supersedes": null,
+    "title": "Samtec MMS-103-01-L-DV primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.11.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-ETHERNET-SOCKET"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEENSY-ETHERNET-SOCKET-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Samtec MMS-103-01-L-DV.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:39:26Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 475879,
+        "final_url": "https://suddendocs.samtec.com/productspecs/tsw-sxx.pdf",
+        "media_type": "application/pdf",
+        "name": "tsw-sxx.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/tsw",
+        "retrieval_status": "current",
+        "sha256": "73a73af3cfa2808a4a0626349af3f4e41ae4f6c9ffab70b31166931a739e0d6f",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 471452,
+        "final_url": "https://suddendocs.samtec.com/catalog_english/ssw_th.pdf",
+        "media_type": "application/pdf",
+        "name": "ssw_th.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/ssw",
+        "retrieval_status": "current",
+        "sha256": "6d89f5c186a49e0f52f37d7bf7b5095081aff8f98e5ba18a85b0811caaf6f509",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 496878,
+        "final_url": "https://suddendocs.samtec.com/prints/ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf",
+        "media_type": "application/pdf",
+        "name": "ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/ssw-124-02-g-s",
+        "retrieval_status": "current",
+        "sha256": "281eaf2b78d84184cade49c841f7d5badb0f92cd2e012a50e764a45b53aeca0d",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 160440,
+        "final_url": "https://www.samtec.com/products/ssw-124-02-g-s",
+        "media_type": "text/html",
+        "name": "ssw-124-02-g-s.html",
+        "note": "",
+        "path": "evidence/source-snapshots/AIUS-TEENSY-SIDE-SOCKET-MFR/ssw-124-02-g-s.html",
+        "retrieval_status": "current",
+        "sha256": "cd74cb52a132c8f77e2b18cff2ddae5e680fc825a6dc70d7323c195404379f2b",
+        "storage": "git"
+      }
+    ],
+    "authority": "Samtec",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-SIDE-SOCKET"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEENSY-SIDE-SOCKET-MFR",
+    "landing_url": "https://www.samtec.com/products/ssw-124-02-g-s",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEENSY-SIDE-SOCKET-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T08:39:26Z",
+        "source_url": "https://www.samtec.com/products/ssw-124-02-g-s",
+        "unit": null,
+        "value": "SSW-124-02-G-S"
+      }
+    ],
+    "purpose": "Satisfy REQ-TEENSY-SIDE-SOCKET-MFR for teensy-side-socket.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T08:39:26Z",
+    "revision": "sha256:46fd5465e24fe5fdab0e123ca88db6cd6aadb70015388d0c24aa5b6b3ac59833",
+    "status": "current",
+    "supersedes": null,
+    "title": "Samtec SSW-124-02-G-S primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/samtec-inc/SSW-124-02-G-S/2190757",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.12.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-SIDE-SOCKET"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEENSY-SIDE-SOCKET-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/samtec-inc/SSW-124-02-G-S/2190757",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Samtec SSW-124-02-G-S.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:09:03Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 475879,
+        "final_url": "https://suddendocs.samtec.com/productspecs/tsw-sxx.pdf",
+        "media_type": "application/pdf",
+        "name": "tsw-sxx.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/tsw",
+        "retrieval_status": "current",
+        "sha256": "73a73af3cfa2808a4a0626349af3f4e41ae4f6c9ffab70b31166931a739e0d6f",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 471452,
+        "final_url": "https://suddendocs.samtec.com/catalog_english/ssw_th.pdf",
+        "media_type": "application/pdf",
+        "name": "ssw_th.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/ssw",
+        "retrieval_status": "current",
+        "sha256": "6d89f5c186a49e0f52f37d7bf7b5095081aff8f98e5ba18a85b0811caaf6f509",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 496878,
+        "final_url": "https://suddendocs.samtec.com/prints/ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf",
+        "media_type": "application/pdf",
+        "name": "ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf",
+        "note": "",
+        "path": "https://www.samtec.com/products/ssw-105-02-g-s",
+        "retrieval_status": "current",
+        "sha256": "281eaf2b78d84184cade49c841f7d5badb0f92cd2e012a50e764a45b53aeca0d",
+        "storage": "lfs"
+      },
+      {
+        "bytes": 160876,
+        "final_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+        "media_type": "text/html",
+        "name": "ssw-105-02-g-s.html",
+        "note": "",
+        "path": "evidence/source-snapshots/AIUS-TEENSY-USB-HOST-SOCKET-MFR/ssw-105-02-g-s.html",
+        "retrieval_status": "current",
+        "sha256": "5ffa9e534c196806a12b247ed27659f8625946ddfbf21d19697838fb23ab9750",
+        "storage": "git"
+      }
+    ],
+    "authority": "Samtec",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-USB-HOST-SOCKET"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+    "landing_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEENSY-USB-HOST-SOCKET-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T09:09:03Z",
+        "source_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+        "unit": null,
+        "value": "SSW-105-02-G-S"
+      }
+    ],
+    "purpose": "Satisfy REQ-TEENSY-USB-HOST-SOCKET-MFR for teensy-usb-host-socket.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:09:03Z",
+    "revision": "sha256:a422e98172fb3eee5c88c9ef5c86ba38da6a7f6fc8d4223057f164df7ade7c19",
+    "status": "current",
+    "supersedes": null,
+    "title": "Samtec SSW-105-02-G-S primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-sockets/2079127",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.12.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-USB-HOST-SOCKET"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEENSY-USB-HOST-SOCKET-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-sockets/2079127",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Samtec SSW-105-02-G-S.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:09:03Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 160096,
+        "final_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+        "media_type": "application/pdf",
+        "name": "TC2030-IDC-Datasheet-Rev-B.pdf",
+        "note": "",
+        "path": "https://www.tag-connect.com/product/tc2030-idc-6-pin-no-legs",
+        "retrieval_status": "current",
+        "sha256": "b1ca5d217f2e4c104ae08eb91a58befae3e0a7ab77b66330cf6991eede98cb1c",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Tag-Connect",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEST-FIXTURE-HEADER"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+    "landing_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEST-FIXTURE-HEADER-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T09:32:58Z",
+        "source_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+        "unit": null,
+        "value": "TC2030-IDC"
+      }
+    ],
+    "purpose": "Satisfy REQ-TEST-FIXTURE-HEADER-MFR for test-fixture-header.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:32:58Z",
+    "revision": "sha256:b1ca5d217f2e4c104ae08eb91a58befae3e0a7ab77b66330cf6991eede98cb1c",
+    "status": "current",
+    "supersedes": null,
+    "title": "Tag-Connect TC2030-IDC primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/tag-connect-llc/TC2030-IDC/4571121",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.13.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEST-FIXTURE-HEADER"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEST-FIXTURE-HEADER-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/tag-connect-llc/TC2030-IDC/4571121",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Tag-Connect TC2030-IDC.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:32:58Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.13.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "TE Connectivity",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-A-RECEPTACLE"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-A-RECEPTACLE-MFR",
+    "landing_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-USB-A-RECEPTACLE-MFR for usb-a-receptacle.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:32:58Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "TE Connectivity 292303-1 primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/usb-connectors/5298195",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.14.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-A-RECEPTACLE"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-A-RECEPTACLE-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/usb-connectors/5298195",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for TE Connectivity 292303-1.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:46:59Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://gct.co/connector/usb4105",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.14.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "GCT",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-C-RECEPTACLE"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-C-RECEPTACLE-MFR",
+    "landing_url": "https://gct.co/connector/usb4105",
+    "observations": [],
+    "purpose": "Satisfy REQ-USB-C-RECEPTACLE-MFR for usb-c-receptacle.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:46:59Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "GCT USB4105-GF-A primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.farnell.com/gct-global-connector-technology/usb4105-gf-a/usb-conn-2-0-type-c-rcpt-16pos/dp/3588205",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.14.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Farnell",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-C-RECEPTACLE"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-C-RECEPTACLE-UK",
+    "landing_url": "https://uk.farnell.com/gct-global-connector-technology/usb4105-gf-a/usb-conn-2-0-type-c-rcpt-16pos/dp/3588205",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for GCT USB4105-GF-A.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T09:46:59Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 2257950,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+        "media_type": "application/pdf",
+        "name": "tpd2eusb30a.pdf",
+        "note": "",
+        "path": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+        "retrieval_status": "current",
+        "sha256": "a2c0dd845043a5bbfe610f673879c29e38649544385dea51dbe0a4c49df39136",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-ESD"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-ESD-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-USB-ESD-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T10:06:21Z",
+        "source_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+        "unit": null,
+        "value": "TPD2EUSB30ADRTR"
+      }
+    ],
+    "purpose": "Satisfy REQ-USB-ESD-MFR for usb-esd.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T10:06:21Z",
+    "revision": "sha256:a2c0dd845043a5bbfe610f673879c29e38649544385dea51dbe0a4c49df39136",
+    "status": "current",
+    "supersedes": null,
+    "title": "Texas Instruments TPD2EUSB30ADRTR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPD2EUSB30ADRTR/2520830",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.15.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-ESD"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-ESD-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPD2EUSB30ADRTR/2520830",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPD2EUSB30ADRTR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T10:06:21Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": 2091645,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "media_type": "application/pdf",
+        "name": "tps2553.pdf",
+        "note": "",
+        "path": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "retrieval_status": "current",
+        "sha256": "56c62cd42a9b37ef3b680ab08b4921c3ec8cc997760ee403287dc4c1971852db",
+        "storage": "lfs"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-POWER-PROTECTION"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-POWER-PROTECTION-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+    "observations": [
+      {
+        "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-USB-POWER-PROTECTION-MFR.",
+        "key": "manufacturer_part_number",
+        "observed_at": "2026-07-17T10:06:21Z",
+        "source_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "unit": null,
+        "value": "TPS2553DBVR"
+      }
+    ],
+    "purpose": "Satisfy REQ-USB-POWER-PROTECTION-MFR for usb-power-protection.",
+    "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T10:06:21Z",
+    "revision": "sha256:56c62cd42a9b37ef3b680ab08b4921c3ec8cc997760ee403287dc4c1971852db",
+    "status": "current",
+    "supersedes": null,
+    "title": "Texas Instruments TPS2553DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Automated acquisition from the fixed realization URL failed during P1D1.16.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-POWER-PROTECTION"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-POWER-PROTECTION-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPS2553DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-17T10:23:46Z",
+    "revision": "unavailable:2026-07-17",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
     "artifacts": [
       {
         "bytes": null,

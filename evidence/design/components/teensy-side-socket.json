@@ -15,6 +15,6 @@
   "manufacturer_request_id": "REQ-TEENSY-SIDE-SOCKET-MFR",
   "availability_request_id": "REQ-TEENSY-SIDE-SOCKET-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }

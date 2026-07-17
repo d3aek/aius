@@ -14,6 +14,6 @@
   "manufacturer_request_id": "REQ-TEENSY-ETHERNET-SOCKET-MFR",
   "availability_request_id": "REQ-TEENSY-ETHERNET-SOCKET-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }

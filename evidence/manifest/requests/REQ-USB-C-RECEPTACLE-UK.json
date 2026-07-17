@@ -15,7 +15,7 @@
   "source_id": "AIUS-USB-C-RECEPTACLE-UK",
   "artifact_kinds": ["price-observation"],
   "retention": "normalized-observation-only",
-  "status": "pending",
+  "status": "unavailable",
   "evidence_ids": [],
-  "notes": "Authorized-distributor acquisition target only; P1C2 makes no stock, price, lead-time, or availability claim."
+  "notes": "Automated acquisition from the fixed realization URL failed during P1D1.14."
 }

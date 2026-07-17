@@ -15,7 +15,7 @@
   "source_id": "AIUS-USB-A-RECEPTACLE-MFR",
   "artifact_kinds": ["datasheet"],
   "retention": "archive",
-  "status": "pending",
+  "status": "unavailable",
   "evidence_ids": [],
-  "notes": "P1D must retain and validate the primary manufacturer datasheet before this candidate can advance."
+  "notes": "Automated acquisition from the fixed realization URL failed during P1D1.13."
 }

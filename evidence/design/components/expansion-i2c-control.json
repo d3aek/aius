@@ -14,6 +14,6 @@
   "manufacturer_request_id": "REQ-EXPANSION-I2C-CONTROL-MFR",
   "availability_request_id": "REQ-EXPANSION-I2C-CONTROL-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }

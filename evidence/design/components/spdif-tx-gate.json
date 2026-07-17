@@ -16,6 +16,6 @@
   "manufacturer_request_id": "REQ-SPDIF-TX-GATE-MFR",
   "availability_request_id": "REQ-SPDIF-TX-GATE-UK",
   "generic_policy": null,
-  "status": "candidate-pending-evidence",
+  "status": "selected",
   "notes": ""
 }
