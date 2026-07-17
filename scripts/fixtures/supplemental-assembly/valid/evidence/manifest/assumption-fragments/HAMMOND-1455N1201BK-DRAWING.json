@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source HAMMOND-1455N1201BK-DRAWING is unavailable for: enclosure dimensions; board envelope",
+  "claim_scope": ["enclosure dimensions", "board envelope"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-HAMMOND-1455N1201BK-DRAWING",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["HAMMOND-1455N1201BK-DRAWING"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-EXPANSION-I2C-CONTROL-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "expansion-i2c-control",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+  ],
+  "authority_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+  "selected_manufacturer": "JST",
+  "selected_mpn": "BM04B-GHS-TBT",
+  "source_id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-EXPANSION-I2C-CONTROL-MFR."
+}

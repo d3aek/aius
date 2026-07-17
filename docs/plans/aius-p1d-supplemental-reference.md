@@ -740,6 +740,15 @@ successful and failing `--check` path performs no replacement. Renderer tests
 lock every output class and both ordering modes. Existing seed and P1D0b suites
 remain unchanged and green.
 
+P1D0c completed on 2026-07-17. The assembler closes the exact 48-request and
+22-component lifecycle, selects literal manufacturer clone rows, and constructs
+the 73 sorted outputs behind the existing aggregate transaction. The final
+clean-room delivery audit returned `PASS` after adding all-current-capable
+lifecycle coverage and production-format fidelity for every persistent fixture
+input. Forty-five supplemental, 32 seed, 34 evidence-validator, 87 P1-validator,
+33 realization and 15 evidence-policy tests were green, together with the
+standalone production fixture check and scoped diff checks.
+
 ### P1D0d — Evidence collection validation
 
 The evidence validator learns the separate supplemental directories, exact

@@ -1,0 +1,19 @@
+{
+  "claim": "Supplemental request REQ-CLIFF-TX-UK source AIUS-CLIFF-TX-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-OPTICAL-BANDWIDTH; REQT-OPTICAL-LOGIC-COMPATIBILITY",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+  ],
+  "consequence": "The selected component remains provisional until REQ-CLIFF-TX-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-CLIFF-TX-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-CLIFF-TX-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

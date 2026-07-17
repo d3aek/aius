@@ -1,0 +1,21 @@
+{
+  "block": "spdif-tx-gate",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "REQT-OPTICAL-PROCESSED-DEFAULT"
+  ],
+  "manufacturer": "Texas Instruments",
+  "mpn": "SN74LVC1G125DBVR",
+  "alternatives": [],
+  "selection_rationale": "Provisional single-MPN candidate chosen under the P1C2 primary-source ranking; all assigned verification gates remain open.",
+  "authority_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+  "manufacturer_request_id": "REQ-SPDIF-TX-GATE-MFR",
+  "availability_request_id": "REQ-SPDIF-TX-GATE-UK",
+  "generic_policy": null,
+  "status": "candidate-evidence-unavailable",
+  "notes": ""
+}

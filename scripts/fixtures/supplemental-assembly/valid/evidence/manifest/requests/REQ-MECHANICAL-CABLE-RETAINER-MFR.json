@@ -1,0 +1,21 @@
+{
+  "request_id": "REQ-MECHANICAL-CABLE-RETAINER-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "mechanical-cable-retainer",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-MECHANICAL-CABLE-RETAINER"
+  ],
+  "authority_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+  "selected_manufacturer": "HellermannTyton",
+  "selected_mpn": "151-30300",
+  "source_id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+  "artifact_kinds": ["datasheet", "product-page"],
+  "retention": "archive",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-MECHANICAL-CABLE-RETAINER-MFR."
+}

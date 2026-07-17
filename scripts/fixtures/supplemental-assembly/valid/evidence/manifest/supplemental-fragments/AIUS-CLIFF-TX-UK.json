@@ -1,0 +1,35 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-CLIFF-TX-UK.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "CPC/Farnell",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+  ],
+  "class": "dynamic",
+  "id": "AIUS-CLIFF-TX-UK",
+  "landing_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+  "observations": [],
+  "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components OTJ5.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "normalized UK distributor price and stock observation"
+}

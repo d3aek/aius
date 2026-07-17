@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.pjrc.com/store/teensy41.html",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture seed unavailable.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "PJRC",
+  "claim_scope": ["Teensy 4.1 board limits", "Teensy 4.1 power", "Teensy 4.1 dimensions", "Teensy 4.1 interfaces"],
+  "class": "golden",
+  "id": "PJRC-TEENSY41-PAGE",
+  "landing_url": "https://www.pjrc.com/store/teensy41.html",
+  "observations": [],
+  "purpose": "Establish board limits, power, dimensions, interfaces, and official document links.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "product page"
+}

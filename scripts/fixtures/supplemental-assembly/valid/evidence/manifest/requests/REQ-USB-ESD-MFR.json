@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-USB-ESD-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "usb-esd",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-ESD"
+  ],
+  "authority_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+  "selected_manufacturer": "Texas Instruments",
+  "selected_mpn": "TPD2EUSB30ADRTR",
+  "source_id": "AIUS-USB-ESD-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-USB-ESD-MFR."
+}

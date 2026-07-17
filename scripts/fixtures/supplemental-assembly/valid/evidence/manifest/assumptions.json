@@ -1,0 +1,689 @@
+[
+  {
+    "claim": "Supplemental request REQ-CLIFF-RX-UK source AIUS-CLIFF-RX-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-OPTICAL-BANDWIDTH; REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "consequence": "The selected component remains provisional until REQ-CLIFF-RX-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-CLIFF-RX-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-CLIFF-RX-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-CLIFF-TX-UK source AIUS-CLIFF-TX-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-OPTICAL-BANDWIDTH; REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "consequence": "The selected component remains provisional until REQ-CLIFF-TX-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-CLIFF-TX-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-CLIFF-TX-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-ETHERNET-MAGJACK-UK source AIUS-ETHERNET-MAGJACK-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-ETHERNET-MAGJACK",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-ETHERNET-MAGJACK"
+    ],
+    "consequence": "The selected component remains provisional until REQ-ETHERNET-MAGJACK-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-ETHERNET-MAGJACK-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-ETHERNET-MAGJACK-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-GPIO-ADC-UK source AIUS-EXPANSION-GPIO-ADC-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-GPIO-ADC-CONNECTOR",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-GPIO-ADC-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-GPIO-ADC-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-GPIO-ADC-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-I2C-CONTROL-UK source AIUS-EXPANSION-I2C-CONTROL-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-I2C-CONTROL-CONNECTOR",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-I2C-CONTROL-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-I2C-CONTROL-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-I2C-CONTROL-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-I2C-ISOLATOR-UK source AIUS-EXPANSION-I2C-ISOLATOR-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-I2C-ISOLATION",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-ISOLATION"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-I2C-ISOLATOR-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-I2C-ISOLATOR-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-I2C-ISOLATOR-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-I2S-TDM-UK source AIUS-EXPANSION-I2S-TDM-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-I2S-TDM-CONNECTOR",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-I2S-TDM-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-I2S-TDM-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-I2S-TDM-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-POWER-PROTECTION-UK source AIUS-EXPANSION-POWER-PROTECTION-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-POWER-PROTECTION",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-POWER-PROTECTION"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-POWER-PROTECTION-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-POWER-PROTECTION-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-POWER-PROTECTION-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-SPI-UK source AIUS-EXPANSION-SPI-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-SPI-CONNECTOR",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-SPI-CONNECTOR"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-SPI-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-SPI-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-SPI-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-UART-DEBUG-UK source AIUS-EXPANSION-UART-DEBUG-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-UART-DEBUG-CONNECTOR",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-UART-DEBUG-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-UART-DEBUG-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-UART-DEBUG-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-EXPANSION-USB-HOST-UK source AIUS-EXPANSION-USB-HOST-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-USB-HOST-CONNECTOR",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-USB-HOST-CONNECTOR"
+    ],
+    "consequence": "The selected component remains provisional until REQ-EXPANSION-USB-HOST-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-USB-HOST-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-EXPANSION-USB-HOST-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-INTERNAL-USB-CABLE-UK source AIUS-INTERNAL-USB-CABLE-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-USB-INTERNAL-CABLE",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-INTERNAL-CABLE"
+    ],
+    "consequence": "The selected component remains provisional until REQ-INTERNAL-USB-CABLE-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-INTERNAL-USB-CABLE-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-INTERNAL-USB-CABLE-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-MECHANICAL-CABLE-RETAINER-UK source AIUS-MECHANICAL-CABLE-RETAINER-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-MECHANICAL-CABLE-RETAINER",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-MECHANICAL-CABLE-RETAINER"
+    ],
+    "consequence": "The selected component remains provisional until REQ-MECHANICAL-CABLE-RETAINER-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-MECHANICAL-CABLE-RETAINER-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-MECHANICAL-CABLE-RETAINER-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-REMOTE-PROGRAM-RTC-UK source AIUS-REMOTE-PROGRAM-RTC-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-REMOTE-PROGRAM-RTC",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-REMOTE-PROGRAM-RTC"
+    ],
+    "consequence": "The selected component remains provisional until REQ-REMOTE-PROGRAM-RTC-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-REMOTE-PROGRAM-RTC-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-REMOTE-PROGRAM-RTC-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-SPDIF-MUX-UK source AIUS-SPDIF-MUX-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-OPTICAL-BANDWIDTH; REQT-OPTICAL-LOGIC-COMPATIBILITY; REQT-OPTICAL-PROCESSED-DEFAULT",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "consequence": "The selected component remains provisional until REQ-SPDIF-MUX-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-SPDIF-MUX-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-SPDIF-MUX-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-SPDIF-TX-GATE-UK source AIUS-SPDIF-TX-GATE-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-OPTICAL-BANDWIDTH; REQT-OPTICAL-LOGIC-COMPATIBILITY; REQT-OPTICAL-PROCESSED-DEFAULT",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "consequence": "The selected component remains provisional until REQ-SPDIF-TX-GATE-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-SPDIF-TX-GATE-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-SPDIF-TX-GATE-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-TEENSY-ETHERNET-SOCKET-UK source AIUS-TEENSY-ETHERNET-SOCKET-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-TEENSY-ETHERNET-SOCKET",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-ETHERNET-SOCKET"
+    ],
+    "consequence": "The selected component remains provisional until REQ-TEENSY-ETHERNET-SOCKET-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-TEENSY-ETHERNET-SOCKET-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-TEENSY-ETHERNET-SOCKET-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-TEENSY-SIDE-SOCKET-UK source AIUS-TEENSY-SIDE-SOCKET-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-TEENSY-SIDE-SOCKET",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-SIDE-SOCKET"
+    ],
+    "consequence": "The selected component remains provisional until REQ-TEENSY-SIDE-SOCKET-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-TEENSY-SIDE-SOCKET-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-TEENSY-SIDE-SOCKET-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-TEENSY-USB-HOST-SOCKET-UK source AIUS-TEENSY-USB-HOST-SOCKET-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-TEENSY-USB-HOST-SOCKET",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-USB-HOST-SOCKET"
+    ],
+    "consequence": "The selected component remains provisional until REQ-TEENSY-USB-HOST-SOCKET-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-TEENSY-USB-HOST-SOCKET-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-TEENSY-USB-HOST-SOCKET-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-TEST-FIXTURE-HEADER-UK source AIUS-TEST-FIXTURE-HEADER-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-TEST-FIXTURE-HEADER",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEST-FIXTURE-HEADER"
+    ],
+    "consequence": "The selected component remains provisional until REQ-TEST-FIXTURE-HEADER-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-TEST-FIXTURE-HEADER-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-TEST-FIXTURE-HEADER-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-USB-A-RECEPTACLE-UK source AIUS-USB-A-RECEPTACLE-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-USB-A-RECEPTACLE",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-A-RECEPTACLE"
+    ],
+    "consequence": "The selected component remains provisional until REQ-USB-A-RECEPTACLE-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-USB-A-RECEPTACLE-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-USB-A-RECEPTACLE-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-USB-C-RECEPTACLE-UK source AIUS-USB-C-RECEPTACLE-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-USB-C-RECEPTACLE",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-C-RECEPTACLE"
+    ],
+    "consequence": "The selected component remains provisional until REQ-USB-C-RECEPTACLE-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-USB-C-RECEPTACLE-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-USB-C-RECEPTACLE-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-USB-ESD-UK source AIUS-USB-ESD-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-USB-ESD",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-ESD"
+    ],
+    "consequence": "The selected component remains provisional until REQ-USB-ESD-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-USB-ESD-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-USB-ESD-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Supplemental request REQ-USB-POWER-PROTECTION-UK source AIUS-USB-POWER-PROTECTION-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-USB-POWER-PROTECTION",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-POWER-PROTECTION"
+    ],
+    "consequence": "The selected component remains provisional until REQ-USB-POWER-PROTECTION-UK is replaced with current evidence.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-AIUS-USB-POWER-PROTECTION-UK",
+    "owner": "P1D",
+    "resolution": null,
+    "source_ids": ["AIUS-USB-POWER-PROTECTION-UK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable supplemental evidence"
+  },
+  {
+    "claim": "Seed source BOE-GBP-DAILY-FX is unavailable for: GBP currency conversion",
+    "claim_scope": ["GBP currency conversion"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-BOE-GBP-DAILY-FX",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["BOE-GBP-DAILY-FX"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source CLIFF-ORJ5 is unavailable for: optical receiver circuit; optical receiver electrical limits",
+    "claim_scope": ["optical receiver circuit", "optical receiver electrical limits"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-CLIFF-ORJ5",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["CLIFF-ORJ5"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source CLIFF-OTJ5 is unavailable for: optical transmitter circuit; optical transmitter electrical limits",
+    "claim_scope": ["optical transmitter circuit", "optical transmitter electrical limits"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-CLIFF-OTJ5",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["CLIFF-OTJ5"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source CPC-CLIFF-OTJ5 is unavailable for: optical transmitter price; optical transmitter stock",
+    "claim_scope": ["optical transmitter price", "optical transmitter stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-CPC-CLIFF-OTJ5",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["CPC-CLIFF-OTJ5"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source DIGIKEY-CLIFF-ORJ5 is unavailable for: optical receiver price; optical receiver stock",
+    "claim_scope": ["optical receiver price", "optical receiver stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-DIGIKEY-CLIFF-ORJ5",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["DIGIKEY-CLIFF-ORJ5"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source DIGIKEY-TEENSY41 is unavailable for: Teensy 4.1 module price; Teensy 4.1 module stock",
+    "claim_scope": ["Teensy 4.1 module price", "Teensy 4.1 module stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-DIGIKEY-TEENSY41",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["DIGIKEY-TEENSY41"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source FARNELL-1455N1201BK is unavailable for: enclosure price; enclosure stock",
+    "claim_scope": ["enclosure price", "enclosure stock"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-FARNELL-1455N1201BK",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["FARNELL-1455N1201BK"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source HAMMOND-1455N1201BK-DRAWING is unavailable for: enclosure dimensions; board envelope",
+    "claim_scope": ["enclosure dimensions", "board envelope"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-HAMMOND-1455N1201BK-DRAWING",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["HAMMOND-1455N1201BK-DRAWING"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source HAMMOND-1455N1201BK-STEP is unavailable for: enclosure mechanical fit",
+    "claim_scope": ["enclosure mechanical fit"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-HAMMOND-1455N1201BK-STEP",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["HAMMOND-1455N1201BK-STEP"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PCBWAY-2L-100 is unavailable for: two-layer PCB fabrication price",
+    "claim_scope": ["two-layer PCB fabrication price"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PCBWAY-2L-100",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PCBWAY-2L-100"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PCBWAY-4L-100 is unavailable for: four-layer PCB fabrication price",
+    "claim_scope": ["four-layer PCB fabrication price"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PCBWAY-4L-100",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PCBWAY-4L-100"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-ETHERNET-KIT is unavailable for: native Ethernet connector circuit; Ethernet kit assembly",
+    "claim_scope": ["native Ethernet connector circuit", "Ethernet kit assembly"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-ETHERNET-KIT",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-ETHERNET-KIT"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-IMXRT1060-CEC is unavailable for: i.MX RT1060 electrical limits",
+    "claim_scope": ["i.MX RT1060 electrical limits"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-IMXRT1060-CEC",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-IMXRT1060-CEC"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-IMXRT1060-RM is unavailable for: S/PDIF peripheral capability; DMA capability; clock topology; memory capability",
+    "claim_scope": ["S/PDIF peripheral capability", "DMA capability", "clock topology", "memory capability"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-IMXRT1060-RM",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-IMXRT1060-RM"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-SPDIF-RX-SOURCE is unavailable for: S/PDIF receive implementation comparison; receive DMA implementation comparison",
+    "claim_scope": ["S/PDIF receive implementation comparison", "receive DMA implementation comparison"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-SPDIF-RX-SOURCE",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-SPDIF-RX-SOURCE"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-SPDIF-TX-SOURCE is unavailable for: S/PDIF transmit implementation comparison; transmit DMA implementation comparison",
+    "claim_scope": ["S/PDIF transmit implementation comparison", "transmit DMA implementation comparison"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-SPDIF-TX-SOURCE",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-SPDIF-TX-SOURCE"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-TEENSY41-PAGE is unavailable for: Teensy 4.1 board limits; Teensy 4.1 power; Teensy 4.1 dimensions; Teensy 4.1 interfaces",
+    "claim_scope": ["Teensy 4.1 board limits", "Teensy 4.1 power", "Teensy 4.1 dimensions", "Teensy 4.1 interfaces"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-TEENSY41-PAGE",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-TEENSY41-PAGE"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-TEENSY41-PINOUT is unavailable for: Teensy 4.1 pin allocation; Teensy 4.1 peripheral allocation",
+    "claim_scope": ["Teensy 4.1 pin allocation", "Teensy 4.1 peripheral allocation"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-TEENSY41-PINOUT",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-TEENSY41-PINOUT"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PJRC-TEENSY41-SCHEMATIC is unavailable for: Teensy 4.1 circuit topology",
+    "claim_scope": ["Teensy 4.1 circuit topology"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PJRC-TEENSY41-SCHEMATIC",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PJRC-TEENSY41-SCHEMATIC"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source PLATFORMIO-TEENSY41 is unavailable for: PlatformIO target configuration; PlatformIO upload configuration",
+    "claim_scope": ["PlatformIO target configuration", "PlatformIO upload configuration"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-PLATFORMIO-TEENSY41",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["PLATFORMIO-TEENSY41"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source VKSDR-TOSLINK-KICAD is unavailable for: optical footprint comparison; optical placement comparison",
+    "claim_scope": ["optical footprint comparison", "optical placement comparison"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-VKSDR-TOSLINK-KICAD",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["VKSDR-TOSLINK-KICAD"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  },
+  {
+    "claim": "Seed source VKSDR-TOSLINK-SCHEMATICS is unavailable for: Cliff optical support circuit comparison",
+    "claim_scope": ["Cliff optical support circuit comparison"],
+    "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+    "evidence_ids": [],
+    "id": "ASM-UNAVAILABLE-VKSDR-TOSLINK-SCHEMATICS",
+    "owner": "P1B",
+    "resolution": null,
+    "source_ids": ["VKSDR-TOSLINK-SCHEMATICS"],
+    "status": "open",
+    "validation_gate": "Replace unavailable seed evidence"
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "claim": "Supplemental request REQ-MECHANICAL-CABLE-RETAINER-UK source AIUS-MECHANICAL-CABLE-RETAINER-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-MECHANICAL-CABLE-RETAINER",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-MECHANICAL-CABLE-RETAINER"
+  ],
+  "consequence": "The selected component remains provisional until REQ-MECHANICAL-CABLE-RETAINER-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-MECHANICAL-CABLE-RETAINER-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-MECHANICAL-CABLE-RETAINER-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

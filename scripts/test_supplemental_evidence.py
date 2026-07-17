@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixture-proven P1D0b supplemental evidence tests."""
+"""Fixture-proven P1D0b and P1D0c supplemental evidence tests."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
+from unittest import mock
 
 import seed_evidence
 
@@ -22,6 +23,10 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 AIUS_ROOT = SCRIPT_ROOT.parent
 MANIFEST_ROOT = AIUS_ROOT / "evidence" / "manifest"
 ORACLE_FIXTURE_ROOT = SCRIPT_ROOT / "fixtures" / "supplemental-realization"
+ASSEMBLY_FIXTURE_ROOT = SCRIPT_ROOT / "fixtures" / "supplemental-assembly" / "valid"
+SEED_FRAGMENT_ROOT = MANIFEST_ROOT / "fragments"
+REQUEST_ROOT = MANIFEST_ROOT / "requests"
+DESIGN_ROOT = AIUS_ROOT / "evidence" / "design"
 TIMESTAMP = "2026-07-16T12:34:56Z"
 MULTI_REQUEST = "REQ-TEENSY-ETHERNET-SOCKET-MFR"
 SINGLE_REQUEST = "REQ-ETHERNET-MAGJACK-MFR"
@@ -327,6 +332,177 @@ class Fixture:
                 seed_evidence._test_formatter,
             )
         )
+
+
+class AssemblyFixture(Fixture):
+    def __init__(self) -> None:
+        super().__init__()
+        for name in (
+            "seed-sources.json",
+            "seed-realization-schema.json",
+            "seed-realization.json",
+        ):
+            shutil.copy2(MANIFEST_ROOT / name, self.manifest / name)
+        seed_realizations = _load(self.manifest / "seed-realization.json")
+        seeds = _load(self.manifest / "seed-sources.json")
+        assert isinstance(seed_realizations, list) and isinstance(seeds, list)
+        for realization in seed_realizations:
+            assert isinstance(realization, dict)
+            realization["failure_policy"] = "assumption"
+        (self.manifest / "seed-realization.json").write_text(
+            json.dumps(seed_realizations, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        seed_fragments = self.manifest / "fragments"
+        seed_assumptions = self.manifest / "assumption-fragments"
+        seed_fragments.mkdir()
+        seed_assumptions.mkdir()
+        for seed in seeds:
+            assert isinstance(seed, dict)
+            source_id = str(seed["id"])
+            source = seed_evidence._source_base(
+                seed,
+                revision="unavailable:2026-07-16",
+                retrieved_at=TIMESTAMP,
+                status="unavailable",
+                redistribution_note=seed_evidence.UNAVAILABLE_NOTE,
+                artifacts=[
+                    {
+                        "name": "unavailable",
+                        "final_url": seed["landing_url"],
+                        "storage": "external-reference",
+                        "path": None,
+                        "sha256": None,
+                        "bytes": None,
+                        "media_type": None,
+                        "retrieval_status": "unavailable",
+                        "note": "Fixture seed unavailable.",
+                    }
+                ],
+                observations=[],
+            )
+            self.write_rendered(seed_fragments / f"{source_id}.json", source)
+            self.write_rendered(
+                seed_assumptions / f"{source_id}.json",
+                seed_evidence._expected_assumption(seed),
+            )
+
+        requests = self.manifest / "requests"
+        shutil.copytree(REQUEST_ROOT, requests)
+        design = self.root / "evidence" / "design"
+        design.mkdir()
+        for name in ("component-schema.json", "selection-policy.json"):
+            shutil.copy2(DESIGN_ROOT / name, design / name)
+        shutil.copytree(DESIGN_ROOT / "components", design / "components")
+        shutil.copy2(
+            DESIGN_ROOT / "provisional-components.csv",
+            design / "provisional-components.csv",
+        )
+        self.populate_supplemental()
+
+    def run_assemble(
+        self,
+        mode: str,
+        *,
+        replace=os.replace,
+        formatter: seed_evidence.Formatter = seed_evidence._test_formatter,
+    ) -> tuple[int, str, str]:
+        return self.run(["assemble", mode], replace=replace, formatter=formatter)
+
+    def populate_supplemental(
+        self,
+        *,
+        current_manufacturer_ids: set[str] | None = None,
+        current_uk_ids: set[str] | None = None,
+    ) -> None:
+        current_manufacturer = (
+            set() if current_manufacturer_ids is None else current_manufacturer_ids
+        )
+        current_uk = set() if current_uk_ids is None else current_uk_ids
+        fragments = self.manifest / "supplemental-fragments"
+        assumptions = self.manifest / "supplemental-assumption-fragments"
+        if fragments.exists():
+            shutil.rmtree(fragments)
+        if assumptions.exists():
+            shutil.rmtree(assumptions)
+        fragments.mkdir()
+        assumptions.mkdir()
+        for row in self.rows:
+            request_id = str(row["request_id"])
+            request = self.request(request_id)
+            source_id = str(request["source_id"])
+            if request_id in current_manufacturer:
+                artifacts: list[dict[str, object]] = []
+                for artifact in row["artifacts"]:
+                    assert isinstance(artifact, dict)
+                    payload = _payload(artifact)
+                    target = self.root / str(artifact["path"])
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(payload)
+                    artifacts.append(
+                        {
+                            "name": artifact["name"],
+                            "final_url": artifact["expected_final_url"],
+                            "storage": artifact["storage"],
+                            "path": artifact["path"],
+                            "sha256": hashlib.sha256(payload).hexdigest(),
+                            "bytes": len(payload),
+                            "media_type": artifact["media_type"],
+                            "retrieval_status": "current",
+                            "note": "",
+                        }
+                    )
+                source = seed_evidence._supplemental_current_manufacturer_source(
+                    request,
+                    row,
+                    artifacts,
+                    TIMESTAMP,
+                )
+            elif request_id in current_uk:
+                values = self.valid_values(request_id)
+                source = seed_evidence._supplemental_current_uk_source(
+                    request,
+                    row,
+                    self.profile(),
+                    values,
+                    PRODUCT_FINAL_URL,
+                    AUTHORIZATION_FINAL_URL,
+                    TIMESTAMP,
+                )
+            else:
+                source = seed_evidence._supplemental_unavailable_source(
+                    request,
+                    row,
+                    f"Fixture unavailable {request_id}.",
+                    TIMESTAMP,
+                )
+                if row["failure_policy"] == "assumption":
+                    self.write_rendered(
+                        assumptions / f"{source_id}.json",
+                        seed_evidence._expected_supplemental_assumption(request),
+                    )
+            self.write_rendered(fragments / f"{source_id}.json", source)
+
+    def expected_output_relatives(self) -> tuple[str, ...]:
+        affected_request_ids = sorted(
+            str(row["request_id"])
+            for row in self.rows
+        )
+        affected_components = sorted(
+            str(self.request(request_id)["family"])
+            for request_id in affected_request_ids
+            if self.request(request_id)["request_kind"] == "manufacturer-evidence"
+        )
+        values = {
+            "evidence/manifest/sources.json",
+            "evidence/manifest/assumptions.json",
+            "evidence/manifest/supplemental-clone-boundary.json",
+            "evidence/manifest/supplemental-requests.json",
+            "evidence/design/provisional-components.csv",
+            *(f"evidence/manifest/requests/{request_id}.json" for request_id in affected_request_ids),
+            *(f"evidence/design/components/{family}.json" for family in affected_components),
+        }
+        return tuple(sorted(values))
 
 
 class SupplementalEvidenceTests(unittest.TestCase):
@@ -1609,6 +1785,698 @@ class SupplementalEvidenceTests(unittest.TestCase):
             seed_evidence._production_formatter,
         )
         self.assertEqual(path.read_bytes(), expected)
+
+
+class SupplementalAssemblyTests(unittest.TestCase):
+    fixture: AssemblyFixture
+
+    def setUp(self) -> None:
+        self.fixture = AssemblyFixture()
+
+    def tearDown(self) -> None:
+        self.fixture.close()
+
+    def assert_assembly_failure(
+        self,
+        fixture: AssemblyFixture,
+        message: str,
+        *,
+        mode: str = "--write",
+    ) -> None:
+        replacements: list[tuple[str, str]] = []
+
+        def replace(source: str, target: str) -> None:
+            replacements.append((source, target))
+            os.replace(source, target)
+
+        status, stdout, stderr = fixture.run_assemble(mode, replace=replace)
+        self.assertEqual(status, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn(message, stderr)
+        self.assertEqual(replacements, [])
+        self.assertEqual(list(fixture.root.rglob("*.tmp")), [])
+
+    def test_renderer_default_and_recursive_order_preserving_modes(self) -> None:
+        value = {
+            "z": {"second": 2, "first": 1},
+            "a": [{"right": True, "left": False}],
+        }
+        alphabetical = seed_evidence._render_json(
+            self.fixture.root,
+            value,
+            seed_evidence._test_formatter,
+        )
+        preserved = seed_evidence._render_json(
+            self.fixture.root,
+            value,
+            seed_evidence._test_formatter,
+            preserve_object_order=True,
+        )
+        self.assertEqual(list(json.loads(alphabetical)), ["a", "z"])
+        preserved_value = json.loads(preserved)
+        self.assertEqual(list(preserved_value), ["z", "a"])
+        self.assertEqual(list(preserved_value["z"]), ["second", "first"])
+        self.assertEqual(list(preserved_value["a"][0]), ["right", "left"])
+
+        def reordering_formatter(root: Path, payload: bytes) -> bytes:
+            del root
+            decoded = json.loads(payload)
+            return (json.dumps(decoded, sort_keys=True, indent=2) + "\n").encode()
+
+        with self.assertRaisesRegex(
+            seed_evidence.ControlError,
+            "changed object-key order",
+        ):
+            seed_evidence._render_json(
+                self.fixture.root,
+                value,
+                reordering_formatter,
+                preserve_object_order=True,
+            )
+
+    def test_valid_assembly_writes_exact_outputs_and_unavailable_lifecycle(self) -> None:
+        expected_relatives = self.fixture.expected_output_relatives()
+        self.assertEqual(len(expected_relatives), 73)
+        preserved_request_bytes = {
+            request_id: (
+                self.fixture.manifest / "requests" / f"{request_id}.json"
+            ).read_bytes()
+            for request_id in seed_evidence.PRESERVED_REQUEST_IDS
+        }
+        preserved_component_bytes = {
+            family: (
+                self.fixture.root / "evidence" / "design" / "components" / f"{family}.json"
+            ).read_bytes()
+            for family in ("cliff-rx", "cliff-tx")
+        }
+        before_components = {
+            path.stem: _load(path)
+            for path in (
+                self.fixture.root / "evidence" / "design" / "components"
+            ).glob("*.json")
+        }
+        replaced: list[str] = []
+
+        def replace(source: str, target: str) -> None:
+            replaced.append(
+                (Path(target).relative_to(self.fixture.root)).as_posix()
+            )
+            os.replace(source, target)
+
+        result = self.fixture.run_assemble("--write", replace=replace)
+        self.assertEqual(result, (0, "", ""), result[2])
+        self.assertEqual(tuple(replaced), expected_relatives)
+        requests = _load(self.fixture.manifest / "supplemental-requests.json")
+        self.assertIsInstance(requests, dict)
+        requests_by_id = {
+            request["request_id"]: request for request in requests["requests"]
+        }
+        for request_id, request in requests_by_id.items():
+            if request_id in seed_evidence.PRESERVED_REQUEST_IDS:
+                self.assertEqual(request["status"], "satisfied")
+                self.assertEqual(request["evidence_ids"], [request["source_id"]])
+                self.assertEqual(
+                    (
+                        self.fixture.manifest / "requests" / f"{request_id}.json"
+                    ).read_bytes(),
+                    preserved_request_bytes[request_id],
+                )
+                continue
+            self.assertEqual(request["status"], "unavailable")
+            self.assertEqual(request["evidence_ids"], [])
+            source = _load(
+                self.fixture.manifest
+                / "supplemental-fragments"
+                / f"{request['source_id']}.json"
+            )
+            self.assertEqual(request["notes"], source["artifacts"][0]["note"])
+            self.assertEqual(
+                _load(
+                    self.fixture.manifest / "requests" / f"{request_id}.json"
+                ),
+                request,
+            )
+
+        for family, before in before_components.items():
+            path = (
+                self.fixture.root
+                / "evidence"
+                / "design"
+                / "components"
+                / f"{family}.json"
+            )
+            after = _load(path)
+            if before["manufacturer_request_id"] in seed_evidence.PRESERVED_REQUEST_IDS:
+                self.assertEqual(path.read_bytes(), preserved_component_bytes[family])
+            elif before["manufacturer_request_id"] is not None:
+                self.assertEqual(after["status"], "candidate-evidence-unavailable")
+                self.assertEqual(
+                    {key: value for key, value in after.items() if key != "status"},
+                    {key: value for key, value in before.items() if key != "status"},
+                )
+            else:
+                self.assertEqual(after, before)
+        clone_rows = _load(
+            self.fixture.manifest / "supplemental-clone-boundary.json"
+        )
+        expected_clone_rows = sorted(
+            [
+                row["clone_boundary"]["unavailable"]
+                for row in self.fixture.rows
+                if row["clone_boundary"] is not None
+            ],
+            key=lambda row: row["source_id"],
+        )
+        self.assertEqual(clone_rows, expected_clone_rows)
+        self.assertEqual(self.fixture.run_assemble("--check"), (0, "", ""))
+
+    def test_all_lifecycle_branches_clone_rows_and_uk_nonmutation(self) -> None:
+        manufacturer_ids = [
+            str(row["request_id"])
+            for row in self.fixture.rows
+            if row["clone_boundary"] is not None
+        ]
+        confirmed_uk_ids = [
+            str(row["request_id"])
+            for row in self.fixture.rows
+            if row["observation_profile"] is not None
+            and row["authorization"]["status"] == "confirmed"
+        ]
+        current_manufacturer = set(manufacturer_ids[::2])
+        current_uk = set(confirmed_uk_ids[::2])
+        self.fixture.populate_supplemental(
+            current_manufacturer_ids=current_manufacturer,
+            current_uk_ids=current_uk,
+        )
+        result = self.fixture.run_assemble("--write")
+        self.assertEqual(result, (0, "", ""), result[2])
+        aggregate = _load(self.fixture.manifest / "supplemental-requests.json")
+        requests = {row["request_id"]: row for row in aggregate["requests"]}
+        for row in self.fixture.rows:
+            request_id = str(row["request_id"])
+            request = requests[request_id]
+            current = request_id in current_manufacturer or request_id in current_uk
+            self.assertEqual(request["status"], "satisfied" if current else "unavailable")
+            self.assertEqual(
+                request["evidence_ids"],
+                [request["source_id"]] if current else [],
+            )
+            component = _load(
+                self.fixture.root
+                / "evidence"
+                / "design"
+                / "components"
+                / f"{request['family']}.json"
+            )
+            manufacturer_id = str(component["manufacturer_request_id"])
+            self.assertEqual(
+                component["status"],
+                "selected"
+                if manufacturer_id in current_manufacturer
+                or manufacturer_id in seed_evidence.PRESERVED_REQUEST_IDS
+                else "candidate-evidence-unavailable",
+            )
+        clone_rows = _load(
+            self.fixture.manifest / "supplemental-clone-boundary.json"
+        )
+        expected = []
+        for row in self.fixture.rows:
+            if row["clone_boundary"] is not None:
+                outcome = (
+                    "current"
+                    if row["request_id"] in current_manufacturer
+                    else "unavailable"
+                )
+                expected.append(row["clone_boundary"][outcome])
+        self.assertEqual(
+            clone_rows,
+            sorted(expected, key=lambda row: row["source_id"]),
+        )
+
+    def test_all_current_eligible_rows_project_exact_current_lifecycle(self) -> None:
+        manufacturer_ids = {
+            str(row["request_id"])
+            for row in self.fixture.rows
+            if row["clone_boundary"] is not None
+        }
+        confirmed_uk_ids = {
+            str(row["request_id"])
+            for row in self.fixture.rows
+            if row["observation_profile"] is not None
+            and row["authorization"]["status"] == "confirmed"
+        }
+        unresolved_uk_ids = {
+            str(row["request_id"])
+            for row in self.fixture.rows
+            if row["observation_profile"] is not None
+            and row["authorization"]["status"] == "unresolved"
+        }
+        self.assertEqual(len(manufacturer_ids), 22)
+        self.assertEqual(len(confirmed_uk_ids), 22)
+        self.assertEqual(unresolved_uk_ids, set(UNRESOLVED_REQUESTS))
+        before_requests = {
+            path.stem: _load(path)
+            for path in (self.fixture.manifest / "requests").glob("*.json")
+        }
+        before_request_bytes = {
+            request_id: (
+                self.fixture.manifest / "requests" / f"{request_id}.json"
+            ).read_bytes()
+            for request_id in seed_evidence.PRESERVED_REQUEST_IDS
+        }
+        component_root = (
+            self.fixture.root / "evidence" / "design" / "components"
+        )
+        before_components = {
+            path.stem: _load(path) for path in component_root.glob("*.json")
+        }
+        preserved_component_bytes = {
+            family: (component_root / f"{family}.json").read_bytes()
+            for family in ("cliff-rx", "cliff-tx")
+        }
+
+        self.fixture.populate_supplemental(
+            current_manufacturer_ids=manufacturer_ids,
+            current_uk_ids=confirmed_uk_ids,
+        )
+        result = self.fixture.run_assemble("--write")
+        self.assertEqual(result, (0, "", ""), result[2])
+
+        aggregate = _load(self.fixture.manifest / "supplemental-requests.json")
+        requests = {row["request_id"]: row for row in aggregate["requests"]}
+        for request_id, before in before_requests.items():
+            after = requests[request_id]
+            self.assertEqual(tuple(after), tuple(before))
+            if request_id in seed_evidence.PRESERVED_REQUEST_IDS:
+                self.assertEqual(after["status"], "satisfied")
+                self.assertEqual(after["evidence_ids"], [after["source_id"]])
+                self.assertEqual(after["notes"], "")
+                self.assertEqual(
+                    (
+                        self.fixture.manifest / "requests" / f"{request_id}.json"
+                    ).read_bytes(),
+                    before_request_bytes[request_id],
+                )
+                continue
+            self.assertEqual(
+                {key: value for key, value in after.items() if key not in {"status", "evidence_ids", "notes"}},
+                {key: value for key, value in before.items() if key not in {"status", "evidence_ids", "notes"}},
+            )
+            if request_id in unresolved_uk_ids:
+                source = self.fixture.fragment(request_id)
+                self.assertEqual(after["status"], "unavailable")
+                self.assertEqual(after["evidence_ids"], [])
+                self.assertEqual(after["notes"], source["artifacts"][0]["note"])
+            else:
+                self.assertIn(request_id, manufacturer_ids | confirmed_uk_ids)
+                self.assertEqual(after["status"], "satisfied")
+                self.assertEqual(after["evidence_ids"], [after["source_id"]])
+                self.assertEqual(after["notes"], "")
+            self.assertEqual(
+                _load(
+                    self.fixture.manifest / "requests" / f"{request_id}.json"
+                ),
+                after,
+            )
+
+        affected_components = 0
+        for family, before in before_components.items():
+            path = component_root / f"{family}.json"
+            after = _load(path)
+            manufacturer_request_id = before["manufacturer_request_id"]
+            if manufacturer_request_id in manufacturer_ids:
+                affected_components += 1
+                self.assertEqual(after["status"], "selected")
+                self.assertEqual(tuple(after), tuple(before))
+                self.assertEqual(
+                    {key: value for key, value in after.items() if key != "status"},
+                    {key: value for key, value in before.items() if key != "status"},
+                )
+            elif manufacturer_request_id in seed_evidence.PRESERVED_REQUEST_IDS:
+                self.assertEqual(path.read_bytes(), preserved_component_bytes[family])
+            else:
+                self.assertEqual(after, before)
+        self.assertEqual(affected_components, 22)
+        for request_id in unresolved_uk_ids:
+            family = str(requests[request_id]["family"])
+            self.assertEqual(_load(component_root / f"{family}.json")["status"], "selected")
+
+        clone_rows = _load(
+            self.fixture.manifest / "supplemental-clone-boundary.json"
+        )
+        expected_clone_rows = sorted(
+            [
+                row["clone_boundary"]["current"]
+                for row in self.fixture.rows
+                if row["clone_boundary"] is not None
+            ],
+            key=lambda row: row["source_id"],
+        )
+        self.assertEqual(clone_rows, expected_clone_rows)
+        self.assertEqual(len(clone_rows), 22)
+
+    def test_fragment_boundaries_reject_missing_extra_unsafe_and_colliding(self) -> None:
+        def first(path: Path) -> Path:
+            return sorted(path.glob("*.json"))[0]
+
+        cases: list[tuple[str, str, object]] = []
+        for boundary, relative in (
+            ("seed", "evidence/manifest/fragments"),
+            ("supplemental", "evidence/manifest/supplemental-fragments"),
+            (
+                "assumption",
+                "evidence/manifest/supplemental-assumption-fragments",
+            ),
+        ):
+            cases.extend(
+                (
+                    (f"{boundary}-missing", "IDs differ", (relative, "missing")),
+                    (f"{boundary}-extra", "IDs differ", (relative, "extra")),
+                    (
+                        f"{boundary}-unsafe",
+                        "unexpected or unsafe",
+                        (relative, "unsafe"),
+                    ),
+                    (f"{boundary}-collision", "ERROR:", (relative, "collision")),
+                )
+            )
+        for name, message, operation in cases:
+            fixture = AssemblyFixture()
+            try:
+                relative, kind = operation
+                directory = fixture.root / str(relative)
+                target = first(directory)
+                if kind == "missing":
+                    target.unlink()
+                elif kind == "extra":
+                    shutil.copy2(target, directory / "EXTRA-FIXTURE.json")
+                elif kind == "unsafe":
+                    outside = Path(fixture.temporary.name) / f"outside-{name}.json"
+                    outside.write_text("{}\n", encoding="utf-8")
+                    target.unlink()
+                    target.symlink_to(outside)
+                else:
+                    value = _load(target)
+                    if boundary == "seed":
+                        value["id"] = str(fixture.rows[0]["source_id"])
+                    elif boundary == "supplemental":
+                        seed = _load(fixture.manifest / "seed-sources.json")[0]
+                        value["id"] = seed["id"]
+                    else:
+                        seed_assumption = _load(
+                            first(fixture.manifest / "assumption-fragments")
+                        )
+                        value["id"] = seed_assumption["id"]
+                    fixture.write_rendered(target, value)
+                status, stdout, stderr = fixture.run_assemble("--write")
+                with self.subTest(case=name):
+                    self.assertEqual(status, 1, stderr)
+                    self.assertEqual(stdout, "")
+                    self.assertIn(message, stderr)
+                    self.assertEqual(list(fixture.root.rglob("*.tmp")), [])
+            finally:
+                fixture.close()
+
+    def test_record_sets_joins_assumptions_and_collisions_fail_before_publish(self) -> None:
+        mutations = (
+            "request-missing",
+            "request-extra",
+            "request-duplicate",
+            "component-missing",
+            "component-extra",
+            "component-duplicate",
+            "assumption-current",
+            "assumption-duplicate-id",
+            "request-join",
+        )
+        for name in mutations:
+            fixture = AssemblyFixture()
+            try:
+                requests = fixture.manifest / "requests"
+                components = fixture.root / "evidence" / "design" / "components"
+                assumptions = (
+                    fixture.manifest / "supplemental-assumption-fragments"
+                )
+                if name == "request-missing":
+                    sorted(requests.glob("*.json"))[0].unlink()
+                elif name == "request-extra":
+                    shutil.copy2(
+                        sorted(requests.glob("*.json"))[0],
+                        requests / "REQ-EXTRA-FIXTURE-MFR.json",
+                    )
+                elif name == "request-duplicate":
+                    paths = sorted(requests.glob("*.json"))[:2]
+                    duplicate = _load(paths[0])
+                    fixture.write_rendered(paths[1], duplicate)
+                elif name == "component-missing":
+                    sorted(components.glob("*.json"))[0].unlink()
+                elif name == "component-extra":
+                    shutil.copy2(
+                        sorted(components.glob("*.json"))[0],
+                        components / "extra-fixture.json",
+                    )
+                elif name == "component-duplicate":
+                    paths = sorted(components.glob("*.json"))[:2]
+                    duplicate = _load(paths[0])
+                    fixture.write_rendered(paths[1], duplicate)
+                elif name == "assumption-current":
+                    fixture.populate_supplemental(current_uk_ids={UK_REQUEST})
+                    fixture.write_rendered(
+                        fixture.assumption_path(UK_REQUEST),
+                        seed_evidence._expected_supplemental_assumption(
+                            fixture.request(UK_REQUEST)
+                        ),
+                    )
+                elif name == "assumption-duplicate-id":
+                    paths = sorted(assumptions.glob("*.json"))[:2]
+                    second = _load(paths[1])
+                    second["id"] = _load(paths[0])["id"]
+                    fixture.write_rendered(paths[1], second)
+                else:
+                    path = requests / f"{SINGLE_REQUEST}.json"
+                    request = _load(path)
+                    request["family"] = "cliff-rx"
+                    fixture.write_rendered(path, request)
+                    aggregate = _load(
+                        fixture.manifest / "supplemental-requests.json"
+                    )
+                    aggregate_request = next(
+                        row
+                        for row in aggregate["requests"]
+                        if row["request_id"] == SINGLE_REQUEST
+                    )
+                    aggregate_request["family"] = "cliff-rx"
+                    (fixture.manifest / "supplemental-requests.json").write_bytes(
+                        seed_evidence.render_p1.render_supplemental_requests(
+                            aggregate["requests"]
+                        )
+                    )
+                status, stdout, stderr = fixture.run_assemble("--write")
+                with self.subTest(case=name):
+                    self.assertEqual(status, 1, stderr)
+                    self.assertEqual(stdout, "")
+                    self.assertTrue(stderr.startswith("ERROR:"))
+                    self.assertEqual(list(fixture.root.rglob("*.tmp")), [])
+            finally:
+                fixture.close()
+
+    def test_prepublication_failures_and_every_check_path_never_replace(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def replace(source: str, target: str) -> None:
+            calls.append((source, target))
+            raise AssertionError("check attempted replacement")
+
+        self.assertEqual(self.fixture.run_assemble("--write"), (0, "", ""))
+        self.assertEqual(
+            self.fixture.run_assemble("--check", replace=replace),
+            (0, "", ""),
+        )
+        self.assertEqual(calls, [])
+        (self.fixture.manifest / "sources.json").write_bytes(b"drift\n")
+        status, _, stderr = self.fixture.run_assemble("--check", replace=replace)
+        self.assertEqual(status, 1, stderr)
+        self.assertIn("aggregate drift", stderr)
+        self.assertEqual(calls, [])
+
+        component_path = (
+            self.fixture.root
+            / "evidence"
+            / "design"
+            / "components"
+            / "ethernet-magjack.json"
+        )
+        component = _load(component_path)
+        component["mpn"] = "WRONG"
+        self.fixture.write_rendered(component_path, component)
+        status, _, stderr = self.fixture.run_assemble("--check", replace=replace)
+        self.assertEqual(status, 1, stderr)
+        self.assertIn("join differs", stderr)
+        self.assertEqual(calls, [])
+
+        fresh = AssemblyFixture()
+        try:
+            formatter_calls = 0
+
+            def formatter(root: Path, payload: bytes) -> bytes:
+                nonlocal formatter_calls
+                formatter_calls += 1
+                if formatter_calls == 10:
+                    raise seed_evidence.ControlError(
+                        "injected prepublication renderer failure"
+                    )
+                return seed_evidence._test_formatter(root, payload)
+
+            status, _, stderr = fresh.run_assemble(
+                "--write",
+                replace=replace,
+                formatter=formatter,
+            )
+            self.assertEqual(status, 2, stderr)
+            self.assertIn("prepublication renderer failure", stderr)
+            self.assertEqual(calls, [])
+            self.assertEqual(list(fresh.root.rglob("*.tmp")), [])
+            formatter_calls = 0
+            status, _, stderr = fresh.run_assemble(
+                "--check",
+                replace=replace,
+                formatter=formatter,
+            )
+            self.assertEqual(status, 2, stderr)
+            self.assertIn("prepublication renderer failure", stderr)
+            self.assertEqual(calls, [])
+        finally:
+            fresh.close()
+
+    def test_each_of_73_replacement_failures_restores_mixed_prior_states(self) -> None:
+        output_relatives = self.fixture.expected_output_relatives()
+        for relative in (
+            "evidence/manifest/sources.json",
+            "evidence/manifest/assumptions.json",
+            "evidence/manifest/supplemental-clone-boundary.json",
+            "evidence/design/provisional-components.csv",
+        ):
+            (self.fixture.root / relative).unlink(missing_ok=True)
+        prior = {
+            relative: (
+                (self.fixture.root / relative).read_bytes()
+                if (self.fixture.root / relative).exists()
+                else None
+            )
+            for relative in output_relatives
+        }
+        self.assertGreater(sum(value is None for value in prior.values()), 1)
+        self.assertGreater(sum(value is not None for value in prior.values()), 1)
+        for failure_index in range(1, 74):
+            calls = 0
+            fsynced: list[Path] = []
+
+            def replace(source: str, target: str) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == failure_index:
+                    raise OSError(f"injected replacement failure {failure_index}")
+                os.replace(source, target)
+
+            with mock.patch.object(
+                seed_evidence,
+                "_fsync_directory",
+                side_effect=lambda path: fsynced.append(path),
+            ):
+                status, stdout, stderr = self.fixture.run_assemble(
+                    "--write",
+                    replace=replace,
+                )
+            with self.subTest(failure_index=failure_index):
+                self.assertEqual(status, 1, stderr)
+                self.assertEqual(stdout, "")
+                self.assertIn("aggregate publish failed", stderr)
+                self.assertGreaterEqual(calls, failure_index)
+                self.assertTrue(fsynced)
+                expected_fsync_directories = {
+                    (self.fixture.root / relative).parent
+                    for relative in output_relatives[:failure_index]
+                }
+                self.assertTrue(
+                    expected_fsync_directories <= set(fsynced),
+                    (expected_fsync_directories, set(fsynced)),
+                )
+                for relative, old_payload in prior.items():
+                    path = self.fixture.root / relative
+                    if old_payload is None:
+                        self.assertFalse(path.exists(), relative)
+                    else:
+                        self.assertEqual(path.read_bytes(), old_payload, relative)
+                self.assertEqual(list(self.fixture.root.rglob("*.tmp")), [])
+
+    def test_persistent_fixture_input_json_has_exact_production_formatting(self) -> None:
+        alphabetical_inputs = [
+            path
+            for relative in (
+                "evidence/manifest/fragments",
+                "evidence/manifest/assumption-fragments",
+                "evidence/manifest/supplemental-fragments",
+                "evidence/manifest/supplemental-assumption-fragments",
+            )
+            for path in sorted((ASSEMBLY_FIXTURE_ROOT / relative).glob("*.json"))
+        ]
+        ordered_inputs = [
+            path
+            for relative in (
+                "evidence/manifest/requests",
+                "evidence/design/components",
+            )
+            for path in sorted((ASSEMBLY_FIXTURE_ROOT / relative).glob("*.json"))
+        ]
+        ordered_inputs.append(
+            ASSEMBLY_FIXTURE_ROOT / "evidence/manifest/seed-realization.json"
+        )
+        self.assertEqual(len(alphabetical_inputs), 114)
+        self.assertEqual(len(ordered_inputs), 78)
+        for path in alphabetical_inputs:
+            value = seed_evidence._decode_json(path.read_bytes(), str(path))
+            expected = seed_evidence._render_json(
+                AIUS_ROOT,
+                value,
+                seed_evidence._production_formatter,
+            )
+            with self.subTest(mode="alphabetical", path=path):
+                self.assertEqual(path.read_bytes(), expected)
+        for path in ordered_inputs:
+            value = seed_evidence._decode_json(path.read_bytes(), str(path))
+            expected = seed_evidence._render_json(
+                AIUS_ROOT,
+                value,
+                seed_evidence._production_formatter,
+                preserve_object_order=True,
+            )
+            with self.subTest(mode="order-preserving", path=path):
+                self.assertEqual(path.read_bytes(), expected)
+        request_aggregate_path = (
+            ASSEMBLY_FIXTURE_ROOT
+            / "evidence/manifest/supplemental-requests.json"
+        )
+        request_aggregate = _load(request_aggregate_path)
+        self.assertEqual(
+            request_aggregate_path.read_bytes(),
+            seed_evidence.render_p1.render_supplemental_requests(
+                request_aggregate["requests"]
+            ),
+        )
+
+    def test_persistent_valid_fixture_is_complete_when_present(self) -> None:
+        if not ASSEMBLY_FIXTURE_ROOT.exists():
+            self.skipTest("persistent P1D0c fixture is generated at delivery")
+        result = seed_evidence.run(
+            [
+                "--root",
+                os.fspath(ASSEMBLY_FIXTURE_ROOT),
+                "supplemental",
+                "assemble",
+                "--check",
+            ]
+        )
+        self.assertEqual(result, 0)
 
 
 if __name__ == "__main__":

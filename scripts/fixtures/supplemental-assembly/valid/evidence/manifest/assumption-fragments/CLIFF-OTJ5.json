@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source CLIFF-OTJ5 is unavailable for: optical transmitter circuit; optical transmitter electrical limits",
+  "claim_scope": ["optical transmitter circuit", "optical transmitter electrical limits"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-CLIFF-OTJ5",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["CLIFF-OTJ5"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

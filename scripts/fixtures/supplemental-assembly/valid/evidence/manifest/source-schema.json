@@ -1,0 +1,487 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.net/schemas/aius/source-schema.json",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$",
+      "format": "uri"
+    },
+    "nullableHttpsUrl": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "format": "date-time"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "projectRelativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.{1,2}(?:/|$))\\S+$"
+    },
+    "sourceClass": {
+      "enum": ["golden", "comparative", "independently-derived", "dynamic"]
+    },
+    "sourceStatus": {
+      "enum": ["current", "superseded", "unavailable"]
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["name", "final_url", "storage", "path", "sha256", "bytes", "media_type", "retrieval_status", "note"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "final_url": {
+          "$ref": "#/$defs/nullableHttpsUrl"
+        },
+        "storage": {
+          "enum": ["lfs", "git", "external-reference"]
+        },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/projectRelativePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bytes": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retrieval_status": {
+          "enum": ["current", "superseded", "unavailable"]
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "storage": {
+                "enum": ["lfs", "git"]
+              },
+              "retrieval_status": {
+                "const": "current"
+              }
+            },
+            "required": ["storage", "retrieval_status"]
+          },
+          "then": {
+            "properties": {
+              "final_url": {
+                "$ref": "#/$defs/httpsUrl"
+              },
+              "path": {
+                "$ref": "#/$defs/projectRelativePath"
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "media_type": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "storage": {
+                "const": "external-reference"
+              }
+            },
+            "required": ["storage"]
+          },
+          "then": {
+            "properties": {
+              "path": {
+                "const": null
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "sha256": {
+                    "const": null
+                  },
+                  "bytes": {
+                    "const": null
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "sha256": {
+                    "$ref": "#/$defs/sha256"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "retrieval_status": {
+                "const": "unavailable"
+              }
+            },
+            "required": ["retrieval_status"]
+          },
+          "then": {
+            "properties": {
+              "storage": {
+                "const": "external-reference"
+              },
+              "path": {
+                "const": null
+              },
+              "sha256": {
+                "const": null
+              },
+              "bytes": {
+                "const": null
+              },
+              "media_type": {
+                "const": null
+              },
+              "note": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "observation": {
+      "type": "object",
+      "required": ["key", "value", "unit", "basis", "observed_at", "source_url"],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "source_url": {
+          "$ref": "#/$defs/httpsUrl"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourceRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "class",
+        "title",
+        "authority",
+        "revision",
+        "purpose",
+        "claim_scope",
+        "landing_url",
+        "retrieved_at",
+        "status",
+        "supersedes",
+        "redistribution_note",
+        "artifacts",
+        "observations"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "class": {
+          "$ref": "#/$defs/sourceClass"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "revision": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "purpose": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "claim_scope": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "landing_url": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "retrieved_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "status": {
+          "$ref": "#/$defs/sourceStatus"
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "redistribution_note": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observation"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "artifacts": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "properties": {
+            "observations": {
+              "minItems": 1
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["superseded", "unavailable"]
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "supersedes": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "superseded"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "artifacts": {
+                "contains": {
+                  "properties": {
+                    "retrieval_status": {
+                      "const": "current"
+                    }
+                  },
+                  "required": ["retrieval_status"]
+                },
+                "minContains": 0,
+                "maxContains": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unavailable"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "artifacts": {
+                "contains": {
+                  "properties": {
+                    "retrieval_status": {
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": ["retrieval_status"]
+                },
+                "minContains": 1
+              },
+              "observations": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourceCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceRecord"
+      },
+      "uniqueItems": true
+    },
+    "seedRecord": {
+      "type": "object",
+      "required": ["id", "class", "authority", "landing_url", "required_object", "purpose", "claim_scope", "required"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "class": {
+          "$ref": "#/$defs/sourceClass"
+        },
+        "authority": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "landing_url": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "required_object": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "purpose": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "claim_scope": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "seedCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/seedRecord"
+      },
+      "minItems": 22,
+      "maxItems": 22,
+      "uniqueItems": true
+    }
+  },
+  "$ref": "#/$defs/sourceCollection"
+}

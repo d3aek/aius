@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-TEENSY-ETHERNET-SOCKET-UK",
+  "request_kind": "uk-availability",
+  "family": "teensy-ethernet-socket",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-ETHERNET-SOCKET"
+  ],
+  "authority_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+  "selected_manufacturer": "Samtec",
+  "selected_mpn": "MMS-103-01-L-DV",
+  "source_id": "AIUS-TEENSY-ETHERNET-SOCKET-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-TEENSY-ETHERNET-SOCKET-UK."
+}

@@ -1,0 +1,2162 @@
+[
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-CLIFF-RX-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-CLIFF-RX-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components ORJ5.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-CLIFF-TX-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "CPC/Farnell",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-CLIFF-TX-UK",
+    "landing_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Cliff Electronic Components OTJ5.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-ETHERNET-MAGJACK-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Pulse Electronics",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-ETHERNET-MAGJACK"
+    ],
+    "class": "golden",
+    "id": "AIUS-ETHERNET-MAGJACK-MFR",
+    "landing_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+    "observations": [],
+    "purpose": "Satisfy REQ-ETHERNET-MAGJACK-MFR for ethernet-magjack.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Pulse Electronics J0011D21BNL primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/pulse-electronics/J0011D21BNL/1036874",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-ETHERNET-MAGJACK-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-ETHERNET-MAGJACK"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-ETHERNET-MAGJACK-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/pulse-electronics/J0011D21BNL/1036874",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Pulse Electronics J0011D21BNL.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-GPIO-ADC-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-GPIO-ADC-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-GPIO-ADC-MFR for expansion-gpio-adc.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-GPIO-ADC-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-GPIO-ADC-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-I2C-CONTROL-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-I2C-CONTROL-MFR for expansion-i2c-control.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-I2C-CONTROL-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-I2C-CONTROL-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-I2C-ISOLATOR-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-ISOLATION"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-I2C-ISOLATOR-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-I2C-ISOLATOR-MFR for expansion-i2c-isolator.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Texas Instruments TCA9517ADGKR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TCA9517ADGKR/5143217",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-I2C-ISOLATOR-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2C-ISOLATION"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-I2C-ISOLATOR-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TCA9517ADGKR/5143217",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TCA9517ADGKR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-I2S-TDM-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-I2S-TDM-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-I2S-TDM-MFR for expansion-i2s-tdm.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM05B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-I2S-TDM-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-I2S-TDM-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521778",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM05B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-POWER-PROTECTION-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-POWER-PROTECTION"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-POWER-PROTECTION-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-POWER-PROTECTION-MFR for expansion-power-protection.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Texas Instruments TPS2553DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-POWER-PROTECTION-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-POWER-PROTECTION"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-POWER-PROTECTION-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPS2553DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-SPI-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-SPI-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-SPI-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-SPI-MFR for expansion-spi.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM06B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/1667367",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-SPI-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-SPI-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-SPI-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/1667367",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM06B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-UART-DEBUG-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-UART-DEBUG-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-UART-DEBUG-MFR for expansion-uart-debug.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-UART-DEBUG-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-UART-DEBUG-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-USB-HOST-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-USB-HOST-CONNECTOR"
+    ],
+    "class": "golden",
+    "id": "AIUS-EXPANSION-USB-HOST-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-EXPANSION-USB-HOST-MFR for expansion-usb-host.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-EXPANSION-USB-HOST-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-EXPANSION-USB-HOST-CONNECTOR"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-EXPANSION-USB-HOST-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-INTERNAL-USB-CABLE-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "StarTech.com",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-INTERNAL-CABLE"
+    ],
+    "class": "golden",
+    "id": "AIUS-INTERNAL-USB-CABLE-MFR",
+    "landing_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-INTERNAL-USB-CABLE-MFR for internal-usb-cable.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "StarTech.com UUSBHAUB6IN primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/usb-cables/1862845",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-INTERNAL-USB-CABLE-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-INTERNAL-CABLE"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-INTERNAL-USB-CABLE-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/usb-cables/1862845",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for StarTech.com UUSBHAUB6IN.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-MECHANICAL-CABLE-RETAINER-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "HellermannTyton",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-MECHANICAL-CABLE-RETAINER"
+    ],
+    "class": "golden",
+    "id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+    "landing_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-MECHANICAL-CABLE-RETAINER-MFR for mechanical-cable-retainer.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "HellermannTyton 151-30300 primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/cable-tie-mounts/2181463",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-MECHANICAL-CABLE-RETAINER-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-MECHANICAL-CABLE-RETAINER"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-MECHANICAL-CABLE-RETAINER-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/cable-tie-mounts/2181463",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for HellermannTyton 151-30300.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-REMOTE-PROGRAM-RTC-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "JST",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-REMOTE-PROGRAM-RTC"
+    ],
+    "class": "golden",
+    "id": "AIUS-REMOTE-PROGRAM-RTC-MFR",
+    "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-REMOTE-PROGRAM-RTC-MFR for remote-program-rtc.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "JST BM03B-GHS-TBT primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-REMOTE-PROGRAM-RTC-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-REMOTE-PROGRAM-RTC"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-REMOTE-PROGRAM-RTC-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521765",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for JST BM03B-GHS-TBT.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-SPDIF-MUX-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "golden",
+    "id": "AIUS-SPDIF-MUX-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-SPDIF-MUX-MFR for spdif-mux.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Texas Instruments SN74LVC1G3157DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G3157DBVR/562896",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-SPDIF-MUX-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-SPDIF-MUX-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G3157DBVR/562896",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments SN74LVC1G3157DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-SPDIF-TX-GATE-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "golden",
+    "id": "AIUS-SPDIF-TX-GATE-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-SPDIF-TX-GATE-MFR for spdif-tx-gate.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Texas Instruments SN74LVC1G125DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G125DBVR/385720",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-SPDIF-TX-GATE-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-OPTICAL-BANDWIDTH",
+      "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+      "REQT-OPTICAL-PROCESSED-DEFAULT"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-SPDIF-TX-GATE-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/SN74LVC1G125DBVR/385720",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments SN74LVC1G125DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEENSY-ETHERNET-SOCKET-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Samtec",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-ETHERNET-SOCKET"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+    "landing_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+    "observations": [],
+    "purpose": "Satisfy REQ-TEENSY-ETHERNET-SOCKET-MFR for teensy-ethernet-socket.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Samtec MMS-103-01-L-DV primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEENSY-ETHERNET-SOCKET-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-ETHERNET-SOCKET"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEENSY-ETHERNET-SOCKET-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Samtec MMS-103-01-L-DV.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.samtec.com/products/ssw-124-02-g-s",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEENSY-SIDE-SOCKET-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Samtec",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-SIDE-SOCKET"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEENSY-SIDE-SOCKET-MFR",
+    "landing_url": "https://www.samtec.com/products/ssw-124-02-g-s",
+    "observations": [],
+    "purpose": "Satisfy REQ-TEENSY-SIDE-SOCKET-MFR for teensy-side-socket.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Samtec SSW-124-02-G-S primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/samtec-inc/SSW-124-02-G-S/2190757",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEENSY-SIDE-SOCKET-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-SIDE-SOCKET"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEENSY-SIDE-SOCKET-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/samtec-inc/SSW-124-02-G-S/2190757",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Samtec SSW-124-02-G-S.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEENSY-USB-HOST-SOCKET-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Samtec",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-USB-HOST-SOCKET"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+    "landing_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+    "observations": [],
+    "purpose": "Satisfy REQ-TEENSY-USB-HOST-SOCKET-MFR for teensy-usb-host-socket.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Samtec SSW-105-02-G-S primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/pcb-sockets/2079127",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEENSY-USB-HOST-SOCKET-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEENSY-USB-HOST-SOCKET"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEENSY-USB-HOST-SOCKET-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/pcb-sockets/2079127",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Samtec SSW-105-02-G-S.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEST-FIXTURE-HEADER-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Tag-Connect",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEST-FIXTURE-HEADER"
+    ],
+    "class": "golden",
+    "id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+    "landing_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-TEST-FIXTURE-HEADER-MFR for test-fixture-header.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Tag-Connect TC2030-IDC primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/tag-connect-llc/TC2030-IDC/4571121",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-TEST-FIXTURE-HEADER-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-TEST-FIXTURE-HEADER"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-TEST-FIXTURE-HEADER-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/tag-connect-llc/TC2030-IDC/4571121",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Tag-Connect TC2030-IDC.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-A-RECEPTACLE-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "TE Connectivity",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-A-RECEPTACLE"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-A-RECEPTACLE-MFR",
+    "landing_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-USB-A-RECEPTACLE-MFR for usb-a-receptacle.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "TE Connectivity 292303-1 primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.rs-online.com/web/p/usb-connectors/5298195",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-A-RECEPTACLE-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "RS",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-A-RECEPTACLE"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-A-RECEPTACLE-UK",
+    "landing_url": "https://uk.rs-online.com/web/p/usb-connectors/5298195",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for TE Connectivity 292303-1.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://gct.co/connector/usb4105",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-C-RECEPTACLE-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "GCT",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-C-RECEPTACLE"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-C-RECEPTACLE-MFR",
+    "landing_url": "https://gct.co/connector/usb4105",
+    "observations": [],
+    "purpose": "Satisfy REQ-USB-C-RECEPTACLE-MFR for usb-c-receptacle.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "GCT USB4105-GF-A primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.farnell.com/gct-global-connector-technology/usb4105-gf-a/usb-conn-2-0-type-c-rcpt-16pos/dp/3588205",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-C-RECEPTACLE-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Farnell",
+    "claim_scope": [
+      "REQT-COMMON-ENCLOSURE-CLEARANCE",
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-C-RECEPTACLE"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-C-RECEPTACLE-UK",
+    "landing_url": "https://uk.farnell.com/gct-global-connector-technology/usb4105-gf-a/usb-conn-2-0-type-c-rcpt-16pos/dp/3588205",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for GCT USB4105-GF-A.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-ESD-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-ESD"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-ESD-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tpd2eusb30a.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-USB-ESD-MFR for usb-esd.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Texas Instruments TPD2EUSB30ADRTR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPD2EUSB30ADRTR/2520830",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-ESD-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-ESD"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-ESD-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPD2EUSB30ADRTR/2520830",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPD2EUSB30ADRTR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-POWER-PROTECTION-MFR.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Texas Instruments",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-POWER-PROTECTION"
+    ],
+    "class": "golden",
+    "id": "AIUS-USB-POWER-PROTECTION-MFR",
+    "landing_url": "https://www.ti.com/lit/ds/symlink/tps2553.pdf",
+    "observations": [],
+    "purpose": "Satisfy REQ-USB-POWER-PROTECTION-MFR for usb-power-protection.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Texas Instruments TPS2553DBVR primary manufacturer evidence"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture unavailable REQ-USB-POWER-PROTECTION-UK.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey",
+    "claim_scope": [
+      "REQT-COMMON-MANUFACTURABILITY",
+      "REQT-COMMON-MANUFACTURER-EVIDENCE",
+      "REQT-COMMON-UK-AVAILABILITY",
+      "REQT-USB-POWER-PROTECTION"
+    ],
+    "class": "dynamic",
+    "id": "AIUS-USB-POWER-PROTECTION-UK",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+    "observations": [],
+    "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPS2553DBVR.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized UK distributor price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.bankofengland.co.uk/boeapps/database/Rates.asp?into=GBP",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Bank of England",
+    "claim_scope": ["GBP currency conversion"],
+    "class": "dynamic",
+    "id": "BOE-GBP-DAILY-FX",
+    "landing_url": "https://www.bankofengland.co.uk/boeapps/database/Rates.asp?into=GBP",
+    "observations": [],
+    "purpose": "Normalize non-GBP price evidence into the cost model.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "official daily GBP exchange-rate observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Cliff Electronic Components",
+    "claim_scope": ["optical receiver circuit", "optical receiver electrical limits"],
+    "class": "golden",
+    "id": "CLIFF-ORJ5",
+    "landing_url": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+    "observations": [],
+    "purpose": "Establish the optical receiver circuit and electrical limits.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "FCR684205R version 2.0 datasheet"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Cliff Electronic Components",
+    "claim_scope": ["optical transmitter circuit", "optical transmitter electrical limits"],
+    "class": "golden",
+    "id": "CLIFF-OTJ5",
+    "landing_url": "https://www.cliffuk.co.uk/products/optical/FCR684205T.pdf",
+    "observations": [],
+    "purpose": "Establish the optical transmitter circuit and electrical limits.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "FCR684205T version 2.1 datasheet"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "CPC Farnell",
+    "claim_scope": ["optical transmitter price", "optical transmitter stock"],
+    "class": "dynamic",
+    "id": "CPC-CLIFF-OTJ5",
+    "landing_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+    "observations": [],
+    "purpose": "Record a UK distributor price and stock observation for the optical transmitter.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey UK",
+    "claim_scope": ["optical receiver price", "optical receiver stock"],
+    "class": "dynamic",
+    "id": "DIGIKEY-CLIFF-ORJ5",
+    "landing_url": "https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094",
+    "observations": [],
+    "purpose": "Record a UK distributor price and stock observation for the optical receiver.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.digikey.co.uk/en/products/filter/evaluation-boards/embedded-mcu-dsp-evaluation-boards/teensy-4-1/786",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "DigiKey UK",
+    "claim_scope": ["Teensy 4.1 module price", "Teensy 4.1 module stock"],
+    "class": "dynamic",
+    "id": "DIGIKEY-TEENSY41",
+    "landing_url": "https://www.digikey.co.uk/en/products/filter/evaluation-boards/embedded-mcu-dsp-evaluation-boards/teensy-4-1/786",
+    "observations": [],
+    "purpose": "Record UK availability and cost observations for the optional Teensy module.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized optional-module observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://uk.farnell.com/hammond/1455n1201bk/box-black-aluminium-end-plate/dp/9287876",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Farnell UK",
+    "claim_scope": ["enclosure price", "enclosure stock"],
+    "class": "dynamic",
+    "id": "FARNELL-1455N1201BK",
+    "landing_url": "https://uk.farnell.com/hammond/1455n1201bk/box-black-aluminium-end-plate/dp/9287876",
+    "observations": [],
+    "purpose": "Record a UK distributor price and stock observation for the enclosure.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized price and stock observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.hammfg.com/files/parts/pdf/1455N1201BK.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Hammond Manufacturing",
+    "claim_scope": ["enclosure dimensions", "board envelope"],
+    "class": "golden",
+    "id": "HAMMOND-1455N1201BK-DRAWING",
+    "landing_url": "https://www.hammfg.com/files/parts/pdf/1455N1201BK.pdf",
+    "observations": [],
+    "purpose": "Establish the enclosure dimensions and usable board envelope.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "enclosure drawing"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.hammfg.com/part/1455N1201BK",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "Hammond Manufacturing",
+    "claim_scope": ["enclosure mechanical fit"],
+    "class": "golden",
+    "id": "HAMMOND-1455N1201BK-STEP",
+    "landing_url": "https://www.hammfg.com/part/1455N1201BK",
+    "observations": [],
+    "purpose": "Provide the manufacturer geometry for mechanical-fit validation.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "STEP file linked by the part page"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pcbway.com/pcb_prototype/2_Layer_pcb/100x100mm.html",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PCBWay",
+    "claim_scope": ["two-layer PCB fabrication price"],
+    "class": "dynamic",
+    "id": "PCBWAY-2L-100",
+    "landing_url": "https://www.pcbway.com/pcb_prototype/2_Layer_pcb/100x100mm.html",
+    "observations": [],
+    "purpose": "Record the two-layer prototype fabrication price range.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized price observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pcbway.com/pcb_prototype/4_Layer_pcb/100x100mm.html",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PCBWay",
+    "claim_scope": ["four-layer PCB fabrication price"],
+    "class": "dynamic",
+    "id": "PCBWAY-4L-100",
+    "landing_url": "https://www.pcbway.com/pcb_prototype/4_Layer_pcb/100x100mm.html",
+    "observations": [],
+    "purpose": "Record the four-layer fallback fabrication price range.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "normalized price observation"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://media.digikey.com/pdf/Data%20Sheets/Sparkfun%20PDFs/Ethernet_Kit_for_Teensy_4.1_Web.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["native Ethernet connector circuit", "Ethernet kit assembly"],
+    "class": "golden",
+    "id": "PJRC-ETHERNET-KIT",
+    "landing_url": "https://media.digikey.com/pdf/Data%20Sheets/Sparkfun%20PDFs/Ethernet_Kit_for_Teensy_4.1_Web.pdf",
+    "observations": [],
+    "purpose": "Establish the native-Ethernet connector circuit and assembly.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "Ethernet kit assembly guide"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pjrc.com/teensy/IMXRT1060CEC_rev4.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["i.MX RT1060 electrical limits"],
+    "class": "golden",
+    "id": "PJRC-IMXRT1060-CEC",
+    "landing_url": "https://www.pjrc.com/teensy/IMXRT1060CEC_rev4.pdf",
+    "observations": [],
+    "purpose": "Establish the processor electrical limits used by the design.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "electrical datasheet revision 4"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["S/PDIF peripheral capability", "DMA capability", "clock topology", "memory capability"],
+    "class": "golden",
+    "id": "PJRC-IMXRT1060-RM",
+    "landing_url": "https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf",
+    "observations": [],
+    "purpose": "Establish S/PDIF, DMA, clock, and memory capability claims.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "annotated reference manual revision 3"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://github.com/PaulStoffregen/Audio/blob/master/input_spdif3.cpp",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["S/PDIF receive implementation comparison", "receive DMA implementation comparison"],
+    "class": "comparative",
+    "id": "PJRC-SPDIF-RX-SOURCE",
+    "landing_url": "https://github.com/PaulStoffregen/Audio/blob/master/input_spdif3.cpp",
+    "observations": [],
+    "purpose": "Compare the existing receive and DMA implementation without treating it as golden evidence.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "pinned upstream source snapshot"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://github.com/PaulStoffregen/Audio/blob/master/output_spdif3.cpp",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["S/PDIF transmit implementation comparison", "transmit DMA implementation comparison"],
+    "class": "comparative",
+    "id": "PJRC-SPDIF-TX-SOURCE",
+    "landing_url": "https://github.com/PaulStoffregen/Audio/blob/master/output_spdif3.cpp",
+    "observations": [],
+    "purpose": "Compare the existing transmit and DMA implementation without treating it as golden evidence.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "pinned upstream source snapshot"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pjrc.com/store/teensy41.html",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["Teensy 4.1 board limits", "Teensy 4.1 power", "Teensy 4.1 dimensions", "Teensy 4.1 interfaces"],
+    "class": "golden",
+    "id": "PJRC-TEENSY41-PAGE",
+    "landing_url": "https://www.pjrc.com/store/teensy41.html",
+    "observations": [],
+    "purpose": "Establish board limits, power, dimensions, interfaces, and official document links.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "product page"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["Teensy 4.1 pin allocation", "Teensy 4.1 peripheral allocation"],
+    "class": "golden",
+    "id": "PJRC-TEENSY41-PINOUT",
+    "landing_url": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+    "observations": [],
+    "purpose": "Establish the Teensy pin and peripheral allocation boundary.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "two-sided pinout revision 4"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://www.pjrc.com/store/teensy41.html",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PJRC",
+    "claim_scope": ["Teensy 4.1 circuit topology"],
+    "class": "golden",
+    "id": "PJRC-TEENSY41-SCHEMATIC",
+    "landing_url": "https://www.pjrc.com/store/teensy41.html",
+    "observations": [],
+    "purpose": "Establish the official Teensy 4.1 board-level circuit topology.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "schematic linked by the product page"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://docs.platformio.org/en/latest/boards/teensy/teensy41.html",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "PlatformIO",
+    "claim_scope": ["PlatformIO target configuration", "PlatformIO upload configuration"],
+    "class": "golden",
+    "id": "PLATFORMIO-TEENSY41",
+    "landing_url": "https://docs.platformio.org/en/latest/boards/teensy/teensy41.html",
+    "observations": [],
+    "purpose": "Establish the PlatformIO target and upload configuration.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "board documentation page"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://vksdr.com/pmod/",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "VKSDR",
+    "claim_scope": ["optical footprint comparison", "optical placement comparison"],
+    "class": "comparative",
+    "id": "VKSDR-TOSLINK-KICAD",
+    "landing_url": "https://vksdr.com/pmod/",
+    "observations": [],
+    "purpose": "Compare footprint and placement choices without reusing them as authoritative design evidence.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "published KiCad archive"
+  },
+  {
+    "artifacts": [
+      {
+        "bytes": null,
+        "final_url": "https://vksdr.com/pmod/",
+        "media_type": null,
+        "name": "unavailable",
+        "note": "Fixture seed unavailable.",
+        "path": null,
+        "retrieval_status": "unavailable",
+        "sha256": null,
+        "storage": "external-reference"
+      }
+    ],
+    "authority": "VKSDR",
+    "claim_scope": ["Cliff optical support circuit comparison"],
+    "class": "comparative",
+    "id": "VKSDR-TOSLINK-SCHEMATICS",
+    "landing_url": "https://vksdr.com/pmod/",
+    "observations": [],
+    "purpose": "Compare Cliff optical support circuitry without treating it as golden evidence.",
+    "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+    "retrieved_at": "2026-07-16T12:34:56Z",
+    "revision": "unavailable:2026-07-16",
+    "status": "unavailable",
+    "supersedes": null,
+    "title": "published schematic archive"
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-TEENSY-ETHERNET-SOCKET-MFR.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "Samtec",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-ETHERNET-SOCKET"
+  ],
+  "class": "golden",
+  "id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+  "landing_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+  "observations": [],
+  "purpose": "Satisfy REQ-TEENSY-ETHERNET-SOCKET-MFR for teensy-ethernet-socket.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "Samtec MMS-103-01-L-DV primary manufacturer evidence"
+}

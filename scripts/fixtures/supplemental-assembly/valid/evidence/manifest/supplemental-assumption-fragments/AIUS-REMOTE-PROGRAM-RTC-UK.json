@@ -1,0 +1,18 @@
+{
+  "claim": "Supplemental request REQ-REMOTE-PROGRAM-RTC-UK source AIUS-REMOTE-PROGRAM-RTC-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-REMOTE-PROGRAM-RTC",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-REMOTE-PROGRAM-RTC"
+  ],
+  "consequence": "The selected component remains provisional until REQ-REMOTE-PROGRAM-RTC-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-REMOTE-PROGRAM-RTC-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-REMOTE-PROGRAM-RTC-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

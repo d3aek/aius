@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.hammfg.com/files/parts/pdf/1455N1201BK.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture seed unavailable.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "Hammond Manufacturing",
+  "claim_scope": ["enclosure dimensions", "board envelope"],
+  "class": "golden",
+  "id": "HAMMOND-1455N1201BK-DRAWING",
+  "landing_url": "https://www.hammfg.com/files/parts/pdf/1455N1201BK.pdf",
+  "observations": [],
+  "purpose": "Establish the enclosure dimensions and usable board envelope.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "enclosure drawing"
+}

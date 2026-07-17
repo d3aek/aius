@@ -1,0 +1,456 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.net/schemas/aius/seed-realization-schema.json",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "pattern": "^https://[^\\s]+$",
+      "format": "uri"
+    },
+    "projectRelativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.{1,2}(?:/|$))\\S+$"
+    },
+    "scalar": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "constraint": {
+      "type": "object",
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "enum": ["none", "non-empty", "enum", "minimum", "exclusive-minimum", "const", "pattern"]
+        },
+        "value": {}
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["none", "non-empty"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "enum"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/scalar"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["minimum", "exclusive-minimum"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "const"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "$ref": "#/$defs/scalar"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pattern"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string",
+                "pattern": "^\\^\\S.*\\$$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "required": ["key", "value_type", "nullable", "constraint", "unit", "basis"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+        },
+        "value_type": {
+          "enum": ["string", "integer", "number", "boolean"]
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "constraint": {
+          "$ref": "#/$defs/constraint"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "constraint": {
+                "properties": {
+                  "kind": {
+                    "enum": ["non-empty", "pattern"]
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["constraint"]
+          },
+          "then": {
+            "properties": {
+              "value_type": {
+                "const": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "constraint": {
+                "properties": {
+                  "kind": {
+                    "enum": ["minimum", "exclusive-minimum"]
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["constraint"]
+          },
+          "then": {
+            "properties": {
+              "value_type": {
+                "enum": ["integer", "number"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "observationProfile": {
+      "type": "object",
+      "required": ["name", "fields"],
+      "properties": {
+        "name": {
+          "enum": ["uk-distributor-price-stock", "pcbway-prototype-quote", "boe-gbp-fx"]
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["name", "retrieval_url", "expected_final_url", "path", "storage", "media_type"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "retrieval_url": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "expected_final_url": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "path": {
+          "$ref": "#/$defs/projectRelativePath"
+        },
+        "storage": {
+          "enum": ["lfs", "git"]
+        },
+        "media_type": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "source_id",
+        "mode",
+        "revision_strategy",
+        "revision_value",
+        "failure_policy",
+        "retention",
+        "artifacts",
+        "observation_profile"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "mode": {
+          "enum": ["artifact", "snapshot", "dynamic"]
+        },
+        "revision_strategy": {
+          "enum": ["fixed", "sha256", "commit", "observation-date"]
+        },
+        "revision_value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure_policy": {
+          "enum": ["golden-block", "assumption"]
+        },
+        "retention": {
+          "enum": ["personal-noncommercial-no-republication", "normalized-observation-only"]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "uniqueItems": true
+        },
+        "observation_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/observationProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "revision_strategy": {
+                "enum": ["fixed", "commit"]
+              }
+            },
+            "required": ["revision_strategy"]
+          },
+          "then": {
+            "properties": {
+              "revision_value": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "revision_value": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": ["artifact", "snapshot"]
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "retention": {
+                "const": "personal-noncommercial-no-republication"
+              },
+              "artifacts": {
+                "minItems": 1
+              },
+              "observation_profile": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "artifact"
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "properties": {
+                    "storage": {
+                      "const": "lfs"
+                    }
+                  },
+                  "required": ["storage"]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "snapshot"
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "properties": {
+                    "storage": {
+                      "const": "git"
+                    }
+                  },
+                  "required": ["storage"]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "dynamic"
+              }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "properties": {
+              "revision_strategy": {
+                "const": "observation-date"
+              },
+              "revision_value": {
+                "const": null
+              },
+              "failure_policy": {
+                "const": "assumption"
+              },
+              "retention": {
+                "const": "normalized-observation-only"
+              },
+              "artifacts": {
+                "maxItems": 0
+              },
+              "observation_profile": {
+                "$ref": "#/$defs/observationProfile"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/row"
+  },
+  "minItems": 22,
+  "maxItems": 22,
+  "uniqueItems": true
+}

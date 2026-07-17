@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-TEENSY-ETHERNET-SOCKET-UK.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "RS",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-ETHERNET-SOCKET"
+  ],
+  "class": "dynamic",
+  "id": "AIUS-TEENSY-ETHERNET-SOCKET-UK",
+  "landing_url": "https://uk.rs-online.com/web/p/pcb-sockets/1800578",
+  "observations": [],
+  "purpose": "Record a UK authorized-distributor price and stock observation for Samtec MMS-103-01-L-DV.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "normalized UK distributor price and stock observation"
+}

@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture seed unavailable.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "PJRC",
+  "claim_scope": ["Teensy 4.1 pin allocation", "Teensy 4.1 peripheral allocation"],
+  "class": "golden",
+  "id": "PJRC-TEENSY41-PINOUT",
+  "landing_url": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+  "observations": [],
+  "purpose": "Establish the Teensy pin and peripheral allocation boundary.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "two-sided pinout revision 4"
+}

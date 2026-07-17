@@ -1,0 +1,20 @@
+{
+  "block": "usb-c-receptacle",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-C-RECEPTACLE"
+  ],
+  "manufacturer": "GCT",
+  "mpn": "USB4105-GF-A",
+  "alternatives": [],
+  "selection_rationale": "Provisional single-MPN candidate chosen under the P1C2 primary-source ranking; all assigned verification gates remain open.",
+  "authority_url": "https://gct.co/connector/usb4105",
+  "manufacturer_request_id": "REQ-USB-C-RECEPTACLE-MFR",
+  "availability_request_id": "REQ-USB-C-RECEPTACLE-UK",
+  "generic_policy": null,
+  "status": "candidate-evidence-unavailable",
+  "notes": ""
+}

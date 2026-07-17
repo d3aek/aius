@@ -1,0 +1,34 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-ETHERNET-MAGJACK-MFR.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "Pulse Electronics",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-ETHERNET-MAGJACK"
+  ],
+  "class": "golden",
+  "id": "AIUS-ETHERNET-MAGJACK-MFR",
+  "landing_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+  "observations": [],
+  "purpose": "Satisfy REQ-ETHERNET-MAGJACK-MFR for ethernet-magjack.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "Pulse Electronics J0011D21BNL primary manufacturer evidence"
+}

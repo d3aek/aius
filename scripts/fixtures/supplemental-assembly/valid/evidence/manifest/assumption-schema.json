@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.net/schemas/aius/assumption-schema.json",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "assumptionIdentifier": {
+      "type": "string",
+      "pattern": "^ASM-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "evidenceIdentifiers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "uniqueItems": true
+    },
+    "claimScope": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "uniqueItems": true
+    },
+    "assumptionRecord": {
+      "type": "object",
+      "required": [
+        "id",
+        "claim",
+        "consequence",
+        "owner",
+        "validation_gate",
+        "evidence_ids",
+        "source_ids",
+        "claim_scope",
+        "status",
+        "resolution"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/assumptionIdentifier"
+        },
+        "claim": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "consequence": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "owner": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "validation_gate": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIdentifiers"
+        },
+        "source_ids": {
+          "$ref": "#/$defs/evidenceIdentifiers"
+        },
+        "claim_scope": {
+          "$ref": "#/$defs/claimScope"
+        },
+        "status": {
+          "enum": ["open", "resolved"]
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "open"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "resolution": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "resolved"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "evidence_ids": {
+                "minItems": 1
+              },
+              "resolution": {
+                "$ref": "#/$defs/nonEmptyString"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/assumptionRecord"
+  }
+}

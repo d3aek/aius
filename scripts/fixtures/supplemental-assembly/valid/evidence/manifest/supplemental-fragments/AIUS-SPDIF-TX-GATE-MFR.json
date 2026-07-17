@@ -1,0 +1,35 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-SPDIF-TX-GATE-MFR.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "Texas Instruments",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "REQT-OPTICAL-PROCESSED-DEFAULT"
+  ],
+  "class": "golden",
+  "id": "AIUS-SPDIF-TX-GATE-MFR",
+  "landing_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g125.pdf",
+  "observations": [],
+  "purpose": "Satisfy REQ-SPDIF-TX-GATE-MFR for spdif-tx-gate.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "Texas Instruments SN74LVC1G125DBVR primary manufacturer evidence"
+}

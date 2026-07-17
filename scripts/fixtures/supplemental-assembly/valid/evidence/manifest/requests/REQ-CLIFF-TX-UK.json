@@ -1,0 +1,22 @@
+{
+  "request_id": "REQ-CLIFF-TX-UK",
+  "request_kind": "uk-availability",
+  "family": "cliff-tx",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+  ],
+  "authority_url": "https://cpc.farnell.com/cliff-electronic-components/fcr684205t/optical-jack-transmitter-otj-5/dp/CN20715",
+  "selected_manufacturer": "Cliff Electronic Components",
+  "selected_mpn": "OTJ5",
+  "source_id": "AIUS-CLIFF-TX-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-CLIFF-TX-UK."
+}

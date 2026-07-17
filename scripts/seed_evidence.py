@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime as dt
 import hashlib
 import http.client
@@ -21,7 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterable, Mapping
 
+import render_p1
 from jsonschema_subset import SchemaError, ValidationError, check_schema, validate
+from test_evidence_policy import validate_clone_boundary_rows
 from test_source_schema import SourceCollectionError, validate_source_collection
 from validate_evidence import ControlError, validate_artifact_payload
 
@@ -107,6 +110,10 @@ SUPPLEMENTAL_FIELD_KEYS = (
     "basis",
 )
 UK_OBSERVATION_PROFILE_NAME = "uk-distributor-price-stock"
+PRESERVED_REQUEST_IDS = (
+    "REQ-CLIFF-RX-MFR",
+    "REQ-CLIFF-TX-MFR",
+)
 UK_OBSERVATION_FIELD_SPECS = (
     (
         "manufacturer_part_number",
@@ -239,6 +246,7 @@ class SupplementalState:
     observation_profiles: tuple[dict[str, object], ...]
     source_schema: dict[str, object]
     assumption_schema: dict[str, object]
+    request_schema: dict[str, object]
 
     @property
     def requests_by_id(self) -> dict[str, dict[str, object]]:
@@ -253,13 +261,13 @@ class SupplementalState:
         return {str(row["name"]): row for row in self.observation_profiles}
 
 
-def _compact_json(value: object) -> bytes:
+def _compact_json(value: object, *, preserve_object_order: bool = False) -> bytes:
     try:
         return json.dumps(
             value,
             ensure_ascii=False,
             allow_nan=False,
-            sort_keys=True,
+            sort_keys=not preserve_object_order,
             separators=(",", ":"),
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
@@ -323,8 +331,27 @@ def _object_keys_are_sorted(value: object) -> bool:
     return True
 
 
-def _render_json(root: Path, value: object, formatter: Formatter) -> bytes:
-    compact = _compact_json(value)
+def _object_key_order_matches(left: object, right: object) -> bool:
+    if isinstance(left, dict) and isinstance(right, dict):
+        return list(left) == list(right) and all(
+            _object_key_order_matches(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _object_key_order_matches(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return True
+
+
+def _render_json(
+    root: Path,
+    value: object,
+    formatter: Formatter,
+    *,
+    preserve_object_order: bool = False,
+) -> bytes:
+    compact = _compact_json(value, preserve_object_order=preserve_object_order)
     expected = _decode_json(compact, "compact renderer input")
     try:
         rendered = formatter(root, compact)
@@ -337,7 +364,9 @@ def _render_json(root: Path, value: object, formatter: Formatter) -> bytes:
     observed = _strict_rendered_json(rendered)
     if not _same_json_value(expected, observed):
         raise ControlError("formatter output changed the JSON value")
-    if not _object_keys_are_sorted(observed):
+    if preserve_object_order and not _object_key_order_matches(expected, observed):
+        raise ControlError("formatter output changed object-key order")
+    if not preserve_object_order and not _object_keys_are_sorted(observed):
         raise ControlError("formatter output changed sorted object-key order")
     return rendered
 
@@ -352,7 +381,7 @@ def _test_formatter(root: Path, payload: bytes) -> bytes:
             value,
             ensure_ascii=False,
             allow_nan=False,
-            sort_keys=True,
+            sort_keys=False,
             indent=2,
         )
         + "\n"
@@ -804,14 +833,22 @@ def _load_supplemental_state(root_argument: Path) -> SupplementalState:
     request_ids = [str(row["request_id"]) for row in requests]
     if request_ids != sorted(request_ids) or len(request_ids) != len(set(request_ids)):
         raise ControlError("supplemental request IDs must be unique and sorted")
-    pending = [row for row in requests if row["status"] != "satisfied"]
-    pending_ids = [str(row["request_id"]) for row in pending]
     realization_ids = [str(row["request_id"]) for row in realizations]
-    if len(realizations) != 46 or realization_ids != sorted(pending_ids):
+    expected_realization_ids = sorted(set(request_ids) - set(PRESERVED_REQUEST_IDS))
+    if len(realizations) != 46 or realization_ids != expected_realization_ids:
         raise ControlError(
-            "supplemental realizations do not exactly cover the 46 non-satisfied requests"
+            "supplemental realizations do not exactly cover the 46 non-preserved requests"
         )
     request_by_id = {str(row["request_id"]): row for row in requests}
+    for request_id in PRESERVED_REQUEST_IDS:
+        request = request_by_id.get(request_id)
+        if (
+            request is None
+            or request.get("status") != "satisfied"
+            or request.get("evidence_ids") != [request.get("source_id")]
+            or request.get("notes") != ""
+        ):
+            raise ControlError(f"{request_id}: preserved request outcome differs")
     source_ids: set[str] = set()
     manufacturer_count = 0
     uk_count = 0
@@ -892,6 +929,7 @@ def _load_supplemental_state(root_argument: Path) -> SupplementalState:
         tuple(observation_profiles),
         source_schema,
         assumption_schema,
+        request_schema,
     )
 
 
@@ -1733,11 +1771,17 @@ def _replace_aggregates(
     outputs: Mapping[Path, bytes],
     replace: Callable[[str, str], object] = os.replace,
 ) -> None:
+    ordered_outputs = dict(
+        sorted(
+            outputs.items(),
+            key=lambda item: item[0].relative_to(root).as_posix(),
+        )
+    )
     prior: dict[Path, bytes | None] = {}
     staged: dict[Path, Path] = {}
     published: list[Path] = []
     try:
-        for target, payload in outputs.items():
+        for target, payload in ordered_outputs.items():
             _check_parent_chain(root, target)
             status = _lstat(target)
             if status is not None and (
@@ -1755,8 +1799,8 @@ def _replace_aggregates(
                 stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode)
             ):
                 raise ControlError(f"aggregate target became unsafe: {target.relative_to(root)}")
-            replace(os.fspath(temporary), os.fspath(target))
             published.append(target)
+            replace(os.fspath(temporary), os.fspath(target))
             _fsync_directory(target.parent)
     except Exception as error:
         rollback_errors: list[str] = []
@@ -2887,6 +2931,553 @@ def _assemble(
     return 0
 
 
+@dataclass(frozen=True)
+class SupplementalAssembly:
+    sources: tuple[dict[str, object], ...]
+    assumptions: tuple[dict[str, object], ...]
+    clone_boundaries: tuple[dict[str, object], ...]
+    requests: tuple[dict[str, object], ...]
+    affected_request_ids: tuple[str, ...]
+    components: tuple[dict[str, object], ...]
+    affected_component_ids: tuple[str, ...]
+    selection_policy: dict[str, object]
+
+
+def _scan_named_json_directory(
+    root: Path,
+    relative_text: str,
+    name_pattern: str,
+) -> dict[str, object]:
+    path = _root_path(root, relative_text)
+    _check_parent_chain(root, path)
+    status = _lstat(path)
+    if status is None:
+        raise DataError(f"required fragment directory is missing: {relative_text}")
+    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+        raise DataError(f"fragment path is not a regular directory: {relative_text}")
+    result: dict[str, object] = {}
+    errors: list[str] = []
+    try:
+        entries = list(os.scandir(path))
+    except OSError as error:
+        raise ControlError(f"cannot scan {relative_text}: {error}") from error
+    for entry in entries:
+        entry_path = Path(entry.path)
+        entry_status = _lstat(entry_path)
+        match = re.fullmatch(name_pattern, entry.name)
+        if (
+            entry_status is None
+            or stat.S_ISLNK(entry_status.st_mode)
+            or not stat.S_ISREG(entry_status.st_mode)
+            or match is None
+        ):
+            errors.append(
+                f"unexpected or unsafe fragment entry: {relative_text}/{entry.name}"
+            )
+            continue
+        filename_id = match.group(1)
+        try:
+            payload = _read_regular(root, f"{relative_text}/{entry.name}")
+            assert payload is not None
+            result[filename_id] = _decode_json(
+                payload,
+                f"{relative_text}/{entry.name}",
+            )
+        except ControlError as error:
+            errors.append(str(error))
+    if errors:
+        raise DataError(errors)
+    return result
+
+
+def _require_exact_ids(
+    rows: Mapping[str, object],
+    expected_ids: set[str],
+    label: str,
+) -> None:
+    actual_ids = set(rows)
+    if actual_ids != expected_ids:
+        raise DataError(
+            f"{label} IDs differ; missing={sorted(expected_ids - actual_ids)!r}, "
+            f"extra={sorted(actual_ids - expected_ids)!r}"
+        )
+
+
+def _require_record_ids(
+    rows: Mapping[str, object],
+    record_key: str,
+    label: str,
+) -> dict[str, dict[str, object]]:
+    by_record_id: dict[str, dict[str, object]] = {}
+    duplicate_ids: set[str] = set()
+    for filename_id, value in rows.items():
+        if not isinstance(value, dict):
+            raise DataError(f"{label} {filename_id} is not an object")
+        record_id = value.get(record_key)
+        if not isinstance(record_id, str):
+            raise DataError(f"{label} {filename_id} has no {record_key}")
+        if record_id != filename_id:
+            raise DataError(
+                f"{label} filename ID {filename_id!r} does not match object ID "
+                f"{record_id!r}"
+            )
+        if record_id in by_record_id:
+            duplicate_ids.add(record_id)
+        by_record_id[record_id] = value
+    if duplicate_ids:
+        raise DataError(f"duplicate {label} record IDs: {sorted(duplicate_ids)!r}")
+    return by_record_id
+
+
+def _require_unchanged_except(
+    before: Mapping[str, object],
+    after: Mapping[str, object],
+    allowed_keys: set[str],
+    label: str,
+) -> None:
+    if tuple(before) != tuple(after):
+        raise DataError(f"{label} property order changed during projection")
+    for key in before:
+        if key not in allowed_keys and not _same_json_value(before[key], after[key]):
+            raise DataError(f"{label} field {key!r} changed during projection")
+        if key not in allowed_keys and not _object_key_order_matches(
+            before[key], after[key]
+        ):
+            raise DataError(f"{label} field {key!r} key order changed during projection")
+
+
+def _supplemental_assembly_data(
+    seed_state: State,
+    state: SupplementalState,
+    formatter: Formatter,
+) -> SupplementalAssembly:
+    seed_sources, seed_assumptions = _assemble_data(seed_state)
+    expected_source_ids = {
+        str(realization["source_id"]) for realization in state.realizations
+    }
+    seed_source_ids = {str(source["id"]) for source in seed_sources}
+    collisions = seed_source_ids & expected_source_ids
+    if collisions:
+        raise DataError(f"seed and supplemental source IDs collide: {sorted(collisions)!r}")
+
+    supplemental_rows = _scan_json_directory(
+        seed_state,
+        "evidence/manifest/supplemental-fragments",
+        required=True,
+    )
+    _require_exact_ids(
+        supplemental_rows,
+        expected_source_ids,
+        "supplemental fragment",
+    )
+    supplemental_sources = _require_record_ids(
+        supplemental_rows,
+        "id",
+        "supplemental fragment",
+    )
+
+    supplemental_assumption_rows = _scan_json_directory(
+        seed_state,
+        "evidence/manifest/supplemental-assumption-fragments",
+        required=False,
+    )
+    expected_supplemental_assumption_ids = {
+        str(request["source_id"])
+        for request in state.requests
+        if str(request["request_id"]) not in PRESERVED_REQUEST_IDS
+        and supplemental_sources[str(request["source_id"])].get("status")
+        == "unavailable"
+        and state.realizations_by_id[str(request["request_id"])]["failure_policy"]
+        == "assumption"
+    }
+    _require_exact_ids(
+        supplemental_assumption_rows,
+        expected_supplemental_assumption_ids,
+        "supplemental assumption fragment",
+    )
+
+    supplemental_assumptions: list[dict[str, object]] = []
+    supplemental_assumption_record_ids: set[str] = set()
+    for filename_id, value in supplemental_assumption_rows.items():
+        if not isinstance(value, dict):
+            raise DataError(
+                f"supplemental assumption fragment {filename_id} is not an object"
+            )
+        record_id = value.get("id")
+        if not isinstance(record_id, str):
+            raise DataError(
+                f"supplemental assumption fragment {filename_id} has no ID"
+            )
+        if record_id in supplemental_assumption_record_ids:
+            raise DataError(f"duplicate supplemental assumption record ID: {record_id}")
+        supplemental_assumption_record_ids.add(record_id)
+        supplemental_assumptions.append(value)
+
+    clone_boundaries: list[dict[str, object]] = []
+    for realization in state.realizations:
+        request_id = str(realization["request_id"])
+        request = state.requests_by_id[request_id]
+        source_id = str(request["source_id"])
+        source = supplemental_sources[source_id]
+        assumption = supplemental_assumption_rows.get(source_id)
+        published_source = _load_supplemental_published_json(
+            state,
+            _supplemental_fragment_path(source_id),
+            formatter,
+        )
+        if not _same_json_value(source, published_source):
+            raise DataError(f"supplemental source scan differs: {source_id}")
+        status = source.get("status")
+        if status == "unavailable":
+            _validate_supplemental_unavailable_source(
+                state,
+                request,
+                realization,
+                source,
+                assumption,
+                published=True,
+            )
+        elif status == "current":
+            _validate_supplemental_assumption(
+                state,
+                request,
+                realization,
+                source,
+                assumption,
+                published=True,
+            )
+            if request["request_kind"] == "manufacturer-evidence":
+                payloads: dict[str, bytes] = {}
+                for artifact in realization["artifacts"]:
+                    assert isinstance(artifact, dict)
+                    relative = str(artifact["path"])
+                    payload = _read_regular(state.root, relative)
+                    assert payload is not None
+                    payloads[relative] = payload
+                _validate_supplemental_manufacturer_source(
+                    state,
+                    request,
+                    realization,
+                    source,
+                    payloads,
+                    published=True,
+                )
+            else:
+                _validate_supplemental_uk_source(
+                    state,
+                    request,
+                    realization,
+                    source,
+                    published=True,
+                )
+        else:
+            raise DataError(
+                f"supplemental source {source_id} must be current or unavailable"
+            )
+        if assumption is not None:
+            published_assumption = _load_supplemental_published_json(
+                state,
+                _supplemental_assumption_fragment_path(source_id),
+                formatter,
+            )
+            if not _same_json_value(assumption, published_assumption):
+                raise DataError(f"supplemental assumption scan differs: {source_id}")
+        boundary = realization.get("clone_boundary")
+        if request["request_kind"] == "manufacturer-evidence":
+            if not isinstance(boundary, dict):
+                raise DataError(f"{request_id}: manufacturer clone boundary is invalid")
+            selected = boundary.get(str(status))
+            if not isinstance(selected, dict) or selected.get("source_id") != source_id:
+                raise DataError(f"{request_id}: selected clone boundary differs")
+            clone_boundaries.append(copy.deepcopy(selected))
+        elif boundary is not None:
+            raise DataError(f"{request_id}: UK clone boundary must be null")
+
+    all_sources = sorted(
+        [*seed_sources, *supplemental_sources.values()],
+        key=lambda row: str(row["id"]),
+    )
+    all_assumptions = sorted(
+        [*seed_assumptions, *supplemental_assumptions],
+        key=lambda row: str(row["id"]),
+    )
+    source_record_ids = [str(row["id"]) for row in all_sources]
+    if len(source_record_ids) != len(set(source_record_ids)):
+        raise DataError("combined source record IDs are not unique")
+    assumption_record_ids = [str(row["id"]) for row in all_assumptions]
+    if len(assumption_record_ids) != len(set(assumption_record_ids)):
+        raise DataError("combined assumption record IDs are not unique")
+    _schema(all_sources, state.source_schema, state.source_schema, "assembled sources")
+    _schema(
+        all_assumptions,
+        state.assumption_schema,
+        state.assumption_schema,
+        "assembled assumptions",
+    )
+    expected_source_rows = sorted(
+        [
+            *({"id": str(seed["id"])} for seed in seed_state.seeds),
+            *({"id": source_id} for source_id in expected_source_ids),
+        ],
+        key=lambda row: row["id"],
+    )
+    try:
+        validate_source_collection(all_sources, expected_source_rows)
+    except SourceCollectionError as error:
+        raise DataError(error.errors) from error
+
+    clone_boundaries.sort(key=lambda row: str(row["source_id"]))
+    try:
+        validate_clone_boundary_rows(clone_boundaries)
+    except (AssertionError, SchemaError, ValidationError) as error:
+        raise DataError(f"supplemental clone boundary is invalid: {error}") from error
+
+    request_rows = _scan_json_directory(
+        seed_state,
+        "evidence/manifest/requests",
+        required=True,
+    )
+    expected_request_ids = set(state.requests_by_id)
+    _require_exact_ids(request_rows, expected_request_ids, "request fragment")
+    input_requests = _require_record_ids(
+        request_rows,
+        "request_id",
+        "request fragment",
+    )
+    projected_requests: list[dict[str, object]] = []
+    for request_id in sorted(expected_request_ids):
+        request = input_requests[request_id]
+        control = state.requests_by_id[request_id]
+        if not _same_json_value(request, control) or not _object_key_order_matches(
+            request, control
+        ):
+            raise DataError(f"request fragment {request_id} differs from its aggregate")
+        _schema(request, state.request_schema, state.request_schema, request_id)
+        projected = copy.deepcopy(request)
+        if request_id not in PRESERVED_REQUEST_IDS:
+            source_id = str(request["source_id"])
+            source = supplemental_sources[source_id]
+            if source["status"] == "current":
+                projected["status"] = "satisfied"
+                projected["evidence_ids"] = [source_id]
+                projected["notes"] = ""
+            else:
+                artifact = source["artifacts"][0]
+                assert isinstance(artifact, dict)
+                projected["status"] = "unavailable"
+                projected["evidence_ids"] = []
+                projected["notes"] = artifact["note"]
+            _require_unchanged_except(
+                request,
+                projected,
+                {"status", "evidence_ids", "notes"},
+                f"request {request_id}",
+            )
+        _schema(
+            projected,
+            state.request_schema,
+            state.request_schema,
+            f"projected request {request_id}",
+        )
+        projected_requests.append(projected)
+
+    component_schema = _load_json(state.root, "evidence/design/component-schema.json")
+    selection_policy = _load_json(
+        state.root,
+        "evidence/design/selection-policy.json",
+    )
+    try:
+        check_schema(component_schema)
+    except SchemaError as error:
+        raise ControlError(f"component schema is invalid: {error}") from error
+    if not isinstance(component_schema, dict) or not isinstance(selection_policy, dict):
+        raise ControlError("component schema and selection policy must be objects")
+    families = selection_policy.get("families")
+    if not isinstance(families, list) or not all(
+        isinstance(family, dict) and isinstance(family.get("family"), str)
+        for family in families
+    ):
+        raise ControlError("selection policy families are invalid")
+    expected_component_ids = {str(family["family"]) for family in families}
+    if len(expected_component_ids) != len(families):
+        raise ControlError("selection policy family IDs are not unique")
+    component_rows = _scan_named_json_directory(
+        state.root,
+        "evidence/design/components",
+        r"([a-z0-9]+(?:-[a-z0-9]+)*)\.json",
+    )
+    _require_exact_ids(component_rows, expected_component_ids, "component fragment")
+    components_by_id = _require_record_ids(
+        component_rows,
+        "block",
+        "component fragment",
+    )
+    for component_id, component in components_by_id.items():
+        _schema(
+            component,
+            component_schema,
+            component_schema,
+            f"component {component_id}",
+        )
+
+    requests_by_family: dict[str, dict[str, dict[str, object]]] = {}
+    for request in projected_requests:
+        family = str(request["family"])
+        kind = str(request["request_kind"])
+        family_requests = requests_by_family.setdefault(family, {})
+        if kind in family_requests:
+            raise DataError(f"component family {family} has duplicate {kind} requests")
+        family_requests[kind] = request
+    if len(requests_by_family) != 24:
+        raise DataError("supplemental requests do not cover exactly 24 component families")
+
+    affected_component_ids: list[str] = []
+    projected_components = {
+        component_id: copy.deepcopy(component)
+        for component_id, component in components_by_id.items()
+    }
+    for family, family_requests in requests_by_family.items():
+        component = projected_components.get(family)
+        manufacturer_request = family_requests.get("manufacturer-evidence")
+        uk_request = family_requests.get("uk-availability")
+        if component is None or manufacturer_request is None or uk_request is None:
+            raise DataError(f"component family {family} request join is incomplete")
+        exact_fields = (
+            ("manufacturer_request_id", manufacturer_request["request_id"]),
+            ("availability_request_id", uk_request["request_id"]),
+            ("manufacturer", manufacturer_request["selected_manufacturer"]),
+            ("mpn", manufacturer_request["selected_mpn"]),
+            ("authority_url", manufacturer_request["authority_url"]),
+            ("requirements", manufacturer_request["requirements"]),
+        )
+        for key, expected in exact_fields:
+            if not _same_json_value(component.get(key), expected):
+                raise DataError(f"component family {family} field {key!r} join differs")
+        for key in ("selected_manufacturer", "selected_mpn"):
+            if uk_request[key] != manufacturer_request[key]:
+                raise DataError(f"component family {family} UK {key} join differs")
+        request_id = str(manufacturer_request["request_id"])
+        if request_id in PRESERVED_REQUEST_IDS:
+            if component.get("status") != "selected":
+                raise DataError(f"preserved component {family} status differs")
+            continue
+        source = supplemental_sources[str(manufacturer_request["source_id"])]
+        before = copy.deepcopy(component)
+        component["status"] = (
+            "selected"
+            if source["status"] == "current"
+            else "candidate-evidence-unavailable"
+        )
+        _require_unchanged_except(
+            before,
+            component,
+            {"status"},
+            f"component {family}",
+        )
+        _schema(
+            component,
+            component_schema,
+            component_schema,
+            f"projected component {family}",
+        )
+        affected_component_ids.append(family)
+    if len(affected_component_ids) != 22:
+        raise DataError("supplemental lifecycle does not affect exactly 22 components")
+
+    return SupplementalAssembly(
+        tuple(all_sources),
+        tuple(all_assumptions),
+        tuple(clone_boundaries),
+        tuple(projected_requests),
+        tuple(sorted(set(expected_request_ids) - set(PRESERVED_REQUEST_IDS))),
+        tuple(
+            projected_components[component_id]
+            for component_id in sorted(projected_components)
+        ),
+        tuple(sorted(affected_component_ids)),
+        selection_policy,
+    )
+
+
+def _supplemental_assemble(
+    seed_state: State,
+    state: SupplementalState,
+    mode: str,
+    replace: Callable[[str, str], object],
+    formatter: Formatter,
+) -> int:
+    assembly = _supplemental_assembly_data(seed_state, state, formatter)
+    requests_by_id = {
+        str(request["request_id"]): request for request in assembly.requests
+    }
+    components_by_id = {
+        str(component["block"]): component for component in assembly.components
+    }
+    rendered: dict[str, bytes] = {
+        "evidence/manifest/assumptions.json": _render_json(
+            state.root,
+            list(assembly.assumptions),
+            formatter,
+        ),
+        "evidence/manifest/sources.json": _render_json(
+            state.root,
+            list(assembly.sources),
+            formatter,
+        ),
+        "evidence/manifest/supplemental-clone-boundary.json": _render_json(
+            state.root,
+            list(assembly.clone_boundaries),
+            formatter,
+            preserve_object_order=True,
+        ),
+    }
+    for request_id in assembly.affected_request_ids:
+        rendered[f"evidence/manifest/requests/{request_id}.json"] = _render_json(
+            state.root,
+            requests_by_id[request_id],
+            formatter,
+            preserve_object_order=True,
+        )
+    for component_id in assembly.affected_component_ids:
+        rendered[f"evidence/design/components/{component_id}.json"] = _render_json(
+            state.root,
+            components_by_id[component_id],
+            formatter,
+            preserve_object_order=True,
+        )
+    request_aggregate = render_p1.render_supplemental_requests(assembly.requests)
+    observed_request_aggregate = _strict_rendered_json(request_aggregate)
+    expected_request_aggregate = {
+        "schema_version": "1.0.0",
+        "requests": list(assembly.requests),
+    }
+    if not _same_json_value(expected_request_aggregate, observed_request_aggregate):
+        raise DataError("supplemental request aggregate renderer changed its input")
+    rendered["evidence/manifest/supplemental-requests.json"] = request_aggregate
+    rendered["evidence/design/provisional-components.csv"] = render_p1.render_components(
+        assembly.selection_policy,
+        assembly.components,
+    )
+    if len(rendered) != 73:
+        raise DataError(f"supplemental assembler output count differs: {len(rendered)}")
+    rendered = dict(sorted(rendered.items()))
+    if mode == "check":
+        errors: list[str] = []
+        for relative, expected in rendered.items():
+            actual = _read_regular(state.root, relative, required=False)
+            if actual != expected:
+                errors.append(f"aggregate drift: {relative}")
+        if errors:
+            raise DataError(errors)
+        return 0
+    outputs = {
+        _root_path(state.root, relative): payload
+        for relative, payload in rendered.items()
+    }
+    _replace_aggregates(state.root, outputs, replace)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(description=__doc__)
     parser.add_argument("--root", help="Aius project root")
@@ -2938,6 +3529,13 @@ def _parser() -> argparse.ArgumentParser:
 
     supplemental_check = supplemental_commands.add_parser("check-fragment")
     supplemental_check.add_argument("request_id")
+
+    supplemental_assemble = supplemental_commands.add_parser("assemble")
+    supplemental_modes = supplemental_assemble.add_mutually_exclusive_group(
+        required=True
+    )
+    supplemental_modes.add_argument("--write", action="store_true")
+    supplemental_modes.add_argument("--check", action="store_true")
     return parser
 
 
@@ -2998,6 +3596,14 @@ def run(
                 return _supplemental_check_fragment(
                     supplemental_state,
                     arguments.request_id,
+                    selected_formatter,
+                )
+            if arguments.supplemental_command == "assemble":
+                return _supplemental_assemble(
+                    _load_state(root),
+                    supplemental_state,
+                    "write" if arguments.write else "check",
+                    replace,
                     selected_formatter,
                 )
             raise ControlError(

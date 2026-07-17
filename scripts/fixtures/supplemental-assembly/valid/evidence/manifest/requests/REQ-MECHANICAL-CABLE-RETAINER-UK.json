@@ -1,0 +1,21 @@
+{
+  "request_id": "REQ-MECHANICAL-CABLE-RETAINER-UK",
+  "request_kind": "uk-availability",
+  "family": "mechanical-cable-retainer",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-MECHANICAL-CABLE-RETAINER"
+  ],
+  "authority_url": "https://uk.rs-online.com/web/p/cable-tie-mounts/2181463",
+  "selected_manufacturer": "HellermannTyton",
+  "selected_mpn": "151-30300",
+  "source_id": "AIUS-MECHANICAL-CABLE-RETAINER-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-MECHANICAL-CABLE-RETAINER-UK."
+}

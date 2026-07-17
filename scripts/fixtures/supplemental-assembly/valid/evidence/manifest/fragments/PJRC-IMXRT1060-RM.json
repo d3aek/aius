@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture seed unavailable.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "PJRC",
+  "claim_scope": ["S/PDIF peripheral capability", "DMA capability", "clock topology", "memory capability"],
+  "class": "golden",
+  "id": "PJRC-IMXRT1060-RM",
+  "landing_url": "https://www.pjrc.com/teensy/IMXRT1060RM_rev3_annotations.pdf",
+  "observations": [],
+  "purpose": "Establish S/PDIF, DMA, clock, and memory capability claims.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "annotated reference manual revision 3"
+}

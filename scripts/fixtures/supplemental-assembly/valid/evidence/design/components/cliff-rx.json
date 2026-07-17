@@ -1,0 +1,21 @@
+{
+  "block": "cliff-rx",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY"
+  ],
+  "manufacturer": "Cliff Electronic Components",
+  "mpn": "ORJ5",
+  "alternatives": [],
+  "selection_rationale": "Existing current seed evidence CLIFF-ORJ5 supports the locked Cliff ORJ5 receiver candidate.",
+  "authority_url": "https://www.cliffuk.co.uk/products/optical/FCR684205R.pdf",
+  "manufacturer_request_id": "REQ-CLIFF-RX-MFR",
+  "availability_request_id": "REQ-CLIFF-RX-UK",
+  "generic_policy": null,
+  "status": "selected",
+  "notes": ""
+}

@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source PJRC-ETHERNET-KIT is unavailable for: native Ethernet connector circuit; Ethernet kit assembly",
+  "claim_scope": ["native Ethernet connector circuit", "Ethernet kit assembly"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-PJRC-ETHERNET-KIT",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["PJRC-ETHERNET-KIT"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

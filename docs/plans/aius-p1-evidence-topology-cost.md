@@ -3342,6 +3342,12 @@ blockers, and validates each supplemental fragment in isolation. Its clean-room
 delivery audit and all seed, supplemental, evidence-policy, evidence-validator
 and P1-validator compatibility suites passed.
 
+P1D0c completed on 2026-07-17. The same engine now assembles the exact closed
+supplemental lifecycle into 73 deterministic outputs with full rollback and
+no-write checking. The clean-room delivery audit passed after exhaustive
+current/unavailable lifecycle, fixture-format fidelity and every-index
+transaction proof; all compatibility suites remained green.
+
 The normative P1D contract is now
 [`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
 supersedes the historical draft below after a clean-room review found that the

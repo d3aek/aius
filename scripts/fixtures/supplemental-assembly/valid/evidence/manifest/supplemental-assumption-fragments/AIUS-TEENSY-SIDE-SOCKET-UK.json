@@ -1,0 +1,18 @@
+{
+  "claim": "Supplemental request REQ-TEENSY-SIDE-SOCKET-UK source AIUS-TEENSY-SIDE-SOCKET-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-TEENSY-SIDE-SOCKET",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-SIDE-SOCKET"
+  ],
+  "consequence": "The selected component remains provisional until REQ-TEENSY-SIDE-SOCKET-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-TEENSY-SIDE-SOCKET-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-TEENSY-SIDE-SOCKET-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

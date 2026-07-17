@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source FARNELL-1455N1201BK is unavailable for: enclosure price; enclosure stock",
+  "claim_scope": ["enclosure price", "enclosure stock"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-FARNELL-1455N1201BK",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["FARNELL-1455N1201BK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

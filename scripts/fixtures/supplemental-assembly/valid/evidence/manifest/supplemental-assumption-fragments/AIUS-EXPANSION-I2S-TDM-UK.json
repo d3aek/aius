@@ -1,0 +1,17 @@
+{
+  "claim": "Supplemental request REQ-EXPANSION-I2S-TDM-UK source AIUS-EXPANSION-I2S-TDM-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-I2S-TDM-CONNECTOR",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-I2S-TDM-CONNECTOR"
+  ],
+  "consequence": "The selected component remains provisional until REQ-EXPANSION-I2S-TDM-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-I2S-TDM-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-EXPANSION-I2S-TDM-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

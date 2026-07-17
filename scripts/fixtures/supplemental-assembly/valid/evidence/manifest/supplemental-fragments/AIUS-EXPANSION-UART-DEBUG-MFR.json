@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-EXPANSION-UART-DEBUG-MFR.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "JST",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+  ],
+  "class": "golden",
+  "id": "AIUS-EXPANSION-UART-DEBUG-MFR",
+  "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+  "observations": [],
+  "purpose": "Satisfy REQ-EXPANSION-UART-DEBUG-MFR for expansion-uart-debug.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+}

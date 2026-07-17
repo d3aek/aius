@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source PJRC-TEENSY41-PAGE is unavailable for: Teensy 4.1 board limits; Teensy 4.1 power; Teensy 4.1 dimensions; Teensy 4.1 interfaces",
+  "claim_scope": ["Teensy 4.1 board limits", "Teensy 4.1 power", "Teensy 4.1 dimensions", "Teensy 4.1 interfaces"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-PJRC-TEENSY41-PAGE",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["PJRC-TEENSY41-PAGE"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

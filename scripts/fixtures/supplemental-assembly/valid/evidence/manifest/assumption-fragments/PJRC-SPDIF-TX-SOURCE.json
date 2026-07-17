@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source PJRC-SPDIF-TX-SOURCE is unavailable for: S/PDIF transmit implementation comparison; transmit DMA implementation comparison",
+  "claim_scope": ["S/PDIF transmit implementation comparison", "transmit DMA implementation comparison"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-PJRC-SPDIF-TX-SOURCE",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["PJRC-SPDIF-TX-SOURCE"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

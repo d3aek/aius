@@ -1,0 +1,17 @@
+{
+  "claim": "Supplemental request REQ-EXPANSION-USB-HOST-UK source AIUS-EXPANSION-USB-HOST-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-USB-HOST-CONNECTOR",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-USB-HOST-CONNECTOR"
+  ],
+  "consequence": "The selected component remains provisional until REQ-EXPANSION-USB-HOST-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-USB-HOST-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-EXPANSION-USB-HOST-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

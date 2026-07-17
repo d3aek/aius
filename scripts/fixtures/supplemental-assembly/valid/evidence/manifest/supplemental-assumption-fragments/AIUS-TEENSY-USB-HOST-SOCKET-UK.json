@@ -1,0 +1,17 @@
+{
+  "claim": "Supplemental request REQ-TEENSY-USB-HOST-SOCKET-UK source AIUS-TEENSY-USB-HOST-SOCKET-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-TEENSY-USB-HOST-SOCKET",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-USB-HOST-SOCKET"
+  ],
+  "consequence": "The selected component remains provisional until REQ-TEENSY-USB-HOST-SOCKET-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-TEENSY-USB-HOST-SOCKET-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-TEENSY-USB-HOST-SOCKET-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

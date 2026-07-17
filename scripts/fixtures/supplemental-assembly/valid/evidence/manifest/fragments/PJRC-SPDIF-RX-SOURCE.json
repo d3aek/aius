@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://github.com/PaulStoffregen/Audio/blob/master/input_spdif3.cpp",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture seed unavailable.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "PJRC",
+  "claim_scope": ["S/PDIF receive implementation comparison", "receive DMA implementation comparison"],
+  "class": "comparative",
+  "id": "PJRC-SPDIF-RX-SOURCE",
+  "landing_url": "https://github.com/PaulStoffregen/Audio/blob/master/input_spdif3.cpp",
+  "observations": [],
+  "purpose": "Compare the existing receive and DMA implementation without treating it as golden evidence.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "pinned upstream source snapshot"
+}

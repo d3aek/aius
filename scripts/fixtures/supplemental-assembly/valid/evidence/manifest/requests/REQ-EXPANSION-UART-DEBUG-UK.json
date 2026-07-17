@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-EXPANSION-UART-DEBUG-UK",
+  "request_kind": "uk-availability",
+  "family": "expansion-uart-debug",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-UART-DEBUG-CONNECTOR"
+  ],
+  "authority_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+  "selected_manufacturer": "JST",
+  "selected_mpn": "BM04B-GHS-TBT",
+  "source_id": "AIUS-EXPANSION-UART-DEBUG-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-EXPANSION-UART-DEBUG-UK."
+}

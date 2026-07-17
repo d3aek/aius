@@ -1,0 +1,14 @@
+{
+  "block": "logic-control-pulldown",
+  "requirements": ["REQT-LOGIC-CONTROL-PULLDOWN"],
+  "manufacturer": null,
+  "mpn": null,
+  "alternatives": [],
+  "selection_rationale": null,
+  "authority_url": null,
+  "manufacturer_request_id": null,
+  "availability_request_id": null,
+  "generic_policy": { "value": "10 kOhm", "package": "0402", "tolerance": "1%" },
+  "status": "generic-allowance",
+  "notes": ""
+}

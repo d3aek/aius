@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-EXPANSION-POWER-PROTECTION-UK.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "DigiKey",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-POWER-PROTECTION"
+  ],
+  "class": "dynamic",
+  "id": "AIUS-EXPANSION-POWER-PROTECTION-UK",
+  "landing_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPS2553DBVR/2047900",
+  "observations": [],
+  "purpose": "Record a UK authorized-distributor price and stock observation for Texas Instruments TPS2553DBVR.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "normalized UK distributor price and stock observation"
+}

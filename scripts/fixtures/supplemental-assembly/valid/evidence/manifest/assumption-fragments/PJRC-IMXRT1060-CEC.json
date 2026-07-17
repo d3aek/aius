@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source PJRC-IMXRT1060-CEC is unavailable for: i.MX RT1060 electrical limits",
+  "claim_scope": ["i.MX RT1060 electrical limits"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-PJRC-IMXRT1060-CEC",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["PJRC-IMXRT1060-CEC"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

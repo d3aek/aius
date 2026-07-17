@@ -1,0 +1,17 @@
+{
+  "claim": "Supplemental request REQ-EXPANSION-GPIO-ADC-UK source AIUS-EXPANSION-GPIO-ADC-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-EXPANSION-GPIO-ADC-CONNECTOR",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+  ],
+  "consequence": "The selected component remains provisional until REQ-EXPANSION-GPIO-ADC-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-EXPANSION-GPIO-ADC-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-EXPANSION-GPIO-ADC-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

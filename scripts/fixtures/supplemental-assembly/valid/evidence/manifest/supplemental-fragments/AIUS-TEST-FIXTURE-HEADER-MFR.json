@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Fixture unavailable REQ-TEST-FIXTURE-HEADER-MFR.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "Tag-Connect",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEST-FIXTURE-HEADER"
+  ],
+  "class": "golden",
+  "id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+  "landing_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+  "observations": [],
+  "purpose": "Satisfy REQ-TEST-FIXTURE-HEADER-MFR for test-fixture-header.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "unavailable:2026-07-16",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "Tag-Connect TC2030-IDC primary manufacturer evidence"
+}
