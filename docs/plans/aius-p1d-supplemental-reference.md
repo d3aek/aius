@@ -906,6 +906,12 @@ closed. `--family` remains invalid for every other stage. Full
 `OK topology supplemental-lifecycle` only after all 48 requests pass.
 
 The validator loads the immutable 46-row `supplemental-realization.json` oracle.
+A pre-index identity check derives the exact expected `(request_id, source_id)`
+set from the selection-policy pairs for every UK request and every non-Cliff
+manufacturer request. The loaded rows must contain each of those 46 identities
+exactly once and no other identity. Duplicate identities are diagnosed before
+assignment and never overwrite one another. This oracle identity check runs for
+both isolated `selection-fragments` and full lifecycle validation.
 A satisfied supplemental manufacturer request requires its exact current
 `golden` source, artifact count and each position's `name`, `final_url`, `path`,
 `storage` and `media_type` equal to the realization, ordered unique realization
@@ -944,6 +950,8 @@ source-presence diagnostics remain unchanged and sorted:
 
 | Predicate | Code and subject | Canonical message |
 | --- | --- | --- |
+| realization identity set differs | `LIFECYCLE`, `evidence/manifest/supplemental-realization.json` | `realization identities differ; missing=<sorted tuple repr>; extra=<sorted tuple repr>` |
+| realization identity repeats | `LIFECYCLE`, `evidence/manifest/supplemental-realization.json` | `realization identity <tuple repr> appears more than once` |
 | full request membership differs | `LIFECYCLE`, `evidence/manifest/requests` | `request IDs differ; missing=<sorted repr>; extra=<sorted repr>` |
 | request is pending | `LIFECYCLE`, request fragment path | `request is not closed` |
 | source is absent | `LIFECYCLE`, request fragment path | `source_id <repr> is absent from sources` |
@@ -1006,11 +1014,12 @@ The regression matrix adds the non-linear leaf-stage dispatch, production
 pending-handoff compatibility, exact eligible and blocked fixture commands, all
 four matrix rows, both Cliff seed exceptions, every non-golden manufacturer
 class including `comparative`, missing/superseded sources, closure membership,
-evidence and notes cardinality, missing realization, artifact count/position/
-kind/current-retention mutations, missing/wrong MPN observations, component
-outcome disagreement, diagnostic sorting, and the exact single blocked-handoff
-diagnostic. The manifest README records the isolated-family, lifecycle-closure
-and design-handoff commands and the required P1D2 order:
+evidence and notes cardinality, missing/mismatched/extra realization identities,
+duplicate tuple and replacement-collision masking attempts, artifact count/
+position/kind/current-retention mutations, missing/wrong MPN observations,
+component outcome disagreement, diagnostic sorting, and the exact single
+blocked-handoff diagnostic. The manifest README records the isolated-family,
+lifecycle-closure and design-handoff commands and the required P1D2 order:
 `validate_evidence`, `supplemental-lifecycle`, then `handoff`.
 
 ## P1D1 — Supplemental acquisition waves
