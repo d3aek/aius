@@ -1429,6 +1429,19 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 07"
 ```
 
+P1D1.07 completed on 2026-07-17 at the shared
+`2026-07-17T07:26:11Z` timestamp with all three sources current. The JST source
+retains the 146,619-byte `eGH.pdf` with SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`;
+the StarTech source retains the 72,119-byte `uusbhaub6in_datasheet.pdf` with
+SHA-256
+`db45eb386e94b1e3346c396d4bfe69763ee745d76128404d693d69e92ee78577`.
+The RS observation records SKU `752-1769`, 1,885 units ready to ship, pack/MOQ
+5 and GBP 0.586 per unit ex VAT. Independent review reproduced every field,
+including the stock quantity, from the exact page within five minutes and
+confirmed the exact JST authorization page. All three fragment checks, active
+delivery audit and the hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.08
 unit: single-file-implementation
