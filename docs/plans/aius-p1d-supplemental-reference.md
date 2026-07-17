@@ -1342,6 +1342,19 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 05"
 ```
 
+P1D1.05 completed on 2026-07-17 at the shared
+`2026-07-17T06:49:42Z` timestamp. The TI source is current and retains the
+2,091,645-byte `tps2553.pdf` with SHA-256
+`56c62cd42a9b37ef3b680ab08b4921c3ec8cc997760ee403287dc4c1971852db`.
+The JST BM06 source is current and retains the 146,619-byte `eGH.pdf` with
+SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`.
+The exact locked DigiKey page returned a Cloudflare 403 during independent
+review, so its UK source is canonically unavailable with the exact open
+sourcing assumption; no recorded or substituted commercial facts were
+accepted. All three fragment checks, the corrected active delivery audit and
+the hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.06
 unit: single-file-implementation
