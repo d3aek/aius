@@ -2022,10 +2022,19 @@ P1D2 has two explicit committable branches after the common green set:
 - **eligible:** no critical manufacturer is unavailable;
   `topology --stage handoff` exits zero and P1D3 may dispatch;
 - **blocked:** one or more critical manufacturers are unavailable; the parent
-  runs `handoff`, records the exact expected critical-selection diagnostic in
-  the phase note, commits the lifecycle-valid state, and does not dispatch P1D3.
-  Any additional diagnostic is a failure. Replacement selection returns to a
-  new reviewed P1C candidate checkpoint before P1D1 resumes.
+  runs `handoff` and requires exit 1, empty stdout, and exactly these two sorted
+  stderr diagnostics:
+
+  ```text
+  AIUS-P1-COMPONENT: evidence/design/components/usb-a-receptacle.json: critical family is blocked by status 'candidate-evidence-unavailable'
+  AIUS-P1-COMPONENT: evidence/design/components/usb-c-receptacle.json: critical family is blocked by status 'candidate-evidence-unavailable'
+  ```
+
+  The phase note records both diagnostics, the parent commits the
+  lifecycle-valid state, and P1D3 does not dispatch. Any missing or additional
+  diagnostic, non-empty stdout, or different exit is a failure. Replacement
+  selection returns to a new reviewed P1C candidate checkpoint before P1D1
+  resumes.
 
 ## P1D3 — Electrical reference contract and package
 
