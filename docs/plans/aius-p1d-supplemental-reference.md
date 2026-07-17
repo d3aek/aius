@@ -878,21 +878,107 @@ complete-fixture validator.
 
 ### P1D0e — P1 lifecycle validation
 
-The P1 validator adds isolated supplemental-fragment and lifecycle-valid checks,
-then removes the schema-invalid `supplemental` class allowance. A satisfied
-manufacturer request requires exactly a current `golden` source, a retained
-artifact set position-bound to the realization, and an embedded matching-MPN
-observation. `comparative` never satisfies it. New stage
-`topology --stage supplemental-lifecycle` requires all 48 requests to be closed,
-enforces the lifecycle matrix, and exits zero for a structurally correct
-unavailable manufacturer outcome. The existing cumulative `handoff` stage
-remains the separate design gate and rejects a critical
-`candidate-evidence-unavailable` component with its exact diagnostic.
+The P1 runner is cumulative only through `selection`. Its explicit dependency
+graph is:
+
+```text
+contract -> architecture-base -> architecture -> selection-fragments -> selection
+                                                                        |-> handoff
+                                                                        `-> supplemental-lifecycle
+```
+
+Both leaf stages therefore run the contract, architecture, policy, complete
+selection-fragment, component-CSV and request-aggregate parity checks.
+`handoff` then applies the design-eligibility gate but does not require requests
+to be closed; this keeps the current 46-pending production handoff valid.
+`supplemental-lifecycle` instead requires lifecycle closure but does not apply
+the design-eligibility gate, so a structurally correct unavailable critical
+manufacturer outcome is committable. The existing critical `unresolved` or
+`candidate-evidence-unavailable` rejection moves out of shared
+`selection-fragments` and runs only in `handoff`. The two leaf stages are
+siblings; neither invokes the other.
+
+`topology --stage selection-fragments --family <family>` remains the isolated
+component and two-request check. It gains the satisfied-source class,
+realization and MPN rules below but does not require any sibling family to be
+closed. `--family` remains invalid for every other stage. Full
+`topology --stage supplemental-lifecycle` accepts no family argument and emits
+`OK topology supplemental-lifecycle` only after all 48 requests pass.
+
+The validator loads the immutable 46-row `supplemental-realization.json` oracle.
+A satisfied supplemental manufacturer request requires its exact current
+`golden` source, artifact count and each position's `name`, `final_url`, `path`,
+`storage` and `media_type` equal to the realization, ordered unique realization
+`artifact_kind` values equal to the request `artifact_kinds`, every artifact be
+current and retained in `git` or `lfs`, and an observation with key
+`manufacturer_part_number` and value equal to `selected_mpn`. `comparative`,
+`independently-derived`, `dynamic` and the schema-invalid `supplemental` class
+never satisfy a manufacturer request.
+
+The exact locked seed pairs `REQ-CLIFF-RX-MFR` / `CLIFF-ORJ5` / `ORJ5` and
+`REQ-CLIFF-TX-MFR` / `CLIFF-OTJ5` / `OTJ5` are the only realization and embedded
+MPN-observation exceptions. Each still requires a current `golden` source and at
+least one current retained `git` or `lfs` artifact. No other source ID, request
+or MPN receives this exception.
+
+The full lifecycle stage requires exactly the 48 request IDs selected by the 24
+non-generic components. It applies this matrix after the existing schema,
+linkage and aggregate-parity checks:
+
+| Request | Source outcome/class | Request outcome | Exact `evidence_ids` | Exact notes | Component outcome |
+| --- | --- | --- | --- | --- | --- |
+| manufacturer | `current` / `golden` | `satisfied` | `[source_id]` | empty | `selected` |
+| manufacturer | `unavailable` / `golden` | `unavailable` | `[]` | sole unavailable artifact note | `candidate-evidence-unavailable` |
+| UK | `current` / `dynamic` | `satisfied` | `[source_id]` | empty | unchanged |
+| UK | `unavailable` / `dynamic` | `unavailable` | `[]` | sole unavailable artifact note | unchanged |
+
+Absent and superseded sources, pending requests, any other class/status pair,
+and component/manufacturer-request disagreement fail lifecycle validation. A
+satisfied UK source additionally requires a matching-MPN observation. The
+evidence validator remains responsible for payload bytes, unavailable artifact
+shape and authorization fields; P1 consumes its validated source outcome and
+rechecks the lifecycle joins above.
+
+New failures have these exact diagnostics; existing schema, linkage, parity and
+source-presence diagnostics remain unchanged and sorted:
+
+| Predicate | Code and subject | Canonical message |
+| --- | --- | --- |
+| full request membership differs | `LIFECYCLE`, `evidence/manifest/requests` | `request IDs differ; missing=<sorted repr>; extra=<sorted repr>` |
+| request is pending | `LIFECYCLE`, request fragment path | `request is not closed` |
+| source is absent | `LIFECYCLE`, request fragment path | `source_id <repr> is absent from sources` |
+| request/source outcome differs | `LIFECYCLE`, request fragment path | `request status <repr> does not match source status <repr>` |
+| outcome evidence differs | `LIFECYCLE`, request fragment path | `evidence_ids differ from lifecycle outcome <status repr>` |
+| outcome notes differ | `LIFECYCLE`, request fragment path | `notes differ from lifecycle outcome <status repr>` |
+| source class differs | `LIFECYCLE`, request fragment path | `source class <actual repr> must be <expected repr>` |
+| supplemental manufacturer realization absent | `LIFECYCLE`, request fragment path | `supplemental manufacturer realization is absent` |
+| artifact count differs | `LIFECYCLE`, request fragment path | `artifact count differs from realization` |
+| artifact position differs | `LIFECYCLE`, request fragment path | `artifact[<index>] field <field repr> differs from realization` |
+| artifact is not retained current | `LIFECYCLE`, request fragment path | `artifact[<index>] is not a current retained artifact` |
+| artifact-kind order differs | `LIFECYCLE`, request fragment path | `ordered artifact kinds differ from request` |
+| MPN observation differs | `LIFECYCLE`, request fragment path | `source is not bound to selected_mpn` |
+| component outcome differs | `LIFECYCLE`, component fragment path | `component status <repr> does not match manufacturer request status <repr>` |
+| critical design blocker at handoff | `COMPONENT`, component fragment path | `critical family is blocked by status <status repr>` |
+
+The persistent runnable fixture lives below
+`scripts/fixtures/validate-p1/supplemental-lifecycle/` with `eligible/` and
+`blocked/` roots plus a deterministic `generate.py --write|--check`. The
+generator combines the production P1 schemas, base contracts, topology,
+rendered documents and current seed fragments with the existing assembly test
+engine. `eligible/` makes all 22 supplemental manufacturers current, all 22
+authorization-confirmed UK rows current, and the exact unresolved
+`AIUS-ETHERNET-MAGJACK-UK` and `AIUS-INTERNAL-USB-CABLE-UK` rows unavailable.
+`blocked/` differs only by making the critical
+`AIUS-ETHERNET-MAGJACK-MFR` outcome unavailable. Both roots pass
+`supplemental-lifecycle`; only `eligible/` passes `handoff`, while `blocked/`
+emits exactly the one canonical Ethernet-magjack critical diagnostic. Fixture
+generation uses deterministic synthetic retained payloads and never copies
+production evidence bytes.
 
 ```yaml
 phase: P1D0e
 unit: test-surface
-seams: [request state, component state, source class, deterministic design gate]
+seams: [request state, component state, source class, supplemental realization oracle, deterministic design gate]
 contract-artifact: spec-only
 fan-out:
   - name: supplemental-p1-validator
@@ -904,12 +990,28 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
+    - python3 scripts/fixtures/validate-p1/supplemental-lifecycle/generate.py --check
+    - python3 scripts/validate_p1.py --root scripts/fixtures/validate-p1/supplemental-lifecycle/eligible topology --stage supplemental-lifecycle
+    - python3 scripts/validate_p1.py --root scripts/fixtures/validate-p1/supplemental-lifecycle/eligible topology --stage handoff
+    - python3 scripts/validate_p1.py --root scripts/fixtures/validate-p1/supplemental-lifecycle/blocked topology --stage supplemental-lifecycle
+    - python3 scripts/test_validate_p1.py PersistentLifecycleFixtureTests.test_blocked_handoff_exact_diagnostic
     - python3 scripts/test_validate_p1.py
     - python3 scripts/validate_p1.py topology --stage handoff
     - python3 scripts/test_validate_evidence.py
   buildable: [seed-compatible lifecycle and design-gate validator]
   parent-commit: "feat(aius): validate supplemental evidence lifecycle"
 ```
+
+The regression matrix adds the non-linear leaf-stage dispatch, production
+pending-handoff compatibility, exact eligible and blocked fixture commands, all
+four matrix rows, both Cliff seed exceptions, every non-golden manufacturer
+class including `comparative`, missing/superseded sources, closure membership,
+evidence and notes cardinality, missing realization, artifact count/position/
+kind/current-retention mutations, missing/wrong MPN observations, component
+outcome disagreement, diagnostic sorting, and the exact single blocked-handoff
+diagnostic. The manifest README records the isolated-family, lifecycle-closure
+and design-handoff commands and the required P1D2 order:
+`validate_evidence`, `supplemental-lifecycle`, then `handoff`.
 
 ## P1D1 — Supplemental acquisition waves
 
