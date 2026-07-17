@@ -1161,6 +1161,17 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 01"
 ```
 
+P1D1.01 completed on 2026-07-17 with all three sources current at the shared
+`2026-07-17T05:39:53Z` timestamp and no unavailable assumptions. The Cliff RX
+observation records DigiKey SKU `4654-FCR684205R-ND`, stock 1,076 and GBP 3.67
+ex VAT; the Cliff TX observation records CPC SKU `CN20715`, stock 55 and GBP
+1.23 ex VAT. The fixed Pulse/Yageo acquisition retained the 820,303-byte
+`DATASHEET_J403.pdf` as LFS with SHA-256
+`af3c35c67a15382616b7ea07fa5095118468b70bc8a6d6b0fdc6ccbd70bb69bd`.
+All three fragment checks and the final-byte 45-test supplemental suite passed.
+Active adversarial review caught and corrected the RX URL product identifier
+being used as the supplier SKU; the focused re-audit returned `PASS`.
+
 ```yaml
 phase: P1D1.02
 unit: single-file-implementation

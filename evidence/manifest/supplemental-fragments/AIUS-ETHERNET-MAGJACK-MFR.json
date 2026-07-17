@@ -1,0 +1,43 @@
+{
+  "artifacts": [
+    {
+      "bytes": 820303,
+      "final_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+      "media_type": "application/pdf",
+      "name": "DATASHEET_J403.pdf",
+      "note": "",
+      "path": "https://productfinder.pulseeng.com/products/datasheets/J403.pdf",
+      "retrieval_status": "current",
+      "sha256": "af3c35c67a15382616b7ea07fa5095118468b70bc8a6d6b0fdc6ccbd70bb69bd",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "Pulse Electronics",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-ETHERNET-MAGJACK"
+  ],
+  "class": "golden",
+  "id": "AIUS-ETHERNET-MAGJACK-MFR",
+  "landing_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-ETHERNET-MAGJACK-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T05:39:53Z",
+      "source_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+      "unit": null,
+      "value": "J0011D21BNL"
+    }
+  ],
+  "purpose": "Satisfy REQ-ETHERNET-MAGJACK-MFR for ethernet-magjack.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T05:39:53Z",
+  "revision": "sha256:af3c35c67a15382616b7ea07fa5095118468b70bc8a6d6b0fdc6ccbd70bb69bd",
+  "status": "current",
+  "supersedes": null,
+  "title": "Pulse Electronics J0011D21BNL primary manufacturer evidence"
+}
