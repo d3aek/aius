@@ -532,6 +532,14 @@ the source fragment. `unavailable` writes the canonical source and optional
 assumption fragment. `check-fragment` validates exactly one request without
 requiring siblings.
 
+The constructor mapping has the 14 keys in source-schema order before
+validation. Publication then passes that mapping through the unchanged shared
+renderer, whose compact input and formatted output sort every object key
+alphabetically. Persisted fragment bytes therefore use recursively alphabetic
+key order; constructor order and published byte order are separate locked
+contracts. Supplemental code must not add a second renderer or weaken the seed
+renderer parity checks.
+
 No command bypasses an access control or substitutes browser-captured bytes.
 The pre-recorded GCT and TE access hazards therefore use the ordinary
 golden-block unavailable path if exact retrieval fails. A UK row whose
@@ -566,6 +574,12 @@ commit-checkpoint:
   buildable: [seed-compatible fixture-proven manufacturer acquisition and source publication]
   parent-commit: "feat(aius): add supplemental manufacturer acquisition"
 ```
+
+P1D0b1 completed on 2026-07-16. Manufacturer acquisition reuses the seed
+retrieval, validation, renderer and transaction engine for all 22 manufacturer
+rows and 35 artifacts; later serial commands remain deterministic stubs. The
+clean-room delivery audit returned `PASS`; 33 realization, 13 supplemental
+acquisition, 32 seed compatibility and 34 evidence-validator tests were green.
 
 ```yaml
 phase: P1D0b2

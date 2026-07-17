@@ -44,6 +44,46 @@ UNAVAILABLE_CONSEQUENCE = (
 )
 PRETTIER_VERSION = "3.8.3"
 FORMATTER_TIMEOUT_SECONDS = 30
+SUPPLEMENTAL_REALIZATION_SHA256 = (
+    "ffbb364de79d734c4ba50885095f58319a56687b0bda93669e4753ba689d493d"
+)
+SUPPLEMENTAL_OWNED_PATH_ROOT = "src/hardware/aius"
+SUPPLEMENTAL_RETENTION = "personal-noncommercial-no-republication"
+SUPPLEMENTAL_SOURCE_KEYS = (
+    "id",
+    "class",
+    "title",
+    "authority",
+    "revision",
+    "purpose",
+    "claim_scope",
+    "landing_url",
+    "retrieved_at",
+    "status",
+    "supersedes",
+    "redistribution_note",
+    "artifacts",
+    "observations",
+)
+SUPPLEMENTAL_ARTIFACT_KEYS = (
+    "name",
+    "final_url",
+    "storage",
+    "path",
+    "sha256",
+    "bytes",
+    "media_type",
+    "retrieval_status",
+    "note",
+)
+SUPPLEMENTAL_OBSERVATION_KEYS = (
+    "key",
+    "value",
+    "unit",
+    "basis",
+    "observed_at",
+    "source_url",
+)
 
 Formatter = Callable[[Path, bytes], bytes]
 ProcessRunner = Callable[..., subprocess.CompletedProcess[bytes]]
@@ -87,6 +127,22 @@ class State:
     @property
     def realizations_by_id(self) -> dict[str, dict[str, object]]:
         return {str(row["source_id"]): row for row in self.realizations}
+
+
+@dataclass(frozen=True)
+class SupplementalState:
+    root: Path
+    requests: tuple[dict[str, object], ...]
+    realizations: tuple[dict[str, object], ...]
+    source_schema: dict[str, object]
+
+    @property
+    def requests_by_id(self) -> dict[str, dict[str, object]]:
+        return {str(row["request_id"]): row for row in self.requests}
+
+    @property
+    def realizations_by_id(self) -> dict[str, dict[str, object]]:
+        return {str(row["request_id"]): row for row in self.realizations}
 
 
 def _compact_json(value: object) -> bytes:
@@ -505,6 +561,151 @@ def _load_state(root_argument: Path) -> State:
     )
 
 
+def _load_supplemental_state(root_argument: Path) -> SupplementalState:
+    argument_status = _lstat(root_argument)
+    if argument_status is not None and stat.S_ISLNK(argument_status.st_mode):
+        raise ControlError(f"Aius root may not be a symlink: {root_argument}")
+    root = root_argument.resolve()
+    root_status = _lstat(root)
+    if root_status is None or stat.S_ISLNK(root_status.st_mode) or not stat.S_ISDIR(
+        root_status.st_mode
+    ):
+        raise ControlError(f"Aius root is not a regular directory: {root}")
+
+    source_schema = _load_json(root, "evidence/manifest/source-schema.json")
+    request_schema = _load_json(root, "evidence/manifest/source-request-schema.json")
+    realization_schema = _load_json(
+        root, "evidence/manifest/supplemental-realization-schema.json"
+    )
+    request_document = _load_json(
+        root, "evidence/manifest/supplemental-requests.json"
+    )
+    realization_payload = _read_regular(
+        root, "evidence/manifest/supplemental-realization.json"
+    )
+    assert realization_payload is not None
+    realization_document = _decode_json(
+        realization_payload,
+        "evidence/manifest/supplemental-realization.json",
+    )
+    for label, schema in (
+        ("source schema", source_schema),
+        ("source request schema", request_schema),
+        ("supplemental realization schema", realization_schema),
+    ):
+        try:
+            check_schema(schema)
+        except SchemaError as error:
+            raise ControlError(f"{label} is invalid: {error}") from error
+    if not isinstance(source_schema, dict) or not isinstance(request_schema, dict):
+        raise ControlError("supplemental source and request schemas must be objects")
+    if not isinstance(realization_schema, dict):
+        raise ControlError("supplemental realization schema must be an object")
+    if not isinstance(request_document, dict) or tuple(request_document) != (
+        "schema_version",
+        "requests",
+    ):
+        raise ControlError("supplemental request aggregate has invalid root properties")
+    if request_document.get("schema_version") != "1.0.0":
+        raise ControlError("supplemental request aggregate schema version differs")
+    requests = request_document.get("requests")
+    if not isinstance(requests, list) or not all(
+        isinstance(row, dict) for row in requests
+    ):
+        raise ControlError("supplemental requests must be an object array")
+    try:
+        for request in requests:
+            validate(request, request_schema)
+        validate(realization_document, realization_schema)
+    except (SchemaError, ValidationError) as error:
+        raise ControlError(f"supplemental control data is invalid: {error}") from error
+    if hashlib.sha256(realization_payload).hexdigest() != SUPPLEMENTAL_REALIZATION_SHA256:
+        raise ControlError("supplemental realization differs from the immutable P1D0a oracle")
+    if not isinstance(realization_document, dict):
+        raise ControlError("supplemental realization control must be an object")
+    if realization_document.get("owned_path_root") != SUPPLEMENTAL_OWNED_PATH_ROOT:
+        raise ControlError("supplemental realization owned path root differs")
+    realizations = realization_document.get("realizations")
+    if not isinstance(realizations, list) or not all(
+        isinstance(row, dict) for row in realizations
+    ):
+        raise ControlError("supplemental realizations must be an object array")
+
+    request_ids = [str(row["request_id"]) for row in requests]
+    if request_ids != sorted(request_ids) or len(request_ids) != len(set(request_ids)):
+        raise ControlError("supplemental request IDs must be unique and sorted")
+    pending = [row for row in requests if row["status"] != "satisfied"]
+    pending_ids = [str(row["request_id"]) for row in pending]
+    realization_ids = [str(row["request_id"]) for row in realizations]
+    if len(realizations) != 46 or realization_ids != sorted(pending_ids):
+        raise ControlError(
+            "supplemental realizations do not exactly cover the 46 non-satisfied requests"
+        )
+    request_by_id = {str(row["request_id"]): row for row in requests}
+    source_ids: set[str] = set()
+    manufacturer_count = 0
+    uk_count = 0
+    for row in realizations:
+        request_id = str(row["request_id"])
+        request = request_by_id[request_id]
+        source_id = str(row["source_id"])
+        if source_id != request["source_id"] or source_id in source_ids:
+            raise ControlError(f"{request_id}: supplemental source identity differs")
+        source_ids.add(source_id)
+        artifacts = row["artifacts"]
+        assert isinstance(artifacts, list)
+        expected_owned_paths = [
+            f"evidence/manifest/supplemental-fragments/{source_id}.json",
+            f"evidence/manifest/supplemental-assumption-fragments/{source_id}.json",
+            *[str(artifact["path"]) for artifact in artifacts],
+        ]
+        if row["owned_paths"] != expected_owned_paths:
+            raise ControlError(f"{request_id}: supplemental owned paths differ")
+        for relative_text in expected_owned_paths:
+            relative = _safe_relative(relative_text)
+            if source_id not in relative.parts and relative.stem != source_id:
+                raise ControlError(
+                    f"{request_id}: supplemental owned path omits its source ID"
+                )
+        if request["request_kind"] == "manufacturer-evidence":
+            manufacturer_count += 1
+            kinds = [str(artifact["artifact_kind"]) for artifact in artifacts]
+            if (
+                row["authority"] != request["selected_manufacturer"]
+                or row["revision_strategy"] != "sha256"
+                or row["revision_value"] is not None
+                or row["observation_url"] is not None
+                or row["authorization"] is not None
+                or row["observation_profile"] is not None
+                or row["failure_policy"] != "golden-block"
+                or row["retention"] != SUPPLEMENTAL_RETENTION
+                or list(dict.fromkeys(kinds)) != request["artifact_kinds"]
+                or not artifacts
+            ):
+                raise ControlError(f"{request_id}: manufacturer realization differs")
+            if not any(
+                artifact["retrieval_url"] == request["authority_url"]
+                for artifact in artifacts
+            ):
+                raise ControlError(
+                    f"{request_id}: manufacturer authority URL is not retained"
+                )
+        elif request["request_kind"] == "uk-availability":
+            uk_count += 1
+            if artifacts or row["observation_profile"] is None:
+                raise ControlError(f"{request_id}: UK realization differs")
+        else:
+            raise ControlError(f"{request_id}: unknown supplemental request kind")
+    if manufacturer_count != 22 or uk_count != 24:
+        raise ControlError("supplemental manufacturer/UK realization split differs")
+    return SupplementalState(
+        root,
+        tuple(requests),
+        tuple(realizations),
+        source_schema,
+    )
+
+
 def _timestamp(value: str) -> str:
     if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value) is None:
         raise DataError(f"timestamp must be exact UTC YYYY-MM-DDTHH:MM:SSZ: {value!r}")
@@ -710,6 +911,74 @@ def _expected_revision(
         combined = hashlib.sha256("".join(digests).encode("ascii")).hexdigest()
         return f"sha256:{combined}"
     raise ControlError(f"unknown revision strategy: {strategy!r}")
+
+
+def _select_supplemental(
+    state: SupplementalState,
+    request_id: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    request = state.requests_by_id.get(request_id)
+    if request is None:
+        raise DataError(f"unknown supplemental request ID: {request_id}")
+    realization = state.realizations_by_id.get(request_id)
+    if realization is None:
+        raise DataError(
+            f"supplemental request {request_id} has no acquisition realization"
+        )
+    return request, realization
+
+
+def _supplemental_current_manufacturer_source(
+    request: Mapping[str, object],
+    realization: Mapping[str, object],
+    artifacts: list[dict[str, object]],
+    retrieved_at: str,
+) -> dict[str, object]:
+    request_id = str(request["request_id"])
+    if request["request_kind"] != "manufacturer-evidence":
+        raise DataError(
+            f"UK supplemental request {request_id} does not support acquire"
+        )
+    if len(artifacts) != len(realization["artifacts"]):
+        raise DataError(f"{request_id}: supplemental artifact result count differs")
+    source = {
+        "id": request["source_id"],
+        "class": "golden",
+        "title": (
+            f"{request['selected_manufacturer']} {request['selected_mpn']} "
+            "primary manufacturer evidence"
+        ),
+        "authority": realization["authority"],
+        "revision": _expected_revision(realization, artifacts, retrieved_at),
+        "purpose": f"Satisfy {request_id} for {request['family']}.",
+        "claim_scope": request["requirements"],
+        "landing_url": request["authority_url"],
+        "retrieved_at": retrieved_at,
+        "status": "current",
+        "supersedes": None,
+        "redistribution_note": ARTIFACT_NOTE,
+        "artifacts": artifacts,
+        "observations": [
+            {
+                "key": "manufacturer_part_number",
+                "value": request["selected_mpn"],
+                "unit": None,
+                "basis": (
+                    "Selected MPN identified by the retained primary manufacturer "
+                    f"evidence for {request_id}."
+                ),
+                "observed_at": retrieved_at,
+                "source_url": request["authority_url"],
+            }
+        ],
+    }
+    if tuple(source) != SUPPLEMENTAL_SOURCE_KEYS:
+        raise DataError("supplemental source constructor property order differs")
+    if any(tuple(artifact) != SUPPLEMENTAL_ARTIFACT_KEYS for artifact in artifacts):
+        raise DataError("supplemental source artifact property order differs")
+    if tuple(source["observations"][0]) != SUPPLEMENTAL_OBSERVATION_KEYS:
+        raise DataError("supplemental source observation property order differs")
+    return source
 
 
 def _expected_assumption(seed: Mapping[str, object]) -> dict[str, object]:
@@ -1157,12 +1426,187 @@ def _assumption_fragment_path(source_id: str) -> str:
     return f"evidence/manifest/assumption-fragments/{source_id}.json"
 
 
+def _supplemental_fragment_path(source_id: str) -> str:
+    return f"evidence/manifest/supplemental-fragments/{source_id}.json"
+
+
 def _prepare_output_directories(state: State, realization: Mapping[str, object]) -> None:
     _ensure_directory(state.root, "evidence/manifest/fragments")
     for artifact in realization["artifacts"]:
         assert isinstance(artifact, dict)
         path = PurePosixPath(str(artifact["path"]))
         _ensure_directory(state.root, path.parent.as_posix())
+
+
+def _prepare_supplemental_output_directories(
+    state: SupplementalState,
+    realization: Mapping[str, object],
+) -> None:
+    _ensure_directory(state.root, "evidence/manifest/supplemental-fragments")
+    artifacts = realization["artifacts"]
+    assert isinstance(artifacts, list)
+    for artifact in artifacts:
+        assert isinstance(artifact, dict)
+        path = PurePosixPath(str(artifact["path"]))
+        _ensure_directory(state.root, path.parent.as_posix())
+
+
+def _validate_supplemental_manufacturer_source(
+    state: SupplementalState,
+    request: Mapping[str, object],
+    realization: Mapping[str, object],
+    source: object,
+    payloads: Mapping[str, bytes],
+) -> None:
+    source_record_schema = state.source_schema["$defs"]["sourceRecord"]
+    _schema(
+        source,
+        source_record_schema,
+        state.source_schema,
+        f"supplemental source {request['source_id']}",
+    )
+    if not isinstance(source, dict):
+        raise DataError("supplemental manufacturer source must be an object")
+    if tuple(source) != SUPPLEMENTAL_SOURCE_KEYS:
+        raise DataError("supplemental manufacturer source property order differs")
+    retrieved_at = source.get("retrieved_at")
+    if not isinstance(retrieved_at, str):
+        raise DataError("supplemental manufacturer source has no timestamp")
+    _timestamp(retrieved_at)
+    actual_artifacts = source.get("artifacts")
+    expected_artifacts = realization["artifacts"]
+    if not isinstance(actual_artifacts, list) or not isinstance(
+        expected_artifacts, list
+    ):
+        raise DataError("supplemental manufacturer artifacts are invalid")
+    if len(actual_artifacts) != len(expected_artifacts):
+        raise DataError("supplemental manufacturer artifact count differs")
+    for index, (actual, expected) in enumerate(
+        zip(actual_artifacts, expected_artifacts, strict=True)
+    ):
+        if not isinstance(actual, dict) or not isinstance(expected, dict):
+            raise DataError(f"supplemental artifact {index} is invalid")
+        if tuple(actual) != SUPPLEMENTAL_ARTIFACT_KEYS:
+            raise DataError(f"supplemental artifact {index} property order differs")
+        exact = {
+            "name": expected["name"],
+            "final_url": expected["expected_final_url"],
+            "storage": expected["storage"],
+            "path": expected["path"],
+            "media_type": expected["media_type"],
+            "retrieval_status": "current",
+            "note": "",
+        }
+        for key, value in exact.items():
+            if actual.get(key) != value:
+                raise DataError(
+                    f"supplemental artifact {index} field {key!r} differs"
+                )
+        relative_path = str(expected["path"])
+        payload = payloads.get(relative_path)
+        if payload is None:
+            raise DataError(f"supplemental artifact payload is missing: {relative_path}")
+        digest = hashlib.sha256(payload).hexdigest()
+        if actual.get("sha256") != digest or actual.get("bytes") != len(payload):
+            raise DataError(f"supplemental artifact {index} hash or size differs")
+        diagnostics = validate_artifact_payload(
+            state.root,
+            relative_path,
+            payload,
+            str(expected["media_type"]),
+            str(expected["storage"]),
+        )
+        if diagnostics:
+            raise DataError(
+                f"{item.code} {item.subject}: {item.message}" for item in diagnostics
+            )
+    expected_source = _supplemental_current_manufacturer_source(
+        request,
+        realization,
+        actual_artifacts,
+        retrieved_at,
+    )
+    if source != expected_source:
+        raise DataError("supplemental manufacturer source differs from its constructor")
+
+
+def _supplemental_acquire(
+    state: SupplementalState,
+    request_id: str,
+    retrieved_at: str,
+    opener: object,
+    replace: Callable[[str, str], object],
+    formatter: Formatter,
+) -> int:
+    request, realization = _select_supplemental(state, request_id)
+    if request["request_kind"] != "manufacturer-evidence":
+        raise DataError(f"UK supplemental request {request_id} does not support acquire")
+    retrieved_at = _timestamp(retrieved_at)
+    _prepare_supplemental_output_directories(state, realization)
+    source_id = str(request["source_id"])
+    fragment_relative = _supplemental_fragment_path(source_id)
+    _reject_target(state.root, fragment_relative)
+    payloads: dict[str, bytes] = {}
+    artifacts: list[dict[str, object]] = []
+    realization_artifacts = realization["artifacts"]
+    assert isinstance(realization_artifacts, list)
+    for entry in realization_artifacts:
+        assert isinstance(entry, dict)
+        relative_path = str(entry["path"])
+        _reject_target(state.root, relative_path)
+        payload = _retrieve(
+            str(entry["retrieval_url"]),
+            str(entry["expected_final_url"]),
+            opener,
+        )
+        diagnostics = validate_artifact_payload(
+            state.root,
+            relative_path,
+            payload,
+            str(entry["media_type"]),
+            str(entry["storage"]),
+        )
+        if diagnostics:
+            raise DataError(
+                f"{item.code} {item.subject}: {item.message}" for item in diagnostics
+            )
+        payloads[relative_path] = payload
+        artifacts.append(
+            {
+                "name": entry["name"],
+                "final_url": entry["expected_final_url"],
+                "storage": entry["storage"],
+                "path": relative_path,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+                "media_type": entry["media_type"],
+                "retrieval_status": "current",
+                "note": "",
+            }
+        )
+    source = _supplemental_current_manufacturer_source(
+        request,
+        realization,
+        artifacts,
+        retrieved_at,
+    )
+    _validate_supplemental_manufacturer_source(
+        state,
+        request,
+        realization,
+        source,
+        payloads,
+    )
+    outputs = {
+        _root_path(state.root, path): payload for path, payload in payloads.items()
+    }
+    outputs[_root_path(state.root, fragment_relative)] = _render_json(
+        state.root,
+        source,
+        formatter,
+    )
+    _publish_new(state.root, outputs, replace)
+    return 0
 
 
 def _acquire(
@@ -1575,6 +2019,31 @@ def _parser() -> argparse.ArgumentParser:
     modes = assemble.add_mutually_exclusive_group(required=True)
     modes.add_argument("--write", action="store_true")
     modes.add_argument("--check", action="store_true")
+
+    supplemental = subparsers.add_parser("supplemental")
+    supplemental_commands = supplemental.add_subparsers(
+        dest="supplemental_command",
+        required=True,
+    )
+
+    supplemental_acquire = supplemental_commands.add_parser("acquire")
+    supplemental_acquire.add_argument("request_id")
+    supplemental_acquire.add_argument("--retrieved-at", required=True)
+
+    supplemental_record = supplemental_commands.add_parser("record")
+    supplemental_record.add_argument("request_id")
+    supplemental_record.add_argument("--values", required=True)
+    supplemental_record.add_argument("--product-final-url", required=True)
+    supplemental_record.add_argument("--authorization-final-url", required=True)
+    supplemental_record.add_argument("--observed-at", required=True)
+
+    supplemental_unavailable = supplemental_commands.add_parser("unavailable")
+    supplemental_unavailable.add_argument("request_id")
+    supplemental_unavailable.add_argument("--note", required=True)
+    supplemental_unavailable.add_argument("--retrieved-at", required=True)
+
+    supplemental_check = supplemental_commands.add_parser("check-fragment")
+    supplemental_check.add_argument("request_id")
     return parser
 
 
@@ -1592,8 +2061,23 @@ def run(
         else Path(__file__).resolve().parents[1]
     )
     try:
-        state = _load_state(root)
         selected_formatter = _production_formatter if formatter is None else formatter
+        if arguments.command == "supplemental":
+            supplemental_state = _load_supplemental_state(root)
+            if arguments.supplemental_command == "acquire":
+                return _supplemental_acquire(
+                    supplemental_state,
+                    arguments.request_id,
+                    arguments.retrieved_at,
+                    opener if opener is not None else _production_opener(),
+                    replace,
+                    selected_formatter,
+                )
+            raise DataError(
+                f"supplemental {arguments.supplemental_command} is not implemented "
+                "until its later P1D0b checkpoint"
+            )
+        state = _load_state(root)
         if arguments.command == "acquire":
             return _acquire(
                 state,

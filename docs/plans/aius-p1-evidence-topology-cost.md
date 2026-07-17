@@ -3327,6 +3327,11 @@ constructor fixtures, executable cross-document contract and manifest policy
 documentation passed clean-room delivery audit with the 46-row oracle hash
 unchanged. The normative detail and phase note are in the supplemental plan.
 
+P1D0b1 completed on 2026-07-16. The existing seed engine now provides
+fixture-proven supplemental manufacturer acquisition and atomic fragment
+publication without changing seed behavior. Its clean-room delivery audit and
+all realization, acquisition, seed and evidence-validator suites passed.
+
 The normative P1D contract is now
 [`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
 supersedes the historical draft below after a clean-room review found that the
