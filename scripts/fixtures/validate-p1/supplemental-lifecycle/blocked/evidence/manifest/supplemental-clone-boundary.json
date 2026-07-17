@@ -1,0 +1,180 @@
+[
+  {
+    "source_id": "AIUS-ETHERNET-MAGJACK-MFR",
+    "classification": "unresolved",
+    "reused_material": [],
+    "derived_claims": ["The manufacturer claim remains unresolved."],
+    "prohibited_use": [
+      "Do not select or release the component until current manufacturer evidence replaces the unavailable source."
+    ],
+    "notes": "The fixed manufacturer source is unavailable."
+  },
+  {
+    "source_id": "AIUS-EXPANSION-GPIO-ADC-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-I2C-CONTROL-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-I2C-ISOLATOR-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-I2S-TDM-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-POWER-PROTECTION-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-SPI-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-UART-DEBUG-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-EXPANSION-USB-HOST-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-INTERNAL-USB-CABLE-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-REMOTE-PROGRAM-RTC-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-SPDIF-MUX-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-SPDIF-TX-GATE-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-TEENSY-SIDE-SOCKET-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-USB-A-RECEPTACLE-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-USB-C-RECEPTACLE-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-USB-ESD-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  },
+  {
+    "source_id": "AIUS-USB-POWER-PROTECTION-MFR",
+    "classification": "official-reuse",
+    "reused_material": ["Retained primary manufacturer evidence."],
+    "derived_claims": ["Aius requirements are bounded by the retained primary manufacturer evidence."],
+    "prohibited_use": ["Do not treat the manufacturer material as a complete Aius design."],
+    "notes": ""
+  }
+]

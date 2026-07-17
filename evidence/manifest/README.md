@@ -119,10 +119,25 @@ python3 scripts/test_validate_evidence.py
 python3 scripts/validate_evidence.py --self-test
 ```
 
-## Future validation
+## P1 selection and lifecycle validation
 
-The following repository-content check is available but expected to report missing required golden sources until P1B:
+Validate one component and its two request fragments in isolation while working
+on an acquisition outcome:
+
+```bash
+python3 scripts/validate_p1.py topology --stage selection-fragments --family ethernet-magjack
+```
+
+Before P1D2, validate the completed repository in this order:
 
 ```bash
 python3 scripts/validate_evidence.py
+python3 scripts/validate_p1.py topology --stage supplemental-lifecycle
+python3 scripts/validate_p1.py topology --stage handoff
 ```
+
+The evidence check validates retained payloads and source records. The lifecycle
+stage then requires all 48 selected-component requests to be closed and joined
+to their source and component outcomes. The handoff stage is the separate design
+eligibility gate; it may pass while requests are pending, but rejects a critical
+component whose manufacturer evidence is unavailable.

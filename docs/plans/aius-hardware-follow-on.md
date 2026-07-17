@@ -113,13 +113,15 @@ H1 cannot start until both P1Ed has committed an eligible H0 result and the
 software gate's P7 phase has passed. H0 evidence work may proceed before P7
 because it does not commit manufacturing effort.
 
-H0 implementation status on 2026-07-17: P1D0d is complete. Supplemental
-evidence validation now closes the exact seed-only and complete collection
-states, realization and immutable-authority binding, status-derived assumptions,
-literal clone boundaries and reproducible synthetic-fixture controls. Its
-clean-room delivery audit passed all validator, seed, supplemental, production
-and complete-fixture checkpoints. P1D0e and the later H0 phases remain pending;
-this milestone does not authorize H1 or manufacturing.
+H0 implementation status on 2026-07-17: P1D0d and P1D0e are complete.
+Supplemental evidence validation closes the exact seed-only and complete
+collection states, realization and immutable-authority binding, status-derived
+assumptions, literal clone boundaries and reproducible synthetic-fixture
+controls. P1 lifecycle validation now separates lifecycle-valid unavailable
+outcomes from the design handoff, enforces the exact 46 realization identities
+and all 48 request joins, and has clean-room-audited eligible and blocked roots.
+P1D1 and the later H0 phases remain pending; this milestone does not authorize
+H1 or manufacturing.
 
 ## H1: Electrical system schematic
 

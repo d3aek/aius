@@ -1,0 +1,65 @@
+{
+  "artifacts": [
+    {
+      "bytes": 53,
+      "final_url": "https://gct.co/files/specs/usb4105-spec.pdf",
+      "media_type": "application/pdf",
+      "name": "usb4105-spec.pdf",
+      "note": "",
+      "path": "docs/reference/datasheets.mdAIUS-USB-C-RECEPTACLE-MFR/usb4105-spec.pdf",
+      "retrieval_status": "current",
+      "sha256": "4793fa9551f56887e4e460b8539a19937df07ab637d0bad2a05c2734b64aa3fb",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 51,
+      "final_url": "https://gct.co/files/drawings/usb4105.pdf",
+      "media_type": "application/pdf",
+      "name": "usb4105.pdf",
+      "note": "",
+      "path": "docs/reference/datasheets.mdAIUS-USB-C-RECEPTACLE-MFR/usb4105.pdf",
+      "retrieval_status": "current",
+      "sha256": "a861f7bb561267d63c998381c472320dc36abe3d1b5035ec396b6aab00f85f67",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 71,
+      "final_url": "https://gct.co/connector/usb4105",
+      "media_type": "text/html",
+      "name": "usb4105.html",
+      "note": "",
+      "path": "evidence/source-snapshots/AIUS-USB-C-RECEPTACLE-MFR/usb4105.html",
+      "retrieval_status": "current",
+      "sha256": "2ad8275a4999932d539fb3577c05d6651e24637463ea54fd25a5040f01b0cb9c",
+      "storage": "git"
+    }
+  ],
+  "authority": "GCT",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-C-RECEPTACLE"
+  ],
+  "class": "golden",
+  "id": "AIUS-USB-C-RECEPTACLE-MFR",
+  "landing_url": "https://gct.co/connector/usb4105",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-USB-C-RECEPTACLE-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-16T12:34:56Z",
+      "source_url": "https://gct.co/connector/usb4105",
+      "unit": null,
+      "value": "USB4105-GF-A"
+    }
+  ],
+  "purpose": "Satisfy REQ-USB-C-RECEPTACLE-MFR for usb-c-receptacle.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "sha256:3d7c60b72de7a231392a21d17042407fca35369b43ed6ebfd553d3fb43d795f6",
+  "status": "current",
+  "supersedes": null,
+  "title": "GCT USB4105-GF-A primary manufacturer evidence"
+}

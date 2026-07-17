@@ -1,0 +1,39 @@
+{
+  "artifacts": [
+    {
+      "bytes": 17,
+      "final_url": "https://www.pjrc.com/teensy/card11a_rev4_web.pdf",
+      "media_type": "application/pdf",
+      "name": "card11a_rev4_web.pdf",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "https://www.pjrc.com/teensy/card11a_rev4_web.pdf",
+      "retrieval_status": "current",
+      "sha256": "58346148e907c6d42d5efbb6ac681765701d53d09413067fe67e2b7ea9294e86",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 17,
+      "final_url": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+      "media_type": "application/pdf",
+      "name": "card11b_rev4_web.pdf",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+      "retrieval_status": "current",
+      "sha256": "58346148e907c6d42d5efbb6ac681765701d53d09413067fe67e2b7ea9294e86",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "PJRC",
+  "claim_scope": ["Teensy 4.1 pin allocation", "Teensy 4.1 peripheral allocation"],
+  "class": "golden",
+  "id": "PJRC-TEENSY41-PINOUT",
+  "landing_url": "https://www.pjrc.com/teensy/card11b_rev4_web.pdf",
+  "observations": [],
+  "purpose": "Establish the Teensy pin and peripheral allocation boundary.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T04:46:15Z",
+  "revision": "rev4",
+  "status": "current",
+  "supersedes": null,
+  "title": "two-sided pinout revision 4"
+}

@@ -1,0 +1,86 @@
+{
+  "artifacts": [
+    {
+      "bytes": 64,
+      "final_url": "https://suddendocs.samtec.com/productspecs/mms-tmm.pdf",
+      "media_type": "application/pdf",
+      "name": "mms-tmm.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/tmm",
+      "retrieval_status": "current",
+      "sha256": "cea57139d1a39987251c003bbd502b3245409a5f24408de25e9b48566f8158a3",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 63,
+      "final_url": "https://suddendocs.samtec.com/catalog_english/mms.pdf",
+      "media_type": "application/pdf",
+      "name": "mms.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/mms",
+      "retrieval_status": "current",
+      "sha256": "402fe2cccce73a8b1a00a6d64606fa6dc955f729bbf19e247524a94d33cf40f5",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 77,
+      "final_url": "https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-xx-xxx-mkt1.pdf",
+      "media_type": "application/pdf",
+      "name": "mms-1xx-01-xxx-xx-xxx-mkt1.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/mms-103-01-l-dv",
+      "retrieval_status": "current",
+      "sha256": "80d5e18901b7a5dd121b0b9a83cffa341f4df526f47c1920b0acb21a27680354",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 77,
+      "final_url": "https://suddendocs.samtec.com/prints/mms-1xx-01-xxx-xx-xxx-mkt2.pdf",
+      "media_type": "application/pdf",
+      "name": "mms-1xx-01-xxx-xx-xxx-mkt2.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/mms-103-01-l-dv",
+      "retrieval_status": "current",
+      "sha256": "e3ce1de8f29cda2d4af3155e8279e0b92724380b1a6a49c25a4699b3a7732cce",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 86,
+      "final_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+      "media_type": "text/html",
+      "name": "mms-103-01-l-dv.html",
+      "note": "",
+      "path": "evidence/source-snapshots/AIUS-TEENSY-ETHERNET-SOCKET-MFR/mms-103-01-l-dv.html",
+      "retrieval_status": "current",
+      "sha256": "aee20531f1f252cb1132f9d152fe9446d0ee05898092157a412ceaa0aa08efb2",
+      "storage": "git"
+    }
+  ],
+  "authority": "Samtec",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-ETHERNET-SOCKET"
+  ],
+  "class": "golden",
+  "id": "AIUS-TEENSY-ETHERNET-SOCKET-MFR",
+  "landing_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEENSY-ETHERNET-SOCKET-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-16T12:34:56Z",
+      "source_url": "https://www.samtec.com/products/mms-103-01-l-dv",
+      "unit": null,
+      "value": "MMS-103-01-L-DV"
+    }
+  ],
+  "purpose": "Satisfy REQ-TEENSY-ETHERNET-SOCKET-MFR for teensy-ethernet-socket.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "sha256:5deef4934a31689bc11129e7555c0cf1f00b8e210390473759e1fefdec811971",
+  "status": "current",
+  "supersedes": null,
+  "title": "Samtec MMS-103-01-L-DV primary manufacturer evidence"
+}

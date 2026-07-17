@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source BOE-GBP-DAILY-FX is unavailable for: GBP currency conversion",
+  "claim_scope": ["GBP currency conversion"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-BOE-GBP-DAILY-FX",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["BOE-GBP-DAILY-FX"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

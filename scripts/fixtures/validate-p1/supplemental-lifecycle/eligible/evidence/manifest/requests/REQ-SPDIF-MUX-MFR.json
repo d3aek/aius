@@ -1,0 +1,22 @@
+{
+  "request_id": "REQ-SPDIF-MUX-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "spdif-mux",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "REQT-OPTICAL-PROCESSED-DEFAULT"
+  ],
+  "authority_url": "https://www.ti.com/lit/ds/symlink/sn74lvc1g3157.pdf",
+  "selected_manufacturer": "Texas Instruments",
+  "selected_mpn": "SN74LVC1G3157DBVR",
+  "source_id": "AIUS-SPDIF-MUX-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-SPDIF-MUX-MFR"],
+  "notes": ""
+}

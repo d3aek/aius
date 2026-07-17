@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-USB-ESD-UK",
+  "request_kind": "uk-availability",
+  "family": "usb-esd",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-ESD"
+  ],
+  "authority_url": "https://www.digikey.co.uk/en/products/detail/texas-instruments/TPD2EUSB30ADRTR/2520830",
+  "selected_manufacturer": "Texas Instruments",
+  "selected_mpn": "TPD2EUSB30ADRTR",
+  "source_id": "AIUS-USB-ESD-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-USB-ESD-UK"],
+  "notes": ""
+}

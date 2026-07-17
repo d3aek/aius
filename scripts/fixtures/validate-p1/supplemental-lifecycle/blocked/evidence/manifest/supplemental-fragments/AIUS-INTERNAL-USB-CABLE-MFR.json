@@ -1,0 +1,43 @@
+{
+  "artifacts": [
+    {
+      "bytes": 71,
+      "final_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+      "media_type": "application/pdf",
+      "name": "uusbhaub6in_datasheet.pdf",
+      "note": "",
+      "path": "https://www.startech.com/en-us/cables/uusbhaub6in",
+      "retrieval_status": "current",
+      "sha256": "889912db9a1083f042a058677a2874ce38ba5e447a07c6c3f35d41d01ce64895",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "StarTech.com",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-INTERNAL-CABLE"
+  ],
+  "class": "golden",
+  "id": "AIUS-INTERNAL-USB-CABLE-MFR",
+  "landing_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-INTERNAL-USB-CABLE-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-16T12:34:56Z",
+      "source_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+      "unit": null,
+      "value": "UUSBHAUB6IN"
+    }
+  ],
+  "purpose": "Satisfy REQ-INTERNAL-USB-CABLE-MFR for internal-usb-cable.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "sha256:889912db9a1083f042a058677a2874ce38ba5e447a07c6c3f35d41d01ce64895",
+  "status": "current",
+  "supersedes": null,
+  "title": "StarTech.com UUSBHAUB6IN primary manufacturer evidence"
+}

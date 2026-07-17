@@ -29,6 +29,10 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 VALIDATOR = SCRIPT_ROOT / "validate_p1.py"
 SCHEMA_FIXTURES = SCRIPT_ROOT / "fixtures" / "p1c-schema"
 MATRIX = SCRIPT_ROOT / "fixtures" / "validate-p1" / "matrix.json"
+LIFECYCLE_FIXTURE_ROOT = (
+    SCRIPT_ROOT / "fixtures" / "validate-p1" / "supplemental-lifecycle"
+)
+REALIZATION = "evidence/manifest/supplemental-realization.json"
 
 FUNCTIONAL_BASE = "scripts/fixtures/p1c-schema/functional-topology/base-v1.json"
 INTERFACES_BASE = "scripts/fixtures/p1c-schema/interfaces-and-states/base-v1.json"
@@ -103,13 +107,14 @@ def _source(
     identifier: str,
     *,
     source_class: str = "golden",
+    status: str = "current",
     artifacts: list[dict[str, object]] | None = None,
     observations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "id": identifier,
         "class": source_class,
-        "status": "current",
+        "status": status,
         "artifacts": [] if artifacts is None else artifacts,
         "observations": [] if observations is None else observations,
     }
@@ -195,6 +200,11 @@ class FixtureTree:
         self.policy_families = {
             row["family"]: row for row in self.policy["families"]
         }
+        self.realization_document = copy.deepcopy(_read_json(AIUS_ROOT / REALIZATION))
+        self.realizations = {
+            row["request_id"]: row
+            for row in self.realization_document["realizations"]
+        }
         self.components = {
             family: _component(family, self.policy_families[family])
             for family in FAMILIES
@@ -250,6 +260,7 @@ class FixtureTree:
             FUNCTIONAL_CONTRACT,
             INTERFACES_CONTRACT,
             SELECTION_CONTRACT,
+            REALIZATION,
         ):
             target = self.path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -321,10 +332,23 @@ class FixtureTree:
         observed_mpn: str | None = "selected",
     ) -> None:
         source_id = f"AIUS-{family.upper()}-MFR"
-        artifact = {
-            "storage": "lfs",
-            "retrieval_status": "current",
-        }
+        request_id = f"REQ-{family.upper()}-MFR"
+        realization = self.realizations[request_id]
+        artifacts = [
+            {
+                "name": row["name"],
+                "final_url": row["expected_final_url"],
+                "path": row["path"],
+                "storage": row["storage"],
+                "media_type": row["media_type"],
+                "retrieval_status": "current",
+            }
+            for row in realization["artifacts"]
+        ]
+        self.requests[request_id]["artifact_kinds"] = (
+            self._ordered_artifact_kinds(realization)
+        )
+        self.write_request(request_id)
         observations = (
             []
             if observed_mpn is None
@@ -342,7 +366,7 @@ class FixtureTree:
         self.sources.append(
             _source(
                 source_id,
-                artifacts=[artifact] if archived else [],
+                artifacts=artifacts if archived else [],
                 observations=observations,
             )
         )
@@ -372,6 +396,125 @@ class FixtureTree:
         request["evidence_ids"] = [request["source_id"]]
         self.write_request(request_id)
         self.add_selected_manufacturer_source(family)
+
+    def _set_source(self, source: dict[str, object]) -> None:
+        self.sources = [
+            row
+            for row in self.sources
+            if row["id"] != source["id"]
+        ]
+        self.sources.append(source)
+
+    @staticmethod
+    def _ordered_artifact_kinds(realization: dict[str, object]) -> list[object]:
+        kinds: list[object] = []
+        for artifact in realization["artifacts"]:
+            kind = artifact["artifact_kind"]
+            if kind not in kinds:
+                kinds.append(kind)
+        return kinds
+
+    def close_lifecycle(
+        self,
+        *,
+        unavailable_manufacturers: set[str] | None = None,
+        unavailable_uk: set[str] | None = None,
+    ) -> None:
+        blocked_manufacturers = (
+            set() if unavailable_manufacturers is None else unavailable_manufacturers
+        )
+        blocked_uk = set() if unavailable_uk is None else unavailable_uk
+        for family in (*CRITICAL_FAMILIES, *NONCRITICAL_FAMILIES):
+            component = self.components[family]
+            manufacturer_request = self.requests[f"REQ-{family.upper()}-MFR"]
+            uk_request = self.requests[f"REQ-{family.upper()}-UK"]
+
+            if family in blocked_manufacturers:
+                note = f"Fixture unavailable {manufacturer_request['request_id']}."
+                component["status"] = "candidate-evidence-unavailable"
+                manufacturer_request["status"] = "unavailable"
+                manufacturer_request["evidence_ids"] = []
+                manufacturer_request["notes"] = note
+                manufacturer_source = _source(
+                    str(manufacturer_request["source_id"]),
+                    status="unavailable",
+                    artifacts=[{"note": note}],
+                )
+            else:
+                component["status"] = "selected"
+                manufacturer_request["status"] = "satisfied"
+                manufacturer_request["evidence_ids"] = [
+                    manufacturer_request["source_id"]
+                ]
+                manufacturer_request["notes"] = ""
+                realization = self.realizations.get(
+                    str(manufacturer_request["request_id"])
+                )
+                if realization is None:
+                    artifacts = [
+                        {"storage": "lfs", "retrieval_status": "current"}
+                    ]
+                else:
+                    artifacts = [
+                        {
+                            "name": artifact["name"],
+                            "final_url": artifact["expected_final_url"],
+                            "path": artifact["path"],
+                            "storage": artifact["storage"],
+                            "media_type": artifact["media_type"],
+                            "retrieval_status": "current",
+                        }
+                        for artifact in realization["artifacts"]
+                    ]
+                    manufacturer_request["artifact_kinds"] = (
+                        self._ordered_artifact_kinds(realization)
+                    )
+                manufacturer_source = _source(
+                    str(manufacturer_request["source_id"]),
+                    artifacts=artifacts,
+                    observations=[
+                        {
+                            "key": "manufacturer_part_number",
+                            "value": manufacturer_request["selected_mpn"],
+                        }
+                    ],
+                )
+            self._set_source(manufacturer_source)
+
+            if family in blocked_uk:
+                note = f"Fixture unavailable {uk_request['request_id']}."
+                uk_request["status"] = "unavailable"
+                uk_request["evidence_ids"] = []
+                uk_request["notes"] = note
+                uk_source = _source(
+                    str(uk_request["source_id"]),
+                    source_class="dynamic",
+                    status="unavailable",
+                    artifacts=[{"note": note}],
+                )
+            else:
+                uk_request["status"] = "satisfied"
+                uk_request["evidence_ids"] = [uk_request["source_id"]]
+                uk_request["notes"] = ""
+                uk_source = _source(
+                    str(uk_request["source_id"]),
+                    source_class="dynamic",
+                    observations=[
+                        {
+                            "key": "manufacturer_part_number",
+                            "value": uk_request["selected_mpn"],
+                        }
+                    ],
+                )
+            self._set_source(uk_source)
+            self.write_component(family)
+            self.write_request(str(manufacturer_request["request_id"]))
+            self.write_request(str(uk_request["request_id"]))
+
+        self.sources.sort(key=lambda row: str(row["id"]))
+        _write_json(self.path("evidence/manifest/sources.json"), self.sources)
+        self.render_selection()
+        self.render_handoff()
 
 
 def _run(root: Path, stage: str, family: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -489,6 +632,7 @@ class PositiveStageTests(ValidatorTestCase):
                 "REQUEST",
                 "FILESET",
                 "PARITY",
+                "LIFECYCLE",
             },
         )
         mutations = {row["mutation"] for row in rows}
@@ -569,6 +713,481 @@ class PositiveStageTests(ValidatorTestCase):
         self.assert_ok("selection-fragments")
 
 
+class LifecycleStageTests(ValidatorTestCase):
+    def source(self, source_id: str) -> dict[str, object]:
+        return next(row for row in self.fixture.sources if row["id"] == source_id)
+
+    def write_sources(self) -> None:
+        _write_json(
+            self.fixture.path("evidence/manifest/sources.json"),
+            self.fixture.sources,
+        )
+
+    def test_leaf_stages_are_non_linear_and_apply_distinct_gates(self) -> None:
+        self.assert_ok("handoff")
+        pending = self.assert_code("supplemental-lifecycle", "LIFECYCLE")
+        self.assertIn("request is not closed", pending.stderr)
+
+        self.fixture.close_lifecycle(
+            unavailable_manufacturers={"ethernet-magjack"},
+            unavailable_uk={"internal-usb-cable"},
+        )
+        self.assert_ok("selection-fragments")
+        self.assert_ok("supplemental-lifecycle")
+        blocked = self.assert_code("handoff", "COMPONENT")
+        self.assertEqual(
+            blocked.stderr,
+            "AIUS-P1-COMPONENT: evidence/design/components/ethernet-magjack.json: "
+            "critical family is blocked by status 'candidate-evidence-unavailable'\n",
+        )
+
+    def test_lifecycle_accepts_all_four_outcome_rows(self) -> None:
+        self.fixture.close_lifecycle(
+            unavailable_manufacturers={"expansion-spi"},
+            unavailable_uk={"internal-usb-cable"},
+        )
+        self.assert_ok("supplemental-lifecycle")
+
+    def test_satisfied_manufacturer_classes_are_golden_only(self) -> None:
+        family = "usb-c-receptacle"
+        for source_class in (
+            "comparative",
+            "independently-derived",
+            "dynamic",
+            "supplemental",
+        ):
+            with self.subTest(source_class=source_class):
+                with FixtureTree() as fixture:
+                    fixture.close_lifecycle()
+                    source_id = f"AIUS-{family.upper()}-MFR"
+                    source = next(
+                        row for row in fixture.sources if row["id"] == source_id
+                    )
+                    source["class"] = source_class
+                    _write_json(
+                        fixture.path("evidence/manifest/sources.json"),
+                        fixture.sources,
+                    )
+                    result = _run(
+                        fixture.root, "selection-fragments", family
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(
+                        "AIUS-P1-LIFECYCLE: evidence/manifest/requests/"
+                        f"REQ-{family.upper()}-MFR.json: source class "
+                        f"{source_class!r} must be 'golden'",
+                        result.stderr.splitlines(),
+                    )
+
+    def test_full_request_membership_missing_and_extra_are_exact(self) -> None:
+        self.fixture.close_lifecycle()
+        missing_id = "REQ-USB-C-RECEPTACLE-UK"
+        self.fixture.path(f"evidence/manifest/requests/{missing_id}.json").unlink()
+        missing = self.assert_code("supplemental-lifecycle", "LIFECYCLE")
+        self.assertIn(
+            "AIUS-P1-LIFECYCLE: evidence/manifest/requests: "
+            f"request IDs differ; missing={[missing_id]!r}; extra=[]",
+            missing.stderr.splitlines(),
+        )
+
+        self.fixture.close()
+        self.fixture = FixtureTree()
+        self.fixture.close_lifecycle()
+        extra_id = "REQ-EXTRA-MFR"
+        _write_json(
+            self.fixture.path(f"evidence/manifest/requests/{extra_id}.json"),
+            self.fixture.requests["REQ-USB-C-RECEPTACLE-MFR"],
+        )
+        extra = self.assert_code("supplemental-lifecycle", "LIFECYCLE")
+        self.assertIn(
+            "AIUS-P1-LIFECYCLE: evidence/manifest/requests: "
+            f"request IDs differ; missing=[]; extra={[extra_id]!r}",
+            extra.stderr.splitlines(),
+        )
+
+    def test_pending_absent_outcome_evidence_and_notes_diagnostics_are_exact(self) -> None:
+        family = "usb-c-receptacle"
+        request_id = f"REQ-{family.upper()}-MFR"
+        path = f"evidence/manifest/requests/{request_id}.json"
+        cases = (
+            (
+                "pending",
+                lambda fixture, request, source: request.update(
+                    {"status": "pending", "evidence_ids": [], "notes": ""}
+                ),
+                "request is not closed",
+            ),
+            (
+                "absent",
+                lambda fixture, request, source: fixture.sources.remove(source),
+                f"source_id {f'AIUS-{family.upper()}-MFR'!r} is absent from sources",
+            ),
+            (
+                "outcome",
+                lambda fixture, request, source: source.update(
+                    {"status": "unavailable"}
+                ),
+                "request status 'satisfied' does not match source status 'unavailable'",
+            ),
+            (
+                "superseded",
+                lambda fixture, request, source: source.update(
+                    {"status": "superseded"}
+                ),
+                "request status 'satisfied' does not match source status 'superseded'",
+            ),
+            (
+                "evidence",
+                lambda fixture, request, source: request.update(
+                    {"evidence_ids": ["CLIFF-ORJ5"]}
+                ),
+                "evidence_ids differ from lifecycle outcome 'satisfied'",
+            ),
+            (
+                "notes",
+                lambda fixture, request, source: request.update(
+                    {"notes": "wrong"}
+                ),
+                "notes differ from lifecycle outcome 'satisfied'",
+            ),
+        )
+        for label, mutate, message in cases:
+            with self.subTest(label=label):
+                with FixtureTree() as fixture:
+                    fixture.close_lifecycle()
+                    request = fixture.requests[request_id]
+                    source = next(
+                        row
+                        for row in fixture.sources
+                        if row["id"] == request["source_id"]
+                    )
+                    mutate(fixture, request, source)
+                    fixture.write_request(request_id)
+                    _write_json(
+                        fixture.path("evidence/manifest/sources.json"),
+                        fixture.sources,
+                    )
+                    fixture.render_handoff()
+                    result = _run(fixture.root, "supplemental-lifecycle")
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(
+                        f"AIUS-P1-LIFECYCLE: {path}: {message}",
+                        result.stderr.splitlines(),
+                    )
+
+    def test_unavailable_nonempty_evidence_is_public_schema_failure(self) -> None:
+        cases = (
+            ("ethernet-magjack", "MFR"),
+            ("internal-usb-cable", "UK"),
+        )
+        for family, suffix in cases:
+            with self.subTest(family=family):
+                with FixtureTree() as fixture:
+                    fixture.close_lifecycle(
+                        unavailable_manufacturers={family}
+                        if suffix == "MFR"
+                        else set(),
+                        unavailable_uk={family} if suffix == "UK" else set(),
+                    )
+                    request_id = f"REQ-{family.upper()}-{suffix}"
+                    request = fixture.requests[request_id]
+                    request["evidence_ids"] = [request["source_id"]]
+                    fixture.write_request(request_id)
+                    fixture.render_handoff()
+                    result = _run(fixture.root, "supplemental-lifecycle")
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(_codes(result), ["INSTANCE"], result.stderr)
+
+    def test_unavailable_notes_and_classes_are_exact(self) -> None:
+        cases = (
+            ("ethernet-magjack", "MFR", "golden"),
+            ("internal-usb-cable", "UK", "dynamic"),
+        )
+        for family, suffix, expected_class in cases:
+            for mutation in ("notes", "class"):
+                with self.subTest(family=family, mutation=mutation):
+                    with FixtureTree() as fixture:
+                        fixture.close_lifecycle(
+                            unavailable_manufacturers={family}
+                            if suffix == "MFR"
+                            else set(),
+                            unavailable_uk={family} if suffix == "UK" else set(),
+                        )
+                        request_id = f"REQ-{family.upper()}-{suffix}"
+                        request = fixture.requests[request_id]
+                        source = next(
+                            row
+                            for row in fixture.sources
+                            if row["id"] == request["source_id"]
+                        )
+                        if mutation == "notes":
+                            request["notes"] = "wrong"
+                            expected = "notes differ from lifecycle outcome 'unavailable'"
+                        else:
+                            source["class"] = "comparative"
+                            expected = (
+                                "source class 'comparative' must be "
+                                f"{expected_class!r}"
+                            )
+                        fixture.write_request(request_id)
+                        _write_json(
+                            fixture.path("evidence/manifest/sources.json"),
+                            fixture.sources,
+                        )
+                        fixture.render_handoff()
+                        result = _run(fixture.root, "supplemental-lifecycle")
+                        self.assertEqual(result.returncode, 1, result.stderr)
+                        self.assertIn(
+                            "AIUS-P1-LIFECYCLE: evidence/manifest/requests/"
+                            f"{request_id}.json: {expected}",
+                            result.stderr.splitlines(),
+                        )
+
+    def test_realization_artifact_and_mpn_matrix_is_exact(self) -> None:
+        family = "teensy-ethernet-socket"
+        request_id = f"REQ-{family.upper()}-MFR"
+        source_id = f"AIUS-{family.upper()}-MFR"
+        mutations = [
+            ("count", None, "artifact count differs from realization"),
+            (
+                "current",
+                None,
+                "artifact[0] is not a current retained artifact",
+            ),
+            ("kinds", None, "ordered artifact kinds differ from request"),
+            ("mpn", None, "source is not bound to selected_mpn"),
+        ]
+        for field in ("name", "final_url", "path", "storage", "media_type"):
+            mutations.append(
+                (
+                    "field",
+                    field,
+                    f"artifact[0] field {field!r} differs from realization",
+                )
+            )
+        for mutation, field, expected in mutations:
+            with self.subTest(mutation=mutation, field=field):
+                with FixtureTree() as fixture:
+                    fixture.close_lifecycle()
+                    request = fixture.requests[request_id]
+                    source = next(
+                        row for row in fixture.sources if row["id"] == source_id
+                    )
+                    artifacts = source["artifacts"]
+                    if mutation == "count":
+                        artifacts.pop()
+                    elif mutation == "current":
+                        artifacts[0]["retrieval_status"] = "superseded"
+                    elif mutation == "kinds":
+                        request["artifact_kinds"] = list(
+                            reversed(request["artifact_kinds"])
+                        )
+                    elif mutation == "mpn":
+                        source["observations"] = []
+                    else:
+                        artifacts[0][field] = "wrong"
+                    fixture.write_request(request_id)
+                    _write_json(
+                        fixture.path("evidence/manifest/sources.json"),
+                        fixture.sources,
+                    )
+                    result = _run(
+                        fixture.root, "selection-fragments", family
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(
+                        "AIUS-P1-LIFECYCLE: evidence/manifest/requests/"
+                        f"{request_id}.json: {expected}",
+                        result.stderr.splitlines(),
+                    )
+
+    def test_missing_realization_and_component_outcome_are_exact(self) -> None:
+        family = "usb-c-receptacle"
+        request_id = f"REQ-{family.upper()}-MFR"
+        self.fixture.close_lifecycle()
+        self.fixture.realization_document["realizations"] = [
+            row
+            for row in self.fixture.realization_document["realizations"]
+            if row["request_id"] != request_id
+        ]
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        missing = self.assert_code(
+            "selection-fragments", "LIFECYCLE", family
+        )
+        self.assertIn(
+            "AIUS-P1-LIFECYCLE: evidence/manifest/requests/"
+            f"{request_id}.json: supplemental manufacturer realization is absent",
+            missing.stderr.splitlines(),
+        )
+
+        self.fixture.close()
+        self.fixture = FixtureTree()
+        self.fixture.close_lifecycle()
+        self.fixture.components[family]["status"] = "candidate-evidence-unavailable"
+        self.fixture.write_component(family)
+        self.fixture.render_selection()
+        disagreement = self.assert_code("supplemental-lifecycle", "LIFECYCLE")
+        self.assertIn(
+            "AIUS-P1-LIFECYCLE: evidence/design/components/"
+            f"{family}.json: component status 'candidate-evidence-unavailable' "
+            "does not match manufacturer request status 'satisfied'",
+            disagreement.stderr.splitlines(),
+        )
+
+    def test_realization_join_requires_exact_source(self) -> None:
+        family = "usb-c-receptacle"
+        request_id = f"REQ-{family.upper()}-MFR"
+        path = f"evidence/manifest/requests/{request_id}.json"
+        self.fixture.close_lifecycle()
+        realization = self.fixture.realizations[request_id]
+        realization["source_id"] = "AIUS-WRONG-MFR"
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        mismatch = _run(self.fixture.root, "supplemental-lifecycle")
+        self.assertEqual(mismatch.returncode, 1, mismatch.stdout + mismatch.stderr)
+        self.assertEqual(mismatch.stdout, "")
+        self.assertEqual(
+            mismatch.stderr,
+            f"AIUS-P1-LIFECYCLE: {path}: supplemental manufacturer "
+            "realization is absent\n"
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identities differ; "
+            f"missing={[(request_id, f'AIUS-{family.upper()}-MFR')]!r}; "
+            f"extra={[(request_id, 'AIUS-WRONG-MFR')]!r}\n",
+        )
+
+    def test_realization_identity_missing_is_exact_in_isolated_stage(self) -> None:
+        missing = (
+            "REQ-USB-A-RECEPTACLE-MFR",
+            "AIUS-USB-A-RECEPTACLE-MFR",
+        )
+        self.fixture.close_lifecycle()
+        self.fixture.realization_document["realizations"] = [
+            row
+            for row in self.fixture.realization_document["realizations"]
+            if (row["request_id"], row["source_id"]) != missing
+        ]
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        result = _run(
+            self.fixture.root,
+            "selection-fragments",
+            "usb-c-receptacle",
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identities differ; "
+            f"missing={[missing]!r}; extra=[]\n",
+        )
+
+    def test_realization_wrong_source_sibling_is_exact_in_full_stage(self) -> None:
+        request_id = "REQ-USB-C-RECEPTACLE-MFR"
+        extra = (request_id, "AIUS-WRONG-MFR")
+        self.fixture.close_lifecycle()
+        sibling = copy.deepcopy(self.fixture.realizations[request_id])
+        sibling["source_id"] = extra[1]
+        self.fixture.realization_document["realizations"].append(sibling)
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        result = _run(self.fixture.root, "supplemental-lifecycle")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identities differ; "
+            f"missing=[]; extra={[extra]!r}\n",
+        )
+
+    def test_realization_exact_duplicate_is_diagnosed_before_indexing(self) -> None:
+        request_id = "REQ-USB-C-RECEPTACLE-MFR"
+        identity = (request_id, "AIUS-USB-C-RECEPTACLE-MFR")
+        self.fixture.close_lifecycle()
+        self.fixture.realization_document["realizations"].append(
+            copy.deepcopy(self.fixture.realizations[request_id])
+        )
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        result = _run(
+            self.fixture.root,
+            "selection-fragments",
+            "usb-c-receptacle",
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identity "
+            f"{identity!r} appears more than once\n",
+        )
+
+    def test_realization_conflicting_duplicate_cannot_mask_first_row(self) -> None:
+        request_id = "REQ-USB-C-RECEPTACLE-MFR"
+        identity = (request_id, "AIUS-USB-C-RECEPTACLE-MFR")
+        self.fixture.close_lifecycle()
+        conflicting = copy.deepcopy(self.fixture.realizations[request_id])
+        conflicting["artifacts"][0]["expected_final_url"] = (
+            "https://example.com/conflicting"
+        )
+        self.fixture.realization_document["realizations"].append(conflicting)
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        result = _run(
+            self.fixture.root,
+            "selection-fragments",
+            "usb-c-receptacle",
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identity "
+            f"{identity!r} appears more than once\n",
+        )
+
+    def test_realization_replacement_collision_is_exact(self) -> None:
+        victim = (
+            "REQ-USB-C-RECEPTACLE-MFR",
+            "AIUS-USB-C-RECEPTACLE-MFR",
+        )
+        collision = (
+            "REQ-USB-A-RECEPTACLE-MFR",
+            "AIUS-USB-A-RECEPTACLE-MFR",
+        )
+        self.fixture.close_lifecycle()
+        replacement = self.fixture.realizations[victim[0]]
+        replacement["request_id"], replacement["source_id"] = collision
+        _write_json(
+            self.fixture.path(REALIZATION), self.fixture.realization_document
+        )
+        result = _run(self.fixture.root, "supplemental-lifecycle")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "AIUS-P1-LIFECYCLE: evidence/manifest/requests/"
+            f"{victim[0]}.json: supplemental manufacturer realization is absent\n"
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identities differ; "
+            f"missing={[victim]!r}; extra=[]\n"
+            "AIUS-P1-LIFECYCLE: evidence/manifest/"
+            "supplemental-realization.json: realization identity "
+            f"{collision!r} appears more than once\n",
+        )
+
+
 class CliAndInputDiagnosticTests(ValidatorTestCase):
     def test_unknown_family_and_forbidden_family_scope_are_usage_errors(self) -> None:
         unknown = _run(self.fixture.root, "selection-fragments", "unknown-family")
@@ -584,6 +1203,11 @@ class CliAndInputDiagnosticTests(ValidatorTestCase):
             ("selection-fragments", "evidence/design/components/usb-c-receptacle.json", "usb-c-receptacle"),
             ("selection", "evidence/design/provisional-components.csv", None),
             ("handoff", "evidence/manifest/supplemental-requests.json", None),
+            (
+                "supplemental-lifecycle",
+                "evidence/manifest/supplemental-requests.json",
+                None,
+            ),
         )
         for stage, relative, family in cases:
             with self.subTest(stage=stage):
@@ -1758,7 +2382,10 @@ class SelectionFragmentDiagnosticTests(ValidatorTestCase):
         self.fixture.requests[request_id]["notes"] = "Manufacturer evidence unavailable."
         self.fixture.write_request(request_id)
         self.assert_ok("selection-fragments", family)
-        self.assert_code("selection-fragments", "COMPONENT")
+        self.fixture.render_selection()
+        self.fixture.render_handoff()
+        self.assert_ok("selection-fragments")
+        self.assert_code("handoff", "COMPONENT")
 
     def test_satisfied_manufacturer_request_requires_current_archived_source(self) -> None:
         family = "usb-c-receptacle"
@@ -1776,7 +2403,7 @@ class SelectionFragmentDiagnosticTests(ValidatorTestCase):
             fixture.add_selected_manufacturer_source(family, archived=False)
             result = _run(fixture.root, "selection-fragments", family)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("REQUEST", _codes(result))
+            self.assertIn("LIFECYCLE", _codes(result))
 
     def test_satisfied_manufacturer_source_requires_matching_mpn_observation(self) -> None:
         family = "usb-c-receptacle"
@@ -1795,7 +2422,7 @@ class SelectionFragmentDiagnosticTests(ValidatorTestCase):
                     )
                     result = _run(fixture.root, "selection-fragments", family)
                     self.assertEqual(result.returncode, 1)
-                    self.assertIn("REQUEST", _codes(result))
+                    self.assertIn("LIFECYCLE", _codes(result))
 
     def test_locked_cliff_seed_source_mpn_pairs_need_no_observation(self) -> None:
         for family, source_id, mpn in (
@@ -1850,7 +2477,7 @@ class SelectionFragmentDiagnosticTests(ValidatorTestCase):
             )
             result = _run(fixture.root, "selection-fragments", family)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("REQUEST", _codes(result))
+            self.assertIn("LIFECYCLE", _codes(result))
 
     def test_satisfied_uk_request_requires_dynamic_matching_mpn_observation(self) -> None:
         family = "usb-c-receptacle"
@@ -1870,7 +2497,7 @@ class SelectionFragmentDiagnosticTests(ValidatorTestCase):
             fixture.add_selected_uk_source(family, matching_mpn=False)
             result = _run(fixture.root, "selection-fragments", family)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("REQUEST", _codes(result))
+            self.assertIn("LIFECYCLE", _codes(result))
 
 
 class AggregateParityTests(ValidatorTestCase):
@@ -1902,6 +2529,38 @@ class AggregateParityTests(ValidatorTestCase):
         self.fixture.render_selection()
         self.fixture.render_handoff()
         self.assert_ok("handoff")
+
+
+class PersistentLifecycleFixtureTests(unittest.TestCase):
+    def run_stage(
+        self, fixture_name: str, stage: str
+    ) -> subprocess.CompletedProcess[str]:
+        return _run(LIFECYCLE_FIXTURE_ROOT / fixture_name, stage)
+
+    def test_eligible_fixture_passes_lifecycle_and_handoff(self) -> None:
+        for stage in ("supplemental-lifecycle", "handoff"):
+            with self.subTest(stage=stage):
+                result = self.run_stage("eligible", stage)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, f"OK topology {stage}\n")
+                self.assertEqual(result.stderr, "")
+
+    def test_blocked_fixture_passes_lifecycle(self) -> None:
+        result = self.run_stage("blocked", "supplemental-lifecycle")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "OK topology supplemental-lifecycle\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_blocked_handoff_exact_diagnostic(self) -> None:
+        result = self.run_stage("blocked", "handoff")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.stderr,
+            "AIUS-P1-COMPONENT: evidence/design/components/"
+            "ethernet-magjack.json: critical family is blocked by status "
+            "'candidate-evidence-unavailable'\n",
+        )
 
 
 if __name__ == "__main__":

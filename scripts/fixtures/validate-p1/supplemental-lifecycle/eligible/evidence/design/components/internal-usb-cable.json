@@ -1,0 +1,20 @@
+{
+  "block": "internal-usb-cable",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-INTERNAL-CABLE"
+  ],
+  "manufacturer": "StarTech.com",
+  "mpn": "UUSBHAUB6IN",
+  "alternatives": [],
+  "selection_rationale": "Provisional single-MPN candidate chosen under the P1C2 primary-source ranking; all assigned verification gates remain open.",
+  "authority_url": "https://media.startech.com/cms/pdfs/uusbhaub6in_datasheet.pdf",
+  "manufacturer_request_id": "REQ-INTERNAL-USB-CABLE-MFR",
+  "availability_request_id": "REQ-INTERNAL-USB-CABLE-UK",
+  "generic_policy": null,
+  "status": "selected",
+  "notes": ""
+}

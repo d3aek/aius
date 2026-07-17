@@ -1,0 +1,21 @@
+{
+  "request_id": "REQ-USB-A-RECEPTACLE-UK",
+  "request_kind": "uk-availability",
+  "family": "usb-a-receptacle",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-A-RECEPTACLE"
+  ],
+  "authority_url": "https://uk.rs-online.com/web/p/usb-connectors/5298195",
+  "selected_manufacturer": "TE Connectivity",
+  "selected_mpn": "292303-1",
+  "source_id": "AIUS-USB-A-RECEPTACLE-UK",
+  "artifact_kinds": ["price-observation"],
+  "retention": "normalized-observation-only",
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-USB-A-RECEPTACLE-UK"],
+  "notes": ""
+}

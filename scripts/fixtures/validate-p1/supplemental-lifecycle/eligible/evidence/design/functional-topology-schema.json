@@ -1,0 +1,921 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.net/schemas/aius/functional-topology-schema.json",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "modeId": {
+      "enum": ["pcm-processed", "dts-processed", "diagnostic-raw-bypass", "unsupported-muted", "fault-muted"]
+    },
+    "blockId": {
+      "enum": [
+        "power-entry",
+        "usb-bridge",
+        "teensy",
+        "optical-rx",
+        "spdif-capture",
+        "input-classifier",
+        "dts-decoder",
+        "pcm-normalizer",
+        "downmix-eq",
+        "spdif-transmit",
+        "raw-bypass-mux",
+        "tx-gate",
+        "optical-tx",
+        "ethernet",
+        "expansion"
+      ]
+    },
+    "flowId": {
+      "enum": [
+        "optical-to-capture",
+        "capture-to-classifier",
+        "classifier-to-dts",
+        "classifier-to-pcm",
+        "dts-to-normalizer",
+        "pcm-to-normalizer",
+        "normalizer-to-dsp",
+        "dsp-to-transmit",
+        "transmit-to-mux",
+        "optical-to-raw-mux",
+        "mux-to-gate",
+        "gate-to-optical",
+        "path-select-control",
+        "tx-enable-control",
+        "watchdog-reset-control",
+        "usb-vbus-entry",
+        "protected-vbus",
+        "teensy-power",
+        "carrier-3v3",
+        "expansion-power"
+      ]
+    },
+    "clockDomainId": {
+      "enum": ["spdif-recovered", "audio-processing", "spdif-transmit-clock", "usb-device-clock", "ethernet-rmii-clock"]
+    },
+    "bufferId": {
+      "enum": ["spdif-rx-dma", "compressed-burst-ring", "decoded-pcm-pool", "dsp-output-ring", "spdif-tx-dma"]
+    },
+    "latencyBoundaryId": {
+      "enum": ["capture", "burst-assembly", "decode", "dsp", "transmit-queue"]
+    },
+    "powerDomainId": {
+      "enum": [
+        "usb-vbus-raw",
+        "protected-5v",
+        "teensy-3v3",
+        "digital-ground",
+        "chassis-shield",
+        "expansion-3v3",
+        "expansion-usb-host-vbus"
+      ]
+    },
+    "controlId": {
+      "enum": [
+        "spdif-path-select",
+        "optical-tx-enable",
+        "teensy-reset",
+        "teensy-watchdog",
+        "program-control",
+        "status-led"
+      ]
+    },
+    "nullablePowerDomainId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/powerDomainId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableClockDomainId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/clockDomainId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableControlId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/controlId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mode": {
+      "type": "object",
+      "required": ["id", "input_formats", "output_format", "active_blocks", "error_mode", "evidence_ids", "notes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/modeId"
+        },
+        "input_formats": {
+          "type": "array",
+          "items": {
+            "enum": ["pcm-stereo", "iec61937-dts-core", "none"]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "output_format": {
+          "enum": ["pcm-stereo-48k", "raw-spdif", "none"]
+        },
+        "active_blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/blockId"
+          },
+          "uniqueItems": true
+        },
+        "error_mode": {
+          "enum": ["unsupported-muted", "fault-muted"]
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "block": {
+      "type": "object",
+      "required": ["id", "kind", "owner", "power_domain", "clock_domain", "evidence_ids", "notes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/blockId"
+        },
+        "kind": {
+          "enum": ["hardware", "firmware", "software", "boundary"]
+        },
+        "owner": {
+          "enum": ["carrier", "teensy-hardware", "teensy-firmware", "external"]
+        },
+        "power_domain": {
+          "$ref": "#/$defs/nullablePowerDomainId"
+        },
+        "clock_domain": {
+          "$ref": "#/$defs/nullableClockDomainId"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "flow": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "source_id",
+        "sink_id",
+        "payload",
+        "enabled_modes",
+        "control_id",
+        "evidence_ids",
+        "notes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/flowId"
+        },
+        "kind": {
+          "enum": ["data", "control", "power"]
+        },
+        "source_id": {
+          "$ref": "#/$defs/blockId"
+        },
+        "sink_id": {
+          "$ref": "#/$defs/blockId"
+        },
+        "payload": {
+          "enum": [
+            "optical-spdif",
+            "logic-spdif",
+            "iec61937-dts-core",
+            "pcm-native",
+            "pcm-stereo-48k",
+            "path-select",
+            "tx-enable",
+            "reset",
+            "usb-vbus",
+            "protected-5v",
+            "teensy-3v3",
+            "expansion-3v3"
+          ]
+        },
+        "enabled_modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modeId"
+          },
+          "uniqueItems": true
+        },
+        "control_id": {
+          "$ref": "#/$defs/nullableControlId"
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "expansion-power"
+              }
+            }
+          },
+          "then": {
+            "required": ["payload"],
+            "properties": {
+              "payload": {
+                "const": "expansion-3v3"
+              }
+            }
+          },
+          "else": {
+            "required": ["payload"],
+            "properties": {
+              "payload": {
+                "enum": [
+                  "optical-spdif",
+                  "logic-spdif",
+                  "iec61937-dts-core",
+                  "pcm-native",
+                  "pcm-stereo-48k",
+                  "path-select",
+                  "tx-enable",
+                  "reset",
+                  "usb-vbus",
+                  "protected-5v",
+                  "teensy-3v3"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "clockDomain": {
+      "type": "object",
+      "required": ["id", "source_id", "consumer_ids", "synchronous_with", "frequency_status", "evidence_ids", "notes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/clockDomainId"
+        },
+        "source_id": {
+          "$ref": "#/$defs/blockId"
+        },
+        "consumer_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/blockId"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "synchronous_with": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/clockDomainId"
+          },
+          "uniqueItems": true
+        },
+        "frequency_status": {
+          "enum": ["evidence-locked", "software-derived", "deferred"]
+        },
+        "evidence_ids": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "buffer": {
+      "type": "object",
+      "required": [
+        "id",
+        "owner",
+        "producer",
+        "consumer",
+        "storage_class",
+        "overflow_policy",
+        "measurement_gate",
+        "notes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/bufferId"
+        },
+        "owner": {
+          "$ref": "#/$defs/blockId"
+        },
+        "producer": {
+          "$ref": "#/$defs/blockId"
+        },
+        "consumer": {
+          "$ref": "#/$defs/blockId"
+        },
+        "storage_class": {
+          "enum": ["dma-ring", "ring-buffer", "block-pool"]
+        },
+        "overflow_policy": {
+          "enum": ["drop-and-mute", "reset-pipeline-and-mute", "backpressure"]
+        },
+        "measurement_gate": {
+          "enum": ["P3", "P4", "P5", "P6", "P7"]
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "latencyBoundary": {
+      "type": "object",
+      "required": ["id", "source", "sink", "budget_status", "measurement_gate", "notes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/latencyBoundaryId"
+        },
+        "source": {
+          "$ref": "#/$defs/blockId"
+        },
+        "sink": {
+          "$ref": "#/$defs/blockId"
+        },
+        "budget_status": {
+          "const": "deferred"
+        },
+        "measurement_gate": {
+          "enum": ["P6", "P7"]
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "modeCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mode"
+      },
+      "minItems": 5,
+      "maxItems": 5,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "pcm-processed"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "dts-processed"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "diagnostic-raw-bypass"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "unsupported-muted"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+              "id": {
+                "const": "fault-muted"
+              }
+            }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "blockCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/block"
+      },
+      "minItems": 15,
+      "maxItems": 15,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "power-entry" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "usb-bridge" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "teensy" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "optical-rx" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "spdif-capture" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "input-classifier" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "dts-decoder" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "pcm-normalizer" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "downmix-eq" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "spdif-transmit" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "raw-bypass-mux" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "tx-gate" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "optical-tx" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "ethernet" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "expansion" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "flowCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/flow"
+      },
+      "minItems": 20,
+      "maxItems": 20,
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "optical-to-capture" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "capture-to-classifier" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "classifier-to-dts" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "classifier-to-pcm" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "dts-to-normalizer" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "pcm-to-normalizer" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "normalizer-to-dsp" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "dsp-to-transmit" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "transmit-to-mux" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "optical-to-raw-mux" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "mux-to-gate" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "gate-to-optical" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "path-select-control" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "tx-enable-control" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "watchdog-reset-control" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "usb-vbus-entry" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "protected-vbus" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "teensy-power" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "carrier-3v3" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "expansion-power" } } },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "clockDomainCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/clockDomain"
+      },
+      "minItems": 5,
+      "maxItems": 5,
+      "allOf": [
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "spdif-recovered" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "audio-processing" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "spdif-transmit-clock" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "usb-device-clock" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "ethernet-rmii-clock" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "bufferCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/buffer"
+      },
+      "minItems": 5,
+      "maxItems": 5,
+      "allOf": [
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "spdif-rx-dma" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "compressed-burst-ring" } }
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "decoded-pcm-pool" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "dsp-output-ring" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "spdif-tx-dma" } } },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    },
+    "latencyBoundaryCollection": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/latencyBoundary"
+      },
+      "minItems": 5,
+      "maxItems": 5,
+      "allOf": [
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "capture" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "burst-assembly" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "decode" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "dsp" } } },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": { "type": "object", "required": ["id"], "properties": { "id": { "const": "transmit-queue" } } },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": [
+    "schema_version",
+    "modes",
+    "blocks",
+    "flows",
+    "clock_domains",
+    "buffers",
+    "latency_boundaries",
+    "evidence_ids"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "modes": {
+      "$ref": "#/$defs/modeCollection"
+    },
+    "blocks": {
+      "$ref": "#/$defs/blockCollection"
+    },
+    "flows": {
+      "$ref": "#/$defs/flowCollection"
+    },
+    "clock_domains": {
+      "$ref": "#/$defs/clockDomainCollection"
+    },
+    "buffers": {
+      "$ref": "#/$defs/bufferCollection"
+    },
+    "latency_boundaries": {
+      "$ref": "#/$defs/latencyBoundaryCollection"
+    },
+    "evidence_ids": {
+      "$ref": "#/$defs/evidenceIds"
+    }
+  },
+  "additionalProperties": false
+}

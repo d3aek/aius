@@ -1,0 +1,19 @@
+{
+  "block": "expansion-i2c-control",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-I2C-CONTROL-CONNECTOR"
+  ],
+  "manufacturer": "JST",
+  "mpn": "BM04B-GHS-TBT",
+  "alternatives": [],
+  "selection_rationale": "Provisional single-MPN candidate chosen under the P1C2 primary-source ranking; all assigned verification gates remain open.",
+  "authority_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+  "manufacturer_request_id": "REQ-EXPANSION-I2C-CONTROL-MFR",
+  "availability_request_id": "REQ-EXPANSION-I2C-CONTROL-UK",
+  "generic_policy": null,
+  "status": "selected",
+  "notes": ""
+}

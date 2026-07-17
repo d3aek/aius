@@ -1,0 +1,54 @@
+{
+  "artifacts": [
+    {
+      "bytes": 77,
+      "final_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+      "media_type": "application/pdf",
+      "name": "TDS_151-30300_com.pdf",
+      "note": "",
+      "path": "https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300",
+      "retrieval_status": "current",
+      "sha256": "609043860594348bcbcf5c74ea9a3b62c1d9aa15cf6b5a3a0173b2403494cc65",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 111,
+      "final_url": "https://www.hellermanntyton.com/products/cable-tie-mounts/ctm0/151-30300",
+      "media_type": "text/html",
+      "name": "151-30300.html",
+      "note": "",
+      "path": "evidence/source-snapshots/AIUS-MECHANICAL-CABLE-RETAINER-MFR/151-30300.html",
+      "retrieval_status": "current",
+      "sha256": "10f0c3902085b7b1e3e7298ad5adf20092ce670595b0f022b3f4cecca27fed48",
+      "storage": "git"
+    }
+  ],
+  "authority": "HellermannTyton",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-MECHANICAL-CABLE-RETAINER"
+  ],
+  "class": "golden",
+  "id": "AIUS-MECHANICAL-CABLE-RETAINER-MFR",
+  "landing_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-MECHANICAL-CABLE-RETAINER-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-16T12:34:56Z",
+      "source_url": "https://www.hellermanntyton.com/shared/assets/TDS_151-30300_com.pdf",
+      "unit": null,
+      "value": "151-30300"
+    }
+  ],
+  "purpose": "Satisfy REQ-MECHANICAL-CABLE-RETAINER-MFR for mechanical-cable-retainer.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "sha256:97f2163c05eb2baf22a37c74ea22033ca6eb4f8837bd333a0020230a4f606c90",
+  "status": "current",
+  "supersedes": null,
+  "title": "HellermannTyton 151-30300 primary manufacturer evidence"
+}

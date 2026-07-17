@@ -1,0 +1,21 @@
+{
+  "request_id": "REQ-ETHERNET-MAGJACK-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "ethernet-magjack",
+  "requirements": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-ETHERNET-MAGJACK"
+  ],
+  "authority_url": "https://yageogroup.com/content/datasheet/asset/file/DATASHEET_J403",
+  "selected_manufacturer": "Pulse Electronics",
+  "selected_mpn": "J0011D21BNL",
+  "source_id": "AIUS-ETHERNET-MAGJACK-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "unavailable",
+  "evidence_ids": [],
+  "notes": "Fixture unavailable REQ-ETHERNET-MAGJACK-MFR."
+}

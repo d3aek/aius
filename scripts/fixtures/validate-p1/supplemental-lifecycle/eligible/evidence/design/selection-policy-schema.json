@@ -1,0 +1,300 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.net/schemas/aius/selection-policy-schema.json",
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "engineeringPolicyIdentifier": {
+      "type": "string",
+      "pattern": "^EP-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "requirementIdentifier": {
+      "type": "string",
+      "pattern": "^REQT-[A-Z0-9]+(?:-[A-Z0-9]+)*$"
+    },
+    "manufacturerRequestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*-MFR$"
+    },
+    "availabilityRequestIdentifier": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z0-9]+(?:-[A-Z0-9]+)*-UK$"
+    },
+    "manufacturerSourceIdentifier": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^AIUS-[A-Z0-9]+(?:-[A-Z0-9]+)*-MFR$"
+        },
+        {
+          "enum": ["CLIFF-ORJ5", "CLIFF-OTJ5"]
+        }
+      ]
+    },
+    "availabilitySourceIdentifier": {
+      "type": "string",
+      "pattern": "^AIUS-[A-Z0-9]+(?:-[A-Z0-9]+)*-UK$"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "componentFile": {
+      "type": "string",
+      "pattern": "^components/[a-z0-9]+(?:-[a-z0-9]+)*\\.json$"
+    },
+    "componentStatus": {
+      "enum": [
+        "candidate-pending-evidence",
+        "selected",
+        "candidate-evidence-unavailable",
+        "generic-allowance",
+        "unresolved"
+      ]
+    },
+    "nullableManufacturerRequestIdentifier": {
+      "anyOf": [{ "$ref": "#/$defs/manufacturerRequestIdentifier" }, { "type": "null" }]
+    },
+    "nullableAvailabilityRequestIdentifier": {
+      "anyOf": [{ "$ref": "#/$defs/availabilityRequestIdentifier" }, { "type": "null" }]
+    },
+    "nullableManufacturerSourceIdentifier": {
+      "anyOf": [{ "$ref": "#/$defs/manufacturerSourceIdentifier" }, { "type": "null" }]
+    },
+    "nullableAvailabilitySourceIdentifier": {
+      "anyOf": [{ "$ref": "#/$defs/availabilitySourceIdentifier" }, { "type": "null" }]
+    },
+    "engineeringPolicy": {
+      "type": "object",
+      "required": ["id", "scope", "rule", "validation_gate", "notes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/engineeringPolicyIdentifier"
+        },
+        "scope": {
+          "enum": ["product-topology", "safe-default", "manufacturability", "sourcing", "provisional-design-choice"]
+        },
+        "rule": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "validation_gate": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["id", "statement", "basis_ids", "verification_stage", "notes"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/requirementIdentifier"
+        },
+        "statement": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "basis_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "verification_stage": {
+          "enum": ["P1D-electrical", "P1D-mechanical", "P1E-sourcing", "H1-schematic", "H2-placement"]
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "family": {
+      "type": "object",
+      "required": [
+        "family",
+        "component_file",
+        "critical",
+        "generic_eligible",
+        "allowed_statuses",
+        "requirements",
+        "manufacturer_request_id",
+        "availability_request_id",
+        "manufacturer_source_id",
+        "availability_source_id",
+        "dependent_feature",
+        "notes"
+      ],
+      "properties": {
+        "family": {
+          "$ref": "#/$defs/slug"
+        },
+        "component_file": {
+          "$ref": "#/$defs/componentFile"
+        },
+        "critical": {
+          "type": "boolean"
+        },
+        "generic_eligible": {
+          "type": "boolean"
+        },
+        "allowed_statuses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/componentStatus"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/requirementIdentifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "manufacturer_request_id": {
+          "$ref": "#/$defs/nullableManufacturerRequestIdentifier"
+        },
+        "availability_request_id": {
+          "$ref": "#/$defs/nullableAvailabilityRequestIdentifier"
+        },
+        "manufacturer_source_id": {
+          "$ref": "#/$defs/nullableManufacturerSourceIdentifier"
+        },
+        "availability_source_id": {
+          "$ref": "#/$defs/nullableAvailabilitySourceIdentifier"
+        },
+        "dependent_feature": {
+          "$ref": "#/$defs/slug"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "generic_eligible": {
+                "const": true
+              }
+            },
+            "required": ["generic_eligible"]
+          },
+          "then": {
+            "properties": {
+              "allowed_statuses": {
+                "const": ["generic-allowance"]
+              },
+              "manufacturer_request_id": {
+                "const": null
+              },
+              "availability_request_id": {
+                "const": null
+              },
+              "manufacturer_source_id": {
+                "const": null
+              },
+              "availability_source_id": {
+                "const": null
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "allowed_statuses": {
+                "type": "array",
+                "items": {
+                  "enum": ["candidate-pending-evidence", "selected", "candidate-evidence-unavailable", "unresolved"]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "manufacturer_request_id": {
+                "$ref": "#/$defs/manufacturerRequestIdentifier"
+              },
+              "availability_request_id": {
+                "$ref": "#/$defs/availabilityRequestIdentifier"
+              },
+              "manufacturer_source_id": {
+                "$ref": "#/$defs/manufacturerSourceIdentifier"
+              },
+              "availability_source_id": {
+                "$ref": "#/$defs/availabilitySourceIdentifier"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "critical": {
+                "const": true
+              }
+            },
+            "required": ["critical"]
+          },
+          "then": {
+            "properties": {
+              "allowed_statuses": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "candidate-pending-evidence",
+                    "selected",
+                    "candidate-evidence-unavailable",
+                    "generic-allowance"
+                  ]
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": ["schema_version", "engineering_policies", "requirements", "families"],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "engineering_policies": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/engineeringPolicy"
+      },
+      "uniqueItems": true
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/requirement"
+      },
+      "uniqueItems": true
+    },
+    "families": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/family"
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

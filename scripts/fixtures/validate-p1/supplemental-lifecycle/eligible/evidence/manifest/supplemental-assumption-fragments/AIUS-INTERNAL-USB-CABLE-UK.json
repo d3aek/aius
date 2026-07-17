@@ -1,0 +1,18 @@
+{
+  "claim": "Supplemental request REQ-INTERNAL-USB-CABLE-UK source AIUS-INTERNAL-USB-CABLE-UK is unavailable for: REQT-COMMON-ENCLOSURE-CLEARANCE; REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-USB-INTERNAL-CABLE",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-INTERNAL-CABLE"
+  ],
+  "consequence": "The selected component remains provisional until REQ-INTERNAL-USB-CABLE-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-INTERNAL-USB-CABLE-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-INTERNAL-USB-CABLE-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

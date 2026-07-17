@@ -1022,6 +1022,19 @@ blocked-handoff diagnostic. The manifest README records the isolated-family,
 lifecycle-closure and design-handoff commands and the required P1D2 order:
 `validate_evidence`, `supplemental-lifecycle`, then `handoff`.
 
+P1D0e completed on 2026-07-17. The P1 runner now has explicit sibling
+`supplemental-lifecycle` and `handoff` leaves, with lifecycle-valid unavailable
+outcomes separated from design eligibility. Exact policy-derived realization
+identities, duplicate-tuple rejection, source classes, Cliff exceptions,
+artifact positions, MPN observations and all four request/source/component
+outcomes are enforced through the public CLI. Deterministic eligible and
+blocked roots retain only synthetic fixture payloads and reproduce under the
+committed generator. The final clean-room delivery audit returned `PASS` after
+closing source-ID and duplicate-tuple realization masking probes and confirming
+the schema-owned unavailable-evidence boundary. One hundred five P1 and 47
+evidence-validator tests were green, together with every direct fixture command,
+production pending handoff and scoped diff checks.
+
 ## P1D1 — Supplemental acquisition waves
 
 Each row is one short-lived agent and one request. Oracle

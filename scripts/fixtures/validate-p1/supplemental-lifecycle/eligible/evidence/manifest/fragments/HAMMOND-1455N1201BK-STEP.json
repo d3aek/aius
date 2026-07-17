@@ -1,0 +1,28 @@
+{
+  "artifacts": [
+    {
+      "bytes": 11,
+      "final_url": "https://www.hammfg.com/files/parts/stp/1455N1201BK.zip?v=1697661986",
+      "media_type": "application/zip",
+      "name": "1455N1201BK.zip",
+      "note": "Retained for personal noncommercial research; no republication permission is inferred.",
+      "path": "https://www.hammfg.com/part/1455N1201BK",
+      "retrieval_status": "current",
+      "sha256": "102855d599837ca8258d565736139b711e301989df39f506468076decfea1dac",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "Hammond Manufacturing",
+  "claim_scope": ["enclosure mechanical fit"],
+  "class": "golden",
+  "id": "HAMMOND-1455N1201BK-STEP",
+  "landing_url": "https://www.hammfg.com/part/1455N1201BK",
+  "observations": [],
+  "purpose": "Provide the manufacturer geometry for mechanical-fit validation.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T05:45:03Z",
+  "revision": "archive-v1697661986",
+  "status": "current",
+  "supersedes": null,
+  "title": "STEP file linked by the part page"
+}

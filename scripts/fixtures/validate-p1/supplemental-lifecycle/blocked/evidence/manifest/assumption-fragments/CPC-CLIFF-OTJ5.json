@@ -1,0 +1,12 @@
+{
+  "claim": "Seed source CPC-CLIFF-OTJ5 is unavailable for: optical transmitter price; optical transmitter stock",
+  "claim_scope": ["optical transmitter price", "optical transmitter stock"],
+  "consequence": "Dependent P1 claims remain provisional until the source is replaced.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-CPC-CLIFF-OTJ5",
+  "owner": "P1B",
+  "resolution": null,
+  "source_ids": ["CPC-CLIFF-OTJ5"],
+  "status": "open",
+  "validation_gate": "Replace unavailable seed evidence"
+}

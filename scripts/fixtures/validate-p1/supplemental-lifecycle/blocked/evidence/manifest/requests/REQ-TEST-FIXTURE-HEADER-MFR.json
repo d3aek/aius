@@ -1,0 +1,20 @@
+{
+  "request_id": "REQ-TEST-FIXTURE-HEADER-MFR",
+  "request_kind": "manufacturer-evidence",
+  "family": "test-fixture-header",
+  "requirements": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEST-FIXTURE-HEADER"
+  ],
+  "authority_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+  "selected_manufacturer": "Tag-Connect",
+  "selected_mpn": "TC2030-IDC",
+  "source_id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+  "artifact_kinds": ["datasheet"],
+  "retention": "archive",
+  "status": "satisfied",
+  "evidence_ids": ["AIUS-TEST-FIXTURE-HEADER-MFR"],
+  "notes": ""
+}

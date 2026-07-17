@@ -1,0 +1,43 @@
+{
+  "artifacts": [
+    {
+      "bytes": 66,
+      "final_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+      "media_type": "application/pdf",
+      "name": "292303-1.datasheet.pdf",
+      "note": "",
+      "path": "docs/reference/datasheets.mdAIUS-USB-A-RECEPTACLE-MFR/292303-1.datasheet.pdf",
+      "retrieval_status": "current",
+      "sha256": "17842f61df7846269b8479f935a665e988e9dadbd61fdc01a00dfaaeeb69f4ae",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "TE Connectivity",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-A-RECEPTACLE"
+  ],
+  "class": "golden",
+  "id": "AIUS-USB-A-RECEPTACLE-MFR",
+  "landing_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-USB-A-RECEPTACLE-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-16T12:34:56Z",
+      "source_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+      "unit": null,
+      "value": "292303-1"
+    }
+  ],
+  "purpose": "Satisfy REQ-USB-A-RECEPTACLE-MFR for usb-a-receptacle.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-16T12:34:56Z",
+  "revision": "sha256:17842f61df7846269b8479f935a665e988e9dadbd61fdc01a00dfaaeeb69f4ae",
+  "status": "current",
+  "supersedes": null,
+  "title": "TE Connectivity 292303-1 primary manufacturer evidence"
+}

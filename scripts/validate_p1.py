@@ -32,6 +32,7 @@ STAGES = (
     "selection-fragments",
     "selection",
     "handoff",
+    "supplemental-lifecycle",
 )
 
 FUNCTIONAL_SCHEMA = Path("evidence/design/functional-topology-schema.json")
@@ -50,6 +51,7 @@ FUNCTIONAL_MARKDOWN = Path("docs/reference/functional-topology.md")
 INTERFACES_MARKDOWN = Path("docs/reference/interfaces-and-states.md")
 COMPONENT_CSV = Path("evidence/design/provisional-components.csv")
 REQUEST_AGGREGATE = Path("evidence/manifest/supplemental-requests.json")
+SUPPLEMENTAL_REALIZATION = Path("evidence/manifest/supplemental-realization.json")
 
 FUNCTIONAL_CONTRACT = Path("evidence/design/contracts/functional-topology.json")
 INTERFACES_CONTRACT = Path("evidence/design/contracts/interfaces-and-states.json")
@@ -619,6 +621,9 @@ class Validator:
         self.policy_families: dict[str, Mapping[str, object]] | None = None
         self.components: dict[str, Mapping[str, object]] = {}
         self.requests: dict[str, Mapping[str, object]] = {}
+        self.realizations_by_request_source: (
+            dict[tuple[str, str], Mapping[str, object]] | None
+        ) = None
         self.selection_fragments_ready = False
 
     def add(self, code: str, path: Path, detail: str) -> None:
@@ -1256,8 +1261,9 @@ class Validator:
     def check_selection_fragments(self, family: str | None) -> None:
         if self.policy_families is None:
             return
+        self._load_supplemental_realizations()
         if family is not None:
-            self._check_family_fragment(family, fileset_mode=False)
+            self._check_family_fragment(family)
             return
 
         component_names = self._json_basenames(COMPONENT_DIRECTORY)
@@ -1266,7 +1272,7 @@ class Validator:
             self.add("FILESET", COMPONENT_DIRECTORY, self._set_difference_detail(expected_component_names, component_names))
 
         for name in FAMILIES:
-            self._check_family_fragment(name, fileset_mode=True)
+            self._check_family_fragment(name)
 
         if len(self.components) != len(FAMILIES):
             return
@@ -1285,6 +1291,84 @@ class Validator:
             self.add("FILESET", REQUEST_DIRECTORY, self._set_difference_detail(expected_request_names, request_names))
         self.selection_fragments_ready = not self.diagnostics
 
+    def _load_supplemental_realizations(self) -> None:
+        if self.realizations_by_request_source is not None:
+            return
+        loaded = self.load_json(SUPPLEMENTAL_REALIZATION)
+        rows = (
+            loaded.value.get("realizations")
+            if loaded.parsed and isinstance(loaded.value, dict)
+            else None
+        )
+        if not isinstance(rows, list):
+            self.realizations_by_request_source = {}
+            return
+        loaded_rows: list[
+            tuple[tuple[str, str], Mapping[str, object]]
+        ] = []
+        for row in rows:
+            request_id = row.get("request_id") if isinstance(row, dict) else None
+            source_id = row.get("source_id") if isinstance(row, dict) else None
+            if not isinstance(request_id, str) or not isinstance(source_id, str):
+                continue
+            loaded_rows.append(((request_id, source_id), row))
+
+        actual_identities = {identity for identity, _ in loaded_rows}
+        expected_identities = self._expected_realization_identities()
+        if actual_identities != expected_identities:
+            self.add(
+                "LIFECYCLE",
+                SUPPLEMENTAL_REALIZATION,
+                "realization identities differ; "
+                f"missing={sorted(expected_identities - actual_identities)!r}; "
+                f"extra={sorted(actual_identities - expected_identities)!r}",
+            )
+        counts: dict[tuple[str, str], int] = {}
+        for identity, _ in loaded_rows:
+            counts[identity] = counts.get(identity, 0) + 1
+        for identity in sorted(
+            identity for identity, count in counts.items() if count > 1
+        ):
+            self.add(
+                "LIFECYCLE",
+                SUPPLEMENTAL_REALIZATION,
+                f"realization identity {identity!r} appears more than once",
+            )
+
+        result: dict[tuple[str, str], Mapping[str, object]] = {}
+        for identity, row in loaded_rows:
+            if identity not in result:
+                result[identity] = row
+        self.realizations_by_request_source = result
+
+    def _expected_realization_identities(self) -> set[tuple[str, str]]:
+        if self.policy_families is None:
+            return set()
+        result: set[tuple[str, str]] = set()
+        for family in (*CRITICAL_FAMILIES, *NONCRITICAL_FAMILIES):
+            policy = self.policy_families.get(family)
+            if policy is None:
+                continue
+            pairs = [
+                (
+                    policy.get("availability_request_id"),
+                    policy.get("availability_source_id"),
+                )
+            ]
+            if family not in {"cliff-rx", "cliff-tx"}:
+                pairs.append(
+                    (
+                        policy.get("manufacturer_request_id"),
+                        policy.get("manufacturer_source_id"),
+                    )
+                )
+            result.update(
+                (request_id, source_id)
+                for request_id, source_id in pairs
+                if isinstance(request_id, str) and isinstance(source_id, str)
+            )
+        return result
+
     @staticmethod
     def _set_difference_detail(expected: set[str], actual: set[str]) -> str:
         missing = sorted(expected - actual)
@@ -1301,7 +1385,7 @@ class Validator:
             self.add("PARSE", directory, str(error))
         return None
 
-    def _check_family_fragment(self, family: str, *, fileset_mode: bool) -> None:
+    def _check_family_fragment(self, family: str) -> None:
         family_policy = self.policy_families.get(family) if self.policy_families is not None else None
         path = COMPONENT_DIRECTORY / f"{family}.json"
         component = self.validate_instance(path, COMPONENT_SCHEMA)
@@ -1325,11 +1409,6 @@ class Validator:
                     self.add("COMPONENT", path, f"{field} differs from selection policy")
         if component.get("status") not in family_policy.get("allowed_statuses", []):
             self.add("COMPONENT", path, "status is not allowed by selection policy")
-        if fileset_mode and family_policy.get("critical") is True and status in {
-            "unresolved",
-            "candidate-evidence-unavailable",
-        }:
-            self.add("COMPONENT", path, f"critical family is blocked by status {status!r}")
         if status not in SELECTED_STATUSES:
             return
         self._check_request_fragment(path, component, family_policy, "manufacturer-evidence")
@@ -1443,40 +1522,150 @@ class Validator:
             self.add("REQUEST", path, "satisfied request source_id is absent or non-current")
             return
         if request.get("request_kind") == "manufacturer-evidence":
-            artifacts = source.get("artifacts")
-            archived = isinstance(artifacts, list) and any(
-                isinstance(artifact, dict)
-                and artifact.get("storage") in {"lfs", "git"}
-                and artifact.get("retrieval_status") == "current"
-                for artifact in artifacts
-            )
-            observations = source.get("observations")
-            selected_mpn = request.get("selected_mpn")
-            matches_mpn = isinstance(observations, list) and any(
-                isinstance(observation, dict)
-                and observation.get("key") == "manufacturer_part_number"
-                and observation.get("value") == selected_mpn
-                for observation in observations
-            )
-            seed_pair = (source_id, selected_mpn) in {
-                ("CLIFF-ORJ5", "ORJ5"),
-                ("CLIFF-OTJ5", "OTJ5"),
-            }
-            if source.get("class") not in {"golden", "comparative", "supplemental"} or not archived:
-                self.add("REQUEST", path, "satisfied manufacturer request lacks a current archived artifact")
-            if not (matches_mpn or seed_pair):
-                self.add("REQUEST", path, "satisfied manufacturer source is not bound to selected_mpn")
+            self._check_satisfied_manufacturer(path, request, source)
         else:
-            observations = source.get("observations")
-            mpn = request.get("selected_mpn")
-            matches_mpn = isinstance(observations, list) and any(
-                isinstance(observation, dict)
-                and observation.get("key") == "manufacturer_part_number"
-                and observation.get("value") == mpn
-                for observation in observations
+            self._check_satisfied_uk(path, request, source)
+
+    def _check_source_class(
+        self,
+        path: Path,
+        source: Mapping[str, object],
+        expected: str,
+    ) -> None:
+        actual = source.get("class")
+        if actual != expected:
+            self.add(
+                "LIFECYCLE",
+                path,
+                f"source class {actual!r} must be {expected!r}",
             )
-            if source.get("class") != "dynamic" or not matches_mpn:
-                self.add("REQUEST", path, "satisfied UK request lacks a current dynamic matching-MPN observation")
+
+    @staticmethod
+    def _has_matching_mpn(
+        source: Mapping[str, object], selected_mpn: object
+    ) -> bool:
+        observations = source.get("observations")
+        return isinstance(observations, list) and any(
+            isinstance(observation, dict)
+            and observation.get("key") == "manufacturer_part_number"
+            and observation.get("value") == selected_mpn
+            for observation in observations
+        )
+
+    @staticmethod
+    def _is_current_retained(artifact: object) -> bool:
+        return (
+            isinstance(artifact, dict)
+            and artifact.get("storage") in {"lfs", "git"}
+            and artifact.get("retrieval_status") == "current"
+        )
+
+    @staticmethod
+    def _ordered_unique_artifact_kinds(
+        artifacts: object,
+    ) -> list[object]:
+        result: list[object] = []
+        if not isinstance(artifacts, list):
+            return result
+        for artifact in artifacts:
+            kind = artifact.get("artifact_kind") if isinstance(artifact, dict) else None
+            if kind not in result:
+                result.append(kind)
+        return result
+
+    def _check_satisfied_manufacturer(
+        self,
+        path: Path,
+        request: Mapping[str, object],
+        source: Mapping[str, object],
+    ) -> None:
+        self._check_source_class(path, source, "golden")
+        source_id = request.get("source_id")
+        request_id = request.get("request_id")
+        selected_mpn = request.get("selected_mpn")
+        seed_exception = (request_id, source_id, selected_mpn) in {
+            ("REQ-CLIFF-RX-MFR", "CLIFF-ORJ5", "ORJ5"),
+            ("REQ-CLIFF-TX-MFR", "CLIFF-OTJ5", "OTJ5"),
+        }
+        actual_artifacts = source.get("artifacts")
+        actual_list = actual_artifacts if isinstance(actual_artifacts, list) else []
+        if seed_exception:
+            if not any(self._is_current_retained(row) for row in actual_list):
+                self.add(
+                    "LIFECYCLE",
+                    path,
+                    "artifact[0] is not a current retained artifact",
+                )
+            return
+
+        realization = (
+            None
+            if self.realizations_by_request_source is None
+            else self.realizations_by_request_source.get(
+                (str(request_id), str(source_id))
+            )
+        )
+        if realization is None:
+            self.add(
+                "LIFECYCLE",
+                path,
+                "supplemental manufacturer realization is absent",
+            )
+            return
+        expected_artifacts = realization.get("artifacts")
+        expected_list = expected_artifacts if isinstance(expected_artifacts, list) else []
+        if len(actual_list) != len(expected_list):
+            self.add(
+                "LIFECYCLE", path, "artifact count differs from realization"
+            )
+        field_pairs = (
+            ("name", "name"),
+            ("final_url", "expected_final_url"),
+            ("path", "path"),
+            ("storage", "storage"),
+            ("media_type", "media_type"),
+        )
+        for index, artifact in enumerate(actual_list):
+            if not self._is_current_retained(artifact):
+                self.add(
+                    "LIFECYCLE",
+                    path,
+                    f"artifact[{index}] is not a current retained artifact",
+                )
+        for index, (actual, expected) in enumerate(
+            zip(actual_list, expected_list)
+        ):
+            if not isinstance(actual, dict) or not isinstance(expected, dict):
+                continue
+            for actual_field, expected_field in field_pairs:
+                if actual.get(actual_field) != expected.get(expected_field):
+                    self.add(
+                        "LIFECYCLE",
+                        path,
+                        f"artifact[{index}] field {actual_field!r} differs from realization",
+                    )
+        if self._ordered_unique_artifact_kinds(expected_list) != request.get(
+            "artifact_kinds"
+        ):
+            self.add(
+                "LIFECYCLE", path, "ordered artifact kinds differ from request"
+            )
+        if not self._has_matching_mpn(source, selected_mpn):
+            self.add(
+                "LIFECYCLE", path, "source is not bound to selected_mpn"
+            )
+
+    def _check_satisfied_uk(
+        self,
+        path: Path,
+        request: Mapping[str, object],
+        source: Mapping[str, object],
+    ) -> None:
+        self._check_source_class(path, source, "dynamic")
+        if not self._has_matching_mpn(source, request.get("selected_mpn")):
+            self.add(
+                "LIFECYCLE", path, "source is not bound to selected_mpn"
+            )
 
     def check_selection(self, policy: object | None) -> None:
         if (
@@ -1491,10 +1680,10 @@ class Validator:
             lambda: render_components(policy, self.components.values()),
         )
 
-    def check_handoff(self) -> None:
+    def check_request_aggregate(self) -> bool:
         aggregate = self.load_json(REQUEST_AGGREGATE)
         if not aggregate.parsed or not self.selection_fragments_ready:
-            return
+            return False
         expected_request_ids = {
             request_id
             for family in FAMILIES
@@ -1502,11 +1691,133 @@ class Validator:
         }
         if set(self.requests) != expected_request_ids:
             self.add("PARITY", REQUEST_AGGREGATE, "loaded request fragment membership is incomplete")
-            return
+            return False
         self._check_parity(
             REQUEST_AGGREGATE,
             lambda: render_supplemental_requests(self.requests.values()),
         )
+        return not self.diagnostics
+
+    def check_handoff(self) -> None:
+        for family in CRITICAL_FAMILIES:
+            component = self.components.get(family)
+            status = component.get("status") if component is not None else None
+            if status in {"unresolved", "candidate-evidence-unavailable"}:
+                self.add(
+                    "COMPONENT",
+                    COMPONENT_DIRECTORY / f"{family}.json",
+                    f"critical family is blocked by status {status!r}",
+                )
+
+    def check_supplemental_lifecycle(self) -> None:
+        expected_ids = {
+            request_id
+            for family in (*CRITICAL_FAMILIES, *NONCRITICAL_FAMILIES)
+            for request_id in (
+                f"REQ-{family.upper()}-MFR",
+                f"REQ-{family.upper()}-UK",
+            )
+        }
+        request_names = self._json_basenames(REQUEST_DIRECTORY)
+        actual_ids = (
+            set(self.requests)
+            if request_names is None
+            else {name.removesuffix(".json") for name in request_names}
+        )
+        if actual_ids != expected_ids:
+            self.add(
+                "LIFECYCLE",
+                REQUEST_DIRECTORY,
+                "request IDs differ; "
+                f"missing={sorted(expected_ids - actual_ids)!r}; "
+                f"extra={sorted(actual_ids - expected_ids)!r}",
+            )
+        for request_id in sorted(actual_ids & expected_ids & set(self.requests)):
+            request = self.requests[request_id]
+            path = REQUEST_DIRECTORY / f"{request_id}.json"
+            self._check_lifecycle_request(path, request)
+
+    def _check_lifecycle_request(
+        self, path: Path, request: Mapping[str, object]
+    ) -> None:
+        request_status = request.get("status")
+        if request_status == "pending":
+            self.add("LIFECYCLE", path, "request is not closed")
+        source_id = request.get("source_id")
+        source = (
+            self.sources_by_id.get(source_id)
+            if self.sources_by_id is not None and isinstance(source_id, str)
+            else None
+        )
+        if source is None:
+            self.add(
+                "LIFECYCLE",
+                path,
+                f"source_id {source_id!r} is absent from sources",
+            )
+            return
+
+        manufacturer = request.get("request_kind") == "manufacturer-evidence"
+        self._check_source_class(path, source, "golden" if manufacturer else "dynamic")
+        source_status = source.get("status")
+        expected_source_status = {
+            "satisfied": "current",
+            "unavailable": "unavailable",
+        }.get(request_status)
+        if expected_source_status is None or source_status != expected_source_status:
+            self.add(
+                "LIFECYCLE",
+                path,
+                f"request status {request_status!r} does not match source status {source_status!r}",
+            )
+        if request_status not in {"satisfied", "unavailable"}:
+            return
+
+        expected_evidence = [source_id] if request_status == "satisfied" else []
+        if request.get("evidence_ids") != expected_evidence:
+            self.add(
+                "LIFECYCLE",
+                path,
+                f"evidence_ids differ from lifecycle outcome {request_status!r}",
+            )
+        if request_status == "satisfied":
+            expected_notes: object = ""
+        else:
+            artifacts = source.get("artifacts")
+            expected_notes = (
+                artifacts[0].get("note")
+                if isinstance(artifacts, list)
+                and len(artifacts) == 1
+                and isinstance(artifacts[0], dict)
+                else None
+            )
+        if request.get("notes") != expected_notes:
+            self.add(
+                "LIFECYCLE",
+                path,
+                f"notes differ from lifecycle outcome {request_status!r}",
+            )
+        if request_status == "satisfied":
+            if manufacturer:
+                self._check_satisfied_manufacturer(path, request, source)
+            else:
+                self._check_satisfied_uk(path, request, source)
+        if manufacturer:
+            family = request.get("family")
+            component = self.components.get(str(family))
+            component_path = COMPONENT_DIRECTORY / f"{family}.json"
+            component_status = component.get("status") if component is not None else None
+            expected_component = (
+                "selected"
+                if request_status == "satisfied"
+                else "candidate-evidence-unavailable"
+            )
+            if component_status != expected_component:
+                self.add(
+                    "LIFECYCLE",
+                    component_path,
+                    f"component status {component_status!r} does not match manufacturer request status {request_status!r}",
+                )
 
     def _expected_request_ids_for_component(self, family: str) -> tuple[str, ...]:
         component = self.components.get(family)
@@ -1587,18 +1898,33 @@ def run(argv: list[str] | None = None) -> int:
     validator = Validator(root)
     validator.load_schemas()
     validator.check_contracts()
-    stage_index = STAGES.index(arguments.stage)
+    stage = arguments.stage
     policy: object | None = None
-    if stage_index >= STAGES.index("architecture-base"):
+    architecture_stages = {
+        "architecture-base",
+        "architecture",
+        "selection-fragments",
+        "selection",
+        "handoff",
+        "supplemental-lifecycle",
+    }
+    policy_stages = architecture_stages - {"architecture-base"}
+    fragment_stages = policy_stages - {"architecture"}
+    selection_stages = {"selection", "handoff", "supplemental-lifecycle"}
+    if stage in architecture_stages:
         validator.check_architecture()
-    if stage_index >= STAGES.index("architecture"):
+    if stage in policy_stages:
         policy = validator.check_policy()
-    if stage_index >= STAGES.index("selection-fragments"):
+    if stage in fragment_stages:
         validator.check_selection_fragments(arguments.family)
-    if stage_index >= STAGES.index("selection"):
+    if stage in selection_stages:
         validator.check_selection(policy)
-    if stage_index >= STAGES.index("handoff"):
+    if stage in {"handoff", "supplemental-lifecycle"}:
+        validator.check_request_aggregate()
+    if stage == "handoff":
         validator.check_handoff()
+    elif stage == "supplemental-lifecycle":
+        validator.check_supplemental_lifecycle()
 
     diagnostics = validator.sorted_diagnostics()
     if diagnostics:

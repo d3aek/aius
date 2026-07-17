@@ -72,6 +72,12 @@
     "canonical_positive_fixture": "selection-fragments/valid"
   },
   {
+    "mutation": "request source lifecycle realization or component outcome differs",
+    "earliest_stage": "selection-fragments or supplemental-lifecycle",
+    "code": "LIFECYCLE",
+    "canonical_positive_fixture": "supplemental-lifecycle/eligible"
+  },
+  {
     "mutation": "component or request JSON basename set differs",
     "earliest_stage": "selection-fragments",
     "code": "FILESET",
