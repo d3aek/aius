@@ -24,6 +24,13 @@ Clean-room Gate 12 at commit `a4b724316` returned `PASS` with no findings. It
 confirmed the amended plans, literal realization oracle, current code, phase
 sizing and deterministic checkpoints, and authorized P1C5a0 implementation.
 
+The P1D1 clean-room gate against baseline `a7d181dc7` returned `PASS` on
+2026-07-17 after removing an impossible direct exit 3 from the manufacturer
+acquisition procedure. It confirmed all 16 wave bridges, 46 one-request agents,
+127 exact oracle-owned paths, global ownership disjointness, lifecycle fallback
+semantics and Wave 01 observation bindings. This authorizes only the committed
+P1D1 acquisition waves and does not authorize later phases or manufacturing.
+
 ## Execution constraints
 
 - An agent may signal, stop, restart or otherwise interfere only with a process
@@ -1105,11 +1112,11 @@ spawn prompts.
 
 The wave procedure is exact:
 
-1. Manufacturer: run `supplemental acquire`. Exit 0 is current. On exit 1,
-   run `supplemental unavailable` with note `Automated acquisition from the
-   fixed realization URL failed during P1D1.NN.` and the wave timestamp; that
-   command must exit 3. Exit 3 directly from acquire is also an already-durable
-   blocker. Any other exit blocks the wave.
+1. Manufacturer: run `supplemental acquire`. Exit 0 is current. Exit 1 creates
+   no new output and invokes `supplemental unavailable` with note `Automated
+   acquisition from the fixed realization URL failed during P1D1.NN.` and the
+   wave timestamp; that command must exit 3 and publishes the durable design
+   blocker. Exit 2 blocks the wave. No direct exit 3 from acquire is valid.
 2. Confirmed UK: run `supplemental record` with the observed strict JSON and
    final URLs. Exit 0 is current. Inability to assemble the observation or exit
    1 invokes `supplemental unavailable` with the same literal wave note and
