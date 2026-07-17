@@ -113,7 +113,64 @@ commit-checkpoint:
 
 ## Findings
 
-Research pending.
+USB-A:
+
+- Eligible and preferred: TE Connectivity `292303-1`.
+  - Manufacturer page: <https://www.te.com/en/product-292303-1.html>
+  - Status: Active.
+  - Exact match: USB 2.0, Type A, receptacle, 4 position, right angle, through-hole.
+  - Primary docs: product drawing `ENG_CD_292303_G.pdf`, application spec `ENG_SS_114-40054_B.pdf`, product spec `ENG_SS_108-60034_A.pdf`.
+  - RS UK page: <https://uk.rs-online.com/web/p/usb-connectors/5298195>
+  - RS stock and price evidence on the crawled page: 25 in stock, 115 more from another location, 1,560 shipping from 2026-06-05, pack of 5, £8.58 ex VAT, £1.716/unit.
+  - Why retained: it exactly satisfies the internal USB-A screen and the earlier failure was evidence selection, not a bad MPN.
+
+- Rejected: Würth Elektronik `614004134726`.
+  - Manufacturer catalogue and datasheet exist.
+  - Rejected on mechanical practicality for the likely carrier: right-angle THT with ~19.3 mm depth and a 1.57 mm PCB recommendation mismatch versus the design target.
+
+- Rejected: Würth Elektronik `629104190121`.
+  - Manufacturer catalogue and datasheet exist.
+  - Rejected as an SMT USB-A option: the footprint/retention tradeoff is worse than the incumbent THT TE part for a small-run carrier.
+
+- Rejected: Würth Elektronik `614004184726`.
+  - Manufacturer catalogue and datasheet exist.
+  - Rejected because the manufacturer-recommended PCB thickness is 1.20 ± 0.05 mm, which is a poor fit for the likely 1.6 mm board.
+
+- Rejected: Molex `67643-3911` and `89485-8000`.
+  - RS pages exist, but the manufacturer evidence chain remained too weakly published to satisfy the exact-MPN rule.
+
+USB-C:
+
+- Eligible and preferred: Würth Elektronik `629722000214`.
+  - Manufacturer catalogue: <https://www.we-online.com/en/components/products/INPUT_OUTPUT_WR_USB_TYPE_C>
+  - Datasheet: `629722000214 Datasheet (PDF)` on the manufacturer page and the dedicated PDF from the prior audit.
+  - Status: Active, production active, expected lifetime >10 years.
+  - Exact match: USB 2.0, Type C, horizontal, receptacle, 16 pins, SMT, 0.8 mm PCB, 5 A, 48 V.
+  - Documented CAD outputs: STEP, IGES, and EDA libraries are published on the manufacturer catalog page.
+  - RS UK page: <https://uk.rs-online.com/web/p/usb-connectors/0736097>
+  - RS evidence on the crawled page: RS stock no. 736-097, tape of 10, £9.50 ex VAT, preorder, shipping from 2026-07-20.
+  - Mouser and DigiKey also carry the exact MPN with current stock; those pages corroborate the part but do not change the RS-first recommendation.
+
+- Rejected: TE Connectivity `1-2295018-2`.
+  - Primary evidence exists and the MPN is exact.
+  - Rejected because the mid-mount construction makes routing and assembly materially harder than the Würth horizontal part without improving the current requirement coverage.
+
+- Rejected: Hirose `CX90M-16P`.
+  - Rejected because the authority/lifecycle chain was not explicit enough for a clean exact-MPN shortlist.
+
+- Rejected: Würth Elektronik `632723300011`.
+  - Rejected because the pin naming and interface details do not match the independent CC1/CC2 requirement cleanly enough for this design.
+
+- Rejected: Molex `217179-0001`.
+  - Rejected because the published manufacturer chain was incomplete for the exact-MPN rule.
+
+- Rejected: TE Connectivity `2480790-1`.
+  - Rejected because it is a charge-only connector and does not expose D+/D-.
+
+Conclusion:
+
+- The search did not displace the USB-A incumbent.
+- The USB-C replacement candidate is `629722000214`, with the main unresolved implementation risk being the 0.8 mm PCB thickness recommendation. That belongs in P1C6b selection and H2 validation, not in P1C6a.
 
 ## Follow-on gate
 
