@@ -1203,6 +1203,18 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 02"
 ```
 
+P1D1.02 completed on 2026-07-17 at the shared
+`2026-07-17T05:59:20Z` timestamp. The fixed JST acquisition retained the
+146,619-byte `eGH.pdf` as LFS with SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`
+and exact MPN `BM04B-GHS-TBT`. The pre-locked unresolved Ethernet-magjack UK
+request and the RS GPIO/ADC request both published canonical unavailable source
+and assumption pairs; a normal RS request returned Access Denied and no bypass
+or commerce observation was used. These UK outcomes close their lifecycles as
+sourcing risks and do not create a manufacturer design blocker. All three
+fragment checks, active delivery audit and the hash-stable 45-test supplemental
+suite passed.
+
 ```yaml
 phase: P1D1.03
 unit: single-file-implementation

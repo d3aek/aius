@@ -1,0 +1,42 @@
+{
+  "artifacts": [
+    {
+      "bytes": 146619,
+      "final_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+      "media_type": "application/pdf",
+      "name": "eGH.pdf",
+      "note": "",
+      "path": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+      "retrieval_status": "current",
+      "sha256": "b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "JST",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+  ],
+  "class": "golden",
+  "id": "AIUS-EXPANSION-GPIO-ADC-MFR",
+  "landing_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-GPIO-ADC-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T05:59:20Z",
+      "source_url": "https://www.jst-mfg.com/product/pdf/eng/eGH.pdf",
+      "unit": null,
+      "value": "BM04B-GHS-TBT"
+    }
+  ],
+  "purpose": "Satisfy REQ-EXPANSION-GPIO-ADC-MFR for expansion-gpio-adc.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T05:59:20Z",
+  "revision": "sha256:b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722",
+  "status": "current",
+  "supersedes": null,
+  "title": "JST BM04B-GHS-TBT primary manufacturer evidence"
+}

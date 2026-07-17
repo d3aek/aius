@@ -1,0 +1,33 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Automated acquisition from the fixed realization URL failed during P1D1.02.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "RS",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-GPIO-ADC-CONNECTOR"
+  ],
+  "class": "dynamic",
+  "id": "AIUS-EXPANSION-GPIO-ADC-UK",
+  "landing_url": "https://uk.rs-online.com/web/p/pcb-headers/7521769",
+  "observations": [],
+  "purpose": "Record a UK authorized-distributor price and stock observation for JST BM04B-GHS-TBT.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T05:59:20Z",
+  "revision": "unavailable:2026-07-17",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "normalized UK distributor price and stock observation"
+}
