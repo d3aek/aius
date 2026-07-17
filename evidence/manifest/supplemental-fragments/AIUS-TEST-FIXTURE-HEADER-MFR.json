@@ -1,0 +1,42 @@
+{
+  "artifacts": [
+    {
+      "bytes": 160096,
+      "final_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+      "media_type": "application/pdf",
+      "name": "TC2030-IDC-Datasheet-Rev-B.pdf",
+      "note": "",
+      "path": "https://www.tag-connect.com/product/tc2030-idc-6-pin-no-legs",
+      "retrieval_status": "current",
+      "sha256": "b1ca5d217f2e4c104ae08eb91a58befae3e0a7ab77b66330cf6991eede98cb1c",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "Tag-Connect",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEST-FIXTURE-HEADER"
+  ],
+  "class": "golden",
+  "id": "AIUS-TEST-FIXTURE-HEADER-MFR",
+  "landing_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEST-FIXTURE-HEADER-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T09:32:58Z",
+      "source_url": "https://www.tag-connect.com/wp-content/uploads/bsk-pdf-manager/2019/12/TC2030-IDC-Datasheet-Rev-B.pdf",
+      "unit": null,
+      "value": "TC2030-IDC"
+    }
+  ],
+  "purpose": "Satisfy REQ-TEST-FIXTURE-HEADER-MFR for test-fixture-header.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T09:32:58Z",
+  "revision": "sha256:b1ca5d217f2e4c104ae08eb91a58befae3e0a7ab77b66330cf6991eede98cb1c",
+  "status": "current",
+  "supersedes": null,
+  "title": "Tag-Connect TC2030-IDC primary manufacturer evidence"
+}

@@ -1716,6 +1716,21 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 13"
 ```
 
+P1D1.13 completed on 2026-07-17 at the shared
+`2026-07-17T09:32:58Z` timestamp. The Tag-Connect manufacturer source is
+current and retains the 160,096-byte `TC2030-IDC-Datasheet-Rev-B.pdf` with
+SHA-256
+`b1ca5d217f2e4c104ae08eb91a58befae3e0a7ab77b66330cf6991eede98cb1c`.
+Independent retrieval matched the retained PDF byte-for-byte and confirmed
+exact part `TC2030-IDC`. The fixture-header UK source is canonically unavailable
+because independent retrieval of both the exact DigiKey product page and the
+exact ECIA TrustedParts authorization page returned HTTP 403, so no commerce
+observations were accepted. The USB-A-receptacle manufacturer source is the
+required golden unavailable blocker: the exact TE URL returned HTTP 403 with
+an access-denied response, and the locked policy forbids a substitute document.
+It retains no artifact and publishes no assumption. All three fragment checks,
+the active delivery audit and the hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.14
 unit: single-file-implementation

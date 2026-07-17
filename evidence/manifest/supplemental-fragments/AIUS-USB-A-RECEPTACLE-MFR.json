@@ -1,0 +1,34 @@
+{
+  "artifacts": [
+    {
+      "bytes": null,
+      "final_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+      "media_type": null,
+      "name": "unavailable",
+      "note": "Automated acquisition from the fixed realization URL failed during P1D1.13.",
+      "path": null,
+      "retrieval_status": "unavailable",
+      "sha256": null,
+      "storage": "external-reference"
+    }
+  ],
+  "authority": "TE Connectivity",
+  "claim_scope": [
+    "REQT-COMMON-ENCLOSURE-CLEARANCE",
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-USB-A-RECEPTACLE"
+  ],
+  "class": "golden",
+  "id": "AIUS-USB-A-RECEPTACLE-MFR",
+  "landing_url": "https://www.te.com/usa-en/product-292303-1.datasheet.pdf",
+  "observations": [],
+  "purpose": "Satisfy REQ-USB-A-RECEPTACLE-MFR for usb-a-receptacle.",
+  "redistribution_note": "No local copy is retained; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T09:32:58Z",
+  "revision": "unavailable:2026-07-17",
+  "status": "unavailable",
+  "supersedes": null,
+  "title": "TE Connectivity 292303-1 primary manufacturer evidence"
+}
