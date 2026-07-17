@@ -807,6 +807,7 @@ New syntactically valid failures have these exact diagnostics:
 | exact ID set differs | `FRAGMENT_COLLECTION`, directory path | `fragment IDs differ; missing=<sorted repr>; extra=<sorted repr>` |
 | source filename and record differ | `FRAGMENT_COLLECTION`, fragment path | `filename source ID <repr> does not match record ID <repr>` |
 | assumption filename and citation differ | `FRAGMENT_COLLECTION`, fragment path | `filename source ID <repr> does not match canonical assumption source <repr>` |
+| duplicate fragment record ID | `FRAGMENT_COLLECTION`, duplicate record ID | `record ID appears in more than one fragment` |
 | seed/supplemental ID collision | `FRAGMENT_COLLECTION`, colliding ID | `ID appears in both seed and supplemental fragments` |
 | aggregate differs from fragments | `FRAGMENT_COLLECTION`, aggregate path | `aggregate differs from sorted fragment collection` |
 | current artifact count differs | `REALIZATION_BINDING`, source ID | `current artifact count differs from realization` |
@@ -848,14 +849,19 @@ commit-checkpoint:
 
 Parameterized tests lock seed-only and complete acceptance; every activation
 signal; every missing, extra, unsafe, colliding, malformed and identity boundary
-across all four directories; both aggregate parity failures; every current and
+across all four directories, including duplicate record IDs within either
+assumption directory; both aggregate parity failures; every current and
 unavailable realization artifact binding field and position; unavailable
 exemption; payload hash/size binding; exact boundary membership, ordering,
 literal outcome equality and UK exclusion; and exact code, subject, message and
 exit class. The complete fixture adds the immutable seed
 `clone-boundary.json`, passes the direct validator command above and remains
-green through the P1D0c assembler check. Existing seed validation and P1D0c
-assembly behavior remain unchanged.
+green through the P1D0c assembler check. Its generator copies that seed boundary
+byte-for-byte and sets only the fixture copy of the 11 required golden seed
+controls to `required: false`, because the synthetic complete fixture records
+all 22 seed outcomes as unavailable. Regression tests prove regeneration retains
+both adaptations and that the production controls remain 11 required rows.
+Existing seed validation and P1D0c assembly behavior remain unchanged.
 
 ### P1D0e — P1 lifecycle validation
 
