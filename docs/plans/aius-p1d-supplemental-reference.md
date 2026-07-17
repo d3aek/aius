@@ -1522,6 +1522,18 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 09"
 ```
 
+P1D1.09 completed on 2026-07-17 at the shared
+`2026-07-17T08:04:56Z` timestamp with all three sources current. The JST source
+retains the 146,619-byte `eGH.pdf` with SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`;
+the TI source retains the 3,411,562-byte `sn74lvc1g3157.pdf` with SHA-256
+`2a39b0f597c54e20e3f595aad0f8be74b45cfd0062a593f792ad5ac8c34ab87d`.
+The RS observation records SKU `752-1765`, 3,385 units ready to ship, pack/MOQ
+5 and GBP 0.548 per unit ex VAT. Independent review reproduced every field,
+including the stock quantity, from the exact product page and confirmed the
+exact JST authorization page. All three fragment checks, active delivery audit
+and the hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.10
 unit: single-file-implementation
