@@ -5,15 +5,21 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
+import validate_evidence as validator_module
+import seed_evidence
 from validate_evidence import ControlError, validate_artifact_payload
 
 
@@ -21,20 +27,7 @@ SCRIPT_ROOT = Path(__file__).resolve().parent
 AIUS_ROOT = SCRIPT_ROOT.parent
 MANIFEST_ROOT = AIUS_ROOT / "evidence" / "manifest"
 VALIDATOR = SCRIPT_ROOT / "validate_evidence.py"
-
-REQUIRED_GOLDEN_IDS = (
-    "CLIFF-ORJ5",
-    "CLIFF-OTJ5",
-    "HAMMOND-1455N1201BK-DRAWING",
-    "HAMMOND-1455N1201BK-STEP",
-    "PJRC-ETHERNET-KIT",
-    "PJRC-IMXRT1060-CEC",
-    "PJRC-IMXRT1060-RM",
-    "PJRC-TEENSY41-PAGE",
-    "PJRC-TEENSY41-PINOUT",
-    "PJRC-TEENSY41-SCHEMATIC",
-    "PLATFORMIO-TEENSY41",
-)
+COMPLETE_FIXTURE_ROOT = SCRIPT_ROOT / "fixtures" / "supplemental-assembly" / "valid"
 
 MEDIA_FIXTURES = {
     ".pdf": ("application/pdf", "lfs", b"%PDF-1.7\nfixture\n"),
@@ -217,6 +210,9 @@ class Fixture:
             "seed-sources.json",
             "assumption-schema.json",
             "clone-boundary.json",
+            "seed-realization.json",
+            "supplemental-realization.json",
+            "supplemental-requests.json",
             "README.md",
         ):
             shutil.copy2(MANIFEST_ROOT / name, self.manifest / name)
@@ -233,9 +229,8 @@ class Fixture:
         by_id = {
             seed["id"]: seed for seed in self.seeds if isinstance(seed, dict)
         }
-        self.sources = [
-            _source_from_seed(by_id[source_id]) for source_id in REQUIRED_GOLDEN_IDS
-        ]
+        self.seed_ids = set(by_id)
+        self.sources = [_source_from_seed(seed) for seed in self.seeds]
         self.sources.sort(key=lambda source: str(source["id"]))
         self.assumptions: list[dict[str, object]] = []
         self.supplemental: list[dict[str, object]] | None = None
@@ -281,6 +276,31 @@ class Fixture:
             )
         elif supplemental_path.exists():
             supplemental_path.unlink()
+
+        fragment_root = self.manifest / "fragments"
+        assumption_fragment_root = self.manifest / "assumption-fragments"
+        fragment_root.mkdir(exist_ok=True)
+        assumption_fragment_root.mkdir(exist_ok=True)
+        for path in fragment_root.glob("*.json"):
+            path.unlink()
+        for path in assumption_fragment_root.glob("*.json"):
+            path.unlink()
+        for source in self.sources:
+            source_id = source.get("id")
+            if isinstance(source_id, str) and source_id in self.seed_ids:
+                (fragment_root / f"{source_id}.json").write_text(
+                    json.dumps(source, indent=2) + "\n", encoding="utf-8"
+                )
+        for assumption in self.assumptions:
+            source_ids = assumption.get("source_ids")
+            if (
+                isinstance(source_ids, list)
+                and len(source_ids) == 1
+                and source_ids[0] in self.seed_ids
+            ):
+                (assumption_fragment_root / f"{source_ids[0]}.json").write_text(
+                    json.dumps(assumption, indent=2) + "\n", encoding="utf-8"
+                )
 
     def source(self, source_id: str) -> dict[str, object]:
         return next(source for source in self.sources if source["id"] == source_id)
@@ -350,6 +370,127 @@ class Fixture:
         else:
             command.extend(arguments)
         return _run(command, self.worktree)
+
+
+class CompleteFixture:
+    def __init__(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="aius-complete-")
+        self.worktree = Path(self._temporary.name) / "repo"
+        self.root = self.worktree / "src" / "hardware" / "aius"
+        shutil.copytree(COMPLETE_FIXTURE_ROOT, self.root)
+        self.manifest = self.root / "evidence" / "manifest"
+        (self.root / "baseline.json").write_text("[]\n", encoding="utf-8")
+        (self.worktree / ".gitattributes").write_text(
+            "/evidence/artifacts/** filter=lfs diff=lfs merge=lfs\n",
+            encoding="utf-8",
+        )
+        _run(["git", "init", "-q"], self.worktree)
+
+    def close(self) -> None:
+        self._temporary.cleanup()
+
+    def run(self) -> subprocess.CompletedProcess[str]:
+        return _run(
+            [
+                sys.executable,
+                "-B",
+                os.fspath(VALIDATOR),
+                "--root",
+                os.fspath(self.root),
+                "--baseline",
+                "baseline.json",
+            ],
+            self.worktree,
+        )
+
+    def json(self, relative: str) -> object:
+        return _load_json(self.root / relative)
+
+    def write_json(self, relative: str, value: object) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+    def source(self, source_id: str) -> dict[str, object]:
+        value = self.json(
+            f"evidence/manifest/supplemental-fragments/{source_id}.json"
+        )
+        assert isinstance(value, dict)
+        return value
+
+    def write_source(self, source: dict[str, object]) -> None:
+        source_id = str(source["id"])
+        self.write_json(
+            f"evidence/manifest/supplemental-fragments/{source_id}.json",
+            source,
+        )
+        sources = self.json("evidence/manifest/sources.json")
+        assert isinstance(sources, list)
+        replacement = [
+            source if row.get("id") == source_id else row
+            for row in sources
+            if isinstance(row, dict)
+        ]
+        replacement.sort(key=lambda row: str(row["id"]))
+        self.write_json("evidence/manifest/sources.json", replacement)
+
+    def realization(self, source_id: str) -> dict[str, object]:
+        document = self.json("evidence/manifest/supplemental-realization.json")
+        assert isinstance(document, dict)
+        rows = document["realizations"]
+        assert isinstance(rows, list)
+        return next(row for row in rows if row["source_id"] == source_id)
+
+    def make_current_manufacturer(self, source_id: str) -> dict[str, object]:
+        source = self.source(source_id)
+        realization = self.realization(source_id)
+        realization_artifacts = realization["artifacts"]
+        assert isinstance(realization_artifacts, list)
+        artifacts: list[dict[str, object]] = []
+        digests: list[str] = []
+        for index, row in enumerate(realization_artifacts):
+            assert isinstance(row, dict)
+            suffix = Path(str(row["path"])).suffix
+            _media, _storage, payload = MEDIA_FIXTURES[suffix]
+            target = self.root / str(row["path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            digest = hashlib.sha256(payload).hexdigest()
+            digests.append(digest)
+            artifacts.append(
+                {
+                    "name": row["name"],
+                    "final_url": row["expected_final_url"],
+                    "storage": row["storage"],
+                    "path": row["path"],
+                    "sha256": digest,
+                    "bytes": len(payload),
+                    "media_type": row["media_type"],
+                    "retrieval_status": "current",
+                    "note": "",
+                }
+            )
+        source["revision"] = "sha256:" + hashlib.sha256(
+            "".join(digests).encode("ascii")
+        ).hexdigest()
+        source["status"] = "current"
+        source["redistribution_note"] = (
+            "Retained for personal noncommercial research; no republication permission is inferred."
+        )
+        source["artifacts"] = artifacts
+        source["observations"] = []
+        self.write_source(source)
+        boundary = self.json("evidence/manifest/supplemental-clone-boundary.json")
+        assert isinstance(boundary, list)
+        current_row = realization["clone_boundary"]["current"]
+        boundary = [
+            current_row if row.get("source_id") == source_id else row
+            for row in boundary
+        ]
+        self.write_json(
+            "evidence/manifest/supplemental-clone-boundary.json", boundary
+        )
+        return source
 
 
 class ValidatorFixtureTests(unittest.TestCase):
@@ -522,8 +663,13 @@ class ValidatorFixtureTests(unittest.TestCase):
         new_dynamic = _nonseed_source("NEW-DYNAMIC", "dynamic")
         self.fixture.add_source(new_dynamic)
         completed = self.fixture.run()
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assert_diagnostic(
+            completed,
+            "FRAGMENT_COLLECTION",
+            "evidence/manifest/sources.json",
+        )
 
+        self.fixture = self._replace_fixture()
         external = Path(self.fixture._temporary.name) / "external-baseline.json"
         external.write_text("[]\n", encoding="utf-8")
         completed = self.fixture.run(arguments=[
@@ -545,7 +691,8 @@ class ValidatorFixtureTests(unittest.TestCase):
         self.assert_diagnostic(completed, "SEED_IDENTITY", source_id)
 
         self.fixture = self._replace_fixture()
-        missing = str(self.fixture.sources.pop(0)["id"])
+        missing = "CLIFF-ORJ5"
+        self.fixture.sources.remove(self.fixture.source(missing))
         completed = self.fixture.run()
         self.assert_diagnostic(completed, "REQUIRED_SOURCE", missing)
 
@@ -599,12 +746,11 @@ class ValidatorFixtureTests(unittest.TestCase):
         )
 
     def test_unavailable_artifact_and_exact_open_assumption_are_valid(self) -> None:
-        unavailable = _nonseed_source(
-            "OPTIONAL-DYNAMIC", "dynamic", status="unavailable"
-        )
-        self.fixture.add_source(unavailable)
+        unavailable = self.fixture.source("BOE-GBP-DAILY-FX")
+        unavailable["status"] = "unavailable"
+        unavailable["artifacts"] = [_external_artifact(unavailable=True)]
         self.fixture.assumptions = [
-            _assumption("OPTIONAL-DYNAMIC", unavailable["claim_scope"])
+            _assumption("BOE-GBP-DAILY-FX", unavailable["claim_scope"])
         ]
         completed = self.fixture.run()
         self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -624,18 +770,17 @@ class ValidatorFixtureTests(unittest.TestCase):
             _boundary_row("SUPPLEMENTAL-DERIVED", "independently-re-derived")
         ]
         completed = self.fixture.run()
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertNotIn("DERIVED_EVIDENCE", completed.stderr)
 
     def test_valid_supersession_chain_is_accepted(self) -> None:
-        prior = _nonseed_source("OPTIONAL-DYNAMIC-OLD", "dynamic")
+        prior = self.fixture.source("BOE-GBP-DAILY-FX")
         prior["status"] = "superseded"
         prior_artifact = prior["artifacts"][0]
         assert isinstance(prior_artifact, dict)
         prior_artifact["retrieval_status"] = "superseded"
-        current = _nonseed_source("OPTIONAL-DYNAMIC-NEW", "dynamic")
-        current["supersedes"] = "OPTIONAL-DYNAMIC-OLD"
-        self.fixture.add_source(current)
-        self.fixture.add_source(prior)
+        current = self.fixture.source("CPC-CLIFF-OTJ5")
+        current["supersedes"] = "BOE-GBP-DAILY-FX"
         completed = self.fixture.run()
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
@@ -679,7 +824,8 @@ class ValidatorFixtureTests(unittest.TestCase):
             _boundary_row("SUPPLEMENTAL-UNRESOLVED", "unresolved")
         ]
         completed = self.fixture.run()
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertNotIn("SOURCE_ASSUMPTION", completed.stderr)
 
     def test_supplemental_seed_overlap_and_dynamic_presence_are_rejected(self) -> None:
         self.fixture.supplemental = [
@@ -702,7 +848,7 @@ class ValidatorFixtureTests(unittest.TestCase):
         path = self.fixture.root / str(artifact["path"])
         path.unlink()
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[1].artifacts[0]")
 
         self.fixture = self._replace_fixture()
         artifact = self.fixture.add_artifact("CLIFF-ORJ5", ".pdf")
@@ -710,7 +856,7 @@ class ValidatorFixtureTests(unittest.TestCase):
         path.unlink()
         path.mkdir()
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[1].artifacts[0]")
 
         self.fixture = self._replace_fixture()
         artifact = self.fixture.add_artifact("CLIFF-ORJ5", ".pdf")
@@ -720,7 +866,7 @@ class ValidatorFixtureTests(unittest.TestCase):
         path.unlink()
         path.symlink_to(outside)
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[1].artifacts[0]")
 
         self.fixture = self._replace_fixture()
         artifact = self.fixture.add_artifact("CLIFF-ORJ5", ".pdf")
@@ -731,22 +877,22 @@ class ValidatorFixtureTests(unittest.TestCase):
         old_path.replace(wrong_path)
         artifact["path"] = wrong_relative
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_PATH", "sources[1].artifacts[0]")
 
     def test_artifact_storage_bytes_hash_media_signature_attribute_and_pointer(self) -> None:
         artifact = self.fixture.add_artifact(
             "CLIFF-ORJ5", ".pdf", storage="git"
         )
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "ARTIFACT_STORAGE", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_STORAGE", "sources[1].artifacts[0]")
 
         self.fixture = self._replace_fixture()
         artifact = self.fixture.add_artifact("CLIFF-ORJ5", ".pdf")
         artifact["bytes"] = int(artifact["bytes"]) + 1
         artifact["sha256"] = "0" * 64
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "ARTIFACT_BYTES", "sources[0].artifacts[0]")
-        self.assert_diagnostic(completed, "ARTIFACT_SHA256", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_BYTES", "sources[1].artifacts[0]")
+        self.assert_diagnostic(completed, "ARTIFACT_SHA256", "sources[1].artifacts[0]")
 
         self.fixture = self._replace_fixture()
         self.fixture.add_artifact(
@@ -754,27 +900,27 @@ class ValidatorFixtureTests(unittest.TestCase):
         )
         completed = self.fixture.run()
         self.assert_diagnostic(
-            completed, "ARTIFACT_MEDIA_TYPE", "sources[0].artifacts[0]"
+            completed, "ARTIFACT_MEDIA_TYPE", "sources[1].artifacts[0]"
         )
 
         self.fixture = self._replace_fixture()
         self.fixture.add_artifact("CLIFF-ORJ5", ".pdf", payload=b"not a PDF")
         completed = self.fixture.run()
         self.assert_diagnostic(
-            completed, "ARTIFACT_SIGNATURE", "sources[0].artifacts[0]"
+            completed, "ARTIFACT_SIGNATURE", "sources[1].artifacts[0]"
         )
 
         self.fixture = self._replace_fixture()
         self.fixture.add_artifact("CLIFF-ORJ5", ".pdf")
         (self.fixture.worktree / ".gitattributes").write_text("", encoding="utf-8")
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "GIT_ATTRIBUTE", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "GIT_ATTRIBUTE", "sources[1].artifacts[0]")
 
         self.fixture = self._replace_fixture()
         pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"0" * 64
         self.fixture.add_artifact("CLIFF-ORJ5", ".pdf", payload=pointer)
         completed = self.fixture.run()
-        self.assert_diagnostic(completed, "LFS_POINTER", "sources[0].artifacts[0]")
+        self.assert_diagnostic(completed, "LFS_POINTER", "sources[1].artifacts[0]")
 
     def test_public_payload_seam_matches_aggregate_media_diagnostics(self) -> None:
         artifact = self.fixture.add_artifact(
@@ -868,7 +1014,7 @@ class ValidatorFixtureTests(unittest.TestCase):
                 self.fixture.add_artifact("CLIFF-ORJ5", suffix, payload=b"\xff")
                 completed = self.fixture.run()
                 self.assert_diagnostic(
-                    completed, "ARTIFACT_SIGNATURE", "sources[0].artifacts[0]"
+                    completed, "ARTIFACT_SIGNATURE", "sources[1].artifacts[0]"
                 )
 
     def test_each_content_check_rejects_an_invalid_payload(self) -> None:
@@ -898,7 +1044,7 @@ class ValidatorFixtureTests(unittest.TestCase):
                 self.assert_diagnostic(
                     completed,
                     "ARTIFACT_SIGNATURE",
-                    "sources[0].artifacts[0]",
+                    "sources[1].artifacts[0]",
                 )
 
     def test_unknown_and_uppercase_suffixes_are_rejected(self) -> None:
@@ -917,7 +1063,7 @@ class ValidatorFixtureTests(unittest.TestCase):
                 self.assert_diagnostic(
                     completed,
                     "ARTIFACT_MEDIA_TYPE",
-                    "sources[0].artifacts[0]",
+                    "sources[1].artifacts[0]",
                 )
 
     def test_diagnostics_are_exactly_deduplicated_and_sorted(self) -> None:
@@ -1018,6 +1164,701 @@ class ValidatorFixtureTests(unittest.TestCase):
 
     def manifest_git_path(self) -> Path:
         return self.fixture.manifest / "sources.json"
+
+
+class SupplementalCollectionTests(unittest.TestCase):
+    fixture: CompleteFixture
+
+    def setUp(self) -> None:
+        self.fixture = CompleteFixture()
+
+    def tearDown(self) -> None:
+        self.fixture.close()
+
+    def assert_exact(
+        self,
+        completed: subprocess.CompletedProcess[str],
+        code: str,
+        subject: str,
+        message: str,
+        *,
+        exit_code: int = 1,
+    ) -> None:
+        self.assertEqual(completed.returncode, exit_code, completed.stderr)
+        self.assertIn(
+            f"ERROR {code} {subject}: {message}",
+            completed.stderr.splitlines(),
+            completed.stderr,
+        )
+
+    def replace_complete_fixture(self) -> CompleteFixture:
+        self.fixture.close()
+        return CompleteFixture()
+
+    def test_seed_only_and_complete_states_are_accepted(self) -> None:
+        seed = Fixture()
+        try:
+            seed.supplemental = []
+            completed = seed.run()
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        finally:
+            seed.close()
+        completed = self.fixture.run()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_complete_fixture_synthetic_seed_boundary_is_explicit(self) -> None:
+        seeds = _load_json(
+            COMPLETE_FIXTURE_ROOT / "evidence/manifest/seed-sources.json"
+        )
+        assert isinstance(seeds, list)
+        required_golden = [
+            row["id"]
+            for row in seeds
+            if row.get("class") == "golden" and row.get("required") is not False
+        ]
+        self.assertEqual(required_golden, [])
+        production = _load_json(MANIFEST_ROOT / "seed-sources.json")
+        assert isinstance(production, list)
+        self.assertEqual(
+            sum(
+                row.get("class") == "golden" and row.get("required") is True
+                for row in production
+            ),
+            11,
+        )
+        generator = runpy.run_path(
+            os.fspath(
+                SCRIPT_ROOT
+                / "fixtures"
+                / "supplemental-assembly"
+                / "generate.py"
+            ),
+            run_name="aius_fixture_generator_test",
+        )
+        adapt = generator["_adapt_validator_fixture"]
+        with tempfile.TemporaryDirectory(prefix="aius-adapted-fixture-") as temporary:
+            adapted_root = Path(temporary) / "aius"
+            adapted_manifest = adapted_root / "evidence" / "manifest"
+            adapted_manifest.mkdir(parents=True)
+            adapt(adapted_root)
+            self.assertEqual(
+                (adapted_manifest / "clone-boundary.json").read_bytes(),
+                (MANIFEST_ROOT / "clone-boundary.json").read_bytes(),
+            )
+            self.assertEqual(
+                (adapted_manifest / "clone-boundary.json").read_bytes(),
+                (
+                    COMPLETE_FIXTURE_ROOT
+                    / "evidence/manifest/clone-boundary.json"
+                ).read_bytes(),
+            )
+            self.assertEqual(
+                (adapted_manifest / "seed-sources.json").read_bytes(),
+                (
+                    COMPLETE_FIXTURE_ROOT
+                    / "evidence/manifest/seed-sources.json"
+                ).read_bytes(),
+            )
+
+    def test_every_complete_activation_signal_requires_complete_members(self) -> None:
+        source_id = "AIUS-ETHERNET-MAGJACK-MFR"
+        for signal in (
+            "supplemental-source-directory",
+            "supplemental-assumption-directory",
+            "boundary-row",
+            "aggregate-source",
+            "aggregate-assumption",
+        ):
+            seed = Fixture()
+            try:
+                if signal == "supplemental-source-directory":
+                    (seed.manifest / "supplemental-fragments").mkdir()
+                elif signal == "supplemental-assumption-directory":
+                    (seed.manifest / "supplemental-assumption-fragments").mkdir()
+                elif signal == "boundary-row":
+                    seed.supplemental = [_boundary_row(source_id, "unresolved")]
+                elif signal == "aggregate-source":
+                    seed.add_source(_nonseed_source(source_id, "golden"))
+                else:
+                    assumption = _assumption(source_id, ["activation"])
+                    assumption["id"] = f"ASM-UNAVAILABLE-{source_id}"
+                    seed.assumptions = [assumption]
+                completed = seed.run()
+                with self.subTest(signal=signal):
+                    if signal == "supplemental-source-directory":
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            "evidence/manifest/supplemental-fragments",
+                            "fragment IDs differ; missing="
+                            + repr(
+                                sorted(
+                                    row["source_id"]
+                                    for row in _load_json(
+                                        seed.manifest
+                                        / "supplemental-realization.json"
+                                    )["realizations"]
+                                )
+                            )
+                            + "; extra=[]",
+                        )
+                    else:
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            "evidence/manifest/supplemental-fragments",
+                            "required fragment directory is missing",
+                        )
+            finally:
+                seed.close()
+
+    def test_four_directory_missing_nonregular_unsafe_and_malformed_matrix(self) -> None:
+        directories = (
+            "evidence/manifest/fragments",
+            "evidence/manifest/assumption-fragments",
+            "evidence/manifest/supplemental-fragments",
+            "evidence/manifest/supplemental-assumption-fragments",
+        )
+        for relative in directories:
+            for mutation in (
+                "missing",
+                "non-directory",
+                "symlink",
+                "unsafe",
+                "non-utf8",
+                "malformed",
+            ):
+                self.fixture = self.replace_complete_fixture()
+                path = self.fixture.root / relative
+                entries = sorted(path.glob("*.json"))
+                if mutation == "missing":
+                    shutil.rmtree(path)
+                elif mutation == "non-directory":
+                    shutil.rmtree(path)
+                    path.write_text("not a directory\n", encoding="utf-8")
+                elif mutation == "symlink":
+                    shutil.rmtree(path)
+                    target = self.fixture.root / "symlink-target"
+                    target.mkdir(exist_ok=True)
+                    path.symlink_to(target, target_is_directory=True)
+                elif mutation == "unsafe":
+                    (path / "unsafe.txt").write_text("{}\n", encoding="utf-8")
+                elif mutation == "non-utf8":
+                    entries[0].write_bytes(b"\xff")
+                else:
+                    entries[0].write_text("{", encoding="utf-8")
+                completed = self.fixture.run()
+                with self.subTest(directory=relative, mutation=mutation):
+                    if mutation == "missing":
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            relative,
+                            "required fragment directory is missing",
+                        )
+                    elif mutation in {"non-directory", "symlink"}:
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            relative,
+                            "fragment path is not a regular non-symlink directory",
+                        )
+                    elif mutation == "unsafe":
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            f"{relative}/unsafe.txt",
+                            "unexpected or unsafe fragment entry",
+                        )
+                    elif mutation in {"non-utf8", "malformed"}:
+                        self.assertEqual(completed.returncode, 2, completed.stderr)
+                        self.assertIn(
+                            "is not UTF-8"
+                            if mutation == "non-utf8"
+                            else "is not valid JSON",
+                            completed.stderr,
+                        )
+
+    def test_unreadable_fragment_control_bytes_are_exit_two(self) -> None:
+        original = validator_module._load_control
+
+        def reject_fragment(path: Path, label: str | None = None) -> object:
+            if "/supplemental-fragments/" in path.as_posix():
+                raise ControlError(f"cannot read {path}: permission denied")
+            return original(path, label)
+
+        stderr = io.StringIO()
+        with mock.patch.object(
+            validator_module, "_load_control", side_effect=reject_fragment
+        ), redirect_stderr(stderr):
+            status = validator_module.main(
+                [
+                    "--root",
+                    os.fspath(self.fixture.root),
+                    "--baseline",
+                    "baseline.json",
+                ]
+            )
+        self.assertEqual(status, 2)
+        self.assertIn("permission denied", stderr.getvalue())
+
+    def test_four_directory_membership_and_identity_matrix(self) -> None:
+        cases = (
+            ("evidence/manifest/fragments", "source"),
+            ("evidence/manifest/assumption-fragments", "assumption"),
+            ("evidence/manifest/supplemental-fragments", "source"),
+            ("evidence/manifest/supplemental-assumption-fragments", "assumption"),
+        )
+        for relative, kind in cases:
+            for mutation in ("missing-entry", "extra-entry", "identity", "non-object"):
+                self.fixture = self.replace_complete_fixture()
+                directory = self.fixture.root / relative
+                first = sorted(directory.glob("*.json"))[0]
+                filename_id = first.stem
+                if mutation == "missing-entry":
+                    first.unlink()
+                elif mutation == "extra-entry":
+                    shutil.copy2(first, directory / "EXTRA.json")
+                elif mutation == "identity":
+                    value = _load_json(first)
+                    assert isinstance(value, dict)
+                    if kind == "source":
+                        value["id"] = "MISMATCH"
+                    else:
+                        value["source_ids"] = ["MISMATCH"]
+                    first.write_text(
+                        json.dumps(value, indent=2) + "\n", encoding="utf-8"
+                    )
+                else:
+                    first.write_text("[]\n", encoding="utf-8")
+                completed = self.fixture.run()
+                with self.subTest(directory=relative, mutation=mutation):
+                    if mutation == "missing-entry":
+                        self.assertIn(
+                            f"ERROR FRAGMENT_COLLECTION {relative}: fragment IDs differ; missing=['{filename_id}']; extra=[]",
+                            completed.stderr.splitlines(),
+                        )
+                    elif mutation == "extra-entry":
+                        self.assertIn(
+                            f"ERROR FRAGMENT_COLLECTION {relative}: fragment IDs differ; missing=[]; extra=['EXTRA']",
+                            completed.stderr.splitlines(),
+                        )
+                    elif kind == "source":
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            f"{relative}/{filename_id}.json",
+                            f"filename source ID {filename_id!r} does not match record ID "
+                            + ("'MISMATCH'" if mutation == "identity" else "None"),
+                        )
+                    else:
+                        self.assert_exact(
+                            completed,
+                            "FRAGMENT_COLLECTION",
+                            f"{relative}/{filename_id}.json",
+                            f"filename source ID {filename_id!r} does not match canonical assumption source "
+                            + ("'MISMATCH'" if mutation == "identity" else "None"),
+                        )
+
+    def test_fragment_collision_and_both_aggregate_parity_diagnostics(self) -> None:
+        seed_source = self.fixture.root / "evidence/manifest/fragments/BOE-GBP-DAILY-FX.json"
+        supplemental = self.fixture.root / "evidence/manifest/supplemental-fragments"
+        shutil.copy2(seed_source, supplemental / seed_source.name)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "FRAGMENT_COLLECTION",
+            "BOE-GBP-DAILY-FX",
+            "ID appears in both seed and supplemental fragments",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        seed_assumption = sorted(
+            (
+                self.fixture.root
+                / "evidence/manifest/assumption-fragments"
+            ).glob("*.json")
+        )[0]
+        supplemental_assumption = sorted(
+            (
+                self.fixture.root
+                / "evidence/manifest/supplemental-assumption-fragments"
+            ).glob("*.json")
+        )[0]
+        seed_value = _load_json(seed_assumption)
+        supplemental_value = _load_json(supplemental_assumption)
+        assert isinstance(seed_value, dict) and isinstance(supplemental_value, dict)
+        supplemental_value["id"] = seed_value["id"]
+        supplemental_assumption.write_text(
+            json.dumps(supplemental_value, indent=2) + "\n", encoding="utf-8"
+        )
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "FRAGMENT_COLLECTION",
+            str(seed_value["id"]),
+            "ID appears in both seed and supplemental fragments",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        sources = self.fixture.json("evidence/manifest/sources.json")
+        assert isinstance(sources, list) and isinstance(sources[0], dict)
+        sources[0]["title"] = "aggregate-only mutation"
+        self.fixture.write_json("evidence/manifest/sources.json", sources)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "FRAGMENT_COLLECTION",
+            "evidence/manifest/sources.json",
+            "aggregate differs from sorted fragment collection",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        assumptions = self.fixture.json("evidence/manifest/assumptions.json")
+        assert isinstance(assumptions, list) and isinstance(assumptions[0], dict)
+        assumptions[0]["claim"] = "aggregate-only mutation"
+        self.fixture.write_json("evidence/manifest/assumptions.json", assumptions)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "FRAGMENT_COLLECTION",
+            "evidence/manifest/assumptions.json",
+            "aggregate differs from sorted fragment collection",
+        )
+
+    def test_duplicate_assumption_record_ids_cannot_be_masked_by_aggregate(self) -> None:
+        for relative in (
+            "evidence/manifest/assumption-fragments",
+            "evidence/manifest/supplemental-assumption-fragments",
+        ):
+            self.fixture = self.replace_complete_fixture()
+            directory = self.fixture.root / relative
+            first, second = sorted(directory.glob("*.json"))[:2]
+            first_value = _load_json(first)
+            second_value = _load_json(second)
+            assert isinstance(first_value, dict) and isinstance(second_value, dict)
+            duplicate_id = str(first_value["id"])
+            second_value["id"] = duplicate_id
+            second.write_text(
+                json.dumps(second_value, indent=2) + "\n", encoding="utf-8"
+            )
+
+            all_assumptions: list[dict[str, object]] = []
+            for fragment_relative in (
+                "evidence/manifest/assumption-fragments",
+                "evidence/manifest/supplemental-assumption-fragments",
+            ):
+                for path in sorted(
+                    (self.fixture.root / fragment_relative).glob("*.json")
+                ):
+                    value = _load_json(path)
+                    assert isinstance(value, dict)
+                    all_assumptions.append(value)
+            all_assumptions.sort(key=lambda row: str(row["id"]))
+            self.fixture.write_json(
+                "evidence/manifest/assumptions.json", all_assumptions
+            )
+
+            completed = self.fixture.run()
+            with self.subTest(directory=relative):
+                self.assert_exact(
+                    completed,
+                    "FRAGMENT_COLLECTION",
+                    duplicate_id,
+                    "record ID appears in more than one fragment",
+                )
+
+    def test_current_manufacturer_artifact_binding_matrix(self) -> None:
+        source_id = "AIUS-TEENSY-ETHERNET-SOCKET-MFR"
+        source = self.fixture.make_current_manufacturer(source_id)
+        completed = self.fixture.run()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        artifacts = source["artifacts"]
+        assert isinstance(artifacts, list)
+        artifact_count = len(artifacts)
+        self.assertEqual(artifact_count, 5)
+        for index in range(artifact_count):
+            for field in ("name", "final_url", "path", "storage", "media_type"):
+                self.fixture = self.replace_complete_fixture()
+                source = self.fixture.make_current_manufacturer(source_id)
+                artifacts = source["artifacts"]
+                assert isinstance(artifacts, list) and isinstance(artifacts[index], dict)
+                artifacts[index][field] = "wrong"
+                self.fixture.write_source(source)
+                completed = self.fixture.run()
+                with self.subTest(index=index, field=field):
+                    self.assert_exact(
+                        completed,
+                        "REALIZATION_BINDING",
+                        source_id,
+                        f"artifact[{index}] field {field!r} differs from realization",
+                    )
+
+        self.fixture = self.replace_complete_fixture()
+        source = self.fixture.make_current_manufacturer(source_id)
+        source["artifacts"] = []
+        self.fixture.write_source(source)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "REALIZATION_BINDING",
+            source_id,
+            "current artifact count differs from realization",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        self.fixture.make_current_manufacturer(source_id)
+        document = self.fixture.json("evidence/manifest/supplemental-realization.json")
+        assert isinstance(document, dict)
+        row = next(
+            item for item in document["realizations"] if item["source_id"] == source_id
+        )
+        row["artifacts"][0]["artifact_kind"] = "wrong-kind"
+        self.fixture.write_json(
+            "evidence/manifest/supplemental-realization.json", document
+        )
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "REALIZATION_BINDING",
+            source_id,
+            "ordered artifact kinds differ from request",
+        )
+
+    def test_unavailable_binding_exemption_and_payload_hash_size(self) -> None:
+        source_id = "AIUS-ETHERNET-MAGJACK-MFR"
+        document = self.fixture.json("evidence/manifest/supplemental-realization.json")
+        assert isinstance(document, dict)
+        row = next(
+            item for item in document["realizations"] if item["source_id"] == source_id
+        )
+        row["artifacts"][0]["name"] = "ignored-while-unavailable"
+        row["artifacts"][0]["artifact_kind"] = "ignored-kind"
+        self.fixture.write_json(
+            "evidence/manifest/supplemental-realization.json", document
+        )
+        completed = self.fixture.run()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        for field, value in (("bytes", 999), ("sha256", "0" * 64)):
+            self.fixture = self.replace_complete_fixture()
+            source = self.fixture.make_current_manufacturer(source_id)
+            artifacts = source["artifacts"]
+            assert isinstance(artifacts, list) and isinstance(artifacts[0], dict)
+            artifacts[0][field] = value
+            self.fixture.write_source(source)
+            completed = self.fixture.run()
+            with self.subTest(field=field):
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertIn(
+                    "ARTIFACT_BYTES" if field == "bytes" else "ARTIFACT_SHA256",
+                    completed.stderr,
+                )
+
+    def test_unavailable_and_current_uk_artifact_binding(self) -> None:
+        source_id = "AIUS-ETHERNET-MAGJACK-MFR"
+        for field in (
+            "name",
+            "final_url",
+            "storage",
+            "path",
+            "sha256",
+            "bytes",
+            "media_type",
+            "retrieval_status",
+            "note",
+        ):
+            self.fixture = self.replace_complete_fixture()
+            source = self.fixture.source(source_id)
+            artifacts = source["artifacts"]
+            assert isinstance(artifacts, list) and isinstance(artifacts[0], dict)
+            artifacts[0][field] = "wrong" if field != "note" else ""
+            self.fixture.write_source(source)
+            completed = self.fixture.run()
+            with self.subTest(field=field):
+                self.assert_exact(
+                    completed,
+                    "REALIZATION_BINDING",
+                    source_id,
+                    "unavailable source artifact differs from canonical metadata",
+                )
+
+        for artifacts_value in ([], [
+            _external_artifact(unavailable=True),
+            _external_artifact(unavailable=True),
+        ]):
+            self.fixture = self.replace_complete_fixture()
+            source = self.fixture.source(source_id)
+            source["artifacts"] = artifacts_value
+            self.fixture.write_source(source)
+            completed = self.fixture.run()
+            with self.subTest(artifact_count=len(artifacts_value)):
+                self.assert_exact(
+                    completed,
+                    "REALIZATION_BINDING",
+                    source_id,
+                    "unavailable source artifact differs from canonical metadata",
+                )
+
+        self.fixture = self.replace_complete_fixture()
+        source = self.fixture.source(source_id)
+        source["landing_url"] = "https://example.com/wrong-authority"
+        artifacts = source["artifacts"]
+        assert isinstance(artifacts, list) and isinstance(artifacts[0], dict)
+        artifacts[0]["final_url"] = "https://example.com/wrong-authority"
+        self.fixture.write_source(source)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "REALIZATION_BINDING",
+            source_id,
+            "unavailable source artifact differs from canonical metadata",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        uk_id = "AIUS-CLIFF-RX-UK"
+        source = self.fixture.source(uk_id)
+        source["status"] = "current"
+        self.fixture.write_source(source)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "REALIZATION_BINDING",
+            uk_id,
+            "current UK source must not contain artifacts",
+        )
+        self.assertIn(
+            "ERROR FRAGMENT_COLLECTION evidence/manifest/supplemental-assumption-fragments: "
+            f"fragment IDs differ; missing=[]; extra=['{uk_id}']",
+            completed.stderr.splitlines(),
+        )
+
+    def test_current_uk_without_artifacts_removes_status_derived_assumption(
+        self,
+    ) -> None:
+        source_id = "AIUS-CLIFF-RX-UK"
+        realization = self.fixture.realization(source_id)
+        requests_document = self.fixture.json(
+            "evidence/manifest/supplemental-requests.json"
+        )
+        realization_document = self.fixture.json(
+            "evidence/manifest/supplemental-realization.json"
+        )
+        assert isinstance(requests_document, dict)
+        assert isinstance(realization_document, dict)
+        request = next(
+            row
+            for row in requests_document["requests"]
+            if row["source_id"] == source_id
+        )
+        profile = next(
+            row
+            for row in realization_document["observation_profiles"]
+            if row["name"] == realization["observation_profile"]
+        )
+        authorization = realization["authorization"]
+        assert isinstance(authorization, dict)
+        values = {
+            "manufacturer_part_number": request["selected_mpn"],
+            "supplier_sku": "SKU-REQ-CLIFF-RX-UK",
+            "distributor": realization["authority"],
+            "product_initial_url": realization["observation_url"],
+            "product_final_url": "https://example.com/commerce/final",
+            "authorization_authority": authorization["authority"],
+            "authorization_method": authorization["method"],
+            "authorization_initial_url": authorization["initial_url"],
+            "authorization_final_url": "https://example.com/authorization/final",
+            "stock_state": "in-stock",
+            "stock_quantity": 12,
+            "price_quantity": 12,
+            "unit_price_ex_vat": 1.25,
+            "currency": "GBP",
+            "minimum_order_quantity": 1,
+            "order_multiple": 1,
+            "price_includes_vat": False,
+        }
+        source = seed_evidence._supplemental_current_uk_source(
+            request,
+            realization,
+            profile,
+            values,
+            "https://example.com/commerce/final",
+            "https://example.com/authorization/final",
+            "2026-07-16T12:34:56Z",
+        )
+        self.assertEqual(source["artifacts"], [])
+        self.fixture.write_source(source)
+
+        assumption_path = (
+            self.fixture.manifest
+            / "supplemental-assumption-fragments"
+            / f"{source_id}.json"
+        )
+        assumption_path.unlink()
+        assumptions = self.fixture.json("evidence/manifest/assumptions.json")
+        assert isinstance(assumptions, list)
+        assumptions = [
+            row
+            for row in assumptions
+            if row.get("id") != f"ASM-UNAVAILABLE-{source_id}"
+        ]
+        self.fixture.write_json("evidence/manifest/assumptions.json", assumptions)
+
+        completed = self.fixture.run()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_literal_supplemental_boundary_membership_order_outcome_and_uk(self) -> None:
+        relative = "evidence/manifest/supplemental-clone-boundary.json"
+        boundary = self.fixture.json(relative)
+        assert isinstance(boundary, list)
+        removed = str(boundary.pop(0)["source_id"])
+        self.fixture.write_json(relative, boundary)
+        completed = self.fixture.run()
+        self.assertIn(
+            f"ERROR CLONE_BOUNDARY {relative}: supplemental boundary source IDs differ; missing=['{removed}']; extra=[]",
+            completed.stderr.splitlines(),
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        boundary = self.fixture.json(relative)
+        assert isinstance(boundary, list)
+        boundary[0], boundary[1] = boundary[1], boundary[0]
+        self.fixture.write_json(relative, boundary)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "CLONE_BOUNDARY",
+            relative,
+            "supplemental boundary source IDs are not sorted",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        boundary = self.fixture.json(relative)
+        assert isinstance(boundary, list)
+        source_id = str(boundary[0]["source_id"])
+        boundary[0]["notes"] = "changed"
+        self.fixture.write_json(relative, boundary)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "CLONE_BOUNDARY",
+            source_id,
+            "supplemental boundary row differs from realization outcome 'unavailable'",
+        )
+
+        self.fixture = self.replace_complete_fixture()
+        boundary = self.fixture.json(relative)
+        assert isinstance(boundary, list)
+        uk_id = "AIUS-CLIFF-RX-UK"
+        boundary.append(_boundary_row(uk_id, "unresolved"))
+        self.fixture.write_json(relative, boundary)
+        completed = self.fixture.run()
+        self.assert_exact(
+            completed,
+            "CLONE_BOUNDARY",
+            uk_id,
+            "UK source must not appear in supplemental clone boundary",
+        )
 
 
 class SelfTestDispatchTests(unittest.TestCase):

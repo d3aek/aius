@@ -9,12 +9,13 @@ import hashlib
 import io
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Iterable, Mapping
 
 
 BASELINE_GIT_PATH = "evidence/manifest/sources.json"
@@ -47,6 +48,14 @@ class Diagnostics:
                 file=sys.stderr,
             )
         return bool(self._items)
+
+
+@dataclass(frozen=True)
+class FragmentCollection:
+    subject: str
+    present: bool
+    scannable: bool
+    records: dict[str, object]
 
 
 @dataclass
@@ -276,6 +285,367 @@ def _by_id(collection: object) -> dict[str, dict[str, object]]:
     return result
 
 
+def _scan_fragment_collection(
+    root: Path,
+    path: Path,
+    *,
+    required: bool,
+    diagnostics: Diagnostics,
+) -> FragmentCollection:
+    subject = _relative_subject(root, path)
+    try:
+        status = path.lstat()
+    except FileNotFoundError:
+        if required:
+            diagnostics.add(
+                "FRAGMENT_COLLECTION",
+                subject,
+                "required fragment directory is missing",
+            )
+        return FragmentCollection(subject, False, False, {})
+    except OSError as error:
+        raise ControlError(f"cannot inspect {subject}: {error}") from error
+
+    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+        diagnostics.add(
+            "FRAGMENT_COLLECTION",
+            subject,
+            "fragment path is not a regular non-symlink directory",
+        )
+        return FragmentCollection(subject, True, False, {})
+
+    try:
+        entries = list(os.scandir(path))
+    except OSError as error:
+        raise ControlError(f"cannot scan {subject}: {error}") from error
+
+    records: dict[str, object] = {}
+    for entry in entries:
+        entry_path = Path(entry.path)
+        entry_subject = _relative_subject(root, entry_path)
+        try:
+            entry_status = entry_path.lstat()
+        except OSError as error:
+            raise ControlError(f"cannot inspect {entry_subject}: {error}") from error
+        match = re.fullmatch(r"([A-Z0-9]+(?:-[A-Z0-9]+)*)\.json", entry.name)
+        if (
+            stat.S_ISLNK(entry_status.st_mode)
+            or not stat.S_ISREG(entry_status.st_mode)
+            or match is None
+        ):
+            diagnostics.add(
+                "FRAGMENT_COLLECTION",
+                entry_subject,
+                "unexpected or unsafe fragment entry",
+            )
+            continue
+        records[match.group(1)] = _load_control(entry_path)
+    return FragmentCollection(subject, True, True, records)
+
+
+def _fragment_ids(
+    collection: FragmentCollection,
+    expected: set[str],
+    diagnostics: Diagnostics,
+) -> None:
+    if not collection.scannable:
+        return
+    actual = set(collection.records)
+    if actual != expected:
+        diagnostics.add(
+            "FRAGMENT_COLLECTION",
+            collection.subject,
+            "fragment IDs differ; "
+            f"missing={sorted(expected - actual)!r}; extra={sorted(actual - expected)!r}",
+        )
+
+
+def _source_fragment_records(
+    root: Path,
+    collection: FragmentCollection,
+    diagnostics: Diagnostics,
+) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for filename_id, value in collection.records.items():
+        record_id = value.get("id") if isinstance(value, dict) else None
+        if record_id != filename_id:
+            diagnostics.add(
+                "FRAGMENT_COLLECTION",
+                f"{collection.subject}/{filename_id}.json",
+                f"filename source ID {filename_id!r} does not match record ID {record_id!r}",
+            )
+        if isinstance(value, dict) and isinstance(record_id, str):
+            result[filename_id] = value
+    return result
+
+
+def _assumption_fragment_records(
+    collection: FragmentCollection,
+    diagnostics: Diagnostics,
+) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for filename_id, value in collection.records.items():
+        source_ids = value.get("source_ids") if isinstance(value, dict) else None
+        canonical_source = (
+            source_ids[0]
+            if isinstance(source_ids, list)
+            and len(source_ids) == 1
+            and isinstance(source_ids[0], str)
+            else None
+        )
+        if canonical_source != filename_id:
+            diagnostics.add(
+                "FRAGMENT_COLLECTION",
+                f"{collection.subject}/{filename_id}.json",
+                f"filename source ID {filename_id!r} does not match canonical assumption source {canonical_source!r}",
+            )
+        record_id = value.get("id") if isinstance(value, dict) else None
+        if isinstance(value, dict) and isinstance(record_id, str):
+            result[filename_id] = value
+    return result
+
+
+def _check_duplicate_fragment_record_ids(
+    collections: Iterable[FragmentCollection],
+    diagnostics: Diagnostics,
+) -> None:
+    counts: dict[str, int] = {}
+    for collection in collections:
+        for value in collection.records.values():
+            record_id = value.get("id") if isinstance(value, dict) else None
+            if isinstance(record_id, str):
+                counts[record_id] = counts.get(record_id, 0) + 1
+    for record_id, count in sorted(counts.items()):
+        if count > 1:
+            diagnostics.add(
+                "FRAGMENT_COLLECTION",
+                record_id,
+                "record ID appears in more than one fragment",
+            )
+
+
+def _status_assumption_sources(
+    sources: Mapping[str, dict[str, object]],
+    realizations: Mapping[str, dict[str, object]],
+) -> set[str]:
+    return {
+        source_id
+        for source_id, source in sources.items()
+        if source.get("status") == "unavailable"
+        and realizations.get(source_id, {}).get("failure_policy") == "assumption"
+    }
+
+
+def _sorted_records(records: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    return sorted(records, key=lambda row: str(row["id"]))
+
+
+def _check_fragment_collisions(
+    seed_sources: Mapping[str, dict[str, object]],
+    supplemental_sources: Mapping[str, dict[str, object]],
+    seed_assumptions: Mapping[str, dict[str, object]],
+    supplemental_assumptions: Mapping[str, dict[str, object]],
+    seed_source_files: set[str],
+    supplemental_source_files: set[str],
+    seed_assumption_files: set[str],
+    supplemental_assumption_files: set[str],
+    diagnostics: Diagnostics,
+) -> None:
+    collisions = (
+        ({str(row["id"]) for row in seed_sources.values()}
+         & {str(row["id"]) for row in supplemental_sources.values()})
+        | ({str(row["id"]) for row in seed_assumptions.values()}
+           & {str(row["id"]) for row in supplemental_assumptions.values()})
+        | (seed_source_files & supplemental_source_files)
+        | (seed_assumption_files & supplemental_assumption_files)
+    )
+    for collision in sorted(collisions):
+        diagnostics.add(
+            "FRAGMENT_COLLECTION",
+            collision,
+            "ID appears in both seed and supplemental fragments",
+        )
+
+
+def _canonical_unavailable_artifact(
+    source: Mapping[str, object], expected_final_url: object
+) -> bool:
+    artifacts = source.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != 1:
+        return False
+    artifact = artifacts[0]
+    if not isinstance(artifact, dict):
+        return False
+    note = artifact.get("note")
+    expected = {
+        "name": "unavailable",
+        "final_url": expected_final_url,
+        "storage": "external-reference",
+        "path": None,
+        "sha256": None,
+        "bytes": None,
+        "media_type": None,
+        "retrieval_status": "unavailable",
+        "note": note,
+    }
+    return isinstance(note, str) and bool(note) and artifact == expected
+
+
+def _ordered_unique(values: Iterable[object]) -> list[object]:
+    result: list[object] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _validate_realization_bindings(
+    sources: Mapping[str, dict[str, object]],
+    realizations: Mapping[str, dict[str, object]],
+    requests: Mapping[str, dict[str, object]],
+    diagnostics: Diagnostics,
+) -> None:
+    field_pairs = (
+        ("name", "name"),
+        ("final_url", "expected_final_url"),
+        ("path", "path"),
+        ("storage", "storage"),
+        ("media_type", "media_type"),
+    )
+    for source_id, realization in sorted(realizations.items()):
+        source = sources.get(source_id)
+        if source is None:
+            continue
+        status = source.get("status")
+        manufacturer = realization.get("clone_boundary") is not None
+        artifacts = source.get("artifacts")
+        request = requests.get(str(realization.get("request_id")), {})
+        if status == "unavailable":
+            if not _canonical_unavailable_artifact(
+                source, request.get("authority_url")
+            ):
+                diagnostics.add(
+                    "REALIZATION_BINDING",
+                    source_id,
+                    "unavailable source artifact differs from canonical metadata",
+                )
+            continue
+        if status != "current":
+            continue
+        if not manufacturer:
+            if artifacts != []:
+                diagnostics.add(
+                    "REALIZATION_BINDING",
+                    source_id,
+                    "current UK source must not contain artifacts",
+                )
+            continue
+
+        expected_artifacts = realization.get("artifacts")
+        actual_artifacts = artifacts if isinstance(artifacts, list) else []
+        expected_list = expected_artifacts if isinstance(expected_artifacts, list) else []
+        if len(actual_artifacts) != len(expected_list):
+            diagnostics.add(
+                "REALIZATION_BINDING",
+                source_id,
+                "current artifact count differs from realization",
+            )
+        for index, (actual, expected) in enumerate(zip(actual_artifacts, expected_list)):
+            if not isinstance(actual, dict) or not isinstance(expected, dict):
+                continue
+            for source_field, realization_field in field_pairs:
+                if actual.get(source_field) != expected.get(realization_field):
+                    diagnostics.add(
+                        "REALIZATION_BINDING",
+                        source_id,
+                        f"artifact[{index}] field {source_field!r} differs from realization",
+                    )
+        kinds = _ordered_unique(
+            artifact.get("artifact_kind")
+            for artifact in expected_list
+            if isinstance(artifact, dict)
+        )
+        if kinds != request.get("artifact_kinds"):
+            diagnostics.add(
+                "REALIZATION_BINDING",
+                source_id,
+                "ordered artifact kinds differ from request",
+            )
+
+
+def _validate_literal_supplemental_boundary(
+    supplemental: object | None,
+    supplemental_present: bool,
+    subject: str,
+    sources: Mapping[str, dict[str, object]],
+    realizations: Mapping[str, dict[str, object]],
+    diagnostics: Diagnostics,
+) -> None:
+    from jsonschema_subset import ValidationError
+    from test_evidence_policy import validate_clone_boundary_rows
+
+    rows = supplemental if isinstance(supplemental, list) else []
+    if supplemental_present:
+        try:
+            validate_clone_boundary_rows(supplemental)
+        except (ValidationError, AssertionError) as error:
+            diagnostics.add("CLONE_BOUNDARY", subject, str(error))
+
+    manufacturer_ids = {
+        source_id
+        for source_id, realization in realizations.items()
+        if realization.get("clone_boundary") is not None
+    }
+    uk_ids = set(realizations) - manufacturer_ids
+    actual_ids = [
+        row.get("source_id")
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("source_id"), str)
+    ]
+    actual_set = set(actual_ids)
+    if actual_set != manufacturer_ids:
+        diagnostics.add(
+            "CLONE_BOUNDARY",
+            subject,
+            "supplemental boundary source IDs differ; "
+            f"missing={sorted(manufacturer_ids - actual_set)!r}; "
+            f"extra={sorted(actual_set - manufacturer_ids)!r}",
+        )
+    if actual_ids != sorted(actual_ids):
+        diagnostics.add(
+            "CLONE_BOUNDARY",
+            subject,
+            "supplemental boundary source IDs are not sorted",
+        )
+    by_id = {
+        str(row["source_id"]): row
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("source_id"), str)
+    }
+    for source_id in sorted(actual_set & uk_ids):
+        diagnostics.add(
+            "CLONE_BOUNDARY",
+            source_id,
+            "UK source must not appear in supplemental clone boundary",
+        )
+    for source_id in sorted(actual_set & manufacturer_ids):
+        source = sources.get(source_id)
+        realization = realizations[source_id]
+        status = source.get("status") if source is not None else None
+        clone_boundary = realization.get("clone_boundary")
+        expected = (
+            clone_boundary.get(status)
+            if isinstance(clone_boundary, dict) and isinstance(status, str)
+            else None
+        )
+        if by_id[source_id] != expected:
+            diagnostics.add(
+                "CLONE_BOUNDARY",
+                source_id,
+                f"supplemental boundary row differs from realization outcome {status!r}",
+            )
+
+
 def _immutable_tuple(record: dict[str, object]) -> tuple[object, ...]:
     return tuple(record.get(field) for field in IMMUTABLE_FIELDS)
 
@@ -478,16 +848,21 @@ def _validate_supplemental_boundary(
     supplemental_present: bool,
     subject: str,
     diagnostics: Diagnostics,
+    *,
+    excluded_ids: set[str] | None = None,
 ) -> None:
     from jsonschema_subset import ValidationError
     from test_evidence_policy import validate_clone_boundary_rows
 
     seed_ids = set(_by_id(seeds))
     sources_by_id = _by_id(sources)
+    excluded = set() if excluded_ids is None else excluded_ids
     expected = {
         source_id
         for source_id, source in sources_by_id.items()
-        if source_id not in seed_ids and source.get("class") != "dynamic"
+        if source_id not in seed_ids
+        and source_id not in excluded
+        and source.get("class") != "dynamic"
     }
 
     if not supplemental_present:
@@ -504,7 +879,11 @@ def _validate_supplemental_boundary(
     except (ValidationError, AssertionError) as error:
         diagnostics.add("CLONE_BOUNDARY", subject, str(error))
 
-    actual = _boundary_pairs(supplemental)
+    actual = {
+        source_id: classification
+        for source_id, classification in _boundary_pairs(supplemental).items()
+        if source_id not in excluded
+    }
     for source_id in sorted(set(actual) & seed_ids):
         diagnostics.add(
             "CLONE_BOUNDARY",
@@ -551,6 +930,211 @@ def _validate_supplemental_boundary(
                 source_id,
                 f"classification must be {expected_classification!r} or 'unresolved'",
             )
+
+
+def _validate_fragment_collections(
+    root: Path,
+    manifest_root: Path,
+    seeds: object,
+    sources: object,
+    assumptions: object,
+    seed_realizations: object,
+    supplemental_realization_document: object,
+    requests_document: object,
+    supplemental_boundary: object | None,
+    supplemental_boundary_present: bool,
+    diagnostics: Diagnostics,
+) -> tuple[set[str], dict[str, dict[str, object]]]:
+    seed_realization_rows = _records(seed_realizations)
+    seed_realization_by_source = {
+        str(row["source_id"]): row
+        for row in seed_realization_rows
+        if isinstance(row.get("source_id"), str)
+    }
+    realization_rows_value = (
+        supplemental_realization_document.get("realizations")
+        if isinstance(supplemental_realization_document, dict)
+        else None
+    )
+    realization_rows = _records(realization_rows_value)
+    realization_by_source = {
+        str(row["source_id"]): row
+        for row in realization_rows
+        if isinstance(row.get("source_id"), str)
+    }
+    request_rows_value = (
+        requests_document.get("requests")
+        if isinstance(requests_document, dict)
+        else None
+    )
+    requests_by_id = {
+        str(row["request_id"]): row
+        for row in _records(request_rows_value)
+        if isinstance(row.get("request_id"), str)
+    }
+
+    supplemental_source_path = manifest_root / "supplemental-fragments"
+    supplemental_assumption_path = manifest_root / "supplemental-assumption-fragments"
+    supplemental_source_present = _control_exists(supplemental_source_path)
+    supplemental_assumption_present = _control_exists(supplemental_assumption_path)
+    aggregate_source_ids = set(_by_id(sources))
+    aggregate_assumption_ids = set(_by_id(assumptions))
+    realization_assumption_ids = {
+        f"ASM-UNAVAILABLE-{source_id}" for source_id in realization_by_source
+    }
+    boundary_has_row = isinstance(supplemental_boundary, list) and bool(
+        supplemental_boundary
+    )
+    complete = (
+        supplemental_source_present
+        or supplemental_assumption_present
+        or boundary_has_row
+        or bool(aggregate_source_ids & set(realization_by_source))
+        or bool(aggregate_assumption_ids & realization_assumption_ids)
+    )
+
+    seed_source_collection = _scan_fragment_collection(
+        root,
+        manifest_root / "fragments",
+        required=True,
+        diagnostics=diagnostics,
+    )
+    seed_assumption_collection = _scan_fragment_collection(
+        root,
+        manifest_root / "assumption-fragments",
+        required=True,
+        diagnostics=diagnostics,
+    )
+    supplemental_source_collection = _scan_fragment_collection(
+        root,
+        supplemental_source_path,
+        required=complete,
+        diagnostics=diagnostics,
+    )
+
+    seed_source_records = _source_fragment_records(
+        root, seed_source_collection, diagnostics
+    )
+    supplemental_source_records = _source_fragment_records(
+        root, supplemental_source_collection, diagnostics
+    )
+    expected_seed_assumptions = _status_assumption_sources(
+        seed_source_records, seed_realization_by_source
+    )
+    expected_supplemental_assumptions = (
+        _status_assumption_sources(
+            {
+                source_id: source
+                for source_id, source in supplemental_source_records.items()
+                if realization_by_source.get(source_id, {}).get("clone_boundary") is None
+            },
+            realization_by_source,
+        )
+        if complete
+        else set()
+    )
+    supplemental_assumption_collection = _scan_fragment_collection(
+        root,
+        supplemental_assumption_path,
+        required=complete and bool(expected_supplemental_assumptions),
+        diagnostics=diagnostics,
+    )
+    seed_assumption_records = _assumption_fragment_records(
+        seed_assumption_collection, diagnostics
+    )
+    supplemental_assumption_records = _assumption_fragment_records(
+        supplemental_assumption_collection, diagnostics
+    )
+
+    _check_duplicate_fragment_record_ids(
+        (
+            seed_source_collection,
+            seed_assumption_collection,
+            supplemental_source_collection,
+            supplemental_assumption_collection,
+        ),
+        diagnostics,
+    )
+
+    _fragment_ids(seed_source_collection, set(_by_id(seeds)), diagnostics)
+    _fragment_ids(
+        seed_assumption_collection, expected_seed_assumptions, diagnostics
+    )
+    _fragment_ids(
+        supplemental_source_collection,
+        set(realization_by_source) if complete else set(),
+        diagnostics,
+    )
+    _fragment_ids(
+        supplemental_assumption_collection,
+        expected_supplemental_assumptions,
+        diagnostics,
+    )
+
+    _check_fragment_collisions(
+        seed_source_records,
+        supplemental_source_records,
+        seed_assumption_records,
+        supplemental_assumption_records,
+        set(seed_source_collection.records),
+        set(supplemental_source_collection.records),
+        set(seed_assumption_collection.records),
+        set(supplemental_assumption_collection.records),
+        diagnostics,
+    )
+
+    all_source_records = [
+        *seed_source_records.values(),
+        *supplemental_source_records.values(),
+    ]
+    all_assumption_records = [
+        *seed_assumption_records.values(),
+        *supplemental_assumption_records.values(),
+    ]
+    source_fragments_well_formed = (
+        len(seed_source_records) == len(seed_source_collection.records)
+        and len(supplemental_source_records)
+        == len(supplemental_source_collection.records)
+    )
+    assumption_fragments_well_formed = (
+        len(seed_assumption_records) == len(seed_assumption_collection.records)
+        and len(supplemental_assumption_records)
+        == len(supplemental_assumption_collection.records)
+    )
+    if source_fragments_well_formed and sources != _sorted_records(all_source_records):
+        diagnostics.add(
+            "FRAGMENT_COLLECTION",
+            "evidence/manifest/sources.json",
+            "aggregate differs from sorted fragment collection",
+        )
+    if (
+        assumption_fragments_well_formed
+        and assumptions != _sorted_records(all_assumption_records)
+    ):
+        diagnostics.add(
+            "FRAGMENT_COLLECTION",
+            "evidence/manifest/assumptions.json",
+            "aggregate differs from sorted fragment collection",
+        )
+
+    if complete:
+        _validate_realization_bindings(
+            supplemental_source_records,
+            realization_by_source,
+            requests_by_id,
+            diagnostics,
+        )
+        _validate_literal_supplemental_boundary(
+            supplemental_boundary,
+            supplemental_boundary_present,
+            _relative_subject(
+                root, manifest_root / "supplemental-clone-boundary.json"
+            ),
+            supplemental_source_records,
+            realization_by_source,
+            diagnostics,
+        )
+    return set(realization_by_source), supplemental_source_records
 
 
 def _path_components(path: Path, relative: PurePosixPath) -> Iterable[Path]:
@@ -875,6 +1459,9 @@ def validate_root(root: Path, baseline_argument: str | None) -> int:
     assumptions_path = manifest_root / "assumptions.json"
     boundary_path = manifest_root / "clone-boundary.json"
     supplemental_path = manifest_root / "supplemental-clone-boundary.json"
+    seed_realization_path = manifest_root / "seed-realization.json"
+    supplemental_realization_path = manifest_root / "supplemental-realization.json"
+    requests_path = manifest_root / "supplemental-requests.json"
 
     source_schema = _load_control(source_schema_path)
     seeds = _load_control(seed_path)
@@ -882,6 +1469,9 @@ def validate_root(root: Path, baseline_argument: str | None) -> int:
     assumption_schema = _load_control(assumption_schema_path)
     assumptions = _load_control(assumptions_path)
     boundary = _load_control(boundary_path)
+    seed_realizations = _load_control(seed_realization_path)
+    supplemental_realizations = _load_control(supplemental_realization_path)
+    requests = _load_control(requests_path)
 
     supplemental_present = _control_exists(supplemental_path)
     supplemental = (
@@ -954,6 +1544,19 @@ def validate_root(root: Path, baseline_argument: str | None) -> int:
         _relative_subject(root, boundary_path),
         diagnostics,
     )
+    realization_ids, _supplemental_sources = _validate_fragment_collections(
+        root,
+        manifest_root,
+        seeds,
+        sources,
+        assumptions,
+        seed_realizations,
+        supplemental_realizations,
+        requests,
+        supplemental,
+        supplemental_present,
+        diagnostics,
+    )
     _validate_supplemental_boundary(
         sources,
         seeds,
@@ -962,6 +1565,7 @@ def validate_root(root: Path, baseline_argument: str | None) -> int:
         supplemental_present,
         _relative_subject(root, supplemental_path),
         diagnostics,
+        excluded_ids=realization_ids,
     )
     _validate_artifacts(root, sources, diagnostics, git_context)
 

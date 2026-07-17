@@ -34,9 +34,50 @@ def _format_json(path: Path, *, preserve_object_order: bool) -> None:
     )
 
 
+def _adapt_validator_fixture(root: Path) -> None:
+    production_manifest = AIUS_ROOT / "evidence" / "manifest"
+    fixture_manifest = root / "evidence" / "manifest"
+
+    production_boundary = production_manifest / "clone-boundary.json"
+    (fixture_manifest / "clone-boundary.json").write_bytes(
+        production_boundary.read_bytes()
+    )
+
+    production_seeds = production_manifest / "seed-sources.json"
+    seed_payload = production_seeds.read_bytes()
+    seed_rows = seed_evidence._decode_json(seed_payload, str(production_seeds))
+    if not isinstance(seed_rows, list):
+        raise RuntimeError("production seed sources are not an array")
+    required_ids = {
+        str(row["id"])
+        for row in seed_rows
+        if isinstance(row, dict) and row.get("required") is True
+    }
+    required_golden_ids = {
+        str(row["id"])
+        for row in seed_rows
+        if isinstance(row, dict)
+        and row.get("class") == "golden"
+        and row.get("required") is True
+    }
+    if required_ids != required_golden_ids or len(required_golden_ids) != 11:
+        raise RuntimeError(
+            "production seed controls do not contain exactly 11 required golden rows"
+        )
+    marker = b'"required": true'
+    if seed_payload.count(marker) != 11:
+        raise RuntimeError(
+            "production seed bytes do not contain exactly 11 required markers"
+        )
+    (fixture_manifest / "seed-sources.json").write_bytes(
+        seed_payload.replace(marker, b'"required": false')
+    )
+
+
 def main() -> int:
     fixture = AssemblyFixture()
     try:
+        _adapt_validator_fixture(fixture.root)
         for relative in (
             "evidence/manifest/fragments",
             "evidence/manifest/assumption-fragments",

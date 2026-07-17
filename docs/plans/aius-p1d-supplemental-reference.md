@@ -4,7 +4,7 @@ type: plans
 scope: aius
 status: in-progress
 tags: [aius, evidence, electrical, kicad, hardware]
-updated: 2026-07-16
+updated: 2026-07-17
 toc: true
 ---
 
@@ -862,6 +862,19 @@ controls to `required: false`, because the synthetic complete fixture records
 all 22 seed outcomes as unavailable. Regression tests prove regeneration retains
 both adaptations and that the production controls remain 11 required rows.
 Existing seed validation and P1D0c assembly behavior remain unchanged.
+
+P1D0d completed on 2026-07-17. The validator now accepts only the exact
+seed-only or complete collection state, binds current and unavailable
+supplemental sources to their realization and immutable request authority,
+checks literal supplemental clone-boundary rows, and rejects duplicate record
+identities across fragment files. The persistent complete fixture is fully
+regenerable while keeping the production seed boundary byte-identical and the
+11 required-seed relaxations confined to the synthetic fixture. The final
+clean-room delivery audit returned `PASS` after adding correlated unavailable
+URL tamper coverage and a positive current-UK/status-derived-assumption branch.
+Forty-seven validator, 32 seed and 45 supplemental tests were green, together
+with the production validator, generator, persistent assembler check and direct
+complete-fixture validator.
 
 ### P1D0e — P1 lifecycle validation
 

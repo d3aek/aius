@@ -17,7 +17,7 @@
     "required_object": "FCR684205R version 2.0 datasheet",
     "purpose": "Establish the optical receiver circuit and electrical limits.",
     "claim_scope": ["optical receiver circuit", "optical receiver electrical limits"],
-    "required": true
+    "required": false
   },
   {
     "id": "CLIFF-OTJ5",
@@ -27,7 +27,7 @@
     "required_object": "FCR684205T version 2.1 datasheet",
     "purpose": "Establish the optical transmitter circuit and electrical limits.",
     "claim_scope": ["optical transmitter circuit", "optical transmitter electrical limits"],
-    "required": true
+    "required": false
   },
   {
     "id": "CPC-CLIFF-OTJ5",
@@ -77,7 +77,7 @@
     "required_object": "enclosure drawing",
     "purpose": "Establish the enclosure dimensions and usable board envelope.",
     "claim_scope": ["enclosure dimensions", "board envelope"],
-    "required": true
+    "required": false
   },
   {
     "id": "HAMMOND-1455N1201BK-STEP",
@@ -87,7 +87,7 @@
     "required_object": "STEP file linked by the part page",
     "purpose": "Provide the manufacturer geometry for mechanical-fit validation.",
     "claim_scope": ["enclosure mechanical fit"],
-    "required": true
+    "required": false
   },
   {
     "id": "PCBWAY-2L-100",
@@ -117,7 +117,7 @@
     "required_object": "Ethernet kit assembly guide",
     "purpose": "Establish the native-Ethernet connector circuit and assembly.",
     "claim_scope": ["native Ethernet connector circuit", "Ethernet kit assembly"],
-    "required": true
+    "required": false
   },
   {
     "id": "PJRC-IMXRT1060-CEC",
@@ -127,7 +127,7 @@
     "required_object": "electrical datasheet revision 4",
     "purpose": "Establish the processor electrical limits used by the design.",
     "claim_scope": ["i.MX RT1060 electrical limits"],
-    "required": true
+    "required": false
   },
   {
     "id": "PJRC-IMXRT1060-RM",
@@ -137,7 +137,7 @@
     "required_object": "annotated reference manual revision 3",
     "purpose": "Establish S/PDIF, DMA, clock, and memory capability claims.",
     "claim_scope": ["S/PDIF peripheral capability", "DMA capability", "clock topology", "memory capability"],
-    "required": true
+    "required": false
   },
   {
     "id": "PJRC-SPDIF-RX-SOURCE",
@@ -167,7 +167,7 @@
     "required_object": "product page",
     "purpose": "Establish board limits, power, dimensions, interfaces, and official document links.",
     "claim_scope": ["Teensy 4.1 board limits", "Teensy 4.1 power", "Teensy 4.1 dimensions", "Teensy 4.1 interfaces"],
-    "required": true
+    "required": false
   },
   {
     "id": "PJRC-TEENSY41-PINOUT",
@@ -177,7 +177,7 @@
     "required_object": "two-sided pinout revision 4",
     "purpose": "Establish the Teensy pin and peripheral allocation boundary.",
     "claim_scope": ["Teensy 4.1 pin allocation", "Teensy 4.1 peripheral allocation"],
-    "required": true
+    "required": false
   },
   {
     "id": "PJRC-TEENSY41-SCHEMATIC",
@@ -187,7 +187,7 @@
     "required_object": "schematic linked by the product page",
     "purpose": "Establish the official Teensy 4.1 board-level circuit topology.",
     "claim_scope": ["Teensy 4.1 circuit topology"],
-    "required": true
+    "required": false
   },
   {
     "id": "PLATFORMIO-TEENSY41",
@@ -197,7 +197,7 @@
     "required_object": "board documentation page",
     "purpose": "Establish the PlatformIO target and upload configuration.",
     "claim_scope": ["PlatformIO target configuration", "PlatformIO upload configuration"],
-    "required": true
+    "required": false
   },
   {
     "id": "VKSDR-TOSLINK-KICAD",
