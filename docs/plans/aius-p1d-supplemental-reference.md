@@ -630,6 +630,13 @@ commit-checkpoint:
   parent-commit: "feat(aius): close supplemental failure paths"
 ```
 
+P1D0b3 completed on 2026-07-17. Canonical unavailable publication now closes
+all 46 realization rows, emits exact UK assumptions, preserves manufacturer
+golden blockers, and provides isolated current-or-unavailable fragment checks.
+The clean-room delivery audit returned `PASS`; 35 supplemental, 32 seed, 34
+evidence-validator, 87 P1-validator and 15 evidence-policy tests were green,
+along with the repository evidence validator and scoped diff checks.
+
 Tests cover all realization rows, property order, artifact-kind binding,
 repeated kinds, Git/LFS media, exact URLs, MPN identity, UK field ranges,
 authorization, unavailable branches, symlinks, payload tampering, every publish

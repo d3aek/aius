@@ -1,5 +1,8 @@
 # Aius evidence manifest policy
 
+This directory defines the durable evidence records, acquisition controls, and
+validation commands used by Aius hardware decisions.
+
 ## Directory boundary
 
 **Binary evidence:** Store public, directly retrievable binary evidence retained for personal noncommercial research under `docs/reference/datasheets.md<source-id>/`; Git LFS must report `filter=lfs`.
@@ -36,6 +39,20 @@ contain its row's exact source ID. Manufacturer rows retain primary evidence;
 UK rows retain normalized observations only. The constructor fixtures under
 `scripts/fixtures/supplemental-realization/` lock the exact current and
 unavailable source-record shapes for both classes.
+
+Run one supplemental request through the shared evidence engine with
+`seed_evidence.py supplemental acquire`, `record`, `unavailable`, or
+`check-fragment`. Each command takes the immutable supplemental request ID;
+acquisition and unavailable recording also require an exact UTC timestamp,
+while UK recording requires the strict observation JSON and both final HTTPS
+URLs.
+
+`check-fragment` validates only the named request and does not require sibling
+supplemental fragments. A current source or UK-unavailable publication exits
+zero. A durably published manufacturer-unavailable source exits three because
+it is a design blocker. An acquisition, recording, validation, or transactional
+publication failure exits one without publishing a new partial result. CLI
+usage errors exit two.
 
 ## External-reference workflow
 
@@ -84,6 +101,11 @@ Record a failed retrieval as `status: unavailable` with an unavailable
 specific failure note. Do not infer facts from an unavailable source. Missing
 golden evidence blocks its dependent claim; missing comparative or dynamic
 evidence follows the assumption and confidence rules in the source contract.
+
+A supplemental UK-unavailable source also writes its exact open P1D assumption
+under `evidence/manifest/supplemental-assumption-fragments/`. A supplemental
+manufacturer-unavailable source writes no assumption because its exit-three
+golden blocker is explicit.
 
 ## Runnable validation
 

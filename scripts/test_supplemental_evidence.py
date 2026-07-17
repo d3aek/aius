@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixture-proven P1D0b1/b2 supplemental evidence tests."""
+"""Fixture-proven P1D0b supplemental evidence tests."""
 
 from __future__ import annotations
 
@@ -138,6 +138,7 @@ class Fixture:
         self.manifest.mkdir(parents=True)
         for name in (
             "source-schema.json",
+            "assumption-schema.json",
             "source-request-schema.json",
             "supplemental-realization-schema.json",
             "supplemental-realization.json",
@@ -211,6 +212,19 @@ class Fixture:
         assert isinstance(value, dict)
         return value
 
+    def assumption_path(self, request_id: str) -> Path:
+        source_id = self.request(request_id)["source_id"]
+        return (
+            self.manifest
+            / "supplemental-assumption-fragments"
+            / f"{source_id}.json"
+        )
+
+    def assumption(self, request_id: str) -> dict[str, object]:
+        value = _load(self.assumption_path(request_id))
+        assert isinstance(value, dict)
+        return value
+
     def profile(self) -> dict[str, object]:
         self.assert_profile_count()
         profile = self.profiles[0]
@@ -280,12 +294,39 @@ class Fixture:
             observed_at,
         ]
 
+    def unavailable_arguments(
+        self,
+        request_id: str,
+        *,
+        note: str = "Unavailable.",
+        retrieved_at: str = TIMESTAMP,
+    ) -> list[str]:
+        return [
+            "unavailable",
+            request_id,
+            "--note",
+            note,
+            "--retrieved-at",
+            retrieved_at,
+        ]
+
     def output_paths(self, request_id: str) -> list[Path]:
         row = self.row(request_id)
         return [
             *[self.root / artifact["path"] for artifact in row["artifacts"]],
             self.fragment_path(request_id),
+            self.assumption_path(request_id),
         ]
+
+    def write_rendered(self, path: Path, value: object) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            seed_evidence._render_json(
+                self.root,
+                value,
+                seed_evidence._test_formatter,
+            )
+        )
 
 
 class SupplementalEvidenceTests(unittest.TestCase):
@@ -456,23 +497,456 @@ class SupplementalEvidenceTests(unittest.TestCase):
                 self.assert_failure(result, message)
                 self.assertEqual(self.fixture.opener.requests, [])
 
-    def test_p1d0b3_commands_remain_deterministic_nonfunctional_stubs(self) -> None:
-        commands = (
-            [
-                "unavailable",
-                SINGLE_REQUEST,
-                "--note",
-                "Unavailable.",
-                "--retrieved-at",
-                TIMESTAMP,
-            ],
-            ["check-fragment", SINGLE_REQUEST],
+    def test_unavailable_constructors_match_both_committed_p1d0a_oracles(self) -> None:
+        for fixture_name in ("manufacturer-unavailable.json", "uk-unavailable.json"):
+            case = _load(ORACLE_FIXTURE_ROOT / fixture_name)
+            assert isinstance(case, dict)
+            request_id = str(case["request_id"])
+            source = seed_evidence._supplemental_unavailable_source(
+                self.fixture.request(request_id),
+                self.fixture.row(request_id),
+                str(case["note"]),
+                str(case["retrieved_at"]),
+            )
+            with self.subTest(fixture=fixture_name):
+                self.assertEqual(source, case["expected_source"])
+                self.assertEqual(tuple(source), seed_evidence.SUPPLEMENTAL_SOURCE_KEYS)
+                self.assertEqual(
+                    tuple(source["artifacts"][0]),
+                    seed_evidence.SUPPLEMENTAL_ARTIFACT_KEYS,
+                )
+        request = self.fixture.request(UK_REQUEST)
+        requirements = request["requirements"]
+        source_id = request["source_id"]
+        self.assertEqual(
+            seed_evidence._expected_supplemental_assumption(request),
+            {
+                "id": f"ASM-UNAVAILABLE-{source_id}",
+                "claim": (
+                    f"Supplemental request {UK_REQUEST} source {source_id} is "
+                    f"unavailable for: {'; '.join(requirements)}"
+                ),
+                "consequence": (
+                    f"The selected component remains provisional until {UK_REQUEST} "
+                    "is replaced with current evidence."
+                ),
+                "owner": "P1D",
+                "validation_gate": "Replace unavailable supplemental evidence",
+                "evidence_ids": [],
+                "source_ids": [source_id],
+                "claim_scope": requirements,
+                "status": "open",
+                "resolution": None,
+            },
         )
-        for command in commands:
-            result = self.fixture.run(command)
-            with self.subTest(command=command[0]):
-                self.assert_failure(result, "later P1D0b checkpoint")
+
+    def test_all_46_rows_publish_validate_and_exit_by_exact_unavailable_class(self) -> None:
+        manufacturer_ids: list[str] = []
+        uk_ids: list[str] = []
+        note = "  Fixed realization unavailable.  "
+        for row in self.fixture.rows:
+            request_id = str(row["request_id"])
+            request = self.fixture.request(request_id)
+            result = self.fixture.run(
+                self.fixture.unavailable_arguments(request_id, note=note)
+            )
+            source = self.fixture.fragment(request_id)
+            expected_source = seed_evidence._supplemental_unavailable_source(
+                request,
+                row,
+                note,
+                TIMESTAMP,
+            )
+            with self.subTest(request_id=request_id):
+                self.assertEqual(source, expected_source)
+                self.assertTrue(seed_evidence._object_keys_are_sorted(source))
+                self.assertEqual(source["artifacts"][0]["note"], note)
+                if request["request_kind"] == "manufacturer-evidence":
+                    manufacturer_ids.append(request_id)
+                    self.assertEqual(result[0], 3, result[2])
+                    self.assertEqual(result[1], "")
+                    self.assertIn("recorded unavailable", result[2])
+                    self.assertFalse(self.fixture.assumption_path(request_id).exists())
+                else:
+                    uk_ids.append(request_id)
+                    self.assertEqual(result, (0, "", ""))
+                    assumption = self.fixture.assumption(request_id)
+                    self.assertEqual(
+                        assumption,
+                        seed_evidence._expected_supplemental_assumption(request),
+                    )
+                    self.assertTrue(
+                        seed_evidence._object_keys_are_sorted(assumption)
+                    )
+                for artifact in row["artifacts"]:
+                    self.assertFalse((self.fixture.root / artifact["path"]).exists())
+                self.assertEqual(
+                    self.fixture.run(["check-fragment", request_id]),
+                    (0, "", ""),
+                )
+        self.assertEqual(len(manufacturer_ids), 22)
+        self.assertEqual(len(uk_ids), 24)
+        self.assertEqual(self.fixture.opener.requests, [])
+
+    def test_unavailable_rejects_identity_note_and_timestamp_without_publication(self) -> None:
+        cases = (
+            (SINGLE_REQUEST, "   ", TIMESTAMP, "non-whitespace"),
+            (SINGLE_REQUEST, "Unavailable.", "2026-07-16", "timestamp"),
+            ("REQ-NOT-REAL-UK", "Unavailable.", TIMESTAMP, "unknown"),
+            (
+                "REQ-CLIFF-RX-MFR",
+                "Unavailable.",
+                TIMESTAMP,
+                "no acquisition realization",
+            ),
+        )
+        for index, (request_id, note, retrieved_at, message) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            result = self.fixture.run(
+                [
+                    "unavailable",
+                    request_id,
+                    "--note",
+                    note,
+                    "--retrieved-at",
+                    retrieved_at,
+                ]
+            )
+            with self.subTest(request_id=request_id, note=note):
+                self.assert_failure(result, message)
+                fragments = self.fixture.manifest / "supplemental-fragments"
+                assumptions = (
+                    self.fixture.manifest
+                    / "supplemental-assumption-fragments"
+                )
+                self.assertEqual(
+                    list(fragments.glob("*.json")) if fragments.exists() else [],
+                    [],
+                )
+                self.assertEqual(
+                    list(assumptions.glob("*.json")) if assumptions.exists() else [],
+                    [],
+                )
+                self.assertEqual(list(self.fixture.root.rglob("*.tmp")), [])
                 self.assertEqual(self.fixture.opener.requests, [])
+
+    def test_every_unavailable_publication_boundary_is_atomic_exit_one(self) -> None:
+        cases = ((SINGLE_REQUEST, 1), (UK_REQUEST, 1), (UK_REQUEST, 2))
+        for index, (request_id, failure_call) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            calls = 0
+
+            def replace(source: str, target: str) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == failure_call:
+                    raise OSError("injected supplemental unavailable publish failure")
+                os.replace(source, target)
+
+            result = self.fixture.run(
+                self.fixture.unavailable_arguments(request_id),
+                replace=replace,
+            )
+            with self.subTest(request_id=request_id, failure_call=failure_call):
+                self.assert_failure(result, "publish failed", code=1)
+                self.assert_no_outputs(request_id)
+                self.assertEqual(self.fixture.opener.requests, [])
+
+    def test_unavailable_refuses_existing_and_symlink_output_boundaries(self) -> None:
+        cases = (
+            ("source-existing", SINGLE_REQUEST),
+            ("source-symlink", SINGLE_REQUEST),
+            ("source-parent-symlink", SINGLE_REQUEST),
+            ("assumption-existing", UK_REQUEST),
+            ("assumption-symlink", UK_REQUEST),
+            ("assumption-parent-symlink", UK_REQUEST),
+        )
+        for index, (kind, request_id) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            outside = Path(self.fixture.temporary.name) / f"outside-{kind}"
+            if kind == "source-existing":
+                target = self.fixture.fragment_path(request_id)
+                target.parent.mkdir(parents=True)
+                target.write_text("foreign\n", encoding="utf-8")
+            elif kind == "source-symlink":
+                target = self.fixture.fragment_path(request_id)
+                target.parent.mkdir(parents=True)
+                outside.write_text("outside\n", encoding="utf-8")
+                target.symlink_to(outside)
+            elif kind == "source-parent-symlink":
+                target = self.fixture.manifest / "supplemental-fragments"
+                outside.mkdir()
+                target.symlink_to(outside, target_is_directory=True)
+            elif kind == "assumption-existing":
+                target = self.fixture.assumption_path(request_id)
+                target.parent.mkdir(parents=True)
+                target.write_text("foreign\n", encoding="utf-8")
+            elif kind == "assumption-symlink":
+                target = self.fixture.assumption_path(request_id)
+                target.parent.mkdir(parents=True)
+                outside.write_text("outside\n", encoding="utf-8")
+                target.symlink_to(outside)
+            else:
+                target = (
+                    self.fixture.manifest
+                    / "supplemental-assumption-fragments"
+                )
+                outside.mkdir()
+                target.symlink_to(outside, target_is_directory=True)
+            result = self.fixture.run(
+                self.fixture.unavailable_arguments(request_id)
+            )
+            with self.subTest(kind=kind):
+                self.assert_failure(
+                    result,
+                    "unsafe" if "parent" in kind else "overwrite",
+                )
+                if kind.startswith("assumption"):
+                    self.assertFalse(self.fixture.fragment_path(request_id).exists())
+                if kind == "source-existing":
+                    self.assertEqual(target.read_text(encoding="utf-8"), "foreign\n")
+                if kind in {"source-symlink", "assumption-symlink"}:
+                    self.assertTrue(target.is_symlink())
+                    self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+                if "parent" in kind:
+                    self.assertEqual(list(outside.iterdir()), [])
+                self.assertEqual(list(self.fixture.root.rglob("*.tmp")), [])
+
+    def test_unavailable_renderer_failures_precede_atomic_publication(self) -> None:
+        for failure_call in (1, 2):
+            if failure_call > 1:
+                self.reset_fixture()
+            calls = 0
+
+            def formatter(root: Path, payload: bytes) -> bytes:
+                nonlocal calls
+                calls += 1
+                if calls == failure_call:
+                    raise seed_evidence.ControlError(
+                        "injected unavailable renderer failure"
+                    )
+                return seed_evidence._test_formatter(root, payload)
+
+            result = self.fixture.run(
+                self.fixture.unavailable_arguments(UK_REQUEST),
+                formatter=formatter,
+            )
+            with self.subTest(failure_call=failure_call):
+                self.assert_failure(
+                    result,
+                    "injected unavailable renderer failure",
+                    code=2,
+                )
+                self.assert_no_outputs(UK_REQUEST)
+
+    def test_unavailable_pair_matches_real_pinned_prettier_and_checks(self) -> None:
+        def real_formatter(root: Path, payload: bytes) -> bytes:
+            del root
+            return seed_evidence._production_formatter(AIUS_ROOT, payload)
+
+        result = self.fixture.run(
+            self.fixture.unavailable_arguments(UK_REQUEST),
+            formatter=real_formatter,
+        )
+        self.assertEqual(result, (0, "", ""), result[2])
+        for path, value in (
+            (self.fixture.fragment_path(UK_REQUEST), self.fixture.fragment(UK_REQUEST)),
+            (
+                self.fixture.assumption_path(UK_REQUEST),
+                self.fixture.assumption(UK_REQUEST),
+            ),
+        ):
+            expected = seed_evidence._render_json(
+                AIUS_ROOT,
+                value,
+                seed_evidence._production_formatter,
+            )
+            self.assertEqual(path.read_bytes(), expected)
+            self.assertTrue(seed_evidence._object_keys_are_sorted(value))
+        self.assertEqual(
+            self.fixture.run(
+                ["check-fragment", UK_REQUEST],
+                formatter=real_formatter,
+            ),
+            (0, "", ""),
+        )
+
+    def test_check_fragment_accepts_each_outcome_without_requiring_siblings(self) -> None:
+        cases = (
+            (
+                SINGLE_REQUEST,
+                ["acquire", SINGLE_REQUEST, "--retrieved-at", TIMESTAMP],
+                0,
+            ),
+            (UK_REQUEST, self.fixture.record_arguments(UK_REQUEST), 0),
+            (UK_REQUEST, self.fixture.unavailable_arguments(UK_REQUEST), 0),
+            (
+                SINGLE_REQUEST,
+                self.fixture.unavailable_arguments(SINGLE_REQUEST),
+                3,
+            ),
+        )
+        for index, (request_id, command, expected_status) in enumerate(cases):
+            if index:
+                self.reset_fixture()
+                if command[0] == "record":
+                    command = self.fixture.record_arguments(request_id)
+                elif command[0] == "unavailable":
+                    command = self.fixture.unavailable_arguments(request_id)
+            published = self.fixture.run(command)
+            with self.subTest(command=command[0], request_id=request_id):
+                self.assertEqual(published[0], expected_status, published[2])
+                sibling = self.fixture.fragment_path("REQ-CLIFF-TX-UK")
+                sibling.parent.mkdir(parents=True, exist_ok=True)
+                sibling.write_bytes(b"not JSON\n")
+                sibling_assumption = self.fixture.assumption_path("REQ-CLIFF-TX-UK")
+                sibling_assumption.parent.mkdir(parents=True, exist_ok=True)
+                sibling_assumption.write_bytes(b"not JSON\n")
+                self.assertEqual(
+                    self.fixture.run(["check-fragment", request_id]),
+                    (0, "", ""),
+                )
+
+    def test_check_fragment_rejects_payload_and_metadata_tampering(self) -> None:
+        cases = (
+            "missing-source",
+            "source-constructor",
+            "source-rendering",
+            "source-order",
+            "source-duplicate-key",
+            "missing-assumption",
+            "assumption-constructor",
+            "unexpected-assumption",
+            "artifact-payload",
+        )
+        for index, kind in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            request_id = UK_REQUEST
+            if kind == "missing-source":
+                message = "missing"
+            elif kind in {
+                "source-constructor",
+                "source-rendering",
+                "source-order",
+                "source-duplicate-key",
+                "missing-assumption",
+                "assumption-constructor",
+            }:
+                self.assertEqual(
+                    self.fixture.run(
+                        self.fixture.unavailable_arguments(UK_REQUEST)
+                    ),
+                    (0, "", ""),
+                )
+                if kind == "source-constructor":
+                    source = self.fixture.fragment(UK_REQUEST)
+                    source["title"] = "tampered"
+                    self.fixture.write_rendered(
+                        self.fixture.fragment_path(UK_REQUEST),
+                        source,
+                    )
+                    message = "constructor"
+                elif kind == "source-rendering":
+                    source = self.fixture.fragment(UK_REQUEST)
+                    self.fixture.fragment_path(UK_REQUEST).write_text(
+                        json.dumps(source, separators=(",", ":")) + "\n",
+                        encoding="utf-8",
+                    )
+                    message = "renderer bytes"
+                elif kind == "source-order":
+                    source = self.fixture.fragment(UK_REQUEST)
+                    reversed_source = dict(reversed(list(source.items())))
+                    self.fixture.fragment_path(UK_REQUEST).write_text(
+                        json.dumps(reversed_source, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    message = "object-key order"
+                elif kind == "source-duplicate-key":
+                    path = self.fixture.fragment_path(UK_REQUEST)
+                    payload = path.read_text(encoding="utf-8")
+                    path.write_text(
+                        '{"status":"unavailable",' + payload[1:],
+                        encoding="utf-8",
+                    )
+                    message = "duplicate JSON key"
+                elif kind == "missing-assumption":
+                    self.fixture.assumption_path(UK_REQUEST).unlink()
+                    message = "requires an unavailable assumption"
+                else:
+                    assumption = self.fixture.assumption(UK_REQUEST)
+                    assumption["owner"] = "wrong"
+                    self.fixture.write_rendered(
+                        self.fixture.assumption_path(UK_REQUEST),
+                        assumption,
+                    )
+                    message = "non-canonical"
+            elif kind == "unexpected-assumption":
+                self.assertEqual(
+                    self.fixture.run(self.fixture.record_arguments(UK_REQUEST)),
+                    (0, "", ""),
+                )
+                assumption = seed_evidence._expected_supplemental_assumption(
+                    self.fixture.request(UK_REQUEST)
+                )
+                self.fixture.write_rendered(
+                    self.fixture.assumption_path(UK_REQUEST),
+                    assumption,
+                )
+                message = "unexpected assumption"
+            else:
+                request_id = SINGLE_REQUEST
+                self.assertEqual(
+                    self.fixture.run(
+                        ["acquire", SINGLE_REQUEST, "--retrieved-at", TIMESTAMP]
+                    ),
+                    (0, "", ""),
+                )
+                artifact = self.fixture.row(SINGLE_REQUEST)["artifacts"][0]
+                (self.fixture.root / artifact["path"]).write_bytes(b"tampered")
+                message = "hash or size"
+            result = self.fixture.run(["check-fragment", request_id])
+            with self.subTest(kind=kind):
+                self.assert_failure(result, message)
+
+    def test_check_fragment_rejects_source_assumption_and_artifact_symlinks(self) -> None:
+        cases = ("source", "assumption", "artifact")
+        for index, kind in enumerate(cases):
+            if index:
+                self.reset_fixture()
+            request_id = UK_REQUEST if kind != "artifact" else SINGLE_REQUEST
+            if kind == "artifact":
+                self.assertEqual(
+                    self.fixture.run(
+                        ["acquire", request_id, "--retrieved-at", TIMESTAMP]
+                    ),
+                    (0, "", ""),
+                )
+                artifact = self.fixture.row(request_id)["artifacts"][0]
+                target = self.fixture.root / artifact["path"]
+            else:
+                self.assertEqual(
+                    self.fixture.run(
+                        self.fixture.unavailable_arguments(request_id)
+                    ),
+                    (0, "", ""),
+                )
+                target = (
+                    self.fixture.fragment_path(request_id)
+                    if kind == "source"
+                    else self.fixture.assumption_path(request_id)
+                )
+            outside = Path(self.fixture.temporary.name) / f"outside-check-{kind}"
+            target.unlink()
+            outside.write_text("outside\n", encoding="utf-8")
+            target.symlink_to(outside)
+            result = self.fixture.run(["check-fragment", request_id])
+            with self.subTest(kind=kind):
+                self.assert_failure(result, "regular non-symlink")
+                self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
 
     def test_exact_profile_matches_locked_17_field_contract(self) -> None:
         profile = self.fixture.profile()
@@ -894,6 +1368,11 @@ class SupplementalEvidenceTests(unittest.TestCase):
                 ],
                 "--authorization-final-url",
             ),
+            (
+                ["unavailable", SINGLE_REQUEST, "--retrieved-at", TIMESTAMP],
+                "--note",
+            ),
+            (["check-fragment"], "request_id"),
         )
         for arguments, message in cases:
             stderr = io.StringIO()

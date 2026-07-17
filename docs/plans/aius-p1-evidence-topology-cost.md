@@ -3336,6 +3336,12 @@ P1D0b2 completed on 2026-07-16. The same engine now records exact normalized UK
 observations for confirmed authorization rows without network access; its
 clean-room delivery audit and all compatibility suites passed.
 
+P1D0b3 completed on 2026-07-17. The evidence engine now publishes canonical
+unavailable outcomes and exact UK assumptions, retains manufacturer golden
+blockers, and validates each supplemental fragment in isolation. Its clean-room
+delivery audit and all seed, supplemental, evidence-policy, evidence-validator
+and P1-validator compatibility suites passed.
+
 The normative P1D contract is now
 [`aius-p1d-supplemental-reference.md`](aius-p1d-supplemental-reference.md). It
 supersedes the historical draft below after a clean-room review found that the
