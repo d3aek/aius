@@ -1297,6 +1297,19 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 04"
 ```
 
+P1D1.04 completed on 2026-07-17 at the shared
+`2026-07-17T06:33:17Z` timestamp. The locked DigiKey isolator URL could not
+be attributed directly, so that source is canonically unavailable with its
+exact open sourcing assumption; no search or substitute-table facts were
+accepted. The JST BM05 manufacturer source is current and retains the
+146,619-byte `eGH.pdf` with SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`.
+The RS observation is current with SKU `752-1778`, 2,460 units ready to ship,
+pack/MOQ 5 and GBP 0.60 per unit ex VAT. A later stock response from the same
+final URL differed and was recorded as non-blocking dynamic CDN/session
+behaviour. All three fragment checks, active delivery audit and the
+hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.05
 unit: single-file-implementation
