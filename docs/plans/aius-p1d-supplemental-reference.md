@@ -1878,10 +1878,13 @@ review-intensity: active
 commit-checkpoint:
   green:
     - python3 scripts/test_check_p1d2_format.py
-    - python3 scripts/check_p1d2_format.py
   buildable: [fixture-proven exact supplemental lifecycle formatting command]
   parent-commit: "test(aius): pin supplemental formatting inputs"
 ```
+
+P1D2a proves the checker against its complete isolated fixture only. Its live
+invocation remains the final P1D2 common-green command, after `supplemental
+assemble --write` creates the P1D2-owned aggregate operands.
 
 `check_p1d2_format.py` accepts no arguments, resolves the Aius and repository
 roots from its own path, and invokes the absolute repository-pinned
