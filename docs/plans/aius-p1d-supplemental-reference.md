@@ -1474,6 +1474,22 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 08"
 ```
 
+P1D1.08 completed on 2026-07-17 at the shared
+`2026-07-17T07:41:05Z` timestamp. The internal-cable UK source is canonically
+unavailable because its distributor authorization was pre-locked unresolved.
+The HellermannTyton manufacturer source is current and retains the 72,455-byte
+`TDS_151-30300_com.pdf` with SHA-256
+`96e9b86e40ebe699139aa1ae81e9feb377de76f35649ec6ddb99596e463ac9c8`
+and the 214,584-byte `151-30300.html` with SHA-256
+`a434dcad2355226e488d205df87b946fabb6ca35bc875913cf7db92b800c65b1`.
+The mechanical-retainer UK source is canonically unavailable because the exact
+live locator did not directly substantiate RS; no commerce observations were
+accepted. Independent review matched the PDF bytes and found only generated
+nonce/widget differences in normalized live HTML. All three fragment checks,
+active delivery audit and the hash-stable 45-test supplemental suite passed.
+The retained HTML remains byte-exact, including upstream whitespace; authored
+whitespace checks exclude this hashed source artifact rather than rewriting it.
+
 ```yaml
 phase: P1D1.09
 unit: single-file-implementation
