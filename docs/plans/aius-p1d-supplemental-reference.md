@@ -1665,6 +1665,25 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 12"
 ```
 
+P1D1.12 completed on 2026-07-17 at the shared
+`2026-07-17T09:09:03Z` timestamp. The side-socket UK and USB-host-socket UK
+sources are canonically unavailable because independent retrieval of their
+exact locked DigiKey and RS pages returned HTTP 403, so no commerce
+observations were accepted. The exact Samtec distributor page still confirmed
+DigiKey and RS authorization but could not substitute for the missing product
+facts. The active delivery audit rejected an initial USB-host-socket UK current
+record because its RS price and stock observations were not independently
+reproducible and conflicted with a recent indexed result; the corrected
+unavailable lifecycle passed a focused clean-room re-audit. The Samtec
+USB-host-socket manufacturer source is current and retains three byte-exact
+PDFs plus one HTML snapshot with composite revision
+`a422e98172fb3eee5c88c9ef5c86ba38da6a7f6fc8d4223057f164df7ade7c19`.
+Independent retrieval matched all three PDF byte streams. The live HTML
+differed only in generated font ordering, security/session fields and
+Cloudflare markup while still supporting exact MPN `SSW-105-02-G-S` and the
+retained PDFs. All three fragment checks, the corrected delivery audit and the
+hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.13
 unit: single-file-implementation

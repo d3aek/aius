@@ -1,0 +1,75 @@
+{
+  "artifacts": [
+    {
+      "bytes": 475879,
+      "final_url": "https://suddendocs.samtec.com/productspecs/tsw-sxx.pdf",
+      "media_type": "application/pdf",
+      "name": "tsw-sxx.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/tsw",
+      "retrieval_status": "current",
+      "sha256": "73a73af3cfa2808a4a0626349af3f4e41ae4f6c9ffab70b31166931a739e0d6f",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 471452,
+      "final_url": "https://suddendocs.samtec.com/catalog_english/ssw_th.pdf",
+      "media_type": "application/pdf",
+      "name": "ssw_th.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/ssw",
+      "retrieval_status": "current",
+      "sha256": "6d89f5c186a49e0f52f37d7bf7b5095081aff8f98e5ba18a85b0811caaf6f509",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 496878,
+      "final_url": "https://suddendocs.samtec.com/prints/ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf",
+      "media_type": "application/pdf",
+      "name": "ssw-1xx-xx-xxx-x-xx-xxx-xx-mkt.pdf",
+      "note": "",
+      "path": "https://www.samtec.com/products/ssw-105-02-g-s",
+      "retrieval_status": "current",
+      "sha256": "281eaf2b78d84184cade49c841f7d5badb0f92cd2e012a50e764a45b53aeca0d",
+      "storage": "lfs"
+    },
+    {
+      "bytes": 160876,
+      "final_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+      "media_type": "text/html",
+      "name": "ssw-105-02-g-s.html",
+      "note": "",
+      "path": "evidence/source-snapshots/AIUS-TEENSY-USB-HOST-SOCKET-MFR/ssw-105-02-g-s.html",
+      "retrieval_status": "current",
+      "sha256": "5ffa9e534c196806a12b247ed27659f8625946ddfbf21d19697838fb23ab9750",
+      "storage": "git"
+    }
+  ],
+  "authority": "Samtec",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-TEENSY-USB-HOST-SOCKET"
+  ],
+  "class": "golden",
+  "id": "AIUS-TEENSY-USB-HOST-SOCKET-MFR",
+  "landing_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-TEENSY-USB-HOST-SOCKET-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T09:09:03Z",
+      "source_url": "https://www.samtec.com/products/ssw-105-02-g-s",
+      "unit": null,
+      "value": "SSW-105-02-G-S"
+    }
+  ],
+  "purpose": "Satisfy REQ-TEENSY-USB-HOST-SOCKET-MFR for teensy-usb-host-socket.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T09:09:03Z",
+  "revision": "sha256:a422e98172fb3eee5c88c9ef5c86ba38da6a7f6fc8d4223057f164df7ade7c19",
+  "status": "current",
+  "supersedes": null,
+  "title": "Samtec SSW-105-02-G-S primary manufacturer evidence"
+}
