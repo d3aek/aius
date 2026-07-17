@@ -1,0 +1,19 @@
+{
+  "claim": "Supplemental request REQ-SPDIF-TX-GATE-UK source AIUS-SPDIF-TX-GATE-UK is unavailable for: REQT-COMMON-MANUFACTURABILITY; REQT-COMMON-MANUFACTURER-EVIDENCE; REQT-COMMON-UK-AVAILABILITY; REQT-OPTICAL-BANDWIDTH; REQT-OPTICAL-LOGIC-COMPATIBILITY; REQT-OPTICAL-PROCESSED-DEFAULT",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-OPTICAL-BANDWIDTH",
+    "REQT-OPTICAL-LOGIC-COMPATIBILITY",
+    "REQT-OPTICAL-PROCESSED-DEFAULT"
+  ],
+  "consequence": "The selected component remains provisional until REQ-SPDIF-TX-GATE-UK is replaced with current evidence.",
+  "evidence_ids": [],
+  "id": "ASM-UNAVAILABLE-AIUS-SPDIF-TX-GATE-UK",
+  "owner": "P1D",
+  "resolution": null,
+  "source_ids": ["AIUS-SPDIF-TX-GATE-UK"],
+  "status": "open",
+  "validation_gate": "Replace unavailable supplemental evidence"
+}

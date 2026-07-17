@@ -1565,6 +1565,17 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 10"
 ```
 
+P1D1.10 completed on 2026-07-17 at the shared
+`2026-07-17T08:22:46Z` timestamp. Both DigiKey UK sources are canonically
+unavailable because independent opens of their exact locked product pages
+returned Cloudflare challenges, so no commerce observations were accepted.
+The exact TI authorization page remained current but could not substitute for
+the missing product facts. The TI transmit-gate source is current and retains
+the 2,654,721-byte `sn74lvc1g125.pdf` with SHA-256
+`6cb9a94830cfaabca892d7698190eced47f3ee8a87d3aa2d26eeb87a56dad292`.
+All three fragment checks, active delivery audit and the hash-stable 45-test
+supplemental suite passed.
+
 ```yaml
 phase: P1D1.11
 unit: single-file-implementation
