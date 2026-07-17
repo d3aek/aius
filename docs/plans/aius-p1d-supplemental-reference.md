@@ -672,11 +672,36 @@ row. UK nulls produce no row. `supplemental-clone-boundary.json` is sorted by
 - `manifest/supplemental-requests.json` and
   `design/provisional-components.csv`.
 
-It preserves key order, validates the proposed complete collection before the
-first replacement, fsyncs, and restores every prior byte stream or prior absence
-after handled failure. `--check` performs no writes. This phase changes the deep
-evidence engine and its tests only; validator integration follows in separate
-checkpoints.
+Rendering is exact by output class. Sources and assumptions retain the existing
+shared `_render_json` default, including recursively alphabetical object keys.
+That same shared renderer gains one opt-in order-preserving mode; its default,
+strict JSON checks, pinned Prettier invocation and byte checks remain unchanged.
+Request and component fragments use the order-preserving mode after copying the
+decoded input mappings and replacing existing outcome fields in place, so every
+object retains its input key order recursively. The supplemental clone-boundary
+array also uses the order-preserving mode and contains the realization's literal
+nested rows in their committed key order. This is one renderer with two explicit
+ordering modes, not a second JSON renderer. The two review aggregates use the
+existing pure `render_p1.render_supplemental_requests` and
+`render_p1.render_components` functions, respectively.
+
+P1D0c validation is assembler-local. Before rendering or replacing any output,
+it validates every seed and supplemental source and assumption fragment with
+the existing per-fragment validators; validates the combined source and
+assumption arrays with their schemas and `validate_source_collection`; validates
+every projected request and component with `source-request-schema.json` and
+`component-schema.json`; applies the reusable `validate_clone_boundary_rows`
+check; and enforces the assembler-owned exact fileset, ID join, assumption,
+lifecycle and status-only mutation invariants in this section. It does not call
+`validate_evidence.validate_root` or `validate_p1`; their supplemental
+collection and lifecycle integration remains P1D0d and P1D0e.
+
+All 73 output byte streams are constructed and validated before the first
+replacement. The transaction orders targets lexically by Aius-relative path,
+stages and fsyncs every byte stream, fsyncs each replacement directory, and on
+handled failure restores every prior byte stream or prior absence and removes
+every temporary. `--check` renders and compares the same 73 byte streams but
+never calls the replacement seam and performs no write.
 
 ```yaml
 phase: P1D0c
@@ -699,6 +724,21 @@ commit-checkpoint:
   buildable: [fixture-proven atomic supplemental lifecycle closure]
   parent-commit: "feat(aius): assemble supplemental evidence lifecycle"
 ```
+
+The P1D0c regression matrix is explicit. Parameterized tests cover each missing,
+extra, unsafe and colliding seed, supplemental and assumption fragment boundary;
+missing, extra and duplicate record IDs; missing or extra unavailable
+assumptions and assumptions beside current sources; all current and unavailable
+manufacturer and UK lifecycle branches across 48 requests; exact status-only
+projection across all 22 components; byte-identical preservation of both
+already-satisfied Cliff manufacturer requests and components; UK component
+non-mutation; and literal clone-row selection and ordering. Tests inject a
+failure before publication and at each of the 73 sorted replacement indices,
+with mixed prior-present and prior-absent targets, and require full restoration,
+directory fsync coverage and no temporary residue. A write spy proves every
+successful and failing `--check` path performs no replacement. Renderer tests
+lock every output class and both ordering modes. Existing seed and P1D0b suites
+remain unchanged and green.
 
 ### P1D0d — Evidence collection validation
 
