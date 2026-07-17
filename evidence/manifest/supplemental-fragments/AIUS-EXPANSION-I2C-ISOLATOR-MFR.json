@@ -1,0 +1,42 @@
+{
+  "artifacts": [
+    {
+      "bytes": 1119704,
+      "final_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+      "media_type": "application/pdf",
+      "name": "tca9517a.pdf",
+      "note": "",
+      "path": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+      "retrieval_status": "current",
+      "sha256": "ad2d7dc5994583006aa21b67ee9f18507a2698ad9366285dff56816f065790c6",
+      "storage": "lfs"
+    }
+  ],
+  "authority": "Texas Instruments",
+  "claim_scope": [
+    "REQT-COMMON-MANUFACTURABILITY",
+    "REQT-COMMON-MANUFACTURER-EVIDENCE",
+    "REQT-COMMON-UK-AVAILABILITY",
+    "REQT-EXPANSION-I2C-ISOLATION"
+  ],
+  "class": "golden",
+  "id": "AIUS-EXPANSION-I2C-ISOLATOR-MFR",
+  "landing_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+  "observations": [
+    {
+      "basis": "Selected MPN identified by the retained primary manufacturer evidence for REQ-EXPANSION-I2C-ISOLATOR-MFR.",
+      "key": "manufacturer_part_number",
+      "observed_at": "2026-07-17T06:11:36Z",
+      "source_url": "https://www.ti.com/lit/ds/symlink/tca9517a.pdf",
+      "unit": null,
+      "value": "TCA9517ADGKR"
+    }
+  ],
+  "purpose": "Satisfy REQ-EXPANSION-I2C-ISOLATOR-MFR for expansion-i2c-isolator.",
+  "redistribution_note": "Retained for personal noncommercial research; no republication permission is inferred.",
+  "retrieved_at": "2026-07-17T06:11:36Z",
+  "revision": "sha256:ad2d7dc5994583006aa21b67ee9f18507a2698ad9366285dff56816f065790c6",
+  "status": "current",
+  "supersedes": null,
+  "title": "Texas Instruments TCA9517ADGKR primary manufacturer evidence"
+}

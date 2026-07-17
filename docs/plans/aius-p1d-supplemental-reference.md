@@ -1252,6 +1252,20 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 03"
 ```
 
+P1D1.03 completed on 2026-07-17 with all three sources current at the shared
+`2026-07-17T06:11:36Z` timestamp and no unavailable assumptions. The JST
+control-connector source retained the 146,619-byte `eGH.pdf` with SHA-256
+`b1dcb317b6b9a4fbbedd2dbf42c64c95306a252d23de8933b85fcf161240b722`;
+the TI isolator source retained the 1,119,704-byte `tca9517a.pdf` with SHA-256
+`ad2d7dc5994583006aa21b67ee9f18507a2698ad9366285dff56816f065790c6`.
+The RS observation records SKU `752-1769`, 1,885 units ready to ship, pack/MOQ
+5 and GBP 0.586 per unit ex VAT. Independent page reads reproduced 1,885; one
+review session briefly received a different stock variant from the same final
+URL, which was recorded as non-blocking dynamic CDN/session behaviour. The
+cross-wave GPIO/ADC evidence correction landed separately before this
+checkpoint. All three fragment checks, active delivery audit and the
+hash-stable 45-test supplemental suite passed.
+
 ```yaml
 phase: P1D1.04
 unit: single-file-implementation
