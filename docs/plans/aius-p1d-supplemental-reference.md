@@ -1844,6 +1844,16 @@ commit-checkpoint:
   parent-commit: "docs(aius): archive supplemental evidence wave 16"
 ```
 
+P1D1.16 completed on 2026-07-17 at the shared
+`2026-07-17T10:23:46Z` timestamp. The USB power-protection UK source is
+canonically unavailable because the exact DigiKey product page returned HTTP
+403, so the strict commerce observation was not supportable. The exact TI
+authorization page remained current and listed Digi-Key Electronics but could
+not substitute for the missing product facts. The isolated fragment check,
+active delivery audit and hash-stable 45-test supplemental suite passed. This
+completes all 16 bounded P1D1 acquisition waves; aggregate lifecycle closure
+remains assigned to P1D2.
+
 ## P1D2 — Serial integration and lifecycle closure
 
 P1D2 starts only after all 46 isolated checks pass. It runs the deterministic
