@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, dts-lfe,
-#         iec61937, iec61937-fuzz, pipeline, dsp.
+#         iec61937, iec61937-fuzz, capability-protocol, capability, pipeline, dsp.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -144,6 +144,29 @@ iec61937-fuzz)
 		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
 		-o "$fuzz_out"
 	"$fuzz_out" 200000
+	;;
+capability-protocol)
+	# USB capability wire protocol: CRC-32, framing/resync, golden vectors (no decoder).
+	out="$build_dir/capability-protocol"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_capability/include" \
+		"$fw_root/test/capability/test_capability_protocol.c" \
+		"$fw_root/lib/aius_capability/src/aius_cap_protocol.c" \
+		"$fw_root/lib/aius_capability/src/aius_cap_payload.c" \
+		-o "$out"
+	"$out" "$fw_root/test/capability/vectors"
+	;;
+capability)
+	# USB capability round-trip: sim device + host runner decoding the corpus.
+	out="$build_dir/capability"
+	inc_cap=("-I$fw_root/lib/aius_capability/include" "-I$fw_root/tools/device/include")
+	dts_build "$out" "${inc_cap[@]}" \
+		"$fw_root/test/capability/test_capability.c" \
+		"$fw_root/tools/device/src/aius_sim_device.c" \
+		"$fw_root/tools/device/src/aius_host_runner.c" \
+		"$fw_root/lib/aius_capability/src/aius_cap_protocol.c" \
+		"$fw_root/lib/aius_capability/src/aius_cap_payload.c" \
+		"$fw_root/lib/aius_capability/src/aius_cap_device.c"
+	"$out" "$fw_root/tools/dts_vectors/vectors"
 	;;
 pipeline)
 	# S/PDIF pipeline: classifier + IEC 61937 parser chained into the DTS decoder,
