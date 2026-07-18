@@ -104,8 +104,11 @@ Measured, not asserted. The gate passes when, at 600 MHz release build:
 ## Phases
 
 Each phase is a normal commit: green host tests (and, from P5, a reproducible
-target build) plus a diff review. No verdict schemas. **P1–P4 are done**
-(2026-07-18); P5–P7 need the physical Teensy connected.
+target build) plus a diff review. No verdict schemas. **P1–P4 and the P5 host
+side are done** (2026-07-18); P6–P7 need the physical Teensy connected. The
+product signal chain beyond this gate — PCM/DTS classifier + end-to-end pipeline
+(`lib/aius_pipeline`) and the 5.1→stereo downmix + EQ (`lib/aius_dsp`) — also
+landed host-tested during the board-free window.
 
 1. **P1 — Portable codec contracts.** *Done.* The C headers (`aius_codec.h`,
    `aius_arena.h`), a tested arena allocator, and the native harness
@@ -120,23 +123,27 @@ target build) plus a diff review. No verdict schemas. **P1–P4 are done**
    behind `AiusDtsDecoder`; host decode bit-exact to FFmpeg on every full-band
    channel (LFE matches within a looser bound — each decoder uses its own LFE
    reconstruction FIR); no-heap arena path (0 steady-state allocations, 60.9 KiB
-   high-water for 5.1); 1M-iteration robustness fuzz. Follow-up: confirm LFE
-   against a dcadec-lineage reference.
+   high-water for 5.1); 1M-iteration robustness fuzz. LFE since confirmed
+   bit-exact to a full dcadec build (the FFmpeg gap was its differing LFE FIR) —
+   `dts-lfe` suite.
 4. **P4 — Reproducible PlatformIO target.** *Done.* `teensy41-release` +
    `teensy41-instrument` at 600 MHz; per-bank memory report (all banks fit);
    `firmware.hex` byte-identical across rebuilds. The firmware's own
    `firmware/scripts/test.sh` is the native-test entry point — the repo-root
    `scripts/test.sh` is a .NET/vitest/pytest discovery runner with no C-suite
    slot, so it is deliberately not modified.
-5. **P5 — USB capability harness.** A small versioned USB-Serial protocol
-   (`AIUS` magic, length-framed, CRC-32, ACK/NACK, commands to identify, submit a
-   frame, request PCM, run the corpus, run a soak). Retained `CrashReport` is the
-   first diagnostic after a fault. Simulated device + host runner + golden vectors
-   so a run is auditable without re-running.
-6. **P6 — Teensy proof.** User connects the Teensy over USB. The host runner
-   flashes the release build, streams the corpus, records raw results, and checks
-   them against the [budgets](#budgets). Persist the raw results and a short
-   pass/blocked summary under `evidence/capability-results/`.
+5. **P5 — USB capability harness.** *Host side done.* The versioned USB-Serial
+   protocol (`AIUS` magic, length-framed, CRC-32/ISO-HDLC, ACK/NACK; identify,
+   submit-frame, request-PCM, run-corpus, run-soak), an arena-driven device
+   handler over `AiusDtsDecoder`, a simulated device + host runner over an
+   `AiusHostTransport` seam, and golden wire vectors — all host-tested
+   (`lib/aius_capability`, `tools/device`). Remaining for P6: implement the
+   transport seam over the board's USB CDC and add retained `CrashReport`.
+6. **P6 — Teensy proof.** User connects the Teensy over USB. Implement the
+   `AiusHostTransport` seam over USB CDC (the runner, framer, and protocol are
+   unchanged from the P5 sim), flash the release build, stream the corpus, record
+   raw results, and check them against the [budgets](#budgets). Persist the raw
+   results and a short pass/blocked summary under `evidence/capability-results/`.
 7. **P7 — Soak.** Eight-hour run on the recorded firmware/cable/port. Any reset,
    protocol error, PCM mismatch, deadline miss, allocation, memory high-water
    growth, or crash fails it; retry cannot turn a failure green.
