@@ -7,8 +7,8 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, iec61937,
-#         iec61937-fuzz, pipeline, dsp.
+# Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, dts-lfe,
+#         iec61937, iec61937-fuzz, pipeline, dsp.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -119,6 +119,13 @@ dts-fuzz)
 	out="$build_dir/dts-fuzz"
 	dts_build "$out" "$fw_root/test/dts/fuzz_dts.c"
 	"$out" "$fw_root/tools/dts_vectors/vectors" 50000
+	;;
+dts-lfe)
+	# DTS Core LFE bit-exact test: AiusDtsDecoder vs a full dcadec core decode
+	# (committed reference PCM; running the suite needs no dcadec build).
+	out="$build_dir/dts-lfe"
+	dts_build "$out" "$fw_root/test/dts-lfe/test_dts_lfe.c"
+	"$out" "$fw_root/tools/dts_vectors/vectors" "$fw_root/tools/dcadec_ref"
 	;;
 iec61937)
 	# IEC 61937 burst parser known-answer test against the committed corpus.
