@@ -1,8 +1,0 @@
-{
-  "id": "capture",
-  "source": "optical-rx",
-  "sink": "spdif-capture",
-  "budget_status": 4,
-  "measurement_gate": "P6",
-  "notes": ""
-}

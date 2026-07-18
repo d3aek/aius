@@ -44,7 +44,7 @@ The preferred quantity is three because it supplies a rework unit, a regression/
 
 ## Two-layer versus four-layer decision
 
-Two layers are the cost baseline. The [hardware follow-on](aius-hardware-follow-on.md) requires a placement, impedance, and return-path feasibility proof before that choice becomes final.
+Two layers are the cost baseline. The [hardware spec](aius-hardware-spec.md) requires a placement, impedance, and return-path feasibility proof before that choice becomes final.
 
 Planning price anchors from PCBWay's published prototype pages are approximately:
 
@@ -79,13 +79,11 @@ Archive current supplier pages or quotations under `docs/reference/datasheets.md
 
 ## Costed functional BOM requirements
 
-The normative CSV fields, tidy scenario representation, decimal rounding,
-Bank of England conversion rule, batch/per-unit reconciliation, and risk schema
-are defined by the [P1 implementation contract](aius-p1-evidence-topology-cost.md).
-The requirements below map to those machine-validated fields and do not define
-an alternate file format.
-
-Every BOM line records:
+The functional BOM lives in
+[`provisional-components.csv`](../../evidence/design/provisional-components.csv).
+Costing is plain arithmetic — GBP, Bank of England rate at the retrieval date for
+foreign prices, VAT 20%, freight/duty allocated over three assembled units — not a
+machine-validated schema. Every BOM line records:
 
 - functional block and provisional or selected manufacturer part number;
 - approved substitute policy;

@@ -1,4 +1,0 @@
-block,status,critical,manufacturer,mpn,requirements,alternatives,selection_rationale,authority_url,manufacturer_request_id,availability_request_id,generic_value,generic_package,generic_tolerance,notes
-alpha,selected,true,"Acme, Inc.","A""1","[""REQT-QUOTE"",""REQT-Ω""]","[{""authority_url"":""https://example.test/a"",""manufacturer"":""Beta"",""mpn"":""ALT,1"",""selection_rationale"":""line 1\nline 2""}]","quoted ""choice""",https://example.test/α,REQ-ALPHA-MFR,REQ-ALPHA-UK,,,,"comma, quote "" and
-newline"
-zeta,generic-allowance,false,,,"[""REQT-Z""]",[],,,,,"10k""","0603, metric",±1%,Ω

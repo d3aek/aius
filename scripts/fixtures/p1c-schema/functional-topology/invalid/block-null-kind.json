@@ -1,9 +1,0 @@
-{
-  "id": "power-entry",
-  "kind": null,
-  "owner": "external",
-  "power_domain": "usb-vbus-raw",
-  "clock_domain": null,
-  "evidence_ids": [],
-  "notes": ""
-}

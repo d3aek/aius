@@ -1,8 +1,0 @@
-{
-  "id": "status-led",
-  "owner": "teensy",
-  "active_level": "high",
-  "reset_default": "low",
-  "evidence_ids": ["PJRC-TEENSY41-PINOUT"],
-  "notes": "The required safe_value field is absent."
-}

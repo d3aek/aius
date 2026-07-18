@@ -1,9 +1,0 @@
-{
-  "id": "spdif-recovered",
-  "source_id": "optical-rx",
-  "consumer_ids": [],
-  "synchronous_with": [],
-  "frequency_status": "deferred",
-  "evidence_ids": [],
-  "notes": ""
-}

@@ -1,9 +1,0 @@
-{
-  "id": "pcm-processed",
-  "input_formats": ["pcm-stereo"],
-  "output_format": "pcm-stereo-48k",
-  "active_blocks": ["teensy"],
-  "error_mode": "unsupported-muted",
-  "evidence_ids": [],
-  "notes": ""
-}
