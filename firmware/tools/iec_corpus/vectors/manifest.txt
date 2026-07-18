@@ -1,0 +1,18 @@
+IEC 61937 parser corpus. Columns: name | packing | expect | detail
+(regenerate with tools/iec_corpus/generate.sh)
+
+dts_be16 | 16 | OK type=13 | real stereo DTS Core AU (1884 B), BE wire
+dts_le16 | 16 | OK type=13 | same AU, LE (byte-swapped) wire -> identical payload
+dts_14bit | 14 | OK type=13 | same AU, 14-bit packing -> identical payload
+dts51_be16 | 16 | OK type=13 | real 5.1 DTS Core AU (1884 B), BE wire
+type11 | 16 | OK type=11 | synthetic 32 B, DTS burst type I
+type12 | 16 | OK type=12 | synthetic 64 B, DTS burst type II
+unsupported_ac3 | 16 | UNSUPPORTED type=1 | AC-3, de-framed but out of scope
+null_type | 16 | UNSUPPORTED type=0 | null-data burst, 0 B payload
+two_bursts | 16 | OK,OK type=13 | two DTS bursts, 8-word pause between; payload == dts_be16.pay
+recover | 16 | OK type=13 | garbage + false Pa, then valid burst; payload == dts_be16.pay
+padded | 16 | OK type=13 | pause stuffing around one burst
+error_flag | 16 | MALFORMED type=13 | Pc error flag set
+zero_len | 16 | MALFORMED type=13 | length-code 0 on a DTS type
+overlong | 16 | NO_SPACE type=13 | Pd=0xFFFF (8192 B) > 4096 cap
+truncated | 16 | NEED_MORE then finish()->TRUNCATED type=13 | half payload only

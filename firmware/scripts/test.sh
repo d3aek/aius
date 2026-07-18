@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract, dts.
+# Suites: arena, codec-api-contract, dts, iec61937, iec61937-fuzz.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,6 +87,24 @@ dts)
 		"$vendor/ta.c" \
 		-lm -o "$out"
 	"$out" "$fw_root/tools/dts_vectors/vectors"
+	;;
+iec61937)
+	# IEC 61937 burst parser known-answer test against the committed corpus.
+	iec_out="$build_dir/iec61937"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_iec61937/include" \
+		"$fw_root/test/iec61937/test_iec61937.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
+		-o "$iec_out"
+	"$iec_out" "$fw_root/tools/iec_corpus/vectors"
+	;;
+iec61937-fuzz)
+	# IEC 61937 parser fuzz: random/adversarial streams under ASan/UBSan.
+	fuzz_out="$build_dir/iec61937-fuzz"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_iec61937/include" \
+		"$fw_root/test/iec61937/fuzz_iec61937.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
+		-o "$fuzz_out"
+	"$fuzz_out" 200000
 	;;
 *)
 	echo "unknown suite: $suite" >&2
