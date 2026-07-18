@@ -235,7 +235,11 @@ static AiusStatus decode_locked(AiusDtsDecoder *dec, const uint8_t *data,
     for (size_t i = 0; i < sizeof(k_spkr_map) / sizeof(k_spkr_map[0]); i++) {
         if (!(dec->core->ch_mask & k_spkr_map[i].spkr_mask))
             continue;
-        block->planes[nch] = dec->core->output_samples[k_spkr_map[i].spkr_index];
+        /* dcadec's output_samples is int*; AiusPcmBlock.planes is int32_t*. The
+         * two pointee types are representation-identical (both 32-bit), but on
+         * arm-none-eabi newlib int32_t is `long int` (distinct from int), so the
+         * assignment needs an explicit cast to compile there. */
+        block->planes[nch] = (int32_t *)dec->core->output_samples[k_spkr_map[i].spkr_index];
         mask |= k_spkr_map[i].aius_bit;
         nch++;
     }
