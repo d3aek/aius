@@ -49,7 +49,7 @@ PARTS = [
 ]
 
 # Board origin in canvas px.
-OX, OY = 60, 90
+OX, OY = 60, 128
 
 
 def bx(x):
@@ -74,12 +74,16 @@ def build():
     )
     parts.append(f'<rect width="{W:.0f}" height="{H:.0f}" fill="#fbfcfd"/>')
     parts.append(
-        f'<text x="{OX}" y="40" font-size="22" font-weight="700" fill="#1a2430">'
+        f'<text x="{OX}" y="42" font-size="22" font-weight="700" fill="#1a2430">'
         f'Aius carrier &#8212; placement floorplan</text>'
     )
     parts.append(
-        f'<text x="{OX}" y="62" font-size="12" fill="#5a6675">Concept placement from the '
-        f'interfaces/topology spec + BOM. Not routed, not exact mechanical CAD, not manufacturing data.</text>'
+        f'<text x="{OX}" y="66" font-size="12" fill="#5a6675">Concept placement from the '
+        f'interfaces/topology spec + BOM.</text>'
+    )
+    parts.append(
+        f'<text x="{OX}" y="84" font-size="12" fill="#5a6675">Not routed, not exact '
+        f'mechanical CAD, not manufacturing data.</text>'
     )
 
     # Enclosure outline (centered over the board envelope).
@@ -138,13 +142,13 @@ def build():
         f'fill="none" stroke="#E8804C" stroke-width="2" stroke-dasharray="4 3"/>'
     )
     parts.append(
-        f'<text x="{(ax+tx)/2+6:.0f}" y="{(ay+ty)/2:.0f}" font-size="9" fill="#c25a2a">'
-        f'internal USB-A&#8594;micro-B cable (sole 5V+data)</text>'
+        f'<text x="{bx(52):.0f}" y="{by(39):.0f}" font-size="8.5" fill="#c25a2a">'
+        f'internal cable (sole 5V + data)</text>'
     )
-    # microSD note on Teensy.
+    # microSD / Ethernet note below the Teensy.
     parts.append(
-        f'<text x="{bx(47):.0f}" y="{by(50)+4:.0f}" font-size="8.5" fill="#0f3d1c" '
-        f'text-anchor="middle">microSD + native Ethernet pins &#8594;</text>'
+        f'<text x="{bx(BOARD_W/2):.0f}" y="{by(63):.0f}" font-size="9" fill="#3c7a3c" '
+        f'text-anchor="middle">microSD + native Ethernet pins on the Teensy stay accessible</text>'
     )
 
     # Legend / BOM list on the right.

@@ -1,133 +1,134 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1148" height="870" viewBox="0 0 1148 870" font-family="Helvetica,Arial,sans-serif">
-<rect width="1148" height="870" fill="#fbfcfd"/>
-<text x="60" y="40" font-size="22" font-weight="700" fill="#1a2430">Aius carrier &#8212; placement floorplan</text>
-<text x="60" y="62" font-size="12" fill="#5a6675">Concept placement from the interfaces/topology spec + BOM. Not routed, not exact mechanical CAD, not manufacturing data.</text>
-<rect x="39" y="54" width="618" height="720" rx="10" fill="none" stroke="#b9c2cd" stroke-width="2" stroke-dasharray="6 5"/>
-<text x="45" y="766" font-size="11" fill="#9aa6b2">Hammond 1455N1201BK enclosure (~103 x 120 mm, provisional)</text>
-<rect x="60" y="90" width="576" height="600" rx="6" fill="#eef3ee" stroke="#3c7a3c" stroke-width="2"/>
-<text x="630" y="682" font-size="11" fill="#3c7a3c" text-anchor="end">2-layer PCB, &#8804; 96 x 100 mm (hypothesis)</text>
-<line x1="60" y1="90" x2="636" y2="90" stroke="#3c7a3c" stroke-width="4"/>
-<text x="348" y="82" font-size="11" fill="#3c7a3c" text-anchor="middle" font-weight="600">REAR PANEL (machined by hand / CNC)</text>
-<rect x="96" y="102" width="90" height="72" rx="3" fill="#4C9BE8" fill-opacity="0.82" stroke="#4C9BE8" stroke-width="1.4"/>
-<text x="141" y="136" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">1</text>
-<text x="141" y="147" font-size="8.5" fill="#12202c" text-anchor="middle">RX</text>
-<rect x="198" y="102" width="90" height="72" rx="3" fill="#4C9BE8" fill-opacity="0.82" stroke="#4C9BE8" stroke-width="1.4"/>
-<text x="243" y="136" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">2</text>
-<text x="243" y="147" font-size="8.5" fill="#12202c" text-anchor="middle">TX</text>
-<rect x="330" y="96" width="54" height="48" rx="3" fill="#E8804C" fill-opacity="0.82" stroke="#E8804C" stroke-width="1.4"/>
-<text x="357" y="118" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">3</text>
-<text x="357" y="129" font-size="8.5" fill="#12202c" text-anchor="middle">USB-C</text>
-<rect x="420" y="102" width="96" height="72" rx="3" fill="#5BAF6A" fill-opacity="0.82" stroke="#5BAF6A" stroke-width="1.4"/>
-<text x="468" y="136" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">4</text>
-<text x="468" y="147" font-size="8.5" fill="#12202c" text-anchor="middle">RJ45</text>
-<rect x="552" y="102" width="66" height="36" rx="3" fill="#8A8F98" fill-opacity="0.82" stroke="#8A8F98" stroke-width="1.4"/>
-<text x="585" y="118" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">5</text>
-<text x="585" y="129" font-size="8.5" fill="#12202c" text-anchor="middle">PROG</text>
-<rect x="114" y="198" width="42" height="30" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
-<text x="135" y="211" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">6</text>
-<text x="135" y="222" font-size="8.5" fill="#12202c" text-anchor="middle">GATE</text>
-<rect x="222" y="198" width="42" height="30" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
-<text x="243" y="211" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">7</text>
-<text x="243" y="222" font-size="8.5" fill="#12202c" text-anchor="middle">MUX</text>
-<rect x="324" y="162" width="36" height="24" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
-<text x="342" y="172" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">8</text>
-<text x="342" y="183" font-size="8.5" fill="#12202c" text-anchor="middle">ESD</text>
-<rect x="372" y="162" width="36" height="24" rx="3" fill="#E05A5A" fill-opacity="0.82" stroke="#E05A5A" stroke-width="1.4"/>
-<text x="390" y="172" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">9</text>
-<text x="390" y="183" font-size="8.5" fill="#12202c" text-anchor="middle">PWR</text>
-<rect x="432" y="198" width="72" height="30" rx="3" fill="#C9A227" fill-opacity="0.82" stroke="#C9A227" stroke-width="1.4"/>
-<text x="468" y="211" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">10</text>
-<text x="468" y="222" font-size="8.5" fill="#12202c" text-anchor="middle">MAG</text>
-<rect x="324" y="258" width="84" height="48" rx="3" fill="#E8804C" fill-opacity="0.82" stroke="#E8804C" stroke-width="1.4"/>
-<text x="366" y="280" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">11</text>
-<text x="366" y="291" font-size="8.5" fill="#12202c" text-anchor="middle">USB-A</text>
-<rect x="162" y="336" width="366" height="108" rx="3" fill="#2F9E44" fill-opacity="0.82" stroke="#2F9E44" stroke-width="1.4"/>
-<text x="345" y="388" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">12</text>
-<text x="345" y="399" font-size="8.5" fill="#12202c" text-anchor="middle">TEENSY 4.1</text>
-<rect x="96" y="474" width="42" height="30" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
-<text x="117" y="487" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">13</text>
-<text x="117" y="498" font-size="8.5" fill="#12202c" text-anchor="middle">ISO</text>
-<rect x="558" y="486" width="48" height="48" rx="3" fill="#8A8F98" fill-opacity="0.82" stroke="#8A8F98" stroke-width="1.4"/>
-<text x="582" y="508" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">14</text>
-<text x="582" y="519" font-size="8.5" fill="#12202c" text-anchor="middle">TC</text>
-<rect x="96" y="618" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
-<text x="123" y="631" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">15</text>
-<text x="123" y="642" font-size="8.5" fill="#12202c" text-anchor="middle">I2C</text>
-<rect x="162" y="618" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
-<text x="189" y="631" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">16</text>
-<text x="189" y="642" font-size="8.5" fill="#12202c" text-anchor="middle">SPI</text>
-<rect x="228" y="618" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
-<text x="255" y="631" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">17</text>
-<text x="255" y="642" font-size="8.5" fill="#12202c" text-anchor="middle">UART</text>
-<rect x="294" y="618" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
-<text x="321" y="631" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">18</text>
-<text x="321" y="642" font-size="8.5" fill="#12202c" text-anchor="middle">I2S</text>
-<rect x="360" y="618" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
-<text x="387" y="631" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">19</text>
-<text x="387" y="642" font-size="8.5" fill="#12202c" text-anchor="middle">HOST</text>
-<rect x="426" y="618" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
-<text x="453" y="631" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">20</text>
-<text x="453" y="642" font-size="8.5" fill="#12202c" text-anchor="middle">GPIO</text>
-<path d="M366,306 C366,346 528,360 528,390" fill="none" stroke="#E8804C" stroke-width="2" stroke-dasharray="4 3"/>
-<text x="453" y="348" font-size="9" fill="#c25a2a">internal USB-A&#8594;micro-B cable (sole 5V+data)</text>
-<text x="342" y="394" font-size="8.5" fill="#0f3d1c" text-anchor="middle">microSD + native Ethernet pins &#8594;</text>
-<text x="708.0" y="60" font-size="14" font-weight="700" fill="#1a2430">Placed blocks</text>
-<rect x="708.0" y="71" width="11" height="11" rx="2" fill="#4C9BE8"/>
-<text x="726.0" y="80" font-size="11" fill="#26313d"><tspan font-weight="700">1.</tspan> TOSLINK optical receiver <tspan fill="#8a95a1">&#8212; Cliff ORJ5 / FCR684205R</tspan></text>
-<rect x="708.0" y="89" width="11" height="11" rx="2" fill="#4C9BE8"/>
-<text x="726.0" y="98" font-size="11" fill="#26313d"><tspan font-weight="700">2.</tspan> TOSLINK optical transmitter <tspan fill="#8a95a1">&#8212; Cliff OTJ5 / FCR684205T</tspan></text>
-<rect x="708.0" y="107" width="11" height="11" rx="2" fill="#E8804C"/>
-<text x="726.0" y="116" font-size="11" fill="#26313d"><tspan font-weight="700">3.</tspan> Rear USB-C sink (sole 5V + data) <tspan fill="#8a95a1">&#8212; Wurth 629722000214 (candidate)</tspan></text>
-<rect x="708.0" y="125" width="11" height="11" rx="2" fill="#5BAF6A"/>
-<text x="726.0" y="134" font-size="11" fill="#26313d"><tspan font-weight="700">4.</tspan> Ethernet magjack (Teensy native PHY) <tspan fill="#8a95a1">&#8212; Pulse J0011D21BNL</tspan></text>
-<rect x="708.0" y="143" width="11" height="11" rx="2" fill="#8A8F98"/>
-<text x="726.0" y="152" font-size="11" fill="#26313d"><tspan font-weight="700">5.</tspan> Remote Program + RTC header <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="161" width="11" height="11" rx="2" fill="#B07AD1"/>
-<text x="726.0" y="170" font-size="11" fill="#26313d"><tspan font-weight="700">6.</tspan> S/PDIF TX gate (reset-safe disable) <tspan fill="#8a95a1">&#8212; TI SN74LVC1G125DBVR</tspan></text>
-<rect x="708.0" y="179" width="11" height="11" rx="2" fill="#B07AD1"/>
-<text x="726.0" y="188" font-size="11" fill="#26313d"><tspan font-weight="700">7.</tspan> Diagnostic raw-bypass mux <tspan fill="#8a95a1">&#8212; TI SN74LVC1G3157DBVR</tspan></text>
-<rect x="708.0" y="197" width="11" height="11" rx="2" fill="#B07AD1"/>
-<text x="726.0" y="206" font-size="11" fill="#26313d"><tspan font-weight="700">8.</tspan> USB high-speed ESD <tspan fill="#8a95a1">&#8212; TI TPD2EUSB30ADRTR</tspan></text>
-<rect x="708.0" y="215" width="11" height="11" rx="2" fill="#E05A5A"/>
-<text x="726.0" y="224" font-size="11" fill="#26313d"><tspan font-weight="700">9.</tspan> USB 5V load switch / protection <tspan fill="#8a95a1">&#8212; TI TPS2553DBVR</tspan></text>
-<rect x="708.0" y="233" width="11" height="11" rx="2" fill="#C9A227"/>
-<text x="726.0" y="242" font-size="11" fill="#26313d"><tspan font-weight="700">10.</tspan> Magjack center-tap + support passives <tspan fill="#8a95a1">&#8212; 100 nF 0402 + terms</tspan></text>
-<rect x="708.0" y="251" width="11" height="11" rx="2" fill="#E8804C"/>
-<text x="726.0" y="260" font-size="11" fill="#26313d"><tspan font-weight="700">11.</tspan> Internal USB-A (feeds Teensy) <tspan fill="#8a95a1">&#8212; TE 292303-1</tspan></text>
-<rect x="708.0" y="269" width="11" height="11" rx="2" fill="#2F9E44"/>
-<text x="726.0" y="278" font-size="11" fill="#26313d"><tspan font-weight="700">12.</tspan> Socketed Teensy 4.1 module <tspan fill="#8a95a1">&#8212; Samtec SSW/MMS sockets</tspan></text>
-<rect x="708.0" y="287" width="11" height="11" rx="2" fill="#B07AD1"/>
-<text x="726.0" y="296" font-size="11" fill="#26313d"><tspan font-weight="700">13.</tspan> Expansion I2C isolator <tspan fill="#8a95a1">&#8212; TI TCA9517A</tspan></text>
-<rect x="708.0" y="305" width="11" height="11" rx="2" fill="#8A8F98"/>
-<text x="726.0" y="314" font-size="11" fill="#26313d"><tspan font-weight="700">14.</tspan> Bring-up / test point <tspan fill="#8a95a1">&#8212; Tag-Connect TC2030-IDC</tspan></text>
-<rect x="708.0" y="323" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="332" font-size="11" fill="#26313d"><tspan font-weight="700">15.</tspan> Expansion: I2C control <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="341" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="350" font-size="11" fill="#26313d"><tspan font-weight="700">16.</tspan> Expansion: SPI (6-circuit) <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="359" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="368" font-size="11" fill="#26313d"><tspan font-weight="700">17.</tspan> Expansion: UART / debug <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="377" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="386" font-size="11" fill="#26313d"><tspan font-weight="700">18.</tspan> Expansion: I2S / TDM audio <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="395" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="404" font-size="11" fill="#26313d"><tspan font-weight="700">19.</tspan> Expansion: USB host <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="413" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="422" font-size="11" fill="#26313d"><tspan font-weight="700">20.</tspan> Expansion: GPIO / ADC (+ trigger out) <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
-<rect x="708.0" y="439" width="11" height="11" rx="2" fill="#4C9BE8"/>
-<text x="726.0" y="448" font-size="10.5" fill="#5a6675">optical S/PDIF</text>
-<rect x="708.0" y="455" width="11" height="11" rx="2" fill="#E8804C"/>
-<text x="726.0" y="464" font-size="10.5" fill="#5a6675">USB</text>
-<rect x="708.0" y="471" width="11" height="11" rx="2" fill="#5BAF6A"/>
-<text x="726.0" y="480" font-size="10.5" fill="#5a6675">Ethernet</text>
-<rect x="708.0" y="487" width="11" height="11" rx="2" fill="#2F9E44"/>
-<text x="726.0" y="496" font-size="10.5" fill="#5a6675">Teensy module</text>
-<rect x="708.0" y="503" width="11" height="11" rx="2" fill="#B07AD1"/>
-<text x="726.0" y="512" font-size="10.5" fill="#5a6675">logic IC</text>
-<rect x="708.0" y="519" width="11" height="11" rx="2" fill="#E05A5A"/>
-<text x="726.0" y="528" font-size="10.5" fill="#5a6675">power protection</text>
-<rect x="708.0" y="535" width="11" height="11" rx="2" fill="#C9A227"/>
-<text x="726.0" y="544" font-size="10.5" fill="#5a6675">passives</text>
-<rect x="708.0" y="551" width="11" height="11" rx="2" fill="#D46A9F"/>
-<text x="726.0" y="560" font-size="10.5" fill="#5a6675">expansion header</text>
-<rect x="708.0" y="567" width="11" height="11" rx="2" fill="#8A8F98"/>
-<text x="726.0" y="576" font-size="10.5" fill="#5a6675">service / test</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1148" height="908" viewBox="0 0 1148 908" font-family="Helvetica,Arial,sans-serif">
+<rect width="1148" height="908" fill="#fbfcfd"/>
+<text x="60" y="42" font-size="22" font-weight="700" fill="#1a2430">Aius carrier &#8212; placement floorplan</text>
+<text x="60" y="66" font-size="12" fill="#5a6675">Concept placement from the interfaces/topology spec + BOM.</text>
+<text x="60" y="84" font-size="12" fill="#5a6675">Not routed, not exact mechanical CAD, not manufacturing data.</text>
+<rect x="39" y="92" width="618" height="720" rx="10" fill="none" stroke="#b9c2cd" stroke-width="2" stroke-dasharray="6 5"/>
+<text x="45" y="804" font-size="11" fill="#9aa6b2">Hammond 1455N1201BK enclosure (~103 x 120 mm, provisional)</text>
+<rect x="60" y="128" width="576" height="600" rx="6" fill="#eef3ee" stroke="#3c7a3c" stroke-width="2"/>
+<text x="630" y="720" font-size="11" fill="#3c7a3c" text-anchor="end">2-layer PCB, &#8804; 96 x 100 mm (hypothesis)</text>
+<line x1="60" y1="128" x2="636" y2="128" stroke="#3c7a3c" stroke-width="4"/>
+<text x="348" y="120" font-size="11" fill="#3c7a3c" text-anchor="middle" font-weight="600">REAR PANEL (machined by hand / CNC)</text>
+<rect x="96" y="140" width="90" height="72" rx="3" fill="#4C9BE8" fill-opacity="0.82" stroke="#4C9BE8" stroke-width="1.4"/>
+<text x="141" y="174" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">1</text>
+<text x="141" y="185" font-size="8.5" fill="#12202c" text-anchor="middle">RX</text>
+<rect x="198" y="140" width="90" height="72" rx="3" fill="#4C9BE8" fill-opacity="0.82" stroke="#4C9BE8" stroke-width="1.4"/>
+<text x="243" y="174" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">2</text>
+<text x="243" y="185" font-size="8.5" fill="#12202c" text-anchor="middle">TX</text>
+<rect x="330" y="134" width="54" height="48" rx="3" fill="#E8804C" fill-opacity="0.82" stroke="#E8804C" stroke-width="1.4"/>
+<text x="357" y="156" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">3</text>
+<text x="357" y="167" font-size="8.5" fill="#12202c" text-anchor="middle">USB-C</text>
+<rect x="420" y="140" width="96" height="72" rx="3" fill="#5BAF6A" fill-opacity="0.82" stroke="#5BAF6A" stroke-width="1.4"/>
+<text x="468" y="174" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">4</text>
+<text x="468" y="185" font-size="8.5" fill="#12202c" text-anchor="middle">RJ45</text>
+<rect x="552" y="140" width="66" height="36" rx="3" fill="#8A8F98" fill-opacity="0.82" stroke="#8A8F98" stroke-width="1.4"/>
+<text x="585" y="156" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">5</text>
+<text x="585" y="167" font-size="8.5" fill="#12202c" text-anchor="middle">PROG</text>
+<rect x="114" y="236" width="42" height="30" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
+<text x="135" y="249" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">6</text>
+<text x="135" y="260" font-size="8.5" fill="#12202c" text-anchor="middle">GATE</text>
+<rect x="222" y="236" width="42" height="30" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
+<text x="243" y="249" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">7</text>
+<text x="243" y="260" font-size="8.5" fill="#12202c" text-anchor="middle">MUX</text>
+<rect x="324" y="200" width="36" height="24" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
+<text x="342" y="210" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">8</text>
+<text x="342" y="221" font-size="8.5" fill="#12202c" text-anchor="middle">ESD</text>
+<rect x="372" y="200" width="36" height="24" rx="3" fill="#E05A5A" fill-opacity="0.82" stroke="#E05A5A" stroke-width="1.4"/>
+<text x="390" y="210" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">9</text>
+<text x="390" y="221" font-size="8.5" fill="#12202c" text-anchor="middle">PWR</text>
+<rect x="432" y="236" width="72" height="30" rx="3" fill="#C9A227" fill-opacity="0.82" stroke="#C9A227" stroke-width="1.4"/>
+<text x="468" y="249" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">10</text>
+<text x="468" y="260" font-size="8.5" fill="#12202c" text-anchor="middle">MAG</text>
+<rect x="324" y="296" width="84" height="48" rx="3" fill="#E8804C" fill-opacity="0.82" stroke="#E8804C" stroke-width="1.4"/>
+<text x="366" y="318" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">11</text>
+<text x="366" y="329" font-size="8.5" fill="#12202c" text-anchor="middle">USB-A</text>
+<rect x="162" y="374" width="366" height="108" rx="3" fill="#2F9E44" fill-opacity="0.82" stroke="#2F9E44" stroke-width="1.4"/>
+<text x="345" y="426" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">12</text>
+<text x="345" y="437" font-size="8.5" fill="#12202c" text-anchor="middle">TEENSY 4.1</text>
+<rect x="96" y="512" width="42" height="30" rx="3" fill="#B07AD1" fill-opacity="0.82" stroke="#B07AD1" stroke-width="1.4"/>
+<text x="117" y="525" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">13</text>
+<text x="117" y="536" font-size="8.5" fill="#12202c" text-anchor="middle">ISO</text>
+<rect x="558" y="524" width="48" height="48" rx="3" fill="#8A8F98" fill-opacity="0.82" stroke="#8A8F98" stroke-width="1.4"/>
+<text x="582" y="546" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">14</text>
+<text x="582" y="557" font-size="8.5" fill="#12202c" text-anchor="middle">TC</text>
+<rect x="96" y="656" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
+<text x="123" y="669" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">15</text>
+<text x="123" y="680" font-size="8.5" fill="#12202c" text-anchor="middle">I2C</text>
+<rect x="162" y="656" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
+<text x="189" y="669" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">16</text>
+<text x="189" y="680" font-size="8.5" fill="#12202c" text-anchor="middle">SPI</text>
+<rect x="228" y="656" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
+<text x="255" y="669" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">17</text>
+<text x="255" y="680" font-size="8.5" fill="#12202c" text-anchor="middle">UART</text>
+<rect x="294" y="656" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
+<text x="321" y="669" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">18</text>
+<text x="321" y="680" font-size="8.5" fill="#12202c" text-anchor="middle">I2S</text>
+<rect x="360" y="656" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
+<text x="387" y="669" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">19</text>
+<text x="387" y="680" font-size="8.5" fill="#12202c" text-anchor="middle">HOST</text>
+<rect x="426" y="656" width="54" height="30" rx="3" fill="#D46A9F" fill-opacity="0.82" stroke="#D46A9F" stroke-width="1.4"/>
+<text x="453" y="669" font-size="10" fill="#12202c" text-anchor="middle" font-weight="700">20</text>
+<text x="453" y="680" font-size="8.5" fill="#12202c" text-anchor="middle">GPIO</text>
+<path d="M366,344 C366,384 528,398 528,428" fill="none" stroke="#E8804C" stroke-width="2" stroke-dasharray="4 3"/>
+<text x="372" y="362" font-size="8.5" fill="#c25a2a">internal cable (sole 5V + data)</text>
+<text x="348" y="506" font-size="9" fill="#3c7a3c" text-anchor="middle">microSD + native Ethernet pins on the Teensy stay accessible</text>
+<text x="708.0" y="98" font-size="14" font-weight="700" fill="#1a2430">Placed blocks</text>
+<rect x="708.0" y="109" width="11" height="11" rx="2" fill="#4C9BE8"/>
+<text x="726.0" y="118" font-size="11" fill="#26313d"><tspan font-weight="700">1.</tspan> TOSLINK optical receiver <tspan fill="#8a95a1">&#8212; Cliff ORJ5 / FCR684205R</tspan></text>
+<rect x="708.0" y="127" width="11" height="11" rx="2" fill="#4C9BE8"/>
+<text x="726.0" y="136" font-size="11" fill="#26313d"><tspan font-weight="700">2.</tspan> TOSLINK optical transmitter <tspan fill="#8a95a1">&#8212; Cliff OTJ5 / FCR684205T</tspan></text>
+<rect x="708.0" y="145" width="11" height="11" rx="2" fill="#E8804C"/>
+<text x="726.0" y="154" font-size="11" fill="#26313d"><tspan font-weight="700">3.</tspan> Rear USB-C sink (sole 5V + data) <tspan fill="#8a95a1">&#8212; Wurth 629722000214 (candidate)</tspan></text>
+<rect x="708.0" y="163" width="11" height="11" rx="2" fill="#5BAF6A"/>
+<text x="726.0" y="172" font-size="11" fill="#26313d"><tspan font-weight="700">4.</tspan> Ethernet magjack (Teensy native PHY) <tspan fill="#8a95a1">&#8212; Pulse J0011D21BNL</tspan></text>
+<rect x="708.0" y="181" width="11" height="11" rx="2" fill="#8A8F98"/>
+<text x="726.0" y="190" font-size="11" fill="#26313d"><tspan font-weight="700">5.</tspan> Remote Program + RTC header <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="199" width="11" height="11" rx="2" fill="#B07AD1"/>
+<text x="726.0" y="208" font-size="11" fill="#26313d"><tspan font-weight="700">6.</tspan> S/PDIF TX gate (reset-safe disable) <tspan fill="#8a95a1">&#8212; TI SN74LVC1G125DBVR</tspan></text>
+<rect x="708.0" y="217" width="11" height="11" rx="2" fill="#B07AD1"/>
+<text x="726.0" y="226" font-size="11" fill="#26313d"><tspan font-weight="700">7.</tspan> Diagnostic raw-bypass mux <tspan fill="#8a95a1">&#8212; TI SN74LVC1G3157DBVR</tspan></text>
+<rect x="708.0" y="235" width="11" height="11" rx="2" fill="#B07AD1"/>
+<text x="726.0" y="244" font-size="11" fill="#26313d"><tspan font-weight="700">8.</tspan> USB high-speed ESD <tspan fill="#8a95a1">&#8212; TI TPD2EUSB30ADRTR</tspan></text>
+<rect x="708.0" y="253" width="11" height="11" rx="2" fill="#E05A5A"/>
+<text x="726.0" y="262" font-size="11" fill="#26313d"><tspan font-weight="700">9.</tspan> USB 5V load switch / protection <tspan fill="#8a95a1">&#8212; TI TPS2553DBVR</tspan></text>
+<rect x="708.0" y="271" width="11" height="11" rx="2" fill="#C9A227"/>
+<text x="726.0" y="280" font-size="11" fill="#26313d"><tspan font-weight="700">10.</tspan> Magjack center-tap + support passives <tspan fill="#8a95a1">&#8212; 100 nF 0402 + terms</tspan></text>
+<rect x="708.0" y="289" width="11" height="11" rx="2" fill="#E8804C"/>
+<text x="726.0" y="298" font-size="11" fill="#26313d"><tspan font-weight="700">11.</tspan> Internal USB-A (feeds Teensy) <tspan fill="#8a95a1">&#8212; TE 292303-1</tspan></text>
+<rect x="708.0" y="307" width="11" height="11" rx="2" fill="#2F9E44"/>
+<text x="726.0" y="316" font-size="11" fill="#26313d"><tspan font-weight="700">12.</tspan> Socketed Teensy 4.1 module <tspan fill="#8a95a1">&#8212; Samtec SSW/MMS sockets</tspan></text>
+<rect x="708.0" y="325" width="11" height="11" rx="2" fill="#B07AD1"/>
+<text x="726.0" y="334" font-size="11" fill="#26313d"><tspan font-weight="700">13.</tspan> Expansion I2C isolator <tspan fill="#8a95a1">&#8212; TI TCA9517A</tspan></text>
+<rect x="708.0" y="343" width="11" height="11" rx="2" fill="#8A8F98"/>
+<text x="726.0" y="352" font-size="11" fill="#26313d"><tspan font-weight="700">14.</tspan> Bring-up / test point <tspan fill="#8a95a1">&#8212; Tag-Connect TC2030-IDC</tspan></text>
+<rect x="708.0" y="361" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="370" font-size="11" fill="#26313d"><tspan font-weight="700">15.</tspan> Expansion: I2C control <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="379" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="388" font-size="11" fill="#26313d"><tspan font-weight="700">16.</tspan> Expansion: SPI (6-circuit) <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="397" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="406" font-size="11" fill="#26313d"><tspan font-weight="700">17.</tspan> Expansion: UART / debug <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="415" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="424" font-size="11" fill="#26313d"><tspan font-weight="700">18.</tspan> Expansion: I2S / TDM audio <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="433" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="442" font-size="11" fill="#26313d"><tspan font-weight="700">19.</tspan> Expansion: USB host <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="451" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="460" font-size="11" fill="#26313d"><tspan font-weight="700">20.</tspan> Expansion: GPIO / ADC (+ trigger out) <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
+<rect x="708.0" y="477" width="11" height="11" rx="2" fill="#4C9BE8"/>
+<text x="726.0" y="486" font-size="10.5" fill="#5a6675">optical S/PDIF</text>
+<rect x="708.0" y="493" width="11" height="11" rx="2" fill="#E8804C"/>
+<text x="726.0" y="502" font-size="10.5" fill="#5a6675">USB</text>
+<rect x="708.0" y="509" width="11" height="11" rx="2" fill="#5BAF6A"/>
+<text x="726.0" y="518" font-size="10.5" fill="#5a6675">Ethernet</text>
+<rect x="708.0" y="525" width="11" height="11" rx="2" fill="#2F9E44"/>
+<text x="726.0" y="534" font-size="10.5" fill="#5a6675">Teensy module</text>
+<rect x="708.0" y="541" width="11" height="11" rx="2" fill="#B07AD1"/>
+<text x="726.0" y="550" font-size="10.5" fill="#5a6675">logic IC</text>
+<rect x="708.0" y="557" width="11" height="11" rx="2" fill="#E05A5A"/>
+<text x="726.0" y="566" font-size="10.5" fill="#5a6675">power protection</text>
+<rect x="708.0" y="573" width="11" height="11" rx="2" fill="#C9A227"/>
+<text x="726.0" y="582" font-size="10.5" fill="#5a6675">passives</text>
+<rect x="708.0" y="589" width="11" height="11" rx="2" fill="#D46A9F"/>
+<text x="726.0" y="598" font-size="10.5" fill="#5a6675">expansion header</text>
+<rect x="708.0" y="605" width="11" height="11" rx="2" fill="#8A8F98"/>
+<text x="726.0" y="614" font-size="10.5" fill="#5a6675">service / test</text>
 </svg>
