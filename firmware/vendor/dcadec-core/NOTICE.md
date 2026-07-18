@@ -66,3 +66,9 @@ build accommodates them entirely from outside, in the `dts` suite of
 4. The adapter provides `dca_format_log` (normally in the excluded
    `dca_context.c`), the sink the core's `dca_log` macro targets. It runs with
    `core->ctx == NULL` and surfaces only hard errors.
+5. The no-heap arena path intercepts `ta.c`'s libc calls at LINK time, never by
+   editing the source. The DTS suites link `aius_alloc_shim.c` with
+   `-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free`, so every
+   `ta_alloc_size` / `ta_zalloc_size` / `ta_realloc_size` / `ta_free` call in the
+   vendored allocator routes through an `AiusArena` when one is armed and through
+   `__real_*` (libc) otherwise. `ta.c` stays byte-for-byte upstream.

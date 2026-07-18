@@ -7,7 +7,8 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract, dts, iec61937, iec61937-fuzz.
+# Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, iec61937,
+#         iec61937-fuzz.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,6 +58,42 @@ compile_and_run() {
 	"$out"
 }
 
+# Shared build inputs for every DTS suite. The adapter and the vendored dcadec
+# core allocate through libc malloc/calloc/realloc/free; the aius_alloc_shim
+# intercepts those at LINK time via --wrap so the no-heap arena path is provable
+# without editing any vendored file. Every DTS suite links the shim + the wrap
+# flags: with no arena armed the shim just forwards to __real_* (libc), so the
+# differential decode is unaffected.
+dts_build() {
+	local out="$1"
+	shift
+	# Include paths: adapter, arena/codec ABI, and the vendored core.
+	local dts_inc=("-I$fw_root/lib/aius_dts/include" "-I$inc" \
+		"-I$fw_root/vendor/dcadec-core")
+	# The vendored dcadec sources use M_PI (needs _GNU_SOURCE under -std=c11) and
+	# the AT_LEAST_GCC() feature macro (benign -Wexpansion-to-defined). These
+	# accommodations are scoped to the DTS suites so the vendored files stay
+	# verbatim. The comma-separated --wrap list is one linker argument.
+	# shellcheck disable=SC2054
+	local dts_cflags=(-D_GNU_SOURCE -Wno-expansion-to-defined \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+	local vendor="$fw_root/vendor/dcadec-core"
+	"$cc" "${cflags[@]}" "${dts_inc[@]}" "${dts_cflags[@]}" \
+		"$@" \
+		"$fw_root/lib/aius_dts/src/aius_dts.c" \
+		"$fw_root/lib/aius_dts/src/aius_alloc_shim.c" \
+		"$src/aius_arena.c" \
+		"$vendor/bitstream.c" \
+		"$vendor/core_decoder.c" \
+		"$vendor/dmix_tables.c" \
+		"$vendor/idct_fixed.c" \
+		"$vendor/idct_float.c" \
+		"$vendor/interpolator.c" \
+		"$vendor/interpolator_fixed.c" \
+		"$vendor/ta.c" \
+		-lm -o "$out"
+}
+
 case "$suite" in
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"
@@ -67,26 +104,21 @@ codec-api-contract)
 dts)
 	# DTS Core differential test: vendored dcadec fixed-point core + AiusDtsDecoder
 	# adapter vs the FFmpeg reference decode of the committed corpus.
-	dts_inc=("-I$fw_root/lib/aius_dts/include" "-I$fw_root/vendor/dcadec-core")
-	# The vendored dcadec sources use M_PI (needs _GNU_SOURCE under -std=c11) and
-	# the AT_LEAST_GCC() feature macro (benign -Wexpansion-to-defined). These
-	# accommodations are scoped to this suite so the vendored files stay verbatim.
-	dts_cflags=(-D_GNU_SOURCE -Wno-expansion-to-defined)
-	vendor="$fw_root/vendor/dcadec-core"
 	out="$build_dir/dts"
-	"$cc" "${cflags[@]}" "${dts_inc[@]}" "${dts_cflags[@]}" \
-		"$fw_root/test/dts/test_dts.c" \
-		"$fw_root/lib/aius_dts/src/aius_dts.c" \
-		"$vendor/bitstream.c" \
-		"$vendor/core_decoder.c" \
-		"$vendor/dmix_tables.c" \
-		"$vendor/idct_fixed.c" \
-		"$vendor/idct_float.c" \
-		"$vendor/interpolator.c" \
-		"$vendor/interpolator_fixed.c" \
-		"$vendor/ta.c" \
-		-lm -o "$out"
+	dts_build "$out" "$fw_root/test/dts/test_dts.c"
 	"$out" "$fw_root/tools/dts_vectors/vectors"
+	;;
+dts-arena)
+	# No-heap arena path + allocation metrics: prove zero steady-state allocations.
+	out="$build_dir/dts-arena"
+	dts_build "$out" "$fw_root/test/dts/test_dts_arena.c"
+	"$out" "$fw_root/tools/dts_vectors/vectors"
+	;;
+dts-fuzz)
+	# Malformed/truncated/fuzz robustness under ASan/UBSan.
+	out="$build_dir/dts-fuzz"
+	dts_build "$out" "$fw_root/test/dts/fuzz_dts.c"
+	"$out" "$fw_root/tools/dts_vectors/vectors" 50000
 	;;
 iec61937)
 	# IEC 61937 burst parser known-answer test against the committed corpus.

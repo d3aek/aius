@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "aius_alloc_shim.h"
+
 /* Vendored dcadec headers (added to the include path by the build). */
 #include "common.h"
 #include "core_decoder.h"
@@ -29,6 +31,14 @@ INTERPOLATE_LFE(lfe_float_iir)    { (void)pcm_samples; (void)lfe_samples; (void)
 INTERPOLATE_SUB(sub32_float)      { (void)dsp; (void)pcm_samples; (void)subband_samples_lo; (void)subband_samples_hi; (void)nsamples; (void)perfect; abort(); }
 INTERPOLATE_SUB(sub64_float)      { (void)dsp; (void)pcm_samples; (void)subband_samples_lo; (void)subband_samples_hi; (void)nsamples; (void)perfect; abort(); }
 
+/* Process-wide mute for the hard-error log sink (see aius_dts_set_log_quiet). */
+static int g_log_quiet;
+
+void aius_dts_set_log_quiet(int quiet)
+{
+    g_log_quiet = quiet ? 1 : 0;
+}
+
 /* dcadec's logging sink. The vendored core reaches this via the dca_log macro
  * (obj->ctx passed through as `dca`). We run without a real context, so ctx is
  * NULL; surface only hard errors to stderr and stay silent otherwise. */
@@ -38,6 +48,8 @@ void dca_format_log(struct dcadec_context *dca, int level,
     (void)dca;
     (void)file;
     (void)line;
+    if (g_log_quiet)
+        return;
     if ((level & ~DCADEC_LOG_ONCE) != DCADEC_LOG_ERROR)
         return;
     va_list ap;
@@ -52,6 +64,8 @@ struct AiusDtsDecoder {
     struct core_decoder *core;  /* ta root; owns all decoder sub-allocations */
     uint8_t *inbuf;             /* aligned, padded scratch for one access unit */
     size_t   inbuf_cap;
+    AiusArena *arena;           /* non-NULL => allocation routes through this arena */
+    AiusMetrics metrics;        /* measurements from the most recent decode */
 };
 
 /* dcadec native speaker -> AIUS canonical plane, in AIUS emission order. */
@@ -74,25 +88,61 @@ static const struct spkr_map k_spkr_map[] = {
     (SPEAKER_MASK_L | SPEAKER_MASK_R | SPEAKER_MASK_C | \
      SPEAKER_MASK_LFE1 | SPEAKER_MASK_Ls | SPEAKER_MASK_Rs)
 
-AiusStatus aius_dts_decoder_create(AiusDtsDecoder **out)
+/* Allocate the handle + core. When `arena` is non-NULL, the allocation shim is
+ * armed for the duration so the handle and the ta root land in the arena; it is
+ * disarmed again on return. When NULL, allocation falls through to libc. */
+static AiusStatus decoder_create(AiusDtsDecoder **out, AiusArena *arena)
 {
     if (!out)
         return AIUS_INVALID_ARG;
     *out = NULL;
 
+    if (arena)
+        aius_alloc_shim_set_arena(arena);
+
     AiusDtsDecoder *dec = calloc(1, sizeof(*dec));
+    if (dec) {
+        /* The core must be ta-allocated so its sub-buffers attach as children. */
+        dec->core = ta_znew(NULL, struct core_decoder);
+    }
+
+    if (arena)
+        aius_alloc_shim_set_arena(NULL);
+
     if (!dec)
         return AIUS_NO_SPACE;
-
-    /* The core must be ta-allocated so its sub-buffers can attach as children. */
-    dec->core = ta_znew(NULL, struct core_decoder);
     if (!dec->core) {
+        /* Only reachable in the libc path; an arena-backed handle is reclaimed
+         * with the arena, and freeing it here is a harmless no-op besides. */
         free(dec);
         return AIUS_NO_SPACE;
     }
+
     dec->core->ctx = NULL;
+    dec->arena = arena;
+    dec->metrics.last_status = AIUS_OK;
 
     *out = dec;
+    return AIUS_OK;
+}
+
+AiusStatus aius_dts_decoder_create(AiusDtsDecoder **out)
+{
+    return decoder_create(out, NULL);
+}
+
+AiusStatus aius_dts_decoder_create_arena(AiusDtsDecoder **out, AiusArena *arena)
+{
+    if (!arena)
+        return AIUS_INVALID_ARG;
+    return decoder_create(out, arena);
+}
+
+AiusStatus aius_dts_get_metrics(const AiusDtsDecoder *dec, AiusMetrics *out)
+{
+    if (!dec || !out)
+        return AIUS_INVALID_ARG;
+    *out = dec->metrics;
     return AIUS_OK;
 }
 
@@ -100,12 +150,17 @@ void aius_dts_decoder_destroy(AiusDtsDecoder *dec)
 {
     if (!dec)
         return;
+    AiusArena *arena = dec->arena;
+    if (arena)
+        aius_alloc_shim_set_arena(arena);
     if (dec->core) {
         core_clear(dec->core);
         ta_free(dec->core);
     }
     free(dec->inbuf);
     free(dec);
+    if (arena)
+        aius_alloc_shim_set_arena(NULL);
 }
 
 /* Copy the access unit into a 4-byte-aligned buffer with DCADEC_BUFFER_PADDING
@@ -146,13 +201,12 @@ static AiusStatus map_core_error(int ret)
     }
 }
 
-AiusStatus aius_dts_decode_access_unit(AiusDtsDecoder *dec,
-                                       const uint8_t *data, size_t size,
-                                       AiusPcmBlock *block)
+/* Core of a decode, run with the allocation shim already armed (or not) by the
+ * caller. Returns the typed status; on AIUS_OK, *block references decoder-owned
+ * planar PCM. */
+static AiusStatus decode_locked(AiusDtsDecoder *dec, const uint8_t *data,
+                                size_t size, AiusPcmBlock *block)
 {
-    if (!dec || !data || !block || size == 0 || size > (size_t)INT_MAX)
-        return AIUS_INVALID_ARG;
-
     size_t padded = 0;
     AiusStatus st = stage_input(dec, data, size, &padded);
     if (st != AIUS_OK)
@@ -189,4 +243,31 @@ AiusStatus aius_dts_decode_access_unit(AiusDtsDecoder *dec,
     block->channel_mask = mask;
 
     return AIUS_OK;
+}
+
+AiusStatus aius_dts_decode_access_unit(AiusDtsDecoder *dec,
+                                       const uint8_t *data, size_t size,
+                                       AiusPcmBlock *block)
+{
+    if (!dec || !data || !block || size == 0 || size > (size_t)INT_MAX)
+        return AIUS_INVALID_ARG;
+
+    if (dec->arena) {
+        aius_alloc_shim_set_arena(dec->arena);
+        aius_alloc_shim_reset_count();
+    }
+
+    AiusStatus st = decode_locked(dec, data, size, block);
+
+    if (dec->arena) {
+        dec->metrics.alloc_count = aius_alloc_shim_alloc_count();
+        dec->metrics.arena_high_water = (uint32_t)aius_arena_high_water(dec->arena);
+        aius_alloc_shim_set_arena(NULL);
+    } else {
+        dec->metrics.alloc_count = 0;
+        dec->metrics.arena_high_water = 0;
+    }
+    dec->metrics.last_status = st;
+
+    return st;
 }
