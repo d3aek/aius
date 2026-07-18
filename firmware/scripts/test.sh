@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract.
+# Suites: arena, codec-api-contract, dts.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +63,30 @@ arena)
 	;;
 codec-api-contract)
 	compile_and_run codec-api-contract "$fw_root/test/codec-api/test_codec_api_contract.c"
+	;;
+dts)
+	# DTS Core differential test: vendored dcadec fixed-point core + AiusDtsDecoder
+	# adapter vs the FFmpeg reference decode of the committed corpus.
+	dts_inc=("-I$fw_root/lib/aius_dts/include" "-I$fw_root/vendor/dcadec-core")
+	# The vendored dcadec sources use M_PI (needs _GNU_SOURCE under -std=c11) and
+	# the AT_LEAST_GCC() feature macro (benign -Wexpansion-to-defined). These
+	# accommodations are scoped to this suite so the vendored files stay verbatim.
+	dts_cflags=(-D_GNU_SOURCE -Wno-expansion-to-defined)
+	vendor="$fw_root/vendor/dcadec-core"
+	out="$build_dir/dts"
+	"$cc" "${cflags[@]}" "${dts_inc[@]}" "${dts_cflags[@]}" \
+		"$fw_root/test/dts/test_dts.c" \
+		"$fw_root/lib/aius_dts/src/aius_dts.c" \
+		"$vendor/bitstream.c" \
+		"$vendor/core_decoder.c" \
+		"$vendor/dmix_tables.c" \
+		"$vendor/idct_fixed.c" \
+		"$vendor/idct_float.c" \
+		"$vendor/interpolator.c" \
+		"$vendor/interpolator_fixed.c" \
+		"$vendor/ta.c" \
+		-lm -o "$out"
+	"$out" "$fw_root/tools/dts_vectors/vectors"
 	;;
 *)
 	echo "unknown suite: $suite" >&2
