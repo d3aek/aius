@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, iec61937,
-#         iec61937-fuzz, dsp.
+#         iec61937-fuzz, pipeline, dsp.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -137,6 +137,18 @@ iec61937-fuzz)
 		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
 		-o "$fuzz_out"
 	"$fuzz_out" 200000
+	;;
+pipeline)
+	# S/PDIF pipeline: classifier + IEC 61937 parser chained into the DTS decoder,
+	# end-to-end vs a direct raw-AU decode over the committed IEC corpus.
+	out="$build_dir/pipeline"
+	dts_build "$out" \
+		"-I$fw_root/lib/aius_pipeline/include" \
+		"-I$fw_root/lib/aius_iec61937/include" \
+		"$fw_root/test/pipeline/test_pipeline.c" \
+		"$fw_root/lib/aius_pipeline/src/aius_pipeline.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c"
+	"$out" "$fw_root/tools/iec_corpus/vectors"
 	;;
 dsp)
 	# 5.1->stereo downmix + Direct Form I biquad EQ known-answer tests. -ffp-contract=off
