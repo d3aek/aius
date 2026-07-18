@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, iec61937,
-#         iec61937-fuzz.
+#         iec61937-fuzz, dsp.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -137,6 +137,18 @@ iec61937-fuzz)
 		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
 		-o "$fuzz_out"
 	"$fuzz_out" 200000
+	;;
+dsp)
+	# 5.1->stereo downmix + Direct Form I biquad EQ known-answer tests. -ffp-contract=off
+	# keeps the double-precision math bit-identical between host and Cortex-M7 (no FMA).
+	dsp_out="$build_dir/dsp"
+	"$cc" "${cflags[@]}" -D_GNU_SOURCE -ffp-contract=off \
+		"-I$fw_root/lib/aius_dsp/include" \
+		"$fw_root/test/dsp/test_dsp.c" \
+		"$fw_root/lib/aius_dsp/src/aius_dsp.c" \
+		"$src/aius_arena.c" \
+		-lm -o "$dsp_out"
+	"$dsp_out"
 	;;
 *)
 	echo "unknown suite: $suite" >&2
