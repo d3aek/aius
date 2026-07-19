@@ -5,8 +5,7 @@
   "description": [
     "Hierarchical root of the Aius carrier schematic. Each per-area sheet is a",
     "self-contained review unit generated from its own connectivity spec;",
-    "cross-sheet connectivity is by global label (see connectivity/nets.md).",
-    "Add optical-spdif and ethernet sheets here as later milestones land."
+    "cross-sheet connectivity is by global label (see connectivity/nets.md)."
   ],
   "sheets": [
     { "name": "power-usb", "spec": "power-usb.json", "page": "2", "at": [25.4, 25.4], "size": [63.5, 25.4] },
@@ -16,6 +15,14 @@
       "page": "3",
       "at": [114.3, 25.4],
       "size": [63.5, 25.4]
-    }
+    },
+    {
+      "name": "optical-spdif",
+      "spec": "optical-spdif.json",
+      "page": "4",
+      "at": [203.2, 25.4],
+      "size": [63.5, 25.4]
+    },
+    { "name": "ethernet", "spec": "ethernet.json", "page": "5", "at": [292.1, 25.4], "size": [63.5, 25.4] }
   ]
 }

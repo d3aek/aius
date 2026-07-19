@@ -2961,20 +2961,30 @@
 		(stroke (width 0) (type default))
 		(uuid "b5025ee0-1bf1-5793-83b9-80ae5140ca14")
 	)
-	(label "CHASSIS"
+	(global_label "CHASSIS"
+		(shape bidirectional)
 		(at 58.42 146.05 270)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "9589538b-b0e9-571f-bf72-88a3075eda06")
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "61401ec8-740f-52f5-acc6-5ebfed01af2e")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 58.42 146.05 270)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
 	)
 	(wire
 		(pts (xy 259.08 127) (xy 259.08 132.08))
 		(stroke (width 0) (type default))
 		(uuid "e5428e52-c673-5313-bd6a-6c06447c04af")
 	)
-	(label "CHASSIS"
+	(global_label "CHASSIS"
+		(shape bidirectional)
 		(at 259.08 132.08 270)
-		(effects (font (size 1.27 1.27)) (justify left bottom))
-		(uuid "541b6c02-8088-5ce4-b6df-20c031fd490e")
+		(effects (font (size 1.27 1.27)) (justify left))
+		(uuid "8aee84cf-fc95-50c2-8cd0-5e51f74d93be")
+		(property "Intersheetrefs" "${INTERSHEET_REFS}"
+			(at 259.08 132.08 270)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
 	)
 	(no_connect
 		(at 81.28 130.81)

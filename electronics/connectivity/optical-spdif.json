@@ -1,0 +1,157 @@
+{
+  "sheet": "optical-spdif",
+  "title": "Aius carrier - optical-spdif sheet",
+  "paper": "A3",
+  "global_nets": ["GND", "+3V3", "SPDIF_RX", "SPDIF_TX", "PATH_SELECT", "TX_ENABLE"],
+  "description": [
+    "Reset-safe optical S/PDIF path: Cliff ORJ5 TOSLINK receiver -> bypass mux",
+    "(SN74LVC1G3157) -> TX gate (SN74LVC1G126) -> Cliff OTJ5 TOSLINK transmitter.",
+    "The receiver drives the global SPDIF_RX (terminated at Teensy pin 15) and also",
+    "feeds the mux raw-bypass input. The mux selects the transmit source between the",
+    "Teensy processed output (SPDIF_TX, pin 14) and the raw ORJ5 bypass; the gate",
+    "holds the transmitter idle until firmware enables it. All logic runs at 3.3 V.",
+    "See connectivity/nets.md and docs/reference/interfaces-and-states.md."
+  ],
+  "design_notes": {
+    "mux_truth_table": "SN74LVC1G3157 SPDT analog switch: select pin S (pin 6) = PATH_SELECT. S LOW -> common A (pin 4) = B1 (pin 3); S HIGH -> A = B2 (pin 1). B1 is wired to the PROCESSED source (SPDIF_TX, Teensy pin 14) and B2 to the RAW bypass (SPDIF_RX, the ORJ5 output). PATH_SELECT has a 10k pull-down on the teensy-expansion sheet (R17), so the hardware default is S LOW = processed path, exactly the interfaces-and-states spdif-path-select reset default. HIGH selects the diagnostic raw bypass.",
+    "tx_gate_oe_polarity": "SAFETY-CRITICAL. The gate is an SN74LVC1G126, whose output-enable is ACTIVE-HIGH (OE on pin 1): OE LOW -> output Y (pin 4) high-impedance; OE HIGH -> Y = A. TX_ENABLE is active-HIGH with a 10k pull-down (R18) on the teensy-expansion sheet, so its reset/absent default is LOW. OE is therefore driven DIRECTLY by TX_ENABLE: at reset TX_ENABLE LOW -> OE LOW -> Y high-Z -> transmitter idle, with no inverter and no fail-safe pull-up needed. (This replaced an earlier 1G125 active-low-OE gate that required an added inverter + pull-up; the 1G126 is the correct single-part solution.)",
+    "tx_idle_level": "When the gate output is high-impedance (TX disabled), R40 (10k) pulls the gate output / OTJ5 Vin (TX_GATED) to GND, giving the transmitter a defined idle logic level (no optical carrier) instead of a floating input. OTJ5 Vin min VIH is 2.0 V, so the pulled-low idle is unambiguously a logic low.",
+    "reset_safe_summary": "With the Teensy absent, held in reset, booting, or crashed, the two teensy-side pull-downs alone establish the safe optical state before firmware runs: R17 (PATH_SELECT low) selects the processed path at the mux, and R18 (TX_ENABLE low) -> gate OE low holds the TX gate high-Z, so the OTJ5 sees the R40-defined idle and emits no data. Path selection is only ever changed by firmware while TX is muted (interfaces-and-states raw-bypass-request).",
+    "levels": "3.3 V logic throughout. ORJ5 output min VOH 2.4 V drives the mux/Teensy CMOS inputs; the >=16 Mbit/s S/PDIF bandwidth is met by the LVC logic (typ. 340 MHz analog switch, 3.7 ns gate) and the 16 Mbit/s ORJ5/OTJ5 modules.",
+    "decoupling": "Per Cliff datasheets: C20 (100nF) decouples ORJ5 Vcc within 7 mm; C21 (30pF) sits GND-to-Vout on the ORJ5 to avoid the loading effect; C25 (100nF) decouples OTJ5 Vcc. C22/C24 (100nF) decouple the mux and gate +3V3 pins.",
+    "bom_change": "The tx-gate part changes from SN74LVC1G125 (active-low OE) to SN74LVC1G126 (active-high OE) so TX_ENABLE drives OE directly with no inverter. provisional-components.csv / aius-hardware-spec spdif-tx-gate must be updated to the 1G126; no inverter part is added."
+  },
+  "components": [
+    {
+      "ref": "U20",
+      "lib_id": "aius:Cliff_ORJ5",
+      "value": "ORJ5",
+      "mpn": "Cliff FCR684205R",
+      "footprint": "aius:Cliff_ORJ5_TOSLINK",
+      "at": [59.69, 119.38],
+      "desc": "TOSLINK optical S/PDIF receiver: optical in -> SPDIF_RX + raw-bypass mux input"
+    },
+    {
+      "ref": "U21",
+      "lib_id": "aius:SN74LVC1G3157",
+      "value": "SN74LVC1G3157",
+      "mpn": "TI SN74LVC1G3157DBVR",
+      "footprint": "Package_TO_SOT_SMD:SOT-23-6",
+      "at": [139.7, 119.38],
+      "desc": "S/PDIF bypass mux (SPDT): B1=processed (SPDIF_TX), B2=raw (SPDIF_RX), S=PATH_SELECT"
+    },
+    {
+      "ref": "U23",
+      "lib_id": "aius:SN74LVC1G126",
+      "value": "SN74LVC1G126",
+      "mpn": "TI SN74LVC1G126DBVR",
+      "footprint": "Package_TO_SOT_SMD:SOT-23-5",
+      "at": [224.79, 119.38],
+      "desc": "optical TX gate: A=MUX_OUT, OE=TX_ENABLE (active high), Y=TX_GATED (high-Z when disabled)"
+    },
+    {
+      "ref": "U24",
+      "lib_id": "aius:Cliff_OTJ5",
+      "value": "OTJ5",
+      "mpn": "Cliff FCR684205T",
+      "footprint": "aius:Cliff_OTJ5_TOSLINK",
+      "at": [309.88, 119.38],
+      "desc": "TOSLINK optical S/PDIF transmitter: gated logic in -> optical out"
+    },
+    {
+      "ref": "C20",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [59.69, 80.01],
+      "desc": "ORJ5 Vcc decoupling (0.1uF within 7 mm per datasheet)"
+    },
+    {
+      "ref": "C21",
+      "lib_id": "Device:C",
+      "value": "30pF",
+      "mpn": "30pF 0402 5%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [95.25, 149.86],
+      "desc": "ORJ5 GND-to-Vout loading cap (30pF per datasheet precaution)"
+    },
+    {
+      "ref": "C22",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [139.7, 74.93],
+      "desc": "mux +3V3 decoupling"
+    },
+    {
+      "ref": "C24",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [224.79, 74.93],
+      "desc": "TX gate +3V3 decoupling"
+    },
+    {
+      "ref": "C25",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [309.88, 80.01],
+      "desc": "OTJ5 Vcc decoupling (0.1uF within 7 mm per datasheet)"
+    },
+    {
+      "ref": "R40",
+      "lib_id": "Device:R",
+      "value": "10k",
+      "mpn": "10k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [265.43, 154.94],
+      "desc": "TX_GATED / OTJ5 Vin pull-down: defined idle low when the gate is high-Z"
+    }
+  ],
+  "nets": {
+    "+3V3": [
+      ["U20", "3"],
+      ["U21", "5"],
+      ["U23", "5"],
+      ["U24", "2"],
+      ["C20", "1"],
+      ["C22", "1"],
+      ["C24", "1"],
+      ["C25", "1"]
+    ],
+    "GND": [
+      ["U20", "2"],
+      ["U21", "2"],
+      ["U23", "3"],
+      ["U24", "1"],
+      ["C20", "2"],
+      ["C21", "2"],
+      ["C22", "2"],
+      ["C24", "2"],
+      ["C25", "2"],
+      ["R40", "2"]
+    ],
+    "SPDIF_RX": [
+      ["U20", "1"],
+      ["U21", "1"],
+      ["C21", "1"]
+    ],
+    "SPDIF_TX": [["U21", "3"]],
+    "PATH_SELECT": [["U21", "6"]],
+    "TX_ENABLE": [["U23", "1"]],
+    "MUX_OUT": [
+      ["U21", "4"],
+      ["U23", "2"]
+    ],
+    "TX_GATED": [
+      ["U23", "4"],
+      ["U24", "3"],
+      ["R40", "1"]
+    ]
+  }
+}

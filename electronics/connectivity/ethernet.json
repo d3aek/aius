@@ -1,0 +1,64 @@
+{
+  "sheet": "ethernet",
+  "title": "Aius carrier - ethernet sheet",
+  "paper": "A3",
+  "global_nets": ["GND", "CHASSIS", "ETH_RXP", "ETH_RXN", "ETH_TXP", "ETH_TXN", "ETH_LED"],
+  "description": [
+    "Native-Ethernet magjack. The DP83825 PHY is on the Teensy 4.1, so its 6-pin",
+    "native-Ethernet header carries post-PHY MDI differential pairs straight to the",
+    "Pulse J0011D21BNL magjack (integrated 1CT:1 magnetics + Bob-Smith termination).",
+    "No PHY, no RMII, no 25 MHz clock on the carrier. See connectivity/nets.md and",
+    "docs/reference/interfaces-and-states.md (ethernet-rj45)."
+  ],
+  "design_notes": {
+    "mdi_mapping": "Teensy native-Ethernet header MDI pairs to the magjack PHY-side pins: ETH_TXP->TD+ (pin 1), ETH_TXN->TD- (pin 2), ETH_RXP->RD+ (pin 3), ETH_RXN->RD- (pin 6). The magjack integrated magnetics couple these to the RJ45 cable side.",
+    "centre_tap_cap": "The transmit and receive PHY-side transformer centre taps (pins 4 TCT, 5 RCT) are tied together (ETH_CT) and returned to GND through the single 100nF centre-tap cap C30 - the same decoupling the PJRC Ethernet Kit reference provides for this native connection.",
+    "led": "The Teensy header exposes one Ethernet LED signal. ETH_LED drives the magjack left (green link/activity) LED anode (pin 9); its cathode (pin 10) returns to GND. The J0011D21BNL LEDs carry internal series resistors. The right (yellow) LED (pins 11/12) is unused and left as no-connect - only one LED signal exists on the native header.",
+    "chassis": "The magjack shield tabs (SHIELD) and the CHS-GROUND / Bob-Smith termination return (pin 8) tie to the CHASSIS net, the chassis-shield domain shared with the USB-C/USB-A shells (power-usb). CHASSIS is kept isolated from digital GND per the interfaces-and-states backfeed rule (they are joined, if at all, at a single controlled point in layout, not in this schematic). CHASSIS is promoted to a global net so this shield merges with the power-entry shells.",
+    "no_phy": "No DP83825 and no RMII on the carrier - the PHY is on the Teensy. This is the evidence-backed correction to the original H1b plan; see connectivity/nets.md."
+  },
+  "components": [
+    {
+      "ref": "J20",
+      "lib_id": "aius:Pulse_J0011D21BNL",
+      "value": "J0011D21BNL",
+      "mpn": "Pulse J0011D21BNL",
+      "footprint": "aius:Pulse_J0011D21BNL_TabDown",
+      "at": [149.86, 129.54],
+      "desc": "native-Ethernet RJ45 magjack (integrated magnetics + G/Y LEDs), MDI to Teensy header"
+    },
+    {
+      "ref": "C30",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [209.55, 119.38],
+      "desc": "Ethernet centre-tap cap: joined TX/RX PHY-side centre taps to GND"
+    }
+  ],
+  "nets": {
+    "ETH_TXP": [["J20", "1"]],
+    "ETH_TXN": [["J20", "2"]],
+    "ETH_RXP": [["J20", "3"]],
+    "ETH_RXN": [["J20", "6"]],
+    "ETH_CT": [
+      ["J20", "4"],
+      ["J20", "5"],
+      ["C30", "1"]
+    ],
+    "ETH_LED": [["J20", "9"]],
+    "GND": [
+      ["J20", "10"],
+      ["C30", "2"]
+    ],
+    "CHASSIS": [
+      ["J20", "8"],
+      ["J20", "SH"]
+    ]
+  },
+  "no_connects": [
+    ["J20", "11"],
+    ["J20", "12"]
+  ]
+}

@@ -16,10 +16,13 @@ the Teensy and the power tree by matching text.
 | `GND` | power-usb (`PWR_FLAG` on the USB-C ground) | every sheet | single digital ground; declared external at power entry |
 | `VBUS_5V` | power-usb (`TPS2553` protected 5 V out) | teensy-expansion USB-host switch | protected-5V domain; the only 5 V rail leaving power-usb |
 | `+3V3` | teensy-expansion (Teensy 3.3V pin, `power_out`) | optical, ethernet, expansion | `teensy-3v3`; the Teensy sources it, so no `PWR_FLAG` is needed |
+| `CHASSIS` | enclosure (USB-C/USB-A shells) | power-usb shells, ethernet magjack shield | chassis-shield domain, isolated from `GND`; passive-only (no `PWR_FLAG`) |
 
 `GND` and `VBUS_5V` originate on the power-usb sheet and are promoted to global
 there (`power-usb.json` `global_nets`); `+3V3` originates on teensy-expansion.
-These are the three rails the later sheets attach to.
+`CHASSIS` is also promoted to global on power-usb so the ethernet magjack shield
+joins the same chassis-shield domain as the USB shells. These rails are what the
+later sheets attach to.
 
 ## Global Teensy signals
 
@@ -42,10 +45,12 @@ Consumed by the ethernet sheet (6-pin native-Ethernet header → magjack):
 | `ETH_TXN` | Ethernet TX- | MDI transmit pair - |
 | `ETH_TXP` | Ethernet TX+ | MDI transmit pair + |
 
-Until those sheets land, each of these seven signal globals terminates on the
-Teensy alone, so full-severity ERC reports them as `isolated_pin_label`
-("label connected to only one pin"). That is the expected incremental state; the
-error-severity gate (`scripts/erc.sh`) stays clean.
+Both sheets have landed: the optical-spdif sheet drives/consumes `SPDIF_RX`,
+`SPDIF_TX`, `PATH_SELECT`, `TX_ENABLE`, and the ethernet sheet terminates the
+five `ETH_*` MDI/LED globals at the magjack. Every one of these seven signal
+globals now spans at least two pins, so the earlier `isolated_pin_label`
+warnings are cleared; full-severity ERC leaves only provisional
+`footprint_link_issues`.
 
 ## Design decisions recorded during capture
 
@@ -71,8 +76,10 @@ DP83825I to the carrier and replicate the "PJRC Ethernet Kit reference circuit")
   "10/100 Mbit / DP83825 PHY / (6 pins)".
 
 The BOM already matches this reality (magjack + centre-tap cap, no PHY line item).
-**Action for the ethernet-sheet agent / plan owner:** drop the on-carrier DP83825
-and RMII; wire the magjack to the `ETH_*` globals. Flagged to the orchestrator.
+**Resolved on the ethernet sheet:** no on-carrier DP83825 and no RMII; the Pulse
+`J0011D21BNL` magjack MDI pairs wire straight to the `ETH_*` globals, its two
+PHY-side centre taps join through the 100 nF `C30` to `GND`, and its shield +
+CHS-ground tie to `CHASSIS`.
 
 ### One expansion power switch → USB-host VBUS
 
@@ -93,7 +100,9 @@ via bounded clamp current + isolation rather than a second switch.
 ## Sheet-local nets
 
 Everything not listed above is sheet-local: the power-usb internals
-(`VBUS_RAW`, `CC1/2`, `EN`, `FAULT`, `ILIM`, `USB_DP/DM`, `CHASSIS`) and the
-teensy-expansion internals (the isolator A/B buses, series-clamp `*_T`/header
-pairs, `EXP_USBH_*` control, `USBH_D±`, `PROGRAM`, `ON_OFF`, `VBAT`). Promote a
-local net to global only when a second sheet must reference it, and add it here.
+(`VBUS_RAW`, `CC1/2`, `EN`, `FAULT`, `ILIM`, `USB_DP/DM`), the teensy-expansion
+internals (the isolator A/B buses, series-clamp `*_T`/header pairs, `EXP_USBH_*`
+control, `USBH_D±`, `PROGRAM`, `ON_OFF`, `VBAT`), the optical-spdif internals
+(`MUX_OUT` mux→gate, `TX_OE_N` inverter→gate `~OE`, `TX_GATED` gate→OTJ5), and the
+ethernet internal `ETH_CT` (joined magjack centre taps → `C30`). Promote a local
+net to global only when a second sheet must reference it, and add it here.

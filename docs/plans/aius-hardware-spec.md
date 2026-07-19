@@ -84,7 +84,8 @@ the selected parts are in the BOM. Summary:
 - Socketed Teensy 4.1 (Samtec `SSW-124-02-G-S` side sockets, `MMS-103-01-L-DV`
   Ethernet header socket, `SSW-105-02-G-S` USB-host socket).
 - Cliff optical: ORJ5 (`FCR684205R`) receiver, OTJ5 (`FCR684205T`) transmitter.
-- S/PDIF **bypass mux** TI `SN74LVC1G3157DBVR`; **TX gate** TI `SN74LVC1G125DBVR`.
+- S/PDIF **bypass mux** TI `SN74LVC1G3157DBVR`; **TX gate** TI `SN74LVC1G126DBVR`
+  (active-high OE, so `TX_ENABLE` default-low = TX disabled with no inverter — set at H1).
 - Rear USB-C receptacle (candidate GCT `USB4105-GF-A`; see [open sourcing](#open-hardware-questions)),
   independent CC1/CC2 5.1 kΩ pulldowns, USB ESD TI `TPD2EUSB30ADRTR`,
   power protection TI `TPS2553DBVR`, 90 Ω D+/D- to an internal USB-A receptacle

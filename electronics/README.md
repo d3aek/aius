@@ -6,10 +6,11 @@ ERC-checked and rendered in the digest-pinned KiCad 10.0.4 container
 directory implements the H1 foundation of
 [`../docs/plans/aius-h1-schematic.md`](../docs/plans/aius-h1-schematic.md): a
 **hierarchical multi-sheet project** whose root `aius-carrier.kicad_sch`
-instantiates one sub-sheet per functional area. Present and ERC-clean today: the
-`power-usb` sheet (H1a) and the `teensy-expansion` sheet (Teensy 4.1, expansion /
-service / test interfaces). The `optical-spdif` and `ethernet` sheets are later
-H1b milestones and attach via the global-label net convention below.
+instantiates one sub-sheet per functional area. All four sheets are present and
+ERC-clean: `power-usb` (H1a), `teensy-expansion` (Teensy 4.1, expansion / service
+/ test interfaces), `optical-spdif` (reset-safe ORJ5 → mux → gate → OTJ5 path,
+H1b) and `ethernet` (Pulse magjack for the Teensy native-Ethernet header, H1b).
+Cross-sheet connectivity is by the global-label net convention below.
 
 ## Pipeline
 
@@ -44,11 +45,17 @@ connectivity/aius-carrier.json  (project manifest: sheet list)
   `(px, py)` lands at schematic `(X + px, Y - py)`; a pin's `angle` points
   tip→body, so the label direction is `angle + 180`). Placement origins are
   snapped to the 1.27 mm grid so every stub endpoint stays on-grid.
-- **`lib/aius.kicad_sym`** — custom symbols for parts KiCad does not ship:
+- **`lib/aius.kicad_sym`** — custom symbols for parts KiCad does not ship, plus
+  single-unit redraws of a few stock parts (the stock `74xGxx` symbols split their
+  power pins into a second unit the single-unit generator cannot place):
   `TPD2EUSB30A` (3-pin shunt USB ESD), `TPS2553` (current-limit load switch),
   `Teensy41` (the socketed module, drawn as the carrier-used pads with correct
-  electrical types), `TCA9517A` (I2C level-translating buffer/isolator), and the
-  generic `Conn_1x02..06` connectors (JST GH headers, pin headers, Tag-Connect).
+  electrical types), `TCA9517A` (I2C level-translating buffer/isolator), the
+  generic `Conn_1x02..06` connectors (JST GH headers, pin headers, Tag-Connect),
+  the Cliff `Cliff_ORJ5` / `Cliff_OTJ5` TOSLINK optical modules, the
+  `SN74LVC1G3157` bypass mux, `SN74LVC1G04` inverter and `SN74LVC1G125` TX gate
+  (single-unit, pin numbers verified against the datasheets and the stock KiCad
+  symbols), and the Pulse `Pulse_J0011D21BNL` RJ45 magjack.
 - **`lib/standard-cache.kicad_sym`** — verbatim copies of the stock KiCad symbols
   the generator uses (`R`, `C`, `USB_C_Receptacle_USB2.0_16P`, `USB_A`,
   `PWR_FLAG`), taken from KiCad 10.0.4 (`/usr/share/kicad/symbols`, digest pinned
@@ -82,15 +89,14 @@ The whole project is **ERC-error-clean** (`scripts/erc.sh`, `--severity-error`
 exits 0 — `Found 0 violations`). The error-clean gate also proves the global
 rails merge across sheets: teensy-expansion's `GND` / `VBUS_5V` power-input pins
 are driven by the power-usb `PWR_FLAG` / `TPS2553` output through the global
-labels, and `+3V3` is driven by the Teensy 3.3 V `power_out`.
+labels, `+3V3` is driven by the Teensy 3.3 V `power_out`, and the optical logic
+`VCC` pins ride that same `+3V3`.
 
-Full-severity ERC (`scripts/erc.sh --all`) leaves 17 non-electrical warnings, all
-expected at this milestone:
-
-- 7× `isolated_pin_label` ("label connected to only one pin") — the cross-sheet
-  signal globals `SPDIF_RX`, `SPDIF_TX`, `ETH_RXP/RXN/LED/TXN/TXP` terminate on
-  the Teensy alone until the optical-spdif and ethernet sheets land. They clear
-  when those sheets connect. See [`connectivity/nets.md`](connectivity/nets.md).
-- 10× `footprint_link_issues` — provisional footprints (the power-usb `J2` TE
-  `292303-1`, plus the custom `aius:` land patterns for the Teensy sockets, JST
-  GH headers and Tag-Connect). Land-pattern verification is H2, not H1.
+Full-severity ERC (`scripts/erc.sh --all`) leaves 13 `footprint_link_issues` and
+nothing else. All are provisional footprints — the power-usb `J2` TE `292303-1`
+plus the custom `aius:` land patterns (Teensy sockets, JST GH headers,
+Tag-Connect, and the new `Cliff_ORJ5` / `Cliff_OTJ5` / `Pulse_J0011D21BNL`
+modules). Land-pattern verification is H2, not H1. The optical mux/inverter/gate
+use real KiCad `SOT-23-5/6` footprints, so they add no warnings, and the earlier
+`isolated_pin_label` warnings cleared once the optical-spdif and ethernet sheets
+connected the seven cross-sheet signal globals.

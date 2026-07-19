@@ -59,6 +59,60 @@
 			)
 		)
 	)
+	(sheet
+		(at 203.2 25.4)
+		(size 63.5 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke (width 0.1524) (type solid))
+		(fill (color 0 0 0 0.0000))
+		(uuid "5a3f8198-f2ec-57e8-a034-96a3ff164e12")
+		(property "Sheetname" "optical-spdif"
+			(at 203.2 24.6888 0)
+			(effects (font (size 1.27 1.27)) (justify left bottom))
+		)
+		(property "Sheetfile" "optical-spdif.kicad_sch"
+			(at 203.2 51.5112 0)
+			(effects (font (size 1.27 1.27)) (justify left top))
+		)
+		(instances
+			(project "aius-carrier"
+				(path "/68a9aac5-3712-532f-bce8-e090c97e9611"
+					(page "4")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 292.1 25.4)
+		(size 63.5 25.4)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke (width 0.1524) (type solid))
+		(fill (color 0 0 0 0.0000))
+		(uuid "76d052f7-db86-5e91-a827-da32bb2755a2")
+		(property "Sheetname" "ethernet"
+			(at 292.1 24.6888 0)
+			(effects (font (size 1.27 1.27)) (justify left bottom))
+		)
+		(property "Sheetfile" "ethernet.kicad_sch"
+			(at 292.1 51.5112 0)
+			(effects (font (size 1.27 1.27)) (justify left top))
+		)
+		(instances
+			(project "aius-carrier"
+				(path "/68a9aac5-3712-532f-bce8-e090c97e9611"
+					(page "5")
+				)
+			)
+		)
+	)
 	(sheet_instances
 		(path "/"
 			(page "1")
@@ -68,6 +122,12 @@
 		)
 		(path "/9a8dd7e0-f296-5044-86a8-6a5914dae9ce"
 			(page "3")
+		)
+		(path "/5a3f8198-f2ec-57e8-a034-96a3ff164e12"
+			(page "4")
+		)
+		(path "/76d052f7-db86-5e91-a827-da32bb2755a2"
+			(page "5")
 		)
 	)
 	(embedded_fonts no)
