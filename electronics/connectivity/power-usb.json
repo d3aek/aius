@@ -1,0 +1,227 @@
+{
+  "sheet": "power-usb",
+  "title": "Aius carrier - power-usb sheet",
+  "paper": "A3",
+  "description": [
+    "Sole power entry for the Aius carrier: rear USB-C VBUS -> TPS2553",
+    "current-limited / reverse-blocking load switch -> protected 5V rail ->",
+    "internal USB-A receptacle (and downstream Teensy via the internal cable).",
+    "Sink-only USB 2.0: CC1/CC2 have independent 5.1k Rd pulldowns; D+/D- are a",
+    "single 90-ohm differential pair from USB-C through the TPD2EUSB30A shunt ESD",
+    "to the USB-A receptacle. No path sources USB VBUS; no second 5V feed."
+  ],
+  "design_notes": {
+    "en_default": "TPS2553 EN is active-high. R3 (10k) pulls EN up to VBUS_RAW so the load switch is ENABLED by default at plug-in, with no controller on this domain - the protected rail comes up from hardware alone.",
+    "ilim": "R4 (24.9k, 1%) sets the current-limit threshold. Per the TPS2553 datasheet range (15k..232k over 1.7A..75mA), ~24.9k yields a ~1.0A limit: comfortably above the Teensy plus a bus-powered internal USB device (<0.6A typical) while protecting the USB-C source.",
+    "fault": "FAULT is active-low open-drain. R5 (100k) pulls it up to VBUS_RAW so it reads deasserted when healthy; it is a monitor-only output on this sheet (no consumer).",
+    "decoupling": "C1 100nF + C2 10uF bulk on VBUS_RAW at the switch input; C3 100nF + C4 10uF on the protected VBUS_5V output feeding the USB-A port.",
+    "shield": "USB-C and USB-A shells share the CHASSIS net (chassis-shield domain), kept separate from GND per the interfaces-and-states backfeed rule.",
+    "usb_c_part": "USB-C receptacle candidate GCT USB4105-GF-A (16-pin USB2.0); D+/D- A- and B-side pins are tied for reversibility. SBU1/SBU2 unused (no-connect)."
+  },
+  "components": [
+    {
+      "ref": "J1",
+      "lib_id": "Connector:USB_C_Receptacle_USB2.0_16P",
+      "value": "USB4105-GF-A",
+      "mpn": "GCT USB4105-GF-A",
+      "footprint": "Connector_USB:USB_C_Receptacle_GCT_USB4105-xx-A_16P_TopMnt_Horizontal",
+      "at": [66.04, 118.11],
+      "desc": "rear USB-C receptacle (sole power+data entry)"
+    },
+    {
+      "ref": "U1",
+      "lib_id": "aius:TPD2EUSB30A",
+      "value": "TPD2EUSB30ADRTR",
+      "mpn": "TI TPD2EUSB30ADRTR",
+      "footprint": "Package_TO_SOT_SMD:SOT-23-3",
+      "at": [149.86, 76.2],
+      "desc": "USB D+/D- ESD protection (shunt)"
+    },
+    {
+      "ref": "U2",
+      "lib_id": "aius:TPS2553",
+      "value": "TPS2553DBVR",
+      "mpn": "TI TPS2553DBVR",
+      "footprint": "Package_TO_SOT_SMD:SOT-23-6",
+      "at": [154.94, 160.02],
+      "desc": "5V current-limit / reverse-blocking load switch"
+    },
+    {
+      "ref": "J2",
+      "lib_id": "Connector:USB_A",
+      "value": "292303-1",
+      "mpn": "TE 292303-1",
+      "footprint": "Connector_USB:USB_A_TE_292303-1_Horizontal",
+      "at": [261.62, 116.84],
+      "desc": "internal USB-A receptacle (protected 5V)"
+    },
+    {
+      "ref": "R1",
+      "lib_id": "Device:R",
+      "value": "5.1k",
+      "mpn": "5.1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [96.52, 165.1],
+      "desc": "CC1 Rd pulldown (sink role)"
+    },
+    {
+      "ref": "R2",
+      "lib_id": "Device:R",
+      "value": "5.1k",
+      "mpn": "5.1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [111.76, 165.1],
+      "desc": "CC2 Rd pulldown (sink role)"
+    },
+    {
+      "ref": "R3",
+      "lib_id": "Device:R",
+      "value": "10k",
+      "mpn": "10k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [127.0, 137.16],
+      "desc": "EN pull-up to VBUS_RAW (default enabled)"
+    },
+    {
+      "ref": "R4",
+      "lib_id": "Device:R",
+      "value": "24.9k",
+      "mpn": "24.9k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [195.58, 175.26],
+      "desc": "ILIM current-limit set resistor (~1.0A)"
+    },
+    {
+      "ref": "R5",
+      "lib_id": "Device:R",
+      "value": "100k",
+      "mpn": "100k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [195.58, 137.16],
+      "desc": "FAULT open-drain pull-up to VBUS_RAW"
+    },
+    {
+      "ref": "C1",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [76.2, 205.74],
+      "desc": "VBUS_RAW decoupling at switch input"
+    },
+    {
+      "ref": "C2",
+      "lib_id": "Device:C",
+      "value": "10uF",
+      "mpn": "10uF 0805",
+      "footprint": "Capacitor_SMD:C_0805_2012Metric",
+      "at": [93.98, 205.74],
+      "desc": "VBUS_RAW bulk"
+    },
+    {
+      "ref": "C3",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [220.98, 205.74],
+      "desc": "VBUS_5V decoupling"
+    },
+    {
+      "ref": "C4",
+      "lib_id": "Device:C",
+      "value": "10uF",
+      "mpn": "10uF 0805",
+      "footprint": "Capacitor_SMD:C_0805_2012Metric",
+      "at": [238.76, 205.74],
+      "desc": "VBUS_5V bulk at USB-A port"
+    },
+    {
+      "ref": "#FLG01",
+      "lib_id": "power:PWR_FLAG",
+      "value": "PWR_FLAG",
+      "footprint": "",
+      "at": [55.88, 187.96],
+      "desc": "declares VBUS_RAW as an externally-sourced power net"
+    },
+    {
+      "ref": "#FLG02",
+      "lib_id": "power:PWR_FLAG",
+      "value": "PWR_FLAG",
+      "footprint": "",
+      "at": [55.88, 226.06],
+      "desc": "declares GND as an externally-sourced power net"
+    }
+  ],
+  "nets": {
+    "VBUS_RAW": [
+      ["J1", "A4"],
+      ["U2", "1"],
+      ["R3", "1"],
+      ["R5", "1"],
+      ["C1", "1"],
+      ["C2", "1"],
+      ["#FLG01", "1"]
+    ],
+    "VBUS_5V": [
+      ["U2", "6"],
+      ["J2", "1"],
+      ["C3", "1"],
+      ["C4", "1"]
+    ],
+    "GND": [
+      ["J1", "A1"],
+      ["U1", "3"],
+      ["U2", "2"],
+      ["J2", "4"],
+      ["R1", "2"],
+      ["R2", "2"],
+      ["R4", "2"],
+      ["C1", "2"],
+      ["C2", "2"],
+      ["C3", "2"],
+      ["C4", "2"],
+      ["#FLG02", "1"]
+    ],
+    "USB_DP": [
+      ["J1", "A6"],
+      ["J1", "B6"],
+      ["U1", "1"],
+      ["J2", "3"]
+    ],
+    "USB_DM": [
+      ["J1", "A7"],
+      ["J1", "B7"],
+      ["U1", "2"],
+      ["J2", "2"]
+    ],
+    "CC1": [
+      ["J1", "A5"],
+      ["R1", "1"]
+    ],
+    "CC2": [
+      ["J1", "B5"],
+      ["R2", "1"]
+    ],
+    "EN": [
+      ["U2", "3"],
+      ["R3", "2"]
+    ],
+    "FAULT": [
+      ["U2", "4"],
+      ["R5", "2"]
+    ],
+    "ILIM": [
+      ["U2", "5"],
+      ["R4", "1"]
+    ],
+    "CHASSIS": [
+      ["J1", "SH"],
+      ["J2", "SH"]
+    ]
+  },
+  "no_connects": [
+    ["J1", "A8"],
+    ["J1", "B8"]
+  ]
+}
