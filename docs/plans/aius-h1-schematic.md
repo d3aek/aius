@@ -67,11 +67,15 @@ H1 is real engineering, not mechanical generation; drawing the nets surfaces
 questions the paper spec left open. Resolve each against the datasheet and record
 the decision:
 
-- **Ethernet PHY (blocking the ethernet sheet).** The i.MX RT1062 MAC needs an
-  external RMII PHY (PJRC's Ethernet Kit uses a DP83825). The BOM lists the
-  magjack but **no PHY**. Options: add a DP83825I + its support (25 MHz clock,
-  RMII routing, magnetics already in the magjack) to the BOM, or descope Ethernet
-  from the first board. Decision needed before the ethernet sheet closes.
+- **Ethernet PHY — RESOLVED (2026-07-19): add the DP83825I on-board.** The i.MX
+  RT1062 has only the Ethernet MAC; the PHY lives on PJRC's separate Ethernet Kit
+  (DP83825), and the BOM had the magjack but no PHY. Decision: put the DP83825I on
+  the carrier and **replicate the PJRC Ethernet Kit reference circuit** (we hold
+  the `PJRC-ETHERNET-KIT` evidence) rather than use a daughterboard. The ethernet
+  sheet (H1b) copies that reference and adds the PHY + its support (REF_CLK source,
+  RMII series terms, decoupling, straps) to the BOM. Rationale: integrated
+  Ethernet was specced deliberately, the kit gives a proven copy-able circuit, and
+  retrofitting a PHY later is a full respin.
 - **Teensy 4.1 pin map.** Fix the exact pad each net uses (the native-Ethernet
   6-pin header signals, I2S/TDM, SPI, I2C, UART, USB-host, Program, LED, SDIO)
   from the PJRC pinout card, conflict-checked.
