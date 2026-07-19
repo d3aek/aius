@@ -3,9 +3,9 @@ title: Aius H1 schematic capture
 type: plans
 scope: aius
 subtype: design
-status: in-progress
+status: shipped
 tags: [aius, hardware, kicad, schematic, erc]
-updated: 2026-07-18
+updated: 2026-07-19
 toc: true
 ---
 
@@ -91,13 +91,24 @@ the decision:
 
 ## Milestones
 
-- **H1a — pipeline proof.** Custom symbol library + generator + the `power-usb`
-  sheet, ERC-clean, rendered to PDF. Proves spec → `.kicad_sch` → ERC → render.
-- **H1b — remaining sheets.** optical-spdif, teensy-expansion, and ethernet
-  (after the PHY decision), each ERC-clean.
-- **H1c — full review.** Whole-schematic ERC clean, a pin-by-pin power-path and
-  fault-safe-state (reset defaults: TX disabled, processed path) review, rendered
-  PDF committed. Gate to H2.
+- **H1a — pipeline proof. *Done.*** Custom symbol library + generator + the
+  `power-usb` sheet, ERC 0/0, rendered. Proved spec → `.kicad_sch` → ERC → render.
+- **H1b — remaining sheets. *Done.*** teensy-expansion (Teensy symbol + the
+  conflict-checked pin map + shared-net convention), optical-spdif, and ethernet.
+  Whole-project ERC 0/0. TX gate simplified to a single `SN74LVC1G126`
+  (active-high OE) during review — no inverter.
+- **H1c — full review. *Done (2026-07-19).*** Whole-schematic ERC 0/0. Fault-safe
+  review confirmed: single USB-C power entry (no second VIN/VUSB; shield on its
+  own CHASSIS net); the reset defaults hold in hardware before firmware runs —
+  `PATH_SELECT` 10k pulldown selects the processed mux path and `TX_ENABLE` 10k
+  pulldown drives the `1G126` gate OE low → TX high-Z → OTJ5 idle; pin map
+  conflict-free (SPI on SPI1 to avoid the pin-13 LED/SCK0 clash). Rendered SVGs
+  committed. **H1 complete — ready for H2.**
+
+Remaining for H2 (not H1): footprint/land-pattern verification (the provisional
+footprints are the only full-severity ERC warnings), placement, impedance
+(90 Ω USB / 100 Ω Ethernet), routing, DRC. Open item to confirm with the user:
+the Teensy 4.1 is an Ethernet-populated board.
 
 ## Not in H1
 
