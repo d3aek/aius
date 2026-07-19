@@ -1,0 +1,21 @@
+{
+  "project": "aius-carrier",
+  "title": "Aius carrier - hierarchical root",
+  "paper": "A3",
+  "description": [
+    "Hierarchical root of the Aius carrier schematic. Each per-area sheet is a",
+    "self-contained review unit generated from its own connectivity spec;",
+    "cross-sheet connectivity is by global label (see connectivity/nets.md).",
+    "Add optical-spdif and ethernet sheets here as later milestones land."
+  ],
+  "sheets": [
+    { "name": "power-usb", "spec": "power-usb.json", "page": "2", "at": [25.4, 25.4], "size": [63.5, 25.4] },
+    {
+      "name": "teensy-expansion",
+      "spec": "teensy-expansion.json",
+      "page": "3",
+      "at": [114.3, 25.4],
+      "size": [63.5, 25.4]
+    }
+  ]
+}

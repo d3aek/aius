@@ -1,0 +1,608 @@
+{
+  "sheet": "teensy-expansion",
+  "title": "Aius carrier - teensy-expansion sheet",
+  "paper": "A2",
+  "global_nets": [
+    "GND",
+    "+3V3",
+    "VBUS_5V",
+    "SPDIF_RX",
+    "SPDIF_TX",
+    "PATH_SELECT",
+    "TX_ENABLE",
+    "ETH_RXP",
+    "ETH_RXN",
+    "ETH_LED",
+    "ETH_TXN",
+    "ETH_TXP"
+  ],
+  "description": [
+    "Socketed Teensy 4.1 (on-board DP83825 Ethernet PHY) and its expansion,",
+    "service and test interfaces. Teensy VUSB/VIN are not fitted on the carrier",
+    "(power enters via the internal USB-A -> micro-B cable per power-usb).",
+    "Cross-sheet nets (rails, SPDIF, ETH_*, PATH_SELECT, TX_ENABLE) are global",
+    "labels consumed by the optical-spdif and ethernet sheets; see nets.md and",
+    "pin-map.md."
+  ],
+  "design_notes": {
+    "ethernet_phy": "The DP83825 PHY is ON the Teensy 4.1 (order the 'with Ethernet chip' variant). The 6-pin native-Ethernet header carries MDI differential pairs (ETH_RX+/-, ETH_TX+/-) + LED to the magjack on the ethernet sheet - NOT RMII to an external PHY. The PJRC Ethernet Kit is only a magjack + centre-tap cap + ribbon, no PHY. No DP83825 on the carrier.",
+    "power_entry": "VIN and VUSB are no-connect: the Teensy is powered through its own micro-B jack from the internal USB-A cable (power-usb sheet), the sole 5V feed. No second VIN/VUSB feed.",
+    "safe_defaults": "R17 pulls PATH_SELECT low (processed path) and R18 pulls TX_ENABLE low (optical TX disabled) - the hardware-safe optical defaults from interfaces-and-states, held before firmware runs.",
+    "expansion_3v3": "expansion-3v3 == teensy-3v3 (+3V3). Per-signal protection is the design's backfeed guard: TCA9517A isolator on I2C, 1k series clamps on SPI/UART/I2S/GPIO-ADC exported CMOS signals. The one expansion reverse-blocking power switch (TPS2553 U12) guards the USB-host VBUS domain (protected-5V source). See nets.md for the one-switch resolution of the interface's two protected expansion domains.",
+    "i2c_isolator": "TCA9517A: A-side (pins 2/3) to Teensy SCL0/SDA0 (pin 19/18) with 4.7k pull-ups to +3V3; B-side (pins 6/5) to J10 with 4.7k pull-ups to +3V3. EN (pin1) tied high.",
+    "usb_host_switch": "TPS2553 U12: IN=VBUS_5V, OUT=EXP_USBH_VBUS (feeds Teensy USBH_5V pad and J14 VBUS). EN pulled to +3V3 (enabled while core powered, off when core unpowered = safe). ILIM ~0.5A. Note: the BOM lists one expansion TPS2553; it is assigned here to the USB-host VBUS domain.",
+    "led_pin13": "Pin 13 is the Teensy on-board LED (shared with SCK0); it is reserved, not routed on the carrier (no-connect). SPI uses SPI1 (SCK1=27/MOSI1=26/MISO1=1/CS1=38) so pin 13 serves the LED only - no pad serves two functions.",
+    "tag_connect": "TC2030-IDC bring-up point taps +3V3, GND, PROGRAM, ON_OFF and the debug UART (shared net with J12) - same function at two access points, not a second function on one pad."
+  },
+  "components": [
+    {
+      "ref": "U10",
+      "lib_id": "aius:Teensy41",
+      "value": "Teensy 4.1",
+      "mpn": "PJRC Teensy 4.1 (with Ethernet chip)",
+      "footprint": "aius:Teensy41_Sockets_SSW-124_MMS-103_SSW-105",
+      "at": [175.26, 204.47],
+      "desc": "socketed Teensy 4.1; on-board DP83825 Ethernet PHY"
+    },
+    {
+      "ref": "U11",
+      "lib_id": "aius:TCA9517A",
+      "value": "TCA9517A",
+      "mpn": "TI TCA9517ADGKR",
+      "footprint": "Package_SO:VSSOP-8_3x3mm_P0.65mm",
+      "at": [265.43, 95.25],
+      "desc": "expansion I2C level-translating buffer (powered-off high-Z isolation)"
+    },
+    {
+      "ref": "U12",
+      "lib_id": "aius:TPS2553",
+      "value": "TPS2553",
+      "mpn": "TI TPS2553DBVR",
+      "footprint": "Package_TO_SOT_SMD:SOT-23-6",
+      "at": [265.43, 299.72],
+      "desc": "expansion USB-host VBUS reverse-blocking current-limit switch"
+    },
+    {
+      "ref": "J10",
+      "lib_id": "aius:Conn_1x04",
+      "value": "BM04B-GHS-TBT",
+      "mpn": "JST BM04B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "at": [389.89, 54.61],
+      "desc": "expansion I2C header (isolated B-side): 3V3/SCL/SDA/GND"
+    },
+    {
+      "ref": "J11",
+      "lib_id": "aius:Conn_1x06",
+      "value": "BM06B-GHS-TBT",
+      "mpn": "JST BM06B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM06B-GHS-TBT",
+      "at": [389.89, 110.49],
+      "desc": "expansion SPI header: 3V3/SCK/MOSI/MISO/CS/GND"
+    },
+    {
+      "ref": "J12",
+      "lib_id": "aius:Conn_1x04",
+      "value": "BM04B-GHS-TBT",
+      "mpn": "JST BM04B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "at": [389.89, 165.1],
+      "desc": "expansion UART/debug header: 3V3/TX/RX/GND"
+    },
+    {
+      "ref": "J13",
+      "lib_id": "aius:Conn_1x05",
+      "value": "BM05B-GHS-TBT",
+      "mpn": "JST BM05B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM05B-GHS-TBT",
+      "at": [389.89, 214.63],
+      "desc": "expansion I2S/TDM header: BCLK/LRCLK/TXD/RXD/GND"
+    },
+    {
+      "ref": "J14",
+      "lib_id": "aius:Conn_1x04",
+      "value": "BM04B-GHS-TBT",
+      "mpn": "JST BM04B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "at": [389.89, 265.43],
+      "desc": "expansion USB-host header: VBUS/D+/D-/GND"
+    },
+    {
+      "ref": "J15",
+      "lib_id": "aius:Conn_1x04",
+      "value": "BM04B-GHS-TBT",
+      "mpn": "JST BM04B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "at": [389.89, 314.96],
+      "desc": "expansion GPIO/ADC header: 3V3/GPIO/ADC/GND"
+    },
+    {
+      "ref": "J16",
+      "lib_id": "aius:Conn_1x03",
+      "value": "BM03B-GHS-TBT",
+      "mpn": "JST BM03B-GHS-TBT",
+      "footprint": "aius:JST_GH_BM03B-GHS-TBT",
+      "at": [49.53, 110.49],
+      "desc": "remote Program/RTC service header: PROGRAM/VBAT/GND"
+    },
+    {
+      "ref": "J17",
+      "lib_id": "aius:Conn_1x06",
+      "value": "TC2030-IDC",
+      "mpn": "Tag-Connect TC2030-IDC",
+      "footprint": "aius:Tag-Connect_TC2030-IDC-NL",
+      "at": [49.53, 209.55],
+      "desc": "Tag-Connect bring-up/test point: 3V3/PROGRAM/GND/ON_OFF/dbgTX/dbgRX"
+    },
+    {
+      "ref": "R10",
+      "lib_id": "Device:R",
+      "value": "4.7k",
+      "mpn": "4.7k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [224.79, 44.45],
+      "desc": "I2C SCL pull-up, Teensy A-side"
+    },
+    {
+      "ref": "R11",
+      "lib_id": "Device:R",
+      "value": "4.7k",
+      "mpn": "4.7k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [245.11, 44.45],
+      "desc": "I2C SDA pull-up, Teensy A-side"
+    },
+    {
+      "ref": "R12",
+      "lib_id": "Device:R",
+      "value": "4.7k",
+      "mpn": "4.7k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [304.8, 44.45],
+      "desc": "I2C SCL pull-up, expansion B-side"
+    },
+    {
+      "ref": "R13",
+      "lib_id": "Device:R",
+      "value": "4.7k",
+      "mpn": "4.7k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 44.45],
+      "desc": "I2C SDA pull-up, expansion B-side"
+    },
+    {
+      "ref": "R14",
+      "lib_id": "Device:R",
+      "value": "10k",
+      "mpn": "10k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [209.55, 265.43],
+      "desc": "USB-host switch EN pull-up to +3V3 (enabled while core powered)"
+    },
+    {
+      "ref": "R15",
+      "lib_id": "Device:R",
+      "value": "100k",
+      "mpn": "100k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [209.55, 299.72],
+      "desc": "USB-host switch FAULT open-drain pull-up to +3V3"
+    },
+    {
+      "ref": "R16",
+      "lib_id": "Device:R",
+      "value": "49.9k",
+      "mpn": "49.9k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [320.04, 299.72],
+      "desc": "USB-host switch ILIM set (~0.5A host budget)"
+    },
+    {
+      "ref": "C10",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [330.2, 335.28],
+      "desc": "expansion USB-host VBUS decoupling"
+    },
+    {
+      "ref": "C11",
+      "lib_id": "Device:C",
+      "value": "10uF",
+      "mpn": "10uF 0805",
+      "footprint": "Capacitor_SMD:C_0805_2012Metric",
+      "at": [350.52, 335.28],
+      "desc": "expansion USB-host VBUS bulk"
+    },
+    {
+      "ref": "C12",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [209.55, 335.28],
+      "desc": "USB-host switch VBUS_5V input decoupling"
+    },
+    {
+      "ref": "C13",
+      "lib_id": "Device:C",
+      "value": "100nF",
+      "mpn": "100nF 0402 10%",
+      "footprint": "Capacitor_SMD:C_0402_1005Metric",
+      "at": [110.49, 299.72],
+      "desc": "Teensy +3V3 decoupling at socket"
+    },
+    {
+      "ref": "C14",
+      "lib_id": "Device:C",
+      "value": "10uF",
+      "mpn": "10uF 0805",
+      "footprint": "Capacitor_SMD:C_0805_2012Metric",
+      "at": [129.54, 299.72],
+      "desc": "Teensy +3V3 bulk at socket"
+    },
+    {
+      "ref": "R17",
+      "lib_id": "Device:R",
+      "value": "10k",
+      "mpn": "10k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [95.25, 279.4],
+      "desc": "PATH_SELECT pull-down: default processed path (active-high select)"
+    },
+    {
+      "ref": "R18",
+      "lib_id": "Device:R",
+      "value": "10k",
+      "mpn": "10k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [69.85, 279.4],
+      "desc": "TX_ENABLE pull-down: default optical TX disabled (active-high enable)"
+    },
+    {
+      "ref": "R20",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [299.72, 119.38],
+      "desc": "expansion series clamp on SPI_SCK"
+    },
+    {
+      "ref": "R21",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [299.72, 139.7],
+      "desc": "expansion series clamp on SPI_MOSI"
+    },
+    {
+      "ref": "R22",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [299.72, 160.02],
+      "desc": "expansion series clamp on SPI_MISO"
+    },
+    {
+      "ref": "R23",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [299.72, 180.34],
+      "desc": "expansion series clamp on SPI_CS"
+    },
+    {
+      "ref": "R24",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [299.72, 199.39],
+      "desc": "expansion series clamp on UART_TX"
+    },
+    {
+      "ref": "R25",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [299.72, 219.71],
+      "desc": "expansion series clamp on UART_RX"
+    },
+    {
+      "ref": "R26",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 119.38],
+      "desc": "expansion series clamp on I2S_BCLK"
+    },
+    {
+      "ref": "R27",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 139.7],
+      "desc": "expansion series clamp on I2S_LRCLK"
+    },
+    {
+      "ref": "R28",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 160.02],
+      "desc": "expansion series clamp on I2S_TXD"
+    },
+    {
+      "ref": "R29",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 180.34],
+      "desc": "expansion series clamp on I2S_RXD"
+    },
+    {
+      "ref": "R30",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 199.39],
+      "desc": "expansion series clamp on EXP_GPIO"
+    },
+    {
+      "ref": "R31",
+      "lib_id": "Device:R",
+      "value": "1k",
+      "mpn": "1k 0402 1%",
+      "footprint": "Resistor_SMD:R_0402_1005Metric",
+      "at": [325.12, 219.71],
+      "desc": "expansion series clamp on EXP_ADC"
+    },
+    {
+      "ref": "#FLG20",
+      "lib_id": "power:PWR_FLAG",
+      "value": "PWR_FLAG",
+      "mpn": "",
+      "footprint": "",
+      "at": [54.61, 160.02],
+      "desc": "declares VBAT (external RTC coin cell via J16) as externally sourced"
+    }
+  ],
+  "nets": {
+    "GND": [
+      ["U10", "GND"],
+      ["U10", "UHGND"],
+      ["U10", "EGND"],
+      ["U11", "4"],
+      ["U12", "2"],
+      ["J10", "4"],
+      ["J11", "6"],
+      ["J12", "4"],
+      ["J13", "5"],
+      ["J14", "4"],
+      ["J15", "4"],
+      ["J16", "3"],
+      ["J17", "3"],
+      ["R16", "2"],
+      ["R17", "2"],
+      ["R18", "2"],
+      ["C10", "2"],
+      ["C11", "2"],
+      ["C12", "2"],
+      ["C13", "2"],
+      ["C14", "2"]
+    ],
+    "+3V3": [
+      ["U10", "3V3"],
+      ["U11", "7"],
+      ["U11", "8"],
+      ["U11", "1"],
+      ["R10", "1"],
+      ["R11", "1"],
+      ["R12", "1"],
+      ["R13", "1"],
+      ["R14", "1"],
+      ["R15", "1"],
+      ["J10", "1"],
+      ["J11", "1"],
+      ["J12", "1"],
+      ["J15", "1"],
+      ["J17", "1"],
+      ["C13", "1"],
+      ["C14", "1"]
+    ],
+    "VBUS_5V": [
+      ["U12", "1"],
+      ["C12", "1"]
+    ],
+    "SPDIF_RX": [["U10", "15"]],
+    "SPDIF_TX": [["U10", "14"]],
+    "PATH_SELECT": [
+      ["U10", "40"],
+      ["R17", "1"]
+    ],
+    "TX_ENABLE": [
+      ["U10", "39"],
+      ["R18", "1"]
+    ],
+    "ETH_RXP": [["U10", "ERXP"]],
+    "ETH_RXN": [["U10", "ERXN"]],
+    "ETH_LED": [["U10", "ELED"]],
+    "ETH_TXN": [["U10", "ETXN"]],
+    "ETH_TXP": [["U10", "ETXP"]],
+    "EXP_USBH_VBUS": [
+      ["U12", "6"],
+      ["U10", "UH5V"],
+      ["J14", "1"],
+      ["C10", "1"],
+      ["C11", "1"]
+    ],
+    "EXP_USBH_EN": [
+      ["U12", "3"],
+      ["R14", "2"]
+    ],
+    "EXP_USBH_FAULT": [
+      ["U12", "4"],
+      ["R15", "2"]
+    ],
+    "EXP_USBH_ILIM": [
+      ["U12", "5"],
+      ["R16", "1"]
+    ],
+    "USBH_DP": [
+      ["U10", "UHDP"],
+      ["J14", "2"]
+    ],
+    "USBH_DM": [
+      ["U10", "UHDM"],
+      ["J14", "3"]
+    ],
+    "VBAT": [
+      ["U10", "VBAT"],
+      ["J16", "2"],
+      ["#FLG20", "1"]
+    ],
+    "PROGRAM": [
+      ["U10", "PGM"],
+      ["J16", "1"],
+      ["J17", "2"]
+    ],
+    "ON_OFF": [
+      ["U10", "ONOFF"],
+      ["J17", "4"]
+    ],
+    "I2C_SCL_T": [
+      ["U10", "19"],
+      ["U11", "2"],
+      ["R10", "2"]
+    ],
+    "I2C_SDA_T": [
+      ["U10", "18"],
+      ["U11", "3"],
+      ["R11", "2"]
+    ],
+    "I2C_SCL_EXP": [
+      ["U11", "6"],
+      ["J10", "2"],
+      ["R12", "2"]
+    ],
+    "I2C_SDA_EXP": [
+      ["U11", "5"],
+      ["J10", "3"],
+      ["R13", "2"]
+    ],
+    "SPI_SCK_T": [
+      ["U10", "27"],
+      ["R20", "1"]
+    ],
+    "SPI_SCK": [
+      ["R20", "2"],
+      ["J11", "2"]
+    ],
+    "SPI_MOSI_T": [
+      ["U10", "26"],
+      ["R21", "1"]
+    ],
+    "SPI_MOSI": [
+      ["R21", "2"],
+      ["J11", "3"]
+    ],
+    "SPI_MISO_T": [
+      ["U10", "1"],
+      ["R22", "1"]
+    ],
+    "SPI_MISO": [
+      ["R22", "2"],
+      ["J11", "4"]
+    ],
+    "SPI_CS_T": [
+      ["U10", "38"],
+      ["R23", "1"]
+    ],
+    "SPI_CS": [
+      ["R23", "2"],
+      ["J11", "5"]
+    ],
+    "UART_TX_T": [
+      ["U10", "29"],
+      ["R24", "1"]
+    ],
+    "UART_TX": [
+      ["R24", "2"],
+      ["J12", "2"],
+      ["J17", "5"]
+    ],
+    "UART_RX_T": [
+      ["U10", "28"],
+      ["R25", "1"]
+    ],
+    "UART_RX": [
+      ["R25", "2"],
+      ["J12", "3"],
+      ["J17", "6"]
+    ],
+    "I2S_BCLK_T": [
+      ["U10", "21"],
+      ["R26", "1"]
+    ],
+    "I2S_BCLK": [
+      ["R26", "2"],
+      ["J13", "1"]
+    ],
+    "I2S_LRCLK_T": [
+      ["U10", "20"],
+      ["R27", "1"]
+    ],
+    "I2S_LRCLK": [
+      ["R27", "2"],
+      ["J13", "2"]
+    ],
+    "I2S_TXD_T": [
+      ["U10", "7"],
+      ["R28", "1"]
+    ],
+    "I2S_TXD": [
+      ["R28", "2"],
+      ["J13", "3"]
+    ],
+    "I2S_RXD_T": [
+      ["U10", "8"],
+      ["R29", "1"]
+    ],
+    "I2S_RXD": [
+      ["R29", "2"],
+      ["J13", "4"]
+    ],
+    "EXP_GPIO_T": [
+      ["U10", "41"],
+      ["R30", "1"]
+    ],
+    "EXP_GPIO": [
+      ["R30", "2"],
+      ["J15", "2"]
+    ],
+    "EXP_ADC_T": [
+      ["U10", "24"],
+      ["R31", "1"]
+    ],
+    "EXP_ADC": [
+      ["R31", "2"],
+      ["J15", "3"]
+    ]
+  },
+  "no_connects": [
+    ["U10", "VIN"],
+    ["U10", "VUSB"],
+    ["U10", "13"]
+  ]
+}

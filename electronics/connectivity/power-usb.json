@@ -2,6 +2,7 @@
   "sheet": "power-usb",
   "title": "Aius carrier - power-usb sheet",
   "paper": "A3",
+  "global_nets": ["GND", "VBUS_5V"],
   "description": [
     "Sole power entry for the Aius carrier: rear USB-C VBUS -> TPS2553",
     "current-limited / reverse-blocking load switch -> protected 5V rail ->",

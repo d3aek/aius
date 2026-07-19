@@ -53,8 +53,9 @@ Four hierarchical sheets, each a self-contained review unit:
    S/PDIF-TX (pin 14) and the raw RX bypass into the mux (`SN74LVC1G3157`),
    through the TX gate (`SN74LVC1G125`), to the Cliff OTJ5 transmitter. Hardware
    defaults: processed path selected, TX held disabled. Decoupling.
-3. **ethernet** — the magjack and the Teensy native-Ethernet interface. **Open
-   gap (see below): the Ethernet PHY.**
+3. **ethernet** — the Pulse magjack wired to the Teensy's post-PHY 6-pin MDI
+   header (RX±/TX±/LED/GND) plus the 100 nF centre-tap cap. The DP83825 PHY is on
+   the Teensy, not the carrier (see below), so this sheet is small.
 4. **teensy-expansion** — the socketed Teensy 4.1, its pin allocation
    (RX=15, TX=14, reserved I2C/SPI/UART/I2S/USB-host/Program/LED/SDIO), the
    keyed expansion headers (I2C + `TCA9517A` isolator, SPI, UART, I2S/TDM,
@@ -67,15 +68,18 @@ H1 is real engineering, not mechanical generation; drawing the nets surfaces
 questions the paper spec left open. Resolve each against the datasheet and record
 the decision:
 
-- **Ethernet PHY — RESOLVED (2026-07-19): add the DP83825I on-board.** The i.MX
-  RT1062 has only the Ethernet MAC; the PHY lives on PJRC's separate Ethernet Kit
-  (DP83825), and the BOM had the magjack but no PHY. Decision: put the DP83825I on
-  the carrier and **replicate the PJRC Ethernet Kit reference circuit** (we hold
-  the `PJRC-ETHERNET-KIT` evidence) rather than use a daughterboard. The ethernet
-  sheet (H1b) copies that reference and adds the PHY + its support (REF_CLK source,
-  RMII series terms, decoupling, straps) to the BOM. Rationale: integrated
-  Ethernet was specced deliberately, the kit gives a proven copy-able circuit, and
-  retrofitting a PHY later is a full respin.
+- **Ethernet PHY — CORRECTED (2026-07-19): no PHY on the carrier.** This was
+  first mis-flagged as a gap (and a wrong "add the DP83825 on-board" decision was
+  briefly recorded). The evidence is unambiguous: the Teensy 4.1 itself contains
+  the Ethernet controller **and** the DP83825 PHY (PJRC teensy41 page: "Teensy 4.1
+  contains an Ethernet controller and Ethernet PHY chip"; the spec table lists the
+  DP83825 PHY under Teensy 4.1). Its 6-pin Ethernet header carries the **post-PHY
+  MDI** signals (RX±, TX±, LED, GND); PJRC's Ethernet Kit is just a magjack + cap
+  + cable, no PHY. So the carrier needs **only the magjack** (Pulse `J0011D21BNL`)
+  + a 100 nF centre-tap cap — exactly the original BOM. The ethernet sheet wires
+  the magjack to the Teensy MDI globals (`ETH_RXP/RXN/TXP/TXN/LED`); no on-carrier
+  PHY, no RMII routing. (Confirm the user's Teensy 4.1 is an Ethernet-populated
+  board.)
 - **Teensy 4.1 pin map.** Fix the exact pad each net uses (the native-Ethernet
   6-pin header signals, I2S/TDM, SPI, I2C, UART, USB-host, Program, LED, SDIO)
   from the PJRC pinout card, conflict-checked.

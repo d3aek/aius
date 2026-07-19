@@ -28,7 +28,15 @@
   "sheets": [
     [
       "68a9aac5-3712-532f-bce8-e090c97e9611",
-      "power-usb"
+      "1"
+    ],
+    [
+      "47b625ad-ec1f-5fcc-aa9b-eddaab8de077",
+      "2"
+    ],
+    [
+      "9a8dd7e0-f296-5044-86a8-6a5914dae9ce",
+      "3"
     ]
   ],
   "text_variables": {}
