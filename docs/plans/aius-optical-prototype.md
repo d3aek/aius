@@ -179,6 +179,10 @@ flat downmix/bypass and the stretch goal is recorded as deferred.
   centre-tap capacitor.
 - USB connection retained as a bring-up/programming fallback, but not required
   during source/sink validation.
+- The optional 8 MB Teensy PSRAM is deliberately not used for the real-time
+  optical path. Internal RAM is sufficient for audio blocks, decoder state,
+  Ethernet buffers, and bounded telemetry; PSRAM is reserved for a later
+  diagnostic capture feature if required.
 
 ### Deliberately excluded
 
