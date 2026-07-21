@@ -21,9 +21,11 @@ CMD_GET_STATUS = 0x02
 CMD_CLEAR_COUNTERS = 0x04
 CMD_START_TEST = 0x05
 CMD_STOP_TEST = 0x06
+CMD_GET_EVENTS = 0x08
 RSP_ACK = 0x80
 RSP_DISCOVERY = 0x82
 RSP_STATUS = 0x83
+RSP_EVENTS = 0x84
 
 
 def encode(msg_type, request_id, payload=b"", flags=0):
@@ -75,6 +77,22 @@ def parse_status(payload):
             "pipeline_overruns": struct.unpack_from("<I", payload, 33)[0],
         }
     return result
+
+
+def parse_events(payload):
+    if not payload or (len(payload) - 1) % 12 != 0:
+        raise ValueError("invalid events payload")
+    count = payload[0]
+    if len(payload) != 1 + count * 12:
+        raise ValueError("invalid events count")
+    events = []
+    for offset in range(1, len(payload), 12):
+        sequence, uptime_ms = struct.unpack_from("<II", payload, offset)
+        events.append({"sequence": sequence, "uptime_ms": uptime_ms,
+                       "type": payload[offset + 8],
+                       "state": payload[offset + 9],
+                       "detail": struct.unpack_from("<H", payload, offset + 10)[0]})
+    return events
 
 
 def request(target, msg_type, payload=b"", timeout=0.25, retries=3, broadcast=False):
@@ -130,8 +148,9 @@ def discover(timeout):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["discover", "status", "clear", "start", "stop"])
+    parser.add_argument("command", choices=["discover", "status", "events", "clear", "start", "stop"])
     parser.add_argument("--target", default=None, help="target IPv4 address")
+    parser.add_argument("--cursor", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=0.25)
     args = parser.parse_args()
 
@@ -140,14 +159,18 @@ def main():
         return
     if not args.target:
         parser.error("--target is required for this command")
-    command = {"status": CMD_GET_STATUS, "clear": CMD_CLEAR_COUNTERS,
+    command = {"status": CMD_GET_STATUS, "events": CMD_GET_EVENTS,
+               "clear": CMD_CLEAR_COUNTERS,
                "start": CMD_START_TEST, "stop": CMD_STOP_TEST}[args.command]
-    response, address = request((args.target, PORT), command,
+    payload = struct.pack("<I", args.cursor) if args.command == "events" else b""
+    response, address = request((args.target, PORT), command, payload=payload,
                                 timeout=args.timeout)
     result = {"source": address[0], "type": response["type"],
               "request_id": response["request_id"]}
     if response["type"] in (RSP_DISCOVERY, RSP_STATUS):
         result["status"] = parse_status(response["payload"])
+    elif response["type"] == RSP_EVENTS:
+        result["events"] = parse_events(response["payload"])
     elif response["type"] == RSP_ACK:
         result["ack"] = True
     print(json.dumps(result, indent=2, sort_keys=True))

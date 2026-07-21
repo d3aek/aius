@@ -32,6 +32,34 @@ static bool g_dhcp;
 static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
 
+struct AiusEvent {
+	uint32_t sequence;
+	uint32_t uptime_ms;
+	uint8_t type;
+	uint8_t state;
+	uint16_t detail;
+};
+
+static AiusEvent g_events[8];
+static uint32_t g_event_sequence;
+static uint8_t g_last_state;
+
+static uint8_t current_state(void);
+
+static void record_state(void)
+{
+	uint8_t state = current_state();
+	if (state == g_last_state)
+		return;
+	g_last_state = state;
+	AiusEvent &event = g_events[g_event_sequence % 8u];
+	event.sequence = ++g_event_sequence;
+	event.uptime_ms = millis();
+	event.type = 1;
+	event.state = state;
+	event.detail = 0;
+}
+
 class AiusAudioProcessor : public AudioStream
 {
 public:
@@ -58,6 +86,7 @@ public:
 	uint32_t block_count(void) const { return g_blocks; }
 	uint32_t overrun_count(void) const { return g_overruns; }
 	AiusStatus create_status(void) const { return g_create_status; }
+	void clear_counters(void) { g_blocks = 0; g_overruns = 0; }
 
 protected:
 	void update(void) override
@@ -175,18 +204,25 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
 static AudioConnection g_audio_left(g_audio_processor, 0, g_spdif_out, 0);
 static AudioConnection g_audio_right(g_audio_processor, 1, g_spdif_out, 1);
 
+static uint8_t current_state(void)
+{
+	AiusPipelineClass klass = g_audio_processor.classification();
+	return !AudioInputSPDIF3::pllLocked() ? 2 :
+	       klass == AIUS_PIPELINE_DTS ? 4 :
+	       klass == AIUS_PIPELINE_PCM ? 3 : 2;
+}
+
 static void put_status(uint8_t *payload, uint16_t *length)
 {
 	/* Versioned, explicitly packed status payload:
 	 * 0 version, 1 network mode (1 DHCP/2 fallback), 2 state, 3 flags,
 	 * 4 boot epoch, 8 uptime ms, 12 IPv4, 16 MAC, 22 NTP-valid flag. */
-	memset(payload, 0, 23);
+	record_state();
+	memset(payload, 0, 37);
 	payload[0] = 1;
 	payload[1] = g_dhcp ? 1 : 2;
 	AiusPipelineClass klass = g_audio_processor.classification();
-	payload[2] = !AudioInputSPDIF3::pllLocked() ? 2 :
-	             klass == AIUS_PIPELINE_DTS ? 4 :
-	             klass == AIUS_PIPELINE_PCM ? 3 : 2;
+	payload[2] = g_last_state;
 	if (AudioInputSPDIF3::pllLocked())
 		payload[3] |= 1u;
 	aius_net_put_u32(payload + 4, g_boot_epoch);
@@ -254,12 +290,34 @@ static void service_network(void)
 		              payload, length);
 		break;
 	case AIUS_NET_CMD_CLEAR_COUNTERS:
-	case AIUS_NET_CMD_START_TEST:
-	case AIUS_NET_CMD_STOP_TEST:
-		/* Accepted as idempotent bring-up commands; runtime counters are added
-		 * before these commands are enabled for physical acceptance. */
+		g_audio_processor.clear_counters();
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
 		break;
+	case AIUS_NET_CMD_START_TEST:
+	case AIUS_NET_CMD_STOP_TEST:
+		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		break;
+	case AIUS_NET_CMD_GET_EVENTS: {
+		uint32_t cursor = request.payload_len >= 4 ?
+			aius_net_get_u32(request.payload) : 0;
+		uint8_t count = 0;
+		for (uint32_t i = 0; i < 8 && count < 4; i++) {
+			const AiusEvent &event = g_events[i];
+			if (event.sequence <= cursor || event.sequence == 0)
+				continue;
+			uint8_t *dst = payload + 1 + count * 12;
+			aius_net_put_u32(dst, event.sequence);
+			aius_net_put_u32(dst + 4, event.uptime_ms);
+			dst[8] = event.type;
+			dst[9] = event.state;
+			aius_net_put_u16(dst + 10, event.detail);
+			count++;
+		}
+		payload[0] = count;
+		length = (uint16_t)(1 + count * 12);
+		send_response(AIUS_NET_RSP_EVENTS, request.request_id, payload, length);
+		break;
+	}
 	default:
 		send_nack(request.request_id, AIUS_NET_ERR_TYPE);
 		break;

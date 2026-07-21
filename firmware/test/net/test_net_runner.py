@@ -35,6 +35,19 @@ class RunnerProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RUNNER.decode(frame)
 
+    def test_events_cursor_payload(self):
+        payload = bytearray(13)
+        payload[0] = 1
+        struct.pack_into("<II", payload, 1, 3, 900)
+        payload[9] = 1
+        payload[10] = 3
+        struct.pack_into("<H", payload, 11, 0)
+        events = RUNNER.parse_events(payload)
+        self.assertEqual(events[0]["sequence"], 3)
+        self.assertEqual(events[0]["state"], 3)
+        with self.assertRaises(ValueError):
+            RUNNER.parse_events(payload[:-1])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -194,6 +194,13 @@ flat downmix/bypass and the stretch goal is recorded as deferred.
 
 ## Firmware phases
 
+Current implementation status: the portable UDP framing, DHCP-first Ethernet
+bring-up target, real Teensy S/PDIF input/output objects, IEC 61937 DTS/PCM
+pipeline, flat 5.1-to-stereo downmix, versioned status snapshot, and bounded
+cursor-based event retrieval are implemented and build-tested. Physical optical
+acceptance, fixed EQ presets, NTP synchronization, and authenticated control
+remain validation or follow-on work.
+
 ### Phase 1: remote-control transport
 
 **unit:** Ethernet control/telemetry adapter and protocol tests  
