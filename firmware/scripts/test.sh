@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, dts-lfe,
-#         iec61937, iec61937-fuzz, capability-protocol, capability, pipeline, dsp.
+#         iec61937, iec61937-fuzz, capability-protocol, capability, pipeline, dsp, net.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -191,6 +191,15 @@ dsp)
 		"$src/aius_arena.c" \
 		-lm -o "$dsp_out"
 	"$dsp_out"
+	;;
+net)
+	# UDP control datagram codec: explicit wire widths, CRC and malformed input.
+	net_out="$build_dir/net"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_net/include" \
+		"$fw_root/test/net/test_net.c" \
+		"$fw_root/lib/aius_net/src/aius_net.c" \
+		-o "$net_out"
+	"$net_out"
 	;;
 *)
 	echo "unknown suite: $suite" >&2
