@@ -31,6 +31,13 @@ find_rawhid()
 				return 0
 				;;
 		esac
+		devpath="$(printf '%s\n' "$props" | sed -n 's/^DEVPATH=//p')"
+		case "$devpath" in
+			*'/16C0:0486.'*':1.0/'*|*'/16C0:0486.'*':1.0/hidraw/'*)
+				echo "$path"
+				return 0
+				;;
+		esac
 	done
 	return 1
 }
