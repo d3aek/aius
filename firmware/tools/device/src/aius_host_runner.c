@@ -177,9 +177,15 @@ int aius_host_identify(AiusHostRunner *r, AiusCapCapabilities *out)
 	if (host_send(r, AIUS_CAP_CMD_IDENTIFY, NULL, 0, NULL) != 0)
 		return -1;
 	AiusCapFrame f;
-	if (host_recv(r, &f) != 1)
-		return -1;
-	audit_recv(r, &f);
+	for (;;) {
+		if (host_recv(r, &f) != 1)
+			return -1;
+		audit_recv(r, &f);
+		/* A target reset report may precede the first response after boot. */
+		if (f.msg_type == AIUS_CAP_RSP_DIAGNOSTIC && f.sequence == 0)
+			continue;
+		break;
+	}
 	if (f.msg_type != AIUS_CAP_RSP_CAPABILITIES ||
 	    !aius_cap_get_capabilities(f.payload, f.payload_len, out)) {
 		r->last_error = AIUS_CAP_ERR_INTERNAL;
