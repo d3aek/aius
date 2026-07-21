@@ -14,6 +14,8 @@
 
 extern "C" {
 #include "aius_net.h"
+#include "aius_dsp.h"
+#include "aius_pipeline.h"
 }
 
 static constexpr uint16_t AIUS_NET_PORT = 4242;
@@ -29,9 +31,149 @@ static IPAddress g_static_mask(AIUS_STATIC_MASK[0], AIUS_STATIC_MASK[1],
 static bool g_dhcp;
 static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
+
+class AiusAudioProcessor : public AudioStream
+{
+public:
+	AiusAudioProcessor(void) : AudioStream(2, g_input_queue) {}
+
+	void begin_pipeline(void)
+	{
+		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
+			g_create_status = AIUS_NO_SPACE;
+			return;
+		}
+		AiusPcmSink sink = {this, consume_block};
+		AiusPipelineConfig config = {AIUS_IEC61937_PACK_16, 0};
+		g_create_status = aius_pipeline_create_arena(&g_pipeline, &config,
+		                                             &sink, &g_arena);
+	}
+
+	AiusPipelineClass classification(void) const
+	{
+		return g_pipeline ? aius_pipeline_classification(g_pipeline)
+		                  : AIUS_PIPELINE_UNKNOWN;
+	}
+
+	uint32_t block_count(void) const { return g_blocks; }
+	uint32_t overrun_count(void) const { return g_overruns; }
+	AiusStatus create_status(void) const { return g_create_status; }
+
+protected:
+	void update(void) override
+	{
+		audio_block_t *left = receiveReadOnly(0);
+		audio_block_t *right = receiveReadOnly(1);
+		if (left != nullptr && right != nullptr && g_pipeline != nullptr) {
+			uint16_t words[AUDIO_BLOCK_SAMPLES * 2];
+			for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+				words[2 * i] = (uint16_t)left->data[i];
+				words[2 * i + 1] = (uint16_t)right->data[i];
+			}
+			AiusStatus st = aius_pipeline_push(g_pipeline, words,
+			                                   AUDIO_BLOCK_SAMPLES * 2);
+			if (st != AIUS_OK)
+				g_overruns++;
+		}
+		if (left != nullptr)
+			release(left);
+		if (right != nullptr)
+			release(right);
+
+		emit_block();
+	}
+
+private:
+	static constexpr uint32_t RING_FRAMES = 2048;
+	static constexpr size_t ARENA_BYTES = 128u * 1024u;
+	audio_block_t *g_input_queue[2] = {nullptr, nullptr};
+	static uint8_t g_arena_memory[ARENA_BYTES] __attribute__((aligned(16)));
+	AiusArena g_arena;
+	AiusPipeline *g_pipeline = nullptr;
+	AiusStatus g_create_status = AIUS_INVALID_ARG;
+	int32_t g_left[RING_FRAMES];
+	int32_t g_right[RING_FRAMES];
+	uint32_t g_read = 0;
+	uint32_t g_write = 0;
+	uint32_t g_count = 0;
+	uint32_t g_blocks = 0;
+	uint32_t g_overruns = 0;
+
+	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
+	{
+		return static_cast<AiusAudioProcessor *>(ctx)->enqueue(block);
+	}
+
+	AiusStatus enqueue(const AiusPcmBlock *block)
+	{
+		if (block == nullptr || block->frames > AUDIO_BLOCK_SAMPLES * 4 ||
+		    block->planes[0] == nullptr)
+			return AIUS_INVALID_ARG;
+		if (block->frames > RING_FRAMES - g_count)
+			return AIUS_NO_SPACE;
+		int32_t processed_left[AUDIO_BLOCK_SAMPLES * 4];
+		int32_t processed_right[AUDIO_BLOCK_SAMPLES * 4];
+		AiusPcmBlock processed = {};
+		processed.planes[0] = processed_left;
+		processed.planes[1] = processed_right;
+		AiusDspConfig dsp = {};
+		dsp.downmix = aius_downmix_config_default();
+		AiusStatus dsp_status = aius_dsp_process(&dsp, block, &processed);
+		if (dsp_status != AIUS_OK)
+			return dsp_status;
+		for (uint32_t i = 0; i < block->frames; i++) {
+			int32_t l = processed_left[i] >> 8;
+			int32_t r = processed_right[i] >> 8;
+			if (l > 32767) l = 32767;
+			if (l < -32768) l = -32768;
+			if (r > 32767) r = 32767;
+			if (r < -32768) r = -32768;
+			g_left[g_write] = l;
+			g_right[g_write] = r;
+			g_write = (g_write + 1) % RING_FRAMES;
+		}
+		g_count += block->frames;
+		g_blocks++;
+		return AIUS_OK;
+	}
+
+	void emit_block(void)
+	{
+		audio_block_t *left = allocate();
+		audio_block_t *right = allocate();
+		if (left == nullptr || right == nullptr) {
+			if (left != nullptr) release(left);
+			if (right != nullptr) release(right);
+			g_overruns++;
+			return;
+		}
+		for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+			if (g_count != 0) {
+				left->data[i] = (int16_t)g_left[g_read];
+				right->data[i] = (int16_t)g_right[g_read];
+				g_read = (g_read + 1) % RING_FRAMES;
+				g_count--;
+			} else {
+				left->data[i] = 0;
+				right->data[i] = 0;
+			}
+		}
+		transmit(left, 0);
+		transmit(right, 1);
+		release(left);
+		release(right);
+	}
+};
+
+uint8_t AiusAudioProcessor::g_arena_memory[AiusAudioProcessor::ARENA_BYTES]
+	__attribute__((aligned(16)));
+
+static AiusAudioProcessor g_audio_processor;
 static AudioOutputSPDIF3 g_spdif_out;
-static AudioConnection g_spdif_left(g_spdif_in, 0, g_spdif_out, 0);
-static AudioConnection g_spdif_right(g_spdif_in, 1, g_spdif_out, 1);
+static AudioConnection g_spdif_left(g_spdif_in, 0, g_audio_processor, 0);
+static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
+static AudioConnection g_audio_left(g_audio_processor, 0, g_spdif_out, 0);
+static AudioConnection g_audio_right(g_audio_processor, 1, g_spdif_out, 1);
 
 static void put_status(uint8_t *payload, uint16_t *length)
 {
@@ -41,7 +183,10 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	memset(payload, 0, 23);
 	payload[0] = 1;
 	payload[1] = g_dhcp ? 1 : 2;
-	payload[2] = AudioInputSPDIF3::pllLocked() ? 2 : 1;
+	AiusPipelineClass klass = g_audio_processor.classification();
+	payload[2] = !AudioInputSPDIF3::pllLocked() ? 2 :
+	             klass == AIUS_PIPELINE_DTS ? 4 :
+	             klass == AIUS_PIPELINE_PCM ? 3 : 2;
 	if (AudioInputSPDIF3::pllLocked())
 		payload[3] |= 1u;
 	aius_net_put_u32(payload + 4, g_boot_epoch);
@@ -51,7 +196,12 @@ static void put_status(uint8_t *payload, uint16_t *length)
 		payload[12 + i] = ip[i];
 	memcpy(payload + 16, g_mac, sizeof(g_mac));
 	payload[22] = 0; /* NTP validity: not yet implemented by NativeEthernet adapter */
-	*length = 23;
+	payload[23] = (uint8_t)klass;
+	payload[24] = (uint8_t)g_audio_processor.create_status();
+	aius_net_put_u32(payload + 25, AudioInputSPDIF3::sampleRate());
+	aius_net_put_u32(payload + 29, g_audio_processor.block_count());
+	aius_net_put_u32(payload + 33, g_audio_processor.overrun_count());
+	*length = 37;
 }
 
 static void send_response(uint8_t type, uint32_t request_id,
@@ -131,6 +281,7 @@ void setup(void)
 {
 	Serial.begin(115200);
 	AudioMemory(24);
+	g_audio_processor.begin_pipeline();
 	g_boot_epoch = micros();
 	start_network();
 }

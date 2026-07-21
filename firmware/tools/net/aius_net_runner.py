@@ -54,9 +54,10 @@ def decode(frame):
 def parse_status(payload):
     if len(payload) < 23 or payload[0] != 1:
         raise ValueError("unsupported status payload")
-    return {
+    result = {
         "network_mode": {1: "dhcp", 2: "static-fallback"}.get(payload[1], "unknown"),
-        "state": {1: "boot-muted", 2: "carrier-locked"}.get(payload[2], "unknown"),
+        "state": {1: "boot-muted", 2: "waiting-for-carrier",
+                   3: "pcm-active", 4: "dts-active"}.get(payload[2], "unknown"),
         "carrier_locked": bool(payload[3] & 1),
         "boot_epoch": struct.unpack_from("<I", payload, 4)[0],
         "uptime_ms": struct.unpack_from("<I", payload, 8)[0],
@@ -64,6 +65,16 @@ def parse_status(payload):
         "mac": ":".join(f"{x:02x}" for x in payload[16:22]),
         "ntp_valid": bool(payload[22]),
     }
+    if len(payload) >= 37:
+        result = {
+            **result,
+            "format": {0: "unknown", 1: "pcm", 2: "dts"}.get(payload[23], "unknown"),
+            "pipeline_status": payload[24],
+            "sample_rate_hz": struct.unpack_from("<I", payload, 25)[0],
+            "pipeline_blocks": struct.unpack_from("<I", payload, 29)[0],
+            "pipeline_overruns": struct.unpack_from("<I", payload, 33)[0],
+        }
+    return result
 
 
 def request(target, msg_type, payload=b"", timeout=0.25, retries=3, broadcast=False):
