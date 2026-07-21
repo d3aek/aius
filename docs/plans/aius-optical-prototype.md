@@ -34,10 +34,12 @@ recording their final datasheet pinout and package variant in the BOM.
 
 Ethernet carries only framed control requests, state, counters, and test results.
 It must not carry or replay the audio stream. The first implementation should
-use a small authenticated-by-local-network request/response protocol over UDP,
-with a monotonically increasing request ID and a fixed-size status response.
-TCP is unnecessary for the initial fixture and would add connection-state failure
-modes.
+use a small request/response protocol over UDP, with a monotonically increasing
+request ID and an explicitly versioned response schema. UDP is acceptable for the
+fixture only when the board is on a directly connected or isolated test network;
+the protocol must not claim to provide security until an authentication mechanism
+is added. TCP is unnecessary for the initial fixture and would add
+connection-state failure modes.
 
 Required commands:
 
@@ -49,11 +51,96 @@ Required commands:
 | `start_test` | start a bounded on-device observation window |
 | `stop_test` | end the observation window safely and mute output if requested |
 | `reboot` | controlled software restart, with TX disabled first |
+| `get_events` | retrieve bounded transition/fault events from a cursor |
 
 The status response must include input carrier loss count, malformed burst count,
 PCM/DTS detection counts, output-enable transitions, watchdog/reset reason, and a
-sequence/timestamp pair. A host test runner must be able to fail closed on a
-missing, stale, malformed, or out-of-order response.
+sequence/timestamp pair. It must also identify the board instance and boot epoch,
+so a response from a rebooted or wrong target cannot satisfy an old request. The
+wire format must use explicit little-endian widths and a bounded length, either as
+a fixed packed schema with a declared size or as versioned fields; a C struct's
+native layout is not a wire contract. A host test runner must be able to fail
+closed on a missing, stale, malformed, duplicate, replayed, or out-of-order
+response.
+
+## Adversarial review — 2026-07-21
+
+The following findings are resolved in the plan before implementation.
+
+### Control protocol findings
+
+1. **UDP loss and duplication:** every request carries a 32-bit request ID and
+   every response echoes it, includes the boot epoch, and carries a response
+   status. `get_status`, `clear_counters`, `set_mode`, and `stop_test` are
+   idempotent. `start_test` is keyed by request ID and cannot create two active
+   windows when a retry arrives. `reboot` is acknowledged before reset and is
+   not retried automatically after acknowledgement.
+2. **Replay and unauthorized control:** the fixture protocol is explicitly
+   *unauthenticated* in its first version. The runner must require a configured
+   target IP/MAC and the board must reject packets from unconfigured peers. The
+   board must be placed on an isolated test network or direct Ethernet link.
+   A later authenticated protocol is a release requirement, not an assumption
+   hidden in this prototype.
+3. **Identity and stale responses:** `get_status` returns protocol version,
+   firmware build ID, hardware identity, MAC, boot epoch, uptime, and the current
+   request/response sequence. The runner records these at session start and
+   rejects changes except across an explicitly expected reboot.
+4. **Network configuration:** DHCP is not a valid sole dependency for a
+   USB-disconnected test. The prototype uses a documented static IPv4 address
+   and subnet, with the address printed in the bring-up record. Link state and
+   DHCP/static configuration failures are separate status fields.
+5. **Audio-loop interference:** Ethernet polling and packet parsing run in a
+   bounded foreground slice. No network call may block the S/PDIF interrupt,
+   DMA service, or audio sink. Incoming packets are copied into a bounded queue;
+   queue overflow is a telemetry fault and never a reason to drop audio safety
+   behavior.
+
+### Telemetry findings
+
+6. **Unknown is not zero:** carrier lock, format, rate, and output state each
+   have validity flags. Before the S/PDIF runtime exists, those fields are
+   reported as unknown, not as a fabricated stable value.
+7. **Counters need definitions:** all counters are monotonic `uint64_t` values
+   since boot, with a separate clearable test epoch. Definitions are fixed:
+   carrier-loss events are qualified transitions, malformed bursts are parser
+   rejects, decode failures are DTS access-unit failures, and output transitions
+   count actual gate commands. The response includes audio input words/frames,
+   output frames, ring-buffer overruns, and network packet drops.
+8. **Snapshots must be coherent:** telemetry is published through a double
+   buffer or a short interrupt-safe snapshot section. Multiword counters must
+   never be read half-updated by the Ethernet service.
+9. **Counters are insufficient evidence:** the firmware maintains a small
+   bounded event ring containing timestamp, event type, state, and detail. The
+   protocol adds `get_events` with a cursor so the host can reconstruct carrier,
+   format, reset, and fault transitions after a polling gap.
+10. **External sink observability:** a downstream DAC lock alone cannot prove
+    DTS was decoded or that raw DTS was not forwarded. The test fixture must
+    record both board telemetry and the sink behavior; raw-versus-processed
+    claims require either a second optical capture point or a sink/test receiver
+    that identifies IEC 61937 versus PCM.
+
+### Stretch-goal review: basic mix/EQ
+
+The repository already contains allocation-free, tested downmix and biquad EQ
+primitives. The stretch goal is therefore feasible as a separate phase, but the
+first optical pass must run with a flat/bypass DSP configuration.
+
+The bounded stretch goal is:
+
+- route decoded DTS blocks and PCM blocks through `aius_dsp_process`;
+- use the existing default 5.1-to-stereo coefficients;
+- expose only a small fixed set of compile-time or protocol-selected presets:
+  flat, speech, and bass-reduced;
+- report the active preset, clipping count, DSP block count, and processing
+  overrun count;
+- prove block-boundary EQ state continuity and zero steady-state allocations;
+- measure CPU time and memory on the Ethernet-enabled target before enabling it
+  for the physical DTS test.
+
+Arbitrary remote biquad coefficients, live coefficient mutation, resampling, and
+per-channel user EQ are out of scope. If the DSP path cannot meet the measured
+audio deadline or causes any safety-state regression, the prototype remains on
+flat downmix/bypass and the stretch goal is recorded as deferred.
 
 ## Hardware prototype scope
 
@@ -88,9 +175,9 @@ missing, stale, malformed, or out-of-order response.
 
 **unit:** Ethernet control/telemetry adapter and protocol tests  
 **seams:** Ethernet service loop ↔ portable pipeline state interface  
-**contract-artifact:** protocol header, request/response examples, status-field definitions  
+**contract-artifact:** protocol header, request/response examples, status-field definitions, identity/boot-epoch rules  
 **fan-out:** one owner for protocol framing and one owner for the Teensy Ethernet adapter  
-**review-intensity:** adversarial review of framing, timeout, replay, malformed-packet, and fail-closed behavior  
+**review-intensity:** adversarial review of framing, timeout, retry, replay, identity, malformed-packet, and fail-closed behavior  
 **commit-checkpoint:** host protocol tests and instrumented Teensy build green
 
 Add the Ethernet service behind a narrow C-compatible interface. Keep the codec,
@@ -111,6 +198,10 @@ The firmware must boot with TX disabled, expose the physical carrier/lock state,
 classify PCM versus IEC 61937 DTS Core, and never emit raw compressed data in the
 processed mode. Raw bypass is diagnostic-only and must require the same muted
 transition already defined in the Aius state contract.
+
+The physical S/PDIF runtime is a prerequisite for non-unknown carrier, format,
+rate, and audio-counter telemetry. The control service must not infer those fields
+from command traffic.
 
 ### Phase 3: remote fixture runner
 
@@ -147,14 +238,20 @@ silently continuing.
    behavior is unchanged and the host records the control-plane outage.
 9. **Long observation:** run the existing soak-style repeated status and optical
    observation workload for at least eight hours, recording resets, carrier
-   losses, malformed bursts, output transitions, and missed responses.
+   losses, malformed bursts, output transitions, event-ring gaps, and missed
+   responses.
 10. **Power/reset safety:** assert reset and cycle power while source and sink are
-    connected; verify no unintended optical transmission during boot or reset.
+   connected; verify no unintended optical transmission during boot or reset.
+11. **DSP stretch:** with a deterministic PCM/DTS fixture, compare flat output
+    against the existing host DSP oracle, then verify each fixed preset, clipping
+    behavior, block-boundary continuity, and measured processing margin.
 
 ## Acceptance gates
 
 - Native parser/decoder and protocol tests pass with zero allocation violations.
 - Clean PlatformIO build succeeds for the Ethernet-enabled target.
+- The protocol has a documented static network configuration and rejects
+  unconfigured peers; the test network is isolated.
 - USB-controlled optical smoke test passes before USB removal.
 - All remote commands pass with USB physically disconnected.
 - DTS input produces processed PCM at the optical output, not a raw DTS bypass.
@@ -162,6 +259,9 @@ silently continuing.
   documented state table.
 - Eight-hour observation completes with no unexplained reset, malformed packet,
   buffer overrun, or output-enable fault.
+- The DSP stretch goal is separately accepted only if its host oracle, target
+  timing, state continuity, and allocation gates pass; otherwise it remains
+  disabled without blocking the optical prototype.
 
 No manufacturing release follows automatically from these gates. The result is a
 prototype validation record that informs the later schematic, layout, and DRC
