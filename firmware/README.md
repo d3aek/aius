@@ -20,13 +20,14 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
 | `vendor/dcadec-core/` | Minimal `dcadec` fixed-point DTS Core (LGPL 2.1, verbatim; see its `NOTICE.md`). |
 | `src/` | Teensy entry point (`main.cpp`) — the P4 decode-footprint harness. |
-| `tools/device/` | Simulated device + host runner (the P6 USB harness, host side). |
+| `tools/device/` | Simulated device + host runner, including the P6 hidraw transport. |
 | `tools/dts_vectors/`, `tools/iec_corpus/` | Committed DTS/IEC test corpora + generators. |
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
 | `tools/memory/` | Linker-map → per-bank memory report. |
 | `test/` | Host test suites (one directory per suite). |
 | `scripts/test.sh` | Native (host, gcc) test runner — the firmware's test entry point. |
 | `scripts/build.sh` | Teensy 4.1 cross-build (`pio run`) + per-bank memory report. |
+| `scripts/run_hid.sh` | Host P6 proof over Teensy RawHID (`/dev/hidrawN`). |
 | `platformio.ini` | Teensy 4.1 cross-build environments. |
 
 ## Running host tests
@@ -64,7 +65,10 @@ the reproducible Teensy cross-build + per-bank memory report (P4, all banks fit)
 the USB capability protocol + simulated device + host runner (P5), the PCM/DTS
 classifier + end-to-end pipeline, and the 5.1→stereo downmix + EQ output DSP.
 
-Remaining needs the board: P6 flashes the release build and runs the capability
-harness over real USB (DWT cycle counts, host/target bit-exactness), then P7 is
-the soak. The `AiusHostTransport` seam in `tools/device` is what P6 implements
-over the board's USB CDC; the runner and protocol are unchanged from the sim.
+The P6 target entry point is `teensy41-capability`, using Teensy RawHID with the
+same framed protocol and device handler as the host simulator. Build it with
+`scripts/build.sh teensy41-capability`, flash it with PlatformIO/Teensy loader,
+then run `scripts/run_hid.sh /dev/hidrawN tools/dts_vectors/vectors`. The command
+writes a raw transcript beside the chosen device unless an audit path is supplied.
+The remaining P6 acceptance work is the physical flash/run, DWT cycle capture,
+and persisted pass/blocked evidence; P7 is the soak.

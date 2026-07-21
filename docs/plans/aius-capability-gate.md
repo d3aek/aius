@@ -139,11 +139,14 @@ landed host-tested during the board-free window.
    `AiusHostTransport` seam, and golden wire vectors — all host-tested
    (`lib/aius_capability`, `tools/device`). Remaining for P6: implement the
    transport seam over the board's USB CDC and add retained `CrashReport`.
-6. **P6 — Teensy proof.** User connects the Teensy over USB. Implement the
-   `AiusHostTransport` seam over USB CDC (the runner, framer, and protocol are
-   unchanged from the P5 sim), flash the release build, stream the corpus, record
-   raw results, and check them against the [budgets](#budgets). Persist the raw
-   results and a short pass/blocked summary under `evidence/capability-results/`.
+6. **P6 — Teensy proof.** *Transport implemented; physical run pending.* The
+   `AiusHostTransport` seam is implemented over the Teensy RawHID reports exposed
+   as `/dev/hidraw*`; the runner, framer, and protocol remain unchanged from the
+   P5 sim. The `teensy41-capability` target provides the matching firmware entry
+   point and fragments responses at the 64-byte report boundary. Flash the image,
+   stream the corpus with `scripts/run_hid.sh`, record raw results, and check them
+   against the [budgets](#budgets). Persist the raw results and a short
+   pass/blocked summary under `evidence/capability-results/`.
 7. **P7 — Soak.** Eight-hour run on the recorded firmware/cable/port. Any reset,
    protocol error, PCM mismatch, deadline miss, allocation, memory high-water
    growth, or crash fails it; retry cannot turn a failure green.
