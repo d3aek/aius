@@ -59,6 +59,8 @@ size_t aius_host_build_batch(uint8_t *dst, size_t cap, const uint8_t *const *aus
  * -2 when the device replied with an unexpected type / NACK (see last_error). */
 int aius_host_identify(AiusHostRunner *r, AiusCapCapabilities *out);
 int aius_host_reset_metrics(AiusHostRunner *r);
+/* Ask a Teensy target to enter its HalfKay bootloader. No response is expected. */
+int aius_host_reboot_bootloader(AiusHostRunner *r);
 int aius_host_submit_frame(AiusHostRunner *r, const uint8_t *au, uint32_t len,
                            AiusCapFrameResult *out);
 /* Fills `hdr` and up to `max_samples` channel-major planar int32 samples. */

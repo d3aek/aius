@@ -55,6 +55,8 @@ static void drain_frames(void)
         stage(event == AIUS_CAP_FRAME_ERROR ? 13u : 14u);
         if (event == AIUS_CAP_FRAME_ERROR)
             aius_cap_device_handle_error(&g_device, &frame, emit_hid, NULL);
+        else if (frame.msg_type == AIUS_CAP_CMD_REBOOT_BOOTLOADER)
+            _reboot_Teensyduino_();
         else
             aius_cap_device_handle(&g_device, &frame, emit_hid, NULL);
     }

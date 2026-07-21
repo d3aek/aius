@@ -17,9 +17,6 @@ hex="$1"
 vectors="$2"
 audit="${3:-$fw_root/.build/native/aius-p6.audit}"
 
-echo "==> Waiting for Teensy bootloader and flashing $hex"
-timeout 90 "$loader" --mcu=imxrt1062 -w -v "$hex"
-
 find_rawhid()
 {
 	for path in /dev/hidraw*; do
@@ -33,7 +30,7 @@ find_rawhid()
 		esac
 		devpath="$(printf '%s\n' "$props" | sed -n 's/^DEVPATH=//p')"
 		case "$devpath" in
-			*'/16C0:0486.'*':1.0/'*|*'/16C0:0486.'*':1.0/hidraw/'*)
+			*':1.0/'*'16C0:0486.'*)
 				echo "$path"
 				return 0
 				;;
@@ -41,6 +38,14 @@ find_rawhid()
 	done
 	return 1
 }
+
+if hidraw="$(find_rawhid)"; then
+	echo "==> Requesting software reboot from $hidraw"
+	"$runner" "$hidraw" --reboot
+fi
+
+echo "==> Waiting for Teensy bootloader and flashing $hex"
+timeout 90 "$loader" --mcu=imxrt1062 -w -v "$hex"
 
 echo "==> Waiting for application RawHID re-enumeration"
 for attempt in $(seq 1 60); do

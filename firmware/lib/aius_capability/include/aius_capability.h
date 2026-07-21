@@ -55,6 +55,7 @@ typedef enum {
 	AIUS_CAP_CMD_REQUEST_PCM   = 0x04, /* payload: empty; returns last decoded PCM */
 	AIUS_CAP_CMD_RUN_CORPUS    = 0x05, /* payload: [u32 len][au]... batch decode */
 	AIUS_CAP_CMD_RUN_SOAK      = 0x06, /* payload: [u32 iters][u32 len][au]... */
+	AIUS_CAP_CMD_REBOOT_BOOTLOADER = 0x07, /* payload: empty; enter HalfKay */
 
 	/* Responses */
 	AIUS_CAP_RSP_ACK          = 0x80,

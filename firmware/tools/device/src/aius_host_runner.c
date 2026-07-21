@@ -209,6 +209,11 @@ int aius_host_reset_metrics(AiusHostRunner *r)
 	return 0;
 }
 
+int aius_host_reboot_bootloader(AiusHostRunner *r)
+{
+	return host_send(r, AIUS_CAP_CMD_REBOOT_BOOTLOADER, NULL, 0, NULL);
+}
+
 int aius_host_submit_frame(AiusHostRunner *r, const uint8_t *au, uint32_t len,
                            AiusCapFrameResult *out)
 {

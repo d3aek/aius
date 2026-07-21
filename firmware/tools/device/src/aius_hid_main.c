@@ -57,7 +57,8 @@ static uint64_t elapsed_us(const struct timespec *a, const struct timespec *b)
 int main(int argc, char **argv)
 {
     if (argc < 3 || argc > 4) {
-        fprintf(stderr, "usage: %s /dev/hidrawN vectors-dir [audit-file]\n", argv[0]);
+        fprintf(stderr, "usage: %s /dev/hidrawN vectors-dir [audit-file]\n"
+                        "       %s /dev/hidrawN --reboot\n", argv[0], argv[0]);
         return 2;
     }
 
@@ -70,6 +71,11 @@ int main(int argc, char **argv)
     aius_host_runner_init(&runner, aius_hid_transport_interface(&hid));
     aius_host_runner_set_write_chunk(&runner, AIUS_HID_REPORT_BYTES);
     runner.max_polls = 10000;
+	if (strcmp(argv[2], "--reboot") == 0) {
+		int rc = aius_host_reboot_bootloader(&runner);
+		aius_hid_transport_close(&hid);
+		return rc == 0 ? 0 : 1;
+	}
 
     char default_audit[256];
     snprintf(default_audit, sizeof(default_audit), "%s.hid.audit", argv[1]);
