@@ -46,6 +46,7 @@ Required commands:
 | command | purpose |
 | --- | --- |
 | `get_status` | firmware version, protocol version, state, carrier/PLL state, format, sample rate, counters, last error |
+| `discover` | answer a bounded LAN discovery request with identity and network state |
 | `set_mode` | processed, raw optical bypass, muted; every transition passes through muted |
 | `clear_counters` | reset test counters and error latches |
 | `start_test` | start a bounded on-device observation window |
@@ -86,10 +87,28 @@ The following findings are resolved in the plan before implementation.
    request/response sequence. The runner records these at session start and
    rejects changes except across an explicitly expected reboot.
 4. **Network configuration:** DHCP is not a valid sole dependency for a
-   USB-disconnected test. The prototype uses a documented static IPv4 address
-   and subnet, with the address printed in the bring-up record. Link state and
-   DHCP/static configuration failures are separate status fields.
-5. **Audio-loop interference:** Ethernet polling and packet parsing run in a
+   USB-disconnected test. Use DHCP first with a bounded startup timeout, then a
+   deterministic static fallback. The default fixture fallback is
+   `192.168.42.42/24`, with no gateway; the host can use `192.168.42.1/24` on a
+   direct or isolated test link. The static address is configuration data and
+   must be changed before attaching the fixture to a network where it could
+   conflict. Link state, DHCP result, selected address, and fallback/conflict
+   failures are separate status fields.
+5. **DHCP discovery:** because the DHCP address is not known in advance, the
+   runner sends a bounded UDP discovery broadcast. A matching board replies
+   with its MAC, identity, IP mode, address, protocol version, and boot epoch.
+   The runner then pins the selected IP/MAC for the session and rejects other
+   responders. Discovery is a fixture convenience, not authentication.
+6. **Lease changes and recovery:** renew an active DHCP lease in the foreground
+   without changing the address mid-session. After link loss, increment a
+   network epoch and repeat DHCP-first startup; use static fallback only if
+   DHCP cannot be restored. The event ring records each transition.
+7. **Time correlation:** if DHCP supplies an NTP server, use it to obtain a
+   best-effort wall-clock offset for evidence timestamps. NTP validity, sync
+   age, and offset are telemetry fields. Monotonic uptime, boot epoch, and
+   request IDs remain authoritative for ordering, timeout, and stale-response
+   decisions; loss of NTP must never affect the audio path or control safety.
+8. **Audio-loop interference:** Ethernet polling and packet parsing run in a
    bounded foreground slice. No network call may block the S/PDIF interrupt,
    DMA service, or audio sink. Incoming packets are copied into a bounded queue;
    queue overflow is a telemetry fault and never a reason to drop audio safety
@@ -212,10 +231,10 @@ from command traffic.
 **review-intensity:** independent review of pass/fail criteria and evidence completeness  
 **commit-checkpoint:** runner dry-run against simulator and real-board smoke test green
 
-The runner must support a fixed target address, a bounded command timeout, status
-polling, test labels, and append-only JSONL evidence. It must remain useful with
-USB absent and must report loss of Ethernet control as a test failure rather than
-silently continuing.
+The runner must support DHCP discovery, the documented static fallback address,
+a bounded command timeout, status polling, test labels, and append-only JSONL
+evidence. It must remain useful with USB absent and must report loss of Ethernet
+control as a test failure rather than silently continuing.
 
 ## Representative test matrix
 
@@ -234,15 +253,21 @@ silently continuing.
    qualified event, and recovery returns to the correct mode.
 7. **Remote operation without USB:** disconnect USB, retain Ethernet, repeat
    status, mode, carrier-loss, and reboot tests.
-8. **Control-link failure:** unplug Ethernet during active audio; verify audio
+8. **DHCP startup:** attach the board to a DHCP-enabled isolated network; verify
+   discovery, lease-selected mode, address reporting, lease renewal, NTP
+   correlation when offered, and control after the lease is refreshed.
+9. **Static fallback:** remove DHCP service, power-cycle the board, verify the
+   bounded fallback address and discovery response, then run remote tests over
+   the direct/isolated static subnet.
+10. **Control-link failure:** unplug Ethernet during active audio; verify audio
    behavior is unchanged and the host records the control-plane outage.
-9. **Long observation:** run the existing soak-style repeated status and optical
+11. **Long observation:** run the existing soak-style repeated status and optical
    observation workload for at least eight hours, recording resets, carrier
    losses, malformed bursts, output transitions, event-ring gaps, and missed
    responses.
-10. **Power/reset safety:** assert reset and cycle power while source and sink are
+12. **Power/reset safety:** assert reset and cycle power while source and sink are
    connected; verify no unintended optical transmission during boot or reset.
-11. **DSP stretch:** with a deterministic PCM/DTS fixture, compare flat output
+13. **DSP stretch:** with a deterministic PCM/DTS fixture, compare flat output
     against the existing host DSP oracle, then verify each fixed preset, clipping
     behavior, block-boundary continuity, and measured processing margin.
 
@@ -250,8 +275,8 @@ silently continuing.
 
 - Native parser/decoder and protocol tests pass with zero allocation violations.
 - Clean PlatformIO build succeeds for the Ethernet-enabled target.
-- The protocol has a documented static network configuration and rejects
-  unconfigured peers; the test network is isolated.
+- DHCP-first startup, discovery, lease renewal, NTP correlation when available,
+  and deterministic static fallback all pass on the isolated fixture network.
 - USB-controlled optical smoke test passes before USB removal.
 - All remote commands pass with USB physically disconnected.
 - DTS input produces processed PCM at the optical output, not a raw DTS bypass.
