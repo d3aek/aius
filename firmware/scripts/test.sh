@@ -201,6 +201,9 @@ net)
 		-o "$net_out"
 	"$net_out"
 	;;
+net-runner)
+	python3 "$fw_root/test/net/test_net_runner.py"
+	;;
 *)
 	echo "unknown suite: $suite" >&2
 	exit 2
