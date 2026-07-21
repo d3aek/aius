@@ -76,3 +76,6 @@ interface number, and writes a raw transcript unless an audit path is supplied.
 Large RawHID commands use acknowledged 32-byte fragments because this USB
 extender corrupts longer logical reports. The physical P6 corpus passes all 40
 vectors; P7 soak remains.
+
+Set `AIUS_HID_ITERATIONS` when invoking `scripts/run_hid.sh` to repeat the full
+corpus in one device session; use `/dev/null` as the audit path for a long soak.

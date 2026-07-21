@@ -3,6 +3,7 @@
 #include "aius_hid_runner.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -72,6 +73,9 @@ int main(int argc, char **argv)
     aius_host_runner_set_write_chunk(&runner, AIUS_HID_REPORT_BYTES);
     runner.max_polls = 10000;
 	runner.fragment_large = 1;
+    struct timespec sequence_clock;
+    clock_gettime(CLOCK_MONOTONIC, &sequence_clock);
+    runner.next_seq = (uint16_t)(sequence_clock.tv_nsec | 1u);
     if (strcmp(argv[2], "--reboot") == 0) {
 		int rc = aius_host_reboot_bootloader(&runner);
 		aius_hid_transport_close(&hid);
@@ -101,7 +105,15 @@ int main(int argc, char **argv)
 
     unsigned submitted = 0;
     unsigned failed = 0;
-    for (size_t v = 0; v < sizeof(vectors) / sizeof(vectors[0]); v++) {
+    unsigned iterations = 1;
+    const char *iterations_text = getenv("AIUS_HID_ITERATIONS");
+    if (iterations_text != NULL && *iterations_text != '\0') {
+        unsigned long parsed = strtoul(iterations_text, NULL, 10);
+        if (parsed > 0 && parsed <= UINT_MAX)
+            iterations = (unsigned)parsed;
+    }
+    for (unsigned iteration = 0; iteration < iterations; iteration++) {
+        for (size_t v = 0; v < sizeof(vectors) / sizeof(vectors[0]); v++) {
         char path[1024];
         snprintf(path, sizeof(path), "%s/%s.dts", argv[2], vectors[v]);
         size_t len = 0;
@@ -132,13 +144,18 @@ int main(int argc, char **argv)
                 failed++;
             start = end;
         }
-        free(data);
+            free(data);
+        }
+        if (iterations > 1)
+            fprintf(stderr, "soak iteration %u/%u submitted=%u failed=%u\n",
+                    iteration + 1, iterations, submitted, failed);
     }
 
-    fprintf(audit, "summary submitted=%u failed=%u\n", submitted, failed);
+    fprintf(audit, "summary iterations=%u submitted=%u failed=%u\n",
+            iterations, submitted, failed);
     fclose(audit);
     aius_hid_transport_close(&hid);
-    printf("P6 hidraw proof: submitted=%u failed=%u audit=%s\n",
-           submitted, failed, audit_path);
+    printf("P6 hidraw proof: iterations=%u submitted=%u failed=%u audit=%s\n",
+           iterations, submitted, failed, audit_path);
     return failed == 0 ? 0 : 1;
 }
