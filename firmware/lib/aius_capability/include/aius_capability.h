@@ -36,6 +36,7 @@ extern "C" {
 #define AIUS_CAP_VERSION      1u
 #define AIUS_CAP_HEADER_LEN   12u
 #define AIUS_CAP_CRC_LEN      4u
+#define AIUS_CAP_FRAGMENT_CHUNK 32u
 #define AIUS_CAP_MAX_PAYLOAD  65536u
 #define AIUS_CAP_MAX_FRAME    (AIUS_CAP_HEADER_LEN + AIUS_CAP_MAX_PAYLOAD + AIUS_CAP_CRC_LEN)
 
@@ -56,6 +57,7 @@ typedef enum {
 	AIUS_CAP_CMD_RUN_CORPUS    = 0x05, /* payload: [u32 len][au]... batch decode */
 	AIUS_CAP_CMD_RUN_SOAK      = 0x06, /* payload: [u32 iters][u32 len][au]... */
 	AIUS_CAP_CMD_REBOOT_BOOTLOADER = 0x07, /* payload: empty; enter HalfKay */
+	AIUS_CAP_CMD_SUBMIT_FRAGMENT = 0x08, /* payload: [u32 offset][u32 total][bytes] */
 
 	/* Responses */
 	AIUS_CAP_RSP_ACK          = 0x80,

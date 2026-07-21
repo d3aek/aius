@@ -71,12 +71,12 @@ int main(int argc, char **argv)
     aius_host_runner_init(&runner, aius_hid_transport_interface(&hid));
     aius_host_runner_set_write_chunk(&runner, AIUS_HID_REPORT_BYTES);
     runner.max_polls = 10000;
-	if (strcmp(argv[2], "--reboot") == 0) {
+	runner.fragment_large = 1;
+    if (strcmp(argv[2], "--reboot") == 0) {
 		int rc = aius_host_reboot_bootloader(&runner);
 		aius_hid_transport_close(&hid);
 		return rc == 0 ? 0 : 1;
 	}
-
     char default_audit[256];
     snprintf(default_audit, sizeof(default_audit), "%s.hid.audit", argv[1]);
     const char *audit_path = argc == 4 ? argv[3] : default_audit;

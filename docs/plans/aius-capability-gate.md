@@ -105,7 +105,8 @@ Measured, not asserted. The gate passes when, at 600 MHz release build:
 
 Each phase is a normal commit: green host tests (and, from P5, a reproducible
 target build) plus a diff review. No verdict schemas. **P1–P4 and the P5 host
-side are done** (2026-07-18); P6–P7 need the physical Teensy connected. The
+side and P6 are done** (P6 physical validation 2026-07-21); P7 still needs the
+soak run. The
 product signal chain beyond this gate — PCM/DTS classifier + end-to-end pipeline
 (`lib/aius_pipeline`) and the 5.1→stereo downmix + EQ (`lib/aius_dsp`) — also
 landed host-tested during the board-free window.
@@ -132,21 +133,19 @@ landed host-tested during the board-free window.
    `firmware/scripts/test.sh` is the native-test entry point — the repo-root
    `scripts/test.sh` is a .NET/vitest/pytest discovery runner with no C-suite
    slot, so it is deliberately not modified.
-5. **P5 — USB capability harness.** *Host side done.* The versioned USB-Serial
+5. **P5 — USB capability harness.** *Done.* The versioned USB-Serial
    protocol (`AIUS` magic, length-framed, CRC-32/ISO-HDLC, ACK/NACK; identify,
    submit-frame, request-PCM, run-corpus, run-soak), an arena-driven device
    handler over `AiusDtsDecoder`, a simulated device + host runner over an
    `AiusHostTransport` seam, and golden wire vectors — all host-tested
-   (`lib/aius_capability`, `tools/device`). Remaining for P6: implement the
-   transport seam over the board's USB CDC and add retained `CrashReport`.
-6. **P6 — Teensy proof.** *Transport implemented; physical run pending.* The
+   (`lib/aius_capability`, `tools/device`).
+6. **P6 — Teensy proof.** *Done.* The
    `AiusHostTransport` seam is implemented over the Teensy RawHID reports exposed
    as `/dev/hidraw*`; the runner, framer, and protocol remain unchanged from the
    P5 sim. The `teensy41-capability` target provides the matching firmware entry
-   point and fragments responses at the 64-byte report boundary. Flash the image,
-   stream the corpus with `scripts/run_hid.sh`, record raw results, and check them
-   against the [budgets](#budgets). Persist the raw results and a short
-   pass/blocked summary under `evidence/capability-results/`.
+   point and uses acknowledged 32-byte command fragments for the USB-over-fibre
+   path. The physical corpus passed 40/40 vectors with zero allocation
+   violations; raw results and a summary are under `evidence/capability-results/`.
    The USB-over-fibre KVM path must pass through a dedicated USB controller (or
    provide equivalent host-side reattachment); individual VID/PID hostdevs and
    hub passthrough do not follow Teensy re-enumeration. `scripts/flash_and_run.sh`

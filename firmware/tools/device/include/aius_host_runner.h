@@ -33,6 +33,7 @@ typedef struct {
 	FILE             *audit;     /* transcript sink, or NULL */
 	size_t            write_chunk; /* 0 = one write; >0 = split to exercise partials */
 	int               max_polls; /* recv attempts before timeout */
+	int               fragment_large; /* split large HID commands into reports */
 	AiusCapError      last_error;
 } AiusHostRunner;
 

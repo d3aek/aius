@@ -70,8 +70,9 @@ The P6 target entry point is `teensy41-capability`, using Teensy RawHID with the
 same framed protocol and device handler as the host simulator. Build it with
 `scripts/build.sh teensy41-capability`, flash it with PlatformIO/Teensy loader,
 then run `scripts/flash_and_run.sh .pio/build/teensy41-capability/firmware.hex \
-tools/dts_vectors/vectors`. The wrapper waits for the bootloader, resolves the
-new application interface by VID/PID and interface number, and writes a raw
-transcript unless an audit path is supplied.
-The remaining P6 acceptance work is the physical flash/run, DWT cycle capture,
-and persisted pass/blocked evidence; P7 is the soak.
+tools/dts_vectors/vectors`. The wrapper requests the running image to enter
+HalfKay, flashes it, resolves the new application interface by VID/PID and
+interface number, and writes a raw transcript unless an audit path is supplied.
+Large RawHID commands use acknowledged 32-byte fragments because this USB
+extender corrupts longer logical reports. The physical P6 corpus passes all 40
+vectors; P7 soak remains.

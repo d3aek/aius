@@ -17,6 +17,7 @@ void aius_host_runner_init(AiusHostRunner *r, const AiusHostTransport *tp)
 	r->audit = NULL;
 	r->write_chunk = 0;
 	r->max_polls = 64;
+	r->fragment_large = 0;
 	r->last_error = AIUS_CAP_ERR_NONE;
 }
 
@@ -217,6 +218,35 @@ int aius_host_reboot_bootloader(AiusHostRunner *r)
 int aius_host_submit_frame(AiusHostRunner *r, const uint8_t *au, uint32_t len,
                            AiusCapFrameResult *out)
 {
+	if (r->fragment_large && len > AIUS_CAP_FRAGMENT_CHUNK) {
+		uint8_t payload[8u + AIUS_CAP_FRAGMENT_CHUNK];
+		uint32_t offset = 0;
+		while (offset < len) {
+			uint32_t chunk = len - offset;
+			if (chunk > AIUS_CAP_FRAGMENT_CHUNK)
+				chunk = AIUS_CAP_FRAGMENT_CHUNK;
+			aius_cap_put_u32(payload, offset);
+			aius_cap_put_u32(payload + 4, len);
+			memcpy(payload + 8, au + offset, chunk);
+			if (host_send(r, AIUS_CAP_CMD_SUBMIT_FRAGMENT, payload, 8u + chunk,
+			              NULL) != 0)
+				return -1;
+			AiusCapFrame f;
+			if (host_recv(r, &f) != 1)
+				return -1;
+			audit_recv(r, &f);
+			if (offset + chunk < len) {
+				if (f.msg_type != AIUS_CAP_RSP_ACK)
+					return -2;
+			} else if (f.msg_type != AIUS_CAP_RSP_FRAME_RESULT ||
+			           !aius_cap_get_frame_result(f.payload, f.payload_len, out)) {
+				r->last_error = AIUS_CAP_ERR_INTERNAL;
+				return -2;
+			}
+			offset += chunk;
+		}
+		return 0;
+	}
 	if (host_send(r, AIUS_CAP_CMD_SUBMIT_FRAME, au, len, NULL) != 0)
 		return -1;
 	AiusCapFrame f;
