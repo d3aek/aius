@@ -7,6 +7,7 @@
 
 typedef struct {
     int fd;
+    int last_errno;
     uint8_t report[AIUS_HID_REPORT_BYTES];
     AiusHostTransport transport;
 } AiusHidTransport;

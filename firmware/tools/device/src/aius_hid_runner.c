@@ -16,6 +16,8 @@ static size_t hid_write(void *ctx, const uint8_t *data, size_t len)
     memset(hid->report, 0, sizeof(hid->report));
     memcpy(hid->report, data, len);
     ssize_t written = write(hid->fd, hid->report, sizeof(hid->report));
+    if (written < 0)
+        hid->last_errno = errno;
     return written == (ssize_t)sizeof(hid->report) ? len : 0;
 }
 
@@ -26,6 +28,8 @@ static size_t hid_read(void *ctx, uint8_t *dst, size_t cap)
         return 0;
     ssize_t n = read(hid->fd, dst, cap < AIUS_HID_REPORT_BYTES
                                   ? cap : AIUS_HID_REPORT_BYTES);
+    if (n < 0)
+        hid->last_errno = errno;
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
         return 0;
     return n > 0 ? (size_t)n : 0;
@@ -42,6 +46,7 @@ static size_t hid_available(void *ctx)
 int aius_hid_transport_open(AiusHidTransport *hid, const char *path)
 {
     memset(hid, 0, sizeof(*hid));
+    hid->last_errno = 0;
     hid->fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (hid->fd < 0)
         return -1;

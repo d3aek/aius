@@ -126,7 +126,7 @@ int main(int argc, char **argv)
         size_t start = find_sync(data, len, 0);
         while (start < len) {
             size_t end = find_sync(data, len, start + 4);
-            AiusCapFrameResult result;
+            AiusCapFrameResult result = {0};
             struct timespec before, after;
             clock_gettime(CLOCK_MONOTONIC, &before);
             int rc = aius_host_submit_frame(&runner, data + start,
@@ -142,6 +142,11 @@ int main(int argc, char **argv)
             submitted++;
             if (rc != 0 || result.status != AIUS_OK)
                 failed++;
+            if ((rc != 0 || result.status != AIUS_OK) && failed <= 3)
+                fprintf(stderr, "first-failure vector=%s offset=%zu rc=%d "
+                                "runner_error=%u result_status=%u hid_errno=%d\n",
+                        vectors[v], start, rc, runner.last_error, result.status,
+                        hid.last_errno);
             start = end;
         }
             free(data);

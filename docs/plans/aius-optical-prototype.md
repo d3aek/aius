@@ -201,6 +201,20 @@ cursor-based event retrieval are implemented and build-tested. Physical optical
 acceptance, fixed EQ presets, NTP synchronization, and authenticated control
 remain validation or follow-on work.
 
+### RawHID soak investigation
+
+The first long run was not a valid soak result: after an initially clean
+period, failures rose until nearly every submission failed, reaching about
+19.2 million failures out of 19.3 million submissions. The audit path was
+`/dev/null`, and the host transport previously collapsed device removal,
+write/read errors, and timeout into the same failure code. The diagnostic
+runner now records the first transport `errno`, runner error, and result status.
+The next reproduction must use a real audit file and capture USB re-enumeration
+and reset evidence. The portable simulator soak remains green, so the current
+leading hypotheses are RawHID/device reset or transport loss, followed by a
+target-only allocation or memory-corruption fault; decode correctness is not
+yet implicated.
+
 ### Phase 1: remote-control transport
 
 **unit:** Ethernet control/telemetry adapter and protocol tests  
