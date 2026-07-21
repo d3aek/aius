@@ -28,6 +28,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `scripts/test.sh` | Native (host, gcc) test runner — the firmware's test entry point. |
 | `scripts/build.sh` | Teensy 4.1 cross-build (`pio run`) + per-bank memory report. |
 | `scripts/run_hid.sh` | Host P6 proof over Teensy RawHID (`/dev/hidrawN`). |
+| `scripts/flash_and_run.sh` | Bounded flash, re-enumeration wait, and P6 proof. |
 | `platformio.ini` | Teensy 4.1 cross-build environments. |
 
 ## Running host tests
@@ -68,7 +69,9 @@ classifier + end-to-end pipeline, and the 5.1→stereo downmix + EQ output DSP.
 The P6 target entry point is `teensy41-capability`, using Teensy RawHID with the
 same framed protocol and device handler as the host simulator. Build it with
 `scripts/build.sh teensy41-capability`, flash it with PlatformIO/Teensy loader,
-then run `scripts/run_hid.sh /dev/hidrawN tools/dts_vectors/vectors`. The command
-writes a raw transcript beside the chosen device unless an audit path is supplied.
+then run `scripts/flash_and_run.sh .pio/build/teensy41-capability/firmware.hex \
+tools/dts_vectors/vectors`. The wrapper waits for the bootloader, resolves the
+new application interface by VID/PID and interface number, and writes a raw
+transcript unless an audit path is supplied.
 The remaining P6 acceptance work is the physical flash/run, DWT cycle capture,
 and persisted pass/blocked evidence; P7 is the soak.

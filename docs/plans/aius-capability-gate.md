@@ -147,6 +147,11 @@ landed host-tested during the board-free window.
    stream the corpus with `scripts/run_hid.sh`, record raw results, and check them
    against the [budgets](#budgets). Persist the raw results and a short
    pass/blocked summary under `evidence/capability-results/`.
+   The USB-over-fibre KVM path must pass through a dedicated USB controller (or
+   provide equivalent host-side reattachment); individual VID/PID hostdevs and
+   hub passthrough do not follow Teensy re-enumeration. `scripts/flash_and_run.sh`
+   supplies bounded loader and application-interface discovery once that topology
+   is in place.
 7. **P7 — Soak.** Eight-hour run on the recorded firmware/cable/port. Any reset,
    protocol error, PCM mismatch, deadline miss, allocation, memory high-water
    growth, or crash fails it; retry cannot turn a failure green.
