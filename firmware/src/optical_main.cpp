@@ -566,8 +566,15 @@ static void http_send_content(unsigned status, const char *content_type,
 {
 	size_t response_length = aius_http_write_response(g_http_response,
 		sizeof(g_http_response), status, content_type, body, body_length);
-	if (response_length != 0)
-		(void)g_http_client.write(g_http_response, response_length);
+	for (size_t offset = 0; response_length != 0 && offset < response_length;) {
+		size_t length = response_length - offset;
+		if (length > 512u)
+			length = 512u;
+		size_t written = g_http_client.write(g_http_response + offset, length);
+		if (written == 0)
+			break;
+		offset += written;
+	}
 	g_http_client.stop();
 	g_http_client = EthernetClient();
 }
