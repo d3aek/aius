@@ -19,6 +19,8 @@ extern "C" {
 	#include "aius_dsp.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
+	#include "service/dhcp/fnet_dhcp_cln.h"
+	#include "stack/fnet_netif.h"
 }
 
 static constexpr uint16_t AIUS_NET_PORT = 4242;
@@ -44,6 +46,9 @@ static IPAddress g_static_mask(AIUS_STATIC_MASK[0], AIUS_STATIC_MASK[1],
 static bool g_dhcp;
 static bool g_network_ready;
 static uint32_t g_network_retry_at;
+static bool g_ethernet_initialized;
+static bool g_dhcp_pending;
+static uint32_t g_dhcp_deadline;
 static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
 
@@ -718,15 +723,72 @@ static void service_network(void)
 		g_network_budget_overruns++;
 }
 
+static bool ensure_dhcp_client(void)
+{
+	fnet_netif_desc_t netif = fnet_netif_get_default();
+	if (netif == nullptr)
+		return false;
+	fnet_dhcp_cln_desc_t client = fnet_dhcp_cln_get_by_netif(netif);
+	if (client != nullptr && fnet_dhcp_cln_is_enabled(client))
+		return true;
+	static fnet_dhcp_cln_params_t params = {};
+	params.netif = netif;
+	client = fnet_dhcp_cln_init(&params);
+	if (client == nullptr)
+		return false;
+	fnet_dhcp_cln_set_response_timeout(client, 250);
+	return true;
+}
+
+static void activate_network(bool dhcp)
+{
+	g_dhcp = dhcp;
+	g_dhcp_pending = false;
+	g_network_ready = true;
+	g_udp.begin(AIUS_NET_PORT);
+	g_http_server.begin();
+	Serial.printf("AIUS Ethernet ready: dhcp=%u ip=%u.%u.%u.%u link=%u\\n",
+	              g_dhcp ? 1u : 0u, Ethernet.localIP()[0], Ethernet.localIP()[1],
+	              Ethernet.localIP()[2], Ethernet.localIP()[3],
+	              (unsigned)Ethernet.linkStatus());
+}
+
 static void start_network(void)
 {
 	/* NativeEthernet provides a bounded DHCP attempt. Static mode is used only
 	 * after DHCP fails, keeping the fallback usable on a direct cable. */
 	if (g_network_ready)
 		return;
+	if (g_dhcp_pending) {
+		if (Ethernet.localIP() != IPAddress(0, 0, 0, 0)) {
+			activate_network(true);
+			return;
+		}
+		if ((int32_t)(millis() - g_dhcp_deadline) < 0)
+			return;
+		g_dhcp_pending = false;
+	}
+	if (g_ethernet_initialized && Ethernet.linkStatus() != LinkON) {
+		g_network_retry_at = millis() + 5000u;
+		return;
+	}
+	if (g_ethernet_initialized && Ethernet.linkStatus() == LinkON) {
+		Serial.printf("AIUS Ethernet DHCP retry exhausted; static fallback begin\\n");
+		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
+		              IPAddress(0, 0, 0, 0), g_static_mask);
+		if (Ethernet.localIP() != IPAddress(0, 0, 0, 0)) {
+			activate_network(false);
+			return;
+		}
+	}
+	if (g_ethernet_initialized) {
+		g_network_retry_at = millis() + 5000u;
+		return;
+	}
 	Serial.printf("AIUS Ethernet MAC configured=%02x:%02x:%02x:%02x:%02x:%02x\\n",
 	              g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
 	Serial.printf("AIUS Ethernet init: DHCP begin\\n");
+	g_ethernet_initialized = true;
 	g_dhcp = Ethernet.begin(g_mac, 5000, 250) != 0;
 	byte actual_mac[6] = {};
 	Ethernet.MACAddress(actual_mac);
@@ -735,27 +797,20 @@ static void start_network(void)
 	              actual_mac[4], actual_mac[5]);
 	Serial.printf("AIUS Ethernet DHCP result=%u link=%u\\n", g_dhcp ? 1u : 0u,
 	              (unsigned)Ethernet.linkStatus());
-	if (!g_dhcp && Ethernet.linkStatus() == LinkON) {
-		Serial.printf("AIUS Ethernet static fallback begin\\n");
-		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
-		              IPAddress(0, 0, 0, 0), g_static_mask);
-		Serial.printf("AIUS Ethernet static fallback returned\\n");
-	}
-	g_network_ready = Ethernet.linkStatus() == LinkON &&
-	                  (g_dhcp || Ethernet.localIP() != IPAddress(0, 0, 0, 0));
-	if (!g_network_ready) {
-		g_network_retry_at = millis() + 5000u;
-		Serial.printf("AIUS Ethernet unavailable: link=%u hardware=%u\\n",
-		              (unsigned)Ethernet.linkStatus(),
-		              (unsigned)Ethernet.hardwareStatus());
+	if (g_dhcp) {
+		activate_network(true);
 		return;
 	}
-	g_udp.begin(AIUS_NET_PORT);
-	g_http_server.begin();
-	Serial.printf("AIUS Ethernet ready: dhcp=%u ip=%u.%u.%u.%u link=%u\\n",
-	              g_dhcp ? 1u : 0u, Ethernet.localIP()[0], Ethernet.localIP()[1],
-	              Ethernet.localIP()[2], Ethernet.localIP()[3],
-	              (unsigned)Ethernet.linkStatus());
+	if (ensure_dhcp_client()) {
+		g_dhcp_pending = true;
+		g_dhcp_deadline = millis() + 5000u;
+		Serial.printf("AIUS Ethernet DHCP client enabled after link callback gap\\n");
+		return;
+	}
+	g_network_retry_at = millis() + 5000u;
+	Serial.printf("AIUS Ethernet unavailable: link=%u hardware=%u\\n",
+	              (unsigned)Ethernet.linkStatus(),
+	              (unsigned)Ethernet.hardwareStatus());
 }
 
 void setup(void)
