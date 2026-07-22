@@ -198,3 +198,19 @@ implementation:
   Ethernet. Asset writes and deletes require an exact constant-time comparison
   of `X-Aius-SD-Auth`; public-config writes do not. The token is not accepted
   for protected configuration or filesystem paths.
+
+### Phase 8: self-hosted maintenance tooling
+
+**unit:** device-hosted upload form and standalone shell uploader  
+**seams:** browser/file picker ↔ authenticated asset PUT; shell file tree ↔ device API  
+**contract-artifact:** upload form served by the device; `tools/aius-sd-sync.sh`  
+**fan-out:** embedded UI owns the form; shell tool owns transport and token input; OpenAPI owns examples  
+**review-intensity:** nested paths, auth failures, config ACL separation, partial sync, missing tools, and no-repo execution  
+**commit-checkpoint:** shell syntax check, mocked HTTP integration tests, and target upload smoke test
+
+The device home page will include an upload form and exact curl-compatible
+request examples. The standalone script will accept a device URL, a local
+`www/` tree, and an auth token obtained over USB; it will upload files using
+standard HTTP PUT with `Content-Length`, preserve relative paths, and refuse to
+send `config.json` through the asset path. It will run from a copied file on a
+maintenance host and will not depend on Python, PlatformIO, or this repository.
