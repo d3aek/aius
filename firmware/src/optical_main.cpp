@@ -6,6 +6,7 @@
  */
 
 #include <Arduino.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <AudioStream.h>
@@ -909,6 +910,88 @@ static unsigned http_error_status(AiusHttpResult result)
 	}
 }
 
+static bool http_json_append(char *body, size_t capacity, size_t *length,
+	                           const char *format, ...)
+{
+	if (*length >= capacity)
+		return false;
+	va_list arguments;
+	va_start(arguments, format);
+	int written = vsnprintf(body + *length, capacity - *length, format,
+	                        arguments);
+	va_end(arguments);
+	if (written < 0 || (size_t)written >= capacity - *length)
+		return false;
+	*length += (size_t)written;
+	return true;
+}
+
+static const char *http_dsp_eq_type(uint8_t type)
+{
+	switch (type) {
+	case 0: return "bypass";
+	case 1: return "highpass";
+	case 2: return "peaking";
+	default: return nullptr;
+	}
+}
+
+static size_t http_dsp_config_json(uint8_t *body, size_t capacity)
+{
+	if (capacity > AIUS_OPTICAL_MODEL_MAX_JSON_BYTES)
+		capacity = AIUS_OPTICAL_MODEL_MAX_JSON_BYTES;
+	char *output = (char *)body;
+	size_t length = 0;
+	if (!http_json_append(output, capacity, &length,
+	                      "{\"schema_version\":1,\"sample_rate_hz\":%lu,\"profiles\":[",
+	                      (unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ))
+		return 0;
+	for (uint8_t profile_index = 0; profile_index < AIUS_OPTICAL_PROFILE_COUNT;
+	     profile_index++) {
+		const AiusOpticalProfileConfig &profile = AIUS_OPTICAL_PROFILES[profile_index];
+		if (!http_json_append(output, capacity, &length, "%s{\"id\":\"%s\",\"eq\":[",
+		                      profile_index == 0 ? "" : ",", profile.name))
+			return 0;
+		for (uint8_t section_index = 0; section_index < profile.eq_count;
+		     section_index++) {
+			const AiusOpticalEqConfig &section = profile.eq[section_index];
+			const char *type = http_dsp_eq_type(section.type);
+			if (type == nullptr || !http_json_append(
+				output, capacity, &length,
+				"%s{\"type\":\"%s\",\"frequency_hz\":%.17g,\"q\":%.17g,\"gain_db\":%.17g}",
+				section_index == 0 ? "" : ",", type, section.frequency_hz,
+				section.q, section.gain_db))
+				return 0;
+		}
+		if (!http_json_append(output, capacity, &length, "]}"))
+			return 0;
+	}
+	if (!http_json_append(output, capacity, &length, "],\"mixes\":["))
+		return 0;
+	for (uint8_t mix_index = 0; mix_index < AIUS_OPTICAL_MIX_COUNT; mix_index++) {
+		const AiusOpticalMixConfig &mix = AIUS_OPTICAL_MIXES[mix_index];
+		AiusDownmixConfig downmix = aius_downmix_config_default();
+		downmix.lfe = mix.lfe;
+		double headroom = mix.clipfree ? aius_downmix_clipfree_headroom(&downmix) :
+		                    mix.headroom;
+		if (!http_json_append(output, capacity, &length,
+		                      "%s{\"id\":\"%s\",\"lfe_gain_linear\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s}",
+		                      mix_index == 0 ? "" : ",", mix.name, mix.lfe,
+		                      headroom, mix.clipfree ? "true" : "false"))
+			return 0;
+	}
+	if (!http_json_append(output, capacity, &length,
+	                      "],\"active\":{\"profile_id\":\"%s\",\"profile_index\":%u,\"mix_id\":\"%s\",\"mix_index\":%u,\"profile_pending\":%u,\"mix_pending\":%u}}",
+	                      AIUS_OPTICAL_PROFILES[g_audio_processor.mode()].name,
+	                      g_audio_processor.mode(),
+	                      AIUS_OPTICAL_MIXES[g_audio_processor.mix()].name,
+	                      g_audio_processor.mix(),
+	                      g_audio_processor.mode_pending() ? 1u : 0u,
+	                      g_audio_processor.mix_pending() ? 1u : 0u))
+		return 0;
+	return length;
+}
+
 static size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
@@ -1330,6 +1413,9 @@ static void http_handle_request(void)
 		return;
 	case AIUS_HTTP_ROUTE_STATUS:
 		body_length = http_status_json(body, sizeof(body));
+		break;
+	case AIUS_HTTP_ROUTE_DSP_CONFIG:
+		body_length = http_dsp_config_json(body, sizeof(body));
 		break;
 	case AIUS_HTTP_ROUTE_EVENTS:
 		body_length = http_events_json(request.cursor, body, sizeof(body));

@@ -75,6 +75,8 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_REBOOT;
 	if (token_equals(path, length, "/api/config/public"))
 		return AIUS_HTTP_ROUTE_CONFIG_PUBLIC;
+	if (token_equals(path, length, "/api/dsp/config"))
+		return AIUS_HTTP_ROUTE_DSP_CONFIG;
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;
 	if (has_prefix(path, length, "/sd/") && length > strlen("/sd/")) {
@@ -205,6 +207,9 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->method != AIUS_HTTP_PUT)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_DSP_CONFIG &&
+	    request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;

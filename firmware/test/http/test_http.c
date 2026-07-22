@@ -11,6 +11,27 @@ static void parse_ok(const char *raw, AiusHttpRoute route)
 	assert(request.route == route);
 }
 
+static void test_dsp_config_route(void)
+{
+	AiusHttpRequest request;
+	const char *get = "GET /api/dsp/config HTTP/1.0\r\n\r\n";
+	const char *post = "POST /api/dsp/config HTTP/1.0\r\n\r\n";
+	const char *put = "PUT /api/dsp/config HTTP/1.0\r\n\r\n";
+	const char *delete = "DELETE /api/dsp/config HTTP/1.0\r\n\r\n";
+	const char *near_miss = "GET /api/dsp/configuration HTTP/1.0\r\n\r\n";
+
+	assert(aius_http_parse((const uint8_t *)get, strlen(get), &request) == AIUS_HTTP_OK);
+	assert(request.route == AIUS_HTTP_ROUTE_DSP_CONFIG);
+	assert(aius_http_parse((const uint8_t *)post, strlen(post), &request) ==
+	       AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)put, strlen(put), &request) ==
+	       AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)delete, strlen(delete), &request) ==
+	       AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)near_miss, strlen(near_miss), &request) ==
+	       AIUS_HTTP_ERR_ROUTE);
+}
+
 static void test_sd_auth_header(void)
 {
 	AiusHttpRequest request;
@@ -49,6 +70,7 @@ int main(void)
 {
 	AiusHttpRequest request;
 	test_sd_auth_header();
+	test_dsp_config_route();
 	parse_ok("GET / HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_HOME);
 	parse_ok("GET /api/sd HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_STATUS);
 	parse_ok("GET /sd/index.html HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_FILE);
