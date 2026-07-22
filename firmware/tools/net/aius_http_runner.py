@@ -35,6 +35,19 @@ def request(target, method, path, body=None, timeout=0.5):
         connection.close()
 
 
+def request_bytes(target, method, path, body=None, content_type="application/octet-stream",
+                  timeout=0.5):
+    host, port = target
+    connection = http.client.HTTPConnection(host, port, timeout=timeout)
+    headers = {"Connection": "close", "Content-Type": content_type}
+    try:
+        connection.request(method, path, body, headers)
+        response = connection.getresponse()
+        return {"status": response.status, "body": response.read()}
+    finally:
+        connection.close()
+
+
 def abandoned_request(target):
     host, port = target
     connection = socket.create_connection((host, port), timeout=0.5)
@@ -131,12 +144,15 @@ def reboot_and_wait(target, timeout):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("status", "soak", "reboot"))
+    parser.add_argument("command", choices=("status", "soak", "reboot", "sd-status",
+                                             "sd-get", "sd-put", "sd-delete"))
     parser.add_argument("--target", required=True, help="device host or host:port")
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--evidence", default="aius-http-soak.jsonl")
+    parser.add_argument("--resource", choices=("index.html", "app.js", "style.css", "config.json"))
+    parser.add_argument("--file")
     args = parser.parse_args()
     if ":" in args.target and args.target.rsplit(":", 1)[1].isdigit():
         host, port_text = args.target.rsplit(":", 1)
@@ -147,6 +163,27 @@ def main():
         print(json.dumps(request(target, "GET", "/api/status"), sort_keys=True))
     elif args.command == "reboot":
         print(json.dumps(reboot_and_wait(target, args.timeout), sort_keys=True))
+    elif args.command == "sd-status":
+        print(json.dumps(request(target, "GET", "/api/sd"), sort_keys=True))
+    elif args.command == "sd-get":
+        if not args.resource:
+            parser.error("sd-get requires --resource")
+        result = request_bytes(target, "GET", f"/sd/{args.resource}", timeout=args.timeout)
+        if args.file:
+            Path(args.file).write_bytes(result["body"])
+        else:
+            print(result["body"].decode("utf-8", errors="replace"), end="")
+    elif args.command == "sd-put":
+        if not args.resource or not args.file:
+            parser.error("sd-put requires --resource and --file")
+        body = Path(args.file).read_bytes()
+        print(json.dumps(request_bytes(target, "PUT", f"/sd/{args.resource}", body,
+                                        timeout=args.timeout), default=lambda value: value.decode("utf-8"),
+                         sort_keys=True))
+    elif args.command == "sd-delete":
+        if not args.resource:
+            parser.error("sd-delete requires --resource")
+        print(json.dumps(request(target, "DELETE", f"/sd/{args.resource}"), sort_keys=True))
     else:
         run_soak(target, args.duration, args.interval, args.evidence)
 

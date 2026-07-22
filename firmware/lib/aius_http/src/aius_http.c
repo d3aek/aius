@@ -73,6 +73,13 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_CLEAR;
 	if (token_equals(path, length, "/api/reboot"))
 		return AIUS_HTTP_ROUTE_REBOOT;
+	if (token_equals(path, length, "/api/sd"))
+		return AIUS_HTTP_ROUTE_SD_STATUS;
+	if (has_prefix(path, length, "/sd/") && length > strlen("/sd/")) {
+		request->resource = path + strlen("/sd/");
+		request->resource_length = length - strlen("/sd/");
+		return AIUS_HTTP_ROUTE_SD_FILE;
+	}
 	return AIUS_HTTP_ROUTE_UNKNOWN;
 }
 
@@ -114,6 +121,10 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		request->method = AIUS_HTTP_GET;
 	else if ((size_t)(space1 - data) == 4 && memcmp(data, "POST", 4) == 0)
 		request->method = AIUS_HTTP_POST;
+	else if ((size_t)(space1 - data) == 6 && memcmp(data, "DELETE", 6) == 0)
+		request->method = AIUS_HTTP_DELETE;
+	else if ((size_t)(space1 - data) == 3 && memcmp(data, "PUT", 3) == 0)
+		request->method = AIUS_HTTP_PUT;
 	else
 		return AIUS_HTTP_ERR_METHOD;
 
@@ -137,11 +148,24 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_ROUTE;
 	if (request->method == AIUS_HTTP_GET &&
 	    (request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX ||
-	     request->route >= AIUS_HTTP_ROUTE_START))
+	     (request->route >= AIUS_HTTP_ROUTE_START &&
+	      request->route <= AIUS_HTTP_ROUTE_REBOOT)))
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->method == AIUS_HTTP_POST &&
 	    (request->route == AIUS_HTTP_ROUTE_STATUS || request->route == AIUS_HTTP_ROUTE_EVENTS))
 		return AIUS_HTTP_ERR_METHOD;
+	if ((request->method == AIUS_HTTP_PUT || request->method == AIUS_HTTP_DELETE) &&
+	    request->route != AIUS_HTTP_ROUTE_SD_FILE)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS && request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
+	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT &&
+	    request->method != AIUS_HTTP_DELETE)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
+	    (request->resource_length == 0 || request->resource_length > 32))
+		return AIUS_HTTP_ERR_ROUTE;
 	if ((request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX) &&
 	    !request->has_body)
 		return AIUS_HTTP_ERR_BODY;
@@ -169,6 +193,7 @@ const char *aius_http_reason(unsigned status)
 	case 405: return "Method Not Allowed";
 	case 408: return "Request Timeout";
 	case 413: return "Payload Too Large";
+	case 507: return "Insufficient Storage";
 	default: return "Internal Server Error";
 	}
 }

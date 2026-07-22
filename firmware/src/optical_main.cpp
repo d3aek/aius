@@ -11,6 +11,7 @@
 #include <AudioStream.h>
 #include <NativeEthernet.h>
 #include <NativeEthernetUdp.h>
+#include <SD.h>
 #include <input_spdif3.h>
 #include <output_spdif3.h>
 
@@ -41,7 +42,9 @@ static EthernetServer g_http_server(80);
 static EthernetClient g_http_client;
 static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
+static uint8_t g_http_sd_body[AIUS_HTTP_MAX_BODY];
 static size_t g_http_request_length;
+static size_t g_http_body_offset;
 static uint32_t g_http_last_byte_ms;
 static uint32_t g_http_requests;
 static uint32_t g_http_rejections;
@@ -56,6 +59,7 @@ static bool g_network_ready;
 static uint32_t g_network_retry_at;
 static bool g_ethernet_initialized;
 static bool g_dhcp_pending;
+static bool g_sd_ready;
 static uint32_t g_dhcp_deadline;
 static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
@@ -530,6 +534,107 @@ static void http_send(unsigned status, const uint8_t *body, size_t body_length)
 	http_send_content(status, "application/json", body, body_length);
 }
 
+static bool http_sd_path(const AiusHttpRequest *request, char *path,
+                         size_t capacity, const char **content_type)
+{
+	if (request == nullptr || request->resource == nullptr ||
+		request->resource_length == 0)
+		return false;
+	const char *type = nullptr;
+	if (request->resource_length == 10 &&
+		memcmp(request->resource, "index.html", 10) == 0)
+		type = "text/html; charset=utf-8";
+	else if (request->resource_length == 6 &&
+		memcmp(request->resource, "app.js", 6) == 0)
+		type = "application/javascript";
+	else if (request->resource_length == 9 &&
+		memcmp(request->resource, "style.css", 9) == 0)
+		type = "text/css";
+	else if (request->resource_length == 11 &&
+		memcmp(request->resource, "config.json", 11) == 0)
+		type = "application/json";
+	else
+		return false;
+	int written = snprintf(path, capacity, "/aius/%.*s",
+		(int)request->resource_length, request->resource);
+	if (written < 0 || (size_t)written >= capacity)
+		return false;
+	*content_type = type;
+	return true;
+}
+
+static void http_sd_request(const AiusHttpRequest &request)
+{
+	if (!g_sd_ready) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
+		http_send(503, body, sizeof(body) - 1);
+		return;
+	}
+	if (request.route == AIUS_HTTP_ROUTE_SD_STATUS) {
+		static const uint8_t body[] = "{\"ready\":true}";
+		http_send(200, body, sizeof(body) - 1);
+		return;
+	}
+	char path[40];
+	const char *content_type = nullptr;
+	if (!http_sd_path(&request, path, sizeof(path), &content_type)) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_path\"}";
+		http_send(404, body, sizeof(body) - 1);
+		return;
+	}
+	if (request.method == AIUS_HTTP_GET) {
+		File file = SD.open(path, FILE_READ);
+		if (!file) {
+			static const uint8_t body[] = "{\"ok\":false,\"error\":\"not_found\"}";
+			http_send(404, body, sizeof(body) - 1);
+			return;
+		}
+		uint64_t size = file.size();
+		if (size > sizeof(g_http_sd_body)) {
+			file.close();
+			static const uint8_t body[] = "{\"ok\":false,\"error\":\"file_too_large\"}";
+			http_send(413, body, sizeof(body) - 1);
+			return;
+		}
+		size_t length = file.read(g_http_sd_body, (size_t)size);
+		file.close();
+		http_send_content(200, content_type, g_http_sd_body, length);
+		return;
+	}
+	if (request.method == AIUS_HTTP_DELETE) {
+		if (!SD.remove(path)) {
+			static const uint8_t body[] = "{\"ok\":false,\"error\":\"not_found\"}";
+			http_send(404, body, sizeof(body) - 1);
+			return;
+		}
+		static const uint8_t body[] = "{\"ok\":true}";
+		http_send(200, body, sizeof(body) - 1);
+		return;
+	}
+	SD.remove("/aius/.upload.tmp");
+	File file = SD.open("/aius/.upload.tmp", FILE_WRITE);
+	const uint8_t *body = g_http_request + g_http_body_offset;
+	size_t length = g_http_request_length - g_http_body_offset;
+	if (!file || file.write(body, length) != length) {
+		if (file)
+			file.close();
+		SD.remove("/aius/.upload.tmp");
+		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_write\"}";
+		http_send(507, error, sizeof(error) - 1);
+		return;
+	}
+	file.close();
+	SD.remove(path);
+	if (!SD.rename("/aius/.upload.tmp", path)) {
+		SD.remove("/aius/.upload.tmp");
+		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_commit\"}";
+		http_send(500, error, sizeof(error) - 1);
+		return;
+	}
+	static const uint8_t response[] = "{\"ok\":true}";
+	http_send(200, response, sizeof(response) - 1);
+}
+
 static void reset_application(void)
 {
 	__disable_irq();
@@ -552,7 +657,10 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>POST /api/start {}</code></li>"
 		"<li><code>POST /api/stop {}</code></li>"
 		"<li><code>POST /api/clear {}</code></li>"
-		"<li><code>POST /api/reboot {}</code></li></ul>"
+		"<li><code>POST /api/reboot {}</code></li>"
+		"<li><a href=\"/api/sd\">GET /api/sd</a></li>"
+		"<li><code>PUT /sd/{index.html|app.js|style.css|config.json}</code> raw body, max 1536 bytes</li>"
+		"<li><code>DELETE /sd/{resource}</code></li></ul>"
 		"<h2>Control</h2><label>Mode <select id=m>"
 		"<option>%s</option><option>%s</option><option>%s</option></select></label> "
 		"<label>Mix <select id=x><option>%s</option><option>%s</option>"
@@ -590,6 +698,10 @@ static void http_handle_request(void)
 	size_t body_length = 0;
 	unsigned status = 200;
 	switch (request.route) {
+	case AIUS_HTTP_ROUTE_SD_STATUS:
+	case AIUS_HTTP_ROUTE_SD_FILE:
+		http_sd_request(request);
+		return;
 	case AIUS_HTTP_ROUTE_HOME:
 		body_length = http_home_page(body, sizeof(body));
 		if (body_length == 0) {
@@ -684,6 +796,7 @@ static void service_http(void)
 	} else {
 		size_t body_offset = 0;
 		if (http_header_end(&body_offset)) {
+			g_http_body_offset = body_offset;
 			size_t expected_body = 0;
 			int body_result = http_expected_body(body_offset - 2u, &expected_body);
 			if (body_result < 0 || g_http_request_length - body_offset > expected_body) {
@@ -902,6 +1015,10 @@ void setup(void)
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();
 	g_boot_epoch = micros();
+	g_sd_ready = SD.begin(BUILTIN_SDCARD);
+	if (g_sd_ready)
+		(void)SD.mkdir("/aius");
+	Serial.printf("AIUS SD ready=%u\\n", g_sd_ready ? 1u : 0u);
 	start_network();
 }
 

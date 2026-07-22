@@ -8,14 +8,16 @@
 extern "C" {
 #endif
 
-#define AIUS_HTTP_MAX_REQUEST 1024u
+#define AIUS_HTTP_MAX_REQUEST 2048u
 #define AIUS_HTTP_MAX_HEADERS 512u
-#define AIUS_HTTP_MAX_BODY 256u
+#define AIUS_HTTP_MAX_BODY 1536u
 #define AIUS_HTTP_MAX_RESPONSE 2048u
 
 typedef enum {
 	AIUS_HTTP_GET = 1,
-	AIUS_HTTP_POST = 2
+	AIUS_HTTP_POST = 2,
+	AIUS_HTTP_DELETE = 3,
+	AIUS_HTTP_PUT = 4
 } AiusHttpMethod;
 
 typedef enum {
@@ -28,7 +30,9 @@ typedef enum {
 	AIUS_HTTP_ROUTE_START,
 	AIUS_HTTP_ROUTE_STOP,
 	AIUS_HTTP_ROUTE_CLEAR,
-	AIUS_HTTP_ROUTE_REBOOT
+	AIUS_HTTP_ROUTE_REBOOT,
+	AIUS_HTTP_ROUTE_SD_STATUS,
+	AIUS_HTTP_ROUTE_SD_FILE
 } AiusHttpRoute;
 
 typedef enum {
@@ -49,6 +53,8 @@ typedef struct {
 	uint8_t mode;
 	uint8_t mix;
 	uint8_t has_body;
+	const uint8_t *resource;
+	size_t resource_length;
 } AiusHttpRequest;
 
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,

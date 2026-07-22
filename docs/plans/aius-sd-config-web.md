@@ -23,6 +23,24 @@ page when the card is absent or invalid.
 - Asset paths are allowlisted; traversal, symlinks, and arbitrary filesystem
   enumeration are not exposed.
 
+## Current implementation slice
+
+The firmware now initializes the optional built-in SD card and exposes bounded
+raw file operations for `index.html`, `app.js`, `style.css`, and `config.json`:
+
+- `GET /api/sd` reports card availability.
+- `GET /sd/{resource}` reads a file, capped at 1536 bytes.
+- `PUT /sd/{resource}` writes through `/aius/.upload.tmp`, then replaces the
+  target, capped at 1536 bytes.
+- `DELETE /sd/{resource}` removes an allowlisted file.
+
+The embedded page remains the root page in this slice. Uploaded `index.html`
+is available explicitly at `/sd/index.html`; root-page handoff is part of the
+static asset server and control-surface migration phases. `config.json` is
+stored but is not yet an active DSP configuration source; the build-time JSON
+continues to define the current runtime profiles until the journaled parser and
+activation phases land.
+
 ## Phases
 
 ### Phase 1: bounded runtime configuration
