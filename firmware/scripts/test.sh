@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, dts-lfe,
-#         iec61937, iec61937-fuzz, capability-protocol, capability, pipeline, dsp, net.
+#         iec61937, iec61937-fuzz, capability-protocol, capability, pipeline, dsp, net, net-runner, dashboard.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -203,6 +203,9 @@ net)
 	;;
 net-runner)
 	python3 "$fw_root/test/net/test_net_runner.py"
+	;;
+dashboard)
+	python3 "$fw_root/test/net/test_aius_dashboard.py"
 	;;
 *)
 	echo "unknown suite: $suite" >&2

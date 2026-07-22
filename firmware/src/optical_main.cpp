@@ -47,18 +47,23 @@ static bool g_test_running;
 
 static uint8_t current_state(void);
 
+static void record_event(uint8_t type, uint8_t state, uint16_t detail)
+{
+	AiusEvent &event = g_events[g_event_sequence % 8u];
+	event.sequence = ++g_event_sequence;
+	event.uptime_ms = millis();
+	event.type = type;
+	event.state = state;
+	event.detail = detail;
+}
+
 static void record_state(void)
 {
 	uint8_t state = current_state();
 	if (state == g_last_state)
 		return;
 	g_last_state = state;
-	AiusEvent &event = g_events[g_event_sequence % 8u];
-	event.sequence = ++g_event_sequence;
-	event.uptime_ms = millis();
-	event.type = 1;
-	event.state = state;
-	event.detail = 0;
+	record_event(1, state, 0);
 }
 
 class AiusAudioProcessor : public AudioStream
@@ -335,11 +340,17 @@ static void service_network(void)
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
 		break;
 	case AIUS_NET_CMD_START_TEST:
-		g_test_running = true;
+		if (!g_test_running) {
+			g_test_running = true;
+			record_event(2, current_state(), 1);
+		}
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
 		break;
 	case AIUS_NET_CMD_STOP_TEST:
-		g_test_running = false;
+		if (g_test_running) {
+			g_test_running = false;
+			record_event(2, current_state(), 0);
+		}
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
 		break;
 	case AIUS_NET_CMD_REBOOT:
