@@ -49,6 +49,10 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 {
 	if (token_equals(path, length, "/api/status"))
 		return AIUS_HTTP_ROUTE_STATUS;
+	if (token_equals(path, length, "/api/events")) {
+		request->cursor = 0;
+		return AIUS_HTTP_ROUTE_EVENTS;
+	}
 	if (has_prefix(path, length, "/api/events?cursor=")) {
 		const uint8_t *cursor = path + strlen("/api/events?cursor=");
 		size_t cursor_length = length - strlen("/api/events?cursor=");
