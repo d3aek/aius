@@ -49,6 +49,7 @@ static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
 enum AiusSdJobState : uint8_t {
 	AIUS_SD_JOB_IDLE = 0,
 	AIUS_SD_JOB_UPLOAD_OPEN,
+	AIUS_SD_JOB_UPLOAD_MKDIR,
 	AIUS_SD_JOB_UPLOAD_RECEIVE,
 	AIUS_SD_JOB_UPLOAD_WRITE,
 	AIUS_SD_JOB_UPLOAD_CHECK_TARGET,
@@ -76,6 +77,7 @@ struct AiusSdJob {
 	uint32_t written;
 	uint32_t initial_offset;
 	uint32_t initial_end;
+	uint16_t mkdir_offset;
 	uint16_t pending_length;
 	uint16_t response_offset;
 	uint16_t response_length;
@@ -207,6 +209,7 @@ static void sd_job_clear(void)
 	g_sd_job.written = 0;
 	g_sd_job.initial_offset = 0;
 	g_sd_job.initial_end = 0;
+	g_sd_job.mkdir_offset = 0;
 	g_sd_job.pending_length = 0;
 	g_sd_job.response_offset = 0;
 	g_sd_job.response_length = 0;
@@ -289,6 +292,20 @@ static void sd_job_send_error(unsigned status, const char *error)
 static void service_sd_job(void)
 {
 	switch (g_sd_job.state) {
+	case AIUS_SD_JOB_UPLOAD_MKDIR: {
+		const char *separator = strchr(g_sd_job.target_path + g_sd_job.mkdir_offset, '/');
+		if (separator == nullptr) {
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_OPEN;
+			return;
+		}
+		char directory[sizeof(g_sd_job.target_path)];
+		size_t length = (size_t)(separator - g_sd_job.target_path);
+		memcpy(directory, g_sd_job.target_path, length);
+		directory[length] = '\0';
+		(void)SD.mkdir(directory);
+		g_sd_job.mkdir_offset = (uint16_t)(length + 1u);
+		return;
+	}
 	case AIUS_SD_JOB_UPLOAD_OPEN:
 		g_sd_job.file = SD.open(g_sd_job.temp_path, FILE_WRITE);
 		if (!g_sd_job.file) {
@@ -991,6 +1008,13 @@ static bool http_sd_authorized(const AiusHttpRequest &request)
 	                               request.sd_auth_length) != 0;
 }
 
+static bool http_sd_resource_is_config(const AiusHttpRequest &request)
+{
+	return request.resource_length >= 11u &&
+		memcmp(request.resource + request.resource_length - 11u,
+		       "config.json", 11u) == 0;
+}
+
 static bool http_sd_upload_begin_target(const char *target,
                                         const char *content_type,
                                         bool config_upload, uint32_t expected,
@@ -1007,7 +1031,8 @@ static bool http_sd_upload_begin_target(const char *target,
 	g_sd_job.expected = expected;
 	g_sd_job.initial_offset = (uint32_t)initial_offset;
 	g_sd_job.initial_end = (uint32_t)initial_end;
-	g_sd_job.state = AIUS_SD_JOB_UPLOAD_OPEN;
+	g_sd_job.mkdir_offset = 6u;
+	g_sd_job.state = AIUS_SD_JOB_UPLOAD_MKDIR;
 	return true;
 }
 
@@ -1149,10 +1174,7 @@ static void http_sd_request(const AiusHttpRequest &request)
 		http_send(404, body, sizeof(body) - 1);
 		return;
 	}
-	if (request.method != AIUS_HTTP_GET &&
-		request.resource_length >= 11u &&
-		memcmp(request.resource + request.resource_length - 11u,
-		       "config.json", 11u) == 0) {
+	if (request.method != AIUS_HTTP_GET && http_sd_resource_is_config(request)) {
 		static const uint8_t body[] = "{\"ok\":false,\"error\":\"config_public_only\"}";
 		http_send(403, body, sizeof(body) - 1);
 		return;
@@ -1417,7 +1439,19 @@ static void service_http(void)
 			                                             &request);
 			if (parse_result == AIUS_HTTP_OK &&
 			    request.route == AIUS_HTTP_ROUTE_SD_FILE &&
-			    request.method == AIUS_HTTP_PUT && !g_sd_ready) {
+			    request.method == AIUS_HTTP_PUT &&
+			    http_sd_resource_is_config(request)) {
+				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"config_public_only\"}";
+				http_send(403, error_body, sizeof(error_body) - 1);
+			} else if (parse_result == AIUS_HTTP_OK &&
+			           request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			           request.method == AIUS_HTTP_PUT &&
+			           !http_sd_authorized(request)) {
+				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
+				http_send(401, error_body, sizeof(error_body) - 1);
+			} else if (parse_result == AIUS_HTTP_OK &&
+			           request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			           request.method == AIUS_HTTP_PUT && !g_sd_ready) {
 				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
 				http_send(503, error_body, sizeof(error_body) - 1);
 			} else if (parse_result == AIUS_HTTP_OK &&
