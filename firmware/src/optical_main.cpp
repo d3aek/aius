@@ -702,6 +702,8 @@ private:
 			g_mix = mix;
 			const AiusOpticalMixConfig &config = AIUS_OPTICAL_MIXES[mix];
 			g_downmix = aius_downmix_config_default();
+			g_downmix.center = config.center;
+			g_downmix.surround = config.surround;
 			g_downmix.lfe = config.lfe;
 			if (config.clipfree)
 				g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
@@ -972,12 +974,15 @@ static size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	for (uint8_t mix_index = 0; mix_index < AIUS_OPTICAL_MIX_COUNT; mix_index++) {
 		const AiusOpticalMixConfig &mix = AIUS_OPTICAL_MIXES[mix_index];
 		AiusDownmixConfig downmix = aius_downmix_config_default();
+		downmix.center = mix.center;
+		downmix.surround = mix.surround;
 		downmix.lfe = mix.lfe;
 		double headroom = mix.clipfree ? aius_downmix_clipfree_headroom(&downmix) :
 		                    mix.headroom;
 		if (!http_json_append(output, capacity, &length,
-		                      "%s{\"id\":\"%s\",\"lfe_gain_linear\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s}",
-		                      mix_index == 0 ? "" : ",", mix.name, mix.lfe,
+				                      "%s{\"id\":\"%s\",\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s}",
+				                      mix_index == 0 ? "" : ",", mix.name, mix.center,
+				                      mix.surround, mix.lfe,
 		                      headroom, mix.clipfree ? "true" : "false"))
 			return 0;
 	}

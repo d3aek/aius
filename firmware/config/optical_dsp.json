@@ -15,8 +15,20 @@
     }
   ],
   "mixes": [
-    { "name": "standard", "lfe": 0, "headroom": 1 },
-    { "name": "lfe-minus10", "lfe": 0.3162277660168379, "headroom": 1 },
-    { "name": "clipfree", "lfe": 0, "headroom": "clipfree" }
+    { "name": "standard", "center": 0.7071067811865475, "surround": 0.7071067811865475, "lfe": 0, "headroom": 1 },
+    {
+      "name": "lfe-minus10",
+      "center": 0.7071067811865475,
+      "surround": 0.7071067811865475,
+      "lfe": 0.3162277660168379,
+      "headroom": 1
+    },
+    {
+      "name": "clipfree",
+      "center": 0.7071067811865475,
+      "surround": 0.7071067811865475,
+      "lfe": 0,
+      "headroom": "clipfree"
+    }
   ]
 }

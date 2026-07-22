@@ -29,7 +29,8 @@ the DSP schema.
   - `profiles[]`: `id`, `eq[]`
   - `eq[]`: `type` (`bypass`, `highpass`, or `peaking`),
     `frequency_hz`, `q`, and `gain_db`
-  - `mixes[]`: `id`, `lfe_gain_linear`, `headroom_linear`, and `clipfree`
+  - `mixes[]`: `id`, `center_gain_linear`, `surround_gain_linear`,
+    `lfe_gain_linear`, `headroom_linear`, and `clipfree`
   - `active`: `profile_id`, `profile_index`, `mix_id`, `mix_index`,
     `profile_pending`, and `mix_pending`
 - The finite generator limits are eight profiles, eight mixes, two EQ sections
@@ -49,6 +50,17 @@ the DSP schema.
   downmix coefficients, clip-free resolves to
   `1 / (1 + 0.7071067811865475 + 0.7071067811865475 + abs(lfe_gain_linear))`;
   standard and lfe-minus10 retain unity headroom.
+- `center_gain_linear` is the shared FC-to-L/R coefficient. Increasing it
+  raises dialogue/voice relative to FL/FR; zero removes the centre channel.
+- `surround_gain_linear` is the shared SL-to-L and SR-to-R coefficient.
+  Increasing it blends the rear channels more strongly while preserving their
+  left/right placement; zero removes the surround contribution.
+- The coefficients are symmetric by design. Independent SL/SR gains are not
+  part of this model because they would change image balance rather than
+  control surround blend.
+- Mix coefficients are finite and bounded to `0 <= gain <= 4` linear
+  (`-inf` is not a valid control value; the upper bound is approximately
+  `+12 dB`). Configured non-clipfree headroom is bounded to `0 < h <= 1`.
 - The endpoint reports the compiled DSP table, not the SD feature flags and not
   an editable configuration. A later persistence/write API must version its
   own contract rather than silently reusing this read-only model.

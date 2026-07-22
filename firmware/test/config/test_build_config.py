@@ -31,6 +31,7 @@ def test_valid_fixture_and_model_bound():
     assert "AIUS_OPTICAL_PROFILE_COUNT = 3u" in header
     assert "AIUS_OPTICAL_MIX_COUNT = 3u" in header
     assert "AIUS_OPTICAL_MODEL_MAX_JSON_BYTES = 6144u" in header
+    assert '"standard", 0.70710678118654746, 0.70710678118654746' in header
 
 
 def test_table_and_eq_bounds():
@@ -84,12 +85,30 @@ def test_eq_types_and_all_numeric_fields_are_finite():
     expect_invalid(config, "finite number")
 
     config = copy.deepcopy(fixture)
-    config["mixes"][0]["lfe"] = float("-inf")
-    expect_invalid(config, "finite number")
+    for field in ("center", "surround", "lfe"):
+        config = copy.deepcopy(fixture)
+        config["mixes"][0][field] = float("-inf")
+        expect_invalid(config, "finite number")
+
+        config = copy.deepcopy(fixture)
+        config["mixes"][0][field] = -0.01
+        expect_invalid(config, "between 0 and")
+
+        config = copy.deepcopy(fixture)
+        config["mixes"][0][field] = 4.01
+        expect_invalid(config, "between 0 and")
 
     config = copy.deepcopy(fixture)
     config["mixes"][0]["headroom"] = float("nan")
     expect_invalid(config, "finite number")
+
+    config = copy.deepcopy(fixture)
+    config["mixes"][0]["headroom"] = 0
+    expect_invalid(config, "greater than 0")
+
+    config = copy.deepcopy(fixture)
+    config["mixes"][0]["headroom"] = 1.01
+    expect_invalid(config, "greater than 0")
 
 
 def main():

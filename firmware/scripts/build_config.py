@@ -10,6 +10,7 @@ MAX_MIXES = 8
 MAX_EQ_SECTIONS = 2
 MAX_ID_LENGTH = 24
 MAX_MODEL_JSON_BYTES = 6144
+MAX_MIX_GAIN_LINEAR = 4.0
 EQ_TYPES = {"bypass": 0, "highpass": 1, "peaking": 2}
 ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,23}")
 
@@ -27,6 +28,18 @@ def _validate_id(value, field):
         raise ValueError(
             f"{field} must be 1-{MAX_ID_LENGTH} ASCII letters, digits, '.', '_' or '-'"
         )
+
+
+def _bounded_mix_gain(value, field):
+    _finite_number(value, field)
+    if value < 0 or value > MAX_MIX_GAIN_LINEAR:
+        raise ValueError(f"{field} must be between 0 and {MAX_MIX_GAIN_LINEAR}")
+
+
+def _bounded_headroom(value, field):
+    _finite_number(value, field)
+    if value <= 0 or value > 1:
+        raise ValueError(f"{field} must be greater than 0 and at most 1")
 
 
 def validate_config(config):
@@ -76,10 +89,11 @@ def validate_config(config):
         if mix_id in mix_ids:
             raise ValueError(f"duplicate mix ID: {mix_id}")
         mix_ids.add(mix_id)
-        _finite_number(mix.get("lfe"), f"mix {mix_id} lfe")
+        for field in ("center", "surround", "lfe"):
+            _bounded_mix_gain(mix.get(field), f"mix {mix_id} {field}")
         headroom = mix.get("headroom")
         if headroom != "clipfree":
-            _finite_number(headroom, f"mix {mix_id} headroom")
+            _bounded_headroom(headroom, f"mix {mix_id} headroom")
 
 
 def generate_header(config):
@@ -92,7 +106,7 @@ def generate_header(config):
         "#include <stdint.h>",
         "typedef struct { uint8_t type; double frequency_hz; double q; double gain_db; } AiusOpticalEqConfig;",
         "typedef struct { const char *name; uint8_t eq_count; AiusOpticalEqConfig eq[2]; } AiusOpticalProfileConfig;",
-        "typedef struct { const char *name; double lfe; double headroom; uint8_t clipfree; } AiusOpticalMixConfig;",
+        "typedef struct { const char *name; double center; double surround; double lfe; double headroom; uint8_t clipfree; } AiusOpticalMixConfig;",
         f"static const uint32_t AIUS_OPTICAL_SAMPLE_RATE_HZ = {int(config['sample_rate_hz'])}u;",
         f"static const uint8_t AIUS_OPTICAL_PROFILE_COUNT = {len(profiles)}u;",
         f"static const uint8_t AIUS_OPTICAL_MIX_COUNT = {len(mixes)}u;",
@@ -123,7 +137,7 @@ def generate_header(config):
     for mix in mixes:
         clipfree = 1 if mix.get("headroom") == "clipfree" else 0
         headroom = 1 if clipfree else mix["headroom"]
-        lines.append('{"%s", %.17g, %.17g, %d},' % (mix["name"], mix["lfe"], headroom, clipfree))
+        lines.append('{"%s", %.17g, %.17g, %.17g, %.17g, %d},' % (mix["name"], mix["center"], mix["surround"], mix["lfe"], headroom, clipfree))
     lines.append("};")
     return "\n".join(lines) + "\n"
 
