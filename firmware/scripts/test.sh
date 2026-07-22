@@ -203,6 +203,7 @@ net)
 	;;
 net-runner)
 	python3 "$fw_root/test/net/test_net_runner.py"
+	python3 "$fw_root/test/net/test_aius_http_runner.py"
 	;;
 http)
 	http_out="$build_dir/http"

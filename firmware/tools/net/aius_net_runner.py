@@ -85,6 +85,16 @@ def parse_status(payload):
     if len(payload) >= 39:
         result["mix_mode"] = {0: "standard", 1: "lfe-minus10", 2: "clipfree"}.get(
             payload[38], "unknown")
+    if len(payload) >= 55:
+        result["event_sequence"] = struct.unpack_from("<I", payload, 39)[0]
+        result["event_overflows"] = struct.unpack_from("<I", payload, 43)[0]
+        result["network_drops"] = struct.unpack_from("<I", payload, 47)[0]
+        result["network_budget_overruns"] = struct.unpack_from("<I", payload, 51)[0]
+    if len(payload) >= 71:
+        result["http_requests"] = struct.unpack_from("<I", payload, 55)[0]
+        result["http_rejections"] = struct.unpack_from("<I", payload, 59)[0]
+        result["http_client_drops"] = struct.unpack_from("<I", payload, 63)[0]
+        result["http_service_overruns"] = struct.unpack_from("<I", payload, 67)[0]
     return result
 
 

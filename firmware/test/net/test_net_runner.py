@@ -59,6 +59,16 @@ class RunnerProtocolTests(unittest.TestCase):
         self.assertTrue(status["test_running"])
         self.assertEqual(status["mix_mode"], "clipfree")
 
+    def test_extended_status_network_and_http_counters(self):
+        payload = bytearray(71)
+        payload[0] = 1
+        struct.pack_into("<IIIIIIII", payload, 39, 10, 2, 3, 4, 5, 6, 7, 8)
+        status = RUNNER.parse_status(payload)
+        self.assertEqual(status["event_sequence"], 10)
+        self.assertEqual(status["network_budget_overruns"], 4)
+        self.assertEqual(status["http_requests"], 5)
+        self.assertEqual(status["http_service_overruns"], 8)
+
 
 if __name__ == "__main__":
     unittest.main()
