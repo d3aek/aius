@@ -43,6 +43,11 @@ static EthernetClient g_http_client;
 static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
 static uint8_t g_http_sd_body[AIUS_HTTP_MAX_BODY];
+static File g_sd_upload;
+static char g_sd_upload_path[40];
+static uint32_t g_sd_upload_expected;
+static uint32_t g_sd_upload_received;
+static bool g_sd_upload_active;
 static size_t g_http_request_length;
 static size_t g_http_body_offset;
 static uint32_t g_http_last_byte_ms;
@@ -435,15 +440,24 @@ static int http_expected_body(size_t header_end, size_t *expected)
 		i += 16;
 		uint32_t value = 0;
 		while (i < header_end && g_http_request[i] >= '0' && g_http_request[i] <= '9') {
-			value = value * 10u + (uint32_t)(g_http_request[i] - '0');
-			if (value > AIUS_HTTP_MAX_BODY)
+			uint32_t digit = (uint32_t)(g_http_request[i] - '0');
+			if (value > (UINT32_MAX - digit) / 10u)
 				return -1;
+			value = value * 10u + digit;
 			i++;
 		}
 		*expected = value;
 		return 1;
 	}
 	return 1;
+}
+
+static int http_has_content_length(size_t header_end)
+{
+	for (size_t i = 0; i + 16 < header_end; i++)
+		if (memcmp(g_http_request + i, "Content-Length: ", 16) == 0)
+			return 1;
+	return 0;
 }
 
 static unsigned http_error_status(AiusHttpResult result)
@@ -535,6 +549,95 @@ static void http_send(unsigned status, const uint8_t *body, size_t body_length)
 }
 
 static bool http_sd_path(const AiusHttpRequest *request, char *path,
+                         size_t capacity, const char **content_type);
+
+static void http_sd_upload_abort(void)
+{
+	if (g_sd_upload)
+		g_sd_upload.close();
+	SD.remove("/aius/.upload.tmp");
+	g_sd_upload_active = false;
+	g_sd_upload_expected = 0;
+	g_sd_upload_received = 0;
+}
+
+static bool http_sd_upload_begin(const AiusHttpRequest &request,
+                                 uint32_t expected)
+{
+	const char *content_type = nullptr;
+	if (!http_sd_path(&request, g_sd_upload_path, sizeof(g_sd_upload_path),
+	                 &content_type))
+		return false;
+	(void)content_type;
+	http_sd_upload_abort();
+	g_sd_upload = SD.open("/aius/.upload.tmp", FILE_WRITE);
+	if (!g_sd_upload)
+		return false;
+	g_sd_upload_expected = expected;
+	g_sd_upload_received = 0;
+	g_sd_upload_active = true;
+	return true;
+}
+
+static bool http_sd_upload_write(const uint8_t *data, size_t length)
+{
+	if (!g_sd_upload_active || length > g_sd_upload_expected - g_sd_upload_received)
+		return false;
+	if (length != 0 && g_sd_upload.write(data, length) != length)
+		return false;
+	g_sd_upload_received += (uint32_t)length;
+	return true;
+}
+
+static void http_sd_upload_finish(void)
+{
+	if (!g_sd_upload_active || g_sd_upload_received != g_sd_upload_expected) {
+		http_sd_upload_abort();
+		return;
+	}
+	g_sd_upload.close();
+	g_sd_upload_active = false;
+	SD.remove(g_sd_upload_path);
+	if (!SD.rename("/aius/.upload.tmp", g_sd_upload_path)) {
+		SD.remove("/aius/.upload.tmp");
+		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_commit\"}";
+		http_send(500, error, sizeof(error) - 1);
+		return;
+	}
+	static const uint8_t response[] = "{\"ok\":true}";
+	http_send(200, response, sizeof(response) - 1);
+}
+
+static bool http_sd_send_file(const char *path, const char *content_type)
+{
+	File file = SD.open(path, FILE_READ);
+	if (!file)
+		return false;
+	uint32_t size = (uint32_t)file.size();
+	char header[192];
+	int header_length = snprintf(header, sizeof(header),
+		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
+		"Connection: close\r\n\r\n", content_type, (unsigned long)size);
+	if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
+		g_http_client.write((const uint8_t *)header, (size_t)header_length) !=
+		(size_t)header_length) {
+		file.close();
+		return false;
+	}
+	while (file.available()) {
+		size_t length = file.read(g_http_sd_body, sizeof(g_http_sd_body));
+		if (length == 0 || g_http_client.write(g_http_sd_body, length) != length) {
+			file.close();
+			return false;
+		}
+	}
+	file.close();
+	g_http_client.stop();
+	g_http_client = EthernetClient();
+	return true;
+}
+
+static bool http_sd_path(const AiusHttpRequest *request, char *path,
                          size_t capacity, const char **content_type)
 {
 	if (request == nullptr || request->resource == nullptr ||
@@ -583,22 +686,12 @@ static void http_sd_request(const AiusHttpRequest &request)
 		return;
 	}
 	if (request.method == AIUS_HTTP_GET) {
-		File file = SD.open(path, FILE_READ);
-		if (!file) {
+		if (!SD.exists(path)) {
 			static const uint8_t body[] = "{\"ok\":false,\"error\":\"not_found\"}";
 			http_send(404, body, sizeof(body) - 1);
 			return;
 		}
-		uint64_t size = file.size();
-		if (size > sizeof(g_http_sd_body)) {
-			file.close();
-			static const uint8_t body[] = "{\"ok\":false,\"error\":\"file_too_large\"}";
-			http_send(413, body, sizeof(body) - 1);
-			return;
-		}
-		size_t length = file.read(g_http_sd_body, (size_t)size);
-		file.close();
-		http_send_content(200, content_type, g_http_sd_body, length);
+		(void)http_sd_send_file(path, content_type);
 		return;
 	}
 	if (request.method == AIUS_HTTP_DELETE) {
@@ -611,28 +704,15 @@ static void http_sd_request(const AiusHttpRequest &request)
 		http_send(200, body, sizeof(body) - 1);
 		return;
 	}
-	SD.remove("/aius/.upload.tmp");
-	File file = SD.open("/aius/.upload.tmp", FILE_WRITE);
-	const uint8_t *body = g_http_request + g_http_body_offset;
-	size_t length = g_http_request_length - g_http_body_offset;
-	if (!file || file.write(body, length) != length) {
-		if (file)
-			file.close();
-		SD.remove("/aius/.upload.tmp");
+	uint32_t length = (uint32_t)(g_http_request_length - g_http_body_offset);
+	if (!http_sd_upload_begin(request, length) ||
+		!http_sd_upload_write(g_http_request + g_http_body_offset, length)) {
+		http_sd_upload_abort();
 		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_write\"}";
 		http_send(507, error, sizeof(error) - 1);
 		return;
 	}
-	file.close();
-	SD.remove(path);
-	if (!SD.rename("/aius/.upload.tmp", path)) {
-		SD.remove("/aius/.upload.tmp");
-		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_commit\"}";
-		http_send(500, error, sizeof(error) - 1);
-		return;
-	}
-	static const uint8_t response[] = "{\"ok\":true}";
-	http_send(200, response, sizeof(response) - 1);
+	http_sd_upload_finish();
 }
 
 static void reset_application(void)
@@ -659,7 +739,7 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>POST /api/clear {}</code></li>"
 		"<li><code>POST /api/reboot {}</code></li>"
 		"<li><a href=\"/api/sd\">GET /api/sd</a></li>"
-		"<li><code>PUT /sd/{index.html|app.js|style.css|config.json}</code> raw body, max 1536 bytes</li>"
+		"<li><code>PUT /sd/{index.html|app.js|style.css|config.json}</code> raw body with Content-Length</li>"
 		"<li><code>DELETE /sd/{resource}</code></li></ul>"
 		"<h2>Control</h2><label>Mode <select id=m>"
 		"<option>%s</option><option>%s</option><option>%s</option></select></label> "
@@ -780,6 +860,38 @@ static void service_http(void)
 	}
 	if (!g_http_client)
 		return;
+	if (g_sd_upload_active) {
+		while (g_http_client.available() &&
+		       g_sd_upload_received < g_sd_upload_expected &&
+		       (uint32_t)(micros() - started) < 1500u) {
+			size_t remaining = g_sd_upload_expected - g_sd_upload_received;
+			size_t available = (size_t)g_http_client.available();
+			size_t requested = available < sizeof(g_http_sd_body) ? available :
+			                    sizeof(g_http_sd_body);
+			if (requested > remaining)
+				requested = remaining;
+			int got = g_http_client.read(g_http_sd_body, requested);
+			if (got <= 0 || !http_sd_upload_write(g_http_sd_body, (size_t)got)) {
+				http_sd_upload_abort();
+				static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_write\"}";
+				http_send(507, error, sizeof(error) - 1);
+				return;
+			}
+		}
+		if (g_sd_upload_active &&
+		    g_sd_upload_received == g_sd_upload_expected) {
+			http_sd_upload_finish();
+			return;
+		}
+		if ((uint32_t)(millis() - g_http_last_byte_ms) > 150u) {
+			http_sd_upload_abort();
+			g_http_client.stop();
+			g_http_client = EthernetClient();
+			g_http_request_length = 0;
+			g_http_client_drops++;
+		}
+		return;
+	}
 	while (g_http_client.available() && g_http_request_length < AIUS_HTTP_MAX_REQUEST) {
 		int value = g_http_client.read();
 		if (value < 0)
@@ -799,7 +911,28 @@ static void service_http(void)
 			g_http_body_offset = body_offset;
 			size_t expected_body = 0;
 			int body_result = http_expected_body(body_offset - 2u, &expected_body);
-			if (body_result < 0 || g_http_request_length - body_offset > expected_body) {
+			AiusHttpRequest request;
+			AiusHttpResult parse_result = aius_http_parse(g_http_request, body_offset,
+			                                             &request);
+			if (parse_result == AIUS_HTTP_OK &&
+			    request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			    request.method == AIUS_HTTP_PUT) {
+				if (body_result < 0 || !http_has_content_length(body_offset - 2u) ||
+				    g_http_request_length - body_offset > expected_body ||
+				    !http_sd_upload_begin(request, (uint32_t)expected_body) ||
+				    !http_sd_upload_write(g_http_request + body_offset,
+				                          g_http_request_length - body_offset)) {
+					http_sd_upload_abort();
+					g_http_rejections++;
+					static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_upload\"}";
+					http_send(body_result < 0 ? 413 : 507, error_body,
+					          sizeof(error_body) - 1);
+				} else {
+					g_http_request_length = body_offset;
+					if (g_sd_upload_received == g_sd_upload_expected)
+						http_sd_upload_finish();
+				}
+			} else if (body_result < 0 || g_http_request_length - body_offset > expected_body) {
 				g_http_rejections++;
 				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"body_too_large\"}";
 				http_send(413, error_body, sizeof(error_body) - 1);

@@ -29,9 +29,10 @@ The firmware now initializes the optional built-in SD card and exposes bounded
 raw file operations for `index.html`, `app.js`, `style.css`, and `config.json`:
 
 - `GET /api/sd` reports card availability.
-- `GET /sd/{resource}` reads a file, capped at 1536 bytes.
-- `PUT /sd/{resource}` writes through `/aius/.upload.tmp`, then replaces the
-  target, capped at 1536 bytes.
+- `GET /sd/{resource}` streams the file in bounded SD/RAM chunks.
+- `PUT /sd/{resource}` streams through `/aius/.upload.tmp`, then replaces the
+  target. `Content-Length` is required; the body is no longer limited by the
+  firmware request buffer.
 - `DELETE /sd/{resource}` removes an allowlisted file.
 
 The embedded page remains the root page in this slice. Uploaded `index.html`
