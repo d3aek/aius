@@ -29,6 +29,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `scripts/build.sh` | Teensy 4.1 cross-build (`pio run`) + per-bank memory report. |
 | `scripts/run_hid.sh` | Host P6 proof over Teensy RawHID (`/dev/hidrawN`). |
 | `scripts/flash_and_run.sh` | Bounded flash, re-enumeration wait, and P6 proof. |
+| `scripts/flash_optical.sh` | Optical-image flash wrapper; waits for HalfKay and reports completion. |
 | `platformio.ini` | Teensy 4.1 cross-build environments. |
 
 ## Running host tests
@@ -56,6 +57,21 @@ C suites.
 
 Cross-build for the Teensy with `scripts/build.sh` (needs PlatformIO; see its
 header for the pinned-venv recipe).
+
+### Optical flashing session rule
+
+Start the loader before asking for a button press:
+
+```sh
+sg plugdev -c '$HOME/.platformio/packages/tool-teensy/teensy_loader_cli --mcu=imxrt1062 -w -v .pio/build/teensy41-optical/firmware.hex'
+```
+
+The loader owns a long-running interactive session while it waits for HalfKay.
+The caller must keep that session handle, poll it until it exits, and only then
+continue with the post-flash probe. A later conversation turn is not an
+automatic completion callback. Treat `Found HalfKay Bootloader`, `Booting`, and
+the process exit status as the flash completion evidence; do not report the
+flash as complete while the loader is still waiting.
 
 ## Status
 
