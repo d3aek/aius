@@ -1351,6 +1351,9 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>PUT /sd/www/{path}</code> raw body with Content-Length and X-Aius-SD-Auth</li>"
 		"<li><code>DELETE /sd/www/{path}</code> with X-Aius-SD-Auth</li>"
 		"<li><code>PUT /api/config/public</code> JSON feature flags, no auth</li></ul>"
+		"<h2>DSP configuration</h2><p><a href=\"/api/dsp/config\">GET /api/dsp/config</a> "
+		"reports schema_version, sample_rate_hz, profiles, EQ sections, mixes, and active selection.</p>"
+		"<pre id=dsp>Loading DSP configuration...</pre>"
 		"<h2>SD web upload</h2><p>Get the token over USB with <code>AIUS AUTH</code>. "
 		"The picker preserves relative paths and sends authenticated standard HTTP PUT requests.</p>"
 		"<label>SD auth token <input id=t size=16 maxlength=16 autocomplete=off></label> "
@@ -1366,12 +1369,13 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<button title=\"Clear audio and event counters\" onclick=go('/api/clear')>Clear counters</button> "
 		"<button title=\"Restart the application without entering HalfKay\" onclick=reboot()>Reboot</button></p>"
 		"<pre id=s>Loading status...</pre><p id=e></p></body><script>"
-		"const s=document.getElementById('s'),e=document.getElementById('e'),u=document.getElementById('u');"
+		"const s=document.getElementById('s'),e=document.getElementById('e'),u=document.getElementById('u'),d=document.getElementById('dsp');"
 		"async function get(){try{s.textContent=JSON.stringify(await (await fetch('/api/status')).json(),null,2);e.textContent=''}catch(a){e.textContent=a}}"
+		"async function getDsp(){try{const r=await fetch('/api/dsp/config');if(!r.ok)throw Error('HTTP '+r.status);d.textContent=JSON.stringify(await r.json(),null,2)}catch(a){d.textContent='DSP model unavailable: '+a}}"
 		"async function go(a,b){try{await fetch(a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});get()}catch(c){e.textContent=c}}"
 		"async function reboot(){e.textContent='Rebooting...';try{await go('/api/reboot');setTimeout(get,2000)}catch(a){}}"
 		"async function upload(){u.textContent='';const token=document.getElementById('t').value;const files=[...(document.getElementById('f').files||[])];for(const file of files){const rel=file.webkitRelativePath||file.name;const path=rel.split('/').slice(1).join('/')||rel;if(path.split('/').pop()==='config.json'){u.textContent+='refused '+path+'\\n';continue}try{const r=await fetch('/sd/www/'+path.split('/').map(encodeURIComponent).join('/'),{method:'PUT',headers:{'X-Aius-SD-Auth':token,'Content-Type':'application/octet-stream'},body:file});u.textContent+=r.status+' '+path+'\\n'}catch(a){u.textContent+='error '+path+' '+a+'\\n'}}}"
-		"get();setInterval(get,2000)</script></html>",
+		"get();getDsp();setInterval(get,2000);setInterval(getDsp,2000)</script></html>",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		AIUS_OPTICAL_PROFILES[0].name, AIUS_OPTICAL_PROFILES[1].name,
 		AIUS_OPTICAL_PROFILES[2].name, AIUS_OPTICAL_MIXES[0].name,
