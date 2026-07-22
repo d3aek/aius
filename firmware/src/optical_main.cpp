@@ -535,7 +535,8 @@ static void reset_application(void)
 static size_t http_home_page(uint8_t *body, size_t capacity)
 {
 	int length = snprintf((char *)body, capacity,
-		"<!doctype html><html><head><meta charset=\"utf-8\"><title>Aius</title></head>"
+		"<!doctype html><html><head><meta charset=\"utf-8\"><title>Aius</title>"
+		"<style>body{font-family:monospace;white-space:pre-wrap}code{font-family:inherit}</style></head>"
 		"<body><h1>Aius optical firmware</h1><p>Git revision: %s<br>Build UTC: %s</p>"
 		"<h2>API</h2><ul><li><a href=\"/api/status\">GET /api/status</a></li>"
 		"<li><a href=\"/api/events\">GET /api/events</a></li>"
