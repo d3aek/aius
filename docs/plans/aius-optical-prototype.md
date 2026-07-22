@@ -161,6 +161,36 @@ per-channel user EQ are out of scope. If the DSP path cannot meet the measured
 audio deadline or causes any safety-state regression, the prototype remains on
 flat downmix/bypass and the stretch goal is recorded as deferred.
 
+## DSP control protocol and remote dashboard
+
+The dashboard is a host-side service. The Teensy remains a bounded UDP device
+with no HTTP server, filesystem, JavaScript runtime, or unbounded UI state. The
+dashboard talks only to the versioned UDP client and must not expose the device
+directly outside the isolated fixture network.
+
+The DSP control contract is deliberately preset-based:
+
+| operation | request payload | response/telemetry |
+| --- | --- | --- |
+| `set_mode` | one byte: `flat`, `speech`, or `bass-reduced` | ACK, then status reports the active preset |
+| `start_test` | empty | idempotent ACK; status test flag and event transition |
+| `stop_test` | empty | idempotent ACK; status test flag cleared |
+| `clear_counters` | empty | ACK; counters reset at a new test epoch |
+| `get_status` | empty | coherent network, audio, DSP, and identity snapshot |
+| `get_events` | cursor `u32` | bounded event records and next cursor |
+| `reboot` | empty | ACK before reset; never automatically retried |
+
+Preset changes are applied at a muted/audio-safe boundary and reset EQ state so
+old filter history cannot leak between modes. The dashboard displays the board
+identity, boot epoch, active preset, test state, carrier/format/rate, counters,
+overruns, and event history. It shows stale/offline state after bounded request
+failure and never presents a control as successful without a matching ACK.
+
+The initial dashboard has no authentication and binds to loopback by default.
+Target address, expected MAC, and a fixture-network warning are explicit
+configuration. Authentication and multi-user access control remain outside the
+prototype boundary.
+
 ## Hardware prototype scope
 
 ### Required
