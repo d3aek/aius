@@ -6,6 +6,8 @@
  */
 
 #include <Arduino.h>
+#include <stdio.h>
+#include <string.h>
 #include <AudioStream.h>
 #include <NativeEthernet.h>
 #include <NativeEthernetUdp.h>
@@ -14,8 +16,9 @@
 
 extern "C" {
 #include "aius_net.h"
-#include "aius_dsp.h"
-#include "aius_pipeline.h"
+	#include "aius_dsp.h"
+	#include "aius_pipeline.h"
+	#include "aius_http.h"
 }
 
 static constexpr uint16_t AIUS_NET_PORT = 4242;
@@ -24,6 +27,16 @@ static constexpr uint32_t AIUS_STATIC_MASK[4] = {255, 255, 255, 0};
 
 static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
 static EthernetUDP g_udp;
+static EthernetServer g_http_server(80);
+static EthernetClient g_http_client;
+static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
+static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
+static size_t g_http_request_length;
+static uint32_t g_http_last_byte_ms;
+static uint32_t g_http_requests;
+static uint32_t g_http_rejections;
+static uint32_t g_http_client_drops;
+static uint32_t g_http_service_overruns;
 static IPAddress g_static_ip(AIUS_STATIC_IP[0], AIUS_STATIC_IP[1],
                              AIUS_STATIC_IP[2], AIUS_STATIC_IP[3]);
 static IPAddress g_static_mask(AIUS_STATIC_MASK[0], AIUS_STATIC_MASK[1],
@@ -320,8 +333,12 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	uint32_t event_overflows = g_event_overflows;
 	uint32_t network_drops = g_network_drops;
 	uint32_t network_budget_overruns = g_network_budget_overruns;
+	uint32_t http_requests = g_http_requests;
+	uint32_t http_rejections = g_http_rejections;
+	uint32_t http_client_drops = g_http_client_drops;
+	uint32_t http_service_overruns = g_http_service_overruns;
 	interrupts();
-	memset(payload, 0, 55);
+	memset(payload, 0, 71);
 	payload[0] = 1;
 	payload[1] = g_dhcp ? 1 : 2;
 	AiusPipelineClass klass = g_audio_processor.classification();
@@ -348,7 +365,11 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	aius_net_put_u32(payload + 43, event_overflows);
 	aius_net_put_u32(payload + 47, network_drops);
 	aius_net_put_u32(payload + 51, network_budget_overruns);
-	*length = 55;
+	aius_net_put_u32(payload + 55, http_requests);
+	aius_net_put_u32(payload + 59, http_rejections);
+	aius_net_put_u32(payload + 63, http_client_drops);
+	aius_net_put_u32(payload + 67, http_service_overruns);
+	*length = 71;
 }
 
 static void send_response(uint8_t type, uint32_t request_id,
@@ -368,6 +389,229 @@ static void send_nack(uint32_t request_id, uint8_t error)
 {
 	uint8_t payload[1] = {error};
 	send_response(AIUS_NET_RSP_NACK, request_id, payload, sizeof(payload));
+}
+
+static int http_header_end(size_t *body_offset)
+{
+	for (size_t i = 3; i < g_http_request_length; i++) {
+		if (g_http_request[i - 3] == '\r' && g_http_request[i - 2] == '\n' &&
+		    g_http_request[i - 1] == '\r' && g_http_request[i] == '\n') {
+			*body_offset = i + 1;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int http_expected_body(size_t header_end, size_t *expected)
+{
+	*expected = 0;
+	for (size_t i = 0; i + 16 < header_end; i++) {
+		if (memcmp(g_http_request + i, "Content-Length: ", 16) != 0)
+			continue;
+		i += 16;
+		uint32_t value = 0;
+		while (i < header_end && g_http_request[i] >= '0' && g_http_request[i] <= '9') {
+			value = value * 10u + (uint32_t)(g_http_request[i] - '0');
+			if (value > AIUS_HTTP_MAX_BODY)
+				return -1;
+			i++;
+		}
+		*expected = value;
+		return 1;
+	}
+	return 1;
+}
+
+static unsigned http_error_status(AiusHttpResult result)
+{
+	switch (result) {
+	case AIUS_HTTP_ERR_TOO_LARGE: return 413;
+	case AIUS_HTTP_ERR_TIMEOUT: return 408;
+	case AIUS_HTTP_ERR_METHOD: return 405;
+	case AIUS_HTTP_ERR_ROUTE: return 404;
+	default: return 400;
+	}
+}
+
+static size_t http_status_json(uint8_t *body, size_t capacity)
+{
+	uint8_t status[71];
+	uint16_t status_length = 0;
+	put_status(status, &status_length);
+	if (capacity == 0 || status_length < 71)
+		return 0;
+	int written = snprintf((char *)body, capacity,
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		status[0], status[2], status[3] & 1u, status[23],
+		(unsigned long)aius_net_get_u32(status + 25),
+		(unsigned long)aius_net_get_u32(status + 29),
+		(unsigned long)aius_net_get_u32(status + 33), status[37], status[38],
+		(unsigned long)aius_net_get_u32(status + 39),
+		(unsigned long)aius_net_get_u32(status + 43),
+		(unsigned long)aius_net_get_u32(status + 47),
+		(unsigned long)aius_net_get_u32(status + 51),
+		(unsigned long)aius_net_get_u32(status + 55),
+		(unsigned long)aius_net_get_u32(status + 59),
+		(unsigned long)aius_net_get_u32(status + 63),
+		(unsigned long)aius_net_get_u32(status + 67));
+	return written > 0 && (size_t)written < capacity ? (size_t)written : 0;
+}
+
+static size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)
+{
+	int written = snprintf((char *)body, capacity, "{\"cursor\":%lu,\"next\":%lu,\"events\":[",
+		(unsigned long)cursor, (unsigned long)g_event_sequence);
+	if (written < 0 || (size_t)written >= capacity)
+		return 0;
+	size_t length = (size_t)written;
+	uint8_t count = 0;
+	uint32_t first = g_event_sequence > 8u ? g_event_sequence - 7u : 1u;
+	for (uint32_t sequence = first; sequence <= g_event_sequence && count < 8; sequence++) {
+		const AiusEvent &event = g_events[(sequence - 1u) % 8u];
+		if (event.sequence != sequence || event.sequence <= cursor)
+			continue;
+		written = snprintf((char *)body + length, capacity - length,
+			"%s{\"sequence\":%lu,\"uptime_ms\":%lu,\"type\":%u,\"state\":%u,\"detail\":%u}",
+			count == 0 ? "" : ",", (unsigned long)event.sequence,
+			(unsigned long)event.uptime_ms, event.type, event.state, event.detail);
+		if (written < 0 || (size_t)written >= capacity - length)
+			return 0;
+		length += (size_t)written;
+		count++;
+	}
+	if (length + 2 >= capacity)
+		return 0;
+	body[length++] = ']';
+	body[length++] = '}';
+	body[length] = 0;
+	return length;
+}
+
+static void http_send(unsigned status, const uint8_t *body, size_t body_length)
+{
+	size_t response_length = aius_http_write_response(g_http_response,
+		sizeof(g_http_response), status, "application/json", body, body_length);
+	if (response_length != 0)
+		(void)g_http_client.write(g_http_response, response_length);
+	g_http_client.stop();
+}
+
+static void http_handle_request(void)
+{
+	AiusHttpRequest request;
+	AiusHttpResult result = aius_http_parse(g_http_request, g_http_request_length, &request);
+	if (result != AIUS_HTTP_OK) {
+		static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"invalid_request\"}";
+		g_http_rejections++;
+		http_send(http_error_status(result), error_body, sizeof(error_body) - 1);
+		return;
+	}
+	g_http_requests++;
+	uint8_t body[AIUS_HTTP_MAX_RESPONSE];
+	size_t body_length = 0;
+	unsigned status = 200;
+	switch (request.route) {
+	case AIUS_HTTP_ROUTE_STATUS:
+		body_length = http_status_json(body, sizeof(body));
+		break;
+	case AIUS_HTTP_ROUTE_EVENTS:
+		body_length = http_events_json(request.cursor, body, sizeof(body));
+		break;
+	case AIUS_HTTP_ROUTE_MODE:
+		if (!g_audio_processor.set_mode(request.mode)) status = 400;
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":%s,\"mode\":%u}",
+			status == 200 ? "true" : "false", g_audio_processor.mode());
+		break;
+	case AIUS_HTTP_ROUTE_MIX:
+		if (!g_audio_processor.set_mix(request.mix)) status = 400;
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":%s,\"mix\":%u}",
+			status == 200 ? "true" : "false", g_audio_processor.mix());
+		break;
+	case AIUS_HTTP_ROUTE_START:
+		if (!g_test_running) {
+			g_test_running = true;
+			record_event(2, current_state(), 1);
+		}
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"running\":true}");
+		break;
+	case AIUS_HTTP_ROUTE_STOP:
+		if (g_test_running) {
+			g_test_running = false;
+			record_event(2, current_state(), 0);
+		}
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"running\":false}");
+		break;
+	case AIUS_HTTP_ROUTE_CLEAR:
+		g_audio_processor.clear_counters();
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true}");
+		break;
+	case AIUS_HTTP_ROUTE_REBOOT:
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"rebooting\":true}");
+		http_send(status, body, (size_t)body_length);
+		_reboot_Teensyduino_();
+		return;
+	default:
+		status = 404;
+		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":false}");
+		break;
+	}
+	if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
+		static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"response_too_large\"}";
+		http_send(500, error_body, sizeof(error_body) - 1);
+		return;
+	}
+	http_send(status, body, (size_t)body_length);
+}
+
+static void service_http(void)
+{
+	uint32_t started = micros();
+	if (!g_http_client || !g_http_client.connected()) {
+		EthernetClient candidate = g_http_server.available();
+		if (candidate) {
+			if (g_http_client)
+				g_http_client_drops++;
+			g_http_client = candidate;
+			g_http_request_length = 0;
+			g_http_last_byte_ms = millis();
+		}
+	}
+	if (!g_http_client)
+		return;
+	while (g_http_client.available() && g_http_request_length < AIUS_HTTP_MAX_REQUEST) {
+		int value = g_http_client.read();
+		if (value < 0)
+			break;
+		g_http_request[g_http_request_length++] = (uint8_t)value;
+		g_http_last_byte_ms = millis();
+		if ((uint32_t)(micros() - started) >= 1500u)
+			break;
+	}
+	if (g_http_request_length >= sizeof(g_http_request)) {
+		g_http_rejections++;
+		static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"request_too_large\"}";
+		http_send(413, error_body, sizeof(error_body) - 1);
+	} else {
+		size_t body_offset = 0;
+		if (http_header_end(&body_offset)) {
+			size_t expected_body = 0;
+			int body_result = http_expected_body(body_offset - 2u, &expected_body);
+			if (body_result < 0 || g_http_request_length - body_offset > expected_body) {
+				g_http_rejections++;
+				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"body_too_large\"}";
+				http_send(413, error_body, sizeof(error_body) - 1);
+			} else if (g_http_request_length - body_offset == expected_body)
+				http_handle_request();
+		}
+	}
+	if (g_http_client && (uint32_t)(millis() - g_http_last_byte_ms) > 150u) {
+		g_http_client_drops++;
+		g_http_client.stop();
+		g_http_request_length = 0;
+	}
+	if ((uint32_t)(micros() - started) > 2000u)
+		g_http_service_overruns++;
 }
 
 static void service_network(void)
@@ -481,6 +725,7 @@ static void start_network(void)
 		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
 		              IPAddress(0, 0, 0, 0), g_static_mask);
 	g_udp.begin(AIUS_NET_PORT);
+	g_http_server.begin();
 }
 
 void setup(void)
@@ -495,6 +740,7 @@ void setup(void)
 void loop(void)
 {
 	service_network();
+	service_http();
 	if (g_dhcp)
 		(void)Ethernet.maintain();
 }
