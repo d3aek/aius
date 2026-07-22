@@ -209,11 +209,14 @@ period, failures rose until nearly every submission failed, reaching about
 `/dev/null`, and the host transport previously collapsed device removal,
 write/read errors, and timeout into the same failure code. The diagnostic
 runner now records the first transport `errno`, runner error, and result status.
-The next reproduction must use a real audit file and capture USB re-enumeration
-and reset evidence. The portable simulator soak remains green, so the current
-leading hypotheses are RawHID/device reset or transport loss, followed by a
-target-only allocation or memory-corruption fault; decode correctness is not
-yet implicated.
+The portable simulator soak remains green, so the leading hypotheses were
+RawHID/device reset or transport loss, followed by a target-only allocation or
+memory-corruption fault. A controlled P6 reproduction reached the same boundary
+at approximately 60 iterations: the audit contained only `status=0` frame
+results, while the host then stopped progressing in hidraw I/O and the board
+still enumerated as `16c0:0486`. This materially favors a USB-over-fibre/KVM
+RawHID transport stall over a decoder failure. The optical image was restored
+after the reproduction.
 
 ### Phase 1: remote-control transport
 
