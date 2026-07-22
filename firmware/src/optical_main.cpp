@@ -916,7 +916,12 @@ static void service_http(void)
 			                                             &request);
 			if (parse_result == AIUS_HTTP_OK &&
 			    request.route == AIUS_HTTP_ROUTE_SD_FILE &&
-			    request.method == AIUS_HTTP_PUT) {
+			    request.method == AIUS_HTTP_PUT && !g_sd_ready) {
+				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
+				http_send(503, error_body, sizeof(error_body) - 1);
+			} else if (parse_result == AIUS_HTTP_OK &&
+			           request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			           request.method == AIUS_HTTP_PUT) {
 				if (body_result < 0 || !http_has_content_length(body_offset - 2u) ||
 				    g_http_request_length - body_offset > expected_body ||
 				    !http_sd_upload_begin(request, (uint32_t)expected_body) ||
