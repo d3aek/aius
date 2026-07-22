@@ -42,14 +42,19 @@ struct AiusEvent {
 
 static AiusEvent g_events[8];
 static uint32_t g_event_sequence;
+static uint32_t g_event_overflows;
 static uint8_t g_last_state;
 static bool g_test_running;
+static volatile uint32_t g_network_drops;
+static volatile uint32_t g_network_budget_overruns;
 
 static uint8_t current_state(void);
 
 static void record_event(uint8_t type, uint8_t state, uint16_t detail)
 {
 	AiusEvent &event = g_events[g_event_sequence % 8u];
+	if (g_event_sequence >= 8u)
+		g_event_overflows++;
 	event.sequence = ++g_event_sequence;
 	event.uptime_ms = millis();
 	event.type = type;
@@ -90,10 +95,28 @@ public:
 		                  : AIUS_PIPELINE_UNKNOWN;
 	}
 
-	uint32_t block_count(void) const { return g_blocks; }
-	uint32_t overrun_count(void) const { return g_overruns; }
+	uint32_t block_count(void) const
+	{
+		noInterrupts();
+		uint32_t value = g_blocks;
+		interrupts();
+		return value;
+	}
+	uint32_t overrun_count(void) const
+	{
+		noInterrupts();
+		uint32_t value = g_overruns;
+		interrupts();
+		return value;
+	}
 	AiusStatus create_status(void) const { return g_create_status; }
-	void clear_counters(void) { g_blocks = 0; g_overruns = 0; }
+	void clear_counters(void)
+	{
+		noInterrupts();
+		g_blocks = 0;
+		g_overruns = 0;
+		interrupts();
+	}
 	uint8_t mode(void) const { return g_mode; }
 	uint8_t mix(void) const { return g_mix; }
 	bool set_mode(uint8_t mode)
@@ -101,19 +124,8 @@ public:
 		if (mode > AIUS_NET_MODE_BASS_REDUCED)
 			return false;
 		noInterrupts();
-		g_mode = mode;
-		if (mode == AIUS_NET_MODE_FLAT) {
-			g_eq[0] = aius_biquad_bypass();
-			g_eq_count = 1;
-		} else if (mode == AIUS_NET_MODE_SPEECH) {
-			g_eq[0] = aius_biquad_highpass(48000.0, 120.0, 0.7071);
-			g_eq[1] = aius_biquad_peaking(48000.0, 2500.0, 0.8, 3.0);
-			g_eq_count = 2;
-		} else {
-			g_eq[0] = aius_biquad_highpass(48000.0, 80.0, 0.7071);
-			g_eq_count = 1;
-		}
-		memset(g_eq_state, 0, sizeof(g_eq_state));
+		g_pending_mode = mode;
+		g_mode_pending = true;
 		interrupts();
 		return true;
 	}
@@ -122,12 +134,8 @@ public:
 		if (mix > AIUS_NET_MIX_CLIPFREE)
 			return false;
 		noInterrupts();
-		g_mix = mix;
-		g_downmix = aius_downmix_config_default();
-		if (mix == AIUS_NET_MIX_LFE_MINUS10)
-			g_downmix.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
-		else if (mix == AIUS_NET_MIX_CLIPFREE)
-			g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
+		g_pending_mix = mix;
+		g_mix_pending = true;
 		interrupts();
 		return true;
 	}
@@ -135,6 +143,7 @@ public:
 protected:
 	void update(void) override
 	{
+		apply_pending_controls();
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
 		if (left != nullptr && right != nullptr && g_pipeline != nullptr) {
@@ -173,6 +182,10 @@ private:
 	uint32_t g_overruns = 0;
 	uint8_t g_mode = AIUS_NET_MODE_FLAT;
 	uint8_t g_mix = AIUS_NET_MIX_STANDARD;
+	volatile uint8_t g_pending_mode = AIUS_NET_MODE_FLAT;
+	volatile uint8_t g_pending_mix = AIUS_NET_MIX_STANDARD;
+	volatile bool g_mode_pending = false;
+	volatile bool g_mix_pending = false;
 	AiusDownmixConfig g_downmix = aius_downmix_config_default();
 	AiusBiquad g_eq[2];
 	AiusBiquadState g_eq_state[4] = {};
@@ -181,6 +194,37 @@ private:
 	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
 		return static_cast<AiusAudioProcessor *>(ctx)->enqueue(block);
+	}
+
+	void apply_pending_controls(void)
+	{
+		if (g_mode_pending) {
+			uint8_t mode = g_pending_mode;
+			g_mode_pending = false;
+			g_mode = mode;
+			if (mode == AIUS_NET_MODE_FLAT) {
+				g_eq[0] = aius_biquad_bypass();
+				g_eq_count = 1;
+			} else if (mode == AIUS_NET_MODE_SPEECH) {
+				g_eq[0] = aius_biquad_highpass(48000.0, 120.0, 0.7071);
+				g_eq[1] = aius_biquad_peaking(48000.0, 2500.0, 0.8, 3.0);
+				g_eq_count = 2;
+			} else {
+				g_eq[0] = aius_biquad_highpass(48000.0, 80.0, 0.7071);
+				g_eq_count = 1;
+			}
+			memset(g_eq_state, 0, sizeof(g_eq_state));
+		}
+		if (g_mix_pending) {
+			uint8_t mix = g_pending_mix;
+			g_mix_pending = false;
+			g_mix = mix;
+			g_downmix = aius_downmix_config_default();
+			if (mix == AIUS_NET_MIX_LFE_MINUS10)
+				g_downmix.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
+			else if (mix == AIUS_NET_MIX_CLIPFREE)
+				g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
+		}
 	}
 
 	AiusStatus enqueue(const AiusPcmBlock *block)
@@ -267,11 +311,17 @@ static uint8_t current_state(void)
 
 static void put_status(uint8_t *payload, uint16_t *length)
 {
-	/* Versioned, explicitly packed status payload:
-	 * 0 version, 1 network mode (1 DHCP/2 fallback), 2 state, 3 flags,
-	 * 4 boot epoch, 8 uptime ms, 12 IPv4, 16 MAC, 22 NTP-valid flag. */
+	/* Versioned, explicitly packed status payload. The original 39 bytes remain
+	 * stable; diagnostic counters append at 39: event sequence, event overflow,
+	 * network drops, and network budget overruns. */
 	record_state();
-	memset(payload, 0, 39);
+	noInterrupts();
+	uint32_t event_sequence = g_event_sequence;
+	uint32_t event_overflows = g_event_overflows;
+	uint32_t network_drops = g_network_drops;
+	uint32_t network_budget_overruns = g_network_budget_overruns;
+	interrupts();
+	memset(payload, 0, 55);
 	payload[0] = 1;
 	payload[1] = g_dhcp ? 1 : 2;
 	AiusPipelineClass klass = g_audio_processor.classification();
@@ -294,7 +344,11 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	aius_net_put_u32(payload + 33, g_audio_processor.overrun_count());
 	payload[37] = g_audio_processor.mode();
 	payload[38] = g_audio_processor.mix();
-	*length = 39;
+	aius_net_put_u32(payload + 39, event_sequence);
+	aius_net_put_u32(payload + 43, event_overflows);
+	aius_net_put_u32(payload + 47, network_drops);
+	aius_net_put_u32(payload + 51, network_budget_overruns);
+	*length = 55;
 }
 
 static void send_response(uint8_t type, uint32_t request_id,
@@ -318,21 +372,27 @@ static void send_nack(uint32_t request_id, uint8_t error)
 
 static void service_network(void)
 {
+	uint32_t started = micros();
 	int packet_size = g_udp.parsePacket();
 	if (packet_size <= 0)
 		return;
 	uint8_t packet[AIUS_NET_MAX_FRAME];
 	if (packet_size > (int)sizeof(packet)) {
+		g_network_drops++;
 		while (g_udp.available())
 			(void)g_udp.read();
 		return;
 	}
 	int got = g_udp.read(packet, sizeof(packet));
-	if (got != packet_size)
+	if (got != packet_size) {
+		g_network_drops++;
 		return;
+	}
 	AiusNetFrame request;
-	if (aius_net_decode(packet, (size_t)got, &request) != AIUS_NET_OK)
+	if (aius_net_decode(packet, (size_t)got, &request) != AIUS_NET_OK) {
+		g_network_drops++;
 		return;
+	}
 	uint8_t payload[AIUS_NET_MAX_PAYLOAD];
 	uint16_t length = 0;
 	switch (request.type) {
@@ -380,16 +440,16 @@ static void service_network(void)
 		break;
 	case AIUS_NET_CMD_REBOOT:
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
-		delay(5);
 		_reboot_Teensyduino_();
 		break;
 	case AIUS_NET_CMD_GET_EVENTS: {
 		uint32_t cursor = request.payload_len >= 4 ?
 			aius_net_get_u32(request.payload) : 0;
 		uint8_t count = 0;
-		for (uint32_t i = 0; i < 8 && count < 4; i++) {
-			const AiusEvent &event = g_events[i];
-			if (event.sequence <= cursor || event.sequence == 0)
+		uint32_t first = g_event_sequence > 8u ? g_event_sequence - 7u : 1u;
+		for (uint32_t sequence = first; sequence <= g_event_sequence && count < 4; sequence++) {
+			const AiusEvent &event = g_events[(sequence - 1u) % 8u];
+			if (event.sequence != sequence || event.sequence <= cursor)
 				continue;
 			uint8_t *dst = payload + 1 + count * 12;
 			aius_net_put_u32(dst, event.sequence);
@@ -408,6 +468,8 @@ static void service_network(void)
 		send_nack(request.request_id, AIUS_NET_ERR_TYPE);
 		break;
 	}
+	if ((uint32_t)(micros() - started) > 2000u)
+		g_network_budget_overruns++;
 }
 
 static void start_network(void)
