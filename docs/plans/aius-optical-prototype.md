@@ -224,7 +224,9 @@ at offset zero and are rejected forever. The P6 receiver now resets its cursor
 on an out-of-order fragment, and the host retries the complete access unit once
 after a fragment timeout or NACK. Native capability tests and the P6 build pass;
 the hardware retry path remains to be re-run when the board is next placed in
-bootloader mode.
+bootloader mode. That validation is now complete: the repaired P6 image passed
+100 iterations and 4,000/4,000 frame submissions with zero failures, including
+the former failure boundary, before the optical image was restored.
 
 ### Phase 1: remote-control transport
 
