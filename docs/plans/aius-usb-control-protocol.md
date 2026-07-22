@@ -1,6 +1,6 @@
 ---
 title: AIUS USB control protocol
-status: in_progress
+status: complete
 owner: aius
 ---
 
@@ -141,8 +141,9 @@ the `teensy41-optical` target builds within all memory-bank budgets.
 transition  
 **commit-checkpoint:** host tests, target build, and live USB smoke test
 
-**status:** documentation is complete. Live USB smoke testing is pending a
-flash of this image onto the attached target.
+**status:** complete. The live target accepted PROTOCOL, ID, AUTH, and
+structured-error commands. USB-only BOOTLOADER caused HalfKay enumeration,
+the loader flashed the image, and Ethernet returned afterward.
 
 ## Acceptance criteria
 
@@ -156,3 +157,13 @@ flash of this image onto the attached target.
   sends the token on an error path.
 - The target build remains within the existing flash, RAM, and audio timing
   budgets.
+
+## Delivered evidence
+
+- Native `usb-control`, HTTP, config, and DSP suites pass.
+- `teensy41-optical` builds with 505,312 bytes flash used, 28,220 bytes FlexRAM
+  free, and 501,216 bytes OCRAM free.
+- Live target revision `3f70e4572995` returned structured CDC responses.
+- Live `AIUS BOOTLOADER 9` transition was observed by `teensy_loader_cli` as
+  `Found HalfKay Bootloader`, followed by successful programming and Ethernet
+  recovery.
