@@ -66,6 +66,10 @@ static void drain_frames(void)
             uint32_t chunk = frame.payload_len >= 8 ? frame.payload_len - 8 : 0;
             if (offset != g_fragment_received || total == 0 ||
                 total > sizeof(g_fragment_buf) || offset + chunk > total) {
+                /* A lost report must not poison every later frame. The host
+                 * will retry the complete access unit after this NACK. */
+                g_fragment_received = 0;
+                g_fragment_total = 0;
                 AiusCapFrame error = frame;
                 error.error = AIUS_CAP_ERR_MALFORMED_PAYLOAD;
                 aius_cap_device_handle_error(&g_device, &error, emit_hid, NULL);

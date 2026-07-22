@@ -215,10 +215,10 @@ int aius_host_reboot_bootloader(AiusHostRunner *r)
 	return host_send(r, AIUS_CAP_CMD_REBOOT_BOOTLOADER, NULL, 0, NULL);
 }
 
-int aius_host_submit_frame(AiusHostRunner *r, const uint8_t *au, uint32_t len,
-                           AiusCapFrameResult *out)
+static int submit_fragmented_once(AiusHostRunner *r, const uint8_t *au,
+                                  uint32_t len, AiusCapFrameResult *out)
 {
-	if (r->fragment_large && len > AIUS_CAP_FRAGMENT_CHUNK) {
+	if (len > AIUS_CAP_FRAGMENT_CHUNK) {
 		uint8_t payload[8u + AIUS_CAP_FRAGMENT_CHUNK];
 		uint32_t offset = 0;
 		while (offset < len) {
@@ -246,6 +246,23 @@ int aius_host_submit_frame(AiusHostRunner *r, const uint8_t *au, uint32_t len,
 			offset += chunk;
 		}
 		return 0;
+	}
+	return -1;
+}
+
+int aius_host_submit_frame(AiusHostRunner *r, const uint8_t *au, uint32_t len,
+                           AiusCapFrameResult *out)
+{
+	if (r->fragment_large && len > AIUS_CAP_FRAGMENT_CHUNK) {
+		/* One dropped HID report can leave the device midway through a frame.
+		 * Retry the complete frame once; the device resets its fragment cursor
+		 * when it rejects the restarted offset. */
+		for (unsigned attempt = 0; attempt < 2; attempt++) {
+			int rc = submit_fragmented_once(r, au, len, out);
+			if (rc == 0)
+				return 0;
+		}
+		return -1;
 	}
 	if (host_send(r, AIUS_CAP_CMD_SUBMIT_FRAME, au, len, NULL) != 0)
 		return -1;

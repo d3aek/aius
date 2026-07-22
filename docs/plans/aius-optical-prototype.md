@@ -218,6 +218,14 @@ still enumerated as `16c0:0486`. This materially favors a USB-over-fibre/KVM
 RawHID transport stall over a decoder failure. The optical image was restored
 after the reproduction.
 
+The failure mode is actionable: a dropped fragment leaves the device cursor
+mid-frame while the host waits for that fragment's ACK. Subsequent frames start
+at offset zero and are rejected forever. The P6 receiver now resets its cursor
+on an out-of-order fragment, and the host retries the complete access unit once
+after a fragment timeout or NACK. Native capability tests and the P6 build pass;
+the hardware retry path remains to be re-run when the board is next placed in
+bootloader mode.
+
 ### Phase 1: remote-control transport
 
 **unit:** Ethernet control/telemetry adapter and protocol tests  
