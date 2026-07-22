@@ -70,6 +70,7 @@ static uint32_t g_boot_epoch;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
 static uint32_t g_sd_probe_at;
+static bool g_sd_usage_refresh_pending;
 static AudioInputSPDIF3 g_spdif_in;
 
 struct AiusEvent {
@@ -124,6 +125,9 @@ static void service_sd(void)
 			g_sd_ready = false;
 			refresh_sd_usage();
 			Serial.printf("AIUS SD removed\\n");
+		} else if (g_sd_usage_refresh_pending) {
+			refresh_sd_usage();
+			g_sd_usage_refresh_pending = false;
 		}
 		return;
 	}
@@ -664,7 +668,7 @@ static void http_sd_upload_finish(void)
 		http_send(500, error, sizeof(error) - 1);
 		return;
 	}
-	refresh_sd_usage();
+	g_sd_usage_refresh_pending = true;
 	static const uint8_t response[] = "{\"ok\":true}";
 	http_send(200, response, sizeof(response) - 1);
 }
@@ -761,7 +765,7 @@ static void http_sd_request(const AiusHttpRequest &request)
 			http_send(404, body, sizeof(body) - 1);
 			return;
 		}
-		refresh_sd_usage();
+		g_sd_usage_refresh_pending = true;
 		static const uint8_t body[] = "{\"ok\":true}";
 		http_send(200, body, sizeof(body) - 1);
 		return;
