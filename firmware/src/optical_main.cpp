@@ -724,10 +724,22 @@ static void start_network(void)
 	 * after DHCP fails, keeping the fallback usable on a direct cable. */
 	if (g_network_ready)
 		return;
+	Serial.printf("AIUS Ethernet MAC configured=%02x:%02x:%02x:%02x:%02x:%02x\\n",
+	              g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
+	Serial.printf("AIUS Ethernet init: DHCP begin\\n");
 	g_dhcp = Ethernet.begin(g_mac, 5000, 250) != 0;
+	byte actual_mac[6] = {};
+	Ethernet.MACAddress(actual_mac);
+	Serial.printf("AIUS Ethernet MAC actual=%02x:%02x:%02x:%02x:%02x:%02x\\n",
+	              actual_mac[0], actual_mac[1], actual_mac[2], actual_mac[3],
+	              actual_mac[4], actual_mac[5]);
+	Serial.printf("AIUS Ethernet DHCP result=%u link=%u\\n", g_dhcp ? 1u : 0u,
+	              (unsigned)Ethernet.linkStatus());
 	if (!g_dhcp && Ethernet.linkStatus() == LinkON) {
+		Serial.printf("AIUS Ethernet static fallback begin\\n");
 		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
 		              IPAddress(0, 0, 0, 0), g_static_mask);
+		Serial.printf("AIUS Ethernet static fallback returned\\n");
 	}
 	g_network_ready = Ethernet.linkStatus() == LinkON &&
 	                  (g_dhcp || Ethernet.localIP() != IPAddress(0, 0, 0, 0));
