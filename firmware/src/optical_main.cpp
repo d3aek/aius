@@ -42,12 +42,50 @@ static EthernetServer g_http_server(80);
 static EthernetClient g_http_client;
 static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
-static uint8_t g_http_sd_body[AIUS_HTTP_MAX_BODY];
-static File g_sd_upload;
-static char g_sd_upload_path[40];
-static uint32_t g_sd_upload_expected;
-static uint32_t g_sd_upload_received;
-static bool g_sd_upload_active;
+static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
+
+enum AiusSdJobState : uint8_t {
+	AIUS_SD_JOB_IDLE = 0,
+	AIUS_SD_JOB_UPLOAD_OPEN,
+	AIUS_SD_JOB_UPLOAD_RECEIVE,
+	AIUS_SD_JOB_UPLOAD_WRITE,
+	AIUS_SD_JOB_UPLOAD_CHECK_TARGET,
+	AIUS_SD_JOB_UPLOAD_BACKUP,
+	AIUS_SD_JOB_UPLOAD_INSTALL,
+	AIUS_SD_JOB_UPLOAD_ROLLBACK,
+	AIUS_SD_JOB_UPLOAD_CLEANUP,
+	AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP,
+	AIUS_SD_JOB_DOWNLOAD_OPEN,
+	AIUS_SD_JOB_DOWNLOAD_HEADER,
+	AIUS_SD_JOB_DOWNLOAD_READ,
+	AIUS_SD_JOB_DOWNLOAD_WRITE,
+	AIUS_SD_JOB_DELETE
+};
+
+struct AiusSdJob {
+	AiusSdJobState state;
+	File file;
+	char target_path[48];
+	char temp_path[48];
+	char backup_path[48];
+	const char *content_type;
+	uint32_t expected;
+	uint32_t received;
+	uint32_t written;
+	uint32_t initial_offset;
+	uint32_t initial_end;
+	uint16_t pending_length;
+	uint16_t response_offset;
+	uint16_t response_length;
+	bool target_existed;
+	bool backup_moved;
+	uint16_t error_status;
+	uint8_t transfer[AIUS_SD_TRANSFER_SLICE];
+	char response_header[192];
+};
+
+static AiusSdJob g_sd_job = {};
+static uint32_t g_sd_job_sequence;
 static size_t g_http_request_length;
 static size_t g_http_body_offset;
 static uint32_t g_http_last_byte_ms;
@@ -114,29 +152,317 @@ static void refresh_sd_usage(void)
 	g_sd_used_bytes = SD.usedSize();
 }
 
-static void service_sd(void)
+static void http_send(unsigned status, const uint8_t *body, size_t body_length);
+
+static bool sd_job_active(void)
 {
-	uint32_t now = millis();
-	if ((int32_t)(now - g_sd_probe_at) < 0)
+	return g_sd_job.state != AIUS_SD_JOB_IDLE;
+}
+
+static void sd_job_clear(void)
+{
+	if (g_sd_job.file)
+		g_sd_job.file.close();
+	g_sd_job.state = AIUS_SD_JOB_IDLE;
+	g_sd_job.target_path[0] = 0;
+	g_sd_job.temp_path[0] = 0;
+	g_sd_job.backup_path[0] = 0;
+	g_sd_job.content_type = nullptr;
+	g_sd_job.expected = 0;
+	g_sd_job.received = 0;
+	g_sd_job.written = 0;
+	g_sd_job.initial_offset = 0;
+	g_sd_job.initial_end = 0;
+	g_sd_job.pending_length = 0;
+	g_sd_job.response_offset = 0;
+	g_sd_job.response_length = 0;
+	g_sd_job.target_existed = false;
+	g_sd_job.backup_moved = false;
+	g_sd_job.error_status = 0;
+}
+
+static void sd_job_cancel(void)
+{
+	if (!sd_job_active())
 		return;
-	g_sd_probe_at = now + 1000u;
-	if (g_sd_ready) {
-		if (!SD.mediaPresent()) {
-			g_sd_ready = false;
-			refresh_sd_usage();
-			Serial.printf("AIUS SD removed\\n");
-		} else if (g_sd_usage_refresh_pending) {
-			refresh_sd_usage();
-			g_sd_usage_refresh_pending = false;
+	if (g_sd_job.file)
+		g_sd_job.file.close();
+	if (g_sd_job.backup_moved &&
+	    (g_sd_job.state == AIUS_SD_JOB_UPLOAD_INSTALL ||
+     g_sd_job.state == AIUS_SD_JOB_UPLOAD_ROLLBACK)) {
+		g_sd_job.pending_length = 0;
+		g_sd_job.error_status = 0;
+		g_sd_job.state = AIUS_SD_JOB_UPLOAD_ROLLBACK;
+		return;
+	}
+	if (!g_sd_ready) {
+		/* Keep the cancellation marker until the card returns so the
+		 * uniquely named temporary file can be removed by service_sd. */
+		g_sd_job.pending_length = 0;
+		g_sd_job.error_status = 0;
+		g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+		return;
+	}
+	/* Cleanup is deferred as well. In particular, disconnect handling must not
+	 * turn an HTTP service call into an SD write. */
+	g_sd_job.pending_length = 0;
+	g_sd_job.error_status = 0;
+	g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+}
+
+static void sd_job_drop_client(void)
+{
+	if (g_http_client)
+		g_http_client.stop();
+	g_http_client = EthernetClient();
+	g_http_request_length = 0;
+}
+
+static uint32_t sd_job_id(void)
+{
+	return ++g_sd_job_sequence ^ millis() ^ g_boot_epoch;
+}
+
+static bool sd_job_make_upload_paths(const char *target)
+{
+	uint32_t id = sd_job_id();
+	int temp_length = snprintf(g_sd_job.temp_path, sizeof(g_sd_job.temp_path),
+	                           "/aius/.upload-%08lx-%08lx.tmp",
+	                           (unsigned long)id, (unsigned long)g_sd_job_sequence);
+	int backup_length = snprintf(g_sd_job.backup_path,
+	                             sizeof(g_sd_job.backup_path),
+	                             "/aius/.backup-%08lx-%08lx.bak",
+	                             (unsigned long)id, (unsigned long)g_sd_job_sequence);
+	return temp_length > 0 && backup_length > 0 &&
+	       (size_t)temp_length < sizeof(g_sd_job.temp_path) &&
+	       (size_t)backup_length < sizeof(g_sd_job.backup_path) &&
+	       strlen(target) < sizeof(g_sd_job.target_path);
+}
+
+static void sd_job_send_error(unsigned status, const char *error)
+{
+	char body[64];
+	int length = snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}",
+	                      error);
+	if (length > 0 && (size_t)length < sizeof(body))
+		http_send(status, (const uint8_t *)body, (size_t)length);
+	else
+		sd_job_drop_client();
+	sd_job_clear();
+}
+
+static void service_sd_job(void)
+{
+	switch (g_sd_job.state) {
+	case AIUS_SD_JOB_UPLOAD_OPEN:
+		g_sd_job.file = SD.open(g_sd_job.temp_path, FILE_WRITE);
+		if (!g_sd_job.file) {
+			g_sd_job.error_status = 507;
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+		} else {
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
+		}
+		return;
+	case AIUS_SD_JOB_UPLOAD_RECEIVE:
+		if (g_sd_job.pending_length != 0)
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_WRITE;
+		else if (g_sd_job.written == g_sd_job.expected)
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_CHECK_TARGET;
+		return;
+	case AIUS_SD_JOB_UPLOAD_WRITE:
+		if (!g_sd_job.file || g_sd_job.pending_length == 0) {
+			g_sd_job.error_status = 507;
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			return;
+		}
+		if (g_sd_job.file.write(g_sd_job.transfer, g_sd_job.pending_length) !=
+		    g_sd_job.pending_length) {
+			g_sd_job.error_status = 507;
+			g_sd_job.file.close();
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			return;
+		}
+		g_sd_job.written += g_sd_job.pending_length;
+		g_sd_job.pending_length = 0;
+		g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
+		return;
+	case AIUS_SD_JOB_UPLOAD_CHECK_TARGET:
+		if (g_sd_job.file)
+			g_sd_job.file.close();
+		g_sd_job.target_existed = SD.exists(g_sd_job.target_path);
+		g_sd_job.state = g_sd_job.target_existed ?
+			AIUS_SD_JOB_UPLOAD_BACKUP : AIUS_SD_JOB_UPLOAD_INSTALL;
+		return;
+	case AIUS_SD_JOB_UPLOAD_BACKUP:
+		if (!SD.rename(g_sd_job.target_path, g_sd_job.backup_path)) {
+			g_sd_job.error_status = 500;
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			return;
+		}
+		g_sd_job.backup_moved = true;
+		g_sd_job.state = AIUS_SD_JOB_UPLOAD_INSTALL;
+		return;
+	case AIUS_SD_JOB_UPLOAD_INSTALL:
+		if (SD.rename(g_sd_job.temp_path, g_sd_job.target_path)) {
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_CLEANUP;
+		} else if (g_sd_job.backup_moved) {
+			g_sd_job.error_status = 500;
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_ROLLBACK;
+		} else {
+			g_sd_job.error_status = 500;
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+		}
+		return;
+	case AIUS_SD_JOB_UPLOAD_ROLLBACK:
+		/* The target was moved aside before the install. Keep retrying this
+		 * single filesystem operation until the old target is restored. */
+		if (SD.rename(g_sd_job.backup_path, g_sd_job.target_path))
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+		return;
+	case AIUS_SD_JOB_UPLOAD_CLEANUP:
+		if (g_sd_job.backup_moved && !SD.remove(g_sd_job.backup_path))
+			return;
+		g_sd_usage_refresh_pending = true;
+		static const uint8_t upload_ok[] = "{\"ok\":true}";
+		http_send(200, upload_ok, sizeof(upload_ok) - 1);
+		sd_job_clear();
+		return;
+	case AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP: {
+		if (g_sd_job.file)
+			g_sd_job.file.close();
+		if (g_sd_job.temp_path[0] != 0)
+			(void)SD.remove(g_sd_job.temp_path);
+		if (g_sd_job.error_status != 0) {
+			unsigned status = g_sd_job.error_status;
+			sd_job_send_error(status, status == 500 ? "sd_commit" : "sd_write");
+		} else {
+			sd_job_drop_client();
+			sd_job_clear();
 		}
 		return;
 	}
-	if (SD.begin(BUILTIN_SDCARD)) {
-		g_sd_ready = true;
-		(void)SD.mkdir("/aius");
+	case AIUS_SD_JOB_DOWNLOAD_OPEN: {
+		g_sd_job.file = SD.open(g_sd_job.target_path, FILE_READ);
+		if (!g_sd_job.file) {
+			sd_job_send_error(404, "not_found");
+			return;
+		}
+		uint32_t size = (uint32_t)g_sd_job.file.size();
+		int length = snprintf(g_sd_job.response_header,
+		                      sizeof(g_sd_job.response_header),
+		                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n"
+		                      "Content-Length: %lu\r\nConnection: close\r\n\r\n",
+		                      g_sd_job.content_type,
+		                      (unsigned long)size);
+		if (length < 0 || (size_t)length >= sizeof(g_sd_job.response_header)) {
+			sd_job_send_error(500, "response_too_large");
+			return;
+		}
+		g_sd_job.response_length = (uint16_t)length;
+		g_sd_job.response_offset = 0;
+		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_HEADER;
+		return;
+	}
+	case AIUS_SD_JOB_DOWNLOAD_HEADER: {
+		size_t remaining = g_sd_job.response_length - g_sd_job.response_offset;
+		size_t written = g_http_client.write(
+			(const uint8_t *)g_sd_job.response_header + g_sd_job.response_offset,
+			remaining);
+		if (written == 0) {
+			sd_job_drop_client();
+			sd_job_clear();
+			return;
+		}
+		g_sd_job.response_offset += (uint16_t)written;
+		if (g_sd_job.response_offset == g_sd_job.response_length)
+			g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_READ;
+		return;
+	}
+	case AIUS_SD_JOB_DOWNLOAD_READ: {
+		size_t length = g_sd_job.file.read(g_sd_job.transfer,
+		                                  sizeof(g_sd_job.transfer));
+		if (length == 0) {
+			g_sd_job.file.close();
+			g_http_client.stop();
+			g_http_client = EthernetClient();
+			g_http_request_length = 0;
+			sd_job_clear();
+			return;
+		}
+		g_sd_job.pending_length = (uint16_t)length;
+		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_WRITE;
+		return;
+	}
+	case AIUS_SD_JOB_DOWNLOAD_WRITE: {
+		size_t written = g_http_client.write(g_sd_job.transfer,
+		                                    g_sd_job.pending_length);
+		if (written == 0) {
+			sd_job_drop_client();
+			sd_job_clear();
+			return;
+		}
+		if (written < g_sd_job.pending_length) {
+			memmove(g_sd_job.transfer, g_sd_job.transfer + written,
+			        g_sd_job.pending_length - written);
+		}
+		g_sd_job.pending_length -= (uint16_t)written;
+		if (g_sd_job.pending_length == 0)
+			g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_READ;
+		return;
+	}
+	case AIUS_SD_JOB_DELETE:
+		if (!SD.remove(g_sd_job.target_path))
+			sd_job_send_error(404, "not_found");
+		else {
+			g_sd_usage_refresh_pending = true;
+			static const uint8_t delete_ok[] = "{\"ok\":true}";
+			http_send(200, delete_ok, sizeof(delete_ok) - 1);
+			sd_job_clear();
+		}
+		return;
+	case AIUS_SD_JOB_IDLE:
+		return;
+	}
+}
+
+static void service_sd(void)
+{
+	uint32_t now = millis();
+	if (g_sd_ready && sd_job_active() && !SD.mediaPresent()) {
+		g_sd_ready = false;
 		refresh_sd_usage();
-		Serial.printf("AIUS SD inserted fs=%s total=%llu\\n", sd_filesystem(),
-		              (unsigned long long)g_sd_total_bytes);
+		sd_job_cancel();
+		sd_job_drop_client();
+		Serial.printf("AIUS SD removed\\n");
+		return;
+	}
+	if (!g_sd_ready) {
+		if ((int32_t)(now - g_sd_probe_at) < 0)
+			return;
+		g_sd_probe_at = now + 1000u;
+		if (SD.begin(BUILTIN_SDCARD)) {
+			g_sd_ready = true;
+			(void)SD.mkdir("/aius");
+			refresh_sd_usage();
+			Serial.printf("AIUS SD inserted fs=%s total=%llu\\n", sd_filesystem(),
+			              (unsigned long long)g_sd_total_bytes);
+		}
+		return;
+	}
+	if (sd_job_active()) {
+		service_sd_job();
+		return;
+	}
+	if ((int32_t)(now - g_sd_probe_at) < 0)
+		return;
+	g_sd_probe_at = now + 1000u;
+	if (!SD.mediaPresent()) {
+		g_sd_ready = false;
+		refresh_sd_usage();
+		Serial.printf("AIUS SD removed\\n");
+	} else if (g_sd_usage_refresh_pending) {
+		refresh_sd_usage();
+		g_sd_usage_refresh_pending = false;
 	}
 }
 
@@ -615,91 +941,67 @@ static void http_send(unsigned status, const uint8_t *body, size_t body_length)
 static bool http_sd_path(const AiusHttpRequest *request, char *path,
                          size_t capacity, const char **content_type);
 
-static void http_sd_upload_abort(void)
-{
-	if (g_sd_upload)
-		g_sd_upload.close();
-	SD.remove("/aius/.upload.tmp");
-	g_sd_upload_active = false;
-	g_sd_upload_expected = 0;
-	g_sd_upload_received = 0;
-}
-
 static bool http_sd_upload_begin(const AiusHttpRequest &request,
-                                 uint32_t expected)
+                                 uint32_t expected, size_t initial_offset,
+                                 size_t initial_end)
 {
 	const char *content_type = nullptr;
-	if (!http_sd_path(&request, g_sd_upload_path, sizeof(g_sd_upload_path),
-	                 &content_type))
+	if (sd_job_active() || !http_sd_path(&request, g_sd_job.target_path,
+	                                    sizeof(g_sd_job.target_path), &content_type))
 		return false;
-	(void)content_type;
-	http_sd_upload_abort();
-	g_sd_upload = SD.open("/aius/.upload.tmp", FILE_WRITE);
-	if (!g_sd_upload)
+	if (!sd_job_make_upload_paths(g_sd_job.target_path))
 		return false;
-	g_sd_upload_expected = expected;
-	g_sd_upload_received = 0;
-	g_sd_upload_active = true;
+	g_sd_job.content_type = content_type;
+	g_sd_job.expected = expected;
+	g_sd_job.initial_offset = (uint32_t)initial_offset;
+	g_sd_job.initial_end = (uint32_t)initial_end;
+	g_sd_job.state = AIUS_SD_JOB_UPLOAD_OPEN;
 	return true;
 }
 
-static bool http_sd_upload_write(const uint8_t *data, size_t length)
+static bool http_sd_stage_upload(void)
 {
-	if (!g_sd_upload_active || length > g_sd_upload_expected - g_sd_upload_received)
+	if (!sd_job_active() ||
+	    (g_sd_job.state != AIUS_SD_JOB_UPLOAD_OPEN &&
+	     g_sd_job.state != AIUS_SD_JOB_UPLOAD_RECEIVE) ||
+	    g_sd_job.pending_length != 0 ||
+	    g_sd_job.received == g_sd_job.expected)
+		return true;
+	size_t remaining = g_sd_job.expected - g_sd_job.received;
+	if (g_sd_job.initial_offset < g_sd_job.initial_end) {
+		size_t available = g_sd_job.initial_end - g_sd_job.initial_offset;
+		size_t length = available < remaining ? available : remaining;
+		if (length > sizeof(g_sd_job.transfer))
+			length = sizeof(g_sd_job.transfer);
+		memcpy(g_sd_job.transfer, g_http_request + g_sd_job.initial_offset,
+		       length);
+		g_sd_job.initial_offset += (uint32_t)length;
+		g_sd_job.pending_length = (uint16_t)length;
+		g_sd_job.received += (uint32_t)length;
+		return true;
+	}
+	if (!g_http_client.available())
+		return true;
+	size_t available = (size_t)g_http_client.available();
+	size_t length = available < remaining ? available : remaining;
+	if (length > sizeof(g_sd_job.transfer))
+		length = sizeof(g_sd_job.transfer);
+	int got = g_http_client.read(g_sd_job.transfer, length);
+	if (got <= 0)
 		return false;
-	if (length != 0 && g_sd_upload.write(data, length) != length)
-		return false;
-	g_sd_upload_received += (uint32_t)length;
+	g_http_last_byte_ms = millis();
+	g_sd_job.pending_length = (uint16_t)got;
+	g_sd_job.received += (uint32_t)got;
 	return true;
 }
 
-static void http_sd_upload_finish(void)
+static void http_sd_upload_receive_service(void)
 {
-	if (!g_sd_upload_active || g_sd_upload_received != g_sd_upload_expected) {
-		http_sd_upload_abort();
+	if (!http_sd_stage_upload()) {
+		g_sd_job.error_status = 507;
+		g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		return;
 	}
-	g_sd_upload.close();
-	g_sd_upload_active = false;
-	SD.remove(g_sd_upload_path);
-	if (!SD.rename("/aius/.upload.tmp", g_sd_upload_path)) {
-		SD.remove("/aius/.upload.tmp");
-		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_commit\"}";
-		http_send(500, error, sizeof(error) - 1);
-		return;
-	}
-	g_sd_usage_refresh_pending = true;
-	static const uint8_t response[] = "{\"ok\":true}";
-	http_send(200, response, sizeof(response) - 1);
-}
-
-static bool http_sd_send_file(const char *path, const char *content_type)
-{
-	File file = SD.open(path, FILE_READ);
-	if (!file)
-		return false;
-	uint32_t size = (uint32_t)file.size();
-	char header[192];
-	int header_length = snprintf(header, sizeof(header),
-		"HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %lu\r\n"
-		"Connection: close\r\n\r\n", content_type, (unsigned long)size);
-	if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
-		g_http_client.write((const uint8_t *)header, (size_t)header_length) !=
-		(size_t)header_length) {
-		file.close();
-		return false;
-	}
-	while (file.available()) {
-		size_t length = file.read(g_http_sd_body, sizeof(g_http_sd_body));
-		if (length == 0 || g_http_client.write(g_http_sd_body, length) != length) {
-			file.close();
-			return false;
-		}
-	}
-	file.close();
-	g_http_client.stop();
-	g_http_client = EthernetClient();
-	return true;
 }
 
 static bool http_sd_path(const AiusHttpRequest *request, char *path,
@@ -751,34 +1053,28 @@ static void http_sd_request(const AiusHttpRequest &request)
 		return;
 	}
 	if (request.method == AIUS_HTTP_GET) {
-		if (!SD.exists(path)) {
-			static const uint8_t body[] = "{\"ok\":false,\"error\":\"not_found\"}";
-			http_send(404, body, sizeof(body) - 1);
+		if (sd_job_active()) {
+			static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
+			http_send(503, body, sizeof(body) - 1);
 			return;
 		}
-		(void)http_sd_send_file(path, content_type);
+		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
+		g_sd_job.content_type = content_type;
+		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_OPEN;
 		return;
 	}
 	if (request.method == AIUS_HTTP_DELETE) {
-		if (!SD.remove(path)) {
-			static const uint8_t body[] = "{\"ok\":false,\"error\":\"not_found\"}";
-			http_send(404, body, sizeof(body) - 1);
+		if (sd_job_active()) {
+			static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
+			http_send(503, body, sizeof(body) - 1);
 			return;
 		}
-		g_sd_usage_refresh_pending = true;
-		static const uint8_t body[] = "{\"ok\":true}";
-		http_send(200, body, sizeof(body) - 1);
+		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
+		g_sd_job.state = AIUS_SD_JOB_DELETE;
 		return;
 	}
-	uint32_t length = (uint32_t)(g_http_request_length - g_http_body_offset);
-	if (!http_sd_upload_begin(request, length) ||
-		!http_sd_upload_write(g_http_request + g_http_body_offset, length)) {
-		http_sd_upload_abort();
-		static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_write\"}";
-		http_send(507, error, sizeof(error) - 1);
-		return;
-	}
-	http_sd_upload_finish();
+	static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_upload\"}";
+	http_send(400, error, sizeof(error) - 1);
 }
 
 static void reset_application(void)
@@ -914,6 +1210,25 @@ static void http_handle_request(void)
 static void service_http(void)
 {
 	uint32_t started = micros();
+	if (sd_job_active()) {
+		if (!g_http_client || !g_http_client.connected()) {
+			g_http_client_drops++;
+			sd_job_cancel();
+			sd_job_drop_client();
+			return;
+		}
+		if (g_sd_job.state == AIUS_SD_JOB_UPLOAD_OPEN ||
+		    g_sd_job.state == AIUS_SD_JOB_UPLOAD_RECEIVE) {
+			http_sd_upload_receive_service();
+			if (g_sd_job.received < g_sd_job.expected &&
+			    (uint32_t)(millis() - g_http_last_byte_ms) > 150u) {
+				g_http_client_drops++;
+				sd_job_cancel();
+				sd_job_drop_client();
+			}
+		}
+		return;
+	}
 	if (!g_http_client || !g_http_client.connected()) {
 		EthernetClient candidate = g_http_server.accept();
 		if (candidate) {
@@ -926,38 +1241,6 @@ static void service_http(void)
 	}
 	if (!g_http_client)
 		return;
-	if (g_sd_upload_active) {
-		while (g_http_client.available() &&
-		       g_sd_upload_received < g_sd_upload_expected &&
-		       (uint32_t)(micros() - started) < 1500u) {
-			size_t remaining = g_sd_upload_expected - g_sd_upload_received;
-			size_t available = (size_t)g_http_client.available();
-			size_t requested = available < sizeof(g_http_sd_body) ? available :
-			                    sizeof(g_http_sd_body);
-			if (requested > remaining)
-				requested = remaining;
-			int got = g_http_client.read(g_http_sd_body, requested);
-			if (got <= 0 || !http_sd_upload_write(g_http_sd_body, (size_t)got)) {
-				http_sd_upload_abort();
-				static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_write\"}";
-				http_send(507, error, sizeof(error) - 1);
-				return;
-			}
-		}
-		if (g_sd_upload_active &&
-		    g_sd_upload_received == g_sd_upload_expected) {
-			http_sd_upload_finish();
-			return;
-		}
-		if ((uint32_t)(millis() - g_http_last_byte_ms) > 150u) {
-			http_sd_upload_abort();
-			g_http_client.stop();
-			g_http_client = EthernetClient();
-			g_http_request_length = 0;
-			g_http_client_drops++;
-		}
-		return;
-	}
 	while (g_http_client.available() && g_http_request_length < AIUS_HTTP_MAX_REQUEST) {
 		int value = g_http_client.read();
 		if (value < 0)
@@ -990,18 +1273,17 @@ static void service_http(void)
 			           request.method == AIUS_HTTP_PUT) {
 				if (body_result < 0 || !http_has_content_length(body_offset - 2u) ||
 				    g_http_request_length - body_offset > expected_body ||
-				    !http_sd_upload_begin(request, (uint32_t)expected_body) ||
-				    !http_sd_upload_write(g_http_request + body_offset,
-				                          g_http_request_length - body_offset)) {
-					http_sd_upload_abort();
+				    !http_sd_upload_begin(request, (uint32_t)expected_body,
+				                          body_offset, g_http_request_length)) {
+					sd_job_clear();
 					g_http_rejections++;
 					static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_upload\"}";
 					http_send(body_result < 0 ? 413 : 507, error_body,
 					          sizeof(error_body) - 1);
 				} else {
-					g_http_request_length = body_offset;
-					if (g_sd_upload_received == g_sd_upload_expected)
-						http_sd_upload_finish();
+					/* Keep the already-received body in the request buffer until
+					 * the receipt state stages it. No SD call occurs here. */
+					return;
 				}
 			} else if (body_result < 0 || g_http_request_length - body_offset > expected_body) {
 				g_http_rejections++;
