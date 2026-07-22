@@ -11,12 +11,49 @@ static void parse_ok(const char *raw, AiusHttpRoute route)
 	assert(request.route == route);
 }
 
+static void test_sd_auth_header(void)
+{
+	AiusHttpRequest request;
+	const char *absent = "GET /api/status HTTP/1.0\r\n\r\n";
+	const char *valid = "GET /api/status HTTP/1.0\r\n"
+	                   "X-Aius-SD-Auth: 0123456789abcdef\r\n\r\n";
+	const char *malformed = "GET /api/status HTTP/1.0\r\n"
+	                        "X-Aius-SD-Auth:\r\n\r\n";
+	const char *oversized = "GET /api/status HTTP/1.0\r\n"
+	                       "X-Aius-SD-Auth: 0123456789abcdef0\r\n\r\n";
+	const char *duplicate = "GET /api/status HTTP/1.0\r\n"
+	                       "X-Aius-SD-Auth: 0123456789abcdef\r\n"
+	                       "X-Aius-SD-Auth: fedcba9876543210\r\n\r\n";
+	const char *wrong_case = "GET /api/status HTTP/1.0\r\n"
+	                        "x-aius-sd-auth: 0123456789abcdef\r\n\r\n";
+
+	assert(aius_http_parse((const uint8_t *)absent, strlen(absent), &request) == AIUS_HTTP_OK);
+	assert(request.sd_auth == NULL);
+	assert(request.sd_auth_length == 0);
+	assert(aius_http_parse((const uint8_t *)valid, strlen(valid), &request) == AIUS_HTTP_OK);
+	assert(request.sd_auth_length == AIUS_HTTP_MAX_SD_AUTH);
+	assert(memcmp(request.sd_auth, "0123456789abcdef", AIUS_HTTP_MAX_SD_AUTH) == 0);
+	assert(aius_http_parse((const uint8_t *)malformed, strlen(malformed), &request) ==
+	       AIUS_HTTP_ERR_MALFORMED);
+	assert(aius_http_parse((const uint8_t *)oversized, strlen(oversized), &request) ==
+	       AIUS_HTTP_ERR_TOO_LARGE);
+	assert(aius_http_parse((const uint8_t *)duplicate, strlen(duplicate), &request) ==
+	       AIUS_HTTP_ERR_MALFORMED);
+	assert(aius_http_parse((const uint8_t *)wrong_case, strlen(wrong_case), &request) ==
+	       AIUS_HTTP_OK);
+	assert(request.sd_auth == NULL);
+	assert(request.sd_auth_length == 0);
+}
+
 int main(void)
 {
 	AiusHttpRequest request;
+	test_sd_auth_header();
 	parse_ok("GET / HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_HOME);
 	parse_ok("GET /api/sd HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_STATUS);
 	parse_ok("GET /sd/index.html HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_FILE);
+	parse_ok("PUT /api/config/public HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
+	         AIUS_HTTP_ROUTE_CONFIG_PUBLIC);
 	parse_ok("PUT /sd/index.html HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
 	         AIUS_HTTP_ROUTE_SD_FILE);
 	parse_ok("GET /api/status HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_STATUS);

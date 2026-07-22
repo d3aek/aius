@@ -24,6 +24,8 @@ extern "C" {
 #include "stack/fnet_netif.h"
 }
 #include "aius_optical_config.h"
+#include "aius_auth.h"
+#include "aius_config.h"
 
 #ifndef AIUS_BUILD_GIT_REV
 #define AIUS_BUILD_GIT_REV "unknown"
@@ -65,9 +67,9 @@ enum AiusSdJobState : uint8_t {
 struct AiusSdJob {
 	AiusSdJobState state;
 	File file;
-	char target_path[48];
-	char temp_path[48];
-	char backup_path[48];
+	char target_path[128];
+	char temp_path[64];
+	char backup_path[64];
 	const char *content_type;
 	uint32_t expected;
 	uint32_t received;
@@ -79,6 +81,7 @@ struct AiusSdJob {
 	uint16_t response_length;
 	bool target_existed;
 	bool backup_moved;
+	bool config_upload;
 	uint16_t error_status;
 	uint8_t transfer[AIUS_SD_TRANSFER_SLICE];
 	char response_header[192];
@@ -110,6 +113,13 @@ static uint64_t g_sd_used_bytes;
 static uint32_t g_sd_probe_at;
 static bool g_sd_usage_refresh_pending;
 static AudioInputSPDIF3 g_spdif_in;
+static AiusConfig g_config;
+static AiusConfig g_pending_config;
+static bool g_config_upload_pending;
+static uint32_t g_config_error_count;
+static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
+static char g_usb_command[32];
+static size_t g_usb_command_length;
 
 struct AiusEvent {
 	uint32_t sequence;
@@ -152,6 +162,30 @@ static void refresh_sd_usage(void)
 	g_sd_used_bytes = SD.usedSize();
 }
 
+static void load_sd_config(void)
+{
+	aius_config_set_defaults(&g_config);
+	File file = SD.open("/aius/config.json", FILE_READ);
+	if (!file) {
+		g_config_error_count++;
+		return;
+	}
+	uint8_t json[AIUS_CONFIG_MAX_JSON_BYTES];
+	size_t length = 0;
+	while (file.available() && length < sizeof(json))
+		json[length++] = (uint8_t)file.read();
+	bool too_large = file.available();
+	file.close();
+	if (too_large) {
+		(void)aius_config_parse(json, sizeof(json) + 1u, &g_config);
+		g_config_error_count++;
+		return;
+	}
+	(void)aius_config_parse(json, length, &g_config);
+	if (!g_config.valid)
+		g_config_error_count++;
+}
+
 static void http_send(unsigned status, const uint8_t *body, size_t body_length);
 
 static bool sd_job_active(void)
@@ -178,6 +212,7 @@ static void sd_job_clear(void)
 	g_sd_job.response_length = 0;
 	g_sd_job.target_existed = false;
 	g_sd_job.backup_moved = false;
+	g_sd_job.config_upload = false;
 	g_sd_job.error_status = 0;
 }
 
@@ -322,6 +357,10 @@ static void service_sd_job(void)
 	case AIUS_SD_JOB_UPLOAD_CLEANUP:
 		if (g_sd_job.backup_moved && !SD.remove(g_sd_job.backup_path))
 			return;
+		if (g_sd_job.config_upload && g_config_upload_pending) {
+			g_config = g_pending_config;
+			g_config_upload_pending = false;
+		}
 		g_sd_usage_refresh_pending = true;
 		static const uint8_t upload_ok[] = "{\"ok\":true}";
 		http_send(200, upload_ok, sizeof(upload_ok) - 1);
@@ -333,6 +372,8 @@ static void service_sd_job(void)
 		if (g_sd_job.temp_path[0] != 0)
 			(void)SD.remove(g_sd_job.temp_path);
 		if (g_sd_job.error_status != 0) {
+			if (g_sd_job.config_upload)
+				g_config_upload_pending = false;
 			unsigned status = g_sd_job.error_status;
 			sd_job_send_error(status, status == 500 ? "sd_commit" : "sd_write");
 		} else {
@@ -443,6 +484,7 @@ static void service_sd(void)
 		if (SD.begin(BUILTIN_SDCARD)) {
 			g_sd_ready = true;
 			(void)SD.mkdir("/aius");
+			load_sd_config();
 			refresh_sd_usage();
 			Serial.printf("AIUS SD inserted fs=%s total=%llu\\n", sd_filesystem(),
 			              (unsigned long long)g_sd_total_bytes);
@@ -860,7 +902,7 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -871,6 +913,8 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long long)g_sd_total_bytes,
 		(unsigned long long)g_sd_used_bytes,
 		(unsigned long long)(g_sd_total_bytes - g_sd_used_bytes),
+		g_config.valid, (unsigned)g_config.error_code, g_config.error_message,
+		(unsigned long)g_config_error_count,
 		network_mode, status[12], status[13], status[14], status[15],
 		(status[1] != 0 && Ethernet.linkStatus() == LinkON) ? 1u : 0u,
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
@@ -941,22 +985,42 @@ static void http_send(unsigned status, const uint8_t *body, size_t body_length)
 static bool http_sd_path(const AiusHttpRequest *request, char *path,
                          size_t capacity, const char **content_type);
 
-static bool http_sd_upload_begin(const AiusHttpRequest &request,
-                                 uint32_t expected, size_t initial_offset,
-                                 size_t initial_end)
+static bool http_sd_authorized(const AiusHttpRequest &request)
 {
-	const char *content_type = nullptr;
-	if (sd_job_active() || !http_sd_path(&request, g_sd_job.target_path,
-	                                    sizeof(g_sd_job.target_path), &content_type))
+	return aius_auth_token_matches(g_auth_token, (const char *)request.sd_auth,
+	                               request.sd_auth_length) != 0;
+}
+
+static bool http_sd_upload_begin_target(const char *target,
+                                        const char *content_type,
+                                        bool config_upload, uint32_t expected,
+                                        size_t initial_offset, size_t initial_end)
+{
+	if (sd_job_active() || target == nullptr || content_type == nullptr ||
+		strlen(target) >= sizeof(g_sd_job.target_path))
 		return false;
+	strncpy(g_sd_job.target_path, target, sizeof(g_sd_job.target_path));
 	if (!sd_job_make_upload_paths(g_sd_job.target_path))
 		return false;
 	g_sd_job.content_type = content_type;
+	g_sd_job.config_upload = config_upload;
 	g_sd_job.expected = expected;
 	g_sd_job.initial_offset = (uint32_t)initial_offset;
 	g_sd_job.initial_end = (uint32_t)initial_end;
 	g_sd_job.state = AIUS_SD_JOB_UPLOAD_OPEN;
 	return true;
+}
+
+static bool http_sd_upload_begin(const AiusHttpRequest &request,
+                                 uint32_t expected, size_t initial_offset,
+                                 size_t initial_end)
+{
+	char target[sizeof(g_sd_job.target_path)];
+	const char *content_type = nullptr;
+	if (!http_sd_path(&request, target, sizeof(target), &content_type))
+		return false;
+	return http_sd_upload_begin_target(target, content_type, false, expected,
+	                                  initial_offset, initial_end);
 }
 
 static bool http_sd_stage_upload(void)
@@ -1008,23 +1072,56 @@ static bool http_sd_path(const AiusHttpRequest *request, char *path,
                          size_t capacity, const char **content_type)
 {
 	if (request == nullptr || request->resource == nullptr ||
-		request->resource_length == 0)
+		request->resource_length < 5u || request->resource_length > 96u ||
+		memcmp(request->resource, "www/", 4) != 0)
 		return false;
-	const char *type = nullptr;
-	if (request->resource_length == 10 &&
-		memcmp(request->resource, "index.html", 10) == 0)
+	const char *resource = (const char *)request->resource;
+	size_t component_length = 0u;
+	for (size_t i = 4u; i < request->resource_length; i++) {
+		uint8_t ch = request->resource[i];
+		if (ch == '%' || ch == '\\' || ch == 0u)
+			return false;
+		if (ch == '/') {
+			if (i == 4u || i + 1u == request->resource_length ||
+				request->resource[i - 1u] == '/' || component_length > 32u)
+				return false;
+			component_length = 0u;
+			continue;
+		}
+		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'))
+			return false;
+		component_length++;
+		if (component_length > 32u)
+			return false;
+	}
+	for (size_t i = 4u; i + 1u < request->resource_length; i++)
+		if (resource[i] == '.' && resource[i + 1u] == '.' &&
+			(i == 4u || resource[i - 1u] == '/') &&
+			(i + 2u == request->resource_length || resource[i + 2u] == '/'))
+			return false;
+	if (component_length > 32u)
+		return false;
+	unsigned components = 1u;
+	for (size_t i = 4u; i < request->resource_length; i++)
+		if (resource[i] == '/') {
+			components++;
+			if (components > 8u)
+				return false;
+		}
+	const char *type = "application/octet-stream";
+	if (request->resource_length >= 5u &&
+		memcmp(resource + request->resource_length - 5u, ".html", 5u) == 0)
 		type = "text/html; charset=utf-8";
-	else if (request->resource_length == 6 &&
-		memcmp(request->resource, "app.js", 6) == 0)
+	else if (request->resource_length >= 3u &&
+		memcmp(resource + request->resource_length - 3u, ".js", 3u) == 0)
 		type = "application/javascript";
-	else if (request->resource_length == 9 &&
-		memcmp(request->resource, "style.css", 9) == 0)
+	else if (request->resource_length >= 4u &&
+		memcmp(resource + request->resource_length - 4u, ".css", 4u) == 0)
 		type = "text/css";
-	else if (request->resource_length == 11 &&
-		memcmp(request->resource, "config.json", 11) == 0)
+	else if (request->resource_length >= 5u &&
+		memcmp(resource + request->resource_length - 5u, ".json", 5u) == 0)
 		type = "application/json";
-	else
-		return false;
 	int written = snprintf(path, capacity, "/aius/%.*s",
 		(int)request->resource_length, request->resource);
 	if (written < 0 || (size_t)written >= capacity)
@@ -1045,12 +1142,27 @@ static void http_sd_request(const AiusHttpRequest &request)
 		http_send(200, body, sizeof(body) - 1);
 		return;
 	}
-	char path[40];
+	char path[sizeof(g_sd_job.target_path)];
 	const char *content_type = nullptr;
 	if (!http_sd_path(&request, path, sizeof(path), &content_type)) {
 		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_path\"}";
 		http_send(404, body, sizeof(body) - 1);
 		return;
+	}
+	if (request.method != AIUS_HTTP_GET &&
+		request.resource_length >= 11u &&
+		memcmp(request.resource + request.resource_length - 11u,
+		       "config.json", 11u) == 0) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"config_public_only\"}";
+		http_send(403, body, sizeof(body) - 1);
+		return;
+	}
+	if (request.method == AIUS_HTTP_PUT || request.method == AIUS_HTTP_DELETE) {
+		if (!http_sd_authorized(request)) {
+			static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
+			http_send(401, body, sizeof(body) - 1);
+			return;
+		}
 	}
 	if (request.method == AIUS_HTTP_GET) {
 		if (sd_job_active()) {
@@ -1077,6 +1189,36 @@ static void http_sd_request(const AiusHttpRequest &request)
 	http_send(400, error, sizeof(error) - 1);
 }
 
+static void http_config_public_request(const AiusHttpRequest &request)
+{
+	if (!g_sd_ready) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
+		http_send(503, body, sizeof(body) - 1);
+		return;
+	}
+	AiusConfig parsed;
+	size_t length = g_http_request_length - g_http_body_offset;
+	AiusConfigErrorCode error = aius_config_parse(
+		g_http_request + g_http_body_offset, length, &parsed);
+	if (error != AIUS_CONFIG_OK) {
+		g_config = parsed;
+		g_config_error_count++;
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"config_invalid\"}";
+		http_send(400, body, sizeof(body) - 1);
+		return;
+	}
+	if (!http_sd_upload_begin_target("/aius/config.json", "application/json",
+	                                true, (uint32_t)length, g_http_body_offset,
+	                                g_http_request_length)) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
+		http_send(503, body, sizeof(body) - 1);
+		return;
+	}
+	g_pending_config = parsed;
+	g_config_upload_pending = true;
+	(void)request;
+}
+
 static void reset_application(void)
 {
 	__disable_irq();
@@ -1101,8 +1243,14 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>POST /api/clear {}</code></li>"
 		"<li><code>POST /api/reboot {}</code></li>"
 		"<li><a href=\"/api/sd\">GET /api/sd</a></li>"
-		"<li><code>PUT /sd/{index.html|app.js|style.css|config.json}</code> raw body with Content-Length</li>"
-		"<li><code>DELETE /sd/{resource}</code></li></ul>"
+		"<li><code>PUT /sd/www/{path}</code> raw body with Content-Length and X-Aius-SD-Auth</li>"
+		"<li><code>DELETE /sd/www/{path}</code> with X-Aius-SD-Auth</li>"
+		"<li><code>PUT /api/config/public</code> JSON feature flags, no auth</li></ul>"
+		"<h2>SD web upload</h2><p>Get the token over USB with <code>AIUS AUTH</code>. "
+		"The picker preserves relative paths and sends authenticated standard HTTP PUT requests.</p>"
+		"<label>SD auth token <input id=t size=16 maxlength=16 autocomplete=off></label> "
+		"<input id=f type=file multiple webkitdirectory directory><button onclick=upload()>Upload selected files</button>"
+		"<pre id=u></pre>"
 		"<h2>Control</h2><label>Mode <select id=m>"
 		"<option>%s</option><option>%s</option><option>%s</option></select></label> "
 		"<label>Mix <select id=x><option>%s</option><option>%s</option>"
@@ -1113,10 +1261,11 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<button title=\"Clear audio and event counters\" onclick=go('/api/clear')>Clear counters</button> "
 		"<button title=\"Restart the application without entering HalfKay\" onclick=reboot()>Reboot</button></p>"
 		"<pre id=s>Loading status...</pre><p id=e></p></body><script>"
-		"const s=document.getElementById('s'),e=document.getElementById('e');"
+		"const s=document.getElementById('s'),e=document.getElementById('e'),u=document.getElementById('u');"
 		"async function get(){try{s.textContent=JSON.stringify(await (await fetch('/api/status')).json(),null,2);e.textContent=''}catch(a){e.textContent=a}}"
 		"async function go(a,b){try{await fetch(a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});get()}catch(c){e.textContent=c}}"
 		"async function reboot(){e.textContent='Rebooting...';try{await go('/api/reboot');setTimeout(get,2000)}catch(a){}}"
+		"async function upload(){u.textContent='';const token=document.getElementById('t').value;const files=[...(document.getElementById('f').files||[])];for(const file of files){const rel=file.webkitRelativePath||file.name;const path=rel.split('/').slice(1).join('/')||rel;if(path.split('/').pop()==='config.json'){u.textContent+='refused '+path+'\\n';continue}try{const r=await fetch('/sd/www/'+path.split('/').map(encodeURIComponent).join('/'),{method:'PUT',headers:{'X-Aius-SD-Auth':token,'Content-Type':'application/octet-stream'},body:file});u.textContent+=r.status+' '+path+'\\n'}catch(a){u.textContent+='error '+path+' '+a+'\\n'}}}"
 		"get();setInterval(get,2000)</script></html>",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		AIUS_OPTICAL_PROFILES[0].name, AIUS_OPTICAL_PROFILES[1].name,
@@ -1140,6 +1289,9 @@ static void http_handle_request(void)
 	size_t body_length = 0;
 	unsigned status = 200;
 	switch (request.route) {
+	case AIUS_HTTP_ROUTE_CONFIG_PUBLIC:
+		http_config_public_request(request);
+		return;
 	case AIUS_HTTP_ROUTE_SD_STATUS:
 	case AIUS_HTTP_ROUTE_SD_FILE:
 		http_sd_request(request);
@@ -1301,6 +1453,26 @@ static void service_http(void)
 	}
 	if ((uint32_t)(micros() - started) > 2000u)
 		g_http_service_overruns++;
+}
+
+static void service_usb_auth(void)
+{
+	while (Serial.available()) {
+		int value = Serial.read();
+		if (value < 0)
+			return;
+		if (value == '\n' || value == '\r') {
+			g_usb_command[g_usb_command_length] = '\0';
+			if (strcmp(g_usb_command, "AIUS AUTH") == 0)
+				Serial.printf("AIUS AUTH %s\n", g_auth_token);
+			g_usb_command_length = 0;
+			continue;
+		}
+		if (g_usb_command_length + 1u < sizeof(g_usb_command))
+			g_usb_command[g_usb_command_length++] = (char)value;
+		else
+			g_usb_command_length = 0;
+	}
 }
 
 static void service_network(void)
@@ -1498,12 +1670,24 @@ static void start_network(void)
 void setup(void)
 {
 	Serial.begin(115200);
+	uint8_t auth_material[AIUS_AUTH_DEVICE_MATERIAL_SIZE];
+	uint32_t mac0 = HW_OCOTP_MAC0;
+	uint32_t mac1 = HW_OCOTP_MAC1;
+	uint32_t mac2 = HW_OCOTP_MAC2;
+	memcpy(auth_material, &mac0, sizeof(mac0));
+	memcpy(auth_material + 4u, &mac1, sizeof(mac1));
+	memcpy(auth_material + 8u, &mac2, sizeof(mac2));
+	memcpy(auth_material + 12u, &mac0, sizeof(mac0));
+	(void)aius_auth_derive_token(auth_material, g_auth_token);
+	aius_config_set_defaults(&g_config);
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();
 	g_boot_epoch = micros();
 	g_sd_ready = SD.begin(BUILTIN_SDCARD);
-	if (g_sd_ready)
+	if (g_sd_ready) {
 		(void)SD.mkdir("/aius");
+		load_sd_config();
+	}
 	refresh_sd_usage();
 	Serial.printf("AIUS SD ready=%u\\n", g_sd_ready ? 1u : 0u);
 	start_network();
@@ -1511,6 +1695,7 @@ void setup(void)
 
 void loop(void)
 {
+	service_usb_auth();
 	if (g_network_ready) {
 		service_network();
 		service_http();

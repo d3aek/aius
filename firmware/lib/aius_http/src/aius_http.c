@@ -73,6 +73,8 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_CLEAR;
 	if (token_equals(path, length, "/api/reboot"))
 		return AIUS_HTTP_ROUTE_REBOOT;
+	if (token_equals(path, length, "/api/config/public"))
+		return AIUS_HTTP_ROUTE_CONFIG_PUBLIC;
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;
 	if (has_prefix(path, length, "/sd/") && length > strlen("/sd/")) {
@@ -93,6 +95,46 @@ static int json_value(const uint8_t *body, size_t length, const char *key,
 		return 0;
 	return length == (size_t)expected_length &&
 	       memcmp(body, expected, length) == 0;
+}
+
+static AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
+	                                   AiusHttpRequest *request)
+{
+	static const char header_name[] = "X-Aius-SD-Auth";
+	const size_t header_name_length = sizeof(header_name) - 1u;
+	const uint8_t *cursor = headers;
+	const uint8_t *end = headers + length;
+
+	while (cursor < end) {
+		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor),
+		                                     "\r\n", 2);
+		if (line_end == NULL)
+			line_end = end;
+		size_t line_length = (size_t)(line_end - cursor);
+		if (line_length > header_name_length &&
+		    memcmp(cursor, header_name, header_name_length) == 0 &&
+		    cursor[header_name_length] == ':') {
+			const uint8_t *value = cursor + header_name_length + 1u;
+			const uint8_t *value_end = line_end;
+			while (value < value_end && (*value == ' ' || *value == '\t'))
+				value++;
+			while (value_end > value &&
+			       (value_end[-1] == ' ' || value_end[-1] == '\t'))
+				value_end--;
+			if (value == value_end)
+				return AIUS_HTTP_ERR_MALFORMED;
+			if ((size_t)(value_end - value) > AIUS_HTTP_MAX_SD_AUTH)
+				return AIUS_HTTP_ERR_TOO_LARGE;
+			if (request->sd_auth != NULL)
+				return AIUS_HTTP_ERR_MALFORMED;
+			request->sd_auth = value;
+			request->sd_auth_length = (size_t)(value_end - value);
+		}
+		if (line_end == end)
+			break;
+		cursor = line_end + 2;
+	}
+	return AIUS_HTTP_OK;
 }
 
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
@@ -137,6 +179,9 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		(size_t)(header_end - header_start);
 	if (header_length > AIUS_HTTP_MAX_HEADERS)
 		return AIUS_HTTP_ERR_TOO_LARGE;
+	AiusHttpResult auth_result = extract_sd_auth(header_start, header_length, request);
+	if (auth_result != AIUS_HTTP_OK)
+		return auth_result;
 	const uint8_t *body = header_end + 4;
 	size_t body_length = length - (size_t)(body - data);
 	if (body_length > AIUS_HTTP_MAX_BODY)
@@ -155,7 +200,11 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	    (request->route == AIUS_HTTP_ROUTE_STATUS || request->route == AIUS_HTTP_ROUTE_EVENTS))
 		return AIUS_HTTP_ERR_METHOD;
 	if ((request->method == AIUS_HTTP_PUT || request->method == AIUS_HTTP_DELETE) &&
-	    request->route != AIUS_HTTP_ROUTE_SD_FILE)
+	    request->route != AIUS_HTTP_ROUTE_SD_FILE &&
+	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
+	    request->method != AIUS_HTTP_PUT)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
@@ -164,7 +213,7 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	    request->method != AIUS_HTTP_DELETE)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
-	    (request->resource_length == 0 || request->resource_length > 32))
+	    (request->resource_length == 0 || request->resource_length > 96))
 		return AIUS_HTTP_ERR_ROUTE;
 	if ((request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX) &&
 	    !request->has_body)
@@ -189,10 +238,13 @@ const char *aius_http_reason(unsigned status)
 	switch (status) {
 	case 200: return "OK";
 	case 400: return "Bad Request";
+	case 401: return "Unauthorized";
+	case 403: return "Forbidden";
 	case 404: return "Not Found";
 	case 405: return "Method Not Allowed";
 	case 408: return "Request Timeout";
 	case 413: return "Payload Too Large";
+	case 503: return "Service Unavailable";
 	case 507: return "Insufficient Storage";
 	default: return "Internal Server Error";
 	}
