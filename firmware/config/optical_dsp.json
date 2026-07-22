@@ -1,0 +1,22 @@
+{
+  "sample_rate_hz": 48000,
+  "profiles": [
+    { "name": "flat", "eq": [{ "type": "bypass" }] },
+    {
+      "name": "speech",
+      "eq": [
+        { "type": "highpass", "frequency_hz": 120, "q": 0.7071 },
+        { "type": "peaking", "frequency_hz": 2500, "q": 0.8, "gain_db": 3 }
+      ]
+    },
+    {
+      "name": "bass-reduced",
+      "eq": [{ "type": "highpass", "frequency_hz": 80, "q": 0.7071 }]
+    }
+  ],
+  "mixes": [
+    { "name": "standard", "lfe": 0, "headroom": 1 },
+    { "name": "lfe-minus10", "lfe": 0.3162277660168379, "headroom": 1 },
+    { "name": "clipfree", "lfe": 0, "headroom": "clipfree" }
+  ]
+}

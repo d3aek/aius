@@ -22,6 +22,7 @@ extern "C" {
 	#include "service/dhcp/fnet_dhcp_cln.h"
 #include "stack/fnet_netif.h"
 }
+#include "aius_optical_config.h"
 
 #ifndef AIUS_BUILD_GIT_REV
 #define AIUS_BUILD_GIT_REV "unknown"
@@ -150,7 +151,7 @@ public:
 	bool mix_pending(void) const { return g_mix_pending; }
 	bool set_mode(uint8_t mode)
 	{
-		if (mode > AIUS_NET_MODE_BASS_REDUCED)
+		if (mode >= AIUS_OPTICAL_PROFILE_COUNT)
 			return false;
 		noInterrupts();
 		g_pending_mode = mode;
@@ -160,7 +161,7 @@ public:
 	}
 	bool set_mix(uint8_t mix)
 	{
-		if (mix > AIUS_NET_MIX_CLIPFREE)
+		if (mix >= AIUS_OPTICAL_MIX_COUNT)
 			return false;
 		noInterrupts();
 		g_pending_mix = mix;
@@ -231,16 +232,18 @@ private:
 			uint8_t mode = g_pending_mode;
 			g_mode_pending = false;
 			g_mode = mode;
-			if (mode == AIUS_NET_MODE_FLAT) {
-				g_eq[0] = aius_biquad_bypass();
-				g_eq_count = 1;
-			} else if (mode == AIUS_NET_MODE_SPEECH) {
-				g_eq[0] = aius_biquad_highpass(48000.0, 120.0, 0.7071);
-				g_eq[1] = aius_biquad_peaking(48000.0, 2500.0, 0.8, 3.0);
-				g_eq_count = 2;
-			} else {
-				g_eq[0] = aius_biquad_highpass(48000.0, 80.0, 0.7071);
-				g_eq_count = 1;
+			const AiusOpticalProfileConfig &profile = AIUS_OPTICAL_PROFILES[mode];
+			g_eq_count = profile.eq_count;
+			for (size_t i = 0; i < g_eq_count; i++) {
+				const AiusOpticalEqConfig &section = profile.eq[i];
+				if (section.type == 0)
+					g_eq[i] = aius_biquad_bypass();
+				else if (section.type == 1)
+					g_eq[i] = aius_biquad_highpass(AIUS_OPTICAL_SAMPLE_RATE_HZ,
+						section.frequency_hz, section.q);
+				else
+					g_eq[i] = aius_biquad_peaking(AIUS_OPTICAL_SAMPLE_RATE_HZ,
+						section.frequency_hz, section.q, section.gain_db);
 			}
 			memset(g_eq_state, 0, sizeof(g_eq_state));
 		}
@@ -248,10 +251,10 @@ private:
 			uint8_t mix = g_pending_mix;
 			g_mix_pending = false;
 			g_mix = mix;
+			const AiusOpticalMixConfig &config = AIUS_OPTICAL_MIXES[mix];
 			g_downmix = aius_downmix_config_default();
-			if (mix == AIUS_NET_MIX_LFE_MINUS10)
-				g_downmix.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
-			else if (mix == AIUS_NET_MIX_CLIPFREE)
+			g_downmix.lfe = config.lfe;
+			if (config.clipfree)
 				g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
 		}
 	}
@@ -551,19 +554,24 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>POST /api/clear {}</code></li>"
 		"<li><code>POST /api/reboot {}</code></li></ul>"
 		"<h2>Control</h2><label>Mode <select id=m>"
-		"<option>flat</option><option>speech</option><option>bass-reduced</option></select></label> "
-		"<label>Mix <select id=x><option>standard</option><option>lfe-minus10</option>"
-		"<option>clipfree</option></select></label> <button onclick=go('/api/mode',{mode:m.value})>Set mode</button> "
+		"<option>%s</option><option>%s</option><option>%s</option></select></label> "
+		"<label>Mix <select id=x><option>%s</option><option>%s</option>"
+		"<option>%s</option></select></label> <button onclick=go('/api/mode',{mode:m.value})>Set mode</button> "
 		"<button onclick=go('/api/mix',{mix:x.value})>Set mix</button><p>"
-		"<button onclick=go('/api/start')>Start</button> <button onclick=go('/api/stop')>Stop</button> "
-		"<button onclick=go('/api/clear')>Clear</button> <button onclick=reboot()>Reboot</button></p>"
+		"<button title=\"Enable test processing state\" onclick=go('/api/start')>Start</button> "
+		"<button title=\"Disable test processing state\" onclick=go('/api/stop')>Stop</button> "
+		"<button title=\"Clear audio and event counters\" onclick=go('/api/clear')>Clear counters</button> "
+		"<button title=\"Restart the application without entering HalfKay\" onclick=reboot()>Reboot</button></p>"
 		"<pre id=s>Loading status...</pre><p id=e></p></body><script>"
 		"const s=document.getElementById('s'),e=document.getElementById('e');"
 		"async function get(){try{s.textContent=JSON.stringify(await (await fetch('/api/status')).json(),null,2);e.textContent=''}catch(a){e.textContent=a}}"
 		"async function go(a,b){try{await fetch(a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});get()}catch(c){e.textContent=c}}"
 		"async function reboot(){e.textContent='Rebooting...';try{await go('/api/reboot');setTimeout(get,2000)}catch(a){}}"
 		"get();setInterval(get,2000)</script></html>",
-		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
+		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
+		AIUS_OPTICAL_PROFILES[0].name, AIUS_OPTICAL_PROFILES[1].name,
+		AIUS_OPTICAL_PROFILES[2].name, AIUS_OPTICAL_MIXES[0].name,
+		AIUS_OPTICAL_MIXES[1].name, AIUS_OPTICAL_MIXES[2].name);
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
