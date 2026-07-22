@@ -163,10 +163,12 @@ flat downmix/bypass and the stretch goal is recorded as deferred.
 
 ## DSP control protocol and remote dashboard
 
-The dashboard is a host-side service. The Teensy remains a bounded UDP device
-with no HTTP server, filesystem, JavaScript runtime, or unbounded UI state. The
-dashboard talks only to the versioned UDP client and must not expose the device
-directly outside the isolated fixture network.
+The dashboard is a normal upstream repository app under `the companion dashboard app`: static frontend
+assets mounted by `web.json`, shared `mr-*` kit chrome, and a CanvasHost-discovered
+.NET API module. The API module is the only UDP client and must not expose the
+device directly outside the isolated fixture network. The Teensy remains a
+bounded UDP device with no HTTP server, filesystem, JavaScript runtime, or
+unbounded UI state.
 
 The DSP control contract is deliberately preset-based:
 
@@ -186,10 +188,10 @@ identity, boot epoch, active preset, test state, carrier/format/rate, counters,
 overruns, and event history. It shows stale/offline state after bounded request
 failure and never presents a control as successful without a matching ACK.
 
-The initial dashboard has no authentication and binds to loopback by default.
-Target address, expected MAC, and a fixture-network warning are explicit
-configuration. Authentication and multi-user access control remain outside the
-prototype boundary.
+The initial dashboard uses the host's existing authenticated app boundary. Target
+address, expected MAC, and a fixture-network warning are explicit API
+configuration. Authentication and multi-user access control use the host's
+existing protection conventions rather than a dashboard-specific login.
 
 ## Hardware prototype scope
 
