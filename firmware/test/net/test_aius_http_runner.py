@@ -49,6 +49,11 @@ class HttpRunnerTests(unittest.TestCase):
             thread.join()
             server.server_close()
 
+    def test_raw_response_records_clean_connection_close(self):
+        result = RUNNER.raw_response_record(b"")
+        self.assertEqual(result, {"method": "MALFORMED", "status": None,
+                                  "outcome": "connection_closed"})
+
 
 if __name__ == "__main__":
     unittest.main()

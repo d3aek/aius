@@ -42,6 +42,13 @@ def abandoned_request(target):
     connection.close()
 
 
+def raw_response_record(response):
+    parts = response.split(b" ", 2)
+    if len(parts) >= 2 and parts[1].isdigit():
+        return {"method": "MALFORMED", "status": int(parts[1])}
+    return {"method": "MALFORMED", "status": None, "outcome": "connection_closed"}
+
+
 def exercise_once(target, cursor, mode, mix):
     records = []
     for method, path, body in (
@@ -66,7 +73,7 @@ def exercise_once(target, cursor, mode, mix):
         connection.settimeout(0.5)
         try:
             response = connection.recv(256)
-            records.append({"method": "MALFORMED", "status": int(response.split(b" ", 2)[1])})
+            records.append(raw_response_record(response))
         finally:
             connection.close()
     abandoned_request(target)

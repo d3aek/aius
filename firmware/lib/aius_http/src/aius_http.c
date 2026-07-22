@@ -47,6 +47,8 @@ static int token_equals(const uint8_t *value, size_t length, const char *token)
 static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 	                             AiusHttpRequest *request)
 {
+	if (token_equals(path, length, "/"))
+		return AIUS_HTTP_ROUTE_HOME;
 	if (token_equals(path, length, "/api/status"))
 		return AIUS_HTTP_ROUTE_STATUS;
 	if (token_equals(path, length, "/api/events")) {
