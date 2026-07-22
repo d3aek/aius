@@ -35,6 +35,9 @@ code, pre { white-space:pre-wrap; word-break:break-word; }
 <section><strong>DSP preset</strong><div>
 <button data-mode="flat">Flat</button><button data-mode="speech">Speech</button>
 <button data-mode="bass-reduced">Bass reduced</button></div>
+<strong>Mix</strong><div>
+<button data-mix="standard">Standard</button><button data-mix="lfe-minus10">LFE −10 dB</button>
+<button data-mix="clipfree">Clip-free</button></div>
 <strong>Observation</strong><div>
 <button data-test="start">Start test</button><button data-test="stop">Stop test</button>
 <button id="clear">Clear counters</button></div></section>
@@ -73,6 +76,7 @@ async function command(path, body) {
   catch (error) { identity.className='offline'; identity.textContent=`Command failed: ${error}`; }
 }
 document.querySelectorAll('[data-mode]').forEach(x => x.onclick=() => command('/api/mode', {mode:x.dataset.mode}));
+document.querySelectorAll('[data-mix]').forEach(x => x.onclick=() => command('/api/mix', {mix:x.dataset.mix}));
 document.querySelectorAll('[data-test]').forEach(x => x.onclick=() => command('/api/test', {action:x.dataset.test}));
 document.querySelector('#clear').onclick = () => command('/api/clear', {});
 refresh(); setInterval(refresh, 1000);
@@ -150,6 +154,10 @@ def make_handler(state):
                     modes = {"flat": 0, "speech": 1, "bass-reduced": 2}
                     payload = bytes((modes[body["mode"]],))
                     command = net.CMD_SET_MODE
+                elif self.path == "/api/mix":
+                    mixes = {"standard": 0, "lfe-minus10": 1, "clipfree": 2}
+                    payload = bytes((mixes[body["mix"]],))
+                    command = net.CMD_SET_MIX
                 elif self.path == "/api/test":
                     command = {"start": net.CMD_START_TEST,
                                "stop": net.CMD_STOP_TEST}[body["action"]]

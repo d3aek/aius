@@ -23,6 +23,7 @@ CMD_START_TEST = 0x05
 CMD_STOP_TEST = 0x06
 CMD_GET_EVENTS = 0x08
 CMD_SET_MODE = 0x03
+CMD_SET_MIX = 0x09
 RSP_ACK = 0x80
 RSP_DISCOVERY = 0x82
 RSP_STATUS = 0x83
@@ -81,6 +82,9 @@ def parse_status(payload):
         result["test_running"] = bool(payload[3] & 2)
         result["eq_mode"] = {0: "flat", 1: "speech", 2: "bass-reduced"}.get(
             payload[37], "unknown")
+    if len(payload) >= 39:
+        result["mix_mode"] = {0: "standard", 1: "lfe-minus10", 2: "clipfree"}.get(
+            payload[38], "unknown")
     return result
 
 
@@ -186,10 +190,11 @@ def run_soak(target, duration, interval, evidence):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["discover", "status", "events", "mode", "soak", "clear", "start", "stop"])
+    parser.add_argument("command", choices=["discover", "status", "events", "mode", "mix", "soak", "clear", "start", "stop"])
     parser.add_argument("--target", default=None, help="target IPv4 address")
     parser.add_argument("--cursor", type=int, default=0)
     parser.add_argument("--mode", choices=["flat", "speech", "bass-reduced"], default="flat")
+    parser.add_argument("--mix", choices=["standard", "lfe-minus10", "clipfree"], default="standard")
     parser.add_argument("--duration", type=float, default=28800)
     parser.add_argument("--interval", type=float, default=1.0)
     parser.add_argument("--evidence", default=None)
@@ -206,11 +211,14 @@ def main():
         return
     command = {"status": CMD_GET_STATUS, "events": CMD_GET_EVENTS,
                "mode": CMD_SET_MODE,
+               "mix": CMD_SET_MIX,
                "clear": CMD_CLEAR_COUNTERS,
                "start": CMD_START_TEST, "stop": CMD_STOP_TEST}[args.command]
     payload = struct.pack("<I", args.cursor) if args.command == "events" else b""
     if args.command == "mode":
         payload = bytes({"flat": 0, "speech": 1, "bass-reduced": 2}[args.mode])
+    if args.command == "mix":
+        payload = bytes({"standard": 0, "lfe-minus10": 1, "clipfree": 2}[args.mix])
     response, address = request((args.target, PORT), command, payload=payload,
                                 timeout=args.timeout)
     result = {"source": address[0], "type": response["type"],

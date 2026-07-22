@@ -49,13 +49,15 @@ class RunnerProtocolTests(unittest.TestCase):
             RUNNER.parse_events(payload[:-1])
 
     def test_extended_status_mode(self):
-        payload = bytearray(38)
+        payload = bytearray(39)
         payload[0] = 1
         payload[3] = 2
         payload[37] = 1
+        payload[38] = 2
         status = RUNNER.parse_status(payload)
         self.assertEqual(status["eq_mode"], "speech")
         self.assertTrue(status["test_running"])
+        self.assertEqual(status["mix_mode"], "clipfree")
 
 
 if __name__ == "__main__":

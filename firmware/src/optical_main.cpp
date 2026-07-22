@@ -95,6 +95,7 @@ public:
 	AiusStatus create_status(void) const { return g_create_status; }
 	void clear_counters(void) { g_blocks = 0; g_overruns = 0; }
 	uint8_t mode(void) const { return g_mode; }
+	uint8_t mix(void) const { return g_mix; }
 	bool set_mode(uint8_t mode)
 	{
 		if (mode > AIUS_NET_MODE_BASS_REDUCED)
@@ -113,6 +114,20 @@ public:
 			g_eq_count = 1;
 		}
 		memset(g_eq_state, 0, sizeof(g_eq_state));
+		interrupts();
+		return true;
+	}
+	bool set_mix(uint8_t mix)
+	{
+		if (mix > AIUS_NET_MIX_CLIPFREE)
+			return false;
+		noInterrupts();
+		g_mix = mix;
+		g_downmix = aius_downmix_config_default();
+		if (mix == AIUS_NET_MIX_LFE_MINUS10)
+			g_downmix.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
+		else if (mix == AIUS_NET_MIX_CLIPFREE)
+			g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
 		interrupts();
 		return true;
 	}
@@ -157,6 +172,8 @@ private:
 	uint32_t g_blocks = 0;
 	uint32_t g_overruns = 0;
 	uint8_t g_mode = AIUS_NET_MODE_FLAT;
+	uint8_t g_mix = AIUS_NET_MIX_STANDARD;
+	AiusDownmixConfig g_downmix = aius_downmix_config_default();
 	AiusBiquad g_eq[2];
 	AiusBiquadState g_eq_state[4] = {};
 	size_t g_eq_count = 1;
@@ -179,7 +196,7 @@ private:
 		processed.planes[0] = processed_left;
 		processed.planes[1] = processed_right;
 		AiusDspConfig dsp = {};
-		dsp.downmix = aius_downmix_config_default();
+		dsp.downmix = g_downmix;
 		dsp.eq = g_eq;
 		dsp.eq_sections = g_eq_count;
 		dsp.eq_state = g_eq_state;
@@ -254,7 +271,7 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	 * 0 version, 1 network mode (1 DHCP/2 fallback), 2 state, 3 flags,
 	 * 4 boot epoch, 8 uptime ms, 12 IPv4, 16 MAC, 22 NTP-valid flag. */
 	record_state();
-	memset(payload, 0, 38);
+	memset(payload, 0, 39);
 	payload[0] = 1;
 	payload[1] = g_dhcp ? 1 : 2;
 	AiusPipelineClass klass = g_audio_processor.classification();
@@ -276,7 +293,8 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	aius_net_put_u32(payload + 29, g_audio_processor.block_count());
 	aius_net_put_u32(payload + 33, g_audio_processor.overrun_count());
 	payload[37] = g_audio_processor.mode();
-	*length = 38;
+	payload[38] = g_audio_processor.mix();
+	*length = 39;
 }
 
 static void send_response(uint8_t type, uint32_t request_id,
@@ -334,6 +352,13 @@ static void service_network(void)
 		break;
 	case AIUS_NET_CMD_SET_MODE:
 		if (request.payload_len != 1 || !g_audio_processor.set_mode(request.payload[0])) {
+			send_nack(request.request_id, AIUS_NET_ERR_PAYLOAD);
+			break;
+		}
+		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		break;
+	case AIUS_NET_CMD_SET_MIX:
+		if (request.payload_len != 1 || !g_audio_processor.set_mix(request.payload[0])) {
 			send_nack(request.request_id, AIUS_NET_ERR_PAYLOAD);
 			break;
 		}
