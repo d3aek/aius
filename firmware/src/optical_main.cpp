@@ -69,6 +69,7 @@ static uint32_t g_dhcp_deadline;
 static uint32_t g_boot_epoch;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
+static uint32_t g_sd_probe_at;
 static AudioInputSPDIF3 g_spdif_in;
 
 struct AiusEvent {
@@ -110,6 +111,29 @@ static void refresh_sd_usage(void)
 	}
 	g_sd_total_bytes = SD.totalSize();
 	g_sd_used_bytes = SD.usedSize();
+}
+
+static void service_sd(void)
+{
+	uint32_t now = millis();
+	if ((int32_t)(now - g_sd_probe_at) < 0)
+		return;
+	g_sd_probe_at = now + 1000u;
+	if (g_sd_ready) {
+		if (!SD.mediaPresent()) {
+			g_sd_ready = false;
+			refresh_sd_usage();
+			Serial.printf("AIUS SD removed\\n");
+		}
+		return;
+	}
+	if (SD.begin(BUILTIN_SDCARD)) {
+		g_sd_ready = true;
+		(void)SD.mkdir("/aius");
+		refresh_sd_usage();
+		Serial.printf("AIUS SD inserted fs=%s total=%llu\\n", sd_filesystem(),
+		              (unsigned long long)g_sd_total_bytes);
+	}
 }
 
 static void record_event(uint8_t type, uint8_t state, uint16_t detail)
@@ -1209,4 +1233,5 @@ void loop(void)
 	}
 	if (g_dhcp)
 		(void)Ethernet.maintain();
+	service_sd();
 }
