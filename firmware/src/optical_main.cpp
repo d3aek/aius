@@ -42,6 +42,8 @@ static IPAddress g_static_ip(AIUS_STATIC_IP[0], AIUS_STATIC_IP[1],
 static IPAddress g_static_mask(AIUS_STATIC_MASK[0], AIUS_STATIC_MASK[1],
                                AIUS_STATIC_MASK[2], AIUS_STATIC_MASK[3]);
 static bool g_dhcp;
+static bool g_network_ready;
+static uint32_t g_network_retry_at;
 static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
 
@@ -340,7 +342,7 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	interrupts();
 	memset(payload, 0, 71);
 	payload[0] = 1;
-	payload[1] = g_dhcp ? 1 : 2;
+	payload[1] = !g_network_ready ? 0 : (g_dhcp ? 1 : 2);
 	AiusPipelineClass klass = g_audio_processor.classification();
 	payload[2] = g_last_state;
 	if (AudioInputSPDIF3::pllLocked())
@@ -720,12 +722,28 @@ static void start_network(void)
 {
 	/* NativeEthernet provides a bounded DHCP attempt. Static mode is used only
 	 * after DHCP fails, keeping the fallback usable on a direct cable. */
+	if (g_network_ready)
+		return;
 	g_dhcp = Ethernet.begin(g_mac, 5000, 250) != 0;
-	if (!g_dhcp)
+	if (!g_dhcp && Ethernet.linkStatus() == LinkON) {
 		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
 		              IPAddress(0, 0, 0, 0), g_static_mask);
+	}
+	g_network_ready = Ethernet.linkStatus() == LinkON &&
+	                  (g_dhcp || Ethernet.localIP() != IPAddress(0, 0, 0, 0));
+	if (!g_network_ready) {
+		g_network_retry_at = millis() + 5000u;
+		Serial.printf("AIUS Ethernet unavailable: link=%u hardware=%u\\n",
+		              (unsigned)Ethernet.linkStatus(),
+		              (unsigned)Ethernet.hardwareStatus());
+		return;
+	}
 	g_udp.begin(AIUS_NET_PORT);
 	g_http_server.begin();
+	Serial.printf("AIUS Ethernet ready: dhcp=%u ip=%u.%u.%u.%u link=%u\\n",
+	              g_dhcp ? 1u : 0u, Ethernet.localIP()[0], Ethernet.localIP()[1],
+	              Ethernet.localIP()[2], Ethernet.localIP()[3],
+	              (unsigned)Ethernet.linkStatus());
 }
 
 void setup(void)
@@ -739,8 +757,12 @@ void setup(void)
 
 void loop(void)
 {
-	service_network();
-	service_http();
+	if (g_network_ready) {
+		service_network();
+		service_http();
+	} else if ((int32_t)(millis() - g_network_retry_at) >= 0) {
+		start_network();
+	}
 	if (g_dhcp)
 		(void)Ethernet.maintain();
 }
