@@ -77,6 +77,9 @@ def exercise_once(target, cursor, mode, mix):
         finally:
             connection.close()
     abandoned_request(target)
+    # NativeEthernet may need a short close-wait interval after the intentionally
+    # incomplete body before its next listening socket is ready.
+    time.sleep(0.25)
     return records
 
 
