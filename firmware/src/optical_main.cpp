@@ -43,6 +43,7 @@ struct AiusEvent {
 static AiusEvent g_events[8];
 static uint32_t g_event_sequence;
 static uint8_t g_last_state;
+static bool g_test_running;
 
 static uint8_t current_state(void);
 
@@ -67,6 +68,7 @@ public:
 
 	void begin_pipeline(void)
 	{
+		(void)set_mode(AIUS_NET_MODE_FLAT);
 		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 			g_create_status = AIUS_NO_SPACE;
 			return;
@@ -87,6 +89,28 @@ public:
 	uint32_t overrun_count(void) const { return g_overruns; }
 	AiusStatus create_status(void) const { return g_create_status; }
 	void clear_counters(void) { g_blocks = 0; g_overruns = 0; }
+	uint8_t mode(void) const { return g_mode; }
+	bool set_mode(uint8_t mode)
+	{
+		if (mode > AIUS_NET_MODE_BASS_REDUCED)
+			return false;
+		noInterrupts();
+		g_mode = mode;
+		if (mode == AIUS_NET_MODE_FLAT) {
+			g_eq[0] = aius_biquad_bypass();
+			g_eq_count = 1;
+		} else if (mode == AIUS_NET_MODE_SPEECH) {
+			g_eq[0] = aius_biquad_highpass(48000.0, 120.0, 0.7071);
+			g_eq[1] = aius_biquad_peaking(48000.0, 2500.0, 0.8, 3.0);
+			g_eq_count = 2;
+		} else {
+			g_eq[0] = aius_biquad_highpass(48000.0, 80.0, 0.7071);
+			g_eq_count = 1;
+		}
+		memset(g_eq_state, 0, sizeof(g_eq_state));
+		interrupts();
+		return true;
+	}
 
 protected:
 	void update(void) override
@@ -127,6 +151,10 @@ private:
 	uint32_t g_count = 0;
 	uint32_t g_blocks = 0;
 	uint32_t g_overruns = 0;
+	uint8_t g_mode = AIUS_NET_MODE_FLAT;
+	AiusBiquad g_eq[2];
+	AiusBiquadState g_eq_state[4] = {};
+	size_t g_eq_count = 1;
 
 	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
@@ -147,6 +175,9 @@ private:
 		processed.planes[1] = processed_right;
 		AiusDspConfig dsp = {};
 		dsp.downmix = aius_downmix_config_default();
+		dsp.eq = g_eq;
+		dsp.eq_sections = g_eq_count;
+		dsp.eq_state = g_eq_state;
 		AiusStatus dsp_status = aius_dsp_process(&dsp, block, &processed);
 		if (dsp_status != AIUS_OK)
 			return dsp_status;
@@ -218,7 +249,7 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	 * 0 version, 1 network mode (1 DHCP/2 fallback), 2 state, 3 flags,
 	 * 4 boot epoch, 8 uptime ms, 12 IPv4, 16 MAC, 22 NTP-valid flag. */
 	record_state();
-	memset(payload, 0, 37);
+	memset(payload, 0, 38);
 	payload[0] = 1;
 	payload[1] = g_dhcp ? 1 : 2;
 	AiusPipelineClass klass = g_audio_processor.classification();
@@ -232,12 +263,15 @@ static void put_status(uint8_t *payload, uint16_t *length)
 		payload[12 + i] = ip[i];
 	memcpy(payload + 16, g_mac, sizeof(g_mac));
 	payload[22] = 0; /* NTP validity: not yet implemented by NativeEthernet adapter */
+	if (g_test_running)
+		payload[3] |= 2u;
 	payload[23] = (uint8_t)klass;
 	payload[24] = (uint8_t)g_audio_processor.create_status();
 	aius_net_put_u32(payload + 25, AudioInputSPDIF3::sampleRate());
 	aius_net_put_u32(payload + 29, g_audio_processor.block_count());
 	aius_net_put_u32(payload + 33, g_audio_processor.overrun_count());
-	*length = 37;
+	payload[37] = g_audio_processor.mode();
+	*length = 38;
 }
 
 static void send_response(uint8_t type, uint32_t request_id,
@@ -293,9 +327,25 @@ static void service_network(void)
 		g_audio_processor.clear_counters();
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
 		break;
-	case AIUS_NET_CMD_START_TEST:
-	case AIUS_NET_CMD_STOP_TEST:
+	case AIUS_NET_CMD_SET_MODE:
+		if (request.payload_len != 1 || !g_audio_processor.set_mode(request.payload[0])) {
+			send_nack(request.request_id, AIUS_NET_ERR_PAYLOAD);
+			break;
+		}
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		break;
+	case AIUS_NET_CMD_START_TEST:
+		g_test_running = true;
+		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		break;
+	case AIUS_NET_CMD_STOP_TEST:
+		g_test_running = false;
+		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		break;
+	case AIUS_NET_CMD_REBOOT:
+		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		delay(5);
+		_reboot_Teensyduino_();
 		break;
 	case AIUS_NET_CMD_GET_EVENTS: {
 		uint32_t cursor = request.payload_len >= 4 ?

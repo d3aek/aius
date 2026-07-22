@@ -43,6 +43,12 @@ enum {
 	AIUS_NET_RSP_EVENTS = 0x84
 };
 
+enum {
+	AIUS_NET_MODE_FLAT = 0,
+	AIUS_NET_MODE_SPEECH = 1,
+	AIUS_NET_MODE_BASS_REDUCED = 2
+};
+
 typedef enum {
 	AIUS_NET_OK = 0,
 	AIUS_NET_ERR_CAPACITY,

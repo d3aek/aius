@@ -48,6 +48,15 @@ class RunnerProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RUNNER.parse_events(payload[:-1])
 
+    def test_extended_status_mode(self):
+        payload = bytearray(38)
+        payload[0] = 1
+        payload[3] = 2
+        payload[37] = 1
+        status = RUNNER.parse_status(payload)
+        self.assertEqual(status["eq_mode"], "speech")
+        self.assertTrue(status["test_running"])
+
 
 if __name__ == "__main__":
     unittest.main()

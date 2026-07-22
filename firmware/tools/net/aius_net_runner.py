@@ -22,6 +22,7 @@ CMD_CLEAR_COUNTERS = 0x04
 CMD_START_TEST = 0x05
 CMD_STOP_TEST = 0x06
 CMD_GET_EVENTS = 0x08
+CMD_SET_MODE = 0x03
 RSP_ACK = 0x80
 RSP_DISCOVERY = 0x82
 RSP_STATUS = 0x83
@@ -76,6 +77,10 @@ def parse_status(payload):
             "pipeline_blocks": struct.unpack_from("<I", payload, 29)[0],
             "pipeline_overruns": struct.unpack_from("<I", payload, 33)[0],
         }
+    if len(payload) >= 38:
+        result["test_running"] = bool(payload[3] & 2)
+        result["eq_mode"] = {0: "flat", 1: "speech", 2: "bass-reduced"}.get(
+            payload[37], "unknown")
     return result
 
 
@@ -146,11 +151,48 @@ def discover(timeout):
     return found
 
 
+def run_soak(target, duration, interval, evidence):
+    started = time.monotonic()
+    cursor = 0
+    stream = open(evidence, "a", encoding="utf-8") if evidence else None
+    try:
+        while time.monotonic() - started < duration:
+            sample = {"host_uptime_s": time.monotonic() - started}
+            try:
+                response, address = request(target, CMD_GET_STATUS)
+                sample["source"] = address[0]
+                sample["status"] = parse_status(response["payload"])
+                events, _ = request(target, CMD_GET_EVENTS,
+                                    struct.pack("<I", cursor))
+                parsed = parse_events(events["payload"])
+                sample["events"] = parsed
+                if parsed:
+                    cursor = max(event["sequence"] for event in parsed)
+                sample["ok"] = True
+            except (OSError, TimeoutError, ValueError) as error:
+                sample["ok"] = False
+                sample["error"] = str(error)
+            line = json.dumps(sample, sort_keys=True)
+            if stream:
+                stream.write(line + "\n")
+                stream.flush()
+            else:
+                print(line)
+            time.sleep(max(interval, 0.05))
+    finally:
+        if stream:
+            stream.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["discover", "status", "events", "clear", "start", "stop"])
+    parser.add_argument("command", choices=["discover", "status", "events", "mode", "soak", "clear", "start", "stop"])
     parser.add_argument("--target", default=None, help="target IPv4 address")
     parser.add_argument("--cursor", type=int, default=0)
+    parser.add_argument("--mode", choices=["flat", "speech", "bass-reduced"], default="flat")
+    parser.add_argument("--duration", type=float, default=28800)
+    parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument("--evidence", default=None)
     parser.add_argument("--timeout", type=float, default=0.25)
     args = parser.parse_args()
 
@@ -159,10 +201,16 @@ def main():
         return
     if not args.target:
         parser.error("--target is required for this command")
+    if args.command == "soak":
+        run_soak((args.target, PORT), args.duration, args.interval, args.evidence)
+        return
     command = {"status": CMD_GET_STATUS, "events": CMD_GET_EVENTS,
+               "mode": CMD_SET_MODE,
                "clear": CMD_CLEAR_COUNTERS,
                "start": CMD_START_TEST, "stop": CMD_STOP_TEST}[args.command]
     payload = struct.pack("<I", args.cursor) if args.command == "events" else b""
+    if args.command == "mode":
+        payload = bytes({"flat": 0, "speech": 1, "bass-reduced": 2}[args.mode])
     response, address = request((args.target, PORT), command, payload=payload,
                                 timeout=args.timeout)
     result = {"source": address[0], "type": response["type"],
