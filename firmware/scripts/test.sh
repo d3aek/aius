@@ -7,8 +7,9 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract, dts, dts-arena, dts-fuzz, dts-lfe,
-#         iec61937, iec61937-fuzz, capability-protocol, capability, pipeline, dsp, net, net-runner, http.
+# Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
+#         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
+#         pipeline, dsp, net, net-runner, http.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,6 +96,9 @@ dts_build() {
 }
 
 case "$suite" in
+config)
+	python3 "$fw_root/test/config/test_build_config.py"
+	;;
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"
 	;;
