@@ -28,9 +28,8 @@ int main(void)
 	assert(aius_http_parse((const uint8_t *)put, strlen(put), &request) == AIUS_HTTP_ERR_METHOD);
 	const char *nope = "GET /nope HTTP/1.0\r\n\r\n";
 	assert(aius_http_parse((const uint8_t *)nope, strlen(nope), &request) == AIUS_HTTP_ERR_ROUTE);
-	const char *http11 = "GET /api/status HTTP/1.1\r\n\r\n";
-	assert(aius_http_parse((const uint8_t *)http11, strlen(http11), &request) ==
-	       AIUS_HTTP_ERR_MALFORMED);
+	parse_ok("GET /api/status HTTP/1.1\r\nHost: device\r\nConnection: close\r\n\r\n",
+	         AIUS_HTTP_ROUTE_STATUS);
 	const char *empty_body = "POST /api/mode HTTP/1.0\r\n\r\n{}";
 	assert(aius_http_parse((const uint8_t *)empty_body, strlen(empty_body), &request) ==
 	       AIUS_HTTP_ERR_BODY);

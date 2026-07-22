@@ -56,7 +56,7 @@ def exercise_once(target, cursor, mode, mix):
         result = request(target, method, path, body)
         records.append({"method": method, "path": path, **result})
     for raw in (
-        b"GET /api/status HTTP/1.1\r\n\r\n",
+        b"GET /api/status HTTP/2.0\r\n\r\n",
         b"PUT /api/status HTTP/1.0\r\n\r\n",
         b"GET /api/status HTTP/1.0\r\n",
     ):

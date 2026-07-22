@@ -100,7 +100,9 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_MALFORMED;
 	const uint8_t *space2 = (const uint8_t *)memchr(space1 + 1, ' ',
 		request_line_length - (size_t)(space1 + 1 - data));
-	if (space2 == NULL || memcmp(space2 + 1, "HTTP/1.0", 8) != 0)
+	if (space2 == NULL ||
+	    (memcmp(space2 + 1, "HTTP/1.0", 8) != 0 &&
+	     memcmp(space2 + 1, "HTTP/1.1", 8) != 0))
 		return AIUS_HTTP_ERR_MALFORMED;
 	if ((size_t)(space1 - data) == 3 && memcmp(data, "GET", 3) == 0)
 		request->method = AIUS_HTTP_GET;
