@@ -92,3 +92,73 @@ profile count, EQ sections, names, and numeric ranges at parse time.
 - SD reads and writes stay outside the audio interrupt and bounded service slice.
 - Removing the card during HTTP service does not reset or stall audio.
 - The complete SD-backed page is optional; the fallback page always remains usable.
+
+## Extension plan: SD scheduling, feature flags, and physical-access authorization
+
+### Phase 5: budgeted SD service scheduling
+
+**unit:** deferred SD read/write jobs and cached utilization refresh  
+**seams:** HTTP transport ↔ SD job queue; SD job completion ↔ HTTP response  
+**contract-artifact:** bounded job state, 512-byte transfer slices, status timing counters  
+**fan-out:** firmware SD scheduler owns `optical_main.cpp`; runner owns timing assertions  
+**review-intensity:** disconnects, partial writes, card removal, queue starvation, audio-overrun correlation  
+**commit-checkpoint:** build, native parser/runner tests, target CRUD, and soak with zero audio overruns
+
+SD writes must not run synchronously inside the HTTP service budget. The HTTP
+handler will stage bounded data and the main-loop SD service will perform one
+small transfer at a time, preserving atomic temporary-file replacement. Usage
+scans remain cached and refreshed by the SD maintenance service.
+
+### Phase 6: SD feature-flag configuration
+
+**unit:** bounded feature-flag loader with defaults and invalid-file fallback  
+**seams:** `/aius/config.json` bytes ↔ volatile flags; flags ↔ HTTP/DSP policy  
+**contract-artifact:** `features` object with `sd_web`, `sd_config`, `remote_control`, and `telemetry` booleans  
+**fan-out:** portable flag parser/tests own the config contract; firmware adapter owns loading; OpenAPI owns exposure  
+**review-intensity:** missing card, malformed JSON, duplicate keys, unknown flags, safe defaults, reboot persistence  
+**commit-checkpoint:** native parser tests, target load/status test, and config replacement test
+
+Flags are loaded into RAM and never consulted from the audio interrupt. Invalid
+or absent configuration leaves safe defaults. The authentication policy is not
+feature-toggleable, so a malformed or malicious config cannot disable write
+authorization for assets.
+
+### Phase 7: physical-access SD write authorization
+
+**unit:** per-device firmware-derived token disclosure over USB and HTTP header verification  
+**seams:** USB `AIUS AUTH` command ↔ token; `X-Aius-SD-Auth` header ↔ write policy  
+**contract-artifact:** token format and authenticated PUT/DELETE rules in OpenAPI and runner  
+**fan-out:** firmware auth owns USB/HTTP code; runner owns credential acquisition/use tests; docs own operator procedure  
+**review-intensity:** missing/wrong/replayed token, config exception, malformed headers, reboot stability, no HTTP disclosure  
+**commit-checkpoint:** native auth tests, USB command smoke test, authenticated asset CRUD, unauthenticated config update
+
+The token is derived from firmware-held device material and a compiled salt,
+printed only in response to an exact physical USB command. Asset PUT/DELETE
+requires the token in `X-Aius-SD-Auth`; `config.json` PUT remains the explicit
+operator exception requested for frequent user changes. DELETE of config and
+all non-allowlisted paths remain rejected.
+
+### Revised file and configuration boundary
+
+The fixed four-file allowlist is too narrow for iterative UI development. The
+replacement contract is:
+
+- `/aius/www/` is a path-confined UI asset tree. Arbitrary nested files are
+  accepted within bounded path and request limits; `..`, duplicate separators,
+  absolute paths, hidden upload staging names, and filesystem escape are
+  rejected. UI asset PUT/DELETE requires `X-Aius-SD-Auth`.
+- `/aius/config.json` is not directly writable over HTTP. The public section is
+  updated through a dedicated API operation after parsing and ACL validation.
+- The public configuration ACL is firmware-owned and declares which keys may
+  be changed without the token. Protected DSP, network, auth, and filesystem
+  policy keys cannot be changed through that exception.
+- Invalid JSON, schema violations, rejected public keys, and failed SD commits
+  are retained in status as a bounded error code/message and never enter the
+  active runtime configuration.
+
+JSON remains the external format because the browser dashboard and future
+tooling need nested objects, arrays, and a stable self-describing contract. It
+will be parsed only on SD load or an explicit configuration update, outside the
+audio interrupt, using a bounded tokenizer/validator. A line-oriented key/value
+format would be cheaper to parse but would duplicate the web contract and make
+ACL/schema evolution harder; it is not warranted for this device.
