@@ -162,3 +162,39 @@ will be parsed only on SD load or an explicit configuration update, outside the
 audio interrupt, using a bounded tokenizer/validator. A line-oriented key/value
 format would be cheaper to parse but would duplicate the web contract and make
 ACL/schema evolution harder; it is not warranted for this device.
+
+## Adversarial review resolutions
+
+The clean-room review returned RED. These constraints resolve its findings before
+implementation:
+
+- The UI root is `/aius/www/`, with a maximum decoded path length of 96 bytes,
+  maximum eight components, maximum 32 bytes per component, and only ASCII
+  alphanumerics plus `.`, `_`, `-`, and `/`. Percent encoding, backslashes,
+  empty components, `.` and `..` are rejected rather than normalized. The
+  firmware never exposes directory enumeration or symlink traversal.
+- There is one SD job at a time and one 512-byte SD transfer slice per main
+  loop. HTTP body receipt, SD writes, response reads, rename/rollback, and
+  utilization scans are separate job states. A disconnect cancels the job and
+  removes only its uniquely named temporary file.
+- Replacement uses a unique temporary name and rollback protocol: rename the
+  existing target to a backup, rename the temporary file into place, restore
+  the backup if the second rename fails, and delete the backup only after
+  commit. The old target is never removed before a replacement is durable.
+- The unauthenticated configuration exception is `PUT /api/config/public`, not
+  direct `PUT /sd/config.json`. Its body is a bounded JSON object containing
+  only the firmware-owned public ACL keys `features.sd_web`,
+  `features.remote_control`, and `features.telemetry`. It performs merge-and-
+  replace of those keys, rejects unknown or duplicate keys, and cannot modify
+  DSP, network, auth, filesystem, or asset policy.
+- `/aius/config.json` is parsed only when loaded or explicitly updated. The
+  accepted initial schema is the feature object above, with safe defaults on
+  missing or invalid data. Status retains `config_valid`,
+  `config_error_code`, and `config_error_count` until the next successful load
+  or reboot.
+- The USB credential is a fixed-format per-device token derived from
+  firmware-held device material and a compiled salt. The exact physical USB
+  command is `AIUS AUTH\n`; it prints the token once per command and never over
+  Ethernet. Asset writes and deletes require an exact constant-time comparison
+  of `X-Aius-SD-Auth`; public-config writes do not. The token is not accepted
+  for protected configuration or filesystem paths.
