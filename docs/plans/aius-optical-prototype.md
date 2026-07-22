@@ -5,7 +5,7 @@ scope: aius
 subtype: experiment
 status: proposed
 tags: [aius, optical-spdif, prototype, ethernet, validation]
-updated: 2026-07-21
+updated: 2026-07-22
 toc: true
 ---
 
@@ -164,11 +164,12 @@ flat downmix/bypass and the stretch goal is recorded as deferred.
 ## DSP control protocol and remote dashboard
 
 The dashboard is a normal upstream repository app under `the companion dashboard app`: static frontend
-assets mounted by `web.json`, shared `mr-*` kit chrome, and a CanvasHost-discovered
-.NET API module. The API module is the only UDP client and must not expose the
-device directly outside the isolated fixture network. The Teensy remains a
-bounded UDP device with no HTTP server, filesystem, JavaScript runtime, or
-unbounded UI state.
+assets mounted by `web.json` and shared `mr-*` kit chrome. The frontend is
+planned to talk directly to the Teensy's bounded HTTP control surface; no .NET
+API module is needed for the prototype. The firmware will serve no dashboard
+assets and has no JavaScript runtime. The existing UDP protocol remains
+available to the host fixture runner until HTTP parity and concurrent-soak
+acceptance are complete.
 
 The DSP control contract is deliberately preset-based:
 
@@ -192,6 +193,149 @@ The initial dashboard uses the host's existing authenticated app boundary. Targe
 address, expected MAC, and a fixture-network warning are explicit API
 configuration. Authentication and multi-user access control use the host's
 existing protection conventions rather than a dashboard-specific login.
+
+The app also serves a committed OpenAPI document at
+`/apps/aius/swagger.json`, with `/apps/aius/openapi/v1.json` as a conventional
+alias. It describes the device-facing HTTP routes, request bodies, response
+schemas, bounded error responses, and the reboot semantics. The document uses a
+server variable for the configured device host rather than pretending the app
+and device share an origin. It is app documentation and tooling input; the
+firmware does not embed Swagger or OpenAPI machinery.
+
+## Minimal HTTP API review and implementation plan
+
+The HTTP surface will be a transport adapter over shared command/state handlers,
+not a second DSP implementation. It is not present in the current firmware
+image; implementation is gated on the prerequisites below. The browser-facing
+contract is:
+
+| method and path | body | result |
+| --- | --- | --- |
+| `GET /api/status` | none | bounded JSON snapshot |
+| `GET /api/events?cursor=<u32>` | none | bounded JSON event page and cursor |
+| `POST /api/mode` | `{"mode":"flat"\|"speech"\|"bass-reduced"}` | ACK plus active mode |
+| `POST /api/mix` | `{"mix":"standard"\|"lfe-minus10"\|"clipfree"}` | ACK plus active mix |
+| `POST /api/start` | none | idempotent ACK |
+| `POST /api/stop` | none | idempotent ACK |
+| `POST /api/clear` | none | ACK plus new test epoch |
+| `POST /api/reboot` | none | ACK, then controlled reboot |
+
+Adversarial findings and resolutions:
+
+1. A blocking `readStringUntil`, `while (client.connected())`, or unbounded
+   JSON parser could starve audio servicing. The server therefore accepts one
+   request per connection, has fixed header/body limits, a short idle timeout,
+   and a byte/time budget per `loop()` call. Slow or malformed clients are
+   discarded without changing audio state.
+2. HTTP connection and response buffers must not overlap S/PDIF, DMA, decoder,
+   or EQ storage. All HTTP buffers are static; audio buffers remain in internal
+   RAM. Status is copied from a coherent snapshot, and commands enter the same
+   safe-boundary state transitions as UDP commands.
+3. TCP reliability removes UDP response loss but does not make commands safe to
+   repeat. Mode, mix, start, stop, and clear remain idempotent. Reboot sends its
+   response before disabling TX and restarting, and the browser treats the
+   missing post-reboot response as expected.
+4. A dashboard polling loop can create connection churn. The dashboard uses a
+   bounded status interval, one in-flight request, and event cursor polling; it
+   must not issue requests faster than the firmware's service budget.
+5. The full FNET HTTP/CGI/filesystem service is not justified for this surface.
+   Start with a small `EthernetServer` adapter and measure flash, RAM, maximum
+   request latency, and audio processing margin on the Ethernet target.
+
+The initial numeric limits are contract values: one active client, 1024 total
+request bytes, 512 header bytes, 256 body bytes, a 150 ms inter-byte timeout,
+a 2 ms maximum HTTP service budget per `loop()` call, and 2048 response bytes.
+The implementation must expose counters for budget exhaustion and client
+rejection so these limits can be evaluated during soak.
+
+The review gate is currently RED. Before HTTP adapter work starts, the firmware
+must add a coherent telemetry snapshot, event-ring sequence/gap handling, and
+an audio-safe deferred mode/mix transition. The current UDP service also needs
+bounded parsing and response work; HTTP must not paper over those scheduling and
+state-consistency gaps. Current tests cover the portable UDP codec and pipeline
+only; no `the companion dashboard app` or HTTP regression surface exists yet.
+
+### HTTP implementation phases
+
+#### Phase 4: HTTP parser and response codec
+
+**unit:** `single-file-implementation` for bounded HTTP parsing/formatting  
+**seams:** byte stream ↔ validated request; state snapshot ↔ JSON response  
+**contract-artifact:** this route table plus parser limits and error matrix  
+**fan-out:** one owner; no parallel edits to the HTTP adapter files  
+**review-intensity:** malformed request, slow client, oversized body, duplicate command, and response-bound tests  
+**commit-checkpoint:** native HTTP parser tests green; Ethernet target still builds
+
+Implement a transport-independent parser/formatter first. It must recognize
+only the documented methods and paths, reject HTTP versions/features outside the
+contract, bound headers and bodies, and produce deterministic status codes for
+400/404/405/413/408/500 cases. No command may execute until the complete request
+is validated. The parser tests must cover malformed, truncated, slow, abandoned,
+pipelined, duplicate, replayed, unsupported-method, and oversized requests,
+proving that none changes audio state. This phase is blocked until the numeric
+limits above are represented by named constants and test fixtures.
+
+#### Phase 5: Teensy HTTP adapter
+
+**unit:** `component-behind-interface` for the foreground Ethernet adapter  
+**seams:** `EthernetServer` client lifecycle ↔ parser; parsed command ↔ shared control handlers  
+**contract-artifact:** committed parser tests and fixed buffer/timeout constants  
+**fan-out:** one owner for the adapter; test additions use disjoint HTTP test files  
+**review-intensity:** audio scheduling, coherent telemetry, connection churn, and reset safety  
+**commit-checkpoint:** clean `teensy41-optical` build, native protocol suites, and HTTP loopback tests green
+
+First refactor the shared network service so both UDP and HTTP have strict
+bounded parse/send work. Poll HTTP with the 2 ms per-loop budget, serve JSON
+only, close each connection after one response, and expose counters for HTTP
+requests, rejected requests, active-client drops, and service-budget overruns.
+The audio path must not call Ethernet code or allocate memory.
+
+#### Phase 6: concurrent HTTP/optical soak
+
+**unit:** `test-surface` for host HTTP exerciser and soak evidence  
+**seams:** HTTP client ↔ device control; repeated commands ↔ audio soak oracle  
+**contract-artifact:** JSONL evidence schema with control and audio timelines  
+**fan-out:** one owner for the HTTP exerciser and evidence assertions  
+**review-intensity:** long-run scheduling and failure-injection review  
+**commit-checkpoint:** simulator tests green and real-board soak acceptance recorded
+
+Extend the runner with a concurrent HTTP workload: poll status and events while
+repeatedly exercising every non-reboot endpoint, including mode/mix changes at
+safe intervals, start/stop idempotence, counter clearing, malformed requests,
+and deliberate connection abandonment. Record request latency, HTTP errors,
+audio block/overrun counters, carrier state, output transitions, resets, and
+event-ring gaps in one JSONL timeline.
+
+Acceptance requires that the concurrent run introduce no unexplained audio
+overruns, decoder failures, carrier transitions, output-gate faults, resets, or
+counter corruption compared with a control soak of equal duration. HTTP service
+budget overruns and rejected clients may occur only within documented limits;
+they must not alter audio safety behavior. Reboot is tested separately because
+it intentionally interrupts the audio session.
+
+Evidence must compare equal-duration control and concurrent runs and include
+HTTP-disabled, idle-polling, nominal-valid-load, maximum-valid-load,
+malformed-load, and connection-churn cases. It records maximum HTTP service
+latency, interrupt-masking duration, audio deadline margin, network drops,
+telemetry sequence gaps, and event-ring overflow in addition to the existing
+audio counters. A real-board run exercises every endpoint except reboot in the
+concurrent case; reboot is a separate controlled test.
+
+#### Phase 7: dashboard and OpenAPI contract
+
+**unit:** `test-surface` for the standalone Utilities app and its API description  
+**seams:** `web.json` mount ↔ app shell; OpenAPI document ↔ device HTTP contract  
+**contract-artifact:** committed `swagger.json` validated against the route table  
+**fan-out:** one owner for the Aius app; no parallel edits to its manifest or shell  
+**review-intensity:** launcher placement, direct-device URL configuration, schema drift, and endpoint discoverability  
+**commit-checkpoint:** app frontend tests and OpenAPI validation green; dashboard remains usable without the device
+
+Add the standalone Aius app under the Utilities tier using the existing `mr-*`
+shell and menu-strip conventions. Its frontend uses the documented HTTP routes
+directly, exposes a configurable device host, and marks the device offline or
+stale without fabricating successful control state. Ship and validate
+`swagger.json` alongside the app so the dashboard, API explorer, and manual
+clients share one contract artifact.
 
 ## Hardware prototype scope
 
