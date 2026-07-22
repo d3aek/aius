@@ -248,16 +248,18 @@ a 2 ms maximum HTTP service budget per `loop()` call, and 2048 response bytes.
 The implementation must expose counters for budget exhaustion and client
 rejection so these limits can be evaluated during soak.
 
-The review gate is currently RED. Before HTTP adapter work starts, the firmware
-must add a coherent telemetry snapshot, event-ring sequence/gap handling, and
-an audio-safe deferred mode/mix transition. The current UDP service also needs
-bounded parsing and response work; HTTP must not paper over those scheduling and
-state-consistency gaps. Current tests cover the portable UDP codec and pipeline
-only; no `the companion dashboard app` or HTTP regression surface exists yet.
+The clean-room review was initially RED. Its firmware prerequisites are now
+implemented: telemetry counters are snapshotted, event retrieval is chronological
+with overflow accounting, mode/mix changes are deferred to the audio update
+boundary, UDP work is bounded, and the HTTP adapter has explicit service limits.
+The remaining gate is physical: target timing measurements and equal-duration
+control/concurrent optical soaks still require the board and source/sink.
 
 ### HTTP implementation phases
 
 #### Phase 4: HTTP parser and response codec
+
+**status:** implemented and pushed; native malformed/truncation/body/HTTP-version tests green
 
 **unit:** `single-file-implementation` for bounded HTTP parsing/formatting  
 **seams:** byte stream ↔ validated request; state snapshot ↔ JSON response  
@@ -277,6 +279,8 @@ limits above are represented by named constants and test fixtures.
 
 #### Phase 5: Teensy HTTP adapter
 
+**status:** implemented and pushed; `teensy41-optical` builds with HTTP enabled. Real-board latency and audio-margin measurements remain pending.
+
 **unit:** `component-behind-interface` for the foreground Ethernet adapter  
 **seams:** `EthernetServer` client lifecycle ↔ parser; parsed command ↔ shared control handlers  
 **contract-artifact:** committed parser tests and fixed buffer/timeout constants  
@@ -291,6 +295,8 @@ requests, rejected requests, active-client drops, and service-budget overruns.
 The audio path must not call Ethernet code or allocate memory.
 
 #### Phase 6: concurrent HTTP/optical soak
+
+**status:** host exerciser and JSONL evidence are implemented and pushed; real-board acceptance remains pending.
 
 **unit:** `test-surface` for host HTTP exerciser and soak evidence  
 **seams:** HTTP client ↔ device control; repeated commands ↔ audio soak oracle  
@@ -322,6 +328,8 @@ audio counters. A real-board run exercises every endpoint except reboot in the
 concurrent case; reboot is a separate controlled test.
 
 #### Phase 7: dashboard and OpenAPI contract
+
+**status:** Utilities app, direct-device controls, OpenAPI document, Vitest contract test, and Playwright scenario are implemented and pushed.
 
 **unit:** `test-surface` for the standalone Utilities app and its API description  
 **seams:** `web.json` mount ↔ app shell; OpenAPI document ↔ device HTTP contract  
