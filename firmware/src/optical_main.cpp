@@ -523,6 +523,15 @@ static void http_send(unsigned status, const uint8_t *body, size_t body_length)
 	http_send_content(status, "application/json", body, body_length);
 }
 
+static void reset_application(void)
+{
+	__disable_irq();
+	SCB_AIRCR = 0x05FA0004;
+	asm volatile("dsb sy" ::: "memory");
+	while (true)
+		asm volatile("isb" ::: "memory");
+}
+
 static size_t http_home_page(uint8_t *body, size_t capacity)
 {
 	int length = snprintf((char *)body, capacity,
@@ -603,7 +612,8 @@ static void http_handle_request(void)
 	case AIUS_HTTP_ROUTE_REBOOT:
 		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"rebooting\":true}");
 		http_send(status, body, (size_t)body_length);
-		_reboot_Teensyduino_();
+		delay(20);
+		reset_application();
 		return;
 	default:
 		status = 404;
