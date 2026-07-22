@@ -3,6 +3,7 @@ import json
 import pathlib
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -53,6 +54,16 @@ class HttpRunnerTests(unittest.TestCase):
         result = RUNNER.raw_response_record(b"")
         self.assertEqual(result, {"method": "MALFORMED", "status": None,
                                   "outcome": "connection_closed"})
+
+    def test_reboot_waits_for_status_after_ack(self):
+        responses = [
+            {"status": 200, "body": {"ok": True, "rebooting": True}},
+            {"status": 200, "body": {"network_mode": "dhcp"}},
+        ]
+        with patch.object(RUNNER, "request", side_effect=responses) as request:
+            result = RUNNER.reboot_and_wait(("127.0.0.1", 80), 1)
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(request.call_count, 2)
 
 
 if __name__ == "__main__":

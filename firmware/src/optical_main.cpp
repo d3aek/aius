@@ -455,12 +455,17 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	put_status(status, &status_length);
 	if (capacity == 0 || status_length < 71)
 		return 0;
+	const char *network_mode = status[1] == 0 ? "offline" :
+		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
 		(unsigned long)aius_net_get_u32(status + 33), status[37], status[38],
+		network_mode, status[12], status[13], status[14], status[15],
+		(status[1] != 0 && Ethernet.linkStatus() == LinkON) ? 1u : 0u,
+		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		(unsigned long)aius_net_get_u32(status + 39),
 		(unsigned long)aius_net_get_u32(status + 43),
 		(unsigned long)aius_net_get_u32(status + 47),

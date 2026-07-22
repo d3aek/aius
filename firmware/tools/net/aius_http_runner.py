@@ -112,12 +112,30 @@ def run_soak(target, duration, interval, evidence):
             time.sleep(max(0.0, interval - (time.monotonic() - started)))
 
 
+def reboot_and_wait(target, timeout):
+    acknowledgement = request(target, "POST", "/api/reboot")
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    last_error = None
+    while time.monotonic() < deadline:
+        attempts += 1
+        try:
+            status = request(target, "GET", "/api/status", timeout=0.5)
+            return {"acknowledgement": acknowledgement, "attempts": attempts,
+                    "status": status}
+        except (OSError, http.client.HTTPException) as error:
+            last_error = type(error).__name__
+            time.sleep(0.25)
+    raise TimeoutError(f"device did not return after reboot ({last_error})")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("status", "soak"))
+    parser.add_argument("command", choices=("status", "soak", "reboot"))
     parser.add_argument("--target", required=True, help="device host or host:port")
     parser.add_argument("--duration", type=float, default=60.0)
     parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--evidence", default="aius-http-soak.jsonl")
     args = parser.parse_args()
     if ":" in args.target and args.target.rsplit(":", 1)[1].isdigit():
@@ -127,6 +145,8 @@ def main():
         target = (args.target, 80)
     if args.command == "status":
         print(json.dumps(request(target, "GET", "/api/status"), sort_keys=True))
+    elif args.command == "reboot":
+        print(json.dumps(reboot_and_wait(target, args.timeout), sort_keys=True))
     else:
         run_soak(target, args.duration, args.interval, args.evidence)
 
