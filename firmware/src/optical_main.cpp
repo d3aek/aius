@@ -21,6 +21,7 @@ extern "C" {
 	#include "aius_dsp.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
+	#include "aius_usb_control.h"
 	#include "service/dhcp/fnet_dhcp_cln.h"
 #include "stack/fnet_netif.h"
 }
@@ -121,8 +122,8 @@ static AiusConfig g_pending_config;
 static bool g_config_upload_pending;
 static uint32_t g_config_error_count;
 static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
-static char g_usb_command[32];
-static size_t g_usb_command_length;
+static AiusUsbParser g_usb_parser;
+static char g_usb_response[192];
 
 struct AiusEvent {
 	uint32_t sequence;
@@ -1579,23 +1580,60 @@ static void service_http(void)
 		g_http_service_overruns++;
 }
 
-static void service_usb_auth(void)
+static void service_usb_control(void)
 {
 	while (Serial.available()) {
 		int value = Serial.read();
 		if (value < 0)
 			return;
-		if (value == '\n' || value == '\r') {
-			g_usb_command[g_usb_command_length] = '\0';
-			if (strcmp(g_usb_command, "AIUS AUTH") == 0)
-				Serial.printf("AIUS AUTH %s\n", g_auth_token);
-			g_usb_command_length = 0;
+		AiusUsbEvent event;
+		if (!aius_usb_control_feed(&g_usb_parser, (uint8_t)value, &event))
 			continue;
+		size_t response_length;
+		if (event.type == AIUS_USB_EVENT_ERROR) {
+			response_length = aius_usb_control_write_error(g_usb_response,
+			                                             sizeof(g_usb_response), 0,
+			                                             event.error);
+		} else {
+			const uint32_t request_id = event.command.request_id;
+			switch (event.command.kind) {
+			case AIUS_USB_COMMAND_PROTOCOL:
+				response_length = aius_usb_control_write_ok(g_usb_response,
+				                                             sizeof(g_usb_response),
+				                                             request_id, "PROTOCOL", "1");
+				break;
+			case AIUS_USB_COMMAND_ID: {
+				char payload[128];
+				snprintf(payload, sizeof(payload), "protocol=1 revision=%s build=%s mode=optical",
+				         AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
+				response_length = aius_usb_control_write_ok(g_usb_response,
+				                                             sizeof(g_usb_response),
+				                                             request_id, "ID", payload);
+				break;
+			}
+			case AIUS_USB_COMMAND_AUTH:
+				response_length = aius_usb_control_write_ok(g_usb_response,
+				                                             sizeof(g_usb_response),
+				                                             request_id, "AUTH", g_auth_token);
+				break;
+			case AIUS_USB_COMMAND_BOOTLOADER:
+				response_length = aius_usb_control_write_ok(g_usb_response,
+				                                             sizeof(g_usb_response),
+				                                             request_id, "BOOTLOADER", "entering");
+				Serial.write((const uint8_t *)g_usb_response, response_length);
+				Serial.flush();
+				delay(20);
+				_reboot_Teensyduino_();
+				return;
+			default:
+				response_length = aius_usb_control_write_error(g_usb_response,
+				                                             sizeof(g_usb_response), 0,
+				                                             AIUS_USB_ERROR_INTERNAL);
+				break;
+			}
 		}
-		if (g_usb_command_length + 1u < sizeof(g_usb_command))
-			g_usb_command[g_usb_command_length++] = (char)value;
-		else
-			g_usb_command_length = 0;
+		if (response_length != 0)
+			Serial.write((const uint8_t *)g_usb_response, response_length);
 	}
 }
 
@@ -1794,6 +1832,7 @@ static void start_network(void)
 void setup(void)
 {
 	Serial.begin(115200);
+	aius_usb_control_init(&g_usb_parser);
 	uint8_t auth_material[AIUS_AUTH_DEVICE_MATERIAL_SIZE];
 	uint32_t mac0 = HW_OCOTP_MAC0;
 	uint32_t mac1 = HW_OCOTP_MAC1;
@@ -1819,7 +1858,7 @@ void setup(void)
 
 void loop(void)
 {
-	service_usb_auth();
+	service_usb_control();
 	if (g_network_ready) {
 		service_network();
 		service_http();

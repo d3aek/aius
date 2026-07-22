@@ -4,6 +4,9 @@ The Teensy 4.1 capability firmware and its portable, host-testable codec code.
 See the [capability gate](../docs/plans/aius-capability-gate.md) for the phased
 plan and the measured pass/fail budgets.
 
+The optical target's application-level USB control commands are defined in the
+[USB control protocol reference](../docs/reference/usb-control-protocol.md).
+
 Open this directory in the VS Code PlatformIO extension. Codec, parser, DSP, and
 measurement code stays behind portable C-compatible interfaces with no Arduino
 dependency, so the identical source runs in host tests and on the Teensy.

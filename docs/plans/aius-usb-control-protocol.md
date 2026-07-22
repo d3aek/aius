@@ -1,10 +1,12 @@
 ---
 title: AIUS USB control protocol
-status: planned
+status: in_progress
 owner: aius
 ---
 
 # AIUS USB control protocol
+
+The implemented operator reference is [USB application control protocol](../reference/usb-control-protocol.md).
 
 ## Scope
 
@@ -114,6 +116,8 @@ requirements.
 secret leakage, and bootloader exposure  
 **commit-checkpoint:** reviewed plan committed and pushed
 
+**status:** complete. The reviewed contract was committed as `129d81562`.
+
 ### Phase 2: firmware implementation
 
 **unit:** bounded application-command parser and dispatcher in the optical firmware  
@@ -124,15 +128,21 @@ helpers
 **review-intensity:** full command/error matrix and no audio-path allocations  
 **commit-checkpoint:** native protocol tests and clean target build
 
+**status:** complete. Native `usb-control`, HTTP, config, and DSP suites pass;
+the `teensy41-optical` target builds within all memory-bank budgets.
+
 ### Phase 3: tooling and validation
 
 **unit:** USB operator tool and central operator documentation  
 **seams:** `/dev/ttyACM*` ↔ request correlation; loader ↔ bootloader response  
-**contract-artifact:** standalone shell/Python-free tool examples  
+**contract-artifact:** central reference page and operator command examples
 **fan-out:** tool, docs, and target smoke tests are disjoint  
 **review-intensity:** reconnect, stale replies, partial lines, and bootloader
 transition  
 **commit-checkpoint:** host tests, target build, and live USB smoke test
+
+**status:** documentation is complete. Live USB smoke testing is pending a
+flash of this image onto the attached target.
 
 ## Acceptance criteria
 
@@ -141,7 +151,8 @@ transition
 - Unknown and malformed input always produces a bounded, parseable error.
 - `AIUS BOOTLOADER` is accepted only on USB CDC and does not acquire an HTTP or
   UDP route.
-- Host tests cover all commands, errors, line endings, overflow, duplicate
-  arguments, and secret non-disclosure.
+- Host tests cover all commands, errors, line endings, overflow, invalid bytes,
+  duplicate/trailing arguments, and response formatting. The dispatcher never
+  sends the token on an error path.
 - The target build remains within the existing flash, RAM, and audio timing
   budgets.
