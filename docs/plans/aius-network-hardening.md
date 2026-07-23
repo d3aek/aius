@@ -31,10 +31,12 @@ may permanently stop the foreground loop or require a reflash.
    foreground HTTP writes and absent link recovery are confirmed risks.
 2. Add bounded network lifecycle and HTTP transport recovery. Keep one client,
    reject stalled peers, abort partial SD jobs, restart DHCP/network after link
-   loss, and retain static fallback.
+   loss, and retain static fallback. **Implemented:** link-debounced network
+   epoch reset, two bounded DHCP attempts, bounded response writes, and
+   disconnect cleanup.
 3. Add a hardware watchdog and reset diagnostics. Feed it only from the main
    loop after critical services have returned; expose reset cause and recovery
-   counters in status.
+   counters in status. **Implemented:** WDOG1 startup/feed and status fields.
 4. Add native tests, build the optical target, flash, and validate link loss,
    DHCP retry, malformed/stalled HTTP, reboot, and long control traffic while
    audio/replay continues.

@@ -50,6 +50,9 @@ static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
 static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
 static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 10000u;
 static constexpr uint32_t AIUS_SD_UPLOAD_STALL_MS = 2000u;
+static constexpr uint32_t AIUS_HTTP_WRITE_STALL_MS = 100u;
+static constexpr uint32_t AIUS_NETWORK_LINK_DEBOUNCE_MS = 250u;
+static constexpr uint32_t AIUS_NETWORK_RETRY_MS = 1000u;
 DMAMEM static AiusReplayService g_replay_service;
 static File g_replay_file;
 static char g_replay_path[96];
@@ -153,11 +156,16 @@ static bool g_network_ready;
 static uint32_t g_network_retry_at;
 static bool g_ethernet_initialized;
 static bool g_dhcp_pending;
+static uint32_t g_network_link_down_at;
+static uint32_t g_network_restarts;
+static uint8_t g_dhcp_attempts;
 static bool g_sd_ready;
 static uint32_t g_dhcp_deadline;
 static volatile uint32_t g_dhcp_discover_count;
 static volatile uint32_t g_dhcp_update_count;
 static uint32_t g_boot_epoch;
+static uint32_t g_reset_source;
+static bool g_watchdog_enabled;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
 static uint32_t g_sd_probe_at;
@@ -188,6 +196,26 @@ static volatile uint32_t g_network_drops;
 static volatile uint32_t g_network_budget_overruns;
 
 static uint8_t current_state(void);
+
+static void watchdog_init(void)
+{
+	CCM_CCGR3 |= CCM_CCGR3_WDOG1(3);
+	WDOG1_WMCR = 0;
+	/* Eight seconds covers the bounded DHCP attempt and SD operations, while
+	 * still recovering from a wedged driver or socket write. */
+	constexpr uint8_t timeout = 15u;
+	WDOG1_WCR |= WDOG_WCR_SRS | WDOG_WCR_WT(timeout);
+	WDOG1_WCR |= WDOG_WCR_WDE | WDOG_WCR_WDT | WDOG_WCR_SRE;
+	g_watchdog_enabled = true;
+}
+
+static void watchdog_feed(void)
+{
+	if (!g_watchdog_enabled)
+		return;
+	WDOG1_WSR = 0x5555;
+	WDOG1_WSR = 0xAAAA;
+}
 
 static void service_hw_metrics(void)
 {
@@ -1151,7 +1179,7 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -1166,6 +1194,10 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)g_config_error_count,
 		network_mode, status[12], status[13], status[14], status[15],
 		(status[1] != 0 && Ethernet.linkStatus() == LinkON) ? 1u : 0u,
+		(unsigned long)g_network_restarts, g_dhcp_pending ? 1u : 0u,
+		(unsigned long)g_dhcp_discover_count,
+		(unsigned long)g_dhcp_update_count,
+		(unsigned long)g_reset_source,
 		(double)g_cpu_temp_c, g_cpu_temp_valid ? 1u : 0u,
 		(double)g_cpu_temp_max_c,
 		g_cpu_temp_valid ? (unsigned long)(millis() - g_cpu_temp_sample_ms) : 0ul,
@@ -1216,15 +1248,28 @@ static void http_send_content(unsigned status, const char *content_type,
 {
 	size_t response_length = aius_http_write_response(g_http_response,
 		sizeof(g_http_response), status, content_type, body, body_length);
-	for (size_t offset = 0; response_length != 0 && offset < response_length;) {
+	uint32_t last_progress = millis();
+	size_t offset = 0;
+	for (; response_length != 0 && offset < response_length;) {
+		if (!g_http_client || !g_http_client.connected() ||
+			(uint32_t)(millis() - last_progress) > AIUS_HTTP_WRITE_STALL_MS)
+			break;
+		int available = g_http_client.availableForWrite();
+		if (available < 1)
+			continue;
 		size_t length = response_length - offset;
 		if (length > 512u)
 			length = 512u;
+		if ((size_t)available < length)
+			length = (size_t)available;
 		size_t written = g_http_client.write(g_http_response + offset, length);
 		if (written == 0)
-			break;
+			continue;
+		last_progress = millis();
 		offset += written;
 	}
+	if (response_length != 0 && offset < response_length)
+		g_http_client_drops++;
 	g_http_client.stop();
 	g_http_client = EthernetClient();
 }
@@ -2167,6 +2212,7 @@ static void activate_network(bool dhcp)
 {
 	g_dhcp = dhcp;
 	g_dhcp_pending = false;
+	g_dhcp_attempts = 0;
 	g_network_ready = true;
 	g_udp.begin(AIUS_NET_PORT);
 	g_http_server.begin();
@@ -2174,6 +2220,41 @@ static void activate_network(bool dhcp)
 	              g_dhcp ? 1u : 0u, Ethernet.localIP()[0], Ethernet.localIP()[1],
 	              Ethernet.localIP()[2], Ethernet.localIP()[3],
 	              (unsigned)Ethernet.linkStatus());
+}
+
+static void reset_network_service(void)
+{
+	if (sd_job_active())
+		sd_job_clear();
+	if (g_http_client)
+		g_http_client.stop();
+	g_http_client = EthernetClient();
+	g_http_request_length = 0;
+	g_udp.stop();
+	g_network_ready = false;
+	g_dhcp = false;
+	g_dhcp_pending = false;
+	g_ethernet_initialized = false;
+	g_dhcp_attempts = 0;
+	g_network_link_down_at = 0;
+	g_network_retry_at = millis() + AIUS_NETWORK_RETRY_MS;
+	g_network_restarts++;
+}
+
+static void supervise_network_link(void)
+{
+	if (!g_ethernet_initialized || !g_network_ready)
+		return;
+	if (Ethernet.linkStatus() == LinkON) {
+		g_network_link_down_at = 0;
+		return;
+	}
+	uint32_t now = millis();
+	if (g_network_link_down_at == 0)
+		g_network_link_down_at = now;
+	else if ((uint32_t)(now - g_network_link_down_at) >=
+		         AIUS_NETWORK_LINK_DEBOUNCE_MS)
+		reset_network_service();
 }
 
 static void start_network(void)
@@ -2190,12 +2271,22 @@ static void start_network(void)
 		if ((int32_t)(millis() - g_dhcp_deadline) < 0)
 			return;
 		g_dhcp_pending = false;
+		if (g_dhcp_attempts < 2u) {
+			g_ethernet_initialized = false;
+			g_network_retry_at = millis();
+			return;
+		}
 	}
 	if (g_ethernet_initialized && Ethernet.linkStatus() != LinkON) {
 		g_network_retry_at = millis() + 5000u;
 		return;
 	}
 	if (g_ethernet_initialized && Ethernet.linkStatus() == LinkON) {
+		if (g_dhcp_attempts < 2u) {
+			g_ethernet_initialized = false;
+			g_network_retry_at = millis();
+			return;
+		}
 		Serial.printf("AIUS Ethernet DHCP retry exhausted; static fallback begin\\n");
 		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
 		              IPAddress(0, 0, 0, 0), g_static_mask);
@@ -2212,6 +2303,7 @@ static void start_network(void)
 	              g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
 	Serial.printf("AIUS Ethernet init: DHCP begin\\n");
 	g_ethernet_initialized = true;
+	g_dhcp_attempts++;
 	g_dhcp = Ethernet.begin(g_mac, 5000, 250) != 0;
 	byte actual_mac[6] = {};
 	Ethernet.MACAddress(actual_mac);
@@ -2238,6 +2330,9 @@ static void start_network(void)
 
 void setup(void)
 {
+	g_reset_source = SRC_SRSR & 0xffu;
+	SRC_SRSR = g_reset_source;
+	watchdog_init();
 	Serial.begin(115200);
 	aius_usb_control_init(&g_usb_parser);
 	uint8_t auth_material[AIUS_AUTH_DEVICE_MATERIAL_SIZE];
@@ -2268,6 +2363,7 @@ void loop(void)
 {
 	service_usb_control();
 	service_hw_metrics();
+	supervise_network_link();
 	if (g_network_ready) {
 		service_network();
 		service_http();
@@ -2280,4 +2376,5 @@ void loop(void)
 	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
 		(void)aius_replay_service_refill(&g_replay_service, 2048u);
 	service_sd();
+	watchdog_feed();
 }
