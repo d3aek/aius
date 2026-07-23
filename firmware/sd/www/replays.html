@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aius replay manager</title>
+  <link rel="stylesheet" href="replays.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">AIUS / SD CARD</p>
+        <h1>Replay manager</h1>
+        <p class="lede">Upload IEC 61937 captures and feed them through the same DTS, DSP, limiter, and meter path as the optical input.</p>
+      </div>
+      <nav><a href="/sd/www/index.html">DSP editor</a><a href="/">Device status</a></nav>
+    </header>
+
+    <section class="card status-card">
+      <div class="section-title"><h2>Playback</h2><span id="state" class="pill">stopped</span></div>
+      <div class="status-grid">
+        <div><span>Active replay</span><strong id="active">none</strong></div>
+        <div><span>Position</span><strong id="position">0 / 0 bytes</strong></div>
+        <div><span>Queue</span><strong id="queue">0 / 0 words</strong></div>
+        <div><span>Underruns</span><strong id="underruns">0</strong></div>
+        <div><span>Loops completed</span><strong id="loops">0</strong></div>
+        <div><span>Input classifier</span><strong id="classifier">unknown</strong></div>
+      </div>
+      <div class="meter-row"><label>Buffer fill <progress id="buffer" max="100" value="0"></progress></label><span id="decoder">decoder idle</span></div>
+      <div class="controls">
+        <label>Selected replay <select id="selected"><option value="">No replay selected</option></select></label>
+        <label class="check"><input id="loop" type="checkbox"> Loop continuously</label>
+        <button id="start">Start selected</button><button id="stop" class="secondary">Stop</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Replay library</h2><button id="refresh" class="secondary">Refresh</button></div>
+      <p class="hint">Files are little-endian 16-bit IEC 61937 words. Uploads resume at the server-reported offset after a network interruption.</p>
+      <div id="files" class="file-list"><p class="muted">Loading replay files...</p></div>
+      <form id="upload" class="upload">
+        <label>Replay ID <input id="replay-id" pattern="[A-Za-z0-9_-]{1,48}" required placeholder="film-trailer-51"></label>
+        <label>Capture file <input id="file" type="file" accept=".iec,application/octet-stream" required></label>
+        <label>USB auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
+        <button>Upload / resume</button>
+      </form>
+      <p id="upload-status" class="hint" role="status"></p>
+    </section>
+
+    <section class="card meters"><div class="section-title"><h2>Live processing</h2><a href="/api/meters">machine meters</a></div><canvas id="waveform" width="960" height="180"></canvas><p id="meter-summary" class="hint">Meter data unavailable.</p></section>
+  </main>
+  <script src="replays.js"></script>
+</body>
+</html>
