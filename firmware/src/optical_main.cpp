@@ -2251,7 +2251,7 @@ void loop(void)
 	} else if ((int32_t)(millis() - g_network_retry_at) >= 0) {
 		start_network();
 	}
-	if (g_dhcp)
+	if (g_dhcp || g_dhcp_pending)
 		(void)Ethernet.maintain();
 	if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
 	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
