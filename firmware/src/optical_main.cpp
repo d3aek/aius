@@ -2301,10 +2301,13 @@ static void start_network(void)
 	}
 	Serial.printf("AIUS Ethernet MAC configured=%02x:%02x:%02x:%02x:%02x:%02x\\n",
 	              g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
-	Serial.printf("AIUS Ethernet init: DHCP begin\\n");
+	Serial.printf("AIUS Ethernet init: DHCP begin reset_source=%lu\\n",
+	              (unsigned long)g_reset_source);
 	g_ethernet_initialized = true;
 	g_dhcp_attempts++;
-	g_dhcp = Ethernet.begin(g_mac, 5000, 250) != 0;
+	/* Keep the synchronous library probe below the watchdog budget. The FNET
+	 * client below owns the subsequent bounded retry cycle. */
+	g_dhcp = Ethernet.begin(g_mac, 1000, 250) != 0;
 	byte actual_mac[6] = {};
 	Ethernet.MACAddress(actual_mac);
 	Serial.printf("AIUS Ethernet MAC actual=%02x:%02x:%02x:%02x:%02x:%02x\\n",
