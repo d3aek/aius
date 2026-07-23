@@ -42,9 +42,27 @@ may permanently stop the foreground loop or require a reflash.
    audio/replay continues. **In progress:** HTTP/net/replay native tests and
    target build pass; the firmware now services HTTP before secondary UDP
    traffic, feeds the watchdog at that seam, and rebinds a lost listener.
-   Live HTTP validation is still pending on the newly built image. The
-   observed failure is being treated as firmware-side, not as a guest routing
-   issue.
+   Live HTTP validation is still pending. The latest image was built and the
+   loader detected the 16c0:0478 bootloader, but the write failed and the board
+   returned to 16c0:0483 application mode. The next session should use the
+   loader's explicit wait mode while the Program button is pressed, then verify
+   the image revision over USB and probe `/api/status` at the DHCP lease.
+
+## Next-session handoff
+
+- Current pushed firmware checkpoint: HTTP-first loop, watchdog checkpoint,
+  listener rebinding, and `http_server_rebinds` telemetry.
+- Build command: `firmware/scripts/build.sh teensy41-optical`.
+- Focused tests: `firmware/scripts/test.sh --environment
+  native --suite http` and `--suite net`.
+- Image: `firmware/.pio/build/teensy41-optical/firmware.hex`.
+- Flash command, using the guest's `plugdev` access:
+  `sg plugdev -c "$HOME/.platformio/packages/tool-teensy/teensy_loader_cli
+  --mcu=imxrt1062 -w -v
+  firmware/.pio/build/teensy41-optical/firmware.hex"`.
+- Do not infer a routing fault from the HTTP timeout. The current working
+  hypothesis is firmware startup/service failure or an unreliable bootloader
+  transfer over the USB-over-fibre path.
 
 ## Non-goals
 
