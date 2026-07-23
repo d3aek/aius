@@ -142,6 +142,7 @@ static uint32_t g_http_requests;
 static uint32_t g_http_rejections;
 static uint32_t g_http_client_drops;
 static uint32_t g_http_service_overruns;
+static uint32_t g_http_server_rebinds;
 static float g_cpu_temp_c;
 static float g_cpu_temp_max_c;
 static uint32_t g_cpu_temp_sample_ms;
@@ -1179,7 +1180,7 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -1198,6 +1199,7 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)g_dhcp_discover_count,
 		(unsigned long)g_dhcp_update_count,
 		(unsigned long)g_reset_source,
+		(unsigned long)g_http_server_rebinds,
 		(double)g_cpu_temp_c, g_cpu_temp_valid ? 1u : 0u,
 		(double)g_cpu_temp_max_c,
 		g_cpu_temp_valid ? (unsigned long)(millis() - g_cpu_temp_sample_ms) : 0ul,
@@ -1921,6 +1923,11 @@ static void service_http(void)
 		}
 		return;
 	}
+	if (!g_http_server) {
+		g_http_server.begin();
+		g_http_server_rebinds++;
+		return;
+	}
 	if (!g_http_client || !g_http_client.connected()) {
 		EthernetClient candidate = g_http_server.accept();
 		if (candidate) {
@@ -2369,8 +2376,12 @@ void loop(void)
 	service_hw_metrics();
 	supervise_network_link();
 	if (g_network_ready) {
-		service_network();
 		service_http();
+		/* HTTP is the recovery/control plane. Do not let a UDP/FNET poll stall
+		 * starve it, and establish a watchdog checkpoint before entering the
+		 * secondary discovery service. */
+		watchdog_feed();
+		service_network();
 	} else if ((int32_t)(millis() - g_network_retry_at) >= 0) {
 		start_network();
 	}

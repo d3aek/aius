@@ -40,9 +40,11 @@ may permanently stop the foreground loop or require a reflash.
 4. Add native tests, build the optical target, flash, and validate link loss,
    DHCP retry, malformed/stalled HTTP, reboot, and long control traffic while
    audio/replay continues. **In progress:** HTTP/net/replay native tests and
-   target build pass; the hardened image flashed and reaches Ethernet startup.
-   Live HTTP validation remains blocked by the guest's missing route to the
-   board's DHCP subnet (`192.0.2.0/24`).
+   target build pass; the firmware now services HTTP before secondary UDP
+   traffic, feeds the watchdog at that seam, and rebinds a lost listener.
+   Live HTTP validation is still pending on the newly built image. The
+   observed failure is being treated as firmware-side, not as a guest routing
+   issue.
 
 ## Non-goals
 
