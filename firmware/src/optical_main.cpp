@@ -48,6 +48,7 @@ static EthernetClient g_http_client;
 static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
 static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
+static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 500u;
 DMAMEM static AiusReplayService g_replay_service;
 static File g_replay_file;
 static char g_replay_path[96];
@@ -115,6 +116,7 @@ struct AiusSdJob {
 	uint16_t pending_length;
 	uint16_t response_offset;
 	uint16_t response_length;
+	uint32_t progress_ms;
 	bool target_existed;
 	bool backup_moved;
 	bool config_upload;
@@ -272,6 +274,7 @@ static void sd_job_clear(void)
 	g_sd_job.pending_length = 0;
 	g_sd_job.response_offset = 0;
 	g_sd_job.response_length = 0;
+	g_sd_job.progress_ms = 0;
 	g_sd_job.target_existed = false;
 	g_sd_job.backup_moved = false;
 	g_sd_job.config_upload = false;
@@ -507,15 +510,24 @@ static void service_sd_job(void)
 		return;
 	}
 	case AIUS_SD_JOB_DOWNLOAD_HEADER: {
+		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
+			sd_job_cancel();
+			return;
+		}
 		size_t remaining = g_sd_job.response_length - g_sd_job.response_offset;
+		int available = g_http_client.availableForWrite();
+		if (available <= 0)
+			return;
+		if ((size_t)available < remaining)
+			remaining = (size_t)available;
 		size_t written = g_http_client.write(
 			(const uint8_t *)g_sd_job.response_header + g_sd_job.response_offset,
 			remaining);
 		if (written == 0) {
-			sd_job_drop_client();
-			sd_job_clear();
+			sd_job_cancel();
 			return;
 		}
+		g_sd_job.progress_ms = millis();
 		g_sd_job.response_offset += (uint16_t)written;
 		if (g_sd_job.response_offset == g_sd_job.response_length)
 			g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_READ;
@@ -537,13 +549,22 @@ static void service_sd_job(void)
 		return;
 	}
 	case AIUS_SD_JOB_DOWNLOAD_WRITE: {
-		size_t written = g_http_client.write(g_sd_job.transfer,
-		                                    g_sd_job.pending_length);
-		if (written == 0) {
-			sd_job_drop_client();
-			sd_job_clear();
+		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
+			sd_job_cancel();
 			return;
 		}
+		int available = g_http_client.availableForWrite();
+		if (available <= 0)
+			return;
+		size_t length = g_sd_job.pending_length;
+		if ((size_t)available < length)
+			length = (size_t)available;
+		size_t written = g_http_client.write(g_sd_job.transfer, length);
+		if (written == 0) {
+			sd_job_cancel();
+			return;
+		}
+		g_sd_job.progress_ms = millis();
 		if (written < g_sd_job.pending_length) {
 			memmove(g_sd_job.transfer, g_sd_job.transfer + written,
 			        g_sd_job.pending_length - written);
@@ -1412,6 +1433,7 @@ static void http_sd_request(const AiusHttpRequest &request)
 		}
 		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
 		g_sd_job.content_type = content_type;
+		g_sd_job.progress_ms = millis();
 		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_OPEN;
 		return;
 	}
