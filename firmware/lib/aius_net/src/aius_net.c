@@ -7,6 +7,42 @@
 #define AIUS_NET_MAGIC2 0x4Eu
 #define AIUS_NET_MAGIC3 0x31u
 
+static void aius_net_action_none(AiusNetAction *action)
+{
+	action->kind = AIUS_NET_ACTION_NONE;
+	action->generation = 0;
+}
+
+static void aius_net_action_set(AiusNetAction *action, AiusNetActionKind kind,
+	                            uint32_t generation)
+{
+	action->kind = kind;
+	action->generation = generation;
+}
+
+static void aius_net_saturating_increment(uint32_t *value)
+{
+	if (*value != UINT32_MAX)
+		(*value)++;
+}
+
+static bool aius_net_deadline_reached(uint32_t now_ms, uint32_t deadline_ms)
+{
+	return (int32_t)(now_ms - deadline_ms) >= 0;
+}
+
+static void aius_net_begin_teardown(AiusNetSupervisor *supervisor,
+	                                AiusNetFault fault,
+	                                AiusNetAction *action)
+{
+	supervisor->state = AIUS_NET_STATE_TEARDOWN;
+	supervisor->deadline_ms = 0;
+	supervisor->last_fault = fault;
+	aius_net_saturating_increment(&supervisor->restarts);
+	aius_net_action_set(action, AIUS_NET_ACTION_TEARDOWN,
+	                    supervisor->generation);
+}
+
 uint32_t aius_net_crc32(const uint8_t *data, size_t len)
 {
 	uint32_t crc = 0xffffffffu;
@@ -75,4 +111,130 @@ AiusNetError aius_net_decode(const uint8_t *src, size_t len,
 	out->payload = src + AIUS_NET_HEADER_LEN;
 	out->payload_len = payload_len;
 	return AIUS_NET_OK;
+}
+
+void aius_net_supervisor_init(AiusNetSupervisor *supervisor, uint32_t now_ms,
+	                          bool recovery_safe,
+	                          AiusNetAction *initial_action)
+{
+	(void)now_ms;
+	if (supervisor == NULL || initial_action == NULL)
+		return;
+
+	supervisor->state = recovery_safe ? AIUS_NET_STATE_RECOVERY_SAFE
+	                                  : AIUS_NET_STATE_STACK_START;
+	supervisor->generation = recovery_safe ? 0u : 1u;
+	supervisor->deadline_ms = 0;
+	supervisor->restarts = 0;
+	supervisor->ignored_events = 0;
+	supervisor->cleanup_faults = 0;
+	supervisor->last_fault = AIUS_NET_FAULT_NONE;
+	aius_net_action_none(initial_action);
+	if (!recovery_safe)
+		aius_net_action_set(initial_action, AIUS_NET_ACTION_START_STACK,
+		                    supervisor->generation);
+}
+
+void aius_net_supervisor_step(AiusNetSupervisor *supervisor, uint32_t now_ms,
+	                          AiusNetEvent event, AiusNetAction *action)
+{
+	if (supervisor == NULL || action == NULL)
+		return;
+
+	aius_net_action_none(action);
+
+	if (event.kind != AIUS_NET_EVENT_NONE) {
+		if (event.generation != supervisor->generation) {
+			aius_net_saturating_increment(&supervisor->ignored_events);
+		} else {
+			switch (supervisor->state) {
+			case AIUS_NET_STATE_STACK_START:
+				if (event.kind == AIUS_NET_EVENT_STACK_STARTED) {
+					supervisor->state = AIUS_NET_STATE_DHCP_WAIT;
+					supervisor->deadline_ms =
+						now_ms + AIUS_NET_DHCP_DEADLINE_MS;
+					aius_net_action_set(
+						action, AIUS_NET_ACTION_START_DHCP,
+						supervisor->generation);
+					return;
+				}
+				if (event.kind == AIUS_NET_EVENT_RESOURCE_FAULT) {
+					aius_net_begin_teardown(
+						supervisor, event.fault, action);
+					return;
+				}
+				aius_net_saturating_increment(
+					&supervisor->ignored_events);
+				break;
+			case AIUS_NET_STATE_DHCP_WAIT:
+				if (event.kind == AIUS_NET_EVENT_LEASE_ACQUIRED) {
+					supervisor->state = AIUS_NET_STATE_ONLINE;
+					supervisor->deadline_ms = 0;
+					aius_net_action_set(
+						action,
+						AIUS_NET_ACTION_PUBLISH_ONLINE,
+						supervisor->generation);
+					return;
+				}
+				if (event.kind == AIUS_NET_EVENT_RESOURCE_FAULT) {
+					aius_net_begin_teardown(
+						supervisor, event.fault, action);
+					return;
+				}
+				aius_net_saturating_increment(
+					&supervisor->ignored_events);
+				break;
+			case AIUS_NET_STATE_ONLINE:
+				if (event.kind == AIUS_NET_EVENT_RESOURCE_FAULT) {
+					aius_net_begin_teardown(
+						supervisor, event.fault, action);
+					return;
+				}
+				aius_net_saturating_increment(
+					&supervisor->ignored_events);
+				break;
+			case AIUS_NET_STATE_TEARDOWN:
+				if (event.kind == AIUS_NET_EVENT_TEARDOWN_DONE ||
+				    event.kind == AIUS_NET_EVENT_TEARDOWN_FAULT) {
+					if (event.kind ==
+					    AIUS_NET_EVENT_TEARDOWN_FAULT)
+						aius_net_saturating_increment(
+							&supervisor
+								 ->cleanup_faults);
+					supervisor->state =
+						AIUS_NET_STATE_BACKOFF;
+					supervisor->deadline_ms =
+						now_ms + AIUS_NET_BACKOFF_MS;
+					return;
+				}
+				aius_net_saturating_increment(
+					&supervisor->ignored_events);
+				break;
+			case AIUS_NET_STATE_BACKOFF:
+			case AIUS_NET_STATE_RECOVERY_SAFE:
+			default:
+				aius_net_saturating_increment(
+					&supervisor->ignored_events);
+				break;
+			}
+		}
+	}
+
+	if (supervisor->state == AIUS_NET_STATE_DHCP_WAIT &&
+	    aius_net_deadline_reached(now_ms, supervisor->deadline_ms)) {
+		aius_net_begin_teardown(supervisor,
+		                        AIUS_NET_FAULT_DHCP_TIMEOUT, action);
+		return;
+	}
+
+	if (supervisor->state == AIUS_NET_STATE_BACKOFF &&
+	    aius_net_deadline_reached(now_ms, supervisor->deadline_ms)) {
+		supervisor->generation++;
+		if (supervisor->generation == 0)
+			supervisor->generation = 1;
+		supervisor->state = AIUS_NET_STATE_STACK_START;
+		supervisor->deadline_ms = 0;
+		aius_net_action_set(action, AIUS_NET_ACTION_START_STACK,
+		                    supervisor->generation);
+	}
 }

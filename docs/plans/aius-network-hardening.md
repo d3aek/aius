@@ -304,11 +304,16 @@ transition per call.
   and returns `START_DHCP`.
 - Current-generation `LEASE_ACQUIRED` in `DHCP_WAIT`, including at exact
   deadline, moves to `ONLINE` and returns `PUBLISH_ONLINE`.
-- `RESOURCE_FAULT` in any non-safe state and DHCP expiry move to `TEARDOWN`,
-  invalidate the generation, record the saturated fault/restart counters, and
-  return `TEARDOWN` for the invalidated generation.
+- `RESOURCE_FAULT` in a live-resource state (`STACK_START`, `DHCP_WAIT`, or
+  `ONLINE`) and DHCP expiry move to `TEARDOWN`, invalidate resource authority,
+  record the saturated fault/restart counters, and return `TEARDOWN` with the
+  invalidated generation number for cleanup correlation.
 - `TEARDOWN_DONE` or `TEARDOWN_FAULT` moves to `BACKOFF`; cleanup failure is
   recorded but cannot retain authority for the invalidated generation.
+- `TEARDOWN` and `BACKOFF` retain the invalidated generation number only for
+  cleanup correlation. Resource callbacks in either state are impossible
+  events, so they are ignored and counted even when the numeric generation
+  matches.
 - Backoff expiry increments the generation, skipping zero after wrap, moves to
   `STACK_START`, and returns `START_STACK`. Generation wrap is allowed only
   after teardown has invalidated all resources.
@@ -1380,6 +1385,7 @@ the declared proof, commits explicit paths, and pushes.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [aius_net_supervisor_init, aius_net_supervisor_step]
 contract-artifact: spec-only
 dependencies: []
@@ -1997,3 +2003,7 @@ pushes.
   in the contract and decomposition above.
 - Final clean-room plan-to-build recheck: passed after five failed reviews and
   their amendments. Phase 1 is authorized for dispatch.
+- Phase 1: native `net` suite and `teensy41-optical` build pass. The first
+  delivery audit rejected ambiguous invalidated-generation wording and a
+  mirror-image oracle; the amended live-resource contract and independent
+  table/model proof passed the clean-room re-audit.

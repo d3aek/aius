@@ -1,6 +1,7 @@
 #ifndef AIUS_NET_H
 #define AIUS_NET_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -78,6 +79,70 @@ typedef struct {
 	uint16_t payload_len;
 } AiusNetFrame;
 
+#define AIUS_NET_DHCP_DEADLINE_MS 5000u
+#define AIUS_NET_BACKOFF_MS 1000u
+
+typedef enum {
+	AIUS_NET_STATE_STACK_START,
+	AIUS_NET_STATE_DHCP_WAIT,
+	AIUS_NET_STATE_ONLINE,
+	AIUS_NET_STATE_TEARDOWN,
+	AIUS_NET_STATE_BACKOFF,
+	AIUS_NET_STATE_RECOVERY_SAFE
+} AiusNetState;
+
+typedef enum {
+	AIUS_NET_EVENT_NONE,
+	AIUS_NET_EVENT_STACK_STARTED,
+	AIUS_NET_EVENT_LEASE_ACQUIRED,
+	AIUS_NET_EVENT_RESOURCE_FAULT,
+	AIUS_NET_EVENT_TEARDOWN_DONE,
+	AIUS_NET_EVENT_TEARDOWN_FAULT
+} AiusNetEventKind;
+
+typedef enum {
+	AIUS_NET_ACTION_NONE,
+	AIUS_NET_ACTION_START_STACK,
+	AIUS_NET_ACTION_START_DHCP,
+	AIUS_NET_ACTION_TEARDOWN,
+	AIUS_NET_ACTION_PUBLISH_ONLINE
+} AiusNetActionKind;
+
+typedef enum {
+	AIUS_NET_FAULT_NONE = 0,
+	AIUS_NET_FAULT_DHCP_TIMEOUT = 1,
+	AIUS_NET_FAULT_LINK_LOST = 2,
+	AIUS_NET_FAULT_STACK_START = 3,
+	AIUS_NET_FAULT_DHCP_START = 4,
+	AIUS_NET_FAULT_LISTENER = 5,
+	AIUS_NET_FAULT_UDP = 6,
+	AIUS_NET_FAULT_SOCKET = 7,
+	AIUS_NET_FAULT_TEARDOWN = 8,
+	AIUS_NET_FAULT_CALLBACK_OVERFLOW = 9,
+	AIUS_NET_FAULT_DRIVER_PROTOCOL = 10
+} AiusNetFault;
+
+typedef struct {
+	AiusNetEventKind kind;
+	uint32_t generation;
+	AiusNetFault fault;
+} AiusNetEvent;
+
+typedef struct {
+	AiusNetActionKind kind;
+	uint32_t generation;
+} AiusNetAction;
+
+typedef struct {
+	AiusNetState state;
+	uint32_t generation;
+	uint32_t deadline_ms;
+	uint32_t restarts;
+	uint32_t ignored_events;
+	uint32_t cleanup_faults;
+	AiusNetFault last_fault;
+} AiusNetSupervisor;
+
 uint32_t aius_net_crc32(const uint8_t *data, size_t len);
 
 size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
@@ -86,6 +151,13 @@ size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
 
 AiusNetError aius_net_decode(const uint8_t *src, size_t len,
 	                             AiusNetFrame *out);
+
+void aius_net_supervisor_init(AiusNetSupervisor *supervisor, uint32_t now_ms,
+	                          bool recovery_safe,
+	                          AiusNetAction *initial_action);
+
+void aius_net_supervisor_step(AiusNetSupervisor *supervisor, uint32_t now_ms,
+	                          AiusNetEvent event, AiusNetAction *action);
 
 static inline void aius_net_put_u16(uint8_t *p, uint16_t v)
 {
