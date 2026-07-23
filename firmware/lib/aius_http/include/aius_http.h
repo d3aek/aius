@@ -8,11 +8,11 @@
 extern "C" {
 #endif
 
-#define AIUS_HTTP_MAX_REQUEST 2048u
+#define AIUS_HTTP_MAX_REQUEST 8192u
 #define AIUS_HTTP_MAX_HEADERS 512u
 #define AIUS_HTTP_MAX_SD_AUTH 16u /* fixed-format SD auth token width */
 #define AIUS_HTTP_MAX_REPLAY_ID 48u
-#define AIUS_HTTP_MAX_BODY 1536u
+#define AIUS_HTTP_MAX_BODY 4096u
 #define AIUS_HTTP_MAX_RESPONSE 8192u
 
 typedef enum {

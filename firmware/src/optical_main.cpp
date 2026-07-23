@@ -136,6 +136,11 @@ static uint32_t g_http_requests;
 static uint32_t g_http_rejections;
 static uint32_t g_http_client_drops;
 static uint32_t g_http_service_overruns;
+static float g_cpu_temp_c;
+static float g_cpu_temp_max_c;
+static uint32_t g_cpu_temp_sample_ms;
+static uint32_t g_cpu_temp_next_ms;
+static bool g_cpu_temp_valid;
 static IPAddress g_static_ip(AIUS_STATIC_IP[0], AIUS_STATIC_IP[1],
                              AIUS_STATIC_IP[2], AIUS_STATIC_IP[3]);
 static IPAddress g_static_mask(AIUS_STATIC_MASK[0], AIUS_STATIC_MASK[1],
@@ -178,6 +183,22 @@ static volatile uint32_t g_network_drops;
 static volatile uint32_t g_network_budget_overruns;
 
 static uint8_t current_state(void);
+
+static void service_hw_metrics(void)
+{
+	uint32_t now = millis();
+	if ((int32_t)(now - g_cpu_temp_next_ms) < 0)
+		return;
+	g_cpu_temp_next_ms = now + 1000u;
+	float temperature = tempmonGetTemp();
+	if (temperature < -40.0f || temperature > 150.0f)
+		return;
+	g_cpu_temp_c = temperature;
+	if (!g_cpu_temp_valid || temperature > g_cpu_temp_max_c)
+		g_cpu_temp_max_c = temperature;
+	g_cpu_temp_sample_ms = now;
+	g_cpu_temp_valid = true;
+}
 
 static const char *sd_filesystem(void)
 {
@@ -1081,7 +1102,7 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -1096,6 +1117,9 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)g_config_error_count,
 		network_mode, status[12], status[13], status[14], status[15],
 		(status[1] != 0 && Ethernet.linkStatus() == LinkON) ? 1u : 0u,
+		(double)g_cpu_temp_c, g_cpu_temp_valid ? 1u : 0u,
+		(double)g_cpu_temp_max_c,
+		g_cpu_temp_valid ? (unsigned long)(millis() - g_cpu_temp_sample_ms) : 0ul,
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		(unsigned long)aius_net_get_u32(status + 39),
 		(unsigned long)aius_net_get_u32(status + 43),
@@ -1589,6 +1613,13 @@ static bool http_replay_body_id(char *id, size_t capacity, bool *loop)
 static void http_replay_request(const AiusHttpRequest &request)
 {
 	uint8_t body[AIUS_HTTP_MAX_RESPONSE];
+	if (!(request.route == AIUS_HTTP_ROUTE_REPLAYS_STATUS ||
+	      (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_GET)) &&
+	    !http_sd_authorized(request)) {
+		static const uint8_t unauthorized[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
+		http_send(401, unauthorized, sizeof(unauthorized) - 1u);
+		return;
+	}
 	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STATUS) {
 		size_t length = http_replay_status_json(body, sizeof(body));
 		http_send(200, body, length);
@@ -1597,6 +1628,37 @@ static void http_replay_request(const AiusHttpRequest &request)
 	if (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_GET) {
 		size_t length = http_replay_list_json(body, sizeof(body));
 		http_send(length == 0u ? 500u : 200u, body, length);
+		return;
+	}
+	if (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_DELETE) {
+		char id[AIUS_REPLAY_MAX_ID_LENGTH + 1u] = {};
+		bool loop = false;
+		(void)loop;
+		if (!http_replay_body_id(id, sizeof(id), &loop)) {
+			static const uint8_t bad[] = "{\"ok\":false,\"error\":\"replay_body\"}";
+			http_send(400, bad, sizeof(bad) - 1u);
+			return;
+		}
+		if (strcmp(id, g_replay_service.id) == 0 &&
+		    g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY) {
+			static const uint8_t active[] = "{\"ok\":false,\"error\":\"replay_active\"}";
+			http_send(409, active, sizeof(active) - 1u);
+			return;
+		}
+		char path[96];
+		snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
+		if (!SD.exists(path)) {
+			static const uint8_t missing[] = "{\"ok\":false,\"error\":\"replay_not_found\"}";
+			http_send(404, missing, sizeof(missing) - 1u);
+			return;
+		}
+		if (!SD.remove(path)) {
+			static const uint8_t failed[] = "{\"ok\":false,\"error\":\"replay_delete\"}";
+			http_send(503, failed, sizeof(failed) - 1u);
+			return;
+		}
+		int length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"deleted\":\"%s\"}", id);
+		http_send(200, body, (size_t)length);
 		return;
 	}
 	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STOP) {
@@ -2114,6 +2176,7 @@ void setup(void)
 void loop(void)
 {
 	service_usb_control();
+	service_hw_metrics();
 	if (g_network_ready) {
 		service_network();
 		service_http();

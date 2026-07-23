@@ -20,6 +20,13 @@ Generate the default 30-second pack with:
 ./generate.sh
 ```
 
+Upload one IEC replay, resuming an interrupted `.part` upload automatically:
+
+```sh
+./upload.sh --device http://192.0.2.66 --token TOKEN \
+  --id cinematic_program_51 generated/cinematic_program_51.iec
+```
+
 Use `OUT=/path/to/output DURATION=60 ./generate.sh` for a longer pack. The
 generator requires an FFmpeg build with the `dca` encoder; Aius' checked-in
 10 ms DTS and IEC vectors remain available when FFmpeg is not installed.
