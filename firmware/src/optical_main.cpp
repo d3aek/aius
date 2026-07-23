@@ -25,6 +25,7 @@ extern "C" {
 	#include "service/dhcp/fnet_dhcp_cln.h"
 #include "stack/fnet_netif.h"
 }
+#include "aius_replay.h"
 #include "aius_optical_config.h"
 #include "aius_auth.h"
 #include "aius_config.h"
@@ -47,6 +48,37 @@ static EthernetClient g_http_client;
 static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
 static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
+DMAMEM static AiusReplayService g_replay_service;
+static File g_replay_file;
+static char g_replay_path[96];
+
+static AiusStatus replay_reader_open(void *, uint32_t file_bytes)
+{
+	(void)file_bytes;
+	if (g_replay_file) g_replay_file.close();
+	g_replay_file = SD.open(g_replay_path, FILE_READ);
+	return g_replay_file ? AIUS_OK : AIUS_MALFORMED;
+}
+
+static AiusStatus replay_reader_read(void *, uint32_t offset, uint8_t *buffer,
+	                                  size_t capacity, size_t *bytes_read)
+{
+	if (!g_replay_file || buffer == nullptr || bytes_read == nullptr ||
+	    !g_replay_file.seek(offset)) return AIUS_MALFORMED;
+	int count = g_replay_file.read(buffer, capacity);
+	if (count < 0) return AIUS_MALFORMED;
+	*bytes_read = (size_t)count;
+	return AIUS_OK;
+}
+
+static void replay_reader_close(void *)
+{
+	if (g_replay_file) g_replay_file.close();
+}
+
+static AiusReplayReader g_replay_reader = {
+	nullptr, replay_reader_open, replay_reader_read, replay_reader_close
+};
 
 enum AiusSdJobState : uint8_t {
 	AIUS_SD_JOB_IDLE = 0,
@@ -625,7 +657,18 @@ protected:
 		apply_pending_controls();
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
-		if (left != nullptr && right != nullptr && g_pipeline != nullptr) {
+		if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
+		    g_pipeline != nullptr) {
+			uint16_t words[AUDIO_BLOCK_SAMPLES * 2];
+			size_t count = aius_replay_service_pop_words(&g_replay_service, words,
+			                                             AUDIO_BLOCK_SAMPLES * 2);
+			if (count == AUDIO_BLOCK_SAMPLES * 2) {
+				AiusStatus st = aius_pipeline_push(g_pipeline, words, count);
+				if (st != AIUS_OK) g_overruns++;
+			} else {
+				g_overruns++;
+			}
+		} else if (left != nullptr && right != nullptr && g_pipeline != nullptr) {
 			uint16_t words[AUDIO_BLOCK_SAMPLES * 2];
 			for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
 				words[2 * i] = (uint16_t)left->data[i];
@@ -1389,6 +1432,82 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
+static size_t http_replay_status_json(uint8_t *body, size_t capacity)
+{
+	AiusReplayStatus replay = {};
+	(void)aius_replay_service_status(&g_replay_service, &replay);
+	const char *state = replay.state == AIUS_REPLAY_PLAYING ? "playing" :
+		replay.state == AIUS_REPLAY_PREBUFFERING ? "prebuffering" :
+		replay.state == AIUS_REPLAY_EOF ? "eof" :
+		replay.state == AIUS_REPLAY_ERROR ? "error" : "stopped";
+	const char *klass = replay.decoder.classification == AIUS_PIPELINE_DTS ? "dts" :
+		replay.decoder.classification == AIUS_PIPELINE_PCM ? "pcm" : "unknown";
+	int length = snprintf((char *)body, capacity,
+		"{\"ok\":true,\"state\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu}",
+		state, replay.id, (unsigned long)replay.file_bytes,
+		(unsigned long)replay.offset_bytes, replay.duration_seconds,
+		replay.loop ? "true" : "false", (unsigned long)replay.loops_completed,
+		(unsigned long)replay.queue_words, (unsigned long)replay.watermark_words,
+		(unsigned long)replay.underruns, klass, (unsigned long)replay.decoder_errors);
+	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
+}
+
+static bool http_replay_body_id(char *id, size_t capacity, bool *loop)
+{
+	const char *body = (const char *)g_http_request + g_http_body_offset;
+	const char *id_start = strstr(body, "\"id\":\"");
+	if (id_start == nullptr) return false;
+	id_start += 6;
+	const char *id_end = strchr(id_start, '"');
+	if (id_end == nullptr || (size_t)(id_end - id_start) == 0u ||
+	    (size_t)(id_end - id_start) >= capacity) return false;
+	memcpy(id, id_start, (size_t)(id_end - id_start));
+	id[id_end - id_start] = '\0';
+	*loop = strstr(body, "\"loop\":true") != nullptr;
+	return aius_replay_id_is_valid(id);
+}
+
+static void http_replay_request(const AiusHttpRequest &request)
+{
+	uint8_t body[AIUS_HTTP_MAX_RESPONSE];
+	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STATUS) {
+		size_t length = http_replay_status_json(body, sizeof(body));
+		http_send(200, body, length);
+		return;
+	}
+	if (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_GET) {
+		static const uint8_t empty[] = "{\"ok\":true,\"files\":[]}";
+		http_send(200, empty, sizeof(empty) - 1u);
+		return;
+	}
+	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STOP) {
+		aius_replay_service_stop(&g_replay_service);
+		static const uint8_t stopped[] = "{\"ok\":true,\"state\":\"stopped\"}";
+		http_send(200, stopped, sizeof(stopped) - 1u);
+		return;
+	}
+	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_START) {
+		char id[AIUS_REPLAY_MAX_ID_LENGTH + 1u] = {};
+		bool loop = false;
+		if (!g_sd_ready || !http_replay_body_id(id, sizeof(id), &loop)) {
+			static const uint8_t bad[] = "{\"ok\":false,\"error\":\"replay_body\"}";
+			http_send(400, bad, sizeof(bad) - 1u);
+			return;
+		}
+		snprintf(g_replay_path, sizeof(g_replay_path), "/aius/replays/%s.iec", id);
+		File file = SD.open(g_replay_path, FILE_READ);
+		if (!file) { static const uint8_t missing[] = "{\"ok\":false,\"error\":\"replay_not_found\"}"; http_send(404, missing, sizeof(missing) - 1u); return; }
+		uint32_t bytes = (uint32_t)file.size(); file.close();
+		AiusStatus replay_status = aius_replay_service_start(&g_replay_service, id, bytes, loop, &g_replay_reader);
+		if (replay_status != AIUS_OK) { static const uint8_t failed[] = "{\"ok\":false,\"error\":\"replay_start\"}"; http_send(409, failed, sizeof(failed) - 1u); return; }
+		int length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"%s\"}", id);
+		http_send(200, body, (size_t)length);
+		return;
+	}
+	static const uint8_t unsupported[] = "{\"ok\":false,\"error\":\"replay_method\"}";
+	http_send(405, unsupported, sizeof(unsupported) - 1u);
+}
+
 static void http_handle_request(void)
 {
 	AiusHttpRequest request;
@@ -1406,6 +1525,12 @@ static void http_handle_request(void)
 	switch (request.route) {
 	case AIUS_HTTP_ROUTE_CONFIG_PUBLIC:
 		http_config_public_request(request);
+		return;
+	case AIUS_HTTP_ROUTE_REPLAYS:
+	case AIUS_HTTP_ROUTE_REPLAYS_STATUS:
+	case AIUS_HTTP_ROUTE_REPLAYS_START:
+	case AIUS_HTTP_ROUTE_REPLAYS_STOP:
+		http_replay_request(request);
 		return;
 	case AIUS_HTTP_ROUTE_SD_STATUS:
 	case AIUS_HTTP_ROUTE_SD_FILE:
@@ -1847,6 +1972,7 @@ void setup(void)
 	memcpy(auth_material + 8u, &mac2, sizeof(mac2));
 	memcpy(auth_material + 12u, &mac0, sizeof(mac0));
 	(void)aius_auth_derive_token(auth_material, g_auth_token);
+	aius_replay_service_init(&g_replay_service);
 	aius_config_set_defaults(&g_config);
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();
@@ -1872,5 +1998,8 @@ void loop(void)
 	}
 	if (g_dhcp)
 		(void)Ethernet.maintain();
+	if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
+	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
+		(void)aius_replay_service_refill(&g_replay_service, 2048u);
 	service_sd();
 }

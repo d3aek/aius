@@ -1,10 +1,15 @@
 #ifndef AIUS_REPLAY_H
 #define AIUS_REPLAY_H
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+#include <atomic>
+#else
+#include <stdatomic.h>
+#endif
 
 #include "aius_codec.h"
 #include "aius_pipeline.h"
@@ -25,8 +30,13 @@ extern "C" {
 
 typedef struct {
 	uint16_t words[AIUS_REPLAY_WORD_RING_CAPACITY];
+#ifdef __cplusplus
+	std::atomic<uint32_t> read_index;
+	std::atomic<uint32_t> write_index;
+#else
 	_Atomic uint32_t read_index;
 	_Atomic uint32_t write_index;
+#endif
 } AiusReplayWordRing;
 
 /* Initialize/reset is service-side only.  Push and pop are the two SPSC
