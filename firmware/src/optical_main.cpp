@@ -118,6 +118,10 @@ struct AiusSdJob {
 	bool target_existed;
 	bool backup_moved;
 	bool config_upload;
+	bool replay_upload;
+	bool replay_final;
+	uint32_t replay_offset;
+	uint32_t replay_total;
 	uint16_t error_status;
 	uint8_t transfer[AIUS_SD_TRANSFER_SLICE];
 	char response_header[192];
@@ -250,6 +254,10 @@ static void sd_job_clear(void)
 	g_sd_job.target_existed = false;
 	g_sd_job.backup_moved = false;
 	g_sd_job.config_upload = false;
+	g_sd_job.replay_upload = false;
+	g_sd_job.replay_final = false;
+	g_sd_job.replay_offset = 0;
+	g_sd_job.replay_total = 0;
 	g_sd_job.error_status = 0;
 }
 
@@ -346,6 +354,13 @@ static void service_sd_job(void)
 			g_sd_job.error_status = 507;
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		} else {
+			if (g_sd_job.replay_upload &&
+			    !g_sd_job.file.seek(g_sd_job.replay_offset)) {
+				g_sd_job.file.close();
+				g_sd_job.error_status = 507;
+				g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+				return;
+			}
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
 		}
 		return;
@@ -375,6 +390,10 @@ static void service_sd_job(void)
 	case AIUS_SD_JOB_UPLOAD_CHECK_TARGET:
 		if (g_sd_job.file)
 			g_sd_job.file.close();
+		if (g_sd_job.replay_upload && !g_sd_job.replay_final) {
+			g_sd_job.state = AIUS_SD_JOB_UPLOAD_CLEANUP;
+			return;
+		}
 		g_sd_job.target_existed = SD.exists(g_sd_job.target_path);
 		g_sd_job.state = g_sd_job.target_existed ?
 			AIUS_SD_JOB_UPLOAD_BACKUP : AIUS_SD_JOB_UPLOAD_INSTALL;
@@ -406,6 +425,16 @@ static void service_sd_job(void)
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		return;
 	case AIUS_SD_JOB_UPLOAD_CLEANUP:
+		if (g_sd_job.replay_upload && !g_sd_job.replay_final) {
+			char response[96];
+			int length = snprintf(response, sizeof(response),
+			                      "{\"ok\":true,\"next_offset\":%lu}",
+			                      (unsigned long)(g_sd_job.replay_offset + g_sd_job.written));
+			if (length > 0)
+				http_send(200, (const uint8_t *)response, (size_t)length);
+			sd_job_clear();
+			return;
+		}
 		if (g_sd_job.backup_moved && !SD.remove(g_sd_job.backup_path))
 			return;
 		if (g_sd_job.config_upload && g_config_upload_pending) {
@@ -420,7 +449,8 @@ static void service_sd_job(void)
 	case AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP: {
 		if (g_sd_job.file)
 			g_sd_job.file.close();
-		if (g_sd_job.temp_path[0] != 0)
+		if (g_sd_job.temp_path[0] != 0 &&
+		    !(g_sd_job.replay_upload && !g_sd_job.replay_final))
 			(void)SD.remove(g_sd_job.temp_path);
 		if (g_sd_job.error_status != 0) {
 			if (g_sd_job.config_upload)
@@ -1149,7 +1179,8 @@ static bool http_sd_resource_is_config(const AiusHttpRequest &request)
 
 static bool http_sd_upload_begin_target(const char *target,
                                         const char *content_type,
-                                        bool config_upload, uint32_t expected,
+                                        bool config_upload, bool replay_upload,
+                                        uint32_t expected,
                                         size_t initial_offset, size_t initial_end)
 {
 	if (sd_job_active() || target == nullptr || content_type == nullptr ||
@@ -1160,6 +1191,7 @@ static bool http_sd_upload_begin_target(const char *target,
 		return false;
 	g_sd_job.content_type = content_type;
 	g_sd_job.config_upload = config_upload;
+	g_sd_job.replay_upload = replay_upload;
 	g_sd_job.expected = expected;
 	g_sd_job.initial_offset = (uint32_t)initial_offset;
 	g_sd_job.initial_end = (uint32_t)initial_end;
@@ -1176,8 +1208,29 @@ static bool http_sd_upload_begin(const AiusHttpRequest &request,
 	const char *content_type = nullptr;
 	if (!http_sd_path(&request, target, sizeof(target), &content_type))
 		return false;
-	return http_sd_upload_begin_target(target, content_type, false, expected,
-	                                  initial_offset, initial_end);
+	if (!http_sd_upload_begin_target(target, content_type, false,
+	                                 request.route == AIUS_HTTP_ROUTE_SD_REPLAY,
+	                                 expected, initial_offset, initial_end))
+		return false;
+	if (request.route == AIUS_HTTP_ROUTE_SD_REPLAY) {
+		int part_length = snprintf(g_sd_job.temp_path, sizeof(g_sd_job.temp_path),
+		                           "/aius/replays/%.*s.part",
+		                           (int)request.replay_id_length, request.replay_id);
+		if (part_length < 0 || (size_t)part_length >= sizeof(g_sd_job.temp_path))
+			return false;
+		g_sd_job.replay_offset = request.content_range_start;
+		g_sd_job.replay_total = request.content_range_total;
+		g_sd_job.replay_final = request.content_range_end + 1u == request.content_range_total;
+		if (g_sd_job.replay_offset == 0u) {
+			(void)SD.remove(g_sd_job.temp_path);
+		} else {
+			File partial = SD.open(g_sd_job.temp_path, FILE_READ);
+			bool valid = partial && (uint32_t)partial.size() == g_sd_job.replay_offset;
+			if (partial) partial.close();
+			if (!valid) return false;
+		}
+	}
+	return true;
 }
 
 static bool http_sd_stage_upload(void)
@@ -1228,6 +1281,15 @@ static void http_sd_upload_receive_service(void)
 static bool http_sd_path(const AiusHttpRequest *request, char *path,
                          size_t capacity, const char **content_type)
 {
+	if (request != nullptr && request->route == AIUS_HTTP_ROUTE_SD_REPLAY &&
+	    request->replay_id != nullptr && request->replay_id_length > 0u &&
+	    request->replay_id_length <= AIUS_HTTP_MAX_REPLAY_ID) {
+		int written = snprintf(path, capacity, "/aius/replays/%.*s.iec",
+		                       (int)request->replay_id_length, request->replay_id);
+		if (written < 0 || (size_t)written >= capacity) return false;
+		*content_type = "application/octet-stream";
+		return true;
+	}
 	if (request == nullptr || request->resource == nullptr ||
 		request->resource_length < 5u || request->resource_length > 96u ||
 		memcmp(request->resource, "www/", 4) != 0)
@@ -1362,7 +1424,7 @@ static void http_config_public_request(const AiusHttpRequest &request)
 		return;
 	}
 	if (!http_sd_upload_begin_target("/aius/config.json", "application/json",
-	                                true, (uint32_t)length, g_http_body_offset,
+								true, false, (uint32_t)length, g_http_body_offset,
 	                                g_http_request_length)) {
 		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
 		http_send(503, body, sizeof(body) - 1);
@@ -1452,6 +1514,63 @@ static size_t http_replay_status_json(uint8_t *body, size_t capacity)
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
+static size_t http_replay_list_json(uint8_t *body, size_t capacity)
+{
+	if (!g_sd_ready) return (size_t)snprintf((char *)body, capacity,
+		"{\"ok\":false,\"error\":\"sd_unavailable\"}");
+	File directory = SD.open("/aius/replays");
+	if (!directory || !directory.isDirectory()) {
+		if (directory) directory.close();
+		return (size_t)snprintf((char *)body, capacity, "{\"ok\":true,\"files\":[]}");
+	}
+	size_t length = 0u;
+	int written = snprintf((char *)body, capacity, "{\"ok\":true,\"files\":[");
+	if (written < 0 || (size_t)written >= capacity) { directory.close(); return 0u; }
+	length = (size_t)written;
+	bool first = true;
+	for (;;) {
+		File entry = directory.openNextFile();
+		if (!entry) break;
+		if (!entry.isDirectory()) {
+			const char *name = entry.name();
+			const char *base = strrchr(name, '/');
+			base = base == nullptr ? name : base + 1;
+			size_t name_length = strlen(base);
+			bool complete = name_length > 4u &&
+				memcmp(base + name_length - 4u, ".iec", 4u) == 0;
+			bool partial = name_length > 5u &&
+				memcmp(base + name_length - 5u, ".part", 5u) == 0;
+			if (complete || partial) {
+				size_t suffix = complete ? 4u : 5u;
+				size_t id_length = name_length - suffix;
+				if (id_length <= AIUS_HTTP_MAX_REPLAY_ID) {
+					char duration[24];
+					snprintf(duration, sizeof(duration), complete ? "%.3f" : "null",
+					         complete ? (double)entry.size() / 192000.0 : 0.0);
+					written = snprintf((char *)body + length, capacity - length,
+						"%s{\"id\":\"%.*s\",\"bytes\":%lu,\"duration_seconds\":%s,\"upload_next_offset\":%lu,\"complete\":%s,\"active\":%s}",
+						first ? "" : ",", (int)id_length, base,
+						(unsigned long)entry.size(), duration,
+						(unsigned long)entry.size(), complete ? "true" : "false",
+						(strlen(g_replay_service.id) == id_length &&
+						 memcmp(base, g_replay_service.id, id_length) == 0 && complete) ?
+						"true" : "false");
+					if (written < 0 || (size_t)written >= capacity - length) {
+						entry.close(); directory.close(); return 0u;
+					}
+					length += (size_t)written;
+					first = false;
+				}
+			}
+		}
+		entry.close();
+	}
+	directory.close();
+	if (length + 2u >= capacity) return 0u;
+	body[length++] = ']'; body[length++] = '}'; body[length] = 0;
+	return length;
+}
+
 static bool http_replay_body_id(char *id, size_t capacity, bool *loop)
 {
 	const char *body = (const char *)g_http_request + g_http_body_offset;
@@ -1476,8 +1595,8 @@ static void http_replay_request(const AiusHttpRequest &request)
 		return;
 	}
 	if (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_GET) {
-		static const uint8_t empty[] = "{\"ok\":true,\"files\":[]}";
-		http_send(200, empty, sizeof(empty) - 1u);
+		size_t length = http_replay_list_json(body, sizeof(body));
+		http_send(length == 0u ? 500u : 200u, body, length);
 		return;
 	}
 	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STOP) {
@@ -1534,6 +1653,7 @@ static void http_handle_request(void)
 		return;
 	case AIUS_HTTP_ROUTE_SD_STATUS:
 	case AIUS_HTTP_ROUTE_SD_FILE:
+	case AIUS_HTTP_ROUTE_SD_REPLAY:
 		http_sd_request(request);
 		return;
 	case AIUS_HTTP_ROUTE_HOME:
@@ -1659,24 +1779,28 @@ static void service_http(void)
 			AiusHttpResult parse_result = aius_http_parse(g_http_request, body_offset,
 			                                             &request);
 			if (parse_result == AIUS_HTTP_OK &&
-			    request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			    (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
+			     request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
 			    request.method == AIUS_HTTP_PUT &&
 			    http_sd_resource_is_config(request)) {
 				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"config_public_only\"}";
 				http_send(403, error_body, sizeof(error_body) - 1);
 			} else if (parse_result == AIUS_HTTP_OK &&
-			           request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			           (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
+			            request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
 			           request.method == AIUS_HTTP_PUT &&
 			           !http_sd_authorized(request)) {
 				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
 				http_send(401, error_body, sizeof(error_body) - 1);
 			} else if (parse_result == AIUS_HTTP_OK &&
-			           request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			           (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
+			            request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
 			           request.method == AIUS_HTTP_PUT && !g_sd_ready) {
 				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
 				http_send(503, error_body, sizeof(error_body) - 1);
 			} else if (parse_result == AIUS_HTTP_OK &&
-			           request.route == AIUS_HTTP_ROUTE_SD_FILE &&
+			           (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
+			            request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
 			           request.method == AIUS_HTTP_PUT) {
 				if (body_result < 0 || !http_has_content_length(body_offset - 2u) ||
 				    g_http_request_length - body_offset > expected_body ||
