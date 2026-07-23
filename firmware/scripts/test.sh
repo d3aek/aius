@@ -9,7 +9,7 @@
 #
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
-#         pipeline, dsp, net, net-runner, http, usb-control.
+#         pipeline, dsp, net, net-runner, http, usb-control, replay.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -224,6 +224,17 @@ usb-control)
 		"$fw_root/lib/aius_usb_control/src/aius_usb_control.c" \
 		-o "$usb_out"
 	"$usb_out"
+	;;
+replay)
+	replay_out="$build_dir/replay"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_pipeline/include" \
+		"-I$fw_root/lib/aius_dts/include" \
+		"-I$fw_root/lib/aius_iec61937/include" \
+		"-I$fw_root/lib/aius_replay/include" \
+		"$fw_root/test/replay/test_replay.c" \
+		"$fw_root/lib/aius_replay/src/aius_replay.c" \
+		-o "$replay_out"
+	"$replay_out"
 	;;
 *)
 	echo "unknown suite: $suite" >&2

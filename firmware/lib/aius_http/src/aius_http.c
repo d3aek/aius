@@ -77,14 +77,61 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_CONFIG_PUBLIC;
 	if (token_equals(path, length, "/api/dsp/config"))
 		return AIUS_HTTP_ROUTE_DSP_CONFIG;
+	if (token_equals(path, length, "/api/replays"))
+		return AIUS_HTTP_ROUTE_REPLAYS;
+	if (token_equals(path, length, "/api/replays/status"))
+		return AIUS_HTTP_ROUTE_REPLAYS_STATUS;
+	if (token_equals(path, length, "/api/replays/start"))
+		return AIUS_HTTP_ROUTE_REPLAYS_START;
+	if (token_equals(path, length, "/api/replays/stop"))
+		return AIUS_HTTP_ROUTE_REPLAYS_STOP;
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;
+	if (has_prefix(path, length, "/sd/replays/") &&
+	    length > strlen("/sd/replays/")) {
+		request->replay_id = path + strlen("/sd/replays/");
+		request->replay_id_length = length - strlen("/sd/replays/");
+		return AIUS_HTTP_ROUTE_SD_REPLAY;
+	}
 	if (has_prefix(path, length, "/sd/") && length > strlen("/sd/")) {
 		request->resource = path + strlen("/sd/");
 		request->resource_length = length - strlen("/sd/");
 		return AIUS_HTTP_ROUTE_SD_FILE;
 	}
 	return AIUS_HTTP_ROUTE_UNKNOWN;
+}
+
+static AiusHttpResult extract_content_range(const uint8_t *headers, size_t length,
+	                                         AiusHttpRequest *request)
+{
+	static const char prefix[] = "Content-Range: bytes ";
+	const uint8_t *cursor = headers;
+	const uint8_t *end = headers + length;
+	while (cursor < end) {
+		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor), "\r\n", 2);
+		if (line_end == NULL) line_end = end;
+		size_t line_length = (size_t)(line_end - cursor);
+		if (line_length >= sizeof(prefix) - 1u &&
+		    memcmp(cursor, prefix, sizeof(prefix) - 1u) == 0) {
+			const uint8_t *value = cursor + sizeof(prefix) - 1u;
+			const uint8_t *dash = (const uint8_t *)memchr(value, '-',
+				(size_t)(line_end - value));
+			const uint8_t *slash = dash == NULL ? NULL : (const uint8_t *)memchr(dash + 1,
+				'/', (size_t)(line_end - (dash + 1)));
+			if (dash == NULL || slash == NULL ||
+			    !decimal_u32(value, (size_t)(dash - value), &request->content_range_start) ||
+			    !decimal_u32(dash + 1, (size_t)(slash - (dash + 1)), &request->content_range_end) ||
+			    !decimal_u32(slash + 1, (size_t)(line_end - (slash + 1)), &request->content_range_total) ||
+			    request->content_range_start > request->content_range_end ||
+			    request->content_range_total == 0u ||
+			    request->content_range_end >= request->content_range_total)
+				return AIUS_HTTP_ERR_BODY;
+			request->has_content_range = 1u;
+		}
+		if (line_end == end) break;
+		cursor = line_end + 2;
+	}
+	return AIUS_HTTP_OK;
 }
 
 static int json_value(const uint8_t *body, size_t length, const char *key,
@@ -184,6 +231,9 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	AiusHttpResult auth_result = extract_sd_auth(header_start, header_length, request);
 	if (auth_result != AIUS_HTTP_OK)
 		return auth_result;
+	AiusHttpResult range_result = extract_content_range(header_start, header_length, request);
+	if (range_result != AIUS_HTTP_OK)
+		return range_result;
 	const uint8_t *body = header_end + 4;
 	size_t body_length = length - (size_t)(body - data);
 	if (body_length > AIUS_HTTP_MAX_BODY)
@@ -203,13 +253,24 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	if ((request->method == AIUS_HTTP_PUT || request->method == AIUS_HTTP_DELETE) &&
 	    request->route != AIUS_HTTP_ROUTE_SD_FILE &&
-	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC)
+	    request->route != AIUS_HTTP_ROUTE_SD_REPLAY &&
+	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
+	    request->route != AIUS_HTTP_ROUTE_REPLAYS)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->method != AIUS_HTTP_PUT)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_DSP_CONFIG &&
 	    request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS && request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_START && request->method != AIUS_HTTP_POST)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STOP && request->method != AIUS_HTTP_POST)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_REPLAYS &&
+	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_DELETE)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
@@ -220,6 +281,20 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
 	    (request->resource_length == 0 || request->resource_length > 96))
 		return AIUS_HTTP_ERR_ROUTE;
+	if (request->route == AIUS_HTTP_ROUTE_SD_REPLAY) {
+		if (request->replay_id_length == 0 || request->replay_id_length > AIUS_HTTP_MAX_REPLAY_ID)
+			return AIUS_HTTP_ERR_ROUTE;
+		for (size_t i = 0; i < request->replay_id_length; i++) {
+			uint8_t ch = request->replay_id[i];
+			if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			      (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
+				return AIUS_HTTP_ERR_ROUTE;
+		}
+		if (request->method == AIUS_HTTP_PUT && !request->has_content_range)
+			return AIUS_HTTP_ERR_BODY;
+		if (request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT)
+			return AIUS_HTTP_ERR_METHOD;
+	}
 	if ((request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX) &&
 	    !request->has_body)
 		return AIUS_HTTP_ERR_BODY;

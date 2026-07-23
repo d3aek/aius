@@ -11,6 +11,7 @@ extern "C" {
 #define AIUS_HTTP_MAX_REQUEST 2048u
 #define AIUS_HTTP_MAX_HEADERS 512u
 #define AIUS_HTTP_MAX_SD_AUTH 16u /* fixed-format SD auth token width */
+#define AIUS_HTTP_MAX_REPLAY_ID 48u
 #define AIUS_HTTP_MAX_BODY 1536u
 #define AIUS_HTTP_MAX_RESPONSE 8192u
 
@@ -35,7 +36,13 @@ typedef enum {
 	AIUS_HTTP_ROUTE_CONFIG_PUBLIC,
 	AIUS_HTTP_ROUTE_SD_STATUS,
 	AIUS_HTTP_ROUTE_SD_FILE,
-	AIUS_HTTP_ROUTE_DSP_CONFIG
+	AIUS_HTTP_ROUTE_DSP_CONFIG,
+	AIUS_HTTP_ROUTE_REPLAYS,
+	AIUS_HTTP_ROUTE_REPLAYS_STATUS,
+	AIUS_HTTP_ROUTE_REPLAYS_START,
+	AIUS_HTTP_ROUTE_REPLAYS_STOP,
+	AIUS_HTTP_ROUTE_REPLAYS_DELETE,
+	AIUS_HTTP_ROUTE_SD_REPLAY
 } AiusHttpRoute;
 
 typedef enum {
@@ -58,9 +65,17 @@ typedef struct {
 	uint8_t has_body;
 	const uint8_t *resource;
 	size_t resource_length;
+	/* Replay ID for /sd/replays/<id>, pointing into the parsed request bytes. */
+	const uint8_t *replay_id;
+	size_t replay_id_length;
 	/* Optional exact-header value, pointing into the parsed request bytes. */
 	const uint8_t *sd_auth;
 	size_t sd_auth_length;
+	/* Optional validated Content-Range metadata. */
+	uint8_t has_content_range;
+	uint32_t content_range_start;
+	uint32_t content_range_end;
+	uint32_t content_range_total;
 } AiusHttpRequest;
 
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,

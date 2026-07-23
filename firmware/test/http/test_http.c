@@ -66,11 +66,36 @@ static void test_sd_auth_header(void)
 	assert(request.sd_auth_length == 0);
 }
 
+static void test_replay_routes(void)
+{
+	AiusHttpRequest request;
+	const char *upload = "PUT /sd/replays/trailer-51 HTTP/1.0\r\n"
+		"X-Aius-SD-Auth: 0123456789abcdef\r\n"
+		"Content-Range: bytes 0-3/8\r\nContent-Length: 4\r\n\r\nABCD";
+	assert(aius_http_parse((const uint8_t *)upload, strlen(upload), &request) == AIUS_HTTP_OK);
+	assert(request.route == AIUS_HTTP_ROUTE_SD_REPLAY);
+	assert(request.replay_id_length == 10);
+	assert(request.has_content_range);
+	assert(request.content_range_start == 0);
+	assert(request.content_range_end == 3);
+	assert(request.content_range_total == 8);
+	parse_ok("GET /api/replays HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_REPLAYS);
+	parse_ok("GET /api/replays/status HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_REPLAYS_STATUS);
+	parse_ok("POST /api/replays/start HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
+	         AIUS_HTTP_ROUTE_REPLAYS_START);
+	parse_ok("POST /api/replays/stop HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_REPLAYS_STOP);
+	const char *odd = "PUT /sd/replays/x HTTP/1.0\r\nContent-Range: bytes 0-2/4\r\n\r\nABC";
+	assert(aius_http_parse((const uint8_t *)odd, strlen(odd), &request) == AIUS_HTTP_OK);
+	const char *bad_id = "GET /sd/replays/a.b HTTP/1.0\r\n\r\n";
+	assert(aius_http_parse((const uint8_t *)bad_id, strlen(bad_id), &request) == AIUS_HTTP_ERR_ROUTE);
+}
+
 int main(void)
 {
 	AiusHttpRequest request;
 	test_sd_auth_header();
 	test_dsp_config_route();
+	test_replay_routes();
 	parse_ok("GET / HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_HOME);
 	parse_ok("GET /api/sd HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_STATUS);
 	parse_ok("GET /sd/index.html HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_FILE);
