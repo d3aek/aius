@@ -169,7 +169,7 @@ static bool g_config_upload_pending;
 static uint32_t g_config_error_count;
 static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
 static AiusUsbParser g_usb_parser;
-static char g_usb_response[192];
+static char g_usb_response[320];
 
 struct AiusEvent {
 	uint32_t sequence;
