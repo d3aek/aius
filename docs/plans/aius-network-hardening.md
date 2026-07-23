@@ -39,7 +39,10 @@ may permanently stop the foreground loop or require a reflash.
    counters in status. **Implemented:** WDOG1 startup/feed and status fields.
 4. Add native tests, build the optical target, flash, and validate link loss,
    DHCP retry, malformed/stalled HTTP, reboot, and long control traffic while
-   audio/replay continues.
+   audio/replay continues. **In progress:** HTTP/net/replay native tests and
+   target build pass; the hardened image flashed and reaches Ethernet startup.
+   Live HTTP validation remains blocked by the guest's missing route to the
+   board's DHCP subnet (`192.0.2.0/24`).
 
 ## Non-goals
 
