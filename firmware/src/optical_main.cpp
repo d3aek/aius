@@ -2123,14 +2123,17 @@ static void service_network(void)
 		g_network_budget_overruns++;
 }
 
-static bool ensure_dhcp_client(void)
+static bool ensure_dhcp_client(bool restart)
 {
 	fnet_netif_desc_t netif = fnet_netif_get_default();
 	if (netif == nullptr)
 		return false;
 	fnet_dhcp_cln_desc_t client = fnet_dhcp_cln_get_by_netif(netif);
-	if (client != nullptr && fnet_dhcp_cln_is_enabled(client))
-		return true;
+	if (client != nullptr && fnet_dhcp_cln_is_enabled(client)) {
+		if (!restart)
+			return true;
+		fnet_dhcp_cln_release(client);
+	}
 	static fnet_dhcp_cln_params_t params = {};
 	params.netif = netif;
 	client = fnet_dhcp_cln_init(&params);
@@ -2201,7 +2204,7 @@ static void start_network(void)
 		activate_network(true);
 		return;
 	}
-	if (ensure_dhcp_client()) {
+	if (ensure_dhcp_client(true)) {
 		g_dhcp_pending = true;
 		g_dhcp_deadline = millis() + 5000u;
 		Serial.printf("AIUS Ethernet DHCP client enabled after link callback gap\\n");
