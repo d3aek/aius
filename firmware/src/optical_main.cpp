@@ -2245,7 +2245,7 @@ static void supervise_network_link(void)
 {
 	if (!g_ethernet_initialized || !g_network_ready)
 		return;
-	if (Ethernet.linkStatus() == LinkON) {
+	if (Ethernet.linkStatus() != LinkOFF) {
 		g_network_link_down_at = 0;
 		return;
 	}
@@ -2277,7 +2277,7 @@ static void start_network(void)
 			return;
 		}
 	}
-	if (g_ethernet_initialized && Ethernet.linkStatus() != LinkON) {
+	if (g_ethernet_initialized && Ethernet.linkStatus() == LinkOFF) {
 		g_network_retry_at = millis() + 5000u;
 		return;
 	}
