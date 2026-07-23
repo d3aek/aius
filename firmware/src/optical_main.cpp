@@ -322,6 +322,14 @@ static void sd_job_drop_client(void)
 	g_http_request_length = 0;
 }
 
+static void sd_job_abort_download(void)
+{
+	if (g_sd_job.file)
+		g_sd_job.file.close();
+	sd_job_drop_client();
+	sd_job_clear();
+}
+
 static uint32_t sd_job_id(void)
 {
 	return ++g_sd_job_sequence ^ millis() ^ g_boot_epoch;
@@ -511,7 +519,7 @@ static void service_sd_job(void)
 	}
 	case AIUS_SD_JOB_DOWNLOAD_HEADER: {
 		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
-			sd_job_cancel();
+			sd_job_abort_download();
 			return;
 		}
 		size_t remaining = g_sd_job.response_length - g_sd_job.response_offset;
@@ -524,7 +532,7 @@ static void service_sd_job(void)
 			(const uint8_t *)g_sd_job.response_header + g_sd_job.response_offset,
 			remaining);
 		if (written == 0) {
-			sd_job_cancel();
+			sd_job_abort_download();
 			return;
 		}
 		g_sd_job.progress_ms = millis();
@@ -550,7 +558,7 @@ static void service_sd_job(void)
 	}
 	case AIUS_SD_JOB_DOWNLOAD_WRITE: {
 		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
-			sd_job_cancel();
+			sd_job_abort_download();
 			return;
 		}
 		int available = g_http_client.availableForWrite();
@@ -561,7 +569,7 @@ static void service_sd_job(void)
 			length = (size_t)available;
 		size_t written = g_http_client.write(g_sd_job.transfer, length);
 		if (written == 0) {
-			sd_job_cancel();
+			sd_job_abort_download();
 			return;
 		}
 		g_sd_job.progress_ms = millis();
