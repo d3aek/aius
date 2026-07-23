@@ -120,12 +120,21 @@ static AiusStatus fill(AiusReplayService *service, AiusReplayStream *stream,
 	       !stream->eof) {
 		size_t bytes = 0u;
 		uint32_t offset = stream->offset_bytes;
+		size_t word_limit = budget;
+		size_t ring_space = aius_replay_word_ring_space(&service->ring);
+		if (word_limit > ring_space)
+			word_limit = ring_space;
+		size_t byte_capacity = word_limit * 2u;
+		if (byte_capacity > AIUS_REPLAY_BYTE_BUFFER_SIZE)
+			byte_capacity = AIUS_REPLAY_BYTE_BUFFER_SIZE;
+		if (byte_capacity > sizeof(service->scratch_words))
+			byte_capacity = sizeof(service->scratch_words);
 		AiusStatus status = stream->reader.read(stream->reader.ctx, offset,
 			service->byte_buffers[stream->buffer_index],
-			AIUS_REPLAY_BYTE_BUFFER_SIZE, &bytes);
+			byte_capacity, &bytes);
 		if (status != AIUS_OK) return status;
 		if (bytes == 0u) { stream->eof = true; break; }
-		if ((bytes & 1u) != 0u || bytes > budget * 2u) return AIUS_MALFORMED;
+		if ((bytes & 1u) != 0u || bytes > byte_capacity) return AIUS_MALFORMED;
 		size_t words = bytes / 2u;
 		for (size_t i = 0; i < words; i++)
 			service->scratch_words[i] = aius_replay_word_from_le(

@@ -28,10 +28,12 @@ done
 
 size=$(wc -c < "$file")
 offset=0
-if listing=$(curl --fail --silent --show-error --max-time 5 "$device/api/replays"); then
-	prior=$(printf '%s' "$listing" | sed -n "s/.*\"id\":\"$id\"[^}]*\"upload_next_offset\":\([0-9]*\).*/\1/p")
-	[[ -n "$prior" ]] && offset=$prior
-fi
+listing=$(curl --fail --silent --show-error --max-time 20 "$device/api/replays") || {
+	printf '%s\n' 'unable to read replay inventory; refusing to restart upload' >&2
+	exit 1
+}
+prior=$(printf '%s' "$listing" | sed -n "s/.*\"id\":\"$id\"[^}]*\"upload_next_offset\":\([0-9]*\).*/\1/p")
+[[ -n "$prior" ]] && offset=$prior
 ((offset <= size)) || { printf 'device offset %s exceeds file size %s\n' "$offset" "$size" >&2; exit 1; }
 
 tmp=$(mktemp -d)
@@ -41,7 +43,7 @@ while ((offset < size)); do
 	count=$((remaining < 4096 ? remaining : 4096))
 	dd if="$file" of="$tmp/chunk" bs=1 skip="$offset" count="$count" status=none
 	end=$((offset + count - 1))
-	response=$(curl --fail-with-body --silent --show-error --max-time 15 \
+	response=$(curl --fail-with-body --silent --show-error --max-time 60 \
 		-X PUT "$device/sd/replays/$id" \
 		-H "X-Aius-SD-Auth: $token" \
 		-H "Content-Range: bytes $offset-$end/$size" \

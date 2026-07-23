@@ -48,7 +48,8 @@ static EthernetClient g_http_client;
 static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
 static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
-static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 500u;
+static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 10000u;
+static constexpr uint32_t AIUS_SD_UPLOAD_STALL_MS = 2000u;
 DMAMEM static AiusReplayService g_replay_service;
 static File g_replay_file;
 static char g_replay_path[96];
@@ -129,7 +130,7 @@ struct AiusSdJob {
 	char response_header[192];
 };
 
-static AiusSdJob g_sd_job = {};
+DMAMEM static AiusSdJob g_sd_job = {};
 static uint32_t g_sd_job_sequence;
 static size_t g_http_request_length;
 static size_t g_http_body_offset;
@@ -353,9 +354,12 @@ static bool sd_job_make_upload_paths(const char *target)
 
 static void sd_job_send_error(unsigned status, const char *error)
 {
-	char body[64];
-	int length = snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}",
-	                      error);
+	char body[128];
+	int length = snprintf(body, sizeof(body),
+	                      "{\"ok\":false,\"error\":\"%s\",\"received\":%lu,\"written\":%lu,\"expected\":%lu}",
+	                      error, (unsigned long)g_sd_job.received,
+	                      (unsigned long)g_sd_job.written,
+	                      (unsigned long)g_sd_job.expected);
 	if (length > 0 && (size_t)length < sizeof(body))
 		http_send(status, (const uint8_t *)body, (size_t)length);
 	else
@@ -386,13 +390,10 @@ static void service_sd_job(void)
 			g_sd_job.error_status = 507;
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		} else {
-			if (g_sd_job.replay_upload &&
-			    !g_sd_job.file.seek(g_sd_job.replay_offset)) {
-				g_sd_job.file.close();
-				g_sd_job.error_status = 507;
-				g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
-				return;
-			}
+			/* FILE_WRITE is append mode. Replay upload validation already
+			 * proved that the existing .part size equals replay_offset, so a
+			 * seek to the exact end is both redundant and rejected by some
+			 * SdFat/Arduino SD combinations. */
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
 		}
 		return;
@@ -408,17 +409,30 @@ static void service_sd_job(void)
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
 			return;
 		}
-		if (g_sd_job.file.write(g_sd_job.transfer, g_sd_job.pending_length) !=
-		    g_sd_job.pending_length) {
+		{
+			uint16_t remaining = g_sd_job.pending_length;
+			uint16_t offset = 0;
+			for (unsigned attempt = 0; remaining != 0 && attempt < 4u; attempt++) {
+				size_t written = g_sd_job.file.write(g_sd_job.transfer + offset,
+				                                    remaining);
+				if (written > remaining)
+					written = remaining;
+				remaining = (uint16_t)(remaining - written);
+				offset = (uint16_t)(offset + written);
+				if (remaining != 0)
+					delay(2);
+			}
+			if (remaining == 0) {
+				g_sd_job.written += g_sd_job.pending_length;
+				g_sd_job.pending_length = 0;
+				g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
+				return;
+			}
 			g_sd_job.error_status = 507;
 			g_sd_job.file.close();
 			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
 			return;
 		}
-		g_sd_job.written += g_sd_job.pending_length;
-		g_sd_job.pending_length = 0;
-		g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
-		return;
 	case AIUS_SD_JOB_UPLOAD_CHECK_TARGET:
 		if (g_sd_job.file)
 			g_sd_job.file.close();
@@ -524,10 +538,12 @@ static void service_sd_job(void)
 		}
 		size_t remaining = g_sd_job.response_length - g_sd_job.response_offset;
 		int available = g_http_client.availableForWrite();
-		if (available <= 0)
+		if (available < 2)
 			return;
 		if ((size_t)available < remaining)
 			remaining = (size_t)available;
+		if (remaining > 1u)
+			remaining /= 2u;
 		size_t written = g_http_client.write(
 			(const uint8_t *)g_sd_job.response_header + g_sd_job.response_offset,
 			remaining);
@@ -562,11 +578,13 @@ static void service_sd_job(void)
 			return;
 		}
 		int available = g_http_client.availableForWrite();
-		if (available <= 0)
+		if (available < 2)
 			return;
 		size_t length = g_sd_job.pending_length;
 		if ((size_t)available < length)
 			length = (size_t)available;
+		if (length > 1u)
+			length /= 2u;
 		size_t written = g_http_client.write(g_sd_job.transfer, length);
 		if (written == 0) {
 			sd_job_abort_download();
@@ -1315,7 +1333,10 @@ static bool http_sd_stage_upload(void)
 		length = sizeof(g_sd_job.transfer);
 	int got = g_http_client.read(g_sd_job.transfer, length);
 	if (got <= 0)
-		return false;
+		/* NativeEthernet can report bytes available immediately before a
+		 * non-blocking read observes the socket transition. Treat that as
+		 * temporary lack of progress; the receive idle timer owns timeout. */
+		return true;
 	g_http_last_byte_ms = millis();
 	g_sd_job.pending_length = (uint16_t)got;
 	g_sd_job.received += (uint32_t)got;
@@ -1818,7 +1839,23 @@ static void service_http(void)
 {
 	uint32_t started = micros();
 	if (sd_job_active()) {
-		if (!g_http_client || !g_http_client.connected()) {
+		bool transport_open = g_http_client &&
+			(g_http_client.connected() || g_http_client.available());
+		bool upload_waiting =
+			g_sd_job.state == AIUS_SD_JOB_UPLOAD_OPEN ||
+			g_sd_job.state == AIUS_SD_JOB_UPLOAD_RECEIVE;
+		bool download_waiting =
+			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_OPEN ||
+			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_HEADER ||
+			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_READ ||
+			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_WRITE;
+		bool upload_can_wait = upload_waiting &&
+			(g_sd_job.pending_length != 0u ||
+			 g_sd_job.received == g_sd_job.expected ||
+			 (uint32_t)(millis() - g_http_last_byte_ms) <= AIUS_SD_UPLOAD_STALL_MS);
+		bool download_can_wait = download_waiting &&
+			(uint32_t)(millis() - g_sd_job.progress_ms) <= AIUS_SD_DOWNLOAD_STALL_MS;
+		if (!transport_open && !upload_can_wait && !download_can_wait) {
 			g_http_client_drops++;
 			sd_job_cancel();
 			sd_job_drop_client();
@@ -1828,7 +1865,8 @@ static void service_http(void)
 		    g_sd_job.state == AIUS_SD_JOB_UPLOAD_RECEIVE) {
 			http_sd_upload_receive_service();
 			if (g_sd_job.received < g_sd_job.expected &&
-			    (uint32_t)(millis() - g_http_last_byte_ms) > 150u) {
+			    g_sd_job.pending_length == 0u &&
+			    (uint32_t)(millis() - g_http_last_byte_ms) > AIUS_SD_UPLOAD_STALL_MS) {
 				g_http_client_drops++;
 				sd_job_cancel();
 				sd_job_drop_client();

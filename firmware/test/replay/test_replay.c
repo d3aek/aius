@@ -26,9 +26,57 @@ static void test_format(void)
 	assert(!aius_replay_id_is_valid("bad.id"));
 }
 
+struct memory_reader {
+	uint8_t bytes[8192];
+};
+
+static AiusStatus memory_open(void *ctx, uint32_t file_bytes)
+{
+	(void)ctx;
+	return file_bytes == 8192u ? AIUS_OK : AIUS_INVALID_ARG;
+}
+
+static AiusStatus memory_read(void *ctx, uint32_t offset, uint8_t *buffer,
+	                            size_t capacity, size_t *bytes_read)
+{
+	struct memory_reader *reader = ctx;
+	if (offset >= sizeof(reader->bytes)) {
+		*bytes_read = 0;
+		return AIUS_OK;
+	}
+	size_t length = sizeof(reader->bytes) - offset;
+	if (length > capacity) length = capacity;
+	memcpy(buffer, reader->bytes + offset, length);
+	*bytes_read = length;
+	return AIUS_OK;
+}
+
+static void memory_close(void *ctx)
+{
+	(void)ctx;
+}
+
+static void test_service_prebuffer(void)
+{
+	struct memory_reader memory = {};
+	AiusReplayReader reader = {
+		&memory, memory_open, memory_read, memory_close
+	};
+	AiusReplayService service;
+	aius_replay_service_init(&service);
+	assert(aius_replay_service_start(&service, "prebuffer", 8192u, false,
+	                                &reader) == AIUS_OK);
+	AiusReplayStatus status = {};
+	assert(aius_replay_service_status(&service, &status) == AIUS_OK);
+	assert(status.state == AIUS_REPLAY_PLAYING);
+	assert(status.queue_words >= AIUS_REPLAY_START_WATERMARK_WORDS);
+	aius_replay_service_stop(&service);
+}
+
 int main(void)
 {
 	test_ring();
 	test_format();
+	test_service_prebuffer();
 	return 0;
 }
