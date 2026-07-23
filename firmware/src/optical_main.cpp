@@ -155,6 +155,8 @@ static bool g_ethernet_initialized;
 static bool g_dhcp_pending;
 static bool g_sd_ready;
 static uint32_t g_dhcp_deadline;
+static volatile uint32_t g_dhcp_discover_count;
+static volatile uint32_t g_dhcp_update_count;
 static uint32_t g_boot_epoch;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
@@ -1987,9 +1989,15 @@ static void service_usb_control(void)
 				                                             request_id, "PROTOCOL", "1");
 				break;
 			case AIUS_USB_COMMAND_ID: {
-				char payload[128];
-				snprintf(payload, sizeof(payload), "protocol=1 revision=%s build=%s mode=optical",
-				         AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
+				char payload[192];
+				IPAddress ip = Ethernet.localIP();
+				snprintf(payload, sizeof(payload),
+						"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u link=%u dhcp_pending=%u dhcp_discovers=%lu dhcp_updates=%lu",
+				         AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
+				         ip[0], ip[1], ip[2], ip[3],
+				         (unsigned)Ethernet.linkStatus(), g_dhcp_pending ? 1u : 0u,
+				         (unsigned long)g_dhcp_discover_count,
+				         (unsigned long)g_dhcp_update_count);
 				response_length = aius_usb_control_write_ok(g_usb_response,
 				                                             sizeof(g_usb_response),
 				                                             request_id, "ID", payload);
@@ -2140,6 +2148,18 @@ static bool ensure_dhcp_client(bool restart)
 	if (client == nullptr)
 		return false;
 	fnet_dhcp_cln_set_response_timeout(client, 250);
+	fnet_dhcp_cln_set_callback_discover(
+		client,
+		[](fnet_dhcp_cln_desc_t, fnet_netif_desc_t, void *) {
+			g_dhcp_discover_count++;
+		},
+		nullptr);
+	fnet_dhcp_cln_set_callback_updated(
+		client,
+		[](fnet_dhcp_cln_desc_t, fnet_netif_desc_t, void *) {
+			g_dhcp_update_count++;
+		},
+		nullptr);
 	return true;
 }
 
