@@ -201,9 +201,9 @@ static void watchdog_init(void)
 {
 	CCM_CCGR3 |= CCM_CCGR3_WDOG1(3);
 	WDOG1_WMCR = 0;
-	/* Eight seconds covers the bounded DHCP attempt and SD operations, while
-	 * still recovering from a wedged driver or socket write. */
-	constexpr uint8_t timeout = 15u;
+	/* Sixteen seconds covers setup's SD probe plus the bounded DHCP attempt,
+	 * while still recovering from a wedged driver or socket write. */
+	constexpr uint8_t timeout = 31u;
 	WDOG1_WCR |= WDOG_WCR_SRS | WDOG_WCR_WT(timeout);
 	WDOG1_WCR |= WDOG_WCR_WDE | WDOG_WCR_WDT | WDOG_WCR_SRE;
 	g_watchdog_enabled = true;
@@ -2356,6 +2356,7 @@ void setup(void)
 	}
 	refresh_sd_usage();
 	Serial.printf("AIUS SD ready=%u\\n", g_sd_ready ? 1u : 0u);
+	watchdog_feed();
 	start_network();
 }
 
