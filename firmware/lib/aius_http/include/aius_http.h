@@ -9,11 +9,16 @@
 extern "C" {
 #endif
 
-#define AIUS_HTTP_MAX_REQUEST 8192u
+/* AIUS_HTTP_MAX_REQUEST/AIUS_HTTP_MAX_BODY must fit the largest non-streamed
+ * body accepted by any route: PUT /api/dsp/config, bounded to 12288 bytes
+ * (AIUS_DSP_MODEL_MAX_JSON_BYTES in aius_dsp_config.h). 1024 bytes of headroom
+ * covers the request line + headers (X-Aius-SD-Auth, Content-Length, etc.)
+ * above the body itself. */
+#define AIUS_HTTP_MAX_REQUEST 13312u
 #define AIUS_HTTP_MAX_HEADERS 512u
 #define AIUS_HTTP_MAX_SD_AUTH 16u /* fixed-format SD auth token width */
 #define AIUS_HTTP_MAX_REPLAY_ID 48u
-#define AIUS_HTTP_MAX_BODY 4096u
+#define AIUS_HTTP_MAX_BODY 12288u
 #define AIUS_HTTP_MAX_RESPONSE 8192u
 #define AIUS_HTTP_CONTENT_TYPE_STORAGE 64u
 

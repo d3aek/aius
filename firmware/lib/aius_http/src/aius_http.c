@@ -349,13 +349,14 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	    request->route != AIUS_HTTP_ROUTE_SD_FILE &&
 	    request->route != AIUS_HTTP_ROUTE_SD_REPLAY &&
 	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
-	    request->route != AIUS_HTTP_ROUTE_REPLAYS)
+	    request->route != AIUS_HTTP_ROUTE_REPLAYS &&
+	    request->route != AIUS_HTTP_ROUTE_DSP_CONFIG)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->method != AIUS_HTTP_PUT)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_DSP_CONFIG &&
-	    request->method != AIUS_HTTP_GET)
+	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;

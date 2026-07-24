@@ -262,8 +262,66 @@ Default config is still bypass-equivalent (unity trim, no EQ, disabled limiter),
 default audio is unchanged by construction. `teensy41-optical` and
 `teensy41-optical-fault` both build; RAM1 free-for-locals is 22,684 B (the ~12 KB
 input-stage scratch consumes most of the 22→38 KB headroom the earlier OCRAM move
-freed, still comfortable margin). PUT `/api/dsp/config`, SD persistence, and the
-block-boundary generation swap are still open below.
+freed, still comfortable margin).
+
+**PUT `/api/dsp/config` + SD persistence + block-boundary apply done.** A new
+bounded, allocation-free parser library (`lib/aius_dsp_config/`, mirroring
+`lib/aius_config`'s hand-rolled recursive-descent style) validates the PUT wire
+shape — the same 8 top-level keys `GET /api/dsp/config` returns plus a 9th,
+`base_generation` (the optimistic-concurrency token) — against exactly
+`scripts/build_config.py`'s bounds, and is proven by a new native `dsp-config`
+suite (40+ assertions: every bound, every unknown/missing key at every nesting
+level, wrong types, `>2` EQ sections, `source != "sd"`, malformed JSON, duplicate
+keys, oversize). `aius_http.c`'s route gate now allows `PUT` on `DSP_CONFIG`
+(POST/DELETE still rejected); `AIUS_HTTP_MAX_REQUEST`/`AIUS_HTTP_MAX_BODY` raised
+to fit the 12,288-byte model plus header overhead — `g_http_request`/
+`g_http_response` stay `DMAMEM`, unaffected by the earlier ITCM budget.
+`http_dsp_config_put_request()` (`FLASHMEM`) checks `X-Aius-SD-Auth`, parses and
+bounds-checks the body, 409s on a stale `base_generation` without touching SD or
+the active snapshot, then reuses the existing `AiusSdJob` transactional
+mkdir→write→backup→install state machine (a new `dsp_upload` job-kind bit,
+parallel to the existing `config_upload`) to write `/aius/dsp.json` verbatim. A
+new `g_pending_dsp_model`/`g_dsp_upload_pending`/`g_dsp_apply_pending` staging
+triple (mirroring `g_pending_config`/`g_config_upload_pending`, all `DMAMEM`
+except the `volatile bool` flag) hands the validated model from SD-job success to
+`AiusAudioProcessor::enqueue()`, which is the actual block boundary: it applies
+the staged model, sets `source: sd`, and increments `config_generation` there,
+never in loop/HTTP context. `config_generation` is a per-boot-session counter
+(0 at boot for the default default, +1 per applied change) — not itself
+persisted; only the client-supplied `base_generation` on a PUT is a trusted
+concurrency token, so a re-loaded SD file's stale `config_generation` is safely
+ignored. `stage_dsp_sd_override()` (`FLASHMEM`) loads `/aius/dsp.json` through
+the *same* parser at boot and on SD hot-reinsert (mirroring `load_sd_config()`'s
+two call sites) — the persisted file already carries `source":"sd"` and a
+`base_generation`, so it round-trips through the identical validator. `GET
+/api/dsp/config` now serializes the live `g_active_model` (RAM mirror, `DMAMEM`,
+kept in sync at the same block-boundary apply point) and reports the real
+`source`/`config_generation` instead of hardcoded defaults, via a dedicated
+`DMAMEM` `g_dsp_config_body[12288]` buffer instead of the shared 8 KB per-route
+stack array (that array was previously too small for the model's true 12,288-byte
+cap — a latent truncation bug this closes).
+
+Two budget findings worth keeping in mind for future FLASHMEM work in this
+codebase: (1) GCC does **not** merge the `section` attribute from a forward
+declaration onto a later definition that omits it — `FLASHMEM` must be applied
+directly on every definition, not via prototypes, or the code silently stays in
+ITCM. (2) `strtod()` was dropped from the new parser in favor of a small
+hand-rolled decimal-to-double decoder: pulling in newlib's general `strtod`/
+`_dtoa_r` machinery cost ~7.7 KB of ITCM — nothing else in this firmware
+previously needed floating-point string parsing, so it wasn't already paid for.
+The custom decoder is not bit-exact with `strtod()` for pathological inputs
+(very long digit runs, denormals) but is exact within double precision for every
+value this schema's bounds allow.
+
+`teensy41-optical` and `teensy41-optical-fault` both build with these changes;
+RAM1 free-for-locals is back to 22,684 B, matching the input-stage-wiring
+baseline above (net near-zero additional ITCM/DTCM cost once the parser and new
+statics were correctly FLASHMEM/DMAMEM-routed). Native `dsp-config`, `http`,
+`dsp`, `dsp-vectors`, and `config` suites are all green. Genuine on-device smoke
+(a live PUT over the network, an actual SD write/reboot/reload cycle) has not
+been run against real hardware in this session — target build success is the
+proof available without physical device access; live-hardware smoke is a
+follow-up before shipping this to the actual unit.
 
 ### Meters endpoint + accumulate wiring
 
@@ -287,12 +345,14 @@ render, editor loads, no audio/HTTP overruns under a short soak.
 
 There is no `Aius.Regress` project or hardware requirements registry in this
 repository. The authoritative regression scope is the existing
-`firmware/scripts/test.sh --environment native --suite http`, the generated
-config validation test added to that runner, the Vitest OpenAPI contract test,
-the target PlatformIO build, and live target smoke/soak evidence. The embedded
-page contract will also have a Playwright fixture regression that loads a
-captured model response and asserts the field-to-DOM mapping; target-only
-network checks remain a separate hardware gate.
+`firmware/scripts/test.sh --environment native --suite http`, `--suite
+dsp-config` (the PUT /api/dsp/config bounded validator, added with the SD
+persistence phase), the generated config validation test added to that runner,
+the Vitest OpenAPI contract test, the target PlatformIO build, and live target
+smoke/soak evidence. The embedded page contract will also have a Playwright
+fixture regression that loads a captured model response and asserts the
+field-to-DOM mapping; target-only network checks remain a separate hardware
+gate.
 
 ## Acceptance gates
 
@@ -301,9 +361,10 @@ network checks remain a separate hardware gate.
   (Done — the `dsp-vectors` suite.)
 - `GET /api/dsp/config` returns the complete single effective config (`source`,
   input channels, output EQ, matrix, limiter, features) with resolved units.
+  (Done — serializes `g_active_model`, real `source`/`config_generation`.)
 - Authenticated `PUT /api/dsp/config` validates and commits atomically; invalid
   or stale (`base_generation`) writes leave SD and the active block-boundary
-  snapshot unchanged.
+  snapshot unchanged. (Done — native-proven; live-hardware smoke still open.)
 - `GET /api/meters` returns coherent bounded snapshots without audio-thread
   allocation or unbounded sample transfer.
 - OpenAPI schemas and example describe every returned field; no `mode`/`mix`

@@ -22,6 +22,7 @@ extern "C" {
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
 	#include "aius_usb_control.h"
+	#include "aius_dsp_config.h"
 	#include "service/dhcp/fnet_dhcp_cln.h"
 #include "stack/fnet_netif.h"
 }
@@ -51,6 +52,12 @@ static EthernetClient g_http_client;
 // Relocating them frees ~16 KB of FlexRAM so ITCM can grow (see docs plan).
 DMAMEM static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
 DMAMEM static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
+// GET /api/dsp/config's response can be up to AIUS_OPTICAL_MODEL_MAX_JSON_BYTES
+// (12288 B), larger than every other route's response and larger than the
+// shared per-route stack `body[AIUS_HTTP_MAX_RESPONSE]` buffer in
+// http_handle_request(). A dedicated OCRAM buffer avoids bumping that shared
+// 8 KB stack array for every other route just to fit this one model.
+DMAMEM static uint8_t g_dsp_config_body[AIUS_OPTICAL_MODEL_MAX_JSON_BYTES];
 static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
 static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 10000u;
 static constexpr uint32_t AIUS_SD_UPLOAD_STALL_MS = 2000u;
@@ -128,6 +135,7 @@ struct AiusSdJob {
 	bool target_existed;
 	bool backup_moved;
 	bool config_upload;
+	bool dsp_upload;
 	bool replay_upload;
 	bool replay_final;
 	uint32_t replay_offset;
@@ -180,6 +188,113 @@ static AiusConfig g_config;
 static AiusConfig g_pending_config;
 static bool g_config_upload_pending;
 static uint32_t g_config_error_count;
+
+/* The effective DSP model (source == "default" | "sd") and its runtime-reported
+ * generation counter. g_active_model mirrors AIUS_OPTICAL_CONFIG's shape so the
+ * GET serializer and apply_config() work identically whether the source is the
+ * const factory default or a parsed SD override. Defaults to a plain copy of
+ * AIUS_OPTICAL_CONFIG (a compile-time-constant aggregate, safe to read at static
+ * init). g_config_generation is a per-boot-session counter: 0 at boot for the
+ * default, incremented every time ANY new model (initial SD load, hot-reinsert
+ * reload, or a PUT) is applied at an audio block boundary -- it is NOT persisted
+ * across reboots (the SD file's own "config_generation" field is client-supplied
+ * and untrusted; only "base_generation" on a PUT is a trusted concurrency
+ * token). */
+static FLASHMEM AiusOpticalConfig make_default_active_model(void)
+{
+	return AIUS_OPTICAL_CONFIG;
+}
+// Off the audio path (read/written only from apply_config()'s cold callers and
+// the enqueue()-side block-boundary swap, never per-block), so DMAMEM (OCRAM)
+// like g_http_request/g_http_response -- keeps this ~700-byte-each pair out of
+// the tight shared FlexRAM/ITCM+DTCM+stack pool.
+DMAMEM static AiusOpticalConfig g_active_model = make_default_active_model();
+static bool g_dsp_source_sd;
+static uint32_t g_config_generation;
+
+/* Staged model awaiting a block-boundary-safe apply. Written from loop/HTTP
+ * context (a validated PUT, or an SD (re)load); consumed once, at the top of
+ * AiusAudioProcessor::enqueue() (audio-ISR context), which is the actual audio
+ * block boundary. g_dsp_apply_pending is the single volatile handoff flag: the
+ * writer always fully populates g_pending_dsp_model BEFORE setting it, so the
+ * ISR never observes a partially-written model (see docs plan "Input trim/EQ +
+ * limiter wiring done" note for the equivalent apply_config() out-of-line
+ * rationale -- this is the same single-writer/single-reader flag idiom already
+ * used elsewhere in this file, e.g. g_dhcp_discover_count). g_dsp_upload_pending
+ * is the separate SD-job-lifecycle gate (mirrors g_config_upload_pending):
+ * true only while a dsp_upload SD job is in flight for the currently staged
+ * model, so a failed/cancelled job never arms g_dsp_apply_pending. DMAMEM for
+ * the same reason as g_active_model: written from loop/HTTP context, read once
+ * (a plain struct copy) at the block boundary, never touched per-block. */
+DMAMEM static AiusOpticalConfig g_pending_dsp_model;
+static bool g_dsp_upload_pending;
+static volatile bool g_dsp_apply_pending;
+
+static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, AiusOpticalConfig &out)
+{
+	out.sample_rate_hz = model.sample_rate_hz;
+	out.features.input_eq = model.features.input_eq;
+	out.features.matrix = model.features.matrix;
+	out.features.output_eq = model.features.output_eq;
+	out.features.limiter = model.features.limiter;
+	out.features.meters = model.features.meters;
+	for (size_t c = 0; c < AIUS_DSP_MODEL_INPUT_CHANNELS; c++) {
+		out.input_channels[c].gain_db = model.input_channels[c].gain_db;
+		out.input_channels[c].eq_count = model.input_channels[c].eq_count;
+		for (size_t i = 0; i < AIUS_DSP_MODEL_EQ_MAX; i++) {
+			out.input_channels[c].eq[i].type = model.input_channels[c].eq[i].type;
+			out.input_channels[c].eq[i].frequency_hz = model.input_channels[c].eq[i].frequency_hz;
+			out.input_channels[c].eq[i].q = model.input_channels[c].eq[i].q;
+			out.input_channels[c].eq[i].gain_db = model.input_channels[c].eq[i].gain_db;
+		}
+	}
+	out.output_eq_count = model.output_eq_count;
+	for (size_t i = 0; i < AIUS_DSP_MODEL_EQ_MAX; i++) {
+		out.output_eq[i].type = model.output_eq[i].type;
+		out.output_eq[i].frequency_hz = model.output_eq[i].frequency_hz;
+		out.output_eq[i].q = model.output_eq[i].q;
+		out.output_eq[i].gain_db = model.output_eq[i].gain_db;
+	}
+	out.matrix.center_gain_linear = model.matrix.center_gain_linear;
+	out.matrix.surround_gain_linear = model.matrix.surround_gain_linear;
+	out.matrix.lfe_gain_linear = model.matrix.lfe_gain_linear;
+	out.matrix.headroom_linear = model.matrix.headroom_linear;
+	out.matrix.clipfree = model.matrix.clipfree;
+	out.limiter.enabled = model.limiter.enabled;
+	out.limiter.threshold_dbfs = model.limiter.threshold_dbfs;
+	out.limiter.attack_ms = model.limiter.attack_ms;
+	out.limiter.release_ms = model.limiter.release_ms;
+	out.limiter.lookahead_ms = model.limiter.lookahead_ms;
+}
+
+/* Read and validate /aius/dsp.json (the SD override, written by a prior
+ * successful PUT) and stage it for a block-boundary apply. A missing file is
+ * the common case (no override configured) and is not an error. An oversized
+ * or invalid file leaves the currently active model untouched -- called both
+ * at boot (after SD.begin()) and on hot-reinsert (service_sd()), mirroring
+ * load_sd_config()'s dual call sites. The audio pipeline is already running by
+ * the time this runs (AudioMemory()/begin_pipeline() precede SD.begin() in
+ * setup()), so this never mutates live DSP state directly -- same staged/
+ * consumed-at-block-boundary path a runtime PUT uses. */
+static FLASHMEM void stage_dsp_sd_override(void)
+{
+	File file = SD.open("/aius/dsp.json", FILE_READ);
+	if (!file)
+		return;
+	uint8_t json[AIUS_DSP_MODEL_MAX_JSON_BYTES];
+	size_t length = 0;
+	while (file.available() && length < sizeof(json))
+		json[length++] = (uint8_t)file.read();
+	bool too_large = file.available();
+	file.close();
+	if (too_large)
+		return;
+	AiusDspModel parsed;
+	if (aius_dsp_config_parse_put(json, length, &parsed) != AIUS_DSP_CONFIG_OK)
+		return;
+	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
+	g_dsp_apply_pending = true;
+}
 static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
 static AiusUsbParser g_usb_parser;
 static char g_usb_response[320];
@@ -314,6 +429,7 @@ static void sd_job_clear(void)
 	g_sd_job.target_existed = false;
 	g_sd_job.backup_moved = false;
 	g_sd_job.config_upload = false;
+	g_sd_job.dsp_upload = false;
 	g_sd_job.replay_upload = false;
 	g_sd_job.replay_final = false;
 	g_sd_job.replay_offset = 0;
@@ -522,6 +638,12 @@ static void service_sd_job(void)
 			g_config = g_pending_config;
 			g_config_upload_pending = false;
 		}
+		if (g_sd_job.dsp_upload && g_dsp_upload_pending) {
+			/* SD write is durable; the audio-side apply happens at the next
+			 * block boundary (AiusAudioProcessor::enqueue), not here. */
+			g_dsp_apply_pending = true;
+			g_dsp_upload_pending = false;
+		}
 		g_sd_usage_refresh_pending = true;
 		static const uint8_t upload_ok[] = "{\"ok\":true}";
 		http_send(200, upload_ok, sizeof(upload_ok) - 1);
@@ -536,6 +658,8 @@ static void service_sd_job(void)
 		if (g_sd_job.error_status != 0) {
 			if (g_sd_job.config_upload)
 				g_config_upload_pending = false;
+			if (g_sd_job.dsp_upload)
+				g_dsp_upload_pending = false;
 			unsigned status = g_sd_job.error_status;
 			sd_job_send_error(status, status == 500 ? "sd_commit" : "sd_write");
 		} else {
@@ -669,6 +793,7 @@ static void service_sd(void)
 			g_sd_ready = true;
 			(void)SD.mkdir("/aius");
 			load_sd_config();
+			stage_dsp_sd_override();
 			refresh_sd_usage();
 			Serial.printf("AIUS SD inserted fs=%s total=%llu\\n", sd_filesystem(),
 			              (unsigned long long)g_sd_total_bytes);
@@ -720,7 +845,7 @@ public:
 
 	void begin_pipeline(void)
 	{
-		apply_config();
+		apply_config(AIUS_OPTICAL_CONFIG);
 		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 			g_create_status = AIUS_NO_SPACE;
 			return;
@@ -760,19 +885,21 @@ public:
 		interrupts();
 	}
 
-	/* Resolve the single const factory config into the runtime output-EQ biquads,
-	 * downmix matrix, input-channel trim/EQ, and limiter. Cold path: read only at
-	 * bring-up (and, later, a config apply), so it is FLASHMEM. The default config
-	 * resolves to a bypass output EQ, the standard downmix, unity input trim with
-	 * no EQ, and a disabled limiter, i.e. the audio path is bit-identical to the
-	 * old flat-profile + standard-mix default.
+	/* Resolve `cfg` (either AIUS_OPTICAL_CONFIG, the const factory default in
+	 * FLASH, or a RAM-resident parsed SD override with the same field shape)
+	 * into the runtime output-EQ biquads, downmix matrix, input-channel
+	 * trim/EQ, and limiter. Cold path -- called at bring-up and, later, at a
+	 * block-boundary config apply -- so it is FLASHMEM. The default config
+	 * resolves to a bypass output EQ, the standard downmix, unity input trim
+	 * with no EQ, and a disabled limiter, i.e. the audio path is bit-identical
+	 * to the old flat-profile + standard-mix default.
 	 *
 	 * Defined out-of-line (below the class) rather than in-body: an in-body
 	 * definition is implicitly inline (vague linkage / comdat), which conflicts
 	 * at compile time with the plain FLASHMEM free functions already sharing the
 	 * .flashmem section ("section type conflict") once the function is too large
 	 * to fully inline away. Out-of-line gives it ordinary linkage instead. */
-	FLASHMEM void apply_config(void);
+	FLASHMEM void apply_config(const AiusOpticalConfig &cfg);
 
 protected:
 	void update(void) override
@@ -849,6 +976,18 @@ private:
 
 	AiusStatus enqueue(const AiusPcmBlock *block)
 	{
+		/* Block-boundary config apply: the one point in the audio path where a
+		 * staged model (a validated PUT or an SD (re)load) becomes active. Cheap
+		 * in the common case (a single volatile bool read); apply_config() itself
+		 * is bounded but not free (biquad coefficient trig), so this only runs
+		 * once per staged change, never per block. */
+		if (g_dsp_apply_pending) {
+			g_active_model = g_pending_dsp_model;
+			apply_config(g_active_model);
+			g_dsp_source_sd = true;
+			g_config_generation++;
+			g_dsp_apply_pending = false;
+		}
 		if (block == nullptr || block->frames > AUDIO_BLOCK_SAMPLES * 4 ||
 		    block->planes[0] == nullptr)
 			return AIUS_INVALID_ARG;
@@ -913,9 +1052,8 @@ private:
 	}
 };
 
-FLASHMEM void AiusAudioProcessor::apply_config(void)
+FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 {
-	const AiusOpticalConfig &cfg = AIUS_OPTICAL_CONFIG;
 	g_eq_count = cfg.output_eq_count;
 	for (size_t i = 0; i < g_eq_count && i < 2; i++) {
 		const AiusOpticalEqConfig &section = cfg.output_eq[i];
@@ -1157,21 +1295,24 @@ static FLASHMEM bool http_dsp_eq_array(char *output, size_t capacity, size_t *le
 	return http_json_append(output, capacity, length, "]");
 }
 
-/* Serialize the single effective DSP config (the const factory default). Cold
- * path, fixed buffer, capacity-checked; returns 0 (deterministic error) if the
- * model cannot fit the response budget. `source` and `config_generation` are the
- * runtime-reported fields the later SD-override slice slots into: the const
- * default is always source "default", generation 0. */
+/* Serialize the single effective DSP config: g_active_model, kept in sync with
+ * whatever is actually running (the const factory default at boot, or the last
+ * model applied at an audio block boundary). Cold path, fixed buffer,
+ * capacity-checked; returns 0 (deterministic error) if the model cannot fit the
+ * response budget. `source`/`config_generation` are runtime-reported, not part
+ * of the model struct itself. */
 static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 {
 	static const char *const channel_names[6] = {"fl", "fr", "fc", "lfe", "sl", "sr"};
-	const AiusOpticalConfig &cfg = AIUS_OPTICAL_CONFIG;
+	const AiusOpticalConfig &cfg = g_active_model;
 	if (capacity > AIUS_OPTICAL_MODEL_MAX_JSON_BYTES)
 		capacity = AIUS_OPTICAL_MODEL_MAX_JSON_BYTES;
 	char *output = (char *)body;
 	size_t length = 0;
 	if (!http_json_append(output, capacity, &length,
-	                      "{\"source\":\"default\",\"config_generation\":0,\"sample_rate_hz\":%lu,",
+	                      "{\"source\":\"%s\",\"config_generation\":%lu,\"sample_rate_hz\":%lu,",
+	                      g_dsp_source_sd ? "sd" : "default",
+	                      (unsigned long)g_config_generation,
 	                      (unsigned long)cfg.sample_rate_hz))
 		return 0;
 	if (!http_json_append(output, capacity, &length,
@@ -1350,7 +1491,8 @@ static bool http_sd_upload_begin_target(const char *target,
                                         const char *content_type,
                                         bool config_upload, bool replay_upload,
                                         uint32_t expected,
-                                        size_t initial_offset, size_t initial_end)
+                                        size_t initial_offset, size_t initial_end,
+                                        bool dsp_upload = false)
 {
 	if (sd_job_active() || target == nullptr || content_type == nullptr ||
 		strlen(target) >= sizeof(g_sd_job.target_path))
@@ -1360,6 +1502,7 @@ static bool http_sd_upload_begin_target(const char *target,
 		return false;
 	g_sd_job.content_type = content_type;
 	g_sd_job.config_upload = config_upload;
+	g_sd_job.dsp_upload = dsp_upload;
 	g_sd_job.replay_upload = replay_upload;
 	g_sd_job.expected = expected;
 	g_sd_job.initial_offset = (uint32_t)initial_offset;
@@ -1606,6 +1749,58 @@ static void http_config_public_request(const AiusHttpRequest &request)
 	g_pending_config = parsed;
 	g_config_upload_pending = true;
 	(void)request;
+}
+
+/* PUT /api/dsp/config: authenticated (X-Aius-SD-Auth), validated, bounded body.
+ * On success this only makes the write to /aius/dsp.json durable and stages the
+ * validated model -- it does NOT apply it. The actual apply (and
+ * config_generation increment) happens at the next audio block boundary
+ * (AiusAudioProcessor::enqueue), once service_sd_job() reaches
+ * AIUS_SD_JOB_UPLOAD_CLEANUP for this job. Invalid input, a stale
+ * base_generation, or an SD failure all leave both SD and the active DSP
+ * snapshot untouched. */
+static FLASHMEM void http_dsp_config_put_request(const AiusHttpRequest &request)
+{
+	if (!http_sd_authorized(request)) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
+		http_send(401, body, sizeof(body) - 1);
+		return;
+	}
+	if (!g_sd_ready) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
+		http_send(503, body, sizeof(body) - 1);
+		return;
+	}
+	size_t length = g_http_request_length - g_http_body_offset;
+	AiusDspModel parsed;
+	AiusDspConfigErrorCode error = aius_dsp_config_parse_put(
+		g_http_request + g_http_body_offset, length, &parsed);
+	if (error != AIUS_DSP_CONFIG_OK) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"dsp_config_invalid\"}";
+		http_send(400, body, sizeof(body) - 1);
+		return;
+	}
+	if (parsed.base_generation != g_config_generation) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"stale_generation\"}";
+		http_send(409, body, sizeof(body) - 1);
+		return;
+	}
+	/* The raw accepted body is written to SD verbatim (same pattern as
+	 * config_upload above) -- it already carries "source":"sd" and a
+	 * "base_generation" field, so it re-parses cleanly with the same
+	 * aius_dsp_config_parse_put() at the next boot/hot-reinsert
+	 * (stage_dsp_sd_override); the stale base_generation it then contains is
+	 * simply never read for anything at that point. */
+	if (!http_sd_upload_begin_target("/aius/dsp.json", "application/json",
+	                                 false, false, (uint32_t)length,
+	                                 g_http_body_offset, g_http_request_length,
+	                                 true)) {
+		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
+		http_send(503, body, sizeof(body) - 1);
+		return;
+	}
+	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
+	g_dsp_upload_pending = true;
 }
 
 static void reset_application(void)
@@ -1872,8 +2067,13 @@ static void http_handle_request(void)
 		body_length = http_status_json(body, sizeof(body));
 		break;
 	case AIUS_HTTP_ROUTE_DSP_CONFIG:
-		body_length = http_dsp_config_json(body, sizeof(body));
-		break;
+		if (request.method == AIUS_HTTP_PUT) {
+			http_dsp_config_put_request(request);
+			return;
+		}
+		body_length = http_dsp_config_json(g_dsp_config_body, sizeof(g_dsp_config_body));
+		http_send_content(status, "application/json", g_dsp_config_body, body_length);
+		return;
 	case AIUS_HTTP_ROUTE_EVENTS:
 		body_length = http_events_json(request.cursor, body, sizeof(body));
 		break;
@@ -2386,6 +2586,7 @@ void setup(void)
 	if (g_sd_ready) {
 		(void)SD.mkdir("/aius");
 		load_sd_config();
+		stage_dsp_sd_override();
 	}
 	refresh_sd_usage();
 	Serial.printf("AIUS SD ready=%u\\n", g_sd_ready ? 1u : 0u);

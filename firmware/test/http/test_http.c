@@ -35,8 +35,10 @@ static void test_dsp_config_route(void)
 	assert(request.route == AIUS_HTTP_ROUTE_DSP_CONFIG);
 	assert(aius_http_parse((const uint8_t *)post, strlen(post), &request) ==
 	       AIUS_HTTP_ERR_METHOD);
-	assert(aius_http_parse((const uint8_t *)put, strlen(put), &request) ==
-	       AIUS_HTTP_ERR_METHOD);
+	/* PUT /api/dsp/config writes the SD-hosted DSP config override; only POST
+	 * and DELETE are rejected on this route now. */
+	assert(aius_http_parse((const uint8_t *)put, strlen(put), &request) == AIUS_HTTP_OK);
+	assert(request.route == AIUS_HTTP_ROUTE_DSP_CONFIG);
 	assert(aius_http_parse((const uint8_t *)delete, strlen(delete), &request) ==
 	       AIUS_HTTP_ERR_METHOD);
 	assert(aius_http_parse((const uint8_t *)near_miss, strlen(near_miss), &request) ==

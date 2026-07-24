@@ -7,11 +7,11 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
-#         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
-#         pipeline, dsp, dsp-vectors, net, net-runner, http, usb-control, replay,
-#         boot, boot-target, fault-target, build-metadata, runtime,
-#         network-transport, sd, sd-target.
+# Suites: arena, codec-api-contract, config, dsp-config, dts, dts-arena,
+#         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
+#         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
+#         usb-control, replay, boot, boot-target, fault-target, build-metadata,
+#         runtime, network-transport, sd, sd-target.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,6 +101,18 @@ dts_build() {
 case "$suite" in
 config)
 	python3 "$fw_root/test/config/test_build_config.py"
+	;;
+dsp-config)
+	# Bounded, allocation-free PUT /api/dsp/config validator: parses the DSP model
+	# JSON wire shape against the same bounds build_config.py's validate_config()
+	# enforces. -lm for floor()/isfinite()/pow() (JSON number decode + integer
+	# and finite-range checks) -- no strtod(): see aius_dsp_config.c for why.
+	dsp_config_out="$build_dir/dsp-config"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_dsp_config/include" \
+		"$fw_root/test/dsp-config/test_dsp_config.c" \
+		"$fw_root/lib/aius_dsp_config/src/aius_dsp_config.c" \
+		-lm -o "$dsp_config_out"
+	"$dsp_config_out"
 	;;
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"
