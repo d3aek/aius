@@ -9,8 +9,8 @@
 #
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
-#         pipeline, dsp, net, net-runner, http, usb-control, replay, boot,
-#         boot-target, fault-target, build-metadata, runtime,
+#         pipeline, dsp, dsp-vectors, net, net-runner, http, usb-control, replay,
+#         boot, boot-target, fault-target, build-metadata, runtime,
 #         network-transport, sd, sd-target.
 set -euo pipefail
 
@@ -198,6 +198,20 @@ dsp)
 		"$src/aius_arena.c" \
 		-lm -o "$dsp_out"
 	"$dsp_out"
+	;;
+dsp-vectors)
+	# Decode each committed DTS vector through the portable DTS interface, then
+	# drive the decoded PCM through the PUBLIC DSP interface (downmix + biquad EQ)
+	# and check routing/gain/latency known answers. -ffp-contract=off keeps the
+	# double-precision downmix/EQ bit-identical to the Cortex-M7 target (as the
+	# dsp suite). The dts_build machinery links the vendored dcadec core + adapter
+	# + --wrap alloc shim; the extra flags/sources add the DSP module.
+	out="$build_dir/dsp-vectors"
+	dts_build "$out" -ffp-contract=off \
+		"-I$fw_root/lib/aius_dsp/include" \
+		"$fw_root/test/dsp/test_dsp_vectors.c" \
+		"$fw_root/lib/aius_dsp/src/aius_dsp.c"
+	"$out" "$fw_root/tools/dts_vectors/vectors" "$fw_root/tools/dts_vectors/golden"
 	;;
 net)
 	# UDP codec plus the pure generation/deadline network supervisor oracle.

@@ -1,0 +1,6 @@
+channels 6
+mask 0x3f
+frames 5120
+in_peak 629193 629339 629169 563277 629291 630242
+out_peak_l 1153007
+out_peak_r 1162608

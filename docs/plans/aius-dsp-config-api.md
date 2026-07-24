@@ -22,13 +22,20 @@ before extending the configuration API or control surface:
 The critical-path order below supersedes the older phase numbering where they
 conflict:
 
-1. Extend the native DSP harness to decode each vector into the portable DSP
-   interface and retain deterministic decoded-input and stereo-output
-   known-answer fixtures.
-2. Prove channel routing and signal math before UI work: stereo isolation;
-   FL/FR passthrough; symmetric FC contribution; SL-to-L and SR-to-R placement;
-   LFE gain; clip-free headroom; trim/EQ bypass equivalence; limiter threshold,
-   lookahead, attack, and release; finite output; and bounded latency.
+1. **Done.** The native `dsp-vectors` suite decodes each of the four committed
+   vectors through the portable DTS interface, drives the decoded PCM through the
+   public DSP interface (`aius_dsp_downmix` / `aius_dsp_process`), and checks
+   deterministic decoded-input and stereo-output golden fixtures
+   (`tools/dts_vectors/golden/*.golden`). The sample corpus now runs through the
+   pipeline.
+2. **Mostly done.** The `dsp-vectors` suite proves, through the public interface
+   on real decoded vector content: stereo isolation; FL/FR passthrough; symmetric
+   FC contribution; SL-to-L and SR-to-R placement; LFE gain (default-excluded and
+   −10 dB fold); clip-free headroom; trim/EQ bypass equivalence; finite output;
+   and bounded latency (output frame count == input; seamless block-boundary
+   continuity). Limiter threshold/lookahead/attack/release and input trim /
+   per-input EQ are **not yet provable** — those seams do not exist in the
+   portable interface and land with step 3.
 3. Implement the bounded signal path and coherent meter snapshot behind the
    portable DSP interface. The sample-vector tests, allocation guard, cycle
    budget, and queue/latency bounds are the completion gate.
