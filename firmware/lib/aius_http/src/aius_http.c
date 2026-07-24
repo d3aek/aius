@@ -116,6 +116,8 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_CONFIG_PUBLIC;
 	if (token_equals(path, length, "/api/dsp/config"))
 		return AIUS_HTTP_ROUTE_DSP_CONFIG;
+	if (token_equals(path, length, "/api/meters"))
+		return AIUS_HTTP_ROUTE_METERS;
 	if (token_equals(path, length, "/api/replays"))
 		return AIUS_HTTP_ROUTE_REPLAYS;
 	if (token_equals(path, length, "/api/replays/status"))
@@ -357,6 +359,9 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_DSP_CONFIG &&
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT)
+		return AIUS_HTTP_ERR_METHOD;
+	/* Read-only meter snapshot; the serializer lands with Phase 14b. */
+	if (request->route == AIUS_HTTP_ROUTE_METERS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;

@@ -3559,6 +3559,39 @@ Cold-code discipline is not optional at this point: ITCM has 1,352 bytes free.
 Every dispatcher entry point is `FLASHMEM`, applied on the definition rather
 than a prototype.
 
+**Delivered.** `src/aius_optical_app.{h,cpp}` carry an `AiusOpticalApp` callback
+table (20 required entries, each rejected at init when null) and a dispatcher
+returning either an immediate response or an SD job request, for all 19 route
+enumerators and all four USB commands plus the `NONE` case. The `optical-app`
+suite (14 groups) asserts route coverage exhaustively, status/content-type/body
+per decision, SD job requests field-by-field against `aius_sd.c`'s validation,
+path-traversal and encoding rejection, refusal ordering, serializer exhaustion on
+all seven serializers, and per-route callback isolation. `http` is green
+unmodified. `AIUS_HTTP_ROUTE_METERS` is added to the enum and parser (GET-only)
+so Phase 14b lands only a handler body. The unreferenced
+`AIUS_HTTP_ROUTE_REPLAYS_DELETE` enumerator is removed — the parser never
+produced it (DELETE on `/api/replays` is `REPLAYS` plus the DELETE method) and it
+had zero references anywhere in the tree.
+
+The FLASHMEM discipline holds: `arm-none-eabi-size -A` on the new object reports
+`.text 0`, `.flashmem 3976`, `.rodata.str1.4 1275` — **zero ITCM**. The linked
+image is currently byte-identical with and without the module, because nothing
+references it yet, so those bytes are not in the bank report below and will
+appear when Phase 12 constructs it.
+
+**A linker fact worth carrying into Phases 12, 14, and 14b:** `imxrt1062_t41.ld`
+maps `*(.flashmem*)` to FLASH but `*(.rodata*)` to **DTCM**. So `FLASHMEM` moves
+code out of ITCM while its string literals still land in the 22,684-byte
+free-for-locals zone — here, ~1,275 bytes of JSON error bodies. Phase 14 deletes
+the equivalent literals from `optical_main.cpp`, so the cutover should be roughly
+net-neutral; if it is not, naming those constant bodies `PROGMEM` moves them to
+flash.
+
+Post-phase bank figures: ITCM 195,192 used / **1,416 free**, DTCM 304,996 /
+22,684, FLASH 530,908 / 7,595,556. ITCM free moved from 1,352 to 1,416 as a
+result of this phase's own `aius_http.c` edits; no other session's firmware work
+landed in that window.
+
 ### Phase 12 — Teensy runtime service composition
 
 ```yaml
@@ -3772,6 +3805,49 @@ it on the legacy machinery this phase deletes. Three concrete pieces:
 The block-boundary apply itself does not move. It stays in the audio path, where
 `config_generation` increments and `source` becomes `sd`, and remains the only
 place the active model changes.
+
+#### Open decision — buffered PUTs cannot currently be SD jobs
+
+Phase 11 surfaced a hard constraint in the delivered transaction ABI.
+`accept_application()` (`aius_http_transaction.c:732`) accepts
+`AIUS_SD_JOB_UPLOAD` **only for a streamed request** — a PUT to `/sd/…` whose
+body flows straight to the card. `PUT /api/dsp/config` and
+`PUT /api/config/public` are buffered by design: the body is parsed and
+validated in full, then written verbatim. Neither can be expressed as an SD job
+today.
+
+Phase 11's dispatcher therefore returns an immediate 200 for both and hands the
+accepted bytes to a storage callback. That is a **wire-behaviour change** from
+the pre-cutover firmware, where `{"ok":true}` is emitted from the SD job's
+cleanup state after the write commits (`optical_main.cpp:649`), and where a
+failed write surfaces as `500 sd_commit` or `507 sd_write`. Under Phase 11's
+shape the 200 becomes optimistic and those two failure responses disappear.
+
+Nothing is broken today — nothing constructs the dispatcher until Phase 12, so
+the deployed contract is unchanged, and the OpenAPI document committed at step
+B5 still describes the firmware accurately. **Phase 14 must pick one:**
+
+- **Preserve the current semantics** by giving the transaction a buffered-upload
+  job kind, or by letting the storage service report completion
+  asynchronously. Keeps `200` meaning "durably written", keeps the 500/507
+  surface, and keeps the committed OpenAPI correct. Costs a change to a
+  delivered, tested ABI.
+- **Accept the optimistic 200** and update the OpenAPI document plus the SD
+  editor's expectations in the same commit. Cheaper, but the client loses any
+  signal that the SD write failed, and the editor's "applied" state would rest
+  entirely on its `config_generation` poll.
+
+Recommended: the first. The editor already polls for a generation change so it
+would survive either, but silently losing the write-failure surface on a
+config-persistence route is a poor trade for the ABI change avoided.
+
+Phase 11 also had to make three smaller behaviour choices that Phase 14
+inherits: serializer exhaustion now returns a deterministic
+`500 response_too_large` where the legacy path sent an empty 200 or empty 500; a
+streamed replay PUT without `Content-Range` is now `400 sd_upload` where the
+legacy path silently appended at offset 0 and never finalized; and
+`GET /api/replays` with no card keeps its pre-cutover `200` carrying
+`{"ok":false,"error":"sd_unavailable"}`.
 
 Two further legacy behaviours die here. `watchdog_init()` currently arms a 16 s
 interval (`WDOG_WCR_WT(31)`) and `loop()` feeds at three points; the normative

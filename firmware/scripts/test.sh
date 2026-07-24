@@ -11,7 +11,7 @@
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
-#         runtime, network-transport, sd, sd-target.
+#         runtime, network-transport, sd, sd-target, optical-app.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -372,6 +372,34 @@ sd)
 		"$fw_root/lib/aius_sd/src/aius_sd.c" \
 		-o "$sd_out"
 	"$sd_out"
+	;;
+optical-app)
+	# Optical application dispatch: one bounded decision per HTTP route and USB
+	# command against a fake application. The dispatcher is a target .cpp (it
+	# carries FLASHMEM on every definition), so the C11 oracle and the real
+	# parser compile with gcc and link through g++.
+	optical_app_inc=("-I$fw_root/lib/aius_http/include" \
+		"-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/lib/aius_sd/include" \
+		"-I$fw_root/lib/aius_usb_control/include" \
+		"-I$fw_root/src")
+	optical_app_oracle="$build_dir/optical-app-oracle.o"
+	optical_app_parser="$build_dir/optical-app-http.o"
+	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
+		-c "$fw_root/test/optical-app/test_optical_app.c" \
+		-o "$optical_app_oracle"
+	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
+		-c "$fw_root/lib/aius_http/src/aius_http.c" \
+		-o "$optical_app_parser"
+	optical_app_out="$build_dir/optical-app"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -Wpedantic -O1 -g \
+		-fsanitize=address,undefined \
+		"${optical_app_inc[@]}" \
+		"$fw_root/src/aius_optical_app.cpp" \
+		"$optical_app_oracle" \
+		"$optical_app_parser" \
+		-o "$optical_app_out"
+	"$optical_app_out"
 	;;
 sd-target)
 	python3 "$fw_root/test/sd-target/test_source_guard.py"

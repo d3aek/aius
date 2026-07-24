@@ -587,6 +587,35 @@ the repository — the suite is hand-rolled assertions — and the 500/507 field
 list is read from `sd_job_send_error()`'s format string, not from a captured
 device response.
 
+### Unfinished mode/mix removal in the the host application app
+
+The single-config work removed `POST /api/mode` and `POST /api/mix` from the
+firmware, the UDP verbs, the embedded flash page, and `swagger.json` — but not
+from the the host application app at ``. Three loose ends remain, found
+while assembling Phase 11's route inventory:
+
+- **Two checked-in tests contradict each other.**
+  `frontend/test/scenarios/control-shell.json:13` asserts
+  `/api/mode` and `/api/mix` **are** present in `swagger.json` (under
+  `AIUS.APP.OPENAPI.1`), while `test/swagger.test.js` asserts they
+  are **absent**. `swagger.json` does not contain them, so the browser scenario
+  fails whenever it runs.
+- **The dashboard still wires dead buttons.** `frontend/src/app.js`
+  lines 92–93 POST to both routes. The firmware no longer dispatches either, so
+  both controls now produce a 404.
+- **The firmware parser still accepts them.** `aius_http.c` matches `/api/mode`
+  and `/api/mix` into live route enumerators that nothing dispatches. Phase 11
+  deliberately left them parsing and gave each a bounded 404, because removing
+  them breaks the `http` suite (`test/http/test_http.c` depends on them in six
+  places, four only incidentally as a POST-with-body vehicle) and that suite is
+  not Phase 11's to edit.
+
+None of this affects the device. Fix it with Phase 14, whose owner holds
+`test/http/` and can retire the routes, the scenario assertion, and the
+dashboard controls in one change. `AIUS.APP.OPENAPI.1` needs its wording checked
+at the same time — it says the document describes "every device route", which is
+what the scenario was asserting with a now-stale route list.
+
 ### Target validation
 
 **Merged into step B6**, the single on-device session shared with the network
