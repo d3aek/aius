@@ -111,6 +111,7 @@ throughout. Track B is serialized because every phase in it touches
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
+| B9 | Retire the the app dashboard, keeping `swagger.json` and its contract suite | `ui-contract` and Vitest suites green after removal |
 
 Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
 delivered and are not re-reviewed. Each remaining phase's gate is its green
@@ -141,6 +142,18 @@ delivered-phase blocks are historical and are not re-run.
   accepted to get the post-cutover image onto a board that currently cannot be
   reached any other way; the button-free tooling then removes the need for the
   next one.
+- **The the app dashboard is out of scope until B9.** It is superseded by the
+  device's own SD-hosted control surface and is queued for deletion as the last
+  step, not repaired along the way. Two consequences to expect rather than
+  investigate: the `control-shell.json` browser scenario **fails today** and stays
+  failing until B9, because it asserts `/api/mode` and `/api/mix` are present in
+  `swagger.json` while the OpenAPI suite asserts they are absent; and the
+  dashboard's mode/mix buttons already 404 and will simply keep doing so. Do not
+  spend time on either. B9 removes the dashboard, that scenario, and the
+  `ui-contract-allowlist.json` entry for its stylesheet together, and coordinates
+  with the ui-kit accessibility rollout that currently enrols the app. Nothing
+  earlier in the sequence depends on it, including Phase 14's removal of the
+  firmware-side `MODE`/`MIX` route enumerators.
 
 ## Removed evidence apparatus
 

@@ -105,6 +105,7 @@ throughout. Track B is serialized because every phase in it touches
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
+| B9 | Retire the the app dashboard, keeping `swagger.json` and its contract suite | `ui-contract` and Vitest suites green after removal |
 
 Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
 delivered and are not re-reviewed. Each remaining phase's gate is its green
@@ -135,6 +136,18 @@ delivered-phase blocks are historical and are not re-run.
   accepted to get the post-cutover image onto a board that currently cannot be
   reached any other way; the button-free tooling then removes the need for the
   next one.
+- **The the app dashboard is out of scope until B9.** It is superseded by the
+  device's own SD-hosted control surface and is queued for deletion as the last
+  step, not repaired along the way. Two consequences to expect rather than
+  investigate: the `control-shell.json` browser scenario **fails today** and stays
+  failing until B9, because it asserts `/api/mode` and `/api/mix` are present in
+  `swagger.json` while the OpenAPI suite asserts they are absent; and the
+  dashboard's mode/mix buttons already 404 and will simply keep doing so. Do not
+  spend time on either. B9 removes the dashboard, that scenario, and the
+  `ui-contract-allowlist.json` entry for its stylesheet together, and coordinates
+  with the ui-kit accessibility rollout that currently enrols the app. Nothing
+  earlier in the sequence depends on it, including Phase 14's removal of the
+  firmware-side `MODE`/`MIX` route enumerators.
 
 ## DSP work breakdown
 
@@ -623,10 +636,14 @@ reachable, and it is the only machine-readable description of the wire format.
 The flash page, not the host application, is the no-SD fallback, so nothing is lost as a
 backstop.
 
-**Blocked on coordination, not on effort.** Deleting
-`frontend/src/{app.js,index.html,style.css}` is not a local change: the aius
-dashboard is an enrolled participant in the ui-kit accessibility rollout, an
-active workstream owned elsewhere.
+**Queued as step B9, the last thing in the sequence.** The dashboard is out of
+scope until then: not repaired, not partially fixed, not investigated. Its
+`control-shell.json` scenario fails today and stays failing, and its mode/mix
+buttons 404 and keep doing so. Both are known and neither blocks anything.
+
+Deferring it to the end is also what makes the deletion cheap, because it is not
+a local change: the aius dashboard is an enrolled participant in the ui-kit
+accessibility rollout, an active workstream owned elsewhere.
 
 - `src/libs/frontend-shared/test/fixtures/ui-contract-allowlist.json` carries an
   entry for `frontend/src/style.css` under `ownerTask:
@@ -644,7 +661,8 @@ Two things make this cheaper than it looks: the planned contract scenario
 `src/libs/frontend-shared/test/scenarios/contracts/aius.json` does not exist
 yet, and `contracts/manifest.json` has no aius row. So the retirement cancels
 planned work rather than unpicking landed work. It still needs the rollout
-owner's agreement before anything is deleted.
+owner's agreement before anything is deleted, and by B9 that rollout may have
+moved on far enough that the question answers itself.
 
 `AIUS.APP.SHELL.1`, `AIUS.APP.CONTROL.1`, and `AIUS.APP.TELEMETRY.1` retire with
 the dashboard; `AIUS.APP.OPENAPI.1` survives and needs rewording, since it says
