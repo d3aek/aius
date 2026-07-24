@@ -1279,6 +1279,7 @@ typedef struct {
 
 typedef enum {
     AIUS_HTTP_SD_STARTED,
+    AIUS_HTTP_SD_PROGRESS,
     AIUS_HTTP_SD_NEED_UPLOAD,
     AIUS_HTTP_SD_DOWNLOAD_DATA,
     AIUS_HTTP_SD_COMPLETE,
@@ -1333,6 +1334,7 @@ typedef enum {
 typedef struct {
     AiusHttpActionKind kind;
     uint64_t action_id;
+    uint8_t *read_buffer;
     const uint8_t *data;
     size_t length;
     const AiusHttpRequest *request;
@@ -1393,10 +1395,13 @@ typedef struct {
     unsigned last_status;
     bool valid;
     bool client_active;
+    bool transport_terminal;
+    bool cleanup_requested;
     bool deadline_active;
     bool dispatch_emitted;
     bool close_emitted;
     bool response_started;
+    bool response_is_download;
     bool sd_started;
     bool sd_cancel_emitted;
     bool sd_terminal;
@@ -1499,6 +1504,11 @@ zero bytes. `WOULD_BLOCK` and `CLOSED` require zero bytes and zero fault;
 `completed_action = NONE`, and carry respectively no payload or one nonzero
 `peer_fault`. Every field not named for an event is zero or null.
 
+`READ` uses mutable `read_buffer` and requires `data = NULL`; `WRITE` and
+upload-supply actions use immutable `data` and require `read_buffer = NULL`.
+Every other action requires both pointers null unless its operation explicitly
+names one.
+
 `NONE` with no outstanding action drives the next action. `NONE` while a
 transport or SD drain action is outstanding retains that authority and can
 only cause deadline expiry. Because dispatch and job start are synchronous
@@ -1508,6 +1518,16 @@ or malformed event is a protocol fault. Before any response byte it produces
 the fixed protocol response below; after transmission starts it proceeds
 directly to cleanup. No malformed event may consume a valid outstanding SD
 authority.
+
+An unsolicited peer event is valid only after accept. It consumes an
+outstanding `READ`, `WRITE`, or `CLOSE`, because that transport operation can
+no longer make progress. If `DISPATCH`, `SD_START`, `SD_STEP`, or `SD_CANCEL`
+is outstanding, the transaction sets `cleanup_requested` but retains that
+non-transport authority until its correlated event arrives. A malformed event
+or timeout follows the same rule for outstanding SD authority. Once retained
+authority resolves, cleanup emits transport close if it is not terminal, then
+starts or continues SD cancellation. This serialization permits only one
+outstanding action without abandoning a correlated SD side effect.
 
 Initialization enters authority-free `IDLE`; `step(NONE)` emits one `ACCEPT`.
 An accept `WOULD_BLOCK` returns to accept-ready `IDLE`; a successful accept
@@ -1564,19 +1584,23 @@ the same fallback and cancels the job before cleanup.
 
 ### SD transfer and lifetime contract
 
-An `SD_STARTED` event has no payload. `NEED_UPLOAD` supplies a positive
+An `SD_STARTED` event has no payload. `SD_PROGRESS` has no payload and reports
+that one bounded runtime epoch completed without reaching an application
+boundary; it never rearms a deadline. `NEED_UPLOAD` supplies a positive
 `sd_length` no greater than the job buffer capacity. `DOWNLOAD_DATA` supplies
 non-null `sd_data`, positive `sd_length`, and the authoritative total
 `sd_size`; every later chunk repeats the same size. `COMPLETE` carries
-`sd_size` only for a zero-byte download and otherwise has no payload. `FAILED`
-carries nonzero typed `sd_fault` and may carry `sd_driver_fault`.
+`sd_size` only for a zero-byte download and otherwise has no payload. A
+nonzero download may not complete before at least one `DOWNLOAD_DATA`.
+`FAILED` carries nonzero typed `sd_fault` and may carry `sd_driver_fault`.
 `CANCELLED` is terminal and may carry an authoritative cleanup/rollback
 `sd_fault` and driver fault. Every unnamed field is zero or null.
 
 `SD_STEP` operations are exact:
 
-- `ADVANCE` asks the owned job to advance until it exposes one semantic event,
-  while performing at most one target SD action in that runtime epoch.
+- `ADVANCE` asks the owned job to advance one bounded epoch. It performs at
+  most one target SD action and returns `SD_PROGRESS` when that epoch does not
+  expose another semantic event.
 - `SUPPLY_UPLOAD` carries transaction-owned staged bytes for immediate
   `aius_sd_job_supply()`. The buffer remains unchanged until the correlated SD
   result. Retained body-prefix bytes are supplied before any further `READ`.
@@ -1600,14 +1624,16 @@ completing before all declared bytes were supplied, inconsistent download
 sizes, zero/oversized chunks, or bytes beyond the declared body is a protocol
 fault followed by cancellation.
 
-`SD_CANCEL` is an acknowledged drain operation, not a notification. The
-runtime resolves any outstanding download `OUTPUT` with failure, calls
-`aius_sd_job_cancel()` exactly once, then advances at most one SD action per
-runtime epoch until rollback/cleanup reaches terminal. It returns `CANCELLED`
-only after all SD authority is exhausted. Cleanup or rollback failure remains
-the authoritative `last_sd_fault` over the original transport fault or
-timeout. HTTP does not restart, reset either buffer, or allow another accept
-until both transport close and SD terminal are confirmed.
+`SD_CANCEL` begins an acknowledged drain, not a notification. The runtime
+resolves any outstanding download `OUTPUT` with failure, calls
+`aius_sd_job_cancel()` exactly once, and returns `SD_PROGRESS` unless the job
+is already terminal. The transaction then issues `SD_STEP/ADVANCE` epochs,
+each performing at most one SD action, until rollback/cleanup returns
+`CANCELLED`. `sd_cancel_emitted` prevents a second cancel call. Cleanup or
+rollback failure remains the authoritative `last_sd_fault` over the original
+transport fault or timeout. HTTP does not restart, reset either buffer, or
+allow another accept until both `transport_terminal` and `sd_terminal` are
+true.
 
 HTTP never calls a socket or file API and never loops over transport or SD
 progress.
