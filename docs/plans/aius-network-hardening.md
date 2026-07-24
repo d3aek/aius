@@ -2120,7 +2120,7 @@ bool aius_runtime_epoch(
 ```
 
 `aius_runtime_epoch()` invokes the normative checkpoint table in order. Before
-each service it calls `checkpoint()`. In normal mode it calls all eight services
+each service it calls `checkpoint()`. In normal mode it calls all nine services
 then records `EPOCH_COMPLETE` and feeds once. In recovery-safe mode it calls
 only bounded USB RX/TX, records `EPOCH_COMPLETE`, and feeds once. A service
 returning false ends the epoch without feed; the next watchdog reset identifies
@@ -2239,11 +2239,18 @@ AiusCdcTeensyOps aius_cdc_teensy_ops(AiusCdcTeensy *adapter);
 AiusCdcTeensyPrimitives aius_cdc_teensy_serial_primitives(void);
 
 typedef struct {
+    uint32_t boot_generation;
+    uint32_t reset_source;
+    uint8_t watchdog_early_resets;
+} AiusRuntimeTeensyBootStatus;
+
+typedef struct {
     void *context;
     bool (*reset_capture)(
         void *context,
         const AiusRuntimeBudget *budget,
-        uint32_t now_ms);
+        uint32_t now_ms,
+        AiusRuntimeTeensyBootStatus *status);
     bool (*metrics)(
         void *context,
         const AiusRuntimeBudget *budget,
@@ -2267,9 +2274,11 @@ typedef struct {
     uint8_t http_request[AIUS_HTTP_MAX_REQUEST];
     uint8_t http_response[AIUS_HTTP_MAX_RESPONSE];
     AiusNetAction pending_network_action;
+    AiusNetEvent pending_network_event;
     AiusHttpEvent pending_http_event;
     AiusHttpApplicationResponse pending_application_response;
     bool network_action_present;
+    bool network_event_present;
     bool http_event_present;
     bool application_response_present;
 } AiusRuntimeNetworkHttp;
@@ -2312,13 +2321,16 @@ typedef struct {
     AiusRuntimeUsb usb;
     AiusOpticalApp app;
     AiusRuntimeTeensyPlatformOps platform;
+    AiusRuntimeTeensyBootStatus boot_status;
+    uint16_t last_checkpoint;
     bool recovery_safe;
     uint32_t completed_epochs;
 } AiusRuntimeTeensy;
 
 void aius_runtime_network_http_construct(
     AiusRuntimeNetworkHttp *service,
-    uint32_t now_ms);
+    uint32_t now_ms,
+    bool recovery_safe);
 
 bool aius_runtime_network_service(
     AiusRuntimeNetworkHttp *service,
@@ -2375,8 +2387,19 @@ void aius_runtime_teensy_status(
 ```
 
 Each service constructor initializes memory only. Network construction retains
-the supervisor's initial action in `pending_network_action`; it performs no
-target call. Each service function consumes at most one retained input,
+the supervisor's initial action in `pending_network_action`, passes
+`recovery_safe` to `aius_net_supervisor_init()`, and performs no target call.
+The `NETWORK` checkpoint uses this strict one-operation precedence:
+
+1. A pending supervisor action, or an adapter-retained multi-call action, calls
+   `aius_network_teensy_apply()` once (`NONE` advances retained work) and stores
+   its event for a later epoch.
+2. Otherwise a pending network event calls `aius_net_supervisor_step()` once
+   and stores its action for a later epoch.
+3. Otherwise `aius_network_teensy_poll()` runs once and stores its event.
+
+It never applies, steps, and polls in the same epoch. Each service function
+otherwise consumes at most one retained input,
 executes the exact supplied budget, and publishes at most one retained output.
 The HTTP/storage bridge is explicit: root passes one storage event into
 `aius_runtime_http_service()` and one returned SD-backed HTTP action into
@@ -2388,11 +2411,14 @@ service or a scheduler callback.
 returns the primitive connection sample. `read_byte()` returns `CLOSED` when
 disconnected, maps primitive `-1` to `WOULD_BLOCK`, maps `0..255` to
 `PROGRESS(bytes=1)` and stores that byte, and maps every other sentinel to
-`FAULT(AIUS_CDC_ADAPTER_PROTOCOL_FAULT)`. `write_capacity()` maps primitive
+`FAULT(AIUS_CDC_ADAPTER_PROTOCOL_FAULT)` after incrementing the adapter's
+saturating `protocol_faults` and storing the sentinel in `last_fault`.
+`write_capacity()` maps primitive
 values `<=0` to zero and clamps positive values to 64. `write()` requires an
 offered length in `1..64`, returns `CLOSED` when disconnected, maps primitive
 zero to `WOULD_BLOCK`, `1..offered` to `PROGRESS`, and an oversized result to
-the protocol sentinel fault. Production `Serial` exposes no separate driver
+the protocol sentinel fault with the same one-time adapter diagnostic update.
+Production `Serial` exposes no separate driver
 fault; the fake primitive covers every normalized result. The sentinel and
 adapter types live in `aius_cdc_teensy.h`, which Phase 12 owns.
 `aius_cdc_teensy_serial_primitives()` lives in `aius_cdc_teensy.cpp`, is the
@@ -2413,7 +2439,12 @@ The root's scheduler callback table is fixed: `RESET_CAPTURE`, `METRICS`,
 `UDP`, and `REPLAY` invoke the same-named platform callback; `USB_RX` and
 `USB_TX` invoke the two USB service functions; `NETWORK` and `HTTP` invoke the
 two network/HTTP service functions; and `SD` invokes the storage service.
-Checkpoint and feed forward only to the platform callbacks. Native fakes
+Before forwarding each checkpoint the root stores it in `last_checkpoint`.
+`RESET_CAPTURE` fully initializes and returns `boot_status`; failure stops the
+epoch without publishing a partial capture. `aius_runtime_teensy_status()` is
+a pure snapshot: it combines retained `boot_status` and `last_checkpoint` with
+network/runtime counters and performs no platform call. Checkpoint and feed
+otherwise forward only to the platform callbacks. Native fakes
 assert each callback, exact budget, retained input/output flag transition, and
 failure short-circuit.
 `USB_RX` is the explicit exception to
@@ -2427,7 +2458,10 @@ epoch, clears staged RX, and stores the driver fault in
 `usb.adapter.last_fault`.
 `CLOSED` stores zero. Any other result is an adapter protocol fault: it follows
 the same stop/clear behavior, stores `AIUS_CDC_ADAPTER_PROTOCOL_FAULT`, and
-increments saturating `usb.adapter.protocol_faults`. Disconnection clears staged RX.
+increments saturating `usb.adapter.protocol_faults`. A valid normalized
+`FAULT`, including the sentinel returned by the adapter, is not counted again;
+write-side raw oversize is diagnosed solely inside `aius_cdc_teensy::write()`.
+Disconnection clears staged RX.
 At `USB_TX`, it moves and clears the
 prior retained application-response and write-event presence flags, samples
 the bounded `write_capacity`, then calls
