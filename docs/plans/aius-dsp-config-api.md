@@ -222,13 +222,22 @@ limiter, coherent meter module) are done and committed.** Remaining:
 
 ### Config model + read endpoint
 
-Replace the profiles/mixes preset model with the single `const` + `FLASHMEM`
-default config in `config/optical_dsp.json` + `build_config.py`; serialize it via
+Replace the profiles/mixes preset model with the single default config in
+`config/optical_dsp.json` + `build_config.py`; serialize it via
 `GET /api/dsp/config` (`FLASHMEM`); apply the single config in the audio path
 (output EQ + downmix, default bit-identical to today); remove `POST /api/mode` /
 `POST /api/mix` and every mode/mix reference from the embedded page; update swagger
 + the native `config` and Vitest OpenAPI suites. **Gate:** those suites green +
 target build + default audio unchanged on device.
+
+**Landed.** Single-config model + `PROGMEM` FLASH-resident default (`FLASHMEM` is
+for code, not const data — the const config uses `PROGMEM`); serializer + apply
+helper `FLASHMEM`; mode/mix routes, UDP verbs, and all embedded-page references
+removed. `config` + swagger suites green; `teensy41-optical` builds with ITCM
+headroom *improved* (98.5 %, 2968 B free — the smaller model + FLASH placement net
+freed fast RAM). Default audio is bit-identical by construction (matrix = default
+coefficients; EQ bypass = no-op); on-device audio confirmation is part of the live
+smoke. Input trim/EQ + limiter application and PUT/SD are the next phases.
 
 ### Write + SD persistence + block-boundary apply
 

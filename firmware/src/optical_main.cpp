@@ -720,7 +720,7 @@ public:
 
 	void begin_pipeline(void)
 	{
-		(void)set_mode(AIUS_NET_MODE_FLAT);
+		apply_config();
 		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 			g_create_status = AIUS_NO_SPACE;
 			return;
@@ -759,35 +759,43 @@ public:
 		g_overruns = 0;
 		interrupts();
 	}
-	uint8_t mode(void) const { return g_mode; }
-	uint8_t mix(void) const { return g_mix; }
-	bool mode_pending(void) const { return g_mode_pending; }
-	bool mix_pending(void) const { return g_mix_pending; }
-	bool set_mode(uint8_t mode)
+
+	/* Resolve the single const factory config into the runtime output-EQ biquads
+	 * and downmix matrix. Cold path: read only at bring-up (and, later, a config
+	 * apply), so it is FLASHMEM. The default config resolves to a bypass output EQ
+	 * and the standard downmix, i.e. the audio path is bit-identical to the old
+	 * flat-profile + standard-mix default. Input trim/EQ and the limiter are NOT
+	 * wired into the audio path yet (a later slice); only what the audio path
+	 * applies today (output EQ + downmix) is sourced here. */
+	FLASHMEM void apply_config(void)
 	{
-		if (mode >= AIUS_OPTICAL_PROFILE_COUNT)
-			return false;
-		noInterrupts();
-		g_pending_mode = mode;
-		g_mode_pending = true;
-		interrupts();
-		return true;
-	}
-	bool set_mix(uint8_t mix)
-	{
-		if (mix >= AIUS_OPTICAL_MIX_COUNT)
-			return false;
-		noInterrupts();
-		g_pending_mix = mix;
-		g_mix_pending = true;
-		interrupts();
-		return true;
+		const AiusOpticalConfig &cfg = AIUS_OPTICAL_CONFIG;
+		g_eq_count = cfg.output_eq_count;
+		for (size_t i = 0; i < g_eq_count && i < 2; i++) {
+			const AiusOpticalEqConfig &section = cfg.output_eq[i];
+			if (section.type == 0)
+				g_eq[i] = aius_biquad_bypass();
+			else if (section.type == 1)
+				g_eq[i] = aius_biquad_highpass(cfg.sample_rate_hz,
+					section.frequency_hz, section.q);
+			else
+				g_eq[i] = aius_biquad_peaking(cfg.sample_rate_hz,
+					section.frequency_hz, section.q, section.gain_db);
+		}
+		memset(g_eq_state, 0, sizeof(g_eq_state));
+		g_downmix = aius_downmix_config_default();
+		g_downmix.center = cfg.matrix.center_gain_linear;
+		g_downmix.surround = cfg.matrix.surround_gain_linear;
+		g_downmix.lfe = cfg.matrix.lfe_gain_linear;
+		if (cfg.matrix.clipfree)
+			g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
+		else
+			g_downmix.headroom = cfg.matrix.headroom_linear;
 	}
 
 protected:
 	void update(void) override
 	{
-		apply_pending_controls();
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
 		if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
@@ -835,55 +843,14 @@ private:
 	uint32_t g_count = 0;
 	uint32_t g_blocks = 0;
 	uint32_t g_overruns = 0;
-	uint8_t g_mode = AIUS_NET_MODE_FLAT;
-	uint8_t g_mix = AIUS_NET_MIX_STANDARD;
-	volatile uint8_t g_pending_mode = AIUS_NET_MODE_FLAT;
-	volatile uint8_t g_pending_mix = AIUS_NET_MIX_STANDARD;
-	volatile bool g_mode_pending = false;
-	volatile bool g_mix_pending = false;
 	AiusDownmixConfig g_downmix = aius_downmix_config_default();
 	AiusBiquad g_eq[2];
 	AiusBiquadState g_eq_state[4] = {};
-	size_t g_eq_count = 1;
+	size_t g_eq_count = 0;
 
 	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
 		return static_cast<AiusAudioProcessor *>(ctx)->enqueue(block);
-	}
-
-	void apply_pending_controls(void)
-	{
-		if (g_mode_pending) {
-			uint8_t mode = g_pending_mode;
-			g_mode_pending = false;
-			g_mode = mode;
-			const AiusOpticalProfileConfig &profile = AIUS_OPTICAL_PROFILES[mode];
-			g_eq_count = profile.eq_count;
-			for (size_t i = 0; i < g_eq_count; i++) {
-				const AiusOpticalEqConfig &section = profile.eq[i];
-				if (section.type == 0)
-					g_eq[i] = aius_biquad_bypass();
-				else if (section.type == 1)
-					g_eq[i] = aius_biquad_highpass(AIUS_OPTICAL_SAMPLE_RATE_HZ,
-						section.frequency_hz, section.q);
-				else
-					g_eq[i] = aius_biquad_peaking(AIUS_OPTICAL_SAMPLE_RATE_HZ,
-						section.frequency_hz, section.q, section.gain_db);
-			}
-			memset(g_eq_state, 0, sizeof(g_eq_state));
-		}
-		if (g_mix_pending) {
-			uint8_t mix = g_pending_mix;
-			g_mix_pending = false;
-			g_mix = mix;
-			const AiusOpticalMixConfig &config = AIUS_OPTICAL_MIXES[mix];
-			g_downmix = aius_downmix_config_default();
-			g_downmix.center = config.center;
-			g_downmix.surround = config.surround;
-			g_downmix.lfe = config.lfe;
-			if (config.clipfree)
-				g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
-		}
 	}
 
 	AiusStatus enqueue(const AiusPcmBlock *block)
@@ -1005,8 +972,10 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	aius_net_put_u32(payload + 25, AudioInputSPDIF3::sampleRate());
 	aius_net_put_u32(payload + 29, g_audio_processor.block_count());
 	aius_net_put_u32(payload + 33, g_audio_processor.overrun_count());
-	payload[37] = g_audio_processor.mode();
-	payload[38] = g_audio_processor.mix();
+	/* Bytes 37/38 were the active mode/mix selection. The single-config model has
+	 * no selection; byte 37 now reports the active config source (0 = the const
+	 * factory default) and byte 38 is reserved. Both stay zero via the memset
+	 * above, keeping the fixed 71-byte binary status schema unchanged. */
 	aius_net_put_u32(payload + 39, event_sequence);
 	aius_net_put_u32(payload + 43, event_overflows);
 	aius_net_put_u32(payload + 47, network_drops);
@@ -1089,7 +1058,7 @@ static unsigned http_error_status(AiusHttpResult result)
 	}
 }
 
-static bool http_json_append(char *body, size_t capacity, size_t *length,
+static FLASHMEM bool http_json_append(char *body, size_t capacity, size_t *length,
 	                           const char *format, ...)
 {
 	if (*length >= capacity)
@@ -1105,7 +1074,7 @@ static bool http_json_append(char *body, size_t capacity, size_t *length,
 	return true;
 }
 
-static const char *http_dsp_eq_type(uint8_t type)
+static FLASHMEM const char *http_dsp_eq_type(uint8_t type)
 {
 	switch (type) {
 	case 0: return "bypass";
@@ -1115,61 +1084,85 @@ static const char *http_dsp_eq_type(uint8_t type)
 	}
 }
 
-static size_t http_dsp_config_json(uint8_t *body, size_t capacity)
+/* Serialize one bounded EQ table (`sections` of `count`) as a JSON array. Cold
+ * path (config read), so FLASHMEM. Returns false on capacity exhaustion or an
+ * unknown section type. */
+static FLASHMEM bool http_dsp_eq_array(char *output, size_t capacity, size_t *length,
+                                       const AiusOpticalEqConfig *sections, uint8_t count)
 {
+	if (!http_json_append(output, capacity, length, "["))
+		return false;
+	for (uint8_t index = 0; index < count && index < 2u; index++) {
+		const char *type = http_dsp_eq_type(sections[index].type);
+		if (type == nullptr || !http_json_append(output, capacity, length,
+			"%s{\"type\":\"%s\",\"frequency_hz\":%.17g,\"q\":%.17g,\"gain_db\":%.17g}",
+			index == 0 ? "" : ",", type, sections[index].frequency_hz,
+			sections[index].q, sections[index].gain_db))
+			return false;
+	}
+	return http_json_append(output, capacity, length, "]");
+}
+
+/* Serialize the single effective DSP config (the const factory default). Cold
+ * path, fixed buffer, capacity-checked; returns 0 (deterministic error) if the
+ * model cannot fit the response budget. `source` and `config_generation` are the
+ * runtime-reported fields the later SD-override slice slots into: the const
+ * default is always source "default", generation 0. */
+static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
+{
+	static const char *const channel_names[6] = {"fl", "fr", "fc", "lfe", "sl", "sr"};
+	const AiusOpticalConfig &cfg = AIUS_OPTICAL_CONFIG;
 	if (capacity > AIUS_OPTICAL_MODEL_MAX_JSON_BYTES)
 		capacity = AIUS_OPTICAL_MODEL_MAX_JSON_BYTES;
 	char *output = (char *)body;
 	size_t length = 0;
 	if (!http_json_append(output, capacity, &length,
-	                      "{\"schema_version\":1,\"sample_rate_hz\":%lu,\"profiles\":[",
-	                      (unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ))
+	                      "{\"source\":\"default\",\"config_generation\":0,\"sample_rate_hz\":%lu,",
+	                      (unsigned long)cfg.sample_rate_hz))
 		return 0;
-	for (uint8_t profile_index = 0; profile_index < AIUS_OPTICAL_PROFILE_COUNT;
-	     profile_index++) {
-		const AiusOpticalProfileConfig &profile = AIUS_OPTICAL_PROFILES[profile_index];
-		if (!http_json_append(output, capacity, &length, "%s{\"id\":\"%s\",\"eq\":[",
-		                      profile_index == 0 ? "" : ",", profile.name))
-			return 0;
-		for (uint8_t section_index = 0; section_index < profile.eq_count;
-		     section_index++) {
-			const AiusOpticalEqConfig &section = profile.eq[section_index];
-			const char *type = http_dsp_eq_type(section.type);
-			if (type == nullptr || !http_json_append(
-				output, capacity, &length,
-				"%s{\"type\":\"%s\",\"frequency_hz\":%.17g,\"q\":%.17g,\"gain_db\":%.17g}",
-				section_index == 0 ? "" : ",", type, section.frequency_hz,
-				section.q, section.gain_db))
-				return 0;
-		}
-		if (!http_json_append(output, capacity, &length, "]}"))
-			return 0;
-	}
-	if (!http_json_append(output, capacity, &length, "],\"mixes\":["))
-		return 0;
-	for (uint8_t mix_index = 0; mix_index < AIUS_OPTICAL_MIX_COUNT; mix_index++) {
-		const AiusOpticalMixConfig &mix = AIUS_OPTICAL_MIXES[mix_index];
-		AiusDownmixConfig downmix = aius_downmix_config_default();
-		downmix.center = mix.center;
-		downmix.surround = mix.surround;
-		downmix.lfe = mix.lfe;
-		double headroom = mix.clipfree ? aius_downmix_clipfree_headroom(&downmix) :
-		                    mix.headroom;
-		if (!http_json_append(output, capacity, &length,
-				                      "%s{\"id\":\"%s\",\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s}",
-				                      mix_index == 0 ? "" : ",", mix.name, mix.center,
-				                      mix.surround, mix.lfe,
-		                      headroom, mix.clipfree ? "true" : "false"))
-			return 0;
-	}
 	if (!http_json_append(output, capacity, &length,
-	                      "],\"active\":{\"profile_id\":\"%s\",\"profile_index\":%u,\"mix_id\":\"%s\",\"mix_index\":%u,\"profile_pending\":%u,\"mix_pending\":%u}}",
-	                      AIUS_OPTICAL_PROFILES[g_audio_processor.mode()].name,
-	                      g_audio_processor.mode(),
-	                      AIUS_OPTICAL_MIXES[g_audio_processor.mix()].name,
-	                      g_audio_processor.mix(),
-	                      g_audio_processor.mode_pending() ? 1u : 0u,
-	                      g_audio_processor.mix_pending() ? 1u : 0u))
+	                      "\"features\":{\"input_eq\":%s,\"matrix\":%s,\"output_eq\":%s,\"limiter\":%s,\"meters\":%s},",
+	                      cfg.features.input_eq ? "true" : "false",
+	                      cfg.features.matrix ? "true" : "false",
+	                      cfg.features.output_eq ? "true" : "false",
+	                      cfg.features.limiter ? "true" : "false",
+	                      cfg.features.meters ? "true" : "false"))
+		return 0;
+	if (!http_json_append(output, capacity, &length, "\"input_channels\":{"))
+		return 0;
+	for (uint8_t channel = 0; channel < 6u; channel++) {
+		const AiusOpticalInputChannelConfig &entry = cfg.input_channels[channel];
+		if (!http_json_append(output, capacity, &length,
+		                      "%s\"%s\":{\"gain_db\":%.17g,\"eq\":",
+		                      channel == 0 ? "" : ",", channel_names[channel],
+		                      entry.gain_db))
+			return 0;
+		if (!http_dsp_eq_array(output, capacity, &length, entry.eq, entry.eq_count))
+			return 0;
+		if (!http_json_append(output, capacity, &length, "}"))
+			return 0;
+	}
+	if (!http_json_append(output, capacity, &length, "},\"output_eq\":"))
+		return 0;
+	if (!http_dsp_eq_array(output, capacity, &length, cfg.output_eq, cfg.output_eq_count))
+		return 0;
+	AiusDownmixConfig resolved = aius_downmix_config_default();
+	resolved.center = cfg.matrix.center_gain_linear;
+	resolved.surround = cfg.matrix.surround_gain_linear;
+	resolved.lfe = cfg.matrix.lfe_gain_linear;
+	double headroom = cfg.matrix.clipfree ?
+		aius_downmix_clipfree_headroom(&resolved) : cfg.matrix.headroom_linear;
+	if (!http_json_append(output, capacity, &length,
+	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s},",
+	                      cfg.matrix.center_gain_linear, cfg.matrix.surround_gain_linear,
+	                      cfg.matrix.lfe_gain_linear, headroom,
+	                      cfg.matrix.clipfree ? "true" : "false"))
+		return 0;
+	if (!http_json_append(output, capacity, &length,
+	                      "\"limiter\":{\"enabled\":%s,\"threshold_dbfs\":%.17g,\"attack_ms\":%.17g,\"release_ms\":%.17g,\"lookahead_ms\":%.17g}}",
+	                      cfg.limiter.enabled ? "true" : "false",
+	                      cfg.limiter.threshold_dbfs, cfg.limiter.attack_ms,
+	                      cfg.limiter.release_ms, cfg.limiter.lookahead_ms))
 		return 0;
 	return length;
 }
@@ -1184,13 +1177,11 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"mode\":%u,\"mix\":%u,\"mode_pending\":%u,\"mix_pending\":%u,\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"default\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
-		(unsigned long)aius_net_get_u32(status + 33), status[37], status[38],
-		g_audio_processor.mode_pending() ? 1u : 0u,
-		g_audio_processor.mix_pending() ? 1u : 0u,
+		(unsigned long)aius_net_get_u32(status + 33),
 		g_sd_ready ? 1u : 0u, sd_filesystem(),
 		(unsigned long long)g_sd_total_bytes,
 		(unsigned long long)g_sd_used_bytes,
@@ -1580,8 +1571,6 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<body><h1>Aius optical firmware</h1><p>Git revision: %s<br>Build UTC: %s</p>"
 		"<h2>API</h2><ul><li><a href=\"/api/status\">GET /api/status</a></li>"
 		"<li><a href=\"/api/events\">GET /api/events</a></li>"
-		"<li><code>POST /api/mode {&quot;mode&quot;:&quot;flat&quot;}</code></li>"
-		"<li><code>POST /api/mix {&quot;mix&quot;:&quot;standard&quot;}</code></li>"
 		"<li><code>POST /api/start {}</code></li>"
 		"<li><code>POST /api/stop {}</code></li>"
 		"<li><code>POST /api/clear {}</code></li>"
@@ -1591,18 +1580,14 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>DELETE /sd/www/{path}</code> with X-Aius-SD-Auth</li>"
 		"<li><code>PUT /api/config/public</code> JSON feature flags, no auth</li></ul>"
 		"<h2>DSP configuration</h2><p><a href=\"/api/dsp/config\">GET /api/dsp/config</a> "
-		"reports schema_version, sample_rate_hz, profiles, EQ sections, mixes, and active selection.</p>"
+		"reports the single effective config: source, sample_rate_hz, features, input channels, output EQ, matrix, and limiter.</p>"
 		"<pre id=dsp>Loading DSP configuration...</pre>"
 		"<h2>SD web upload</h2><p>Get the token over USB with <code>AIUS AUTH</code>. "
 		"The picker preserves relative paths and sends authenticated standard HTTP PUT requests.</p>"
 		"<label>SD auth token <input id=t size=16 maxlength=16 autocomplete=off></label> "
 		"<input id=f type=file multiple webkitdirectory directory><button onclick=upload()>Upload selected files</button>"
 		"<pre id=u></pre>"
-		"<h2>Control</h2><label>Mode <select id=m>"
-		"<option>%s</option><option>%s</option><option>%s</option></select></label> "
-		"<label>Mix <select id=x><option>%s</option><option>%s</option>"
-		"<option>%s</option></select></label> <button onclick=go('/api/mode',{mode:m.value})>Set mode</button> "
-		"<button onclick=go('/api/mix',{mix:x.value})>Set mix</button><p>"
+		"<h2>Control</h2><p>"
 		"<button title=\"Enable test processing state\" onclick=go('/api/start')>Start</button> "
 		"<button title=\"Disable test processing state\" onclick=go('/api/stop')>Stop</button> "
 		"<button title=\"Clear audio and event counters\" onclick=go('/api/clear')>Clear counters</button> "
@@ -1615,10 +1600,7 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 		"async function reboot(){e.textContent='Rebooting...';try{await go('/api/reboot');setTimeout(get,2000)}catch(a){}}"
 		"async function upload(){u.textContent='';const token=document.getElementById('t').value;const files=[...(document.getElementById('f').files||[])];for(const file of files){const rel=file.webkitRelativePath||file.name;const path=rel.split('/').slice(1).join('/')||rel;if(path.split('/').pop()==='config.json'){u.textContent+='refused '+path+'\\n';continue}try{const r=await fetch('/sd/www/'+path.split('/').map(encodeURIComponent).join('/'),{method:'PUT',headers:{'X-Aius-SD-Auth':token,'Content-Type':'application/octet-stream'},body:file});u.textContent+=r.status+' '+path+'\\n'}catch(a){u.textContent+='error '+path+' '+a+'\\n'}}}"
 		"get();getDsp();setInterval(get,2000);setInterval(getDsp,2000)</script></html>",
-		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
-		AIUS_OPTICAL_PROFILES[0].name, AIUS_OPTICAL_PROFILES[1].name,
-		AIUS_OPTICAL_PROFILES[2].name, AIUS_OPTICAL_MIXES[0].name,
-		AIUS_OPTICAL_MIXES[1].name, AIUS_OPTICAL_MIXES[2].name);
+		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
@@ -1840,16 +1822,6 @@ static void http_handle_request(void)
 		break;
 	case AIUS_HTTP_ROUTE_EVENTS:
 		body_length = http_events_json(request.cursor, body, sizeof(body));
-		break;
-	case AIUS_HTTP_ROUTE_MODE:
-		if (!g_audio_processor.set_mode(request.mode)) status = 400;
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":%s,\"mode\":%u}",
-			status == 200 ? "true" : "false", g_audio_processor.mode());
-		break;
-	case AIUS_HTTP_ROUTE_MIX:
-		if (!g_audio_processor.set_mix(request.mix)) status = 400;
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":%s,\"mix\":%u}",
-			status == 200 ? "true" : "false", g_audio_processor.mix());
 		break;
 	case AIUS_HTTP_ROUTE_START:
 		if (!g_test_running) {
@@ -2126,18 +2098,11 @@ static void service_network(void)
 		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
 		break;
 	case AIUS_NET_CMD_SET_MODE:
-		if (request.payload_len != 1 || !g_audio_processor.set_mode(request.payload[0])) {
-			send_nack(request.request_id, AIUS_NET_ERR_PAYLOAD);
-			break;
-		}
-		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
-		break;
 	case AIUS_NET_CMD_SET_MIX:
-		if (request.payload_len != 1 || !g_audio_processor.set_mix(request.payload[0])) {
-			send_nack(request.request_id, AIUS_NET_ERR_PAYLOAD);
-			break;
-		}
-		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
+		/* Mode/mix selection is retired by the single-config model. The command
+		 * IDs remain in the binary protocol, but there is no selection to set, so
+		 * the device rejects them rather than silently no-op-acking. */
+		send_nack(request.request_id, AIUS_NET_ERR_TYPE);
 		break;
 	case AIUS_NET_CMD_START_TEST:
 		if (!g_test_running) {
