@@ -2098,8 +2098,9 @@ Arduino dependencies.
 typedef struct {
     uint16_t checkpoint;
     uint16_t max_calls;
-    uint16_t max_bytes;
-    uint32_t progress_deadline_ms;
+    uint16_t max_rx_bytes;
+    uint16_t max_tx_bytes;
+    uint32_t service_budget_ms;
 } AiusRuntimeBudget;
 
 typedef struct {
@@ -2119,16 +2120,61 @@ bool aius_runtime_epoch(
     bool recovery_safe);
 ```
 
+The immutable descriptor table is literal:
+
+| Checkpoint constant | `max_calls` | `max_rx_bytes` | `max_tx_bytes` | `service_budget_ms` |
+|---|---:|---:|---:|---:|
+| `AIUS_BOOT_CHECKPOINT_RESET_CAPTURE` | 2 | 0 | 0 | 250 |
+| `AIUS_BOOT_CHECKPOINT_USB_RX` | 64 | 64 | 0 | 0 |
+| `AIUS_BOOT_CHECKPOINT_USB_TX` | 1 | 0 | 64 | 500 |
+| `AIUS_BOOT_CHECKPOINT_METRICS` | 1 | 0 | 0 | 0 |
+| `AIUS_BOOT_CHECKPOINT_NETWORK` | 1 | 0 | 0 | 0 |
+| `AIUS_BOOT_CHECKPOINT_HTTP` | 1 | 256 | 512 | 0 |
+| `AIUS_BOOT_CHECKPOINT_UDP` | 1 | 532 | 532 | 2 |
+| `AIUS_BOOT_CHECKPOINT_REPLAY` | 1 | 2048 | 0 | 0 |
+| `AIUS_BOOT_CHECKPOINT_SD` | 1 | 512 | 512 | 0 |
+| `AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE` | 0 | 0 | 0 | 0 |
+
+`service_budget_ms` is a relative per-call service interval supplied to the
+service, never an absolute timestamp and never measured by the scheduler. Zero
+means no scheduler-supplied interval. DHCP/backoff, HTTP inactivity, SD
+inactivity, and the watchdog remain owned by their portable service ABIs; the
+500 ms USB value is the already-committed acknowledgement interval. UDP's 532
+bytes are the 16-byte header, 512-byte maximum payload, and 4-byte CRC.
+`aius_runtime_budget()` returns the same stable pointer for a valid checkpoint
+for the process lifetime and `NULL` for `10..UINT16_MAX`.
+
 `aius_runtime_epoch()` invokes the normative checkpoint table in order. Before
 each service it calls `checkpoint()`. In normal mode it calls all nine services
 then records `EPOCH_COMPLETE` and feeds once. In recovery-safe mode it calls
 only bounded USB RX/TX, records `EPOCH_COMPLETE`, and feeds once. A service
 returning false ends the epoch without feed; the next watchdog reset identifies
-that checkpoint. `aius_runtime_budget()` returns immutable compile-time
-descriptors matching every table row; tests compare the full mapping. Host
-tests assert exact order, construction-only setup
-contract, one feed, no feed on early return, safe-mode selection, and isolated
-network-generation restart.
+that checkpoint.
+
+The scheduler is stateless: it has no init, construction, generation, counter,
+or storage authority. It supplies immutable budgets and enforces only
+order, mode selection, and feed eligibility; Phase 12 services enforce calls
+and bytes. At entry it copies the complete `AiusRuntimeOps` value. `ops == NULL`
+or any null `service`, `checkpoint`, or `feed_watchdog` callback returns false
+before any callback. A null `context` is valid and forwarded unchanged.
+Callbacks may mutate the original ops storage, including when context aliases
+it, without changing the entry snapshot. Callback re-entry into
+`aius_runtime_epoch()` with the same ops/context is a caller precondition
+violation.
+
+Normal trace is checkpoints `0..8`, each immediately followed by one service,
+then checkpoint `9`, then one feed. Recovery-safe trace is checkpoint/service
+`1`, checkpoint/service `2`, checkpoint `9`, feed. A false service ends the
+trace immediately: no later checkpoint, service, epoch-complete checkpoint, or
+feed. Return true means the complete trace ran and the void feed callback was
+invoked; it does not claim a hardware feed result.
+
+The source-blind oracle asserts 10 descriptor rows and all 65,526 invalid
+selectors; two complete traces with event counts `20` and `6`; 11 failure
+traces with normal lengths `2,4,...,18` and safe lengths `2,4`; 10 ops-validity
+rows covering null ops, every callback-presence combination, and null context;
+and two ops/context alias-mutation rows. Every registry rejects duplicate keys
+and asserts its exact count.
 
 ## Optical target-composition ABI
 
@@ -2447,6 +2493,9 @@ network/runtime counters and performs no platform call. Checkpoint and feed
 otherwise forward only to the platform callbacks. Native fakes
 assert each callback, exact budget, retained input/output flag transition, and
 failure short-circuit.
+`completed_epochs` increments saturating at `UINT32_MAX` only when
+`aius_runtime_epoch()` returns true after invoking the sole feed callback.
+Invalid, incomplete, or service-failed epochs do not increment it.
 `USB_RX` is the explicit exception to
 the one-adapter-event service rule. While connected, it performs at most the
 lesser of 64 one-byte CDC read attempts and available space in the retained
@@ -2936,15 +2985,18 @@ unit: component-behind-interface
 seams: [aius_runtime_epoch, AiusRuntimeOps, boot checkpoints]
 contract-artifact: spec-only
 dependencies: [phase-1, phase-2]
-outcome: "One portable epoch enforces service order, quotas, checkpoints, and feed eligibility."
+outcome: "One portable epoch supplies budgets and enforces order, selection, checkpoints, and feed eligibility."
 acceptance:
   - immutable budgets exactly match the normative table
   - normal and recovery-safe service order and call counts are exact
   - early return records the failing checkpoint and never feeds
 fan-out:
-  - name: agent-runtime-scheduler
+  - name: agent-runtime-scheduler-engine
     owned-paths:
       - firmware/lib/aius_runtime/
+      - firmware/platformio.ini
+  - name: agent-runtime-scheduler-independent-oracle
+    owned-paths:
       - firmware/test/runtime/
       - firmware/scripts/test.sh
 review-intensity: active
@@ -2952,13 +3004,17 @@ commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite runtime
   buildable:
-    - teensy41-optical
+    - firmware/scripts/build.sh teensy41-optical
   parent-commit: "feat(aius): add deterministic runtime epochs"
 ```
 
-Prove exact service order, construction-only setup contract, watchdog
-eligibility, early-return behaviour, recovery-safe selection, and generation
-restart isolation.
+Run the slices sequentially. The engine slice lands the reviewed public header,
+stateless scheduler, and explicit optical source/include wiring. After the
+parent verifies the header, a fresh source-blind oracle reads only the committed
+contract and public header, then implements the exact registries and runner
+registration without reading the scheduler source. Prove service order,
+watchdog eligibility, early-return behaviour, and recovery-safe selection;
+construction and network-generation behavior remain in their owning phases.
 
 ### Phase 9 — Status schema compatibility
 
