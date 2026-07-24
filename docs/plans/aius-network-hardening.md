@@ -731,6 +731,10 @@ typedef enum {
     AIUS_SD_PHASE_INSTALL_BACKUP,
     AIUS_SD_PHASE_INSTALL_RENAME,
     AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP,
+    AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
+    AIUS_SD_PHASE_INSTALL_PUBLISH_SIZE,
+    AIUS_SD_PHASE_INSTALL_PUBLISH_READ,
+    AIUS_SD_PHASE_INSTALL_PUBLISH_CLOSE,
     AIUS_SD_PHASE_INSTALL_PUBLISH,
     AIUS_SD_PHASE_ROLLBACK,
     AIUS_SD_PHASE_CLEANUP_CLOSE,
@@ -947,9 +951,9 @@ sequence is:
 | `PROBE` | `MEDIA_PRESENT → BOOL`, then `COMPLETE`; result is `PROBE` with the returned presence. `false` is a successful absent-media result. |
 | `CONFIG_LOAD` | `OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG → COMPLETE`. Target is required. Size must be `1..AIUS_CONFIG_MAX_JSON_BYTES` and fit the caller buffer. Positive partial reads accumulate contiguously until the declared size. `PUBLISH_CONFIG` borrows the complete buffer until its `OK`/`FAULT` event. Missing/open failure, empty input, oversize input, or early zero bytes fail after one close if opened. Result is `BYTES` with the published byte count. |
 | `USAGE_REFRESH` | `TOTAL_SIZE → SIZE`, then `USED_SIZE → SIZE`, then `COMPLETE`. Result is `USAGE` with both 64-bit values; `used > total` is `PROTOCOL`. |
-| `UPLOAD/REPLACE` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_WRITE_TRUNCATE(temp)`; accept and write exactly `total` new bytes; `CLOSE`; then run the install sequence below. Zero-length replacement is valid and still creates/truncates, closes, and installs an empty file. |
+| `UPLOAD/REPLACE` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_WRITE_TRUNCATE(temp)`; accept and write exactly `total` new bytes; `CLOSE`; then run the install sequence below. Zero-length replacement is valid only when `publish_config == false` and still creates/truncates, closes, and installs an empty file. |
 | `UPLOAD/APPEND_PART` | Emit parent `MKDIR` actions for `target`; `OPEN_READ(target) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(target)`; accept and write exactly `total`; `CLOSE`; `COMPLETE`. `target` is the durable part path. It is never promoted, renamed, or removed by failure/cancellation. |
-| `UPLOAD/FINALIZE_PART` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. |
+| `UPLOAD/FINALIZE_PART` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. Config publication is valid only when the final `initial_offset + total` is within the config limit. |
 | `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. After size capture, `initial_offset > captured_size` is `RANGE`. If `total == 0`, set `end_offset = captured_size`; otherwise require checked `initial_offset + total <= captured_size` or fail `RANGE`, then set that sum as `end_offset`. Result is `BYTES` with acknowledged output bytes. |
 | `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. After size capture, `initial_offset > captured_size` is `RANGE`; otherwise set `end_offset = initial_offset + min(total, captured_size - initial_offset)`. `initial_offset == captured_size` is a successful zero-byte refill. |
 | `DELETE` | `REMOVE(target) → OK`, then `COMPLETE`. Adapter `REMOVE` is idempotent: already absent and removed are both `OK`. |
@@ -962,9 +966,9 @@ Request fields are not implicit:
 | `CONFIG_LOAD` | must be zero | must be zero | true / required non-null constant |
 | `DOWNLOAD` | zero means through captured EOF; positive is exact length | `0..INT64_MAX` | false / required non-null constant |
 | `REPLAY_REFILL` | required `1..INT64_MAX` maximum | `0..INT64_MAX` | false / null |
-| `UPLOAD/REPLACE` | `0..INT64_MAX`; zero is valid | must be zero | optional; content type is required iff true |
+| `UPLOAD/REPLACE` | `0..INT64_MAX`; zero is valid only without publication | must be zero | optional; if true, total must be `1..AIUS_CONFIG_MAX_JSON_BYTES`, capacity at least that limit, and content type non-null |
 | `UPLOAD/APPEND_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | false / null |
-| `UPLOAD/FINALIZE_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | optional; content type is required iff true |
+| `UPLOAD/FINALIZE_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | optional; if true, checked final size must be `1..AIUS_CONFIG_MAX_JSON_BYTES`, capacity at least that limit, and content type non-null |
 
 Non-upload jobs require `install_mode == REPLACE`; any other value is
 `INVALID_REQUEST`. A non-null content type where the table requires null is
@@ -1080,6 +1084,9 @@ while bytes remain is `SHORT_IO`; bytes beyond the requested length are
 Positive short progress is valid. `WRITE` advances only the acknowledged
 prefix and re-emits only the unwritten suffix. No job emits a read after its
 captured byte target reaches zero, so early zero/EOF is always a fault.
+During the explicit post-commit publication reread, open/size/read faults map
+to `PUBLISH` instead of their ordinary pre-commit categories; its close fault
+maps to `CLEANUP`.
 
 `NEED_INPUT`, `COMPLETE`, and `FAIL` are uncorrelated one-shot application
 notifications and do not await an event. `NEED_INPUT` is emitted once per
@@ -1121,7 +1128,7 @@ File growth is ignored after `FILE_SIZE`; shrinkage is detected as short I/O.
 |---|---|
 | `EXISTS(target) == false` | Skip backup and attempt `RENAME(temp,target)`. |
 | `EXISTS(target) == true` | `REMOVE(backup)` idempotently, then `RENAME(target,backup)`. Backup-rename failure leaves target authoritative and never attempts install. |
-| Install succeeds | Target is authoritative and the commit point is crossed. Later cancellation is ignored. Attempt backup removal if moved, then optional publish. |
+| Install succeeds | Target is authoritative and the commit point is crossed. Later cancellation is ignored. Attempt backup removal if moved. If publication is requested, run the post-commit reread sequence below before `PUBLISH_CONFIG`. |
 | Install fails without backup | Target remains absent and temp/part is preserved; emit `FAIL/INSTALL`. |
 | Install fails after backup | Attempt `RENAME(backup,target)` exactly once. Success restores target and preserves temp/part, then fails `INSTALL`. Failure preserves backup and temp/part and fails `ROLLBACK`. |
 | Backup removal fails after commit | Target remains authoritative. Optional publish still runs; terminal result is `FAIL/CLEANUP` with the driver fault. |
@@ -1130,6 +1137,15 @@ File growth is ignored after `FILE_SIZE`; shrinkage is detected as short I/O.
 If both post-commit backup removal and publication fail, `CLEANUP` wins and
 retains the backup-removal driver fault; publication is still attempted but
 does not replace the earlier higher-precedence failure.
+
+Post-commit upload publication never borrows streamed upload history. It runs
+`OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG`. The captured
+size must equal the installed final size and be
+`1..AIUS_CONFIG_MAX_JSON_BYTES`; `config_bytes` starts at zero, partial reads
+accumulate into `buffer + config_bytes`, and publication borrows exactly those
+complete bytes. Open/size/read/range failure records `PUBLISH`; close failure
+records higher-precedence `CLEANUP`. Because commit already crossed, no
+publication reread failure rolls the installed target back.
 
 Disposable `REPLACE` temp is removed once on pre-install ordinary failure,
 timeout, or cancellation. It is preserved after an install/rollback failure
@@ -2466,4 +2482,7 @@ pushes.
   `end_offset`; download/refill now derive it after file-size capture and fail
   out-of-file requests with the stable `RANGE` fault. The fresh recheck passed;
   Phase 5 is authorized for engine dispatch followed by the source-blind
-  oracle slice.
+  oracle slice. The first engine dispatch stopped before write because an
+  unbounded streamed upload could not supply a complete `PUBLISH_CONFIG`
+  buffer; publishing uploads are now config-sized and use an explicit
+  post-commit reread before publication.
