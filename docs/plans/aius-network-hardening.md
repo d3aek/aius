@@ -939,7 +939,12 @@ are no-ops; `supply(NULL, ...)` returns false; `result(NULL)` returns null.
 non-null action to `NONE` before any validation; a null job then returns, while
 a null action for a live job records `PROTOCOL` and follows authority-safe
 cleanup. `init()` may store an invalid buffer/capacity, but the next start
-rejects it with `CAPACITY`.
+rejects it with `CAPACITY`. An otherwise valid authority-free start rejects
+with terminal `OVERFLOW` and emits no correlated action when
+`next_action_id > UINT64_MAX - 262` or IDs are exhausted. Equality is accepted:
+`BEGIN` may consume `UINT64_MAX - 262`; after its `OK`, the next non-reserved
+action detects the boundary and fails before any path mutation or file
+authority.
 
 Phase 5 adds an unused portable module. It does not move or claim the
 synchronous `optical_main.cpp` SD calls; the Teensy adapter and runtime cutover
@@ -957,8 +962,9 @@ required path, and selects `PREPARE`. A rejected start selects `FAILED` with
 the job.
 
 Every accepted job first emits `BEGIN`. The application acknowledges it with
-`OK`; `FAULT` fails the job. After that common edge, the normative per-kind
-sequence is:
+`OK`; `FAULT` fails the job directly without close, rollback, existence,
+remove, or any other cleanup action because per-job storage initialization
+never succeeded. After that common edge, the normative per-kind sequence is:
 
 | Job/mode | Required sequence and completion result |
 |---|---|
@@ -1116,8 +1122,10 @@ During the explicit post-commit publication reread, open/size/read faults map
 to `PUBLISH` instead of their ordinary pre-commit categories; its close fault
 maps to `CLEANUP`.
 
-Every idempotent filesystem mutation is decomposed into a correlated existence
-observation followed by at most one mutation:
+Every existence-sensitive path mutation (`MKDIR` or `REMOVE`) is decomposed
+into a correlated existence observation followed by at most one mutation.
+Handle-authority operations `TRUNCATE(0)` and `CLOSE` are explicitly outside
+this path-idempotency rule:
 
 | `existence_purpose` | `BOOL false` continuation | `BOOL true` continuation |
 |---|---|---|
@@ -3307,8 +3315,10 @@ and strengthen the existing SD registry for every existence purpose, both bool
 branches, malformed correlations, cancellation/deadline precedence, and the
 write-begin/truncate authority edge. It also proves the exact 262-ID reserve
 with the worst-case one-byte post-commit publication tail, the just-below
-boundary abort before commit, cleanup use of the reserve, `UINT64_MAX`
-saturation, and no ID reuse. After the parent verifies that header,
+boundary abort before commit, authority-free start rejection above the
+threshold, equality acceptance followed by pre-mutation overflow, BEGIN fault
+with zero cleanup actions, cleanup use of the reserve, `UINT64_MAX` saturation,
+and no ID reuse. After the parent verifies that header,
 the adapter slice implements the fixed C++ ABI and adds
 `aius_sd_teensy.cpp` to the optical PlatformIO source filter without editing
 `optical_main.cpp`. Finally a fresh adapter-source-blind oracle compiles the
