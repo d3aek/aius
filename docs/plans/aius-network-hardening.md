@@ -1950,9 +1950,10 @@ void aius_usb_runtime_step(
 
 The caller owns RX and response buffers. The response buffer must be non-null,
 with capacity `48..320`. Invalid initialization leaves `valid = false`; later
-steps produce `NONE`. A null runtime is ignored. A null action makes `step()` a
-pure no-op without validation, counters, deadline tests, or authority changes.
-A non-null action is always fully initialized to `NONE`.
+steps produce `NONE`. Step prologue order is exact: if `action == NULL`, return
+without touching any object; otherwise initialize the action fully to `NONE`;
+then if `runtime == NULL || !runtime->valid`, return; only then validate RX and
+mutate counters, deadlines, or authority.
 The step consumes at most the first 64 RX bytes, offers at most 64 TX bytes
 within `tx_capacity`, and returns at most one action.
 
@@ -1975,7 +1976,9 @@ within `tx_capacity`, and returns at most one action.
   `DISPATCH`. A missing, duplicate, or out-of-state response is a protocol
   fault. `protocol_faults` saturates at `UINT32_MAX`. Success has
   `error = NONE`, `verb != NULL`, `verb_length` in `1..10`, a case-sensitive
-  canonical verb matching `PROTOCOL`, `ID`, `AUTH`, or `BOOTLOADER`, and a
+  canonical verb matching the pending command exactly:
+  `PROTOCOL→PROTOCOL`, `ID→ID`, `AUTH→AUTH`, or
+  `BOOTLOADER→BOOTLOADER`, and a
   printable-ASCII payload of at most 256 bytes with `payload == NULL` exactly
   when its length is zero. `BOOTLOADER` success requires zero payload; the
   runtime alone appends `entering`. Error responses have an enum in
@@ -1983,6 +1986,7 @@ within `tx_capacity`, and returns at most one action.
   uses only explicit lengths; the legacy C-string formatter remains solely for
   the pre-Phase-14 adapter. Invalid application fields or formatting overflow
   select the exact fixed `AIUS/1 ERR <request-id> INTERNAL error\n` response.
+  Application verb and payload spans must not overlap the response buffer.
   Parser errors use request ID zero. The minimum response capacity makes that
   response and the fixed bootloader acknowledgement fit.
 - TX requests one write of at most 64 bytes per epoch. Zero capacity preserves
@@ -2020,33 +2024,51 @@ correlation, deadline, authorization, and emission field.
 
 The correlated transition matrix is normative:
 
-| Entry authority | Input | Authority/post-state |
-|---|---|---|
-| `DISPATCH` | valid normal/error response | format response; enter `TX` |
-| `DISPATCH` | valid bootloader success | format fixed acknowledgement; authorize and enter `TX` |
-| `DISPATCH` | missing/invalid response | increment once; format `INTERNAL`; enter `TX` |
-| no dispatch | application response present | increment once; ignore response |
-| write outstanding | valid partial `PROGRESS` | consume correlation; advance accepted bytes; offer at most one replacement |
-| write outstanding | valid full `PROGRESS` | consume correlation; normal response enters `IDLE`; bootloader enters |
-| write outstanding | valid `WOULD_BLOCK` | consume correlation; preserve offset; offer at most one replacement |
-| write outstanding | valid `CLOSED`/`FAULT` | consume correlation; normal response enters `IDLE`; bootloader enters |
-| write outstanding | missing/malformed result | increment once and consume correlation; normal response enters `IDLE`; bootloader retains authorization and may offer one replacement |
-| no write outstanding | TX event present | increment once; do not advance offset |
+| ID | Entry authority | Input | Authority/post-state |
+|---|---|---|---|
+| `T01` | `IDLE` | disconnected | reset incomplete parser; consume no RX |
+| `T02` | `IDLE` | connected, no RX | remain `IDLE` |
+| `T03` | `IDLE` | incomplete RX | retain parser prefix |
+| `T04` | `IDLE` | complete command | copy request; emit `DISPATCH` |
+| `T05` | `IDLE` | parser terminal error | format request-ID-zero error; enter `TX` |
+| `T06` | `DISPATCH` | valid normal success | format response; enter `TX` |
+| `T07` | `DISPATCH` | valid application error | format response; enter `TX` |
+| `T08` | `DISPATCH` | valid bootloader success | format fixed acknowledgement; authorize and enter `TX` |
+| `T09` | `DISPATCH` | invalid response | increment once; format `INTERNAL`; enter `TX` |
+| `T10` | `DISPATCH` | missing response | increment once; format `INTERNAL`; enter `TX` |
+| `T11` | no dispatch | application response present | increment once; ignore response |
+| `T12` | `TX`, no write | zero capacity | retain offset; emit `NONE` |
+| `T13` | `TX`, no write | nonfinal capacity | emit one retained `WRITE` slice |
+| `T14` | `TX`, no write | final normal slice | emit one retained `WRITE` slice |
+| `T15` | authorized `TX`, no write | final bootloader slice | emit retained `WRITE`; enter `ACK_PENDING` |
+| `T16` | write outstanding | valid partial `PROGRESS` | consume correlation; advance accepted bytes; offer at most one replacement |
+| `T17` | write outstanding | valid full nonfinal `PROGRESS` | consume correlation; advance; remain `TX`; offer at most one next slice |
+| `T18` | write outstanding | valid full final normal `PROGRESS` | consume correlation; advance; enter `IDLE` |
+| `T19` | write outstanding | valid full final bootloader `PROGRESS` | consume correlation; advance; enter bootloader |
+| `T20` | write outstanding | valid `WOULD_BLOCK` | consume correlation; preserve offset; offer at most one replacement |
+| `T21` | write outstanding | valid `CLOSED`/`FAULT` | consume correlation; normal enters `IDLE`; authorized bootloader enters |
+| `T22` | write outstanding | missing/malformed result, normal | increment once; consume correlation; enter `IDLE` |
+| `T23` | write outstanding | missing/malformed result, bootloader | increment once; consume correlation; retain authorization; offer at most one replacement |
+| `T24` | terminal bootloader | any input after one-shot emission | emit `NONE`; retain terminal state |
 
 Each independently invalid application, TX, or RX input channel increments the
 counter exactly once. Only the state-authoritative channel selects the
 transition; unsolicited secondary inputs cannot advance offsets or replace its
 result.
 
-The source-blind oracle is count-asserted: 22 base transition rows; 12
+The source-blind oracle implements the exact stable IDs `T01..T24`; each row
+declares entry state/authority, input presence and payload, expected fault
+delta, offsets, post-state, action, and retained authority. It rejects duplicate
+IDs and keys and asserts exactly 24 rows. It also asserts 12
 malformed/unnamed TX payload rows; 12 unsolicited/duplicate input rows; 8 RX
 quota/terminal rows covering lengths and split positions
-`0/1/63/64/65`, CR, LF suppression, and retained suffix; 18 response rows
-covering all four success verbs, all six error enums, invalid pointer/length
-pairs, printable boundaries, capacities `47/48/319/320/321`, and overflow;
-6 deadline rows cover before/equal/after with and without `millis()` wrap; and
-4 repeated disconnect/reconnect transactions. The test asserts each exact row
-count and rejects duplicate matrix keys.
+`0/1/63/64/65`, CR, LF suppression, and retained suffix; and 21 response rows:
+four exact command/verb successes, six exact application-error enums, six
+invalid pointer/length/verb/payload rows, and five capacity rows for invalid
+`47`, minimum `48`, primary overflow at `48`, maximum `320`, and invalid `321`.
+The registry further asserts 6 deadline rows covering before/equal/after with
+and without `millis()` wrap, plus 4 repeated disconnect/reconnect transactions.
+The test asserts each exact row count and rejects duplicate matrix keys.
 
 Recovery-safe mode accepts `PROTOCOL`, `ID`, `AUTH`, and `BOOTLOADER`; verified
 reflash is its only exit.
@@ -2187,6 +2209,8 @@ typedef struct {
     uint8_t http_response[AIUS_HTTP_MAX_RESPONSE];
     uint8_t sd_transfer[512];
     char usb_response[320];
+    char usb_verb[11];
+    char usb_payload[257];
     AiusCdcTeensyOps cdc;
     uint8_t usb_rx[64];
     size_t usb_rx_length;
@@ -2194,6 +2218,8 @@ typedef struct {
     AiusUsbApplicationResponse usb_application_response;
     bool usb_write_event_present;
     bool usb_application_response_present;
+    bool usb_rx_terminal;
+    uint32_t usb_last_fault;
     bool bootloader_entered;
     uint32_t completed_epochs;
 } AiusRuntimeTeensy;
@@ -2214,19 +2240,33 @@ void aius_runtime_teensy_status(
     AiusRecoveryStatus *status);
 ```
 
-Construction initializes memory only. At `USB_RX`, while connected, the target
-performs at most the lesser of 64 one-byte CDC read attempts and available
-space in the retained 64-byte staging buffer; it does not call the portable
-USB step. Disconnection clears staged RX. At `USB_TX`, it moves and clears the
+The USB application callback writes a NUL-terminated verb and payload within
+the dedicated `11`- and `257`-byte buffers. `aius_optical_usb_dispatch()`
+bounded-scans those buffers, sets the explicit lengths, and rejects missing
+terminators or a verb inconsistent with the command.
+
+Construction initializes memory only. `USB_RX` is the explicit exception to
+the one-adapter-event service rule. While connected, it performs at most the
+lesser of 64 one-byte CDC read attempts and available space in the retained
+64-byte staging buffer; it does not call the portable USB step. Only
+`PROGRESS(bytes=1, fault=0)` appends a byte. `WOULD_BLOCK(bytes=0, fault=0)`
+stops cleanly. `CLOSED(bytes=0, fault=0)` or
+`FAULT(bytes=0, fault!=0)` stops, marks the connection unavailable for that
+epoch, clears staged RX, and retains the numeric fault for diagnostics. Any
+other result is an adapter protocol fault and follows the same stop/clear
+behavior. Disconnection clears staged RX. At `USB_TX`, it moves and clears the
 prior retained application-response and write-event presence flags, samples
 the bounded `write_capacity`, then calls
 `aius_usb_runtime_step()` exactly once with staged RX, retained application
-response/write result, current connection state, and current write capacity;
+response/write result, the current connection sample combined with any
+`USB_RX` terminal result, and current write capacity;
 removes exactly `rx_consumed` bytes from staging; and handles at most one
 returned action. `DISPATCH` is invoked synchronously and its response retained
 for the next epoch. `WRITE` performs one nonblocking primitive call and retains
 its `AiusIoEvent`. Only these newly produced results set the cleared presence
-flags. `ENTER_BOOTLOADER` invokes the callback once.
+flags. If the `USB_TX` connection sample is false it clears staged RX again,
+covering loss between checkpoints. `ENTER_BOOTLOADER` invokes the callback
+once.
 
 The epoch otherwise supplies exact portable budgets, routes at most one
 adapter event/action per service, calls
@@ -2814,7 +2854,7 @@ dependencies: [phase-1, phase-4, phase-5, phase-6, phase-7, phase-8, phase-9, ph
 outcome: "Target services compose behind one construction-only, epoch-driven object."
 acceptance:
   - exact checkpoint budgets reach every service callback
-  - one adapter event or action is handled per service
+  - USB_RX handles at most 64 one-byte primitive results; every other service handles one adapter event or action
   - network teardown discards HTTP before resource cleanup
   - fake epoch covers every service result and exact call count
 fan-out:
