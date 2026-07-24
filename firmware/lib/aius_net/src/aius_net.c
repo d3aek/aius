@@ -6,6 +6,8 @@
 #define AIUS_NET_MAGIC1 0x55u
 #define AIUS_NET_MAGIC2 0x4Eu
 #define AIUS_NET_MAGIC3 0x31u
+#define AIUS_NET_LEGACY_STATUS_LEN 71u
+#define AIUS_NET_RECOVERY_STATUS_LEN 99u
 
 static void aius_net_action_none(AiusNetAction *action)
 {
@@ -77,6 +79,43 @@ size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
 	aius_net_put_u32(dst + total - AIUS_NET_CRC_LEN,
 	                 aius_net_crc32(dst, total - AIUS_NET_CRC_LEN));
 	return total;
+}
+
+size_t aius_net_status_encode(
+	uint8_t *output,
+	size_t capacity,
+	const uint8_t legacy_status[AIUS_NET_LEGACY_STATUS_LEN],
+	const AiusRecoveryStatus *recovery)
+{
+	uint8_t encoded[AIUS_NET_RECOVERY_STATUS_LEN];
+
+	if (output == NULL || legacy_status == NULL || recovery == NULL ||
+	    capacity < AIUS_NET_RECOVERY_STATUS_LEN ||
+	    legacy_status[0] != AIUS_NET_VERSION ||
+	    legacy_status[1] > 1u ||
+	    recovery->network_state < AIUS_NET_STATE_STACK_START ||
+	    recovery->network_state > AIUS_NET_STATE_RECOVERY_SAFE ||
+	    recovery->network_last_fault < AIUS_NET_FAULT_NONE ||
+	    recovery->network_last_fault > AIUS_NET_FAULT_DRIVER_PROTOCOL ||
+	    recovery->last_checkpoint > 9u)
+		return 0;
+
+	memcpy(encoded, legacy_status, AIUS_NET_LEGACY_STATUS_LEN);
+	encoded[71] = (uint8_t)recovery->network_state;
+	encoded[72] = recovery->recovery_safe ? 1u : 0u;
+	encoded[73] = (uint8_t)recovery->network_last_fault;
+	encoded[74] = (uint8_t)recovery->last_checkpoint;
+	aius_net_put_u32(encoded + 75, recovery->network_generation);
+	aius_net_put_u32(encoded + 79, recovery->boot_generation);
+	aius_net_put_u32(encoded + 83, recovery->reset_source);
+	encoded[87] = recovery->watchdog_early_resets;
+	encoded[88] = 0;
+	encoded[89] = 0;
+	encoded[90] = 0;
+	aius_net_put_u32(encoded + 91, recovery->loop_epoch);
+	aius_net_put_u32(encoded + 95, recovery->network_restarts);
+	memcpy(output, encoded, sizeof(encoded));
+	return sizeof(encoded);
 }
 
 AiusNetError aius_net_decode(const uint8_t *src, size_t len,

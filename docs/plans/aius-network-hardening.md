@@ -3096,6 +3096,7 @@ construction and network-generation behavior remain in their owning phases.
 
 ```yaml
 unit: phase-task
+status: completed
 seams: [aius_net_status_encode, parse_status]
 deferred-consumers: [put_status, HTTP status JSON, USB ID]
 contract-artifact: both
@@ -3599,3 +3600,18 @@ pushes.
   of the caller's ops storage. The focused clean-room delivery audit passed.
   `teensy41-optical` explicitly compiles the stateless scheduler, passes pinned
   NativeEthernet linked-symbol verification, and fits every memory bank.
+- Phase 9 delivery: the native `net` and Python `net-runner` suites pass
+  against the two precommitted LFS contract fixtures. The C proof byte-matches
+  the canonical 99-byte encoding and independent 71-byte prefix; exhausts
+  capacities `0..98`, invalid versions and modes, all 65,526 invalid
+  checkpoints, enum/fault domains, valid endpoints, and `UINT32_MAX` counters;
+  and proves rejection leaves output unchanged. The Python proof accepts only
+  71/99-byte payloads, exhausts protocol-representable invalid lengths,
+  validates every recovery domain and reserved byte independently, preserves
+  legacy keys/types, and maps historical mode `2` to `legacy-static`. The
+  first plan gate rejected contradictory target scope, missing fixed fixtures,
+  incomplete parser semantics, and an oversized slice; the amended,
+  fixture-backed decomposition passed a fresh plan recheck and clean-room
+  delivery audit. `teensy41-optical` compiles the portable encoder beside the
+  still-legacy target emitter, passes pinned NativeEthernet linked-symbol
+  verification, and fits every memory bank.

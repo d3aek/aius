@@ -143,11 +143,30 @@ typedef struct {
 	AiusNetFault last_fault;
 } AiusNetSupervisor;
 
+typedef struct {
+	AiusNetState network_state;
+	bool recovery_safe;
+	AiusNetFault network_last_fault;
+	uint16_t last_checkpoint;
+	uint32_t network_generation;
+	uint32_t boot_generation;
+	uint32_t reset_source;
+	uint8_t watchdog_early_resets;
+	uint32_t loop_epoch;
+	uint32_t network_restarts;
+} AiusRecoveryStatus;
+
 uint32_t aius_net_crc32(const uint8_t *data, size_t len);
 
 size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
 	                       uint16_t flags, uint32_t request_id,
 	                       const uint8_t *payload, uint16_t payload_len);
+
+size_t aius_net_status_encode(
+	uint8_t *output,
+	size_t capacity,
+	const uint8_t legacy_status[71],
+	const AiusRecoveryStatus *recovery);
 
 AiusNetError aius_net_decode(const uint8_t *src, size_t len,
 	                             AiusNetFrame *out);

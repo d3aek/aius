@@ -56,10 +56,11 @@ def decode(frame):
 
 
 def parse_status(payload):
-    if len(payload) < 23 or payload[0] != 1:
+    if len(payload) not in (71, 99) or payload[0] != 1:
         raise ValueError("unsupported status payload")
     result = {
-        "network_mode": {1: "dhcp", 2: "static-fallback"}.get(payload[1], "unknown"),
+        "network_mode": {1: "dhcp", 2: "legacy-static"}.get(
+            payload[1], "unknown"),
         "state": {1: "boot-muted", 2: "waiting-for-carrier",
                    3: "pcm-active", 4: "dts-active"}.get(payload[2], "unknown"),
         "carrier_locked": bool(payload[3] & 1),
@@ -68,33 +69,53 @@ def parse_status(payload):
         "ip": ".".join(str(x) for x in payload[12:16]),
         "mac": ":".join(f"{x:02x}" for x in payload[16:22]),
         "ntp_valid": bool(payload[22]),
+        "format": {0: "unknown", 1: "pcm", 2: "dts"}.get(
+            payload[23], "unknown"),
+        "pipeline_status": payload[24],
+        "sample_rate_hz": struct.unpack_from("<I", payload, 25)[0],
+        "pipeline_blocks": struct.unpack_from("<I", payload, 29)[0],
+        "pipeline_overruns": struct.unpack_from("<I", payload, 33)[0],
+        "test_running": bool(payload[3] & 2),
+        "eq_mode": {0: "flat", 1: "speech", 2: "bass-reduced"}.get(
+            payload[37], "unknown"),
+        "mix_mode": {0: "standard", 1: "lfe-minus10", 2: "clipfree"}.get(
+            payload[38], "unknown"),
+        "event_sequence": struct.unpack_from("<I", payload, 39)[0],
+        "event_overflows": struct.unpack_from("<I", payload, 43)[0],
+        "network_drops": struct.unpack_from("<I", payload, 47)[0],
+        "network_budget_overruns": struct.unpack_from("<I", payload, 51)[0],
+        "http_requests": struct.unpack_from("<I", payload, 55)[0],
+        "http_rejections": struct.unpack_from("<I", payload, 59)[0],
+        "http_client_drops": struct.unpack_from("<I", payload, 63)[0],
+        "http_service_overruns": struct.unpack_from("<I", payload, 67)[0],
     }
-    if len(payload) >= 37:
-        result = {
-            **result,
-            "format": {0: "unknown", 1: "pcm", 2: "dts"}.get(payload[23], "unknown"),
-            "pipeline_status": payload[24],
-            "sample_rate_hz": struct.unpack_from("<I", payload, 25)[0],
-            "pipeline_blocks": struct.unpack_from("<I", payload, 29)[0],
-            "pipeline_overruns": struct.unpack_from("<I", payload, 33)[0],
-        }
-    if len(payload) >= 38:
-        result["test_running"] = bool(payload[3] & 2)
-        result["eq_mode"] = {0: "flat", 1: "speech", 2: "bass-reduced"}.get(
-            payload[37], "unknown")
-    if len(payload) >= 39:
-        result["mix_mode"] = {0: "standard", 1: "lfe-minus10", 2: "clipfree"}.get(
-            payload[38], "unknown")
-    if len(payload) >= 55:
-        result["event_sequence"] = struct.unpack_from("<I", payload, 39)[0]
-        result["event_overflows"] = struct.unpack_from("<I", payload, 43)[0]
-        result["network_drops"] = struct.unpack_from("<I", payload, 47)[0]
-        result["network_budget_overruns"] = struct.unpack_from("<I", payload, 51)[0]
-    if len(payload) >= 71:
-        result["http_requests"] = struct.unpack_from("<I", payload, 55)[0]
-        result["http_rejections"] = struct.unpack_from("<I", payload, 59)[0]
-        result["http_client_drops"] = struct.unpack_from("<I", payload, 63)[0]
-        result["http_service_overruns"] = struct.unpack_from("<I", payload, 67)[0]
+    if len(payload) == 99:
+        network_state = payload[71]
+        recovery_safe = payload[72]
+        network_last_fault = payload[73]
+        last_checkpoint = payload[74]
+        if network_state > 5:
+            raise ValueError("invalid recovery network state")
+        if recovery_safe > 1:
+            raise ValueError("invalid recovery-safe flag")
+        if network_last_fault > 10:
+            raise ValueError("invalid recovery network fault")
+        if last_checkpoint > 9:
+            raise ValueError("invalid runtime checkpoint")
+        if any(payload[88:91]):
+            raise ValueError("invalid recovery reserved bytes")
+        result.update({
+            "network_state": network_state,
+            "recovery_safe": bool(recovery_safe),
+            "network_last_fault": network_last_fault,
+            "last_checkpoint": last_checkpoint,
+            "network_generation": struct.unpack_from("<I", payload, 75)[0],
+            "boot_generation": struct.unpack_from("<I", payload, 79)[0],
+            "reset_source": struct.unpack_from("<I", payload, 83)[0],
+            "watchdog_early_resets": payload[87],
+            "loop_epoch": struct.unpack_from("<I", payload, 91)[0],
+            "network_restarts": struct.unpack_from("<I", payload, 95)[0],
+        })
     return result
 
 
