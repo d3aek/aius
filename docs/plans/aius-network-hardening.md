@@ -513,6 +513,8 @@ Only `aius_network_teensy.cpp` may include NativeEthernet/FNET headers. The
 public header contains no vendor type:
 
 ```c
+#define AIUS_CDC_ADAPTER_PROTOCOL_FAULT UINT32_C(0x55534250)
+
 typedef struct {
     uint32_t generation;
     bool stack_started;
@@ -1949,8 +1951,10 @@ void aius_usb_runtime_step(
 ```
 
 The caller owns RX and response buffers. The response buffer must be non-null,
-with capacity `48..320`. Invalid initialization leaves `valid = false`; later
-steps produce `NONE`. Step prologue order is exact: if `action == NULL`, return
+with capacity `48..320`. Init prologue is exact: if `runtime == NULL`, return
+without touching `response`; otherwise fully reset the runtime, touch no
+response bytes, and leave `valid = false` when `response == NULL` or capacity
+is outside `48..320`. Step prologue order is exact: if `action == NULL`, return
 without touching any object; otherwise initialize the action fully to `NONE`;
 then if `runtime == NULL || !runtime->valid`, return; only then validate RX and
 mutate counters, deadlines, or authority.
@@ -1959,8 +1963,9 @@ within `tx_capacity`, and returns at most one action.
 
 - On every step, before mutation, `rx == NULL` exactly when `rx_length == 0`
   and a nonempty RX span must not overlap the response buffer. A violation
-  increments `protocol_faults` once, returns `NONE`, and consumes zero RX. RX
-  consumes at most
+  increments `protocol_faults` once, sets `rx_consumed = 0`, and suppresses RX
+  parsing only; it cannot preempt a retained application response, correlated
+  TX event, connection loss, or deadline. Valid RX consumes at most
   `min(rx_length, 64)` bytes and stops at the first parser terminal event.
   `rx_consumed` is determined by the entry state: it is the exact inclusive
   count through that terminal byte when entry state is `IDLE`, even when the
@@ -2056,10 +2061,16 @@ counter exactly once. Only the state-authoritative channel selects the
 transition; unsolicited secondary inputs cannot advance offsets or replace its
 result.
 
-The source-blind oracle implements the exact stable IDs `T01..T24`; each row
-declares entry state/authority, input presence and payload, expected fault
-delta, offsets, post-state, action, and retained authority. It rejects duplicate
-IDs and keys and asserts exactly 24 rows. It also asserts 12
+The source-blind oracle implements `T01..T24` as transition families with 36
+exact stable variant keys. `T01..T15`, `T18`, and `T19` each have one variant;
+`T16`, `T17`, and `T20` each have `.normal` and `.boot`; `T21` has
+`.normal.closed`, `.normal.fault`, `.boot.closed`, and `.boot.fault`; `T22`
+and `T23` each have `.missing` and `.malformed`; and `T24` has `.none`, `.rx`,
+`.application`, `.tx`, and `.disconnect`. Each variant fixes entry state,
+connection, capacity, time relation, authority, complete input payload,
+expected fault delta, offsets, post-state, action, and retained authority. The
+registry rejects duplicate family IDs and variant keys and asserts exactly 24
+families and 36 variants. It also asserts 12
 malformed/unnamed TX payload rows; 12 unsolicited/duplicate input rows; 8 RX
 quota/terminal rows covering lengths and split positions
 `0/1/63/64/65`, CR, LF suppression, and retained suffix; and 21 response rows:
@@ -2220,6 +2231,7 @@ typedef struct {
     bool usb_application_response_present;
     bool usb_rx_terminal;
     uint32_t usb_last_fault;
+    uint32_t usb_protocol_faults;
     bool bootloader_entered;
     uint32_t completed_epochs;
 } AiusRuntimeTeensy;
@@ -2252,9 +2264,11 @@ lesser of 64 one-byte CDC read attempts and available space in the retained
 `PROGRESS(bytes=1, fault=0)` appends a byte. `WOULD_BLOCK(bytes=0, fault=0)`
 stops cleanly. `CLOSED(bytes=0, fault=0)` or
 `FAULT(bytes=0, fault!=0)` stops, marks the connection unavailable for that
-epoch, clears staged RX, and retains the numeric fault for diagnostics. Any
-other result is an adapter protocol fault and follows the same stop/clear
-behavior. Disconnection clears staged RX. At `USB_TX`, it moves and clears the
+epoch, clears staged RX, and stores the driver fault in `usb_last_fault`.
+`CLOSED` stores zero. Any other result is an adapter protocol fault: it follows
+the same stop/clear behavior, stores `AIUS_CDC_ADAPTER_PROTOCOL_FAULT`, and
+increments saturating `usb_protocol_faults`. Disconnection clears staged RX.
+At `USB_TX`, it moves and clears the
 prior retained application-response and write-event presence flags, samples
 the bounded `write_capacity`, then calls
 `aius_usb_runtime_step()` exactly once with staged RX, retained application
@@ -2858,12 +2872,14 @@ acceptance:
   - network teardown discards HTTP before resource cleanup
   - fake epoch covers every service result and exact call count
 fan-out:
-  - name: agent-teensy-runtime-services
+  - name: agent-teensy-runtime-composition
     owned-paths:
       - firmware/src/aius_runtime_teensy.cpp
       - firmware/src/aius_runtime_teensy.h
-      - firmware/test/runtime-target/
       - firmware/platformio.ini
+  - name: agent-teensy-runtime-independent-oracle
+    owned-paths:
+      - firmware/test/runtime-target/
       - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
@@ -2873,6 +2889,12 @@ commit-checkpoint:
     - teensy41-optical
   parent-commit: "feat(aius): compose bounded Teensy runtime services"
 ```
+
+Run the slices sequentially. The composition slice delivers the reviewed public
+header, target service object, and build wiring. After the parent verifies the
+header, a fresh source-blind oracle reads only the committed contract and public
+headers, then implements fake-service coverage and runner registration without
+reading the composition source.
 
 ### Phase 13 — Teensy retained watchdog adapter
 
