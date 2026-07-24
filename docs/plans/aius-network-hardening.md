@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-07-23
+updated: 2026-07-24
 toc: true
 ---
 
@@ -16,6 +16,35 @@ retry behaviour without proving that initialization, socket ownership, USB
 recovery, or watchdog recovery is bounded. This plan replaces those claims with
 explicit portable state machines, one-shot target adapters, and evidence that
 exercises the deployed firmware.
+
+## Execution handoff — 2026-07-24
+
+Network hardening is paused. Do not run another clean-room audit or produce the
+ten-image production/fault receipt matrix unless the user explicitly resumes
+this plan. The active critical path has moved to
+[`aius-dsp-config-api.md`](aius-dsp-config-api.md): validate the DSP signal path
+with the committed DTS sample vectors, then complete and test the UI control
+surface.
+
+Delivered and pushed work remains valid through Phases 1–10 and the Phase 13
+retained-watchdog implementation baseline (`8916df890`). Phases 11–12 and
+14–18 remain unexecuted. Phase 13 is not closed and this plan must not be
+reported as shipped.
+
+The stopped Phase 13 identity-correction working set is intentionally left
+uncommitted in:
+
+- `firmware/scripts/build.sh`;
+- `firmware/scripts/build_metadata.py`;
+- `firmware/test/build-metadata/test_build_evidence.py`;
+- `firmware/test/build-metadata/test_build_metadata.py`.
+
+Focused proofs passed for exact receipt validation, production/fault selector
+coverage, independent environment identity, wrapper failure behavior, and
+ordinary `tee` capture failure. The registered build-metadata suite passed
+before the final receipt, independent-oracle, and `tee` edits, so it is not
+current proof for this stopped working set. The hostile-build-host snapshot
+finding is outside scope under the trusted build-host boundary below.
 
 ## Trusted fixture boundary
 
