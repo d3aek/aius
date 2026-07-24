@@ -365,6 +365,14 @@ intermediate phase builds are not acceptance evidence.
 
 `aius_boot` is independent of Teensy registers and retained storage.
 
+`AIUS_BOOT_MAGIC` is numeric `0x41495542`. Ledger CRC is
+CRC-32/ISO-HDLC over exactly 24 bytes: every field before `crc32`, serialized
+in declaration order and little-endian for 16/32-bit values. Validity requires
+that CRC, magic, version 1, `last_checkpoint` in `0..9`, mode in `0..1`, and
+zero reserved bits. Mutation functions are no-ops for null or invalid ledgers;
+checkpoint values outside `0..9` are also no-ops. They never recompute a CRC
+that would bless corrupted retained state.
+
 ```c
 typedef enum {
     AIUS_BOOT_MODE_NORMAL = 0,
@@ -1418,6 +1426,7 @@ target lifecycle code in this phase.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [aius_boot_init, aius_boot_record_checkpoint, aius_boot_mark_healthy]
 contract-artifact: spec-only
 dependencies: []
@@ -2007,3 +2016,7 @@ pushes.
   delivery audit rejected ambiguous invalidated-generation wording and a
   mirror-image oracle; the amended live-resource contract and independent
   table/model proof passed the clean-room re-audit.
+- Phase 2: native `boot` suite and `teensy41-optical` build pass. The first
+  delivery audit rejected a self-confirming CRC test and missing invalid-state
+  branches; the fixed 24-byte known-answer vector and complete public-interface
+  proof passed the clean-room re-audit.
