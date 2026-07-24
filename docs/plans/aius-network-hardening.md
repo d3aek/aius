@@ -1040,9 +1040,17 @@ One correlated action may be outstanding. Emission assigns a nonzero,
 monotonically incremented 64-bit `action_id`, records its kind/id, and
 initializes the returned action fully. IDs are job-object lifetime values:
 `init()` starts at one and `start()` never resets or reuses them. Before a
-normal emission would consume an id above `UINT64_MAX - 3`, the job records
-`OVERFLOW`; the final three ids are reserved for close, rollback, and temp or
-backup cleanup. Consuming `UINT64_MAX` sets `action_ids_exhausted` and leaves
+non-reserved emission would consume an id above `UINT64_MAX - 262`, the job
+records `OVERFLOW`. The final 262 IDs are reserved for authority-safe close,
+rollback, existence/removal cleanup, and mandatory post-commit publication.
+The bound is exact: with a moved backup and a 256-byte config whose reads each
+make one-byte progress, post-commit work needs backup `EXISTS`/`REMOVE`, open,
+size, 256 reads, close, and publish, totaling 262 correlated actions. All
+post-commit publication actions and cleanup/rollback actions are emitted from
+this reserve; ordinary begin/probe/path preparation/open/transfer/install work
+is not. Thus exhaustion is detected before the install commit point unless
+the complete worst-case mandatory tail can still finish. Consuming
+`UINT64_MAX` sets `action_ids_exhausted` and leaves
 `next_action_id` saturated at `UINT64_MAX`; it never increments, wraps, or
 reuses zero. Terminal notifications are uncorrelated. Once exhausted, later
 `start()` calls emit terminal `FAIL/OVERFLOW` without correlated work; only a
@@ -3296,7 +3304,10 @@ Run all four slices sequentially. First amend the portable engine, then have a
 fresh source-blind oracle read only the committed contract and public header
 and strengthen the existing SD registry for every existence purpose, both bool
 branches, malformed correlations, cancellation/deadline precedence, and the
-write-begin/truncate authority edge. After the parent verifies that header,
+write-begin/truncate authority edge. It also proves the exact 262-ID reserve
+with the worst-case one-byte post-commit publication tail, the just-below
+boundary abort before commit, cleanup use of the reserve, `UINT64_MAX`
+saturation, and no ID reuse. After the parent verifies that header,
 the adapter slice implements the fixed C++ ABI and adds
 `aius_sd_teensy.cpp` to the optical PlatformIO source filter without editing
 `optical_main.cpp`. Finally a fresh adapter-source-blind oracle compiles the
