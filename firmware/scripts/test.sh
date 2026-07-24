@@ -219,11 +219,23 @@ net-runner)
 	;;
 http)
 	http_out="$build_dir/http"
-	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_http/include" \
+	http_inc=("-I$fw_root/lib/aius_http/include" \
+		"-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/lib/aius_sd/include" \
+		"-I$fw_root/lib/aius_config/include")
+	"$cc" "${cflags[@]}" "${http_inc[@]}" \
 		"$fw_root/test/http/test_http.c" \
 		"$fw_root/lib/aius_http/src/aius_http.c" \
 		-o "$http_out"
 	"$http_out"
+	http_transaction_out="$build_dir/http-transaction"
+	"$cc" "${cflags[@]}" "${http_inc[@]}" \
+		"$fw_root/test/http/test_http_transaction.c" \
+		"$fw_root/lib/aius_http/src/aius_http.c" \
+		"$fw_root/lib/aius_http/src/aius_http_transaction.c" \
+		"$fw_root/lib/aius_sd/src/aius_sd.c" \
+		-o "$http_transaction_out"
+	"$http_transaction_out"
 	;;
 usb-control)
 	usb_out="$build_dir/usb-control"

@@ -38,6 +38,45 @@ static int decimal_u32(const uint8_t *value, size_t length, uint32_t *result)
 	return 1;
 }
 
+static int decimal_u64(const uint8_t *value, size_t length, uint64_t *result)
+{
+	uint64_t parsed = 0;
+	if (length == 0)
+		return 0;
+	for (size_t i = 0; i < length; i++) {
+		uint64_t digit;
+		if (value[i] < '0' || value[i] > '9')
+			return 0;
+		digit = (uint64_t)(value[i] - '0');
+		if (parsed > (UINT64_MAX - digit) / UINT64_C(10))
+			return 0;
+		parsed = parsed * UINT64_C(10) + digit;
+	}
+	*result = parsed;
+	return 1;
+}
+
+static int ascii_equal_fold(uint8_t left, char right)
+{
+	if (left >= 'A' && left <= 'Z')
+		left = (uint8_t)(left + ('a' - 'A'));
+	if (right >= 'A' && right <= 'Z')
+		right = (char)(right + ('a' - 'A'));
+	return left == (uint8_t)right;
+}
+
+static int header_name_equals(const uint8_t *line, size_t length,
+	                          const char *name)
+{
+	size_t name_length = strlen(name);
+	if (length != name_length)
+		return 0;
+	for (size_t i = 0; i < length; i++)
+		if (!ascii_equal_fold(line[i], name[i]))
+			return 0;
+	return 1;
+}
+
 static int token_equals(const uint8_t *value, size_t length, const char *token)
 {
 	size_t token_length = strlen(token);
@@ -134,6 +173,45 @@ static AiusHttpResult extract_content_range(const uint8_t *headers, size_t lengt
 	return AIUS_HTTP_OK;
 }
 
+static AiusHttpResult extract_framing(const uint8_t *headers, size_t length,
+	                                  AiusHttpRequest *request)
+{
+	const uint8_t *cursor = headers;
+	const uint8_t *end = headers + length;
+
+	while (cursor < end) {
+		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor),
+		                                     "\r\n", 2);
+		const uint8_t *colon;
+		size_t name_length;
+		if (line_end == NULL)
+			line_end = end;
+		colon = (const uint8_t *)memchr(cursor, ':',
+		                              (size_t)(line_end - cursor));
+		if (colon != NULL) {
+			name_length = (size_t)(colon - cursor);
+			if (header_name_equals(cursor, name_length, "Transfer-Encoding"))
+				return AIUS_HTTP_ERR_MALFORMED;
+			if (header_name_equals(cursor, name_length, "Content-Length")) {
+				const uint8_t *value = colon + 1;
+				if (request->has_content_length)
+					return AIUS_HTTP_ERR_MALFORMED;
+				if (value == line_end || *value != ' ')
+					return AIUS_HTTP_ERR_MALFORMED;
+				value++;
+				if (!decimal_u64(value, (size_t)(line_end - value),
+				                 &request->content_length))
+					return AIUS_HTTP_ERR_MALFORMED;
+				request->has_content_length = true;
+			}
+		}
+		if (line_end == end)
+			break;
+		cursor = line_end + 2;
+	}
+	return AIUS_HTTP_OK;
+}
+
 static int json_value(const uint8_t *body, size_t length, const char *key,
 	                    const char *value)
 {
@@ -186,6 +264,13 @@ static AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
 	return AIUS_HTTP_OK;
 }
 
+static int is_streamed_request(const AiusHttpRequest *request)
+{
+	return request->method == AIUS_HTTP_PUT &&
+	       (request->route == AIUS_HTTP_ROUTE_SD_FILE ||
+	        request->route == AIUS_HTTP_ROUTE_SD_REPLAY);
+}
+
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	                               AiusHttpRequest *request)
 {
@@ -204,7 +289,7 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_MALFORMED;
 	const uint8_t *space2 = (const uint8_t *)memchr(space1 + 1, ' ',
 		request_line_length - (size_t)(space1 + 1 - data));
-	if (space2 == NULL ||
+	if (space2 == NULL || (size_t)(line_end - (space2 + 1)) != 8u ||
 	    (memcmp(space2 + 1, "HTTP/1.0", 8) != 0 &&
 	     memcmp(space2 + 1, "HTTP/1.1", 8) != 0))
 		return AIUS_HTTP_ERR_MALFORMED;
@@ -228,6 +313,10 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		(size_t)(header_end - header_start);
 	if (header_length > AIUS_HTTP_MAX_HEADERS)
 		return AIUS_HTTP_ERR_TOO_LARGE;
+	request->header_length = (size_t)(header_end - data) + 4u;
+	AiusHttpResult framing_result = extract_framing(header_start, header_length, request);
+	if (framing_result != AIUS_HTTP_OK)
+		return framing_result;
 	AiusHttpResult auth_result = extract_sd_auth(header_start, header_length, request);
 	if (auth_result != AIUS_HTTP_OK)
 		return auth_result;
@@ -236,9 +325,14 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return range_result;
 	const uint8_t *body = header_end + 4;
 	size_t body_length = length - (size_t)(body - data);
-	if (body_length > AIUS_HTTP_MAX_BODY)
-		return AIUS_HTTP_ERR_TOO_LARGE;
-	request->has_body = body_length != 0;
+	request->body = body;
+	request->body_length = body_length;
+	request->has_body = request->content_length != 0u;
+	if (!request->has_content_length && body_length != 0u)
+		return AIUS_HTTP_ERR_MALFORMED;
+	if ((uint64_t)body_length > request->content_length)
+		return AIUS_HTTP_ERR_MALFORMED;
+	request->body_complete = (uint64_t)body_length == request->content_length;
 
 	request->route = route_for(space1 + 1, (size_t)(space2 - (space1 + 1)), request);
 	if (request->route == AIUS_HTTP_ROUTE_UNKNOWN)
@@ -290,10 +384,20 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 			      (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
 				return AIUS_HTTP_ERR_ROUTE;
 		}
-		if (request->method == AIUS_HTTP_PUT && !request->has_content_range)
+		if (request->method == AIUS_HTTP_PUT && request->body_complete &&
+		    !request->has_content_range)
 			return AIUS_HTTP_ERR_BODY;
 		if (request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_PUT)
 			return AIUS_HTTP_ERR_METHOD;
+	}
+	if (is_streamed_request(request)) {
+		if (!request->has_content_length)
+			return AIUS_HTTP_ERR_BODY;
+	} else {
+		if (request->content_length > AIUS_HTTP_MAX_BODY)
+			return AIUS_HTTP_ERR_TOO_LARGE;
+		if (!request->body_complete)
+			return AIUS_HTTP_ERR_BODY;
 	}
 	if ((request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX) &&
 	    !request->has_body)
@@ -317,33 +421,73 @@ const char *aius_http_reason(unsigned status)
 {
 	switch (status) {
 	case 200: return "OK";
+	case 201: return "Created";
+	case 204: return "No Content";
 	case 400: return "Bad Request";
 	case 401: return "Unauthorized";
 	case 403: return "Forbidden";
 	case 404: return "Not Found";
 	case 405: return "Method Not Allowed";
 	case 408: return "Request Timeout";
+	case 409: return "Conflict";
 	case 413: return "Payload Too Large";
+	case 416: return "Range Not Satisfiable";
+	case 500: return "Internal Server Error";
 	case 503: return "Service Unavailable";
 	case 507: return "Insufficient Storage";
-	default: return "Internal Server Error";
+	default: return NULL;
 	}
+}
+
+static int valid_content_type(const char *content_type)
+{
+	size_t length = 0;
+	if (content_type == NULL)
+		return 0;
+	while (length < AIUS_HTTP_CONTENT_TYPE_STORAGE && content_type[length] != '\0') {
+		unsigned char value = (unsigned char)content_type[length];
+		if (value < 0x20u || value > 0x7eu)
+			return 0;
+		length++;
+	}
+	return length != 0u && length < AIUS_HTTP_CONTENT_TYPE_STORAGE;
+}
+
+size_t aius_http_write_headers(uint8_t *output, size_t capacity,
+	                           unsigned status, const char *content_type,
+	                           uint64_t content_length)
+{
+	char header[192];
+	const char *reason = aius_http_reason(status);
+	int header_length;
+	if (output == NULL || reason == NULL || !valid_content_type(content_type))
+		return 0;
+	header_length = snprintf(header, sizeof(header),
+		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n\r\n",
+		status, reason, content_type, (unsigned long long)content_length);
+	if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
+	    (size_t)header_length > capacity)
+		return 0;
+	memcpy(output, header, (size_t)header_length);
+	return (size_t)header_length;
 }
 
 size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              unsigned status, const char *content_type,
 	                              const uint8_t *body, size_t body_length)
 {
-	if (output == NULL || content_type == NULL || body_length > AIUS_HTTP_MAX_RESPONSE)
+	uint8_t header[192];
+	size_t header_length;
+	if (output == NULL || (body_length != 0u && body == NULL) ||
+	    body_length > AIUS_HTTP_MAX_RESPONSE)
 		return 0;
-	char header[192];
-	int header_length = snprintf(header, sizeof(header),
-		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
-		status, aius_http_reason(status), content_type, (unsigned)body_length);
-	if (header_length < 0 || (size_t)header_length + body_length > capacity)
+	header_length = aius_http_write_headers(header, sizeof(header), status,
+	                                        content_type, (uint64_t)body_length);
+	if (header_length == 0u || body_length > capacity ||
+	    header_length > capacity - body_length)
 		return 0;
-	memcpy(output, header, (size_t)header_length);
-	if (body_length != 0 && body != NULL)
+	memcpy(output, header, header_length);
+	if (body_length != 0u)
 		memcpy(output + header_length, body, body_length);
-	return (size_t)header_length + body_length;
+	return header_length + body_length;
 }

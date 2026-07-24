@@ -3390,3 +3390,16 @@ pushes.
   scenario-only mismatch coverage and missing append/finalize cancellation
   rows. The count-asserted cross-product oracle and durable-file cancellation
   sequences passed the final clean-room audit.
+- Phase 6 delivery: the native `http` suite passes under strict C11,
+  warnings-as-errors, ASan, and UBSan with 32 named transaction tests, 111
+  natural authority/event rows, all 63 SD operation/result edges, 68
+  unnamed-field mutations from valid SD baselines, 39 fixed-response capacity
+  boundaries, real ACK deadline/wrap cases, and repeated restart and duplicate
+  authority cases. The source-blind oracle exposed strict framing,
+  pre-accept restart, SD result-matrix, transport-root, retained-dispatch,
+  download-deadline, publication-bound, and streamed-upload backpressure
+  defects before delivery. Four delivery audits rejected self-confirming or
+  incomplete precedence, payload, capacity, and lifecycle proof; the final
+  fresh audit passed. `teensy41-optical` explicitly compiles the HTTP codec,
+  transaction engine, and SD engine, passes pinned NativeEthernet linked-symbol
+  verification, and fits every memory bank.

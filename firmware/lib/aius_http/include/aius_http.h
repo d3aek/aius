@@ -1,6 +1,7 @@
 #ifndef AIUS_HTTP_H
 #define AIUS_HTTP_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,6 +15,7 @@ extern "C" {
 #define AIUS_HTTP_MAX_REPLAY_ID 48u
 #define AIUS_HTTP_MAX_BODY 4096u
 #define AIUS_HTTP_MAX_RESPONSE 8192u
+#define AIUS_HTTP_CONTENT_TYPE_STORAGE 64u
 
 typedef enum {
 	AIUS_HTTP_GET = 1,
@@ -63,6 +65,12 @@ typedef struct {
 	uint8_t mode;
 	uint8_t mix;
 	uint8_t has_body;
+	size_t header_length;
+	bool has_content_length;
+	uint64_t content_length;
+	const uint8_t *body;
+	size_t body_length;
+	bool body_complete;
 	const uint8_t *resource;
 	size_t resource_length;
 	/* Replay ID for /sd/replays/<id>, pointing into the parsed request bytes. */
@@ -82,6 +90,9 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	                               AiusHttpRequest *request);
 
 const char *aius_http_reason(unsigned status);
+size_t aius_http_write_headers(uint8_t *output, size_t capacity,
+	                           unsigned status, const char *content_type,
+	                           uint64_t content_length);
 size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              unsigned status, const char *content_type,
 	                              const uint8_t *body, size_t body_length);
