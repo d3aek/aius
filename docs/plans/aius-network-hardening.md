@@ -2895,6 +2895,7 @@ remain Phases 10 and 14.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [aius_http_transaction_step, AiusIoResult, bounded SD job]
 contract-artifact: spec-only
 dependencies: [phase-1, phase-5]
@@ -2945,6 +2946,7 @@ remain later phases.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [aius_usb_runtime_step, AIUS_USB_COMMAND_BOOTLOADER]
 contract-artifact: spec-only
 dependencies: [phase-1]
@@ -3493,3 +3495,16 @@ pushes.
   fresh audit passed. `teensy41-optical` explicitly compiles the HTTP codec,
   transaction engine, and SD engine, passes pinned NativeEthernet linked-symbol
   verification, and fits every memory bank.
+- Phase 7 delivery: the native `usb-control` suite passes under strict C11,
+  warnings-as-errors, ASan, and UBSan with count-asserted registries covering
+  24 transition families, 36 stable variants, 12 malformed or unnamed TX
+  rows, 12 unsolicited or duplicate input rows, 8 RX boundary rows, 21
+  application-response rows, 6 wrap-aware deadline rows in both authorized
+  `TX` and `ACK_PENDING`, and 4 reconnect transactions. The source-blind
+  oracle proves exact replacement writes after partial, blocked, and malformed
+  correlations; bootloader denial cannot retain entry authority. The first
+  delivery audit rejected missing ACK-pending, replacement-write, and negative
+  authorization proof; the strengthened oracle passed a fresh clean-room
+  re-audit. `teensy41-optical` compiles the bounded runtime beside the unchanged
+  legacy adapter, passes pinned NativeEthernet linked-symbol verification, and
+  fits every memory bank.

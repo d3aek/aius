@@ -240,6 +240,7 @@ http)
 usb-control)
 	usb_out="$build_dir/usb-control"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_usb_control/include" \
+		"-I$fw_root/lib/aius_net/include" \
 		"$fw_root/test/usb-control/test_usb_control.c" \
 		"$fw_root/lib/aius_usb_control/src/aius_usb_control.c" \
 		-o "$usb_out"
