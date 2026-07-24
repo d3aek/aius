@@ -95,7 +95,7 @@ throughout. Track B is serialized because every phase in it touches
 
 | Step | Work | Gate |
 |---|---|---|
-| A1 | `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | committed regression against captured responses |
+| A1 | **Done** — `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | `test/sd-editor/`, 36 tests green |
 | A2 | Target asset smoke — the page loads and drives the real device | folded into the single on-device session (B6) |
 
 **Track B — bounded runtime cutover** (strictly ordered)

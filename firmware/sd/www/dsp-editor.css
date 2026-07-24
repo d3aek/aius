@@ -1,0 +1,42 @@
+/* DSP editor additions. The shared chrome (page frame, cards, status grid,
+   controls, pills, canvas) comes from replays.css, which index.html links
+   first -- keep both pages looking like one product and only add what the
+   editor's dense form and meter table need. */
+
+code{color:#74d7ff}
+/* auto-fill (not auto-fit) so a one-field row keeps a column's width instead of
+   stretching a lone input across the card. */
+.form-mount{margin-top:14px}
+.field-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.field{display:grid;gap:5px;color:#aab4c0;font-size:.78rem;background:#11151b;border-radius:6px;padding:10px}
+.field__label{color:#9aa8b5}
+.field input,.field select{width:100%}
+/* Reserved so a validation message never reflows the form. */
+.field__error{color:#f2a0a0;font-size:.72rem;min-height:1.1em}
+.field--invalid input,.field--invalid select{border-color:#d16a6a}
+.field--check{grid-template-columns:auto 1fr;align-items:center}
+.field--check input{width:auto;justify-self:start;grid-row:1}
+.field--check .field__error{grid-column:1/3}
+.field input:disabled,.field select:disabled{color:#7f8b98;background:#0c1015}
+
+.channel{border-top:1px solid #303945;padding-top:14px;margin-top:14px}
+.channel:first-child{border-top:0;padding-top:0;margin-top:0}
+.channel__title{margin:0 0 10px;font-size:.85rem;color:#73e6a0;letter-spacing:.06em}
+.eq-slots{display:grid;gap:10px;margin-top:10px}
+.eq-row{display:grid;grid-template-columns:minmax(80px,auto) 1fr;gap:12px;align-items:start}
+.eq-row__title{color:#9aa8b5;font-size:.75rem;padding-top:12px}
+
+.notice{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:14px 0;padding:12px;border:1px solid #e8c46a;border-radius:6px;background:#211d13;color:#e8dcc0;font-size:.8rem}
+.notice[hidden]{display:none}
+.error-summary{color:#f2a0a0;font-size:.78rem;margin-top:10px}
+.error-summary[hidden]{display:none}
+.pill[data-state="applied"]{border-color:#53b57e;color:#73e6a0}
+.pill[data-state="pending"],.pill[data-state="sending"]{border-color:#74d7ff;color:#74d7ff}
+.pill[data-state="stale"],.pill[data-state="invalid"],.pill[data-state="error"]{border-color:#d16a6a;color:#f2a0a0}
+
+.meter-table{width:100%;border-collapse:collapse;margin-top:14px;font-size:.78rem;font-variant-numeric:tabular-nums}
+.meter-table th,.meter-table td{text-align:right;padding:6px 8px;border-bottom:1px solid #232b35}
+.meter-table th[scope="row"],.meter-table thead th:first-child{text-align:left;color:#9aa8b5;font-weight:400}
+.meter-table thead th{color:#9aa8b5;font-weight:400}
+
+@media(max-width:650px){.eq-row{grid-template-columns:1fr}.eq-row__title{padding-top:0}}

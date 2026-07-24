@@ -1,0 +1,29 @@
+{
+  "source": "sd",
+  "config_generation": 4,
+  "sample_rate_hz": 48000,
+  "features": { "input_eq": true, "matrix": true, "output_eq": false, "limiter": true, "meters": true },
+  "input_channels": {
+    "fl": { "gain_db": -3.5, "eq": [{ "type": "peaking", "frequency_hz": 120, "q": 1.2, "gain_db": -4.5 }] },
+    "fr": {
+      "gain_db": -3.5,
+      "eq": [
+        { "type": "peaking", "frequency_hz": 120, "q": 1.2, "gain_db": -4.5 },
+        { "type": "highpass", "frequency_hz": 45, "q": 0.707, "gain_db": 0 }
+      ]
+    },
+    "fc": { "gain_db": 2.5, "eq": [{ "type": "highpass", "frequency_hz": 80, "q": 0.707, "gain_db": 0 }] },
+    "lfe": { "gain_db": -60, "eq": [] },
+    "sl": { "gain_db": 1, "eq": [{ "type": "bypass", "frequency_hz": 0, "q": 0, "gain_db": 0 }] },
+    "sr": { "gain_db": 1, "eq": [] }
+  },
+  "output_eq": [{ "type": "peaking", "frequency_hz": 4000, "q": 0.9, "gain_db": 2 }],
+  "matrix": {
+    "center_gain_linear": 0.85,
+    "surround_gain_linear": 0.6,
+    "lfe_gain_linear": 0.25,
+    "headroom_linear": 0.37037037037037035,
+    "clipfree": true
+  },
+  "limiter": { "enabled": true, "threshold_dbfs": -1.5, "attack_ms": 0.5, "release_ms": 120, "lookahead_ms": 2 }
+}

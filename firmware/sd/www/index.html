@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aius DSP editor</title>
+  <!-- replays.css carries the shared chrome for both SD pages; dsp-editor.css
+       adds only what the editor needs on top. -->
+  <link rel="stylesheet" href="replays.css">
+  <link rel="stylesheet" href="dsp-editor.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">AIUS / SD CARD</p>
+        <h1>DSP editor</h1>
+        <p class="lede">Edit the single effective DSP configuration: input trim and EQ, downmix matrix, output EQ, true-peak limiter, and the per-stage bypass flags. Writes go to <code>/aius/dsp.json</code> and apply at the next audio block boundary.</p>
+      </div>
+      <nav><a href="replays.html">Replay manager</a><a href="/">Device status</a></nav>
+    </header>
+
+    <section class="card status-card">
+      <div class="section-title"><h2>Effective configuration</h2><span id="apply-state" class="pill">loading</span></div>
+      <div class="status-grid">
+        <div><span>Source</span><strong id="source">unknown</strong></div>
+        <div><span>Generation</span><strong id="generation">--</strong></div>
+        <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
+        <div><span>Model bytes</span><strong id="model-bytes">--</strong></div>
+      </div>
+      <div id="stale" class="notice" hidden>
+        <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Re-reading discards the edits on this page.</span>
+        <button id="stale-reload">Re-read device config</button>
+      </div>
+      <div class="controls">
+        <label>SD auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
+        <button id="apply">Apply to device</button>
+        <button id="reload" class="secondary">Re-read</button>
+      </div>
+      <p id="status" class="hint" role="status">Loading configuration...</p>
+      <p id="errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Feature bypass</h2><a href="/api/dsp/config">machine config</a></div>
+      <p class="hint">Unchecking a stage bypasses it for latency and diagnostic comparisons. DTS framing and decoding cannot be bypassed.</p>
+      <div id="features" class="form-mount"></div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Input channels</h2></div>
+      <p class="hint">Per-channel trim runs before the downmix. Each channel takes up to two EQ sections; <em>none</em> removes the section from the config, <em>bypass</em> keeps a present but inactive one.</p>
+      <div id="input-channels" class="form-mount"></div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Output EQ</h2></div>
+      <p class="hint">Stereo post-mix sections, run on both channels.</p>
+      <div id="output-eq" class="form-mount"></div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Downmix matrix</h2></div>
+      <p class="hint">Centre and surround gains are shared by both stereo sides by design. With the clip-free policy selected the device resolves headroom itself.</p>
+      <div id="matrix" class="form-mount"></div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Limiter</h2></div>
+      <p class="hint">True-peak safety limiter on the output tail.</p>
+      <div id="limiter" class="form-mount"></div>
+    </section>
+
+    <section class="card meters">
+      <div class="section-title"><h2>Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
+      <canvas id="waveform" width="960" height="180"></canvas>
+      <div class="status-grid">
+        <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
+        <div><span>Queue</span><strong id="meter-queue">--</strong></div>
+        <div><span>Estimated latency</span><strong id="meter-latency">--</strong></div>
+        <div><span>DSP cycles last / max</span><strong id="meter-cycles">--</strong></div>
+      </div>
+      <table class="meter-table">
+        <thead><tr><th scope="col">Channel</th><th scope="col">Peak dBFS</th><th scope="col">RMS dBFS</th></tr></thead>
+        <tbody id="meter-rows"></tbody>
+      </table>
+      <p id="meter-summary" class="hint">Meter data unavailable.</p>
+    </section>
+  </main>
+  <script src="dsp-editor.js"></script>
+</body>
+</html>

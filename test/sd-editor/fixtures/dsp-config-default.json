@@ -1,0 +1,23 @@
+{
+  "source": "default",
+  "config_generation": 0,
+  "sample_rate_hz": 48000,
+  "features": { "input_eq": true, "matrix": true, "output_eq": true, "limiter": true, "meters": true },
+  "input_channels": {
+    "fl": { "gain_db": 0, "eq": [] },
+    "fr": { "gain_db": 0, "eq": [] },
+    "fc": { "gain_db": 0, "eq": [] },
+    "lfe": { "gain_db": 0, "eq": [] },
+    "sl": { "gain_db": 0, "eq": [] },
+    "sr": { "gain_db": 0, "eq": [] }
+  },
+  "output_eq": [],
+  "matrix": {
+    "center_gain_linear": 0.7071067811865475,
+    "surround_gain_linear": 0.7071067811865475,
+    "lfe_gain_linear": 0,
+    "headroom_linear": 1,
+    "clipfree": false
+  },
+  "limiter": { "enabled": false, "threshold_dbfs": 0, "attack_ms": 1, "release_ms": 100, "lookahead_ms": 0 }
+}

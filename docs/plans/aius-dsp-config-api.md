@@ -89,7 +89,7 @@ throughout. Track B is serialized because every phase in it touches
 
 | Step | Work | Gate |
 |---|---|---|
-| A1 | `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | committed regression against captured responses |
+| A1 | **Done** — `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | `test/sd-editor/`, 36 tests green |
 | A2 | Target asset smoke — the page loads and drives the real device | folded into the single on-device session (B6) |
 
 **Track B — bounded runtime cutover** (strictly ordered)
@@ -474,17 +474,64 @@ into the audio path — the one genuinely hot addition, and ITCM free space is
 **Gate:** coherent bounded snapshots, no audio-thread allocation, ITCM within
 budget.
 
+**Open decision — the meters wire shape.** Building the control surface surfaced
+four points this plan left underspecified. The editor accepts every shape below,
+so nothing is blocked; Phase 14b picks one and this section records it.
+
+- **Level encoding.** `AiusMeterSnapshot` stores absolute linear sample
+  magnitudes and its header puts the `20·log10(v / AIUS_DSP_SAMPLE_MAX)`
+  conversion on the reader, but `replays.js` already reads a `peak_dbfs` field.
+  *Recommended:* the firmware emits `*_dbfs` and no client converts.
+- **`output` shape.** "Stereo output peak/RMS" can be a scalar summary or a
+  per-channel pair. **This one has a cross-track consequence:** `replays.js:18`
+  does `Number(output.peak_dbfs).toFixed(1)`, which renders `NaN` if the field
+  becomes a two-element array. *Recommended:* keep `output.peak_dbfs` and
+  `output.rms_dbfs` scalar so the replay page keeps working, and add explicit
+  `output.peak_dbfs_l` / `_r` only if per-channel readout is actually wanted. If
+  the array form is chosen instead, `replays.js` must be fixed in the same
+  change.
+- **`input[]` ordering.** *Recommended:* a six-element array in `AIUS_CH_` order
+  (`fl, fr, fc, lfe, sl, sr`), positional, no per-entry channel key.
+- **`waveform[]` semantics.** *Recommended:* the documented non-negative
+  per-bucket peak-magnitude envelope, drawn mirrored about the centre line.
+- **Behaviour when `features.meters` is false.** Unspecified today. The editor
+  treats every non-2xx identically, so any of 404 / 503 / a zeroed snapshot
+  works; pick one and document it in the OpenAPI catch-up (step B5).
+
 ### SD control-surface editor
 
-**Track A above — unblocked, running in parallel with the cutover.**
-`firmware/sd/www/index.html` — static HTML/CSS/JS using only the documented API;
-every control mapped to the config JSON; meters + canvas waveform from
-`/api/meters`. It follows the existing `firmware/sd/www/replays.*` precedent
-(self-contained, no shared-module imports, no `mr-*` kit): the page is served off
-the device's SD card and cannot reach the host application's shared mounts, which is the
-one standing exception to the repository's UI-kit reuse rule. Built and tested
-against captured vector/config responses. **Gate:** the committed regression;
-the target asset smoke folds into B6.
+**Track A — delivered, except the on-device asset smoke.**
+`firmware/sd/www/index.html` plus `dsp-editor.css` / `dsp-editor.js` — static
+HTML/CSS/JS using only the documented API; every control mapped to the config
+JSON; meters + canvas waveform from `/api/meters`. It follows the existing
+`firmware/sd/www/replays.*` precedent (self-contained classic script, no
+shared-module imports, no `mr-*` kit) and links `replays.css` before its own
+sheet so shared chrome cannot drift between the two SD pages. The device serving
+the page off its own SD card, unable to reach the host application's shared mounts, is the
+one standing exception to the repository's UI-kit reuse rule.
+
+The regression is `test/sd-editor/dsp-editor.test.js` — vitest
+plus happy-dom, loading the real page body and evaluating the real script against
+a stubbed device contract, so it needs neither a served URL nor a `web.json`
+mount. 36 tests cover the field-to-DOM mapping for every model field, a
+byte-level PUT round trip, every documented bound (12 scalar cases + 6 EQ cases,
+each asserting the inline message, `aria-invalid`, and that Apply refuses to
+send), the 409 stale-generation path and its re-read recovery, the
+pending→applied transition polling for a `config_generation` change, canvas
+waveform geometry and the 128-point cap, `/api/meters` 404 degradation with
+back-off, and hard transport failure on both read and write surfacing visibly.
+
+Two page-level modelling decisions worth keeping: the EQ type select carries a
+page-level `none` (section omitted from `eq[]`) alongside the real firmware
+`bypass` type, because the wire model has no "absent" type; and with `clipfree`
+checked the headroom input goes read-only and displays the resolved
+`1 / (1 + centre + surround + |lfe|)`, which is what gets sent.
+
+**Remaining:** the target asset smoke — the page loading and driving the real
+device — folds into B6. The meter path is proven against authored-to-contract
+fixtures rather than captured device responses, because `GET /api/meters` does
+not exist yet; recheck it against the real endpoint once 14b lands and the wire
+shape above is settled.
 
 ### OpenAPI catch-up
 

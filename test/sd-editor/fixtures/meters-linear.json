@@ -1,0 +1,19 @@
+{
+  "sequence": 12,
+  "sample_rate_hz": 48000,
+  "input": [
+    { "peak": 4194304, "rms": 838861 },
+    { "peak": 8388607, "rms": 2097152 },
+    { "peak": 0, "rms": 0 },
+    { "peak": 0, "rms": 0 },
+    { "peak": 0, "rms": 0 },
+    { "peak": 0, "rms": 0 }
+  ],
+  "output": { "peak": [8388607, 4194304], "rms": [2097152, 838861] },
+  "limiter_gain_reduction_db": 0,
+  "queue_frames": 0,
+  "estimated_latency_us": 0,
+  "dsp_cycles_last": 0,
+  "dsp_cycles_max": 0,
+  "waveform": []
+}
