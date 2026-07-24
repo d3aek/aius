@@ -440,8 +440,8 @@ ordered labels:
    for the actually imported PlatformIO and SCons packages;
 6. `platformio-teensy-platform`: `PLATFORMIO_CORE_DIR/platforms/teensy`;
 7. `platformio-packages`: `PLATFORMIO_CORE_DIR/packages`;
-8. `system-usr-bin`: resolved `/usr/bin`;
-9. `system-bin`: resolved `/bin`.
+8. `system-usr-bin`: lexical `/usr/bin`;
+9. `system-bin`: lexical `/bin`.
 
 Each root includes its `.` entry, followed by descendants sorted by raw
 `os.fsencode` relative-path bytes. A record is the concatenation
