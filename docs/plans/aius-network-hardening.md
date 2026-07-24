@@ -1240,6 +1240,7 @@ remain its public codec.
 #define AIUS_HTTP_RX_QUOTA 256u
 #define AIUS_HTTP_TX_QUOTA 512u
 #define AIUS_HTTP_CONTENT_TYPE_STORAGE 64u
+#define AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT UINT32_C(0x48545450)
 
 typedef enum {
     AIUS_HTTP_TX_IDLE,
@@ -1278,6 +1279,7 @@ typedef struct {
 } AiusHttpApplicationResponse;
 
 typedef enum {
+    AIUS_HTTP_SD_EVENT_NONE,
     AIUS_HTTP_SD_STARTED,
     AIUS_HTTP_SD_PROGRESS,
     AIUS_HTTP_SD_NEED_UPLOAD,
@@ -1392,6 +1394,7 @@ typedef struct {
     char sd_content_type[AIUS_HTTP_CONTENT_TYPE_STORAGE];
     AiusHttpFault last_fault;
     AiusSdFault last_sd_fault;
+    uint32_t last_transport_fault;
     uint32_t last_driver_fault;
     unsigned last_status;
     bool valid;
@@ -1510,6 +1513,10 @@ upload-supply actions use immutable `data` and require `read_buffer = NULL`.
 Every other action requires both pointers null unless its operation explicitly
 names one.
 
+`last_transport_fault` retains the nonzero `AiusIoEvent.fault` or
+`peer_fault` that selected cleanup; HTTP-owned timeouts and protocol faults
+leave it zero. It is distinct from the SD job’s `last_driver_fault`.
+
 `NONE` with no outstanding action drives the next action. `NONE` while a
 transport or SD drain action is outstanding retains that authority and can
 only cause deadline expiry. Because dispatch and job start are synchronous
@@ -1616,6 +1623,33 @@ nonzero download may not complete before at least one `DOWNLOAD_DATA`.
 - `FAIL_DOWNLOAD` resolves that `OUTPUT` with failure when transport cannot
   finish it.
 
+`FAIL_DOWNLOAD` always carries
+`fault = AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT`; every other HTTP action carries
+zero fault. The runtime feeds that exact nonzero value as the correlated
+`AiusSdEvent.fault` for `OUTPUT`. The SD engine therefore records
+`AIUS_SD_FAULT_IO`, which is an internal drain mechanism rather than a new
+HTTP-visible root cause.
+
+The correlated SD result matrix is exhaustive:
+
+| Outstanding action | Valid `sd_kind` values |
+|---|---|
+| `SD_START` | `STARTED`, `FAILED` |
+| `SD_STEP/ADVANCE`, upload job | `PROGRESS`, `NEED_UPLOAD`, `COMPLETE`, `FAILED` |
+| `SD_STEP/ADVANCE`, download job | `PROGRESS`, `DOWNLOAD_DATA`, `COMPLETE`, `FAILED` |
+| `SD_STEP/ADVANCE`, other job | `PROGRESS`, `COMPLETE`, `FAILED` |
+| `SD_STEP/SUPPLY_UPLOAD` | `PROGRESS` |
+| `SD_STEP/ACK_DOWNLOAD` | `PROGRESS`, `DOWNLOAD_DATA`, `COMPLETE`, `FAILED` |
+| `SD_STEP/FAIL_DOWNLOAD` | `PROGRESS`, `CANCELLED` |
+| `SD_CANCEL` | `PROGRESS`, `CANCELLED` |
+| `SD_STEP/ADVANCE` while cancelling | `PROGRESS`, `CANCELLED` |
+
+Every other SD kind is a protocol fault and retains outstanding SD authority.
+`STARTED` is accepted once. `NEED_UPLOAD` is valid only for `UPLOAD`;
+`DOWNLOAD_DATA` only for `DOWNLOAD` or `REPLAY_REFILL`; and `COMPLETE` is valid
+only when exact upload/download byte accounting is already satisfied.
+`SD_EVENT_NONE` is never a valid `SD_RESULT`.
+
 The transaction never retains RX data owned by the transport; `READ` writes
 directly into its request buffer. A download chunk is borrowed from the SD job
 but remains immutable until the correlated `ACK_DOWNLOAD` or `FAIL_DOWNLOAD`,
@@ -1631,17 +1665,25 @@ completing before all declared bytes were supplied, inconsistent download
 sizes, zero/oversized chunks, or bytes beyond the declared body is a protocol
 fault followed by cancellation.
 
-`SD_CANCEL` begins an acknowledged drain, not a notification. Before calling
-cancel, the runtime feeds any retained adapter result to the job so its
-correlated driver action is resolved, or resolves an outstanding download
-`OUTPUT` with failure. It then calls `aius_sd_job_cancel()` exactly once and
-returns `SD_PROGRESS` unless the job is already terminal. The transaction then
-issues `SD_STEP/ADVANCE` epochs, each performing at most one SD action, until
-rollback/cleanup returns `CANCELLED`. `sd_cancel_emitted` prevents a second
-cancel call. Cleanup or rollback failure remains the authoritative
-`last_sd_fault` over the original transport fault or timeout. HTTP does not
-restart, reset either buffer, or allow another accept until both
-`transport_terminal` and `sd_terminal` are true.
+If a download chunk is outstanding when cleanup starts, HTTP first resolves it
+with `SD_STEP/FAIL_DOWNLOAD`. `SD_CANCEL` then begins the acknowledged drain.
+Before calling cancel, the runtime feeds any retained adapter result to the job
+so its correlated driver action is resolved. It calls `aius_sd_job_cancel()`
+exactly once and returns `SD_PROGRESS` unless the job is already terminal. The
+transaction then issues `SD_STEP/ADVANCE` epochs, each performing at most one
+SD action, until rollback/cleanup returns `CANCELLED`.
+If `FAIL_DOWNLOAD` itself returns terminal `CANCELLED`, the job has no remaining
+authority and HTTP does not emit the otherwise-required `SD_CANCEL`.
+
+When terminal SD state contains
+`AIUS_SD_FAULT_IO/AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT`, the runtime filters that
+synthetic pair and returns `CANCELLED` with `sd_fault = NONE` and zero driver
+fault. A rollback or cleanup fault that replaced it is returned with
+`CANCELLED` and remains authoritative. Any other pre-existing SD fault is also
+returned with `CANCELLED` and retained as authoritative. `sd_cancel_emitted`
+prevents a second cancel call. HTTP does not restart, reset either buffer, or
+allow another accept until both `transport_terminal` and `sd_terminal` are
+true.
 
 HTTP never calls a socket or file API and never loops over transport or SD
 progress.
