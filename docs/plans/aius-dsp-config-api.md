@@ -535,12 +535,57 @@ shape above is settled.
 
 ### OpenAPI catch-up
 
-**Step B5.** `PUT /api/dsp/config` shipped in firmware without reaching
-`swagger.json`, and `GET /api/meters` lands with 14b. Document
-both — request/response schemas, the `X-Aius-SD-Auth` parameter, the
-`base_generation` concurrency field, and the 400/401/409/503 responses — and
-extend `test/swagger.test.js`, which currently asserts only the
-`GET`. **Gate:** the Vitest OpenAPI contract suite.
+**Step B5. The `PUT` half is done; `GET /api/meters` waits for 14b** and the wire
+shape settled above. `swagger.json` gains `putDspConfig` with the `SdAuth`
+parameter, a `DspConfigUpdate` request body and schema, and an `SdJobError`
+schema; the request reuses the existing `DspFeatures` / `DspInputChannels` /
+`DspInputChannel` / `DspEqSection` / `DspMatrix` / `DspLimiter` sub-schemas
+rather than forking a parallel request-side tree, and the suite asserts that
+reuse by deep equality so a future divergence fails loudly.
+
+**Documenting the route against the firmware, rather than against this plan,
+found six places the plan was wrong or silent.** They are corrections to the
+contract, not to the code:
+
+- **"Validates and commits atomically" hides a split.** The handler never sends
+  the 200. On success `http_dsp_config_put_request()` only *starts* an SD job;
+  `{"ok":true}` is emitted later from the job's cleanup state
+  (`optical_main.cpp:649`), and even then the model is only *staged* — the apply
+  and the `config_generation` increment happen at the next audio block boundary.
+  A client that reads 200 as "active" is wrong; it means "durably written".
+- **The response set is larger than 400/401/409/503.** The transport can emit
+  `413 request_too_large` and `413 body_too_large` before the handler runs, and
+  the SD job can emit `500 sd_commit` or `507 sd_write` asynchronously with a
+  five-field body (`ok`, `error`, `received`, `written`, `expected`), not the
+  two-field error shape every other route uses.
+- **Every parser failure collapses to one wire string.**
+  `AiusDspConfigErrorCode` distinguishes unknown key, duplicate key, out of
+  range, too many EQ sections, invalid source, invalid EQ type, and oversize —
+  the wire returns `dsp_config_invalid` for all of them. The plan's validation
+  section reads as though those distinctions are observable. They are not.
+- **The 12,288-byte cap is not the observable boundary.**
+  `AIUS_HTTP_MAX_REQUEST` is 13,312 for headers plus body, so a body over
+  12,288 still reaches the parser and returns 400; only one that fills the
+  transport buffer returns 413.
+- **`config_generation` is required on a PUT and then ignored.**
+  `parse_top_value()` parses it into a discarded double
+  (`aius_dsp_config.c:1131`). Only `base_generation` drives the 409. The plan
+  never says the request must carry it at all.
+- **Request EQ sections are laxer than response ones.** `parse_eq_section()`
+  requires only `type`; `frequency_hz`, `q`, and `gain_db` each default to 0
+  when absent. For a non-bypass type the 10 Hz and 0.1 lower bounds make
+  frequency and Q effectively required, but `gain_db` may be omitted for any
+  type, and `{"type":"bypass"}` alone is accepted. `GET` always emits all four.
+  **The schema deliberately stays stricter than the parser here** and records
+  the laxity in prose: everything the document permits, the device accepts, and
+  forking a laxer `DspEqSectionUpdate` would cascade into duplicate channel and
+  channel-map schemas for no client benefit.
+
+**Gate:** the Vitest OpenAPI contract suite (green, 2 tests) plus the Prettier
+JSON check. Not proven: no OpenAPI schema validator runs over this document in
+the repository — the suite is hand-rolled assertions — and the 500/507 field
+list is read from `sd_job_send_error()`'s format string, not from a captured
+device response.
 
 ### Target validation
 
@@ -576,9 +621,9 @@ gate.
 - `GET /api/meters` returns coherent bounded snapshots without audio-thread
   allocation or unbounded sample transfer.
 - OpenAPI schemas and example describe every route and returned field; no
-  `mode`/`mix` selection endpoints remain. (**Not met** — `swagger.json`
-  documents only `GET /api/dsp/config`; the `PUT` and `GET /api/meters` are
-  missing. Closed by step B5.)
+  `mode`/`mix` selection endpoints remain. (**Partly met** — `GET` and `PUT
+  /api/dsp/config` are both documented as of step B5; `GET /api/meters` lands
+  with 14b, once its wire shape is settled.)
 - The `/aius/dsp.json` override is loaded through the bounded SD job path, not a
   synchronous read, so the boot and hot-reinsert paths respect the
   one-SD-primitive-per-epoch contract. (Closed by step B3.)
