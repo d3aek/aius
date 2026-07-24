@@ -1977,13 +1977,16 @@ All fixed errors use `application/json`:
 | protocol fault before TX | 400 | `{"ok":false,"error":"protocol"}` |
 | response overflow | 500 | `{"ok":false,"error":"response_too_large"}` |
 | download `OPEN` | 404 | `{"ok":false,"error":"sd_not_found"}` |
+| SD `NOT_FOUND` | 404 | `{"ok":false,"error":"sd_not_found"}` |
 | SD `RANGE` | 416 | `{"ok":false,"error":"sd_range"}` |
 | SD `MEDIA` | 503 | `{"ok":false,"error":"sd_unavailable"}` |
 | SD `CAPACITY` or `OVERFLOW` | 507 | `{"ok":false,"error":"sd_capacity"}` |
 | every other SD failure | 500 | `{"ok":false,"error":"sd_failure"}` |
 
-An SD `OPEN` maps to 404 only for download; otherwise it uses the remaining-SD
-mapping. Transport-caused cancellation sends no response. A protocol or SD
+An SD `OPEN` maps to 404 only for download; `NOT_FOUND` maps to 404 for every
+job, although the validated application contract emits it only for a
+required-existing delete. Otherwise the remaining-SD mapping applies.
+Transport-caused cancellation sends no response. A protocol or SD
 failure after any response byte closes without attempting a second response.
 The transaction retains `last_fault`, `last_sd_fault`, `last_driver_fault`, and
 `last_status` through cleanup and restart until the next successful accept.
@@ -3300,6 +3303,12 @@ fan-out:
   - name: agent-sd-portable-idempotency-oracle
     owned-paths:
       - firmware/test/sd/test_aius_sd.c
+  - name: agent-http-required-delete-compatibility
+    owned-paths:
+      - firmware/lib/aius_http/src/aius_http_transaction.c
+  - name: agent-http-required-delete-independent-oracle
+    owned-paths:
+      - firmware/test/http/test_http_transaction.c
   - name: agent-teensy-sd-adapter
     owned-paths:
       - firmware/src/aius_sd_teensy.cpp
@@ -3313,13 +3322,14 @@ review-intensity: active
 commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite sd
+    - firmware/scripts/test.sh --environment native --suite http
     - firmware/scripts/test.sh --environment native --suite sd-target
   buildable:
     - firmware/scripts/build.sh teensy41-optical
   parent-commit: "feat(aius): add one-shot Teensy SD adapter"
 ```
 
-Run all four slices sequentially. First amend the portable engine, then have a
+Run all six slices sequentially. First amend the portable engine, then have a
 fresh source-blind oracle read only the committed contract and public header
 and strengthen the existing SD registry for every existence purpose, both bool
 branches, malformed correlations, cancellation/deadline precedence, and the
@@ -3329,7 +3339,15 @@ boundary abort before commit, authority-free start rejection above the
 threshold, equality acceptance followed by pre-mutation overflow, BEGIN fault
 with zero cleanup actions, cleanup use of the reserve, `UINT64_MAX` saturation,
 and no ID reuse. After the parent verifies that header,
-the adapter slice implements the fixed C++ ABI and adds
+the HTTP compatibility slice requires `require_existing == false` for every
+non-delete SD request, includes it in the all-zero immediate-response check,
+accepts either value only for `DELETE`, and maps `NOT_FOUND` to exact status
+404 body `{"ok":false,"error":"sd_not_found"}`. The eventual Phase 11 HTTP
+DELETE dispatcher must set `require_existing = true`; internal idempotent
+deletes explicitly use false. A fresh source-blind HTTP oracle adds the
+non-delete rejection matrix, immediate-response zero-field rejection,
+required-delete acceptance, and exact terminal 404 golden before the adapter
+slice starts. The adapter slice implements the fixed C++ ABI and adds
 `aius_sd_teensy.cpp` to the optical PlatformIO source filter without editing
 `optical_main.cpp`. Finally a fresh adapter-source-blind oracle compiles the
 real source against the fake `SD.h` contract and owns the runner registration.
