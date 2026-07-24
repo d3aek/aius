@@ -880,6 +880,7 @@ typedef struct {
     AiusSdResult result;
     bool target_existed;
     bool backup_moved;
+    bool install_failed;
     bool installed;
     bool file_open;
     bool publish_config;
@@ -1151,6 +1152,12 @@ Disposable `REPLACE` temp is removed once on pre-install ordinary failure,
 timeout, or cancellation. It is preserved after an install/rollback failure
 for diagnosis and possible manual recovery. `APPEND_PART` target and
 `FINALIZE_PART` temp are durable and never removed by cleanup.
+`install_failed` is set only when the correlated `RENAME(temp,target)` returns
+`FAULT`, independently of terminal-fault precedence. Cleanup preserves temp
+whenever that flag is set, including when an earlier cancellation, timeout, or
+protocol fault remains the terminal cause after successful rollback. A
+cancellation-triggered rollback with `install_failed == false` still removes a
+disposable `REPLACE` temp once.
 
 `deadline_ms` is an absolute wrapping 32-bit time; zero disables it. A nonzero
 deadline at start must have signed delta `0..INT32_MAX` from `now_ms`.
@@ -2486,4 +2493,7 @@ pushes.
   unbounded streamed upload could not supply a complete `PUBLISH_CONFIG`
   buffer; publishing uploads are now config-sized and use an explicit
   post-commit reread before publication. The focused publication recheck
-  passed and engine dispatch is authorized again.
+  passed and engine dispatch is authorized again. Engine authority review then
+  found that an earlier abort could mask a later install-rename failure and
+  wrongly delete its recovery temp; explicit `install_failed` authority now
+  separates preservation from terminal-fault precedence.
