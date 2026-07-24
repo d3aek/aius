@@ -1648,7 +1648,8 @@ transaction replaces it with this complete response when that fits:
 If the fallback does not fit, no partial response is emitted. Download headers
 are formatted only after the first `DOWNLOAD_DATA`, or download `COMPLETE` for
 a zero-byte file, supplies the authoritative `sd_size`. Header overflow uses
-the same fallback and cancels the job before cleanup.
+the same fallback. A nonterminal job follows chunk release and cancellation;
+a zero-byte job that reported terminal `COMPLETE` needs only transport cleanup.
 
 ### SD transfer and lifetime contract
 
@@ -1726,13 +1727,17 @@ resolves:
 
 1. if a download chunk is unacknowledged, emit and resolve
    `SD_STEP/FAIL_DOWNLOAD`;
-2. if transport close has not been emitted, emit and resolve `CLOSE`;
-3. if the SD job remains nonterminal, emit `SD_CANCEL` once and continue its
+2. if a fixed error was selected before any response byte and transport is
+   still usable, send that complete response;
+3. if transport close has not been emitted, emit and resolve `CLOSE`;
+4. if the SD job remains nonterminal, emit `SD_CANCEL` once and continue its
    `SD_STEP/ADVANCE` drain.
 
 Thus the bounded chunk release precedes close only when needed; every other
-cleanup closes transport before SD cancellation. `SD_CANCEL` begins the
-acknowledged drain.
+cleanup sends any still-permitted deterministic error, closes transport, then
+cancels SD. A peer/transport failure, response-write failure, or prior response
+byte suppresses the pending fixed error. `SD_CANCEL` begins the acknowledged
+drain.
 Before calling cancel, the runtime feeds any retained adapter result to the job
 so its correlated driver action is resolved. It calls `aius_sd_job_cancel()`
 exactly once and returns `SD_PROGRESS` unless the job is already terminal. The
@@ -1774,11 +1779,14 @@ one-shot.
 
 The response-write deadline starts at `now_ms + 100` when a response first
 becomes sendable, before returning the first `WRITE`. Immediate and fixed
-responses become sendable when selected. A non-download SD success response
-may be formatted earlier but becomes sendable only on `SD_COMPLETE`. A
-download header becomes sendable when the first `DOWNLOAD_DATA`, or zero-byte
-download `COMPLETE`, supplies authoritative size. Merely formatting a deferred
-response and merely issuing `WRITE` do not start or rearm the deadline.
+responses normally become sendable when selected. A fixed error selected while
+correlated SD authority or an unacknowledged chunk is retained is formatted
+but becomes sendable only after that authority resolves and the chunk is
+failed. A non-download SD success response may be formatted earlier but
+becomes sendable only on `SD_COMPLETE`. A download header becomes sendable
+when the first `DOWNLOAD_DATA`, or zero-byte download `COMPLETE`, supplies
+authoritative size. Merely formatting a deferred response and merely issuing
+`WRITE` do not start or rearm the deadline.
 
 Event and time precedence is exact:
 
