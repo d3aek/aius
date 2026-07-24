@@ -10,6 +10,7 @@
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
 #         pipeline, dsp, net, net-runner, http, usb-control, replay, boot.
+#         network-transport.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,6 +43,7 @@ done
 [ -n "$suite" ] || usage
 
 cc="${CC:-gcc}"
+cxx="${CXX:-g++}"
 inc="$fw_root/lib/aius_codec_api/include"
 src="$fw_root/lib/aius_codec_api/src"
 build_dir="$fw_root/.build/native"
@@ -249,6 +251,25 @@ boot)
 		"$fw_root/lib/aius_boot/src/aius_boot.c" \
 		-o "$boot_out"
 	"$boot_out"
+	;;
+network-transport)
+	python3 "$fw_root/test/network-transport/test_vendor_source.py"
+	transport_out="$build_dir/network-transport"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g \
+		-fsanitize=address,undefined -ffunction-sections -fdata-sections \
+		-Wl,--gc-sections -DFNET_CFG_TLS=0 \
+		"-I$fw_root/test/network-transport/fake" \
+		"-I$fw_root/vendor/NativeEthernet/src" \
+		"$fw_root/test/network-transport/test_nativeethernet_behavior.cpp" \
+		"$fw_root/vendor/NativeEthernet/src/NativeEthernet.cpp" \
+		"$fw_root/vendor/NativeEthernet/src/NativeEthernetClient.cpp" \
+		"$fw_root/vendor/NativeEthernet/src/NativeEthernetServer.cpp" \
+		"$fw_root/vendor/NativeEthernet/src/Nativesocket.cpp" \
+		-o "$transport_out"
+	"$transport_out" fnet-init-failure
+	"$transport_out" netif-init-failure
+	"$transport_out" link-init-failure
+	"$transport_out" lifecycle
 	;;
 *)
 	echo "unknown suite: $suite" >&2

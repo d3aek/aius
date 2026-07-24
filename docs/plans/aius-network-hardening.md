@@ -588,7 +588,9 @@ DHCP.
 
 The repository-pinned NativeEthernet snapshot is the MIT-licensed source from
 `framework-arduinoteensy 1.162.0`. Its `NOTICE.md` records that version and an
-Aius patch list. Required patches are:
+Aius patch list. A checked-in manifest records the upstream SHA-256 for every
+snapshotted file and the patched SHA-256 for every changed file. Required
+patches are:
 
 - `Ethernet.beginNoWait()` initializes stack/callbacks once and returns without
   waiting for link or DHCP;
@@ -598,10 +600,28 @@ Aius patch list. Required patches are:
   capacity;
 - `EthernetServer::begin()` is idempotent and `end()` unregisters its service
   and closes its listener;
-- `Ethernet.end()` closes owned sockets and DHCP without a wait.
+- `Ethernet.end()` invalidates user callbacks, unregisters server and link
+  services, then closes owned sockets and DHCP without a wait;
+- a failed initialization step leaves a state that `end()` can clean and a
+  later `beginNoWait()` can retry without reinitializing an enabled FNET stack.
 
-The source guard rejects unbounded loops in these target-facing functions and
-rejects application FNET includes outside the pinned library.
+The source guard rejects unbounded loops in these target-facing functions. It
+also rejects application FNET includes outside the pinned library, with one
+temporary exact-path exception for the pre-cutover
+`firmware/src/optical_main.cpp`. The guard test proves its
+rejection logic against synthetic forbidden application input and fails if any
+second exception appears. Phase 14 removes the legacy includes and the
+exception in the same commit, after which the full tree has no application
+FNET access.
+
+The native transport suite compiles the patched C++ against fake Arduino/FNET
+primitives. It injects failure at each initialization step and proves retry,
+idempotent ordered teardown, late-callback rejection, DHCP descriptor
+ownership, server service ownership, and zero-capacity/single-send write
+semantics. Text guards supplement this behavioral harness; they are not the
+behavior oracle. The suite also validates the immutable snapshot manifest and
+the PlatformIO resolved-library metadata plus patched symbols from an optical
+build.
 
 ## Bounded SD job ABI
 
@@ -1457,19 +1477,26 @@ and checkpoint persistence semantics. No Teensy register access lands here.
 
 ```yaml
 unit: refactor-target
+status: completed
 seams: [beginNoWait, dhcpStart, dhcpStop, EthernetClient.write, EthernetServer.end, Ethernet.end]
 contract-artifact: spec-only
 dependencies: []
 outcome: "The selected NativeEthernet source exposes only one-shot lifecycle primitives."
 acceptance:
   - vendored source and license provenance match framework 1.162.0
+  - immutable upstream/patched hashes identify every snapshotted file
   - source guard rejects unbounded waits in every target-facing primitive
+  - source guard rejects synthetic application FNET access and permits only the
+    exact legacy optical_main.cpp exception until phase 14
+  - fake FNET failures prove partial initialization can tear down and retry
+  - fake callbacks prove unregister-before-close and late-event rejection
   - begin, write, server end, and stack end each return after one attempt
+  - target metadata and symbols prove PlatformIO selected the patched snapshot
 fan-out:
   - name: agent-nativeethernet-oneshot
     owned-paths:
       - firmware/vendor/NativeEthernet/
-      - firmware/test/network-transport/test_vendor_source.py
+      - firmware/test/network-transport/
       - firmware/platformio.ini
       - firmware/scripts/test.sh
 review-intensity: active
@@ -1832,6 +1859,7 @@ outcome: "setup and loop delegate to the reviewed lifecycle with no legacy path.
 acceptance:
   - setup performs construction only and loop runs one epoch
   - static fallback, raw FNET access, rebind globals, blocking writes, and extra feeds are absent
+  - the network-transport source guard has no application FNET exception
   - status JSON, USB ID, and UDP expose the exact recovery fields
   - production and fault images build and all component suites remain green
 fan-out:
@@ -1843,6 +1871,7 @@ fan-out:
 review-intensity: active
 commit-checkpoint:
   green:
+    - firmware/scripts/test.sh --environment native --suite network-transport
     - firmware/scripts/test.sh --environment native --suite net
     - firmware/scripts/test.sh --environment native --suite http
     - firmware/scripts/test.sh --environment native --suite runtime
@@ -2020,3 +2049,13 @@ pushes.
   delivery audit rejected a self-confirming CRC test and missing invalid-state
   branches; the fixed 24-byte known-answer vector and complete public-interface
   proof passed the clean-room re-audit.
+- Phase 3: native `network-transport` source and ASan/UBSan fake-FNET suites
+  pass across fresh FNET, netif, link, and full-lifecycle processes;
+  `teensy41-optical` builds with only the pinned `AiusNativeEthernet` source,
+  and its post-link symbol proof passes. Four clean-room delivery reviews
+  rejected partial-init deadlock, callback-unsafe teardown, self-confirming
+  source checks, incomplete fault injection, mutable patch identity,
+  bypassable or overbroad loop guards, and late link-state mutation. The final
+  review passed after executable cleanup-time callback injection, exact
+  upstream/patched hashes, target resolver enforcement, and late-event
+  authority revocation were delivered.
