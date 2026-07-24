@@ -760,38 +760,19 @@ public:
 		interrupts();
 	}
 
-	/* Resolve the single const factory config into the runtime output-EQ biquads
-	 * and downmix matrix. Cold path: read only at bring-up (and, later, a config
-	 * apply), so it is FLASHMEM. The default config resolves to a bypass output EQ
-	 * and the standard downmix, i.e. the audio path is bit-identical to the old
-	 * flat-profile + standard-mix default. Input trim/EQ and the limiter are NOT
-	 * wired into the audio path yet (a later slice); only what the audio path
-	 * applies today (output EQ + downmix) is sourced here. */
-	FLASHMEM void apply_config(void)
-	{
-		const AiusOpticalConfig &cfg = AIUS_OPTICAL_CONFIG;
-		g_eq_count = cfg.output_eq_count;
-		for (size_t i = 0; i < g_eq_count && i < 2; i++) {
-			const AiusOpticalEqConfig &section = cfg.output_eq[i];
-			if (section.type == 0)
-				g_eq[i] = aius_biquad_bypass();
-			else if (section.type == 1)
-				g_eq[i] = aius_biquad_highpass(cfg.sample_rate_hz,
-					section.frequency_hz, section.q);
-			else
-				g_eq[i] = aius_biquad_peaking(cfg.sample_rate_hz,
-					section.frequency_hz, section.q, section.gain_db);
-		}
-		memset(g_eq_state, 0, sizeof(g_eq_state));
-		g_downmix = aius_downmix_config_default();
-		g_downmix.center = cfg.matrix.center_gain_linear;
-		g_downmix.surround = cfg.matrix.surround_gain_linear;
-		g_downmix.lfe = cfg.matrix.lfe_gain_linear;
-		if (cfg.matrix.clipfree)
-			g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
-		else
-			g_downmix.headroom = cfg.matrix.headroom_linear;
-	}
+	/* Resolve the single const factory config into the runtime output-EQ biquads,
+	 * downmix matrix, input-channel trim/EQ, and limiter. Cold path: read only at
+	 * bring-up (and, later, a config apply), so it is FLASHMEM. The default config
+	 * resolves to a bypass output EQ, the standard downmix, unity input trim with
+	 * no EQ, and a disabled limiter, i.e. the audio path is bit-identical to the
+	 * old flat-profile + standard-mix default.
+	 *
+	 * Defined out-of-line (below the class) rather than in-body: an in-body
+	 * definition is implicitly inline (vague linkage / comdat), which conflicts
+	 * at compile time with the plain FLASHMEM free functions already sharing the
+	 * .flashmem section ("section type conflict") once the function is too large
+	 * to fully inline away. Out-of-line gives it ordinary linkage instead. */
+	FLASHMEM void apply_config(void);
 
 protected:
 	void update(void) override
@@ -847,6 +828,19 @@ private:
 	AiusBiquad g_eq[2];
 	AiusBiquadState g_eq_state[4] = {};
 	size_t g_eq_count = 0;
+	/* Input stage: per-channel trim + up to two EQ sections, wired from
+	 * AIUS_OPTICAL_CONFIG.input_channels[]. The scratch planes are hot per-block
+	 * staging buffers input_stage_apply() copies decoded planes into before
+	 * trim/EQ (see aius_dsp.h); sized to the largest block enqueue() accepts
+	 * (AUDIO_BLOCK_SAMPLES * 4 frames) across all AIUS_MAX_CHANNELS planes. */
+	AiusInputStage g_input_stage = aius_input_stage_default();
+	AiusBiquad g_input_eq[AIUS_DSP_INPUT_CHANNELS][AIUS_DSP_INPUT_EQ_MAX] = {};
+	AiusBiquadState g_input_eq_state[AIUS_DSP_INPUT_CHANNELS][AIUS_DSP_INPUT_EQ_MAX] = {};
+	static constexpr uint32_t INPUT_SCRATCH_FRAMES = AUDIO_BLOCK_SAMPLES * 4;
+	int32_t g_input_scratch[AIUS_MAX_CHANNELS][INPUT_SCRATCH_FRAMES];
+	bool g_input_stage_active = false;
+	AiusLimiter g_limiter = {};
+	bool g_limiter_active = false;
 
 	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
@@ -870,6 +864,8 @@ private:
 		dsp.eq = g_eq;
 		dsp.eq_sections = g_eq_count;
 		dsp.eq_state = g_eq_state;
+		dsp.input = g_input_stage_active ? &g_input_stage : nullptr;
+		dsp.limiter = g_limiter_active ? &g_limiter : nullptr;
 		AiusStatus dsp_status = aius_dsp_process(&dsp, block, &processed);
 		if (dsp_status != AIUS_OK)
 			return dsp_status;
@@ -916,6 +912,64 @@ private:
 		release(right);
 	}
 };
+
+FLASHMEM void AiusAudioProcessor::apply_config(void)
+{
+	const AiusOpticalConfig &cfg = AIUS_OPTICAL_CONFIG;
+	g_eq_count = cfg.output_eq_count;
+	for (size_t i = 0; i < g_eq_count && i < 2; i++) {
+		const AiusOpticalEqConfig &section = cfg.output_eq[i];
+		if (section.type == 0)
+			g_eq[i] = aius_biquad_bypass();
+		else if (section.type == 1)
+			g_eq[i] = aius_biquad_highpass(cfg.sample_rate_hz,
+				section.frequency_hz, section.q);
+		else
+			g_eq[i] = aius_biquad_peaking(cfg.sample_rate_hz,
+				section.frequency_hz, section.q, section.gain_db);
+	}
+	memset(g_eq_state, 0, sizeof(g_eq_state));
+	g_downmix = aius_downmix_config_default();
+	g_downmix.center = cfg.matrix.center_gain_linear;
+	g_downmix.surround = cfg.matrix.surround_gain_linear;
+	g_downmix.lfe = cfg.matrix.lfe_gain_linear;
+	if (cfg.matrix.clipfree)
+		g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
+	else
+		g_downmix.headroom = cfg.matrix.headroom_linear;
+
+	for (size_t c = 0; c < AIUS_DSP_INPUT_CHANNELS; c++) {
+		const AiusOpticalInputChannelConfig &ic = cfg.input_channels[c];
+		AiusInputChannelConfig &channel = g_input_stage.channels[c];
+		channel.gain_linear = aius_db_to_linear(ic.gain_db);
+		channel.eq_sections = ic.eq_count;
+		for (size_t i = 0; i < ic.eq_count && i < AIUS_DSP_INPUT_EQ_MAX; i++) {
+			const AiusOpticalEqConfig &section = ic.eq[i];
+			if (section.type == 0)
+				g_input_eq[c][i] = aius_biquad_bypass();
+			else if (section.type == 1)
+				g_input_eq[c][i] = aius_biquad_highpass(cfg.sample_rate_hz,
+					section.frequency_hz, section.q);
+			else
+				g_input_eq[c][i] = aius_biquad_peaking(cfg.sample_rate_hz,
+					section.frequency_hz, section.q, section.gain_db);
+		}
+		channel.eq = g_input_eq[c];
+		channel.eq_state = g_input_eq_state[c];
+	}
+	memset(g_input_eq_state, 0, sizeof(g_input_eq_state));
+	for (size_t p = 0; p < AIUS_MAX_CHANNELS; p++)
+		g_input_stage.scratch[p] = g_input_scratch[p];
+	g_input_stage_active = cfg.features.input_eq != 0;
+
+	g_limiter.cfg.enabled = cfg.limiter.enabled;
+	g_limiter.cfg.threshold_dbfs = cfg.limiter.threshold_dbfs;
+	g_limiter.cfg.attack_ms = cfg.limiter.attack_ms;
+	g_limiter.cfg.release_ms = cfg.limiter.release_ms;
+	g_limiter.cfg.lookahead_ms = cfg.limiter.lookahead_ms;
+	memset(&g_limiter.state, 0, sizeof(g_limiter.state));
+	g_limiter_active = cfg.features.limiter != 0;
+}
 
 uint8_t AiusAudioProcessor::g_arena_memory[AiusAudioProcessor::ARENA_BYTES]
 	__attribute__((aligned(16)));

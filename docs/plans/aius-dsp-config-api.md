@@ -249,6 +249,22 @@ buffer, not a stack bump. Wire the input-stage trim/EQ and the limiter into the
 audio apply here (they exist in `aius_dsp` but are not yet applied). **Gate:**
 native config / SD-round-trip tests + target smoke, no flash writes.
 
+**Input trim/EQ + limiter wiring done.** `AiusAudioProcessor::apply_config()`
+(`src/optical_main.cpp`) now resolves `AIUS_OPTICAL_CONFIG.input_channels[]` into
+an `AiusInputStage` (per-channel trim + up to two EQ sections, backed by static
+scratch planes sized to the largest decoded block) and `AIUS_OPTICAL_CONFIG.limiter`
+into an `AiusLimiter`; `enqueue()` passes both into `AiusDspConfig` gated by
+`features.input_eq` / `features.limiter`. `apply_config()` moved out-of-line (it is
+a class member so an in-body definition has vague/comdat linkage, which no longer
+compiles once it is too large to always-inline alongside the plain `FLASHMEM` free
+functions already sharing the `.flashmem` section — GCC's "section type conflict").
+Default config is still bypass-equivalent (unity trim, no EQ, disabled limiter), so
+default audio is unchanged by construction. `teensy41-optical` and
+`teensy41-optical-fault` both build; RAM1 free-for-locals is 22,684 B (the ~12 KB
+input-stage scratch consumes most of the 22→38 KB headroom the earlier OCRAM move
+freed, still comfortable margin). PUT `/api/dsp/config`, SD persistence, and the
+block-boundary generation swap are still open below.
+
 ### Meters endpoint + accumulate wiring
 
 `GET /api/meters` from the coherent snapshot; wire the per-block meter accumulate
