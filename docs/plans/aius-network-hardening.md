@@ -1389,6 +1389,7 @@ typedef struct {
     char sd_temp_path[AIUS_SD_PATH_STORAGE];
     char sd_backup_path[AIUS_SD_PATH_STORAGE];
     char content_type[AIUS_HTTP_CONTENT_TYPE_STORAGE];
+    char sd_content_type[AIUS_HTTP_CONTENT_TYPE_STORAGE];
     AiusHttpFault last_fault;
     AiusSdFault last_sd_fault;
     uint32_t last_driver_fault;
@@ -1557,12 +1558,18 @@ The application response is borrowed through its correlated step only:
   header.
 
 For `SD_JOB`, the transaction validates the request and copies all three path
-strings and the content type into its fixed storage. Its stored
-`AiusSdJobRequest` points only into that storage. The returned `SD_START`
-points to the stored request, so the runtime can synchronously call
-`aius_sd_job_start()` before the next HTTP step without borrowing application
-memory. `SD_START` starts the SD job with deadline zero; HTTP owns the
-inactivity deadline and cancellation protocol.
+strings into its fixed path storage. A non-null `sd_job.content_type` must be a
+NUL-terminated string of `1..AIUS_HTTP_CONTENT_TYPE_STORAGE-1` bytes and is
+copied separately into `sd_content_type`; a null value remains null. The
+stored `AiusSdJobRequest` points only into those retained fields. The top-level
+response content type is always copied into `content_type`. For `DOWNLOAD`,
+both content-type fields describe the downloaded representation and must be
+byte-for-byte equal; for other job kinds they are independent and follow the
+committed SD request-field table. The returned `SD_START` points to the stored
+request, so the runtime can synchronously call `aius_sd_job_start()` before the
+next HTTP step without borrowing application memory. `SD_START` starts the SD
+job with deadline zero; HTTP owns the inactivity deadline and cancellation
+protocol.
 
 Permitted application statuses are `200`, `201`, `204`, `400`, `401`, `403`,
 `404`, `405`, `408`, `409`, `413`, `416`, `500`, `503`, and `507`.
@@ -1624,16 +1631,17 @@ completing before all declared bytes were supplied, inconsistent download
 sizes, zero/oversized chunks, or bytes beyond the declared body is a protocol
 fault followed by cancellation.
 
-`SD_CANCEL` begins an acknowledged drain, not a notification. The runtime
-resolves any outstanding download `OUTPUT` with failure, calls
-`aius_sd_job_cancel()` exactly once, and returns `SD_PROGRESS` unless the job
-is already terminal. The transaction then issues `SD_STEP/ADVANCE` epochs,
-each performing at most one SD action, until rollback/cleanup returns
-`CANCELLED`. `sd_cancel_emitted` prevents a second cancel call. Cleanup or
-rollback failure remains the authoritative `last_sd_fault` over the original
-transport fault or timeout. HTTP does not restart, reset either buffer, or
-allow another accept until both `transport_terminal` and `sd_terminal` are
-true.
+`SD_CANCEL` begins an acknowledged drain, not a notification. Before calling
+cancel, the runtime feeds any retained adapter result to the job so its
+correlated driver action is resolved, or resolves an outstanding download
+`OUTPUT` with failure. It then calls `aius_sd_job_cancel()` exactly once and
+returns `SD_PROGRESS` unless the job is already terminal. The transaction then
+issues `SD_STEP/ADVANCE` epochs, each performing at most one SD action, until
+rollback/cleanup returns `CANCELLED`. `sd_cancel_emitted` prevents a second
+cancel call. Cleanup or rollback failure remains the authoritative
+`last_sd_fault` over the original transport fault or timeout. HTTP does not
+restart, reset either buffer, or allow another accept until both
+`transport_terminal` and `sd_terminal` are true.
 
 HTTP never calls a socket or file API and never loops over transport or SD
 progress.
