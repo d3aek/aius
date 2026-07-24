@@ -2491,6 +2491,9 @@ fan-out:
   - name: agent-http-transaction-engine
     owned-paths:
       - firmware/lib/aius_http/src/aius_http_transaction.c
+  - name: agent-http-target-build-wiring
+    owned-paths:
+      - firmware/platformio.ini
   - name: agent-http-independent-oracle
     owned-paths:
       - firmware/test/http/
@@ -2506,8 +2509,12 @@ commit-checkpoint:
 
 Run the slices sequentially. The codec slice lands the reviewed public framing
 header and narrow transaction header. The engine slice implements only the new
-transaction source. After the parent verifies that implementation against the
-committed headers, a fresh oracle agent reads the plan and public headers but
+transaction source. The target-build slice keeps `platformio.ini` as the
+single source of truth by explicitly compiling `aius_http.c`,
+`aius_http_transaction.c`, and `aius_sd.c`, exposing their include directories,
+and excluding `aius_http` and `aius_sd` from PlatformIO library discovery. After
+the parent verifies that implementation against the committed headers and the
+target build passes, a fresh oracle agent reads the plan and public headers but
 not either implementation source, then authors the independent
 transition/model/property suite and runner registration. Phase 6 does not edit
 `optical_main.cpp`, add a Teensy SD adapter, or cut over the runtime; those
