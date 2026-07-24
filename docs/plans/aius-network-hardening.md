@@ -372,11 +372,20 @@ tuple and exposes these exact CLI operations:
 - `environment-metadata --pio PATH --core-dir PATH` prints one canonical
   single-line JSON object with `schema`, `revision`,
   `platformio_core_version`, and `toolchain_version`;
+- `environment-context --pio PATH --core-dir PATH` performs one fingerprint
+  pass and prints canonical JSON with exact keys `metadata` (the complete
+  environment-metadata object), `pythonpath` (the path-separator-joined lexical
+  import roots), and `revision` (equal to `metadata.revision`);
 - `image-metadata --source-revision REV --build-environment-revision REV
   --environment ENV [--selector N]` prints one canonical single-line JSON
   object with `source_revision`, `build_environment_revision`, `environment`,
   nullable `selector`, `build_revision`, integer `build_id_u32`, and
   eight-lowercase-hex `build_id`;
+- `create-receipt` requires one argument for every non-schema receipt field
+  below, accepts `--selector` only as integer `0..8`, and prints the exact
+  canonical receipt;
+- `validate-build-log --path PATH` emits nothing only when the log contains
+  exactly one retained-slot proof line, otherwise fails;
 - `validate-evidence --repository-root PATH --pio PATH --core-dir PATH
   --evidence-root PATH` validates the complete ten-image receipt matrix.
 
@@ -425,7 +434,7 @@ ordered labels:
 
 1. `pio-launcher`: absolute launcher entry, link chain, and resolved file;
 2. `python-executable`: absolute shebang entry, link chain, and resolved file;
-3. `python-venv-config`: the launcher prefix's `pyvenv.cfg`, when present;
+3. `python-venv-config`: the reported `sys.prefix` `pyvenv.cfg`, when present;
 4. `python-stdlib`: that interpreter's complete standard-library root;
 5. `python-import-000..N`: the sorted unique existing import roots discovered
    for the actually imported PlatformIO and SCons packages;
@@ -463,6 +472,13 @@ covered by its root's `E` records. Thus `/usr/bin` alternatives such as
 target strings plus terminal bytes. Starting absolute root locations remain
 labels, not hash inputs.
 
+A labeled root whose `.` entry is a symlink to a directory is the one directory
+exception: after its `S` hops it emits
+`D\0<label>\0.\0<mode>\0`, where mode is the resolved terminal directory's six
+lowercase octal permission bits, then traverses that directory with relative
+`E` records. This preserves lexical virtualenv/import-root link identity.
+Non-root symlinks to external directories remain errors.
+
 The `--pio` CLI value must be absolute. It is resolved strictly through every
 symlink to an executable regular file. Its first line must be exactly
 `#!<absolute-python-path>` with no argument; `/usr/bin/env`, relative, missing,
@@ -471,13 +487,16 @@ execution so a virtual-environment prefix is not erased by symlink resolution;
 its `.` link path uses the `S`/`F` chain above under the exact labels
 `pio-launcher` and `python-executable`. The fixed
 `<shebang-python> -c <probe>` imports `platformio` and
-`SCons`, then emits canonical JSON containing `sysconfig.get_path("stdlib")`
-and the sorted unique existing parents that contain those imported packages,
-`purelib`, and `platlib`. It runs with no `-S`, so pre-3.14 virtual-environment
-and user-site behavior matches the launcher. Missing imports, extra probe
-output, or a package outside the reported roots fails. The launcher prefix's
-`pyvenv.cfg`, if present, and every reported root are fingerprinted. Native
-tests mutate a file in the actually imported PlatformIO root and require the
+`SCons`, then emits canonical JSON containing lexical absolute paths for
+`sys.prefix`, `sysconfig.get_path("stdlib")`, and the sorted unique existing
+parents that contain those imported packages, `purelib`, and `platlib`. Neither
+the probe nor caller resolves those roots before fingerprinting. It runs with
+no `-S`, so pre-3.14 virtual-environment and user-site behavior matches the
+launcher. Missing imports, extra probe output, or a package outside the
+reported roots fails. `<reported-sys.prefix>/pyvenv.cfg`, if present, and every
+lexical reported root are fingerprinted. Native tests invoke the unresolved
+launcher entry, cover a symlinked shebang virtualenv and symlinked import root,
+mutate the actual `pyvenv.cfg` and imported PlatformIO bytes, and require each
 environment revision to change.
 
 The wrapper computes the revision before and after the build. PIO runs through
@@ -553,6 +572,15 @@ transient worktree mutation isolation; nonempty or escaping snapshot
 destinations; post-build source, environment, dirty,
 snapshot, copy, hash, and post-link failure; stale-receipt invalidation; atomic
 exact-schema publication; and the complete ten-receipt matrix validator.
+Wrapper tests independently run production and selectors `0..8`; exhaust
+missing/extra/invalid selector and argument shapes; prove staged, unstaged, and
+untracked input rejection occurs before PIO; inject copy and hash command
+failure; and cover malformed/missing Git roots. Image tests prove timestamps do
+not change revision or ID. The environment oracle computes record bytes without
+calling the production record builder and covers regular/directory/symlink
+known answers, launcher/interpreter/root link chains, cycle, dangling, special
+file, external-directory rejection, root-change races, and imported package
+and `pyvenv.cfg` mutation.
 
 Each atomic receipt has exactly these keys and JSON types:
 
@@ -3785,6 +3813,51 @@ fan-out:
     owned-paths:
       - firmware/platformio.ini
       - firmware/scripts/test.sh
+evidence-closure-fan-out:
+  implementation-chain:
+    - name: agent-evidence-manifest-snapshot
+      concern: tracked manifest, cleanliness, immutable snapshot
+      owned-paths: [firmware/scripts/build_metadata.py]
+    - name: agent-evidence-environment
+      concern: external environment record and link closure
+      start-after: [agent-evidence-manifest-snapshot]
+      owned-paths: [firmware/scripts/build_metadata.py]
+    - name: agent-evidence-image-identity
+      concern: selector metadata and build ID
+      start-after: [agent-evidence-environment]
+      owned-paths: [firmware/scripts/build_metadata.py]
+    - name: agent-evidence-receipt-validator
+      concern: receipt publication, log proof, ten-image validator
+      start-after: [agent-evidence-image-identity]
+      owned-paths: [firmware/scripts/build_metadata.py]
+    - name: agent-evidence-wrapper
+      concern: lock, snapshot build, failure invalidation, artifact publication
+      start-after: [agent-evidence-receipt-validator]
+      owned-paths: [firmware/scripts/build.sh]
+  metadata-oracle-chain:
+    source-blind: true
+    slices:
+      - name: agent-evidence-manifest-snapshot-oracle
+        concern: manifest/dirty/snapshot black-box model
+        owned-paths: [firmware/test/build-metadata/test_build_metadata.py]
+      - name: agent-evidence-environment-oracle
+        concern: independent environment-record/link model
+        start-after: [agent-evidence-manifest-snapshot-oracle]
+        owned-paths: [firmware/test/build-metadata/test_build_metadata.py]
+      - name: agent-evidence-image-oracle
+        concern: production/selectors/timestamp known-answer vectors
+        start-after: [agent-evidence-environment-oracle]
+        owned-paths: [firmware/test/build-metadata/test_build_metadata.py]
+  publication-oracle-chain:
+    source-blind: true
+    slices:
+      - name: agent-evidence-receipt-validator-oracle
+        concern: exact receipt and ten-image mutation matrix
+        owned-paths: [firmware/test/build-metadata/test_build_evidence.py]
+      - name: agent-evidence-wrapper-oracle
+        concern: invocation, dirt, copy/hash, and publication failures
+        start-after: [agent-evidence-receipt-validator-oracle]
+        owned-paths: [firmware/test/build-metadata/test_build_evidence.py]
 review-intensity: active
 commit-checkpoint:
   implementation-baseline:
@@ -3797,6 +3870,10 @@ commit-checkpoint:
       - firmware/scripts/build.sh teensy41-optical
       - firmware/scripts/build.sh teensy41-optical-fault 0
     parent-commit: "feat(aius): add retained Teensy watchdog adapter"
+  identity-correction:
+    green:
+      - firmware/scripts/test.sh --environment native --suite build-metadata
+    parent-commit: "feat(aius): harden firmware evidence identity"
   green:
     - firmware/scripts/test.sh --environment native --suite boot
     - firmware/scripts/test.sh --environment native --suite boot-target
@@ -3843,6 +3920,16 @@ the retained-slot post-link success marker. The validator rejects extra or
 missing evidence directories/files and malformed diagnostic commits, but
 diagnostic `source_commit` values may differ when unrelated commits advanced.
 This transient build evidence is not committed.
+
+The original build-identity slice predates the expanded evidence contract and
+is historical. Evidence closure uses the three concern-sized chains above.
+The implementation chain is serialized because its slices deepen one module;
+the metadata-oracle and publication-oracle chains run in parallel with it and
+with each other because they own disjoint test paths and remain source-blind.
+Within each chain, overlapping owned paths serialize. No correction prompt may
+span two listed concerns. The identity-correction checkpoint requires all
+three chains, a frozen-tree registered suite, and a clean-room delivery audit
+before the first acceptance receipt build.
 
 Phase 13 has two explicit parent checkpoints because a receipt cannot identify
 a commit before that commit exists. The implementation-baseline checkpoint
@@ -4361,4 +4448,10 @@ invalidated Phase 17 gate before the same plan-wide reviewer reruns.
   those findings. The following re-gate rejected unspecified launcher/interpreter
   link-chain encoding and the impossible rejection of real `/usr/bin`
   alternative links. Exact `S`/`F` closure records now bind outbound link
-  targets and terminal file bytes; a fresh re-gate is required.
+  targets and terminal file bytes; the next plan gate passed. The first
+  identity delivery audit then rejected erased symlinked-virtualenv identity,
+  incomplete negative/source-blind proof, undocumented public CLI operations,
+  and a phase-sized identity slice. Lexical import roots, `sys.prefix`
+  authority, `D` records, the exact expanded CLI, exhaustive cases, and the
+  three concern-sized chains above define the correction; a fresh plan gate is
+  required before correction dispatch.
