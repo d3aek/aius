@@ -553,8 +553,10 @@ WDOG_WCR_SRE`, selecting the pinned 8-second interval. Feed writes `0x5555`
 then `0xAAAA` exactly once each. Null/incomplete hardware primitives return
 false before any write.
 
-The linked `g_aius_boot_slots` symbol must be 32-byte aligned, occupy exactly
-128 bytes in `.dmabuffers`, and satisfy
+The source `g_aius_boot_slots` object uses the `DMAMEM` input section
+`.dmabuffers`; the pinned Teensy 4.1 linker script maps that input into linked
+output section `.bss.dma`. The linked symbol must be 32-byte aligned, occupy
+exactly 128 bytes in `.bss.dma`, and satisfy
 `address + 128 <= 0x2027ff80`. A post-link check fails every production or
 fault build otherwise; this is the compile-time guard against overlap with the
 pinned CrashReport range `0x2027ff80..0x2027ffff`.
