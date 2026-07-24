@@ -1,7 +1,5 @@
 #include "aius_sd.h"
 
-#include "aius_config.h"
-
 #include <limits.h>
 #include <string.h>
 
@@ -230,12 +228,16 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 	if (request->kind != AIUS_SD_JOB_DELETE &&
 	    request->require_existing)
 		return AIUS_SD_FAULT_INVALID_REQUEST;
+	if (request->publish && request->publish_capacity == 0u)
+		return AIUS_SD_FAULT_INVALID_REQUEST;
+	if (!request->publish && request->publish_capacity != 0u)
+		return AIUS_SD_FAULT_INVALID_REQUEST;
 
 	switch (request->kind) {
 	case AIUS_SD_JOB_PROBE:
 	case AIUS_SD_JOB_USAGE_REFRESH:
 		if (request->total != 0u || request->initial_offset != 0u ||
-		    request->publish_config || request->content_type != NULL ||
+		    request->publish || request->content_type != NULL ||
 		    request->target_path != NULL || request->temp_path != NULL ||
 		    request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -243,17 +245,17 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 
 	case AIUS_SD_JOB_CONFIG_LOAD:
 		if (request->total != 0u || request->initial_offset != 0u ||
-		    !request->publish_config || request->content_type == NULL ||
+		    !request->publish || request->content_type == NULL ||
 		    request->temp_path != NULL || request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
-		if (job->capacity < AIUS_CONFIG_MAX_JSON_BYTES)
+		if (job->capacity < request->publish_capacity)
 			return AIUS_SD_FAULT_CAPACITY;
 		if (!copy_canonical_path(request->target_path, target))
 			return AIUS_SD_FAULT_PATH;
 		break;
 
 	case AIUS_SD_JOB_DOWNLOAD:
-		if (request->publish_config || request->content_type == NULL ||
+		if (request->publish || request->content_type == NULL ||
 		    request->temp_path != NULL || request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
 		if (!copy_canonical_path(request->target_path, target))
@@ -262,7 +264,7 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 
 	case AIUS_SD_JOB_DELETE:
 		if (request->total != 0u || request->initial_offset != 0u ||
-		    request->publish_config || request->content_type != NULL ||
+		    request->publish || request->content_type != NULL ||
 		    request->temp_path != NULL || request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
 		if (!copy_canonical_path(request->target_path, target))
@@ -270,7 +272,7 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 		break;
 
 	case AIUS_SD_JOB_REPLAY_REFILL:
-		if (request->total == 0u || request->publish_config ||
+		if (request->total == 0u || request->publish ||
 		    request->content_type != NULL || request->temp_path != NULL ||
 		    request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -290,14 +292,12 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 					: AIUS_SD_FAULT_PATH;
 			if (!paths_are_distinct(target, temp, backup))
 				return AIUS_SD_FAULT_PATH;
-			if (request->publish_config) {
+			if (request->publish) {
 				if (request->content_type == NULL ||
 				    request->total == 0u ||
-				    request->total >
-					    AIUS_CONFIG_MAX_JSON_BYTES)
+				    request->total > request->publish_capacity)
 					return AIUS_SD_FAULT_INVALID_REQUEST;
-				if (job->capacity <
-				    AIUS_CONFIG_MAX_JSON_BYTES)
+				if (job->capacity < request->publish_capacity)
 					return AIUS_SD_FAULT_CAPACITY;
 			} else if (request->content_type != NULL) {
 				return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -305,7 +305,7 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 			break;
 
 		case AIUS_SD_INSTALL_APPEND_PART:
-			if (request->publish_config ||
+			if (request->publish ||
 			    request->content_type != NULL ||
 			    request->temp_path != NULL ||
 			    request->backup_path != NULL)
@@ -321,16 +321,14 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 				return AIUS_SD_FAULT_PATH;
 			if (!paths_are_distinct(target, temp, backup))
 				return AIUS_SD_FAULT_PATH;
-			if (request->publish_config) {
+			if (request->publish) {
 				uint64_t final_size =
 					request->initial_offset + request->total;
 				if (request->content_type == NULL ||
 				    final_size == 0u ||
-				    final_size >
-					    AIUS_CONFIG_MAX_JSON_BYTES)
+				    final_size > request->publish_capacity)
 					return AIUS_SD_FAULT_INVALID_REQUEST;
-				if (job->capacity <
-				    AIUS_CONFIG_MAX_JSON_BYTES)
+				if (job->capacity < request->publish_capacity)
 					return AIUS_SD_FAULT_CAPACITY;
 			} else if (request->content_type != NULL) {
 				return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -401,7 +399,8 @@ void aius_sd_job_start(AiusSdJob *job,
 	job->total = request_copy.total;
 	job->end_offset = request_copy.initial_offset + request_copy.total;
 	job->deadline_ms = deadline_ms;
-	job->publish_config = request_copy.publish_config;
+	job->publish = request_copy.publish;
+	job->publish_capacity = request_copy.publish_capacity;
 	job->require_existing =
 		request_copy.kind == AIUS_SD_JOB_DELETE &&
 		request_copy.require_existing;
@@ -435,7 +434,7 @@ static void select_existence(AiusSdJob *job,
 static void continue_after_committed_backup(AiusSdJob *job)
 {
 	job->backup_moved = false;
-	if (job->publish_config) {
+	if (job->publish) {
 		job->config_bytes = 0u;
 		set_phase(job, AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
 		          AIUS_SD_PUBLISH);
@@ -1035,7 +1034,7 @@ static void select_post_commit(AiusSdJob *job)
 		select_existence(
 			job, AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
 			AIUS_SD_CLEANUP);
-	} else if (job->publish_config) {
+	} else if (job->publish) {
 		job->config_bytes = 0u;
 		set_phase(job, AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
 		          AIUS_SD_PUBLISH);
@@ -1281,7 +1280,7 @@ static void handle_size_event(AiusSdJob *job, uint64_t size)
 	switch (job->phase) {
 	case AIUS_SD_PHASE_CONFIG_SIZE:
 		job->captured_size = size;
-		if (size == 0u || size > AIUS_CONFIG_MAX_JSON_BYTES ||
+		if (size == 0u || size > job->publish_capacity ||
 		    size > job->capacity) {
 			record_fault(job, AIUS_SD_FAULT_CAPACITY, 0u);
 		} else {
@@ -1345,7 +1344,7 @@ static void handle_size_event(AiusSdJob *job, uint64_t size)
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_SIZE:
 		job->captured_size = size;
 		if (size != job->end_offset || size == 0u ||
-		    size > AIUS_CONFIG_MAX_JSON_BYTES ||
+		    size > job->publish_capacity ||
 		    size > job->capacity) {
 			record_fault(job, AIUS_SD_FAULT_PUBLISH, 0u);
 			set_phase(job, AIUS_SD_PHASE_CLEANUP_CLOSE,

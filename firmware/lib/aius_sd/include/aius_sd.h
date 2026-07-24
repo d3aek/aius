@@ -167,7 +167,16 @@ typedef struct {
 	const char *content_type;
 	uint64_t total;
 	uint64_t initial_offset;
-	bool publish_config;
+	/* When true, the job re-opens the installed/loaded file and hands its
+	 * complete bytes to the caller via one AIUS_SD_ACTION_PUBLISH_CONFIG
+	 * action (mechanism is generic, not feature-config-specific despite the
+	 * action's name). publish_capacity is the caller-supplied maximum byte
+	 * count for that publish (e.g. AIUS_CONFIG_MAX_JSON_BYTES for the
+	 * feature-flag config, or a different caller-owned limit for another
+	 * config-like file); required and validated against job capacity when
+	 * publish is true, must be zero otherwise. */
+	bool publish;
+	size_t publish_capacity;
 	bool require_existing;
 } AiusSdJobRequest;
 
@@ -248,7 +257,8 @@ typedef struct {
 	bool install_failed;
 	bool installed;
 	bool file_open;
-	bool publish_config;
+	bool publish;
+	size_t publish_capacity;
 	bool require_existing;
 	bool close_emitted;
 	bool cancel_requested;

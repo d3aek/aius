@@ -8,7 +8,6 @@
 #define RESPONSE_TIMEOUT_MS UINT32_C(100)
 #define SD_TIMEOUT_MS UINT32_C(2000)
 #define DOWNLOAD_TIMEOUT_MS UINT32_C(10000)
-#define CONFIG_PUBLICATION_MAX UINT64_C(256)
 
 static const uint8_t bad_request_body[] =
 	"{\"ok\":false,\"error\":\"bad_request\"}";
@@ -150,6 +149,10 @@ static bool sd_request_fields_valid(const AiusSdJobRequest *request)
 	if (request->kind != AIUS_SD_JOB_DELETE &&
 	    request->require_existing)
 		return false;
+	/* publish and publish_capacity are paired, never implicit: the caller
+	 * supplies the byte limit for the file it is publishing (Phase 10a). */
+	if (request->publish != (request->publish_capacity != 0u))
+		return false;
 	if (request->total > (uint64_t)INT64_MAX ||
 	    request->initial_offset > (uint64_t)INT64_MAX ||
 	    request->total >
@@ -169,21 +172,21 @@ static bool sd_request_fields_valid(const AiusSdJobRequest *request)
 		return request->install_mode == AIUS_SD_INSTALL_REPLACE &&
 		       !target && !temp && !backup && request->content_type == NULL &&
 		       request->total == 0u && request->initial_offset == 0u &&
-		       !request->publish_config;
+		       !request->publish;
 	case AIUS_SD_JOB_CONFIG_LOAD:
 		return request->install_mode == AIUS_SD_INSTALL_REPLACE &&
 		       target && !temp && !backup && request->content_type != NULL &&
 		       request->total == 0u && request->initial_offset == 0u &&
-		       request->publish_config;
+		       request->publish;
 	case AIUS_SD_JOB_DELETE:
 		return request->install_mode == AIUS_SD_INSTALL_REPLACE &&
 		       target && !temp && !backup && request->content_type == NULL &&
 		       request->total == 0u && request->initial_offset == 0u &&
-		       !request->publish_config;
+		       !request->publish;
 	case AIUS_SD_JOB_DOWNLOAD:
 		return request->install_mode == AIUS_SD_INSTALL_REPLACE &&
 		       target && !temp && !backup && request->content_type != NULL &&
-		       !request->publish_config;
+		       !request->publish;
 	case AIUS_SD_JOB_REPLAY_REFILL:
 		return false;
 	case AIUS_SD_JOB_UPLOAD:
@@ -191,24 +194,24 @@ static bool sd_request_fields_valid(const AiusSdJobRequest *request)
 		case AIUS_SD_INSTALL_REPLACE:
 			return target && temp && backup &&
 			       request->initial_offset == 0u &&
-			       (!request->publish_config ||
+			       (!request->publish ||
 			        (request->total != 0u &&
-			         request->total <= CONFIG_PUBLICATION_MAX &&
+			         request->total <= request->publish_capacity &&
 			         request->content_type != NULL)) &&
-			       (request->publish_config ||
+			       (request->publish ||
 			        request->content_type == NULL);
 		case AIUS_SD_INSTALL_APPEND_PART:
 			return target && !temp && !backup &&
 			       request->content_type == NULL &&
-			       !request->publish_config;
+			       !request->publish;
 		case AIUS_SD_INSTALL_FINALIZE_PART:
 			return target && temp && backup &&
-			       (!request->publish_config ||
+			       (!request->publish ||
 			        (request->content_type != NULL &&
 			         request->initial_offset + request->total != 0u &&
 			         request->initial_offset + request->total <=
-				         CONFIG_PUBLICATION_MAX)) &&
-			       (request->publish_config ||
+				         request->publish_capacity)) &&
+			       (request->publish ||
 			        request->content_type == NULL);
 		default:
 			return false;
@@ -264,7 +267,8 @@ static bool zero_sd_request(const AiusSdJobRequest *request)
 	       request->target_path == NULL && request->temp_path == NULL &&
 	       request->backup_path == NULL && request->content_type == NULL &&
 	       request->total == 0u && request->initial_offset == 0u &&
-	       !request->publish_config && !request->require_existing;
+	       !request->publish && request->publish_capacity == 0u &&
+	       !request->require_existing;
 }
 
 static bool event_common_zero(const AiusHttpEvent *event)

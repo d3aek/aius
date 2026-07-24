@@ -1,5 +1,10 @@
 #include "aius_sd.h"
 
+/* aius_sd.c is no longer coupled to the feature-flag config (Phase 10a): the
+ * publish byte limit is a request field. This suite keeps exercising the
+ * feature-flag config's own limit, so it owns the include the module dropped. */
+#include "aius_config.h"
+
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
@@ -226,7 +231,8 @@ static AiusSdJobRequest request_for(AiusSdJobKind kind)
 	case AIUS_SD_JOB_CONFIG_LOAD:
 		request.target_path = "/config.json";
 		request.content_type = "application/json";
-		request.publish_config = true;
+		request.publish = true;
+		request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 		break;
 	case AIUS_SD_JOB_DOWNLOAD:
 		request.target_path = "/audio/file.bin";
@@ -936,7 +942,8 @@ static void test_install_publication_and_authority(void)
 	AiusSdAction action;
 	AiusSdJobRequest request = upload_request(AIUS_SD_INSTALL_REPLACE);
 	request.total = sizeof(data);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.content_type = "application/json";
 
 	scenario = "replace existing publish";
@@ -981,7 +988,8 @@ static void test_install_publication_and_authority(void)
 	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
 
 	scenario = "install failure without backup preserves temp";
-	request.publish_config = false;
+	request.publish = false;
+	request.publish_capacity = 0u;
 	request.content_type = NULL;
 	action = begin_upload(&job,
 	                      &request,
@@ -1170,7 +1178,7 @@ static void test_request_boundaries(void)
 	struct InvalidRequestCase {
 		AiusSdJobRequest request;
 	};
-	struct InvalidRequestCase invalid[12];
+	struct InvalidRequestCase invalid[14];
 	size_t count = 0u;
 	invalid[count++].request = (AiusSdJobRequest){
 		.kind = (AiusSdJobKind)99, .install_mode = AIUS_SD_INSTALL_REPLACE};
@@ -1184,7 +1192,8 @@ static void test_request_boundaries(void)
 	request.target_path = "/x";
 	invalid[count++].request = request;
 	request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
-	request.publish_config = false;
+	request.publish = false;
+	request.publish_capacity = 0u;
 	invalid[count++].request = request;
 	request = request_for(AIUS_SD_JOB_DOWNLOAD);
 	request.content_type = NULL;
@@ -1199,16 +1208,29 @@ static void test_request_boundaries(void)
 	request.initial_offset = 1u;
 	invalid[count++].request = request;
 	request = upload_request(AIUS_SD_INSTALL_REPLACE);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.total = 0u;
 	request.content_type = "application/json";
 	invalid[count++].request = request;
 	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.content_type = "application/json";
 	invalid[count++].request = request;
 	request = request_for(AIUS_SD_JOB_DELETE);
 	request.content_type = "unexpected";
+	invalid[count++].request = request;
+	/* publish and publish_capacity are paired, never implicit: neither half
+	 * is a valid request on its own. */
+	request = upload_request(AIUS_SD_INSTALL_REPLACE);
+	request.publish = true;
+	request.publish_capacity = 0u;
+	request.total = 1u;
+	request.content_type = "application/json";
+	invalid[count++].request = request;
+	request = request_for(AIUS_SD_JOB_PROBE);
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	invalid[count++].request = request;
 	for (size_t index = 0; index < count; ++index) {
 		scenario = "invalid request field matrix";
@@ -1662,7 +1684,8 @@ static void test_post_commit_fault_precedence(void)
 	AiusSdAction action;
 	AiusSdJobRequest request = upload_request(AIUS_SD_INSTALL_REPLACE);
 	request.total = 1u;
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.content_type = "application/json";
 
 	scenario = "post-commit cleanup plus publish fault";
@@ -1697,7 +1720,8 @@ static void test_post_commit_fault_precedence(void)
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CLEANUP, 51u);
 
 	scenario = "cancel after install commit ignored";
-	request.publish_config = false;
+	request.publish = false;
+	request.publish_capacity = 0u;
 	request.content_type = NULL;
 	action = begin_upload(&job,
 	                      &request,
@@ -2683,7 +2707,8 @@ static AiusSdAction reach_post_commit_publish_open(
 	AiusSdJobRequest request = upload_request(AIUS_SD_INSTALL_REPLACE);
 	AiusSdAction action;
 	request.total = length;
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.content_type = "application/json";
 	action = begin_upload(job,
 	                      &request,
@@ -2947,7 +2972,8 @@ static void test_complete_request_boundary_matrix(void)
 	request.total = 1u;
 	fields[field_count++] = (struct InvalidFieldCase){"delete total", request};
 	request = request_for(AIUS_SD_JOB_DELETE);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	fields[field_count++] = (struct InvalidFieldCase){"delete publish", request};
 	request = request_for(AIUS_SD_JOB_REPLAY_REFILL);
 	request.content_type = "x";
@@ -2959,7 +2985,8 @@ static void test_complete_request_boundary_matrix(void)
 	request.initial_offset = 1u;
 	fields[field_count++] = (struct InvalidFieldCase){"config offset", request};
 	request = request_for(AIUS_SD_JOB_DOWNLOAD);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	fields[field_count++] = (struct InvalidFieldCase){"download publish", request};
 	request = upload_request(AIUS_SD_INSTALL_REPLACE);
 	request.content_type = "x";
@@ -2968,7 +2995,8 @@ static void test_complete_request_boundary_matrix(void)
 	request.content_type = "x";
 	fields[field_count++] = (struct InvalidFieldCase){"final stray content", request};
 	request = upload_request(AIUS_SD_INSTALL_FINALIZE_PART);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.total = CONFIG_LIMIT + 1u;
 	request.content_type = "application/json";
 	fields[field_count++] = (struct InvalidFieldCase){"final publish oversize", request};
@@ -3160,7 +3188,8 @@ static void test_exact_262_id_publication_reserve(void)
 	for (size_t index = 0u; index < sizeof(data); ++index)
 		data[index] = (uint8_t)index;
 	request.total = sizeof(data);
-	request.publish_config = true;
+	request.publish = true;
+	request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	request.content_type = "application/json";
 
 	scenario = "exact 262-id worst-case publication tail";
@@ -3334,7 +3363,8 @@ static AiusSdJobRequest matrix_request(MatrixProfile profile)
 	case MATRIX_REPLACE_PUBLISH:
 		request = upload_request(AIUS_SD_INSTALL_REPLACE);
 		request.total = 1u;
-		request.publish_config = true;
+		request.publish = true;
+		request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 		request.content_type = "application/json";
 		return request;
 	}

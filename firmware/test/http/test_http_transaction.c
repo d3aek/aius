@@ -601,7 +601,7 @@ static void test_application_validation_and_overflow(void)
 
 static AiusHttpApplicationResponse upload_application(
 	AiusSdInstallMode mode, uint64_t total, uint64_t initial_offset,
-	bool publish_config)
+	bool publish)
 {
 	static const uint8_t body[] = "{}";
 	AiusHttpApplicationResponse response =
@@ -609,9 +609,11 @@ static AiusHttpApplicationResponse upload_application(
 		       body, sizeof(body) - 1u, total);
 	response.sd_job.install_mode = mode;
 	response.sd_job.initial_offset = initial_offset;
-	response.sd_job.publish_config = publish_config;
+	response.sd_job.publish = publish;
+	response.sd_job.publish_capacity =
+		publish ? AIUS_CONFIG_MAX_JSON_BYTES : 0u;
 	response.sd_job.content_type =
-		publish_config ? "application/json" : NULL;
+		publish ? "application/json" : NULL;
 	if (mode == AIUS_SD_INSTALL_APPEND_PART) {
 		response.sd_job.temp_path = NULL;
 		response.sd_job.backup_path = NULL;
@@ -662,7 +664,7 @@ static void test_upload_application_modes_and_publication_sizes(void)
 		assert(action.sd_request->total == 1);
 		assert(action.sd_request->initial_offset ==
 		       modes[i].initial_offset);
-		assert(!action.sd_request->publish_config);
+		assert(!action.sd_request->publish);
 		assert(action.sd_request->content_type == NULL);
 		if (modes[i].mode == AIUS_SD_INSTALL_APPEND_PART) {
 			assert(action.sd_request->temp_path == NULL);
@@ -711,7 +713,7 @@ static void test_upload_application_modes_and_publication_sizes(void)
 			&fixture, 0, application_result(&dispatch, &response));
 		if (publication[i].valid) {
 			assert(action.kind == AIUS_HTTP_ACTION_SD_START);
-			assert(action.sd_request->publish_config);
+			assert(action.sd_request->publish);
 			assert(strcmp(action.sd_request->content_type,
 			              "application/json") == 0);
 			publication_valid++;
@@ -754,7 +756,8 @@ static AiusHttpApplicationResponse control_application(AiusSdJobKind kind)
 	if (kind == AIUS_SD_JOB_CONFIG_LOAD) {
 		response.sd_job.target_path = "/config";
 		response.sd_job.content_type = "application/json";
-		response.sd_job.publish_config = true;
+		response.sd_job.publish = true;
+		response.sd_job.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
 	} else if (kind == AIUS_SD_JOB_DELETE) {
 		response.sd_job.target_path = "/delete";
 	}
@@ -791,17 +794,17 @@ static void test_control_job_application_validation(void)
 		if (kinds[i] == AIUS_SD_JOB_CONFIG_LOAD) {
 			assert(strcmp(action.sd_request->target_path,
 			              "/config") == 0);
-			assert(action.sd_request->publish_config);
+			assert(action.sd_request->publish);
 			assert(strcmp(action.sd_request->content_type,
 			              "application/json") == 0);
 		} else if (kinds[i] == AIUS_SD_JOB_DELETE) {
 			assert(strcmp(action.sd_request->target_path,
 			              "/delete") == 0);
-			assert(!action.sd_request->publish_config);
+			assert(!action.sd_request->publish);
 			assert(action.sd_request->content_type == NULL);
 		} else {
 			assert(action.sd_request->target_path == NULL);
-			assert(!action.sd_request->publish_config);
+			assert(!action.sd_request->publish);
 			assert(action.sd_request->content_type == NULL);
 		}
 		valid_trials++;
@@ -855,8 +858,15 @@ static void test_control_job_application_validation(void)
 				response.sd_job.backup_path = "/forbidden";
 				break;
 			case INVALID_CONTROL_PUBLISH:
-				response.sd_job.publish_config =
+				/* Keep publish/publish_capacity paired so the
+				 * kind-specific rule is what rejects, not the
+				 * generic pairing check. */
+				response.sd_job.publish =
 					kinds[i] != AIUS_SD_JOB_CONFIG_LOAD;
+				response.sd_job.publish_capacity =
+					response.sd_job.publish
+						? AIUS_CONFIG_MAX_JSON_BYTES
+						: 0u;
 				break;
 			case INVALID_CONTROL_CONTENT_TYPE:
 				response.sd_job.content_type =
