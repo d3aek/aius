@@ -861,6 +861,7 @@ typedef struct {
     uint64_t captured_size;
     uint64_t transferred;
     uint64_t total;
+    size_t config_bytes;
     size_t requested;
     size_t pending;
     uint32_t deadline_ms;
@@ -880,6 +881,7 @@ typedef struct {
     bool close_emitted;
     bool cancel_requested;
     bool abort_requested;
+    bool action_ids_exhausted;
     bool terminal_emitted;
 } AiusSdJob;
 
@@ -911,6 +913,14 @@ void aius_sd_job_step(
 const AiusSdResult *aius_sd_job_result(
     const AiusSdJob *job);
 ```
+
+Pointer behavior is total: `init(NULL)`, `start(NULL, ...)`, and `cancel(NULL)`
+are no-ops; `supply(NULL, ...)` returns false; `result(NULL)` returns null.
+`start(valid_job, NULL, ...)` records `INVALID_REQUEST`. `step()` initializes a
+non-null action to `NONE` before any validation; a null job then returns, while
+a null action for a live job records `PROTOCOL` and follows authority-safe
+cleanup. `init()` may store an invalid buffer/capacity, but the next start
+rejects it with `CAPACITY`.
 
 Phase 5 adds an unused portable module. It does not move or claim the
 synchronous `optical_main.cpp` SD calls; the Teensy adapter and runtime cutover
@@ -989,10 +999,13 @@ is the checked exclusive end `initial_offset + total`; `captured_size` is the
 last accepted `FILE_SIZE`; and `transferred` counts only acknowledged new
 upload bytes or acknowledged output bytes. Upload remaining bytes are always
 `total - transferred`, and the absolute next write offset is
-`initial_offset + transferred`. `buffer_offset` and `pending` describe only an
-accepted buffer slice awaiting partial write/output completion. `file_open`
-is sole open-handle authority. `mkdir_path_index` selects target, temp, then
-backup as applicable; `mkdir_offset` selects the next proper parent prefix.
+`initial_offset + transferred`. `config_bytes` counts accepted config reads;
+config `READ` uses `buffer + config_bytes` with length
+`captured_size - config_bytes`. `buffer_offset` and `pending` describe only an
+accepted upload/output slice awaiting partial write/output completion.
+`file_open` is sole open-handle authority. `mkdir_path_index` selects target,
+temp, then backup as applicable; `mkdir_offset` selects the next proper parent
+prefix.
 The explicit `phase` values distinguish initial part-size validation,
 append/write, final-size verification, install, rollback, cleanup, and terminal
 emission, including zero-byte uploads.
@@ -1005,13 +1018,19 @@ initializes the returned action fully. IDs are job-object lifetime values:
 `init()` starts at one and `start()` never resets or reuses them. Before a
 normal emission would consume an id above `UINT64_MAX - 3`, the job records
 `OVERFLOW`; the final three ids are reserved for close, rollback, and temp or
-backup cleanup. Terminal notifications are uncorrelated. A new start is
-accepted only after the prior `COMPLETE`/`FAIL` notification has been emitted.
+backup cleanup. Consuming `UINT64_MAX` sets `action_ids_exhausted` and leaves
+`next_action_id` saturated at `UINT64_MAX`; it never increments, wraps, or
+reuses zero. Terminal notifications are uncorrelated. Once exhausted, later
+`start()` calls emit terminal `FAIL/OVERFLOW` without correlated work; only a
+fresh, authority-free `init()` begins a new object lifetime at id one. A new
+start is otherwise accepted only after the prior `COMPLETE`/`FAIL`
+notification has been emitted.
 
 A call while an action is outstanding may supply `NONE`, which must have every
 payload field zero, leaves the job waiting, and emits `NONE`, or the single
-matching event. A non-`NONE` event with no outstanding action records
-`PROTOCOL` and enters cleanup. A zero/wrong action id, wrong event kind,
+matching event. With no outstanding action, only an all-zero `NONE` is valid;
+a payload-bearing `NONE` or any non-`NONE` event records `PROTOCOL` and enters
+cleanup. A zero/wrong action id, wrong event kind,
 malformed payload, or different-action result records `PROTOCOL` and
 `abort_requested` but does not clear the outstanding action: its side effect
 remains unresolved. Only a later well-formed matching event may establish
@@ -1039,7 +1058,7 @@ uncorrelated rows have id zero. Any payload not named below is null/zero:
 | `MKDIR`, `OPEN_READ`, `OPEN_WRITE_TRUNCATE`, `OPEN_APPEND`, `EXISTS`, `REMOVE` | immutable `path` |
 | `SEEK` | 64-bit absolute `offset` |
 | `NEED_INPUT` | `length=requested`, `offset=initial_offset+transferred` |
-| `READ` | mutable job `buffer`, `length=min(capacity, captured target remaining)`, absolute `offset` |
+| `READ` | config: `buffer + config_bytes`, `length=captured_size-config_bytes`, `offset=config_bytes`; download/refill: job `buffer`, `length=min(capacity, end_offset-(initial_offset+transferred))`, absolute `offset=initial_offset+transferred` |
 | `WRITE` | job `buffer + buffer_offset`, `length=pending`, absolute `offset` |
 | `OUTPUT` | immutable job `buffer`, positive acknowledged read `length`, absolute chunk-start `offset` |
 | `FILE_SIZE` | none; it addresses the sole open file |
@@ -1069,7 +1088,7 @@ actions: their borrowed buffer remains immutable until matching `OK`/`FAULT`,
 so the runtime consumes data before reuse.
 
 After an upload file opens, the job enters `NEED_INPUT` and emits length
-`min(capacity, total - offset)`, stored in `requested`. `supply()` succeeds only
+`min(capacity, total - transferred)`, stored in `requested`. `supply()` succeeds only
 in that state with non-null data and length `1..requested` not exceeding the
 remaining total. It copies the bytes into the job buffer, sets `pending`,
 clears `requested`, and selects `WRITE` without a driver action. Null, zero,
@@ -1077,8 +1096,12 @@ clears `requested`, and selects `WRITE` without a driver action. Null, zero,
 never retains caller memory. In the correct `NEED_INPUT` state, zero length is
 `SHORT_IO`; null with positive length, length above requested/remaining, or any
 second/out-of-state supply is `PROTOCOL`. Each records `abort_requested` and
-enters the ordinary close/rollback/disposable-temp cleanup path; `FAILED` is
-selected only after that authority is exhausted.
+enters the ordinary close/rollback/disposable-temp cleanup path. If another
+action is outstanding, the job retains it exactly like malformed correlation
+and waits for its matching result before cleanup. Supply against `IDLE`, or
+against `DONE`/`FAILED` after their terminal notification, returns false
+without mutating the terminal result. `FAILED` is selected only after active
+authority is exhausted.
 Accepted bytes remain job-owned until every partial `WRITE` consumes them.
 Only then is the next `NEED_INPUT` emitted or commit begun.
 
@@ -1102,6 +1125,10 @@ File growth is ignored after `FILE_SIZE`; shrinkage is detected as short I/O.
 | Backup removal fails after commit | Target remains authoritative. Optional publish still runs; terminal result is `FAIL/CLEANUP` with the driver fault. |
 | `PUBLISH_CONFIG` fails | Installed target remains authoritative; never roll back file installation; terminal result is `FAIL/PUBLISH`. |
 
+If both post-commit backup removal and publication fail, `CLEANUP` wins and
+retains the backup-removal driver fault; publication is still attempted but
+does not replace the earlier higher-precedence failure.
+
 Disposable `REPLACE` temp is removed once on pre-install ordinary failure,
 timeout, or cancellation. It is preserved after an install/rollback failure
 for diagnosis and possible manual recovery. `APPEND_PART` target and
@@ -1109,17 +1136,29 @@ for diagnosis and possible manual recovery. `APPEND_PART` target and
 
 `deadline_ms` is an absolute wrapping 32-bit time; zero disables it. A nonzero
 deadline at start must have signed delta `0..INT32_MAX` from `now_ms`.
-`step()` first validates and consumes a supplied matching event, then considers
-`(int32_t)(now_ms - deadline_ms) >= 0`. If that event completes the job, its
-terminal result wins. If it successfully crosses the install commit point,
-the commit wins: target remains authoritative and mandatory backup cleanup plus
-optional publication finish; deadline does not replace success, though those
-later actions may fail. Otherwise equality/expiry after partial progress
-records `TIMEOUT` immediately and enters close, rollback, and disposable-temp
-cleanup. The first abort cause among cancellation, timeout, protocol, short
-I/O, and driver fault is retained; later cleanup or rollback failure overrides
-it with `CLEANUP` or `ROLLBACK`. Timeout never selects an unsafe immediate
-terminal.
+`step()` uses this total precedence:
+
+1. validate and consume one matching event to establish bytes, handle, and file
+   authority;
+2. a successful install rename crosses the commit point and wins over any
+   earlier cancellation or deadline, so target remains authoritative and
+   mandatory post-commit cleanup/publication finishes;
+3. rollback failure overrides every prior cause; cleanup failure overrides
+   every cause except rollback;
+4. an abort cause already recorded before the call wins over ordinary
+   completion from the event;
+5. otherwise an event that completes the job wins before deadline evaluation;
+6. otherwise `(int32_t)(now_ms - deadline_ms) >= 0` records `TIMEOUT` and
+   begins cleanup.
+
+The first ordinary abort cause among cancellation, timeout, protocol, short
+I/O, and driver fault is retained. Thus a preexisting cancellation plus a final
+close/read/write event finishes as `CANCELLED`; the same final event with no
+prior abort completes successfully even at deadline equality. Expiry after
+partial progress retains the progress but times out. If timeout/cancellation
+occurs while an action is outstanding, it records the abort but retains that
+unresolved action until its matching event establishes authority. Timeout
+never selects an unsafe immediate terminal.
 
 `cancel()` is idempotent and sets `cancel_requested`. If an action is
 outstanding, its correlated event is consumed first because the side effect may
@@ -1882,7 +1921,7 @@ adapter into the target but leave legacy runtime composition intact.
 ### Phase 5 — Bounded SD jobs
 
 ```yaml
-unit: component-behind-interface
+unit: phase-task
 seams: [aius_sd_job_step, aius_sd_job_supply, AiusSdAction, AiusSdResult]
 contract-artifact: spec-only
 dependencies: [phase-1]
@@ -1893,10 +1932,12 @@ acceptance:
   - output/config buffer ownership survives partial I/O and correlated acknowledgement
   - invalid paths, capacity, arithmetic, deadlines, and events fail with stable local faults
 fan-out:
-  - name: agent-bounded-sd-job
+  - name: agent-sd-job-engine
     owned-paths:
       - firmware/lib/aius_sd/include/aius_sd.h
       - firmware/lib/aius_sd/src/aius_sd.c
+  - name: agent-sd-independent-oracle
+    owned-paths:
       - firmware/test/sd/test_aius_sd.c
       - firmware/scripts/test.sh
 review-intensity: active
@@ -1908,9 +1949,13 @@ commit-checkpoint:
   parent-commit: "feat(aius): add bounded SD job state machine"
 ```
 
-Implement only the portable SD ABI and scripted transition oracle. The target
-`File` adapter, `optical_main.cpp` wiring, and removal of legacy synchronous SD
-calls remain Phases 10 and 14.
+Run the slices sequentially. The engine agent implements only the public header
+and state engine from the committed plan. After the parent verifies that header
+against the plan, a fresh oracle agent reads the plan and public header but not
+the engine source, then authors the independent transition/model/property
+suite and runner registration. Implement no target adapter. The `File`
+adapter, `optical_main.cpp` wiring, and removal of legacy synchronous SD calls
+remain Phases 10 and 14.
 
 ### Phase 6 — Stateful HTTP transactions
 
@@ -2411,4 +2456,8 @@ pushes.
   first recheck also rejected overloaded internal state, contradictory zero-I/O
   faults, unsafe invalid-supply termination, unresolved side-effect authority,
   and ambiguous deadline precedence; explicit phases/counters and the final
-  payload/correlation/cleanup rules above resolve those findings.
+  payload/correlation/cleanup rules above resolve those findings. The final
+  sizing recheck rejected missing config accumulation, residual abort/id
+  precedence, and one oversized agent; those rules are now total and Phase 5
+  is split into an engine slice followed by an implementation-blind oracle
+  slice.
