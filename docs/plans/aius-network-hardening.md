@@ -384,6 +384,10 @@ Every data command emits no partial stdout on failure and exits nonzero.
 `build.sh` calls these operations; it never carries a second manifest list.
 The manifest revision binds tracked path, mode, and blob identity while
 ignoring commits outside the build/evidence closure.
+Every canonical JSON output in this contract is UTF-8
+`json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`
+followed by exactly one LF. Thus key order is ascending Unicode key order and
+there is no other whitespace.
 
 - source revision is the complete firmware input revision;
 - production identity is
@@ -409,26 +413,50 @@ contain the firmware input revision; they do not identify repository `HEAD`.
 
 Source identity deliberately covers committed repository inputs. External
 compiler inputs have a separate **build environment revision**:
-`sha256:<64 lowercase hex>` over
-`aius-optical-build-environment/1\0` and these ordered labeled roots:
+`sha256:<64 lowercase hex>`. The SHA-256 input begins with the ASCII bytes
+`aius-optical-build-environment/1\0`, followed by records from these exact
+ordered labels:
 
-1. resolved PIO launcher file;
-2. resolved launcher Python executable;
-3. that interpreter's complete standard-library root;
-4. that interpreter's complete `site-packages` root;
-5. `PLATFORMIO_CORE_DIR/platforms/teensy`;
-6. `PLATFORMIO_CORE_DIR/packages`.
+1. `pio-launcher`: resolved PIO launcher file;
+2. `python-executable`: resolved launcher Python executable;
+3. `python-stdlib`: that interpreter's complete standard-library root;
+4. `python-site-packages`: that interpreter's complete `site-packages` root;
+5. `platformio-teensy-platform`: `PLATFORMIO_CORE_DIR/platforms/teensy`;
+6. `platformio-packages`: `PLATFORMIO_CORE_DIR/packages`.
 
-For a file-tree root, records are sorted by UTF-8 relative path bytes and encode
-entry type, POSIX mode, relative path, and SHA-256 of regular-file bytes or
-symlink target bytes, each field NUL-delimited. Directory records encode type,
-mode, path, and an empty digest. `__pycache__`, `.pyc`, and `.pyo` entries are
-the only exclusions. Missing, unreadable, special-device, escaping-symlink, or
-changing roots fail the command. Absolute root locations are labels, not hash
-inputs. The wrapper computes the revision before and after the build. PIO runs
-through `env -i` with only `HOME`, a fixed launcher-plus-system `PATH`,
-`LC_ALL=C`, `TZ=UTC`, `PLATFORMIO_CORE_DIR`, external build/libdeps directories,
-the two validated revision variables, and the validated fault selector.
+Each root includes its `.` entry, followed by descendants sorted by raw
+`os.fsencode` relative-path bytes. A record is the concatenation
+`E\0<label>\0<type>\0<mode>\0<path>\0<digest>\0`. `<type>` is exactly `f`,
+`d`, or `l`; `<mode>` is `stat.S_IMODE` as six lowercase octal digits; `<path>`
+is `.` for the root or the raw slash-separated relative-path bytes; `<digest>`
+is 64 lowercase ASCII SHA-256 hex for regular-file bytes or raw symlink-target
+bytes and is empty for a directory. Root boundaries are therefore explicit in
+the label on every record. A component exactly `__pycache__` and a basename
+ending `.pyc` or `.pyo` are the only exclusions. NUL in a path, missing or
+unreadable roots, non-file/directory/symlink entries, absolute symlink targets,
+lexically escaping symlink targets, or a root that changes across one
+calculation fail the command. Absolute root locations are labels, not hash
+inputs.
+
+The `--pio` CLI value must be absolute. It is resolved strictly through every
+symlink to an executable regular file. Its first line must be exactly
+`#!<absolute-python-path>` with no argument; `/usr/bin/env`, relative, missing,
+or multi-argument shebangs fail. The interpreter is strictly resolved to an
+executable regular file. The command
+`<python> -I -S -c <probe>` obtains `stdlib` and `purelib` from
+`sysconfig.get_path`; the fixed probe emits canonical JSON and no other output.
+Those resolved directories become `python-stdlib` and
+`python-site-packages`.
+
+The wrapper computes the revision before and after the build. PIO runs through
+`env -i` with only `HOME`, `PATH=<resolved-pio-dir>:/usr/bin:/bin`, `LC_ALL=C`,
+`TZ=UTC`, `PLATFORMIO_CORE_DIR`, external build/libdeps directories, the two
+validated revision variables, and the validated fault selector.
+`platformio_core_version` is capture group 1 from the exact trimmed launcher
+output `^PlatformIO Core, version ([0-9A-Za-z.+-]+)$`.
+`toolchain_version` is the exact nonempty first stdout line from
+`PLATFORMIO_CORE_DIR/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-gcc
+--version`; extra leading/trailing whitespace or command failure is rejected.
 Caller-set `AIUS_FIRMWARE_INPUT_REVISION`,
 `AIUS_BUILD_ENVIRONMENT_REVISION`, `AIUS_FAULT_CHECKPOINT`,
 `PLATFORMIO_BUILD_DIR`, or `PLATFORMIO_LIBDEPS_DIR` is rejected before the
@@ -440,11 +468,24 @@ deletes the target receipt, resolves `HEAD^{commit}`, and rejects staged,
 unstaged, or untracked changes in any manifest path before PlatformIO runs.
 The exact snapshot is
 `.pio/source-snapshots/<64-source-hex>/repository/`, containing repo-relative
-manifest paths and a generated marker outside those roots. Preparation exports
-the selected commit into a sibling `mktemp` staging directory, verifies every
-entry against Git, removes write permission from exported entries, and
-atomically replaces only that revision's prior snapshot. A failed export or
-verification removes only its staging directory and publishes no receipt.
+manifest paths and
+`.aius-optical-snapshot.json` at the snapshot repository root, outside those
+paths. The marker is canonical JSON with exactly:
+
+```json
+{
+  "commit": "<40 lowercase hex>",
+  "input_manifest_schema": "aius-optical-input-manifest/1",
+  "schema": "aius-optical-source-snapshot/1",
+  "source_revision": "sha256:<64 lowercase hex>"
+}
+```
+
+Preparation exports the selected commit into a sibling `mktemp` staging
+directory, verifies every entry against Git and the exact marker, removes write
+permission from exported entries and the marker, and atomically replaces only
+that revision's prior snapshot. A failed export or verification removes only
+its staging directory and publishes no receipt.
 PlatformIO receives the snapshot firmware directory as `PROJECT_DIR`, with
 build and libdeps output forced to the live firmware `.pio/` tree; no generated
 file may enter an exported manifest root. `verify-snapshot` runs before and
@@ -498,7 +539,9 @@ Each atomic receipt has exactly these keys and JSON types:
 `build_revision` follows the compact production/fault grammar above. Gate
 equality uses source and build-environment revisions, never the diagnostic
 source commit. `build.log` is the complete PlatformIO stdout/stderr stream and
-must contain that artifact's retained-slot post-link success marker.
+must contain exactly one line matching
+`^retained boot slots: PASS \(0x[0-9a-f]{8}\.\.0x[0-9a-f]{8}, \.bss\.dma\)$`.
+The validator accepts no substring or alternate case as the post-link proof.
 
 The repository build interface is `firmware/scripts/build.sh`
 with arguments `teensy41-optical-fault <checkpoint>`. Its required second
@@ -4262,4 +4305,7 @@ invalidated Phase 17 gate before the same plan-wide reviewer reruns.
   implicit manifest ABI, ambiguous receipt fields/selector encoding, missing
   external tool fingerprints, underspecified snapshot mechanics, and an
   ad-hoc matrix check. The exact CLI/schema/environment/snapshot/validator
-  contracts above resolve those findings; a fresh re-gate is required.
+  contracts above resolve those findings. The focused re-gate then rejected
+  unspecified external-record framing, canonical JSON bytes, launcher
+  resolution, snapshot marker content, and retained-slot log matching. Those
+  encodings are now exact; a fresh re-gate is required.
