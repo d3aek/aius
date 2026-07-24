@@ -3546,6 +3546,16 @@ fan-out:
       - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
+  implementation-baseline:
+    green:
+      - firmware/scripts/test.sh --environment native --suite boot
+      - firmware/scripts/test.sh --environment native --suite boot-target
+      - firmware/scripts/test.sh --environment native --suite fault-target
+      - firmware/scripts/test.sh --environment native --suite build-metadata
+    buildable:
+      - firmware/scripts/build.sh teensy41-optical
+      - firmware/scripts/build.sh teensy41-optical-fault 0
+    parent-commit: "feat(aius): add retained Teensy watchdog adapter"
   green:
     - firmware/scripts/test.sh --environment native --suite boot
     - firmware/scripts/test.sh --environment native --suite boot-target
@@ -3562,7 +3572,7 @@ commit-checkpoint:
     - firmware/scripts/build.sh teensy41-optical-fault 6
     - firmware/scripts/build.sh teensy41-optical-fault 7
     - firmware/scripts/build.sh teensy41-optical-fault 8
-  parent-commit: "feat(aius): add retained Teensy watchdog adapter"
+  parent-commit: "docs(aius): close retained watchdog evidence"
 ```
 
 Do not claim OCRAM retention until live Phase 17 evidence.
@@ -3585,6 +3595,15 @@ and SHA-256 of both binaries. A gate is complete only when all ten receipts
 match current `HEAD`, their binaries match the recorded hashes, and each
 selector-specific artifact independently passed the retained-slot post-link
 check. This transient build evidence is not committed.
+
+Phase 13 has two explicit parent checkpoints because a receipt cannot identify
+a commit before that commit exists. The implementation-baseline checkpoint
+lands and pushes the reviewed, green, buildable code while Phase 13 remains
+`evidence-pending`; it does not claim completion. Immediately from that clean
+commit, with no later-phase implementation in between, rerun production and
+fault selectors `0..8`, validate all ten current-HEAD receipts, and run the
+complete clean-room delivery audit. Only the second plan/evidence checkpoint
+marks Phase 13 completed.
 
 ### Phase 14 — Optical runtime cutover
 
