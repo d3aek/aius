@@ -514,6 +514,13 @@ This revision claims the enumerated executable/source/package/PATH closure, not
 a hermetic operating-system or kernel identity. Final ELF/HEX hashes are the
 authority for exact produced bytes; the plan does not claim cross-host
 bit-reproducibility. A fully hermetic toolchain image remains deferred.
+The build host, installed tools, and filesystem administration are trusted,
+non-adversarial inputs. The harness must fail closed for ordinary command,
+I/O, and evidence-publication failures, but malicious tool substitution,
+hostile symlink prepopulation, concurrent hostile filesystem mutation, and
+containment as a security boundary are outside this review. Snapshot path
+checks prevent accidental aliasing and stale output reuse; they do not claim
+to defend a compromised build host.
 Caller-set `AIUS_FIRMWARE_INPUT_REVISION`,
 `AIUS_BUILD_ENVIRONMENT_REVISION`, `AIUS_FAULT_CHECKPOINT`,
 `PLATFORMIO_BUILD_DIR`, `PLATFORMIO_LIBDEPS_DIR`, or `PYTHONPATH` is rejected
