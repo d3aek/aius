@@ -1239,6 +1239,7 @@ remain its public codec.
 ```c
 #define AIUS_HTTP_RX_QUOTA 256u
 #define AIUS_HTTP_TX_QUOTA 512u
+#define AIUS_HTTP_SD_CAPACITY_MAX 512u
 #define AIUS_HTTP_CONTENT_TYPE_STORAGE 64u
 #define AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT UINT32_C(0x48545450)
 
@@ -1318,6 +1319,7 @@ typedef struct {
     const AiusHttpApplicationResponse *application_response;
     AiusHttpSdEventKind sd_kind;
     const uint8_t *sd_data;
+    size_t sd_capacity;
     size_t sd_length;
     uint64_t sd_size;
     AiusSdFault sd_fault;
@@ -1378,6 +1380,7 @@ typedef struct {
     size_t response_length;
     size_t response_offset;
     const uint8_t *download_data;
+    size_t sd_capacity;
     uint64_t download_size;
     uint64_t download_sent;
     size_t download_length;
@@ -1413,6 +1416,13 @@ typedef struct {
     bool sd_terminal;
     bool action_ids_exhausted;
 } AiusHttpTransaction;
+
+size_t aius_http_write_headers(
+    uint8_t *output,
+    size_t capacity,
+    unsigned status,
+    const char *content_type,
+    uint64_t content_length);
 
 void aius_http_transaction_init(
     AiusHttpTransaction *transaction,
@@ -1494,6 +1504,14 @@ AIUS_HTTP_FAULT_INVALID_INIT`; every later step returns `NONE` without changing
 authority. A null transaction is ignored. A non-null action is always fully
 initialized to `NONE`, including on invalid input.
 
+`aius_http_write_headers()` writes the same exact status line, content type,
+64-bit decimal `Content-Length`, `Connection: close`, and final blank line as
+`aius_http_write_response()`, but never copies or requires a body. It returns
+only the header byte count, or zero for an unsupported status, invalid content
+type, null output, or insufficient capacity. `aius_http_write_response()` uses
+this seam and then appends its complete body. Download headers use it with
+`sd_size`; the transaction engine does not duplicate codec formatting.
+
 ### Correlated action protocol
 
 Every non-`NONE` action has a nonzero monotonically increasing `action_id`.
@@ -1528,6 +1546,10 @@ names one.
 `last_transport_fault` retains the nonzero `AiusIoEvent.fault` or
 `peer_fault` that selected cleanup; HTTP-owned timeouts and protocol faults
 leave it zero. It is distinct from the SD job’s `last_driver_fault`.
+
+A null `action` makes `aius_http_transaction_step()` a pure no-op: it does not
+validate or consume the supplied event, test a deadline, change a field, or
+alter any authority. Callers must provide a non-null action to make progress.
 
 `NONE` with no outstanding action drives the next action. `NONE` while a
 transport or SD drain action is outstanding retains that authority and can
@@ -1590,6 +1612,12 @@ refill owns a replay-buffer consumer rather than an HTTP representation and
 remains outside the Phase 6 transaction. Returning it is an application
 protocol fault.
 
+An HTTP `UPLOAD` job is valid only for one of the two streamed `PUT` requests,
+and its `sd_job.total` must equal the request’s declared `content_length`.
+A streamed request may receive an `IMMEDIATE` rejection without consuming the
+remaining body, or an `SD_JOB/UPLOAD`; every other SD kind is a protocol fault.
+A non-streamed request may not return `SD_JOB/UPLOAD`.
+
 For `SD_JOB`, the transaction validates the request and copies all three path
 strings into its fixed path storage. A non-null `sd_job.content_type` must be a
 NUL-terminated string of `1..AIUS_HTTP_CONTENT_TYPE_STORAGE-1` bytes and is
@@ -1624,17 +1652,19 @@ the same fallback and cancels the job before cleanup.
 
 ### SD transfer and lifetime contract
 
-An `SD_STARTED` event has no payload. `SD_PROGRESS` has no payload and reports
-that one bounded runtime epoch completed without reaching an application
-boundary; it never rearms a deadline. `NEED_UPLOAD` supplies a positive
-`sd_length` no greater than the job buffer capacity. `DOWNLOAD_DATA` supplies
-non-null `sd_data`, positive `sd_length`, and the authoritative total
-`sd_size`; every later chunk repeats the same size. `COMPLETE` carries
-`sd_size` only for a zero-byte download and otherwise has no payload. A
-nonzero download may not complete before at least one `DOWNLOAD_DATA`.
-`FAILED` carries nonzero typed `sd_fault` and may carry `sd_driver_fault`.
-`CANCELLED` is terminal and may carry an authoritative cleanup/rollback
-`sd_fault` and driver fault. Every unnamed field is zero or null.
+An `SD_STARTED` event supplies only `sd_capacity`, which must be in
+`1..AIUS_HTTP_SD_CAPACITY_MAX` and is retained by the transaction.
+`SD_PROGRESS` has no payload and reports that one bounded runtime epoch
+completed without reaching an application boundary. `NEED_UPLOAD` supplies a
+positive `sd_length` no greater than retained `sd_capacity`.
+`DOWNLOAD_DATA` supplies non-null `sd_data`, positive `sd_length` no greater
+than retained `sd_capacity`, and the authoritative total `sd_size`; every
+later chunk repeats the same size. `COMPLETE` carries `sd_size` only for a
+zero-byte download and otherwise has no payload. A nonzero download may not
+complete before at least one `DOWNLOAD_DATA`. `FAILED` carries nonzero typed
+`sd_fault` and may carry `sd_driver_fault`. `CANCELLED` is terminal and may
+carry an authoritative cleanup/rollback `sd_fault` and driver fault. Every
+unnamed field, including `sd_capacity` after `STARTED`, is zero or null.
 
 `SD_STEP` operations are exact:
 
@@ -1691,8 +1721,18 @@ completing before all declared bytes were supplied, inconsistent download
 sizes, zero/oversized chunks, or bytes beyond the declared body is a protocol
 fault followed by cancellation.
 
-If a download chunk is outstanding when cleanup starts, HTTP first resolves it
-with `SD_STEP/FAIL_DOWNLOAD`. `SD_CANCEL` then begins the acknowledged drain.
+Cleanup action ordering is exact after any retained outstanding action
+resolves:
+
+1. if a download chunk is unacknowledged, emit and resolve
+   `SD_STEP/FAIL_DOWNLOAD`;
+2. if transport close has not been emitted, emit and resolve `CLOSE`;
+3. if the SD job remains nonterminal, emit `SD_CANCEL` once and continue its
+   `SD_STEP/ADVANCE` drain.
+
+Thus the bounded chunk release precedes close only when needed; every other
+cleanup closes transport before SD cancellation. `SD_CANCEL` begins the
+acknowledged drain.
 Before calling cancel, the runtime feeds any retained adapter result to the job
 so its correlated driver action is resolved. It calls `aius_sd_job_cancel()`
 exactly once and returns `SD_PROGRESS` unless the job is already terminal. The
@@ -1731,6 +1771,14 @@ application dispatch, and an unresolved action do not rearm. The
 application-response and SD-start handshakes must resolve on the next call and
 therefore have no separate deadline. Close has no retry deadline because it is
 one-shot.
+
+The response-write deadline starts at `now_ms + 100` when a response first
+becomes sendable, before returning the first `WRITE`. Immediate and fixed
+responses become sendable when selected. A non-download SD success response
+may be formatted earlier but becomes sendable only on `SD_COMPLETE`. A
+download header becomes sendable when the first `DOWNLOAD_DATA`, or zero-byte
+download `COMPLETE`, supplies authoritative size. Merely formatting a deferred
+response and merely issuing `WRITE` do not start or rearm the deadline.
 
 Event and time precedence is exact:
 
