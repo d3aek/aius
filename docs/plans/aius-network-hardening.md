@@ -521,7 +521,7 @@ complete non-null primitive table; null storage is a no-op, while null or
 incomplete primitives leave `valid == false`, `active_slot == UINT8_MAX`, and
 `sequence == 0`. Load zeroes a non-null output before work and returns false
 for null/invalid storage or output. Commit returns false for null/invalid
-storage or ledger, including a ledger rejected by `aius_boot_ledger_valid`.
+storage or ledger, including a ledger rejected by `aius_boot_is_valid`.
 With no valid slot, the first commit targets slot 0 with sequence 1. Otherwise
 it targets the inactive slot with selected sequence plus one, including
 `UINT32_MAX → 0`.
@@ -3523,6 +3523,9 @@ fan-out:
     owned-paths:
       - firmware/src/aius_fault_teensy.cpp
       - firmware/src/aius_fault_teensy.h
+  - name: agent-fault-injector-independent-oracle
+    owned-paths:
+      - firmware/test/fault-target/
   - name: agent-fault-build-identity
     owned-paths:
       - firmware/scripts/build.sh
@@ -3531,7 +3534,7 @@ fan-out:
     owned-paths:
       - firmware/test/build-metadata/
   - name: agent-watchdog-build-coordinator
-    start-after: [phase-10, agent-retained-reset-adapter, agent-retained-reset-independent-oracle, agent-fault-injector, agent-fault-build-identity, agent-fault-build-independent-oracle]
+    start-after: [phase-10, agent-retained-reset-adapter, agent-retained-reset-independent-oracle, agent-fault-injector, agent-fault-injector-independent-oracle, agent-fault-build-identity, agent-fault-build-independent-oracle]
     owned-paths:
       - firmware/platformio.ini
       - firmware/scripts/test.sh
@@ -3540,6 +3543,7 @@ commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite boot
     - firmware/scripts/test.sh --environment native --suite boot-target
+    - firmware/scripts/test.sh --environment native --suite fault-target
     - firmware/scripts/test.sh --environment native --suite build-metadata
   buildable:
     - firmware/scripts/build.sh teensy41-optical
@@ -3556,10 +3560,13 @@ commit-checkpoint:
 ```
 
 Do not claim OCRAM retention until live Phase 17 evidence.
-Run the first five concern-sized slices after this phase's clean-room gate.
+Run the first six concern-sized slices after this phase's clean-room gate.
 The retained/reset implementation and its source-blind target oracle are
-sequential; the fault injector and build-identity implementation may run in
-parallel with them, followed by the source-blind metadata oracle. The shared
+sequential. The fault injector is followed by a source-blind oracle that
+compiles the real source for production and selectors `0..8`, proves exact
+checkpoint matching/return behavior, and mutation-tests the single intentional
+loop exception. Build identity may run in parallel with those pairs, followed
+by its source-blind metadata oracle. The shared
 `platformio.ini`/`scripts/test.sh` coordinator starts only after Phase 10 is
 committed and all five slices are reviewed. All builds sharing
 `.pio/build/teensy41-optical-fault` run serially.
