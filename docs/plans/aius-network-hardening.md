@@ -3909,6 +3909,10 @@ acceptance:
   - the snapshot a reader observes is never torn, under the seqlock boundary
   - the per-block accumulate performs no allocation and no unbounded work
   - the response is fixed-size, with waveform capped at 128 points
+  - levels are dBFS floored at -120.0, so every emitted number is finite
+  - waveform points are per-mille integers 0..1000
+  - sequence 0 is served as a valid 200, not a status-code special case
+  - replays.js and the SD editor are updated in the same commit
   - ITCM stays within budget with the accumulate tap linked in
 review-intensity: standard
 commit-checkpoint:
@@ -3920,11 +3924,19 @@ commit-checkpoint:
   parent-commit: "feat(aius): serve bounded DSP meter snapshots"
 ```
 
-The contract is [`aius-dsp-config-api.md`](aius-dsp-config-api.md)'s: `sequence`,
-`sample_rate_hz`, `input[]`, `output`, `limiter_gain_reduction_db`,
-`queue_frames`, `estimated_latency_us`, `dsp_cycles_last`, `dsp_cycles_max`, and
-`waveform[]` capped at 128 points. Meter values are diagnostic snapshots and
-never become configuration fields.
+The contract is [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters
+endpoint, whose **settled wire shape** block is now normative rather than a set of
+options: dBFS levels floored at `-120.0`, `input` as six positional entries in
+`AIUS_CH_*` order, `output` as two-element `[L, R]` arrays, `waveform` as
+per-mille integers `0..1000`, and `sequence == 0` served as a valid 200 meaning
+"never published". Meter values are diagnostic snapshots and never become
+configuration fields.
+
+This phase owns both consumers. `replays.js` is already wrong on two counts
+independent of the chosen shape (a scalar `output.peak_dbfs` assumption, and
+waveform maths expecting `[-1, 1]` while the struct holds `int32_t` sample
+units), and the SD editor degrades on a non-2xx rather than on `sequence == 0`.
+Both are fixed here so producer and consumers stay consistent at the commit.
 
 The portable `AiusMeter` / `AiusMeterSnapshot` module is already delivered and
 host-proven; what lands here is the target wiring — the per-block accumulate tap

@@ -487,29 +487,70 @@ into the audio path — the one genuinely hot addition, and ITCM free space is
 **Gate:** coherent bounded snapshots, no audio-thread allocation, ITCM within
 budget.
 
-**Open decision — the meters wire shape.** Building the control surface surfaced
-four points this plan left underspecified. The editor accepts every shape below,
-so nothing is blocked; Phase 14b picks one and this section records it.
+#### Settled wire shape (2026-07-24)
 
-- **Level encoding.** `AiusMeterSnapshot` stores absolute linear sample
-  magnitudes and its header puts the `20·log10(v / AIUS_DSP_SAMPLE_MAX)`
-  conversion on the reader, but `replays.js` already reads a `peak_dbfs` field.
-  *Recommended:* the firmware emits `*_dbfs` and no client converts.
-- **`output` shape.** "Stereo output peak/RMS" can be a scalar summary or a
-  per-channel pair. **This one has a cross-track consequence:** `replays.js:18`
-  does `Number(output.peak_dbfs).toFixed(1)`, which renders `NaN` if the field
-  becomes a two-element array. *Recommended:* keep `output.peak_dbfs` and
-  `output.rms_dbfs` scalar so the replay page keeps working, and add explicit
-  `output.peak_dbfs_l` / `_r` only if per-channel readout is actually wanted. If
-  the array form is chosen instead, `replays.js` must be fixed in the same
-  change.
-- **`input[]` ordering.** *Recommended:* a six-element array in `AIUS_CH_` order
-  (`fl, fr, fc, lfe, sl, sr`), positional, no per-entry channel key.
-- **`waveform[]` semantics.** *Recommended:* the documented non-negative
-  per-bucket peak-magnitude envelope, drawn mirrored about the centre line.
-- **Behaviour when `features.meters` is false.** Unspecified today. The editor
-  treats every non-2xx identically, so any of 404 / 503 / a zeroed snapshot
-  works; pick one and document it in the OpenAPI catch-up (step B5).
+Three of the four points this section previously left open were never really
+open: `AiusMeterSnapshot` already fixes them. `input_peak[]` / `input_rms[]` are
+six entries in `AIUS_CH_*` bit order, `output_peak[2]` / `output_rms[2]` are
+already per-channel `[L, R]`, and `waveform` is a non-negative per-bucket
+peak-magnitude envelope with an explicit count, capped at 128. The JSON mirrors
+the struct rather than reshaping it.
+
+What was genuinely open was **units**, because the struct's header delegates the
+`20·log10(v / AIUS_DSP_SAMPLE_MAX)` conversion to the reader. That delegation is
+reversed: **the firmware converts.** The deciding argument is that `log10(0)` is
+`-Infinity`, which is not valid JSON, and silence is an audio meter's resting
+state rather than an edge case. Converting once on the device with a documented
+floor beats every client reinventing that clamp.
+
+```json
+{
+  "sequence": 1234,
+  "sample_rate_hz": 48000,
+  "input": [
+    { "peak_dbfs": -6.0, "rms_dbfs": -12.3 }
+  ],
+  "output": {
+    "peak_dbfs": [-3.1, -3.2],
+    "rms_dbfs": [-9.4, -9.5]
+  },
+  "limiter_gain_reduction_db": -1.5,
+  "waveform": [0, 12, 340, 998, 1000, 640],
+  "queue_frames": 0,
+  "estimated_latency_us": 0,
+  "dsp_cycles_last": 0,
+  "dsp_cycles_max": 0
+}
+```
+
+- **Levels are dBFS, floored at `-120.0`.** Every `*_dbfs` field is finite;
+  silence reports exactly `-120.0`, never `-Infinity` or `null`. Computed in the
+  HTTP path, which is cold `FLASHMEM` code, so the ~16 `log10` calls per snapshot
+  cost nothing the audio budget can feel.
+  `limiter_gain_reduction_db` is already dB (`<= 0`) and passes through unconverted.
+- **`input` is exactly six positional entries** in `AIUS_CH_*` order: `fl`, `fr`,
+  `fc`, `lfe`, `sl`, `sr`. No per-entry channel key; position is the identity.
+- **`output` keeps both channels** as two-element `[L, R]` arrays. Flattening to a
+  scalar would discard information the pipeline already has.
+- **`waveform` is per-mille integers, `0..1000`**, of full scale: non-negative
+  magnitudes, drawn mirrored about the centre line. Chosen over raw sample units
+  and over normalised floats because it is both the smallest encoding (~640 bytes
+  against ~900 raw) and the cheapest to format, avoiding 128 float conversions per
+  snapshot in the HTTP path. The array's length is the count; there is no separate
+  `waveform_count` on the wire.
+- **`features.meters` false is not a special case.** The route always returns 200
+  with a valid snapshot. Nothing publishes while metering is bypassed, so
+  `sequence` stays `0`, which the struct already documents as "never published".
+  Clients render `sequence == 0` as "no data" rather than as zero-level signal.
+  This reuses an existing sentinel instead of inventing a status-code convention.
+
+**Both consumers need a change, and 14b owns both.** `replays.js` is wrong on two
+counts today, independent of which shape was chosen: `line 18` does
+`Number(output.peak_dbfs).toFixed(1)`, which yields `NaN` on a two-element array,
+and its `y = h/2 - point*h/2` waveform maths assumes points in roughly `[-1, 1]`
+while the struct holds `int32_t` sample units, so raw values would draw thousands
+of pixels off-canvas. The SD editor accepts the chosen shape already but degrades
+on a non-2xx rather than on `sequence == 0`, so it needs the "no data" branch.
 
 ### SD control-surface editor
 
