@@ -1353,6 +1353,8 @@ typedef enum {
     AIUS_HTTP_FAULT_RESPONSE_TIMEOUT,
     AIUS_HTTP_FAULT_UPLOAD_TIMEOUT,
     AIUS_HTTP_FAULT_DOWNLOAD_TIMEOUT,
+    AIUS_HTTP_FAULT_SD_TIMEOUT,
+    AIUS_HTTP_FAULT_REQUEST_CAPACITY,
     AIUS_HTTP_FAULT_RESPONSE_CAPACITY,
     AIUS_HTTP_FAULT_ACTION_ID_EXHAUSTED,
     AIUS_HTTP_FAULT_TRANSPORT,
@@ -1447,7 +1449,9 @@ bool body_complete;
 `header_length` includes the terminating `\r\n\r\n`. `body` is
 `data + header_length`; `body_length` is the currently supplied prefix.
 `body_complete` is true only when `body_length == content_length`. The parser is
-called only after the transaction has found a complete header block.
+called only after the transaction has found a complete header block. Existing
+`has_body` is true exactly when declared `content_length != 0`, including a
+streamed request whose body prefix is still empty.
 
 The framing rules are:
 
@@ -1471,14 +1475,17 @@ The framing rules are:
   `body_complete`. It never reads past `body_length`. An incomplete streamed
   body is valid only for the two streamed routes above.
 
-The transaction searches for the header delimiter incrementally, never beyond
-`AIUS_HTTP_MAX_HEADERS + 4`, and offers at most `AIUS_HTTP_RX_QUOTA` bytes per
-`READ`. Before dispatch it writes directly into the unused suffix of the
-caller-owned request buffer. During streamed upload it supplies the retained
-prefix first, then reuses the request buffer as transaction-owned staging.
-`DISPATCH` is emitted exactly once. Every slice in `parsed_request` remains
-valid through the correlated application-response step; no slice is retained
-after that step.
+The transaction searches only the newly extended suffix for the header
+delimiter and never beyond the smaller of request capacity and
+`AIUS_HTTP_MAX_REQUEST`. A buffer filled without a delimiter is
+`REQUEST_CAPACITY`/413; after a delimiter, the codec separately enforces its
+`AIUS_HTTP_MAX_HEADERS` field-byte bound. Each `READ` offers at most
+`AIUS_HTTP_RX_QUOTA` bytes. Before dispatch it writes directly into the unused
+suffix of the caller-owned request buffer. During streamed upload it supplies
+the retained prefix first, then reuses the request buffer as transaction-owned
+staging. `DISPATCH` is emitted exactly once. Every slice in `parsed_request`
+remains valid through the correlated application-response step; no slice is
+retained after that step.
 
 The request and response buffers must both be non-null, have capacities in
 `1..AIUS_HTTP_MAX_REQUEST` and `1..AIUS_HTTP_MAX_RESPONSE`, and not overlap.
@@ -1492,8 +1499,13 @@ initialized to `NONE`, including on invalid input.
 Every non-`NONE` action has a nonzero monotonically increasing `action_id`.
 The transaction retains its kind, ID, and offered length until a valid
 correlated event resolves it. IDs are never reused during the object lifetime.
-Reserving past `UINT64_MAX` records `AIUS_HTTP_FAULT_ACTION_ID_EXHAUSTED` and
-starts cleanup without emitting the wrapped action.
+Reserving past `UINT64_MAX` records `AIUS_HTTP_FAULT_ACTION_ID_EXHAUSTED`,
+sets `action_ids_exhausted`, and enters permanent fail-safe quiescence without
+emitting a wrapped action. Because no correlated cleanup ID remains, this is
+the sole exit that cannot issue `CLOSE` or SD drain actions: `valid` becomes
+false, all later steps return `NONE`, and buffers and authority remain
+unreusable until `init()` or watchdog reset. The oracle injects this state;
+normal operation cannot reach it within the device lifetime.
 
 `IO_RESULT` must name the outstanding `ACCEPT`, `READ`, `WRITE`, or `CLOSE`
 action and echo its ID. `READ` and `WRITE` `PROGRESS` is valid only with
@@ -1542,6 +1554,15 @@ An accept `WOULD_BLOCK` returns to accept-ready `IDLE`; a successful accept
 starts client authority, clears the prior client’s counters and flags, and
 starts request reception. Accepted `CLOSED` or `FAULT` starts cleanup.
 
+Before successful accept there is no client on which to send an error or
+close. Any non-`NONE` event with no outstanding `ACCEPT`, or any malformed,
+wrong-ID, wrong-action, unsolicited peer, or `CLOSED` result for `ACCEPT`,
+records `AIUS_HTTP_FAULT_PROTOCOL`, consumes the one-shot accept authority, and
+returns to restartable `IDLE` with `last_status = 0`. A well-formed accept
+`FAULT` instead records `AIUS_HTTP_FAULT_TRANSPORT` and its driver fault before
+the same restart. Neither path emits `WRITE` or `CLOSE`. The action-ID
+exhaustion rule above instead selects permanent fail-safe quiescence.
+
 Every accepted connection emits exactly one idempotent `CLOSE`, even after an
 unsolicited peer close/fault. `CLOSE` `PROGRESS`, `CLOSED`, or `FAULT` exhausts
 transport authority. `CLOSE` `WOULD_BLOCK` is an adapter protocol fault and
@@ -1563,6 +1584,11 @@ The application response is borrowed through its correlated step only:
   the application-response step. For download, `body` is null and
   `body_length` is zero; status and copied content type form the later download
   header.
+
+`AIUS_SD_JOB_REPLAY_REFILL` is not a valid HTTP application response. Replay
+refill owns a replay-buffer consumer rather than an HTTP representation and
+remains outside the Phase 6 transaction. Returning it is an application
+protocol fault.
 
 For `SD_JOB`, the transaction validates the request and copies all three path
 strings into its fixed path storage. A non-null `sd_job.content_type` must be a
@@ -1646,8 +1672,8 @@ The correlated SD result matrix is exhaustive:
 
 Every other SD kind is a protocol fault and retains outstanding SD authority.
 `STARTED` is accepted once. `NEED_UPLOAD` is valid only for `UPLOAD`;
-`DOWNLOAD_DATA` only for `DOWNLOAD` or `REPLAY_REFILL`; and `COMPLETE` is valid
-only when exact upload/download byte accounting is already satisfied.
+`DOWNLOAD_DATA` only for `DOWNLOAD`; and `COMPLETE` is valid only when exact
+upload/download byte accounting is already satisfied.
 `SD_EVENT_NONE` is never a valid `SD_RESULT`.
 
 The transaction never retains RX data owned by the transport; `READ` writes
@@ -1691,19 +1717,39 @@ progress.
 ### Deadlines, transmission, and deterministic failures
 
 Deadlines are inactivity deadlines: request `150 ms`, response write `100 ms`,
-upload `2 s`, download `10 s`. Successful accept starts the request deadline.
-Only validated positive RX, TX, upload-supply, or download progress rearms the
-matching deadline. `WOULD_BLOCK`, action issuance, application dispatch,
-SD-start, and `ADVANCE` without transferred bytes do not rearm it. The
+upload and other bounded SD control jobs `2 s`, and download `10 s`.
+`PROBE`, `CONFIG_LOAD`, `USAGE_REFRESH`, and `DELETE` use the 2 s SD-control
+deadline. `REPLAY_REFILL` is rejected by HTTP. Successful accept starts the
+request deadline; `SD_STARTED` starts the deadline selected by the stored job
+kind.
+
+Validated positive RX, TX, upload-supply, `NEED_UPLOAD`, `DOWNLOAD_DATA`, and
+`SD_PROGRESS` results rearm the matching deadline. For `SD_PROGRESS`, the
+runtime guarantees that one target result or one finite job-state transition
+was consumed; action issuance alone is not progress. `WOULD_BLOCK`,
+application dispatch, and an unresolved action do not rearm. The
 application-response and SD-start handshakes must resolve on the next call and
 therefore have no separate deadline. Close has no retry deadline because it is
 one-shot.
 
-Validate an event before testing time. A well-formed correlated positive
-progress event at deadline equality wins and rearms; otherwise equality
-expires. Use `(int32_t)(now_ms - deadline_ms) >= 0`; every interval is below
-`INT32_MAX`. Timeout starts cleanup, and an active SD job is cancelled through
-the drain protocol.
+Event and time precedence is exact:
+
+1. validate the event; malformed payload, correlation, or state selects
+   `AIUS_HTTP_FAULT_PROTOCOL` regardless of the clock;
+2. consume a well-formed correlated event;
+3. its terminal `CLOSED`, `FAULT`, `COMPLETE`, `FAILED`, or `CANCELLED`
+   result wins over simultaneous expiry;
+4. validated progress named above at equality wins and rearms;
+5. only a remaining `NONE` or `WOULD_BLOCK` at equality selects timeout.
+
+Use `(int32_t)(now_ms - deadline_ms) >= 0`; every interval is below
+`INT32_MAX`. Request expiry selects `REQUEST_TIMEOUT`; response-write expiry
+selects `RESPONSE_TIMEOUT`; upload expiry selects `UPLOAD_TIMEOUT`; download
+expiry selects `DOWNLOAD_TIMEOUT`; and other SD-job expiry selects
+`SD_TIMEOUT`. Any active SD job is cancelled through the drain protocol.
+Request timeout formats the fixed 408 response. Response, upload, download,
+and SD-control timeouts send no new response and retain `last_status = 0`
+unless transmission had already selected a status.
 
 `WRITE` is exactly the next
 `min(AIUS_HTTP_TX_QUOTA, remaining)` bytes. Immediate responses and download
@@ -1737,6 +1783,17 @@ mapping. Transport-caused cancellation sends no response. A protocol or SD
 failure after any response byte closes without attempting a second response.
 The transaction retains `last_fault`, `last_sd_fault`, `last_driver_fault`, and
 `last_status` through cleanup and restart until the next successful accept.
+
+`last_fault` assignment is deterministic: parser `EMPTY`, `MALFORMED`, `BODY`,
+`METHOD`, and `ROUTE` results use `PROTOCOL`; request/header/body size failures
+use `REQUEST_CAPACITY`; invalid application/event state uses `PROTOCOL`;
+response fallback or header capacity uses `RESPONSE_CAPACITY`; transport I/O
+or peer failure uses `TRANSPORT`; and any non-timeout SD terminal fault uses
+`SD`. The specific timeout assignments are listed above. `last_status` is the
+selected application or fixed-response status, or zero when no response was
+selected. A later transport failure does not erase an already selected status.
+SD rollback/cleanup replacement remains authoritative in `last_sd_fault`;
+otherwise the first validated terminal cause in the precedence list wins.
 
 The independent oracle enumerates every reachable
 state/outstanding-action/event triple and all unnamed-payload violations. It
