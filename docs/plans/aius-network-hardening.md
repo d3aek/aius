@@ -698,6 +698,47 @@ typedef enum {
 } AiusSdState;
 
 typedef enum {
+    AIUS_SD_PHASE_NONE,
+    AIUS_SD_PHASE_BEGIN,
+    AIUS_SD_PHASE_PROBE_MEDIA,
+    AIUS_SD_PHASE_CONFIG_OPEN,
+    AIUS_SD_PHASE_CONFIG_SIZE,
+    AIUS_SD_PHASE_CONFIG_READ,
+    AIUS_SD_PHASE_CONFIG_CLOSE,
+    AIUS_SD_PHASE_CONFIG_PUBLISH,
+    AIUS_SD_PHASE_USAGE_TOTAL,
+    AIUS_SD_PHASE_USAGE_USED,
+    AIUS_SD_PHASE_MKDIR,
+    AIUS_SD_PHASE_PART_SIZE_OPEN,
+    AIUS_SD_PHASE_PART_SIZE,
+    AIUS_SD_PHASE_PART_SIZE_CLOSE,
+    AIUS_SD_PHASE_UPLOAD_OPEN,
+    AIUS_SD_PHASE_UPLOAD_INPUT,
+    AIUS_SD_PHASE_UPLOAD_WRITE,
+    AIUS_SD_PHASE_UPLOAD_CLOSE,
+    AIUS_SD_PHASE_FINAL_SIZE_OPEN,
+    AIUS_SD_PHASE_FINAL_SIZE,
+    AIUS_SD_PHASE_FINAL_SIZE_CLOSE,
+    AIUS_SD_PHASE_DOWNLOAD_OPEN,
+    AIUS_SD_PHASE_DOWNLOAD_SIZE,
+    AIUS_SD_PHASE_DOWNLOAD_SEEK,
+    AIUS_SD_PHASE_DOWNLOAD_READ,
+    AIUS_SD_PHASE_DOWNLOAD_OUTPUT,
+    AIUS_SD_PHASE_DOWNLOAD_CLOSE,
+    AIUS_SD_PHASE_DELETE_REMOVE,
+    AIUS_SD_PHASE_INSTALL_EXISTS,
+    AIUS_SD_PHASE_INSTALL_REMOVE_OLD_BACKUP,
+    AIUS_SD_PHASE_INSTALL_BACKUP,
+    AIUS_SD_PHASE_INSTALL_RENAME,
+    AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP,
+    AIUS_SD_PHASE_INSTALL_PUBLISH,
+    AIUS_SD_PHASE_ROLLBACK,
+    AIUS_SD_PHASE_CLEANUP_CLOSE,
+    AIUS_SD_PHASE_CLEANUP_TEMP,
+    AIUS_SD_PHASE_TERMINAL
+} AiusSdPhase;
+
+typedef enum {
     AIUS_SD_EVENT_NONE,
     AIUS_SD_EVENT_OK,
     AIUS_SD_EVENT_BYTES,
@@ -708,7 +749,7 @@ typedef enum {
 
 typedef struct {
     AiusSdEventKind kind;
-    uint32_t action_id;
+    uint64_t action_id;
     size_t bytes;
     uint64_t size;
     bool value;
@@ -742,7 +783,7 @@ typedef enum {
 
 typedef struct {
     AiusSdActionKind kind;
-    uint32_t action_id;
+    uint64_t action_id;
     const char *path;
     const char *path_to;
     uint8_t *buffer;
@@ -804,6 +845,7 @@ typedef struct {
 
 typedef struct {
     AiusSdState state;
+    AiusSdPhase phase;
     AiusSdJobKind kind;
     AiusSdInstallMode install_mode;
     char target_path[AIUS_SD_PATH_STORAGE];
@@ -814,23 +856,30 @@ typedef struct {
     uint8_t *buffer;
     size_t capacity;
     size_t buffer_offset;
-    uint64_t offset;
+    uint64_t initial_offset;
+    uint64_t end_offset;
+    uint64_t captured_size;
+    uint64_t transferred;
     uint64_t total;
     size_t requested;
     size_t pending;
     uint32_t deadline_ms;
-    uint32_t next_action_id;
-    uint32_t outstanding_action_id;
+    uint64_t next_action_id;
+    uint64_t outstanding_action_id;
     AiusSdActionKind outstanding_action;
+    uint8_t mkdir_path_index;
+    uint8_t mkdir_offset;
     AiusSdFault last_fault;
     uint32_t last_driver_fault;
     AiusSdResult result;
     bool target_existed;
     bool backup_moved;
     bool installed;
+    bool file_open;
     bool publish_config;
     bool close_emitted;
     bool cancel_requested;
+    bool abort_requested;
     bool terminal_emitted;
 } AiusSdJob;
 
@@ -871,9 +920,9 @@ remain Phases 10 and 14.
 
 The caller owns a non-null 1–512 byte transfer buffer. `CONFIG_LOAD` additionally
 requires capacity at least `AIUS_CONFIG_MAX_JSON_BYTES` (256). `start()` is
-valid only from `IDLE`, `DONE`, or `FAILED`; it clears the previous result,
-validates the complete request, copies every required path, and selects
-`PREPARE`. A rejected start selects `FAILED` with
+valid only from `IDLE`, or from `DONE`/`FAILED` after `terminal_emitted`; it
+clears the previous result, validates the complete request, copies every
+required path, and selects `PREPARE`. A rejected start selects `FAILED` with
 `INVALID_REQUEST`, `CAPACITY`, `PATH`, or `OVERFLOW` and later emits one
 `FAIL`. `content_type` is an application-owned constant whose lifetime covers
 the job.
@@ -894,8 +943,21 @@ sequence is:
 | `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. It returns `min(total, file_size - initial_offset)` bytes; `initial_offset == file_size` is a successful zero-byte refill. |
 | `DELETE` | `REMOVE(target) → OK`, then `COMPLETE`. Adapter `REMOVE` is idempotent: already absent and removed are both `OK`. |
 
+Request fields are not implicit:
+
+| Kind/mode | `total` | `initial_offset` | `publish_config` / `content_type` |
+|---|---|---|---|
+| `PROBE`, `USAGE_REFRESH`, `DELETE` | must be zero | must be zero | false / null |
+| `CONFIG_LOAD` | must be zero | must be zero | true / required non-null constant |
+| `DOWNLOAD` | zero means through captured EOF; positive is exact length | `0..INT64_MAX` | false / required non-null constant |
+| `REPLAY_REFILL` | required `1..INT64_MAX` maximum | `0..INT64_MAX` | false / null |
+| `UPLOAD/REPLACE` | `0..INT64_MAX`; zero is valid | must be zero | optional; content type is required iff true |
+| `UPLOAD/APPEND_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | false / null |
+| `UPLOAD/FINALIZE_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | optional; content type is required iff true |
+
 Non-upload jobs require `install_mode == REPLACE`; any other value is
-`INVALID_REQUEST`. Upload request paths are exact:
+`INVALID_REQUEST`. A non-null content type where the table requires null is
+also invalid. Upload request paths are exact:
 
 - `REPLACE` requires distinct target, disposable temp, and backup paths.
 - `APPEND_PART` requires only target; temp and backup must be null.
@@ -921,32 +983,79 @@ load, upload, download, and refill jobs return `BYTES` with their acknowledged
 new/published/transferred count. Delete returns `COMPLETE`; probe and usage use
 their typed results. Every failed job returns `FAULT`.
 
+The public fields have one meaning throughout a job: `phase` selects exactly
+one row/edge above; `initial_offset` is the copied request value; `end_offset`
+is the checked exclusive end `initial_offset + total`; `captured_size` is the
+last accepted `FILE_SIZE`; and `transferred` counts only acknowledged new
+upload bytes or acknowledged output bytes. Upload remaining bytes are always
+`total - transferred`, and the absolute next write offset is
+`initial_offset + transferred`. `buffer_offset` and `pending` describe only an
+accepted buffer slice awaiting partial write/output completion. `file_open`
+is sole open-handle authority. `mkdir_path_index` selects target, temp, then
+backup as applicable; `mkdir_offset` selects the next proper parent prefix.
+The explicit `phase` values distinguish initial part-size validation,
+append/write, final-size verification, install, rollback, cleanup, and terminal
+emission, including zero-byte uploads.
+
 ### Action/event oracle
 
 One correlated action may be outstanding. Emission assigns a nonzero,
-monotonically incremented `action_id`, records its kind/id, and initializes the
-returned action fully. A call while an action is outstanding may supply
-`NONE`, which leaves the job waiting and emits `NONE`, or the single matching
-event. Any non-`NONE` event with no outstanding action, zero/wrong action id,
-duplicate result, wrong kind, invalid byte/fault fields, or result for a
-different action selects `PROTOCOL`. Action-id wrap before a job completes is
-`OVERFLOW`.
+monotonically incremented 64-bit `action_id`, records its kind/id, and
+initializes the returned action fully. IDs are job-object lifetime values:
+`init()` starts at one and `start()` never resets or reuses them. Before a
+normal emission would consume an id above `UINT64_MAX - 3`, the job records
+`OVERFLOW`; the final three ids are reserved for close, rollback, and temp or
+backup cleanup. Terminal notifications are uncorrelated. A new start is
+accepted only after the prior `COMPLETE`/`FAIL` notification has been emitted.
+
+A call while an action is outstanding may supply `NONE`, which must have every
+payload field zero, leaves the job waiting, and emits `NONE`, or the single
+matching event. A non-`NONE` event with no outstanding action records
+`PROTOCOL` and enters cleanup. A zero/wrong action id, wrong event kind,
+malformed payload, or different-action result records `PROTOCOL` and
+`abort_requested` but does not clear the outstanding action: its side effect
+remains unresolved. Only a later well-formed matching event may establish
+whether that side effect occurred; its normal success/failure transition is
+applied only to update `file_open`, bytes, or file authority, then the job
+enters cleanup without emitting further normal work. Duplicate results arrive
+with no outstanding action and follow the first rule. If the matching result
+never arrives, the portable job remains boundedly waiting; the Phase 14
+checkpoint watchdog is the recovery boundary.
 
 | Outstanding action | Only successful event | Validation |
 |---|---|---|
 | `BEGIN`, `MKDIR`, `OPEN_*`, `SEEK`, `RENAME`, `REMOVE`, `CLOSE`, `PUBLISH_CONFIG`, `OUTPUT` | `OK` | `bytes == 0`, `size == 0`, `value == false`, `fault == 0` |
 | `MEDIA_PRESENT`, `EXISTS` | `BOOL` | only `value` is meaningful |
 | `FILE_SIZE`, `TOTAL_SIZE`, `USED_SIZE` | `SIZE` | only 64-bit `size` is meaningful and it must be `<= INT64_MAX` |
-| `READ`, `WRITE` | `BYTES` | `1..outstanding length`; other fields zero |
+| `READ`, `WRITE` | `BYTES` | `0..outstanding length`; other fields zero; zero is correlated `SHORT_IO` |
 | any correlated action | `FAULT` | bytes/size/value zero and nonzero driver fault |
 
-`FAULT` preserves its driver value in `result.driver_fault` and maps by action
+Every action is fully initialized. Correlated rows have their assigned id;
+uncorrelated rows have id zero. Any payload not named below is null/zero:
+
+| Action | Exact nonzero payload |
+|---|---|
+| `NONE`, `BEGIN`, `MEDIA_PRESENT`, `CLOSE`, `TOTAL_SIZE`, `USED_SIZE`, `COMPLETE` | none (`BEGIN`, media, close, and sizes carry only their correlated id) |
+| `MKDIR`, `OPEN_READ`, `OPEN_WRITE_TRUNCATE`, `OPEN_APPEND`, `EXISTS`, `REMOVE` | immutable `path` |
+| `SEEK` | 64-bit absolute `offset` |
+| `NEED_INPUT` | `length=requested`, `offset=initial_offset+transferred` |
+| `READ` | mutable job `buffer`, `length=min(capacity, captured target remaining)`, absolute `offset` |
+| `WRITE` | job `buffer + buffer_offset`, `length=pending`, absolute `offset` |
+| `OUTPUT` | immutable job `buffer`, positive acknowledged read `length`, absolute chunk-start `offset` |
+| `FILE_SIZE` | none; it addresses the sole open file |
+| `RENAME` | immutable source `path` and destination `path_to` |
+| `PUBLISH_CONFIG` | immutable job `buffer`, complete config `length` |
+| `FAIL` | stable local `fault` |
+
+For `BOOL`, `SIZE`, and `BYTES`, every payload field not named in the row is
+zero/false. `FAULT` preserves its driver value in `result.driver_fault` and maps by action
 and authority: `MEDIA_PRESENT` to `MEDIA`; `OPEN_*` to `OPEN`; `SEEK` to
 `SEEK`; backup/install rename to `INSTALL`; rollback rename to `ROLLBACK`;
 `PUBLISH_CONFIG` to `PUBLISH`; close/remove during terminal cleanup to
 `CLEANUP`; and `BEGIN`, `MKDIR`, read/write/output, size/existence, ordinary
-remove, or ordinary close to `IO`. `READ` or `WRITE` zero progress while bytes
-remain is `SHORT_IO`; bytes beyond the requested length are `PROTOCOL`.
+remove, or ordinary close to `IO`. A correlated `READ` or `WRITE` zero progress
+while bytes remain is `SHORT_IO`; bytes beyond the requested length are
+`PROTOCOL`.
 Positive short progress is valid. `WRITE` advances only the acknowledged
 prefix and re-emits only the unwritten suffix. No job emits a read after its
 captured byte target reaches zero, so early zero/EOF is always a fault.
@@ -965,7 +1074,11 @@ in that state with non-null data and length `1..requested` not exceeding the
 remaining total. It copies the bytes into the job buffer, sets `pending`,
 clears `requested`, and selects `WRITE` without a driver action. Null, zero,
 `requested + 1`, remaining `+ 1`, repeated supply, or supply in any other state
-selects `FAILED/PROTOCOL` or `FAILED/SHORT_IO` without retaining caller memory.
+never retains caller memory. In the correct `NEED_INPUT` state, zero length is
+`SHORT_IO`; null with positive length, length above requested/remaining, or any
+second/out-of-state supply is `PROTOCOL`. Each records `abort_requested` and
+enters the ordinary close/rollback/disposable-temp cleanup path; `FAILED` is
+selected only after that authority is exhausted.
 Accepted bytes remain job-owned until every partial `WRITE` consumes them.
 Only then is the next `NEED_INPUT` emitted or commit begun.
 
@@ -995,11 +1108,18 @@ for diagnosis and possible manual recovery. `APPEND_PART` target and
 `FINALIZE_PART` temp are durable and never removed by cleanup.
 
 `deadline_ms` is an absolute wrapping 32-bit time; zero disables it. A nonzero
-deadline must be within `INT32_MAX` milliseconds of `now_ms`. `step()` first
-validates and consumes a supplied matching event, then considers
-`(int32_t)(now_ms - deadline_ms) >= 0`; thus an event at equality is consumed
-before timeout. Timeout records `TIMEOUT` and enters the same close, rollback,
-and temp-cleanup path as cancellation, never an unsafe immediate terminal.
+deadline at start must have signed delta `0..INT32_MAX` from `now_ms`.
+`step()` first validates and consumes a supplied matching event, then considers
+`(int32_t)(now_ms - deadline_ms) >= 0`. If that event completes the job, its
+terminal result wins. If it successfully crosses the install commit point,
+the commit wins: target remains authoritative and mandatory backup cleanup plus
+optional publication finish; deadline does not replace success, though those
+later actions may fail. Otherwise equality/expiry after partial progress
+records `TIMEOUT` immediately and enters close, rollback, and disposable-temp
+cleanup. The first abort cause among cancellation, timeout, protocol, short
+I/O, and driver fault is retained; later cleanup or rollback failure overrides
+it with `CLEANUP` or `ROLLBACK`. Timeout never selects an unsafe immediate
+terminal.
 
 `cancel()` is idempotent and sets `cancel_requested`. If an action is
 outstanding, its correlated event is consumed first because the side effect may
@@ -1038,12 +1158,14 @@ AiusSdEvent aius_sd_teensy_execute(
 
 `aius_sd_teensy_execute()` contains no loop, retry, or delay and invokes exactly
 one matching `SD`/`File` primitive. It owns the sole target `File` handle.
-`PUBLISH_CONFIG`, `COMPLETE`, and `FAIL` are application actions and never
-enter the adapter. A source guard proves the one-call shape; a fake proves
-action/result mapping; target receipts record each returned call duration and
-require 99th percentile below 50 ms and maximum below 250 ms. These measurements
-do not pretend to cancel a wedged library call: the Phase 14 fault image stalls
-at checkpoint `SD` and must prove watchdog reset and USB recovery in 8–10 s.
+Every returned event echoes the correlated `action_id`. `BEGIN`, `NEED_INPUT`,
+`OUTPUT`, `PUBLISH_CONFIG`, `COMPLETE`, and `FAIL` are application actions and
+never enter the adapter. A source guard proves the one-call shape; a fake
+proves action/result mapping; target receipts record each returned call
+duration and require 99th percentile below 50 ms and maximum below 250 ms.
+These measurements do not pretend to cancel a wedged library call: the Phase
+14 fault image stalls at checkpoint `SD` and must prove watchdog reset and USB
+recovery in 8–10 s.
 
 ## Bounded HTTP transaction ABI
 
@@ -2285,4 +2407,8 @@ pushes.
   lacked a normative transition/result oracle and incorrectly claimed target
   cutover and adapter scope. The contract now defines correlated actions,
   typed results, all job/mode sequences, path/arithmetic boundaries, buffer
-  ownership, install/rollback authority, and timeout/cancellation cleanup.
+  ownership, install/rollback authority, and timeout/cancellation cleanup. The
+  first recheck also rejected overloaded internal state, contradictory zero-I/O
+  faults, unsafe invalid-supply termination, unresolved side-effect authority,
+  and ambiguous deadline precedence; explicit phases/counters and the final
+  payload/correlation/cleanup rules above resolve those findings.
