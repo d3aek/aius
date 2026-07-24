@@ -10,7 +10,7 @@
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
 #         pipeline, dsp, net, net-runner, http, usb-control, replay, boot,
-#         network-transport, sd.
+#         runtime, network-transport, sd.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -264,6 +264,16 @@ boot)
 		"$fw_root/lib/aius_boot/src/aius_boot.c" \
 		-o "$boot_out"
 	"$boot_out"
+	;;
+runtime)
+	runtime_out="$build_dir/runtime"
+	"$cc" "${cflags[@]}" \
+		"-I$fw_root/lib/aius_boot/include" \
+		"-I$fw_root/lib/aius_runtime/include" \
+		"$fw_root/test/runtime/test_runtime.c" \
+		"$fw_root/lib/aius_runtime/src/aius_runtime.c" \
+		-o "$runtime_out"
+	"$runtime_out"
 	;;
 network-transport)
 	python3 "$fw_root/test/network-transport/test_vendor_source.py"

@@ -2984,6 +2984,7 @@ Phase 14.
 
 ```yaml
 unit: component-behind-interface
+status: completed
 seams: [aius_runtime_epoch, AiusRuntimeOps, boot checkpoints]
 contract-artifact: spec-only
 dependencies: [phase-1, phase-2]
@@ -3508,3 +3509,13 @@ pushes.
   re-audit. `teensy41-optical` compiles the bounded runtime beside the unchanged
   legacy adapter, passes pinned NativeEthernet linked-symbol verification, and
   fits every memory bank.
+- Phase 8 delivery: the native `runtime` suite passes under strict C11,
+  warnings-as-errors, ASan, and UBSan with 10 literal descriptor rows, all
+  65,526 invalid selectors, exact 20-event normal and 6-event recovery-safe
+  traces, 11 fail-fast traces, 10 ops-validity rows, and 2 entry-snapshot alias
+  mutation rows. The source-blind oracle proves stable budget pointers, exact
+  checkpoint/service order, no feed after incomplete epochs, one feed after a
+  complete epoch, null-context forwarding, and immunity to callback mutation
+  of the caller's ops storage. The focused clean-room delivery audit passed.
+  `teensy41-optical` explicitly compiles the stateless scheduler, passes pinned
+  NativeEthernet linked-symbol verification, and fits every memory bank.
