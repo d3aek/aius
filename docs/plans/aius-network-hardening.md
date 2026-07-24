@@ -708,11 +708,13 @@ typedef enum {
     AIUS_SD_PHASE_CONFIG_PUBLISH,
     AIUS_SD_PHASE_USAGE_TOTAL,
     AIUS_SD_PHASE_USAGE_USED,
+    AIUS_SD_PHASE_PATH_EXISTS,
     AIUS_SD_PHASE_MKDIR,
     AIUS_SD_PHASE_PART_SIZE_OPEN,
     AIUS_SD_PHASE_PART_SIZE,
     AIUS_SD_PHASE_PART_SIZE_CLOSE,
     AIUS_SD_PHASE_UPLOAD_OPEN,
+    AIUS_SD_PHASE_UPLOAD_TRUNCATE,
     AIUS_SD_PHASE_UPLOAD_INPUT,
     AIUS_SD_PHASE_UPLOAD_WRITE,
     AIUS_SD_PHASE_UPLOAD_CLOSE,
@@ -726,7 +728,6 @@ typedef enum {
     AIUS_SD_PHASE_DOWNLOAD_OUTPUT,
     AIUS_SD_PHASE_DOWNLOAD_CLOSE,
     AIUS_SD_PHASE_DELETE_REMOVE,
-    AIUS_SD_PHASE_INSTALL_EXISTS,
     AIUS_SD_PHASE_INSTALL_REMOVE_OLD_BACKUP,
     AIUS_SD_PHASE_INSTALL_BACKUP,
     AIUS_SD_PHASE_INSTALL_RENAME,
@@ -741,6 +742,16 @@ typedef enum {
     AIUS_SD_PHASE_CLEANUP_TEMP,
     AIUS_SD_PHASE_TERMINAL
 } AiusSdPhase;
+
+typedef enum {
+    AIUS_SD_EXISTS_NONE,
+    AIUS_SD_EXISTS_MKDIR,
+    AIUS_SD_EXISTS_DELETE,
+    AIUS_SD_EXISTS_INSTALL_TARGET,
+    AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+    AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+    AIUS_SD_EXISTS_CLEANUP_TEMP
+} AiusSdExistencePurpose;
 
 typedef enum {
     AIUS_SD_EVENT_NONE,
@@ -766,8 +777,9 @@ typedef enum {
     AIUS_SD_ACTION_MEDIA_PRESENT,
     AIUS_SD_ACTION_MKDIR,
     AIUS_SD_ACTION_OPEN_READ,
-    AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE,
+    AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
     AIUS_SD_ACTION_OPEN_APPEND,
+    AIUS_SD_ACTION_TRUNCATE,
     AIUS_SD_ACTION_SEEK,
     AIUS_SD_ACTION_NEED_INPUT,
     AIUS_SD_ACTION_READ,
@@ -853,6 +865,7 @@ typedef struct {
     AiusSdPhase phase;
     AiusSdJobKind kind;
     AiusSdInstallMode install_mode;
+    AiusSdExistencePurpose existence_purpose;
     char target_path[AIUS_SD_PATH_STORAGE];
     char temp_path[AIUS_SD_PATH_STORAGE];
     char backup_path[AIUS_SD_PATH_STORAGE];
@@ -952,12 +965,12 @@ sequence is:
 | `PROBE` | `MEDIA_PRESENT → BOOL`, then `COMPLETE`; result is `PROBE` with the returned presence. `false` is a successful absent-media result. |
 | `CONFIG_LOAD` | `OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG → COMPLETE`. Target is required. Size must be `1..AIUS_CONFIG_MAX_JSON_BYTES` and fit the caller buffer. Positive partial reads accumulate contiguously until the declared size. `PUBLISH_CONFIG` borrows the complete buffer until its `OK`/`FAULT` event. Missing/open failure, empty input, oversize input, or early zero bytes fail after one close if opened. Result is `BYTES` with the published byte count. |
 | `USAGE_REFRESH` | `TOTAL_SIZE → SIZE`, then `USED_SIZE → SIZE`, then `COMPLETE`. Result is `USAGE` with both 64-bit values; `used > total` is `PROTOCOL`. |
-| `UPLOAD/REPLACE` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_WRITE_TRUNCATE(temp)`; accept and write exactly `total` new bytes; `CLOSE`; then run the install sequence below. Zero-length replacement is valid only when `publish_config == false` and still creates/truncates, closes, and installs an empty file. |
-| `UPLOAD/APPEND_PART` | Emit parent `MKDIR` actions for `target`; `OPEN_READ(target) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(target)`; accept and write exactly `total`; `CLOSE`; `COMPLETE`. `target` is the durable part path. It is never promoted, renamed, or removed by failure/cancellation. |
-| `UPLOAD/FINALIZE_PART` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. Config publication is valid only when the final `initial_offset + total` is within the config limit. |
+| `UPLOAD/REPLACE` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and emit `MKDIR(parent) → OK` only when false. Then `OPEN_WRITE_BEGIN(temp) → TRUNCATE(0)`, accept and write exactly `total` new bytes, `CLOSE`, and run the install sequence below. Zero-length replacement is valid only when `publish_config == false` and still opens, truncates, closes, and installs an empty file. |
+| `UPLOAD/APPEND_PART` | For each target parent prefix, emit `EXISTS(parent) → BOOL` and `MKDIR(parent) → OK` only when false; `OPEN_READ(target) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(target)`; accept and write exactly `total`; `CLOSE`; `COMPLETE`. `target` is the durable part path. It is never promoted, renamed, or removed by failure/cancellation. |
+| `UPLOAD/FINALIZE_PART` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and `MKDIR(parent) → OK` only when false; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. Config publication is valid only when the final `initial_offset + total` is within the config limit. |
 | `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. After size capture, `initial_offset > captured_size` is `RANGE`. If `total == 0`, set `end_offset = captured_size`; otherwise require checked `initial_offset + total <= captured_size` or fail `RANGE`, then set that sum as `end_offset`. Result is `BYTES` with acknowledged output bytes. |
 | `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. After size capture, `initial_offset > captured_size` is `RANGE`; otherwise set `end_offset = initial_offset + min(total, captured_size - initial_offset)`. `initial_offset == captured_size` is a successful zero-byte refill. |
-| `DELETE` | `REMOVE(target) → OK`, then `COMPLETE`. Adapter `REMOVE` is idempotent: already absent and removed are both `OK`. |
+| `DELETE` | `EXISTS(target) → BOOL`; false completes immediately, while true requires `REMOVE(target) → OK` before `COMPLETE`. |
 
 Request fields are not implicit:
 
@@ -986,9 +999,10 @@ Each path is an absolute canonical path of 1–127 bytes plus NUL. `/`, a
 trailing slash, empty segments, `.` or `..` segments, backslash, control bytes,
 and non-absolute paths are rejected. Required paths must be pairwise distinct.
 All emitted path pointers borrow immutable job-owned copies. `directory_path`
-holds one NUL-terminated proper parent prefix at a time; `MKDIR` walks from the
-first segment through the final parent, never emits `/`, and treats existing
-directories as `OK`.
+holds one NUL-terminated proper parent prefix at a time. Parent preparation
+walks from the first segment through the final parent and never emits `/`.
+Each prefix first uses `EXISTS`; true advances to the next prefix without a
+mutation, while false emits exactly one `MKDIR`.
 
 `initial_offset + total` must not overflow `uint64_t`. Action offsets and file
 sizes are 64-bit. The portable module accepts values through `INT64_MAX`;
@@ -1012,7 +1026,10 @@ config `READ` uses `buffer + config_bytes` with length
 accepted upload/output slice awaiting partial write/output completion.
 `file_open` is sole open-handle authority. `mkdir_path_index` selects target,
 temp, then backup as applicable; `mkdir_offset` selects the next proper parent
-prefix.
+prefix. `existence_purpose` is non-`NONE` only while one `PATH_EXISTS`
+correlation is outstanding or its `BOOL` result is being routed. It selects
+exactly one continuation: parent creation, delete, install-target selection,
+old-backup removal, committed-backup cleanup, or disposable-temp cleanup.
 The explicit `phase` values distinguish initial part-size validation,
 append/write, final-size verification, install, rollback, cleanup, and terminal
 emission, including zero-byte uploads.
@@ -1050,7 +1067,7 @@ checkpoint watchdog is the recovery boundary.
 
 | Outstanding action | Only successful event | Validation |
 |---|---|---|
-| `BEGIN`, `MKDIR`, `OPEN_*`, `SEEK`, `RENAME`, `REMOVE`, `CLOSE`, `PUBLISH_CONFIG`, `OUTPUT` | `OK` | `bytes == 0`, `size == 0`, `value == false`, `fault == 0` |
+| `BEGIN`, `MKDIR`, `OPEN_*`, `TRUNCATE`, `SEEK`, `RENAME`, `REMOVE`, `CLOSE`, `PUBLISH_CONFIG`, `OUTPUT` | `OK` | `bytes == 0`, `size == 0`, `value == false`, `fault == 0` |
 | `MEDIA_PRESENT`, `EXISTS` | `BOOL` | only `value` is meaningful |
 | `FILE_SIZE`, `TOTAL_SIZE`, `USED_SIZE` | `SIZE` | only 64-bit `size` is meaningful and it must be `<= INT64_MAX` |
 | `READ`, `WRITE` | `BYTES` | `0..outstanding length`; other fields zero; zero is correlated `SHORT_IO` |
@@ -1062,7 +1079,8 @@ uncorrelated rows have id zero. Any payload not named below is null/zero:
 | Action | Exact nonzero payload |
 |---|---|
 | `NONE`, `BEGIN`, `MEDIA_PRESENT`, `CLOSE`, `TOTAL_SIZE`, `USED_SIZE`, `COMPLETE` | none (`BEGIN`, media, close, and sizes carry only their correlated id) |
-| `MKDIR`, `OPEN_READ`, `OPEN_WRITE_TRUNCATE`, `OPEN_APPEND`, `EXISTS`, `REMOVE` | immutable `path` |
+| `MKDIR`, `OPEN_READ`, `OPEN_WRITE_BEGIN`, `OPEN_APPEND`, `EXISTS`, `REMOVE` | immutable `path` |
+| `TRUNCATE` | `offset == 0`; it addresses the sole open file |
 | `SEEK` | 64-bit absolute `offset` |
 | `NEED_INPUT` | `length=requested`, `offset=initial_offset+transferred` |
 | `READ` | config: `buffer + config_bytes`, `length=captured_size-config_bytes`, `offset=config_bytes`; download/refill: job `buffer`, `length=min(capacity, end_offset-(initial_offset+transferred))`, absolute `offset=initial_offset+transferred` |
@@ -1075,11 +1093,12 @@ uncorrelated rows have id zero. Any payload not named below is null/zero:
 
 For `BOOL`, `SIZE`, and `BYTES`, every payload field not named in the row is
 zero/false. `FAULT` preserves its driver value in `result.driver_fault` and maps by action
-and authority: `MEDIA_PRESENT` to `MEDIA`; `OPEN_*` to `OPEN`; `SEEK` to
+and authority: `MEDIA_PRESENT` to `MEDIA`; `OPEN_*` to `OPEN`; `TRUNCATE` and `SEEK` to
 `SEEK`; backup/install rename to `INSTALL`; rollback rename to `ROLLBACK`;
-`PUBLISH_CONFIG` to `PUBLISH`; close/remove during terminal cleanup to
-`CLEANUP`; and `BEGIN`, `MKDIR`, read/write/output, size/existence, ordinary
-remove, or ordinary close to `IO`. A correlated `READ` or `WRITE` zero progress
+`PUBLISH_CONFIG` to `PUBLISH`; close/remove/existence during terminal cleanup to
+`CLEANUP`; install-target or old-backup existence to `INSTALL`; and `BEGIN`,
+parent existence or `MKDIR`, read/write/output, size, delete existence,
+ordinary remove, or ordinary close to `IO`. A correlated `READ` or `WRITE` zero progress
 while bytes remain is `SHORT_IO`; bytes beyond the requested length are
 `PROTOCOL`.
 Positive short progress is valid. `WRITE` advances only the acknowledged
@@ -1088,6 +1107,32 @@ captured byte target reaches zero, so early zero/EOF is always a fault.
 During the explicit post-commit publication reread, open/size/read faults map
 to `PUBLISH` instead of their ordinary pre-commit categories; its close fault
 maps to `CLEANUP`.
+
+Every idempotent filesystem mutation is decomposed into a correlated existence
+observation followed by at most one mutation:
+
+| `existence_purpose` | `BOOL false` continuation | `BOOL true` continuation |
+|---|---|---|
+| `MKDIR` | emit `MKDIR(directory_path)` | advance to the next parent prefix |
+| `DELETE` | complete successfully | emit `REMOVE(target)` |
+| `INSTALL_TARGET` | emit `RENAME(temp,target)` | begin `REMOVE_OLD_BACKUP` existence check |
+| `REMOVE_OLD_BACKUP` | emit `RENAME(target,backup)` | emit `REMOVE(backup)`, then rename |
+| `REMOVE_COMMITTED_BACKUP` | clear backup authority and continue publication/terminal routing | emit `REMOVE(backup)` |
+| `CLEANUP_TEMP` | finish the already-recorded failure | emit `REMOVE(temp)` |
+
+The `PATH_EXISTS` phase emits exactly one `EXISTS` for the purpose-selected
+immutable path. It clears the purpose after consuming the matching `BOOL`.
+`BOOL` with purpose `NONE`, a purpose/path mismatch, or any non-`BOOL` success
+is `PROTOCOL`. A false existence result is the pinned Teensy API's only
+observable absent result; a driver that can distinguish lookup failure returns
+`FAULT`, never false. This removes idempotency guesses from the target adapter
+without pretending the pinned boolean API exposes a richer error code.
+
+`OPEN_WRITE_BEGIN` success establishes `file_open` and immediately selects
+`UPLOAD_TRUNCATE`; `TRUNCATE(offset=0)` success selects zero-length close or
+the normal input/write loop. `TRUNCATE` fault closes through authority-safe
+cleanup and maps to `SEEK`. No upload byte is accepted before truncation
+acknowledges successfully.
 
 `NEED_INPUT`, `COMPLETE`, and `FAIL` are uncorrelated one-shot application
 notifications and do not await an event. `NEED_INPUT` is emitted once per
@@ -1128,8 +1173,8 @@ File growth is ignored after `FILE_SIZE`; shrinkage is detected as short I/O.
 | Edge | Required behavior and authoritative files |
 |---|---|
 | `EXISTS(target) == false` | Skip backup and attempt `RENAME(temp,target)`. |
-| `EXISTS(target) == true` | `REMOVE(backup)` idempotently, then `RENAME(target,backup)`. Backup-rename failure leaves target authoritative and never attempts install. |
-| Install succeeds | Target is authoritative and the commit point is crossed. Later cancellation is ignored. Attempt backup removal if moved. If publication is requested, run the post-commit reread sequence below before `PUBLISH_CONFIG`. |
+| `EXISTS(target) == true` | `EXISTS(backup)`; remove it only when present, then `RENAME(target,backup)`. Backup lookup/removal/rename failure leaves target authoritative and never attempts install. |
+| Install succeeds | Target is authoritative and the commit point is crossed. Later cancellation is ignored. If a backup was moved, check its existence and remove it only when present. If publication is requested, run the post-commit reread sequence below before `PUBLISH_CONFIG`. |
 | Install fails without backup | Target remains absent and temp/part is preserved; emit `FAIL/INSTALL`. |
 | Install fails after backup | Attempt `RENAME(backup,target)` exactly once. Success restores target and preserves temp/part, then fails `INSTALL`. Failure preserves backup and temp/part and fails `ROLLBACK`. |
 | Backup removal fails after commit | Target remains authoritative. Optional publish still runs; terminal result is `FAIL/CLEANUP` with the driver fault. |
@@ -1148,8 +1193,8 @@ complete bytes. Open/size/read/range failure records `PUBLISH`; close failure
 records higher-precedence `CLEANUP`. Because commit already crossed, no
 publication reread failure rolls the installed target back.
 
-Disposable `REPLACE` temp is removed once on pre-install ordinary failure,
-timeout, or cancellation. It is preserved after an install/rollback failure
+Disposable `REPLACE` temp is checked once and removed when present on
+pre-install ordinary failure, timeout, or cancellation. It is preserved after an install/rollback failure
 for diagnosis and possible manual recovery. `APPEND_PART` target and
 `FINALIZE_PART` temp are durable and never removed by cleanup.
 `install_failed` is set only when the correlated `RENAME(temp,target)` returns
@@ -1207,11 +1252,17 @@ and repeated cancellation.
 
 The target adapter ABI is:
 
-```c
+```cpp
+#define AIUS_SD_TEENSY_DRIVER_FAULT UINT32_C(0x53444452)
+#define AIUS_SD_TEENSY_PROTOCOL_FAULT UINT32_C(0x53445052)
+
 typedef struct {
+    File file;
     bool file_open;
     uint32_t last_duration_us;
     uint32_t longest_duration_us;
+    uint32_t protocol_faults;
+    uint32_t last_fault;
 } AiusSdTeensy;
 
 void aius_sd_teensy_init(AiusSdTeensy *adapter);
@@ -1220,16 +1271,81 @@ AiusSdEvent aius_sd_teensy_execute(
     const AiusSdAction *action);
 ```
 
-`aius_sd_teensy_execute()` contains no loop, retry, or delay and invokes exactly
-one matching `SD`/`File` primitive. It owns the sole target `File` handle.
-Every returned event echoes the correlated `action_id`. `BEGIN`, `NEED_INPUT`,
-`OUTPUT`, `PUBLISH_CONFIG`, `COMPLETE`, and `FAIL` are application actions and
-never enter the adapter. A source guard proves the one-call shape; a fake
-proves action/result mapping; target receipts record each returned call
-duration and require 99th percentile below 50 ms and maximum below 250 ms.
-These measurements do not pretend to cancel a wedged library call: the Phase
-14 fault image stalls at checkpoint `SD` and must prove watchdog reset and USB
-recovery in 8–10 s.
+The header is C++-only and includes the pinned Teensy `SD.h`; the composition
+object therefore owns its concrete `File` directly rather than through a
+singleton or hidden file-static handle. `init()` is valid only on a
+default-constructed adapter that has no open file. It performs no SD/File
+operation and zeros file authority, durations, diagnostics, and fault state.
+Reinitializing an open adapter is a caller-precondition violation.
+
+Every accepted portable job emits `BEGIN`, including repeated jobs.
+`aius_sd_teensy_execute()` maps one eligible action to exactly one storage
+primitive:
+
+| Action | Sole storage primitive | Exact event and authority |
+|---|---|---|
+| `BEGIN` | `SD.begin(BUILTIN_SDCARD)` | true `OK`; false `FAULT(DRIVER)`; requires no open file |
+| `MEDIA_PRESENT` | `SD.mediaPresent()` | `BOOL` |
+| `MKDIR` | `SD.mkdir(path)` | true `OK`; false `FAULT(DRIVER)` |
+| `OPEN_READ` | `SD.open(path, FILE_READ)` | valid `File` gives `OK` and sole open authority; invalid gives `FAULT(DRIVER)` |
+| `OPEN_WRITE_BEGIN` | `SD.open(path, FILE_WRITE_BEGIN)` | valid `File` gives `OK` and sole open authority without claiming truncation; invalid gives `FAULT(DRIVER)` |
+| `OPEN_APPEND` | `SD.open(path, FILE_WRITE)` | valid `File` gives `OK` and sole open authority at end; invalid gives `FAULT(DRIVER)` |
+| `TRUNCATE` | `file.truncate(0)` | true `OK`; false `FAULT(DRIVER)`; retains open authority |
+| `SEEK` | `file.seek(offset)` | true `OK`; false `FAULT(DRIVER)` |
+| `READ` | `file.read(buffer,length)` | nonnegative `BYTES`, including zero; negative `FAULT(DRIVER)` |
+| `WRITE` | `file.write(buffer,length)` | `BYTES`, including zero |
+| `FILE_SIZE` | `file.size()` | `SIZE` |
+| `EXISTS` | `SD.exists(path)` | `BOOL`; false is the only pinned absent result |
+| `RENAME` | `SD.rename(path,path_to)` | true `OK`; false `FAULT(DRIVER)` |
+| `REMOVE` | `SD.remove(path)` | true `OK`; false `FAULT(DRIVER)` |
+| `CLOSE` | `file.close()` | the pinned call is void; adapter clears authority and returns `OK` |
+| `TOTAL_SIZE` | `SD.totalSize()` | `SIZE` |
+| `USED_SIZE` | `SD.usedSize()` | `SIZE` |
+
+`NONE`, `NEED_INPUT`, `OUTPUT`, `PUBLISH_CONFIG`, `COMPLETE`, and `FAIL` are
+not adapter actions and return an all-zero `NONE` event with zero primitive and
+clock calls. An unknown action kind does the same protocol-fault path as a
+malformed eligible action. Null adapter or action returns all-zero `NONE`;
+there is no object in which to retain a diagnostic.
+
+Eligible actions require a nonzero ID and exact named payload from the portable
+action table. A null required path/buffer, unexpected named field, out-of-range
+`length`, `offset > INT64_MAX`, `TRUNCATE` with nonzero offset, open action
+while already open, or file action without open authority executes no
+primitive and returns `FAULT(PROTOCOL)` echoing the supplied ID. It increments
+`protocol_faults` saturating at `UINT32_MAX`, stores
+`AIUS_SD_TEENSY_PROTOCOL_FAULT`, and zeros every unnamed event field. Storage
+API failure stores `AIUS_SD_TEENSY_DRIVER_FAULT` without incrementing the
+protocol counter. The adapter does not retain action IDs: a valid duplicate is
+executed and echoed like any other call; correlation/duplicate rejection
+belongs to the portable job.
+
+For each valid eligible action, the adapter samples `micros()` immediately
+before and after the one storage primitive. Unsigned subtraction is the exact
+wrap-safe duration. Successful and failed storage calls update
+`last_duration_us`; `longest_duration_us` is the unsigned maximum. A rejected,
+application, null, or `NONE` call sets `last_duration_us` to zero and leaves
+the maximum unchanged. The two clock samples are diagnostics and do not relax
+the one-storage-primitive rule.
+
+The target oracle compiles the real adapter source against a fake `SD.h`,
+`File`, `SD`, and `micros()` implementation. Its fixed catalog covers every
+one of 23 action kinds in enum order, rejects duplicate keys, and asserts 17
+eligible storage actions plus 6 application/non-actions. It covers all
+success/failure results, open-authority
+transitions, exact payload validation, nulls, zero/malformed IDs, unnamed
+fields, duplicate-ID echo behavior, counter saturation, duration equality and
+wrap, and fully zeroed event fields. It asserts exactly one storage primitive
+and two clock samples for each valid eligible action, and zero for every
+rejected/application action. A source guard rejects `for`, `while`, `do`,
+recursion into `aius_sd_teensy_execute`, `delay`, and `delayMicroseconds`;
+counts the single primitive site in each eligible switch branch; and has
+mutation self-tests proving every forbidden form is rejected.
+
+Target receipts record each returned call duration and require 99th percentile
+below 50 ms and maximum below 250 ms. These measurements do not pretend to
+cancel a wedged library call: the Phase 14 fault image stalls at checkpoint
+`SD` and must prove watchdog reset and USB recovery in 8–10 s.
 
 ## Bounded HTTP transaction ABI
 
@@ -3137,31 +3253,55 @@ owned exclusively by Phase 14.
 ### Phase 10 — One-shot Teensy SD adapter
 
 ```yaml
-unit: component-behind-interface
-seams: [aius_sd_teensy_execute, AiusSdAction, Teensy SD and File]
+unit: phase-task
+seams: [aius_sd_job_step, AiusSdExistencePurpose, aius_sd_teensy_execute, Teensy SD and File]
 contract-artifact: spec-only
 dependencies: [phase-5]
-outcome: "Every target SD call is one observable primitive behind the portable job."
+outcome: "Portable idempotency and truncation edges drive one observable target primitive per epoch."
 acceptance:
-  - source guard rejects loops, retries, and delay in the adapter
-  - fake maps every action to one primitive and one event
-  - optical target builds with the adapter unused
+  - every idempotent mutation is preceded by one correlated existence observation
+  - write-begin and truncate are separate correlated actions before upload input
+  - real adapter source maps the fixed action catalog to one storage primitive
+  - source guard and mutation self-tests reject loops, retries, recursion, and delay
+  - strict C and C++17 ASan/UBSan suites pass with exact event and authority fields
+  - optical target compiles the adapter without constructing or calling it
 fan-out:
+  - name: agent-sd-portable-idempotency-engine
+    owned-paths:
+      - firmware/lib/aius_sd/include/aius_sd.h
+      - firmware/lib/aius_sd/src/aius_sd.c
+  - name: agent-sd-portable-idempotency-oracle
+    owned-paths:
+      - firmware/test/sd/test_aius_sd.c
   - name: agent-teensy-sd-adapter
     owned-paths:
       - firmware/src/aius_sd_teensy.cpp
       - firmware/src/aius_sd_teensy.h
-      - firmware/test/sd-target/
       - firmware/platformio.ini
+  - name: agent-teensy-sd-independent-oracle
+    owned-paths:
+      - firmware/test/sd-target/
       - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
   green:
+    - firmware/scripts/test.sh --environment native --suite sd
     - firmware/scripts/test.sh --environment native --suite sd-target
   buildable:
-    - teensy41-optical
+    - firmware/scripts/build.sh teensy41-optical
   parent-commit: "feat(aius): add one-shot Teensy SD adapter"
 ```
+
+Run all four slices sequentially. First amend the portable engine, then have a
+fresh source-blind oracle read only the committed contract and public header
+and strengthen the existing SD registry for every existence purpose, both bool
+branches, malformed correlations, cancellation/deadline precedence, and the
+write-begin/truncate authority edge. After the parent verifies that header,
+the adapter slice implements the fixed C++ ABI and adds
+`aius_sd_teensy.cpp` to the optical PlatformIO source filter without editing
+`optical_main.cpp`. Finally a fresh adapter-source-blind oracle compiles the
+real source against the fake `SD.h` contract and owns the runner registration.
+No slice constructs or invokes the adapter in production before Phase 14.
 
 ### Phase 11 — Optical application dispatch
 
