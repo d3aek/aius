@@ -10,7 +10,7 @@
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
 #         pipeline, dsp, net, net-runner, http, usb-control, replay, boot,
-#         runtime, network-transport, sd.
+#         runtime, network-transport, sd, sd-target.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -317,6 +317,19 @@ sd)
 		"$fw_root/lib/aius_sd/src/aius_sd.c" \
 		-o "$sd_out"
 	"$sd_out"
+	;;
+sd-target)
+	python3 "$fw_root/test/sd-target/test_source_guard.py"
+	sd_target_out="$build_dir/sd-target"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -O1 -g \
+		-fsanitize=address,undefined -fno-sanitize=enum \
+		"-I$fw_root/test/sd-target/fake" \
+		"-I$fw_root/lib/aius_sd/include" \
+		"-I$fw_root/src" \
+		"$fw_root/test/sd-target/test_aius_sd_teensy.cpp" \
+		"$fw_root/src/aius_sd_teensy.cpp" \
+		-o "$sd_target_out"
+	"$sd_target_out"
 	;;
 *)
 	echo "unknown suite: $suite" >&2

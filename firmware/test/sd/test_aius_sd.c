@@ -103,7 +103,7 @@ static void validate_action(const AiusSdAction *action)
 		break;
 	case AIUS_SD_ACTION_MKDIR:
 	case AIUS_SD_ACTION_OPEN_READ:
-	case AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
 	case AIUS_SD_ACTION_OPEN_APPEND:
 	case AIUS_SD_ACTION_EXISTS:
 	case AIUS_SD_ACTION_REMOVE:
@@ -113,6 +113,14 @@ static void validate_action(const AiusSdAction *action)
 		CHECK(action->length == 0u, "unexpected length");
 		CHECK(action->offset == 0u, "unexpected offset");
 		CHECK(action->fault == 0u, "unexpected fault");
+		break;
+	case AIUS_SD_ACTION_TRUNCATE:
+		CHECK(action->path == NULL && action->path_to == NULL,
+		      "truncate carried path");
+		CHECK(action->buffer == NULL && action->length == 0u,
+		      "truncate carried buffer");
+		CHECK(action->offset == 0u && action->fault == 0u,
+		      "truncate carried payload");
 		break;
 	case AIUS_SD_ACTION_SEEK:
 		CHECK(action->path == NULL && action->path_to == NULL,
@@ -382,12 +390,66 @@ static void test_probe_usage_delete(void)
 	              AIUS_SD_FAULT_PROTOCOL,
 	              0u);
 
-	scenario = "delete";
+	scenario = "delete optional missing defaults to success";
 	request = request_for(AIUS_SD_JOB_DELETE);
+	CHECK(!request.require_existing,
+	      "DELETE request default is not optional");
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	CHECK(!job.require_existing,
+	      "optional DELETE requirement copy mismatch");
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	CHECK(job.phase == AIUS_SD_PHASE_PATH_EXISTS,
+	      "delete existence phase mismatch");
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_DELETE,
+	      "delete existence purpose mismatch");
+	CHECK(strcmp(action.path, request.target_path) == 0,
+	      "delete existence path mismatch");
+	const uint64_t after_exists_id = job.next_action_id;
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, false),
+	                     AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_COMPLETE, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.next_action_id == after_exists_id,
+	      "optional missing DELETE emitted REMOVE");
+
+	scenario = "delete required missing fails without mutation";
+	request.require_existing = true;
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	CHECK(job.require_existing,
+	      "required DELETE requirement copy mismatch");
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_DELETE,
+	      "required DELETE existence purpose mismatch");
+	CHECK(strcmp(action.path, request.target_path) == 0,
+	      "required DELETE existence path mismatch");
+	const uint64_t required_after_exists_id = job.next_action_id;
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, false),
+	                     AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_NOT_FOUND,
+	      "required missing DELETE fault mismatch");
+	expect_result(
+		&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_NOT_FOUND, 0u);
+	CHECK(job.next_action_id == required_after_exists_id,
+	      "required missing DELETE emitted REMOVE");
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_NONE,
+	      "required missing DELETE retained authority");
+
+	scenario = "delete required present removes and completes";
 	start_valid(&job, buffer, sizeof(buffer), &request);
 	action = begin_job(&job);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
 	CHECK(job.phase == AIUS_SD_PHASE_DELETE_REMOVE, "delete phase mismatch");
+	CHECK(strcmp(action.path, request.target_path) == 0,
+	      "delete remove path mismatch");
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
 	expect_result(&job, AIUS_SD_RESULT_COMPLETE, AIUS_SD_FAULT_NONE, 0u);
 }
@@ -578,7 +640,7 @@ static AiusSdJobRequest upload_request(AiusSdInstallMode mode)
 	return request;
 }
 
-static AiusSdAction accept_mkdirs(
+static AiusSdAction accept_parent_paths(
 	AiusSdJob *job,
 	AiusSdAction action,
 	const char *const *paths,
@@ -586,12 +648,24 @@ static AiusSdAction accept_mkdirs(
 	AiusSdActionKind next)
 {
 	for (size_t index = 0; index < count; ++index) {
-		CHECK(action.kind == AIUS_SD_ACTION_MKDIR, "missing mkdir");
+		CHECK(action.kind == AIUS_SD_ACTION_EXISTS,
+		      "missing parent existence observation");
+		CHECK(job->phase == AIUS_SD_PHASE_PATH_EXISTS,
+		      "parent existence phase mismatch");
+		CHECK(job->existence_purpose == AIUS_SD_EXISTS_MKDIR,
+		      "parent existence purpose mismatch");
+		CHECK(strcmp(action.path, paths[index]) == 0,
+		      "parent existence path/order mismatch");
+		action = step_action(job,
+		                     0u,
+		                     bool_event(action.action_id, false),
+		                     AIUS_SD_ACTION_MKDIR);
+		CHECK(job->phase == AIUS_SD_PHASE_MKDIR, "mkdir phase mismatch");
 		CHECK(strcmp(action.path, paths[index]) == 0, "mkdir path/order mismatch");
 		action = acknowledge_ok(
 			job,
 			&action,
-			index + 1u == count ? next : AIUS_SD_ACTION_MKDIR);
+			index + 1u == count ? next : AIUS_SD_ACTION_EXISTS);
 	}
 	return action;
 }
@@ -609,12 +683,29 @@ static AiusSdAction begin_upload(
 	AiusSdAction action;
 	start_valid(job, buffer, capacity, request);
 	action = begin_job(job);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_MKDIR);
+	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_EXISTS);
 	if (request->install_mode == AIUS_SD_INSTALL_APPEND_PART)
-		return accept_mkdirs(
+		return accept_parent_paths(
 			job, action, append_dirs, ARRAY_COUNT(append_dirs), next);
-	return accept_mkdirs(
+	return accept_parent_paths(
 		job, action, replace_dirs, ARRAY_COUNT(replace_dirs), next);
+}
+
+static AiusSdAction acknowledge_write_begin(
+	AiusSdJob *job,
+	const AiusSdAction *open,
+	AiusSdActionKind after_truncate)
+{
+	CHECK(open->kind == AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
+	      "expected write-begin open");
+	CHECK(job->phase == AIUS_SD_PHASE_UPLOAD_OPEN,
+	      "write-begin phase mismatch");
+	AiusSdAction action =
+		acknowledge_ok(job, open, AIUS_SD_ACTION_TRUNCATE);
+	CHECK(job->file_open, "write-begin did not establish file authority");
+	CHECK(job->phase == AIUS_SD_PHASE_UPLOAD_TRUNCATE,
+	      "truncate phase mismatch");
+	return acknowledge_ok(job, &action, after_truncate);
 }
 
 static AiusSdAction supply_and_write(
@@ -653,11 +744,102 @@ static AiusSdAction supply_and_write(
 static AiusSdAction install_no_target(AiusSdJob *job, AiusSdAction action)
 {
 	CHECK(action.kind == AIUS_SD_ACTION_EXISTS, "install existence missing");
+	CHECK(job->phase == AIUS_SD_PHASE_PATH_EXISTS,
+	      "install-target existence phase mismatch");
+	CHECK(job->existence_purpose == AIUS_SD_EXISTS_INSTALL_TARGET,
+	      "install-target existence purpose mismatch");
+	CHECK(strcmp(action.path, job->target_path) == 0,
+	      "install-target existence path mismatch");
 	action = step_action(
 		job, 0u, bool_event(action.action_id, false), AIUS_SD_ACTION_RENAME);
 	CHECK(strcmp(action.path, job->temp_path) == 0, "install source mismatch");
 	CHECK(strcmp(action.path_to, job->target_path) == 0,
 	      "install destination mismatch");
+	return action;
+}
+
+static AiusSdAction install_existing_target(
+	AiusSdJob *job,
+	AiusSdAction action,
+	bool backup_exists)
+{
+	CHECK(action.kind == AIUS_SD_ACTION_EXISTS,
+	      "install-target existence missing");
+	CHECK(job->existence_purpose == AIUS_SD_EXISTS_INSTALL_TARGET,
+	      "install-target purpose mismatch");
+	CHECK(strcmp(action.path, job->target_path) == 0,
+	      "install-target path mismatch");
+	action = step_action(job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_EXISTS);
+	CHECK(job->existence_purpose == AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+	      "old-backup purpose mismatch");
+	CHECK(strcmp(action.path, job->backup_path) == 0,
+	      "old-backup existence path mismatch");
+	action = step_action(
+		job,
+		0u,
+		bool_event(action.action_id, backup_exists),
+		backup_exists ? AIUS_SD_ACTION_REMOVE : AIUS_SD_ACTION_RENAME);
+	if (backup_exists) {
+		CHECK(strcmp(action.path, job->backup_path) == 0,
+		      "old-backup removal path mismatch");
+		action = acknowledge_ok(job, &action, AIUS_SD_ACTION_RENAME);
+	}
+	CHECK(strcmp(action.path, job->target_path) == 0 &&
+		      strcmp(action.path_to, job->backup_path) == 0,
+	      "backup rename mismatch");
+	return action;
+}
+
+static AiusSdAction finish_committed_backup(
+	AiusSdJob *job,
+	AiusSdAction action,
+	bool backup_exists,
+	AiusSdActionKind next)
+{
+	CHECK(action.kind == AIUS_SD_ACTION_EXISTS,
+	      "committed-backup existence missing");
+	CHECK(job->existence_purpose == AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+	      "committed-backup purpose mismatch");
+	CHECK(strcmp(action.path, job->backup_path) == 0,
+	      "committed-backup existence path mismatch");
+	action = step_action(
+		job,
+		0u,
+		bool_event(action.action_id, backup_exists),
+		backup_exists ? AIUS_SD_ACTION_REMOVE : next);
+	if (backup_exists) {
+		CHECK(strcmp(action.path, job->backup_path) == 0,
+		      "committed-backup removal path mismatch");
+		action = acknowledge_ok(job, &action, next);
+	}
+	return action;
+}
+
+static AiusSdAction remove_disposable_temp(
+	AiusSdJob *job,
+	AiusSdAction action,
+	bool temp_exists,
+	AiusSdActionKind next)
+{
+	CHECK(action.kind == AIUS_SD_ACTION_EXISTS,
+	      "cleanup-temp existence missing");
+	CHECK(job->existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP,
+	      "cleanup-temp purpose mismatch");
+	CHECK(strcmp(action.path, job->temp_path) == 0,
+	      "cleanup-temp existence path mismatch");
+	action = step_action(
+		job,
+		0u,
+		bool_event(action.action_id, temp_exists),
+		temp_exists ? AIUS_SD_ACTION_REMOVE : next);
+	if (temp_exists) {
+		CHECK(strcmp(action.path, job->temp_path) == 0,
+		      "cleanup-temp removal path mismatch");
+		action = acknowledge_ok(job, &action, next);
+	}
 	return action;
 }
 
@@ -676,9 +858,10 @@ static void test_upload_modes(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
 	CHECK(strcmp(action.path, request.temp_path) == 0, "replace open path mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	CHECK(action.offset == 0u && action.length == sizeof(abc),
 	      "replace input request mismatch");
 	action = supply_and_write(
@@ -696,8 +879,8 @@ static void test_upload_modes(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_CLOSE);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(&job, &action, AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
 	action = install_no_target(&job, action);
 	acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
@@ -761,28 +944,21 @@ static void test_install_publication_and_authority(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, request.backup_path) == 0,
-	      "old backup remove mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
-	CHECK(strcmp(action.path, request.target_path) == 0 &&
-		      strcmp(action.path_to, request.backup_path) == 0,
-	      "backup rename mismatch");
+	action = install_existing_target(&job, action, true);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
 	CHECK(strcmp(action.path, request.temp_path) == 0 &&
 		      strcmp(action.path_to, request.target_path) == 0,
 	      "install rename mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
 	CHECK(job.installed, "install commit not recorded");
-	CHECK(strcmp(action.path, request.backup_path) == 0,
-	      "post-commit backup remove mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = finish_committed_backup(
+		&job, action, true, AIUS_SD_ACTION_OPEN_READ);
 	CHECK(strcmp(action.path, request.target_path) == 0,
 	      "publish reread path mismatch");
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FILE_SIZE);
@@ -811,8 +987,9 @@ static void test_install_publication_and_authority(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
@@ -828,14 +1005,13 @@ static void test_install_publication_and_authority(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	action = install_existing_target(&job, action, true);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 42u), AIUS_SD_ACTION_RENAME);
@@ -851,20 +1027,36 @@ static void test_install_publication_and_authority(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	action = install_existing_target(&job, action, true);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 43u), AIUS_SD_ACTION_RENAME);
+	CHECK(job.install_failed,
+	      "temp-to-target failure did not preserve temp authority");
+	CHECK(job.backup_moved,
+	      "temp-to-target failure lost backup recovery authority");
+	CHECK(!job.installed,
+	      "failed temp-to-target rename claimed install commit");
+	const uint64_t after_rollback_id = job.next_action_id;
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 44u), AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_ROLLBACK, "rollback failure fault mismatch");
+	CHECK(job.install_failed,
+	      "rollback failure lost disposable-temp recovery authority");
+	CHECK(job.backup_moved,
+	      "rollback failure lost backup recovery authority");
+	CHECK(!job.installed,
+	      "rollback failure claimed install commit");
+	CHECK(job.next_action_id == after_rollback_id,
+	      "rollback failure emitted recovery-file cleanup");
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_NONE,
+	      "rollback failure retained correlated authority");
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_ROLLBACK, 44u);
 }
 
@@ -929,7 +1121,9 @@ static void test_request_boundaries(void)
 	request.target_path = path127;
 	start_valid(&job, buffer, sizeof(buffer), &request);
 	AiusSdAction action = begin_job(&job);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_DELETE,
+	      "127-byte delete existence purpose mismatch");
 	CHECK(strcmp(action.path, path127) == 0, "127-byte path copy mismatch");
 
 	scenario = "path 128 bytes rejected";
@@ -1027,6 +1221,68 @@ static void test_request_boundaries(void)
 	}
 }
 
+static void test_require_existing_request_matrix(void)
+{
+	uint8_t buffer[512];
+	AiusSdJob job;
+	struct RequireExistingCase {
+		const char *name;
+		AiusSdJobRequest request;
+	};
+	struct RequireExistingCase cases[8];
+	size_t count = 0u;
+
+	cases[count++] = (struct RequireExistingCase){
+		"PROBE require_existing rejected",
+		request_for(AIUS_SD_JOB_PROBE)};
+	cases[count++] = (struct RequireExistingCase){
+		"CONFIG_LOAD require_existing rejected",
+		request_for(AIUS_SD_JOB_CONFIG_LOAD)};
+	cases[count++] = (struct RequireExistingCase){
+		"USAGE_REFRESH require_existing rejected",
+		request_for(AIUS_SD_JOB_USAGE_REFRESH)};
+	cases[count++] = (struct RequireExistingCase){
+		"DOWNLOAD require_existing rejected",
+		request_for(AIUS_SD_JOB_DOWNLOAD)};
+	cases[count++] = (struct RequireExistingCase){
+		"REPLAY_REFILL require_existing rejected",
+		request_for(AIUS_SD_JOB_REPLAY_REFILL)};
+	cases[count++] = (struct RequireExistingCase){
+		"UPLOAD REPLACE require_existing rejected",
+		upload_request(AIUS_SD_INSTALL_REPLACE)};
+	cases[count++] = (struct RequireExistingCase){
+		"UPLOAD APPEND_PART require_existing rejected",
+		upload_request(AIUS_SD_INSTALL_APPEND_PART)};
+	cases[count++] = (struct RequireExistingCase){
+		"UPLOAD FINALIZE_PART require_existing rejected",
+		upload_request(AIUS_SD_INSTALL_FINALIZE_PART)};
+	CHECK(count == ARRAY_COUNT(cases),
+	      "require_existing rejection registry incomplete");
+
+	for (size_t index = 0u; index < count; ++index) {
+		scenario = cases[index].name;
+		cases[index].request.require_existing = true;
+		start_valid(
+			&job, buffer, sizeof(buffer), &cases[index].request);
+		expect_result(&job,
+		              AIUS_SD_RESULT_FAULT,
+		              AIUS_SD_FAULT_INVALID_REQUEST,
+		              0u);
+		CHECK(job.next_action_id == 1u,
+		      "invalid require_existing consumed an action id");
+		CHECK(job.outstanding_action == AIUS_SD_ACTION_NONE &&
+			      job.outstanding_action_id == 0u,
+		      "invalid require_existing retained authority");
+		AiusSdAction action =
+			step_none(&job, AIUS_SD_ACTION_FAIL);
+		CHECK(action.fault == AIUS_SD_FAULT_INVALID_REQUEST,
+		      "invalid require_existing terminal mismatch");
+		CHECK(job.next_action_id == 1u,
+		      "invalid require_existing emitted BEGIN");
+		step_none(&job, AIUS_SD_ACTION_NONE);
+	}
+}
+
 static void test_protocol_mismatches_and_supply(void)
 {
 	uint8_t buffer[8];
@@ -1057,6 +1313,22 @@ static void test_protocol_mismatches_and_supply(void)
 	action = step_action(
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL, "wrong-id fault mismatch");
+
+	scenario = "duplicate prior result retains current outstanding";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	uint64_t completed_id = action.action_id;
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MEDIA_PRESENT);
+	uint64_t current_id = action.action_id;
+	step_action(
+		&job, 0u, ok_event(completed_id), AIUS_SD_ACTION_NONE);
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_MEDIA_PRESENT &&
+		      job.outstanding_action_id == current_id,
+	      "duplicate prior result cleared current authority");
+	action = step_action(
+		&job, 0u, bool_event(current_id, true), AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
+	      "duplicate prior result fault mismatch");
 
 	scenario = "wrong kind retains outstanding";
 	start_valid(&job, buffer, sizeof(buffer), &request);
@@ -1137,7 +1409,7 @@ static void test_protocol_mismatches_and_supply(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
 	CHECK(!aius_sd_job_supply(&job, data, 1u),
 	      "out-of-state supply succeeded");
 	step_action(&job, 0u, none_event(), AIUS_SD_ACTION_NONE);
@@ -1145,12 +1417,35 @@ static void test_protocol_mismatches_and_supply(void)
 	      "supply cleared open authority");
 	action = step_action(
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, request.temp_path) == 0,
-	      "replace temp cleanup missing");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
 	      "outstanding supply fault mismatch");
+
+	scenario = "supply before TRUNCATE acknowledgement";
+	action = begin_upload(&job,
+	                      &request,
+	                      buffer,
+	                      sizeof(buffer),
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TRUNCATE);
+	CHECK(job.file_open, "write-begin did not establish truncate authority");
+	CHECK(!aius_sd_job_supply(&job, data, 1u),
+	      "pre-truncate supply succeeded");
+	step_action(&job, 0u, none_event(), AIUS_SD_ACTION_NONE);
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_TRUNCATE &&
+		      job.outstanding_action_id == action.action_id,
+	      "pre-truncate supply cleared truncate authority");
+	action = step_action(
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
+	CHECK(job.transferred == 0u,
+	      "pre-truncate supply counted upload bytes");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
+	      "pre-truncate supply fault mismatch");
 
 	scenario = "idle and terminal supply inert";
 	aius_sd_job_init(&job, buffer, sizeof(buffer));
@@ -1248,9 +1543,10 @@ static AiusSdFault mapped_fault(AiusSdActionKind action)
 	case AIUS_SD_ACTION_MEDIA_PRESENT:
 		return AIUS_SD_FAULT_MEDIA;
 	case AIUS_SD_ACTION_OPEN_READ:
-	case AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
 	case AIUS_SD_ACTION_OPEN_APPEND:
 		return AIUS_SD_FAULT_OPEN;
+	case AIUS_SD_ACTION_TRUNCATE:
 	case AIUS_SD_ACTION_SEEK:
 		return AIUS_SD_FAULT_SEEK;
 	case AIUS_SD_ACTION_PUBLISH_CONFIG:
@@ -1274,6 +1570,14 @@ static void test_basic_action_faults(void)
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 20u), AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == mapped_fault(AIUS_SD_ACTION_BEGIN), "BEGIN fault map");
+	CHECK(job.next_action_id == 2u,
+	      "BEGIN fault emitted a cleanup correlation");
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_NONE &&
+		      job.existence_purpose == AIUS_SD_EXISTS_NONE,
+	      "BEGIN fault retained cleanup authority");
+	CHECK(!job.file_open && !job.backup_moved && !job.installed,
+	      "BEGIN fault acquired storage authority");
+	step_none(&job, AIUS_SD_ACTION_NONE);
 
 	scenario = "MEDIA_PRESENT fault";
 	start_valid(&job, buffer, sizeof(buffer), &request);
@@ -1288,7 +1592,11 @@ static void test_basic_action_faults(void)
 	request = request_for(AIUS_SD_JOB_DELETE);
 	start_valid(&job, buffer, sizeof(buffer), &request);
 	action = begin_job(&job);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 22u), AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_IO, "remove fault map");
@@ -1362,16 +1670,17 @@ static void test_post_commit_fault_precedence(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = install_existing_target(&job, action, true);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
 	action = step_action(
 		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 51u), AIUS_SD_ACTION_OPEN_READ);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FILE_SIZE);
@@ -1394,18 +1703,18 @@ static void test_post_commit_fault_precedence(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	action = install_existing_target(&job, action, true);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
 	aius_sd_job_cancel(&job);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = finish_committed_backup(
+		&job, action, true, AIUS_SD_ACTION_COMPLETE);
 	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
 }
 
@@ -1415,26 +1724,109 @@ static void test_action_id_reserve(void)
 	AiusSdJob job;
 	AiusSdAction action;
 	AiusSdJobRequest request = request_for(AIUS_SD_JOB_PROBE);
+	const uint64_t reserve_start = UINT64_MAX - UINT64_C(262);
 
-	scenario = "action id exhaustion terminal restart";
+	scenario = "action id above reserve rejected authority-free";
 	aius_sd_job_init(&job, buffer, sizeof(buffer));
-	job.next_action_id = UINT64_MAX - 4u;
-	aius_sd_job_start(&job, &request, 0u, 0u);
-	action = begin_job(&job);
-	CHECK(action.action_id == UINT64_MAX - 4u, "near-limit id mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MEDIA_PRESENT);
-	CHECK(action.action_id == UINT64_MAX - 3u, "near-limit second id mismatch");
-	step_action(&job,
-	            0u,
-	            bool_event(action.action_id, true),
-	            AIUS_SD_ACTION_COMPLETE);
-	step_none(&job, AIUS_SD_ACTION_NONE);
+	job.next_action_id = reserve_start + 1u;
 	aius_sd_job_start(&job, &request, 0u, 0u);
 	expect_terminal(&job,
 	                AIUS_SD_ACTION_FAIL,
 	                AIUS_SD_RESULT_FAULT,
 	                AIUS_SD_FAULT_OVERFLOW,
 	                0u);
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_NONE,
+	      "above-reserve start emitted correlated work");
+	CHECK(job.next_action_id == reserve_start + 1u,
+	      "above-reserve rejection consumed an id");
+
+	scenario = "action id reserve equality accepts BEGIN only";
+	aius_sd_job_init(&job, buffer, sizeof(buffer));
+	job.next_action_id = reserve_start;
+	aius_sd_job_start(&job, &request, 0u, 0u);
+	action = begin_job(&job);
+	CHECK(action.action_id == reserve_start,
+	      "reserve-equality BEGIN id mismatch");
+	action = step_action(
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_OVERFLOW,
+	      "reserve-equality ordinary emission did not overflow");
+	CHECK(job.outstanding_action == AIUS_SD_ACTION_NONE,
+	      "reserve-equality overflow retained authority");
+	CHECK(job.next_action_id == reserve_start + 1u,
+	      "reserve-equality overflow consumed extra id");
+
+	scenario = "action id just below reserve completes probe";
+	aius_sd_job_init(&job, buffer, sizeof(buffer));
+	job.next_action_id = reserve_start - 1u;
+	aius_sd_job_start(&job, &request, 0u, 0u);
+	action = begin_job(&job);
+	CHECK(action.action_id == reserve_start - 1u,
+	      "just-below BEGIN id mismatch");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MEDIA_PRESENT);
+	CHECK(action.action_id == reserve_start,
+	      "just-below second id mismatch");
+	step_action(&job,
+	            0u,
+	            bool_event(action.action_id, true),
+	            AIUS_SD_ACTION_COMPLETE);
+
+	scenario = "upload reserve equality overflows before path mutation";
+	AiusSdJobRequest upload = upload_request(AIUS_SD_INSTALL_REPLACE);
+	upload.total = 0u;
+	aius_sd_job_init(&job, buffer, sizeof(buffer));
+	job.next_action_id = reserve_start;
+	aius_sd_job_start(&job, &upload, 0u, 0u);
+	action = begin_job(&job);
+	CHECK(action.action_id == reserve_start,
+	      "upload reserve-equality BEGIN id mismatch");
+	action = step_action(
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_NONE);
+	action = step_none(&job, AIUS_SD_ACTION_EXISTS);
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP,
+	      "reserve-equality overflow attempted normal path work");
+	CHECK(strcmp(action.path, job.temp_path) == 0,
+	      "reserve-equality cleanup path mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, false),
+	                     AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_OVERFLOW,
+	      "reserve-equality upload fault mismatch");
+	CHECK(!job.file_open && !job.backup_moved && !job.installed,
+	      "reserve-equality overflow acquired file authority");
+
+	scenario = "upload just below reserve aborts before mutation";
+	aius_sd_job_init(&job, buffer, sizeof(buffer));
+	job.next_action_id = reserve_start - 1u;
+	aius_sd_job_start(&job, &upload, 0u, 0u);
+	action = begin_job(&job);
+	CHECK(action.action_id == reserve_start - 1u,
+	      "just-below upload BEGIN id mismatch");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	CHECK(action.action_id == reserve_start,
+	      "just-below parent existence id mismatch");
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_MKDIR,
+	      "just-below parent existence purpose mismatch");
+	CHECK(strcmp(action.path, "/final") == 0,
+	      "just-below parent existence path mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_NONE);
+	action = step_none(&job, AIUS_SD_ACTION_EXISTS);
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP,
+	      "just-below overflow attempted next path mutation");
+	CHECK(strcmp(action.path, job.temp_path) == 0,
+	      "just-below cleanup path mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, false),
+	                     AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_OVERFLOW,
+	      "just-below upload fault mismatch");
+	CHECK(!job.file_open && !job.backup_moved && !job.installed,
+	      "just-below overflow acquired file authority");
 }
 
 static AiusSdAction reach_replace_open(
@@ -1449,7 +1841,7 @@ static AiusSdAction reach_replace_open(
 	                    &request,
 	                    buffer,
 	                    capacity,
-	                    AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
+	                    AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
 }
 
 static AiusSdAction reach_existing_install(
@@ -1465,14 +1857,13 @@ static AiusSdAction reach_existing_install(
 	                      &request,
 	                      buffer,
 	                      CONFIG_LIMIT,
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		job, action, data, length, length, AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_RENAME);
+	action = install_existing_target(job, action, true);
 	return acknowledge_ok(job, &action, AIUS_SD_ACTION_RENAME);
 }
 
@@ -1684,14 +2075,16 @@ static void test_unresolved_action_authority(void)
 	step_action(&job, 0u, wrong, AIUS_SD_ACTION_NONE);
 	action = step_action(
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
 	      "unresolved OPEN terminal mismatch");
 
 	scenario = "unresolved WRITE authority";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), sizeof(data));
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	CHECK(aius_sd_job_supply(&job, data, sizeof(data)), "write supply failed");
 	action = step_none(&job, AIUS_SD_ACTION_WRITE);
 	step_action(
@@ -1701,8 +2094,11 @@ static void test_unresolved_action_authority(void)
 	                     bytes_event(action.action_id, 1u),
 	                     AIUS_SD_ACTION_CLOSE);
 	CHECK(job.transferred == 1u, "resolved WRITE progress not retained");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	finish_protocol_after_close(&job, action);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
+	      "unresolved WRITE terminal mismatch");
 
 	scenario = "unresolved OUTPUT authority";
 	request = request_for(AIUS_SD_JOB_DOWNLOAD);
@@ -1722,18 +2118,25 @@ static void test_unresolved_action_authority(void)
 
 	scenario = "unresolved CLOSE authority";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 0u);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_write_begin(&job, &action, AIUS_SD_ACTION_CLOSE);
 	step_action(
 		&job, 0u, ok_event(action.action_id + 1u), AIUS_SD_ACTION_NONE);
 	action = step_action(
-		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_REMOVE);
-	finish_protocol_after_close(&job, action);
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
+	      "unresolved CLOSE terminal mismatch");
 
 	scenario = "unresolved REMOVE authority";
 	request = request_for(AIUS_SD_JOB_DELETE);
 	start_valid(&job, buffer, sizeof(buffer), &request);
 	action = begin_job(&job);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
 	step_action(
 		&job, 0u, ok_event(action.action_id + 1u), AIUS_SD_ACTION_NONE);
 	action = step_action(
@@ -1752,33 +2155,34 @@ static void test_unresolved_action_authority(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	action = install_existing_target(&job, action, true);
 	step_action(
 		&job, 0u, ok_event(action.action_id + 1u), AIUS_SD_ACTION_NONE);
 	action = step_action(
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_RENAME);
 	CHECK(strcmp(action.path, request.backup_path) == 0,
 	      "protocol cleanup did not roll backup back");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, request.temp_path) == 0,
-	      "protocol cleanup did not remove temp");
-	finish_protocol_after_close(&job, action);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
+	      "rollback cleanup did not retain protocol fault");
 
 	scenario = "unresolved install RENAME success wins";
 	action = reach_existing_install(&job, buffer, data, sizeof(data));
 	step_action(
 		&job, 0u, ok_event(action.action_id + 1u), AIUS_SD_ACTION_NONE);
 	action = step_action(
-		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_REMOVE);
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_EXISTS);
 	CHECK(job.installed, "resolved install success did not commit");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = finish_committed_backup(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
 	      "install commit did not retain prior protocol abort");
 }
@@ -1796,20 +2200,37 @@ static void test_complete_action_fault_matrix(void)
 	request.total = 1u;
 	start_valid(&job, buffer, sizeof(buffer), &request);
 	action = begin_job(&job);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MKDIR);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, false),
+	                     AIUS_SD_ACTION_MKDIR);
 	action = step_action(
-		&job, 0u, fault_event(action.action_id, 60u), AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, request.temp_path) == 0,
-	      "MKDIR fault omitted disposable cleanup");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+		&job, 0u, fault_event(action.action_id, 60u), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 60u);
 
-	scenario = "OPEN_WRITE_TRUNCATE fault";
+	scenario = "OPEN_WRITE_BEGIN fault";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
 	action = step_action(
-		&job, 0u, fault_event(action.action_id, 61u), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+		&job, 0u, fault_event(action.action_id, 61u), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN, 61u);
+
+	scenario = "TRUNCATE fault closes and cleans disposable temp";
+	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_TRUNCATE);
+	CHECK(job.file_open, "truncate fixture lost open authority");
+	action = step_action(
+		&job, 0u, fault_event(action.action_id, 611u), AIUS_SD_ACTION_CLOSE);
+	CHECK(job.file_open, "truncate fault cleared authority before close");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	CHECK(!job.file_open, "truncate cleanup close retained authority");
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_SEEK, 611u);
 
 	scenario = "OPEN_APPEND fault preserves durable part";
 	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
@@ -1826,13 +2247,15 @@ static void test_complete_action_fault_matrix(void)
 
 	scenario = "WRITE fault close and cleanup";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	CHECK(aius_sd_job_supply(&job, data, sizeof(data)), "write-fault supply failed");
 	action = step_none(&job, AIUS_SD_ACTION_WRITE);
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 63u), AIUS_SD_ACTION_CLOSE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 63u);
 
 	scenario = "FILE_SIZE fault close";
@@ -1845,21 +2268,6 @@ static void test_complete_action_fault_matrix(void)
 		&job, 0u, fault_event(action.action_id, 64u), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 64u);
-
-	scenario = "EXISTS fault";
-	request = upload_request(AIUS_SD_INSTALL_REPLACE);
-	request.total = 0u;
-	action = begin_upload(&job,
-	                      &request,
-	                      buffer,
-	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_CLOSE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, fault_event(action.action_id, 65u), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
-	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 65u);
 
 	scenario = "TOTAL_SIZE fault";
 	request = request_for(AIUS_SD_JOB_USAGE_REFRESH);
@@ -1897,36 +2305,21 @@ static void test_complete_action_fault_matrix(void)
 	                      &request,
 	                      buffer,
 	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
 	action = step_action(
+		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_EXISTS);
+	action = step_action(
 		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
 	action = step_action(
-		&job, 0u, fault_event(action.action_id, 69u), AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, request.temp_path) == 0,
-	      "old-backup fault omitted temp cleanup");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+		&job, 0u, fault_event(action.action_id, 69u), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 69u);
-
-	scenario = "backup rename fault preserves recovery files";
-	action = begin_upload(&job,
-	                      &request,
-	                      buffer,
-	                      sizeof(buffer),
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
-	action = supply_and_write(
-		&job, action, data, sizeof(data), sizeof(data), AIUS_SD_ACTION_CLOSE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		&job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
-	action = step_action(
-		&job, 0u, fault_event(action.action_id, 70u), AIUS_SD_ACTION_FAIL);
-	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_INSTALL, 70u);
 
 	scenario = "cleanup close fault precedence and temp authority";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
@@ -1934,16 +2327,19 @@ static void test_complete_action_fault_matrix(void)
 	action = step_action(
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
 	action = step_action(
-		&job, 0u, fault_event(action.action_id, 71u), AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, job.temp_path) == 0,
-	      "close fault lost temp cleanup authority");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+		&job, 0u, fault_event(action.action_id, 71u), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CLEANUP, 71u);
 
 	scenario = "cleanup temp removal fault";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
 	action = step_action(
-		&job, 0u, fault_event(action.action_id, 72u), AIUS_SD_ACTION_REMOVE);
+		&job, 0u, fault_event(action.action_id, 72u), AIUS_SD_ACTION_EXISTS);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
 	action = step_action(
 		&job, 0u, fault_event(action.action_id, 73u), AIUS_SD_ACTION_FAIL);
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CLEANUP, 73u);
@@ -1959,7 +2355,8 @@ static void test_partial_abort_and_commit_precedence(void)
 
 	scenario = "cancel after partial upload write";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), sizeof(data));
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	CHECK(aius_sd_job_supply(&job, data, sizeof(data)), "partial cancel supply failed");
 	action = step_none(&job, AIUS_SD_ACTION_WRITE);
 	action = step_action(
@@ -1968,8 +2365,9 @@ static void test_partial_abort_and_commit_precedence(void)
 	action = step_action(
 		&job, 0u, bytes_event(action.action_id, 1u), AIUS_SD_ACTION_CLOSE);
 	CHECK(job.transferred == sizeof(data), "partial cancel lost write progress");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_CANCELLED,
 	      "partial upload cancel fault mismatch");
 
@@ -2003,7 +2401,8 @@ static void test_partial_abort_and_commit_precedence(void)
 
 	scenario = "deadline after partial upload write";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), sizeof(data));
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	CHECK(aius_sd_job_supply(&job, data, sizeof(data)),
 	      "partial deadline supply failed");
 	action = step_none(&job, AIUS_SD_ACTION_WRITE);
@@ -2013,8 +2412,9 @@ static void test_partial_abort_and_commit_precedence(void)
 	step_action(&job, 5u, none_event(), AIUS_SD_ACTION_NONE);
 	action = step_action(
 		&job, 5u, bytes_event(action.action_id, 1u), AIUS_SD_ACTION_CLOSE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_TIMEOUT,
 	      "partial upload deadline fault mismatch");
 
@@ -2041,9 +2441,10 @@ static void test_partial_abort_and_commit_precedence(void)
 	action = reach_existing_install(&job, buffer, data, sizeof(data));
 	aius_sd_job_cancel(&job);
 	action = step_action(
-		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_REMOVE);
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_EXISTS);
 	CHECK(job.installed, "in-flight install success did not commit");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	action = finish_committed_backup(
+		&job, action, true, AIUS_SD_ACTION_COMPLETE);
 	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
 
 	scenario = "deadline in-flight install success commits";
@@ -2051,9 +2452,10 @@ static void test_partial_abort_and_commit_precedence(void)
 	job.deadline_ms = 5u;
 	step_action(&job, 5u, none_event(), AIUS_SD_ACTION_NONE);
 	action = step_action(
-		&job, 5u, ok_event(action.action_id), AIUS_SD_ACTION_REMOVE);
+		&job, 5u, ok_event(action.action_id), AIUS_SD_ACTION_EXISTS);
 	CHECK(job.installed, "deadline install success did not commit");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	action = finish_committed_backup(
+		&job, action, true, AIUS_SD_ACTION_COMPLETE);
 	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
 }
 
@@ -2070,14 +2472,115 @@ static AiusSdAction reach_backup_rename(
 	                      &request,
 	                      buffer,
 	                      CONFIG_LIMIT,
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		job, action, data, length, length, AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_EXISTS);
+	return install_existing_target(job, action, true);
+}
+
+static AiusSdAction fail_backup_rename_to_temp_cleanup(
+	AiusSdJob *job,
+	uint8_t *buffer,
+	const uint8_t *data,
+	size_t length,
+	uint32_t driver_fault)
+{
+	AiusSdAction action =
+		reach_backup_rename(job, buffer, data, length);
+	CHECK(job->phase == AIUS_SD_PHASE_INSTALL_BACKUP,
+	      "backup-rename fault fixture phase mismatch");
+	CHECK(strcmp(action.path, job->target_path) == 0 &&
+		      strcmp(action.path_to, job->backup_path) == 0,
+	      "backup-rename fault fixture paths mismatch");
 	action = step_action(
-		job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
-	return acknowledge_ok(job, &action, AIUS_SD_ACTION_RENAME);
+		job,
+		0u,
+		fault_event(action.action_id, driver_fault),
+		AIUS_SD_ACTION_EXISTS);
+	CHECK(job->phase == AIUS_SD_PHASE_PATH_EXISTS,
+	      "backup-rename fault skipped path-exists cleanup");
+	CHECK(job->existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP,
+	      "backup-rename fault selected wrong cleanup purpose");
+	CHECK(strcmp(action.path, job->temp_path) == 0,
+	      "backup-rename fault checked wrong cleanup path");
+	CHECK(!job->install_failed,
+	      "target-to-backup fault claimed install failure");
+	CHECK(!job->backup_moved,
+	      "failed target-to-backup rename claimed backup authority");
+	return action;
+}
+
+static void test_backup_rename_fault_temp_cleanup(void)
+{
+	uint8_t buffer[CONFIG_LIMIT];
+	const uint8_t data[] = {6u};
+	AiusSdJob job;
+	AiusSdAction action;
+
+	scenario = "backup rename fault absent temp preserves install fault";
+	action = fail_backup_rename_to_temp_cleanup(
+		&job, buffer, data, sizeof(data), 70u);
+	action = step_action(
+		&job,
+		0u,
+		bool_event(action.action_id, false),
+		AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_INSTALL,
+	      "absent temp replaced backup-rename fault");
+	expect_result(
+		&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_INSTALL, 70u);
+
+	scenario = "backup rename fault present temp removes then preserves";
+	action = fail_backup_rename_to_temp_cleanup(
+		&job, buffer, data, sizeof(data), 71u);
+	action = step_action(
+		&job,
+		0u,
+		bool_event(action.action_id, true),
+		AIUS_SD_ACTION_REMOVE);
+	CHECK(strcmp(action.path, job.temp_path) == 0,
+	      "backup-rename cleanup removed wrong path");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_INSTALL,
+	      "successful temp cleanup replaced backup-rename fault");
+	expect_result(
+		&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_INSTALL, 71u);
+
+	scenario = "backup rename temp existence fault overrides cleanup";
+	action = fail_backup_rename_to_temp_cleanup(
+		&job, buffer, data, sizeof(data), 72u);
+	action = step_action(
+		&job,
+		0u,
+		fault_event(action.action_id, 73u),
+		AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_CLEANUP,
+	      "temp existence fault did not override install fault");
+	expect_result(
+		&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CLEANUP, 73u);
+
+	scenario = "backup rename temp removal fault overrides cleanup";
+	action = fail_backup_rename_to_temp_cleanup(
+		&job, buffer, data, sizeof(data), 74u);
+	action = step_action(
+		&job,
+		0u,
+		bool_event(action.action_id, true),
+		AIUS_SD_ACTION_REMOVE);
+	CHECK(strcmp(action.path, job.temp_path) == 0,
+	      "failing cleanup removal targeted wrong path");
+	action = step_action(
+		&job,
+		0u,
+		fault_event(action.action_id, 75u),
+		AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_CLEANUP,
+	      "temp removal fault did not override install fault");
+	expect_result(
+		&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_CLEANUP, 75u);
 }
 
 static void test_abort_install_failed_authority(void)
@@ -2094,10 +2597,9 @@ static void test_abort_install_failed_authority(void)
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_RENAME);
 	CHECK(strcmp(action.path, job.backup_path) == 0,
 	      "cancel did not request rollback");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
-	CHECK(strcmp(action.path, job.temp_path) == 0,
-	      "cancel rollback omitted disposable temp");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_CANCELLED,
 	      "precommit rollback cancel fault mismatch");
 	CHECK(!job.install_failed, "cancel-only rollback set install_failed");
@@ -2187,17 +2689,17 @@ static AiusSdAction reach_post_commit_publish_open(
 	                      &request,
 	                      buffer,
 	                      CONFIG_LIMIT,
-	                      AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		job, &action, AIUS_SD_ACTION_NEED_INPUT);
 	action = supply_and_write(
 		job, action, data, length, length, AIUS_SD_ACTION_CLOSE);
 	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_EXISTS);
-	action = step_action(
-		job, 0u, bool_event(action.action_id, true), AIUS_SD_ACTION_REMOVE);
+	action = install_existing_target(job, action, true);
 	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_RENAME);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_RENAME);
-	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_REMOVE);
-	return acknowledge_ok(job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_EXISTS);
+	return finish_committed_backup(
+		job, action, true, AIUS_SD_ACTION_OPEN_READ);
 }
 
 static AiusSdAction reach_post_commit_publish(
@@ -2486,8 +2988,9 @@ static void test_complete_request_boundary_matrix(void)
 	action = begin_job(&job);
 	aius_sd_job_cancel(&job);
 	action = step_action(
-		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_REMOVE);
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_CANCELLED,
 	      "INT64_MAX upload rejected");
 
@@ -2577,9 +3080,17 @@ static void test_reserved_action_id_properties(void)
 	action = step_action(
 		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_CLOSE);
 	CHECK(action.action_id == UINT64_MAX - 2u, "reserved close id mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
 	CHECK(action.action_id == UINT64_MAX - 1u,
-	      "reserved temp-cleanup id mismatch");
+	      "reserved temp-existence id mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(action.action_id == UINT64_MAX,
+	      "reserved temp-removal id mismatch");
+	CHECK(job.action_ids_exhausted,
+	      "reserved temp removal did not exhaust ids");
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_CANCELLED,
 	      "reserved cleanup terminal mismatch");
@@ -2593,20 +3104,29 @@ static void test_reserved_action_id_properties(void)
 	CHECK(action.action_id == UINT64_MAX - 2u, "reserved rollback id mismatch");
 	CHECK(strcmp(action.path, job.backup_path) == 0,
 	      "reserved rollback source mismatch");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_REMOVE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
 	CHECK(action.action_id == UINT64_MAX - 1u,
-	      "reserved rollback cleanup id mismatch");
+	      "reserved rollback cleanup existence id mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(action.action_id == UINT64_MAX,
+	      "reserved rollback cleanup removal id mismatch");
 	acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
 
 	scenario = "consume UINT64_MAX and saturate lifetime";
 	action = reach_replace_open(&job, buffer, sizeof(buffer), 1u);
 	job.next_action_id = UINT64_MAX;
 	action = step_action(
-		&job, 0u, fault_event(action.action_id, 101u), AIUS_SD_ACTION_REMOVE);
+		&job, 0u, fault_event(action.action_id, 101u), AIUS_SD_ACTION_EXISTS);
 	CHECK(action.action_id == UINT64_MAX, "cleanup did not consume UINT64_MAX");
 	CHECK(job.action_ids_exhausted, "UINT64_MAX did not exhaust ids");
 	CHECK(job.next_action_id == UINT64_MAX, "next id did not saturate");
-	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, false),
+	                     AIUS_SD_ACTION_FAIL);
 	CHECK(action.fault == AIUS_SD_FAULT_OPEN,
 	      "exhaustion changed prior terminal cause");
 	step_none(&job, AIUS_SD_ACTION_NONE);
@@ -2629,6 +3149,112 @@ static void test_reserved_action_id_properties(void)
 	CHECK(action.action_id == 1u, "fresh init did not reset id to one");
 }
 
+static void test_exact_262_id_publication_reserve(void)
+{
+	uint8_t buffer[CONFIG_LIMIT];
+	uint8_t data[CONFIG_LIMIT];
+	AiusSdJob job;
+	AiusSdAction action;
+	AiusSdJobRequest request = upload_request(AIUS_SD_INSTALL_REPLACE);
+	const uint64_t tail_start = UINT64_MAX - UINT64_C(261);
+	for (size_t index = 0u; index < sizeof(data); ++index)
+		data[index] = (uint8_t)index;
+	request.total = sizeof(data);
+	request.publish_config = true;
+	request.content_type = "application/json";
+
+	scenario = "exact 262-id worst-case publication tail";
+	action = begin_upload(&job,
+	                      &request,
+	                      buffer,
+	                      sizeof(buffer),
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	action = supply_and_write(
+		&job,
+		action,
+		data,
+		sizeof(data),
+		sizeof(data),
+		AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = install_existing_target(&job, action, true);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	CHECK(strcmp(action.path, job.temp_path) == 0 &&
+		      strcmp(action.path_to, job.target_path) == 0,
+	      "reserve fixture install rename mismatch");
+
+	job.next_action_id = tail_start;
+	action = step_action(
+		&job, 0u, ok_event(action.action_id), AIUS_SD_ACTION_EXISTS);
+	CHECK(action.action_id == tail_start,
+	      "publication tail backup existence id mismatch");
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+	      "publication tail backup purpose mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(action.action_id == tail_start + 1u,
+	      "publication tail backup remove id mismatch");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	CHECK(action.action_id == tail_start + 2u,
+	      "publication tail open id mismatch");
+	CHECK(strcmp(action.path, job.target_path) == 0,
+	      "publication tail open path mismatch");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FILE_SIZE);
+	CHECK(action.action_id == tail_start + 3u,
+	      "publication tail size id mismatch");
+	action = step_action(&job,
+	                     0u,
+	                     size_event(action.action_id, sizeof(data)),
+	                     AIUS_SD_ACTION_READ);
+	for (size_t index = 0u; index < sizeof(data); ++index) {
+		CHECK(action.action_id == tail_start + 4u + index,
+		      "publication tail read id mismatch");
+		CHECK(action.buffer == buffer + index,
+		      "publication tail read buffer mismatch");
+		CHECK(action.length == sizeof(data) - index,
+		      "publication tail read length mismatch");
+		CHECK(action.offset == index,
+		      "publication tail read offset mismatch");
+		action.buffer[0] = data[index];
+		action = step_action(
+			&job,
+			0u,
+			bytes_event(action.action_id, 1u),
+			index + 1u == sizeof(data) ? AIUS_SD_ACTION_CLOSE
+			                          : AIUS_SD_ACTION_READ);
+	}
+	CHECK(action.action_id == UINT64_MAX - 1u,
+	      "publication tail close id mismatch");
+	action = acknowledge_ok(
+		&job, &action, AIUS_SD_ACTION_PUBLISH_CONFIG);
+	CHECK(action.action_id == UINT64_MAX,
+	      "publication tail publish did not consume UINT64_MAX");
+	CHECK(action.buffer == buffer && action.length == sizeof(data),
+	      "publication tail publish buffer mismatch");
+	CHECK(memcmp(action.buffer, data, sizeof(data)) == 0,
+	      "publication tail publish data mismatch");
+	CHECK(job.action_ids_exhausted,
+	      "publication tail did not exhaust object lifetime");
+	CHECK(job.next_action_id == UINT64_MAX,
+	      "publication tail next id did not saturate");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+	step_none(&job, AIUS_SD_ACTION_NONE);
+
+	aius_sd_job_start(&job, &request, 0u, 0u);
+	expect_terminal(&job,
+	                AIUS_SD_ACTION_FAIL,
+	                AIUS_SD_RESULT_FAULT,
+	                AIUS_SD_FAULT_OVERFLOW,
+	                0u);
+	CHECK(job.next_action_id == UINT64_MAX,
+	      "exhausted publication lifetime reused an id");
+}
+
 typedef enum {
 	MATRIX_PROBE,
 	MATRIX_CONFIG,
@@ -2648,10 +3274,12 @@ typedef enum {
 	MATRIX_CLEAN_REMOVE_TEMP,
 	MATRIX_CLEAN_CLOSE_REMOVE_TEMP,
 	MATRIX_CLEAN_ROLLBACK_REMOVE_TEMP,
-	MATRIX_CLEAN_COMMIT_REMOVE_BACKUP,
+	MATRIX_CLEAN_COMMIT_EXISTS,
+	MATRIX_CLEAN_COMMIT_REMOVE,
 	MATRIX_CLEAN_EXISTING_INSTALL,
 	MATRIX_CLEAN_CANCEL_CLOSE_REMOVE,
 	MATRIX_CLEAN_CANCEL_CLOSE_DURABLE,
+	MATRIX_CLEAN_EXISTING_OPEN_EXISTS,
 	MATRIX_CLEAN_EXISTING_OPEN_REMOVE
 } MatrixCleanup;
 
@@ -2662,6 +3290,7 @@ typedef struct {
 	AiusSdActionKind action;
 	MatrixCleanup cleanup;
 	bool target_exists;
+	AiusSdExistencePurpose purpose;
 } MatrixFixture;
 
 typedef struct {
@@ -2780,7 +3409,9 @@ static void matrix_build_happy(
 		CHECK(state->action.kind != AIUS_SD_ACTION_COMPLETE,
 		      "matrix builder missed fixture");
 		if (state->job.phase == fixture->phase &&
-		    state->action.kind == fixture->action)
+		    state->action.kind == fixture->action &&
+		    (fixture->purpose == AIUS_SD_EXISTS_NONE ||
+		     state->job.existence_purpose == fixture->purpose))
 			return;
 		if (state->action.kind == AIUS_SD_ACTION_NEED_INPUT) {
 			const uint8_t byte = 0x3cu;
@@ -2821,7 +3452,7 @@ static void matrix_build_fixture(
 		precursor = *fixture;
 		precursor.phase = AIUS_SD_PHASE_UPLOAD_OPEN;
 		precursor.action = fixture->profile == MATRIX_REPLACE
-			                   ? AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE
+			                   ? AIUS_SD_ACTION_OPEN_WRITE_BEGIN
 			                   : AIUS_SD_ACTION_OPEN_APPEND;
 		matrix_build_happy(state, &precursor);
 		aius_sd_job_cancel(&state->job);
@@ -2833,15 +3464,24 @@ static void matrix_build_fixture(
 		      "matrix cleanup-close fixture phase mismatch");
 		return;
 	}
-	if (fixture->phase == AIUS_SD_PHASE_CLEANUP_TEMP) {
+	if (fixture->phase == AIUS_SD_PHASE_CLEANUP_TEMP ||
+	    fixture->purpose == AIUS_SD_EXISTS_CLEANUP_TEMP) {
 		precursor = *fixture;
 		precursor.phase = AIUS_SD_PHASE_UPLOAD_OPEN;
-		precursor.action = AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE;
+		precursor.action = AIUS_SD_ACTION_OPEN_WRITE_BEGIN;
+		precursor.purpose = AIUS_SD_EXISTS_NONE;
 		matrix_build_happy(state, &precursor);
 		state->action = step_action(
 			&state->job,
 			0u,
 			fault_event(state->action.action_id, 121u),
+			AIUS_SD_ACTION_EXISTS);
+		if (fixture->purpose == AIUS_SD_EXISTS_CLEANUP_TEMP)
+			return;
+		state->action = step_action(
+			&state->job,
+			0u,
+			bool_event(state->action.action_id, true),
 			AIUS_SD_ACTION_REMOVE);
 		CHECK(state->job.phase == AIUS_SD_PHASE_CLEANUP_TEMP,
 		      "matrix cleanup-temp fixture phase mismatch");
@@ -2860,6 +3500,7 @@ static const char *const matrix_plan_names[] = {
 	"config-publish",
 	"usage-total",
 	"usage-used",
+	"path-exists-mkdir",
 	"mkdir-replace",
 	"mkdir-append",
 	"mkdir-finalize",
@@ -2872,6 +3513,7 @@ static const char *const matrix_plan_names[] = {
 	"upload-open-replace",
 	"upload-open-append",
 	"upload-open-finalize",
+	"upload-truncate-replace",
 	"upload-write-replace",
 	"upload-write-append",
 	"upload-write-finalize",
@@ -2893,12 +3535,15 @@ static const char *const matrix_plan_names[] = {
 	"refill-output",
 	"download-close",
 	"refill-close",
+	"delete-exists",
 	"delete-remove",
-	"install-exists",
+	"install-target-exists",
+	"remove-old-backup-exists",
 	"install-remove-old-backup",
 	"install-backup-rename",
 	"install-rename-no-backup",
 	"install-rename-with-backup",
+	"remove-committed-backup-exists",
 	"install-remove-backup",
 	"publish-open",
 	"publish-size",
@@ -2908,11 +3553,18 @@ static const char *const matrix_plan_names[] = {
 	"rollback-rename",
 	"cleanup-close-replace",
 	"cleanup-close-append",
+	"cleanup-temp-exists",
 	"cleanup-temp-replace",
 };
 
 #define MATRIX_FIXTURE(name_, profile_, phase_, action_, cleanup_, exists_) \
-	{(name_), (profile_), (phase_), (action_), (cleanup_), (exists_)}
+	{(name_), (profile_), (phase_), (action_), (cleanup_), (exists_), \
+	 AIUS_SD_EXISTS_NONE}
+
+#define MATRIX_EXISTS_FIXTURE( \
+	name_, profile_, purpose_, cleanup_, exists_) \
+	{(name_), (profile_), AIUS_SD_PHASE_PATH_EXISTS, AIUS_SD_ACTION_EXISTS, \
+	 (cleanup_), (exists_), (purpose_)}
 
 static const MatrixFixture matrix_fixtures[] = {
 	MATRIX_FIXTURE("begin", MATRIX_PROBE, AIUS_SD_PHASE_BEGIN,
@@ -2933,6 +3585,9 @@ static const MatrixFixture matrix_fixtures[] = {
 	               AIUS_SD_ACTION_TOTAL_SIZE, MATRIX_CLEAN_PLAIN, false),
 	MATRIX_FIXTURE("usage-used", MATRIX_USAGE, AIUS_SD_PHASE_USAGE_USED,
 	               AIUS_SD_ACTION_USED_SIZE, MATRIX_CLEAN_PLAIN, false),
+	MATRIX_EXISTS_FIXTURE("path-exists-mkdir", MATRIX_REPLACE,
+	                      AIUS_SD_EXISTS_MKDIR,
+	                      MATRIX_CLEAN_REMOVE_TEMP, false),
 	MATRIX_FIXTURE("mkdir-replace", MATRIX_REPLACE, AIUS_SD_PHASE_MKDIR,
 	               AIUS_SD_ACTION_MKDIR, MATRIX_CLEAN_REMOVE_TEMP, false),
 	MATRIX_FIXTURE("mkdir-append", MATRIX_APPEND, AIUS_SD_PHASE_MKDIR,
@@ -2959,7 +3614,7 @@ static const MatrixFixture matrix_fixtures[] = {
 	               MATRIX_CLEAN_PLAIN, false),
 	MATRIX_FIXTURE("upload-open-replace", MATRIX_REPLACE,
 	               AIUS_SD_PHASE_UPLOAD_OPEN,
-	               AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE,
+	               AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
 	               MATRIX_CLEAN_CLOSE_REMOVE_TEMP, false),
 	MATRIX_FIXTURE("upload-open-append", MATRIX_APPEND,
 	               AIUS_SD_PHASE_UPLOAD_OPEN, AIUS_SD_ACTION_OPEN_APPEND,
@@ -2967,6 +3622,10 @@ static const MatrixFixture matrix_fixtures[] = {
 	MATRIX_FIXTURE("upload-open-finalize", MATRIX_FINALIZE,
 	               AIUS_SD_PHASE_UPLOAD_OPEN, AIUS_SD_ACTION_OPEN_APPEND,
 	               MATRIX_CLEAN_CLOSE, false),
+	MATRIX_FIXTURE("upload-truncate-replace", MATRIX_REPLACE,
+	               AIUS_SD_PHASE_UPLOAD_TRUNCATE,
+	               AIUS_SD_ACTION_TRUNCATE,
+	               MATRIX_CLEAN_CLOSE_REMOVE_TEMP, false),
 	MATRIX_FIXTURE("upload-write-replace", MATRIX_REPLACE,
 	               AIUS_SD_PHASE_UPLOAD_WRITE, AIUS_SD_ACTION_WRITE,
 	               MATRIX_CLEAN_CLOSE_REMOVE_TEMP, false),
@@ -3027,12 +3686,18 @@ static const MatrixFixture matrix_fixtures[] = {
 	MATRIX_FIXTURE("refill-close", MATRIX_REFILL,
 	               AIUS_SD_PHASE_DOWNLOAD_CLOSE, AIUS_SD_ACTION_CLOSE,
 	               MATRIX_CLEAN_PLAIN, false),
+	MATRIX_EXISTS_FIXTURE("delete-exists", MATRIX_DELETE,
+	                      AIUS_SD_EXISTS_DELETE,
+	                      MATRIX_CLEAN_PLAIN, true),
 	MATRIX_FIXTURE("delete-remove", MATRIX_DELETE,
 	               AIUS_SD_PHASE_DELETE_REMOVE, AIUS_SD_ACTION_REMOVE,
-	               MATRIX_CLEAN_PLAIN, false),
-	MATRIX_FIXTURE("install-exists", MATRIX_REPLACE,
-	               AIUS_SD_PHASE_INSTALL_EXISTS, AIUS_SD_ACTION_EXISTS,
-	               MATRIX_CLEAN_REMOVE_TEMP, true),
+	               MATRIX_CLEAN_PLAIN, true),
+	MATRIX_EXISTS_FIXTURE("install-target-exists", MATRIX_REPLACE,
+	                      AIUS_SD_EXISTS_INSTALL_TARGET,
+	                      MATRIX_CLEAN_REMOVE_TEMP, true),
+	MATRIX_EXISTS_FIXTURE("remove-old-backup-exists", MATRIX_REPLACE,
+	                      AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+	                      MATRIX_CLEAN_REMOVE_TEMP, true),
 	MATRIX_FIXTURE("install-remove-old-backup", MATRIX_REPLACE,
 	               AIUS_SD_PHASE_INSTALL_REMOVE_OLD_BACKUP,
 	               AIUS_SD_ACTION_REMOVE, MATRIX_CLEAN_REMOVE_TEMP, true),
@@ -3044,7 +3709,10 @@ static const MatrixFixture matrix_fixtures[] = {
 	               MATRIX_CLEAN_PLAIN, false),
 	MATRIX_FIXTURE("install-rename-with-backup", MATRIX_REPLACE,
 	               AIUS_SD_PHASE_INSTALL_RENAME, AIUS_SD_ACTION_RENAME,
-	               MATRIX_CLEAN_COMMIT_REMOVE_BACKUP, true),
+	               MATRIX_CLEAN_COMMIT_EXISTS, true),
+	MATRIX_EXISTS_FIXTURE("remove-committed-backup-exists", MATRIX_REPLACE,
+	                      AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+	                      MATRIX_CLEAN_COMMIT_REMOVE, true),
 	MATRIX_FIXTURE("install-remove-backup", MATRIX_REPLACE,
 	               AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP, AIUS_SD_ACTION_REMOVE,
 	               MATRIX_CLEAN_PLAIN, true),
@@ -3072,12 +3740,16 @@ static const MatrixFixture matrix_fixtures[] = {
 	MATRIX_FIXTURE("cleanup-close-append", MATRIX_APPEND,
 	               AIUS_SD_PHASE_CLEANUP_CLOSE, AIUS_SD_ACTION_CLOSE,
 	               MATRIX_CLEAN_CANCEL_CLOSE_DURABLE, false),
+	MATRIX_EXISTS_FIXTURE("cleanup-temp-exists", MATRIX_REPLACE,
+	                      AIUS_SD_EXISTS_CLEANUP_TEMP,
+	                      MATRIX_CLEAN_EXISTING_OPEN_EXISTS, true),
 	MATRIX_FIXTURE("cleanup-temp-replace", MATRIX_REPLACE,
 	               AIUS_SD_PHASE_CLEANUP_TEMP, AIUS_SD_ACTION_REMOVE,
 	               MATRIX_CLEAN_EXISTING_OPEN_REMOVE, false),
 };
 
 #undef MATRIX_FIXTURE
+#undef MATRIX_EXISTS_FIXTURE
 
 static MatrixState matrix_clone(const MatrixState *base)
 {
@@ -3098,8 +3770,11 @@ static AiusSdActionKind matrix_first_cleanup(MatrixCleanup cleanup)
 	case MATRIX_CLEAN_CLOSE_REMOVE_TEMP:
 		return AIUS_SD_ACTION_CLOSE;
 	case MATRIX_CLEAN_REMOVE_TEMP:
-	case MATRIX_CLEAN_COMMIT_REMOVE_BACKUP:
 	case MATRIX_CLEAN_CANCEL_CLOSE_REMOVE:
+	case MATRIX_CLEAN_COMMIT_EXISTS:
+		return AIUS_SD_ACTION_EXISTS;
+	case MATRIX_CLEAN_COMMIT_REMOVE:
+	case MATRIX_CLEAN_EXISTING_OPEN_EXISTS:
 		return AIUS_SD_ACTION_REMOVE;
 	case MATRIX_CLEAN_ROLLBACK_REMOVE_TEMP:
 		return AIUS_SD_ACTION_RENAME;
@@ -3124,6 +3799,7 @@ static void matrix_expect_terminal_fault(
 	case MATRIX_CLEAN_CANCEL_CLOSE_DURABLE:
 		fault = AIUS_SD_FAULT_CANCELLED;
 		break;
+	case MATRIX_CLEAN_EXISTING_OPEN_EXISTS:
 	case MATRIX_CLEAN_EXISTING_OPEN_REMOVE:
 		fault = AIUS_SD_FAULT_OPEN;
 		driver_fault = 121u;
@@ -3156,20 +3832,18 @@ static void matrix_drain_cleanup(
 		break;
 	case MATRIX_CLEAN_REMOVE_TEMP:
 	case MATRIX_CLEAN_CANCEL_CLOSE_REMOVE:
-		CHECK(action.kind == AIUS_SD_ACTION_REMOVE,
-		      "matrix expected temp removal");
-		CHECK(strcmp(action.path, state->job.temp_path) == 0,
-		      "matrix cleanup removed wrong temp");
-		action = acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_FAIL);
+		CHECK(action.kind == AIUS_SD_ACTION_EXISTS,
+		      "matrix expected temp existence");
+		action = remove_disposable_temp(
+			&state->job, action, true, AIUS_SD_ACTION_FAIL);
 		break;
 	case MATRIX_CLEAN_CLOSE_REMOVE_TEMP:
 		CHECK(action.kind == AIUS_SD_ACTION_CLOSE,
 		      "matrix expected close before temp cleanup");
 		action =
-			acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_REMOVE);
-		CHECK(strcmp(action.path, state->job.temp_path) == 0,
-		      "matrix close cleanup removed wrong temp");
-		action = acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_FAIL);
+			acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_EXISTS);
+		action = remove_disposable_temp(
+			&state->job, action, true, AIUS_SD_ACTION_FAIL);
 		break;
 	case MATRIX_CLEAN_ROLLBACK_REMOVE_TEMP:
 		CHECK(action.kind == AIUS_SD_ACTION_RENAME,
@@ -3178,16 +3852,20 @@ static void matrix_drain_cleanup(
 			      strcmp(action.path_to, state->job.target_path) == 0,
 		      "matrix rollback paths mismatch");
 		action =
-			acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_REMOVE);
-		CHECK(strcmp(action.path, state->job.temp_path) == 0,
-		      "matrix rollback removed wrong temp");
-		action = acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_FAIL);
+			acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_EXISTS);
+		action = remove_disposable_temp(
+			&state->job, action, true, AIUS_SD_ACTION_FAIL);
 		break;
-	case MATRIX_CLEAN_COMMIT_REMOVE_BACKUP:
+	case MATRIX_CLEAN_COMMIT_EXISTS:
+		CHECK(action.kind == AIUS_SD_ACTION_EXISTS,
+		      "matrix expected committed backup existence");
+		action = finish_committed_backup(
+			&state->job, action, true, AIUS_SD_ACTION_FAIL);
+		break;
+	case MATRIX_CLEAN_COMMIT_REMOVE:
+	case MATRIX_CLEAN_EXISTING_OPEN_EXISTS:
 		CHECK(action.kind == AIUS_SD_ACTION_REMOVE,
-		      "matrix expected committed backup cleanup");
-		CHECK(strcmp(action.path, state->job.backup_path) == 0,
-		      "matrix committed cleanup removed wrong backup");
+		      "matrix expected existence-routed removal");
 		action = acknowledge_ok(&state->job, &action, AIUS_SD_ACTION_FAIL);
 		break;
 	}
@@ -3252,6 +3930,9 @@ static size_t matrix_run_fixture(const MatrixFixture *fixture)
 	      "matrix fixture phase mismatch");
 	CHECK(base.action.kind == fixture->action,
 	      "matrix fixture action mismatch");
+	if (fixture->purpose != AIUS_SD_EXISTS_NONE)
+		CHECK(base.job.existence_purpose == fixture->purpose,
+		      "matrix fixture existence purpose mismatch");
 	CHECK(base.job.outstanding_action_id == base.action.action_id,
 	      "matrix fixture action id mismatch");
 	CHECK(base.job.outstanding_action == base.action.kind,
@@ -3355,6 +4036,181 @@ static size_t test_fixture_cross_product(void)
 	return cases;
 }
 
+static void existence_state(
+	MatrixState *state,
+	const char *name,
+	MatrixProfile profile,
+	AiusSdExistencePurpose purpose,
+	bool target_exists)
+{
+	MatrixFixture fixture = {
+		name,
+		profile,
+		AIUS_SD_PHASE_PATH_EXISTS,
+		AIUS_SD_ACTION_EXISTS,
+		MATRIX_CLEAN_PLAIN,
+		target_exists,
+		purpose};
+	matrix_build_fixture(state, &fixture);
+	CHECK(state->action.kind == AIUS_SD_ACTION_EXISTS,
+	      "existence fixture action mismatch");
+	CHECK(state->job.phase == AIUS_SD_PHASE_PATH_EXISTS,
+	      "existence fixture phase mismatch");
+	CHECK(state->job.existence_purpose == purpose,
+	      "existence fixture purpose mismatch");
+}
+
+static size_t test_existence_purpose_routes(void)
+{
+	MatrixState base;
+	MatrixState state;
+	AiusSdAction action;
+
+	scenario = "existence MKDIR false route";
+	existence_state(
+		&base, scenario, MATRIX_REPLACE, AIUS_SD_EXISTS_MKDIR, false);
+	CHECK(strcmp(base.action.path, "/final") == 0,
+	      "MKDIR existence path mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, false),
+	                     AIUS_SD_ACTION_MKDIR);
+	CHECK(strcmp(action.path, "/final") == 0,
+	      "MKDIR false mutation path mismatch");
+	state = matrix_clone(&base);
+	scenario = "existence MKDIR true route";
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, true),
+	                     AIUS_SD_ACTION_EXISTS);
+	CHECK(state.job.existence_purpose == AIUS_SD_EXISTS_MKDIR,
+	      "MKDIR true did not select next existence");
+	CHECK(strcmp(action.path, "/final/dir") == 0,
+	      "MKDIR true next-prefix path mismatch");
+
+	scenario = "existence DELETE routes";
+	existence_state(
+		&base, scenario, MATRIX_DELETE, AIUS_SD_EXISTS_DELETE, true);
+	CHECK(strcmp(base.action.path, base.job.target_path) == 0,
+	      "DELETE existence path mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, false),
+	                     AIUS_SD_ACTION_COMPLETE);
+	CHECK(state.job.existence_purpose == AIUS_SD_EXISTS_NONE,
+	      "DELETE false retained purpose");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(strcmp(action.path, state.job.target_path) == 0,
+	      "DELETE true removal path mismatch");
+
+	scenario = "existence INSTALL_TARGET routes";
+	existence_state(
+		&base,
+		scenario,
+		MATRIX_REPLACE,
+		AIUS_SD_EXISTS_INSTALL_TARGET,
+		true);
+	CHECK(strcmp(base.action.path, base.job.target_path) == 0,
+	      "INSTALL_TARGET existence path mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, false),
+	                     AIUS_SD_ACTION_RENAME);
+	CHECK(strcmp(action.path, state.job.temp_path) == 0 &&
+		      strcmp(action.path_to, state.job.target_path) == 0,
+	      "INSTALL_TARGET false rename mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, true),
+	                     AIUS_SD_ACTION_EXISTS);
+	CHECK(state.job.existence_purpose == AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+	      "INSTALL_TARGET true purpose mismatch");
+	CHECK(strcmp(action.path, state.job.backup_path) == 0,
+	      "INSTALL_TARGET true path mismatch");
+
+	scenario = "existence REMOVE_OLD_BACKUP routes";
+	existence_state(
+		&base,
+		scenario,
+		MATRIX_REPLACE,
+		AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+		true);
+	CHECK(strcmp(base.action.path, base.job.backup_path) == 0,
+	      "REMOVE_OLD_BACKUP existence path mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, false),
+	                     AIUS_SD_ACTION_RENAME);
+	CHECK(strcmp(action.path, state.job.target_path) == 0 &&
+		      strcmp(action.path_to, state.job.backup_path) == 0,
+	      "REMOVE_OLD_BACKUP false rename mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(strcmp(action.path, state.job.backup_path) == 0,
+	      "REMOVE_OLD_BACKUP true removal mismatch");
+
+	scenario = "existence REMOVE_COMMITTED_BACKUP routes";
+	existence_state(
+		&base,
+		scenario,
+		MATRIX_REPLACE,
+		AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+		true);
+	CHECK(strcmp(base.action.path, base.job.backup_path) == 0,
+	      "REMOVE_COMMITTED_BACKUP existence path mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, false),
+	                     AIUS_SD_ACTION_COMPLETE);
+	CHECK(state.job.existence_purpose == AIUS_SD_EXISTS_NONE,
+	      "REMOVE_COMMITTED_BACKUP false retained purpose");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(strcmp(action.path, state.job.backup_path) == 0,
+	      "REMOVE_COMMITTED_BACKUP true removal mismatch");
+
+	scenario = "existence CLEANUP_TEMP routes";
+	existence_state(
+		&base,
+		scenario,
+		MATRIX_REPLACE,
+		AIUS_SD_EXISTS_CLEANUP_TEMP,
+		true);
+	CHECK(strcmp(base.action.path, base.job.temp_path) == 0,
+	      "CLEANUP_TEMP existence path mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, false),
+	                     AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_OPEN,
+	      "CLEANUP_TEMP false fault mismatch");
+	state = matrix_clone(&base);
+	action = step_action(&state.job,
+	                     0u,
+	                     bool_event(state.action.action_id, true),
+	                     AIUS_SD_ACTION_REMOVE);
+	CHECK(strcmp(action.path, state.job.temp_path) == 0,
+	      "CLEANUP_TEMP true removal mismatch");
+	return 12u;
+}
+
 static size_t test_active_no_outstanding_rows(void)
 {
 	const MatrixProfile profiles[] = {
@@ -3372,7 +4228,8 @@ static size_t test_active_no_outstanding_rows(void)
 			AIUS_SD_PHASE_UPLOAD_INPUT,
 			AIUS_SD_ACTION_NEED_INPUT,
 			MATRIX_CLEAN_PLAIN,
-			false};
+			false,
+			AIUS_SD_EXISTS_NONE};
 		MatrixState state;
 		matrix_build_happy(&state, &fixture);
 		scenario = names[index];
@@ -3389,16 +4246,23 @@ static size_t test_active_no_outstanding_rows(void)
 
 		MatrixState invalid = state;
 		invalid.job.buffer = invalid.buffer;
+		CHECK(invalid.job.next_action_id > 1u,
+		      "NEED_INPUT fixture lacks completed correlation");
+		const uint64_t duplicate_id = invalid.job.next_action_id - 1u;
 		AiusSdAction action = step_action(
-			&invalid.job, 0u, ok_event(1u), AIUS_SD_ACTION_CLOSE);
+			&invalid.job,
+			0u,
+			ok_event(duplicate_id),
+			AIUS_SD_ACTION_CLOSE);
 		if (profiles[index] == MATRIX_REPLACE) {
 			action = acknowledge_ok(
-				&invalid.job, &action, AIUS_SD_ACTION_REMOVE);
-			CHECK(strcmp(action.path, invalid.job.temp_path) == 0,
-			      "replace NEED_INPUT protocol removed wrong temp");
+				&invalid.job, &action, AIUS_SD_ACTION_EXISTS);
+			action = remove_disposable_temp(
+				&invalid.job, action, true, AIUS_SD_ACTION_FAIL);
+		} else {
+			action =
+				acknowledge_ok(&invalid.job, &action, AIUS_SD_ACTION_FAIL);
 		}
-		action =
-			acknowledge_ok(&invalid.job, &action, AIUS_SD_ACTION_FAIL);
 		CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
 		      "NEED_INPUT no-outstanding event fault mismatch");
 		++cases;
@@ -3474,16 +4338,8 @@ static size_t test_durable_upload_cancellation_modes(void)
 	scenario = "finalize cancellation before append preserves part";
 	request = upload_request(AIUS_SD_INSTALL_FINALIZE_PART);
 	request.total = 1u;
-	start_valid(&job, buffer, sizeof(buffer), &request);
-	action = begin_job(&job);
-	while (true) {
-		action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MKDIR);
-		if (strcmp(action.path, "/backup/dir") == 0) {
-			action =
-				acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
-			break;
-		}
-	}
+	action = begin_upload(
+		&job, &request, buffer, sizeof(buffer), AIUS_SD_ACTION_OPEN_READ);
 	CHECK(job.phase == AIUS_SD_PHASE_PART_SIZE_OPEN,
 	      "finalize pre-append fixture mismatch");
 	aius_sd_job_cancel(&job);
@@ -3521,7 +4377,8 @@ static size_t test_durable_upload_cancellation_modes(void)
 		AIUS_SD_PHASE_INSTALL_BACKUP,
 		AIUS_SD_ACTION_RENAME,
 		MATRIX_CLEAN_PLAIN,
-		true};
+		true,
+		AIUS_SD_EXISTS_NONE};
 	MatrixState state;
 	matrix_build_happy(&state, &backup_fixture);
 	aius_sd_job_cancel(&state.job);
@@ -3538,6 +4395,31 @@ static size_t test_durable_upload_cancellation_modes(void)
 	return 5u;
 }
 
+static void test_install_target_existence_fault_cleanup(void)
+{
+	uint8_t buffer[CONFIG_LIMIT];
+	AiusSdJob job;
+	AiusSdAction action;
+	AiusSdJobRequest request = upload_request(AIUS_SD_INSTALL_REPLACE);
+	request.total = 0u;
+
+	scenario = "install-target existence fault cleans disposable temp";
+	action = begin_upload(&job,
+	                      &request,
+	                      buffer,
+	                      sizeof(buffer),
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(&job, &action, AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	CHECK(job.existence_purpose == AIUS_SD_EXISTS_INSTALL_TARGET,
+	      "install-target fault fixture purpose mismatch");
+	action = step_action(
+		&job, 0u, fault_event(action.action_id, 65u), AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(
+		&job, action, true, AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_INSTALL, 65u);
+}
+
 int main(void)
 {
 	test_pointer_and_start_contract();
@@ -3547,6 +4429,7 @@ int main(void)
 	test_upload_modes();
 	test_install_publication_and_authority();
 	test_request_boundaries();
+	test_require_existing_request_matrix();
 	test_protocol_mismatches_and_supply();
 	test_deadline_cancel_and_restart();
 	test_basic_action_faults();
@@ -3560,9 +4443,19 @@ int main(void)
 	test_post_commit_fault_matrix();
 	test_complete_request_boundary_matrix();
 	test_reserved_action_id_properties();
+	test_exact_262_id_publication_reserve();
+	test_backup_rename_fault_temp_cleanup();
 	size_t matrix_trials = test_fixture_cross_product();
-	size_t lifecycle_cases = test_active_no_outstanding_rows();
+	size_t lifecycle_cases = test_existence_purpose_routes();
+	lifecycle_cases += test_active_no_outstanding_rows();
 	lifecycle_cases += test_durable_upload_cancellation_modes();
+	CHECK(ARRAY_COUNT(matrix_fixtures) == 64u,
+	      "phase-10 fixture registry count drifted");
+	CHECK(matrix_trials == 1001u,
+	      "phase-10 matrix trial count drifted");
+	CHECK(lifecycle_cases == 27u,
+	      "phase-10 lifecycle case count drifted");
+	test_install_target_existence_fault_cleanup();
 	printf("sd oracle: all tests passed (%zu fixtures, %zu matrix trials, "
 	       "%zu lifecycle cases)\n",
 	       ARRAY_COUNT(matrix_fixtures),

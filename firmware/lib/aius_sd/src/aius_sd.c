@@ -6,7 +6,7 @@
 #include <string.h>
 
 #define AIUS_SD_MAX_TRANSFER 512u
-#define AIUS_SD_RESERVED_ACTION_IDS 3u
+#define AIUS_SD_RESERVED_ACTION_IDS UINT64_C(262)
 
 typedef enum {
 	AIUS_SD_EVENT_WAITING,
@@ -227,6 +227,9 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 	if (request->kind != AIUS_SD_JOB_UPLOAD &&
 	    request->install_mode != AIUS_SD_INSTALL_REPLACE)
 		return AIUS_SD_FAULT_INVALID_REQUEST;
+	if (request->kind != AIUS_SD_JOB_DELETE &&
+	    request->require_existing)
+		return AIUS_SD_FAULT_INVALID_REQUEST;
 
 	switch (request->kind) {
 	case AIUS_SD_JOB_PROBE:
@@ -379,6 +382,12 @@ void aius_sd_job_start(AiusSdJob *job,
 		reject_start(job, fault);
 		return;
 	}
+	if (job->next_action_id == 0u ||
+	    job->next_action_id >
+		    UINT64_MAX - AIUS_SD_RESERVED_ACTION_IDS) {
+		reject_start(job, AIUS_SD_FAULT_OVERFLOW);
+		return;
+	}
 
 	AiusSdJobRequest request_copy = *request;
 	reset_for_start(job);
@@ -393,6 +402,9 @@ void aius_sd_job_start(AiusSdJob *job,
 	job->end_offset = request_copy.initial_offset + request_copy.total;
 	job->deadline_ms = deadline_ms;
 	job->publish_config = request_copy.publish_config;
+	job->require_existing =
+		request_copy.kind == AIUS_SD_JOB_DELETE &&
+		request_copy.require_existing;
 	set_phase(job, AIUS_SD_PHASE_BEGIN, AIUS_SD_PREPARE);
 }
 
@@ -409,9 +421,29 @@ static bool is_replace_temp_disposable(const AiusSdJob *job)
 	return job->kind == AIUS_SD_JOB_UPLOAD &&
 	       job->install_mode == AIUS_SD_INSTALL_REPLACE &&
 	       !job->installed &&
-	       !job->install_failed &&
-	       job->last_fault != AIUS_SD_FAULT_INSTALL &&
-	       job->last_fault != AIUS_SD_FAULT_ROLLBACK;
+	       !job->install_failed;
+}
+
+static void select_existence(AiusSdJob *job,
+	                     AiusSdExistencePurpose purpose,
+	                     AiusSdState state)
+{
+	job->existence_purpose = purpose;
+	set_phase(job, AIUS_SD_PHASE_PATH_EXISTS, state);
+}
+
+static void continue_after_committed_backup(AiusSdJob *job)
+{
+	job->backup_moved = false;
+	if (job->publish_config) {
+		job->config_bytes = 0u;
+		set_phase(job, AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
+		          AIUS_SD_PUBLISH);
+	} else if (job->abort_requested) {
+		finish_failure(job);
+	} else {
+		finish_success(job);
+	}
 }
 
 static void route_abort(AiusSdJob *job)
@@ -423,14 +455,21 @@ static void route_abort(AiusSdJob *job)
 		return;
 
 	if (job->installed) {
+		if ((job->phase == AIUS_SD_PHASE_PATH_EXISTS &&
+		     job->existence_purpose ==
+			     AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP) ||
+		    job->phase == AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP)
+			return;
 		if (job->file_open) {
 			set_phase(job, AIUS_SD_PHASE_CLEANUP_CLOSE,
 			          AIUS_SD_CANCEL_CLOSE);
 			return;
 		}
 		if (job->backup_moved) {
-			set_phase(job, AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP,
-			          AIUS_SD_CLEANUP);
+			select_existence(
+				job,
+				AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+				AIUS_SD_CLEANUP);
 			return;
 		}
 		finish_failure(job);
@@ -446,9 +485,13 @@ static void route_abort(AiusSdJob *job)
 		          AIUS_SD_CANCEL_CLOSE);
 		return;
 	}
+	if (job->phase == AIUS_SD_PHASE_CLEANUP_TEMP ||
+	    (job->phase == AIUS_SD_PHASE_PATH_EXISTS &&
+	     job->existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP))
+		return;
 	if (is_replace_temp_disposable(job)) {
-		set_phase(job, AIUS_SD_PHASE_CLEANUP_TEMP,
-		          AIUS_SD_CANCEL_CLEANUP);
+		select_existence(job, AIUS_SD_EXISTS_CLEANUP_TEMP,
+		                 AIUS_SD_CANCEL_CLEANUP);
 		return;
 	}
 	finish_failure(job);
@@ -601,12 +644,69 @@ static bool prepare_next_directory(AiusSdJob *job)
 	return false;
 }
 
+static const char *existence_path(const AiusSdJob *job)
+{
+	switch (job->existence_purpose) {
+	case AIUS_SD_EXISTS_MKDIR:
+		if (job->state != AIUS_SD_MKDIR)
+			return NULL;
+		return job->directory_path[0] == '\0'
+			       ? NULL
+			       : job->directory_path;
+	case AIUS_SD_EXISTS_DELETE:
+		if (job->state != AIUS_SD_PREPARE)
+			return NULL;
+		return job->target_path[0] == '\0' ? NULL : job->target_path;
+	case AIUS_SD_EXISTS_INSTALL_TARGET:
+		if (job->state != AIUS_SD_CHECK_TARGET)
+			return NULL;
+		return job->target_path[0] == '\0' ? NULL : job->target_path;
+	case AIUS_SD_EXISTS_REMOVE_OLD_BACKUP:
+		if (job->state != AIUS_SD_BACKUP)
+			return NULL;
+		return job->backup_path[0] == '\0' ? NULL : job->backup_path;
+	case AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP:
+		if (job->state != AIUS_SD_CLEANUP)
+			return NULL;
+		return job->backup_path[0] == '\0' ? NULL : job->backup_path;
+	case AIUS_SD_EXISTS_CLEANUP_TEMP:
+		if (job->state != AIUS_SD_CANCEL_CLEANUP)
+			return NULL;
+		return job->temp_path[0] == '\0' ? NULL : job->temp_path;
+	case AIUS_SD_EXISTS_NONE:
+	default:
+		return NULL;
+	}
+}
+
+static bool existence_uses_reserved_id(const AiusSdJob *job)
+{
+	return job->existence_purpose ==
+		       AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP ||
+	       job->existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP;
+}
+
+static void emit_existence(AiusSdJob *job, AiusSdAction *action)
+{
+	const char *path = existence_path(job);
+
+	if (job->phase != AIUS_SD_PHASE_PATH_EXISTS || path == NULL) {
+		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
+		job->existence_purpose = AIUS_SD_EXISTS_NONE;
+		route_abort(job);
+		return;
+	}
+	if (emit_correlated(job, action, AIUS_SD_ACTION_EXISTS,
+	                    existence_uses_reserved_id(job)))
+		action->path = path;
+}
+
 static void emit_upload_open(AiusSdJob *job, AiusSdAction *action)
 {
 	set_phase(job, AIUS_SD_PHASE_UPLOAD_OPEN, AIUS_SD_OPEN);
 	AiusSdActionKind kind =
 		job->install_mode == AIUS_SD_INSTALL_REPLACE
-			? AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE
+			? AIUS_SD_ACTION_OPEN_WRITE_BEGIN
 			: AIUS_SD_ACTION_OPEN_APPEND;
 	if (emit_correlated(job, action, kind, false))
 		action->path = upload_file_path(job);
@@ -614,10 +714,16 @@ static void emit_upload_open(AiusSdJob *job, AiusSdAction *action)
 
 static void emit_mkdir_or_next(AiusSdJob *job, AiusSdAction *action)
 {
-	if (prepare_next_directory(job)) {
-		set_phase(job, AIUS_SD_PHASE_MKDIR, AIUS_SD_MKDIR);
+	if (job->directory_path[0] != '\0') {
 		if (emit_correlated(job, action, AIUS_SD_ACTION_MKDIR, false))
 			action->path = job->directory_path;
+		return;
+	}
+
+	if (prepare_next_directory(job)) {
+		select_existence(job, AIUS_SD_EXISTS_MKDIR,
+		                 AIUS_SD_MKDIR);
+		emit_existence(job, action);
 		return;
 	}
 
@@ -636,7 +742,8 @@ static void emit_mkdir_or_next(AiusSdJob *job, AiusSdAction *action)
 
 static void emit_read(AiusSdJob *job,
 	              AiusSdAction *action,
-	              bool config_read)
+	              bool config_read,
+	              bool reserved)
 {
 	size_t length;
 	uint64_t offset;
@@ -657,7 +764,7 @@ static void emit_read(AiusSdJob *job,
 		buffer = job->buffer;
 	}
 
-	if (emit_correlated(job, action, AIUS_SD_ACTION_READ, false)) {
+	if (emit_correlated(job, action, AIUS_SD_ACTION_READ, reserved)) {
 		action->buffer = buffer;
 		action->length = length;
 		action->offset = offset;
@@ -688,13 +795,18 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 	case AIUS_SD_PHASE_PART_SIZE:
 	case AIUS_SD_PHASE_FINAL_SIZE:
 	case AIUS_SD_PHASE_DOWNLOAD_SIZE:
-	case AIUS_SD_PHASE_INSTALL_PUBLISH_SIZE:
 		(void)emit_correlated(job, action,
 		                      AIUS_SD_ACTION_FILE_SIZE, false);
 		break;
+	case AIUS_SD_PHASE_INSTALL_PUBLISH_SIZE:
+		(void)emit_correlated(job, action,
+		                      AIUS_SD_ACTION_FILE_SIZE, true);
+		break;
 	case AIUS_SD_PHASE_CONFIG_READ:
+		emit_read(job, action, true, false);
+		break;
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_READ:
-		emit_read(job, action, true);
+		emit_read(job, action, true, true);
 		break;
 	case AIUS_SD_PHASE_CONFIG_CLOSE:
 	case AIUS_SD_PHASE_PART_SIZE_CLOSE:
@@ -704,9 +816,15 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 		(void)emit_correlated(job, action, AIUS_SD_ACTION_CLOSE, false);
 		break;
 	case AIUS_SD_PHASE_CONFIG_PUBLISH:
-	case AIUS_SD_PHASE_INSTALL_PUBLISH:
 		if (emit_correlated(job, action,
 		                    AIUS_SD_ACTION_PUBLISH_CONFIG, false)) {
+			action->buffer = job->buffer;
+			action->length = job->config_bytes;
+		}
+		break;
+	case AIUS_SD_PHASE_INSTALL_PUBLISH:
+		if (emit_correlated(job, action,
+		                    AIUS_SD_ACTION_PUBLISH_CONFIG, true)) {
 			action->buffer = job->buffer;
 			action->length = job->config_bytes;
 		}
@@ -721,6 +839,9 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 		                      AIUS_SD_ACTION_USED_SIZE, false);
 		break;
 
+	case AIUS_SD_PHASE_PATH_EXISTS:
+		emit_existence(job, action);
+		break;
 	case AIUS_SD_PHASE_MKDIR:
 		emit_mkdir_or_next(job, action);
 		break;
@@ -738,12 +859,16 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 	case AIUS_SD_PHASE_UPLOAD_OPEN: {
 		AiusSdActionKind kind =
 			job->install_mode == AIUS_SD_INSTALL_REPLACE
-				? AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE
+				? AIUS_SD_ACTION_OPEN_WRITE_BEGIN
 				: AIUS_SD_ACTION_OPEN_APPEND;
 		if (emit_correlated(job, action, kind, false))
 			action->path = upload_file_path(job);
 		break;
 	}
+	case AIUS_SD_PHASE_UPLOAD_TRUNCATE:
+		(void)emit_correlated(job, action,
+		                      AIUS_SD_ACTION_TRUNCATE, false);
+		break;
 	case AIUS_SD_PHASE_UPLOAD_INPUT: {
 		if (job->requested != 0u)
 			break;
@@ -781,7 +906,7 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 			action->offset = job->initial_offset;
 		break;
 	case AIUS_SD_PHASE_DOWNLOAD_READ:
-		emit_read(job, action, false);
+		emit_read(job, action, false, false);
 		break;
 	case AIUS_SD_PHASE_DOWNLOAD_OUTPUT:
 		if (emit_correlated(job, action, AIUS_SD_ACTION_OUTPUT,
@@ -799,11 +924,6 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 			action->path = job->target_path;
 		break;
 
-	case AIUS_SD_PHASE_INSTALL_EXISTS:
-		if (emit_correlated(job, action, AIUS_SD_ACTION_EXISTS,
-		                    false))
-			action->path = job->target_path;
-		break;
 	case AIUS_SD_PHASE_INSTALL_REMOVE_OLD_BACKUP:
 		if (emit_correlated(job, action, AIUS_SD_ACTION_REMOVE,
 		                    false))
@@ -829,7 +949,7 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 		break;
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN:
 		if (emit_correlated(job, action, AIUS_SD_ACTION_OPEN_READ,
-		                    false))
+		                    true))
 			action->path = job->target_path;
 		break;
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_CLOSE:
@@ -880,6 +1000,7 @@ static void select_after_begin(AiusSdJob *job)
 	case AIUS_SD_JOB_UPLOAD:
 		job->mkdir_path_index = 0u;
 		job->mkdir_offset = 1u;
+		job->directory_path[0] = '\0';
 		set_phase(job, AIUS_SD_PHASE_MKDIR, AIUS_SD_MKDIR);
 		break;
 	case AIUS_SD_JOB_DOWNLOAD:
@@ -887,7 +1008,8 @@ static void select_after_begin(AiusSdJob *job)
 		set_phase(job, AIUS_SD_PHASE_DOWNLOAD_OPEN, AIUS_SD_OPEN);
 		break;
 	case AIUS_SD_JOB_DELETE:
-		set_phase(job, AIUS_SD_PHASE_DELETE_REMOVE, AIUS_SD_PREPARE);
+		select_existence(job, AIUS_SD_EXISTS_DELETE,
+		                 AIUS_SD_PREPARE);
 		break;
 	default:
 		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
@@ -902,16 +1024,17 @@ static void select_after_upload_close(AiusSdJob *job)
 	} else if (job->install_mode == AIUS_SD_INSTALL_FINALIZE_PART) {
 		set_phase(job, AIUS_SD_PHASE_FINAL_SIZE_OPEN, AIUS_SD_OPEN);
 	} else {
-		set_phase(job, AIUS_SD_PHASE_INSTALL_EXISTS,
-		          AIUS_SD_CHECK_TARGET);
+		select_existence(job, AIUS_SD_EXISTS_INSTALL_TARGET,
+		                 AIUS_SD_CHECK_TARGET);
 	}
 }
 
 static void select_post_commit(AiusSdJob *job)
 {
 	if (job->backup_moved) {
-		set_phase(job, AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP,
-		          AIUS_SD_CLEANUP);
+		select_existence(
+			job, AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+			AIUS_SD_CLEANUP);
 	} else if (job->publish_config) {
 		job->config_bytes = 0u;
 		set_phase(job, AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
@@ -941,6 +1064,7 @@ static void handle_ok_event(AiusSdJob *job)
 		select_after_begin(job);
 		break;
 	case AIUS_SD_PHASE_MKDIR:
+		job->directory_path[0] = '\0';
 		break;
 	case AIUS_SD_PHASE_CONFIG_OPEN:
 		job->file_open = true;
@@ -964,6 +1088,19 @@ static void handle_ok_event(AiusSdJob *job)
 		break;
 	case AIUS_SD_PHASE_UPLOAD_OPEN:
 		job->file_open = true;
+		if (job->install_mode == AIUS_SD_INSTALL_REPLACE) {
+			set_phase(job, AIUS_SD_PHASE_UPLOAD_TRUNCATE,
+			          AIUS_SD_OPEN);
+			break;
+		}
+		if (job->total == job->transferred)
+			set_phase(job, AIUS_SD_PHASE_UPLOAD_CLOSE,
+			          AIUS_SD_CLEANUP);
+		else
+			set_phase(job, AIUS_SD_PHASE_UPLOAD_INPUT,
+			          AIUS_SD_NEED_INPUT);
+		break;
+	case AIUS_SD_PHASE_UPLOAD_TRUNCATE:
 		if (job->total == job->transferred)
 			set_phase(job, AIUS_SD_PHASE_UPLOAD_CLOSE,
 			          AIUS_SD_CLEANUP);
@@ -981,8 +1118,8 @@ static void handle_ok_event(AiusSdJob *job)
 		break;
 	case AIUS_SD_PHASE_FINAL_SIZE_CLOSE:
 		job->file_open = false;
-		set_phase(job, AIUS_SD_PHASE_INSTALL_EXISTS,
-		          AIUS_SD_CHECK_TARGET);
+		select_existence(job, AIUS_SD_EXISTS_INSTALL_TARGET,
+		                 AIUS_SD_CHECK_TARGET);
 		break;
 	case AIUS_SD_PHASE_DOWNLOAD_OPEN:
 		job->file_open = true;
@@ -1030,16 +1167,7 @@ static void handle_ok_event(AiusSdJob *job)
 		select_post_commit(job);
 		break;
 	case AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP:
-		job->backup_moved = false;
-		if (job->publish_config) {
-			job->config_bytes = 0u;
-			set_phase(job, AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
-			          AIUS_SD_PUBLISH);
-		} else if (job->abort_requested) {
-			finish_failure(job);
-		} else {
-			finish_success(job);
-		}
+		continue_after_committed_backup(job);
 		break;
 	case AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN:
 		job->file_open = true;
@@ -1081,18 +1209,71 @@ static void handle_bool_event(AiusSdJob *job, bool value)
 		job->result.media_present = value;
 		return;
 	}
-	if (job->phase == AIUS_SD_PHASE_INSTALL_EXISTS) {
+	if (job->phase != AIUS_SD_PHASE_PATH_EXISTS ||
+	    job->existence_purpose == AIUS_SD_EXISTS_NONE ||
+	    existence_path(job) == NULL) {
+		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
+		return;
+	}
+
+	AiusSdExistencePurpose purpose = job->existence_purpose;
+	job->existence_purpose = AIUS_SD_EXISTS_NONE;
+
+	switch (purpose) {
+	case AIUS_SD_EXISTS_MKDIR:
+		if (value)
+			job->directory_path[0] = '\0';
+		set_phase(job, AIUS_SD_PHASE_MKDIR, AIUS_SD_MKDIR);
+		break;
+	case AIUS_SD_EXISTS_DELETE:
+		if (value)
+			set_phase(job, AIUS_SD_PHASE_DELETE_REMOVE,
+			          AIUS_SD_PREPARE);
+		else if (!job->require_existing)
+			finish_success(job);
+		else {
+			record_fault(job, AIUS_SD_FAULT_NOT_FOUND, 0u);
+			finish_failure(job);
+		}
+		break;
+	case AIUS_SD_EXISTS_INSTALL_TARGET:
 		job->target_existed = value;
+		if (value)
+			select_existence(job,
+			                 AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+			                 AIUS_SD_BACKUP);
+		else
+			set_phase(job, AIUS_SD_PHASE_INSTALL_RENAME,
+			          AIUS_SD_INSTALL);
+		break;
+	case AIUS_SD_EXISTS_REMOVE_OLD_BACKUP:
 		if (value)
 			set_phase(job,
 			          AIUS_SD_PHASE_INSTALL_REMOVE_OLD_BACKUP,
 			          AIUS_SD_BACKUP);
 		else
-			set_phase(job, AIUS_SD_PHASE_INSTALL_RENAME,
-			          AIUS_SD_INSTALL);
-		return;
+			set_phase(job, AIUS_SD_PHASE_INSTALL_BACKUP,
+			          AIUS_SD_BACKUP);
+		break;
+	case AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP:
+		if (value)
+			set_phase(job, AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP,
+			          AIUS_SD_CLEANUP);
+		else
+			continue_after_committed_backup(job);
+		break;
+	case AIUS_SD_EXISTS_CLEANUP_TEMP:
+		if (value)
+			set_phase(job, AIUS_SD_PHASE_CLEANUP_TEMP,
+			          AIUS_SD_CANCEL_CLEANUP);
+		else
+			finish_failure(job);
+		break;
+	case AIUS_SD_EXISTS_NONE:
+	default:
+		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
+		break;
 	}
-	record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
 }
 
 static void handle_size_event(AiusSdJob *job, uint64_t size)
@@ -1244,6 +1425,21 @@ static bool is_post_commit_publish_phase(AiusSdPhase phase)
 static AiusSdFault map_driver_fault(const AiusSdJob *job,
 	                            AiusSdActionKind action)
 {
+	if (job->phase == AIUS_SD_PHASE_PATH_EXISTS) {
+		switch (job->existence_purpose) {
+		case AIUS_SD_EXISTS_INSTALL_TARGET:
+		case AIUS_SD_EXISTS_REMOVE_OLD_BACKUP:
+			return AIUS_SD_FAULT_INSTALL;
+		case AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP:
+		case AIUS_SD_EXISTS_CLEANUP_TEMP:
+			return AIUS_SD_FAULT_CLEANUP;
+		case AIUS_SD_EXISTS_MKDIR:
+		case AIUS_SD_EXISTS_DELETE:
+		case AIUS_SD_EXISTS_NONE:
+		default:
+			return AIUS_SD_FAULT_IO;
+		}
+	}
 	if (is_post_commit_publish_phase(job->phase)) {
 		return job->phase == AIUS_SD_PHASE_INSTALL_PUBLISH_CLOSE
 			       ? AIUS_SD_FAULT_CLEANUP
@@ -1258,10 +1454,11 @@ static AiusSdFault map_driver_fault(const AiusSdJob *job,
 	if (action == AIUS_SD_ACTION_MEDIA_PRESENT)
 		return AIUS_SD_FAULT_MEDIA;
 	if (action == AIUS_SD_ACTION_OPEN_READ ||
-	    action == AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE ||
+	    action == AIUS_SD_ACTION_OPEN_WRITE_BEGIN ||
 	    action == AIUS_SD_ACTION_OPEN_APPEND)
 		return AIUS_SD_FAULT_OPEN;
-	if (action == AIUS_SD_ACTION_SEEK)
+	if (action == AIUS_SD_ACTION_TRUNCATE ||
+	    action == AIUS_SD_ACTION_SEEK)
 		return AIUS_SD_FAULT_SEEK;
 	if (action == AIUS_SD_ACTION_RENAME)
 		return AIUS_SD_FAULT_INSTALL;
@@ -1275,6 +1472,8 @@ static void handle_fault_event(AiusSdJob *job,
 	                       uint32_t driver_fault)
 {
 	AiusSdPhase phase = job->phase;
+	AiusSdExistencePurpose existence_purpose =
+		job->existence_purpose;
 	AiusSdFault fault = map_driver_fault(job, action);
 
 	if (action == AIUS_SD_ACTION_CLOSE)
@@ -1284,15 +1483,23 @@ static void handle_fault_event(AiusSdJob *job,
 
 	record_fault(job, fault, driver_fault);
 
-	if (phase == AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP) {
-		job->backup_moved = false;
-		if (job->publish_config) {
-			job->config_bytes = 0u;
-			set_phase(job, AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN,
-			          AIUS_SD_PUBLISH);
-		} else {
+	if (phase == AIUS_SD_PHASE_BEGIN) {
+		finish_failure(job);
+		return;
+	}
+	if (phase == AIUS_SD_PHASE_PATH_EXISTS) {
+		job->existence_purpose = AIUS_SD_EXISTS_NONE;
+		if (existence_purpose ==
+		    AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP) {
+			continue_after_committed_backup(job);
+		} else if (existence_purpose ==
+		           AIUS_SD_EXISTS_CLEANUP_TEMP) {
 			finish_failure(job);
 		}
+		return;
+	}
+	if (phase == AIUS_SD_PHASE_INSTALL_REMOVE_BACKUP) {
+		continue_after_committed_backup(job);
 		return;
 	}
 	if (phase == AIUS_SD_PHASE_ROLLBACK ||
@@ -1336,8 +1543,9 @@ static AiusSdEventKind expected_event_kind(AiusSdActionKind action)
 	case AIUS_SD_ACTION_BEGIN:
 	case AIUS_SD_ACTION_MKDIR:
 	case AIUS_SD_ACTION_OPEN_READ:
-	case AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
 	case AIUS_SD_ACTION_OPEN_APPEND:
+	case AIUS_SD_ACTION_TRUNCATE:
 	case AIUS_SD_ACTION_SEEK:
 	case AIUS_SD_ACTION_OUTPUT:
 	case AIUS_SD_ACTION_RENAME:

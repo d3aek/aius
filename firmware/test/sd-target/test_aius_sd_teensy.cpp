@@ -1,0 +1,929 @@
+#include "aius_sd_teensy.h"
+
+#include <assert.h>
+#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+namespace {
+
+enum Primitive {
+	PRIMITIVE_BEGIN,
+	PRIMITIVE_MEDIA_PRESENT,
+	PRIMITIVE_MKDIR,
+	PRIMITIVE_OPEN,
+	PRIMITIVE_TRUNCATE,
+	PRIMITIVE_SEEK,
+	PRIMITIVE_READ,
+	PRIMITIVE_WRITE,
+	PRIMITIVE_SIZE,
+	PRIMITIVE_EXISTS,
+	PRIMITIVE_RENAME,
+	PRIMITIVE_REMOVE,
+	PRIMITIVE_CLOSE,
+	PRIMITIVE_TOTAL_SIZE,
+	PRIMITIVE_USED_SIZE,
+	PRIMITIVE_COUNT
+};
+
+struct Fake {
+	Primitive calls[64];
+	size_t call_count;
+	size_t clock_calls;
+	uint32_t clocks[2];
+	bool succeeds[PRIMITIVE_COUNT];
+	bool media_present;
+	bool exists;
+	bool open_valid;
+	size_t read_result;
+	size_t write_result;
+	uint64_t size_result;
+	uint64_t total_size;
+	uint64_t used_size;
+	uint8_t chip_select;
+	uint8_t open_mode;
+	const char *path;
+	const char *path_to;
+	uint8_t *mutable_buffer;
+	const uint8_t *const_buffer;
+	size_t length;
+	uint64_t offset;
+};
+
+Fake g_fake;
+uint8_t g_buffer[16];
+const char kPath[] = "/path";
+const char kPathTo[] = "/path-to";
+
+void record(Primitive primitive)
+{
+	assert(g_fake.call_count <
+	       sizeof(g_fake.calls) / sizeof(g_fake.calls[0]));
+	g_fake.calls[g_fake.call_count++] = primitive;
+}
+
+void reset_fake()
+{
+	memset(&g_fake, 0, sizeof(g_fake));
+	for (size_t i = 0; i < PRIMITIVE_COUNT; ++i)
+		g_fake.succeeds[i] = true;
+	g_fake.media_present = true;
+	g_fake.exists = true;
+	g_fake.open_valid = true;
+	g_fake.read_result = 3;
+	g_fake.write_result = 3;
+	g_fake.size_result = UINT64_C(123);
+	g_fake.total_size = UINT64_C(1000);
+	g_fake.used_size = UINT64_C(400);
+	g_fake.clocks[0] = 100;
+	g_fake.clocks[1] = 107;
+}
+
+void reset_adapter(AiusSdTeensy *adapter)
+{
+	adapter->file_open = false;
+	adapter->last_duration_us = UINT32_C(0xa5a5a5a5);
+	adapter->longest_duration_us = UINT32_C(0xa5a5a5a5);
+	adapter->protocol_faults = UINT32_C(0xa5a5a5a5);
+	adapter->last_fault = UINT32_C(0xa5a5a5a5);
+	aius_sd_teensy_init(adapter);
+	assert(!adapter->file_open);
+	assert(adapter->last_duration_us == 0);
+	assert(adapter->longest_duration_us == 0);
+	assert(adapter->protocol_faults == 0);
+	assert(adapter->last_fault == 0);
+	assert(g_fake.call_count == 0);
+	assert(g_fake.clock_calls == 0);
+}
+
+bool is_file_action(AiusSdActionKind kind)
+{
+	return kind == AIUS_SD_ACTION_TRUNCATE ||
+	       kind == AIUS_SD_ACTION_SEEK ||
+	       kind == AIUS_SD_ACTION_READ ||
+	       kind == AIUS_SD_ACTION_WRITE ||
+	       kind == AIUS_SD_ACTION_FILE_SIZE ||
+	       kind == AIUS_SD_ACTION_CLOSE;
+}
+
+AiusSdAction make_action(AiusSdActionKind kind)
+{
+	AiusSdAction action = {};
+	action.kind = kind;
+	action.action_id = UINT64_C(47);
+	switch (kind) {
+	case AIUS_SD_ACTION_MKDIR:
+	case AIUS_SD_ACTION_OPEN_READ:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
+	case AIUS_SD_ACTION_OPEN_APPEND:
+	case AIUS_SD_ACTION_EXISTS:
+	case AIUS_SD_ACTION_REMOVE:
+		action.path = kPath;
+		break;
+	case AIUS_SD_ACTION_SEEK:
+		action.offset = 9;
+		break;
+	case AIUS_SD_ACTION_READ:
+	case AIUS_SD_ACTION_WRITE:
+		action.buffer = g_buffer;
+		action.length = 3;
+		action.offset = 9;
+		break;
+	case AIUS_SD_ACTION_RENAME:
+		action.path = kPath;
+		action.path_to = kPathTo;
+		break;
+	case AIUS_SD_ACTION_NONE:
+	case AIUS_SD_ACTION_BEGIN:
+	case AIUS_SD_ACTION_MEDIA_PRESENT:
+	case AIUS_SD_ACTION_TRUNCATE:
+	case AIUS_SD_ACTION_NEED_INPUT:
+	case AIUS_SD_ACTION_OUTPUT:
+	case AIUS_SD_ACTION_FILE_SIZE:
+	case AIUS_SD_ACTION_CLOSE:
+	case AIUS_SD_ACTION_TOTAL_SIZE:
+	case AIUS_SD_ACTION_USED_SIZE:
+	case AIUS_SD_ACTION_PUBLISH_CONFIG:
+	case AIUS_SD_ACTION_COMPLETE:
+	case AIUS_SD_ACTION_FAIL:
+		break;
+	}
+	return action;
+}
+
+void grant_file_authority(AiusSdTeensy *adapter)
+{
+	adapter->file = File(true);
+	adapter->file_open = true;
+}
+
+void prepare_authority(AiusSdTeensy *adapter, AiusSdActionKind kind)
+{
+	if (is_file_action(kind))
+		grant_file_authority(adapter);
+}
+
+void assert_none_event(const AiusSdEvent &event)
+{
+	assert(event.kind == AIUS_SD_EVENT_NONE);
+	assert(event.action_id == 0);
+	assert(event.bytes == 0);
+	assert(event.size == 0);
+	assert(!event.value);
+	assert(event.fault == 0);
+}
+
+void assert_event(const AiusSdEvent &event, AiusSdEventKind kind,
+	              uint64_t action_id, size_t bytes, uint64_t size,
+	              bool value, uint32_t fault)
+{
+	assert(event.kind == kind);
+	assert(event.action_id == action_id);
+	assert(event.bytes == bytes);
+	assert(event.size == size);
+	assert(event.value == value);
+	assert(event.fault == fault);
+}
+
+void assert_protocol_event(const AiusSdEvent &event, uint64_t action_id)
+{
+	assert_event(event, AIUS_SD_EVENT_FAULT, action_id, 0, 0, false,
+	             AIUS_SD_TEENSY_PROTOCOL_FAULT);
+}
+
+void assert_driver_event(const AiusSdEvent &event, uint64_t action_id)
+{
+	assert_event(event, AIUS_SD_EVENT_FAULT, action_id, 0, 0, false,
+	             AIUS_SD_TEENSY_DRIVER_FAULT);
+}
+
+struct CatalogRow {
+	const char *key;
+	AiusSdActionKind kind;
+	bool eligible;
+	Primitive primitive;
+	AiusSdEventKind event;
+};
+
+const CatalogRow kCatalog[] = {
+	{ "none", AIUS_SD_ACTION_NONE, false, PRIMITIVE_COUNT,
+	  AIUS_SD_EVENT_NONE },
+	{ "begin", AIUS_SD_ACTION_BEGIN, true, PRIMITIVE_BEGIN,
+	  AIUS_SD_EVENT_OK },
+	{ "media-present", AIUS_SD_ACTION_MEDIA_PRESENT, true,
+	  PRIMITIVE_MEDIA_PRESENT, AIUS_SD_EVENT_BOOL },
+	{ "mkdir", AIUS_SD_ACTION_MKDIR, true, PRIMITIVE_MKDIR,
+	  AIUS_SD_EVENT_OK },
+	{ "open-read", AIUS_SD_ACTION_OPEN_READ, true, PRIMITIVE_OPEN,
+	  AIUS_SD_EVENT_OK },
+	{ "open-write-begin", AIUS_SD_ACTION_OPEN_WRITE_BEGIN, true,
+	  PRIMITIVE_OPEN, AIUS_SD_EVENT_OK },
+	{ "open-append", AIUS_SD_ACTION_OPEN_APPEND, true, PRIMITIVE_OPEN,
+	  AIUS_SD_EVENT_OK },
+	{ "truncate", AIUS_SD_ACTION_TRUNCATE, true, PRIMITIVE_TRUNCATE,
+	  AIUS_SD_EVENT_OK },
+	{ "seek", AIUS_SD_ACTION_SEEK, true, PRIMITIVE_SEEK,
+	  AIUS_SD_EVENT_OK },
+	{ "need-input", AIUS_SD_ACTION_NEED_INPUT, false, PRIMITIVE_COUNT,
+	  AIUS_SD_EVENT_NONE },
+	{ "read", AIUS_SD_ACTION_READ, true, PRIMITIVE_READ,
+	  AIUS_SD_EVENT_BYTES },
+	{ "write", AIUS_SD_ACTION_WRITE, true, PRIMITIVE_WRITE,
+	  AIUS_SD_EVENT_BYTES },
+	{ "output", AIUS_SD_ACTION_OUTPUT, false, PRIMITIVE_COUNT,
+	  AIUS_SD_EVENT_NONE },
+	{ "file-size", AIUS_SD_ACTION_FILE_SIZE, true, PRIMITIVE_SIZE,
+	  AIUS_SD_EVENT_SIZE },
+	{ "exists", AIUS_SD_ACTION_EXISTS, true, PRIMITIVE_EXISTS,
+	  AIUS_SD_EVENT_BOOL },
+	{ "rename", AIUS_SD_ACTION_RENAME, true, PRIMITIVE_RENAME,
+	  AIUS_SD_EVENT_OK },
+	{ "remove", AIUS_SD_ACTION_REMOVE, true, PRIMITIVE_REMOVE,
+	  AIUS_SD_EVENT_OK },
+	{ "close", AIUS_SD_ACTION_CLOSE, true, PRIMITIVE_CLOSE,
+	  AIUS_SD_EVENT_OK },
+	{ "total-size", AIUS_SD_ACTION_TOTAL_SIZE, true,
+	  PRIMITIVE_TOTAL_SIZE, AIUS_SD_EVENT_SIZE },
+	{ "used-size", AIUS_SD_ACTION_USED_SIZE, true,
+	  PRIMITIVE_USED_SIZE, AIUS_SD_EVENT_SIZE },
+	{ "publish-config", AIUS_SD_ACTION_PUBLISH_CONFIG, false,
+	  PRIMITIVE_COUNT, AIUS_SD_EVENT_NONE },
+	{ "complete", AIUS_SD_ACTION_COMPLETE, false, PRIMITIVE_COUNT,
+	  AIUS_SD_EVENT_NONE },
+	{ "fail", AIUS_SD_ACTION_FAIL, false, PRIMITIVE_COUNT,
+	  AIUS_SD_EVENT_NONE },
+};
+
+void assert_success_event(const CatalogRow &row, const AiusSdEvent &event)
+{
+	if (!row.eligible) {
+		assert_none_event(event);
+		return;
+	}
+	switch (row.event) {
+	case AIUS_SD_EVENT_OK:
+		assert_event(event, row.event, 47, 0, 0, false, 0);
+		break;
+	case AIUS_SD_EVENT_BOOL:
+		assert_event(event, row.event, 47, 0, 0, true, 0);
+		break;
+	case AIUS_SD_EVENT_BYTES:
+		assert_event(event, row.event, 47, 3, 0, false, 0);
+		break;
+	case AIUS_SD_EVENT_SIZE: {
+		uint64_t expected = g_fake.size_result;
+		if (row.kind == AIUS_SD_ACTION_TOTAL_SIZE)
+			expected = g_fake.total_size;
+		else if (row.kind == AIUS_SD_ACTION_USED_SIZE)
+			expected = g_fake.used_size;
+		assert_event(event, row.event, 47, 0, expected, false, 0);
+		break;
+	}
+	case AIUS_SD_EVENT_NONE:
+	case AIUS_SD_EVENT_FAULT:
+		assert(0);
+		break;
+	}
+}
+
+void assert_primitive_payload(AiusSdActionKind kind)
+{
+	switch (kind) {
+	case AIUS_SD_ACTION_BEGIN:
+		assert(g_fake.chip_select == BUILTIN_SDCARD);
+		break;
+	case AIUS_SD_ACTION_MKDIR:
+	case AIUS_SD_ACTION_OPEN_READ:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
+	case AIUS_SD_ACTION_OPEN_APPEND:
+	case AIUS_SD_ACTION_EXISTS:
+	case AIUS_SD_ACTION_REMOVE:
+		assert(g_fake.path == kPath);
+		break;
+	case AIUS_SD_ACTION_TRUNCATE:
+		assert(g_fake.offset == 0);
+		break;
+	case AIUS_SD_ACTION_SEEK:
+		assert(g_fake.offset == 9);
+		break;
+	case AIUS_SD_ACTION_READ:
+		assert(g_fake.mutable_buffer == g_buffer);
+		assert(g_fake.length == 3);
+		break;
+	case AIUS_SD_ACTION_WRITE:
+		assert(g_fake.const_buffer == g_buffer);
+		assert(g_fake.length == 3);
+		break;
+	case AIUS_SD_ACTION_RENAME:
+		assert(g_fake.path == kPath);
+		assert(g_fake.path_to == kPathTo);
+		break;
+	case AIUS_SD_ACTION_MEDIA_PRESENT:
+	case AIUS_SD_ACTION_FILE_SIZE:
+	case AIUS_SD_ACTION_CLOSE:
+	case AIUS_SD_ACTION_TOTAL_SIZE:
+	case AIUS_SD_ACTION_USED_SIZE:
+		break;
+	case AIUS_SD_ACTION_NONE:
+	case AIUS_SD_ACTION_NEED_INPUT:
+	case AIUS_SD_ACTION_OUTPUT:
+	case AIUS_SD_ACTION_PUBLISH_CONFIG:
+	case AIUS_SD_ACTION_COMPLETE:
+	case AIUS_SD_ACTION_FAIL:
+		assert(0);
+		break;
+	}
+	if (kind == AIUS_SD_ACTION_OPEN_READ)
+		assert(g_fake.open_mode == FILE_READ);
+	else if (kind == AIUS_SD_ACTION_OPEN_WRITE_BEGIN)
+		assert(g_fake.open_mode == FILE_WRITE_BEGIN);
+	else if (kind == AIUS_SD_ACTION_OPEN_APPEND)
+		assert(g_fake.open_mode == FILE_WRITE);
+}
+
+void test_init_and_fixed_catalog()
+{
+	assert(sizeof(kCatalog) / sizeof(kCatalog[0]) == 23);
+	size_t eligible = 0;
+	size_t inert = 0;
+	for (size_t i = 0; i < sizeof(kCatalog) / sizeof(kCatalog[0]); ++i) {
+		assert((unsigned)kCatalog[i].kind == i);
+		assert(kCatalog[i].key[0] != '\0');
+		for (size_t j = 0; j < i; ++j)
+			assert(strcmp(kCatalog[i].key, kCatalog[j].key) != 0);
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		prepare_authority(&adapter, kCatalog[i].kind);
+		AiusSdAction action = make_action(kCatalog[i].kind);
+		AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+		assert_success_event(kCatalog[i], event);
+		if (kCatalog[i].eligible) {
+			assert(g_fake.call_count == 1);
+			assert(g_fake.calls[0] == kCatalog[i].primitive);
+			assert(g_fake.clock_calls == 2);
+			assert(adapter.last_duration_us == 7);
+			assert(adapter.longest_duration_us == 7);
+			assert(adapter.last_fault == 0);
+			assert_primitive_payload(kCatalog[i].kind);
+			eligible++;
+		} else {
+			assert(g_fake.call_count == 0);
+			assert(g_fake.clock_calls == 0);
+			assert(adapter.last_duration_us == 0);
+			assert(adapter.longest_duration_us == 0);
+			assert(adapter.protocol_faults == 0);
+			inert++;
+		}
+		if (kCatalog[i].kind == AIUS_SD_ACTION_OPEN_READ ||
+		    kCatalog[i].kind == AIUS_SD_ACTION_OPEN_WRITE_BEGIN ||
+		    kCatalog[i].kind == AIUS_SD_ACTION_OPEN_APPEND)
+			assert(adapter.file_open);
+		else if (kCatalog[i].kind == AIUS_SD_ACTION_CLOSE)
+			assert(!adapter.file_open);
+	}
+	assert(eligible == 17);
+	assert(inert == 6);
+}
+
+void configure_failure(AiusSdActionKind kind)
+{
+	switch (kind) {
+	case AIUS_SD_ACTION_BEGIN:
+	case AIUS_SD_ACTION_MKDIR:
+	case AIUS_SD_ACTION_TRUNCATE:
+	case AIUS_SD_ACTION_SEEK:
+	case AIUS_SD_ACTION_RENAME:
+	case AIUS_SD_ACTION_REMOVE:
+		g_fake.succeeds[
+			kind == AIUS_SD_ACTION_BEGIN ? PRIMITIVE_BEGIN :
+			kind == AIUS_SD_ACTION_MKDIR ? PRIMITIVE_MKDIR :
+			kind == AIUS_SD_ACTION_TRUNCATE ? PRIMITIVE_TRUNCATE :
+			kind == AIUS_SD_ACTION_SEEK ? PRIMITIVE_SEEK :
+			kind == AIUS_SD_ACTION_RENAME ? PRIMITIVE_RENAME :
+			PRIMITIVE_REMOVE] = false;
+		break;
+	case AIUS_SD_ACTION_OPEN_READ:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
+	case AIUS_SD_ACTION_OPEN_APPEND:
+		g_fake.open_valid = false;
+		break;
+	case AIUS_SD_ACTION_READ:
+		g_fake.read_result = 4;
+		break;
+	case AIUS_SD_ACTION_WRITE:
+		g_fake.write_result = 4;
+		break;
+	default:
+		assert(0);
+	}
+}
+
+void test_storage_failures_and_authority()
+{
+	static const AiusSdActionKind fallible[] = {
+		AIUS_SD_ACTION_BEGIN,
+		AIUS_SD_ACTION_MKDIR,
+		AIUS_SD_ACTION_OPEN_READ,
+		AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
+		AIUS_SD_ACTION_OPEN_APPEND,
+		AIUS_SD_ACTION_TRUNCATE,
+		AIUS_SD_ACTION_SEEK,
+		AIUS_SD_ACTION_READ,
+		AIUS_SD_ACTION_WRITE,
+		AIUS_SD_ACTION_RENAME,
+		AIUS_SD_ACTION_REMOVE,
+	};
+	for (size_t i = 0; i < sizeof(fallible) / sizeof(fallible[0]); ++i) {
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		prepare_authority(&adapter, fallible[i]);
+		bool had_authority = adapter.file_open;
+		configure_failure(fallible[i]);
+		AiusSdAction action = make_action(fallible[i]);
+		AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+		assert_driver_event(event, 47);
+		assert(adapter.last_fault == AIUS_SD_TEENSY_DRIVER_FAULT);
+		assert(adapter.protocol_faults == 0);
+		assert(adapter.last_duration_us == 7);
+		assert(adapter.longest_duration_us == 7);
+		assert(g_fake.call_count == 1);
+		assert(g_fake.clock_calls == 2);
+		if (fallible[i] == AIUS_SD_ACTION_OPEN_READ ||
+		    fallible[i] == AIUS_SD_ACTION_OPEN_WRITE_BEGIN ||
+		    fallible[i] == AIUS_SD_ACTION_OPEN_APPEND)
+			assert(!adapter.file_open);
+		else
+			assert(adapter.file_open == had_authority);
+	}
+}
+
+void test_read_write_result_boundaries()
+{
+	static const AiusSdActionKind kinds[] = {
+		AIUS_SD_ACTION_READ, AIUS_SD_ACTION_WRITE
+	};
+	static const size_t results[] = { 0, 3, 4, SIZE_MAX };
+	for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
+		for (size_t j = 0; j < sizeof(results) / sizeof(results[0]); ++j) {
+			reset_fake();
+			AiusSdTeensy adapter;
+			reset_adapter(&adapter);
+			grant_file_authority(&adapter);
+			if (kinds[i] == AIUS_SD_ACTION_READ)
+				g_fake.read_result = results[j];
+			else
+				g_fake.write_result = results[j];
+			AiusSdAction action = make_action(kinds[i]);
+			AiusSdEvent event =
+				aius_sd_teensy_execute(&adapter, &action);
+			if (results[j] <= action.length)
+				assert_event(event, AIUS_SD_EVENT_BYTES, 47,
+				             results[j], 0, false, 0);
+			else
+				assert_driver_event(event, 47);
+			assert(adapter.file_open);
+			assert(g_fake.call_count == 1);
+			assert(g_fake.clock_calls == 2);
+		}
+	}
+}
+
+void test_boolean_and_integer_boundaries()
+{
+	static const AiusSdActionKind boolean_kinds[] = {
+		AIUS_SD_ACTION_MEDIA_PRESENT, AIUS_SD_ACTION_EXISTS
+	};
+	for (size_t i = 0;
+	     i < sizeof(boolean_kinds) / sizeof(boolean_kinds[0]); ++i) {
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		g_fake.media_present = false;
+		g_fake.exists = false;
+		AiusSdAction action = make_action(boolean_kinds[i]);
+		action.action_id = UINT64_MAX;
+		AiusSdEvent event =
+			aius_sd_teensy_execute(&adapter, &action);
+		assert_event(event, AIUS_SD_EVENT_BOOL, UINT64_MAX,
+		             0, 0, false, 0);
+		assert(g_fake.call_count == 1);
+		assert(g_fake.clock_calls == 2);
+		assert(adapter.last_fault == 0);
+	}
+
+	static const AiusSdActionKind offset_kinds[] = {
+		AIUS_SD_ACTION_SEEK,
+		AIUS_SD_ACTION_READ,
+		AIUS_SD_ACTION_WRITE,
+	};
+	for (size_t i = 0;
+	     i < sizeof(offset_kinds) / sizeof(offset_kinds[0]); ++i) {
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		grant_file_authority(&adapter);
+		AiusSdAction action = make_action(offset_kinds[i]);
+		action.offset = (uint64_t)INT64_MAX;
+		AiusSdEvent event =
+			aius_sd_teensy_execute(&adapter, &action);
+		if (offset_kinds[i] == AIUS_SD_ACTION_SEEK)
+			assert_event(event, AIUS_SD_EVENT_OK, 47,
+			             0, 0, false, 0);
+		else
+			assert_event(event, AIUS_SD_EVENT_BYTES, 47,
+			             3, 0, false, 0);
+		if (offset_kinds[i] == AIUS_SD_ACTION_SEEK)
+			assert(g_fake.offset == (uint64_t)INT64_MAX);
+		assert(g_fake.call_count == 1);
+		assert(g_fake.clock_calls == 2);
+	}
+}
+
+enum ActionField {
+	FIELD_PATH,
+	FIELD_PATH_TO,
+	FIELD_BUFFER,
+	FIELD_LENGTH,
+	FIELD_OFFSET,
+	FIELD_FAULT,
+	FIELD_COUNT
+};
+
+#define FIELD_BIT(field) (UINT32_C(1) << (field))
+
+uint32_t named_fields(AiusSdActionKind kind)
+{
+	switch (kind) {
+	case AIUS_SD_ACTION_MKDIR:
+	case AIUS_SD_ACTION_OPEN_READ:
+	case AIUS_SD_ACTION_OPEN_WRITE_BEGIN:
+	case AIUS_SD_ACTION_OPEN_APPEND:
+	case AIUS_SD_ACTION_EXISTS:
+	case AIUS_SD_ACTION_REMOVE:
+		return FIELD_BIT(FIELD_PATH);
+	case AIUS_SD_ACTION_TRUNCATE:
+	case AIUS_SD_ACTION_SEEK:
+		return FIELD_BIT(FIELD_OFFSET);
+	case AIUS_SD_ACTION_READ:
+	case AIUS_SD_ACTION_WRITE:
+		return FIELD_BIT(FIELD_BUFFER) |
+		       FIELD_BIT(FIELD_LENGTH) |
+		       FIELD_BIT(FIELD_OFFSET);
+	case AIUS_SD_ACTION_RENAME:
+		return FIELD_BIT(FIELD_PATH) | FIELD_BIT(FIELD_PATH_TO);
+	default:
+		return 0;
+	}
+}
+
+void mutate_field(AiusSdAction *action, ActionField field)
+{
+	switch (field) {
+	case FIELD_PATH: action->path = kPath; break;
+	case FIELD_PATH_TO: action->path_to = kPathTo; break;
+	case FIELD_BUFFER: action->buffer = g_buffer; break;
+	case FIELD_LENGTH: action->length = 1; break;
+	case FIELD_OFFSET: action->offset = 1; break;
+	case FIELD_FAULT: action->fault = 1; break;
+	case FIELD_COUNT: assert(0); break;
+	}
+}
+
+void expect_protocol_rejection(AiusSdAction action, bool with_authority)
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	if (with_authority)
+		grant_file_authority(&adapter);
+	adapter.longest_duration_us = 91;
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+	assert_protocol_event(event, action.action_id);
+	assert(adapter.protocol_faults == 1);
+	assert(adapter.last_fault == AIUS_SD_TEENSY_PROTOCOL_FAULT);
+	assert(adapter.last_duration_us == 0);
+	assert(adapter.longest_duration_us == 91);
+	assert(g_fake.call_count == 0);
+	assert(g_fake.clock_calls == 0);
+}
+
+void test_exact_payload_validation()
+{
+	size_t unnamed_trials = 0;
+	size_t id_trials = 0;
+	for (size_t i = 0; i < sizeof(kCatalog) / sizeof(kCatalog[0]); ++i) {
+		if (!kCatalog[i].eligible)
+			continue;
+		AiusSdAction base = make_action(kCatalog[i].kind);
+		for (unsigned field = 0; field < FIELD_COUNT; ++field) {
+			if ((named_fields(base.kind) & FIELD_BIT(field)) != 0)
+				continue;
+			AiusSdAction malformed = base;
+			mutate_field(&malformed, (ActionField)field);
+			expect_protocol_rejection(
+				malformed, is_file_action(malformed.kind));
+			unnamed_trials++;
+		}
+		base.action_id = 0;
+		expect_protocol_rejection(base, is_file_action(base.kind));
+		id_trials++;
+	}
+	assert(id_trials == 17);
+	assert(unnamed_trials == 86);
+
+	static const AiusSdActionKind path_actions[] = {
+		AIUS_SD_ACTION_MKDIR,
+		AIUS_SD_ACTION_OPEN_READ,
+		AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
+		AIUS_SD_ACTION_OPEN_APPEND,
+		AIUS_SD_ACTION_EXISTS,
+		AIUS_SD_ACTION_RENAME,
+		AIUS_SD_ACTION_REMOVE,
+	};
+	for (size_t i = 0; i < sizeof(path_actions) / sizeof(path_actions[0]); ++i) {
+		AiusSdAction malformed = make_action(path_actions[i]);
+		malformed.path = nullptr;
+		expect_protocol_rejection(malformed, false);
+	}
+	AiusSdAction rename = make_action(AIUS_SD_ACTION_RENAME);
+	rename.path_to = nullptr;
+	expect_protocol_rejection(rename, false);
+
+	static const AiusSdActionKind transfer[] = {
+		AIUS_SD_ACTION_READ, AIUS_SD_ACTION_WRITE
+	};
+	for (size_t i = 0; i < sizeof(transfer) / sizeof(transfer[0]); ++i) {
+		AiusSdAction malformed = make_action(transfer[i]);
+		malformed.buffer = nullptr;
+		expect_protocol_rejection(malformed, true);
+		malformed = make_action(transfer[i]);
+		malformed.length = 0;
+		expect_protocol_rejection(malformed, true);
+		malformed = make_action(transfer[i]);
+		malformed.length = SIZE_MAX;
+		expect_protocol_rejection(malformed, true);
+		malformed = make_action(transfer[i]);
+		malformed.offset = (uint64_t)INT64_MAX + UINT64_C(1);
+		expect_protocol_rejection(malformed, true);
+	}
+	AiusSdAction truncate = make_action(AIUS_SD_ACTION_TRUNCATE);
+	truncate.offset = 1;
+	expect_protocol_rejection(truncate, true);
+	AiusSdAction seek = make_action(AIUS_SD_ACTION_SEEK);
+	seek.offset = (uint64_t)INT64_MAX + UINT64_C(1);
+	expect_protocol_rejection(seek, true);
+
+	static const AiusSdActionKind opens[] = {
+		AIUS_SD_ACTION_BEGIN,
+		AIUS_SD_ACTION_OPEN_READ,
+		AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
+		AIUS_SD_ACTION_OPEN_APPEND,
+	};
+	for (size_t i = 0; i < sizeof(opens) / sizeof(opens[0]); ++i)
+		expect_protocol_rejection(make_action(opens[i]), true);
+	static const AiusSdActionKind file_actions[] = {
+		AIUS_SD_ACTION_TRUNCATE,
+		AIUS_SD_ACTION_SEEK,
+		AIUS_SD_ACTION_READ,
+		AIUS_SD_ACTION_WRITE,
+		AIUS_SD_ACTION_FILE_SIZE,
+		AIUS_SD_ACTION_CLOSE,
+	};
+	for (size_t i = 0;
+	     i < sizeof(file_actions) / sizeof(file_actions[0]); ++i)
+		expect_protocol_rejection(make_action(file_actions[i]), false);
+}
+
+void test_inert_null_unknown_and_duplicate()
+{
+	for (size_t i = 0; i < sizeof(kCatalog) / sizeof(kCatalog[0]); ++i) {
+		if (kCatalog[i].eligible)
+			continue;
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		adapter.longest_duration_us = 33;
+		AiusSdAction action = make_action(kCatalog[i].kind);
+		action.action_id = 99;
+		action.path = kPath;
+		action.path_to = kPathTo;
+		action.buffer = g_buffer;
+		action.length = 3;
+		action.offset = 4;
+		action.fault = 5;
+		AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+		assert_none_event(event);
+		assert(adapter.protocol_faults == 0);
+		assert(adapter.last_duration_us == 0);
+		assert(adapter.longest_duration_us == 33);
+		assert(g_fake.call_count == 0);
+		assert(g_fake.clock_calls == 0);
+	}
+
+	reset_fake();
+	AiusSdAction valid = make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+	assert_none_event(aius_sd_teensy_execute(nullptr, &valid));
+	assert(g_fake.call_count == 0);
+	assert(g_fake.clock_calls == 0);
+
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	adapter.last_duration_us = 8;
+	adapter.longest_duration_us = 9;
+	assert_none_event(aius_sd_teensy_execute(&adapter, nullptr));
+	assert(adapter.last_duration_us == 0);
+	assert(adapter.longest_duration_us == 9);
+	assert(g_fake.call_count == 0);
+	assert(g_fake.clock_calls == 0);
+
+	AiusSdAction unknown = {};
+	unknown.kind = (AiusSdActionKind)23;
+	unknown.action_id = 71;
+	expect_protocol_rejection(unknown, false);
+
+	reset_fake();
+	reset_adapter(&adapter);
+	AiusSdAction duplicate = make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+	duplicate.action_id = UINT64_C(0x1122334455667788);
+	AiusSdEvent first = aius_sd_teensy_execute(&adapter, &duplicate);
+	AiusSdEvent second = aius_sd_teensy_execute(&adapter, &duplicate);
+	assert_event(first, AIUS_SD_EVENT_BOOL, duplicate.action_id,
+	             0, 0, true, 0);
+	assert_event(second, AIUS_SD_EVENT_BOOL, duplicate.action_id,
+	             0, 0, true, 0);
+	assert(g_fake.call_count == 2);
+	assert(g_fake.clock_calls == 4);
+}
+
+void test_durations_and_counter_saturation()
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	AiusSdAction action = make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+	g_fake.clocks[0] = 45;
+	g_fake.clocks[1] = 45;
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+	assert_event(event, AIUS_SD_EVENT_BOOL, 47, 0, 0, true, 0);
+	assert(adapter.last_duration_us == 0);
+	assert(adapter.longest_duration_us == 0);
+
+	reset_fake();
+	reset_adapter(&adapter);
+	g_fake.clocks[0] = UINT32_MAX - 2u;
+	g_fake.clocks[1] = 2;
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert_event(event, AIUS_SD_EVENT_BOOL, 47, 0, 0, true, 0);
+	assert(adapter.last_duration_us == 5);
+	assert(adapter.longest_duration_us == 5);
+
+	reset_fake();
+	reset_adapter(&adapter);
+	adapter.protocol_faults = UINT32_MAX;
+	adapter.longest_duration_us = 17;
+	action.action_id = 0;
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert_protocol_event(event, 0);
+	assert(adapter.protocol_faults == UINT32_MAX);
+	assert(adapter.last_duration_us == 0);
+	assert(adapter.longest_duration_us == 17);
+}
+
+} // namespace
+
+SDClass SD;
+
+File::File() : valid_(false) {}
+
+File::File(bool valid) : valid_(valid) {}
+
+File::operator bool() const
+{
+	return valid_;
+}
+
+bool File::truncate(uint64_t size)
+{
+	record(PRIMITIVE_TRUNCATE);
+	g_fake.offset = size;
+	return g_fake.succeeds[PRIMITIVE_TRUNCATE];
+}
+
+bool File::seek(uint64_t position)
+{
+	record(PRIMITIVE_SEEK);
+	g_fake.offset = position;
+	return g_fake.succeeds[PRIMITIVE_SEEK];
+}
+
+size_t File::read(uint8_t *buffer, size_t length)
+{
+	record(PRIMITIVE_READ);
+	g_fake.mutable_buffer = buffer;
+	g_fake.length = length;
+	return g_fake.read_result;
+}
+
+size_t File::write(const uint8_t *buffer, size_t length)
+{
+	record(PRIMITIVE_WRITE);
+	g_fake.const_buffer = buffer;
+	g_fake.length = length;
+	return g_fake.write_result;
+}
+
+uint64_t File::size()
+{
+	record(PRIMITIVE_SIZE);
+	return g_fake.size_result;
+}
+
+void File::close()
+{
+	record(PRIMITIVE_CLOSE);
+	valid_ = false;
+}
+
+bool SDClass::begin(uint8_t chip_select)
+{
+	record(PRIMITIVE_BEGIN);
+	g_fake.chip_select = chip_select;
+	return g_fake.succeeds[PRIMITIVE_BEGIN];
+}
+
+bool SDClass::mediaPresent()
+{
+	record(PRIMITIVE_MEDIA_PRESENT);
+	return g_fake.media_present;
+}
+
+bool SDClass::mkdir(const char *path)
+{
+	record(PRIMITIVE_MKDIR);
+	g_fake.path = path;
+	return g_fake.succeeds[PRIMITIVE_MKDIR];
+}
+
+File SDClass::open(const char *path, uint8_t mode)
+{
+	record(PRIMITIVE_OPEN);
+	g_fake.path = path;
+	g_fake.open_mode = mode;
+	return File(g_fake.open_valid);
+}
+
+bool SDClass::exists(const char *path)
+{
+	record(PRIMITIVE_EXISTS);
+	g_fake.path = path;
+	return g_fake.exists;
+}
+
+bool SDClass::rename(const char *path, const char *path_to)
+{
+	record(PRIMITIVE_RENAME);
+	g_fake.path = path;
+	g_fake.path_to = path_to;
+	return g_fake.succeeds[PRIMITIVE_RENAME];
+}
+
+bool SDClass::remove(const char *path)
+{
+	record(PRIMITIVE_REMOVE);
+	g_fake.path = path;
+	return g_fake.succeeds[PRIMITIVE_REMOVE];
+}
+
+uint64_t SDClass::totalSize()
+{
+	record(PRIMITIVE_TOTAL_SIZE);
+	return g_fake.total_size;
+}
+
+uint64_t SDClass::usedSize()
+{
+	record(PRIMITIVE_USED_SIZE);
+	return g_fake.used_size;
+}
+
+uint32_t micros()
+{
+	size_t index = g_fake.clock_calls++;
+	assert(index < 4);
+	return g_fake.clocks[index % 2];
+}
+
+int main()
+{
+	test_init_and_fixed_catalog();
+	test_storage_failures_and_authority();
+	test_read_write_result_boundaries();
+	test_boolean_and_integer_boundaries();
+	test_exact_payload_validation();
+	test_inert_null_unknown_and_duplicate();
+	test_durations_and_counter_saturation();
+	return 0;
+}

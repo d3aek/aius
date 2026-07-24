@@ -147,6 +147,9 @@ static bool sd_request_fields_valid(const AiusSdJobRequest *request)
 	    (unsigned)request->install_mode >
 		    (unsigned)AIUS_SD_INSTALL_FINALIZE_PART)
 		return false;
+	if (request->kind != AIUS_SD_JOB_DELETE &&
+	    request->require_existing)
+		return false;
 	if (request->total > (uint64_t)INT64_MAX ||
 	    request->initial_offset > (uint64_t)INT64_MAX ||
 	    request->total >
@@ -261,7 +264,7 @@ static bool zero_sd_request(const AiusSdJobRequest *request)
 	       request->target_path == NULL && request->temp_path == NULL &&
 	       request->backup_path == NULL && request->content_type == NULL &&
 	       request->total == 0u && request->initial_offset == 0u &&
-	       !request->publish_config;
+	       !request->publish_config && !request->require_existing;
 }
 
 static bool event_common_zero(const AiusHttpEvent *event)
@@ -367,12 +370,12 @@ static bool sd_payload_shape_valid(const AiusHttpEvent *event)
 		       event->sd_length == 0u && event->sd_size == 0u &&
 		       event->sd_fault != AIUS_SD_FAULT_NONE &&
 		       (unsigned)event->sd_fault <=
-			       (unsigned)AIUS_SD_FAULT_RANGE;
+			       (unsigned)AIUS_SD_FAULT_NOT_FOUND;
 	case AIUS_HTTP_SD_CANCELLED:
 		return event->sd_data == NULL && event->sd_capacity == 0u &&
 		       event->sd_length == 0u && event->sd_size == 0u &&
 		       (unsigned)event->sd_fault <=
-			       (unsigned)AIUS_SD_FAULT_RANGE &&
+			       (unsigned)AIUS_SD_FAULT_NOT_FOUND &&
 		       (event->sd_fault != AIUS_SD_FAULT_NONE ||
 		        event->sd_driver_fault == 0u);
 	default:
@@ -826,8 +829,9 @@ static void select_sd_error(AiusHttpTransaction *transaction,
 	record_fault(transaction, AIUS_HTTP_FAULT_SD);
 	transaction->last_sd_fault = fault;
 	transaction->last_driver_fault = driver_fault;
-	if (fault == AIUS_SD_FAULT_OPEN &&
-	    transaction->sd_request.kind == AIUS_SD_JOB_DOWNLOAD) {
+	if (fault == AIUS_SD_FAULT_NOT_FOUND ||
+	    (fault == AIUS_SD_FAULT_OPEN &&
+	     transaction->sd_request.kind == AIUS_SD_JOB_DOWNLOAD)) {
 		status = 404u;
 		body = sd_not_found_body;
 		size = sizeof(sd_not_found_body);

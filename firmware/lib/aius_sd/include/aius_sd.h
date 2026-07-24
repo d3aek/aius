@@ -58,11 +58,13 @@ typedef enum {
 	AIUS_SD_PHASE_CONFIG_PUBLISH,
 	AIUS_SD_PHASE_USAGE_TOTAL,
 	AIUS_SD_PHASE_USAGE_USED,
+	AIUS_SD_PHASE_PATH_EXISTS,
 	AIUS_SD_PHASE_MKDIR,
 	AIUS_SD_PHASE_PART_SIZE_OPEN,
 	AIUS_SD_PHASE_PART_SIZE,
 	AIUS_SD_PHASE_PART_SIZE_CLOSE,
 	AIUS_SD_PHASE_UPLOAD_OPEN,
+	AIUS_SD_PHASE_UPLOAD_TRUNCATE,
 	AIUS_SD_PHASE_UPLOAD_INPUT,
 	AIUS_SD_PHASE_UPLOAD_WRITE,
 	AIUS_SD_PHASE_UPLOAD_CLOSE,
@@ -76,7 +78,6 @@ typedef enum {
 	AIUS_SD_PHASE_DOWNLOAD_OUTPUT,
 	AIUS_SD_PHASE_DOWNLOAD_CLOSE,
 	AIUS_SD_PHASE_DELETE_REMOVE,
-	AIUS_SD_PHASE_INSTALL_EXISTS,
 	AIUS_SD_PHASE_INSTALL_REMOVE_OLD_BACKUP,
 	AIUS_SD_PHASE_INSTALL_BACKUP,
 	AIUS_SD_PHASE_INSTALL_RENAME,
@@ -91,6 +92,16 @@ typedef enum {
 	AIUS_SD_PHASE_CLEANUP_TEMP,
 	AIUS_SD_PHASE_TERMINAL
 } AiusSdPhase;
+
+typedef enum {
+	AIUS_SD_EXISTS_NONE,
+	AIUS_SD_EXISTS_MKDIR,
+	AIUS_SD_EXISTS_DELETE,
+	AIUS_SD_EXISTS_INSTALL_TARGET,
+	AIUS_SD_EXISTS_REMOVE_OLD_BACKUP,
+	AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP,
+	AIUS_SD_EXISTS_CLEANUP_TEMP
+} AiusSdExistencePurpose;
 
 typedef enum {
 	AIUS_SD_EVENT_NONE,
@@ -116,8 +127,9 @@ typedef enum {
 	AIUS_SD_ACTION_MEDIA_PRESENT,
 	AIUS_SD_ACTION_MKDIR,
 	AIUS_SD_ACTION_OPEN_READ,
-	AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE,
+	AIUS_SD_ACTION_OPEN_WRITE_BEGIN,
 	AIUS_SD_ACTION_OPEN_APPEND,
+	AIUS_SD_ACTION_TRUNCATE,
 	AIUS_SD_ACTION_SEEK,
 	AIUS_SD_ACTION_NEED_INPUT,
 	AIUS_SD_ACTION_READ,
@@ -156,6 +168,7 @@ typedef struct {
 	uint64_t total;
 	uint64_t initial_offset;
 	bool publish_config;
+	bool require_existing;
 } AiusSdJobRequest;
 
 typedef enum {
@@ -185,7 +198,8 @@ typedef enum {
 	AIUS_SD_FAULT_PUBLISH = 14,
 	AIUS_SD_FAULT_CANCELLED = 15,
 	AIUS_SD_FAULT_CLEANUP = 16,
-	AIUS_SD_FAULT_RANGE = 17
+	AIUS_SD_FAULT_RANGE = 17,
+	AIUS_SD_FAULT_NOT_FOUND = 18
 } AiusSdFault;
 
 typedef struct {
@@ -203,6 +217,7 @@ typedef struct {
 	AiusSdPhase phase;
 	AiusSdJobKind kind;
 	AiusSdInstallMode install_mode;
+	AiusSdExistencePurpose existence_purpose;
 	char target_path[AIUS_SD_PATH_STORAGE];
 	char temp_path[AIUS_SD_PATH_STORAGE];
 	char backup_path[AIUS_SD_PATH_STORAGE];
@@ -234,6 +249,7 @@ typedef struct {
 	bool installed;
 	bool file_open;
 	bool publish_config;
+	bool require_existing;
 	bool close_emitted;
 	bool cancel_requested;
 	bool abort_requested;

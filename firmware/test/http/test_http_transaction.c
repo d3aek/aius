@@ -294,6 +294,7 @@ static AiusHttpApplicationResponse sd_job(AiusSdJobKind kind,
 }
 
 static AiusHttpAction start_upload_read(Fixture *fixture);
+static AiusHttpAction start_other_advance(Fixture *fixture);
 
 static AiusHttpAction finish_all_writes(Fixture *fixture, AiusHttpAction action)
 {
@@ -558,7 +559,7 @@ static void test_protocol_payload_validation(void)
 static void test_application_validation_and_overflow(void)
 {
 	static const uint8_t body[] = "{}";
-	for (unsigned invalid = 0; invalid < 5; ++invalid) {
+	for (unsigned invalid = 0; invalid < 6; ++invalid) {
 		Fixture fixture;
 		init_fixture(&fixture);
 		AiusHttpAction action =
@@ -575,6 +576,7 @@ static void test_application_validation_and_overflow(void)
 			response.sd_job.kind = AIUS_SD_JOB_REPLAY_REFILL;
 			response.sd_job.target_path = "/x";
 			break;
+		case 5: response.sd_job.require_existing = true; break;
 		}
 		action = call_step(&fixture, 0, application_result(&action, &response));
 		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
@@ -888,6 +890,93 @@ static void test_control_job_application_validation(void)
 	}
 	assert(INVALID_CONTROL_FIELD_COUNT == 8);
 	assert(invalid_trials == 32);
+}
+
+static void test_require_existing_application_validation(void)
+{
+	struct NonDeleteCase {
+		AiusSdJobKind kind;
+		AiusSdInstallMode mode;
+	};
+	static const struct NonDeleteCase non_delete[] = {
+		{ AIUS_SD_JOB_PROBE, AIUS_SD_INSTALL_REPLACE },
+		{ AIUS_SD_JOB_CONFIG_LOAD, AIUS_SD_INSTALL_REPLACE },
+		{ AIUS_SD_JOB_USAGE_REFRESH, AIUS_SD_INSTALL_REPLACE },
+		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_REPLACE },
+		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_APPEND_PART },
+		{ AIUS_SD_JOB_UPLOAD, AIUS_SD_INSTALL_FINALIZE_PART },
+		{ AIUS_SD_JOB_DOWNLOAD, AIUS_SD_INSTALL_REPLACE },
+		{ AIUS_SD_JOB_REPLAY_REFILL, AIUS_SD_INSTALL_REPLACE },
+	};
+	static const uint8_t body[] = "{}";
+	size_t rejection_trials = 0;
+	for (size_t i = 0; i < ARRAY_LENGTH(non_delete); ++i) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch;
+		AiusHttpApplicationResponse response;
+		if (non_delete[i].kind == AIUS_SD_JOB_UPLOAD) {
+			dispatch = dispatch_upload_length(&fixture, 1);
+			response = upload_application(
+				non_delete[i].mode, 1,
+				non_delete[i].mode == AIUS_SD_INSTALL_REPLACE
+					? 0
+					: 7,
+				false);
+		} else if (non_delete[i].kind == AIUS_SD_JOB_DOWNLOAD) {
+			dispatch =
+				feed_request(&fixture,
+				             "GET /sd/x HTTP/1.0\r\n\r\n");
+			response = sd_job(
+				AIUS_SD_JOB_DOWNLOAD, 200,
+				"application/octet-stream", NULL, 0, 0);
+		} else if (non_delete[i].kind ==
+		           AIUS_SD_JOB_REPLAY_REFILL) {
+			dispatch =
+				feed_request(&fixture,
+				             "GET /api/status HTTP/1.0\r\n\r\n");
+			response = sd_job(
+				AIUS_SD_JOB_REPLAY_REFILL, 200,
+				"application/json", body, sizeof(body) - 1u, 1);
+		} else {
+			dispatch =
+				feed_request(&fixture,
+				             "GET /api/status HTTP/1.0\r\n\r\n");
+			response = control_application(non_delete[i].kind);
+		}
+		response.sd_job.require_existing = true;
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_fault ==
+		       AIUS_HTTP_FAULT_PROTOCOL);
+		assert(fixture.transaction.last_status == 400);
+		assert(!fixture.transaction.sd_started);
+		rejection_trials++;
+	}
+	assert(rejection_trials == 8);
+
+	size_t delete_trials = 0;
+	for (unsigned require_existing = 0;
+	     require_existing < 2; ++require_existing) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch =
+			feed_request(&fixture,
+			             "DELETE /sd/x HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			control_application(AIUS_SD_JOB_DELETE);
+		response.sd_job.require_existing = require_existing != 0;
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_SD_START);
+		assert(action.sd_request->kind == AIUS_SD_JOB_DELETE);
+		assert(action.sd_request->require_existing ==
+		       (require_existing != 0));
+		assert(strcmp(action.sd_request->target_path, "/delete") == 0);
+		delete_trials++;
+	}
+	assert(delete_trials == 2);
 }
 
 static void test_request_capacity_and_strict_dispatch(void)
@@ -1277,12 +1366,15 @@ static void test_sd_failure_mapping(void)
 	static const struct Mapping mappings[] = {
 		{ AIUS_SD_FAULT_OPEN, 404, "sd_not_found", true },
 		{ AIUS_SD_FAULT_OPEN, 500, "sd_failure", false },
+		{ AIUS_SD_FAULT_NOT_FOUND, 404, "sd_not_found", false },
+		{ AIUS_SD_FAULT_NOT_FOUND, 404, "sd_not_found", true },
 		{ AIUS_SD_FAULT_RANGE, 416, "sd_range", true },
 		{ AIUS_SD_FAULT_MEDIA, 503, "sd_unavailable", true },
 		{ AIUS_SD_FAULT_CAPACITY, 507, "sd_capacity", true },
 		{ AIUS_SD_FAULT_OVERFLOW, 507, "sd_capacity", true },
 		{ AIUS_SD_FAULT_IO, 500, "sd_failure", true },
 	};
+	assert(AIUS_SD_FAULT_NOT_FOUND == 18);
 	for (size_t i = 0; i < ARRAY_LENGTH(mappings); ++i) {
 		Fixture fixture;
 		init_fixture(&fixture);
@@ -1297,6 +1389,8 @@ static void test_sd_failure_mapping(void)
 			static const uint8_t ok[] = "{}";
 			response = sd_job(AIUS_SD_JOB_DELETE, 204,
 			                  "application/json", ok, sizeof(ok) - 1u, 0);
+			if (mappings[i].fault == AIUS_SD_FAULT_NOT_FOUND)
+				response.sd_job.require_existing = true;
 		}
 		action = call_step(&fixture, 0, application_result(&action, &response));
 		AiusHttpEvent failed = sd_result(&action, AIUS_HTTP_SD_FAILED);
@@ -1309,9 +1403,38 @@ static void test_sd_failure_mapping(void)
 		assert(fixture.transaction.last_driver_fault == 7);
 		assert(fixture.transaction.last_status == mappings[i].status);
 		assert(contains_bytes(action.data, action.length, mappings[i].body));
+		if (mappings[i].fault == AIUS_SD_FAULT_NOT_FOUND) {
+			static const uint8_t not_found_body[] =
+				"{\"ok\":false,\"error\":\"sd_not_found\"}";
+			uint8_t expected[256];
+			size_t expected_length = aius_http_write_response(
+				expected, sizeof(expected), 404,
+				"application/json", not_found_body,
+				sizeof(not_found_body) - 1u);
+			assert(expected_length > 0);
+			assert(fixture.transaction.response_length ==
+			       expected_length);
+			assert(memcmp(fixture.response, expected,
+			              expected_length) == 0);
+		}
 		action = finish_all_writes(&fixture, action);
 		finish_close(&fixture, action);
 	}
+
+	Fixture fixture;
+	init_fixture(&fixture);
+	AiusHttpAction action = start_other_advance(&fixture);
+	uint64_t retained_action_id = action.action_id;
+	AiusHttpEvent invalid = sd_result(&action, AIUS_HTTP_SD_FAILED);
+	invalid.sd_fault = (AiusSdFault)(AIUS_SD_FAULT_NOT_FOUND + 1);
+	invalid.sd_driver_fault = 8;
+	action = call_step(&fixture, 0, invalid);
+	assert_none_action(&action);
+	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_PROTOCOL);
+	assert(fixture.transaction.outstanding_action ==
+	       AIUS_HTTP_ACTION_SD_STEP);
+	assert(fixture.transaction.outstanding_action_id ==
+	       retained_action_id);
 }
 
 static void test_sd_result_matrix_rejects_wrong_kind_and_retains_authority(void)
@@ -3504,6 +3627,8 @@ int main(void)
 		  test_upload_application_modes_and_publication_sizes },
 		{ "application.control-job-validation",
 		  test_control_job_application_validation },
+		{ "application.require-existing-validation",
+		  test_require_existing_application_validation },
 		{ "receive.capacity-dispatch",
 		  test_request_capacity_and_strict_dispatch },
 		{ "upload.prefix-staging-deadline",
@@ -3541,7 +3666,7 @@ int main(void)
 		{ "authority.duplicate-dispatch-close-cancel",
 		  test_duplicate_authority_registry },
 	};
-	assert(ARRAY_LENGTH(registry) == 32);
+	assert(ARRAY_LENGTH(registry) == 33);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

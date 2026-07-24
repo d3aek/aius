@@ -3345,6 +3345,7 @@ unit: phase-task
 seams: [aius_sd_job_step, AiusSdExistencePurpose, aius_sd_teensy_execute, Teensy SD and File]
 contract-artifact: spec-only
 dependencies: [phase-5]
+status: completed
 outcome: "Portable idempotency and truncation edges drive one observable target primitive per epoch."
 acceptance:
   - every idempotent mutation is preceded by one correlated existence observation
@@ -3966,3 +3967,15 @@ their targeted proofs.
   delivery audit. `teensy41-optical` compiles the portable encoder beside the
   still-legacy target emitter, passes pinned NativeEthernet linked-symbol
   verification, and fits every memory bank.
+- Phase 10 delivery: the strict native `sd`, `http`, and `sd-target` suites
+  pass with 64 SD fixtures, 1,001 correlation trials, 27 lifecycle cases,
+  exact required-delete 404 compatibility, and the source-blind 23-action
+  target catalog proving 17 storage primitives plus 6 inert actions. The
+  independent oracle exposed missing existence/truncate transitions and two
+  cleanup-authority defects; both were fixed without weakening expectations.
+  Exact 262-ID post-commit reserve exhaustion, `UINT64_MAX` saturation, all
+  six existence purposes, target timing/authority fields, and source-guard
+  mutation tests pass. A fresh delivery audit passed after correcting
+  target-to-backup rename failure to remove only the disposable temp.
+  `teensy41-optical` compiles but does not construct the adapter, passes pinned
+  NativeEthernet linked-symbol verification, and fits every memory bank.
