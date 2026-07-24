@@ -1,26 +1,157 @@
 ---
 title: Aius DSP pipeline, SD editor, and configuration API
-status: in_progress
+type: plans
+scope: component
+component: aius
+status: in-progress
+tags: [firmware, dsp, audio, http-api, sd]
+updated: 2026-07-24
+toc: true
 ---
 
 # Aius DSP pipeline, SD editor, and configuration API
 
-## Execution handoff — 2026-07-24
+## Shared delivery sequence — 2026-07-24
 
-This is the active, primary Aius plan. The network hardening work in
-[`aius-network-hardening.md`](aius-network-hardening.md) is now a
-finish-the-cutover-then-stop effort and secondary to this DSP work; its
-receipt/reproducibility apparatus has been removed. The next session starts with
-the signal path and uses the committed DSP samples as executable specifications
-before extending the configuration API or control surface:
+**This section is identical in [`aius-network-hardening.md`](aius-network-hardening.md)
+and [`aius-dsp-config-api.md`](aius-dsp-config-api.md). Change both together.** It
+supersedes the separate execution handoffs both documents previously carried. Both
+plans are active, they share one critical path, and neither finishes without the
+other.
+
+### Why the two strands are coupled
+
+A firmware flash attempt during the DSP `PUT /api/dsp/config` work found the
+deployed board crash-looping through DHCP on the legacy pre-cutover
+`optical_main.cpp` path — the exact unbounded-recovery failure the network plan
+exists to close. Only Phase 14 fixes it.
+
+In the same window the DSP strand built its config PUT, its `/aius/dsp.json`
+override load, and its `dsp_upload` job bookkeeping directly on top of the legacy
+ad-hoc SD job machine and the legacy blocking HTTP path — all of which Phase 14
+deletes. So the DSP strand cannot ship without the cutover, and the cutover now
+carries DSP behaviour it did not originally own. Everything else in the DSP strand
+(the SD-hosted control surface) is genuinely independent and runs in parallel.
+
+### Corrections to earlier claims in both plans
+
+- **`runtime-target` is not a delivered regression suite.**
+  `firmware/test/runtime-target/` does not exist; Phase 12 creates it. The
+  standing guard is `net`, `boot`, `network-transport`, `sd`, `http`,
+  `usb-control`, `runtime`, `boot-target`, and `fault-target`. `optical-app`,
+  `optical-cutover`, `flash`, and `recovery-runner` likewise do not exist yet and
+  are created by Phases 11, 14, 15, and 16.
+- **`PUT /api/dsp/config` is not described in OpenAPI.** The write phase shipped
+  the firmware but `swagger.json` still documents only the `GET`,
+  and `test/swagger.test.js` asserts only the `GET`. The DSP plan's
+  OpenAPI acceptance gate is therefore not met. `GET /api/meters` is also absent,
+  as expected. Both land with their owning phases below.
+- **Phase 10a's stated justification was wrong in one detail.** The DSP config
+  `PUT` does not need the SD publish mechanism: it parses and validates the model
+  from the HTTP body itself and writes the accepted bytes verbatim. The real
+  second publish caller is the **boot / hot-reinsert load** of `/aius/dsp.json`,
+  once that moves onto a portable `CONFIG_LOAD` job in Phase 14. Phase 10a is
+  still required — for that path. It is delivered (`df9ea4483`).
+
+### Structural obstacles the cutover must clear
+
+Recorded here because they are cheap to miss and expensive to hit mid-phase:
+
+- **`AiusSdJob` is a name collision.** `optical_main.cpp:118` declares its own
+  `struct AiusSdJob`, unrelated to the portable `AiusSdJob` in `aius_sd.h`. It
+  compiles today only because the file never includes that header. Phase 14
+  cannot include the portable header until the legacy struct and its
+  `service_sd_job()` state machine are gone.
+- **`stage_dsp_sd_override()` is a blocking synchronous read.**
+  `optical_main.cpp:279` reads up to 12,288 bytes one byte at a time from
+  `setup()` and from `service_sd()`, and puts a 12,288-byte array on the stack
+  while the RAM1 free-for-locals zone is 22,684 B. It violates the normative
+  one-SD-primitive-per-epoch rule head-on. Porting it is part of Phase 14, not
+  optional cleanup.
+- **The legacy watchdog interval is 16 s, not the pinned 8 s.**
+  `watchdog_init()` writes `WDOG_WCR_WT(31)`, and `loop()` feeds at three
+  separate points. The normative contract is one 8 s interval with exactly one
+  feed after a complete epoch.
+- **ITCM headroom is 1,352 bytes.** The current `teensy41-optical` build reports
+  ITCM 99.31 % used. Every new per-epoch service, dispatcher, and adapter added
+  by Phases 11, 12, and 14 must be `FLASHMEM` unless it genuinely runs per audio
+  block. Apply the attribute on each definition — GCC does not inherit a
+  `section` attribute from a forward declaration, so a prototype-only `FLASHMEM`
+  silently leaves the code in ITCM.
+
+### Critical path
+
+Two tracks. Track A has no firmware-source overlap and runs concurrently
+throughout. Track B is serialized because every phase in it touches
+`optical_main.cpp` or the files that replace it.
+
+**Track A — SD control surface** (independent, no dependencies)
+
+| Step | Work | Gate |
+|---|---|---|
+| A1 | `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | committed regression against captured responses |
+| A2 | Target asset smoke — the page loads and drives the real device | folded into the single on-device session (B6) |
+
+**Track B — bounded runtime cutover** (strictly ordered)
+
+| Step | Work | Gate |
+|---|---|---|
+| B0 | **Done** (`df9ea4483`) — Phase 10a, SD job publish-capacity generalization | `sd` + `http` suites, target build |
+| B1 | Phase 11 — optical application dispatch, **including the DSP routes** | `optical-app` suite |
+| B2 | Phase 12 — Teensy runtime service composition | `runtime-target` suite |
+| B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port** | `optical-cutover` + all component suites |
+| B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
+| B5 | OpenAPI catch-up — `PUT /api/dsp/config` and `GET /api/meters` | Vitest OpenAPI contract suite |
+| B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
+| B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
+| B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
+
+Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
+delivered and are not re-reviewed. Each remaining phase's gate is its green
+native suite plus an owned-diff review — nothing heavier. The per-phase
+source-blind oracle chains and clean-room delivery audits described in the
+delivered-phase blocks are historical and are not re-run.
+
+### Scope moved by this reconciliation
+
+- **Phase 11 owns the DSP routes.** Its route inventory is every current HTTP
+  route *plus* `GET /api/dsp/config`, `PUT /api/dsp/config`, and `GET /api/meters`.
+  Writing the dispatcher without them means writing it twice.
+- **Phase 14 absorbs the DSP SD-override load.** `stage_dsp_sd_override()`'s
+  blocking read is replaced by a portable `CONFIG_LOAD` job with
+  `publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES`, and the staged model still
+  applies at the audio block boundary. This is what Phase 10a exists for. The
+  `dsp_upload` write path moves onto the portable `UPLOAD/REPLACE` job with
+  `publish = false` — the model is already parsed and validated in RAM, so
+  re-publishing the written bytes would buy nothing.
+- **The meters phase becomes Phase 14b**, owned by the network plan's phase
+  sequence rather than standing alone in the DSP plan, because it wires into the
+  post-cutover runtime and audio path. Its contract stays the DSP plan's.
+- **The two live-hardware gates merge into one session.** The DSP plan's target
+  validation (default audio unchanged, config round-trip, meters render, editor
+  loads, short soak) and the network plan's recovery smoke run against one flash,
+  as B6.
+- **Phase 15 moves after the first live validation.** One manual button press is
+  accepted to get the post-cutover image onto a board that currently cannot be
+  reached any other way; the button-free tooling then removes the need for the
+  next one.
+
+## DSP work breakdown
+
+The signal path below (steps 1–3) and the write/SD-persistence phase (PUT
+`/api/dsp/config`) are done. The remaining DSP-side work is the SD
+control-surface editor (Track A above, unblocked now), the meters endpoint
+(B4, after the cutover), and the OpenAPI catch-up (B5). The committed sample
+vectors are the executable specifications:
 
 - `firmware/tools/dts_vectors/vectors/stereo_impulse.dts`;
 - `firmware/tools/dts_vectors/vectors/surround51_impulse.dts`;
 - `firmware/tools/dts_vectors/vectors/stereo_tones.dts`;
 - `firmware/tools/dts_vectors/vectors/surround51_tones.dts`.
 
-The critical-path order below supersedes the older phase numbering where they
-conflict:
+The ordering below is the DSP model's own build order and is complete through
+step 4. Where it conflicts with anything else in this document, the shared
+delivery sequence above wins:
 
 1. **Done.** The native `dsp-vectors` suite decodes each of the four committed
    vectors through the portable DTS interface, drives the decoded PCM through the
@@ -88,8 +219,10 @@ conflict:
    rendering before target smoke.
 
 Do not resume the deferred network clean-room audits or production receipt
-matrix from this plan. Hardware validation here is limited to the DSP sample
-signal path, control surface, and their latency/audio-continuity gates.
+matrix from this plan. This plan's hardware validation — default audio
+unchanged, config round-trip, meters rendering, editor loading, and the
+latency/audio-continuity gates — no longer runs as a separate session: it is
+folded into the single on-device session at B6 above, against one flash.
 
 UI routing is resolved: the canonical editor route is `/sd/www/index.html`,
 served from the SD filesystem directory `firmware/sd/www/`. The firmware already
@@ -216,9 +349,11 @@ if ever wanted, are SD config files loaded via the editor, not firmware arrays.
 
 ## Phases
 
-The critical-path ordering is in the Execution handoff at the top; this is the
-single-config work breakdown. **Steps 1–3 (the DSP model — signal path, true-peak
-limiter, coherent meter module) are done and committed.** Remaining:
+The delivery ordering is the [shared delivery sequence](#shared-delivery-sequence--2026-07-24)
+at the top; this is the single-config work breakdown. **Steps 1–3 (the DSP model
+— signal path, true-peak limiter, coherent meter module) are done and
+committed**, as are the config model, read endpoint, and the write / SD
+persistence / block-boundary apply phase. Remaining:
 
 ### Config model + read endpoint
 
@@ -325,21 +460,47 @@ follow-up before shipping this to the actual unit.
 
 ### Meters endpoint + accumulate wiring
 
+**This work is now Phase 14b of
+[`aius-network-hardening.md`](aius-network-hardening.md) (step B4).** It wires
+into the audio callback and adds a dispatch route, both of which Phase 14
+rewrites; landing it before the cutover means writing it twice against two
+runtime shapes. The contract stays this plan's; the phase slot, owned paths, and
+gate live with the cutover sequence. Its route is declared by Phase 11's
+dispatcher (step B1) so the dispatcher is written once.
+
 `GET /api/meters` from the coherent snapshot; wire the per-block meter accumulate
-into the audio path — the one genuinely hot addition, so watch ITCM. **Gate:**
-coherent bounded snapshots, no audio-thread allocation, ITCM within budget.
+into the audio path — the one genuinely hot addition, and ITCM free space is
+1,352 bytes, so the accumulate tap is the only part that may stay in ITCM.
+**Gate:** coherent bounded snapshots, no audio-thread allocation, ITCM within
+budget.
 
 ### SD control-surface editor
 
+**Track A above — unblocked, running in parallel with the cutover.**
 `firmware/sd/www/index.html` — static HTML/CSS/JS using only the documented API;
 every control mapped to the config JSON; meters + canvas waveform from
-`/api/meters`. Built and tested (Playwright) against captured vector/config
-responses. **Gate:** the committed Playwright regression + target asset smoke.
+`/api/meters`. It follows the existing `firmware/sd/www/replays.*` precedent
+(self-contained, no shared-module imports, no `mr-*` kit): the page is served off
+the device's SD card and cannot reach the host application's shared mounts, which is the
+one standing exception to the repository's UI-kit reuse rule. Built and tested
+against captured vector/config responses. **Gate:** the committed regression;
+the target asset smoke folds into B6.
+
+### OpenAPI catch-up
+
+**Step B5.** `PUT /api/dsp/config` shipped in firmware without reaching
+`swagger.json`, and `GET /api/meters` lands with 14b. Document
+both — request/response schemas, the `X-Aius-SD-Auth` parameter, the
+`base_generation` concurrency field, and the 400/401/409/503 responses — and
+extend `test/swagger.test.js`, which currently asserts only the
+`GET`. **Gate:** the Vitest OpenAPI contract suite.
 
 ### Target validation
 
-Live smoke: default audio unchanged, config round-trip (GET/PUT/SD/reset), meters
-render, editor loads, no audio/HTTP overruns under a short soak.
+**Merged into step B6**, the single on-device session shared with the network
+plan's recovery smoke: default audio unchanged, config round-trip
+(GET/PUT/SD/reset), meters render, editor loads, no audio/HTTP overruns under a
+short soak — all against one flash rather than a separate DSP-only session.
 
 ## Test scope and evidence
 
@@ -367,8 +528,13 @@ gate.
   snapshot unchanged. (Done — native-proven; live-hardware smoke still open.)
 - `GET /api/meters` returns coherent bounded snapshots without audio-thread
   allocation or unbounded sample transfer.
-- OpenAPI schemas and example describe every returned field; no `mode`/`mix`
-  selection endpoints remain.
+- OpenAPI schemas and example describe every route and returned field; no
+  `mode`/`mix` selection endpoints remain. (**Not met** — `swagger.json`
+  documents only `GET /api/dsp/config`; the `PUT` and `GET /api/meters` are
+  missing. Closed by step B5.)
+- The `/aius/dsp.json` override is loaded through the bounded SD job path, not a
+  synchronous read, so the boot and hot-reinsert paths respect the
+  one-SD-primitive-per-epoch contract. (Closed by step B3.)
 - The SD editor maps every control to the documented JSON model and renders
   meters/waveform data from captured vector-driven responses.
 - The embedded page reports the effective config (`source`, trims, EQ, matrix,

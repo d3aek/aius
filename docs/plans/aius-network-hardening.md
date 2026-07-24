@@ -17,25 +17,132 @@ recovery, or watchdog recovery is bounded. This plan replaces those claims with
 explicit portable state machines, one-shot target adapters, and evidence that
 exercises the deployed firmware.
 
-## Execution handoff — 2026-07-24
+## Shared delivery sequence — 2026-07-24
 
-The DSP work in [`aius-dsp-config-api.md`](aius-dsp-config-api.md) is the active
-critical path: run the committed DTS sample vectors through the pipeline and
-load the SD control surface. This network plan is now a finish-and-stop effort,
-not an open-ended rebuild.
+**This section is identical in [`aius-network-hardening.md`](aius-network-hardening.md)
+and [`aius-dsp-config-api.md`](aius-dsp-config-api.md). Change both together.** It
+supersedes the separate execution handoffs both documents previously carried. Both
+plans are active, they share one critical path, and neither finishes without the
+other.
 
-Delivered and validated: Phases 1–10 and the Phase 13 retained-watchdog code
-baseline (`8916df890`). The native suites (`net`, `boot`, `network-transport`,
-`sd`, `http`, `usb-control`, `runtime`, `runtime-target`, `boot-target`,
-`fault-target`) are the standing regression guard for the network + USB control
-surface and must stay green. Do not re-review or re-validate that delivered
-work.
+### Why the two strands are coupled
 
-Remaining: application dispatch and runtime composition (Phases 11–12), the
-runtime cutover (Phase 14) so the bounded modules replace the legacy blocking
-path, button-free flash tooling (Phase 15), and a proportionate live smoke
-(Phase 16). Each remaining phase's gate is its green native suite plus an
-owned-diff review — nothing heavier.
+A firmware flash attempt during the DSP `PUT /api/dsp/config` work found the
+deployed board crash-looping through DHCP on the legacy pre-cutover
+`optical_main.cpp` path — the exact unbounded-recovery failure the network plan
+exists to close. Only Phase 14 fixes it.
+
+In the same window the DSP strand built its config PUT, its `/aius/dsp.json`
+override load, and its `dsp_upload` job bookkeeping directly on top of the legacy
+ad-hoc SD job machine and the legacy blocking HTTP path — all of which Phase 14
+deletes. So the DSP strand cannot ship without the cutover, and the cutover now
+carries DSP behaviour it did not originally own. Everything else in the DSP strand
+(the SD-hosted control surface) is genuinely independent and runs in parallel.
+
+### Corrections to earlier claims in both plans
+
+- **`runtime-target` is not a delivered regression suite.**
+  `firmware/test/runtime-target/` does not exist; Phase 12 creates it. The
+  standing guard is `net`, `boot`, `network-transport`, `sd`, `http`,
+  `usb-control`, `runtime`, `boot-target`, and `fault-target`. `optical-app`,
+  `optical-cutover`, `flash`, and `recovery-runner` likewise do not exist yet and
+  are created by Phases 11, 14, 15, and 16.
+- **`PUT /api/dsp/config` is not described in OpenAPI.** The write phase shipped
+  the firmware but `swagger.json` still documents only the `GET`,
+  and `test/swagger.test.js` asserts only the `GET`. The DSP plan's
+  OpenAPI acceptance gate is therefore not met. `GET /api/meters` is also absent,
+  as expected. Both land with their owning phases below.
+- **Phase 10a's stated justification was wrong in one detail.** The DSP config
+  `PUT` does not need the SD publish mechanism: it parses and validates the model
+  from the HTTP body itself and writes the accepted bytes verbatim. The real
+  second publish caller is the **boot / hot-reinsert load** of `/aius/dsp.json`,
+  once that moves onto a portable `CONFIG_LOAD` job in Phase 14. Phase 10a is
+  still required — for that path. It is delivered (`df9ea4483`).
+
+### Structural obstacles the cutover must clear
+
+Recorded here because they are cheap to miss and expensive to hit mid-phase:
+
+- **`AiusSdJob` is a name collision.** `optical_main.cpp:118` declares its own
+  `struct AiusSdJob`, unrelated to the portable `AiusSdJob` in `aius_sd.h`. It
+  compiles today only because the file never includes that header. Phase 14
+  cannot include the portable header until the legacy struct and its
+  `service_sd_job()` state machine are gone.
+- **`stage_dsp_sd_override()` is a blocking synchronous read.**
+  `optical_main.cpp:279` reads up to 12,288 bytes one byte at a time from
+  `setup()` and from `service_sd()`, and puts a 12,288-byte array on the stack
+  while the RAM1 free-for-locals zone is 22,684 B. It violates the normative
+  one-SD-primitive-per-epoch rule head-on. Porting it is part of Phase 14, not
+  optional cleanup.
+- **The legacy watchdog interval is 16 s, not the pinned 8 s.**
+  `watchdog_init()` writes `WDOG_WCR_WT(31)`, and `loop()` feeds at three
+  separate points. The normative contract is one 8 s interval with exactly one
+  feed after a complete epoch.
+- **ITCM headroom is 1,352 bytes.** The current `teensy41-optical` build reports
+  ITCM 99.31 % used. Every new per-epoch service, dispatcher, and adapter added
+  by Phases 11, 12, and 14 must be `FLASHMEM` unless it genuinely runs per audio
+  block. Apply the attribute on each definition — GCC does not inherit a
+  `section` attribute from a forward declaration, so a prototype-only `FLASHMEM`
+  silently leaves the code in ITCM.
+
+### Critical path
+
+Two tracks. Track A has no firmware-source overlap and runs concurrently
+throughout. Track B is serialized because every phase in it touches
+`optical_main.cpp` or the files that replace it.
+
+**Track A — SD control surface** (independent, no dependencies)
+
+| Step | Work | Gate |
+|---|---|---|
+| A1 | `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | committed regression against captured responses |
+| A2 | Target asset smoke — the page loads and drives the real device | folded into the single on-device session (B6) |
+
+**Track B — bounded runtime cutover** (strictly ordered)
+
+| Step | Work | Gate |
+|---|---|---|
+| B0 | **Done** (`df9ea4483`) — Phase 10a, SD job publish-capacity generalization | `sd` + `http` suites, target build |
+| B1 | Phase 11 — optical application dispatch, **including the DSP routes** | `optical-app` suite |
+| B2 | Phase 12 — Teensy runtime service composition | `runtime-target` suite |
+| B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port** | `optical-cutover` + all component suites |
+| B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
+| B5 | OpenAPI catch-up — `PUT /api/dsp/config` and `GET /api/meters` | Vitest OpenAPI contract suite |
+| B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
+| B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
+| B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
+
+Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
+delivered and are not re-reviewed. Each remaining phase's gate is its green
+native suite plus an owned-diff review — nothing heavier. The per-phase
+source-blind oracle chains and clean-room delivery audits described in the
+delivered-phase blocks are historical and are not re-run.
+
+### Scope moved by this reconciliation
+
+- **Phase 11 owns the DSP routes.** Its route inventory is every current HTTP
+  route *plus* `GET /api/dsp/config`, `PUT /api/dsp/config`, and `GET /api/meters`.
+  Writing the dispatcher without them means writing it twice.
+- **Phase 14 absorbs the DSP SD-override load.** `stage_dsp_sd_override()`'s
+  blocking read is replaced by a portable `CONFIG_LOAD` job with
+  `publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES`, and the staged model still
+  applies at the audio block boundary. This is what Phase 10a exists for. The
+  `dsp_upload` write path moves onto the portable `UPLOAD/REPLACE` job with
+  `publish = false` — the model is already parsed and validated in RAM, so
+  re-publishing the written bytes would buy nothing.
+- **The meters phase becomes Phase 14b**, owned by the network plan's phase
+  sequence rather than standing alone in the DSP plan, because it wires into the
+  post-cutover runtime and audio path. Its contract stays the DSP plan's.
+- **The two live-hardware gates merge into one session.** The DSP plan's target
+  validation (default audio unchanged, config round-trip, meters render, editor
+  loads, short soak) and the network plan's recovery smoke run against one flash,
+  as B6.
+- **Phase 15 moves after the first live validation.** One manual button press is
+  accepted to get the post-cutover image onto a board that currently cannot be
+  reached any other way; the button-free tooling then removes the need for the
+  next one.
+
+## Removed evidence apparatus
 
 The build-identity / reproducibility / evidence apparatus is removed. It
 reintroduced the SHA-manifest, environment-fingerprint, and ten-image receipt
@@ -856,7 +963,9 @@ typedef struct {
     const char *content_type;
     uint64_t total;
     uint64_t initial_offset;
-    bool publish_config;
+    bool publish;              /* generalized in Phase 10a; was publish_config */
+    size_t publish_capacity;   /* generalized in Phase 10a; caller-supplied cap
+                                 * (was the hardcoded AIUS_CONFIG_MAX_JSON_BYTES) */
     bool require_existing;
 } AiusSdJobRequest;
 
@@ -937,7 +1046,8 @@ typedef struct {
     bool install_failed;
     bool installed;
     bool file_open;
-    bool publish_config;
+    bool publish;
+    size_t publish_capacity;
     bool require_existing;
     bool close_emitted;
     bool cancel_requested;
@@ -995,7 +1105,10 @@ remain Phases 10 and 14.
 ### Portable SD job protocol
 
 The caller owns a non-null 1–512 byte transfer buffer. `CONFIG_LOAD` additionally
-requires capacity at least `AIUS_CONFIG_MAX_JSON_BYTES` (256). `start()` is
+requires capacity at least `publish_capacity` (the caller-supplied limit for the
+file being loaded and published — see [§SD job ABI generalization](#phase-10a--sd-job-publish-capacity-generalization);
+the feature-flag config caller passes `AIUS_CONFIG_MAX_JSON_BYTES` = 256).
+`start()` is
 valid only from `IDLE`, or from `DONE`/`FAILED` after `terminal_emitted`; it
 clears the previous result, validates the complete request, copies every
 required path, and selects `PREPARE`. A rejected start selects `FAILED` with
@@ -1011,26 +1124,26 @@ never succeeded. After that common edge, the normative per-kind sequence is:
 | Job/mode | Required sequence and completion result |
 |---|---|
 | `PROBE` | `MEDIA_PRESENT → BOOL`, then `COMPLETE`; result is `PROBE` with the returned presence. `false` is a successful absent-media result. |
-| `CONFIG_LOAD` | `OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG → COMPLETE`. Target is required. Size must be `1..AIUS_CONFIG_MAX_JSON_BYTES` and fit the caller buffer. Positive partial reads accumulate contiguously until the declared size. `PUBLISH_CONFIG` borrows the complete buffer until its `OK`/`FAULT` event. Missing/open failure, empty input, oversize input, or early zero bytes fail after one close if opened. Result is `BYTES` with the published byte count. |
+| `CONFIG_LOAD` | `OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG → COMPLETE`. Target is required. Size must be `1..publish_capacity` and fit the caller buffer. Positive partial reads accumulate contiguously until the declared size. `PUBLISH_CONFIG` borrows the complete buffer until its `OK`/`FAULT` event. Missing/open failure, empty input, oversize input, or early zero bytes fail after one close if opened. Result is `BYTES` with the published byte count. |
 | `USAGE_REFRESH` | `TOTAL_SIZE → SIZE`, then `USED_SIZE → SIZE`, then `COMPLETE`. Result is `USAGE` with both 64-bit values; `used > total` is `PROTOCOL`. |
-| `UPLOAD/REPLACE` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and emit `MKDIR(parent) → OK` only when false. Then `OPEN_WRITE_BEGIN(temp) → TRUNCATE(0)`, accept and write exactly `total` new bytes, `CLOSE`, and run the install sequence below. Zero-length replacement is valid only when `publish_config == false` and still opens, truncates, closes, and installs an empty file. |
+| `UPLOAD/REPLACE` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and emit `MKDIR(parent) → OK` only when false. Then `OPEN_WRITE_BEGIN(temp) → TRUNCATE(0)`, accept and write exactly `total` new bytes, `CLOSE`, and run the install sequence below. Zero-length replacement is valid only when `publish == false` and still opens, truncates, closes, and installs an empty file. |
 | `UPLOAD/APPEND_PART` | For each target parent prefix, emit `EXISTS(parent) → BOOL` and `MKDIR(parent) → OK` only when false; `OPEN_READ(target) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(target)`; accept and write exactly `total`; `CLOSE`; `COMPLETE`. `target` is the durable part path. It is never promoted, renamed, or removed by failure/cancellation. |
-| `UPLOAD/FINALIZE_PART` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and `MKDIR(parent) → OK` only when false; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. Config publication is valid only when the final `initial_offset + total` is within the config limit. |
+| `UPLOAD/FINALIZE_PART` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and `MKDIR(parent) → OK` only when false; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. Publication is valid only when the final `initial_offset + total` is within `publish_capacity`. |
 | `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. After size capture, `initial_offset > captured_size` is `RANGE`. If `total == 0`, set `end_offset = captured_size`; otherwise require checked `initial_offset + total <= captured_size` or fail `RANGE`, then set that sum as `end_offset`. Result is `BYTES` with acknowledged output bytes. |
 | `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. After size capture, `initial_offset > captured_size` is `RANGE`; otherwise set `end_offset = initial_offset + min(total, captured_size - initial_offset)`. `initial_offset == captured_size` is a successful zero-byte refill. |
 | `DELETE` | `EXISTS(target) → BOOL`; true requires `REMOVE(target) → OK` before `COMPLETE`. False completes when `require_existing == false`, or fails with `NOT_FOUND` and no mutation when `require_existing == true`. |
 
 Request fields are not implicit:
 
-| Kind/mode | `total` | `initial_offset` | `publish_config` / `content_type` |
+| Kind/mode | `total` | `initial_offset` | `publish`/`publish_capacity` / `content_type` |
 |---|---|---|---|
-| `PROBE`, `USAGE_REFRESH`, `DELETE` | must be zero | must be zero | false / null |
-| `CONFIG_LOAD` | must be zero | must be zero | true / required non-null constant |
-| `DOWNLOAD` | zero means through captured EOF; positive is exact length | `0..INT64_MAX` | false / required non-null constant |
-| `REPLAY_REFILL` | required `1..INT64_MAX` maximum | `0..INT64_MAX` | false / null |
-| `UPLOAD/REPLACE` | `0..INT64_MAX`; zero is valid only without publication | must be zero | optional; if true, total must be `1..AIUS_CONFIG_MAX_JSON_BYTES`, capacity at least that limit, and content type non-null |
-| `UPLOAD/APPEND_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | false / null |
-| `UPLOAD/FINALIZE_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | optional; if true, checked final size must be `1..AIUS_CONFIG_MAX_JSON_BYTES`, capacity at least that limit, and content type non-null |
+| `PROBE`, `USAGE_REFRESH`, `DELETE` | must be zero | must be zero | false / zero / null |
+| `CONFIG_LOAD` | must be zero | must be zero | true / required nonzero / required non-null constant |
+| `DOWNLOAD` | zero means through captured EOF; positive is exact length | `0..INT64_MAX` | false / zero / required non-null constant |
+| `REPLAY_REFILL` | required `1..INT64_MAX` maximum | `0..INT64_MAX` | false / zero / null |
+| `UPLOAD/REPLACE` | `0..INT64_MAX`; zero is valid only without publication | must be zero | optional; if true, `publish_capacity` required nonzero, total must be `1..publish_capacity`, job capacity at least `publish_capacity`, and content type non-null |
+| `UPLOAD/APPEND_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | false / zero / null |
+| `UPLOAD/FINALIZE_PART` | `0..INT64_MAX`; zero is valid | `0..INT64_MAX` | optional; if true, `publish_capacity` required nonzero, checked final size must be `1..publish_capacity`, job capacity at least `publish_capacity`, and content type non-null |
 
 Non-upload jobs require `install_mode == REPLACE`; any other value is
 `INVALID_REQUEST`. A non-null content type where the table requires null is
@@ -1248,7 +1361,7 @@ does not replace the earlier higher-precedence failure.
 Post-commit upload publication never borrows streamed upload history. It runs
 `OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG`. The captured
 size must equal the installed final size and be
-`1..AIUS_CONFIG_MAX_JSON_BYTES`; `config_bytes` starts at zero, partial reads
+`1..publish_capacity`; `config_bytes` starts at zero, partial reads
 accumulate into `buffer + config_bytes`, and publication borrows exactly those
 complete bytes. Open/size/read/range failure records `PUBLISH`; close failure
 records higher-precedence `CLEANUP`. Because commit already crossed, no
@@ -2417,9 +2530,13 @@ void aius_optical_usb_dispatch(
 
 Both dispatch functions fully initialize their output and invoke exactly one
 callback for a recognized request. `http_response` receives every parsed route,
-including home, status, events, DSP config, controls, SD files, config, and
-replay list/status/start/stop/delete. It supplies status, content type, body,
-and optional SD job through the complete application response. Body pointers
+including home, status, events, DSP config (`GET` returning the effective
+model, `PUT` validating and returning an `SD_JOB` response with
+`publish = true` and `publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES`, or an
+`IMMEDIATE` 401/400/409 for an auth/validation/stale-generation failure),
+controls, SD files, config, and replay list/status/start/stop/delete. It
+supplies status, content type, body, and optional SD job through the complete
+application response. Body pointers
 must address the supplied app buffer or read-only static storage; path pointers
 must address app-owned storage. They remain valid until the next dispatch.
 Callback `false`, invalid pointer/length, unknown routes/commands, and buffer
@@ -2873,12 +2990,16 @@ Each phase is one concern and ends green, buildable, committed, and pushed. A
 sub-agent edits/tests only its owned paths; the parent updates this plan, runs
 the declared proof, commits explicit paths, and pushes.
 
-**Gate for the remaining phases (11, 12, 14, 15, 16): green native suite plus an
-owned-diff review — nothing heavier.** The per-phase source-blind oracle chains
-and per-phase clean-room delivery audits described in the delivered-phase blocks
-below (Phases 1–10) are historical; they are not re-run and are not required for
-the remaining cutover and smoke work. Phases 1–10 and the Phase 13 code baseline
-are delivered and must not be re-reviewed.
+**Gate for the remaining phases (11, 12, 14, 14b, 15, 16): green native suite
+plus an owned-diff review — nothing heavier.** The per-phase source-blind oracle
+chains and per-phase clean-room delivery audits described in the delivered-phase
+blocks below (Phases 1–10) are historical; they are not re-run and are not
+required for the remaining cutover and smoke work. Phases 1–10, Phase 10a, and
+the Phase 13 code baseline are delivered and must not be re-reviewed.
+
+The phases appear below in numeric order; the delivery order is the shared
+critical path at the top of this document (B1 → B2 → B3 → B4 → B5 → B6 → B7 →
+B8, i.e. 11, 12, 14, 14b, OpenAPI, 16a, 15, 16b).
 
 ### Phase 1 — Pure network supervisor
 
@@ -3304,16 +3425,105 @@ slice starts. The adapter slice implements the fixed C++ ABI and adds
 real source against the fake `SD.h` contract and owns the runner registration.
 No slice constructs or invokes the adapter in production before Phase 14.
 
+### Phase 10a — SD job publish-capacity generalization
+
+```yaml
+unit: parent-only
+status: completed
+seams: [AiusSdJobRequest, AiusSdJob, aius_http_transaction sd_request_fields_valid]
+contract-artifact: stubs-committed
+dependencies: [phase-5, phase-6]
+outcome: "The delivered SD job publish mechanism accepts any caller-supplied byte limit, not just the feature-flag config's 256 bytes."
+acceptance:
+  - aius_sd.c has no remaining dependency on aius_config.h or AIUS_CONFIG_MAX_JSON_BYTES
+  - every publish-capacity bound check (start validation, CONFIG_LOAD, UPLOAD/REPLACE, UPLOAD/FINALIZE_PART, post-load size, post-install re-read size) uses the caller-supplied publish_capacity
+  - publish without a matching nonzero publish_capacity, and publish_capacity set without publish, are both AIUS_SD_FAULT_INVALID_REQUEST
+  - existing sd and http-transaction suites are green against the renamed field with no behavioural change for the feature-flag config caller (still passes AIUS_CONFIG_MAX_JSON_BYTES explicitly)
+review-intensity: active
+commit-checkpoint:
+  green:
+    - firmware/scripts/test.sh --environment native --suite sd
+    - firmware/scripts/test.sh --environment native --suite http
+  buildable:
+    - teensy41-optical
+  parent-commit: "refactor(aius): generalize the SD job publish mechanism beyond the feature-flag config"
+```
+
+Discovered while resuming the DSP config API's PUT `/api/dsp/config` work
+([`aius-dsp-config-api.md`](aius-dsp-config-api.md)): the delivered
+`AiusSdJobRequest.publish_config` mechanism (Phase 5, `aius_sd.c`) and its
+mirrored validation (Phase 6, `aius_http_transaction.c`'s
+`sd_request_fields_valid()`) are structurally generic — they open the
+just-installed or just-loaded file, read it, and hand the complete bytes to
+the caller through one `AIUS_SD_ACTION_PUBLISH_CONFIG` action — but the byte
+limit itself was hardcoded to `AIUS_CONFIG_MAX_JSON_BYTES` (256, the
+feature-flag config's own limit) in both files, once as an `#include
+"aius_config.h"` dependency in the otherwise-portable `aius_sd.c`, once as a
+locally duplicated `CONFIG_PUBLICATION_MAX` constant in
+`aius_http_transaction.c`. The DSP strand needs a second publish caller capped
+at `AIUS_DSP_MODEL_MAX_JSON_BYTES` = 12288, so the limit becomes a request field
+instead of a compile-time constant.
+
+**Correction to the original framing:** that second caller is *not* the DSP
+config `PUT`, as this block first claimed. The `PUT` parses and validates the
+model from the HTTP body itself and writes the accepted bytes verbatim, so its
+`UPLOAD/REPLACE` job runs with `publish = false`. The publish caller is the
+**boot / hot-reinsert load** of `/aius/dsp.json`, which Phase 14 moves onto a
+portable `CONFIG_LOAD` job with `publish_capacity = 12288`. The generalization
+is required either way; only its justification changes.
+
+`bool publish_config` becomes `bool publish` (same meaning, generic name) plus
+a new `size_t publish_capacity` in both `AiusSdJobRequest` and `AiusSdJob`.
+Every occurrence of `AIUS_CONFIG_MAX_JSON_BYTES` inside `aius_sd.c` (request
+validation, the `CONFIG_LOAD` capacity check, `UPLOAD/REPLACE` and
+`UPLOAD/FINALIZE_PART` total/final-size checks, the post-load
+`AIUS_SD_PHASE_CONFIG_SIZE` check, and the post-install
+`AIUS_SD_PHASE_INSTALL_PUBLISH_SIZE` re-read check) is replaced by
+`request->publish_capacity` or `job->publish_capacity`; the file drops its
+`aius_config.h` include entirely, removing a coupling the portable SD job
+module never needed. `aius_http_transaction.c`'s `CONFIG_PUBLICATION_MAX`
+constant and its `publish_config` references get the same treatment. New
+validation makes the pairing explicit rather than implicit:
+`publish && publish_capacity == 0` and `!publish && publish_capacity != 0` are
+both `AIUS_SD_FAULT_INVALID_REQUEST`, matching this module's existing
+not-implicit field discipline. `AIUS_SD_ACTION_PUBLISH_CONFIG` and the
+`*_PUBLISH*` phase/state names keep their current (feature-config-flavored)
+names — renaming enum identifiers throughout an already-delivered, tested
+state machine buys nothing functional and inflates the diff; only their doc
+comments note the mechanism is now generic. Existing callers (the
+feature-flag config's `CONFIG_LOAD`/`UPLOAD` requests) pass
+`publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES` explicitly and are otherwise
+behaviourally unchanged. `aius_sd_teensy.cpp` (Phase 10) needs no change — it
+only implements one-shot file I/O primitives and never references
+`publish`/`publish_capacity` directly.
+
+Touches: `lib/aius_sd/include/aius_sd.h`, `lib/aius_sd/src/aius_sd.c`,
+`lib/aius_http/src/aius_http_transaction.c`, `test/sd/test_aius_sd.c`,
+`test/http/test_http_transaction.c`. Not touched: `aius_sd_teensy.cpp`/`.h`,
+`test/sd-target/`, `optical_main.cpp` (its own `config_upload`/`dsp_upload`
+ad-hoc SD-job bookkeeping predates this ABI and is superseded by Phase 14's
+cutover onto the portable `AiusSdJob`, not by this phase).
+
+**Delivered** (`df9ea4483`). The rename, the caller-supplied capacity at every
+bound check, the dropped `aius_config.h` coupling, and the explicit
+publish/`publish_capacity` pairing all landed; the `sd` suite's
+invalid-request matrix gained a case for each half of the pairing. `sd` (64
+fixtures, 1001 matrix trials, 27 lifecycle cases) and `http` are green and
+`teensy41-optical` builds with all banks fitting. Note for the phases that
+follow: that build reports **ITCM 99.31 % used, 1,352 bytes free** and RAM1
+free-for-locals 22,684 B.
+
 ### Phase 11 — Optical application dispatch
 
 ```yaml
 unit: component-behind-interface
 seams: [aius_optical_http_dispatch, aius_optical_usb_dispatch, fake app callbacks]
 contract-artifact: spec-only
-dependencies: [phase-5, phase-6, phase-7, phase-9]
+dependencies: [phase-5, phase-6, phase-7, phase-9, phase-10a]
 outcome: "Every HTTP route and USB command has exactly one bounded application dispatch."
 acceptance:
   - every current route and command has a golden response
+  - the route inventory includes GET /api/dsp/config, PUT /api/dsp/config, and GET /api/meters
   - callback failure and buffer exhaustion have deterministic errors
   - dispatch performs no transport, SD, watchdog, or delay call
 fan-out:
@@ -3332,6 +3542,22 @@ commit-checkpoint:
     - teensy41-optical
   parent-commit: "feat(aius): isolate optical application dispatch"
 ```
+
+**The route inventory is the current routes plus the three DSP routes.** The DSP
+strand added `GET /api/dsp/config` and `PUT /api/dsp/config` to
+`optical_main.cpp` after this phase was written, and `GET /api/meters` lands in
+Phase 14b. Declaring all three here means the dispatcher is written once instead
+of being extended twice within three phases. Their behaviour is specified in
+[`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Contract decisions:
+`PUT` requires `X-Aius-SD-Auth`, validates the bounded body through
+`aius_dsp_config_parse_put()`, returns 409 on a stale `base_generation` without
+touching SD or the active snapshot, and hands the accepted bytes to an SD job.
+Dispatch itself stays pure — the SD job and the block-boundary apply belong to
+Phases 12 and 14, not here.
+
+Cold-code discipline is not optional at this point: ITCM has 1,352 bytes free.
+Every dispatcher entry point is `FLASHMEM`, applied on the definition rather
+than a prototype.
 
 ### Phase 12 — Teensy runtime service composition
 
@@ -3464,6 +3690,10 @@ outcome: "setup and loop delegate to the reviewed lifecycle with no legacy path.
 acceptance:
   - setup performs construction only and loop runs one epoch
   - static fallback, raw FNET access, rebind globals, blocking writes, and extra feeds are absent
+  - the legacy struct AiusSdJob and service_sd_job() are gone and optical_main.cpp includes the portable aius_sd.h
+  - the /aius/dsp.json override loads through a portable CONFIG_LOAD job, not a synchronous read, and no 12 KB stack frame remains
+  - the DSP config PUT writes through a portable UPLOAD/REPLACE job with publish false
+  - the watchdog arms at the pinned 8 s interval and is fed exactly once per complete epoch
   - the network-transport source guard permits only aius_network_teensy.cpp
   - status JSON, USB ID, and UDP expose the exact recovery fields
   - production and fault images build and all component suites remain green
@@ -3495,6 +3725,10 @@ commit-checkpoint:
     - firmware/scripts/test.sh --environment native --suite replay
     - firmware/scripts/test.sh --environment native --suite usb-control
     - firmware/scripts/test.sh --environment native --suite config
+    - firmware/scripts/test.sh --environment native --suite dsp-config
+    - firmware/scripts/test.sh --environment native --suite sd
+    - firmware/scripts/test.sh --environment native --suite sd-target
+    - firmware/scripts/test.sh --environment native --suite optical-app
     - firmware/scripts/test.sh --environment native --suite optical-cutover
   buildable:
     - firmware/scripts/build.sh teensy41-optical
@@ -3509,7 +3743,89 @@ regression risk. The green native suites above are the guard; a structural check
 setup trace, single-epoch loop delegation, and absence of static fallback, raw
 FNET access, rebind globals, blocking writes, or extra watchdog feeds. Build
 production plus one fault image; the full per-checkpoint fault set is exercised
-by the Phase 16 live smoke, not rebuilt here.
+by the Phase 16a live smoke, not rebuilt here.
+
+**This phase also carries the DSP strand's SD path**, because the DSP work built
+it on the legacy machinery this phase deletes. Three concrete pieces:
+
+- **The legacy `struct AiusSdJob` must go.** `optical_main.cpp:118` declares a
+  same-named, unrelated struct plus a `service_sd_job()` state machine and the
+  `config_upload` / `dsp_upload` / `replay_upload` bookkeeping bits. Nothing in
+  the file can include the portable `aius_sd.h` until they are gone, so this is
+  not deferrable cleanup — it is a precondition for the rest of the cutover.
+- **`stage_dsp_sd_override()` becomes a `CONFIG_LOAD` job.**
+  `optical_main.cpp:279` currently reads `/aius/dsp.json` a byte at a time into
+  a 12,288-byte stack array, from `setup()` and again from `service_sd()`. It
+  becomes one portable `CONFIG_LOAD` job with
+  `publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES`, driven one primitive per
+  epoch, with the published bytes parsed by the same
+  `aius_dsp_config_parse_put()` and staged for the block-boundary apply exactly
+  as today. This is the caller [Phase 10a](#phase-10a--sd-job-publish-capacity-generalization)
+  exists for.
+- **The DSP config `PUT` moves to `UPLOAD/REPLACE` with `publish = false`.**
+  The model is already parsed and validated in RAM by the time the write starts,
+  so re-publishing the written bytes would prove nothing the parser has not
+  already proved. The staged-model handoff (`g_pending_dsp_model` /
+  `g_dsp_upload_pending` / `g_dsp_apply_pending`) keeps its
+  single-writer/single-reader shape; only the job underneath it changes.
+
+The block-boundary apply itself does not move. It stays in the audio path, where
+`config_generation` increments and `source` becomes `sd`, and remains the only
+place the active model changes.
+
+Two further legacy behaviours die here. `watchdog_init()` currently arms a 16 s
+interval (`WDOG_WCR_WT(31)`) and `loop()` feeds at three points; the normative
+contract is the pinned 8 s interval with exactly one feed after a complete
+epoch. And the whole `g_dhcp` / `g_dhcp_pending` / `g_network_retry_at` /
+`g_ethernet_initialized` / `g_http_server_rebinds` global set is replaced by the
+supervisor's single live generation.
+
+Watch ITCM. The pre-cutover build has 1,352 bytes free, and this phase adds the
+runtime composition on top. Everything it introduces runs in epoch or HTTP
+context, not per audio block, so all of it is `FLASHMEM` — applied on each
+definition, never via a prototype. If ITCM still does not fit, the escalation
+order is in [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Target memory
+strategy; relocating hot data is not on it.
+
+### Phase 14b — Meters endpoint and accumulate wiring
+
+```yaml
+unit: phase-task
+seams: [AiusMeter, AiusMeterSnapshot, aius_optical_http_dispatch, audio callback]
+contract-artifact: spec-only
+dependencies: [phase-11, phase-14]
+outcome: "GET /api/meters serves a coherent bounded snapshot without disturbing the audio path."
+acceptance:
+  - the snapshot a reader observes is never torn, under the seqlock boundary
+  - the per-block accumulate performs no allocation and no unbounded work
+  - the response is fixed-size, with waveform capped at 128 points
+  - ITCM stays within budget with the accumulate tap linked in
+review-intensity: standard
+commit-checkpoint:
+  green:
+    - firmware/scripts/test.sh --environment native --suite dsp
+    - firmware/scripts/test.sh --environment native --suite optical-app
+  buildable:
+    - firmware/scripts/build.sh teensy41-optical
+  parent-commit: "feat(aius): serve bounded DSP meter snapshots"
+```
+
+The contract is [`aius-dsp-config-api.md`](aius-dsp-config-api.md)'s: `sequence`,
+`sample_rate_hz`, `input[]`, `output`, `limiter_gain_reduction_db`,
+`queue_frames`, `estimated_latency_us`, `dsp_cycles_last`, `dsp_cycles_max`, and
+`waveform[]` capped at 128 points. Meter values are diagnostic snapshots and
+never become configuration fields.
+
+The portable `AiusMeter` / `AiusMeterSnapshot` module is already delivered and
+host-proven; what lands here is the target wiring — the per-block accumulate tap
+around `aius_dsp_process` in the post-cutover audio path, and the serializer
+behind the route Phase 11 already declared. The accumulate tap is the one
+genuinely hot addition in the remaining work and the only part of it that may
+occupy ITCM; the serializer and the route handler are `FLASHMEM`.
+
+It lands after Phase 14 rather than before because it wires into the audio
+callback and the dispatcher, both of which the cutover reshapes. Writing it
+first means writing it twice.
 
 ### Phase 15 — Button-free flash tooling
 
@@ -3554,6 +3870,14 @@ commit-checkpoint:
   parent-commit: "feat(aius): automate button-free optical flashing"
 ```
 
+**This phase now runs after the first live validation (step B7, not B6).** The
+deployed board is crash-looping and has to be reflashed before anything on it
+can be proven; one manual Program-button press is accepted to get the
+post-cutover image on, so the cutover reaches real hardware a whole phase
+earlier. The button-free tooling then removes the need for the next press, and
+Phase 16b re-runs the zero-button-press gate against it. Nothing about the
+phase's own contract changes — only where it sits in the order.
+
 Lock the host CLI, injected command seams, USB-serial selection, RawHID
 fallback, HalfKay detection, identity derivation, deadlines, and exit codes
 before the three implementation/oracle slices start. The source-blind oracle
@@ -3564,11 +3888,16 @@ loader-fixture use.
 
 ### Phase 16 — Live recovery smoke
 
+Split into **16a** (steps 2–5 below, at step B6, entered by one accepted manual
+Program-button flash) and **16b** (step 1, the zero-button-press flash gate, at
+step B8 once Phase 15 exists). The runner, its fake-fixture tests, and the
+`recovery-runner` suite all land once, with 16a.
+
 ```yaml
 unit: phase-task
 seams: [USB heartbeat, HTTP status, UDP status, fault selection, deployed fixture]
 contract-artifact: spec-only
-dependencies: [phase-9, phase-13, phase-14, phase-15]
+dependencies: [phase-9, phase-13, phase-14, phase-14b]
 outcome: "A small host runner drives a proportionate on-target recovery smoke and records a readable summary."
 acceptance:
   - the runner decodes the recovery status fields and reports pass/fail per gate
@@ -3600,8 +3929,8 @@ hashing, or LFS artifact matrix.
 
 The proportionate live smoke on the deployed device, run once after cutover:
 
-1. One button-free CDC flash and one production restore, each verified by build
-   revision, with zero button presses.
+1. **(16b, after Phase 15.)** One button-free CDC flash and one production
+   restore, each verified by build revision, with zero button presses.
 2. A handful of software reboots (about five) with DHCP, USB, HTTP, and UDP
    ready inside the normative deadlines and no unexpected watchdog reset.
 3. One induced stall at each injectable checkpoint `0..8`, each resetting inside
@@ -3609,6 +3938,17 @@ The proportionate live smoke on the deployed device, run once after cutover:
    service without intervention.
 4. A short soak (about 30 minutes) of HTTP/UDP traffic with no unexpected reset,
    outage, or leaked generation.
+5. **The DSP strand's target validation, in the same session:** default audio
+   unchanged, a `GET`/`PUT`/SD/reset config round-trip, meters rendering, and
+   the SD control-surface editor loading and driving the device. This replaces
+   the separate DSP-only hardware session
+   ([`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Target validation) —
+   one flash, one soak, both strands proven.
+
+Steps 2–5 are 16a and run at step B6; they are entered by **one accepted manual
+Program-button press**, because the deployed board is crash-looping and cannot
+be reached any other way until the post-cutover image is on it. Step 1 is 16b
+and waits for Phase 15.
 
 The single fixture and USB enumeration serialize the mutating steps; each fault
 image is restored to the production image before the next step. This is a
@@ -3622,18 +3962,23 @@ the plan.
 - Build reproducibility beyond the final ELF/HEX hashes is out of scope for this
   personal build. No host/toolchain fingerprint or hash-locked evidence contract.
 - TLS, production authentication policy, and NTP remain separate concerns.
-- Audio decoding and DSP behaviour remain independent of Ethernet recovery.
+- Audio decoding and DSP behaviour remain independent of Ethernet recovery. The
+  DSP *SD and HTTP surface* is not: Phase 14 carries the `/aius/dsp.json` load
+  and config-PUT paths onto the bounded SD job, and Phase 14b serves the meter
+  snapshot. Only the signal processing itself stays out of this plan.
 - A dual-image application rollback scheme is not required. HalfKay plus
   watchdog recovery-safe mode is the recovery boundary.
 
 ## Delivered evidence
 
-Phases 1–10 and the Phase 13 code baseline (`8916df890`) are delivered. Each
-landed its native suite green under strict C11 with warnings-as-errors, ASan,
-and UBSan, and `teensy41-optical` builds with every memory bank fitting and the
-pinned NativeEthernet linked-symbol proof passing. The standing regression-guard
-suites are `net`, `boot`, `network-transport`, `sd`, `http`, `usb-control`,
-`runtime`, `runtime-target`, `boot-target`, and `fault-target`.
+Phases 1–10, Phase 10a (`df9ea4483`), and the Phase 13 code baseline
+(`8916df890`) are delivered. Each landed its native suite green under strict C11
+with warnings-as-errors, ASan, and UBSan, and `teensy41-optical` builds with
+every memory bank fitting and the pinned NativeEthernet linked-symbol proof
+passing. The standing regression-guard suites are `net`, `boot`,
+`network-transport`, `sd`, `sd-target`, `http`, `usb-control`, `runtime`,
+`boot-target`, and `fault-target`. `runtime-target` is **not** among them —
+`firmware/test/runtime-target/` does not exist yet and is created by Phase 12.
 
 - The delivered modules: pure network supervisor, portable boot ledger, pinned
   one-shot NativeEthernet, Teensy network adapter, bounded SD jobs and one-shot
