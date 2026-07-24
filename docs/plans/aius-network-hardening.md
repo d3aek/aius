@@ -462,12 +462,31 @@ _Static_assert(_Alignof(AiusBootSlot) == 32, "retained slot alignment");
 #endif
 
 typedef struct {
+    void *context;
+    bool (*read_slot)(void *context, uint8_t slot, AiusBootSlot *out);
+    bool (*write_slot_bytes)(void *context, uint8_t slot, size_t offset,
+                             const uint8_t *data, size_t length);
+    void (*flush_slot_range)(void *context, uint8_t slot, size_t offset,
+                             size_t length);
+    void (*barrier)(void *context);
+    uint32_t (*read_reset_source)(void *context);
+    void (*clear_reset_source)(void *context, uint32_t captured);
+    void (*enable_watchdog_clock)(void *context);
+    void (*write_watchdog_wmcr)(void *context, uint16_t value);
+    void (*write_watchdog_wcr)(void *context, uint16_t value);
+    void (*write_watchdog_wsr)(void *context, uint16_t value);
+} AiusBootTeensyPrimitives;
+
+typedef struct {
+    AiusBootTeensyPrimitives primitives;
     uint8_t active_slot;
     uint32_t sequence;
+    bool valid;
 } AiusBootStorageTeensy;
 
 void aius_boot_storage_teensy_init(
-    AiusBootStorageTeensy *storage);
+    AiusBootStorageTeensy *storage,
+    const AiusBootTeensyPrimitives *primitives);
 
 bool aius_boot_storage_teensy_load(
     AiusBootStorageTeensy *storage,
@@ -479,6 +498,9 @@ bool aius_boot_storage_teensy_commit(
 
 uint32_t aius_boot_teensy_reset_source(void);
 AiusResetKind aius_boot_teensy_reset_kind(uint32_t raw_reset_source);
+bool aius_boot_teensy_watchdog_arm(void);
+bool aius_boot_teensy_watchdog_feed(void);
+AiusBootTeensyPrimitives aius_boot_teensy_hardware_primitives(void);
 ```
 
 `g_aius_boot_slots[2]` is the only retained object and is declared `DMAMEM` and
@@ -493,12 +515,46 @@ writes sequence/ledger/zero padding/CRC, flushes both cache lines, executes
 previous slot authoritative. With no valid slot, portable boot initialization
 receives no retained ledger.
 
+The public primitive seam is the only storage/register/cache authority and is
+used unchanged by the hardware and fake adapters. Initialization copies a
+complete non-null primitive table; null storage is a no-op, while null or
+incomplete primitives leave `valid == false`, `active_slot == UINT8_MAX`, and
+`sequence == 0`. Load zeroes a non-null output before work and returns false
+for null/invalid storage or output. Commit returns false for null/invalid
+storage or ledger, including a ledger rejected by `aius_boot_ledger_valid`.
+With no valid slot, the first commit targets slot 0 with sequence 1. Otherwise
+it targets the inactive slot with selected sequence plus one, including
+`UINT32_MAX → 0`.
+
+A sequence is newer only when `(int32_t)(left - right) > 0`. Equality and the
+exact half-range difference `0x80000000` select the lower slot index. Each
+`write_slot_bytes` call may report any committed prefix and then fail; the
+adapter stops immediately and does not publish the new active slot. The exact
+commit calls are marker invalidation, sequence, ledger, zero padding, slot CRC,
+two-line flush, barrier, committed marker, first-line flush, barrier. The fake
+oracle injects reset after every call and every byte prefix of every write.
+
 Reset classification is priority ordered: `SRC_SRSR_WDOG_RST_B` is
 `WATCHDOG`; `SRC_SRSR_IPP_RESET_B` or `SRC_SRSR_CSU_RESET_B` is `COLD`;
 `SRC_SRSR_JTAG_SW_RST` or `SRC_SRSR_LOCKUP_SYSRESETREQ` is `SOFTWARE`; all
 remaining combinations are `OTHER`. Raw bits remain in telemetry. Tests cover
 each bit and combination, watchdog priority, sequence wrap, every torn-write
 boundary, corrupt slot/ledger CRC, and one valid/one invalid slot.
+
+Reset capture reads the complete 32-bit `SRC_SRSR` exactly once, returns it
+without masking, then acknowledges exactly the captured value through one
+write-one-to-clear call. Watchdog arm enables WDOG1 clock, writes `WMCR=0`,
+then writes one exact WCR value
+`WDOG_WCR_SRS | WDOG_WCR_WT(15) | WDOG_WCR_WDE | WDOG_WCR_WDT |
+WDOG_WCR_SRE`, selecting the pinned 8-second interval. Feed writes `0x5555`
+then `0xAAAA` exactly once each. Null/incomplete hardware primitives return
+false before any write.
+
+The linked `g_aius_boot_slots` symbol must be 32-byte aligned, occupy exactly
+128 bytes in `.dmabuffers`, and satisfy
+`address + 128 <= 0x2027ff80`. A post-link check fails every production or
+fault build otherwise; this is the compile-time guard against overlap with the
+pinned CrashReport range `0x2027ff80..0x2027ffff`.
 
 The fault image defines exactly one build flag,
 `AIUS_FAULT_STALL_CHECKPOINT=0..8`. Immediately after persisting the matching
@@ -2933,7 +2989,7 @@ the declared proof, commits explicit paths, and pushes.
 ### Phase 1 — Pure network supervisor
 
 ```yaml
-unit: component-behind-interface
+unit: phase-task
 status: completed
 seams: [aius_net_supervisor_init, aius_net_supervisor_step]
 contract-artifact: spec-only
@@ -3456,24 +3512,35 @@ acceptance:
   - production and all fault selectors have distinct verified build IDs
   - production and checkpoint-selectable fault targets build
 fan-out:
-  - name: agent-watchdog-adapter
+  - name: agent-retained-reset-adapter
     owned-paths:
       - firmware/src/aius_boot_teensy.cpp
       - firmware/src/aius_boot_teensy.h
+  - name: agent-retained-reset-independent-oracle
+    owned-paths:
+      - firmware/test/boot-target/
+  - name: agent-fault-injector
+    owned-paths:
       - firmware/src/aius_fault_teensy.cpp
       - firmware/src/aius_fault_teensy.h
+  - name: agent-fault-build-identity
+    owned-paths:
       - firmware/scripts/build.sh
       - firmware/scripts/build_metadata.py
-      - firmware/platformio.ini
-      - firmware/test/boot/
+  - name: agent-fault-build-independent-oracle
+    owned-paths:
       - firmware/test/build-metadata/
+  - name: agent-watchdog-build-coordinator
+    start-after: [phase-10, agent-retained-reset-adapter, agent-retained-reset-independent-oracle, agent-fault-injector, agent-fault-build-identity, agent-fault-build-independent-oracle]
+    owned-paths:
+      - firmware/platformio.ini
       - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite boot
+    - firmware/scripts/test.sh --environment native --suite boot-target
     - firmware/scripts/test.sh --environment native --suite build-metadata
-    - firmware/scripts/test.sh --environment native --suite runtime
   buildable:
     - firmware/scripts/build.sh teensy41-optical
     - firmware/scripts/build.sh teensy41-optical-fault 0
@@ -3489,6 +3556,13 @@ commit-checkpoint:
 ```
 
 Do not claim OCRAM retention until live Phase 17 evidence.
+Run the first five concern-sized slices after this phase's clean-room gate.
+The retained/reset implementation and its source-blind target oracle are
+sequential; the fault injector and build-identity implementation may run in
+parallel with them, followed by the source-blind metadata oracle. The shared
+`platformio.ini`/`scripts/test.sh` coordinator starts only after Phase 10 is
+committed and all five slices are reviewed. All builds sharing
+`.pio/build/teensy41-optical-fault` run serially.
 
 ### Phase 14 — Optical runtime cutover
 
@@ -3521,8 +3595,16 @@ fan-out:
   - name: agent-optical-cutover
     owned-paths:
       - firmware/src/optical_main.cpp
+  - name: agent-optical-cutover-source-oracle
+    owned-paths:
+      - firmware/test/network-transport/test_vendor_source.py
+      - firmware/test/optical-cutover/
+  - name: agent-optical-cutover-coordinator
+    start-after: [agent-optical-cutover, agent-optical-cutover-source-oracle]
+    owned-paths:
       - firmware/platformio.ini
       - firmware/README.md
+      - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
   green:
@@ -3534,16 +3616,31 @@ commit-checkpoint:
     - firmware/scripts/test.sh --environment native --suite replay
     - firmware/scripts/test.sh --environment native --suite usb-control
     - firmware/scripts/test.sh --environment native --suite config
+    - firmware/scripts/test.sh --environment native --suite optical-cutover
   buildable:
     - firmware/scripts/build.sh teensy41-optical
     - firmware/scripts/build.sh teensy41-optical-fault 0
+    - firmware/scripts/build.sh teensy41-optical-fault 1
+    - firmware/scripts/build.sh teensy41-optical-fault 2
+    - firmware/scripts/build.sh teensy41-optical-fault 3
+    - firmware/scripts/build.sh teensy41-optical-fault 4
+    - firmware/scripts/build.sh teensy41-optical-fault 5
+    - firmware/scripts/build.sh teensy41-optical-fault 6
+    - firmware/scripts/build.sh teensy41-optical-fault 7
+    - firmware/scripts/build.sh teensy41-optical-fault 8
   parent-commit: "refactor(aius): cut over the optical runtime lifecycle"
 ```
+
+The cutover implementation and source-blind structural oracle start together
+after Phases 12 and 13. The oracle proves the exact allowed setup trace,
+single-epoch loop delegation, and absence of direct transport, SD, delay,
+fallback, rebind, or extra-feed paths without reading `optical_main.cpp`.
+Their shared-file coordinator and all production/fault builds are serialized.
 
 ### Phase 15 — Button-free flash tooling
 
 ```yaml
-unit: test-surface
+unit: phase-task
 seams: [CDC discovery, AIUS BOOTLOADER, HalfKay, loader exit, revision verification]
 contract-artifact: spec-only
 dependencies: [phase-7, phase-14]
@@ -3553,12 +3650,23 @@ acceptance:
   - acknowledgement loss still accepts HalfKay enumeration
   - loader failure, timeouts, and stale revisions fail closed
 fan-out:
+  - name: agent-cdc-host-control
+    owned-paths:
+      - firmware/tools/net/aius_cdc_runner.py
+      - firmware/test/flash/test_cdc_runner.py
   - name: agent-optical-flash-tool
     owned-paths:
       - firmware/scripts/flash_optical.sh
-      - firmware/test/flash/
+  - name: agent-optical-flash-independent-oracle
+    owned-paths:
+      - firmware/test/flash/test_flash_optical.py
+      - firmware/test/flash/fake/
+  - name: agent-optical-flash-coordinator
+    start-after: [agent-cdc-host-control, agent-optical-flash-tool, agent-optical-flash-independent-oracle]
+    owned-paths:
       - firmware/scripts/test.sh
       - firmware/README.md
+      - docs/reference/usb-control-protocol.md
 review-intensity: active
 commit-checkpoint:
   green:
@@ -3569,10 +3677,15 @@ commit-checkpoint:
   parent-commit: "feat(aius): automate button-free optical flashing"
 ```
 
+Lock the host CLI, injected command seams, USB-serial selection, RawHID
+fallback, HalfKay detection, identity derivation, deadlines, and exit codes
+before the three implementation/oracle slices start. Only the coordinator
+touches shared runner/docs paths.
+
 ### Phase 16 — Acceptance runner and evidence schema
 
 ```yaml
-unit: test-surface
+unit: phase-task
 seams: [USB heartbeat, HTTP status, UDP status, fault selection, audio oracle, JSONL receipt]
 contract-artifact: spec-only
 dependencies: [phase-9, phase-13, phase-15]
@@ -3582,11 +3695,26 @@ acceptance:
   - append tests cover interruption, short write, corrupt tail, and hash chain
   - fake fixture covers every gate result and preserves failed attempts
 fan-out:
-  - name: agent-recovery-acceptance-runner
+  - name: agent-recovery-receipt-kernel
     owned-paths:
-      - firmware/tools/net/
-      - firmware/test/net/
+      - firmware/tools/net/aius_recovery_receipt.py
+      - firmware/test/recovery-runner/test_receipt.py
+  - name: agent-recovery-observers
+    owned-paths:
+      - firmware/tools/net/aius_recovery_observers.py
+      - firmware/test/recovery-runner/test_observers.py
+  - name: agent-recovery-gates
+    start-after: [agent-recovery-receipt-kernel, agent-recovery-observers]
+    owned-paths:
+      - firmware/tools/net/aius_recovery_acceptance.py
+      - firmware/test/recovery-runner/test_gates.py
+  - name: agent-recovery-shell
+    owned-paths:
       - firmware/scripts/run_recovery_acceptance.sh
+      - firmware/test/recovery-runner/test_cli.py
+  - name: agent-recovery-runner-coordinator
+    start-after: [agent-recovery-receipt-kernel, agent-recovery-observers, agent-recovery-gates, agent-recovery-shell]
+    owned-paths:
       - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
@@ -3598,6 +3726,13 @@ commit-checkpoint:
     - firmware/scripts/build.sh teensy41-optical-fault 0
   parent-commit: "test(aius): automate firmware recovery acceptance"
 ```
+
+Before fan-out, lock the exact CLI, the `flash|reboot|watchdog|adapter_fault|sd|soak|restore`
+gate enum, fixture command protocols, timeout/evidence paths, RFC 8785
+canonicalization, deterministic adapter-fault selector/build identity, and
+audio-oracle executable/JSON contract. The receipt kernel and shell may start
+in parallel; observers start independently once those prior contracts exist;
+gates join receipt plus observers; only the coordinator touches `test.sh`.
 
 ### Phase 17 — Live hardware gates
 
@@ -3615,10 +3750,14 @@ acceptance:
   - eight-hour concurrent soak
   - production image restored and verified
 fan-out:
-  - name: agent-live-recovery-gates
-    owned-paths:
-      - firmware/test/evidence/network-hardening/
-      - docs/reference/datasheets.mdnetwork-hardening/
+  - {name: agent-live-preflight, gate: preflight}
+  - {name: agent-live-flash, gate: flash, start-after: [agent-live-preflight]}
+  - {name: agent-live-reboot, gate: reboot, start-after: [agent-live-flash]}
+  - {name: agent-live-watchdog, gate: watchdog, start-after: [agent-live-reboot]}
+  - {name: agent-live-adapter-fault, gate: adapter_fault, start-after: [agent-live-watchdog]}
+  - {name: agent-live-sd, gate: sd, start-after: [agent-live-adapter-fault]}
+  - {name: agent-live-soak, gate: soak, start-after: [agent-live-sd]}
+  - {name: agent-live-restore, gate: restore, start-after: [agent-live-soak]}
 review-intensity: active
 commit-checkpoint:
   green:
@@ -3650,6 +3789,13 @@ Acceptance requires:
 Authored JSONL receipts and text transcripts live under
 `firmware/test/evidence/network-hardening/`. Raw binary/audio captures live
 under `docs/reference/datasheets.mdnetwork-hardening/` and use Git LFS.
+The single fixture, USB enumeration, and shared fault build directory serialize
+all mutating hardware groups in the listed order. Each group owns only its
+gate-named receipt/transcript/artifact subtree and commits after restoring a
+verified production image when it temporarily deploys a fault image.
+Read-only validation for a completed group may overlap the next hardware
+group. Selector builds and live checkpoint injections never run in parallel.
+Final restore waits for every group and validator.
 
 ### Phase 18 — Final clean-room delivery audit
 
@@ -3666,6 +3812,7 @@ acceptance:
 fan-out:
   - name: reviewer-final-delivery
     owned-paths: []
+    read-only: true
 review-intensity: active
 commit-checkpoint:
   green:
@@ -3678,6 +3825,10 @@ commit-checkpoint:
 The reviewer sees only this plan, code, authored receipts, and raw evidence.
 The parent applies required corrections, marks the plan `shipped`, commits, and
 pushes.
+Phase 18 deliberately remains one plan-wide reviewer after every evidence
+commit and the verified production restore. Findings may fan out into
+concern-sized correction slices, but the same complete reviewer reruns after
+their targeted proofs.
 
 ## Deferred work
 
