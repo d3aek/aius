@@ -60,21 +60,25 @@ conflict:
    - **Target memory strategy (for Phase 4).** FlexRAM (512 KB) is fully allocated
      as 32 KB banks shared by ITCM code, DTCM data, and the runtime stack, so
      crossing the 192 KB ITCM boundary grabs a whole bank out of the stack budget.
-     Two levers, applied here:
-     - **Freed DTCM:** `g_http_request` / `g_http_response` (16 KB) moved from DTCM
-       to OCRAM (`DMAMEM`) in `optical_main.cpp` — they are off the audio path and
-       written-before-read. DTCM 306 → 290 KB; FlexRAM stack headroom 22 → 38 KB.
-       OCRAM is 88 % free. The audio-hot 128 KB decode/DSP arena stays in DTCM
-       (single-cycle, deterministic) to protect the cycle budget; moving it to
-       OCRAM/PSRAM would add cache-miss latency/jitter.
-     - **FLASH-place cold code:** Phase 4's new code (config JSON serialize/parse,
-       HTTP routes, editor serving, meter publish/read) runs in `loop()`/HTTP
-       context, NOT the audio-update ISR, so mark it `FLASHMEM` — it never consumes
-       ITCM and has no audio-latency cost (FLASH is 93 % free). Only genuinely
-       audio-ISR-hot code (decode, DSP, per-block meter accumulate) needs ITCM.
-     - **Escalation** if hot ITCM still overflows: shift one FlexRAM bank
-       DTCM→ITCM, relocate the codec lookup tables (64 KB, cycle-budget check
-       first), or fit 16 MB PSRAM (EXTMEM) for large cold data.
+     **Principle: hot-path data earns its DTCM place and is never relocated for
+     space.** The single-cycle, deterministic DTCM access is the whole point for
+     the decode/DSP arena and the codec lookup tables; FLASH/OCRAM would add
+     cache-miss latency and jitter that the audio cycle budget cannot absorb.
+     (The codec tables — `adpcm_coeffs`, `high_freq_samples`, `band_fir_*` — are
+     already `const`; they live in DTCM only because Teensy copies `.rodata` to
+     fast RAM at boot. Leave them.) So the only levers are:
+     - **Cold data → OCRAM.** `g_http_request` / `g_http_response` (16 KB) moved
+       DTCM→OCRAM (`DMAMEM`) — off the audio path, written-before-read. DTCM
+       306 → 290 KB; FlexRAM stack headroom 22 → 38 KB; OCRAM 88 % free.
+     - **Cold code → FLASH.** New config/HTTP/serialize/apply/serve code runs in
+       `loop()`/HTTP context, not the audio ISR, so mark it `FLASHMEM`: zero ITCM,
+       no audio-latency cost (FLASH 93 % free). The single-config default is also
+       `const` + `FLASHMEM` (read only on a config change). Only genuinely
+       per-audio-block code (decode, DSP, meter accumulate) stays in ITCM.
+     - **Escalation** for space, in order: shrink the model (single-config
+       re-model does this ~4×), shift a FlexRAM bank DTCM→ITCM (reallocates the
+       split without moving hot data), or fit 16 MB PSRAM (EXTMEM) for large cold
+       data. Relocating hot data is not on this list.
 4. Expose the proven model through `GET/PUT /api/dsp/config` and
    `GET /api/meters`, including transactional SD persistence and
    block-boundary apply.
@@ -112,6 +116,36 @@ loudness meter, or runtime DSP persistence.
 
 ## Contract decisions
 
+**Model — single editable config (revised 2026-07-24).** Full parametric control
+(input trim/EQ, downmix matrix, output EQ, limiter) makes the old
+select-a-preset model redundant, so there are NO `profiles[]` or `mixes[]` arrays
+and no active-selection / `mode` / `mix` machinery. There is exactly one
+effective config:
+
+- a hardcoded **factory default** — one `const` (and `FLASHMEM`, since it is read
+  cold, only on a config change) config baked from `config/optical_dsp.json`,
+  immutable in FLASH, active at boot and on reset;
+- a single **SD override** — the full custom config parsed from `/aius/dsp.json`
+  into RAM. `source` (`default` | `sd`) reports which is active; a block-boundary
+  apply swaps it and increments `config_generation`.
+
+The config shape is:
+
+- `source`, `config_generation`, `sample_rate_hz`
+- `features`: `input_eq`, `matrix`, `output_eq`, `limiter`, `meters` (bypass flags)
+- `input_channels`: fixed `fl`, `fr`, `fc`, `lfe`, `sl`, `sr`, each `gain_db` + `eq[]`
+- `output_eq[]`: up to two bounded EQ sections
+- `matrix`: `center_gain_linear`, `surround_gain_linear`, `lfe_gain_linear`,
+  `headroom_linear`, `clipfree`
+- `limiter`: `enabled`, `threshold_dbfs`, `attack_ms`, `release_ms`, `lookahead_ms`
+
+Bounds are unchanged (input trim `[-60,12]` dB; EQ freq `[10,24000]`, Q `[0.1,20]`,
+gain `[-24,24]`; limiter threshold `[-24,0]`, attack `[0.1,100]`, release
+`[1,1000]`, lookahead `[0,5]`; two EQ sections per table; all finite). The whole
+config is well under the 12,288-byte cap. `POST /api/mode`, `POST /api/mix`, and
+the embedded page's mode/mix selectors are removed (no consumers). Named presets,
+if ever wanted, are SD config files loaded via the editor, not firmware arrays.
+
 - Keep `GET /api/dsp/config` as the effective model read endpoint.
 - Add authenticated `PUT /api/dsp/config` with a bounded JSON body. It validates
   the complete model, writes `/aius/dsp.json` transactionally, and applies it
@@ -123,8 +157,8 @@ loudness meter, or runtime DSP persistence.
   `decode -> input channel trim/EQ -> downmix matrix -> output EQ -> true-peak
   safety limiter -> output`, with metering taps that do not alter audio.
 - Input channel controls cover `FL`, `FR`, `FC`, `LFE`, `SL`, and `SR`. Each has
-  a trim and up to two EQ sections. Output EQ remains a stereo post-mix
-  profile. Mix controls cover centre, surround, LFE, and headroom coefficients.
+  a trim and up to two EQ sections. Output EQ is a stereo post-mix section.
+  Matrix controls cover centre, surround, LFE, and headroom coefficients.
 - Limiter controls are enabled, threshold, attack, release, and fixed bounded
   lookahead. Loudness normalization is not automatic in the critical path;
   BS.1770-style loudness/true-peak telemetry is exposed first, with target gain
@@ -138,155 +172,91 @@ loudness meter, or runtime DSP persistence.
   channel, stereo output peak/RMS, limiter gain reduction, and up to 128
   decimated waveform/envelope points. The SD editor polls it at 10 Hz and
   renders meters plus a canvas waveform; it never requests full-rate samples.
-- The version-2 editable model is bounded to four profiles, four mixes, six
-  named input channels (`fl`, `fr`, `fc`, `lfe`, `sl`, `sr`), two EQ sections
-  per input channel, and two stereo output EQ sections. Input trim is
-  `gain_db` in `[-60,12]`; EQ frequency is `[10,24000]` Hz, Q is `[0.1,20]`,
-  and EQ gain is `[-24,24]` dB. Limiter threshold is `[-24,0]` dBFS, attack
-  `[0.1,100]` ms, release `[1,1000]` ms, and lookahead `[0,5]` ms. All values
-  are finite.
-- The effective model includes `source` (`compiled` or `sd`),
-  `config_generation`, `features`, `profiles`, `mixes`, and `active`. A write
-  includes `base_generation`; a mismatch returns 409 without touching SD or
-  active DSP. `PUT /api/dsp/config` requires `X-Aius-SD-Auth`.
-- The body is capped at 12,288 bytes; request and response buffers are 16,384
-  bytes in OCRAM. At boot compiled configuration is active immediately. A
-  valid `/aius/dsp.json` override is parsed outside the audio callback and
-  becomes pending only after transactional SD commit; the snapshot swaps at
-  the next audio block boundary and increments `config_generation`. Invalid
-  JSON, SD removal, failed rename, or invalid ranges leave the last valid
-  snapshot active.
-- The v2 response/write shape is:
-  - `schema_version: 2`, `source`, `config_generation`, `sample_rate_hz`
-  - `features`: `input_eq`, `matrix`, `output_eq`, `limiter`, `meters`
-  - `profiles[]`: `id`, `input_channels`, `output_eq[]`, `limiter`
-  - `input_channels`: fixed `fl`, `fr`, `fc`, `lfe`, `sl`, `sr` objects, each
-    with `gain_db` and `eq[]`
-  - `output_eq[]`: the same bounded EQ section shape
-  - `limiter`: `enabled`, `threshold_dbfs`, `attack_ms`, `release_ms`,
-    `lookahead_ms`
-  - `mixes[]`: `id`, `center_gain_linear`, `surround_gain_linear`,
-    `lfe_gain_linear`, `headroom_linear`, and `clipfree`
-  - `active`: `profile_id`, `profile_index`, `mix_id`, `mix_index`,
-    `profile_pending`, and `mix_pending`
-- `GET /api/meters` is a separate schema with `sequence`, `sample_rate_hz`,
-  `input[]`, `output`, `limiter_gain_reduction_db`, `queue_frames`,
-  `estimated_latency_us`, `dsp_cycles_last`, `dsp_cycles_max`, and
-  `waveform[]` capped at 128 points. Meter values are diagnostic snapshots and
-  never become configuration fields.
-- The finite generator limits are four profiles, four mixes, two EQ sections
-  per input/output table, 24 ASCII characters per ID, and unique IDs within
-  each table. The model is capped at 12,288 JSON bytes below the 16,384-byte
-  HTTP response capacity. The build and runtime validators reject over-limit
-  counts, IDs with unsupported characters, duplicate IDs, out-of-range values,
-  and non-finite numeric values.
-- OpenAPI marks objects `additionalProperties: false`, arrays with their exact
-  `maxItems`, numeric fields with units and finite-number expectations, and
-  `schema_version` as the compatibility discriminator.
-- `id` is the stable config name, not an array position. Indices are included
-  only as diagnostic compatibility fields.
-- `headroom_linear` is the resolved runtime value. `clipfree` indicates that
-  the configured mix selected the DSP clip-free headroom policy; the response
-  does not expose the build-time string sentinel. For the current default
-  downmix coefficients, clip-free resolves to
-  `1 / (1 + 0.7071067811865475 + 0.7071067811865475 + abs(lfe_gain_linear))`;
-  standard and lfe-minus10 retain unity headroom.
-- `center_gain_linear` is the shared FC-to-L/R coefficient. Increasing it
-  raises dialogue/voice relative to FL/FR; zero removes the centre channel.
-- `surround_gain_linear` is the shared SL-to-L and SR-to-R coefficient.
-  Increasing it blends the rear channels more strongly while preserving their
-  left/right placement; zero removes the surround contribution.
-- The coefficients are symmetric by design. Independent SL/SR gains are not
-  part of this model because they would change image balance rather than
-  control surround blend.
-- Mix coefficients are finite and bounded to `0 <= gain <= 4` linear
-  (`-inf` is not a valid control value; the upper bound is approximately
-  `+12 dB`). Configured non-clipfree headroom is bounded to `0 < h <= 1`.
-- The effective model includes the compiled table or a valid SD override;
-  `source` reports which is active and `config_generation` changes after a
-  successful block-boundary apply.
-- The built-in page adds a compact monospace DSP section: sample rate, active
-  profile/mix, pending state, profile EQ rows, and mix rows. It fetches the
-  endpoint independently of the status poll and remains usable without SD.
-- OpenAPI is the canonical external model description. It includes schemas,
-  field descriptions, enums, examples, and the new path. The device page
-  links to the route and includes the field names so the recovery interface is
-  self-describing even without the app dashboard.
+- Model shape, bounds, `source`, and `config_generation` are defined in the
+  single-config block at the top of this section. All values are finite; the
+  whole config is well under the 12,288-byte cap.
+- A `PUT` includes `base_generation`; a mismatch returns 409 without touching SD
+  or active DSP. `PUT /api/dsp/config` requires `X-Aius-SD-Auth`.
+- The body is capped at 12,288 bytes. Because `AIUS_HTTP_MAX_RESPONSE` also sizes
+  stack `body[]` arrays, the config response uses a dedicated OCRAM (`DMAMEM`)
+  buffer sized to the model, not a 16 KB stack bump, to respect the FlexRAM stack
+  budget. At boot the const default is active; a valid `/aius/dsp.json` override is
+  parsed outside the audio callback and becomes pending only after transactional
+  SD commit; the snapshot swaps at the next audio block boundary and increments
+  `config_generation`. Invalid JSON, SD removal, failed rename, or invalid ranges
+  leave the last valid snapshot active.
+- `GET /api/meters` is a separate schema: `sequence`, `sample_rate_hz`, `input[]`,
+  `output`, `limiter_gain_reduction_db`, `queue_frames`, `estimated_latency_us`,
+  `dsp_cycles_last`, `dsp_cycles_max`, and `waveform[]` capped at 128 points.
+  Meter values are diagnostic snapshots and never become configuration fields.
+- The build and runtime validators reject out-of-range values, non-finite
+  numbers, and unknown input-channel/limiter keys; the config is capped at 12,288
+  JSON bytes.
+- `headroom_linear` is the resolved runtime value. `clipfree` indicates the config
+  selected the DSP clip-free headroom policy; the response does not expose the
+  build-time string sentinel. For the default downmix coefficients clip-free
+  resolves to `1 / (1 + 0.7071067811865475 + 0.7071067811865475 +
+  abs(lfe_gain_linear))`; unity otherwise.
+- `center_gain_linear` is the shared FC-to-L/R coefficient (raises dialogue; zero
+  removes centre). `surround_gain_linear` is the shared SL-to-L / SR-to-R
+  coefficient (blends the rears while preserving their L/R placement; zero removes
+  surround). The coefficients are symmetric by design; independent SL/SR gains are
+  excluded because they would shift image balance rather than control blend.
+  Matrix gains are finite, `0 <= gain <= 4` linear; configured non-clipfree
+  headroom is `0 < h <= 1`.
+- OpenAPI marks objects `additionalProperties: false`, arrays with exact
+  `maxItems`, and numeric fields with units and finite-number expectations. It is
+  the canonical external model description (schemas, field descriptions, enums,
+  example, path).
+- The embedded flash page gains a compact monospace DSP section: `source`, input
+  trims, output-EQ rows, matrix coefficients, limiter, and pending state. It
+  fetches `/api/dsp/config` independently of the status poll and stays usable
+  without SD. Every `mode`/`mix` selector and every reference to `POST /api/mode`
+  or `POST /api/mix` is removed from the page.
 
 ## Phases
 
-### Phase 1: contract artifact and adversarial review
+The critical-path ordering is in the Execution handoff at the top; this is the
+single-config work breakdown. **Steps 1–3 (the DSP model — signal path, true-peak
+limiter, coherent meter module) are done and committed.** Remaining:
 
-**unit:** response model, bounded JSON shape, and OpenAPI schemas
-**seams:** generated DSP tables ↔ model fields; model ↔ OpenAPI/page contract
-**contract-artifact:** this plan, `swagger.json`, model example,
-SD editor schema
-**fan-out:** OpenAPI/test owner edits app contract; firmware owner consumes only the resolved field list
-**review-intensity:** field naming, numeric units, enum drift, response-size bound, and future write/persistence confusion
-**commit-checkpoint:** JSON validation, OpenAPI tests, and the RED review resolutions recorded before firmware implementation
+### Config model + read endpoint
 
-Add the model schemas and example to OpenAPI, extend the app regression to
-assert the route, required fields, bounds, enums, and example, and record the
-12,288-byte model bound. The clean-room review found the initial contract
-RED; these finite bounds, route requirements, and resolved headroom semantics
-are the amendments required before Phase 2.
+Replace the profiles/mixes preset model with the single `const` + `FLASHMEM`
+default config in `config/optical_dsp.json` + `build_config.py`; serialize it via
+`GET /api/dsp/config` (`FLASHMEM`); apply the single config in the audio path
+(output EQ + downmix, default bit-identical to today); remove `POST /api/mode` /
+`POST /api/mix` and every mode/mix reference from the embedded page; update swagger
++ the native `config` and Vitest OpenAPI suites. **Gate:** those suites green +
+target build + default audio unchanged on device.
 
-### Phase 2: bounded firmware endpoint
+### Write + SD persistence + block-boundary apply
 
-**unit:** read-only DSP model serializer and HTTP route
-**seams:** `AIUS_OPTICAL_*` generated tables ↔ serializer; serializer ↔ HTTP response
-**contract-artifact:** `GET /api/dsp/config` response and native route tests
-**fan-out:** HTTP parser/tests own route recognition; optical firmware owns serialization and runtime selection fields
-**review-intensity:** every supported EQ/mix variant, unknown enum guard, truncation, pending transitions, and no SD/flash calls
-**commit-checkpoint:** native HTTP route/method tests, generator validation tests, target build, and response-size assertion green
+Authenticated `PUT /api/dsp/config` (`X-Aius-SD-Auth`) validates the bounded body,
+writes `/aius/dsp.json` transactionally, and swaps the active snapshot at an audio
+block boundary (`base_generation`/409, `source: sd`, `config_generation`
+increment). Cold code is `FLASHMEM`; the config response uses a dedicated OCRAM
+buffer, not a stack bump. Wire the input-stage trim/EQ and the limiter into the
+audio apply here (they exist in `aius_dsp` but are not yet applied). **Gate:**
+native config / SD-round-trip tests + target smoke, no flash writes.
 
-Implement the route and serializer using fixed buffers and `snprintf`-style
-capacity checks. Serialize the generated table rather than duplicating values
-in firmware code. Return a deterministic error if the model cannot fit the
-response budget, and add a build-time/native assertion covering the configured
-maximum table dimensions.
+### Meters endpoint + accumulate wiring
 
-### Phase 3: bounded DSP pipeline and latency instrumentation
+`GET /api/meters` from the coherent snapshot; wire the per-block meter accumulate
+into the audio path — the one genuinely hot addition, so watch ITCM. **Gate:**
+coherent bounded snapshots, no audio-thread allocation, ITCM within budget.
 
-**unit:** channel trim/EQ, matrix, output EQ, metering, limiter, and latency
-snapshot
-**seams:** decoded planes ↔ input processing; matrix ↔ output processing;
-audio block boundary ↔ coherent telemetry
-**contract-artifact:** DSP config model, feature flags, status/meter fields,
-native known-answer tests
-**fan-out:** portable DSP module; optical adapter; latency test harness
-**review-intensity:** allocation freedom, limiter stability, bypass equivalence,
-cycle budget, queue growth, and reset-safe config apply
-**commit-checkpoint:** native DSP tests, target build, and cycle/latency report
+### SD control-surface editor
 
-Meter snapshots use a fixed ring in OCRAM, a sequence number, and a coherent
-copy boundary. The audio callback only updates scalar accumulators/ring slots;
-HTTP copies the last complete snapshot outside the critical path.
+`firmware/sd/www/index.html` — static HTML/CSS/JS using only the documented API;
+every control mapped to the config JSON; meters + canvas waveform from
+`/api/meters`. Built and tested (Playwright) against captured vector/config
+responses. **Gate:** the committed Playwright regression + target asset smoke.
 
-### Phase 4: SD editor and runtime persistence
+### Target validation
 
-**unit:** self-hosted editor and authenticated DSP JSON update path
-**seams:** browser controls ↔ JSON model; HTTP body ↔ SD transactional write;
-SD model ↔ block-boundary DSP snapshot
-**contract-artifact:** `firmware/sd/www/index.html`, editor schema, PUT examples
-**fan-out:** static UI; HTTP/config loader; firmware application seam
-**review-intensity:** malformed JSON, bounded body, invalid ranges, stale
-generation, SD removal, and editor recovery
-**commit-checkpoint:** mocked API/editor tests, target asset smoke, and config
-round-trip without flash writes
-
-### Phase 5: embedded model view and target validation
-
-**unit:** built-in DSP configuration panel and live endpoint smoke/soak checks  
-**seams:** page fetch ↔ model rendering; endpoint polling ↔ audio critical path  
-**contract-artifact:** embedded page field list, OpenAPI example, soak evidence  
-**fan-out:** embedded HTML/JS owner edits `optical_main.cpp`; validation owner runs target smoke and soak  
-**review-intensity:** absent SD, malformed feature config, pending changes, large model, and concurrent endpoint polling during soak  
-**commit-checkpoint:** page smoke, OpenAPI regression, target response comparison, and soak with zero audio/HTTP-service overruns
-
-Render the effective model and status labels in the flash recovery page, link
-to the SD editor when present, and validate that endpoint polling and editor
-updates continue to work with the HTTP service active during audio soak.
+Live smoke: default audio unchanged, config round-trip (GET/PUT/SD/reset), meters
+render, editor loads, no audio/HTTP overruns under a short soak.
 
 ## Test scope and evidence
 
@@ -302,19 +272,24 @@ network checks remain a separate hardware gate.
 ## Acceptance gates
 
 - All four committed DTS vectors drive decoder-to-stereo known-answer tests for
-  routing, coefficients, EQ, limiter behavior, finite output, and latency.
-- `GET /api/dsp/config` returns the complete effective profile/EQ/mix model
-  with stable IDs and resolved units.
+  routing, coefficients, EQ, limiter behaviour, finite output, and latency.
+  (Done — the `dsp-vectors` suite.)
+- `GET /api/dsp/config` returns the complete single effective config (`source`,
+  input channels, output EQ, matrix, limiter, features) with resolved units.
 - Authenticated `PUT /api/dsp/config` validates and commits atomically; invalid
-  or stale writes leave SD and the active block-boundary snapshot unchanged.
+  or stale (`base_generation`) writes leave SD and the active block-boundary
+  snapshot unchanged.
 - `GET /api/meters` returns coherent bounded snapshots without audio-thread
   allocation or unbounded sample transfer.
-- OpenAPI schemas and examples describe every returned field and enum.
+- OpenAPI schemas and example describe every returned field; no `mode`/`mix`
+  selection endpoints remain.
 - The SD editor maps every control to the documented JSON model and renders
   meters/waveform data from captured vector-driven responses.
-- The embedded recovery page reports the same active profile, EQ sections, mix
-  coefficients, and pending state without depending on SD.
-- The model stays within the request/response capacity and DSP cycle/latency
-  budgets without disrupting audio processing.
-- Existing `/api/status`, mode/mix controls, fallback page, and SD feature
-  configuration continue to work unchanged.
+- The embedded page reports the effective config (`source`, trims, EQ, matrix,
+  limiter, pending state) without depending on SD, and carries no mode/mix
+  selectors.
+- The config stays within the request/response capacity and the DSP cycle/latency
+  budgets without disrupting audio; hot-path data stays in DTCM, cold code/data in
+  FLASH/OCRAM.
+- Existing `/api/status`, the fallback page, and SD feature configuration continue
+  to work; removing the `mode`/`mix` selection is intentional (no consumers).
