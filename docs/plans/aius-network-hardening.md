@@ -2496,4 +2496,5 @@ pushes.
   passed and engine dispatch is authorized again. Engine authority review then
   found that an earlier abort could mask a later install-rename failure and
   wrongly delete its recovery temp; explicit `install_failed` authority now
-  separates preservation from terminal-fault precedence.
+  separates preservation from terminal-fault precedence. The focused
+  install-authority matrix recheck passed.
