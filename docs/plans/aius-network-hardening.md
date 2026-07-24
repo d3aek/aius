@@ -2485,4 +2485,5 @@ pushes.
   oracle slice. The first engine dispatch stopped before write because an
   unbounded streamed upload could not supply a complete `PUBLISH_CONFIG`
   buffer; publishing uploads are now config-sized and use an explicit
-  post-commit reread before publication.
+  post-commit reread before publication. The focused publication recheck
+  passed and engine dispatch is authorized again.
