@@ -45,8 +45,12 @@ static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
 static EthernetUDP g_udp;
 static EthernetServer g_http_server(80);
 static EthernetClient g_http_client;
-static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
-static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
+// HTTP request/response buffers live in OCRAM (DMAMEM), not DTCM: they are off
+// the audio critical path (touched only during request handling) and each is
+// written before it is read, so OCRAM's lack of startup zeroing is harmless.
+// Relocating them frees ~16 KB of FlexRAM so ITCM can grow (see docs plan).
+DMAMEM static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
+DMAMEM static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
 static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
 static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 10000u;
 static constexpr uint32_t AIUS_SD_UPLOAD_STALL_MS = 2000u;

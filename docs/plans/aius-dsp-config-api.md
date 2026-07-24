@@ -57,13 +57,24 @@ conflict:
      goldens byte-unchanged. Metering is **caller-driven**, deliberately NOT a
      field of `AiusDspConfig` — the caller taps around `aius_dsp_process` — so the
      meter code is not linked into the hot function until the adapter wires it.
-   - **Target memory constraint (Phase 4 gate).** The device's ITCM is at ~99.2 %
-     (190.5 KB / 192 KB, ~1.5 KB headroom before the next 32 KB block-rounding
-     tips FlexRAM over). Wiring the meter accumulate/publish path into the runtime
-     for `GET /api/meters` (Phase 4) WILL pull meter code into ITCM and exceed that
-     headroom. Phase 4 must budget for it: place the diagnostic meter code in FLASH
-     (a target-linker concern, since the portable C carries no placement attribute)
-     or free ITCM elsewhere. Recorded here so Phase 4 does not rediscover it late.
+   - **Target memory strategy (for Phase 4).** FlexRAM (512 KB) is fully allocated
+     as 32 KB banks shared by ITCM code, DTCM data, and the runtime stack, so
+     crossing the 192 KB ITCM boundary grabs a whole bank out of the stack budget.
+     Two levers, applied here:
+     - **Freed DTCM:** `g_http_request` / `g_http_response` (16 KB) moved from DTCM
+       to OCRAM (`DMAMEM`) in `optical_main.cpp` — they are off the audio path and
+       written-before-read. DTCM 306 → 290 KB; FlexRAM stack headroom 22 → 38 KB.
+       OCRAM is 88 % free. The audio-hot 128 KB decode/DSP arena stays in DTCM
+       (single-cycle, deterministic) to protect the cycle budget; moving it to
+       OCRAM/PSRAM would add cache-miss latency/jitter.
+     - **FLASH-place cold code:** Phase 4's new code (config JSON serialize/parse,
+       HTTP routes, editor serving, meter publish/read) runs in `loop()`/HTTP
+       context, NOT the audio-update ISR, so mark it `FLASHMEM` — it never consumes
+       ITCM and has no audio-latency cost (FLASH is 93 % free). Only genuinely
+       audio-ISR-hot code (decode, DSP, per-block meter accumulate) needs ITCM.
+     - **Escalation** if hot ITCM still overflows: shift one FlexRAM bank
+       DTCM→ITCM, relocate the codec lookup tables (64 KB, cycle-budget check
+       first), or fit 16 MB PSRAM (EXTMEM) for large cold data.
 4. Expose the proven model through `GET/PUT /api/dsp/config` and
    `GET /api/meters`, including transactional SD persistence and
    block-boundary apply.
