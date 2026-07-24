@@ -2240,6 +2240,22 @@ AiusCdcTeensyPrimitives aius_cdc_teensy_serial_primitives(void);
 
 typedef struct {
     void *context;
+    bool (*reset_capture)(
+        void *context,
+        const AiusRuntimeBudget *budget,
+        uint32_t now_ms);
+    bool (*metrics)(
+        void *context,
+        const AiusRuntimeBudget *budget,
+        uint32_t now_ms);
+    bool (*udp)(
+        void *context,
+        const AiusRuntimeBudget *budget,
+        uint32_t now_ms);
+    bool (*replay)(
+        void *context,
+        const AiusRuntimeBudget *budget,
+        uint32_t now_ms);
     void (*checkpoint)(void *context, uint16_t checkpoint);
     void (*feed_watchdog)(void *context);
 } AiusRuntimeTeensyPlatformOps;
@@ -2250,12 +2266,27 @@ typedef struct {
     AiusHttpTransaction http;
     uint8_t http_request[AIUS_HTTP_MAX_REQUEST];
     uint8_t http_response[AIUS_HTTP_MAX_RESPONSE];
+    AiusNetAction pending_network_action;
+    AiusHttpEvent pending_http_event;
+    AiusHttpApplicationResponse pending_application_response;
+    bool network_action_present;
+    bool http_event_present;
+    bool application_response_present;
 } AiusRuntimeNetworkHttp;
 
 typedef struct {
     AiusSdJob job;
     AiusSdTeensy target;
     uint8_t sd_transfer[512];
+    AiusSdAction pending_action;
+    AiusSdEvent pending_event;
+    AiusHttpEvent pending_http_event;
+    uint64_t http_action_id;
+    AiusHttpActionKind http_action;
+    bool action_present;
+    bool event_present;
+    bool http_event_present;
+    bool http_authority;
 } AiusRuntimeStorage;
 
 typedef struct {
@@ -2285,6 +2316,47 @@ typedef struct {
     uint32_t completed_epochs;
 } AiusRuntimeTeensy;
 
+void aius_runtime_network_http_construct(
+    AiusRuntimeNetworkHttp *service,
+    uint32_t now_ms);
+
+bool aius_runtime_network_service(
+    AiusRuntimeNetworkHttp *service,
+    const AiusRuntimeBudget *budget,
+    uint32_t now_ms);
+
+bool aius_runtime_http_service(
+    AiusRuntimeNetworkHttp *service,
+    const AiusRuntimeBudget *budget,
+    uint32_t now_ms,
+    AiusOpticalApp *app,
+    const AiusHttpEvent *storage_event,
+    AiusHttpAction *storage_action);
+
+void aius_runtime_storage_construct(
+    AiusRuntimeStorage *service);
+
+bool aius_runtime_storage_service(
+    AiusRuntimeStorage *service,
+    const AiusRuntimeBudget *budget,
+    uint32_t now_ms,
+    const AiusHttpAction *http_action,
+    AiusHttpEvent *http_event);
+
+void aius_runtime_usb_construct(
+    AiusRuntimeUsb *service,
+    const AiusCdcTeensyPrimitives *primitives);
+
+bool aius_runtime_usb_rx_service(
+    AiusRuntimeUsb *service,
+    const AiusRuntimeBudget *budget);
+
+bool aius_runtime_usb_tx_service(
+    AiusRuntimeUsb *service,
+    const AiusRuntimeBudget *budget,
+    uint32_t now_ms,
+    AiusOpticalApp *app);
+
 void aius_runtime_teensy_construct(
     AiusRuntimeTeensy *runtime,
     const AiusOpticalAppOps *app_ops,
@@ -2301,6 +2373,16 @@ void aius_runtime_teensy_status(
     const AiusRuntimeTeensy *runtime,
     AiusRecoveryStatus *status);
 ```
+
+Each service constructor initializes memory only. Network construction retains
+the supervisor's initial action in `pending_network_action`; it performs no
+target call. Each service function consumes at most one retained input,
+executes the exact supplied budget, and publishes at most one retained output.
+The HTTP/storage bridge is explicit: root passes one storage event into
+`aius_runtime_http_service()` and one returned SD-backed HTTP action into
+`aius_runtime_storage_service()`; their action ID remains retained until the
+storage service returns the correlated HTTP event. No service calls another
+service or a scheduler callback.
 
 `aius_cdc_teensy` owns the only production `Serial` mapping. `connected()`
 returns the primitive connection sample. `read_byte()` returns `CLOSED` when
@@ -2327,6 +2409,13 @@ Construction initializes memory only, copies the platform callbacks, constructs
 the CDC adapter from the supplied primitives, and retains `recovery_safe` as
 the scheduler mode for every epoch. Null callbacks or primitives make the
 composition invalid; the epoch then returns false without checkpoint or feed.
+The root's scheduler callback table is fixed: `RESET_CAPTURE`, `METRICS`,
+`UDP`, and `REPLAY` invoke the same-named platform callback; `USB_RX` and
+`USB_TX` invoke the two USB service functions; `NETWORK` and `HTTP` invoke the
+two network/HTTP service functions; and `SD` invokes the storage service.
+Checkpoint and feed forward only to the platform callbacks. Native fakes
+assert each callback, exact budget, retained input/output flag transition, and
+failure short-circuit.
 `USB_RX` is the explicit exception to
 the one-adapter-event service rule. While connected, it performs at most the
 lesser of 64 one-byte CDC read attempts and available space in the retained
