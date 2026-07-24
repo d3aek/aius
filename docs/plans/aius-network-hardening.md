@@ -1947,6 +1947,7 @@ adapter into the target but leave legacy runtime composition intact.
 
 ```yaml
 unit: phase-task
+status: completed
 seams: [aius_sd_job_step, aius_sd_job_supply, AiusSdAction, AiusSdResult]
 contract-artifact: spec-only
 dependencies: [phase-1]
@@ -2498,3 +2499,12 @@ pushes.
   wrongly delete its recovery temp; explicit `install_failed` authority now
   separates preservation from terminal-fault precedence. The focused
   install-authority matrix recheck passed.
+- Phase 5 delivery: the native `sd` suite passes under strict C11,
+  warnings-as-errors, ASan, and UBSan with 58 named phase/action fixtures, 910
+  event/payload/authority matrix trials, and 15 lifecycle cases;
+  `teensy41-optical` builds with all banks fitting. The source-blind oracle
+  caught rollback terminal re-entry and suppressed action-id exhaustion
+  notification in the engine. Two delivery reviews then rejected
+  scenario-only mismatch coverage and missing append/finalize cancellation
+  rows. The count-asserted cross-product oracle and durable-file cancellation
+  sequences passed the final clean-room audit.

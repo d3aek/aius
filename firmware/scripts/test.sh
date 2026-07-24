@@ -9,8 +9,8 @@
 #
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
-#         pipeline, dsp, net, net-runner, http, usb-control, replay, boot.
-#         network-transport.
+#         pipeline, dsp, net, net-runner, http, usb-control, replay, boot,
+#         network-transport, sd.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -285,6 +285,15 @@ network-transport)
 		"$fw_root/src/aius_network_teensy.cpp" \
 		-o "$adapter_out"
 	"$adapter_out"
+	;;
+sd)
+	sd_out="$build_dir/sd"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_sd/include" \
+		"-I$fw_root/lib/aius_config/include" \
+		"$fw_root/test/sd/test_aius_sd.c" \
+		"$fw_root/lib/aius_sd/src/aius_sd.c" \
+		-o "$sd_out"
+	"$sd_out"
 	;;
 *)
 	echo "unknown suite: $suite" >&2
