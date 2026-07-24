@@ -513,8 +513,6 @@ Only `aius_network_teensy.cpp` may include NativeEthernet/FNET headers. The
 public header contains no vendor type:
 
 ```c
-#define AIUS_CDC_ADAPTER_PROTOCOL_FAULT UINT32_C(0x55534250)
-
 typedef struct {
     uint32_t generation;
     bool stack_started;
@@ -1954,9 +1952,10 @@ The caller owns RX and response buffers. The response buffer must be non-null,
 with capacity `48..320`. Init prologue is exact: if `runtime == NULL`, return
 without touching `response`; otherwise fully reset the runtime, touch no
 response bytes, and leave `valid = false` when `response == NULL` or capacity
-is outside `48..320`. The runtime object and response span are a caller
-disjointness precondition; the target layout and native oracle statically prove
-it. Step prologue order is exact: if `action == NULL`, return
+is outside `48..320`. The runtime object is a caller disjointness precondition
+from the response span and, at every step, the RX span, application-response
+object, verb span, and payload span; the target layout and native oracle
+statically prove it. Step prologue order is exact: if `action == NULL`, return
 without touching any object; otherwise initialize the action fully to `NONE`;
 then if `runtime == NULL || !runtime->valid`, return; only then validate RX and
 mutate counters, deadlines, or authority. Action storage is a caller
@@ -2202,6 +2201,8 @@ golden responses.
 contains the complete composition object and no file-static lifecycle state:
 
 ```c
+#define AIUS_CDC_ADAPTER_PROTOCOL_FAULT UINT32_C(0x55534250)
+
 typedef struct {
     void *context;
     bool (*connected)(void *context);
@@ -2234,6 +2235,8 @@ void aius_cdc_teensy_construct(
     const AiusCdcTeensyPrimitives *primitives);
 
 AiusCdcTeensyOps aius_cdc_teensy_ops(AiusCdcTeensy *adapter);
+
+AiusCdcTeensyPrimitives aius_cdc_teensy_serial_primitives(void);
 
 typedef struct {
     void *context;
@@ -2269,8 +2272,6 @@ typedef struct {
     bool write_event_present;
     bool application_response_present;
     bool rx_terminal;
-    uint32_t last_fault;
-    uint32_t protocol_faults;
     bool bootloader_entered;
 } AiusRuntimeUsb;
 
@@ -2312,6 +2313,10 @@ zero to `WOULD_BLOCK`, `1..offered` to `PROGRESS`, and an oversized result to
 the protocol sentinel fault. Production `Serial` exposes no separate driver
 fault; the fake primitive covers every normalized result. The sentinel and
 adapter types live in `aius_cdc_teensy.h`, which Phase 12 owns.
+`aius_cdc_teensy_serial_primitives()` lives in `aius_cdc_teensy.cpp`, is the
+only function in the new target runtime that mentions `Serial`, and returns the
+production primitive table used by Phase 14. Tests construct the same adapter
+with fake primitives.
 
 The USB application callback writes a NUL-terminated verb and payload within
 the dedicated `11`- and `257`-byte buffers. `aius_optical_usb_dispatch()`
@@ -2329,10 +2334,11 @@ lesser of 64 one-byte CDC read attempts and available space in the retained
 `PROGRESS(bytes=1, fault=0)` appends a byte. `WOULD_BLOCK(bytes=0, fault=0)`
 stops cleanly. `CLOSED(bytes=0, fault=0)` or
 `FAULT(bytes=0, fault!=0)` stops, marks the connection unavailable for that
-epoch, clears staged RX, and stores the driver fault in `usb_last_fault`.
+epoch, clears staged RX, and stores the driver fault in
+`usb.adapter.last_fault`.
 `CLOSED` stores zero. Any other result is an adapter protocol fault: it follows
 the same stop/clear behavior, stores `AIUS_CDC_ADAPTER_PROTOCOL_FAULT`, and
-increments saturating `usb_protocol_faults`. Disconnection clears staged RX.
+increments saturating `usb.adapter.protocol_faults`. Disconnection clears staged RX.
 At `USB_TX`, it moves and clears the
 prior retained application-response and write-event presence flags, samples
 the bounded `write_capacity`, then calls
