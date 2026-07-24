@@ -2464,4 +2464,6 @@ pushes.
   is split into an engine slice followed by an implementation-blind oracle
   slice. The definitive range recheck rejected an overloaded read
   `end_offset`; download/refill now derive it after file-size capture and fail
-  out-of-file requests with the stable `RANGE` fault.
+  out-of-file requests with the stable `RANGE` fault. The fresh recheck passed;
+  Phase 5 is authorized for engine dispatch followed by the source-blind
+  oracle slice.
