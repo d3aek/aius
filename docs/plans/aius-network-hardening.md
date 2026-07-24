@@ -1300,8 +1300,8 @@ primitive:
 | `OPEN_APPEND` | `SD.open(path, FILE_WRITE)` | valid `File` gives `OK` and sole open authority at end; invalid gives `FAULT(DRIVER)` |
 | `TRUNCATE` | `file.truncate(0)` | true `OK`; false `FAULT(DRIVER)`; retains open authority |
 | `SEEK` | `file.seek(offset)` | true `OK`; false `FAULT(DRIVER)` |
-| `READ` | `file.read(buffer,length)` | nonnegative `BYTES`, including zero; negative `FAULT(DRIVER)` |
-| `WRITE` | `file.write(buffer,length)` | `BYTES`, including zero |
+| `READ` | `file.read(buffer,length)` | public `size_t` result `0..length` gives `BYTES`; any larger value, including the pinned `SIZE_MAX` conversion of an underlying `-1`, gives `FAULT(DRIVER)` |
+| `WRITE` | `file.write(buffer,length)` | public `size_t` result `0..length` gives `BYTES`; any larger value gives `FAULT(DRIVER)` |
 | `FILE_SIZE` | `file.size()` | `SIZE` |
 | `EXISTS` | `SD.exists(path)` | `BOOL`; false is the only pinned absent result |
 | `RENAME` | `SD.rename(path,path_to)` | true `OK`; false `FAULT(DRIVER)` |
@@ -1343,7 +1343,8 @@ eligible storage actions plus 6 application/non-actions. It covers all
 success/failure results, open-authority
 transitions, exact payload validation, nulls, zero/malformed IDs, unnamed
 fields, duplicate-ID echo behavior, counter saturation, duration equality and
-wrap, and fully zeroed event fields. It asserts exactly one storage primitive
+wrap, read/write results `0`, `length`, `length+1`, and `SIZE_MAX`, and fully
+zeroed event fields. It asserts exactly one storage primitive
 and two clock samples for each valid eligible action, and zero for every
 rejected/application action. A source guard rejects `for`, `while`, `do`,
 recursion into `aius_sd_teensy_execute`, `delay`, and `delayMicroseconds`;
