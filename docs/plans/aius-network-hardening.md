@@ -448,7 +448,7 @@ Each root includes its `.` entry, followed by descendants sorted by raw
 `E\0<label>\0<type>\0<mode>\0<path>\0<digest>\0`. `<type>` is exactly `f`,
 `d`, or `l`; `<mode>` is `stat.S_IMODE` as six lowercase octal digits; `<path>`
 is `.` for the root or the raw slash-separated relative-path bytes; `<digest>`
-is 64 lowercase ASCII SHA-256 hex for regular-file bytes or raw symlink-target
+is 64 lowercase ASCII SHA-256 hex of regular-file bytes or raw symlink-target
 bytes and is empty for a directory. Root boundaries are therefore explicit in
 the label on every record. A component exactly `__pycache__` and a basename
 ending `.pyc` or `.pyo` are the only exclusions. NUL in a path, missing or
