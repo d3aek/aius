@@ -1954,10 +1954,16 @@ The caller owns RX and response buffers. The response buffer must be non-null,
 with capacity `48..320`. Init prologue is exact: if `runtime == NULL`, return
 without touching `response`; otherwise fully reset the runtime, touch no
 response bytes, and leave `valid = false` when `response == NULL` or capacity
-is outside `48..320`. Step prologue order is exact: if `action == NULL`, return
+is outside `48..320`. The runtime object and response span are a caller
+disjointness precondition; the target layout and native oracle statically prove
+it. Step prologue order is exact: if `action == NULL`, return
 without touching any object; otherwise initialize the action fully to `NONE`;
 then if `runtime == NULL || !runtime->valid`, return; only then validate RX and
-mutate counters, deadlines, or authority.
+mutate counters, deadlines, or authority. Action storage is a caller
+disjointness precondition from the runtime object, response span, RX span,
+application-response object, verb span, and payload span; target and oracle
+fixtures prove that layout. Calls violating either disjointness precondition
+are outside the portable ABI rather than partially defined alias cases.
 The step consumes at most the first 64 RX bytes, offers at most 64 TX bytes
 within `tx_capacity`, and returns at most one action.
 
@@ -2209,37 +2215,80 @@ typedef struct {
 } AiusCdcTeensyOps;
 
 typedef struct {
+    void *context;
+    bool (*connected)(void *context);
+    int (*read)(void *context);
+    int (*available_for_write)(void *context);
+    size_t (*write)(void *context, const uint8_t *data, size_t length);
+    void (*enter_bootloader)(void *context);
+} AiusCdcTeensyPrimitives;
+
+typedef struct {
+    AiusCdcTeensyPrimitives primitives;
+    uint32_t protocol_faults;
+    uint32_t last_fault;
+} AiusCdcTeensy;
+
+void aius_cdc_teensy_construct(
+    AiusCdcTeensy *adapter,
+    const AiusCdcTeensyPrimitives *primitives);
+
+AiusCdcTeensyOps aius_cdc_teensy_ops(AiusCdcTeensy *adapter);
+
+typedef struct {
+    void *context;
+    void (*checkpoint)(void *context, uint16_t checkpoint);
+    void (*feed_watchdog)(void *context);
+} AiusRuntimeTeensyPlatformOps;
+
+typedef struct {
     AiusNetSupervisor supervisor;
-    AiusNetworkTeensy network;
+    AiusNetworkTeensy target;
     AiusHttpTransaction http;
-    AiusSdJob sd;
-    AiusSdTeensy sd_target;
-    AiusUsbRuntime usb;
-    AiusOpticalApp app;
     uint8_t http_request[AIUS_HTTP_MAX_REQUEST];
     uint8_t http_response[AIUS_HTTP_MAX_RESPONSE];
+} AiusRuntimeNetworkHttp;
+
+typedef struct {
+    AiusSdJob job;
+    AiusSdTeensy target;
     uint8_t sd_transfer[512];
+} AiusRuntimeStorage;
+
+typedef struct {
+    AiusUsbRuntime runtime;
+    AiusCdcTeensy adapter;
     char usb_response[320];
     char usb_verb[11];
     char usb_payload[257];
-    AiusCdcTeensyOps cdc;
+    AiusCdcTeensyOps ops;
     uint8_t usb_rx[64];
     size_t usb_rx_length;
     AiusIoEvent usb_write_event;
-    AiusUsbApplicationResponse usb_application_response;
-    bool usb_write_event_present;
-    bool usb_application_response_present;
-    bool usb_rx_terminal;
-    uint32_t usb_last_fault;
-    uint32_t usb_protocol_faults;
+    AiusUsbApplicationResponse application_response;
+    bool write_event_present;
+    bool application_response_present;
+    bool rx_terminal;
+    uint32_t last_fault;
+    uint32_t protocol_faults;
     bool bootloader_entered;
+} AiusRuntimeUsb;
+
+typedef struct {
+    AiusRuntimeNetworkHttp network_http;
+    AiusRuntimeStorage storage;
+    AiusRuntimeUsb usb;
+    AiusOpticalApp app;
+    AiusRuntimeTeensyPlatformOps platform;
+    bool recovery_safe;
     uint32_t completed_epochs;
 } AiusRuntimeTeensy;
 
 void aius_runtime_teensy_construct(
     AiusRuntimeTeensy *runtime,
     const AiusOpticalAppOps *app_ops,
-    const AiusCdcTeensyOps *cdc_ops,
+    const AiusCdcTeensyPrimitives *cdc_primitives,
+    const AiusRuntimeTeensyPlatformOps *platform_ops,
     uint32_t now_ms,
     bool recovery_safe);
 
@@ -2252,12 +2301,28 @@ void aius_runtime_teensy_status(
     AiusRecoveryStatus *status);
 ```
 
+`aius_cdc_teensy` owns the only production `Serial` mapping. `connected()`
+returns the primitive connection sample. `read_byte()` returns `CLOSED` when
+disconnected, maps primitive `-1` to `WOULD_BLOCK`, maps `0..255` to
+`PROGRESS(bytes=1)` and stores that byte, and maps every other sentinel to
+`FAULT(AIUS_CDC_ADAPTER_PROTOCOL_FAULT)`. `write_capacity()` maps primitive
+values `<=0` to zero and clamps positive values to 64. `write()` requires an
+offered length in `1..64`, returns `CLOSED` when disconnected, maps primitive
+zero to `WOULD_BLOCK`, `1..offered` to `PROGRESS`, and an oversized result to
+the protocol sentinel fault. Production `Serial` exposes no separate driver
+fault; the fake primitive covers every normalized result. The sentinel and
+adapter types live in `aius_cdc_teensy.h`, which Phase 12 owns.
+
 The USB application callback writes a NUL-terminated verb and payload within
 the dedicated `11`- and `257`-byte buffers. `aius_optical_usb_dispatch()`
 bounded-scans those buffers, sets the explicit lengths, and rejects missing
 terminators or a verb inconsistent with the command.
 
-Construction initializes memory only. `USB_RX` is the explicit exception to
+Construction initializes memory only, copies the platform callbacks, constructs
+the CDC adapter from the supplied primitives, and retains `recovery_safe` as
+the scheduler mode for every epoch. Null callbacks or primitives make the
+composition invalid; the epoch then returns false without checkpoint or feed.
+`USB_RX` is the explicit exception to
 the one-adapter-event service rule. While connected, it performs at most the
 lesser of 64 one-byte CDC read attempts and available space in the retained
 64-byte staging buffer; it does not call the portable USB step. Only
@@ -2872,6 +2937,22 @@ acceptance:
   - network teardown discards HTTP before resource cleanup
   - fake epoch covers every service result and exact call count
 fan-out:
+  - name: agent-teensy-cdc-adapter
+    owned-paths:
+      - firmware/src/aius_cdc_teensy.cpp
+      - firmware/src/aius_cdc_teensy.h
+  - name: agent-runtime-network-http-service
+    owned-paths:
+      - firmware/src/aius_runtime_network_http.cpp
+      - firmware/src/aius_runtime_network_http.h
+  - name: agent-runtime-storage-service
+    owned-paths:
+      - firmware/src/aius_runtime_storage.cpp
+      - firmware/src/aius_runtime_storage.h
+  - name: agent-runtime-usb-service
+    owned-paths:
+      - firmware/src/aius_runtime_usb.cpp
+      - firmware/src/aius_runtime_usb.h
   - name: agent-teensy-runtime-composition
     owned-paths:
       - firmware/src/aius_runtime_teensy.cpp
@@ -2890,11 +2971,17 @@ commit-checkpoint:
   parent-commit: "feat(aius): compose bounded Teensy runtime services"
 ```
 
-Run the slices sequentially. The composition slice delivers the reviewed public
-header, target service object, and build wiring. After the parent verifies the
-header, a fresh source-blind oracle reads only the committed contract and public
-headers, then implements fake-service coverage and runner registration without
-reading the composition source.
+Run the slices sequentially in the listed order. The CDC slice owns only
+primitive normalization. The network/HTTP, storage, and USB slices each deepen
+one service behind the corresponding `AiusRuntimeNetworkHttp`,
+`AiusRuntimeStorage`, or `AiusRuntimeUsb` state and header; none owns scheduler
+order or another service. Their headers own the conceptual declarations shown
+above. The final composition slice embeds those reviewed services, wires
+cross-service actions and scheduler callbacks, retains mode, and updates the
+target build. After the parent verifies every public header, a fresh
+source-blind oracle reads only the committed contract and headers, then
+implements fake-service coverage and runner registration without reading any
+service or composition source.
 
 ### Phase 13 — Teensy retained watchdog adapter
 
