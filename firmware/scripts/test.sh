@@ -10,7 +10,8 @@
 # Suites: arena, codec-api-contract, config, dts, dts-arena, dts-fuzz,
 #         dts-lfe, iec61937, iec61937-fuzz, capability-protocol, capability,
 #         pipeline, dsp, net, net-runner, http, usb-control, replay, boot,
-#         runtime, network-transport, sd, sd-target.
+#         boot-target, fault-target, build-metadata, runtime,
+#         network-transport, sd, sd-target.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -264,6 +265,34 @@ boot)
 		"$fw_root/lib/aius_boot/src/aius_boot.c" \
 		-o "$boot_out"
 	"$boot_out"
+	;;
+boot-target)
+	python3 "$fw_root/test/boot-target/test_source_guard.py" \
+		"$fw_root/src/aius_boot_teensy.cpp"
+	python3 "$fw_root/test/boot-target/test_verify_target.py"
+	boot_target_core="$build_dir/boot-target-aius-boot.o"
+	"$cc" "${cflags[@]}" -Wpedantic \
+		"-I$fw_root/lib/aius_boot/include" \
+		-c "$fw_root/lib/aius_boot/src/aius_boot.c" \
+		-o "$boot_target_core"
+	boot_target_out="$build_dir/boot-target"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -Wpedantic -O1 -g \
+		-fsanitize=address,undefined \
+		"-I$fw_root/test/boot-target/fake" \
+		"-I$fw_root/lib/aius_boot/include" \
+		"-I$fw_root/src" \
+		"$fw_root/test/boot-target/test_aius_boot_teensy.cpp" \
+		"$fw_root/src/aius_boot_teensy.cpp" \
+		"$boot_target_core" \
+		-o "$boot_target_out"
+	"$boot_target_out"
+	;;
+fault-target)
+	python3 "$fw_root/test/fault-target/test_source_guard.py"
+	python3 "$fw_root/test/fault-target/test_fault_target.py"
+	;;
+build-metadata)
+	python3 "$fw_root/test/build-metadata/test_build_metadata.py"
 	;;
 runtime)
 	runtime_out="$build_dir/runtime"

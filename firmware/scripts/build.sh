@@ -6,8 +6,9 @@
 # (FLASH / ITCM / DTCM / OCRAM). Foreground-only and root-independent: it resolves
 # the firmware root from its own path.
 #
-#   scripts/build.sh                        # builds teensy41-release (default)
-#   scripts/build.sh teensy41-instrument    # builds a named env
+#   scripts/build.sh                              # builds teensy41-release (default)
+#   scripts/build.sh teensy41-instrument          # builds a named env
+#   scripts/build.sh teensy41-optical-fault 0     # builds fault checkpoint 0
 #   PIO=/path/to/venv/bin/pio scripts/build.sh
 #
 # PlatformIO Core is NOT vendored. Provision it once (pinned) into a venv, e.g.
@@ -21,17 +22,26 @@
 #   PIO                  PlatformIO Core executable            (default: pio on PATH)
 #   PLATFORMIO_CORE_DIR  platform + toolchain cache            (default: ~/.platformio)
 #
-# Exit codes: 0 ok; 1 build failed; 2 a memory bank is over capacity;
-#             3 PlatformIO Core not found; 4 usage error.
+# Exit codes: 0 ok; 1 build/evidence failed; 2 a memory bank is over capacity;
+#             3 required build tool not found; 4 usage error;
+#             75 optical build lock contention.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fw_root="$(cd "$here/.." && pwd)"
 
 env_name="teensy41-release"
+fault_checkpoint=""
 case "${1:-}" in
 -h | --help)
-	echo "usage: build.sh [ENV]        (default ENV: teensy41-release)"
+	if [[ $# -ne 1 ]]; then
+		echo "error: --help does not accept arguments" >&2
+		exit 4
+	fi
+	echo "usage: build.sh [ENV]"
+	echo "       build.sh teensy41-optical-fault CHECKPOINT"
+	echo "  default ENV: teensy41-release"
+	echo "  CHECKPOINT: one digit from 0 through 8"
 	echo "  cross-builds a Teensy 4.1 PlatformIO env and prints the per-bank memory report"
 	echo "  env: PIO=<pio exe> PLATFORMIO_CORE_DIR=<cache dir>"
 	exit 0
@@ -46,6 +56,22 @@ case "${1:-}" in
 	;;
 esac
 
+if [[ ${AIUS_FAULT_CHECKPOINT+x} ]]; then
+	echo "error: AIUS_FAULT_CHECKPOINT is build-script controlled; pass the checkpoint as an argument" >&2
+	exit 4
+fi
+
+if [[ "$env_name" == "teensy41-optical-fault" ]]; then
+	if [[ $# -ne 2 || ! ${2:-} =~ ^[0-8]$ ]]; then
+		echo "error: teensy41-optical-fault requires one checkpoint digit from 0 through 8" >&2
+		exit 4
+	fi
+	fault_checkpoint="$2"
+elif [[ $# -ne 0 && $# -ne 1 ]]; then
+	echo "error: a checkpoint selector is valid only for teensy41-optical-fault" >&2
+	exit 4
+fi
+
 pio="${PIO:-pio}"
 if ! command -v "$pio" >/dev/null 2>&1; then
 	echo "==> PlatformIO Core not found (PIO='$pio')." >&2
@@ -57,10 +83,40 @@ core_dir="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}"
 
 mkdir -p "$fw_root/.pio"
 build_log="$fw_root/.pio/build-$env_name.log"
+archive_evidence=false
+build_head=""
+evidence_selector=""
+evidence_dir=""
+selector_json="null"
+if [[ "$env_name" == "teensy41-optical" || "$env_name" == "teensy41-optical-fault" ]]; then
+	if ! command -v flock >/dev/null 2>&1; then
+		echo "==> flock not found; cannot serialize optical builds." >&2
+		exit 3
+	fi
+	exec {optical_build_lock_fd}>"$fw_root/.pio/optical-build.lock"
+	if ! flock -n "$optical_build_lock_fd"; then
+		echo "==> Another production or fault optical build holds the build lock." >&2
+		exit 75
+	fi
+	build_head="$(cd "$fw_root" && git rev-parse HEAD)"
+	archive_evidence=true
+	if [[ "$env_name" == "teensy41-optical-fault" ]]; then
+		evidence_selector="$fault_checkpoint"
+		evidence_dir="$fw_root/.pio/evidence/fault-cp$evidence_selector"
+		selector_json="$evidence_selector"
+	else
+		evidence_dir="$fw_root/.pio/evidence/production"
+	fi
+	rm -f "$evidence_dir/receipt.json"
+fi
 
 echo "==> Building $env_name for Teensy 4.1 (PlatformIO Core $("$pio" --version 2>/dev/null | awk '{print $NF}'))"
 set +e
-"$pio" run -e "$env_name" -d "$fw_root" 2>&1 | tee "$build_log"
+if [[ -n "$fault_checkpoint" ]]; then
+	AIUS_FAULT_CHECKPOINT="$fault_checkpoint" "$pio" run -e "$env_name" -d "$fw_root" 2>&1 | tee "$build_log"
+else
+	"$pio" run -e "$env_name" -d "$fw_root" 2>&1 | tee "$build_log"
+fi
 rc=${PIPESTATUS[0]}
 set -e
 if [[ $rc -ne 0 ]]; then
@@ -90,3 +146,36 @@ fi
 
 echo
 python3 "$fw_root/tools/memory/mem_report.py" "${report_args[@]}"
+
+if [[ "$archive_evidence" == true ]]; then
+	current_head="$(cd "$fw_root" && git rev-parse HEAD)"
+	if [[ "$current_head" != "$build_head" ]]; then
+		echo "==> HEAD changed during the optical build; evidence was not recorded." >&2
+		exit 1
+	fi
+
+	elf="$fw_root/.pio/build/$env_name/firmware.elf"
+	hex="$fw_root/.pio/build/$env_name/firmware.hex"
+	if [[ ! -f "$elf" || ! -f "$hex" || ! -f "$build_log" ]]; then
+		echo "==> Build succeeded without the required ELF, HEX, and full log." >&2
+		exit 1
+	fi
+
+	mkdir -p "$evidence_dir"
+	cp "$elf" "$evidence_dir/firmware.elf"
+	cp "$hex" "$evidence_dir/firmware.hex"
+	cp "$build_log" "$evidence_dir/build.log"
+
+	elf_sha256="$(sha256sum "$evidence_dir/firmware.elf" | awk '{print $1}')"
+	hex_sha256="$(sha256sum "$evidence_dir/firmware.hex" | awk '{print $1}')"
+	receipt_tmp="$(mktemp "$evidence_dir/.receipt.json.tmp.XXXXXX")"
+	printf '%s\n' \
+		'{' \
+		"  \"source_revision\": \"$build_head\"," \
+		"  \"environment\": \"$env_name\"," \
+		"  \"selector\": $selector_json," \
+		"  \"elf_sha256\": \"$elf_sha256\"," \
+		"  \"hex_sha256\": \"$hex_sha256\"" \
+		'}' >"$receipt_tmp"
+	mv "$receipt_tmp" "$evidence_dir/receipt.json"
+fi
