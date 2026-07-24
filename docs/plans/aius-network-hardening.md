@@ -1237,14 +1237,31 @@ Deepen `aius_http` with a transaction object; parsing and response formatting
 remain its public codec.
 
 ```c
+#define AIUS_HTTP_RX_QUOTA 256u
+#define AIUS_HTTP_TX_QUOTA 512u
+#define AIUS_HTTP_CONTENT_TYPE_STORAGE 64u
+
 typedef enum {
     AIUS_HTTP_TX_IDLE,
     AIUS_HTTP_TX_RECEIVE,
     AIUS_HTTP_TX_DISPATCH,
-    AIUS_HTTP_TX_SEND,
+    AIUS_HTTP_TX_SD_START,
     AIUS_HTTP_TX_SD_TRANSFER,
+    AIUS_HTTP_TX_SEND,
     AIUS_HTTP_TX_CLOSE
 } AiusHttpTransactionState;
+
+typedef enum {
+    AIUS_HTTP_SD_PHASE_NONE,
+    AIUS_HTTP_SD_PHASE_WAIT_START,
+    AIUS_HTTP_SD_PHASE_UPLOAD_WAIT_INPUT,
+    AIUS_HTTP_SD_PHASE_UPLOAD_SUPPLY,
+    AIUS_HTTP_SD_PHASE_DOWNLOAD_ADVANCE,
+    AIUS_HTTP_SD_PHASE_DOWNLOAD_WRITE,
+    AIUS_HTTP_SD_PHASE_DOWNLOAD_ACK,
+    AIUS_HTTP_SD_PHASE_WAIT_TERMINAL,
+    AIUS_HTTP_SD_PHASE_CANCEL
+} AiusHttpSdPhase;
 
 typedef enum {
     AIUS_HTTP_APP_IMMEDIATE,
@@ -1265,30 +1282,9 @@ typedef enum {
     AIUS_HTTP_SD_NEED_UPLOAD,
     AIUS_HTTP_SD_DOWNLOAD_DATA,
     AIUS_HTTP_SD_COMPLETE,
-    AIUS_HTTP_SD_FAILED
+    AIUS_HTTP_SD_FAILED,
+    AIUS_HTTP_SD_CANCELLED
 } AiusHttpSdEventKind;
-
-typedef enum {
-    AIUS_HTTP_EVENT_NONE,
-    AIUS_HTTP_EVENT_ACCEPTED,
-    AIUS_HTTP_EVENT_RX,
-    AIUS_HTTP_EVENT_TX,
-    AIUS_HTTP_EVENT_SD,
-    AIUS_HTTP_EVENT_APPLICATION_RESPONSE,
-    AIUS_HTTP_EVENT_CLOSED,
-    AIUS_HTTP_EVENT_FAULT
-} AiusHttpEventKind;
-
-typedef struct {
-    AiusHttpEventKind kind;
-    AiusIoEvent io;
-    const uint8_t *data;
-    const AiusHttpApplicationResponse *application_response;
-    AiusHttpSdEventKind sd_kind;
-    size_t sd_length;
-    uint64_t sd_size;
-    uint32_t sd_fault;
-} AiusHttpEvent;
 
 typedef enum {
     AIUS_HTTP_ACTION_NONE,
@@ -1302,28 +1298,109 @@ typedef enum {
     AIUS_HTTP_ACTION_CLOSE
 } AiusHttpActionKind;
 
+typedef enum {
+    AIUS_HTTP_EVENT_NONE,
+    AIUS_HTTP_EVENT_IO_RESULT,
+    AIUS_HTTP_EVENT_APPLICATION_RESPONSE,
+    AIUS_HTTP_EVENT_SD_RESULT,
+    AIUS_HTTP_EVENT_PEER_CLOSED,
+    AIUS_HTTP_EVENT_PEER_FAULT
+} AiusHttpEventKind;
+
+typedef struct {
+    AiusHttpEventKind kind;
+    uint64_t action_id;
+    AiusHttpActionKind completed_action;
+    AiusIoEvent io;
+    const AiusHttpApplicationResponse *application_response;
+    AiusHttpSdEventKind sd_kind;
+    const uint8_t *sd_data;
+    size_t sd_length;
+    uint64_t sd_size;
+    AiusSdFault sd_fault;
+    uint32_t sd_driver_fault;
+    uint32_t peer_fault;
+} AiusHttpEvent;
+
+typedef enum {
+    AIUS_HTTP_SD_OP_NONE,
+    AIUS_HTTP_SD_OP_ADVANCE,
+    AIUS_HTTP_SD_OP_SUPPLY_UPLOAD,
+    AIUS_HTTP_SD_OP_ACK_DOWNLOAD,
+    AIUS_HTTP_SD_OP_FAIL_DOWNLOAD
+} AiusHttpSdOperation;
+
 typedef struct {
     AiusHttpActionKind kind;
+    uint64_t action_id;
     const uint8_t *data;
     size_t length;
     const AiusHttpRequest *request;
     const AiusSdJobRequest *sd_request;
+    AiusHttpSdOperation sd_operation;
+    uint32_t fault;
 } AiusHttpAction;
+
+typedef enum {
+    AIUS_HTTP_FAULT_NONE,
+    AIUS_HTTP_FAULT_INVALID_INIT,
+    AIUS_HTTP_FAULT_PROTOCOL,
+    AIUS_HTTP_FAULT_REQUEST_TIMEOUT,
+    AIUS_HTTP_FAULT_RESPONSE_TIMEOUT,
+    AIUS_HTTP_FAULT_UPLOAD_TIMEOUT,
+    AIUS_HTTP_FAULT_DOWNLOAD_TIMEOUT,
+    AIUS_HTTP_FAULT_RESPONSE_CAPACITY,
+    AIUS_HTTP_FAULT_ACTION_ID_EXHAUSTED,
+    AIUS_HTTP_FAULT_TRANSPORT,
+    AIUS_HTTP_FAULT_SD
+} AiusHttpFault;
 
 typedef struct {
     AiusHttpTransactionState state;
+    AiusHttpSdPhase sd_phase;
     uint8_t *request;
     size_t request_capacity;
     size_t request_length;
+    size_t header_length;
+    uint64_t body_expected;
+    size_t upload_prefix_offset;
+    size_t upload_prefix_length;
+    size_t upload_prefix_supplied;
+    uint64_t upload_supplied;
     uint8_t *response;
     size_t response_capacity;
     size_t response_length;
     size_t response_offset;
+    const uint8_t *download_data;
+    uint64_t download_size;
+    uint64_t download_sent;
+    size_t download_length;
+    size_t download_offset;
     uint32_t deadline_ms;
+    uint64_t next_action_id;
+    uint64_t outstanding_action_id;
+    AiusHttpActionKind outstanding_action;
+    size_t outstanding_length;
     AiusHttpRequest parsed_request;
     AiusSdJobRequest sd_request;
+    char sd_target_path[AIUS_SD_PATH_STORAGE];
+    char sd_temp_path[AIUS_SD_PATH_STORAGE];
+    char sd_backup_path[AIUS_SD_PATH_STORAGE];
+    char content_type[AIUS_HTTP_CONTENT_TYPE_STORAGE];
+    AiusHttpFault last_fault;
+    AiusSdFault last_sd_fault;
+    uint32_t last_driver_fault;
+    unsigned last_status;
+    bool valid;
+    bool client_active;
+    bool deadline_active;
     bool dispatch_emitted;
-    bool cleanup_emitted;
+    bool close_emitted;
+    bool response_started;
+    bool sd_started;
+    bool sd_cancel_emitted;
+    bool sd_terminal;
+    bool action_ids_exhausted;
 } AiusHttpTransaction;
 
 void aius_http_transaction_init(
@@ -1341,44 +1418,259 @@ void aius_http_transaction_step(
     AiusHttpAction *action);
 ```
 
-The caller owns both fixed buffers for the transaction lifetime. RX event data
-is borrowed for the step only. The step fully initializes `action` to `NONE`,
-consumes at most 256 event bytes, emits at most one write of 512 bytes, and
-makes at most one state transition.
-- A successful parse stores `parsed_request` and emits `DISPATCH` exactly once.
-  The request and all slices it references remain valid until the application
-  response step returns.
-- The application response is borrowed for one step. `IMMEDIATE` is formatted
-  into the caller-owned response buffer. `SD_JOB` copies the request struct
-  into transaction state and emits `SD_START` with a pointer to that copy.
-  Its path pointers remain borrowed from `AiusOpticalApp` only until the
-  runtime synchronously calls `aius_sd_job_start()`, which copies every path.
-  A missing, duplicate, or out-of-state application response is a protocol
-  fault and closes the transaction.
-- If headers plus body exceed response capacity, the transaction formats a
-  fixed 500 `response_too_large` response when that fits; otherwise it closes
-  without a partial response. Application body pointers are never retained.
-- `WOULD_BLOCK` preserves offsets and changes no counter except a deadline
-  expiry. Partial writes advance exactly by the reported byte count.
-- Disconnect or fault at every state selects `CLOSE`; cleanup is emitted once.
-- Request timeout is 150 ms, response-write timeout 100 ms, upload timeout 2 s,
-  and download timeout 10 s.
-- The runtime consumes `SD_START` before the next transaction step, initializes
-  its owned job, and returns `SD_STARTED` or `SD_FAILED`. While transferring,
-  each `SD_STEP` advances the owned job and at most one target SD action.
-  `NEED_UPLOAD` makes HTTP read at most 256 bytes; the following `SD_STEP`
-  carries those borrowed bytes for immediate copy to the 512-byte job buffer.
-  `DOWNLOAD_DATA` borrows that buffer until the next step; HTTP writes at most
-  512 bytes before requesting more. `sd_size` supplies the download
-  `Content-Length`. `COMPLETE` sends the already-formatted success response;
-  `FAILED` formats the mapped deterministic error. Disconnect emits
-  `SD_CANCEL`, which the runtime consumes once before returning `CLOSED`.
-  HTTP never calls a file API or loops over SD progress.
+`aius_http.h` includes `aius_io.h` and `aius_sd.h`;
+`aius_http_transaction.c` is a new portable source file and contains no target,
+socket, or file API.
 
-The failure matrix covers `WOULD_BLOCK`, zero-byte progress, every partial
-read/write split, disconnect/fault in every state, response capacity, invalid
-transport byte counts, SD open/read/write/commit/cancel failures, and deadline
-equality/wrap.
+### Codec and request-framing contract
+
+`AiusHttpRequest` gains these fields:
+
+```c
+size_t header_length;
+bool has_content_length;
+uint64_t content_length;
+const uint8_t *body;
+size_t body_length;
+bool body_complete;
+```
+
+`header_length` includes the terminating `\r\n\r\n`. `body` is
+`data + header_length`; `body_length` is the currently supplied prefix.
+`body_complete` is true only when `body_length == content_length`. The parser is
+called only after the transaction has found a complete header block.
+
+The framing rules are:
+
+- zero or one exact `Content-Length` header is accepted. Its value is a
+  non-empty unsigned decimal integer with no sign or surrounding syntax and
+  must fit `uint64_t`. Duplicate headers, including equal duplicates, are
+  malformed.
+- absent `Content-Length` means zero. Bytes after the header when it is absent,
+  or bytes beyond the declared length, are malformed. Any
+  `Transfer-Encoding` header is rejected as malformed; chunked requests and
+  request pipelining are unsupported.
+- ordinary requests, including `/api/config/public`, dispatch only when the
+  declared body is complete and fits both the transaction request buffer and
+  `AIUS_HTTP_MAX_BODY`.
+- only `PUT /sd/<resource>` and `PUT /sd/replays/<id>` are streamed. They
+  require `Content-Length`, dispatch as soon as the complete header is parsed,
+  and may declare a body larger than the request buffer. Any body prefix
+  already read with the header remains in the request buffer and is supplied
+  to SD before another socket read.
+- the parser continues to validate route-specific bodies when
+  `body_complete`. It never reads past `body_length`. An incomplete streamed
+  body is valid only for the two streamed routes above.
+
+The transaction searches for the header delimiter incrementally, never beyond
+`AIUS_HTTP_MAX_HEADERS + 4`, and offers at most `AIUS_HTTP_RX_QUOTA` bytes per
+`READ`. Before dispatch it writes directly into the unused suffix of the
+caller-owned request buffer. During streamed upload it supplies the retained
+prefix first, then reuses the request buffer as transaction-owned staging.
+`DISPATCH` is emitted exactly once. Every slice in `parsed_request` remains
+valid through the correlated application-response step; no slice is retained
+after that step.
+
+The request and response buffers must both be non-null, have capacities in
+`1..AIUS_HTTP_MAX_REQUEST` and `1..AIUS_HTTP_MAX_RESPONSE`, and not overlap.
+Invalid initialization sets `valid = false` and `last_fault =
+AIUS_HTTP_FAULT_INVALID_INIT`; every later step returns `NONE` without changing
+authority. A null transaction is ignored. A non-null action is always fully
+initialized to `NONE`, including on invalid input.
+
+### Correlated action protocol
+
+Every non-`NONE` action has a nonzero monotonically increasing `action_id`.
+The transaction retains its kind, ID, and offered length until a valid
+correlated event resolves it. IDs are never reused during the object lifetime.
+Reserving past `UINT64_MAX` records `AIUS_HTTP_FAULT_ACTION_ID_EXHAUSTED` and
+starts cleanup without emitting the wrapped action.
+
+`IO_RESULT` must name the outstanding `ACCEPT`, `READ`, `WRITE`, or `CLOSE`
+action and echo its ID. `READ` and `WRITE` `PROGRESS` is valid only with
+`bytes` in `1..outstanding_length`; `ACCEPT` and `CLOSE` `PROGRESS` require
+zero bytes. `WOULD_BLOCK` and `CLOSED` require zero bytes and zero fault;
+`FAULT` requires zero bytes and nonzero fault. `ACCEPT` never returns
+`CLOSED`. An I/O result for any other action is malformed.
+
+`APPLICATION_RESPONSE` must correlate the outstanding `DISPATCH`.
+`SD_RESULT` must correlate `SD_START`, `SD_STEP`, or `SD_CANCEL`.
+`PEER_CLOSED` and `PEER_FAULT` are unsolicited, require zero action ID and
+`completed_action = NONE`, and carry respectively no payload or one nonzero
+`peer_fault`. Every field not named for an event is zero or null.
+
+`NONE` with no outstanding action drives the next action. `NONE` while a
+transport or SD drain action is outstanding retains that authority and can
+only cause deadline expiry. Because dispatch and job start are synchronous
+runtime handshakes, `NONE` on the call after `DISPATCH` or `SD_START` is a
+protocol fault. A duplicate, wrong-ID, wrong-action, wrong-state, unsolicited,
+or malformed event is a protocol fault. Before any response byte it produces
+the fixed protocol response below; after transmission starts it proceeds
+directly to cleanup. No malformed event may consume a valid outstanding SD
+authority.
+
+Initialization enters authority-free `IDLE`; `step(NONE)` emits one `ACCEPT`.
+An accept `WOULD_BLOCK` returns to accept-ready `IDLE`; a successful accept
+starts client authority, clears the prior client’s counters and flags, and
+starts request reception. Accepted `CLOSED` or `FAULT` starts cleanup.
+
+Every accepted connection emits exactly one idempotent `CLOSE`, even after an
+unsolicited peer close/fault. `CLOSE` `PROGRESS`, `CLOSED`, or `FAULT` exhausts
+transport authority. `CLOSE` `WOULD_BLOCK` is an adapter protocol fault and
+also exhausts transport authority; close is not retried. Per-client storage is
+reset and the object becomes restartable `IDLE` only after transport authority
+is exhausted and any SD job is terminal. `close_emitted` records issuance,
+not acknowledgement.
+
+### Application and response ownership
+
+The application response is borrowed through its correlated step only:
+
+- `IMMEDIATE` requires a supported status, a NUL-terminated content type of
+  `1..AIUS_HTTP_CONTENT_TYPE_STORAGE-1` bytes, a non-null body when
+  `body_length != 0`, and a zeroed `sd_job`. The complete response is formatted
+  during that step; no application pointer is retained.
+- `SD_JOB` obeys the same status, content-type, and body rules. For non-download
+  jobs these fields are the eventual success response and are formatted during
+  the application-response step. For download, `body` is null and
+  `body_length` is zero; status and copied content type form the later download
+  header.
+
+For `SD_JOB`, the transaction validates the request and copies all three path
+strings and the content type into its fixed storage. Its stored
+`AiusSdJobRequest` points only into that storage. The returned `SD_START`
+points to the stored request, so the runtime can synchronously call
+`aius_sd_job_start()` before the next HTTP step without borrowing application
+memory. `SD_START` starts the SD job with deadline zero; HTTP owns the
+inactivity deadline and cancellation protocol.
+
+Permitted application statuses are `200`, `201`, `204`, `400`, `401`, `403`,
+`404`, `405`, `408`, `409`, `413`, `416`, `500`, `503`, and `507`.
+`aius_http_reason()` contains an exact reason for each, including `Conflict`
+and `Range Not Satisfiable`. Any other status or invalid application field is
+a protocol fault.
+
+If a complete immediate or non-download success response does not fit, the
+transaction replaces it with this complete response when that fits:
+
+```text
+500 application/json {"ok":false,"error":"response_too_large"}
+```
+
+If the fallback does not fit, no partial response is emitted. Download headers
+are formatted only after the first `DOWNLOAD_DATA`, or download `COMPLETE` for
+a zero-byte file, supplies the authoritative `sd_size`. Header overflow uses
+the same fallback and cancels the job before cleanup.
+
+### SD transfer and lifetime contract
+
+An `SD_STARTED` event has no payload. `NEED_UPLOAD` supplies a positive
+`sd_length` no greater than the job buffer capacity. `DOWNLOAD_DATA` supplies
+non-null `sd_data`, positive `sd_length`, and the authoritative total
+`sd_size`; every later chunk repeats the same size. `COMPLETE` carries
+`sd_size` only for a zero-byte download and otherwise has no payload. `FAILED`
+carries nonzero typed `sd_fault` and may carry `sd_driver_fault`.
+`CANCELLED` is terminal and may carry an authoritative cleanup/rollback
+`sd_fault` and driver fault. Every unnamed field is zero or null.
+
+`SD_STEP` operations are exact:
+
+- `ADVANCE` asks the owned job to advance until it exposes one semantic event,
+  while performing at most one target SD action in that runtime epoch.
+- `SUPPLY_UPLOAD` carries transaction-owned staged bytes for immediate
+  `aius_sd_job_supply()`. The buffer remains unchanged until the correlated SD
+  result. Retained body-prefix bytes are supplied before any further `READ`.
+- `ACK_DOWNLOAD` acknowledges one complete prior `OUTPUT` chunk only after
+  every byte was accepted by transport.
+- `FAIL_DOWNLOAD` resolves that `OUTPUT` with failure when transport cannot
+  finish it.
+
+The transaction never retains RX data owned by the transport; `READ` writes
+directly into its request buffer. A download chunk is borrowed from the SD job
+but remains immutable until the correlated `ACK_DOWNLOAD` or `FAIL_DOWNLOAD`,
+not merely until the next HTTP call. The transaction retains its pointer,
+length, and offset while partial writes or `WOULD_BLOCK` occur. It never asks
+for another SD action while a chunk is unacknowledged.
+
+For upload, `NEED_UPLOAD` causes a read of at most the smaller of 256 bytes,
+the job’s offered capacity, and the declared body remainder. A positive read
+is followed by `SUPPLY_UPLOAD`; exact supplied and declared offsets are
+retained independently. Asking for input after the declared body is exhausted,
+completing before all declared bytes were supplied, inconsistent download
+sizes, zero/oversized chunks, or bytes beyond the declared body is a protocol
+fault followed by cancellation.
+
+`SD_CANCEL` is an acknowledged drain operation, not a notification. The
+runtime resolves any outstanding download `OUTPUT` with failure, calls
+`aius_sd_job_cancel()` exactly once, then advances at most one SD action per
+runtime epoch until rollback/cleanup reaches terminal. It returns `CANCELLED`
+only after all SD authority is exhausted. Cleanup or rollback failure remains
+the authoritative `last_sd_fault` over the original transport fault or
+timeout. HTTP does not restart, reset either buffer, or allow another accept
+until both transport close and SD terminal are confirmed.
+
+HTTP never calls a socket or file API and never loops over transport or SD
+progress.
+
+### Deadlines, transmission, and deterministic failures
+
+Deadlines are inactivity deadlines: request `150 ms`, response write `100 ms`,
+upload `2 s`, download `10 s`. Successful accept starts the request deadline.
+Only validated positive RX, TX, upload-supply, or download progress rearms the
+matching deadline. `WOULD_BLOCK`, action issuance, application dispatch,
+SD-start, and `ADVANCE` without transferred bytes do not rearm it. The
+application-response and SD-start handshakes must resolve on the next call and
+therefore have no separate deadline. Close has no retry deadline because it is
+one-shot.
+
+Validate an event before testing time. A well-formed correlated positive
+progress event at deadline equality wins and rearms; otherwise equality
+expires. Use `(int32_t)(now_ms - deadline_ms) >= 0`; every interval is below
+`INT32_MAX`. Timeout starts cleanup, and an active SD job is cancelled through
+the drain protocol.
+
+`WRITE` is exactly the next
+`min(AIUS_HTTP_TX_QUOTA, remaining)` bytes. Immediate responses and download
+headers use `response + response_offset`; download bodies use
+`download_data + download_offset`. `WOULD_BLOCK` preserves all offsets and a
+later epoch reoffers the identical slice with a new action ID. Positive partial
+progress advances exactly the accepted prefix and rearms the deadline. Header
+and download-body offsets are independent. A download chunk is acknowledged
+only after all its bytes are accepted. Completion closes once; a zero-byte
+download still sends its header, confirms SD completion, and closes.
+
+All fixed errors use `application/json`:
+
+| Cause | Status | Exact body |
+|---|---:|---|
+| malformed request or body | 400 | `{"ok":false,"error":"bad_request"}` |
+| method | 405 | `{"ok":false,"error":"method_not_allowed"}` |
+| route | 404 | `{"ok":false,"error":"not_found"}` |
+| request timeout | 408 | `{"ok":false,"error":"request_timeout"}` |
+| request/body/header capacity | 413 | `{"ok":false,"error":"request_too_large"}` |
+| protocol fault before TX | 400 | `{"ok":false,"error":"protocol"}` |
+| response overflow | 500 | `{"ok":false,"error":"response_too_large"}` |
+| download `OPEN` | 404 | `{"ok":false,"error":"sd_not_found"}` |
+| SD `RANGE` | 416 | `{"ok":false,"error":"sd_range"}` |
+| SD `MEDIA` | 503 | `{"ok":false,"error":"sd_unavailable"}` |
+| SD `CAPACITY` or `OVERFLOW` | 507 | `{"ok":false,"error":"sd_capacity"}` |
+| every other SD failure | 500 | `{"ok":false,"error":"sd_failure"}` |
+
+An SD `OPEN` maps to 404 only for download; otherwise it uses the remaining-SD
+mapping. Transport-caused cancellation sends no response. A protocol or SD
+failure after any response byte closes without attempting a second response.
+The transaction retains `last_fault`, `last_sd_fault`, `last_driver_fault`, and
+`last_status` through cleanup and restart until the next successful accept.
+
+The independent oracle enumerates every reachable
+state/outstanding-action/event triple and all unnamed-payload violations. It
+also covers every parser result, both application kinds, every SD event and
+operation, cancel/drain authority, capacities around every fixed response,
+RX/TX splits at `0/1/255/256/257/511/512/513`, zero and partial download
+chunks, content-length zero/maximum/overflow/duplicate/invalid cases,
+deadline equality and wrap, action-ID exhaustion, duplicate
+dispatch/close/cancel, cleanup-fault precedence, and multiple accept-close
+restart sequences.
 
 ## Bounded CDC runtime ABI
 
@@ -1996,10 +2288,15 @@ acceptance:
   - dispatch occurs exactly once and response overflow is deterministic
   - partial RX, TX, and SD progress preserve exact offsets and deadlines
 fan-out:
-  - name: agent-http-transaction
+  - name: agent-http-codec-framing
     owned-paths:
       - firmware/lib/aius_http/include/aius_http.h
       - firmware/lib/aius_http/src/aius_http.c
+  - name: agent-http-transaction-engine
+    owned-paths:
+      - firmware/lib/aius_http/src/aius_http_transaction.c
+  - name: agent-http-independent-oracle
+    owned-paths:
       - firmware/test/http/
       - firmware/scripts/test.sh
 review-intensity: active
@@ -2007,11 +2304,18 @@ commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite http
   buildable:
-    - teensy41-optical
+    - firmware/scripts/build.sh teensy41-optical
   parent-commit: "feat(aius): model bounded HTTP transactions"
 ```
 
-Cover the complete failure matrix through the public transaction interface.
+Run the slices sequentially. The codec slice lands the reviewed public framing
+and transaction declarations. The engine slice implements only the new
+transaction source. After the parent verifies that implementation against the
+committed header, a fresh oracle agent reads the plan and public header but not
+either implementation source, then authors the independent
+transition/model/property suite and runner registration. Phase 6 does not edit
+`optical_main.cpp`, add a Teensy SD adapter, or cut over the runtime; those
+remain later phases.
 
 ### Phase 7 — Bounded CDC recovery runtime
 
