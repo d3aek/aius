@@ -353,9 +353,37 @@ manifest:
 
 The last two files are textual build inputs included by
 `aius_spdif_sources.cpp`; omitting them would permit image bytes to change
-without an identity change. The manifest is the single authority shared by
-the metadata injector and build wrapper. It binds tracked path, mode, and blob
-identity while ignoring commits outside the build/evidence closure.
+without an identity change. The manifest is the single authority shared by the
+metadata injector and build wrapper. `build_metadata.py` owns the ordered path
+tuple and exposes these exact CLI operations:
+
+- `manifest-revision --repository-root PATH --commit COMMIT` prints only the
+  full firmware input revision plus newline;
+- `check-clean --repository-root PATH` exits 0 with no output only when every
+  manifest path is free of staged, unstaged, and untracked changes, otherwise
+  exits 1 and prints the porcelain records to stderr;
+- `prepare-snapshot --repository-root PATH --commit COMMIT --destination PATH`
+  exports and verifies the immutable build snapshot, then prints its revision;
+- `verify-snapshot --repository-root PATH --commit COMMIT --snapshot PATH`
+  verifies exact entry set, Git mode, blob identity, symlink target, and absence
+  of extra files under every exported manifest root;
+- `environment-revision --pio PATH --core-dir PATH` prints the external build
+  environment revision;
+- `environment-metadata --pio PATH --core-dir PATH` prints one canonical
+  single-line JSON object with `schema`, `revision`,
+  `platformio_core_version`, and `toolchain_version`;
+- `image-metadata --source-revision REV --build-environment-revision REV
+  --environment ENV [--selector N]` prints one canonical single-line JSON
+  object with `source_revision`, `build_environment_revision`, `environment`,
+  nullable `selector`, `build_revision`, integer `build_id_u32`, and
+  eight-lowercase-hex `build_id`;
+- `validate-evidence --repository-root PATH --pio PATH --core-dir PATH
+  --evidence-root PATH` validates the complete ten-image receipt matrix.
+
+Every data command emits no partial stdout on failure and exits nonzero.
+`build.sh` calls these operations; it never carries a second manifest list.
+The manifest revision binds tracked path, mode, and blob identity while
+ignoring commits outside the build/evidence closure.
 
 - source revision is the complete firmware input revision;
 - production identity is
@@ -364,44 +392,122 @@ identity while ignoring commits outside the build/evidence closure.
   `<first-12-digest-hex>+teensy41-optical-fault.cp<checkpoint>`, where
   checkpoint is one decimal digit `0..8`;
 - `build_id` is the first four SHA-256 digest bytes of the UTF-8 tuple
-  `<full-source>\0<environment>\0<checkpoint>`, interpreted little-endian.
+  `<full-source>\0<build-environment-revision>\0<environment>\0<selector>`,
+  interpreted little-endian. `<selector>` is the ASCII token `production` for
+  production and the single ASCII digit `0` through `8` for a fault build.
 
 The script defines `AIUS_BUILD_SOURCE_REV`, `AIUS_BUILD_TARGET`,
 `AIUS_BUILD_FAULT_CHECKPOINT` (`-1` for production), `AIUS_BUILD_GIT_REV`
 (the compact build revision for the bounded USB payload), `AIUS_BUILD_ID`, and
 `AIUS_BUILD_UTC`. UTC affects image bytes and audit data but not `build_id`.
+`AIUS_BUILD_ID` uses `build_id_u32`; receipts use the same value encoded as
+eight lowercase hexadecimal digits in `build_id`.
 Rebuilding the same source/target/checkpoint therefore preserves boot-ledger
 identity; changing source, target kind, or checkpoint clears early-reset state.
 The legacy field and macro name `source_revision`/`AIUS_BUILD_SOURCE_REV`
 contain the firmware input revision; they do not identify repository `HEAD`.
 
+Source identity deliberately covers committed repository inputs. External
+compiler inputs have a separate **build environment revision**:
+`sha256:<64 lowercase hex>` over
+`aius-optical-build-environment/1\0` and these ordered labeled roots:
+
+1. resolved PIO launcher file;
+2. resolved launcher Python executable;
+3. that interpreter's complete standard-library root;
+4. that interpreter's complete `site-packages` root;
+5. `PLATFORMIO_CORE_DIR/platforms/teensy`;
+6. `PLATFORMIO_CORE_DIR/packages`.
+
+For a file-tree root, records are sorted by UTF-8 relative path bytes and encode
+entry type, POSIX mode, relative path, and SHA-256 of regular-file bytes or
+symlink target bytes, each field NUL-delimited. Directory records encode type,
+mode, path, and an empty digest. `__pycache__`, `.pyc`, and `.pyo` entries are
+the only exclusions. Missing, unreadable, special-device, escaping-symlink, or
+changing roots fail the command. Absolute root locations are labels, not hash
+inputs. The wrapper computes the revision before and after the build. PIO runs
+through `env -i` with only `HOME`, a fixed launcher-plus-system `PATH`,
+`LC_ALL=C`, `TZ=UTC`, `PLATFORMIO_CORE_DIR`, external build/libdeps directories,
+the two validated revision variables, and the validated fault selector.
+Caller-set `AIUS_FIRMWARE_INPUT_REVISION`,
+`AIUS_BUILD_ENVIRONMENT_REVISION`, `AIUS_FAULT_CHECKPOINT`,
+`PLATFORMIO_BUILD_DIR`, or `PLATFORMIO_LIBDEPS_DIR` is rejected before the
+lock. Tool contents or sanitized environment changes therefore cannot retain
+the same `build_id`.
+
 For production and fault evidence, `build.sh` acquires the shared optical lock,
 deletes the target receipt, resolves `HEAD^{commit}`, and rejects staged,
 unstaged, or untracked changes in any manifest path before PlatformIO runs.
-It exports those exact committed paths into an immutable per-revision source
-snapshot and builds that snapshot, not the shared working tree. The wrapper
-supplies the full source revision to the snapshot metadata script; caller-set
-identity variables are rejected. After PlatformIO and evidence generation it
-repeats the dirty check and re-derives the current manifest digest. Dirty input
-or a changed digest fails closed and publishes no receipt. A repository `HEAD`
-change that leaves the manifest bytes unchanged is deliberately accepted.
-Native source-blind tests prove unrelated-commit stability, every manifest-root
-sensitivity, pre-build dirty rejection before PlatformIO, transient worktree
-mutation isolation, mid-build digest/dirty rejection, Git failure rejection,
-receipt invalidation, and exact receipt/image identity.
+The exact snapshot is
+`.pio/source-snapshots/<64-source-hex>/repository/`, containing repo-relative
+manifest paths and a generated marker outside those roots. Preparation exports
+the selected commit into a sibling `mktemp` staging directory, verifies every
+entry against Git, removes write permission from exported entries, and
+atomically replaces only that revision's prior snapshot. A failed export or
+verification removes only its staging directory and publishes no receipt.
+PlatformIO receives the snapshot firmware directory as `PROJECT_DIR`, with
+build and libdeps output forced to the live firmware `.pio/` tree; no generated
+file may enter an exported manifest root. `verify-snapshot` runs before and
+after PlatformIO, so a source mutation or snapshot escape fails even if the
+shared working tree is later restored. The completed read-only snapshot is
+retained for diagnosis and replaced on the next build of that revision.
 
-Each atomic receipt has exactly: schema, input-manifest schema, full firmware
-input revision, diagnostic source commit, environment, nullable selector,
-compact build revision, build ID, SHA-256 of ELF/HEX/full log, PlatformIO Core
-version, and toolchain version. Gate equality uses the firmware input revision,
-never the diagnostic source commit. Each archived log must contain its own
-retained-slot post-link success marker.
+The wrapper supplies `AIUS_FIRMWARE_INPUT_REVISION` and
+`AIUS_BUILD_ENVIRONMENT_REVISION` to the snapshot metadata script. The script
+requires exact `sha256:` encodings when either is supplied; a direct non-evidence
+PIO build derives source identity and uses the literal environment revision
+`unverified`. After PlatformIO and evidence generation the wrapper repeats the
+clean check and re-derives both revisions. Dirty input or a changed revision
+fails closed and publishes no receipt. A repository `HEAD` change that leaves
+the manifest bytes unchanged is deliberately accepted.
+Native source-blind tests use fixed known-answer vectors for schema/root
+ordering and NUL framing; exercise add, delete, rename, content, symlink-target,
+and mode-only changes in every manifest root, including both external SPDIF
+files; and prove unrelated commits and all four dirt states outside the
+manifest are ignored. They require pre-build staged/unstaged/untracked
+rejection before PlatformIO; missing/malformed Git data and roots; reserved
+variable rejection; exact `production` and selector `0..8` build-ID vectors;
+external environment content and mode sensitivity; snapshot entry, escape, and
+transient worktree mutation isolation; post-build source, environment, dirty,
+snapshot, copy, hash, and post-link failure; stale-receipt invalidation; atomic
+exact-schema publication; and the complete ten-receipt matrix validator.
+
+Each atomic receipt has exactly these keys and JSON types:
+
+```json
+{
+  "schema": "aius-optical-build-receipt/1",
+  "input_manifest_schema": "aius-optical-input-manifest/1",
+  "source_revision": "sha256:<64 lowercase hex>",
+  "source_commit": "<40 lowercase hex>",
+  "build_environment_schema": "aius-optical-build-environment/1",
+  "build_environment_revision": "sha256:<64 lowercase hex>",
+  "environment": "teensy41-optical|teensy41-optical-fault",
+  "selector": null,
+  "build_revision": "<compact revision>",
+  "build_id": "<8 lowercase hex>",
+  "elf_sha256": "<64 lowercase hex>",
+  "hex_sha256": "<64 lowercase hex>",
+  "build_log_sha256": "<64 lowercase hex>",
+  "platformio_core_version": "<nonempty exact version>",
+  "toolchain_version": "<nonempty exact first version line>"
+}
+```
+
+`selector` is `null` only for production and otherwise integer `0..8`.
+`build_revision` follows the compact production/fault grammar above. Gate
+equality uses source and build-environment revisions, never the diagnostic
+source commit. `build.log` is the complete PlatformIO stdout/stderr stream and
+must contain that artifact's retained-slot post-link success marker.
 
 The repository build interface is `firmware/scripts/build.sh`
 with arguments `teensy41-optical-fault <checkpoint>`. Its required second
 argument is one digit `0..8`; it rejects omission, extra arguments, and a
 selector on any other environment with usage exit 4. The script exports
 `AIUS_FAULT_CHECKPOINT` only to that PlatformIO invocation.
+`scripts/build.sh --validate-evidence` accepts no other arguments, acquires the
+same optical lock, performs no build or evidence mutation, and delegates to
+the `validate-evidence` CLI operation.
 `build_metadata.py` rejects a missing/invalid selector in the fault environment
 and rejects a selector in production. Metadata native tests cover known
 SHA-256 vectors, all selectors, invalid invocations, and stable IDs across
@@ -3623,6 +3729,7 @@ commit-checkpoint:
     - firmware/scripts/build.sh teensy41-optical-fault 6
     - firmware/scripts/build.sh teensy41-optical-fault 7
     - firmware/scripts/build.sh teensy41-optical-fault 8
+    - firmware/scripts/build.sh --validate-evidence
   parent-commit: "docs(aius): close retained watchdog evidence"
 ```
 
@@ -3645,9 +3752,13 @@ a receipt containing the full firmware input revision in `source_revision`,
 the diagnostic source commit, environment, nullable selector, compact build
 revision, build ID, tool versions, and SHA-256 of ELF, HEX, and full log. A
 gate is complete only when all ten receipts match the current firmware input
-revision, their binaries and logs match the recorded hashes, and each
-selector-specific artifact independently passed the retained-slot post-link
-check. This transient build evidence is not committed.
+and build-environment revisions; contain the exact production/fault
+environment-selector tuple; have ten distinct recomputed compact revisions and
+build IDs; match all ELF, HEX, and log hashes; and each independently contains
+the retained-slot post-link success marker. The validator rejects extra or
+missing evidence directories/files and malformed diagnostic commits, but
+diagnostic `source_commit` values may differ when unrelated commits advanced.
+This transient build evidence is not committed.
 
 Phase 13 has two explicit parent checkpoints because a receipt cannot identify
 a commit before that commit exists. The implementation-baseline checkpoint
@@ -4147,4 +4258,8 @@ invalidated Phase 17 gate before the same plan-wide reviewer reruns.
   changes were unrelated documentation commits. That exposed an overbroad
   evidence identity, not a firmware failure. The amended gate uses the exact
   firmware-input manifest and an immutable committed export; the ten-build
-  evidence matrix remains pending.
+  evidence matrix remains pending. Its first clean-room re-gate rejected an
+  implicit manifest ABI, ambiguous receipt fields/selector encoding, missing
+  external tool fingerprints, underspecified snapshot mechanics, and an
+  ad-hoc matrix check. The exact CLI/schema/environment/snapshot/validator
+  contracts above resolve those findings; a fresh re-gate is required.
