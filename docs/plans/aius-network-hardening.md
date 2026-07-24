@@ -1439,9 +1439,15 @@ void aius_http_transaction_step(
     AiusHttpAction *action);
 ```
 
-`aius_http.h` includes `aius_io.h` and `aius_sd.h`;
-`aius_http_transaction.c` is a new portable source file and contains no target,
-socket, or file API.
+The framing fields, parser, `aius_http_write_headers()`, and response writer
+remain in `aius_http.h`. All transaction-only constants and declarations in
+the block above live in the new `aius_http_transaction.h`, which includes
+`aius_http.h`, `aius_io.h`, and `aius_sd.h`.
+`aius_http_transaction.c` includes that narrow header and contains no target,
+socket, or file API. Existing runtime code that uses only the codec continues
+to include `aius_http.h`; Phase 14 includes the transaction header only after
+removing its legacy local SD state machine. This avoids leaking the portable
+SD job namespace across the pre-cutover optical translation unit.
 
 ### Codec and request-framing contract
 
@@ -2480,6 +2486,7 @@ fan-out:
   - name: agent-http-codec-framing
     owned-paths:
       - firmware/lib/aius_http/include/aius_http.h
+      - firmware/lib/aius_http/include/aius_http_transaction.h
       - firmware/lib/aius_http/src/aius_http.c
   - name: agent-http-transaction-engine
     owned-paths:
@@ -2498,10 +2505,10 @@ commit-checkpoint:
 ```
 
 Run the slices sequentially. The codec slice lands the reviewed public framing
-and transaction declarations. The engine slice implements only the new
+header and narrow transaction header. The engine slice implements only the new
 transaction source. After the parent verifies that implementation against the
-committed header, a fresh oracle agent reads the plan and public header but not
-either implementation source, then authors the independent
+committed headers, a fresh oracle agent reads the plan and public headers but
+not either implementation source, then authors the independent
 transition/model/property suite and runner registration. Phase 6 does not edit
 `optical_main.cpp`, add a Teensy SD adapter, or cut over the runtime; those
 remain later phases.
