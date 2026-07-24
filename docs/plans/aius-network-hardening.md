@@ -496,10 +496,13 @@ bool aius_boot_storage_teensy_commit(
     AiusBootStorageTeensy *storage,
     const AiusBootLedger *ledger);
 
-uint32_t aius_boot_teensy_reset_source(void);
+uint32_t aius_boot_teensy_reset_source(
+    const AiusBootTeensyPrimitives *primitives);
 AiusResetKind aius_boot_teensy_reset_kind(uint32_t raw_reset_source);
-bool aius_boot_teensy_watchdog_arm(void);
-bool aius_boot_teensy_watchdog_feed(void);
+bool aius_boot_teensy_watchdog_arm(
+    const AiusBootTeensyPrimitives *primitives);
+bool aius_boot_teensy_watchdog_feed(
+    const AiusBootTeensyPrimitives *primitives);
 AiusBootTeensyPrimitives aius_boot_teensy_hardware_primitives(void);
 ```
 
@@ -3568,7 +3571,7 @@ checkpoint matching/return behavior, and mutation-tests the single intentional
 loop exception. Build identity may run in parallel with those pairs, followed
 by its source-blind metadata oracle. The shared
 `platformio.ini`/`scripts/test.sh` coordinator starts only after Phase 10 is
-committed and all five slices are reviewed. All builds sharing
+committed and all six slices are reviewed. All builds sharing
 `.pio/build/teensy41-optical-fault` run serially.
 
 ### Phase 14 — Optical runtime cutover
