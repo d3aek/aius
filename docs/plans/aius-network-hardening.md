@@ -1888,15 +1888,18 @@ typedef struct {
 typedef struct {
     AiusUsbError error;
     const char *verb;
+    size_t verb_length;
     const char *payload;
+    size_t payload_length;
 } AiusUsbApplicationResponse;
 
 typedef struct {
     const uint8_t *rx;
     size_t rx_length;
     size_t tx_capacity;
-    size_t tx_accepted;
     bool connected;
+    bool tx_event_present;
+    AiusIoEvent tx_event;
     const AiusUsbApplicationResponse *application_response;
 } AiusUsbRuntimeInput;
 
@@ -1912,6 +1915,7 @@ typedef struct {
     const AiusUsbApplicationRequest *request;
     const uint8_t *tx;
     size_t tx_length;
+    size_t rx_consumed;
 } AiusUsbRuntimeAction;
 
 typedef struct {
@@ -1922,8 +1926,14 @@ typedef struct {
     size_t response_length;
     size_t response_offset;
     uint32_t bootloader_deadline_ms;
+    uint32_t protocol_faults;
+    size_t outstanding_length;
     AiusUsbApplicationRequest pending_request;
+    bool valid;
+    bool write_outstanding;
     bool dispatch_emitted;
+    bool bootloader_authorized;
+    bool enter_emitted;
 } AiusUsbRuntime;
 
 void aius_usb_runtime_init(
@@ -1938,30 +1948,64 @@ void aius_usb_runtime_step(
     AiusUsbRuntimeAction *action);
 ```
 
-The caller owns RX and response buffers. `tx_accepted` acknowledges bytes from
-the prior action and may not exceed that action's length. The step consumes at
-most the first 64 RX bytes, offers at most 64 TX bytes within `tx_capacity`,
-fully initializes the action, and makes at most one state transition.
+The caller owns RX and response buffers. The response buffer must be non-null,
+have capacity `48..320`, and not overlap the current RX span. Invalid
+initialization leaves `valid = false`; later steps produce `NONE`. A null
+runtime is ignored. A non-null action is always fully initialized to `NONE`.
+The step consumes at most the first 64 RX bytes, offers at most 64 TX bytes
+within `tx_capacity`, and returns at most one action.
 
-- RX consumes at most 64 bytes or 64 one-byte read attempts per epoch.
+- `rx == NULL` exactly when `rx_length == 0`. RX consumes at most
+  `min(rx_length, 64)` bytes and stops at the first parser terminal event.
+  `rx_consumed` is the exact inclusive count through that terminal byte; it is
+  zero outside `IDLE`. The caller retains `[rx_consumed, rx_length)`. A
+  suppressed LF after CR is consumed and counted. Disconnect during an
+  incomplete line resets the parser and discards only that incomplete line.
 - A complete command is copied to `pending_request` and emits `DISPATCH`
   exactly once. `PROTOCOL`, `ID`, `AUTH`, and `BOOTLOADER` all use this seam;
   the application supplies protocol/build/status/auth payloads and authorizes
   bootloader entry. The request remains valid until the response step returns.
-- An application response is borrowed for one step. Its `verb` and `payload`
-  are copied through the existing formatter. A formatter overflow emits the
-  fixed `INTERNAL` error if that fits, otherwise drops the response and returns
-  to idle. Missing, duplicate, or out-of-state responses are ignored and
-  counted as protocol faults.
+- An application response is borrowed only on the step immediately following
+  `DISPATCH`. A missing, duplicate, or out-of-state response is a protocol
+  fault. `protocol_faults` saturates at `UINT32_MAX`. `verb` is non-null with
+  length `1..10`; `payload` is null exactly when `payload_length == 0`, whose
+  maximum is 256. Success has `error = NONE` and a canonical verb matching the
+  pending command: `PROTOCOL`, `ID`, `AUTH`, or `BOOTLOADER`. Error responses
+  have a valid non-`NONE` error and zero verb and payload lengths. Formatting
+  uses only explicit lengths; the legacy C-string formatter remains solely for
+  the pre-Phase-14 adapter. Invalid application fields select the exact fixed
+  `AIUS/1 ERR <request-id> INTERNAL error\n` response. Parser errors use request
+  ID zero. The minimum response capacity makes that response and the fixed
+  bootloader acknowledgement fit.
 - TX requests one write of at most 64 bytes per epoch. Zero capacity preserves
-  the response offset and does not busy-wait.
-- `AIUS BOOTLOADER <id>` enters `ACK_PENDING`. HalfKay entry occurs after the
-  full acknowledgement is accepted by CDC, or after a 500 ms deadline. There
-  is no `flush()` or `delay()`.
-- If USB disappears after the command, the host treats HalfKay enumeration as
-  success even when it did not receive the acknowledgement.
-- Continuous RX, line overflow, partial TX, zero TX capacity, disconnect, exact
-  deadline, and `millis()` wrap are native-test cases.
+  the response offset and does not busy-wait. Emitting `WRITE` retains
+  `write_outstanding` and `outstanding_length`. The next step must contain one
+  `tx_event`: `PROGRESS` requires `bytes` in `1..outstanding_length` and zero
+  fault; `WOULD_BLOCK` requires zero bytes/fault and preserves the offset;
+  `CLOSED` requires zero bytes/fault; `FAULT` requires zero bytes and nonzero
+  fault. Only `PROGRESS` advances by accepted bytes. Missing, malformed,
+  duplicate, or unsolicited results increment `protocol_faults` without
+  advancing the offset. A normal response aborts to restartable `IDLE`;
+  authorized bootloader entry retains its one-shot authority.
+- Only a valid successful response for the pending `BOOTLOADER` command
+  authorizes HalfKay. Authorization formats the fixed
+  `AIUS/1 OK <request-id> BOOTLOADER entering\n` acknowledgement and starts one
+  non-rearming deadline at `now_ms + 500`. `ACK_PENDING` begins when its final
+  `WRITE` is outstanding. A TX event is validated and consumed before the
+  deadline is tested. Full acceptance enters immediately, including at exact
+  equality. Otherwise `(int32_t)(now_ms - bootloader_deadline_ms) >= 0`,
+  `CLOSED`, `FAULT`, or connection loss after authorization selects entry.
+  Connection loss before authorization cannot bypass the application decision.
+  Partial progress and `WOULD_BLOCK` never rearm the deadline.
+- Selecting entry changes to terminal `ENTER_BOOTLOADER` and emits exactly one
+  `ENTER_BOOTLOADER` action. Later calls return `NONE`; only reset or `init()`
+  restarts it. Completing a normal/error response returns to `IDLE`. Normal
+  disconnect aborts the transaction, clears parser/offset/write authority, and
+  permits a clean reconnect.
+- The independent transition model enumerates runtime state, connection state,
+  outstanding write authority, response class, every RX split and retained
+  suffix, every TX result, capacity boundaries, deadline relation/wrap, and
+  repeated disconnect/reconnect transactions.
 
 Recovery-safe mode accepts `PROTOCOL`, `ID`, `AUTH`, and `BOOTLOADER`; verified
 reflash is its only exit.
@@ -2079,6 +2123,17 @@ contains the complete composition object and no file-static lifecycle state:
 
 ```c
 typedef struct {
+    void *context;
+    bool (*connected)(void *context);
+    AiusIoEvent (*read_byte)(void *context, uint8_t *byte);
+    AiusIoEvent (*write)(
+        void *context,
+        const uint8_t *data,
+        size_t length);
+    void (*enter_bootloader)(void *context);
+} AiusCdcTeensyOps;
+
+typedef struct {
     AiusNetSupervisor supervisor;
     AiusNetworkTeensy network;
     AiusHttpTransaction http;
@@ -2090,12 +2145,21 @@ typedef struct {
     uint8_t http_response[AIUS_HTTP_MAX_RESPONSE];
     uint8_t sd_transfer[512];
     char usb_response[320];
+    AiusCdcTeensyOps cdc;
+    uint8_t usb_rx[64];
+    size_t usb_rx_length;
+    AiusIoEvent usb_write_event;
+    AiusUsbApplicationResponse usb_application_response;
+    bool usb_write_event_present;
+    bool usb_application_response_present;
+    bool bootloader_entered;
     uint32_t completed_epochs;
 } AiusRuntimeTeensy;
 
 void aius_runtime_teensy_construct(
     AiusRuntimeTeensy *runtime,
     const AiusOpticalAppOps *app_ops,
+    const AiusCdcTeensyOps *cdc_ops,
     uint32_t now_ms,
     bool recovery_safe);
 
@@ -2108,15 +2172,28 @@ void aius_runtime_teensy_status(
     AiusRecoveryStatus *status);
 ```
 
-Construction initializes memory only. The epoch supplies exact portable
-budgets, routes at most one adapter event/action per service, calls
+Construction initializes memory only. At `USB_RX`, the target performs at most
+64 one-byte CDC read attempts into the retained 64-byte staging buffer and does
+not call the portable USB step. At `USB_TX`, it calls
+`aius_usb_runtime_step()` exactly once with staged RX, retained application
+response/write result, current connection state, and current write capacity;
+removes exactly `rx_consumed` bytes from staging; and handles at most one
+returned action. `DISPATCH` is invoked synchronously and its response retained
+for the next epoch. `WRITE` performs one nonblocking primitive call and retains
+its `AiusIoEvent`. `ENTER_BOOTLOADER` invokes the callback once.
+
+The epoch otherwise supplies exact portable budgets, routes at most one
+adapter event/action per service, calls
 `aius_network_teensy_apply()` with `NONE` when the supervisor emits no new
 action so retained publish/teardown work advances, and returns the portable
 scheduler result. It does not feed the watchdog itself; final composition
 supplies the sole-feed callback. Generation teardown discards the HTTP
 transaction before adapter cleanup. Native target-service tests use fake
 network, SD, CDC, clock, checkpoint, and watchdog primitives to cover every
-callback result and exact call count.
+callback result and exact call count. Phase 7 does not edit `optical_main.cpp`
+or `platformio.ini`; the synchronous CDC drain/flush/delay path remains until
+Phase 14. The Phase 7 optical build proves compile/link compatibility only, not
+deployed runtime behavior.
 
 ## Status compatibility contract
 
@@ -2533,9 +2610,12 @@ acceptance:
   - every command dispatches exactly once with deterministic overflow behavior
   - acknowledgement completion, loss, deadline equality, and wrap select HalfKay once
 fan-out:
-  - name: agent-usb-runtime
+  - name: agent-usb-runtime-engine
     owned-paths:
-      - firmware/lib/aius_usb_control/
+      - firmware/lib/aius_usb_control/include/aius_usb_control.h
+      - firmware/lib/aius_usb_control/src/aius_usb_control.c
+  - name: agent-usb-independent-oracle
+    owned-paths:
       - firmware/test/usb-control/
       - firmware/scripts/test.sh
 review-intensity: active
@@ -2543,12 +2623,16 @@ commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite usb-control
   buildable:
-    - teensy41-optical
+    - firmware/scripts/build.sh teensy41-optical
   parent-commit: "feat(aius): bound the USB recovery runtime"
 ```
 
-Implement the RX/TX quotas and incremental bootloader transition. Target
-composition still uses the old adapter until Phase 14.
+Run the slices sequentially. The engine slice implements the reviewed public
+header and state engine. After the parent verifies that header against the
+committed contract, a fresh oracle agent reads the plan and public header but
+not the implementation source, then authors the independent transition model
+and runner registration. Target composition still uses the old adapter until
+Phase 14.
 
 ### Phase 8 — Portable runtime scheduler
 
