@@ -610,11 +610,46 @@ while assembling Phase 11's route inventory:
   places, four only incidentally as a POST-with-body vehicle) and that suite is
   not Phase 11's to edit.
 
-None of this affects the device. Fix it with Phase 14, whose owner holds
-`test/http/` and can retire the routes, the scenario assertion, and the
-dashboard controls in one change. `AIUS.APP.OPENAPI.1` needs its wording checked
-at the same time — it says the document describes "every device route", which is
-what the scenario was asserting with a now-stale route list.
+None of this affects the device. The firmware-side half (retiring the `MODE` and
+`MIX` route enumerators and their parser entries) lands with Phase 14, whose
+owner holds `test/http/`.
+
+**Decision (2026-07-24): retire the the app dashboard, keep the OpenAPI
+document.** The device now serves its own full control surface from SD, so the
+101-line dashboard at `frontend/` duplicates it and is the part
+that has rotted. `swagger.json`, its Vitest contract suite, and the two
+`web.json` mounts stay: the API contract is useful whether or not a device is
+reachable, and it is the only machine-readable description of the wire format.
+The flash page, not the host application, is the no-SD fallback, so nothing is lost as a
+backstop.
+
+**Blocked on coordination, not on effort.** Deleting
+`frontend/src/{app.js,index.html,style.css}` is not a local change: the aius
+dashboard is an enrolled participant in the ui-kit accessibility rollout, an
+active workstream owned elsewhere.
+
+- `src/libs/frontend-shared/test/fixtures/ui-contract-allowlist.json` carries an
+  entry for `frontend/src/style.css` under `ownerTask:
+  aius-adoption` with a `removeByPhase`. `ui-contract.test.js` matches allowlist
+  entries against findings scanned from the tree, so deleting the file fails
+  that suite until the entry goes too. The fixture also pins a
+  `baselineCommit`, so it is not a file to edit casually.
+- `docs/reference/ui-kit-compliance-catalogue.md` carries four aius rows,
+  including a sequenced Phase 8 adoption whose manifest row the catalogue states
+  "the sequenced Phase 8 manifest coordinator alone owns".
+- `docs/plans/ui-kit-accessibility-rollout.md` is currently uncommitted in the
+  shared tree, i.e. that rollout is mid-flight right now.
+
+Two things make this cheaper than it looks: the planned contract scenario
+`src/libs/frontend-shared/test/scenarios/contracts/aius.json` does not exist
+yet, and `contracts/manifest.json` has no aius row. So the retirement cancels
+planned work rather than unpicking landed work. It still needs the rollout
+owner's agreement before anything is deleted.
+
+`AIUS.APP.SHELL.1`, `AIUS.APP.CONTROL.1`, and `AIUS.APP.TELEMETRY.1` retire with
+the dashboard; `AIUS.APP.OPENAPI.1` survives and needs rewording, since it says
+the document describes "every device route" and the stale route list is exactly
+what `control-shell.json` was asserting.
 
 ### Target validation
 
