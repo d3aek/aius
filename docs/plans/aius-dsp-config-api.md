@@ -7,10 +7,12 @@ status: in_progress
 
 ## Execution handoff — 2026-07-24
 
-This is the active Aius plan. Network receipt work and further clean-room
-hardening audits are paused. The next session starts with the signal path and
-uses the committed DSP samples as executable specifications before extending
-the configuration API or control surface:
+This is the active, primary Aius plan. The network hardening work in
+[`aius-network-hardening.md`](aius-network-hardening.md) is now a
+finish-the-cutover-then-stop effort and secondary to this DSP work; its
+receipt/reproducibility apparatus has been removed. The next session starts with
+the signal path and uses the committed DSP samples as executable specifications
+before extending the configuration API or control surface:
 
 - `firmware/tools/dts_vectors/vectors/stereo_impulse.dts`;
 - `firmware/tools/dts_vectors/vectors/surround51_impulse.dts`;
@@ -42,10 +44,12 @@ Do not resume the deferred network clean-room audits or production receipt
 matrix from this plan. Hardware validation here is limited to the DSP sample
 signal path, control surface, and their latency/audio-continuity gates.
 
-One UI routing decision remains explicit: the plan currently names both
-`/sd/www/index.html` and `/aius/www/index.html`. Resolve the canonical HTTP
-route and SD filesystem mapping before implementing the editor; do not create
-a second UI surface.
+UI routing is resolved: the canonical editor route is `/sd/www/index.html`,
+served from the SD filesystem directory `firmware/sd/www/`. The firmware already
+serves `/sd/www/` static assets — `optical_main.cpp` matches the `www/` resource
+prefix and `firmware/sd/www/` already holds the replays surface. The separate
+`/aius/config.json` feature-flag file is not the editor. There is one UI
+surface; do not create a second.
 
 ## Objective
 
@@ -69,8 +73,9 @@ loudness meter, or runtime DSP persistence.
 - Add authenticated `PUT /api/dsp/config` with a bounded JSON body. It validates
   the complete model, writes `/aius/dsp.json` transactionally, and applies it
   only at an audio block boundary. Invalid input never changes active DSP.
-- The SD editor is static HTML/CSS/JavaScript under `/aius/www/`; it uses only
-  the documented HTTP API and can be replaced without firmware flashing.
+- The SD editor is static HTML/CSS/JavaScript under `firmware/sd/www/` (served at
+  `/sd/www/`); it uses only the documented HTTP API and can be replaced without
+  firmware flashing.
 - The signal path is:
   `decode -> input channel trim/EQ -> downmix matrix -> output EQ -> true-peak
   safety limiter -> output`, with metering taps that do not alter audio.
@@ -220,7 +225,7 @@ HTTP copies the last complete snapshot outside the critical path.
 **unit:** self-hosted editor and authenticated DSP JSON update path
 **seams:** browser controls ↔ JSON model; HTTP body ↔ SD transactional write;
 SD model ↔ block-boundary DSP snapshot
-**contract-artifact:** `/aius/www/index.html`, editor schema, PUT examples
+**contract-artifact:** `firmware/sd/www/index.html`, editor schema, PUT examples
 **fan-out:** static UI; HTTP/config loader; firmware application seam
 **review-intensity:** malformed JSON, bounded body, invalid ranges, stale
 generation, SD removal, and editor recovery

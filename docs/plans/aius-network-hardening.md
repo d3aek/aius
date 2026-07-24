@@ -19,32 +19,34 @@ exercises the deployed firmware.
 
 ## Execution handoff — 2026-07-24
 
-Network hardening is paused. Do not run another clean-room audit or produce the
-ten-image production/fault receipt matrix unless the user explicitly resumes
-this plan. The active critical path has moved to
-[`aius-dsp-config-api.md`](aius-dsp-config-api.md): validate the DSP signal path
-with the committed DTS sample vectors, then complete and test the UI control
-surface.
+The DSP work in [`aius-dsp-config-api.md`](aius-dsp-config-api.md) is the active
+critical path: run the committed DTS sample vectors through the pipeline and
+load the SD control surface. This network plan is now a finish-and-stop effort,
+not an open-ended rebuild.
 
-Delivered and pushed work remains valid through Phases 1–10 and the Phase 13
-retained-watchdog implementation baseline (`8916df890`). Phases 11–12 and
-14–18 remain unexecuted. Phase 13 is not closed and this plan must not be
-reported as shipped.
+Delivered and validated: Phases 1–10 and the Phase 13 retained-watchdog code
+baseline (`8916df890`). The native suites (`net`, `boot`, `network-transport`,
+`sd`, `http`, `usb-control`, `runtime`, `runtime-target`, `boot-target`,
+`fault-target`) are the standing regression guard for the network + USB control
+surface and must stay green. Do not re-review or re-validate that delivered
+work.
 
-The stopped Phase 13 identity-correction working set is intentionally left
-uncommitted in:
+Remaining: application dispatch and runtime composition (Phases 11–12), the
+runtime cutover (Phase 14) so the bounded modules replace the legacy blocking
+path, button-free flash tooling (Phase 15), and a proportionate live smoke
+(Phase 16). Each remaining phase's gate is its green native suite plus an
+owned-diff review — nothing heavier.
 
-- `firmware/scripts/build.sh`;
-- `firmware/scripts/build_metadata.py`;
-- `firmware/test/build-metadata/test_build_evidence.py`;
-- `firmware/test/build-metadata/test_build_metadata.py`.
-
-Focused proofs passed for exact receipt validation, production/fault selector
-coverage, independent environment identity, wrapper failure behavior, and
-ordinary `tee` capture failure. The registered build-metadata suite passed
-before the final receipt, independent-oracle, and `tee` edits, so it is not
-current proof for this stopped working set. The hostile-build-host snapshot
-finding is outside scope under the trusted build-host boundary below.
+The build-identity / reproducibility / evidence apparatus is removed. It
+reintroduced the SHA-manifest, environment-fingerprint, and ten-image receipt
+machinery that [`CLAUDE.md`](../../CLAUDE.md) records was
+deleted on 2026-07-18 and must not return for this personal build.
+`build.sh` / `build_metadata.py` revert to plain build metadata (git revision +
+short build id) while keeping the `teensy41-optical-fault <checkpoint>`
+test-image capability that the watchdog smoke needs. The stopped Phase 13
+identity-correction working set (`build.sh`, `build_metadata.py`,
+`test_build_evidence.py`, `test_build_metadata.py`) is discarded, not
+committed.
 
 ## Trusted fixture boundary
 
@@ -115,46 +117,6 @@ The sequence of commits on 2026-07-23 confirms the patch pattern: DHCP
 maintenance, DHCP restart, diagnostics, watchdog timing, link-state handling,
 HTTP ordering, and listener rebinding changed independently in the same global
 state machine. Those changes are observations, not accepted proof.
-
-## Clean-room plan gate
-
-The first adversarial review on 2026-07-23 failed the plan before
-implementation. This amendment resolves its ten findings:
-
-- agent work is concern-sized rather than phase-sized;
-- all implementer ABIs, budgets, matrices, and schemas are specified here
-  before dispatch;
-- the portable boot ledger precedes runtime integration;
-- runtime ordering has a host-testable scheduler seam;
-- CDC has byte/call quotas and incremental bootloader acknowledgement;
-- every new native suite owns its runner registration;
-- status compatibility has a byte-level schema and golden fixtures;
-- verified reflash is the sole recovery-safe exit;
-- each phase contract is a machine-readable YAML block;
-- live gate execution is separate from acceptance-runner implementation.
-
-A second recheck still failed on five gaps: shared I/O ownership, budget
-delivery, boot-generation monotonicity, bounded SD ownership, and live-evidence
-separation. This revision specifies those contracts and adds separate SD, live
-gate, and final-audit phases. A final plan-to-build recheck must pass before
-Phase 1 dispatch.
-
-A third recheck found eight remaining implementation choices: phase
-dependencies/outcomes, async target polling, complete SD jobs, HTTP/USB
-application dispatch, retained target storage, composition sizing, wire-value
-narrowing, and the receipt schema. This revision resolves them in exact ABIs
-and 18 concern-sized phases. The later delivery audit remains independent of
-this gate.
-
-A fourth recheck narrowed the remaining gaps to HTTP/SD exchange ownership,
-route-complete application callbacks, cache-line slot layout, fault-image
-identity, injectable checkpoint terminology, and canonical receipt hashing.
-Those contracts are now byte- and call-exact below.
-
-A fifth recheck left two dispatch blockers: the upload byte handoff into the SD
-job and the repository invocation for checkpoint-selectable builds. The SD ABI
-now has an immediate-copy supply transition, and Phase 13 owns and proves the
-two-argument fault build interface.
 
 ## Normative recovery contract
 
@@ -355,316 +317,27 @@ counter saturation, and 10,000 generated event sequences. The oracle asserts
 one live generation, at most one action per step, stale-event rejection, and
 reachability of `ONLINE`, `BACKOFF`, or `RECOVERY_SAFE`.
 
-## Build and fault-image identity
+## Build stamping
 
-`scripts/build_metadata.py` derives identity without timestamps. The canonical
-source term is **firmware input revision**:
-`sha256:<64 lowercase hex>`. The digest input is the UTF-8 schema tag
-`aius-optical-input-manifest/1`, a NUL byte, each ordered manifest root and a
-NUL byte, then the raw
-`git ls-tree -r -z --full-tree <commit> -- <manifest>` bytes for this tracked
-manifest:
+`scripts/build_metadata.py` produces plain build metadata: a compact build
+revision (`git describe`-style, exported as `AIUS_BUILD_GIT_REV`) and a short
+`AIUS_BUILD_ID` derived from the source revision and target. `build.sh` injects
+those plus `AIUS_BUILD_UTC`. USB `ID` and HTTP status emit the build revision and
+short build id so a deployed image is identifiable. Rebuilding the same source
+and target preserves boot-ledger identity; a source or target change clears
+early-reset state. Native metadata tests cover ID derivation, stability across
+timestamps, and invalid invocations.
 
-- `firmware/platformio.ini`;
-- `firmware/config/`;
-- `firmware/src/`;
-- `firmware/lib/`;
-- `firmware/vendor/NativeEthernet/`;
-- `firmware/vendor/dcadec-core/`;
-- `firmware/scripts/build.sh`;
-- `firmware/scripts/build_metadata.py`;
-- `firmware/scripts/build_config.py`;
-- `firmware/tools/memory/mem_report.py`;
-- `firmware/test/network-transport/verify_target.py`;
-- `firmware/test/boot-target/verify_target.py`;
-- `evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp`;
-- `evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp`.
-
-The last two files are textual build inputs included by
-`aius_spdif_sources.cpp`; omitting them would permit image bytes to change
-without an identity change. The manifest is the single authority shared by the
-metadata injector and build wrapper. `build_metadata.py` owns the ordered path
-tuple and exposes these exact CLI operations:
-
-- `manifest-revision --repository-root PATH --commit COMMIT` prints only the
-  full firmware input revision plus newline;
-- `check-clean --repository-root PATH` exits 0 with no output only when every
-  manifest path is free of staged, unstaged, and untracked changes, otherwise
-  exits 1 and prints the porcelain records to stderr;
-- `prepare-snapshot --repository-root PATH --commit COMMIT --destination PATH`
-  exports and verifies the immutable build snapshot, then prints its revision;
-- `verify-snapshot --repository-root PATH --commit COMMIT --snapshot PATH`
-  verifies exact entry set, Git mode, blob identity, symlink target, and absence
-  of extra files under every exported manifest root;
-- `environment-revision --pio PATH --core-dir PATH` prints the external build
-  environment revision;
-- `environment-metadata --pio PATH --core-dir PATH` prints one canonical
-  single-line JSON object with `schema`, `revision`,
-  `platformio_core_version`, and `toolchain_version`;
-- `environment-context --pio PATH --core-dir PATH` performs one fingerprint
-  pass and prints canonical JSON with exact keys `metadata` (the complete
-  environment-metadata object), `pythonpath` (the path-separator-joined lexical
-  import roots), and `revision` (equal to `metadata.revision`);
-- `image-metadata --source-revision REV --build-environment-revision REV
-  --environment ENV [--selector N]` prints one canonical single-line JSON
-  object with `source_revision`, `build_environment_revision`, `environment`,
-  nullable `selector`, `build_revision`, integer `build_id_u32`, and
-  eight-lowercase-hex `build_id`;
-- `create-receipt` requires one argument for every non-schema receipt field
-  below, accepts `--selector` only as integer `0..8`, and prints the exact
-  canonical receipt;
-- `validate-build-log --path PATH` emits nothing only when the log contains
-  exactly one retained-slot proof line, otherwise fails;
-- `validate-evidence --repository-root PATH --pio PATH --core-dir PATH
-  --evidence-root PATH` validates the complete ten-image receipt matrix.
-
-Every data command emits no partial stdout on failure and exits nonzero.
-`build.sh` calls these operations; it never carries a second manifest list.
-The manifest revision binds tracked path, mode, and blob identity while
-ignoring commits outside the build/evidence closure.
-`check-clean` executes exactly
-`git status --porcelain=v1 -z --untracked-files=all -- <ordered manifest>`.
-With `LC_ALL=C`, it copies Git's raw NUL-framed records to stderr without
-reordering, quoting, or an added LF. Clean output means empty stdout/stderr and
-exit 0; dirt means empty stdout, the raw stderr records, and exit 1; Git failure
-means empty stdout and exit 2 with Git stderr forwarded.
-Every canonical JSON output in this contract is UTF-8
-`json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`
-followed by exactly one LF. Thus key order is ascending Unicode key order and
-there is no other whitespace.
-
-- source revision is the complete firmware input revision;
-- production identity is
-  `<first-12-digest-hex>+teensy41-optical`;
-- fault identity is
-  `<first-12-digest-hex>+teensy41-optical-fault.cp<checkpoint>`, where
-  checkpoint is one decimal digit `0..8`;
-- `build_id` is the first four SHA-256 digest bytes of the UTF-8 tuple
-  `<full-source>\0<build-environment-revision>\0<environment>\0<selector>`,
-  interpreted little-endian. `<selector>` is the ASCII token `production` for
-  production and the single ASCII digit `0` through `8` for a fault build.
-
-The script defines `AIUS_BUILD_SOURCE_REV`, `AIUS_BUILD_TARGET`,
-`AIUS_BUILD_FAULT_CHECKPOINT` (`-1` for production), `AIUS_BUILD_GIT_REV`
-(the compact build revision for the bounded USB payload), `AIUS_BUILD_ID`, and
-`AIUS_BUILD_UTC`. UTC affects image bytes and audit data but not `build_id`.
-`AIUS_BUILD_ID` uses `build_id_u32`; receipts use the same value encoded as
-eight lowercase hexadecimal digits in `build_id`.
-Rebuilding the same source/target/checkpoint therefore preserves boot-ledger
-identity; changing source, target kind, or checkpoint clears early-reset state.
-The legacy field and macro name `source_revision`/`AIUS_BUILD_SOURCE_REV`
-contain the firmware input revision; they do not identify repository `HEAD`.
-
-Source identity deliberately covers committed repository inputs. External
-compiler inputs have a separate **build environment revision**:
-`sha256:<64 lowercase hex>`. The SHA-256 input begins with the ASCII bytes
-`aius-optical-build-environment/1\0`, followed by records from these exact
-ordered labels:
-
-1. `pio-launcher`: absolute launcher entry, link chain, and resolved file;
-2. `python-executable`: absolute shebang entry, link chain, and resolved file;
-3. `python-venv-config`: the reported `sys.prefix` `pyvenv.cfg`, when present;
-4. `python-stdlib`: that interpreter's complete standard-library root;
-5. `python-import-000..N`: the sorted unique existing import roots discovered
-   for the actually imported PlatformIO and SCons packages;
-6. `platformio-teensy-platform`: `PLATFORMIO_CORE_DIR/platforms/teensy`;
-7. `platformio-packages`: `PLATFORMIO_CORE_DIR/packages`;
-8. `system-usr-bin`: lexical `/usr/bin`;
-9. `system-bin`: lexical `/bin`.
-
-Each root includes its `.` entry, followed by descendants sorted by raw
-`os.fsencode` relative-path bytes. A record is the concatenation
-`E\0<label>\0<type>\0<mode>\0<path>\0<digest>\0`. `<type>` is exactly `f`,
-`d`, or `l`; `<mode>` is `stat.S_IMODE` as six lowercase octal digits; `<path>`
-is `.` for the root or the raw slash-separated relative-path bytes; `<digest>`
-is 64 lowercase ASCII SHA-256 hex of regular-file bytes or raw symlink-target
-bytes and is empty for a directory. Root boundaries are therefore explicit in
-the label on every record. A component exactly `__pycache__` and a basename
-ending `.pyc` or `.pyo` are the only exclusions. NUL in a path, missing or
-unreadable roots, non-file/directory/symlink entries, or a root that changes
-across one calculation fail the command.
-
-Every symlink that resolves outside its labeled root, including a symlink used
-to reach the PIO launcher or Python executable, adds ordered closure records.
-For hop index `000000`, `000001`, and so on, the exact record is
-`S\0<label>\0<link-path>\0<index>\0<raw-target>\0`; the terminal regular file
-adds
-`F\0<label>\0<link-path>\0<mode>\0<digest>\0`.
-`<link-path>` is `.` for a root-file chain or the raw root-relative path for a
-tree entry; `<mode>` is six lowercase octal digits and `<digest>` is the
-terminal file's lowercase SHA-256. Closure records are ordered immediately
-after their owning `E` record. Absolute and lexically escaping targets are
-allowed only through this closure. A cycle, dangling hop, special file, or
-external terminal directory fails. An internal directory target is already
-covered by its root's `E` records. Thus `/usr/bin` alternatives such as
-`awk -> /etc/alternatives/awk -> /usr/bin/mawk` are accepted and bind both
-target strings plus terminal bytes. Starting absolute root locations remain
-labels, not hash inputs.
-
-A labeled root whose `.` entry is a symlink to a directory is the one directory
-exception: after its `S` hops it emits
-`D\0<label>\0.\0<mode>\0`, where mode is the resolved terminal directory's six
-lowercase octal permission bits, then traverses that directory with relative
-`E` records. This preserves lexical virtualenv/import-root link identity.
-Non-root symlinks to external directories remain errors.
-
-The `--pio` CLI value must be absolute. It is resolved strictly through every
-symlink to an executable regular file. Its first line must be exactly
-`#!<absolute-python-path>` with no argument; `/usr/bin/env`, relative, missing,
-or multi-argument shebangs fail. The shebang path itself is retained for
-execution so a virtual-environment prefix is not erased by symlink resolution;
-its `.` link path uses the `S`/`F` chain above under the exact labels
-`pio-launcher` and `python-executable`. The fixed
-`<shebang-python> -c <probe>` imports `platformio` and
-`SCons`, then emits canonical JSON containing lexical absolute paths for
-`sys.prefix`, `sysconfig.get_path("stdlib")`, and the sorted unique existing
-parents that contain those imported packages, `purelib`, and `platlib`. Neither
-the probe nor caller resolves those roots before fingerprinting. It runs with
-no `-S`, so pre-3.14 virtual-environment and user-site behavior matches the
-launcher. Missing imports, extra probe output, or a package outside the
-reported roots fails. `<reported-sys.prefix>/pyvenv.cfg`, if present, and every
-lexical reported root are fingerprinted. Native tests invoke the unresolved
-launcher entry, cover a symlinked shebang virtualenv and symlinked import root,
-mutate the actual `pyvenv.cfg` and imported PlatformIO bytes, and require each
-environment revision to change.
-
-The wrapper computes the revision before and after the build. PIO runs through
-`env -i` with `HOME` set to a newly created empty per-run directory,
-`PATH=<resolved-pio-dir>:/usr/bin:/bin`, `PYTHONPATH` set to the exact discovered
-import roots, `LC_ALL=C`, `TZ=UTC`, `PLATFORMIO_CORE_DIR`, external
-build/libdeps directories, the two validated revision variables, and the
-validated fault selector. The empty home is output state, never an input.
-`platformio_core_version` is capture group 1 from the exact trimmed launcher
-output `^PlatformIO Core, version ([0-9A-Za-z.+-]+)$`.
-`toolchain_version` is the exact nonempty first stdout line from
-`PLATFORMIO_CORE_DIR/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-gcc
---version`; extra leading/trailing whitespace or command failure is rejected.
-This revision claims the enumerated executable/source/package/PATH closure, not
-a hermetic operating-system or kernel identity. Final ELF/HEX hashes are the
-authority for exact produced bytes; the plan does not claim cross-host
-bit-reproducibility. A fully hermetic toolchain image remains deferred.
-The build host, installed tools, and filesystem administration are trusted,
-non-adversarial inputs. The harness must fail closed for ordinary command,
-I/O, and evidence-publication failures, but malicious tool substitution,
-hostile symlink prepopulation, concurrent hostile filesystem mutation, and
-containment as a security boundary are outside this review. Snapshot path
-checks prevent accidental aliasing and stale output reuse; they do not claim
-to defend a compromised build host.
-Caller-set `AIUS_FIRMWARE_INPUT_REVISION`,
-`AIUS_BUILD_ENVIRONMENT_REVISION`, `AIUS_FAULT_CHECKPOINT`,
-`PLATFORMIO_BUILD_DIR`, `PLATFORMIO_LIBDEPS_DIR`, or `PYTHONPATH` is rejected
-before the lock. Changes inside the enumerated build environment therefore
-cannot retain the same `build_id`.
-
-For production and fault evidence, `build.sh` acquires the shared optical lock,
-deletes the target receipt, resolves `HEAD^{commit}`, and rejects staged,
-unstaged, or untracked changes in any manifest path before PlatformIO runs.
-The exact per-invocation snapshot is
-`.pio/source-snapshots/<64-source-hex>/run.XXXXXX/repository/`, where
-`run.XXXXXX` is created by `mktemp -d` under that exact digest directory. It
-contains repo-relative manifest paths and
-`.aius-optical-snapshot.json` at the snapshot repository root, outside those
-paths. The marker is canonical JSON with exactly:
-
-```json
-{
-  "commit": "<40 lowercase hex>",
-  "input_manifest_schema": "aius-optical-input-manifest/1",
-  "schema": "aius-optical-source-snapshot/1",
-  "source_revision": "sha256:<64 lowercase hex>"
-}
-```
-
-`prepare-snapshot` requires a nonexistent `repository/` destination inside that
-validated run directory. It exports the selected commit directly there,
-verifies every entry against Git and the exact marker, then removes write
-permission from exported entries and the marker. No rename or replacement of a
-nonempty directory occurs. A failed export or verification removes only that
-new run directory and publishes no receipt.
-PlatformIO receives the snapshot firmware directory as `PROJECT_DIR`, with
-build and libdeps output forced to the live firmware `.pio/` tree; no generated
-file may enter an exported manifest root. `verify-snapshot` runs before and
-after PlatformIO, so a source mutation or snapshot escape fails even if the
-shared working tree is later restored. The completed read-only snapshot is
-retained for diagnosis; later builds create distinct sibling run directories.
-
-The wrapper supplies `AIUS_FIRMWARE_INPUT_REVISION` and
-`AIUS_BUILD_ENVIRONMENT_REVISION` to the snapshot metadata script. The script
-requires exact `sha256:` encodings when either is supplied; a direct non-evidence
-PIO build derives source identity and uses the literal environment revision
-`unverified`. After PlatformIO and evidence generation the wrapper repeats the
-clean check and re-derives both revisions. Dirty input or a changed revision
-fails closed and publishes no receipt. A repository `HEAD` change that leaves
-the manifest bytes unchanged is deliberately accepted.
-Native source-blind tests use fixed known-answer vectors for schema/root
-ordering and NUL framing; exercise add, delete, rename, content, symlink-target,
-and mode-only changes in every manifest root, including both external SPDIF
-files; and prove unrelated commits and all four dirt states outside the
-manifest are ignored. They require pre-build staged/unstaged/untracked
-rejection before PlatformIO; missing/malformed Git data and roots; reserved
-variable rejection; exact `production` and selector `0..8` build-ID vectors;
-external environment content and mode sensitivity; snapshot entry, escape, and
-transient worktree mutation isolation; nonempty or escaping snapshot
-destinations; post-build source, environment, dirty,
-snapshot, copy, hash, and post-link failure; stale-receipt invalidation; atomic
-exact-schema publication; and the complete ten-receipt matrix validator.
-Wrapper tests independently run production and selectors `0..8`; exhaust
-missing/extra/invalid selector and argument shapes; prove staged, unstaged, and
-untracked input rejection occurs before PIO; inject copy and hash command
-failure; and cover malformed/missing Git roots. Image tests prove timestamps do
-not change revision or ID. The environment oracle computes record bytes without
-calling the production record builder and covers regular/directory/symlink
-known answers, launcher/interpreter/root link chains, cycle, dangling, special
-file, external-directory rejection, root-change races, and imported package
-and `pyvenv.cfg` mutation.
-
-Each atomic receipt has exactly these keys and JSON types:
-
-```json
-{
-  "schema": "aius-optical-build-receipt/1",
-  "input_manifest_schema": "aius-optical-input-manifest/1",
-  "source_revision": "sha256:<64 lowercase hex>",
-  "source_commit": "<40 lowercase hex>",
-  "build_environment_schema": "aius-optical-build-environment/1",
-  "build_environment_revision": "sha256:<64 lowercase hex>",
-  "environment": "teensy41-optical|teensy41-optical-fault",
-  "selector": null,
-  "build_revision": "<compact revision>",
-  "build_id": "<8 lowercase hex>",
-  "elf_sha256": "<64 lowercase hex>",
-  "hex_sha256": "<64 lowercase hex>",
-  "build_log_sha256": "<64 lowercase hex>",
-  "platformio_core_version": "<nonempty exact version>",
-  "toolchain_version": "<nonempty exact first version line>"
-}
-```
-
-`selector` is `null` only for production and otherwise integer `0..8`.
-`build_revision` follows the compact production/fault grammar above. Gate
-equality uses source and build-environment revisions, never the diagnostic
-source commit. `build.log` is the complete PlatformIO stdout/stderr stream and
-must contain exactly one line matching
-`^retained boot slots: PASS \(0x[0-9a-f]{8}\.\.0x[0-9a-f]{8}, \.bss\.dma\)$`.
-The validator accepts no substring or alternate case as the post-link proof.
-
-The repository build interface is `firmware/scripts/build.sh`
-with arguments `teensy41-optical-fault <checkpoint>`. Its required second
-argument is one digit `0..8`; it rejects omission, extra arguments, and a
-selector on any other environment with usage exit 4. The script exports
-`AIUS_FAULT_CHECKPOINT` only to that PlatformIO invocation.
-`scripts/build.sh --validate-evidence` accepts no other arguments, acquires the
-same optical lock, performs no build or evidence mutation, and delegates to
-the `validate-evidence` CLI operation.
-`build_metadata.py` rejects a missing/invalid selector in the fault environment
-and rejects a selector in production. Metadata native tests cover known
-SHA-256 vectors, all selectors, invalid invocations, and stable IDs across
-timestamps. USB `ID` and HTTP status emit
-`build_revision` and eight-hex-digit `build_id`. The flash tool computes the
-final HEX SHA-256 and rejects a device whose identity/build ID differs from the
-selected artifact. Each receipt records the same revision, build ID, and image
-hash. Live acceptance artifacts are built only from a clean committed tree;
-intermediate phase builds are not acceptance evidence.
+`build.sh` keeps the `teensy41-optical-fault <checkpoint>` test-image target
+(`<checkpoint>` is one digit `0..8`, exported as `AIUS_FAULT_CHECKPOINT` to that
+one PlatformIO invocation) because the watchdog smoke needs a fault image per
+checkpoint. It carries no evidence-receipt, source-snapshot,
+environment-fingerprint, or ten-image-matrix machinery. That hash-locked
+provenance apparatus is removed per
+[`CLAUDE.md`](../../CLAUDE.md), which records it was deleted on
+2026-07-18 and must not return for this personal build. Final ELF/HEX hashes
+remain the authority for produced bytes; cross-host reproducibility is not
+claimed.
 
 ## Portable boot-ledger ABI
 
@@ -871,7 +544,7 @@ The fault image defines exactly one build flag,
 checkpoint, `aius_fault_checkpoint(uint16_t)` enters an intentional tight loop
 in `aius_fault_teensy.cpp`; the production build compiles the function to a
 return. This test-only file is the sole exception to the unbounded-loop source
-guard. Phase 17 builds and records a distinct revision for every checkpoint.
+guard. The Phase 16 live smoke builds a fault image per checkpoint `0..8`.
 
 ## Bounded target transport ABI
 
@@ -3184,117 +2857,28 @@ checkpoints `10` and `255`; and each of the three reserved bytes when nonzero,
 tested independently. Valid domain endpoints parse. No saturation or
 truncation is permitted.
 
-## Recovery evidence schema
+## Live smoke evidence
 
-Each acceptance attempt appends one UTF-8 JSON object and newline. Schema
-`aius-recovery-receipt/1` has these exact required keys; no key is optional.
-
-```json
-{
-  "schema": "aius-recovery-receipt/1",
-  "run_id": "32 lowercase hex characters",
-  "sequence": 1,
-  "attempt_id": "<run_id>/000001",
-  "started_at": "RFC3339 UTC with Z",
-  "ended_at": "RFC3339 UTC with Z",
-  "target": {
-    "usb_serial": "string",
-    "fixture": "string"
-  },
-  "firmware": {
-    "revision": "string",
-    "build_id": "8 lowercase hex characters",
-    "build_utc": "RFC3339 UTC with Z",
-    "image_sha256": "64 lowercase hex characters"
-  },
-  "gate": "flash|reboot|watchdog|adapter_fault|soak|restore",
-  "fault": null,
-  "expected": {
-    "checkpoint": null,
-    "network_fault": null
-  },
-  "observed": {
-    "boot_generation": 1,
-    "reset_source": 0,
-    "watchdog_early_resets": 0,
-    "last_checkpoint": 9,
-    "network_generation": 1,
-    "network_state": 2,
-    "network_fault": 0,
-    "loop_epoch": 1
-  },
-  "latency_ms": {
-    "loader": null,
-    "usb_ready": 0,
-    "dhcp_ready": 0,
-    "http_ready": 0,
-    "watchdog_reset": null
-  },
-  "services": {
-    "usb": "pass",
-    "dhcp": "pass",
-    "http": "pass",
-    "udp": "pass",
-    "audio": "pass"
-  },
-  "result": "pass",
-  "error": null,
-  "artifacts": [],
-  "previous_record_sha256": null,
-  "record_sha256": "64 lowercase hex characters"
-}
-```
-
-`fault` is null or one of `stall`, `would_block`, `listener_loss`,
-`partial_write`, `peer_close`, `teardown`, `callback_overflow`, or
-`sd_stall`. Expected checkpoint is null or integer `0..8`; expected network
-fault is null or integer `0..10`. Observed integer ranges match the wire ABI;
-an unavailable observation is null, never zero-filled. Each latency is a
-nonnegative integer or null. Every service is `pass`, `fail`, or
-`not_applicable`. Result is `pass`, `fail`, or `interrupted`. Error is null on
-pass, otherwise `{"code": "<enum>", "message": "<string>"}` where code is one
-of `timeout`, `identity`, `revision`, `protocol`, `service`, `audio`,
-`artifact`, `operator_interrupt`, or `runner_internal`.
-
-Each artifact is
-`{"kind":"receipt|transcript|packet|audio|image|log","path":"<repo-relative>",
-"sha256":"<64 lowercase hex>","bytes":<nonnegative integer>}`. Authored
-receipts/transcripts point under `firmware/test/evidence/network-hardening/`;
-binary/audio artifacts point under `docs/reference/datasheets.mdnetwork-hardening/`.
-`record_sha256` hashes canonical JSON with that field omitted; the previous
-hash chains complete records within one run.
-
-Canonical JSON means RFC 8785 JSON Canonicalization Scheme encoded as UTF-8.
-The hash input is the complete record object with only `record_sha256` removed;
-`previous_record_sha256` remains null for sequence 1 and the prior lowercase
-hex digest thereafter. No trailing newline enters the digest. Required unit
-vector:
-
-```text
-object without record_sha256:
-{"schema":"aius-recovery-receipt/1","sequence":1,"previous_record_sha256":null}
-
-RFC 8785 bytes:
-{"previous_record_sha256":null,"schema":"aius-recovery-receipt/1","sequence":1}
-
-SHA-256:
-0ab1b1eda6a925271476b230f52ad8bc5cb5e291275aebf408c9f430e130a9e5
-```
-
-The runner generates `run_id` once from 16 random bytes and monotonically
-increments sequence. It serializes a record to one line of at most 4096 bytes,
-locks the run file, opens with `O_APPEND`, performs one write, calls `fsync`,
-and unlocks. A short write is `runner_internal`; the original file is retained
-without repair for diagnosis, renamed with `.partial`, and a new run ID is
-required.
-Startup rejects a non-newline-terminated or hash-invalid log. It never edits,
-deduplicates, or overwrites an earlier attempt.
+The proportionate live smoke (Phase 16) records a short human-readable summary
+per run under `firmware/test/evidence/network-hardening/`: the deployed build
+revision and short build id, the gate exercised, pass/fail, and the observed
+recovery status fields (boot generation, reset source, early watchdog resets,
+last checkpoint, network state/generation, ready latencies). No canonical-hash
+receipt chain, RFC 8785 canonicalization, or LFS artifact matrix is required;
+this is a personal single-device smoke, not a certification record.
 
 ## Implementation phases
 
 Each phase is one concern and ends green, buildable, committed, and pushed. A
 sub-agent edits/tests only its owned paths; the parent updates this plan, runs
 the declared proof, commits explicit paths, and pushes.
+
+**Gate for the remaining phases (11, 12, 14, 15, 16): green native suite plus an
+owned-diff review — nothing heavier.** The per-phase source-blind oracle chains
+and per-phase clean-room delivery audits described in the delivered-phase blocks
+below (Phases 1–10) are historical; they are not re-run and are not required for
+the remaining cutover and smoke work. Phases 1–10 and the Phase 13 code baseline
+are delivered and must not be re-reviewed.
 
 ### Phase 1 — Pure network supervisor
 
@@ -3813,6 +3397,7 @@ service or composition source.
 
 ```yaml
 unit: component-behind-interface
+status: in-progress
 seams: [AiusBootStorageTeensy, SRC_SRSR, WDOG1, aius_fault_checkpoint]
 contract-artifact: spec-only
 dependencies: [phase-2, phase-8]
@@ -3820,96 +3405,16 @@ outcome: "Retained checkpoints and fault images are target-ready without changin
 acceptance:
   - double-slot tests cover every torn-write boundary and sequence wrap
   - reset-bit priority table is exhaustive
-  - production and all fault selectors have distinct verified build IDs
+  - production and each fault checkpoint build with a distinct short build id
   - production and checkpoint-selectable fault targets build
 fan-out:
-  - name: agent-retained-reset-adapter
-    owned-paths:
-      - firmware/src/aius_boot_teensy.cpp
-      - firmware/src/aius_boot_teensy.h
-  - name: agent-retained-reset-independent-oracle
-    owned-paths:
-      - firmware/test/boot-target/
-  - name: agent-fault-injector
-    owned-paths:
-      - firmware/src/aius_fault_teensy.cpp
-      - firmware/src/aius_fault_teensy.h
-  - name: agent-fault-injector-independent-oracle
-    owned-paths:
-      - firmware/test/fault-target/
-  - name: agent-fault-build-identity
+  - name: agent-fault-build-cleanup
     owned-paths:
       - firmware/scripts/build.sh
       - firmware/scripts/build_metadata.py
-  - name: agent-fault-build-independent-oracle
-    owned-paths:
       - firmware/test/build-metadata/
-  - name: agent-watchdog-build-coordinator
-    start-after: [phase-10, agent-retained-reset-adapter, agent-retained-reset-independent-oracle, agent-fault-injector, agent-fault-injector-independent-oracle, agent-fault-build-identity, agent-fault-build-independent-oracle]
-    owned-paths:
-      - firmware/platformio.ini
-      - firmware/scripts/test.sh
-evidence-closure-fan-out:
-  implementation-chain:
-    - name: agent-evidence-manifest-snapshot
-      concern: tracked manifest, cleanliness, immutable snapshot
-      owned-paths: [firmware/scripts/build_metadata.py]
-    - name: agent-evidence-environment
-      concern: external environment record and link closure
-      start-after: [agent-evidence-manifest-snapshot]
-      owned-paths: [firmware/scripts/build_metadata.py]
-    - name: agent-evidence-image-identity
-      concern: selector metadata and build ID
-      start-after: [agent-evidence-environment]
-      owned-paths: [firmware/scripts/build_metadata.py]
-    - name: agent-evidence-receipt-validator
-      concern: receipt publication, log proof, ten-image validator
-      start-after: [agent-evidence-image-identity]
-      owned-paths: [firmware/scripts/build_metadata.py]
-    - name: agent-evidence-wrapper
-      concern: lock, snapshot build, failure invalidation, artifact publication
-      start-after: [agent-evidence-receipt-validator]
-      owned-paths: [firmware/scripts/build.sh]
-  metadata-oracle-chain:
-    source-blind: true
-    slices:
-      - name: agent-evidence-manifest-snapshot-oracle
-        concern: manifest/dirty/snapshot black-box model
-        owned-paths: [firmware/test/build-metadata/test_build_metadata.py]
-      - name: agent-evidence-environment-oracle
-        concern: independent environment-record/link model
-        start-after: [agent-evidence-manifest-snapshot-oracle]
-        owned-paths: [firmware/test/build-metadata/test_build_metadata.py]
-      - name: agent-evidence-image-oracle
-        concern: production/selectors/timestamp known-answer vectors
-        start-after: [agent-evidence-environment-oracle]
-        owned-paths: [firmware/test/build-metadata/test_build_metadata.py]
-  publication-oracle-chain:
-    source-blind: true
-    slices:
-      - name: agent-evidence-receipt-validator-oracle
-        concern: exact receipt and ten-image mutation matrix
-        owned-paths: [firmware/test/build-metadata/test_build_evidence.py]
-      - name: agent-evidence-wrapper-oracle
-        concern: invocation, dirt, copy/hash, and publication failures
-        start-after: [agent-evidence-receipt-validator-oracle]
-        owned-paths: [firmware/test/build-metadata/test_build_evidence.py]
-review-intensity: active
+review-intensity: standard
 commit-checkpoint:
-  implementation-baseline:
-    green:
-      - firmware/scripts/test.sh --environment native --suite boot
-      - firmware/scripts/test.sh --environment native --suite boot-target
-      - firmware/scripts/test.sh --environment native --suite fault-target
-      - firmware/scripts/test.sh --environment native --suite build-metadata
-    buildable:
-      - firmware/scripts/build.sh teensy41-optical
-      - firmware/scripts/build.sh teensy41-optical-fault 0
-    parent-commit: "feat(aius): add retained Teensy watchdog adapter"
-  identity-correction:
-    green:
-      - firmware/scripts/test.sh --environment native --suite build-metadata
-    parent-commit: "feat(aius): harden firmware evidence identity"
   green:
     - firmware/scripts/test.sh --environment native --suite boot
     - firmware/scripts/test.sh --environment native --suite boot-target
@@ -3918,64 +3423,23 @@ commit-checkpoint:
   buildable:
     - firmware/scripts/build.sh teensy41-optical
     - firmware/scripts/build.sh teensy41-optical-fault 0
-    - firmware/scripts/build.sh teensy41-optical-fault 1
-    - firmware/scripts/build.sh teensy41-optical-fault 2
-    - firmware/scripts/build.sh teensy41-optical-fault 3
-    - firmware/scripts/build.sh teensy41-optical-fault 4
-    - firmware/scripts/build.sh teensy41-optical-fault 5
-    - firmware/scripts/build.sh teensy41-optical-fault 6
-    - firmware/scripts/build.sh teensy41-optical-fault 7
-    - firmware/scripts/build.sh teensy41-optical-fault 8
-    - firmware/scripts/build.sh --validate-evidence
-  parent-commit: "docs(aius): close retained watchdog evidence"
+  parent-commit: "refactor(aius): strip firmware evidence apparatus to plain build stamping"
 ```
 
-Do not claim OCRAM retention until live Phase 17 evidence.
-Run the first six concern-sized slices after this phase's clean-room gate.
-The retained/reset implementation and its source-blind target oracle are
-sequential. The fault injector is followed by a source-blind oracle that
-compiles the real source for production and selectors `0..8`, proves exact
-checkpoint matching/return behavior, and mutation-tests the single intentional
-loop exception. Build identity may run in parallel with those pairs, followed
-by its source-blind metadata oracle. The shared
-`platformio.ini`/`scripts/test.sh` coordinator starts only after Phase 10 is
-committed and all six slices are reviewed. All builds sharing
-`.pio/build/teensy41-optical-fault` run serially. `build.sh` enforces one
-nonblocking advisory lock across production and fault optical builds; lock
-contention fails with exit 75 before PlatformIO or artifact mutation. Every
-successful production/fault build copies its ELF, HEX, and complete log into
-selector-specific `.pio/evidence/<production|fault-cp0..8>/` storage and writes
-a receipt containing the full firmware input revision in `source_revision`,
-the diagnostic source commit, environment, nullable selector, compact build
-revision, build ID, tool versions, and SHA-256 of ELF, HEX, and full log. A
-gate is complete only when all ten receipts match the current firmware input
-and build-environment revisions; contain the exact production/fault
-environment-selector tuple; have ten distinct recomputed compact revisions and
-build IDs; match all ELF, HEX, and log hashes; and each independently contains
-the retained-slot post-link success marker. The validator rejects extra or
-missing evidence directories/files and malformed diagnostic commits, but
-diagnostic `source_commit` values may differ when unrelated commits advanced.
-This transient build evidence is not committed.
+The retained/reset adapter, its target oracle, and the fault injector plus its
+oracle are delivered in baseline `8916df890`; the `boot`, `boot-target`, and
+`fault-target` suites are green and `teensy41-optical` plus a fault image build.
+That code is not re-reviewed.
 
-The original build-identity slice predates the expanded evidence contract and
-is historical. Evidence closure uses the three concern-sized chains above.
-The implementation chain is serialized because its slices deepen one module;
-the metadata-oracle and publication-oracle chains run in parallel with it and
-with each other because they own disjoint test paths and remain source-blind.
-Within each chain, overlapping owned paths serialize. No correction prompt may
-span two listed concerns. The identity-correction checkpoint requires all
-three chains, a frozen-tree registered suite, and a clean-room delivery audit
-before the first acceptance receipt build.
-
-Phase 13 has two explicit parent checkpoints because a receipt cannot identify
-a commit before that commit exists. The implementation-baseline checkpoint
-lands and pushes the reviewed, green, buildable code while Phase 13 remains
-`evidence-pending`; it does not claim completion. Immediately from that clean
-commit, with no later-phase implementation in between, rerun production and
-fault selectors `0..8`, validate all ten current-manifest receipts, and run the
-complete clean-room delivery audit. Unrelated commits may advance `HEAD`; a
-manifest-input change invalidates the matrix. Only the second plan/evidence
-checkpoint marks Phase 13 completed.
+The only remaining work is to strip the evidence/provenance apparatus. Discard
+the stopped identity-correction working set (do not commit it), revert
+`build.sh` / `build_metadata.py` to plain build stamping (see
+[§Build stamping](#build-stamping)) while keeping the `teensy41-optical-fault
+<checkpoint>` test target, and reduce the `build-metadata` suite to build-id
+derivation, timestamp stability, and invalid-invocation coverage. Remove the
+`--validate-evidence` path, the source-snapshot/receipt machinery, and the
+ten-image matrix. Do not claim OCRAM retention until the live smoke (Phase 16)
+confirms it.
 
 ### Phase 14 — Optical runtime cutover
 
@@ -4036,24 +3500,17 @@ commit-checkpoint:
   buildable:
     - firmware/scripts/build.sh teensy41-optical
     - firmware/scripts/build.sh teensy41-optical-fault 0
-    - firmware/scripts/build.sh teensy41-optical-fault 1
-    - firmware/scripts/build.sh teensy41-optical-fault 2
-    - firmware/scripts/build.sh teensy41-optical-fault 3
-    - firmware/scripts/build.sh teensy41-optical-fault 4
-    - firmware/scripts/build.sh teensy41-optical-fault 5
-    - firmware/scripts/build.sh teensy41-optical-fault 6
-    - firmware/scripts/build.sh teensy41-optical-fault 7
-    - firmware/scripts/build.sh teensy41-optical-fault 8
   parent-commit: "refactor(aius): cut over the optical runtime lifecycle"
 ```
 
-The cutover implementation and source-blind structural oracle start together
-after Phases 12 and 13. The oracle proves the exact allowed setup trace,
-single-epoch loop delegation, and absence of direct transport, SD, delay,
-fallback, rebind, or extra-feed paths without reading `optical_main.cpp` or
-the implementer report. Docs may overlap that oracle after the implementation
-contract is available; integration waits for both code and oracle. The parent
-runs all production/fault builds sequentially under the optical build lock.
+This is the load-bearing phase: it swaps the legacy blocking network/SD path in
+`optical_main.cpp` for the delivered bounded lifecycle, so it carries the highest
+regression risk. The green native suites above are the guard; a structural check
+(the `optical-cutover` suite plus the vendor source guard) proves the allowed
+setup trace, single-epoch loop delegation, and absence of static fallback, raw
+FNET access, rebind globals, blocking writes, or extra watchdog feeds. Build
+production plus one fault image; the full per-checkpoint fault set is exercised
+by the Phase 16 live smoke, not rebuilt here.
 
 ### Phase 15 — Button-free flash tooling
 
@@ -4106,226 +3563,65 @@ oracle; suite integration waits for all three initial slices. Fake tests may
 parallelize, but the parent serializes any real CDC, RawHID, HalfKay, or
 loader-fixture use.
 
-### Phase 16 — Acceptance runner and evidence schema
+### Phase 16 — Live recovery smoke
 
 ```yaml
 unit: phase-task
-seams: [USB heartbeat, HTTP status, UDP status, fault selection, audio oracle, JSONL receipt]
-contract-artifact: both
-dispatch-dependencies: [phase-9, phase-13]
-completion-dependencies: [phase-15]
-outcome: "One command executes a selected gate and durably records every attempt."
+seams: [USB heartbeat, HTTP status, UDP status, fault selection, deployed fixture]
+contract-artifact: spec-only
+dependencies: [phase-9, phase-13, phase-14, phase-15]
+outcome: "A small host runner drives a proportionate on-target recovery smoke and records a readable summary."
 acceptance:
-  - schema validation covers every enum, nullable field, and range
-  - append tests cover interruption, short write, corrupt tail, and hash chain
-  - fake fixture covers every gate result and preserves failed attempts
+  - the runner decodes the recovery status fields and reports pass/fail per gate
+  - fake-fixture native tests cover each gate result path
+  - the live smoke below passes on the deployed device
 fan-out:
-  - name: agent-recovery-receipt-kernel
+  - name: agent-recovery-runner
     owned-paths:
-      - firmware/tools/net/aius_recovery_receipt.py
-      - firmware/test/recovery-runner/test_receipt.py
-  - name: agent-recovery-observers
-    owned-paths:
-      - firmware/tools/net/aius_recovery_observers.py
-      - firmware/test/recovery-runner/test_observers.py
-  - name: agent-recovery-lifecycle-gates
-    start-after: [phase-15, agent-recovery-receipt-kernel, agent-recovery-observers]
-    owned-paths:
-      - firmware/tools/net/aius_recovery_gate_lifecycle.py
-      - firmware/test/recovery-runner/test_gate_lifecycle.py
-  - name: agent-recovery-fault-gates
-    start-after: [agent-recovery-receipt-kernel, agent-recovery-observers]
-    owned-paths:
-      - firmware/tools/net/aius_recovery_gate_faults.py
-      - firmware/test/recovery-runner/test_gate_faults.py
-  - name: agent-recovery-workload-gates
-    start-after: [agent-recovery-receipt-kernel, agent-recovery-observers]
-    owned-paths:
-      - firmware/tools/net/aius_recovery_gate_workload.py
-      - firmware/test/recovery-runner/test_gate_workload.py
-  - name: agent-recovery-shell
-    start-after: [phase-15]
-    owned-paths:
-      - firmware/scripts/run_recovery_acceptance.sh
-      - firmware/test/recovery-runner/test_cli.py
-  - name: agent-recovery-acceptance-coordinator
-    start-after: [phase-15, agent-recovery-lifecycle-gates, agent-recovery-fault-gates, agent-recovery-workload-gates]
-    owned-paths:
-      - firmware/tools/net/aius_recovery_acceptance.py
-      - firmware/test/recovery-runner/test_gates.py
-  - name: agent-recovery-runner-coordinator
-    start-after: [agent-recovery-acceptance-coordinator, agent-recovery-shell]
-    owned-paths:
+      - firmware/tools/net/aius_recovery_smoke.py
+      - firmware/test/recovery-runner/
+      - firmware/scripts/run_recovery_smoke.sh
       - firmware/scripts/test.sh
-review-intensity: active
+review-intensity: standard
 commit-checkpoint:
   green:
-    - firmware/scripts/test.sh --environment native --suite net-runner
     - firmware/scripts/test.sh --environment native --suite recovery-runner
   buildable:
     - firmware/scripts/build.sh teensy41-optical
     - firmware/scripts/build.sh teensy41-optical-fault 0
-  parent-commit: "test(aius): automate firmware recovery acceptance"
+  parent-commit: "test(aius): add proportionate recovery smoke runner"
 ```
 
-Before fan-out, commit the exact public function signatures, CLI, the
-`flash|reboot|watchdog|adapter_fault|sd|soak|restore` gate enum, fixture command
-protocols, timeout/evidence paths, RFC 8785 canonicalization, deterministic
-adapter-fault selector/build identity, and audio-oracle executable/JSON
-contract. Receipt and observer slices may start after Phases 9 and 13 while
-Phases 14–15 continue. Fault and workload gate families then join those
-contracts and may also overlap Phase 15. Shell and lifecycle gates require
-Phase 15. The final acceptance coordinator joins all three gate families; only
-the suite coordinator touches `test.sh`. No agent runs an optical build or
-mutates a real fixture; the parent runs the two build gates sequentially after
-integration. Phase 16 cannot complete or commit before Phase 15.
+A single host runner reads USB `ID`, HTTP status, and UDP status, decodes the
+recovery status fields ([§Status compatibility contract](#status-compatibility-contract)),
+and reports pass/fail per gate. Fake-fixture native tests cover each gate result
+path. The runner writes the readable per-run summary described in
+[§Live smoke evidence](#live-smoke-evidence) — no JSONL receipt chain, canonical
+hashing, or LFS artifact matrix.
 
-### Phase 17 — Live hardware gates
+The proportionate live smoke on the deployed device, run once after cutover:
 
-```yaml
-unit: test-surface
-seams: [deployed fixture, acceptance runner, raw evidence]
-contract-artifact: spec-only
-dependencies: [phase-14, phase-15, phase-16]
-outcome: "Target evidence proves button-free recovery and bounded failure behavior."
-acceptance:
-  - ten button-free flashes
-  - one hundred normal reboots
-  - ten watchdog recoveries per injectable checkpoint 0..8
-  - complete adapter fault matrix
-  - eight-hour concurrent soak
-  - production image restored and verified
-fan-out:
-  - name: agent-live-preflight
-    gate: preflight
-    owned-paths: [firmware/test/evidence/network-hardening/preflight/, docs/reference/datasheets.mdnetwork-hardening/preflight/]
-  - {name: agent-live-preflight-validator, start-after: [agent-live-preflight], read-only: true, owned-paths: []}
-  - name: agent-live-flash
-    gate: flash
-    start-after: [agent-live-preflight]
-    owned-paths: [firmware/test/evidence/network-hardening/flash/, docs/reference/datasheets.mdnetwork-hardening/flash/]
-  - {name: agent-live-flash-validator, start-after: [agent-live-flash], read-only: true, owned-paths: []}
-  - name: agent-live-reboot
-    gate: reboot
-    start-after: [agent-live-flash]
-    owned-paths: [firmware/test/evidence/network-hardening/reboot/, docs/reference/datasheets.mdnetwork-hardening/reboot/]
-  - {name: agent-live-reboot-validator, start-after: [agent-live-reboot], read-only: true, owned-paths: []}
-  - name: agent-live-watchdog
-    gate: watchdog
-    start-after: [agent-live-reboot]
-    owned-paths: [firmware/test/evidence/network-hardening/watchdog/, docs/reference/datasheets.mdnetwork-hardening/watchdog/]
-  - {name: agent-live-watchdog-validator, start-after: [agent-live-watchdog], read-only: true, owned-paths: []}
-  - name: agent-live-adapter-fault
-    gate: adapter_fault
-    start-after: [agent-live-watchdog]
-    owned-paths: [firmware/test/evidence/network-hardening/adapter_fault/, docs/reference/datasheets.mdnetwork-hardening/adapter_fault/]
-  - {name: agent-live-adapter-fault-validator, start-after: [agent-live-adapter-fault], read-only: true, owned-paths: []}
-  - name: agent-live-sd
-    gate: sd
-    start-after: [agent-live-adapter-fault]
-    owned-paths: [firmware/test/evidence/network-hardening/sd/, docs/reference/datasheets.mdnetwork-hardening/sd/]
-  - {name: agent-live-sd-validator, start-after: [agent-live-sd], read-only: true, owned-paths: []}
-  - name: agent-live-soak
-    gate: soak
-    start-after: [agent-live-sd]
-    owned-paths: [firmware/test/evidence/network-hardening/soak/, docs/reference/datasheets.mdnetwork-hardening/soak/]
-  - {name: agent-live-soak-validator, start-after: [agent-live-soak], read-only: true, owned-paths: []}
-  - name: agent-live-restore
-    gate: restore
-    start-after: [agent-live-soak]
-    owned-paths: [firmware/test/evidence/network-hardening/restore/, docs/reference/datasheets.mdnetwork-hardening/restore/]
-  - {name: agent-live-restore-validator, start-after: [agent-live-restore], read-only: true, owned-paths: []}
-review-intensity: active
-commit-checkpoint:
-  sub-checkpoints: [flash-with-preflight, reboot, watchdog, adapter-fault, sd, soak, restore]
-  green:
-    - all seven acceptance groups have valid chained receipts
-  buildable:
-    - deployed teensy41-optical production image
-  parent-commit: "test(aius): prove firmware recovery on target"
-```
+1. One button-free CDC flash and one production restore, each verified by build
+   revision, with zero button presses.
+2. A handful of software reboots (about five) with DHCP, USB, HTTP, and UDP
+   ready inside the normative deadlines and no unexpected watchdog reset.
+3. One induced stall at each injectable checkpoint `0..8`, each resetting inside
+   8–10 s, reporting its checkpoint, and returning to normal or recovery-safe
+   service without intervention.
+4. A short soak (about 30 minutes) of HTTP/UDP traffic with no unexpected reset,
+   outage, or leaked generation.
 
-Acceptance requires:
-
-1. Ten consecutive optical flashes through CDC software bootloader entry, exact
-   revision verification, and zero button presses.
-2. One hundred software reboots with DHCP, USB, HTTP, and UDP ready inside the
-   normative deadlines and no unexpected watchdog reset.
-3. Ten induced stalls at every injectable checkpoint `0..8`. Every run resets
-   inside 8–10 s, reports the exact checkpoint, and returns to normal or
-   recovery-safe service without intervention.
-4. Every adapter fault (`WOULD_BLOCK`, listener loss, partial write, peer close,
-   teardown fault, callback overflow) reaches its specified state while USB
-   remains responsive.
-5. Every returned SD primitive meets the timing distribution, an SD checkpoint
-   stall resets in 8–10 s, and USB recovery returns without a button press.
-6. Eight hours of HTTP/UDP/SD traffic has zero unexpected resets, unexplained
-   outages, leaked generations, or independent optical-audio discontinuities.
-7. Production firmware is restored through the same workflow and its exact
-   revision is recorded.
-
-Authored JSONL receipts and text transcripts live under
-`firmware/test/evidence/network-hardening/`. Raw binary/audio captures live
-under `docs/reference/datasheets.mdnetwork-hardening/` and use Git LFS.
-The single fixture, USB enumeration, and shared fault build directory serialize
-all mutating hardware groups in the listed order. Each group owns only its
-gate-named receipt/transcript/artifact subtree and commits after restoring a
-verified production image when it temporarily deploys a fault image.
-Each completed group is checked by a source-blind read-only validator that sees
-only this plan, schema, closed receipt, and raw artifacts, never the executor
-report or live device. After executor N restores and mechanically verifies the
-production image, validator N may overlap executor N+1. Selector builds, live
-checkpoint injections, fixture mutation, USB/HalfKay use, SD media access, and
-audio capture never run in parallel. Receipts are gate-local append-only chains
-under one immutable session/deployed-firmware manifest and identify the stable
-firmware input revision, not repository `HEAD`. The parent commits each
-sub-checkpoint only after its validator passes. Final restore waits for every
-group and validator. Any source, tool, or schema correction invalidates the
-affected downstream evidence and returns to its implementation checkpoint.
-
-### Phase 18 — Final clean-room delivery audit
-
-```yaml
-unit: test-surface
-seams: [plan, delivered code, authored receipts, raw evidence]
-contract-artifact: spec-only
-dependencies: [phase-17]
-outcome: "An independent reviewer accounts for every promise before shipment."
-acceptance:
-  - every plan promise independently matches code and evidence
-  - every divergence is fixed or recorded
-  - production image identity matches the final restore receipt
-fan-out:
-  - name: reviewer-final-delivery
-    owned-paths: []
-    read-only: true
-review-intensity: active
-commit-checkpoint:
-  green:
-    - clean-room delivery audit passes
-  buildable:
-    - deployed teensy41-optical production image
-  parent-commit: "docs(aius): close firmware recovery hardening"
-```
-
-The reviewer sees only this plan, code, authored receipts, and raw evidence.
-The parent applies required corrections, marks the plan `shipped`, commits, and
-pushes.
-Phase 18 deliberately remains one plan-wide reviewer after every evidence
-commit and the verified production restore. Findings may fan out into
-concern-sized correction slices, but the same complete reviewer reruns after
-their targeted proofs. The audit starts only from a clean committed Phase 17
-restore checkpoint; no evidence writer or hardware executor runs concurrently.
-Corrections may fan out only after findings identify disjoint owned paths. Raw
-evidence is immutable. A firmware, tool, or schema correction reruns every
-invalidated Phase 17 gate before the same plan-wide reviewer reruns.
+The single fixture and USB enumeration serialize the mutating steps; each fault
+image is restored to the production image before the next step. This is a
+personal single-device smoke that confirms the cutover did not regress recovery,
+not a certification matrix. There is no separate final clean-room delivery audit:
+the green native suites plus the owned-diff review at the cutover commit carry
+the plan.
 
 ## Deferred work
 
-- A hermetic build image that fingerprints the host kernel and full dynamic
-  library closure remains separate reproducibility work. This plan records the
-  enumerated tool/package/PATH closure and treats final ELF/HEX hashes as the
-  authority for produced bytes.
+- Build reproducibility beyond the final ELF/HEX hashes is out of scope for this
+  personal build. No host/toolchain fingerprint or hash-locked evidence contract.
 - TLS, production authentication policy, and NTP remain separate concerns.
 - Audio decoding and DSP behaviour remain independent of Ethernet recovery.
 - A dual-image application rollback scheme is not required. HalfKay plus
@@ -4333,161 +3629,20 @@ invalidated Phase 17 gate before the same plan-wide reviewer reruns.
 
 ## Delivered evidence
 
-- Pre-change baseline on 2026-07-23: native `net` codec suite passes and
-  `teensy41-optical` builds with PlatformIO 6.1.16, Teensy platform 5.2.0,
-  framework 1.162.0, and all memory banks fitting. This proves only the starting
-  checkpoint, not hardening efficacy.
-- First clean-room plan gate: failed before dispatch; all findings are resolved
-  in the contract and decomposition above.
-- Final clean-room plan-to-build recheck: passed after five failed reviews and
-  their amendments. Phase 1 is authorized for dispatch.
-- Phase 1: native `net` suite and `teensy41-optical` build pass. The first
-  delivery audit rejected ambiguous invalidated-generation wording and a
-  mirror-image oracle; the amended live-resource contract and independent
-  table/model proof passed the clean-room re-audit.
-- Phase 2: native `boot` suite and `teensy41-optical` build pass. The first
-  delivery audit rejected a self-confirming CRC test and missing invalid-state
-  branches; the fixed 24-byte known-answer vector and complete public-interface
-  proof passed the clean-room re-audit.
-- Phase 3: native `network-transport` source and ASan/UBSan fake-FNET suites
-  pass across fresh FNET, netif, link, and full-lifecycle processes;
-  `teensy41-optical` builds with only the pinned `AiusNativeEthernet` source,
-  and its post-link symbol proof passes. Four clean-room delivery reviews
-  rejected partial-init deadlock, callback-unsafe teardown, self-confirming
-  source checks, incomplete fault injection, mutable patch identity,
-  bypassable or overbroad loop guards, and late link-state mutation. The final
-  review passed after executable cleanup-time callback injection, exact
-  upstream/patched hashes, target resolver enforcement, and late-event
-  authority revocation were delivered.
-- Phase 4: native `network-transport` and `teensy41-optical` pass with the
-  adapter compiled beside the unchanged legacy runtime. The first delivery
-  audit rejected a primitive call during clean teardown and sampled I/O
-  coverage. The corrected zero-call teardown, exhaustive fake operation/result
-  matrix, malformed-result rejection, and production fake-FNET TCP/UDP branch
-  proof passed the clean-room re-audit.
-- Phase 5 plan-to-build gate: failed before dispatch because the portable ABI
-  lacked a normative transition/result oracle and incorrectly claimed target
-  cutover and adapter scope. The contract now defines correlated actions,
-  typed results, all job/mode sequences, path/arithmetic boundaries, buffer
-  ownership, install/rollback authority, and timeout/cancellation cleanup. The
-  first recheck also rejected overloaded internal state, contradictory zero-I/O
-  faults, unsafe invalid-supply termination, unresolved side-effect authority,
-  and ambiguous deadline precedence; explicit phases/counters and the final
-  payload/correlation/cleanup rules above resolve those findings. The final
-  sizing recheck rejected missing config accumulation, residual abort/id
-  precedence, and one oversized agent; those rules are now total and Phase 5
-  is split into an engine slice followed by an implementation-blind oracle
-  slice. The definitive range recheck rejected an overloaded read
-  `end_offset`; download/refill now derive it after file-size capture and fail
-  out-of-file requests with the stable `RANGE` fault. The fresh recheck passed;
-  Phase 5 is authorized for engine dispatch followed by the source-blind
-  oracle slice. The first engine dispatch stopped before write because an
-  unbounded streamed upload could not supply a complete `PUBLISH_CONFIG`
-  buffer; publishing uploads are now config-sized and use an explicit
-  post-commit reread before publication. The focused publication recheck
-  passed and engine dispatch is authorized again. Engine authority review then
-  found that an earlier abort could mask a later install-rename failure and
-  wrongly delete its recovery temp; explicit `install_failed` authority now
-  separates preservation from terminal-fault precedence. The focused
-  install-authority matrix recheck passed.
-- Phase 5 delivery: the native `sd` suite passes under strict C11,
-  warnings-as-errors, ASan, and UBSan with 58 named phase/action fixtures, 910
-  event/payload/authority matrix trials, and 15 lifecycle cases;
-  `teensy41-optical` builds with all banks fitting. The source-blind oracle
-  caught rollback terminal re-entry and suppressed action-id exhaustion
-  notification in the engine. Two delivery reviews then rejected
-  scenario-only mismatch coverage and missing append/finalize cancellation
-  rows. The count-asserted cross-product oracle and durable-file cancellation
-  sequences passed the final clean-room audit.
-- Phase 6 delivery: the native `http` suite passes under strict C11,
-  warnings-as-errors, ASan, and UBSan with 32 named transaction tests, 111
-  natural authority/event rows, all 63 SD operation/result edges, 68
-  unnamed-field mutations from valid SD baselines, 39 fixed-response capacity
-  boundaries, real ACK deadline/wrap cases, and repeated restart and duplicate
-  authority cases. The source-blind oracle exposed strict framing,
-  pre-accept restart, SD result-matrix, transport-root, retained-dispatch,
-  download-deadline, publication-bound, and streamed-upload backpressure
-  defects before delivery. Four delivery audits rejected self-confirming or
-  incomplete precedence, payload, capacity, and lifecycle proof; the final
-  fresh audit passed. `teensy41-optical` explicitly compiles the HTTP codec,
-  transaction engine, and SD engine, passes pinned NativeEthernet linked-symbol
-  verification, and fits every memory bank.
-- Phase 7 delivery: the native `usb-control` suite passes under strict C11,
-  warnings-as-errors, ASan, and UBSan with count-asserted registries covering
-  24 transition families, 36 stable variants, 12 malformed or unnamed TX
-  rows, 12 unsolicited or duplicate input rows, 8 RX boundary rows, 21
-  application-response rows, 6 wrap-aware deadline rows in both authorized
-  `TX` and `ACK_PENDING`, and 4 reconnect transactions. The source-blind
-  oracle proves exact replacement writes after partial, blocked, and malformed
-  correlations; bootloader denial cannot retain entry authority. The first
-  delivery audit rejected missing ACK-pending, replacement-write, and negative
-  authorization proof; the strengthened oracle passed a fresh clean-room
-  re-audit. `teensy41-optical` compiles the bounded runtime beside the unchanged
-  legacy adapter, passes pinned NativeEthernet linked-symbol verification, and
-  fits every memory bank.
-- Phase 8 delivery: the native `runtime` suite passes under strict C11,
-  warnings-as-errors, ASan, and UBSan with 10 literal descriptor rows, all
-  65,526 invalid selectors, exact 20-event normal and 6-event recovery-safe
-  traces, 11 fail-fast traces, 10 ops-validity rows, and 2 entry-snapshot alias
-  mutation rows. The source-blind oracle proves stable budget pointers, exact
-  checkpoint/service order, no feed after incomplete epochs, one feed after a
-  complete epoch, null-context forwarding, and immunity to callback mutation
-  of the caller's ops storage. The focused clean-room delivery audit passed.
-  `teensy41-optical` explicitly compiles the stateless scheduler, passes pinned
-  NativeEthernet linked-symbol verification, and fits every memory bank.
-- Phase 9 delivery: the native `net` and Python `net-runner` suites pass
-  against the two precommitted LFS contract fixtures. The C proof byte-matches
-  the canonical 99-byte encoding and independent 71-byte prefix; exhausts
-  capacities `0..98`, invalid versions and modes, all 65,526 invalid
-  checkpoints, enum/fault domains, valid endpoints, and `UINT32_MAX` counters;
-  and proves rejection leaves output unchanged. The Python proof accepts only
-  71/99-byte payloads, exhausts protocol-representable invalid lengths,
-  validates every recovery domain and reserved byte independently, preserves
-  legacy keys/types, and maps historical mode `2` to `legacy-static`. The
-  first plan gate rejected contradictory target scope, missing fixed fixtures,
-  incomplete parser semantics, and an oversized slice; the amended,
-  fixture-backed decomposition passed a fresh plan recheck and clean-room
-  delivery audit. `teensy41-optical` compiles the portable encoder beside the
-  still-legacy target emitter, passes pinned NativeEthernet linked-symbol
-  verification, and fits every memory bank.
-- Phase 10 delivery: the strict native `sd`, `http`, and `sd-target` suites
-  pass with 64 SD fixtures, 1,001 correlation trials, 27 lifecycle cases,
-  exact required-delete 404 compatibility, and the source-blind 23-action
-  target catalog proving 17 storage primitives plus 6 inert actions. The
-  independent oracle exposed missing existence/truncate transitions and two
-  cleanup-authority defects; both were fixed without weakening expectations.
-  Exact 262-ID post-commit reserve exhaustion, `UINT64_MAX` saturation, all
-  six existence purposes, target timing/authority fields, and source-guard
-  mutation tests pass. A fresh delivery audit passed after correcting
-  target-to-backup rename failure to remove only the disposable temp.
-  `teensy41-optical` compiles but does not construct the adapter, passes pinned
-  NativeEthernet linked-symbol verification, and fits every memory bank.
-- Phase 13 implementation baseline: retained/reset, fault-injection, target
-  oracles, metadata tests, production, and checkpoint-0 builds passed the
-  clean-room baseline audit and landed in `8916df890`. The first receipt
-  closure attempts correctly aborted when repository `HEAD` changed, but the
-  changes were unrelated documentation commits. That exposed an overbroad
-  evidence identity, not a firmware failure. The amended gate uses the exact
-  firmware-input manifest and an immutable committed export; the ten-build
-  evidence matrix remains pending. Its first clean-room re-gate rejected an
-  implicit manifest ABI, ambiguous receipt fields/selector encoding, missing
-  external tool fingerprints, underspecified snapshot mechanics, and an
-  ad-hoc matrix check. The exact CLI/schema/environment/snapshot/validator
-  contracts above resolve those findings. The focused re-gate then rejected
-  unspecified external-record framing, canonical JSON bytes, launcher
-  resolution, snapshot marker content, and retained-slot log matching. Those
-  encodings are now exact. The next re-gate rejected nonportable replacement
-  of a nonempty snapshot, ambiguous dirty-output bytes, unhashed HOME/PATH
-  inputs, and virtual-environment package discovery under `-S`. Unique
-  per-run snapshots, raw porcelain framing, an empty home, enumerated PATH
-  roots, actual-import probing, and the explicit non-hermetic boundary resolve
-  those findings. The following re-gate rejected unspecified launcher/interpreter
-  link-chain encoding and the impossible rejection of real `/usr/bin`
-  alternative links. Exact `S`/`F` closure records now bind outbound link
-  targets and terminal file bytes; the next plan gate passed. The first
-  identity delivery audit then rejected erased symlinked-virtualenv identity,
-  incomplete negative/source-blind proof, undocumented public CLI operations,
-  and a phase-sized identity slice. Lexical import roots, `sys.prefix`
-  authority, `D` records, the exact expanded CLI, exhaustive cases, and the
-  three concern-sized chains above define the correction; a fresh plan gate is
-  required before correction dispatch.
+Phases 1–10 and the Phase 13 code baseline (`8916df890`) are delivered. Each
+landed its native suite green under strict C11 with warnings-as-errors, ASan,
+and UBSan, and `teensy41-optical` builds with every memory bank fitting and the
+pinned NativeEthernet linked-symbol proof passing. The standing regression-guard
+suites are `net`, `boot`, `network-transport`, `sd`, `http`, `usb-control`,
+`runtime`, `runtime-target`, `boot-target`, and `fault-target`.
+
+- The delivered modules: pure network supervisor, portable boot ledger, pinned
+  one-shot NativeEthernet, Teensy network adapter, bounded SD jobs and one-shot
+  Teensy SD adapter, stateful HTTP transactions, bounded CDC recovery runtime,
+  portable runtime scheduler, versioned recovery status schema, and the retained
+  Teensy watchdog adapter with its fault injector.
+- The earlier per-phase clean-room plan gates and delivery re-audits are
+  historical and are not repeated.
+- The Phase 13 evidence/receipt matrix is abandoned along with the provenance
+  apparatus it was built for (see [§Build stamping](#build-stamping)); the
+  retained-watchdog and fault-injector code it wrapped remains delivered.
