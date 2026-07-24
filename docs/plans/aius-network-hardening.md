@@ -830,7 +830,8 @@ typedef enum {
     AIUS_SD_FAULT_ROLLBACK = 13,
     AIUS_SD_FAULT_PUBLISH = 14,
     AIUS_SD_FAULT_CANCELLED = 15,
-    AIUS_SD_FAULT_CLEANUP = 16
+    AIUS_SD_FAULT_CLEANUP = 16,
+    AIUS_SD_FAULT_RANGE = 17
 } AiusSdFault;
 
 typedef struct {
@@ -949,8 +950,8 @@ sequence is:
 | `UPLOAD/REPLACE` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_WRITE_TRUNCATE(temp)`; accept and write exactly `total` new bytes; `CLOSE`; then run the install sequence below. Zero-length replacement is valid and still creates/truncates, closes, and installs an empty file. |
 | `UPLOAD/APPEND_PART` | Emit parent `MKDIR` actions for `target`; `OPEN_READ(target) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(target)`; accept and write exactly `total`; `CLOSE`; `COMPLETE`. `target` is the durable part path. It is never promoted, renamed, or removed by failure/cancellation. |
 | `UPLOAD/FINALIZE_PART` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. |
-| `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. `total == 0` means through the captured file size; otherwise exactly `total` bytes are required and must fit within the captured size. Result is `BYTES` with acknowledged output bytes. |
-| `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. It returns `min(total, file_size - initial_offset)` bytes; `initial_offset == file_size` is a successful zero-byte refill. |
+| `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. After size capture, `initial_offset > captured_size` is `RANGE`. If `total == 0`, set `end_offset = captured_size`; otherwise require checked `initial_offset + total <= captured_size` or fail `RANGE`, then set that sum as `end_offset`. Result is `BYTES` with acknowledged output bytes. |
+| `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. After size capture, `initial_offset > captured_size` is `RANGE`; otherwise set `end_offset = initial_offset + min(total, captured_size - initial_offset)`. `initial_offset == captured_size` is a successful zero-byte refill. |
 | `DELETE` | `REMOVE(target) → OK`, then `COMPLETE`. Adapter `REMOVE` is idempotent: already absent and removed are both `OK`. |
 
 Request fields are not implicit:
@@ -994,11 +995,12 @@ new/published/transferred count. Delete returns `COMPLETE`; probe and usage use
 their typed results. Every failed job returns `FAULT`.
 
 The public fields have one meaning throughout a job: `phase` selects exactly
-one row/edge above; `initial_offset` is the copied request value; `end_offset`
-is the checked exclusive end `initial_offset + total`; `captured_size` is the
-last accepted `FILE_SIZE`; and `transferred` counts only acknowledged new
-upload bytes or acknowledged output bytes. Upload remaining bytes are always
-`total - transferred`, and the absolute next write offset is
+one row/edge above; `initial_offset` is the copied request value; for uploads,
+`end_offset` is the checked exclusive end `initial_offset + total`; for
+download/refill, `end_offset` is derived exactly once from the captured size by
+the rows above. `captured_size` is the last accepted `FILE_SIZE`, and
+`transferred` counts only acknowledged new upload bytes or acknowledged output
+bytes. Upload remaining bytes are always `total - transferred`, and the absolute next write offset is
 `initial_offset + transferred`. `config_bytes` counts accepted config reads;
 config `READ` uses `buffer + config_bytes` with length
 `captured_size - config_bytes`. `buffer_offset` and `pending` describe only an
@@ -2460,4 +2462,6 @@ pushes.
   sizing recheck rejected missing config accumulation, residual abort/id
   precedence, and one oversized agent; those rules are now total and Phase 5
   is split into an engine slice followed by an implementation-blind oracle
-  slice.
+  slice. The definitive range recheck rejected an overloaded read
+  `end_offset`; download/refill now derive it after file-size capture and fail
+  out-of-file requests with the stable `RANGE` fault.
