@@ -423,8 +423,8 @@ compiler inputs have a separate **build environment revision**:
 `aius-optical-build-environment/1\0`, followed by records from these exact
 ordered labels:
 
-1. `pio-launcher`: resolved PIO launcher file;
-2. `python-executable`: resolved launcher Python executable;
+1. `pio-launcher`: absolute launcher entry, link chain, and resolved file;
+2. `python-executable`: absolute shebang entry, link chain, and resolved file;
 3. `python-venv-config`: the launcher prefix's `pyvenv.cfg`, when present;
 4. `python-stdlib`: that interpreter's complete standard-library root;
 5. `python-import-000..N`: the sorted unique existing import roots discovered
@@ -443,18 +443,34 @@ is 64 lowercase ASCII SHA-256 hex for regular-file bytes or raw symlink-target
 bytes and is empty for a directory. Root boundaries are therefore explicit in
 the label on every record. A component exactly `__pycache__` and a basename
 ending `.pyc` or `.pyo` are the only exclusions. NUL in a path, missing or
-unreadable roots, non-file/directory/symlink entries, absolute symlink targets,
-lexically escaping symlink targets, or a root that changes across one
-calculation fail the command. Absolute root locations are labels, not hash
-inputs.
+unreadable roots, non-file/directory/symlink entries, or a root that changes
+across one calculation fail the command.
+
+Every symlink that resolves outside its labeled root, including a symlink used
+to reach the PIO launcher or Python executable, adds ordered closure records.
+For hop index `000000`, `000001`, and so on, the exact record is
+`S\0<label>\0<link-path>\0<index>\0<raw-target>\0`; the terminal regular file
+adds
+`F\0<label>\0<link-path>\0<mode>\0<digest>\0`.
+`<link-path>` is `.` for a root-file chain or the raw root-relative path for a
+tree entry; `<mode>` is six lowercase octal digits and `<digest>` is the
+terminal file's lowercase SHA-256. Closure records are ordered immediately
+after their owning `E` record. Absolute and lexically escaping targets are
+allowed only through this closure. A cycle, dangling hop, special file, or
+external terminal directory fails. An internal directory target is already
+covered by its root's `E` records. Thus `/usr/bin` alternatives such as
+`awk -> /etc/alternatives/awk -> /usr/bin/mawk` are accepted and bind both
+target strings plus terminal bytes. Starting absolute root locations remain
+labels, not hash inputs.
 
 The `--pio` CLI value must be absolute. It is resolved strictly through every
 symlink to an executable regular file. Its first line must be exactly
 `#!<absolute-python-path>` with no argument; `/usr/bin/env`, relative, missing,
 or multi-argument shebangs fail. The shebang path itself is retained for
 execution so a virtual-environment prefix is not erased by symlink resolution;
-the resolved executable bytes and every symlink target in that chain are
-fingerprinted. The fixed `<shebang-python> -c <probe>` imports `platformio` and
+its `.` link path uses the `S`/`F` chain above under the exact labels
+`pio-launcher` and `python-executable`. The fixed
+`<shebang-python> -c <probe>` imports `platformio` and
 `SCons`, then emits canonical JSON containing `sysconfig.get_path("stdlib")`
 and the sorted unique existing parents that contain those imported packages,
 `purelib`, and `platlib`. It runs with no `-S`, so pre-3.14 virtual-environment
@@ -4342,4 +4358,7 @@ invalidated Phase 17 gate before the same plan-wide reviewer reruns.
   inputs, and virtual-environment package discovery under `-S`. Unique
   per-run snapshots, raw porcelain framing, an empty home, enumerated PATH
   roots, actual-import probing, and the explicit non-hermetic boundary resolve
-  those findings; a fresh re-gate is required.
+  those findings. The following re-gate rejected unspecified launcher/interpreter
+  link-chain encoding and the impossible rejection of real `/usr/bin`
+  alternative links. Exact `S`/`F` closure records now bind outbound link
+  targets and terminal file bytes; a fresh re-gate is required.
