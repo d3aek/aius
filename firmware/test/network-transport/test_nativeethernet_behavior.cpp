@@ -7,6 +7,7 @@
 
 #include "NativeDns.h"
 #include "NativeEthernet.h"
+#include "aius_network_teensy.h"
 #include "utility/NativeW5100.h"
 
 FakeSerialClass Serial;
@@ -31,6 +32,11 @@ struct FakeState {
     int send_calls;
     int send_capacity;
     int send_result;
+    int sendto_result;
+    int recv_result;
+    int recvfrom_result;
+    int socket_error;
+    int accepted_socket_number;
     int cleanup_callback_injections;
     int callback_socket_api_calls;
     bool fnet_active;
@@ -315,6 +321,144 @@ void test_destroyed_server_has_no_live_object_cookie()
     Ethernet.end();
 }
 
+void test_adapter_socket_result_mapping()
+{
+    AiusNetworkTeensy adapter = {};
+    AiusNetEvent event = {};
+    const AiusNetAction start = {AIUS_NET_ACTION_START_STACK, 9u};
+    const AiusNetAction dhcp = {AIUS_NET_ACTION_START_DHCP, 9u};
+    const AiusNetAction publish = {AIUS_NET_ACTION_PUBLISH_ONLINE, 9u};
+    const AiusNetAction none = {AIUS_NET_ACTION_NONE, 0u};
+    uint8_t buffer[16] = {};
+
+    aius_network_teensy_init(&adapter);
+    aius_network_teensy_apply(&adapter, 0u, start, &event);
+    assert(event.kind == AIUS_NET_EVENT_STACK_STARTED);
+    aius_network_teensy_apply(&adapter, 1u, dhcp, &event);
+    assert(event.kind == AIUS_NET_EVENT_NONE);
+    aius_network_teensy_apply(&adapter, 2u, publish, &event);
+    assert(adapter.listener_open && !adapter.udp_open);
+    aius_network_teensy_apply(&adapter, 3u, none, &event);
+    assert(adapter.online && adapter.udp_open);
+
+    AiusIoEvent io = aius_network_teensy_accept(&adapter);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.accepted_socket_number = 3;
+    fake.service_callback(fake.service_cookie);
+    io = aius_network_teensy_accept(&adapter);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.recv_result = 5;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 5u &&
+           io.fault == 0u);
+
+    fake.recv_result = FNET_ERR;
+    fake.socket_error = FNET_ERR_AGAIN;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.recv_result = 0;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.recv_result = FNET_ERR;
+    fake.socket_error = -9;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+
+    fake.send_capacity = 4;
+    fake.send_result = 4;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
+           io.fault == 0u);
+
+    int sends = fake.send_calls;
+    fake.send_capacity = 0;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u && fake.send_calls == sends);
+
+    fake.send_capacity = 4;
+    fake.send_result = FNET_ERR;
+    fake.socket_error = FNET_ERR_AGAIN;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+
+    fake.socket_error = -9;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.recvfrom_result = 0;
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.recvfrom_result = FNET_ERR;
+    fake.socket_error = FNET_ERR_AGAIN;
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.socket_error = -9;
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+
+    fake.recvfrom_result = 5;
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 5u &&
+           io.fault == 0u);
+
+    fake.sendto_result = FNET_ERR;
+    fake.socket_error = FNET_ERR_AGAIN;
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    fake.socket_error = -9;
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+
+    fake.sendto_result = 4;
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
+           io.fault == 0u);
+
+    const int closes = fake.socket_close_calls;
+    io = aius_network_teensy_close_once(&adapter);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(fake.socket_close_calls == closes + 1);
+    io = aius_network_teensy_close_once(&adapter);
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(fake.socket_close_calls == closes + 1);
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
+           io.fault == 0u);
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
+           io.fault == 0u);
+}
+
 } // namespace
 
 unsigned long millis() { return 0; }
@@ -474,7 +618,7 @@ fnet_return_t fnet_socket_setopt(
 fnet_return_t fnet_socket_listen(fnet_socket_t socket, int)
 {
     observe_socket_access();
-    fake.socket_state[socket_index(socket)] = 3;
+    fake.socket_state[socket_index(socket)] = SS_LISTENING;
     return FNET_OK;
 }
 
@@ -500,7 +644,7 @@ fnet_ssize_t fnet_socket_recv(
     fnet_socket_t, void *, size_t, fnet_flag_t)
 {
     observe_socket_access();
-    return 0;
+    return static_cast<fnet_ssize_t>(fake.recv_result);
 }
 
 fnet_ssize_t fnet_socket_sendto(
@@ -508,6 +652,8 @@ fnet_ssize_t fnet_socket_sendto(
     const fnet_sockaddr *, fnet_size_t)
 {
     observe_socket_access();
+    if (fake.sendto_result != 0)
+        return static_cast<fnet_ssize_t>(fake.sendto_result);
     return static_cast<fnet_ssize_t>(length);
 }
 
@@ -515,7 +661,12 @@ fnet_socket_t fnet_socket_accept(
     fnet_socket_t, fnet_sockaddr *, fnet_size_t *)
 {
     observe_socket_access();
-    return nullptr;
+    if (fake.accepted_socket_number == 0)
+        return nullptr;
+    const int socket_number = fake.accepted_socket_number;
+    fake.accepted_socket_number = 0;
+    fake.socket_state[socket_number - 1] = SS_CONNECTED;
+    return reinterpret_cast<void *>(static_cast<uintptr_t>(socket_number));
 }
 
 fnet_return_t fnet_socket_poll(fnet_socket_poll_t *, size_t) { return 0; }
@@ -541,7 +692,7 @@ fnet_ssize_t fnet_socket_recvfrom(
     fnet_socket_t, void *, size_t, fnet_flag_t, fnet_sockaddr *, fnet_size_t *)
 {
     observe_socket_access();
-    return 0;
+    return static_cast<fnet_ssize_t>(fake.recvfrom_result);
 }
 
 fnet_return_t fnet_socket_getpeername(
@@ -562,7 +713,7 @@ void fnet_socket_close(fnet_socket_t socket)
     inject_cleanup_callback(fake.service_callback, fake.service_cookie);
 }
 
-int8_t fnet_error_get() { return 0; }
+int8_t fnet_error_get() { return static_cast<int8_t>(fake.socket_error); }
 void *fnet_memcpy(void *dst, const void *src, size_t size) {
     return std::memcpy(dst, src, size);
 }
@@ -601,6 +752,11 @@ int main(int argc, char **argv)
     if (scenario == "link-init-failure") {
         test_retry_after_link_init_failure();
         std::puts("NativeEthernet link-init retry: PASS");
+        return 0;
+    }
+    if (scenario == "adapter-io") {
+        test_adapter_socket_result_mapping();
+        std::puts("Teensy adapter raw socket mapping: PASS");
         return 0;
     }
     assert(scenario == "lifecycle");

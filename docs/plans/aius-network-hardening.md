@@ -524,6 +524,9 @@ typedef struct {
     uint8_t pending_read;
     uint8_t pending_count;
     bool callback_overflow;
+    AiusNetAction active_action;
+    uint8_t action_step;
+    bool action_fault;
 } AiusNetworkTeensy;
 
 void aius_network_teensy_init(
@@ -553,6 +556,9 @@ AiusIoEvent aius_network_teensy_write_once(
     const uint8_t *buffer,
     size_t length);
 
+AiusIoEvent aius_network_teensy_close_once(
+    AiusNetworkTeensy *adapter);
+
 AiusIoEvent aius_network_teensy_udp_receive_once(
     AiusNetworkTeensy *adapter,
     uint8_t *buffer,
@@ -564,15 +570,36 @@ AiusIoEvent aius_network_teensy_udp_send_once(
     size_t length);
 ```
 
-`aius_network_teensy_apply()` fully initializes `event` to `NONE`, applies at
-most one action, and emits an event only for that action's generation. The
-adapter structure holds authoritative lifecycle flags; vendor objects are
-file-static implementation details. The I/O functions borrow caller buffers
-only for their call. Every call performs at most one underlying
-state-changing or socket I/O operation and returns.
-`write_once()` writes no more than current capacity and never waits. Teardown is
-idempotent, invalidates callbacks before closing resources, and returns
-`PROGRESS` or `FAULT` in one call.
+`aius_network_teensy_apply()` fully initializes `event` to `NONE`, accepts or
+advances at most one action, and emits an event only for that action's
+generation. `START_STACK` and `START_DHCP` complete in one call.
+`PUBLISH_ONLINE` is retained in `active_action`: one call opens the listener,
+the next `apply(NONE)` call opens UDP, and only then does `online` become true.
+An operation failure clears the active action and emits a current-generation
+`RESOURCE_FAULT` for the failed resource. Reapplying the identical active
+action is equivalent to `NONE`; a different non-teardown action is a
+`DRIVER_PROTOCOL` resource fault. A current `TEARDOWN` action may preempt any
+active action.
+
+Teardown invalidates callbacks and the FIFO before its first target operation,
+then retains the teardown action while successive calls close the listener,
+UDP, and stack in that order. Each call attempts at most one still-live
+resource. It records failures but continues cleanup; only after every resource
+has been attempted does it emit one `TEARDOWN_DONE` or `TEARDOWN_FAULT`.
+Intermediate calls return `NONE`. Repeated teardown after all flags are clear
+is idempotent and emits `TEARDOWN_DONE` without a target call.
+
+The adapter structure holds authoritative lifecycle and active-action flags;
+vendor objects are file-static implementation details. The I/O functions
+borrow caller buffers only for their call. Every call performs at most one
+underlying state-changing or socket I/O operation and returns. `write_once()`
+writes no more than current capacity and never waits. `close_once()` closes
+and clears the sole accepted client and is idempotent. Data calls return
+`PROGRESS` only with `1..capacity` bytes; zero capacity returns `WOULD_BLOCK`
+without a primitive call. FNET `AGAIN` is `WOULD_BLOCK`; peer closure is
+`CLOSED`; every other negative result or NativeEthernet write error is
+`FAULT` with `AIUS_NET_FAULT_SOCKET`. Non-fault results have zero `fault`, and
+`FAULT` has zero bytes and a nonzero fault.
 
 NativeEthernet link/DHCP callbacks append `{kind, generation, fault}` to the
 four-entry FIFO without performing lifecycle work. `poll()` fully initializes
@@ -606,13 +633,15 @@ patches are:
   later `beginNoWait()` can retry without reinitializing an enabled FNET stack.
 
 The source guard rejects unbounded loops in these target-facing functions. It
-also rejects application FNET includes outside the pinned library, with one
-temporary exact-path exception for the pre-cutover
+also rejects NativeEthernet/FNET includes outside the pinned library and the
+single designated adapter owner,
+`firmware/src/aius_network_teensy.cpp`. One temporary
+exact-path exception permits the pre-cutover
 `firmware/src/optical_main.cpp`. The guard test proves its
 rejection logic against synthetic forbidden application input and fails if any
-second exception appears. Phase 14 removes the legacy includes and the
-exception in the same commit, after which the full tree has no application
-FNET access.
+additional owner or exception appears. Phase 14 removes the legacy includes
+and exception in the same commit, after which the adapter is the only
+application-level NativeEthernet/FNET owner.
 
 The native transport suite compiles the patched C++ against fake Arduino/FNET
 primitives. It injects failure at each initialization step and proves retry,
@@ -1229,10 +1258,12 @@ void aius_runtime_teensy_status(
 ```
 
 Construction initializes memory only. The epoch supplies exact portable
-budgets, routes at most one adapter event/action per service, and returns the
-portable scheduler result. It does not feed the watchdog itself; final
-composition supplies the sole-feed callback. Generation teardown discards the
-HTTP transaction before adapter cleanup. Native target-service tests use fake
+budgets, routes at most one adapter event/action per service, calls
+`aius_network_teensy_apply()` with `NONE` when the supervisor emits no new
+action so retained publish/teardown work advances, and returns the portable
+scheduler result. It does not feed the watchdog itself; final composition
+supplies the sole-feed callback. Generation teardown discards the HTTP
+transaction before adapter cleanup. Native target-service tests use fake
 network, SD, CDC, clock, checkpoint, and watchdog primitives to cover every
 callback result and exact call count.
 
@@ -1486,8 +1517,8 @@ acceptance:
   - vendored source and license provenance match framework 1.162.0
   - immutable upstream/patched hashes identify every snapshotted file
   - source guard rejects unbounded waits in every target-facing primitive
-  - source guard rejects synthetic application FNET access and permits only the
-    exact legacy optical_main.cpp exception until phase 14
+  - source guard permits only the designated adapter owner and exact legacy
+    optical_main.cpp exception until phase 14
   - fake FNET failures prove partial initialization can tear down and retry
   - fake callbacks prove unregister-before-close and late-event rejection
   - begin, write, server end, and stack end each return after one attempt
@@ -1516,13 +1547,17 @@ target-facing source guard.
 
 ```yaml
 unit: component-behind-interface
-seams: [AiusNetworkTeensy, AiusIoResult, AiusNetAction]
+status: completed
+seams: [AiusNetworkTeensy, AiusIoResult, AiusNetAction, close_once]
 contract-artifact: spec-only
 dependencies: [phase-1, phase-3]
 outcome: "One adapter owns the target stack and emits generation-scoped events."
 acceptance:
   - fake matrix covers every action, resource fault, and teardown fault
-  - poll emits one queued event and rejects stale or duplicate callbacks
+  - publish and teardown attempt at most one target primitive per call
+  - teardown preempts publish and reaches terminal cleanup despite every fault
+  - accept, read, write, close, and UDP mappings cover progress, block, close, and fault
+  - poll emits one queued event, rejects stale callbacks, and delivers duplicates for supervisor rejection
   - callback overflow becomes one current-generation resource fault
 fan-out:
   - name: agent-teensy-network-adapter
@@ -1859,7 +1894,7 @@ outcome: "setup and loop delegate to the reviewed lifecycle with no legacy path.
 acceptance:
   - setup performs construction only and loop runs one epoch
   - static fallback, raw FNET access, rebind globals, blocking writes, and extra feeds are absent
-  - the network-transport source guard has no application FNET exception
+  - the network-transport source guard permits only aius_network_teensy.cpp
   - status JSON, USB ID, and UDP expose the exact recovery fields
   - production and fault images build and all component suites remain green
 fan-out:
@@ -2059,3 +2094,9 @@ pushes.
   review passed after executable cleanup-time callback injection, exact
   upstream/patched hashes, target resolver enforcement, and late-event
   authority revocation were delivered.
+- Phase 4: native `network-transport` and `teensy41-optical` pass with the
+  adapter compiled beside the unchanged legacy runtime. The first delivery
+  audit rejected a primitive call during clean teardown and sampled I/O
+  coverage. The corrected zero-call teardown, exhaustive fake operation/result
+  matrix, malformed-result rejection, and production fake-FNET TCP/UDP branch
+  proof passed the clean-room re-audit.

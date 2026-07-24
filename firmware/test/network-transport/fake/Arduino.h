@@ -55,13 +55,15 @@ public:
     }
     virtual int availableForWrite() { return 0; }
     virtual void flush() {}
-    void setWriteError() { write_error_ = true; }
+    int getWriteError() const { return write_error_; }
+    void clearWriteError() { write_error_ = 0; }
+    void setWriteError(int error = 1) { write_error_ = error; }
     template <typename T> void print(T) {}
     template <typename T> void print(T, int) {}
     template <typename T> void println(T) {}
     void println() {}
 private:
-    bool write_error_ = false;
+    int write_error_ = 0;
 };
 
 class FakeSerialClass : public Print {

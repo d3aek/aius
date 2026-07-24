@@ -260,16 +260,31 @@ network-transport)
 		-Wl,--gc-sections -DFNET_CFG_TLS=0 \
 		"-I$fw_root/test/network-transport/fake" \
 		"-I$fw_root/vendor/NativeEthernet/src" \
+		"-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/src" \
 		"$fw_root/test/network-transport/test_nativeethernet_behavior.cpp" \
+		"$fw_root/src/aius_network_teensy.cpp" \
 		"$fw_root/vendor/NativeEthernet/src/NativeEthernet.cpp" \
 		"$fw_root/vendor/NativeEthernet/src/NativeEthernetClient.cpp" \
 		"$fw_root/vendor/NativeEthernet/src/NativeEthernetServer.cpp" \
+		"$fw_root/vendor/NativeEthernet/src/NativeEthernetUdp.cpp" \
 		"$fw_root/vendor/NativeEthernet/src/Nativesocket.cpp" \
 		-o "$transport_out"
 	"$transport_out" fnet-init-failure
 	"$transport_out" netif-init-failure
 	"$transport_out" link-init-failure
 	"$transport_out" lifecycle
+	"$transport_out" adapter-io
+	adapter_out="$build_dir/network-teensy-adapter"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -O1 -g \
+		-fsanitize=address,undefined -fno-sanitize=enum \
+		-DAIUS_NETWORK_TEENSY_TESTING \
+		"-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/src" \
+		"$fw_root/test/network-transport/test_network_teensy.cpp" \
+		"$fw_root/src/aius_network_teensy.cpp" \
+		-o "$adapter_out"
+	"$adapter_out"
 	;;
 *)
 	echo "unknown suite: $suite" >&2

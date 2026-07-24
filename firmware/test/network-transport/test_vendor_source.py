@@ -15,6 +15,7 @@ SOURCE_ROOT = VENDOR_ROOT / "src"
 TEMPORARY_INCLUDE_EXCEPTIONS = {
     PurePosixPath("src/optical_main.cpp"),
 }
+DESIGNATED_INCLUDE_OWNER = PurePosixPath("src/aius_network_teensy.cpp")
 
 TARGET_FUNCTIONS = (
     ("NativeEthernet.cpp", "bool EthernetClass::beginNoWait(uint8_t *mac)"),
@@ -251,6 +252,7 @@ def test_platformio_selects_repository_snapshot():
         optical,
     )
     assert re.search(r"(?m)^lib_ignore\s*=.*NativeEthernet", optical)
+    assert "+<aius_network_teensy.cpp>" in optical
     common = config.split("[common]", 1)[1].split("[env:", 1)[0]
     assert "post:test/network-transport/verify_target.py" in common
 
@@ -454,7 +456,14 @@ def test_server_and_stack_teardown_are_idempotent_and_bounded():
 
 def test_application_transport_header_guard_and_temporary_exception():
     violations = repository_transport_include_violations()
-    assert set(violations) == TEMPORARY_INCLUDE_EXCEPTIONS, violations
+    assert set(violations) == (
+        TEMPORARY_INCLUDE_EXCEPTIONS | {DESIGNATED_INCLUDE_OWNER}
+    ), violations
+    assert violations[DESIGNATED_INCLUDE_OWNER] == [
+        "NativeEthernet.h",
+        "NativeEthernetUdp.h",
+        "fnet.h",
+    ]
     assert violations[PurePosixPath("src/optical_main.cpp")] == [
         "NativeEthernet.h",
         "NativeEthernetUdp.h",
@@ -466,6 +475,9 @@ def test_application_transport_header_guard_and_temporary_exception():
     assert forbidden_transport_includes(synthetic) == [
         "service/dhcp/fnet_dhcp_cln.h"
     ]
+
+    public_header = (FIRMWARE_ROOT / "src" / "aius_network_teensy.h").read_text()
+    assert forbidden_transport_includes(public_header) == []
 
 
 def main():

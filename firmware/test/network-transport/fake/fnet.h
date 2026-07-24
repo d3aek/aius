@@ -8,6 +8,7 @@
 #define FNET_CFG_TLS 0
 #define FNET_OK 0
 #define FNET_ERR (-1)
+#define FNET_ERR_AGAIN (-4)
 #define FNET_TRUE 1
 #define FNET_FALSE 0
 #define FNET_NULL nullptr
