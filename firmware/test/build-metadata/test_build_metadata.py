@@ -390,9 +390,6 @@ def main():
     test_build_cli_accepts_all_fault_selectors_without_leaking_to_version_probe()
     test_build_cli_rejects_invalid_missing_extra_and_cross_environment_selectors()
     test_build_cli_preserves_legacy_default_and_single_target_forms()
-    import test_build_evidence
-
-    test_build_evidence.main()
     print("build metadata black-box tests: PASS")
 
 

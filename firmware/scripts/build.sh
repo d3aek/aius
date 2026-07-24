@@ -22,7 +22,7 @@
 #   PIO                  PlatformIO Core executable            (default: pio on PATH)
 #   PLATFORMIO_CORE_DIR  platform + toolchain cache            (default: ~/.platformio)
 #
-# Exit codes: 0 ok; 1 build/evidence failed; 2 a memory bank is over capacity;
+# Exit codes: 0 ok; 1 build failed; 2 a memory bank is over capacity;
 #             3 required build tool not found; 4 usage error;
 #             75 optical build lock contention.
 set -euo pipefail
@@ -83,11 +83,8 @@ core_dir="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}"
 
 mkdir -p "$fw_root/.pio"
 build_log="$fw_root/.pio/build-$env_name.log"
-archive_evidence=false
-build_head=""
-evidence_selector=""
-evidence_dir=""
-selector_json="null"
+# Serialize optical builds so two agents sharing this tree cannot clobber the
+# same .pio/build/<env> output. Build hygiene, not an evidence contract.
 if [[ "$env_name" == "teensy41-optical" || "$env_name" == "teensy41-optical-fault" ]]; then
 	if ! command -v flock >/dev/null 2>&1; then
 		echo "==> flock not found; cannot serialize optical builds." >&2
@@ -98,16 +95,6 @@ if [[ "$env_name" == "teensy41-optical" || "$env_name" == "teensy41-optical-faul
 		echo "==> Another production or fault optical build holds the build lock." >&2
 		exit 75
 	fi
-	build_head="$(cd "$fw_root" && git rev-parse HEAD)"
-	archive_evidence=true
-	if [[ "$env_name" == "teensy41-optical-fault" ]]; then
-		evidence_selector="$fault_checkpoint"
-		evidence_dir="$fw_root/.pio/evidence/fault-cp$evidence_selector"
-		selector_json="$evidence_selector"
-	else
-		evidence_dir="$fw_root/.pio/evidence/production"
-	fi
-	rm -f "$evidence_dir/receipt.json"
 fi
 
 echo "==> Building $env_name for Teensy 4.1 (PlatformIO Core $("$pio" --version 2>/dev/null | awk '{print $NF}'))"
@@ -146,36 +133,3 @@ fi
 
 echo
 python3 "$fw_root/tools/memory/mem_report.py" "${report_args[@]}"
-
-if [[ "$archive_evidence" == true ]]; then
-	current_head="$(cd "$fw_root" && git rev-parse HEAD)"
-	if [[ "$current_head" != "$build_head" ]]; then
-		echo "==> HEAD changed during the optical build; evidence was not recorded." >&2
-		exit 1
-	fi
-
-	elf="$fw_root/.pio/build/$env_name/firmware.elf"
-	hex="$fw_root/.pio/build/$env_name/firmware.hex"
-	if [[ ! -f "$elf" || ! -f "$hex" || ! -f "$build_log" ]]; then
-		echo "==> Build succeeded without the required ELF, HEX, and full log." >&2
-		exit 1
-	fi
-
-	mkdir -p "$evidence_dir"
-	cp "$elf" "$evidence_dir/firmware.elf"
-	cp "$hex" "$evidence_dir/firmware.hex"
-	cp "$build_log" "$evidence_dir/build.log"
-
-	elf_sha256="$(sha256sum "$evidence_dir/firmware.elf" | awk '{print $1}')"
-	hex_sha256="$(sha256sum "$evidence_dir/firmware.hex" | awk '{print $1}')"
-	receipt_tmp="$(mktemp "$evidence_dir/.receipt.json.tmp.XXXXXX")"
-	printf '%s\n' \
-		'{' \
-		"  \"source_revision\": \"$build_head\"," \
-		"  \"environment\": \"$env_name\"," \
-		"  \"selector\": $selector_json," \
-		"  \"elf_sha256\": \"$elf_sha256\"," \
-		"  \"hex_sha256\": \"$hex_sha256\"" \
-		'}' >"$receipt_tmp"
-	mv "$receipt_tmp" "$evidence_dir/receipt.json"
-fi

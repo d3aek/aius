@@ -3397,7 +3397,7 @@ service or composition source.
 
 ```yaml
 unit: component-behind-interface
-status: in-progress
+status: completed
 seams: [AiusBootStorageTeensy, SRC_SRSR, WDOG1, aius_fault_checkpoint]
 contract-artifact: spec-only
 dependencies: [phase-2, phase-8]
@@ -3431,15 +3431,14 @@ oracle are delivered in baseline `8916df890`; the `boot`, `boot-target`, and
 `fault-target` suites are green and `teensy41-optical` plus a fault image build.
 That code is not re-reviewed.
 
-The only remaining work is to strip the evidence/provenance apparatus. Discard
-the stopped identity-correction working set (do not commit it), revert
-`build.sh` / `build_metadata.py` to plain build stamping (see
-[§Build stamping](#build-stamping)) while keeping the `teensy41-optical-fault
-<checkpoint>` test target, and reduce the `build-metadata` suite to build-id
-derivation, timestamp stability, and invalid-invocation coverage. Remove the
-`--validate-evidence` path, the source-snapshot/receipt machinery, and the
-ten-image matrix. Do not claim OCRAM retention until the live smoke (Phase 16)
-confirms it.
+The evidence/provenance apparatus is stripped. The stopped identity-correction
+working set was discarded; `build_metadata.py` was already plain build stamping
+(git revision + short build id, see [§Build stamping](#build-stamping));
+`build.sh` keeps the `teensy41-optical-fault <checkpoint>` test target and the
+optical build lock but no longer copies ELF/HEX artifacts or writes a receipt;
+and the dead `test_build_evidence.py` oracle is removed. The `build-metadata`
+suite is green and `teensy41-optical` builds with all banks fitting. Do not claim
+OCRAM retention until the live smoke (Phase 16) confirms it.
 
 ### Phase 14 — Optical runtime cutover
 
