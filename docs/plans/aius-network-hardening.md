@@ -3575,7 +3575,16 @@ loop exception. Build identity may run in parallel with those pairs, followed
 by its source-blind metadata oracle. The shared
 `platformio.ini`/`scripts/test.sh` coordinator starts only after Phase 10 is
 committed and all six slices are reviewed. All builds sharing
-`.pio/build/teensy41-optical-fault` run serially.
+`.pio/build/teensy41-optical-fault` run serially. `build.sh` enforces one
+nonblocking advisory lock across production and fault optical builds; lock
+contention fails with exit 75 before PlatformIO or artifact mutation. Every
+successful production/fault build copies its ELF, HEX, and complete log into
+selector-specific `.pio/evidence/<production|fault-cp0..8>/` storage and writes
+a receipt containing the full source revision, environment, nullable selector,
+and SHA-256 of both binaries. A gate is complete only when all ten receipts
+match current `HEAD`, their binaries match the recorded hashes, and each
+selector-specific artifact independently passed the retained-slot post-link
+check. This transient build evidence is not committed.
 
 ### Phase 14 — Optical runtime cutover
 
