@@ -818,6 +818,7 @@ typedef struct {
     uint64_t total;
     uint64_t initial_offset;
     bool publish_config;
+    bool require_existing;
 } AiusSdJobRequest;
 
 typedef enum {
@@ -847,7 +848,8 @@ typedef enum {
     AIUS_SD_FAULT_PUBLISH = 14,
     AIUS_SD_FAULT_CANCELLED = 15,
     AIUS_SD_FAULT_CLEANUP = 16,
-    AIUS_SD_FAULT_RANGE = 17
+    AIUS_SD_FAULT_RANGE = 17,
+    AIUS_SD_FAULT_NOT_FOUND = 18
 } AiusSdFault;
 
 typedef struct {
@@ -897,6 +899,7 @@ typedef struct {
     bool installed;
     bool file_open;
     bool publish_config;
+    bool require_existing;
     bool close_emitted;
     bool cancel_requested;
     bool abort_requested;
@@ -976,7 +979,7 @@ never succeeded. After that common edge, the normative per-kind sequence is:
 | `UPLOAD/FINALIZE_PART` | For the target, temp, and backup parent prefixes in that order, emit `EXISTS(parent) → BOOL` and `MKDIR(parent) → OK` only when false; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. Config publication is valid only when the final `initial_offset + total` is within the config limit. |
 | `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. After size capture, `initial_offset > captured_size` is `RANGE`. If `total == 0`, set `end_offset = captured_size`; otherwise require checked `initial_offset + total <= captured_size` or fail `RANGE`, then set that sum as `end_offset`. Result is `BYTES` with acknowledged output bytes. |
 | `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. After size capture, `initial_offset > captured_size` is `RANGE`; otherwise set `end_offset = initial_offset + min(total, captured_size - initial_offset)`. `initial_offset == captured_size` is a successful zero-byte refill. |
-| `DELETE` | `EXISTS(target) → BOOL`; false completes immediately, while true requires `REMOVE(target) → OK` before `COMPLETE`. |
+| `DELETE` | `EXISTS(target) → BOOL`; true requires `REMOVE(target) → OK` before `COMPLETE`. False completes when `require_existing == false`, or fails with `NOT_FOUND` and no mutation when `require_existing == true`. |
 
 Request fields are not implicit:
 
@@ -992,7 +995,10 @@ Request fields are not implicit:
 
 Non-upload jobs require `install_mode == REPLACE`; any other value is
 `INVALID_REQUEST`. A non-null content type where the table requires null is
-also invalid. Upload request paths are exact:
+also invalid. `require_existing` is valid only for `DELETE`; every other job
+requires false. It exists so an HTTP delete can preserve its missing-file 404
+without a target-side preflight or a time-of-check/time-of-use gap. Upload
+request paths are exact:
 
 - `REPLACE` requires distinct target, disposable temp, and backup paths.
 - `APPEND_PART` requires only target; temp and backup must be null.
@@ -1130,7 +1136,7 @@ this path-idempotency rule:
 | `existence_purpose` | `BOOL false` continuation | `BOOL true` continuation |
 |---|---|---|
 | `MKDIR` | emit `MKDIR(directory_path)` | advance to the next parent prefix |
-| `DELETE` | complete successfully | emit `REMOVE(target)` |
+| `DELETE` | complete successfully when `require_existing == false`; otherwise fail `NOT_FOUND` with zero mutation | emit `REMOVE(target)` |
 | `INSTALL_TARGET` | emit `RENAME(temp,target)` | begin `REMOVE_OLD_BACKUP` existence check |
 | `REMOVE_OLD_BACKUP` | emit `RENAME(target,backup)` | emit `REMOVE(backup)`, then rename |
 | `REMOVE_COMMITTED_BACKUP` | clear backup authority and continue publication/terminal routing | emit `REMOVE(backup)` |
@@ -1264,7 +1270,10 @@ triple above, the common protocol-fault result for every mismatched triple, all
 seven job kinds and three upload modes, and model/property sequences for path
 boundaries, 0/1/512/513 capacities, 64-bit arithmetic, deadline
 equality/wrap, partial supply/read/write, every action fault, install/rollback,
-and repeated cancellation.
+repeated cancellation, and both `require_existing` delete branches. The
+required-missing branch proves `NOT_FOUND`, zero `REMOVE` actions, and zero
+driver fault; the optional-missing branch proves successful idempotent
+completion.
 
 The target adapter ABI is:
 
@@ -3278,6 +3287,7 @@ outcome: "Portable idempotency and truncation edges drive one observable target 
 acceptance:
   - every idempotent mutation is preceded by one correlated existence observation
   - write-begin and truncate are separate correlated actions before upload input
+  - required delete distinguishes a missing target from idempotent absence without a preflight mutation
   - real adapter source maps the fixed action catalog to one storage primitive
   - source guard and mutation self-tests reject loops, retries, recursion, and delay
   - strict C and C++17 ASan/UBSan suites pass with exact event and authority fields
