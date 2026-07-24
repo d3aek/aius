@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "aius_alloc_shim.h"
 #include "aius_dsp.h"
 #include "aius_dts.h"
 
@@ -415,7 +416,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&pout, 0, sizeof pout);
         pout.planes[0] = pl;
         pout.planes[1] = pr;
-        AiusDspConfig dc = { cfg, eq, ns, st };
+        AiusDspConfig dc = { cfg, eq, ns, st, NULL, NULL };
         CHECK(aius_dsp_process(&dc, &in, &pout) == AIUS_OK, "%s process", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
@@ -442,7 +443,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&wout, 0, sizeof wout);
         wout.planes[0] = wl;
         wout.planes[1] = wr;
-        AiusDspConfig wc = { cfg, eq, 1, wst };
+        AiusDspConfig wc = { cfg, eq, 1, wst, NULL, NULL };
         CHECK(aius_dsp_process(&wc, &in, &wout) == AIUS_OK, "%s eq whole", v->name);
 
         /* two halves, state carried */
@@ -451,7 +452,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(sst, 0, sizeof sst);
         int32_t *sl = malloc(F * sizeof(int32_t));
         int32_t *sr = malloc(F * sizeof(int32_t));
-        AiusDspConfig sc = { cfg, eq, 1, sst };
+        AiusDspConfig sc = { cfg, eq, 1, sst, NULL, NULL };
 
         AiusPcmBlock ha = in; ha.frames = h;
         AiusPcmBlock hb = in;
@@ -599,6 +600,346 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
               v->name, saturated);
         free(cl);
         free(cr);
+    }
+
+    /* --- input stage: identity trim/EQ leaves the downmix unchanged -------- */
+    {
+        AiusInputStage stage = aius_input_stage_default();
+        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
+        for (int c = 0; c < p.channels; c++) {
+            scr[c] = malloc(F * sizeof(int32_t));
+            stage.scratch[c] = scr[c];
+        }
+        int32_t *pl = malloc(F * sizeof(int32_t));
+        int32_t *pr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock po;
+        memset(&po, 0, sizeof po);
+        po.planes[0] = pl;
+        po.planes[1] = pr;
+        AiusDspConfig dc = { cfg, NULL, 0, NULL, &stage, NULL };
+        CHECK(aius_dsp_process(&dc, &in, &po) == AIUS_OK, "%s input-id", v->name);
+        uint32_t diff = 0;
+        for (uint32_t n = 0; n < F; n++)
+            if (pl[n] != outL[n] || pr[n] != outR[n]) diff++;
+        CHECK(diff == 0, "%s identity input stage != downmix (%u)", v->name, diff);
+        /* Input planes are const: unchanged after processing. */
+        int mutated = 0;
+        for (uint32_t n = 0; n < F; n++)
+            if (p.ch[0][n] != in.planes[0][n]) mutated = 1;
+        CHECK(!mutated, "%s input stage mutated decoded plane", v->name);
+        free(pl);
+        free(pr);
+        for (int c = 0; c < p.channels; c++) free(scr[c]);
+    }
+
+    /* --- input trim: FL -6 dB matches a pre-scaled-FL downmix exactly ------- */
+    {
+        int32_t *fls = malloc(F * sizeof(int32_t)); /* FL plane * 0.5, quantized */
+        for (uint32_t n = 0; n < F; n++)
+            fls[n] = ref_quantize((double)p.ch[0][n] * 0.5);
+        AiusPcmBlock rin = in;
+        rin.planes[0] = fls;
+        int32_t *rl = malloc(F * sizeof(int32_t));
+        int32_t *rr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock ro;
+        memset(&ro, 0, sizeof ro);
+        ro.planes[0] = rl;
+        ro.planes[1] = rr;
+        CHECK(aius_dsp_downmix(&cfg, &rin, &ro) == AIUS_OK, "%s trim ref", v->name);
+
+        AiusInputStage stage = aius_input_stage_default();
+        stage.channels[0].gain_linear = 0.5; /* FL trim */
+        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
+        for (int c = 0; c < p.channels; c++) {
+            scr[c] = malloc(F * sizeof(int32_t));
+            stage.scratch[c] = scr[c];
+        }
+        int32_t *tl = malloc(F * sizeof(int32_t));
+        int32_t *tr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock to;
+        memset(&to, 0, sizeof to);
+        to.planes[0] = tl;
+        to.planes[1] = tr;
+        AiusDspConfig tc = { cfg, NULL, 0, NULL, &stage, NULL };
+        CHECK(aius_dsp_process(&tc, &in, &to) == AIUS_OK, "%s trim proc", v->name);
+        uint32_t diff = 0;
+        for (uint32_t n = 0; n < F; n++)
+            if (tl[n] != rl[n] || tr[n] != rr[n]) diff++;
+        CHECK(diff == 0, "%s FL trim != pre-scaled downmix (%u)", v->name, diff);
+        free(fls);
+        free(rl);
+        free(rr);
+        free(tl);
+        free(tr);
+        for (int c = 0; c < p.channels; c++) free(scr[c]);
+    }
+
+    /* --- limiter: disabled tail leaves the downmix bit-identical ------------ */
+    {
+        AiusLimiter lim;
+        memset(&lim, 0, sizeof lim);
+        lim.cfg = aius_limiter_config_default(); /* enabled == 0 */
+        int32_t *ll = malloc(F * sizeof(int32_t));
+        int32_t *lr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock lo;
+        memset(&lo, 0, sizeof lo);
+        lo.planes[0] = ll;
+        lo.planes[1] = lr;
+        AiusDspConfig lc = { cfg, NULL, 0, NULL, NULL, &lim };
+        CHECK(aius_dsp_process(&lc, &in, &lo) == AIUS_OK, "%s lim off", v->name);
+        uint32_t diff = 0;
+        for (uint32_t n = 0; n < F; n++)
+            if (ll[n] != outL[n] || lr[n] != outR[n]) diff++;
+        CHECK(diff == 0, "%s disabled limiter changed output (%u)", v->name, diff);
+        free(ll);
+        free(lr);
+    }
+
+    /* --- limiter: enabled prevents the surround51_impulse full-scale clip --- */
+    {
+        AiusLimiter lim;
+        memset(&lim, 0, sizeof lim);
+        lim.cfg = aius_limiter_config_default();
+        lim.cfg.enabled = 1;
+        lim.cfg.threshold_dbfs = -3.0;
+        lim.cfg.attack_ms = 1.0;
+        lim.cfg.release_ms = 100.0;
+        lim.cfg.lookahead_ms = 5.0;
+        int32_t *ll = malloc(F * sizeof(int32_t));
+        int32_t *lr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock lo;
+        memset(&lo, 0, sizeof lo);
+        lo.planes[0] = ll;
+        lo.planes[1] = lr;
+        AiusDspConfig lc = { cfg, NULL, 0, NULL, NULL, &lim };
+        CHECK(aius_dsp_process(&lc, &in, &lo) == AIUS_OK, "%s lim on", v->name);
+
+        int32_t base_pk = peak_abs(outL, F);
+        int32_t r_pk = peak_abs(outR, F);
+        if (r_pk > base_pk) base_pk = r_pk;
+        int saturated = 0, inrange = 1;
+        int32_t lim_pk = 0;
+        for (uint32_t n = 0; n < F; n++) {
+            if (ll[n] == AIUS_DSP_SAMPLE_MAX || ll[n] == AIUS_DSP_SAMPLE_MIN ||
+                lr[n] == AIUS_DSP_SAMPLE_MAX || lr[n] == AIUS_DSP_SAMPLE_MIN)
+                saturated++;
+            if (ll[n] > AIUS_DSP_SAMPLE_MAX || ll[n] < AIUS_DSP_SAMPLE_MIN ||
+                lr[n] > AIUS_DSP_SAMPLE_MAX || lr[n] < AIUS_DSP_SAMPLE_MIN)
+                inrange = 0;
+            int32_t a = ll[n] < 0 ? -ll[n] : ll[n];
+            int32_t b = lr[n] < 0 ? -lr[n] : lr[n];
+            if (a > lim_pk) lim_pk = a;
+            if (b > lim_pk) lim_pk = b;
+        }
+        CHECK(inrange, "%s limited output out of range", v->name);
+        /* surround51_impulse saturates at the default downmix (peak == MAX); the
+         * enabled limiter must pull every sample below full scale. */
+        if (base_pk == AIUS_DSP_SAMPLE_MAX) {
+            CHECK(saturated == 0, "%s limiter left %d saturated samples", v->name,
+                  saturated);
+            CHECK(lim_pk < AIUS_DSP_SAMPLE_MAX,
+                  "%s limiter peak %d still full scale", v->name, lim_pk);
+        }
+        free(ll);
+        free(lr);
+    }
+
+    /* --- full path: seamless across a block boundary with carried state ----- */
+    {
+        AiusInputStage stage = aius_input_stage_default();
+        stage.channels[2].gain_linear = aius_db_to_linear(-3.0); /* FC trim */
+        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
+        for (int c = 0; c < p.channels; c++) {
+            scr[c] = malloc(F * sizeof(int32_t));
+            stage.scratch[c] = scr[c];
+        }
+        AiusBiquad oeq[1];
+        oeq[0] = aius_biquad_lowpass(48000.0, 4000.0, 0.7071);
+
+        AiusLimiterConfig limc = aius_limiter_config_default();
+        limc.enabled = 1;
+        limc.threshold_dbfs = -3.0;
+        limc.attack_ms = 1.0;
+        limc.release_ms = 80.0;
+        limc.lookahead_ms = 3.0;
+
+        /* whole block */
+        AiusBiquadState west[2];
+        memset(west, 0, sizeof west);
+        AiusLimiter wlim;
+        memset(&wlim, 0, sizeof wlim);
+        wlim.cfg = limc;
+        int32_t *wl = malloc(F * sizeof(int32_t));
+        int32_t *wr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock wo;
+        memset(&wo, 0, sizeof wo);
+        wo.planes[0] = wl;
+        wo.planes[1] = wr;
+        AiusDspConfig wc = { cfg, oeq, 1, west, &stage, &wlim };
+        CHECK(aius_dsp_process(&wc, &in, &wo) == AIUS_OK, "%s full whole", v->name);
+        CHECK(wo.frames == F, "%s full frames %u != %u", v->name, wo.frames, F);
+
+        /* two halves, EQ + limiter state carried (scratch reused per call) */
+        AiusBiquadState sest[2];
+        memset(sest, 0, sizeof sest);
+        AiusLimiter slim;
+        memset(&slim, 0, sizeof slim);
+        slim.cfg = limc;
+        int32_t *sl = malloc(F * sizeof(int32_t));
+        int32_t *sr = malloc(F * sizeof(int32_t));
+        AiusDspConfig sc = { cfg, oeq, 1, sest, &stage, &slim };
+
+        uint32_t hh = F / 2;
+        AiusPcmBlock ha = in;
+        ha.frames = hh;
+        AiusPcmBlock hb = in;
+        for (int c = 0; c < p.channels; c++)
+            hb.planes[c] = p.ch[c] + hh;
+        hb.frames = F - hh;
+
+        AiusPcmBlock oa;
+        memset(&oa, 0, sizeof oa);
+        oa.planes[0] = sl;
+        oa.planes[1] = sr;
+        AiusPcmBlock ob;
+        memset(&ob, 0, sizeof ob);
+        ob.planes[0] = sl + hh;
+        ob.planes[1] = sr + hh;
+        CHECK(aius_dsp_process(&sc, &ha, &oa) == AIUS_OK, "%s full half a", v->name);
+        CHECK(aius_dsp_process(&sc, &hb, &ob) == AIUS_OK, "%s full half b", v->name);
+
+        uint32_t diff = 0;
+        for (uint32_t n = 0; n < F; n++)
+            if (sl[n] != wl[n] || sr[n] != wr[n]) diff++;
+        CHECK(diff == 0, "%s full-path block split != whole (%u)", v->name, diff);
+        free(wl);
+        free(wr);
+        free(sl);
+        free(sr);
+        for (int c = 0; c < p.channels; c++) free(scr[c]);
+    }
+
+    /* --- allocation-free proof: the full process path touches no allocator -- */
+    {
+        static uint8_t guard_backing[64];
+        AiusArena guard;
+        aius_arena_init(&guard, guard_backing, sizeof guard_backing);
+
+        AiusInputStage stage = aius_input_stage_default();
+        stage.channels[0].gain_linear = aius_db_to_linear(-2.0);
+        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
+        for (int c = 0; c < p.channels; c++) {
+            scr[c] = malloc(F * sizeof(int32_t));
+            stage.scratch[c] = scr[c];
+        }
+        AiusBiquad oeq[1];
+        oeq[0] = aius_biquad_highshelf(48000.0, 8000.0, 0.7071, 3.0);
+        AiusBiquadState oest[2];
+        memset(oest, 0, sizeof oest);
+        AiusLimiter lim;
+        memset(&lim, 0, sizeof lim);
+        lim.cfg = aius_limiter_config_default();
+        lim.cfg.enabled = 1;
+        lim.cfg.threshold_dbfs = -3.0;
+        lim.cfg.attack_ms = 1.0;
+        lim.cfg.release_ms = 100.0;
+        lim.cfg.lookahead_ms = 5.0;
+        int32_t *gl = malloc(F * sizeof(int32_t));
+        int32_t *gr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock go;
+        memset(&go, 0, sizeof go);
+        go.planes[0] = gl;
+        go.planes[1] = gr;
+        AiusMeter gmeter;
+        aius_meter_init(&gmeter, 48000);
+        AiusDspConfig gc = { cfg, oeq, 1, oest, &stage, &lim };
+
+        /* Arm the shim AFTER every buffer is allocated; the process path, the
+         * caller-driven meter taps, publish, and read must not touch
+         * malloc/calloc/realloc. */
+        aius_alloc_shim_set_arena(&guard);
+        aius_alloc_shim_reset_count();
+        AiusStatus gs = aius_dsp_process(&gc, &in, &go);
+        aius_meter_accumulate_input(&gmeter, &in);
+        aius_meter_accumulate_output(&gmeter, go.planes[0], go.planes[1], go.frames);
+        aius_meter_set_limiter_gr(&gmeter, aius_dsp_limiter_gain_reduction_db(&lim));
+        aius_meter_set_telemetry(&gmeter, 96, 2000, 30000, 40000);
+        aius_meter_publish(&gmeter);
+        AiusMeterSnapshot gsnap;
+        int gread = aius_meter_read(&gmeter, &gsnap);
+        uint32_t allocs = aius_alloc_shim_alloc_count();
+        aius_alloc_shim_set_arena(NULL);
+
+        CHECK(gs == AIUS_OK, "%s guarded process status", v->name);
+        CHECK(allocs == 0, "%s metered process path allocated %u time(s)", v->name, allocs);
+        CHECK(gread == 1, "%s guarded meter read", v->name);
+        CHECK(gsnap.sequence == 1 && gsnap.waveform_count <= AIUS_METER_WAVEFORM_MAX,
+              "%s guarded meter snapshot", v->name);
+
+        free(gl);
+        free(gr);
+        for (int c = 0; c < p.channels; c++) free(scr[c]);
+    }
+
+    /* --- meter taps do not alter audio + capture real vector peaks ---------- */
+    {
+        AiusMeter meter;
+        aius_meter_init(&meter, 48000);
+        int32_t *ml = malloc(F * sizeof(int32_t));
+        int32_t *mr = malloc(F * sizeof(int32_t));
+        AiusPcmBlock mo;
+        memset(&mo, 0, sizeof mo);
+        mo.planes[0] = ml;
+        mo.planes[1] = mr;
+        /* Identity input + bypass EQ + no limiter == bare downmix; the meter is
+         * driven caller-side around process. */
+        AiusBiquad eq[1];
+        AiusBiquadState st[2];
+        memset(st, 0, sizeof st);
+        size_t ns = aius_eq_default(eq, 1);
+        AiusDspConfig mc = { cfg, eq, ns, st, NULL, NULL };
+        CHECK(aius_dsp_process(&mc, &in, &mo) == AIUS_OK, "%s meter proc", v->name);
+
+        uint32_t diff = 0;
+        for (uint32_t n = 0; n < F; n++)
+            if (ml[n] != outL[n] || mr[n] != outR[n]) diff++;
+        CHECK(diff == 0, "%s metered output != bare downmix (%u)", v->name, diff);
+
+        aius_meter_accumulate_input(&meter, &in);
+        aius_meter_accumulate_output(&meter, mo.planes[0], mo.planes[1], mo.frames);
+        aius_meter_publish(&meter);
+        AiusMeterSnapshot s;
+        CHECK(aius_meter_read(&meter, &s) == 1, "%s meter read", v->name);
+        /* Output peak matches an independent scan of the stereo result. */
+        CHECK(s.output_peak[0] == (double)peak_abs(outL, F),
+              "%s meter out_peak_l %.0f != %d", v->name, s.output_peak[0],
+              peak_abs(outL, F));
+        CHECK(s.output_peak[1] == (double)peak_abs(outR, F),
+              "%s meter out_peak_r %.0f != %d", v->name, s.output_peak[1],
+              peak_abs(outR, F));
+        /* Per-input peak (identity trim) matches the decoded plane peaks. */
+        {
+            static const uint32_t order[AIUS_METER_INPUT_CHANNELS] = {
+                AIUS_CH_FL, AIUS_CH_FR, AIUS_CH_FC,
+                AIUS_CH_LFE, AIUS_CH_SL, AIUS_CH_SR,
+            };
+            int pp = 0;
+            for (int c = 0; c < AIUS_METER_INPUT_CHANNELS; c++) {
+                if (!(p.channel_mask & order[c])) {
+                    CHECK(s.input_peak[c] == 0.0 && s.input_rms[c] == 0.0,
+                          "%s absent channel %d not zero", v->name, c);
+                    continue;
+                }
+                CHECK(s.input_peak[c] == (double)peak_abs(p.ch[pp], F),
+                      "%s meter in_peak[%d] %.0f != %d", v->name, c,
+                      s.input_peak[c], peak_abs(p.ch[pp], F));
+                CHECK(s.input_rms[c] >= 0.0 && s.input_rms[c] <= s.input_peak[c] + 1e-6,
+                      "%s meter in_rms[%d] out of range", v->name, c);
+                pp++;
+            }
+        }
+        free(ml);
+        free(mr);
     }
 
     /* --- retained known-answer fixture: signature compare ------------------ */

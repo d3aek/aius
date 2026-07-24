@@ -39,6 +39,31 @@ conflict:
 3. Implement the bounded signal path and coherent meter snapshot behind the
    portable DSP interface. The sample-vector tests, allocation guard, cycle
    budget, and queue/latency bounds are the completion gate.
+   - **Signal path done.** The input stage (per-channel trim + up to two EQ
+     sections, `AiusInputStage`) and the true-peak safety limiter tail
+     (`AiusLimiter`, feed-forward stereo-linked lookahead) are additive stages in
+     `aius_dsp.h`; both bypass under NULL/zero-init so the target and goldens are
+     unchanged. Proven through the public interface (`dsp` + `dsp-vectors`):
+     trim/EQ behaviour and bypass equivalence, limiter threshold/attack/release/
+     lookahead, prevention of the surround51_impulse full-scale saturation,
+     finite/bounded output, seamless block boundaries, and allocation-free via
+     the `--wrap` shim. `teensy41-optical` builds.
+   - **Meter module done (slice 3b).** `AiusMeter` / `AiusMeterSnapshot`: peak/RMS
+     per input, stereo out peak/RMS, limiter gain reduction, ≤128 decimated
+     waveform points, sequence number, and a seqlock coherent copy boundary
+     (host-tested: a reader never observes a torn snapshot); plus queue-depth /
+     estimated-latency / DSP-cycle fields the target adapter populates. Proven
+     through the public interface and allocation-free via the `--wrap` shim;
+     goldens byte-unchanged. Metering is **caller-driven**, deliberately NOT a
+     field of `AiusDspConfig` — the caller taps around `aius_dsp_process` — so the
+     meter code is not linked into the hot function until the adapter wires it.
+   - **Target memory constraint (Phase 4 gate).** The device's ITCM is at ~99.2 %
+     (190.5 KB / 192 KB, ~1.5 KB headroom before the next 32 KB block-rounding
+     tips FlexRAM over). Wiring the meter accumulate/publish path into the runtime
+     for `GET /api/meters` (Phase 4) WILL pull meter code into ITCM and exceed that
+     headroom. Phase 4 must budget for it: place the diagnostic meter code in FLASH
+     (a target-linker concern, since the portable C carries no placement attribute)
+     or free ITCM elsewhere. Recorded here so Phase 4 does not rediscover it late.
 4. Expose the proven model through `GET/PUT /api/dsp/config` and
    `GET /api/meters`, including transactional SD persistence and
    block-boundary apply.

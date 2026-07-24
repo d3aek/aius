@@ -148,20 +148,278 @@ void aius_dsp_eq_run(const AiusBiquad *sections, size_t n,
                      AiusBiquadState *state,
                      int32_t *samples, uint32_t frames);
 
-/* Full output DSP config: downmix + optional EQ cascade run on BOTH stereo
- * channels. `eq` is `eq_sections` sections; `eq_state` is 2*eq_sections states,
+/* --- input stage: per-input trim + EQ, runs BEFORE the downmix matrix ----- */
+
+/* Decibels to a linear amplitude multiplier: 10^(db/20). Used to precompute an
+ * input-channel trim from a `gain_db` control (bounded [-60, 12] dB). Evaluated
+ * off the process path; the run loop is multiply-only. */
+double aius_db_to_linear(double db);
+
+/* The six input channels the model shapes, in AIUS_CH_* bit order. An input
+ * stage carries one AiusInputChannelConfig per entry. */
+#define AIUS_DSP_INPUT_CHANNELS 6
+
+/* Up to two EQ sections per input channel (per the config contract). */
+#define AIUS_DSP_INPUT_EQ_MAX 2
+
+/* Trim + EQ for ONE input channel. `gain_linear` is the linear trim (unity =
+ * 1.0, from aius_db_to_linear). `eq` is `eq_sections` biquads (0..
+ * AIUS_DSP_INPUT_EQ_MAX) with `eq_sections` states in `eq_state`, advanced
+ * across blocks so section boundaries are seamless. gain_linear == 1.0 with
+ * eq_sections == 0 is an exact passthrough. */
+typedef struct {
+    double gain_linear;
+    const AiusBiquad *eq;
+    size_t eq_sections;
+    AiusBiquadState *eq_state;
+} AiusInputChannelConfig;
+
+/* Identity input channel: unity trim, no EQ. */
+AiusInputChannelConfig aius_input_channel_default(void);
+
+/* Apply one input channel's trim then EQ cascade over `samples` in place, with a
+ * SINGLE saturating quantize per sample (the trim is folded into the biquad
+ * input, so there is no intermediate double-rounding). ch == NULL or samples ==
+ * NULL is a no-op; eq_sections > 0 with a NULL eq/eq_state skips the EQ (trim
+ * still applies). Allocation-free. */
+void aius_dsp_input_run(const AiusInputChannelConfig *ch,
+                        int32_t *samples, uint32_t frames);
+
+/* Input stage: per-channel trim + EQ for every decoded plane, plus caller-owned
+ * scratch planes the process path stages into before the downmix (downmix reads
+ * a const input). `channels` is indexed in AIUS_CH_* bit order (FL, FR, FC, LFE,
+ * SL, SR); the entry for a channel absent from the decoded mask is ignored.
+ * `scratch[p]` must hold at least the block's frame count int32 samples for each
+ * present plane index `p` (packed in ascending bit order, as the decoder emits).
+ * Carve them once from an arena before the steady-state loop. */
+typedef struct {
+    AiusInputChannelConfig channels[AIUS_DSP_INPUT_CHANNELS];
+    int32_t *scratch[AIUS_MAX_CHANNELS];
+} AiusInputStage;
+
+/* An input stage that is an exact passthrough: unity trim and no EQ on every
+ * channel. `scratch` is zeroed; the caller fills in the plane pointers. */
+AiusInputStage aius_input_stage_default(void);
+
+/* --- true-peak safety limiter: tail stage, after output EQ ---------------- */
+
+/* Lookahead is bounded to [0, 5] ms; at 48 kHz that is at most 240 samples. The
+ * delay lines are fixed at this size so the process path never allocates. A
+ * higher sample rate clamps the delay to this cap. */
+#define AIUS_DSP_LIMITER_MAX_LOOKAHEAD 240
+
+/* Safety-limiter controls (bounds per the config contract). A safety limiter is
+ * transparent below `threshold_dbfs` and applies a bounded, stereo-linked gain
+ * reduction above it; it is not a loudness normalizer. */
+typedef struct {
+    int    enabled;          /* 0 = bypass (transparent, no delay) */
+    double threshold_dbfs;   /* [-24, 0] dBFS, relative to 24-bit full scale */
+    double attack_ms;        /* [0.1, 100] gain-ramp-down time constant */
+    double release_ms;       /* [1, 1000] gain-recovery time constant */
+    double lookahead_ms;     /* [0, 5] delay so reduction leads the peak */
+} AiusLimiterConfig;
+
+/* A disabled (transparent) limiter with neutral time constants. */
+AiusLimiterConfig aius_limiter_config_default(void);
+
+/* Running state + lookahead delay lines. Zero-initialize before first use; the
+ * envelope coefficients and delay length are derived from the config and sample
+ * rate inside aius_dsp_limiter_run and re-derived when either changes (reset-safe
+ * config apply). `gain` and the ring carry across blocks for seamless boundaries.
+ */
+typedef struct {
+    double   env;            /* peak-follower envelope (sample units) */
+    double   gain;           /* current smoothed gain reduction, (0, 1] */
+    uint32_t delay;          /* active lookahead length in samples */
+    uint32_t pos;            /* ring write cursor, mod delay */
+    int      primed;         /* gain/env initialized on the first run */
+    int32_t  buf_l[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
+    int32_t  buf_r[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
+} AiusLimiterState;
+
+/* A limiter is its config plus its running state, so the whole tail stage is one
+ * caller-owned, allocation-free object. */
+typedef struct {
+    AiusLimiterConfig cfg;
+    AiusLimiterState  state;
+} AiusLimiter;
+
+/* Run the true-peak safety limiter over the stereo pair (`l`, `r`) in place at
+ * `fs` Hz. A peak follower (instant attack, release-timed decay) tracks the
+ * incoming true peak; a single stereo-linked gain (so the L/R image is
+ * preserved) is smoothed toward T/peak with the attack/release time constants
+ * and applied to the signal delayed by the lookahead, so the reduction leads the
+ * peak. Below threshold the gain is unity (transparent). cfg.enabled == 0 is a
+ * pure bypass with no delay. Output frame count equals input (the last `delay`
+ * samples stay in the ring as bounded latency). Allocation-free; lim == NULL or
+ * a NULL plane is a no-op. */
+void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
+                          int32_t *l, int32_t *r, uint32_t frames);
+
+/* Current gain reduction in dB (<= 0), for later metering. 0.0 dB means no
+ * reduction. lim == NULL returns 0.0. Reads state only; does not process. */
+double aius_dsp_limiter_gain_reduction_db(const AiusLimiter *lim);
+
+/* --- coherent meter snapshot: diagnostic taps, never configuration --------- */
+
+/* The six metered input channels, in AIUS_CH_* bit order (FL, FR, FC, LFE, SL,
+ * SR) -- the same order the input stage shapes. */
+#define AIUS_METER_INPUT_CHANNELS AIUS_DSP_INPUT_CHANNELS
+
+/* Waveform/envelope points are bounded so the snapshot is a fixed size that fits
+ * a statically reserved ring (OCRAM on target). The SD editor renders at most
+ * this many points and never requests full-rate samples. */
+#define AIUS_METER_WAVEFORM_MAX 128
+
+/* Bounded seqlock read retries: a reader contended by an in-progress publish
+ * retries this many times, then reports failure rather than returning a torn
+ * snapshot. The audio-path writer completes a publish in bounded time, so a
+ * single-reader HTTP path succeeds on the first uncontended attempt. */
+#define AIUS_METER_READ_RETRIES 8
+
+/* A fixed-size, allocation-free diagnostic snapshot of the pipeline. Peak and
+ * RMS are absolute linear sample magnitudes (24-bit sample units), so a reader
+ * converts to dBFS with 20*log10(v / AIUS_DSP_SAMPLE_MAX). All fields are finite.
+ *
+ * Meter values are DIAGNOSTIC and never become configuration fields; the audio
+ * path is bit-identical whether or not a meter is attached.
+ *
+ * `queue_frames`, `estimated_latency_us`, `dsp_cycles_last`, and `dsp_cycles_max`
+ * are populated by the target adapter (it owns the audio queue and the DWT cycle
+ * counter); the portable path carries them through unmeasured as staged fields.
+ */
+typedef struct {
+    uint32_t sequence;      /* strictly increasing publish counter (0 = never published) */
+    uint32_t sample_rate_hz;
+    double   input_peak[AIUS_METER_INPUT_CHANNELS]; /* |sample| per input, AIUS_CH_* order */
+    double   input_rms[AIUS_METER_INPUT_CHANNELS];  /* sqrt(mean(sample^2)) per input */
+    double   output_peak[2];                        /* stereo out |sample|, [L, R] */
+    double   output_rms[2];                         /* stereo out RMS, [L, R] */
+    double   limiter_gain_reduction_db;             /* <= 0.0; 0 = no reduction */
+    uint32_t waveform_count;                        /* valid points, <= AIUS_METER_WAVEFORM_MAX */
+    int32_t  waveform[AIUS_METER_WAVEFORM_MAX];     /* per-bucket peak-magnitude envelope */
+    uint32_t queue_frames;                          /* target adapter: audio queue depth */
+    uint32_t estimated_latency_us;                  /* target adapter: estimated path latency */
+    uint32_t dsp_cycles_last;                       /* target adapter: last block DWT cycles */
+    uint32_t dsp_cycles_max;                        /* target adapter: peak block DWT cycles */
+} AiusMeterSnapshot;
+
+/* Accumulator + coherent publisher. Caller-owned, allocation-free, zero-init
+ * before first use. The audio path calls the cheap accumulate/set functions per
+ * block (scalar peak/sum-of-squares updates and a bounded waveform decimation);
+ * a separate publish step commits a complete snapshot behind a seqlock so a
+ * reader never observes a torn mix of two windows. HTTP copies the last complete
+ * snapshot with aius_meter_read outside the audio critical path.
+ *
+ * COHERENCE. `seq` is a seqlock counter: publish makes it odd (write in
+ * progress), writes the payload, then makes it even (complete). A reader samples
+ * `seq`, copies the payload, re-samples `seq`, and accepts the copy only if it
+ * was even and unchanged -- otherwise it retries. On target the adapter places
+ * this in OCRAM and issues the memory barriers the ISR/reader pair needs; the
+ * portable logic is single-thread host-testable via the same protocol. */
+typedef struct {
+    /* live accumulators for the current (unpublished) window */
+    double   in_peak[AIUS_METER_INPUT_CHANNELS];
+    double   in_sqsum[AIUS_METER_INPUT_CHANNELS];
+    double   out_peak[2];
+    double   out_sqsum[2];
+    uint64_t in_frames;   /* frames accumulated into the input channels */
+    uint64_t out_frames;  /* frames accumulated into the stereo output */
+    int32_t  wave[AIUS_METER_WAVEFORM_MAX];
+    uint32_t wave_count;
+    double   limiter_gr_db;
+    uint32_t sample_rate_hz;
+    /* target-supplied telemetry, staged for the next publish */
+    uint32_t queue_frames;
+    uint32_t estimated_latency_us;
+    uint32_t dsp_cycles_last;
+    uint32_t dsp_cycles_max;
+    /* coherent published state (seqlock-guarded) */
+    volatile uint32_t seq;       /* even = stable, odd = publish in progress */
+    uint32_t publishes;          /* completed publishes -> snapshot.sequence */
+    AiusMeterSnapshot published;
+} AiusMeter;
+
+/* Zero the meter and set the sample rate carried into every snapshot. */
+void aius_meter_init(AiusMeter *m, uint32_t sample_rate_hz);
+
+/* Zero only the windowed accumulators (peak/RMS sums, frame counts, waveform),
+ * leaving the seqlock, published snapshot, limiter GR, and staged telemetry
+ * intact. Called by publish; exposed for an explicit window reset. */
+void aius_meter_reset_accumulators(AiusMeter *m);
+
+/* Accumulate per-input peak + sum-of-squares from a decoded/trimmed block. The
+ * block's present planes are mapped to AIUS_CH_* ordinals via channel_mask, so a
+ * narrower layout leaves absent channels at zero. m/block NULL is a no-op. */
+void aius_meter_accumulate_input(AiusMeter *m, const AiusPcmBlock *block);
+
+/* Accumulate stereo-output peak + sum-of-squares and refresh the decimated
+ * waveform envelope from this block's L/R result. m or a NULL plane is a no-op. */
+void aius_meter_accumulate_output(AiusMeter *m, const int32_t *l, const int32_t *r,
+                                  uint32_t frames);
+
+/* Stage the current limiter gain reduction (dB, <= 0) for the next publish. */
+void aius_meter_set_limiter_gr(AiusMeter *m, double gain_reduction_db);
+
+/* Stage target-adapter telemetry (queue depth, estimated latency, cycle counts)
+ * for the next publish. The portable path does not measure these. */
+void aius_meter_set_telemetry(AiusMeter *m, uint32_t queue_frames,
+                              uint32_t estimated_latency_us,
+                              uint32_t dsp_cycles_last, uint32_t dsp_cycles_max);
+
+/* Decimate a stereo (or mono, r == NULL) block of `frames` samples into at most
+ * `cap` per-bucket peak-magnitude envelope points, written to `out`. The block
+ * is split into min(frames, cap) contiguous, near-equal buckets; each output
+ * point is the peak of max(|l|, |r|) within its bucket. Deterministic and
+ * bounded. Returns the number of points written (0 if out is NULL, cap is 0, or
+ * frames is 0). Allocation-free. */
+uint32_t aius_meter_decimate(const int32_t *l, const int32_t *r, uint32_t frames,
+                             int32_t *out, uint32_t cap);
+
+/* Commit a coherent snapshot: bump the sequence, compute RMS from the window's
+ * sum-of-squares, copy peaks/waveform/limiter-GR/telemetry into the published
+ * snapshot behind the seqlock, then reset the windowed accumulators. m NULL is a
+ * no-op. Allocation-free. */
+void aius_meter_publish(AiusMeter *m);
+
+/* Copy the last complete published snapshot into `out` behind the seqlock. Returns
+ * 1 on a coherent copy, 0 if m/out is NULL or a concurrent publish could not be
+ * read cleanly within AIUS_METER_READ_RETRIES (the caller retries later; a torn
+ * snapshot is never returned). Reads only; allocation-free. */
+int aius_meter_read(const AiusMeter *m, AiusMeterSnapshot *out);
+
+/* Full output DSP config: an optional input stage (per-channel trim + EQ) before
+ * the downmix, the downmix matrix, an optional output EQ cascade run on BOTH
+ * stereo channels, and an optional true-peak safety limiter tail.
+ *
+ * `eq` is `eq_sections` sections; `eq_state` is 2*eq_sections states,
  * channel-major (all L-channel section states, then all R-channel). eq_sections
- * == 0 (or eq == NULL) runs downmix only. */
+ * == 0 (or eq == NULL) runs downmix only.
+ *
+ * `input` == NULL bypasses the input stage (decoded planes feed the downmix
+ * directly). `limiter` == NULL bypasses the limiter tail. Both default to NULL
+ * under aggregate zero-initialization, so a config built only through the
+ * downmix/EQ fields behaves exactly as before these stages existed.
+ *
+ * Metering is deliberately NOT a field here: the AiusMeter taps are driven by the
+ * caller around aius_dsp_process (accumulate the decoded/trimmed input and the
+ * stereo output, then publish at the adapter's cadence), so the meter code is not
+ * linked into this hot function on the target until the adapter wires it. */
 typedef struct {
     AiusDownmixConfig downmix;
     const AiusBiquad *eq;
     size_t eq_sections;
     AiusBiquadState *eq_state;
+    const AiusInputStage *input;
+    AiusLimiter *limiter;
 } AiusDspConfig;
 
-/* Downmix `in` into `out` then run the EQ cascade over L and R. Same `out`
- * buffer contract and return values as aius_dsp_downmix, plus AIUS_INVALID_ARG
- * when eq_sections > 0 but eq or eq_state is NULL. Allocation-free. */
+/* Stage `in` through the input stage (if any) into the stage's scratch planes,
+ * downmix into `out`, run the EQ cascade over L and R, then the limiter (if any).
+ * Same `out` buffer contract and return values as aius_dsp_downmix, plus
+ * AIUS_INVALID_ARG when eq_sections > 0 but eq or eq_state is NULL, or when the
+ * input stage is present but a scratch plane for a decoded channel is NULL.
+ * Allocation-free. */
 AiusStatus aius_dsp_process(const AiusDspConfig *cfg,
                             const AiusPcmBlock *in,
                             AiusPcmBlock *out);

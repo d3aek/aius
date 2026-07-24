@@ -33,6 +33,16 @@ static int close(double a, double b, double tol)
     return (d < 0 ? -d : d) <= tol;
 }
 
+static int32_t peak_abs_i(const int32_t *s, uint32_t n)
+{
+    int32_t pk = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        int32_t a = s[i] < 0 ? -s[i] : s[i];
+        if (a > pk) pk = a;
+    }
+    return pk;
+}
+
 /* --- downmix known answers ------------------------------------------------ */
 
 static void test_stereo_passthrough(void)
@@ -295,13 +305,883 @@ static void test_process_bypass_equals_downmix(void)
     memset(&out, 0, sizeof out);
     out.planes[0] = ol;
     out.planes[1] = or_;
-    AiusDspConfig cfg = {aius_downmix_config_default(), eq, nsec, state};
+    AiusDspConfig cfg = {aius_downmix_config_default(), eq, nsec, state, NULL,
+                         NULL};
     assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
     for (int i = 0; i < 2; i++) {
         assert(ol[i] == dl[i]);
         assert(or_[i] == dr[i]);
     }
     printf("ok process(bypass EQ) == downmix\n");
+}
+
+/* --- input stage: trim + EQ ----------------------------------------------- */
+
+static void test_db_to_linear(void)
+{
+    assert(close(aius_db_to_linear(0.0), 1.0, 1e-12));
+    assert(close(aius_db_to_linear(-60.0), 0.001, 1e-12));          /* 10^-3 */
+    assert(close(aius_db_to_linear(12.0), pow(10.0, 0.6), 1e-12));  /* ~3.981 */
+    assert(close(aius_db_to_linear(6.0), pow(10.0, 0.3), 1e-12));
+    printf("ok db_to_linear endpoints\n");
+}
+
+/* Trim gain across the [-60, 12] dB endpoints, single quantize, saturation. */
+static void test_input_trim_gain(void)
+{
+    /* Unity: exact passthrough including full scale. */
+    {
+        int32_t s[3] = {1000, -2000, AIUS_DSP_SAMPLE_MAX};
+        AiusInputChannelConfig ch = aius_input_channel_default();
+        aius_dsp_input_run(&ch, s, 3);
+        assert(s[0] == 1000 && s[1] == -2000 && s[2] == AIUS_DSP_SAMPLE_MAX);
+    }
+    /* -60 dB (0.001): 1_000_000 -> 1000. */
+    {
+        int32_t s[1] = {1000000};
+        AiusInputChannelConfig ch = aius_input_channel_default();
+        ch.gain_linear = aius_db_to_linear(-60.0);
+        aius_dsp_input_run(&ch, s, 1);
+        assert(s[0] == 1000);
+    }
+    /* +12 dB (~3.981): 1000 -> 3981 (round half away from zero). */
+    {
+        int32_t s[1] = {1000};
+        AiusInputChannelConfig ch = aius_input_channel_default();
+        ch.gain_linear = aius_db_to_linear(12.0);
+        aius_dsp_input_run(&ch, s, 1);
+        int32_t expect = (int32_t)floor(1000.0 * aius_db_to_linear(12.0) + 0.5);
+        assert(s[0] == expect);
+    }
+    /* +12 dB saturates a near-full-scale sample instead of wrapping. */
+    {
+        int32_t s[1] = {AIUS_DSP_SAMPLE_MAX};
+        AiusInputChannelConfig ch = aius_input_channel_default();
+        ch.gain_linear = aius_db_to_linear(12.0);
+        aius_dsp_input_run(&ch, s, 1);
+        assert(s[0] == AIUS_DSP_SAMPLE_MAX);
+    }
+    printf("ok input trim gain endpoints + saturation\n");
+}
+
+/* Trim folds into the biquad input: a unity net cascade is a passthrough with a
+ * single quantize (no intermediate double-rounding). */
+static void test_input_trim_folds_into_eq(void)
+{
+    /* gain 4.0 into a 0.25 pure-gain section -> net unity. */
+    int32_t s[3] = {123, -457, 900001};
+    AiusBiquad sec[1] = {{0.25, 0.0, 0.0, 0.0, 0.0}};
+    AiusBiquadState st[1];
+    memset(st, 0, sizeof st);
+    AiusInputChannelConfig ch = aius_input_channel_default();
+    ch.gain_linear = 4.0;
+    ch.eq = sec;
+    ch.eq_sections = 1;
+    ch.eq_state = st;
+    aius_dsp_input_run(&ch, s, 3);
+    assert(s[0] == 123 && s[1] == -457 && s[2] == 900001);
+    printf("ok input trim folds into EQ (single quantize)\n");
+}
+
+/* Two-section input EQ runs as a cascade; two unity-net sections pass through. */
+static void test_input_two_section_eq(void)
+{
+    int32_t s[4] = {1000, 2000, -3000, 4000};
+    AiusBiquad sec[2] = {{2.0, 0.0, 0.0, 0.0, 0.0}, {0.5, 0.0, 0.0, 0.0, 0.0}};
+    AiusBiquadState st[2];
+    memset(st, 0, sizeof st);
+    AiusInputChannelConfig ch = aius_input_channel_default();
+    ch.eq = sec;
+    ch.eq_sections = 2;
+    ch.eq_state = st;
+    aius_dsp_input_run(&ch, s, 4);
+    assert(s[0] == 1000 && s[1] == 2000 && s[2] == -3000 && s[3] == 4000);
+
+    /* A real lowpass section still settles to unity DC through the input path. */
+    AiusBiquad lp[1] = {aius_biquad_lowpass(FS, 2000.0, 0.7071)};
+    AiusBiquadState lst[1];
+    memset(lst, 0, sizeof lst);
+    enum { N = 4096 };
+    static int32_t d[N];
+    for (int i = 0; i < N; i++) d[i] = 1000000;
+    AiusInputChannelConfig lc = aius_input_channel_default();
+    lc.eq = lp;
+    lc.eq_sections = 1;
+    lc.eq_state = lst;
+    aius_dsp_input_run(&lc, d, N);
+    assert(abs(d[N - 1] - 1000000) <= 1);
+    printf("ok input two-section EQ cascade + DC settle\n");
+}
+
+/* An identity input stage in process leaves the downmix bit-identical. */
+static void test_process_input_identity_equals_downmix(void)
+{
+    int32_t fl[3] = {111, -222, 333}, fr[3] = {444, -555, 666},
+            fc[3] = {777, -888, 999};
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
+    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 3, 48000, mask};
+
+    int32_t dl[3], dr[3];
+    AiusPcmBlock dm;
+    memset(&dm, 0, sizeof dm);
+    dm.planes[0] = dl;
+    dm.planes[1] = dr;
+    AiusDownmixConfig dcfg = aius_downmix_config_default();
+    assert(aius_dsp_downmix(&dcfg, &in, &dm) == AIUS_OK);
+
+    int32_t s0[3], s1[3], s2[3];
+    AiusInputStage stage = aius_input_stage_default();
+    stage.scratch[0] = s0;
+    stage.scratch[1] = s1;
+    stage.scratch[2] = s2;
+
+    int32_t ol[3], or_[3];
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = ol;
+    out.planes[1] = or_;
+    AiusDspConfig cfg = {aius_downmix_config_default(), NULL, 0, NULL, &stage,
+                         NULL};
+    assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
+    for (int i = 0; i < 3; i++) {
+        assert(ol[i] == dl[i]);
+        assert(or_[i] == dr[i]);
+    }
+    /* The decoded input planes (const) were not mutated by the input stage. */
+    assert(fl[0] == 111 && fl[1] == -222 && fl[2] == 333);
+    assert(fc[0] == 777 && fc[1] == -888 && fc[2] == 999);
+    printf("ok process(identity input stage) == downmix\n");
+}
+
+/* An input trim on FC halves its downmix contribution, matching a pre-scaled
+ * downmix exactly (input stage = gain + quantize before the matrix). */
+static void test_process_input_trim_scales(void)
+{
+    int32_t fl[2] = {100000, -100000}, fr[2] = {50000, -50000},
+            fc[2] = {800000, -400000};
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
+    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 2, 48000, mask};
+
+    /* Reference: FC plane pre-scaled by 0.5 (quantized), then bare downmix. */
+    int32_t fcs[2];
+    for (int i = 0; i < 2; i++)
+        fcs[i] = (int32_t)floor((double)fc[i] * 0.5 + 0.5);
+    AiusPcmBlock refin = {{fl, fr, fcs, 0, 0, 0}, 3, 2, 48000, mask};
+    int32_t rl[2], rr[2];
+    AiusPcmBlock ref;
+    memset(&ref, 0, sizeof ref);
+    ref.planes[0] = rl;
+    ref.planes[1] = rr;
+    AiusDownmixConfig dcfg = aius_downmix_config_default();
+    assert(aius_dsp_downmix(&dcfg, &refin, &ref) == AIUS_OK);
+
+    /* Input stage: FC (bit ordinal 2) trimmed to 0.5. */
+    int32_t s0[2], s1[2], s2[2];
+    AiusInputStage stage = aius_input_stage_default();
+    stage.channels[2].gain_linear = 0.5;
+    stage.scratch[0] = s0;
+    stage.scratch[1] = s1;
+    stage.scratch[2] = s2;
+
+    int32_t ol[2], or_[2];
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = ol;
+    out.planes[1] = or_;
+    AiusDspConfig cfg = {aius_downmix_config_default(), NULL, 0, NULL, &stage,
+                         NULL};
+    assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
+    for (int i = 0; i < 2; i++) {
+        assert(ol[i] == rl[i]);
+        assert(or_[i] == rr[i]);
+    }
+    printf("ok process(FC trim -6 dB) halves FC contribution\n");
+}
+
+/* --- true-peak safety limiter --------------------------------------------- */
+
+static void test_limiter_default_disabled(void)
+{
+    AiusLimiterConfig c = aius_limiter_config_default();
+    assert(c.enabled == 0);
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = c;
+    int32_t l[4] = {10, AIUS_DSP_SAMPLE_MAX, -30, 40};
+    int32_t r[4] = {50, -60, AIUS_DSP_SAMPLE_MIN, 80};
+    aius_dsp_limiter_run(&lim, 48000.0, l, r, 4);
+    assert(l[0] == 10 && l[1] == AIUS_DSP_SAMPLE_MAX && l[2] == -30 && l[3] == 40);
+    assert(r[0] == 50 && r[1] == -60 && r[2] == AIUS_DSP_SAMPLE_MIN && r[3] == 80);
+    assert(close(aius_dsp_limiter_gain_reduction_db(&lim), 0.0, 1e-12));
+    printf("ok limiter disabled is transparent\n");
+}
+
+/* Enabled, lookahead 0, all samples below threshold: exact passthrough. */
+static void test_limiter_transparent_below_threshold(void)
+{
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = 0.0; /* T = full scale */
+    lim.cfg.lookahead_ms = 0.0;
+    int32_t l[5] = {100, -200, 300000, -400000, 12345};
+    int32_t r[5] = {-100, 200, -300000, 400000, -6789};
+    int32_t el[5], er[5];
+    memcpy(el, l, sizeof l);
+    memcpy(er, r, sizeof r);
+    aius_dsp_limiter_run(&lim, 48000.0, l, r, 5);
+    for (int i = 0; i < 5; i++) {
+        assert(l[i] == el[i]);
+        assert(r[i] == er[i]);
+    }
+    assert(close(aius_dsp_limiter_gain_reduction_db(&lim), 0.0, 1e-12));
+    printf("ok limiter transparent below threshold\n");
+}
+
+/* Constant input above threshold: gain converges so the output peak settles to
+ * the threshold, and the reported gain reduction matches T/peak. */
+static void test_limiter_threshold_steady_state(void)
+{
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = -6.0;
+    lim.cfg.attack_ms = 1.0;
+    lim.cfg.release_ms = 100.0;
+    lim.cfg.lookahead_ms = 0.0;
+
+    double T = pow(10.0, -6.0 / 20.0) * (double)AIUS_DSP_SAMPLE_MAX;
+    enum { N = 8192 };
+    static int32_t l[N], r[N];
+    for (int i = 0; i < N; i++) {
+        l[i] = AIUS_DSP_SAMPLE_MAX;
+        r[i] = AIUS_DSP_SAMPLE_MAX;
+    }
+    aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
+
+    /* Steady state near the end: output settled to ~threshold. */
+    double tol = T * 0.001;
+    assert(fabs((double)l[N - 1] - T) <= tol);
+    assert(fabs((double)r[N - 1] - T) <= tol);
+    /* Gain converged to T / full-scale. */
+    double expect_db = 20.0 * log10(T / (double)AIUS_DSP_SAMPLE_MAX);
+    assert(close(aius_dsp_limiter_gain_reduction_db(&lim), expect_db, 0.01));
+    printf("ok limiter converges output peak to threshold (%d ~ %.0f)\n",
+           l[N - 1], T);
+}
+
+/* Lookahead delays the signal by exactly `delay` samples (transparent content).
+ */
+static void test_limiter_lookahead_delay(void)
+{
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = 0.0; /* below threshold -> unity gain */
+    /* 5 samples at 48 kHz: 5 * 1000 / 48000 ms. */
+    lim.cfg.lookahead_ms = 5.0 * 1000.0 / 48000.0;
+
+    enum { N = 32, D = 5 };
+    int32_t l[N], r[N], el[N], er[N];
+    for (int i = 0; i < N; i++) {
+        l[i] = (i + 1) * 1000;
+        r[i] = -(i + 1) * 1000;
+    }
+    memcpy(el, l, sizeof l);
+    memcpy(er, r, sizeof r);
+    aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
+    for (int i = 0; i < D; i++) {
+        assert(l[i] == 0 && r[i] == 0); /* primed with silence */
+    }
+    for (int i = D; i < N; i++) {
+        assert(l[i] == el[i - D]);
+        assert(r[i] == er[i - D]);
+    }
+    printf("ok limiter lookahead delays by exactly %d samples\n", D);
+}
+
+/* Attack pulls the gain down monotonically; release recovers it monotonically. */
+static void test_limiter_attack_release_envelope(void)
+{
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = -6.0;
+    lim.cfg.attack_ms = 2.0;
+    lim.cfg.release_ms = 50.0;
+    lim.cfg.lookahead_ms = 0.0;
+
+    /* Attack: constant above-threshold input, gain must be non-increasing, and
+     * runs long enough to converge to the steady-state reduction (~ -6 dB). */
+    double prev = 0.0; /* gain reduction dB, starts at 0 */
+    int attacked = 0;
+    for (int i = 0; i < 4000; i++) {
+        int32_t l = AIUS_DSP_SAMPLE_MAX, r = AIUS_DSP_SAMPLE_MAX;
+        aius_dsp_limiter_run(&lim, 48000.0, &l, &r, 1);
+        double db = aius_dsp_limiter_gain_reduction_db(&lim);
+        assert(db <= prev + 1e-9); /* monotone non-increasing */
+        if (db < -0.5) attacked = 1;
+        prev = db;
+    }
+    assert(attacked); /* gain reduction actually engaged */
+    double after_attack = prev;
+    assert(after_attack < -5.5 && after_attack > -6.5); /* converged near -6 dB */
+
+    /* Release: silence, gain reduction must recover (non-decreasing) toward 0. */
+    double rprev = after_attack;
+    for (int i = 0; i < 20000; i++) {
+        int32_t l = 0, r = 0;
+        aius_dsp_limiter_run(&lim, 48000.0, &l, &r, 1);
+        double db = aius_dsp_limiter_gain_reduction_db(&lim);
+        assert(db >= rprev - 1e-9); /* monotone non-decreasing */
+        rprev = db;
+    }
+    assert(rprev > -0.1); /* recovered essentially to unity */
+    printf("ok limiter attack pulls down, release recovers\n");
+}
+
+/* A full-scale burst (as the downmix would clamp for surround51_impulse) is
+ * pulled below full scale when the limiter is enabled: no output saturation. */
+static void test_limiter_prevents_saturation(void)
+{
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = -3.0;
+    lim.cfg.attack_ms = 1.0;
+    lim.cfg.release_ms = 100.0;
+    lim.cfg.lookahead_ms = 5.0; /* 240 samples */
+
+    enum { N = 1024 };
+    static int32_t l[N], r[N];
+    for (int i = 0; i < N; i++) {
+        l[i] = 1000;
+        r[i] = -1000;
+    }
+    /* Clamped burst, as the downmix would emit for a correlated impulse. */
+    for (int k = 300; k < 303; k++) {
+        l[k] = AIUS_DSP_SAMPLE_MAX;
+        r[k] = AIUS_DSP_SAMPLE_MIN;
+    }
+    aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
+
+    int32_t pk = 0;
+    for (int i = 0; i < N; i++) {
+        int32_t a = l[i] < 0 ? -l[i] : l[i];
+        int32_t b = r[i] < 0 ? -r[i] : r[i];
+        if (a > pk) pk = a;
+        if (b > pk) pk = b;
+        assert(l[i] != AIUS_DSP_SAMPLE_MAX && l[i] != AIUS_DSP_SAMPLE_MIN);
+        assert(r[i] != AIUS_DSP_SAMPLE_MAX && r[i] != AIUS_DSP_SAMPLE_MIN);
+    }
+    assert(pk < AIUS_DSP_SAMPLE_MAX);
+    assert(pk < (int32_t)(0.9 * AIUS_DSP_SAMPLE_MAX)); /* pulled toward threshold */
+    printf("ok limiter prevents full-scale saturation (peak %d)\n", pk);
+}
+
+/* Bounded + finite: every output stays in the 24-bit range and gain in (0, 1]. */
+static void test_limiter_bounded_finite(void)
+{
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = -12.0;
+    lim.cfg.attack_ms = 0.5;
+    lim.cfg.release_ms = 200.0;
+    lim.cfg.lookahead_ms = 2.0;
+
+    enum { N = 4096 };
+    static int32_t l[N], r[N];
+    uint32_t seed = 0x1234567u;
+    for (int i = 0; i < N; i++) {
+        seed = seed * 1103515245u + 12345u;
+        l[i] = (int32_t)(seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1);
+        seed = seed * 1103515245u + 12345u;
+        r[i] = -(int32_t)((seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1));
+    }
+    aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
+    for (int i = 0; i < N; i++) {
+        assert(l[i] >= AIUS_DSP_SAMPLE_MIN && l[i] <= AIUS_DSP_SAMPLE_MAX);
+        assert(r[i] >= AIUS_DSP_SAMPLE_MIN && r[i] <= AIUS_DSP_SAMPLE_MAX);
+    }
+    double gr = aius_dsp_limiter_gain_reduction_db(&lim);
+    assert(gr <= 1e-9); /* never a boost */
+    printf("ok limiter output bounded + finite (gr %.2f dB)\n", gr);
+}
+
+/* Seamless across block boundaries: a split run with carried state equals the
+ * whole-block run (lookahead + envelope state persist). */
+static void test_limiter_block_boundary(void)
+{
+    enum { N = 2048 };
+    static int32_t whole_l[N], whole_r[N], split_l[N], split_r[N], base_l[N],
+        base_r[N];
+    for (int i = 0; i < N; i++) {
+        double s = sin(i * 0.05);
+        base_l[i] = (int32_t)(s * 7000000.0);
+        base_r[i] = (int32_t)(-s * 7000000.0);
+    }
+    memcpy(whole_l, base_l, sizeof base_l);
+    memcpy(whole_r, base_r, sizeof base_r);
+    memcpy(split_l, base_l, sizeof base_l);
+    memcpy(split_r, base_r, sizeof base_r);
+
+    AiusLimiterConfig c = aius_limiter_config_default();
+    c.enabled = 1;
+    c.threshold_dbfs = -6.0;
+    c.attack_ms = 1.0;
+    c.release_ms = 80.0;
+    c.lookahead_ms = 3.0;
+
+    AiusLimiter w;
+    memset(&w, 0, sizeof w);
+    w.cfg = c;
+    aius_dsp_limiter_run(&w, 48000.0, whole_l, whole_r, N);
+
+    AiusLimiter s;
+    memset(&s, 0, sizeof s);
+    s.cfg = c;
+    uint32_t h = N / 2;
+    aius_dsp_limiter_run(&s, 48000.0, split_l, split_r, h);
+    aius_dsp_limiter_run(&s, 48000.0, split_l + h, split_r + h, N - h);
+
+    for (int i = 0; i < N; i++) {
+        assert(split_l[i] == whole_l[i]);
+        assert(split_r[i] == whole_r[i]);
+    }
+    printf("ok limiter seamless across block boundary\n");
+}
+
+/* Full path: identity input stage + downmix + bypass EQ + limiter; frame count
+ * preserved, output bounded. */
+static void test_process_full_path(void)
+{
+    int32_t fl[4] = {6000000, -6000000, 100, -200};
+    int32_t fr[4] = {6000000, -6000000, 300, -400};
+    int32_t fc[4] = {6000000, -6000000, 500, -600};
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
+    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 4, 48000, mask};
+
+    int32_t s0[4], s1[4], s2[4];
+    AiusInputStage stage = aius_input_stage_default();
+    stage.scratch[0] = s0;
+    stage.scratch[1] = s1;
+    stage.scratch[2] = s2;
+
+    AiusBiquad eq[1];
+    AiusBiquadState est[2];
+    memset(est, 0, sizeof est);
+    size_t ns = aius_eq_default(eq, 1);
+
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 1;
+    lim.cfg.threshold_dbfs = -3.0;
+    lim.cfg.attack_ms = 1.0;
+    lim.cfg.release_ms = 50.0;
+    lim.cfg.lookahead_ms = 0.0;
+
+    int32_t ol[4], or_[4];
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = ol;
+    out.planes[1] = or_;
+    AiusDspConfig cfg = {aius_downmix_config_default(), eq, ns, est, &stage,
+                         &lim};
+    assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
+    assert(out.frames == 4);
+    assert(out.channels == 2);
+    for (int i = 0; i < 4; i++) {
+        assert(ol[i] >= AIUS_DSP_SAMPLE_MIN && ol[i] <= AIUS_DSP_SAMPLE_MAX);
+        assert(or_[i] >= AIUS_DSP_SAMPLE_MIN && or_[i] <= AIUS_DSP_SAMPLE_MAX);
+    }
+    printf("ok process full path (input+downmix+eq+limiter)\n");
+}
+
+/* --- coherent meter snapshot ---------------------------------------------- */
+
+/* Per-input peak/RMS on a 6-channel block where each channel carries a distinct
+ * constant: peak == RMS == |constant| for every channel, in AIUS_CH_* order. */
+static void test_meter_input_peak_rms(void)
+{
+    enum { N = 8 };
+    int32_t fl[N], fr[N], fc[N], lfe[N], sl[N], sr[N];
+    const int32_t val[6] = {1000, -2000, 3000, -4000, 5000, -6000};
+    int32_t *pl[6] = {fl, fr, fc, lfe, sl, sr};
+    for (int c = 0; c < 6; c++)
+        for (int i = 0; i < N; i++)
+            pl[c][i] = val[c];
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                    AIUS_CH_SL | AIUS_CH_SR;
+    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, N, 48000, mask};
+
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+    aius_meter_accumulate_input(&m, &in);
+    aius_meter_publish(&m);
+
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&m, &s) == 1);
+    assert(s.sample_rate_hz == 48000);
+    for (int c = 0; c < 6; c++) {
+        double a = val[c] < 0 ? -(double)val[c] : (double)val[c];
+        assert(s.input_peak[c] == a); /* constant DC: peak == |val| */
+        assert(s.input_rms[c] == a);  /* RMS of a constant == |val| */
+    }
+    printf("ok meter input peak/RMS per channel\n");
+}
+
+/* Silence -> zero; full-scale DC -> peak/RMS at full scale; stereo output taps. */
+static void test_meter_output_and_silence(void)
+{
+    enum { N = 4 };
+    /* Silence. */
+    {
+        int32_t z[N] = {0, 0, 0, 0};
+        AiusMeter m;
+        aius_meter_init(&m, 48000);
+        aius_meter_accumulate_output(&m, z, z, N);
+        aius_meter_publish(&m);
+        AiusMeterSnapshot s;
+        assert(aius_meter_read(&m, &s) == 1);
+        assert(s.output_peak[0] == 0.0 && s.output_peak[1] == 0.0);
+        assert(s.output_rms[0] == 0.0 && s.output_rms[1] == 0.0);
+    }
+    /* Full-scale DC on L, negative full-scale on R. */
+    {
+        int32_t l[N], r[N];
+        for (int i = 0; i < N; i++) {
+            l[i] = AIUS_DSP_SAMPLE_MAX;
+            r[i] = AIUS_DSP_SAMPLE_MIN;
+        }
+        AiusMeter m;
+        aius_meter_init(&m, 48000);
+        aius_meter_accumulate_output(&m, l, r, N);
+        aius_meter_publish(&m);
+        AiusMeterSnapshot s;
+        assert(aius_meter_read(&m, &s) == 1);
+        assert(s.output_peak[0] == (double)AIUS_DSP_SAMPLE_MAX);
+        assert(s.output_peak[1] == -(double)AIUS_DSP_SAMPLE_MIN); /* |MIN| */
+        assert(s.output_rms[0] == (double)AIUS_DSP_SAMPLE_MAX);
+        assert(s.output_rms[1] == -(double)AIUS_DSP_SAMPLE_MIN);
+    }
+    printf("ok meter output peak/RMS + silence\n");
+}
+
+/* A tone (and a ramp) RMS matches an independent same-order reference exactly. */
+static void test_meter_tone_rms(void)
+{
+    enum { N = 64 };
+    int32_t l[N], r[N];
+    for (int i = 0; i < N; i++) {
+        l[i] = (int32_t)(sin(i * 0.19) * 5000000.0);
+        r[i] = (int32_t)(cos(i * 0.11) * 3000000.0);
+    }
+    /* Independent reference: same summation order as accumulate_output. */
+    double sql = 0.0, sqr = 0.0, pkl = 0.0, pkr = 0.0;
+    for (int i = 0; i < N; i++) {
+        double vl = (double)l[i], vr = (double)r[i];
+        double al = vl < 0 ? -vl : vl, ar = vr < 0 ? -vr : vr;
+        if (al > pkl) pkl = al;
+        if (ar > pkr) pkr = ar;
+        sql += vl * vl;
+        sqr += vr * vr;
+    }
+    double rl = sqrt(sql / (double)N), rr = sqrt(sqr / (double)N);
+
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+    aius_meter_accumulate_output(&m, l, r, N);
+    aius_meter_publish(&m);
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&m, &s) == 1);
+    assert(s.output_peak[0] == pkl && s.output_peak[1] == pkr);
+    assert(s.output_rms[0] == rl && s.output_rms[1] == rr);
+    printf("ok meter tone RMS matches reference (%.1f, %.1f)\n", rl, rr);
+}
+
+/* Waveform decimation: exact point count, deterministic bucketing, ramp, bounds,
+ * degenerate inputs, and the max(|l|,|r|) envelope. */
+static void test_meter_decimate(void)
+{
+    /* Ramp of 256 into 128 buckets: bucket b = [2b, 2b+2), peak = 2b+1. */
+    {
+        enum { N = 256, CAP = 128 };
+        static int32_t ramp[N];
+        for (int i = 0; i < N; i++) ramp[i] = i;
+        int32_t out[CAP];
+        uint32_t pts = aius_meter_decimate(ramp, NULL, N, out, CAP);
+        assert(pts == CAP);
+        for (uint32_t b = 0; b < CAP; b++)
+            assert(out[b] == (int32_t)(2 * b + 1));
+    }
+    /* frames < cap: one sample per bucket, envelope == |sample|. */
+    {
+        enum { CAP = 128 };
+        int32_t l[10];
+        for (int i = 0; i < 10; i++) l[i] = -(i + 1) * 100;
+        int32_t out[CAP];
+        uint32_t pts = aius_meter_decimate(l, NULL, 10, out, CAP);
+        assert(pts == 10);
+        for (int i = 0; i < 10; i++) assert(out[i] == (i + 1) * 100);
+    }
+    /* Uneven division 130 -> 128: bounded, buckets contiguous + near-equal, each
+     * peak equals an independent per-bucket max scan. */
+    {
+        enum { N = 130, CAP = 128 };
+        static int32_t l[N];
+        for (int i = 0; i < N; i++) l[i] = (i * 7) % 5000 - 2500;
+        int32_t out[CAP];
+        uint32_t pts = aius_meter_decimate(l, NULL, N, out, CAP);
+        assert(pts == CAP);
+        assert(pts <= CAP && pts <= N);
+        uint32_t prev_end = 0;
+        for (uint32_t b = 0; b < pts; b++) {
+            uint32_t start = (uint32_t)((uint64_t)b * N / pts);
+            uint32_t end = (uint32_t)((uint64_t)(b + 1) * N / pts);
+            assert(start == prev_end);           /* contiguous, no gaps/overlap */
+            assert(end - start == 1 || end - start == 2); /* near-equal */
+            int32_t pk = 0;
+            for (uint32_t i = start; i < end; i++) {
+                int32_t a = l[i] < 0 ? -l[i] : l[i];
+                if (a > pk) pk = a;
+            }
+            assert(out[b] == pk);
+            prev_end = end;
+        }
+        assert(prev_end == N); /* full coverage */
+    }
+    /* max(|l|,|r|) envelope: r dominates in a bucket. */
+    {
+        int32_t l[4] = {10, 20, 30, 40};
+        int32_t r[4] = {-100, 5, -7, 9};
+        int32_t out[4];
+        uint32_t pts = aius_meter_decimate(l, r, 4, out, 4);
+        assert(pts == 4);
+        assert(out[0] == 100 && out[1] == 20 && out[2] == 30 && out[3] == 40);
+    }
+    /* Degenerate: NULL out, zero cap, zero frames, NULL l all yield 0 points. */
+    {
+        int32_t l[1] = {1}, out[1];
+        assert(aius_meter_decimate(l, NULL, 1, NULL, 1) == 0);
+        assert(aius_meter_decimate(l, NULL, 1, out, 0) == 0);
+        assert(aius_meter_decimate(l, NULL, 0, out, 1) == 0);
+        assert(aius_meter_decimate(NULL, NULL, 1, out, 1) == 0);
+    }
+    printf("ok meter waveform decimation (ramp, bounds, envelope)\n");
+}
+
+/* Build a deterministic published snapshot from a DC output block. */
+static void meter_publish_dc(AiusMeter *m, int32_t v, uint32_t frames)
+{
+    enum { N = 32 };
+    int32_t l[N], r[N];
+    if (frames > N) frames = N;
+    for (uint32_t i = 0; i < frames; i++) {
+        l[i] = v;
+        r[i] = v;
+    }
+    aius_meter_accumulate_output(m, l, r, frames);
+    aius_meter_publish(m);
+}
+
+/* Coherence: monotone sequence, mid-update rejection, and an interleaved write
+ * (mirroring publish's seqlock protocol) never surfaces a partial snapshot. */
+static void test_meter_coherence(void)
+{
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+
+    /* Sequence advances monotonically across publishes; each read is coherent. */
+    uint32_t prev = 0;
+    for (int k = 1; k <= 5; k++) {
+        meter_publish_dc(&m, k * 1000, 16);
+        assert((m.seq & 1u) == 0); /* stable after publish */
+        AiusMeterSnapshot s;
+        assert(aius_meter_read(&m, &s) == 1);
+        assert(s.sequence == prev + 1);
+        assert(s.output_peak[0] == (double)(k * 1000));
+        prev = s.sequence;
+    }
+
+    /* A read that straddles a write-in-progress (odd seq) is rejected, never
+     * returned torn. Scribble an inconsistent payload to prove it is not read. */
+    AiusMeterSnapshot good;
+    assert(aius_meter_read(&m, &good) == 1);
+    uint32_t base = m.seq;
+    m.seq = base + 1;                       /* odd: publish "in progress" */
+    m.published.output_peak[0] = -12345.0;  /* inconsistent scribble */
+    AiusMeterSnapshot torn;
+    memset(&torn, 0x5a, sizeof torn);
+    assert(aius_meter_read(&m, &torn) == 0); /* rejected across all retries */
+    /* Complete the write with a consistent payload; the reader now accepts it. */
+    m.published.output_peak[0] = 777.0;
+    m.seq = base + 2;                        /* even: complete */
+    AiusMeterSnapshot after;
+    assert(aius_meter_read(&m, &after) == 1);
+    assert(after.output_peak[0] == 777.0);
+
+    /* Interleaved: at every step of a hand-run publish protocol, a reader either
+     * fails (mid-write) or gets a complete snapshot -- never a partial mix. */
+    aius_meter_init(&m, 48000);
+    meter_publish_dc(&m, 4000, 16); /* snapshot A */
+    AiusMeterSnapshot probe;
+    assert(aius_meter_read(&m, &probe) == 1 && probe.output_peak[0] == 4000.0);
+    uint32_t s0 = m.seq;
+    m.seq = s0 + 1;                          /* begin B: odd */
+    assert(aius_meter_read(&m, &probe) == 0);
+    m.published.sequence = probe.sequence + 100; /* partial field writes */
+    assert(aius_meter_read(&m, &probe) == 0);
+    m.published.output_peak[0] = 9000.0;
+    m.published.output_peak[1] = 9000.0;
+    assert(aius_meter_read(&m, &probe) == 0); /* still mid-write */
+    m.seq = s0 + 2;                          /* commit B: even */
+    assert(aius_meter_read(&m, &probe) == 1);
+    assert(probe.output_peak[0] == 9000.0 && probe.output_peak[1] == 9000.0);
+    printf("ok meter coherence (monotone seq, mid-write rejected, no tearing)\n");
+}
+
+/* Every published field is finite and within range on adversarial content. */
+static void test_meter_bounds_finite(void)
+{
+    enum { N = 512 };
+    static int32_t l[N], r[N];
+    int32_t fl[N], fr[N], fc[N], lfe[N], sl[N], sr[N];
+    int32_t *pl[6] = {fl, fr, fc, lfe, sl, sr};
+    uint32_t seed = 0xC0FFEEu;
+    for (int i = 0; i < N; i++) {
+        for (int c = 0; c < 6; c++) {
+            seed = seed * 1103515245u + 12345u;
+            int32_t v = (int32_t)((seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1u));
+            pl[c][i] = (i & 1) ? -v : v;
+        }
+        l[i] = pl[0][i];
+        r[i] = pl[1][i];
+    }
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                    AIUS_CH_SL | AIUS_CH_SR;
+    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, N, 48000, mask};
+
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+    aius_meter_accumulate_input(&m, &in);
+    aius_meter_accumulate_output(&m, l, r, N);
+    aius_meter_set_limiter_gr(&m, -6.5);
+    aius_meter_set_telemetry(&m, 128, 3200, 42000, 51000);
+    aius_meter_publish(&m);
+
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&m, &s) == 1);
+    for (int c = 0; c < AIUS_METER_INPUT_CHANNELS; c++) {
+        assert(isfinite(s.input_peak[c]) && isfinite(s.input_rms[c]));
+        assert(s.input_peak[c] >= 0.0 && s.input_peak[c] <= (double)AIUS_DSP_SAMPLE_MAX + 1.0);
+        assert(s.input_rms[c] >= 0.0 && s.input_rms[c] <= s.input_peak[c] + 1e-6);
+    }
+    for (int k = 0; k < 2; k++) {
+        assert(isfinite(s.output_peak[k]) && isfinite(s.output_rms[k]));
+        assert(s.output_rms[k] <= s.output_peak[k] + 1e-6); /* RMS <= peak */
+    }
+    assert(isfinite(s.limiter_gain_reduction_db) && s.limiter_gain_reduction_db <= 0.0);
+    assert(s.waveform_count <= AIUS_METER_WAVEFORM_MAX);
+    for (uint32_t i = 0; i < s.waveform_count; i++)
+        assert(s.waveform[i] >= 0 && s.waveform[i] <= AIUS_DSP_SAMPLE_MAX);
+    /* Target-adapter telemetry carried through verbatim. */
+    assert(s.queue_frames == 128 && s.estimated_latency_us == 3200);
+    assert(s.dsp_cycles_last == 42000 && s.dsp_cycles_max == 51000);
+    printf("ok meter fields finite + in range\n");
+}
+
+/* Metering does not alter audio: process with a meter attached is bit-identical
+ * to the same config with no meter, and the meter captured the true output peak. */
+static void test_meter_process_no_mutation(void)
+{
+    int32_t fl[4] = {6000000, -6000000, 100, -200};
+    int32_t fr[4] = {5000000, -5000000, 300, -400};
+    int32_t fc[4] = {4000000, -4000000, 500, -600};
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
+    AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 4, 48000, mask};
+
+    AiusBiquad eq[1];
+    size_t ns = aius_eq_default(eq, 1);
+    AiusLimiterConfig limc = aius_limiter_config_default();
+    limc.enabled = 1;
+    limc.threshold_dbfs = -3.0;
+    limc.attack_ms = 1.0;
+    limc.release_ms = 50.0;
+    limc.lookahead_ms = 0.0;
+
+    /* Reference: no meter. */
+    int32_t s0[4], s1[4], s2[4];
+    AiusInputStage stage = aius_input_stage_default();
+    stage.channels[2].gain_linear = aius_db_to_linear(-3.0);
+    stage.scratch[0] = s0;
+    stage.scratch[1] = s1;
+    stage.scratch[2] = s2;
+    AiusBiquadState est[2];
+    memset(est, 0, sizeof est);
+    AiusLimiter lim0;
+    memset(&lim0, 0, sizeof lim0);
+    lim0.cfg = limc;
+    int32_t rl[4], rr[4];
+    AiusPcmBlock rout;
+    memset(&rout, 0, sizeof rout);
+    rout.planes[0] = rl;
+    rout.planes[1] = rr;
+    AiusDspConfig rc = {aius_downmix_config_default(), eq, ns, est, &stage, &lim0};
+    assert(aius_dsp_process(&rc, &in, &rout) == AIUS_OK);
+
+    /* Metered: identical (meter-free) config; the meter is driven caller-side. */
+    int32_t m0[4], m1[4], m2[4];
+    AiusInputStage mstage = aius_input_stage_default();
+    mstage.channels[2].gain_linear = aius_db_to_linear(-3.0);
+    mstage.scratch[0] = m0;
+    mstage.scratch[1] = m1;
+    mstage.scratch[2] = m2;
+    AiusBiquadState mest[2];
+    memset(mest, 0, sizeof mest);
+    AiusLimiter lim1;
+    memset(&lim1, 0, sizeof lim1);
+    lim1.cfg = limc;
+    AiusMeter meter;
+    aius_meter_init(&meter, 48000);
+    int32_t ml[4], mr[4];
+    AiusPcmBlock mout;
+    memset(&mout, 0, sizeof mout);
+    mout.planes[0] = ml;
+    mout.planes[1] = mr;
+    AiusDspConfig mc = {aius_downmix_config_default(), eq, ns, mest, &mstage,
+                        &lim1};
+    assert(aius_dsp_process(&mc, &in, &mout) == AIUS_OK);
+
+    /* Caller-driven metering: run the taps around process, not inside it. */
+    aius_meter_accumulate_input(&meter, &in);
+    aius_meter_accumulate_output(&meter, mout.planes[0], mout.planes[1],
+                                 mout.frames);
+    aius_meter_set_limiter_gr(&meter, aius_dsp_limiter_gain_reduction_db(&lim1));
+
+    for (int i = 0; i < 4; i++) {
+        assert(ml[i] == rl[i]); /* metering did not touch the audio */
+        assert(mr[i] == rr[i]);
+    }
+    /* Decoded input planes remain const. */
+    assert(fl[0] == 6000000 && fc[3] == -600);
+
+    aius_meter_publish(&meter);
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&meter, &s) == 1);
+    int32_t opk_l = peak_abs_i(rl, 4), opk_r = peak_abs_i(rr, 4);
+    assert(s.output_peak[0] == (double)opk_l);
+    assert(s.output_peak[1] == (double)opk_r);
+    /* Limiter GR captured (<= 0). */
+    assert(s.limiter_gain_reduction_db <= 0.0);
+    printf("ok meter taps do not mutate audio (bit-identical) + capture output\n");
 }
 
 static void test_arena_alloc(void)
@@ -349,7 +1229,7 @@ static void test_invalid_args(void)
     assert(aius_dsp_downmix(&cfg, &in, &noout) == AIUS_INVALID_ARG);
 
     /* process: eq_sections>0 but null coeffs. */
-    AiusDspConfig pc = {cfg, NULL, 1, NULL};
+    AiusDspConfig pc = {cfg, NULL, 1, NULL, NULL, NULL};
     assert(aius_dsp_process(&pc, &in, &out) == AIUS_INVALID_ARG);
     printf("ok invalid-arg guards\n");
 }
@@ -368,6 +1248,28 @@ int main(void)
     test_biquad_coeff_math();
     test_biquad_dc_settle();
     test_process_bypass_equals_downmix();
+    test_db_to_linear();
+    test_input_trim_gain();
+    test_input_trim_folds_into_eq();
+    test_input_two_section_eq();
+    test_process_input_identity_equals_downmix();
+    test_process_input_trim_scales();
+    test_limiter_default_disabled();
+    test_limiter_transparent_below_threshold();
+    test_limiter_threshold_steady_state();
+    test_limiter_lookahead_delay();
+    test_limiter_attack_release_envelope();
+    test_limiter_prevents_saturation();
+    test_limiter_bounded_finite();
+    test_limiter_block_boundary();
+    test_process_full_path();
+    test_meter_input_peak_rms();
+    test_meter_output_and_silence();
+    test_meter_tone_rms();
+    test_meter_decimate();
+    test_meter_coherence();
+    test_meter_bounds_finite();
+    test_meter_process_no_mutation();
     test_arena_alloc();
     test_invalid_args();
     printf("ALL DSP TESTS PASSED\n");
