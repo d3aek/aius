@@ -1039,6 +1039,37 @@ static void test_usb_commands(void)
 	assert(response->payload_length == AIUS_OPTICAL_APP_USB_PAYLOAD_MAX);
 }
 
+/* The two 405 method fall-throughs the parser rejects before dispatch ever sees
+ * them (POST to /sd/<file> and POST to /api/replays). They are the dispatcher's
+ * own last line, so they are driven from a hand-built request rather than the
+ * parser -- and their bodies are asserted byte-for-byte like every other. */
+static void test_unreachable_method_defaults(void)
+{
+	Fixture fixture;
+	static const uint8_t resource[] = "www/index.html";
+	static const uint8_t auth[] = "token";
+	AiusHttpRequest request;
+	fixture_init(&fixture);
+
+	memset(&request, 0, sizeof(request));
+	request.method = AIUS_HTTP_POST;
+	request.route = AIUS_HTTP_ROUTE_SD_FILE;
+	request.resource = resource;
+	request.resource_length = sizeof(resource) - 1u;
+	expect_immediate(aius_optical_app_http_dispatch(&fixture.dispatcher,
+	                                                &request),
+	                 405, "{\"ok\":false,\"error\":\"sd_method\"}");
+
+	memset(&request, 0, sizeof(request));
+	request.method = AIUS_HTTP_POST;
+	request.route = AIUS_HTTP_ROUTE_REPLAYS;
+	request.sd_auth = auth;
+	request.sd_auth_length = sizeof(auth) - 1u;
+	expect_immediate(aius_optical_app_http_dispatch(&fixture.dispatcher,
+	                                                &request),
+	                 405, "{\"ok\":false,\"error\":\"replay_method\"}");
+}
+
 /* Every route the parser can produce reaches a dispatch decision -- no route
  * falls through without a status. */
 static void test_route_coverage(void)
@@ -1110,6 +1141,7 @@ int main(void)
 	RUN_TEST(test_callback_isolation);
 	RUN_TEST(test_dispatch_counts);
 	RUN_TEST(test_usb_commands);
+	RUN_TEST(test_unreachable_method_defaults);
 	RUN_TEST(test_route_coverage);
 	fprintf(stderr, "optical-app oracle: all tests passed\n");
 	return 0;

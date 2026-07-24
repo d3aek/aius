@@ -53,11 +53,39 @@ static FLASHMEM const AiusHttpApplicationResponse *http_json(
 	                      (const uint8_t *)text, strlen(text));
 }
 
+/* Every JSON failure body is one envelope around a short token, so only the
+ * tokens are stored. The 23 bytes of `{"ok":false,"error":"` + `"}` would
+ * otherwise repeat once per distinct error, and that costs RAM rather than
+ * FLASH on this target: imxrt1062_t41.ld maps *(.flashmem*) to FLASH but
+ * *(.rodata*) to DTCM, the same region the runtime stack grows down through.
+ * FLASHMEM moves the code; only deduplicating the literals moves the strings.
+ *
+ * The body is formatted into the caller-supplied response buffer, which is
+ * present on every path that can reach here: aius_optical_app_init() refuses a
+ * null buffer or one under AIUS_OPTICAL_APP_MIN_BODY, and both dispatch entry
+ * points refuse an invalid dispatcher before any route -- including the
+ * earliest refusals and the response-capacity-exhaustion path -- can run. The
+ * caller copies the body out during the dispatch call (aius_http_transaction.c
+ * format_response), so overwriting a serializer's rejected output here is safe.
+ *
+ * The longest envelope is 41 bytes against a 256-byte floor, so truncation is
+ * unreachable; it degrades to the generic failure body the 404 default already
+ * stores rather than recursing back through http_too_large(). */
+static FLASHMEM const AiusHttpApplicationResponse *http_error(
+	AiusOpticalAppDispatcher *dispatcher, unsigned status, const char *token)
+{
+	int written = snprintf((char *)dispatcher->body, dispatcher->body_capacity,
+	                       "{\"ok\":false,\"error\":\"%s\"}", token);
+	if (written <= 0 || (size_t)written >= dispatcher->body_capacity)
+		return http_json(dispatcher, status, "{\"ok\":false}");
+	return http_immediate(dispatcher, status, kContentJson, dispatcher->body,
+	                      (size_t)written);
+}
+
 static FLASHMEM const AiusHttpApplicationResponse *http_too_large(
 	AiusOpticalAppDispatcher *dispatcher)
 {
-	return http_json(dispatcher, 500,
-	                 "{\"ok\":false,\"error\":\"response_too_large\"}");
+	return http_error(dispatcher, 500, "response_too_large");
 }
 
 /* Publishes a body the dispatcher formatted into its own buffer. A snprintf
@@ -362,25 +390,21 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 	/* Legacy order for the streamed PUT path: the refusal to overwrite the
 	 * public config outranks authentication, which outranks media state. */
 	if (!replay && resource_is_config(request))
-		return http_json(dispatcher, 403,
-		                 "{\"ok\":false,\"error\":\"config_public_only\"}");
+		return http_error(dispatcher, 403, "config_public_only");
 	if (!app->auth_matches(app->context, request->sd_auth,
 	                       request->sd_auth_length))
-		return http_json(dispatcher, 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		return http_error(dispatcher, 401, "sd_auth");
 	if (!app->sd_ready(app->context))
-		return http_json(dispatcher, 503,
-		                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+		return http_error(dispatcher, 503, "sd_unavailable");
 	if (app->sd_busy(app->context))
-		return http_json(dispatcher, 507,
-		                 "{\"ok\":false,\"error\":\"sd_upload\"}");
+		return http_error(dispatcher, 507, "sd_upload");
 	if (replay) {
 		int written;
 		bool final_chunk;
 		if (!request->has_content_range ||
 		    !replay_id_chars_valid(request->replay_id,
 		                           request->replay_id_length))
-			return http_json(dispatcher, 400,
-			                 "{\"ok\":false,\"error\":\"sd_upload\"}");
+			return http_error(dispatcher, 400, "sd_upload");
 		final_chunk = (uint64_t)request->content_range_end + 1u ==
 			(uint64_t)request->content_range_total;
 		if (!final_chunk) {
@@ -388,8 +412,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 			                       sizeof(dispatcher->target_path),
 			                       request->replay_id,
 			                       request->replay_id_length, ".part"))
-				return http_json(dispatcher, 507,
-				                 "{\"ok\":false,\"error\":\"sd_upload\"}");
+				return http_error(dispatcher, 507, "sd_upload");
 			written = snprintf((char *)dispatcher->body,
 			                   dispatcher->body_capacity,
 			                   "{\"ok\":true,\"next_offset\":%lu}",
@@ -410,8 +433,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 		                       request->replay_id, request->replay_id_length,
 		                       ".iec") ||
 		    !build_upload_scratch(dispatcher, false))
-			return http_json(dispatcher, 507,
-			                 "{\"ok\":false,\"error\":\"sd_upload\"}");
+			return http_error(dispatcher, 507, "sd_upload");
 		return sd_upload(dispatcher, AIUS_SD_INSTALL_FINALIZE_PART,
 		                 request->content_length, request->content_range_start,
 		                 (const uint8_t *)"{\"ok\":true}",
@@ -421,8 +443,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 	    !build_resource_path(dispatcher->target_path,
 	                         sizeof(dispatcher->target_path), request) ||
 	    !build_upload_scratch(dispatcher, true))
-		return http_json(dispatcher, 507,
-		                 "{\"ok\":false,\"error\":\"sd_upload\"}");
+		return http_error(dispatcher, 507, "sd_upload");
 	return sd_upload(dispatcher, AIUS_SD_INSTALL_REPLACE,
 	                 request->content_length, 0u,
 	                 (const uint8_t *)"{\"ok\":true}",
@@ -437,8 +458,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 	if (request->method == AIUS_HTTP_PUT)
 		return dispatch_sd_upload(dispatcher, request);
 	if (!app->sd_ready(app->context))
-		return http_json(dispatcher, 503,
-		                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+		return http_error(dispatcher, 503, "sd_unavailable");
 	if (request->route == AIUS_HTTP_ROUTE_SD_STATUS)
 		return http_json(dispatcher, 200, "{\"ready\":true}");
 	if (request->route == AIUS_HTTP_ROUTE_SD_REPLAY) {
@@ -448,51 +468,46 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 		                       sizeof(dispatcher->target_path),
 		                       request->replay_id, request->replay_id_length,
 		                       ".iec"))
-			return http_json(dispatcher, 404,
-			                 "{\"ok\":false,\"error\":\"sd_path\"}");
+			return http_error(dispatcher, 404, "sd_path");
 		content_type = kContentBinary;
 	} else {
 		if (!resource_path_valid(request) ||
 		    !build_resource_path(dispatcher->target_path,
 		                         sizeof(dispatcher->target_path), request))
-			return http_json(dispatcher, 404,
-			                 "{\"ok\":false,\"error\":\"sd_path\"}");
+			return http_error(dispatcher, 404, "sd_path");
 		content_type = resource_content_type(request);
 	}
 	if (request->method != AIUS_HTTP_GET && resource_is_config(request))
-		return http_json(dispatcher, 403,
-		                 "{\"ok\":false,\"error\":\"config_public_only\"}");
+		return http_error(dispatcher, 403, "config_public_only");
 	if (request->method == AIUS_HTTP_DELETE &&
 	    !app->auth_matches(app->context, request->sd_auth,
 	                       request->sd_auth_length))
-		return http_json(dispatcher, 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		return http_error(dispatcher, 401, "sd_auth");
 	if (app->sd_busy(app->context))
-		return http_json(dispatcher, 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
+		return http_error(dispatcher, 503, "sd_busy");
 	if (request->method == AIUS_HTTP_GET)
 		return sd_download(dispatcher, content_type);
 	if (request->method == AIUS_HTTP_DELETE)
 		return sd_delete(dispatcher);
-	return http_json(dispatcher, 405,
-	                 "{\"ok\":false,\"error\":\"sd_method\"}");
+	return http_error(dispatcher, 405, "sd_method");
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_store(
 	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppStoreResult result,
-	const char *invalid_error)
+	const char *invalid_token)
 {
 	switch (result) {
 	case AIUS_OPTICAL_APP_STORE_OK:
 		return http_json(dispatcher, 200, "{\"ok\":true}");
 	case AIUS_OPTICAL_APP_STORE_STALE:
-		return http_json(dispatcher, 409,
-		                 "{\"ok\":false,\"error\":\"stale_generation\"}");
+		return http_error(dispatcher, 409, "stale_generation");
 	case AIUS_OPTICAL_APP_STORE_BUSY:
-		return http_json(dispatcher, 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
+		return http_error(dispatcher, 503, "sd_busy");
 	case AIUS_OPTICAL_APP_STORE_INVALID:
 	default:
 		break;
 	}
-	return http_json(dispatcher, 400, invalid_error);
+	return http_error(dispatcher, 400, invalid_token);
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_dsp_config(
@@ -506,14 +521,13 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_dsp_config(
 		                                             dispatcher->body_capacity));
 	if (!app->auth_matches(app->context, request->sd_auth,
 	                       request->sd_auth_length))
-		return http_json(dispatcher, 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		return http_error(dispatcher, 401, "sd_auth");
 	if (!app->sd_ready(app->context))
-		return http_json(dispatcher, 503,
-		                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+		return http_error(dispatcher, 503, "sd_unavailable");
 	return dispatch_store(dispatcher,
 	                      app->store_dsp_config(app->context, request->body,
 	                                            request->body_length),
-	                      "{\"ok\":false,\"error\":\"dsp_config_invalid\"}");
+	                      "dsp_config_invalid");
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_config_public(
@@ -521,12 +535,11 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_config_public(
 {
 	const AiusOpticalApp *app = &dispatcher->app;
 	if (!app->sd_ready(app->context))
-		return http_json(dispatcher, 503,
-		                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+		return http_error(dispatcher, 503, "sd_unavailable");
 	return dispatch_store(dispatcher,
 	                      app->store_public_config(app->context, request->body,
 	                                               request->body_length),
-	                      "{\"ok\":false,\"error\":\"config_invalid\"}");
+	                      "config_invalid");
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
@@ -540,7 +553,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 	if (!public_route &&
 	    !app->auth_matches(app->context, request->sd_auth,
 	                       request->sd_auth_length))
-		return http_json(dispatcher, 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		return http_error(dispatcher, 401, "sd_auth");
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STATUS)
 		return http_serialized(dispatcher, kContentJson,
 		                       app->write_replay_status(app->context,
@@ -554,8 +567,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_START) {
 		if (!app->sd_ready(app->context) ||
 		    !replay_body_id(dispatcher, request, &loop))
-			return http_json(dispatcher, 400,
-			                 "{\"ok\":false,\"error\":\"replay_body\"}");
+			return http_error(dispatcher, 400, "replay_body");
 		switch (app->replay_start(app->context, dispatcher->replay_id, loop)) {
 		case AIUS_OPTICAL_APP_REPLAY_OK:
 			return http_body_text(dispatcher, 200,
@@ -563,22 +575,19 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 				         "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"%s\"}",
 				         dispatcher->replay_id));
 		case AIUS_OPTICAL_APP_REPLAY_NOT_FOUND:
-			return http_json(dispatcher, 404,
-			                 "{\"ok\":false,\"error\":\"replay_not_found\"}");
+			return http_error(dispatcher, 404, "replay_not_found");
 		case AIUS_OPTICAL_APP_REPLAY_ACTIVE:
 		case AIUS_OPTICAL_APP_REPLAY_FAILED:
 		default:
 			break;
 		}
-		return http_json(dispatcher, 409,
-		                 "{\"ok\":false,\"error\":\"replay_start\"}");
+		return http_error(dispatcher, 409, "replay_start");
 	}
 	if (request->method == AIUS_HTTP_GET) {
 		/* Pre-cutover behaviour: the listing reports missing media in its own
 		 * body with a 200, it does not fail the request. */
 		if (!app->sd_ready(app->context))
-			return http_json(dispatcher, 200,
-			                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+			return http_error(dispatcher, 200, "sd_unavailable");
 		return http_serialized(dispatcher, kContentJson,
 		                       app->write_replay_list(app->context,
 		                                              dispatcher->body,
@@ -586,8 +595,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 	}
 	if (request->method == AIUS_HTTP_DELETE) {
 		if (!replay_body_id(dispatcher, request, &loop))
-			return http_json(dispatcher, 400,
-			                 "{\"ok\":false,\"error\":\"replay_body\"}");
+			return http_error(dispatcher, 400, "replay_body");
 		switch (app->replay_delete(app->context, dispatcher->replay_id)) {
 		case AIUS_OPTICAL_APP_REPLAY_OK:
 			return http_body_text(dispatcher, 200,
@@ -595,20 +603,16 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 				         "{\"ok\":true,\"deleted\":\"%s\"}",
 				         dispatcher->replay_id));
 		case AIUS_OPTICAL_APP_REPLAY_ACTIVE:
-			return http_json(dispatcher, 409,
-			                 "{\"ok\":false,\"error\":\"replay_active\"}");
+			return http_error(dispatcher, 409, "replay_active");
 		case AIUS_OPTICAL_APP_REPLAY_NOT_FOUND:
-			return http_json(dispatcher, 404,
-			                 "{\"ok\":false,\"error\":\"replay_not_found\"}");
+			return http_error(dispatcher, 404, "replay_not_found");
 		case AIUS_OPTICAL_APP_REPLAY_FAILED:
 		default:
 			break;
 		}
-		return http_json(dispatcher, 503,
-		                 "{\"ok\":false,\"error\":\"replay_delete\"}");
+		return http_error(dispatcher, 503, "replay_delete");
 	}
-	return http_json(dispatcher, 405,
-	                 "{\"ok\":false,\"error\":\"replay_method\"}");
+	return http_error(dispatcher, 405, "replay_method");
 }
 
 /* ------------------------------------------------------------------ */

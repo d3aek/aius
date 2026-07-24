@@ -3582,10 +3582,31 @@ appear when Phase 12 constructs it.
 **A linker fact worth carrying into Phases 12, 14, and 14b:** `imxrt1062_t41.ld`
 maps `*(.flashmem*)` to FLASH but `*(.rodata*)` to **DTCM**. So `FLASHMEM` moves
 code out of ITCM while its string literals still land in the 22,684-byte
-free-for-locals zone — here, ~1,275 bytes of JSON error bodies. Phase 14 deletes
-the equivalent literals from `optical_main.cpp`, so the cutover should be roughly
-net-neutral; if it is not, naming those constant bodies `PROGMEM` moves them to
-flash.
+free-for-locals zone.
+
+**Convention that follows from it, and that later phases should copy:** store
+the error **token** only and emit `{"ok":false,"error":"…"}` from a single
+`http_error(dispatcher, status, token)` that formats into the caller-supplied
+response buffer. Deduplicating literals buys RAM that `FLASHMEM` cannot.
+
+Applied to this dispatcher it moved `.rodata.str1.4` from 1,275 to **907 bytes**
+(−368) and `.flashmem` from 3,976 to **3,628** (−348), across 30 call sites and
+17 distinct tokens, with every response byte unchanged — the suite's exact-body
+assertions were left hardcoded rather than loosened, and the two tokens it never
+reached (`sd_method`, `replay_method`, both unreachable defensive 405 defaults
+because the parser rejects those methods first) gained a test that asserts their
+full envelopes byte-for-byte.
+
+**The 368 bytes are banked, not yet realised.** `arm-none-eabi-nm` on
+`firmware.elf` finds no `aius_optical_app` symbols: the module compiles but
+nothing links it until Phase 12 constructs it, so free-for-locals is still
+22,684. The saving lands when Phase 12 pulls the object in.
+
+`optical_main.cpp` has roughly 35 more instances of the same pattern and is the
+larger prize; Phase 14 deletes them as part of the cutover and should apply this
+convention to whatever it keeps. Declined as not worth the indirection: the
+`{"ok":true,` success prefix, about 60 net bytes across seven literals, three of
+which carry runtime arguments and would need two-stage formatting.
 
 Post-phase bank figures: ITCM 195,192 used / **1,416 free**, DTCM 304,996 /
 22,684, FLASH 530,908 / 7,595,556. ITCM free moved from 1,352 to 1,416 as a
