@@ -328,23 +328,74 @@ reachability of `ONLINE`, `BACKOFF`, or `RECOVERY_SAFE`.
 
 ## Build and fault-image identity
 
-`scripts/build_metadata.py` derives identity without timestamps:
+`scripts/build_metadata.py` derives identity without timestamps. The canonical
+source term is **firmware input revision**:
+`sha256:<64 lowercase hex>`. The digest input is the UTF-8 schema tag
+`aius-optical-input-manifest/1`, a NUL byte, each ordered manifest root and a
+NUL byte, then the raw
+`git ls-tree -r -z --full-tree <commit> -- <manifest>` bytes for this tracked
+manifest:
 
-- source revision is `git rev-parse --short=12 HEAD`;
+- `firmware/platformio.ini`;
+- `firmware/config/`;
+- `firmware/src/`;
+- `firmware/lib/`;
+- `firmware/vendor/NativeEthernet/`;
+- `firmware/vendor/dcadec-core/`;
+- `firmware/scripts/build.sh`;
+- `firmware/scripts/build_metadata.py`;
+- `firmware/scripts/build_config.py`;
+- `firmware/tools/memory/mem_report.py`;
+- `firmware/test/network-transport/verify_target.py`;
+- `firmware/test/boot-target/verify_target.py`;
+- `evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp`;
+- `evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp`.
+
+The last two files are textual build inputs included by
+`aius_spdif_sources.cpp`; omitting them would permit image bytes to change
+without an identity change. The manifest is the single authority shared by
+the metadata injector and build wrapper. It binds tracked path, mode, and blob
+identity while ignoring commits outside the build/evidence closure.
+
+- source revision is the complete firmware input revision;
 - production identity is
-  `<source>+teensy41-optical`;
+  `<first-12-digest-hex>+teensy41-optical`;
 - fault identity is
-  `<source>+teensy41-optical-fault.cp<checkpoint>`, where checkpoint is one
-  decimal digit `0..8`;
-- `build_id` is the first four SHA-256 digest bytes of the UTF-8 identity,
-  interpreted little-endian.
+  `<first-12-digest-hex>+teensy41-optical-fault.cp<checkpoint>`, where
+  checkpoint is one decimal digit `0..8`;
+- `build_id` is the first four SHA-256 digest bytes of the UTF-8 tuple
+  `<full-source>\0<environment>\0<checkpoint>`, interpreted little-endian.
 
 The script defines `AIUS_BUILD_SOURCE_REV`, `AIUS_BUILD_TARGET`,
 `AIUS_BUILD_FAULT_CHECKPOINT` (`-1` for production), `AIUS_BUILD_GIT_REV`
-(the complete identity for compatibility), `AIUS_BUILD_ID`, and
+(the compact build revision for the bounded USB payload), `AIUS_BUILD_ID`, and
 `AIUS_BUILD_UTC`. UTC affects image bytes and audit data but not `build_id`.
 Rebuilding the same source/target/checkpoint therefore preserves boot-ledger
 identity; changing source, target kind, or checkpoint clears early-reset state.
+The legacy field and macro name `source_revision`/`AIUS_BUILD_SOURCE_REV`
+contain the firmware input revision; they do not identify repository `HEAD`.
+
+For production and fault evidence, `build.sh` acquires the shared optical lock,
+deletes the target receipt, resolves `HEAD^{commit}`, and rejects staged,
+unstaged, or untracked changes in any manifest path before PlatformIO runs.
+It exports those exact committed paths into an immutable per-revision source
+snapshot and builds that snapshot, not the shared working tree. The wrapper
+supplies the full source revision to the snapshot metadata script; caller-set
+identity variables are rejected. After PlatformIO and evidence generation it
+repeats the dirty check and re-derives the current manifest digest. Dirty input
+or a changed digest fails closed and publishes no receipt. A repository `HEAD`
+change that leaves the manifest bytes unchanged is deliberately accepted.
+Native source-blind tests prove unrelated-commit stability, every manifest-root
+sensitivity, pre-build dirty rejection before PlatformIO, transient worktree
+mutation isolation, mid-build digest/dirty rejection, Git failure rejection,
+receipt invalidation, and exact receipt/image identity.
+
+Each atomic receipt has exactly: schema, input-manifest schema, full firmware
+input revision, diagnostic source commit, environment, nullable selector,
+compact build revision, build ID, SHA-256 of ELF/HEX/full log, PlatformIO Core
+version, and toolchain version. Gate equality uses the firmware input revision,
+never the diagnostic source commit. Each archived log must contain its own
+retained-slot post-link success marker.
 
 The repository build interface is `firmware/scripts/build.sh`
 with arguments `teensy41-optical-fault <checkpoint>`. Its required second
@@ -3590,9 +3641,11 @@ nonblocking advisory lock across production and fault optical builds; lock
 contention fails with exit 75 before PlatformIO or artifact mutation. Every
 successful production/fault build copies its ELF, HEX, and complete log into
 selector-specific `.pio/evidence/<production|fault-cp0..8>/` storage and writes
-a receipt containing the full source revision, environment, nullable selector,
-and SHA-256 of both binaries. A gate is complete only when all ten receipts
-match current `HEAD`, their binaries match the recorded hashes, and each
+a receipt containing the full firmware input revision in `source_revision`,
+the diagnostic source commit, environment, nullable selector, compact build
+revision, build ID, tool versions, and SHA-256 of ELF, HEX, and full log. A
+gate is complete only when all ten receipts match the current firmware input
+revision, their binaries and logs match the recorded hashes, and each
 selector-specific artifact independently passed the retained-slot post-link
 check. This transient build evidence is not committed.
 
@@ -3601,9 +3654,10 @@ a commit before that commit exists. The implementation-baseline checkpoint
 lands and pushes the reviewed, green, buildable code while Phase 13 remains
 `evidence-pending`; it does not claim completion. Immediately from that clean
 commit, with no later-phase implementation in between, rerun production and
-fault selectors `0..8`, validate all ten current-HEAD receipts, and run the
-complete clean-room delivery audit. Only the second plan/evidence checkpoint
-marks Phase 13 completed.
+fault selectors `0..8`, validate all ten current-manifest receipts, and run the
+complete clean-room delivery audit. Unrelated commits may advance `HEAD`; a
+manifest-input change invalidates the matrix. Only the second plan/evidence
+checkpoint marks Phase 13 completed.
 
 ### Phase 14 — Optical runtime cutover
 
@@ -3640,12 +3694,15 @@ fan-out:
     owned-paths:
       - firmware/test/network-transport/test_vendor_source.py
       - firmware/test/optical-cutover/
-  - name: agent-optical-cutover-coordinator
+  - name: agent-optical-cutover-integration
     start-after: [agent-optical-cutover, agent-optical-cutover-source-oracle]
     owned-paths:
       - firmware/platformio.ini
-      - firmware/README.md
       - firmware/scripts/test.sh
+  - name: agent-optical-cutover-docs
+    start-after: [agent-optical-cutover]
+    owned-paths:
+      - firmware/README.md
 review-intensity: active
 commit-checkpoint:
   green:
@@ -3675,8 +3732,10 @@ commit-checkpoint:
 The cutover implementation and source-blind structural oracle start together
 after Phases 12 and 13. The oracle proves the exact allowed setup trace,
 single-epoch loop delegation, and absence of direct transport, SD, delay,
-fallback, rebind, or extra-feed paths without reading `optical_main.cpp`.
-Their shared-file coordinator and all production/fault builds are serialized.
+fallback, rebind, or extra-feed paths without reading `optical_main.cpp` or
+the implementer report. Docs may overlap that oracle after the implementation
+contract is available; integration waits for both code and oracle. The parent
+runs all production/fault builds sequentially under the optical build lock.
 
 ### Phase 15 — Button-free flash tooling
 
@@ -3702,10 +3761,13 @@ fan-out:
     owned-paths:
       - firmware/test/flash/test_flash_optical.py
       - firmware/test/flash/fake/
-  - name: agent-optical-flash-coordinator
+  - name: agent-optical-flash-suite-integration
     start-after: [agent-cdc-host-control, agent-optical-flash-tool, agent-optical-flash-independent-oracle]
     owned-paths:
       - firmware/scripts/test.sh
+  - name: agent-optical-flash-docs
+    start-after: [agent-cdc-host-control, agent-optical-flash-tool]
+    owned-paths:
       - firmware/README.md
       - docs/reference/usb-control-protocol.md
 review-intensity: active
@@ -3720,16 +3782,20 @@ commit-checkpoint:
 
 Lock the host CLI, injected command seams, USB-serial selection, RawHID
 fallback, HalfKay detection, identity derivation, deadlines, and exit codes
-before the three implementation/oracle slices start. Only the coordinator
-touches shared runner/docs paths.
+before the three implementation/oracle slices start. The source-blind oracle
+does not read either implementation or their reports. Docs may overlap the
+oracle; suite integration waits for all three initial slices. Fake tests may
+parallelize, but the parent serializes any real CDC, RawHID, HalfKay, or
+loader-fixture use.
 
 ### Phase 16 — Acceptance runner and evidence schema
 
 ```yaml
 unit: phase-task
 seams: [USB heartbeat, HTTP status, UDP status, fault selection, audio oracle, JSONL receipt]
-contract-artifact: spec-only
-dependencies: [phase-9, phase-13, phase-15]
+contract-artifact: both
+dispatch-dependencies: [phase-9, phase-13]
+completion-dependencies: [phase-15]
 outcome: "One command executes a selected gate and durably records every attempt."
 acceptance:
   - schema validation covers every enum, nullable field, and range
@@ -3744,17 +3810,33 @@ fan-out:
     owned-paths:
       - firmware/tools/net/aius_recovery_observers.py
       - firmware/test/recovery-runner/test_observers.py
-  - name: agent-recovery-gates
+  - name: agent-recovery-lifecycle-gates
+    start-after: [phase-15, agent-recovery-receipt-kernel, agent-recovery-observers]
+    owned-paths:
+      - firmware/tools/net/aius_recovery_gate_lifecycle.py
+      - firmware/test/recovery-runner/test_gate_lifecycle.py
+  - name: agent-recovery-fault-gates
     start-after: [agent-recovery-receipt-kernel, agent-recovery-observers]
     owned-paths:
-      - firmware/tools/net/aius_recovery_acceptance.py
-      - firmware/test/recovery-runner/test_gates.py
+      - firmware/tools/net/aius_recovery_gate_faults.py
+      - firmware/test/recovery-runner/test_gate_faults.py
+  - name: agent-recovery-workload-gates
+    start-after: [agent-recovery-receipt-kernel, agent-recovery-observers]
+    owned-paths:
+      - firmware/tools/net/aius_recovery_gate_workload.py
+      - firmware/test/recovery-runner/test_gate_workload.py
   - name: agent-recovery-shell
+    start-after: [phase-15]
     owned-paths:
       - firmware/scripts/run_recovery_acceptance.sh
       - firmware/test/recovery-runner/test_cli.py
+  - name: agent-recovery-acceptance-coordinator
+    start-after: [phase-15, agent-recovery-lifecycle-gates, agent-recovery-fault-gates, agent-recovery-workload-gates]
+    owned-paths:
+      - firmware/tools/net/aius_recovery_acceptance.py
+      - firmware/test/recovery-runner/test_gates.py
   - name: agent-recovery-runner-coordinator
-    start-after: [agent-recovery-receipt-kernel, agent-recovery-observers, agent-recovery-gates, agent-recovery-shell]
+    start-after: [agent-recovery-acceptance-coordinator, agent-recovery-shell]
     owned-paths:
       - firmware/scripts/test.sh
 review-intensity: active
@@ -3768,12 +3850,17 @@ commit-checkpoint:
   parent-commit: "test(aius): automate firmware recovery acceptance"
 ```
 
-Before fan-out, lock the exact CLI, the `flash|reboot|watchdog|adapter_fault|sd|soak|restore`
-gate enum, fixture command protocols, timeout/evidence paths, RFC 8785
-canonicalization, deterministic adapter-fault selector/build identity, and
-audio-oracle executable/JSON contract. The receipt kernel and shell may start
-in parallel; observers start independently once those prior contracts exist;
-gates join receipt plus observers; only the coordinator touches `test.sh`.
+Before fan-out, commit the exact public function signatures, CLI, the
+`flash|reboot|watchdog|adapter_fault|sd|soak|restore` gate enum, fixture command
+protocols, timeout/evidence paths, RFC 8785 canonicalization, deterministic
+adapter-fault selector/build identity, and audio-oracle executable/JSON
+contract. Receipt and observer slices may start after Phases 9 and 13 while
+Phases 14–15 continue. Fault and workload gate families then join those
+contracts and may also overlap Phase 15. Shell and lifecycle gates require
+Phase 15. The final acceptance coordinator joins all three gate families; only
+the suite coordinator touches `test.sh`. No agent runs an optical build or
+mutates a real fixture; the parent runs the two build gates sequentially after
+integration. Phase 16 cannot complete or commit before Phase 15.
 
 ### Phase 17 — Live hardware gates
 
@@ -3791,16 +3878,48 @@ acceptance:
   - eight-hour concurrent soak
   - production image restored and verified
 fan-out:
-  - {name: agent-live-preflight, gate: preflight}
-  - {name: agent-live-flash, gate: flash, start-after: [agent-live-preflight]}
-  - {name: agent-live-reboot, gate: reboot, start-after: [agent-live-flash]}
-  - {name: agent-live-watchdog, gate: watchdog, start-after: [agent-live-reboot]}
-  - {name: agent-live-adapter-fault, gate: adapter_fault, start-after: [agent-live-watchdog]}
-  - {name: agent-live-sd, gate: sd, start-after: [agent-live-adapter-fault]}
-  - {name: agent-live-soak, gate: soak, start-after: [agent-live-sd]}
-  - {name: agent-live-restore, gate: restore, start-after: [agent-live-soak]}
+  - name: agent-live-preflight
+    gate: preflight
+    owned-paths: [firmware/test/evidence/network-hardening/preflight/, docs/reference/datasheets.mdnetwork-hardening/preflight/]
+  - {name: agent-live-preflight-validator, start-after: [agent-live-preflight], read-only: true, owned-paths: []}
+  - name: agent-live-flash
+    gate: flash
+    start-after: [agent-live-preflight]
+    owned-paths: [firmware/test/evidence/network-hardening/flash/, docs/reference/datasheets.mdnetwork-hardening/flash/]
+  - {name: agent-live-flash-validator, start-after: [agent-live-flash], read-only: true, owned-paths: []}
+  - name: agent-live-reboot
+    gate: reboot
+    start-after: [agent-live-flash]
+    owned-paths: [firmware/test/evidence/network-hardening/reboot/, docs/reference/datasheets.mdnetwork-hardening/reboot/]
+  - {name: agent-live-reboot-validator, start-after: [agent-live-reboot], read-only: true, owned-paths: []}
+  - name: agent-live-watchdog
+    gate: watchdog
+    start-after: [agent-live-reboot]
+    owned-paths: [firmware/test/evidence/network-hardening/watchdog/, docs/reference/datasheets.mdnetwork-hardening/watchdog/]
+  - {name: agent-live-watchdog-validator, start-after: [agent-live-watchdog], read-only: true, owned-paths: []}
+  - name: agent-live-adapter-fault
+    gate: adapter_fault
+    start-after: [agent-live-watchdog]
+    owned-paths: [firmware/test/evidence/network-hardening/adapter_fault/, docs/reference/datasheets.mdnetwork-hardening/adapter_fault/]
+  - {name: agent-live-adapter-fault-validator, start-after: [agent-live-adapter-fault], read-only: true, owned-paths: []}
+  - name: agent-live-sd
+    gate: sd
+    start-after: [agent-live-adapter-fault]
+    owned-paths: [firmware/test/evidence/network-hardening/sd/, docs/reference/datasheets.mdnetwork-hardening/sd/]
+  - {name: agent-live-sd-validator, start-after: [agent-live-sd], read-only: true, owned-paths: []}
+  - name: agent-live-soak
+    gate: soak
+    start-after: [agent-live-sd]
+    owned-paths: [firmware/test/evidence/network-hardening/soak/, docs/reference/datasheets.mdnetwork-hardening/soak/]
+  - {name: agent-live-soak-validator, start-after: [agent-live-soak], read-only: true, owned-paths: []}
+  - name: agent-live-restore
+    gate: restore
+    start-after: [agent-live-soak]
+    owned-paths: [firmware/test/evidence/network-hardening/restore/, docs/reference/datasheets.mdnetwork-hardening/restore/]
+  - {name: agent-live-restore-validator, start-after: [agent-live-restore], read-only: true, owned-paths: []}
 review-intensity: active
 commit-checkpoint:
+  sub-checkpoints: [flash-with-preflight, reboot, watchdog, adapter-fault, sd, soak, restore]
   green:
     - all seven acceptance groups have valid chained receipts
   buildable:
@@ -3834,9 +3953,17 @@ The single fixture, USB enumeration, and shared fault build directory serialize
 all mutating hardware groups in the listed order. Each group owns only its
 gate-named receipt/transcript/artifact subtree and commits after restoring a
 verified production image when it temporarily deploys a fault image.
-Read-only validation for a completed group may overlap the next hardware
-group. Selector builds and live checkpoint injections never run in parallel.
-Final restore waits for every group and validator.
+Each completed group is checked by a source-blind read-only validator that sees
+only this plan, schema, closed receipt, and raw artifacts, never the executor
+report or live device. After executor N restores and mechanically verifies the
+production image, validator N may overlap executor N+1. Selector builds, live
+checkpoint injections, fixture mutation, USB/HalfKay use, SD media access, and
+audio capture never run in parallel. Receipts are gate-local append-only chains
+under one immutable session/deployed-firmware manifest and identify the stable
+firmware input revision, not repository `HEAD`. The parent commits each
+sub-checkpoint only after its validator passes. Final restore waits for every
+group and validator. Any source, tool, or schema correction invalidates the
+affected downstream evidence and returns to its implementation checkpoint.
 
 ### Phase 18 — Final clean-room delivery audit
 
@@ -3869,7 +3996,11 @@ pushes.
 Phase 18 deliberately remains one plan-wide reviewer after every evidence
 commit and the verified production restore. Findings may fan out into
 concern-sized correction slices, but the same complete reviewer reruns after
-their targeted proofs.
+their targeted proofs. The audit starts only from a clean committed Phase 17
+restore checkpoint; no evidence writer or hardware executor runs concurrently.
+Corrections may fan out only after findings identify disjoint owned paths. Raw
+evidence is immutable. A firmware, tool, or schema correction reruns every
+invalidated Phase 17 gate before the same plan-wide reviewer reruns.
 
 ## Deferred work
 
@@ -4009,3 +4140,11 @@ their targeted proofs.
   target-to-backup rename failure to remove only the disposable temp.
   `teensy41-optical` compiles but does not construct the adapter, passes pinned
   NativeEthernet linked-symbol verification, and fits every memory bank.
+- Phase 13 implementation baseline: retained/reset, fault-injection, target
+  oracles, metadata tests, production, and checkpoint-0 builds passed the
+  clean-room baseline audit and landed in `8916df890`. The first receipt
+  closure attempts correctly aborted when repository `HEAD` changed, but the
+  changes were unrelated documentation commits. That exposed an overbroad
+  evidence identity, not a firmware failure. The amended gate uses the exact
+  firmware-input manifest and an immutable committed export; the ten-build
+  evidence matrix remains pending.
