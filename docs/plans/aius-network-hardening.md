@@ -708,6 +708,7 @@ typedef enum {
 
 typedef struct {
     AiusSdEventKind kind;
+    uint32_t action_id;
     size_t bytes;
     uint64_t size;
     bool value;
@@ -720,11 +721,13 @@ typedef enum {
     AIUS_SD_ACTION_MEDIA_PRESENT,
     AIUS_SD_ACTION_MKDIR,
     AIUS_SD_ACTION_OPEN_READ,
+    AIUS_SD_ACTION_OPEN_WRITE_TRUNCATE,
     AIUS_SD_ACTION_OPEN_APPEND,
     AIUS_SD_ACTION_SEEK,
     AIUS_SD_ACTION_NEED_INPUT,
     AIUS_SD_ACTION_READ,
     AIUS_SD_ACTION_WRITE,
+    AIUS_SD_ACTION_OUTPUT,
     AIUS_SD_ACTION_FILE_SIZE,
     AIUS_SD_ACTION_EXISTS,
     AIUS_SD_ACTION_RENAME,
@@ -739,11 +742,12 @@ typedef enum {
 
 typedef struct {
     AiusSdActionKind kind;
+    uint32_t action_id;
     const char *path;
     const char *path_to;
     uint8_t *buffer;
     size_t length;
-    uint32_t offset;
+    uint64_t offset;
     uint32_t fault;
 } AiusSdAction;
 
@@ -754,10 +758,49 @@ typedef struct {
     const char *temp_path;
     const char *backup_path;
     const char *content_type;
-    size_t total;
-    uint32_t initial_offset;
+    uint64_t total;
+    uint64_t initial_offset;
     bool publish_config;
 } AiusSdJobRequest;
+
+typedef enum {
+    AIUS_SD_RESULT_NONE,
+    AIUS_SD_RESULT_PROBE,
+    AIUS_SD_RESULT_USAGE,
+    AIUS_SD_RESULT_BYTES,
+    AIUS_SD_RESULT_COMPLETE,
+    AIUS_SD_RESULT_FAULT
+} AiusSdResultKind;
+
+typedef enum {
+    AIUS_SD_FAULT_NONE = 0,
+    AIUS_SD_FAULT_INVALID_REQUEST = 1,
+    AIUS_SD_FAULT_PROTOCOL = 2,
+    AIUS_SD_FAULT_CAPACITY = 3,
+    AIUS_SD_FAULT_PATH = 4,
+    AIUS_SD_FAULT_OVERFLOW = 5,
+    AIUS_SD_FAULT_TIMEOUT = 6,
+    AIUS_SD_FAULT_SHORT_IO = 7,
+    AIUS_SD_FAULT_MEDIA = 8,
+    AIUS_SD_FAULT_OPEN = 9,
+    AIUS_SD_FAULT_SEEK = 10,
+    AIUS_SD_FAULT_IO = 11,
+    AIUS_SD_FAULT_INSTALL = 12,
+    AIUS_SD_FAULT_ROLLBACK = 13,
+    AIUS_SD_FAULT_PUBLISH = 14,
+    AIUS_SD_FAULT_CANCELLED = 15,
+    AIUS_SD_FAULT_CLEANUP = 16
+} AiusSdFault;
+
+typedef struct {
+    AiusSdResultKind kind;
+    bool media_present;
+    uint64_t total_bytes;
+    uint64_t used_bytes;
+    uint64_t transferred_bytes;
+    AiusSdFault fault;
+    uint32_t driver_fault;
+} AiusSdResult;
 
 typedef struct {
     AiusSdState state;
@@ -766,19 +809,29 @@ typedef struct {
     char target_path[AIUS_SD_PATH_STORAGE];
     char temp_path[AIUS_SD_PATH_STORAGE];
     char backup_path[AIUS_SD_PATH_STORAGE];
+    char directory_path[AIUS_SD_PATH_STORAGE];
     const char *content_type;
     uint8_t *buffer;
     size_t capacity;
-    size_t offset;
-    size_t total;
+    size_t buffer_offset;
+    uint64_t offset;
+    uint64_t total;
     size_t requested;
     size_t pending;
     uint32_t deadline_ms;
-    uint32_t last_fault;
+    uint32_t next_action_id;
+    uint32_t outstanding_action_id;
+    AiusSdActionKind outstanding_action;
+    AiusSdFault last_fault;
+    uint32_t last_driver_fault;
+    AiusSdResult result;
     bool target_existed;
     bool backup_moved;
+    bool installed;
     bool publish_config;
     bool close_emitted;
+    bool cancel_requested;
+    bool terminal_emitted;
 } AiusSdJob;
 
 void aius_sd_job_init(
@@ -805,43 +858,168 @@ void aius_sd_job_step(
     uint32_t now_ms,
     AiusSdEvent event,
     AiusSdAction *action);
+
+const AiusSdResult *aius_sd_job_result(
+    const AiusSdJob *job);
 ```
 
-The caller owns the 1–512 byte transfer buffer. `start()` validates and copies
-all non-null paths into fixed job storage; paths in later actions borrow those
-copies. `content_type` is an application-owned constant. Upload requires
-explicit target/temp/backup paths. `REPLACE` writes temp, closes, checks target,
-moves an existing target to backup, installs temp, then removes backup.
-`APPEND_PART` appends at `initial_offset` without promotion.
-`FINALIZE_PART` verifies the part size then performs the same backup/install
-sequence. A failed install attempts rollback exactly once; failure preserves
-the backup and emits `FAIL`, never an endless retry. `publish_config` emits
-`PUBLISH_CONFIG` only after successful installation. Download and replay
-refill open/seek/read/close; delete emits one remove. Probe, config load, and
-usage refresh use the same action vocabulary, so no SD call remains in
-`setup()` or outside the runtime SD checkpoint.
+Phase 5 adds an unused portable module. It does not move or claim the
+synchronous `optical_main.cpp` SD calls; the Teensy adapter and runtime cutover
+remain Phases 10 and 14.
 
-A step emits at most one action and one state transition. `BYTES` may not exceed
-the action length; zero bytes before the declared total is a fault. `BOOL` and
-`SIZE` are accepted only for their matching action. Cancel is idempotent,
-closes once, removes a disposable temp once, and rolls back a moved target once.
-Native tests cover every state/event pair, all seven job kinds, all three
-install modes, path/capacity boundaries, partial progress, every action fault,
-deadline equality/wrap, install/rollback failure, and repeated cancellation.
+### Portable SD job protocol
 
-After an upload file opens, `step()` enters `NEED_INPUT` and emits
-`ACTION_NEED_INPUT` with length `min(capacity, total - offset)`, stored in
-`requested`. The runtime maps that action to `AIUS_HTTP_SD_NEED_UPLOAD`. HTTP
-reads no more than the requested length and returns it in one `SD_STEP`.
-The runtime immediately calls `aius_sd_job_supply()`: only `NEED_INPUT` accepts
-it; length must be `1..requested` and must not exceed remaining total. Supply
-copies the borrowed bytes into the caller-owned job buffer, sets `pending`,
-clears `requested`, enters `WRITE`, and performs no driver call. The next SD
-epoch emits one `WRITE`. Partial `BYTES` advances the buffer offset and re-emits
-only the unwritten suffix; after `pending` reaches zero, the job either emits
-the next `NEED_INPUT` or begins commit when total bytes are written. Invalid or
-zero supply selects `FAILED`. Thus upload input is copied before the HTTP event
-expires and target writes never retain transport memory.
+The caller owns a non-null 1–512 byte transfer buffer. `CONFIG_LOAD` additionally
+requires capacity at least `AIUS_CONFIG_MAX_JSON_BYTES` (256). `start()` is
+valid only from `IDLE`, `DONE`, or `FAILED`; it clears the previous result,
+validates the complete request, copies every required path, and selects
+`PREPARE`. A rejected start selects `FAILED` with
+`INVALID_REQUEST`, `CAPACITY`, `PATH`, or `OVERFLOW` and later emits one
+`FAIL`. `content_type` is an application-owned constant whose lifetime covers
+the job.
+
+Every accepted job first emits `BEGIN`. The application acknowledges it with
+`OK`; `FAULT` fails the job. After that common edge, the normative per-kind
+sequence is:
+
+| Job/mode | Required sequence and completion result |
+|---|---|
+| `PROBE` | `MEDIA_PRESENT → BOOL`, then `COMPLETE`; result is `PROBE` with the returned presence. `false` is a successful absent-media result. |
+| `CONFIG_LOAD` | `OPEN_READ(target) → FILE_SIZE → READ* → CLOSE → PUBLISH_CONFIG → COMPLETE`. Target is required. Size must be `1..AIUS_CONFIG_MAX_JSON_BYTES` and fit the caller buffer. Positive partial reads accumulate contiguously until the declared size. `PUBLISH_CONFIG` borrows the complete buffer until its `OK`/`FAULT` event. Missing/open failure, empty input, oversize input, or early zero bytes fail after one close if opened. Result is `BYTES` with the published byte count. |
+| `USAGE_REFRESH` | `TOTAL_SIZE → SIZE`, then `USED_SIZE → SIZE`, then `COMPLETE`. Result is `USAGE` with both 64-bit values; `used > total` is `PROTOCOL`. |
+| `UPLOAD/REPLACE` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_WRITE_TRUNCATE(temp)`; accept and write exactly `total` new bytes; `CLOSE`; then run the install sequence below. Zero-length replacement is valid and still creates/truncates, closes, and installs an empty file. |
+| `UPLOAD/APPEND_PART` | Emit parent `MKDIR` actions for `target`; `OPEN_READ(target) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(target)`; accept and write exactly `total`; `CLOSE`; `COMPLETE`. `target` is the durable part path. It is never promoted, renamed, or removed by failure/cancellation. |
+| `UPLOAD/FINALIZE_PART` | Emit idempotent `MKDIR` for the target, temp, and backup parent prefixes in that order; `OPEN_READ(temp) → FILE_SIZE → CLOSE` and require exact size `initial_offset`; `OPEN_APPEND(temp)`; accept and write exactly `total`; `CLOSE`; reopen/read size and require `initial_offset + total`; close; then run the install sequence. `temp` is the durable part and is preserved on pre-install failure or cancellation. |
+| `DOWNLOAD` | `OPEN_READ(target) → FILE_SIZE → SEEK(initial_offset) → READ* → OUTPUT* → CLOSE → COMPLETE`. `total == 0` means through the captured file size; otherwise exactly `total` bytes are required and must fit within the captured size. Result is `BYTES` with acknowledged output bytes. |
+| `REPLAY_REFILL` | The same open/size/seek/read/output/close sequence, but `total` is a required positive requested maximum. It returns `min(total, file_size - initial_offset)` bytes; `initial_offset == file_size` is a successful zero-byte refill. |
+| `DELETE` | `REMOVE(target) → OK`, then `COMPLETE`. Adapter `REMOVE` is idempotent: already absent and removed are both `OK`. |
+
+Non-upload jobs require `install_mode == REPLACE`; any other value is
+`INVALID_REQUEST`. Upload request paths are exact:
+
+- `REPLACE` requires distinct target, disposable temp, and backup paths.
+- `APPEND_PART` requires only target; temp and backup must be null.
+- `FINALIZE_PART` requires distinct final target, durable temp/part, and
+  backup paths.
+- `PROBE` and `USAGE_REFRESH` forbid every path. `CONFIG_LOAD`, `DOWNLOAD`,
+  `DELETE`, and `REPLAY_REFILL` require only target.
+
+Each path is an absolute canonical path of 1–127 bytes plus NUL. `/`, a
+trailing slash, empty segments, `.` or `..` segments, backslash, control bytes,
+and non-absolute paths are rejected. Required paths must be pairwise distinct.
+All emitted path pointers borrow immutable job-owned copies. `directory_path`
+holds one NUL-terminated proper parent prefix at a time; `MKDIR` walks from the
+first segment through the final parent, never emits `/`, and treats existing
+directories as `OK`.
+
+`initial_offset + total` must not overflow `uint64_t`. Action offsets and file
+sizes are 64-bit. The portable module accepts values through `INT64_MAX`;
+larger request or driver sizes are `OVERFLOW`, allowing the later Teensy
+adapter to reject an unsupported target range without truncation. Config and
+transfer byte counts remain bounded by the 512-byte buffer. Successful config
+load, upload, download, and refill jobs return `BYTES` with their acknowledged
+new/published/transferred count. Delete returns `COMPLETE`; probe and usage use
+their typed results. Every failed job returns `FAULT`.
+
+### Action/event oracle
+
+One correlated action may be outstanding. Emission assigns a nonzero,
+monotonically incremented `action_id`, records its kind/id, and initializes the
+returned action fully. A call while an action is outstanding may supply
+`NONE`, which leaves the job waiting and emits `NONE`, or the single matching
+event. Any non-`NONE` event with no outstanding action, zero/wrong action id,
+duplicate result, wrong kind, invalid byte/fault fields, or result for a
+different action selects `PROTOCOL`. Action-id wrap before a job completes is
+`OVERFLOW`.
+
+| Outstanding action | Only successful event | Validation |
+|---|---|---|
+| `BEGIN`, `MKDIR`, `OPEN_*`, `SEEK`, `RENAME`, `REMOVE`, `CLOSE`, `PUBLISH_CONFIG`, `OUTPUT` | `OK` | `bytes == 0`, `size == 0`, `value == false`, `fault == 0` |
+| `MEDIA_PRESENT`, `EXISTS` | `BOOL` | only `value` is meaningful |
+| `FILE_SIZE`, `TOTAL_SIZE`, `USED_SIZE` | `SIZE` | only 64-bit `size` is meaningful and it must be `<= INT64_MAX` |
+| `READ`, `WRITE` | `BYTES` | `1..outstanding length`; other fields zero |
+| any correlated action | `FAULT` | bytes/size/value zero and nonzero driver fault |
+
+`FAULT` preserves its driver value in `result.driver_fault` and maps by action
+and authority: `MEDIA_PRESENT` to `MEDIA`; `OPEN_*` to `OPEN`; `SEEK` to
+`SEEK`; backup/install rename to `INSTALL`; rollback rename to `ROLLBACK`;
+`PUBLISH_CONFIG` to `PUBLISH`; close/remove during terminal cleanup to
+`CLEANUP`; and `BEGIN`, `MKDIR`, read/write/output, size/existence, ordinary
+remove, or ordinary close to `IO`. `READ` or `WRITE` zero progress while bytes
+remain is `SHORT_IO`; bytes beyond the requested length are `PROTOCOL`.
+Positive short progress is valid. `WRITE` advances only the acknowledged
+prefix and re-emits only the unwritten suffix. No job emits a read after its
+captured byte target reaches zero, so early zero/EOF is always a fault.
+
+`NEED_INPUT`, `COMPLETE`, and `FAIL` are uncorrelated one-shot application
+notifications and do not await an event. `NEED_INPUT` is emitted once per
+request window; subsequent `step(NONE)` calls emit `NONE` until supply arrives.
+`COMPLETE` or `FAIL` is emitted exactly once, after which steps emit `NONE`
+until a valid restart. `OUTPUT` and `PUBLISH_CONFIG` are correlated application
+actions: their borrowed buffer remains immutable until matching `OK`/`FAULT`,
+so the runtime consumes data before reuse.
+
+After an upload file opens, the job enters `NEED_INPUT` and emits length
+`min(capacity, total - offset)`, stored in `requested`. `supply()` succeeds only
+in that state with non-null data and length `1..requested` not exceeding the
+remaining total. It copies the bytes into the job buffer, sets `pending`,
+clears `requested`, and selects `WRITE` without a driver action. Null, zero,
+`requested + 1`, remaining `+ 1`, repeated supply, or supply in any other state
+selects `FAILED/PROTOCOL` or `FAILED/SHORT_IO` without retaining caller memory.
+Accepted bytes remain job-owned until every partial `WRITE` consumes them.
+Only then is the next `NEED_INPUT` emitted or commit begun.
+
+For download/refill, each positive `READ` event is followed by one `OUTPUT`
+action for exactly those bytes and their absolute file offset. The read buffer
+is not reused and the next `READ` is not emitted until `OUTPUT/OK`. A short
+positive read is valid; a zero read before the captured target is `SHORT_IO`.
+File growth is ignored after `FILE_SIZE`; shrinkage is detected as short I/O.
+
+### Installation, failure, timeout, and cancellation authority
+
+`REPLACE` and `FINALIZE_PART` install through this exact authority table:
+
+| Edge | Required behavior and authoritative files |
+|---|---|
+| `EXISTS(target) == false` | Skip backup and attempt `RENAME(temp,target)`. |
+| `EXISTS(target) == true` | `REMOVE(backup)` idempotently, then `RENAME(target,backup)`. Backup-rename failure leaves target authoritative and never attempts install. |
+| Install succeeds | Target is authoritative and the commit point is crossed. Later cancellation is ignored. Attempt backup removal if moved, then optional publish. |
+| Install fails without backup | Target remains absent and temp/part is preserved; emit `FAIL/INSTALL`. |
+| Install fails after backup | Attempt `RENAME(backup,target)` exactly once. Success restores target and preserves temp/part, then fails `INSTALL`. Failure preserves backup and temp/part and fails `ROLLBACK`. |
+| Backup removal fails after commit | Target remains authoritative. Optional publish still runs; terminal result is `FAIL/CLEANUP` with the driver fault. |
+| `PUBLISH_CONFIG` fails | Installed target remains authoritative; never roll back file installation; terminal result is `FAIL/PUBLISH`. |
+
+Disposable `REPLACE` temp is removed once on pre-install ordinary failure,
+timeout, or cancellation. It is preserved after an install/rollback failure
+for diagnosis and possible manual recovery. `APPEND_PART` target and
+`FINALIZE_PART` temp are durable and never removed by cleanup.
+
+`deadline_ms` is an absolute wrapping 32-bit time; zero disables it. A nonzero
+deadline must be within `INT32_MAX` milliseconds of `now_ms`. `step()` first
+validates and consumes a supplied matching event, then considers
+`(int32_t)(now_ms - deadline_ms) >= 0`; thus an event at equality is consumed
+before timeout. Timeout records `TIMEOUT` and enters the same close, rollback,
+and temp-cleanup path as cancellation, never an unsafe immediate terminal.
+
+`cancel()` is idempotent and sets `cancel_requested`. If an action is
+outstanding, its correlated event is consumed first because the side effect may
+already have happened; no later normal action is emitted. Cancellation before
+the install commit point closes an open file once, rolls back a moved backup
+once, removes a disposable replace temp once, then emits `FAIL/CANCELLED`.
+Cancellation after a successful install rename is ignored while mandatory
+backup cleanup and optional config publication finish. A successful in-flight
+backup rename therefore cannot be forgotten. Cleanup/rollback faults replace
+`CANCELLED` with `CLEANUP`/`ROLLBACK` and preserve the driver fault.
+
+`step()` consumes at most one event and emits at most one action. It may make
+bounded internal state transitions that require no external work, but contains
+no retry/delay and cannot execute a driver operation. The native oracle is
+plan-owned: a table enumerates every reachable state/outstanding-action/event
+triple above, the common protocol-fault result for every mismatched triple, all
+seven job kinds and three upload modes, and model/property sequences for path
+boundaries, 0/1/512/513 capacities, 64-bit arithmetic, deadline
+equality/wrap, partial supply/read/write, every action fault, install/rollback,
+and repeated cancellation.
 
 The target adapter ABI is:
 
@@ -1583,31 +1761,34 @@ adapter into the target but leave legacy runtime composition intact.
 
 ```yaml
 unit: component-behind-interface
-seams: [aius_sd_job_step, AiusSdAction, one-shot Teensy SD driver]
+seams: [aius_sd_job_step, aius_sd_job_supply, AiusSdAction, AiusSdResult]
 contract-artifact: spec-only
 dependencies: [phase-1]
-outcome: "All SD work is represented as a portable, cancellable one-action state machine."
+outcome: "An unused portable SD job module represents bounded, correlated, cancellable work."
 acceptance:
-  - every state and event pair is covered for all seven job kinds
-  - replace, append, finalize, rollback, and cancellation preserve path authority
-  - invalid paths, byte counts, deadlines, and driver events fail deterministically
+  - the plan-owned state/action/event oracle is exhaustive for all seven job kinds
+  - all three upload modes preserve the normative install/cancel path authority
+  - output/config buffer ownership survives partial I/O and correlated acknowledgement
+  - invalid paths, capacity, arithmetic, deadlines, and events fail with stable local faults
 fan-out:
   - name: agent-bounded-sd-job
     owned-paths:
-      - firmware/lib/aius_sd/
-      - firmware/test/sd/
+      - firmware/lib/aius_sd/include/aius_sd.h
+      - firmware/lib/aius_sd/src/aius_sd.c
+      - firmware/test/sd/test_aius_sd.c
       - firmware/scripts/test.sh
 review-intensity: active
 commit-checkpoint:
   green:
     - firmware/scripts/test.sh --environment native --suite sd
   buildable:
-    - teensy41-optical
+    - firmware/scripts/build.sh teensy41-optical
   parent-commit: "feat(aius): add bounded SD job state machine"
 ```
 
-Implement the portable SD ABI and complete fake-driver transition matrix.
-Target `File` wiring remains in Phase 10.
+Implement only the portable SD ABI and scripted transition oracle. The target
+`File` adapter, `optical_main.cpp` wiring, and removal of legacy synchronous SD
+calls remain Phases 10 and 14.
 
 ### Phase 6 — Stateful HTTP transactions
 
@@ -2100,3 +2281,8 @@ pushes.
   coverage. The corrected zero-call teardown, exhaustive fake operation/result
   matrix, malformed-result rejection, and production fake-FNET TCP/UDP branch
   proof passed the clean-room re-audit.
+- Phase 5 plan-to-build gate: failed before dispatch because the portable ABI
+  lacked a normative transition/result oracle and incorrectly claimed target
+  cutover and adapter scope. The contract now defines correlated actions,
+  typed results, all job/mode sequences, path/arithmetic boundaries, buffer
+  ownership, install/rollback authority, and timeout/cancellation cleanup.
