@@ -196,10 +196,6 @@ def assert_watchdog_armed_once_fed_once_per_epoch(text):
         "the watchdog feed must not happen in setup(); it belongs to the "
         "per-epoch EPOCH_COMPLETE checkpoint reached through loop()"
     )
-    assert "WDOG_WCR_WT(" not in clean, (
-        "a raw WDOG_WCR_WT(...) interval literal is present; the pinned 8 s "
-        "interval must come from the boot adapter, not be reimplemented here"
-    )
 
 
 POSITIVE_CHECKS = (
@@ -283,6 +279,14 @@ def assert_no_extra_watchdog_feed(text):
     assert "WDOG1_WSR" not in clean, (
         "a raw WDOG1_WSR register write is present; the feed must go "
         "through the boot adapter, not reimplement it here"
+    )
+    # Lives here, not in the positive group: a file-wide absence assertion is
+    # only satisfiable once the legacy arming is deleted, which is S2b's job.
+    # Asserting it positively forced S2a to gut a legacy function body it was
+    # otherwise told not to touch.
+    assert "WDOG_WCR_WT(" not in clean, (
+        "a raw WDOG_WCR_WT(...) interval literal is present; the pinned 8 s "
+        "interval must come from the boot adapter, not be reimplemented here"
     )
 
 
@@ -397,13 +401,6 @@ def run_self_test():
         assert_watchdog_armed_once_fed_once_per_epoch, bad_watchdog_feed_in_setup,
         "watchdog/feed-in-setup", "must not happen in setup",
     )
-    bad_watchdog_raw_interval = good_watchdog + (
-        "\nstatic const int x = WDOG_WCR_WT(15);\n"
-    )
-    _expect_fail(
-        assert_watchdog_armed_once_fed_once_per_epoch, bad_watchdog_raw_interval,
-        "watchdog/raw-interval", "WDOG_WCR_WT",
-    )
 
     # no static fallback.
     _expect_pass(
@@ -473,6 +470,13 @@ def run_self_test():
     )
     _expect_fail(
         assert_no_extra_watchdog_feed, bad_legacy_feed, "extra-feed/legacy",
+    )
+    bad_raw_interval = good_no_extra_feed + (
+        "static const int x = WDOG_WCR_WT(15);\n"
+    )
+    _expect_fail(
+        assert_no_extra_watchdog_feed, bad_raw_interval,
+        "extra-feed/raw-interval", "WDOG_WCR_WT",
     )
 
 
