@@ -67,6 +67,15 @@ void emit(AiusNetEvent *event, AiusNetEventKind kind, uint32_t generation,
 	event->fault = fault;
 }
 
+/* Wrap-safe: the same signed-difference comparison the portable supervisor
+ * uses for its own deadlines, so a millis() wrap during the link wait cannot
+ * turn into a 49-day one.
+ */
+bool deadline_reached(uint32_t now_ms, uint32_t deadline_ms)
+{
+	return static_cast<int32_t>(now_ms - deadline_ms) >= 0;
+}
+
 void clear_pending(AiusNetworkTeensy *adapter)
 {
 	adapter->pending_read = 0u;
@@ -408,6 +417,8 @@ void advance_teardown(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 	if (adapter->action_step == 0u) {
 		adapter->online = false;
 		adapter->lease_acquired = false;
+		adapter->link_up_reported = false;
+		adapter->stack_started_ms = 0u;
 		clear_pending(adapter);
 		if (!adapter->listener_open && !adapter->udp_open &&
 		    !adapter->stack_started && !adapter->dhcp_started) {
@@ -515,7 +526,6 @@ void aius_network_teensy_init(AiusNetworkTeensy *adapter)
 void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	                           AiusNetAction action, AiusNetEvent *event)
 {
-	(void)now_ms;
 	if (event == nullptr) {
 		return;
 	}
@@ -585,6 +595,8 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		}
 		adapter->generation = action.generation;
 		adapter->lease_acquired = false;
+		adapter->link_up_reported = false;
+		adapter->stack_started_ms = now_ms;
 		g_primitives->callbacks_install(adapter, action.generation);
 		adapter->stack_started = true;
 		if (!g_primitives->stack_start()) {
@@ -592,7 +604,18 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			     AIUS_NET_FAULT_STACK_START);
 			return;
 		}
-		emit(event, AIUS_NET_EVENT_STACK_STARTED, action.generation);
+		/* Starting the stack is not evidence that the link is up:
+		 * beginNoWait() returns before the PHY has negotiated, and
+		 * DHCP started on a dead link is a full deadline of dead air.
+		 * A link that is already up produces no NativeEthernet
+		 * callback -- it reports changes -- so the already-up case is
+		 * this one read. Anything else waits for poll().
+		 */
+		if (g_primitives->link_status() == AIUS_NETWORK_TEENSY_LINK_UP) {
+			adapter->link_up_reported = true;
+			emit(event, AIUS_NET_EVENT_STACK_STARTED,
+			     action.generation);
+		}
 		return;
 	}
 
@@ -631,7 +654,6 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	                          AiusNetEvent *event)
 {
-	(void)now_ms;
 	if (event == nullptr) {
 		return;
 	}
@@ -659,12 +681,49 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			g_stale_callbacks++;
 			continue;
 		}
+		/* The callback is one of three observers of a single link-up.
+		 * The latch keeps STACK_STARTED exactly-once per generation, so
+		 * a callback that follows the stack-start or poll read is
+		 * dropped here rather than delivered as a duplicate.
+		 */
+		if (queued.kind == AIUS_NET_EVENT_STACK_STARTED) {
+			if (adapter->link_up_reported) {
+				continue;
+			}
+			adapter->link_up_reported = true;
+		}
 		*event = queued;
 		return;
 	}
 
-	if (adapter->stack_started &&
-	    g_primitives->link_status() == AIUS_NETWORK_TEENSY_LINK_DOWN) {
+	if (!adapter->stack_started) {
+		return;
+	}
+
+	const AiusNetworkTeensyLink link = g_primitives->link_status();
+
+	if (adapter->link_up_reported) {
+		/* Past the gate this is the health check it always was. */
+		if (link == AIUS_NETWORK_TEENSY_LINK_DOWN) {
+			emit(event, AIUS_NET_EVENT_RESOURCE_FAULT,
+			     adapter->generation, AIUS_NET_FAULT_LINK_LOST);
+		}
+		return;
+	}
+
+	/* Waiting for link-up. An already-up link produces no callback, so this
+	 * read is what observes it; UNKNOWN is not up and is not a fault, it
+	 * just keeps waiting. The deadline is what makes the wait bounded: no
+	 * link at all becomes a resource fault, which the supervisor turns into
+	 * teardown, backoff and the next generation rather than a stall.
+	 */
+	if (link == AIUS_NETWORK_TEENSY_LINK_UP) {
+		adapter->link_up_reported = true;
+		emit(event, AIUS_NET_EVENT_STACK_STARTED, adapter->generation);
+		return;
+	}
+	if (deadline_reached(now_ms, adapter->stack_started_ms +
+		                          AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS)) {
 		emit(event, AIUS_NET_EVENT_RESOURCE_FAULT, adapter->generation,
 		     AIUS_NET_FAULT_LINK_LOST);
 	}

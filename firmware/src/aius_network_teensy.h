@@ -22,10 +22,30 @@ typedef enum {
 	AIUS_NETWORK_TEENSY_LINK_DOWN = 2
 } AiusNetworkTeensyLink;
 
+/* How long a generation may wait for its link to come up before the adapter
+ * calls it a resource fault. Starting the stack is not evidence that the link
+ * is up -- Ethernet.beginNoWait() deliberately returns before the PHY has
+ * negotiated -- so AIUS_NET_EVENT_STACK_STARTED is emitted only once link-up
+ * has actually been observed. That observation may never arrive (no cable, dead
+ * PHY, an unresponsive MDIO read that degrades to UNKNOWN), and the portable
+ * supervisor has no deadline of its own in STACK_START, so this deadline is
+ * what keeps the wait bounded: on expiry the adapter emits a current-generation
+ * RESOURCE_FAULT and the supervisor tears down, backs off and retries with the
+ * next generation. It sits above a realistic autonegotiation (1-2 s) so a link
+ * that is merely slow is not torn down, and below the 5 s DHCP deadline so a
+ * dead link is never the more expensive failure of the two.
+ */
+#define AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS 3000u
+
 /* lease_acquired and dhcp_updates are DHCP state the adapter already sees on
  * its own lease callback: lease_acquired is generation-scoped and cleared at
  * every stack start and teardown, dhcp_updates counts leases since init and is
  * never cleared. Neither costs an underlying read.
+ *
+ * link_up_reported is the generation-scoped latch that makes STACK_STARTED
+ * exactly-once: the stack-start link read, the NativeEthernet link callback and
+ * the poll link read are three observers of one event, and whichever sees it
+ * first sets the latch. stack_started_ms stamps the link-wait deadline above.
  */
 typedef struct {
 	uint32_t generation;
@@ -35,6 +55,8 @@ typedef struct {
 	bool online;
 	bool listener_open;
 	bool udp_open;
+	bool link_up_reported;
+	uint32_t stack_started_ms;
 	AiusNetEvent pending[4];
 	uint8_t pending_read;
 	uint8_t pending_count;
@@ -47,9 +69,22 @@ typedef struct {
 
 void aius_network_teensy_init(AiusNetworkTeensy *adapter);
 
+/* START_STACK starts the stack and then takes the one permitted link read. It
+ * emits STACK_STARTED only when that read says the link is already up;
+ * otherwise it emits nothing and the wait continues in poll(). now_ms stamps
+ * the link-wait deadline.
+ */
 void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	                           AiusNetAction action, AiusNetEvent *event);
 
+/* Drains at most one queued callback event, then takes at most one link read.
+ * While a started generation has not yet reported link-up, that read emits
+ * STACK_STARTED on the first UP, or one RESOURCE_FAULT once
+ * AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS has passed since the stack started.
+ * After link-up has been reported it is the health check it always was: a DOWN
+ * read is AIUS_NET_FAULT_LINK_LOST. A queued STACK_STARTED for a generation
+ * that already reported link-up is dropped rather than delivered twice.
+ */
 void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	                          AiusNetEvent *event);
 

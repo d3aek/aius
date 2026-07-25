@@ -558,6 +558,111 @@ static void test_duplicates_and_reachability(void)
 	assert(supervisor.state == AIUS_NET_STATE_RECOVERY_SAFE);
 }
 
+/* STACK_START is the state the target adapter's link gate sits in, so pin the
+ * two properties the gate depends on.
+ *
+ * First, STACK_STARTED is the only way to START_DHCP: the supervisor asks for
+ * DHCP because it was told the stack is ready, never because time passed. That
+ * is what lets the adapter withhold STACK_STARTED until it has actually
+ * observed link-up, and it is why a DISCOVER can no longer be sent onto a link
+ * that has not negotiated.
+ *
+ * Second, STACK_START has no deadline of its own -- unlike DHCP_WAIT and
+ * BACKOFF, no amount of elapsed time moves it. Withholding STACK_STARTED
+ * forever would therefore be a permanent stall, so the boundedness of the wait
+ * has to come from the adapter (AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS), which
+ * reaches the supervisor as a current-generation RESOURCE_FAULT. This asserts
+ * the stall so the guarantee cannot be silently moved here later.
+ */
+static void test_stack_start_waits_for_its_event(void)
+{
+	AiusNetSupervisor supervisor;
+	AiusNetAction action;
+	AiusNetEvent none = {
+		.kind = AIUS_NET_EVENT_NONE,
+		.generation = 0,
+		.fault = AIUS_NET_FAULT_NONE,
+	};
+
+	aius_net_supervisor_init(&supervisor, 0, false, &action);
+	assert(supervisor.state == AIUS_NET_STATE_STACK_START);
+
+	/* No event, arbitrarily far into the future, still STACK_START. */
+	const uint32_t clocks[] = {1u, 1000u, AIUS_NET_DHCP_DEADLINE_MS,
+	                           AIUS_NET_DHCP_DEADLINE_MS * 10u,
+	                           UINT32_MAX / 2u, UINT32_MAX};
+	for (size_t index = 0; index < sizeof(clocks) / sizeof(clocks[0]);
+	     index++) {
+		aius_net_supervisor_step(&supervisor, clocks[index], none,
+		                         &action);
+		assert(supervisor.state == AIUS_NET_STATE_STACK_START);
+		assert(supervisor.generation == 1);
+		assert(action.kind == AIUS_NET_ACTION_NONE);
+	}
+
+	/* Every other current-generation event either does nothing or tears
+	 * down; none of them starts DHCP. */
+	for (int kind = AIUS_NET_EVENT_LEASE_ACQUIRED;
+	     kind <= AIUS_NET_EVENT_TEARDOWN_FAULT; kind++) {
+		AiusNetSupervisor probe;
+		AiusNetEvent event = {
+			.kind = (AiusNetEventKind)kind,
+			.generation = 1,
+			.fault = AIUS_NET_FAULT_LINK_LOST,
+		};
+		aius_net_supervisor_init(&probe, 0, false, &action);
+		aius_net_supervisor_step(&probe, 10, event, &action);
+		assert(action.kind != AIUS_NET_ACTION_START_DHCP);
+		assert(probe.state != AIUS_NET_STATE_DHCP_WAIT);
+	}
+
+	/* The adapter's link deadline arrives as a resource fault, and the
+	 * supervisor turns it into bounded recovery: teardown, backoff, next
+	 * generation, which starts its own bounded wait. */
+	AiusNetEvent link_timeout = {
+		.kind = AIUS_NET_EVENT_RESOURCE_FAULT,
+		.generation = 1,
+		.fault = AIUS_NET_FAULT_LINK_LOST,
+	};
+	aius_net_supervisor_init(&supervisor, 0, false, &action);
+	aius_net_supervisor_step(&supervisor, 3000, link_timeout, &action);
+	assert(supervisor.state == AIUS_NET_STATE_TEARDOWN);
+	assert(supervisor.last_fault == AIUS_NET_FAULT_LINK_LOST);
+	assert(supervisor.restarts == 1);
+	assert(action.kind == AIUS_NET_ACTION_TEARDOWN);
+	assert(action.generation == 1);
+
+	AiusNetEvent done = {
+		.kind = AIUS_NET_EVENT_TEARDOWN_DONE,
+		.generation = 1,
+		.fault = AIUS_NET_FAULT_NONE,
+	};
+	aius_net_supervisor_step(&supervisor, 3001, done, &action);
+	assert(supervisor.state == AIUS_NET_STATE_BACKOFF);
+	aius_net_supervisor_step(&supervisor, 3001 + AIUS_NET_BACKOFF_MS, none,
+	                         &action);
+	assert(supervisor.state == AIUS_NET_STATE_STACK_START);
+	assert(supervisor.generation == 2);
+	assert(action.kind == AIUS_NET_ACTION_START_STACK);
+	assert(action.generation == 2);
+
+	/* And the new generation waits for its own STACK_STARTED. */
+	aius_net_supervisor_step(&supervisor, 3001 + AIUS_NET_BACKOFF_MS * 100u,
+	                         none, &action);
+	assert(supervisor.state == AIUS_NET_STATE_STACK_START);
+	assert(action.kind == AIUS_NET_ACTION_NONE);
+
+	AiusNetEvent started = {
+		.kind = AIUS_NET_EVENT_STACK_STARTED,
+		.generation = 2,
+		.fault = AIUS_NET_FAULT_NONE,
+	};
+	aius_net_supervisor_step(&supervisor, 9000, started, &action);
+	assert(supervisor.state == AIUS_NET_STATE_DHCP_WAIT);
+	assert(action.kind == AIUS_NET_ACTION_START_DHCP);
+	assert(supervisor.deadline_ms == 9000 + AIUS_NET_DHCP_DEADLINE_MS);
+}
+
 static uint32_t random_next(uint32_t *state)
 {
 	*state = *state * 1664525u + 1013904223u;
@@ -676,6 +781,7 @@ int main(void)
 	test_deadline_precedence_and_wrap();
 	test_generation_wrap_and_counter_saturation();
 	test_duplicates_and_reachability();
+	test_stack_start_waits_for_its_event();
 	test_generated_sequences();
 	puts("ok network supervisor");
 	return 0;

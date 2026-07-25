@@ -272,14 +272,19 @@ void test_init_and_action_matrix()
 	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
 	assert(g_fake.log_count == 0u);
 
+	/* The link is up in the fake, so the stack-start link read is the
+	 * observation that releases STACK_STARTED in the same call. */
 	aius_network_teensy_apply(
 		&adapter, 1u, action(AIUS_NET_ACTION_START_STACK), &event);
 	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
 	             AIUS_NET_FAULT_NONE);
 	assert(adapter.stack_started);
-	assert(g_fake.log_count == 2u);
+	assert(adapter.link_up_reported);
+	assert(adapter.stack_started_ms == 1u);
+	assert(g_fake.log_count == 3u);
 	assert(g_fake.log[0] == OP_CALLBACKS_INSTALL);
 	assert(g_fake.log[1] == OP_STACK_START);
+	assert(g_fake.log[2] == OP_LINK_STATUS);
 
 	aius_network_teensy_apply(
 		&adapter, 2u, action(AIUS_NET_ACTION_START_DHCP), &event);
@@ -478,6 +483,11 @@ void test_callback_fifo_stale_duplicate_overflow_and_health()
 		&adapter, 0u, action(AIUS_NET_ACTION_START_STACK), &event);
 	g_fake.log_count = 0u;
 
+	/* The stack-start read already observed link-up for generation 7, so
+	 * both late link callbacks are the same event arriving again: they are
+	 * dropped rather than delivered as duplicate STACK_STARTEDs, while a
+	 * stale-generation callback is still discarded and counted. */
+	assert(adapter.link_up_reported);
 	aius_network_teensy_test_callback(
 		&adapter, 6u, AIUS_NET_EVENT_LEASE_ACQUIRED, AIUS_NET_FAULT_NONE);
 	aius_network_teensy_test_callback(
@@ -485,25 +495,30 @@ void test_callback_fifo_stale_duplicate_overflow_and_health()
 	aius_network_teensy_test_callback(
 		&adapter, 7u, AIUS_NET_EVENT_STACK_STARTED, AIUS_NET_FAULT_NONE);
 	aius_network_teensy_poll(&adapter, 1u, &event);
-	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
-	             AIUS_NET_FAULT_NONE);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
 	assert(aius_network_teensy_test_stale_callbacks() == 1u);
-	assert(g_fake.log_count == 0u);
+	assert(adapter.pending_count == 0u);
+	assert(g_fake.log_count == 1u);
+	assert(g_fake.log[0] == OP_LINK_STATUS);
+
+	/* A current-generation lease still comes through the same FIFO. */
+	aius_network_teensy_test_callback(
+		&adapter, 7u, AIUS_NET_EVENT_LEASE_ACQUIRED, AIUS_NET_FAULT_NONE);
 	aius_network_teensy_poll(&adapter, 2u, &event);
-	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	expect_event(event, AIUS_NET_EVENT_LEASE_ACQUIRED, 7u,
 	             AIUS_NET_FAULT_NONE);
-	assert(g_fake.log_count == 0u);
+	assert(g_fake.log_count == 1u);
 
 	aius_network_teensy_poll(&adapter, 3u, &event);
 	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
-	assert(g_fake.log_count == 1u);
-	assert(g_fake.log[0] == OP_LINK_STATUS);
+	assert(g_fake.log_count == 2u);
+	assert(g_fake.log[1] == OP_LINK_STATUS);
 
 	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
 	aius_network_teensy_poll(&adapter, 4u, &event);
 	expect_event(event, AIUS_NET_EVENT_RESOURCE_FAULT, 7u,
 	             AIUS_NET_FAULT_LINK_LOST);
-	assert(g_fake.log_count == 2u);
+	assert(g_fake.log_count == 3u);
 
 	for (size_t index = 0u; index < 5u; index++) {
 		aius_network_teensy_test_callback(
@@ -518,6 +533,162 @@ void test_callback_fifo_stale_duplicate_overflow_and_health()
 	             AIUS_NET_FAULT_CALLBACK_OVERFLOW);
 	assert(!adapter.callback_overflow);
 	assert(g_fake.log_count == before);
+}
+
+/* Defined below with the other lifecycle helpers. */
+void drive_teardown(AiusNetworkTeensy *adapter, uint32_t generation);
+
+/* The link gate. STACK_STARTED is the supervisor's cue to start DHCP, so it may
+ * only be emitted once the link has actually been observed up -- Ethernet's
+ * beginNoWait() returns before the PHY has negotiated, and a DISCOVER sent onto
+ * a dead link costs the whole 5 s DHCP deadline. The three observers (the
+ * stack-start read, the link callback, the poll read) must produce exactly one
+ * STACK_STARTED per generation between them, and a link that never comes up
+ * must still make bounded progress.
+ */
+void test_link_gate_before_dhcp()
+{
+	AiusNetworkTeensy adapter;
+	AiusNetEvent event = {};
+
+	/* 1. Link already up when the stack starts. NativeEthernet reports link
+	 * changes, so no callback will ever arrive for a link that was already
+	 * up: the stack-start read is the observation, and it happens once.
+	 */
+	reset_adapter(&adapter);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_apply(&adapter, 100u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(adapter.link_up_reported);
+	for (uint32_t tick = 0u; tick < 4u; tick++) {
+		aius_network_teensy_poll(&adapter, 101u + tick, &event);
+		expect_event(event, AIUS_NET_EVENT_NONE, 0u,
+		             AIUS_NET_FAULT_NONE);
+	}
+	/* Well past the link deadline, an up link is never a fault. */
+	aius_network_teensy_poll(
+		&adapter, 100u + AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS + 500u,
+		&event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(!adapter.dhcp_started);
+
+	/* 2. Link down at stack start, up later. Nothing is emitted while the
+	 * link is down or merely unknown, so the supervisor stays in
+	 * STACK_START and never issues START_DHCP; the first UP read releases
+	 * STACK_STARTED, and only once.
+	 */
+	reset_adapter(&adapter);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	aius_network_teensy_apply(&adapter, 1000u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.stack_started);
+	assert(!adapter.link_up_reported);
+	aius_network_teensy_poll(&adapter, 1100u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+	aius_network_teensy_poll(&adapter, 1200u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(!adapter.link_up_reported);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_poll(&adapter, 1300u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(adapter.link_up_reported);
+	aius_network_teensy_poll(&adapter, 1400u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+
+	/* 3. Both observers see the same link-up. The callback is queued while
+	 * the poll read is what first observes UP; exactly one STACK_STARTED
+	 * leaves the adapter either way.
+	 */
+	reset_adapter(&adapter);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	aius_network_teensy_apply(&adapter, 2000u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_test_callback(&adapter, 7u,
+	                                  AIUS_NET_EVENT_STACK_STARTED,
+	                                  AIUS_NET_FAULT_NONE);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_poll(&adapter, 2100u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(adapter.pending_count == 0u);
+	aius_network_teensy_poll(&adapter, 2200u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	/* ... and in the other order: the callback wins, the poll read that
+	 * follows adds nothing. */
+	reset_adapter(&adapter);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	aius_network_teensy_apply(&adapter, 3000u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	aius_network_teensy_test_callback(&adapter, 7u,
+	                                  AIUS_NET_EVENT_STACK_STARTED,
+	                                  AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(&adapter, 3100u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_poll(&adapter, 3200u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+
+	/* 4. Link never comes up. The wait is bounded by the adapter's link
+	 * deadline -- the portable supervisor has no deadline in STACK_START --
+	 * so the generation ends in a resource fault rather than a stall, and
+	 * the next generation starts its own bounded wait.
+	 */
+	reset_adapter(&adapter);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	aius_network_teensy_apply(&adapter, 4000u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(
+		&adapter, 4000u + AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS - 1u,
+		&event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(
+		&adapter, 4000u + AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS, &event);
+	expect_event(event, AIUS_NET_EVENT_RESOURCE_FAULT, 7u,
+	             AIUS_NET_FAULT_LINK_LOST);
+	assert(!adapter.dhcp_started);
+	drive_teardown(&adapter, 7u);
+	assert(!adapter.link_up_reported);
+	aius_network_teensy_apply(&adapter, 9000u,
+	                         action(AIUS_NET_ACTION_START_STACK, 8u),
+	                         &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.stack_started_ms == 9000u);
+	aius_network_teensy_poll(
+		&adapter, 9000u + AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS, &event);
+	expect_event(event, AIUS_NET_EVENT_RESOURCE_FAULT, 8u,
+	             AIUS_NET_FAULT_LINK_LOST);
+
+	/* 5. The deadline is wrap-safe: a stack start just before the millis()
+	 * wrap still expires exactly one deadline later.
+	 */
+	reset_adapter(&adapter);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	aius_network_teensy_apply(&adapter, UINT32_MAX - 10u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(
+		&adapter,
+		(uint32_t)(UINT32_MAX - 10u +
+		           AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS - 1u),
+		&event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(
+		&adapter,
+		(uint32_t)(UINT32_MAX - 10u +
+		           AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS),
+		&event);
+	expect_event(event, AIUS_NET_EVENT_RESOURCE_FAULT, 7u,
+	             AIUS_NET_FAULT_LINK_LOST);
+
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
 }
 
 void expect_io(AiusIoEvent event, AiusIoResult result, size_t bytes,
@@ -936,6 +1107,7 @@ int main()
 	test_teardown_order_and_fault_matrix();
 	test_identical_teardown_reapplication_preserves_fault();
 	test_callback_fifo_stale_duplicate_overflow_and_health();
+	test_link_gate_before_dhcp();
 	test_one_shot_io_matrix();
 	test_status_accessors_across_lifecycle();
 	return 0;

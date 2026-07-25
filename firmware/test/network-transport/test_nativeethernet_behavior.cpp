@@ -45,6 +45,10 @@ struct FakeState {
     bool dhcp_enabled;
     bool inject_callbacks_during_cleanup;
     bool inside_cleanup_callback;
+    /* PHY link state. False by default, which is what a real cold start looks
+     * like: fnet_netif_init() has just released the PHY and nothing has
+     * negotiated yet. */
+    bool link_connected;
     fnet_link_callback_t link_callback;
     void *link_cookie;
     fnet_dhcp_cln_callback_t dhcp_callback;
@@ -333,8 +337,27 @@ void test_adapter_socket_result_mapping()
     uint8_t buffer[16] = {};
 
     aius_network_teensy_init(&adapter);
+    /* beginNoWait() returns before the PHY has negotiated, so a started stack
+     * is not a usable link and STACK_STARTED -- the supervisor's cue to send a
+     * DISCOVER -- is withheld until link-up is actually observed. */
+    assert(!fake.link_connected);
     aius_network_teensy_apply(&adapter, 0u, start, &event);
+    assert(event.kind == AIUS_NET_EVENT_NONE);
+    assert(adapter.stack_started && !adapter.link_up_reported);
+    aius_network_teensy_poll(&adapter, 1u, &event);
+    assert(event.kind == AIUS_NET_EVENT_NONE);
+
+    /* The FNET link service reports the transition through the real
+     * NativeEthernet callback chain; the next poll releases STACK_STARTED
+     * once, and only then does the supervisor's START_DHCP make sense. */
+    fake.link_connected = true;
+    fake.link_callback(nullptr, true, fake.link_cookie);
+    assert(Ethernet.linkStatus() == LinkON);
+    aius_network_teensy_poll(&adapter, 2u, &event);
     assert(event.kind == AIUS_NET_EVENT_STACK_STARTED);
+    assert(event.generation == 9u);
+    aius_network_teensy_poll(&adapter, 3u, &event);
+    assert(event.kind == AIUS_NET_EVENT_NONE);
     aius_network_teensy_apply(&adapter, 1u, dhcp, &event);
     assert(event.kind == AIUS_NET_EVENT_NONE);
     aius_network_teensy_apply(&adapter, 2u, publish, &event);
@@ -468,13 +491,19 @@ void test_adapter_socket_result_mapping()
     assert(address[0] == 0u && address[1] == 0u && address[2] == 0u &&
            address[3] == 0u);
     assert(aius_network_teensy_link(&adapter) ==
-           AIUS_NETWORK_TEENSY_LINK_DOWN);
+           AIUS_NETWORK_TEENSY_LINK_UP);
 
     fake.ip4_address = 0x1504a8c0u;
     assert(aius_network_teensy_address(&adapter, address));
     assert(address[0] == 192u && address[1] == 168u && address[2] == 4u &&
            address[3] == 21u);
 
+    fake.link_connected = false;
+    fake.link_callback(nullptr, false, fake.link_cookie);
+    assert(Ethernet.linkStatus() == LinkOFF);
+    assert(aius_network_teensy_link(&adapter) ==
+           AIUS_NETWORK_TEENSY_LINK_DOWN);
+    fake.link_connected = true;
     fake.link_callback(nullptr, true, fake.link_cookie);
     assert(Ethernet.linkStatus() == LinkON);
     assert(aius_network_teensy_link(&adapter) ==
@@ -524,7 +553,10 @@ fnet_netif_desc_t fnet_netif_get_default()
     return fake.netif_initialized ? reinterpret_cast<void *>(0x10) : nullptr;
 }
 
-fnet_bool_t fnet_netif_is_connected(fnet_netif_desc_t) { return false; }
+fnet_bool_t fnet_netif_is_connected(fnet_netif_desc_t)
+{
+    return fake.link_connected;
+}
 
 fnet_link_desc_t fnet_link_init(fnet_link_params_t *params)
 {
