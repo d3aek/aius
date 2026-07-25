@@ -161,6 +161,31 @@ def call_count(text, callee):
     return without_comments_and_literals(text).count(callee + "(")
 
 
+def qualified_call_sites(text, qualified):
+    """Indices of every `Class::member(` in `text` that is a CALL rather than
+    that member's own out-of-line definition. Definitions are told apart the
+    same way function_definitions() tells them from prototypes: the closing `)`
+    is followed, modulo whitespace, by `{`. Indices are into `text` itself --
+    without_comments_and_literals() blanks with equal-length runs, so the
+    stripped and unstripped strings share an offset space."""
+    clean = without_comments_and_literals(text)
+    needle = qualified + "("
+    sites = []
+    cursor = 0
+    while True:
+        index = clean.find(needle, cursor)
+        if index == -1:
+            return sites
+        cursor = index + len(needle)
+        closing = matching_delimiter(clean, index + len(qualified), "(", ")")
+        after = closing + 1
+        while after < len(clean) and clean[after] in " \t\r\n":
+            after += 1
+        if after < len(clean) and clean[after] == "{":
+            continue
+        sites.append(index)
+
+
 def identifier_present(text, name):
     return re.search(
         rf"\b{re.escape(name)}\b", without_comments_and_literals(text)
@@ -413,6 +438,103 @@ def assert_replay_path_has_no_direct_sd(text):
     )
 
 
+# The replay clock handover.
+#
+# AudioStream::update_setup() grants update responsibility to the first claimant
+# and g_spdif_in is constructed first, so the INPUT drives update_all() from a
+# DMA ISR the incoming carrier clocks. With no carrier that ISR never fires,
+# AiusAudioProcessor::update() never runs, and a replay reports `playing` while
+# processing exactly zero blocks. The handover moves responsibility to the
+# transmitter -- whose DMA free-runs off the audio PLL -- for the duration of a
+# replay, and only while the receiver's DPLL is unlocked.
+#
+# Nothing else can catch a regression here: no native suite compiles
+# optical_main.cpp, and losing the handover in a later refactor reproduces
+# exactly the silent zero-block failure it exists to fix -- a replay that starts,
+# reports `playing`, and makes no sound. So the check is two-sided rather than a
+# presence assertion. WIDENING it is the other failure mode: taking the clock
+# from a LIVE carrier would run passthrough at the transmitter's free-running
+# rate instead of the recovered one, so the handover must stay conditional on
+# pllLocked() and must be reachable from nowhere but the replay reconciler.
+#
+# The reconciler also carries the settled invariant -- THE LIVE INPUT ALWAYS OWNS
+# THE AUDIO PATH -- so a carrier arriving mid-replay must STOP the replay, not
+# merely take the clock back. A reconciler that moved the clock and left the
+# replay running would leave two sources contending for the graph, which is the
+# state the invariant exists to make unreachable; it would also report itself as
+# a still-`playing` replay that produces nothing, which is where this began.
+CLOCK_SERVICE_MARKER = "static FLASHMEM void replay_clock_service(void)"
+REPLAY_CHECKPOINT_MARKER = (
+    "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,"
+)
+# Both flags, not one: a handover that sets only the taker leaves both driving
+# update_all() (a double-processed block), and one that sets only the yielder
+# leaves neither (a stalled graph).
+CLOCK_MASTER_SETTERS = (
+    "AiusSpdifOutputClock::set_master",
+    "AiusSpdifInputClock::set_master",
+)
+
+
+def assert_replay_clock_handover_is_bounded(text):
+    body = function_body(text, CLOCK_SERVICE_MARKER)
+    clean = without_comments_and_literals(body)
+    assert "AIUS_REPLAY_SOURCE_REPLAY" in clean, (
+        "the clock handover is not bounded to the replay path: "
+        "replay_clock_service() never reads AIUS_REPLAY_SOURCE_REPLAY, so its "
+        "trigger is something other than the source the audio path is reading"
+    )
+    assert "pllLocked(" in clean, (
+        "the clock handover does not consult AudioInputSPDIF3::pllLocked(), so "
+        "a replay could take the clock away from a LIVE carrier -- the input's "
+        "recovered clock is the correct master for passthrough"
+    )
+    assert "aius_replay_service_stop(" in clean, (
+        "replay_clock_service() takes the clock back from a carrier but never "
+        "stops the replay, so a live input and a replay both hold the audio "
+        "path; the live input must win outright"
+    )
+    assert "record_event(" in clean, (
+        "a carrier displacing a replay is a transition, not a counter, and "
+        "replay_clock_service() puts nothing in the event ring -- so the one "
+        "channel that could explain a replay ending by itself stays silent"
+    )
+
+    guard_open = clean.find("noInterrupts(")
+    guard_close = clean.find("interrupts()", guard_open + 1) if guard_open >= 0 else -1
+    assert guard_open >= 0 and guard_close > guard_open, (
+        "replay_clock_service() has no noInterrupts()/interrupts() critical "
+        "section; both responsibility flags are read from a DMA ISR, and an ISR "
+        "entering between the two stores would see both or neither peripheral "
+        "driving update_all()"
+    )
+    for setter in CLOCK_MASTER_SETTERS:
+        local = qualified_call_sites(body, setter)
+        assert len(local) == 1, (
+            f"replay_clock_service() calls {setter}() {len(local)} times; the "
+            "handover is one paired write, so anything else means a flag is "
+            "left behind or written twice"
+        )
+        assert guard_open < local[0] < guard_close, (
+            f"{setter}() is written outside the noInterrupts()/interrupts() "
+            "critical section that makes the pair atomic against both DMA ISRs"
+        )
+        whole = qualified_call_sites(text, setter)
+        assert len(whole) == 1, (
+            f"{setter}() has {len(whole)} call sites in the file; the clock "
+            "handover must be reachable only from replay_clock_service(), so "
+            "nothing outside the replay path can move the graph's clock"
+        )
+
+    driver = without_comments_and_literals(
+        function_body(text, REPLAY_CHECKPOINT_MARKER)
+    )
+    assert "replay_clock_service(" in driver, (
+        "platform_replay() never calls replay_clock_service(), so the handover "
+        "is dead code and a replay still processes zero blocks with no carrier"
+    )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -435,6 +557,10 @@ POSITIVE_CHECKS = (
     (
         "the replay path performs no direct SD primitive",
         assert_replay_path_has_no_direct_sd,
+    ),
+    (
+        "the clock handover exists and is bounded to the replay path",
+        assert_replay_clock_handover_is_bounded,
     ),
 )
 
@@ -601,6 +727,20 @@ def run_helper_self_test():
         "multi-line signature body extraction is broken"
     )
     assert "call();" in definitions["two"], "single-line body extraction is broken"
+
+    qualified_text = (
+        "FLASHMEM void Shim::set(bool on)\n{\n\tflag = on;\n}\n"
+        "static void caller(void) { Shim::set(true); }\n"
+        "/* Shim::set(false) in a comment */\n"
+    )
+    sites = qualified_call_sites(qualified_text, "Shim::set")
+    assert len(sites) == 1, (
+        f"qualified_call_sites must see the call and neither the out-of-line "
+        f"definition nor the comment, found {len(sites)}"
+    )
+    assert qualified_text[sites[0]:].startswith("Shim::set(true)"), (
+        "qualified_call_sites returned an offset into the wrong string"
+    )
 
 
 def run_self_test():
@@ -859,6 +999,110 @@ def run_self_test():
     )
     _expect_pass(
         assert_replay_path_has_no_direct_sd, exempt_delete, "replay-sd/exempt"
+    )
+
+    # the clock handover exists and is bounded to the replay path.
+    good_clock = (
+        "FLASHMEM void AiusSpdifInputClock::set_master(bool master)\n"
+        "{\n\tupdate_responsibility = master;\n}\n"
+        "FLASHMEM void AiusSpdifOutputClock::set_master(bool master)\n"
+        "{\n\tupdate_responsibility = master;\n}\n"
+        "static FLASHMEM void replay_clock_service(void)\n"
+        "{\n"
+        "\tif ((g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
+        "\t     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY) &&\n"
+        "\t    AudioInputSPDIF3::pllLocked()) {\n"
+        "\t\treplay_job_cancel();\n"
+        "\t\taius_replay_service_stop(&g_replay_service);\n"
+        "\t\tg_replay_stop_reason = REPLAY_STOP_CARRIER;\n"
+        "\t\trecord_event(3, current_state(), REPLAY_STOP_CARRIER);\n"
+        "\t}\n"
+        "\tconst bool output_drives =\n"
+        "\t\tg_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&\n"
+        "\t\t!AudioInputSPDIF3::pllLocked();\n"
+        "\tif (output_drives == AiusSpdifOutputClock::is_master())\n"
+        "\t\treturn;\n"
+        "\tnoInterrupts();\n"
+        "\tAiusSpdifOutputClock::set_master(output_drives);\n"
+        "\tAiusSpdifInputClock::set_master(!output_drives);\n"
+        "\tinterrupts();\n"
+        "}\n"
+        "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,\n"
+        "                                     uint32_t now_ms)\n"
+        "{\n"
+        "\treplay_refill_service(budget->max_rx_bytes, now_ms);\n"
+        "\treplay_clock_service();\n"
+        "\treturn true;\n"
+        "}\n"
+    )
+    _expect_pass(
+        assert_replay_clock_handover_is_bounded, good_clock, "clock/good"
+    )
+    # Unbounded: the handover no longer keys on the replay source, so it could
+    # move the clock for a reason the audio path knows nothing about. Replaced
+    # file-wide, not once -- the reconciler reads the source twice and either
+    # occurrence alone would satisfy a naive presence check.
+    clock_unbounded = good_clock.replace(
+        "AIUS_REPLAY_SOURCE_REPLAY", "g_replay_armed"
+    )
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_unbounded,
+        "clock/unbounded", "AIUS_REPLAY_SOURCE_REPLAY",
+    )
+    # Would take the clock away from a live carrier, and would never displace a
+    # replay when one arrived.
+    clock_unconditional = good_clock.replace("AudioInputSPDIF3::pllLocked()", "false")
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_unconditional,
+        "clock/ignores-lock", "pllLocked()",
+    )
+    # Moves the clock but leaves the replay running: a live carrier and a replay
+    # both holding the audio path, which the invariant forbids.
+    clock_keeps_replay = good_clock.replace(
+        "\t\taius_replay_service_stop(&g_replay_service);\n", "", 1
+    )
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_keeps_replay,
+        "clock/carrier-does-not-stop-replay", "never stops the replay",
+    )
+    # Silent: the replay ends by itself and nothing says why.
+    clock_no_event = good_clock.replace(
+        "\t\trecord_event(3, current_state(), REPLAY_STOP_CARRIER);\n", "", 1
+    )
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_no_event,
+        "clock/unrecorded-transition", "event ring",
+    )
+    # Half a handover: both peripherals end up driving update_all().
+    clock_one_sided = good_clock.replace(
+        "\tAiusSpdifInputClock::set_master(!output_drives);\n", "", 1
+    )
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_one_sided,
+        "clock/one-sided", "AiusSpdifInputClock::set_master",
+    )
+    # Torn: a DMA ISR can land between the two stores.
+    clock_unguarded = good_clock.replace("\tnoInterrupts();\n", "", 1)
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_unguarded,
+        "clock/no-critical-section", "critical section",
+    )
+    # A second call site outside the reconciler -- the widening this check
+    # exists to refuse.
+    clock_second_site = good_clock + (
+        "static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,\n"
+        "                                                            const char *id)\n"
+        "{\n\tAiusSpdifOutputClock::set_master(true);\n\treturn ok;\n}\n"
+    )
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_second_site,
+        "clock/second-call-site", "call sites in the file",
+    )
+    # Dead code: present, correct, and never reached.
+    clock_unreached = good_clock.replace("\treplay_clock_service();\n", "", 1)
+    _expect_fail(
+        assert_replay_clock_handover_is_bounded, clock_unreached,
+        "clock/never-called", "never calls replay_clock_service()",
     )
 
     # no static fallback.

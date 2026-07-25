@@ -158,6 +158,19 @@ static bool g_replay_job_active;
 static bool g_replay_job_cancelling;
 static bool g_replay_job_size_published;
 
+/* Why the current selection is not playing, so /api/replays/status can tell a
+ * replay the operator stopped from one a carrier displaced (replay_clock_service
+ * below). Without it both read as plain `stopped`, which is the same class of
+ * silent ambiguity as a replay that reports `playing` and processes no blocks.
+ * One byte, not an enum object: a plain `enum` would be int-sized in .bss, and
+ * DTCM is the bank the deciding principle names as scarcest. */
+typedef enum {
+	REPLAY_STOP_NONE = 0, /* never stopped, or a selection is live */
+	REPLAY_STOP_REQUEST,  /* DELETE-ish: the operator asked, via app_replay_stop */
+	REPLAY_STOP_CARRIER   /* the optical input came up and took the audio path */
+} ReplayStopReason;
+static uint8_t g_replay_stop_reason;
+
 /* Reported when the service refuses a delivered chunk, which can only mean the
  * job and the service disagree about the read position. Distinct from the
  * adapter's own faults so the two are told apart in a job result. */
@@ -1565,9 +1578,16 @@ static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
 		replay.state == AIUS_REPLAY_ERROR ? "error" : "stopped";
 	const char *klass = replay.decoder.classification == AIUS_PIPELINE_DTS ? "dts" :
 		replay.decoder.classification == AIUS_PIPELINE_PCM ? "pcm" : "unknown";
+	/* Served alongside `state` rather than folded into it: `stopped` is the
+	 * portable service's own vocabulary and stays exactly what it was, while
+	 * this says who stopped it. A client that never looks reads the same
+	 * document it read before. */
+	const char *stop_reason =
+		g_replay_stop_reason == REPLAY_STOP_CARRIER ? "carrier" :
+		g_replay_stop_reason == REPLAY_STOP_REQUEST ? "request" : "none";
 	int length = snprintf((char *)body, capacity,
-		"{\"ok\":true,\"state\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu}",
-		state, replay.id, (unsigned long)replay.file_bytes,
+		"{\"ok\":true,\"state\":\"%s\",\"stop_reason\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu}",
+		state, stop_reason, replay.id, (unsigned long)replay.file_bytes,
 		(unsigned long)replay.offset_bytes, replay.duration_seconds,
 		replay.loop ? "true" : "false", (unsigned long)replay.loops_completed,
 		(unsigned long)replay.queue_words, (unsigned long)replay.watermark_words,
@@ -1794,6 +1814,7 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
 	replay_job_cancel();
 	if (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)
 		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	g_replay_stop_reason = REPLAY_STOP_NONE;
 	return AIUS_OPTICAL_APP_REPLAY_OK;
 }
 
@@ -1823,6 +1844,7 @@ static FLASHMEM void app_replay_stop(void *)
 {
 	replay_job_cancel();
 	aius_replay_service_stop(&g_replay_service);
+	g_replay_stop_reason = REPLAY_STOP_REQUEST;
 }
 
 static FLASHMEM void app_set_test_running(void *, bool running)
@@ -2762,6 +2784,175 @@ static FLASHMEM void replay_refill_service(size_t budget_words, uint32_t now_ms)
 	replay_job_advance(now_ms);
 }
 
+/* ------------------------------------------------------------------ */
+/* Replay clock handover                                               */
+/*                                                                     */
+/* AudioStream::update_setup() grants update responsibility to the     */
+/* FIRST claimant, and g_spdif_in is constructed above g_spdif_out, so */
+/* the INPUT holds it. input_spdif3.cpp drives AudioStream::update_all */
+/* from its DMA ISR, and that DMA is clocked by the incoming carrier.  */
+/* With the optical input unsoldered there is no carrier, so that ISR  */
+/* never fires, update_all() is never called, AiusAudioProcessor::     */
+/* update() never runs, and a replay reports `playing` while processing */
+/* exactly zero blocks -- no underruns, no overruns, nothing.          */
+/*                                                                     */
+/* The transmitter has no such dependency, which is what makes a       */
+/* runtime fix possible. config_spdif3() (output_spdif3.cpp) points    */
+/* SPDIF0_CLK_ROOT at PLL4 -- CCM_CDCDR_SPDIF0_CLK_SEL(0), the audio   */
+/* PLL set_audioClock() programs three lines earlier -- and sets       */
+/* SPDIF_STC_TXCLK_SOURCE(1), so the tx bit clock is that PLL divided  */
+/* down. SPDIF_SCR_TXSEL(5) is "Tx normal operation", not the          */
+/* 1:feed-through-from-SPDIFIN mode, so the tx DATAPATH is not slaved  */
+/* to the receiver either. The dependency in fact runs the other way:  */
+/* SPDIF_SRPC_CLKSRC_SEL(1) makes the RECEIVER fall back to tx_clk     */
+/* whenever its DPLL is unlocked. The tx DMA is triggered by           */
+/* DMAMUX_SOURCE_SPDIF_TX over a 4 * AUDIO_BLOCK_SAMPLES int32 buffer  */
+/* with INTHALF | INTMAJOR, i.e. one interrupt every                   */
+/* AUDIO_BLOCK_SAMPLES frames -- exactly the rx side's rate. So        */
+/* AudioOutputSPDIF3::isr() already runs at the audio block rate with  */
+/* no input present; it simply declines to call update_all().          */
+/*                                                                     */
+/* THE LIVE INPUT ALWAYS OWNS THE AUDIO PATH. Replay is strictly the   */
+/* fallback for a board with no carrier, so production is unchanged:   */
+/* the input remains clock master for passthrough, the handover is     */
+/* refused while the receiver's DPLL is locked, and a carrier arriving */
+/* mid-replay STOPS the replay and takes the clock back in the same    */
+/* epoch -- reported as stop_reason "carrier" on                       */
+/* GET /api/replays/status and as a type-3 event on /api/events, so a  */
+/* replay that ends by itself is never an unexplained `stopped`.       */
+/* See replay_clock_service() below.                                   */
+/*                                                                     */
+/* ON STOP the clock goes back to the input, deliberately. With no     */
+/* carrier that means the graph stops again: `blocks` and `overruns`   */
+/* freeze at their final values, and the transmitter -- whose ISR      */
+/* keeps running and keeps releasing blocks until block_left_1st is    */
+/* null -- falls to AudioOutputSPDIF3::block_silent, so the optical    */
+/* output carries digital silence. That is the same idle state the     */
+/* board boots into with nothing plugged in, and it is the right one:  */
+/* a passthrough device with no source has nothing to pass through.    */
+/* Nothing leaks across the transition -- the output ISR releases the  */
+/* blocks it holds, and AudioInputSPDIF3::update() releases the pair   */
+/* it allocates each pass while block_offset stays 0.                  */
+/* ------------------------------------------------------------------ */
+
+/* update_responsibility is `protected static` on both peripherals
+ * (input_spdif3.h, output_spdif3.h), so a DERIVED CLASS -- never an object --
+ * is what reaches it; [class.protected]'s "through an object of the derived
+ * type" restriction applies to non-static members only. Private inheritance and
+ * a deleted default constructor because these are access shims, not audio
+ * nodes: neither is an AudioStream anyone may connect, and constructing one
+ * would call the base begin() a second time and re-run config_spdif3().
+ *
+ * Defined out-of-line, and FLASHMEM on both the declaration and the definition,
+ * for the reason AiusAudioProcessor::apply_config() records above: an in-body
+ * definition is implicitly inline (vague linkage), which conflicts with the
+ * plain FLASHMEM free functions sharing .flashmem, and a COMDAT copy of one in
+ * .text would fail the hot-object ITCM guard by name. Nothing here runs per
+ * audio block -- the whole handover is checkpoint-7 work. */
+class AiusSpdifInputClock : private AudioInputSPDIF3 {
+public:
+	AiusSpdifInputClock(void) = delete;
+	static FLASHMEM void set_master(bool master);
+};
+
+class AiusSpdifOutputClock : private AudioOutputSPDIF3 {
+public:
+	AiusSpdifOutputClock(void) = delete;
+	static FLASHMEM bool is_master(void);
+	static FLASHMEM void set_master(bool master);
+};
+
+FLASHMEM void AiusSpdifInputClock::set_master(bool master)
+{
+	update_responsibility = master;
+}
+
+FLASHMEM bool AiusSpdifOutputClock::is_master(void)
+{
+	return update_responsibility;
+}
+
+FLASHMEM void AiusSpdifOutputClock::set_master(bool master)
+{
+	update_responsibility = master;
+}
+
+/* Enforces one invariant: THE LIVE INPUT ALWAYS OWNS THE AUDIO PATH. Replay is
+ * strictly the fallback for a board with no carrier, so a carrier and a replay
+ * never contend -- the carrier wins, every time, and the replay ends.
+ *
+ * Called from checkpoint 7 AFTER the refill pass, because
+ * aius_replay_service_deliver() -- reached through replay_job_route() inside
+ * that pass -- is what promotes SWITCHING_TO_REPLAY to SOURCE_REPLAY once the
+ * ring reaches its watermark; running after it moves the clock in the same
+ * epoch the source moves, not an epoch later.
+ *
+ * A reconciler here rather than a pair of pokes in app_replay_start() /
+ * app_replay_stop(): start only publishes PREBUFFERING, playback begins later
+ * and elsewhere, and the five ways a replay ends -- an operator stop, EOF, a
+ * decoder error, a cancelled job replaced by a new selection, and now a carrier
+ * arriving -- all reach the same `source` field. One derived predicate covers
+ * every one of them; five call sites would not, and each would be a chance to
+ * leave the clock behind. It also keeps pllLocked() out of the audio ISR: this
+ * runs once per epoch in thread context, and the ITCM guard's audio-block set
+ * stays exactly three sections. */
+static FLASHMEM void replay_clock_service(void)
+{
+	/* A carrier displaces any replay that is prebuffering or playing. The
+	 * refill is cancelled and the service stopped exactly as app_replay_stop()
+	 * does it -- memory only, the job drains through its own CLOSE -- and the
+	 * reason is recorded so /api/replays/status does not report this as an
+	 * indistinguishable `stopped`, and so /api/events carries the transition
+	 * rather than leaving it to be inferred from a counter. */
+	if ((g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
+	     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY) &&
+	    AudioInputSPDIF3::pllLocked()) {
+		replay_job_cancel();
+		aius_replay_service_stop(&g_replay_service);
+		g_replay_stop_reason = REPLAY_STOP_CARRIER;
+		record_event(3, current_state(), REPLAY_STOP_CARRIER);
+	}
+	/* Exactly the predicate AiusAudioProcessor::update() branches on, ANDed
+	 * with the absence of a carrier, so the clock owner and the audio source
+	 * cannot disagree by more than the epoch that moves them.
+	 *
+	 * The pllLocked() term is redundant after the arm above has run -- a
+	 * carrier leaves source at OPTICAL -- and it is kept because it is what
+	 * makes this one function a complete statement of the invariant: the
+	 * transmitter takes the clock only in the absence of a carrier, whatever
+	 * any other path may have done to `source`. A carrier arriving mid-replay
+	 * therefore lands the clock back on the input in the same epoch that stops
+	 * the replay, not one later; a carrier going away again does nothing until
+	 * a new replay is started, which is the fallback direction and belongs to
+	 * an operator, not to a PLL edge. */
+	const bool output_drives =
+		g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
+		!AudioInputSPDIF3::pllLocked();
+	if (output_drives == AiusSpdifOutputClock::is_master())
+		return;
+	/* Both flags are read from a DMA ISR -- input_spdif3.cpp's at the top of
+	 * its handler, output_spdif3.cpp's at the bottom of its. This runs in
+	 * thread context, so an ISR cannot be mid-flight when it starts: one that
+	 * had already begun would have run to completion before the epoch
+	 * resumed. The only interleaving left is an ISR entering BETWEEN the two
+	 * stores, and one critical section spanning both removes it -- every ISR
+	 * observes either the whole before-state or the whole after-state, so
+	 * exactly one peripheral drives update_all() at every instant an ISR can
+	 * see. That makes the store order irrelevant, which is the point: neither
+	 * the both-drive window (a double-processed block) nor the neither-drives
+	 * window (a stalled one) can exist. __disable_irq() carries a memory
+	 * clobber, so the compiler cannot hoist a store out either.
+	 *
+	 * Two byte stores, at most once per epoch and in practice once per replay
+	 * transition -- shorter than the critical sections block_count() and
+	 * AudioOutputSPDIF3::update() already take, and it adds nothing to the
+	 * per-block work of either ISR. */
+	noInterrupts();
+	AiusSpdifOutputClock::set_master(output_drives);
+	AiusSpdifInputClock::set_master(!output_drives);
+	interrupts();
+}
+
 /* Checkpoint 7: the SD lifecycle and the replay refill, in that order, with the
  * refill quota taken from the budget rather than the legacy loop's literal
  * 2,048.
@@ -2787,6 +2978,10 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 		return false;
 	sd_lifecycle_service(now_ms);
 	replay_refill_service(budget->max_rx_bytes, now_ms);
+	/* Last, so it sees this epoch's source transition rather than the previous
+	 * one's. Memory only -- two byte stores under one critical section -- so it
+	 * spends none of the epoch's single SD primitive. */
+	replay_clock_service();
 	return true;
 }
 
