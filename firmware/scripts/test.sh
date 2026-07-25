@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, codec-api-contract, config, dsp-config, dts, dts-arena,
+# Suites: arena, auth, codec-api-contract, config, dsp-config, dts, dts-arena,
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
@@ -130,6 +130,17 @@ dsp-config)
 	;;
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"
+	;;
+auth)
+	# The SD maintenance token's derivation. test_auth.c pins the firmware side;
+	# tools/aius_token.py recomputes the same token on the host from a board's
+	# fused MAC words, so both are run together -- a change to either that did
+	# not change the other would silently invalidate every token already
+	# recorded off-device, which is the failure this suite exists to catch.
+	compile_and_run auth "$fw_root/lib/aius_auth/src/aius_auth.c" \
+		"$fw_root/test/auth/test_auth.c" \
+		"-I$fw_root/lib/aius_auth/include"
+	python3 "$fw_root/tools/aius_token.py" --self-test
 	;;
 codec-api-contract)
 	compile_and_run codec-api-contract "$fw_root/test/codec-api/test_codec_api_contract.c"
