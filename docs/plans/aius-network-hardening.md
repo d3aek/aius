@@ -4039,7 +4039,7 @@ table. The mapping is one-to-one and mechanical:
 | S1 | **Done** (`7606632a5`) — the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs. Costs 2,048 B FLASH and **gains** 704 B of ITCM | `src/optical_main.cpp` | target build; `optical-app` green |
 | S2a | Construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
 | S2b | Delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard | `src/optical_main.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` + `network-transport` + every component suite |
-| S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"` | `src/optical_main.cpp` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
+| S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. **Needs the publish-buffer change settled above, which widens S3's owned paths to `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/` and `test/runtime-target/` — split it out as S3a if the diff gets large** | `src/optical_main.cpp`, `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
 | S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, and fix the six dependent places in `test/http/test_http.c` | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
 | S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README | `platformio.ini`, `scripts/test.sh`, `README.md` | full suite sweep |
 
@@ -4103,30 +4103,56 @@ it on the legacy machinery this phase deletes:
   (`aius_runtime_storage.cpp:134`). **R1 delivered both seams and found a third
   obstacle, which S3 must settle before it starts** — see below.
 
-**Open decision for S3 — `publish_capacity` is capped at 512 today.**
-`aius_sd.c:251` rejects a `CONFIG_LOAD` whose `publish_capacity` exceeds the
-job's capacity, and the composed job's capacity *is* the 512-byte transfer slice
+**Settled for S3 — a publish-only buffer in the engine.** `aius_sd.c:251` rejects
+a `CONFIG_LOAD` whose `publish_capacity` exceeds the job's capacity, and the
+composed job's capacity *is* the 512-byte transfer slice
 (`AIUS_RUNTIME_STORAGE_TRANSFER`, `static_assert`-locked to
-`AIUS_HTTP_SD_CAPACITY_MAX` at `aius_runtime_storage.h:46`). So the planned
-`publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES` (12,288) fails at start with
-`AIUS_SD_FAULT_CAPACITY`. Three ways out, none free:
+`AIUS_HTTP_SD_CAPACITY_MAX` at `aius_runtime_storage.h:46`), so the planned
+`publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES` (12,288) would fail at start
+with `AIUS_SD_FAULT_CAPACITY`.
 
-- **A dedicated publish buffer** on the storage service, sized to the DSP model.
-  Costs ~12 KB on a runtime object already at ~35 KB, but the model can be parsed
-  in place with no second copy.
-- **Decouple the transfer slice from the HTTP capacity bound** and grow it to
-  12,288. Same ~12 KB, and it also widens the HTTP SD transfer semantics that the
-  512-byte bound currently pins.
-- **Publish incrementally**, calling R1's consumer repeatedly with 512-byte chunks
-  so the application accumulates into the buffer it already owns. Zero memory
-  growth, and it matches the reasoning that rejected the response-capacity bump in
-  P1a — but it changes `CONFIG_LOAD` semantics in the delivered portable engine,
-  which today buffers the whole file before publishing once.
+This was reviewed on 2026-07-25 and the plan's earlier recommendation —
+publish incrementally so the application accumulates into a buffer it already
+owns — **was wrong on its facts and is withdrawn.** The application has no such
+buffer: `optical_main.cpp:290`'s 12,288-byte array is a *stack local* inside the
+blocking read, alive for one call and incapable of holding state across the ~24
+epochs a bounded job takes. The only other model-sized buffers are the dispatcher
+response body, which is not idle during a hot re-insert — one of S3's two
+triggers — and a parsed model rather than raw JSON. Incremental publish would
+therefore not avoid the 12 KB, only relocate it into a new application static, and
+pay an engine rewrite on top: publish is single-shot by construction
+(`aius_sd.c:1077` finishes the job in the publish arm), `config_bytes` carries
+three meanings at once, the symmetric `INSTALL_PUBLISH` path keys post-commit
+cleanup on a contiguous phase range, and no fault rule exists for a consumer
+refusing chunk *k* after the file is closed.
 
-The third is the most consistent with the rest of this phase and the only one that
-does not duplicate a buffer the application already has. It is also the widest
-blast radius, so it needs its own review against `aius_sd`'s delivered contract
-before S3 starts.
+**Growing the transfer slice is also rejected**, on a better ground than the
+memory one first recorded: `job->capacity` sizes *every* transfer, including
+download reads and upload input, so 12,288 would make every SD primitive a 12 KB
+blocking call — directly against the one-bounded-primitive-per-epoch rule the
+storage service exists to enforce.
+
+**The memory objection does not hold and should not be repeated.** The buffer
+lands in `AiusRuntimeStorage`, inside the `DMAMEM`-placed runtime object, taking
+OCRAM from 15.4 % to 17.7 % used. DTCM is untouched. P1a's rejection of a bigger
+response buffer was a *DTCM stack-frame* argument about the legacy path and does
+not transfer to an OCRAM buffer inside the runtime object.
+
+So S3 adds `publish_buffer` / `publish_buffer_capacity` to `AiusSdJob` with a
+setter, defaulting to the existing `buffer` / `capacity` when null so every
+current caller is unchanged; points the three capacity checks and the size event
+at the new capacity; reads into `publish_buffer + config_bytes` in `min(remaining,
+capacity)` chunks, so **SD primitives stay 512 bytes**; and keeps publish
+single-shot. `AiusRuntimeStorage` gains the model-sized buffer, `sd_capacity`
+stays 512, and the `static_assert` stays intact. The application parses in place
+from the delivered pointer. Roughly six engine edit sites, and every existing `sd`
+and `runtime-target` assertion stays green.
+
+The honest cost, recorded so it is not rediscovered as a surprise: this puts a
+12,288-byte application-shaped buffer inside a portable, application-agnostic
+engine's consumer for a file read twice in a board's lifetime, and it breaks
+`AiusSdJob`'s "one job, one buffer" invariant. That is accepted because the
+per-epoch primitive bound is a watchdog-safety property and OCRAM is not scarce.
 - **The DSP config `PUT` moves to `UPLOAD/REPLACE` with `publish = false`.**
   The model is already parsed and validated in RAM by the time the write starts,
   so re-publishing the written bytes would prove nothing the parser has not
