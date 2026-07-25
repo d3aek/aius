@@ -1,8 +1,15 @@
 /* Aius optical prototype bring-up target.
  *
- * This target keeps the Ethernet service bounded and independent from USB. The
- * first bring-up build exposes discovery/status and the safe control boundary;
- * the S/PDIF runtime is added behind the same status snapshot in the next slice.
+ * setup() constructs the bounded runtime and loop() drives exactly one epoch of
+ * it; every transport, SD and watchdog effect leaves through that runtime. What
+ * remains here is the audio processor and its DSP model, the event ring, the
+ * serializers behind the twenty AiusOpticalApp adapters, and the six platform
+ * callbacks the runtime asks for.
+ *
+ * Slice S2b removed the legacy blocking network/SD path with the NativeEthernet
+ * and FNET includes it needed, so src/aius_network_teensy.cpp is now the only
+ * application-level owner of a vendor transport header (asserted as an exact
+ * set by test/network-transport/test_vendor_source.py).
  */
 
 #include <Arduino.h>
@@ -10,8 +17,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <AudioStream.h>
-#include <NativeEthernet.h>
-#include <NativeEthernetUdp.h>
 #include <SD.h>
 #include <input_spdif3.h>
 #include <output_spdif3.h>
@@ -23,26 +28,25 @@ extern "C" {
 	#include "aius_http.h"
 	#include "aius_usb_control.h"
 	#include "aius_dsp_config.h"
-	#include "service/dhcp/fnet_dhcp_cln.h"
-#include "stack/fnet_netif.h"
 }
 #include "aius_replay.h"
 #include "aius_optical_config.h"
 #include "aius_auth.h"
 #include "aius_config.h"
-/* The portable dispatch seam. It pulls in aius_sd.h (and, through
- * aius_http_transaction.h, aius_io.h) unconditionally, which is why slice S0
- * had to rename this file's legacy SD symbols to LegacySdJob /
- * LegacySdJobState / LEGACY_SD_JOB_* first. Slice S1 filled the callback table
- * and slice S2a constructs the dispatcher inside the composed runtime below. */
+/* The portable dispatch seam, whose twenty callbacks this file implements. It
+ * pulls in aius_sd.h (and, through aius_http_transaction.h, aius_io.h)
+ * unconditionally; the legacy SD symbols that used to collide with it are
+ * gone. */
 #include "aius_optical_app.h"
-/* Slice S2a's composition: the bounded runtime setup() constructs and loop()
- * drives one epoch of, the retained boot adapter that owns the ledger, the
- * pinned 8 s watchdog interval and the sole per-epoch feed, the production
- * `Serial` primitive table the runtime's USB service consumes, and the network
- * adapter whose UDP primitives the UDP platform callback reaches through. */
+/* The composition: the bounded runtime setup() constructs and loop() drives one
+ * epoch of, the retained boot adapter that owns the ledger, the pinned 8 s
+ * watchdog interval and the sole per-epoch feed, the fault adapter the
+ * checkpoint callback stalls through in a fault image, the production `Serial`
+ * primitive table the runtime's USB service consumes, and the network adapter
+ * the UDP callback and the status surface both reach through. */
 #include "aius_boot_teensy.h"
 #include "aius_cdc_teensy.h"
+#include "aius_fault_teensy.h"
 #include "aius_network_teensy.h"
 #include "aius_runtime_teensy.h"
 
@@ -59,32 +63,26 @@ extern "C" {
 #define AIUS_BUILD_ID 0u
 #endif
 
-static constexpr uint16_t AIUS_NET_PORT = 4242;
-static constexpr uint32_t AIUS_STATIC_IP[4] = {192, 168, 42, 42};
-static constexpr uint32_t AIUS_STATIC_MASK[4] = {255, 255, 255, 0};
-
+/* The device MAC, reported at offset 16 of the UDP status payload. The network
+ * adapter configures the identical address on the stack itself
+ * (aius_network_teensy.cpp), so the reported and configured values still agree
+ * after the legacy Ethernet.begin() caller was deleted. */
 static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
-static EthernetUDP g_udp;
-static EthernetServer g_http_server(80);
-static EthernetClient g_http_client;
-// HTTP request/response buffers live in OCRAM (DMAMEM), not DTCM: they are off
-// the audio critical path (touched only during request handling) and each is
-// written before it is read, so OCRAM's lack of startup zeroing is harmless.
-// Relocating them frees ~16 KB of FlexRAM so ITCM can grow (see docs plan).
-DMAMEM static uint8_t g_http_request[AIUS_HTTP_MAX_REQUEST];
-DMAMEM static uint8_t g_http_response[AIUS_HTTP_MAX_RESPONSE];
-// GET /api/dsp/config's response can be up to AIUS_OPTICAL_MODEL_MAX_JSON_BYTES
-// (12288 B), larger than every other route's response and larger than the
-// shared per-route stack `body[AIUS_HTTP_MAX_RESPONSE]` buffer in
-// http_handle_request(). A dedicated OCRAM buffer avoids bumping that shared
-// 8 KB stack array for every other route just to fit this one model.
-DMAMEM static uint8_t g_dsp_config_body[AIUS_OPTICAL_MODEL_MAX_JSON_BYTES];
-static constexpr size_t AIUS_SD_TRANSFER_SLICE = 512u;
-static constexpr uint32_t AIUS_SD_DOWNLOAD_STALL_MS = 10000u;
-static constexpr uint32_t AIUS_SD_UPLOAD_STALL_MS = 2000u;
-static constexpr uint32_t AIUS_HTTP_WRITE_STALL_MS = 100u;
-static constexpr uint32_t AIUS_NETWORK_LINK_DEBOUNCE_MS = 250u;
-static constexpr uint32_t AIUS_NETWORK_RETRY_MS = 1000u;
+
+/* The composed runtime, in OCRAM because aius_runtime_teensy.h requires it: the
+ * object is roughly 35 kB, dominated by the HTTP request/response buffers
+ * (13,312 + 8,192 B) and the model-sized application body buffer (12,288 B),
+ * against a 24,412-byte DTCM free-for-locals zone. A DTCM instance could not
+ * fit, and a stack one could not exist at all. aius_runtime_teensy_construct()
+ * initializes every member it reads, so OCRAM's lack of startup zeroing is
+ * harmless.
+ *
+ * Defined here rather than beside the rest of the slice S2a composition below
+ * because slice S2b's status surface reads it: put_status(), http_status_json()
+ * and app_write_usb_payload() all take their address, link state and DHCP state
+ * from the embedded network adapter. */
+DMAMEM static AiusRuntimeTeensy g_runtime;
+
 DMAMEM static AiusReplayService g_replay_service;
 static File g_replay_file;
 static char g_replay_path[96];
@@ -113,99 +111,40 @@ static void replay_reader_close(void *)
 	if (g_replay_file) g_replay_file.close();
 }
 
+/* Unreferenced between slices S2b and 14c, and GCC says so: the only caller was
+ * the legacy POST /api/replays/start, and app_replay_start() refuses the route
+ * until Phase 14c lands replay refill on a bounded SD job. Kept rather than
+ * deleted because 14c needs a working SD-backed reader to redesign, and a
+ * deletion here would only be re-typed there. The -Wunused-variable warning on
+ * this line is the expected marker of that deferral. */
 static AiusReplayReader g_replay_reader = {
 	nullptr, replay_reader_open, replay_reader_read, replay_reader_close
 };
 
-enum LegacySdJobState : uint8_t {
-	LEGACY_SD_JOB_IDLE = 0,
-	LEGACY_SD_JOB_UPLOAD_OPEN,
-	LEGACY_SD_JOB_UPLOAD_MKDIR,
-	LEGACY_SD_JOB_UPLOAD_RECEIVE,
-	LEGACY_SD_JOB_UPLOAD_WRITE,
-	LEGACY_SD_JOB_UPLOAD_CHECK_TARGET,
-	LEGACY_SD_JOB_UPLOAD_BACKUP,
-	LEGACY_SD_JOB_UPLOAD_INSTALL,
-	LEGACY_SD_JOB_UPLOAD_ROLLBACK,
-	LEGACY_SD_JOB_UPLOAD_CLEANUP,
-	LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP,
-	LEGACY_SD_JOB_DOWNLOAD_OPEN,
-	LEGACY_SD_JOB_DOWNLOAD_HEADER,
-	LEGACY_SD_JOB_DOWNLOAD_READ,
-	LEGACY_SD_JOB_DOWNLOAD_WRITE,
-	LEGACY_SD_JOB_DELETE
-};
-
-struct LegacySdJob {
-	LegacySdJobState state;
-	File file;
-	char target_path[128];
-	char temp_path[64];
-	char backup_path[64];
-	const char *content_type;
-	uint32_t expected;
-	uint32_t received;
-	uint32_t written;
-	uint32_t initial_offset;
-	uint32_t initial_end;
-	uint16_t mkdir_offset;
-	uint16_t pending_length;
-	uint16_t response_offset;
-	uint16_t response_length;
-	uint32_t progress_ms;
-	bool target_existed;
-	bool backup_moved;
-	bool config_upload;
-	bool dsp_upload;
-	bool replay_upload;
-	bool replay_final;
-	uint32_t replay_offset;
-	uint32_t replay_total;
-	uint16_t error_status;
-	uint8_t transfer[AIUS_SD_TRANSFER_SLICE];
-	char response_header[192];
-};
-
-DMAMEM static LegacySdJob g_sd_job = {};
+/* Entropy for the temporary and backup file names the dispatcher builds, mixed
+ * with millis() and the boot epoch by sd_job_id(). Outlived the legacy SD job
+ * it was named for; app_upload_id() is its only reader. */
 static uint32_t g_sd_job_sequence;
-static size_t g_http_request_length;
-static size_t g_http_body_offset;
-static uint32_t g_http_last_byte_ms;
-static uint32_t g_http_requests;
-static uint32_t g_http_rejections;
-static uint32_t g_http_client_drops;
-static uint32_t g_http_service_overruns;
-static uint32_t g_http_server_rebinds;
 static float g_cpu_temp_c;
 static float g_cpu_temp_max_c;
 static uint32_t g_cpu_temp_sample_ms;
 static uint32_t g_cpu_temp_next_ms;
 static bool g_cpu_temp_valid;
-static IPAddress g_static_ip(AIUS_STATIC_IP[0], AIUS_STATIC_IP[1],
-                             AIUS_STATIC_IP[2], AIUS_STATIC_IP[3]);
-static IPAddress g_static_mask(AIUS_STATIC_MASK[0], AIUS_STATIC_MASK[1],
-                               AIUS_STATIC_MASK[2], AIUS_STATIC_MASK[3]);
-static bool g_dhcp;
-static bool g_network_ready;
-static uint32_t g_network_retry_at;
-static bool g_ethernet_initialized;
-static bool g_dhcp_pending;
-static uint32_t g_network_link_down_at;
-static uint32_t g_network_restarts;
-static uint8_t g_dhcp_attempts;
+/* Media state and usage. Nothing probes SD until slice S3 lands the portable
+ * PROBE and USAGE_REFRESH jobs, so these stay false/zero and every SD route
+ * refuses -- the planned sequence, not a defect. */
 static bool g_sd_ready;
-static uint32_t g_dhcp_deadline;
-static volatile uint32_t g_dhcp_discover_count;
-static volatile uint32_t g_dhcp_update_count;
-static uint32_t g_boot_epoch;
-static uint32_t g_reset_source;
-static bool g_watchdog_enabled;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
-static uint32_t g_sd_probe_at;
-static bool g_sd_usage_refresh_pending;
+static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
 static AiusConfig g_config;
+/* Staged by app_store_public_config() while the dispatcher's SD job writes the
+ * accepted bytes. The legacy job's commit arm used to copy it into g_config;
+ * that arm died with the legacy path and slice S3, which ports the SD lifecycle
+ * onto the portable job, owns re-attaching the commit. The staging shape --
+ * fully written, then gated -- is unchanged, so nothing has to be rewritten
+ * when it does. */
 static AiusConfig g_pending_config;
 static bool g_config_upload_pending;
 static uint32_t g_config_error_count;
@@ -227,8 +166,8 @@ static FLASHMEM AiusOpticalConfig make_default_active_model(void)
 }
 // Off the audio path (read/written only from apply_config()'s cold callers and
 // the enqueue()-side block-boundary swap, never per-block), so DMAMEM (OCRAM)
-// like g_http_request/g_http_response -- keeps this ~700-byte-each pair out of
-// the tight shared FlexRAM/ITCM+DTCM+stack pool.
+// -- keeps this ~700-byte-each pair out of the tight shared
+// FlexRAM/ITCM+DTCM+stack pool.
 DMAMEM static AiusOpticalConfig g_active_model = make_default_active_model();
 static bool g_dsp_source_sd;
 static uint32_t g_config_generation;
@@ -240,13 +179,13 @@ static uint32_t g_config_generation;
  * writer always fully populates g_pending_dsp_model BEFORE setting it, so the
  * ISR never observes a partially-written model (see docs plan "Input trim/EQ +
  * limiter wiring done" note for the equivalent apply_config() out-of-line
- * rationale -- this is the same single-writer/single-reader flag idiom already
- * used elsewhere in this file, e.g. g_dhcp_discover_count). g_dsp_upload_pending
- * is the separate SD-job-lifecycle gate (mirrors g_config_upload_pending):
- * true only while a dsp_upload SD job is in flight for the currently staged
- * model, so a failed/cancelled job never arms g_dsp_apply_pending. DMAMEM for
- * the same reason as g_active_model: written from loop/HTTP context, read once
- * (a plain struct copy) at the block boundary, never touched per-block. */
+ * rationale). g_dsp_upload_pending is the separate SD-job-lifecycle gate
+ * (mirrors g_config_upload_pending): true only while a dsp_upload SD job is in
+ * flight for the currently staged model, so a failed or cancelled job never
+ * arms g_dsp_apply_pending. As with the public config above, the arm on commit
+ * went with the legacy job and slice S3 restores it. DMAMEM for the same reason
+ * as g_active_model: written from epoch/HTTP context, read once (a plain struct
+ * copy) at the block boundary, never touched per-block. */
 DMAMEM static AiusOpticalConfig g_pending_dsp_model;
 static bool g_dsp_upload_pending;
 static volatile bool g_dsp_apply_pending;
@@ -288,37 +227,13 @@ static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, Aius
 	out.limiter.lookahead_ms = model.limiter.lookahead_ms;
 }
 
-/* Read and validate /aius/dsp.json (the SD override, written by a prior
- * successful PUT) and stage it for a block-boundary apply. A missing file is
- * the common case (no override configured) and is not an error. An oversized
- * or invalid file leaves the currently active model untouched -- called both
- * at boot (after SD.begin()) and on hot-reinsert (service_sd()), mirroring
- * load_sd_config()'s dual call sites. The audio pipeline is already running by
- * the time this runs (AudioMemory()/begin_pipeline() precede SD.begin() in
- * setup()), so this never mutates live DSP state directly -- same staged/
- * consumed-at-block-boundary path a runtime PUT uses. */
-static FLASHMEM void stage_dsp_sd_override(void)
-{
-	File file = SD.open("/aius/dsp.json", FILE_READ);
-	if (!file)
-		return;
-	uint8_t json[AIUS_DSP_MODEL_MAX_JSON_BYTES];
-	size_t length = 0;
-	while (file.available() && length < sizeof(json))
-		json[length++] = (uint8_t)file.read();
-	bool too_large = file.available();
-	file.close();
-	if (too_large)
-		return;
-	AiusDspModel parsed;
-	if (aius_dsp_config_parse_put(json, length, &parsed) != AIUS_DSP_CONFIG_OK)
-		return;
-	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
-	g_dsp_apply_pending = true;
-}
+/* The SD-hosted DSP override used to be read here, a byte at a time into a
+ * 12,288-byte stack array, from setup() and again from service_sd(). Slice S2b
+ * deleted that read with the rest of the legacy SD lifecycle; slice S3 restores
+ * it as a portable CONFIG_LOAD job with publish_capacity set for the model, so
+ * /aius/dsp.json is simply not loaded at boot in between. */
+
 static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
-static AiusUsbParser g_usb_parser;
-static char g_usb_response[320];
 
 struct AiusEvent {
 	uint32_t sequence;
@@ -338,26 +253,10 @@ static volatile uint32_t g_network_budget_overruns;
 
 static uint8_t current_state(void);
 
-/* Retired by slice S2a, which is the interval change §Accepted wire-behaviour
- * changes records: the legacy sixteen-second arming is replaced by the pinned
- * eight-second one, armed once from setup() through the boot adapter. This body
- * is emptied rather than left in place because the raw interval literal must
- * not survive the cutover -- the optical-cutover positive group asserts the
- * pinned interval comes from the adapter and is not reimplemented here.
- *
- * Nothing calls this any more, so g_watchdog_enabled stays false and the legacy
- * watchdog_feed() below is a no-op. Slice S2b deletes all three. */
-static void watchdog_init(void)
-{
-}
-
-static void watchdog_feed(void)
-{
-	if (!g_watchdog_enabled)
-		return;
-	WDOG1_WSR = 0x5555;
-	WDOG1_WSR = 0xAAAA;
-}
+/* The legacy watchdog pair is gone. The pinned 8 s interval is armed once from
+ * setup() through the boot adapter and fed exactly once per complete epoch by
+ * the runtime's EPOCH_COMPLETE callback; this file writes no watchdog register
+ * of its own, which the optical-cutover absence group asserts file-wide. */
 
 static void service_hw_metrics(void)
 {
@@ -387,456 +286,26 @@ static const char *sd_filesystem(void)
 	}
 }
 
-static void refresh_sd_usage(void)
+/* Whether the composed storage service can accept a new job this epoch. The
+ * legacy predicate read the deleted LegacySdJob state; the honest post-cutover
+ * source is the service that now owns every SD primitive. An HTTP-owned job, a
+ * drain of one whose owner went away, or a root-initiated job all mean the same
+ * thing to a caller asking to start work: busy. Reads memory only.
+ *
+ * The dispatcher checks this before it admits a store, so the two store
+ * adapters' own checks below are the second line of defence against a job that
+ * starts between the dispatcher's check and theirs. */
+static FLASHMEM bool sd_job_active(void)
 {
-	if (!g_sd_ready) {
-		g_sd_total_bytes = 0;
-		g_sd_used_bytes = 0;
-		return;
-	}
-	g_sd_total_bytes = SD.totalSize();
-	g_sd_used_bytes = SD.usedSize();
-}
+	const AiusRuntimeStorage &storage = g_runtime.storage;
 
-static void load_sd_config(void)
-{
-	aius_config_set_defaults(&g_config);
-	File file = SD.open("/aius/config.json", FILE_READ);
-	if (!file) {
-		g_config_error_count++;
-		return;
-	}
-	uint8_t json[AIUS_CONFIG_MAX_JSON_BYTES];
-	size_t length = 0;
-	while (file.available() && length < sizeof(json))
-		json[length++] = (uint8_t)file.read();
-	bool too_large = file.available();
-	file.close();
-	if (too_large) {
-		(void)aius_config_parse(json, sizeof(json) + 1u, &g_config);
-		g_config_error_count++;
-		return;
-	}
-	(void)aius_config_parse(json, length, &g_config);
-	if (!g_config.valid)
-		g_config_error_count++;
-}
-
-static void http_send(unsigned status, const uint8_t *body, size_t body_length);
-
-static bool sd_job_active(void)
-{
-	return g_sd_job.state != LEGACY_SD_JOB_IDLE;
-}
-
-static void sd_job_clear(void)
-{
-	if (g_sd_job.file)
-		g_sd_job.file.close();
-	g_sd_job.state = LEGACY_SD_JOB_IDLE;
-	g_sd_job.target_path[0] = 0;
-	g_sd_job.temp_path[0] = 0;
-	g_sd_job.backup_path[0] = 0;
-	g_sd_job.content_type = nullptr;
-	g_sd_job.expected = 0;
-	g_sd_job.received = 0;
-	g_sd_job.written = 0;
-	g_sd_job.initial_offset = 0;
-	g_sd_job.initial_end = 0;
-	g_sd_job.mkdir_offset = 0;
-	g_sd_job.pending_length = 0;
-	g_sd_job.response_offset = 0;
-	g_sd_job.response_length = 0;
-	g_sd_job.progress_ms = 0;
-	g_sd_job.target_existed = false;
-	g_sd_job.backup_moved = false;
-	g_sd_job.config_upload = false;
-	g_sd_job.dsp_upload = false;
-	g_sd_job.replay_upload = false;
-	g_sd_job.replay_final = false;
-	g_sd_job.replay_offset = 0;
-	g_sd_job.replay_total = 0;
-	g_sd_job.error_status = 0;
-}
-
-static void sd_job_cancel(void)
-{
-	if (!sd_job_active())
-		return;
-	if (g_sd_job.file)
-		g_sd_job.file.close();
-	if (g_sd_job.backup_moved &&
-	    (g_sd_job.state == LEGACY_SD_JOB_UPLOAD_INSTALL ||
-     g_sd_job.state == LEGACY_SD_JOB_UPLOAD_ROLLBACK)) {
-		g_sd_job.pending_length = 0;
-		g_sd_job.error_status = 0;
-		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_ROLLBACK;
-		return;
-	}
-	if (!g_sd_ready) {
-		/* Keep the cancellation marker until the card returns so the
-		 * uniquely named temporary file can be removed by service_sd. */
-		g_sd_job.pending_length = 0;
-		g_sd_job.error_status = 0;
-		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-		return;
-	}
-	/* Cleanup is deferred as well. In particular, disconnect handling must not
-	 * turn an HTTP service call into an SD write. */
-	g_sd_job.pending_length = 0;
-	g_sd_job.error_status = 0;
-	g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-}
-
-static void sd_job_drop_client(void)
-{
-	if (g_http_client)
-		g_http_client.stop();
-	g_http_client = EthernetClient();
-	g_http_request_length = 0;
-}
-
-static void sd_job_abort_download(void)
-{
-	if (g_sd_job.file)
-		g_sd_job.file.close();
-	sd_job_drop_client();
-	sd_job_clear();
+	return storage.http_owned || storage.draining ||
+	       storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
 }
 
 static uint32_t sd_job_id(void)
 {
 	return ++g_sd_job_sequence ^ millis() ^ g_boot_epoch;
-}
-
-static bool sd_job_make_upload_paths(const char *target)
-{
-	uint32_t id = sd_job_id();
-	int temp_length = snprintf(g_sd_job.temp_path, sizeof(g_sd_job.temp_path),
-	                           "/aius/.upload-%08lx-%08lx.tmp",
-	                           (unsigned long)id, (unsigned long)g_sd_job_sequence);
-	int backup_length = snprintf(g_sd_job.backup_path,
-	                             sizeof(g_sd_job.backup_path),
-	                             "/aius/.backup-%08lx-%08lx.bak",
-	                             (unsigned long)id, (unsigned long)g_sd_job_sequence);
-	return temp_length > 0 && backup_length > 0 &&
-	       (size_t)temp_length < sizeof(g_sd_job.temp_path) &&
-	       (size_t)backup_length < sizeof(g_sd_job.backup_path) &&
-	       strlen(target) < sizeof(g_sd_job.target_path);
-}
-
-static void sd_job_send_error(unsigned status, const char *error)
-{
-	char body[128];
-	int length = snprintf(body, sizeof(body),
-	                      "{\"ok\":false,\"error\":\"%s\",\"received\":%lu,\"written\":%lu,\"expected\":%lu}",
-	                      error, (unsigned long)g_sd_job.received,
-	                      (unsigned long)g_sd_job.written,
-	                      (unsigned long)g_sd_job.expected);
-	if (length > 0 && (size_t)length < sizeof(body))
-		http_send(status, (const uint8_t *)body, (size_t)length);
-	else
-		sd_job_drop_client();
-	sd_job_clear();
-}
-
-static void service_sd_job(void)
-{
-	switch (g_sd_job.state) {
-	case LEGACY_SD_JOB_UPLOAD_MKDIR: {
-		const char *separator = strchr(g_sd_job.target_path + g_sd_job.mkdir_offset, '/');
-		if (separator == nullptr) {
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_OPEN;
-			return;
-		}
-		char directory[sizeof(g_sd_job.target_path)];
-		size_t length = (size_t)(separator - g_sd_job.target_path);
-		memcpy(directory, g_sd_job.target_path, length);
-		directory[length] = '\0';
-		(void)SD.mkdir(directory);
-		g_sd_job.mkdir_offset = (uint16_t)(length + 1u);
-		return;
-	}
-	case LEGACY_SD_JOB_UPLOAD_OPEN:
-		g_sd_job.file = SD.open(g_sd_job.temp_path, FILE_WRITE);
-		if (!g_sd_job.file) {
-			g_sd_job.error_status = 507;
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-		} else {
-			/* FILE_WRITE is append mode. Replay upload validation already
-			 * proved that the existing .part size equals replay_offset, so a
-			 * seek to the exact end is both redundant and rejected by some
-			 * SdFat/Arduino SD combinations. */
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_RECEIVE;
-		}
-		return;
-	case LEGACY_SD_JOB_UPLOAD_RECEIVE:
-		if (g_sd_job.pending_length != 0)
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_WRITE;
-		else if (g_sd_job.written == g_sd_job.expected)
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_CHECK_TARGET;
-		return;
-	case LEGACY_SD_JOB_UPLOAD_WRITE:
-		if (!g_sd_job.file || g_sd_job.pending_length == 0) {
-			g_sd_job.error_status = 507;
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-			return;
-		}
-		{
-			uint16_t remaining = g_sd_job.pending_length;
-			uint16_t offset = 0;
-			for (unsigned attempt = 0; remaining != 0 && attempt < 4u; attempt++) {
-				size_t written = g_sd_job.file.write(g_sd_job.transfer + offset,
-				                                    remaining);
-				if (written > remaining)
-					written = remaining;
-				remaining = (uint16_t)(remaining - written);
-				offset = (uint16_t)(offset + written);
-				if (remaining != 0)
-					delay(2);
-			}
-			if (remaining == 0) {
-				g_sd_job.written += g_sd_job.pending_length;
-				g_sd_job.pending_length = 0;
-				g_sd_job.state = LEGACY_SD_JOB_UPLOAD_RECEIVE;
-				return;
-			}
-			g_sd_job.error_status = 507;
-			g_sd_job.file.close();
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-			return;
-		}
-	case LEGACY_SD_JOB_UPLOAD_CHECK_TARGET:
-		if (g_sd_job.file)
-			g_sd_job.file.close();
-		if (g_sd_job.replay_upload && !g_sd_job.replay_final) {
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_CLEANUP;
-			return;
-		}
-		g_sd_job.target_existed = SD.exists(g_sd_job.target_path);
-		g_sd_job.state = g_sd_job.target_existed ?
-			LEGACY_SD_JOB_UPLOAD_BACKUP : LEGACY_SD_JOB_UPLOAD_INSTALL;
-		return;
-	case LEGACY_SD_JOB_UPLOAD_BACKUP:
-		if (!SD.rename(g_sd_job.target_path, g_sd_job.backup_path)) {
-			g_sd_job.error_status = 500;
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-			return;
-		}
-		g_sd_job.backup_moved = true;
-		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_INSTALL;
-		return;
-	case LEGACY_SD_JOB_UPLOAD_INSTALL:
-		if (SD.rename(g_sd_job.temp_path, g_sd_job.target_path)) {
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_CLEANUP;
-		} else if (g_sd_job.backup_moved) {
-			g_sd_job.error_status = 500;
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_ROLLBACK;
-		} else {
-			g_sd_job.error_status = 500;
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-		}
-		return;
-	case LEGACY_SD_JOB_UPLOAD_ROLLBACK:
-		/* The target was moved aside before the install. Keep retrying this
-		 * single filesystem operation until the old target is restored. */
-		if (SD.rename(g_sd_job.backup_path, g_sd_job.target_path))
-			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-		return;
-	case LEGACY_SD_JOB_UPLOAD_CLEANUP:
-		if (g_sd_job.replay_upload && !g_sd_job.replay_final) {
-			char response[96];
-			int length = snprintf(response, sizeof(response),
-			                      "{\"ok\":true,\"next_offset\":%lu}",
-			                      (unsigned long)(g_sd_job.replay_offset + g_sd_job.written));
-			if (length > 0)
-				http_send(200, (const uint8_t *)response, (size_t)length);
-			sd_job_clear();
-			return;
-		}
-		if (g_sd_job.backup_moved && !SD.remove(g_sd_job.backup_path))
-			return;
-		if (g_sd_job.config_upload && g_config_upload_pending) {
-			g_config = g_pending_config;
-			g_config_upload_pending = false;
-		}
-		if (g_sd_job.dsp_upload && g_dsp_upload_pending) {
-			/* SD write is durable; the audio-side apply happens at the next
-			 * block boundary (AiusAudioProcessor::enqueue), not here. */
-			g_dsp_apply_pending = true;
-			g_dsp_upload_pending = false;
-		}
-		g_sd_usage_refresh_pending = true;
-		static const uint8_t upload_ok[] = "{\"ok\":true}";
-		http_send(200, upload_ok, sizeof(upload_ok) - 1);
-		sd_job_clear();
-		return;
-	case LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP: {
-		if (g_sd_job.file)
-			g_sd_job.file.close();
-		if (g_sd_job.temp_path[0] != 0 &&
-		    !(g_sd_job.replay_upload && !g_sd_job.replay_final))
-			(void)SD.remove(g_sd_job.temp_path);
-		if (g_sd_job.error_status != 0) {
-			if (g_sd_job.config_upload)
-				g_config_upload_pending = false;
-			if (g_sd_job.dsp_upload)
-				g_dsp_upload_pending = false;
-			unsigned status = g_sd_job.error_status;
-			sd_job_send_error(status, status == 500 ? "sd_commit" : "sd_write");
-		} else {
-			sd_job_drop_client();
-			sd_job_clear();
-		}
-		return;
-	}
-	case LEGACY_SD_JOB_DOWNLOAD_OPEN: {
-		g_sd_job.file = SD.open(g_sd_job.target_path, FILE_READ);
-		if (!g_sd_job.file) {
-			sd_job_send_error(404, "not_found");
-			return;
-		}
-		uint32_t size = (uint32_t)g_sd_job.file.size();
-		int length = snprintf(g_sd_job.response_header,
-		                      sizeof(g_sd_job.response_header),
-		                      "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n"
-		                      "Content-Length: %lu\r\nConnection: close\r\n\r\n",
-		                      g_sd_job.content_type,
-		                      (unsigned long)size);
-		if (length < 0 || (size_t)length >= sizeof(g_sd_job.response_header)) {
-			sd_job_send_error(500, "response_too_large");
-			return;
-		}
-		g_sd_job.response_length = (uint16_t)length;
-		g_sd_job.response_offset = 0;
-		g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_HEADER;
-		return;
-	}
-	case LEGACY_SD_JOB_DOWNLOAD_HEADER: {
-		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
-			sd_job_abort_download();
-			return;
-		}
-		size_t remaining = g_sd_job.response_length - g_sd_job.response_offset;
-		int available = g_http_client.availableForWrite();
-		if (available < 2)
-			return;
-		if ((size_t)available < remaining)
-			remaining = (size_t)available;
-		if (remaining > 1u)
-			remaining /= 2u;
-		size_t written = g_http_client.write(
-			(const uint8_t *)g_sd_job.response_header + g_sd_job.response_offset,
-			remaining);
-		if (written == 0) {
-			sd_job_abort_download();
-			return;
-		}
-		g_sd_job.progress_ms = millis();
-		g_sd_job.response_offset += (uint16_t)written;
-		if (g_sd_job.response_offset == g_sd_job.response_length)
-			g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_READ;
-		return;
-	}
-	case LEGACY_SD_JOB_DOWNLOAD_READ: {
-		size_t length = g_sd_job.file.read(g_sd_job.transfer,
-		                                  sizeof(g_sd_job.transfer));
-		if (length == 0) {
-			g_sd_job.file.close();
-			g_http_client.stop();
-			g_http_client = EthernetClient();
-			g_http_request_length = 0;
-			sd_job_clear();
-			return;
-		}
-		g_sd_job.pending_length = (uint16_t)length;
-		g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_WRITE;
-		return;
-	}
-	case LEGACY_SD_JOB_DOWNLOAD_WRITE: {
-		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
-			sd_job_abort_download();
-			return;
-		}
-		int available = g_http_client.availableForWrite();
-		if (available < 2)
-			return;
-		size_t length = g_sd_job.pending_length;
-		if ((size_t)available < length)
-			length = (size_t)available;
-		if (length > 1u)
-			length /= 2u;
-		size_t written = g_http_client.write(g_sd_job.transfer, length);
-		if (written == 0) {
-			sd_job_abort_download();
-			return;
-		}
-		g_sd_job.progress_ms = millis();
-		if (written < g_sd_job.pending_length) {
-			memmove(g_sd_job.transfer, g_sd_job.transfer + written,
-			        g_sd_job.pending_length - written);
-		}
-		g_sd_job.pending_length -= (uint16_t)written;
-		if (g_sd_job.pending_length == 0)
-			g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_READ;
-		return;
-	}
-	case LEGACY_SD_JOB_DELETE:
-		if (!SD.remove(g_sd_job.target_path))
-			sd_job_send_error(404, "not_found");
-		else {
-			g_sd_usage_refresh_pending = true;
-			static const uint8_t delete_ok[] = "{\"ok\":true}";
-			http_send(200, delete_ok, sizeof(delete_ok) - 1);
-			sd_job_clear();
-		}
-		return;
-	case LEGACY_SD_JOB_IDLE:
-		return;
-	}
-}
-
-static void service_sd(void)
-{
-	uint32_t now = millis();
-	if (g_sd_ready && sd_job_active() && !SD.mediaPresent()) {
-		g_sd_ready = false;
-		refresh_sd_usage();
-		sd_job_cancel();
-		sd_job_drop_client();
-		Serial.printf("AIUS SD removed\\n");
-		return;
-	}
-	if (!g_sd_ready) {
-		if ((int32_t)(now - g_sd_probe_at) < 0)
-			return;
-		g_sd_probe_at = now + 1000u;
-		if (SD.begin(BUILTIN_SDCARD)) {
-			g_sd_ready = true;
-			(void)SD.mkdir("/aius");
-			load_sd_config();
-			stage_dsp_sd_override();
-			refresh_sd_usage();
-			Serial.printf("AIUS SD inserted fs=%s total=%llu\\n", sd_filesystem(),
-			              (unsigned long long)g_sd_total_bytes);
-		}
-		return;
-	}
-	if (sd_job_active()) {
-		service_sd_job();
-		return;
-	}
-	if ((int32_t)(now - g_sd_probe_at) < 0)
-		return;
-	g_sd_probe_at = now + 1000u;
-	if (!SD.mediaPresent()) {
-		g_sd_ready = false;
-		refresh_sd_usage();
-		Serial.printf("AIUS SD removed\\n");
-	} else if (g_sd_usage_refresh_pending) {
-		refresh_sd_usage();
-		g_sd_usage_refresh_pending = false;
-	}
 }
 
 static void record_event(uint8_t type, uint8_t state, uint16_t detail)
@@ -1149,36 +618,53 @@ static uint8_t current_state(void)
 	       klass == AIUS_PIPELINE_PCM ? 3 : 2;
 }
 
+/* The 71-byte UDP status payload. Its length and every field offset are exactly
+ * what they were before the cutover; only the producers of four fields moved,
+ * and three of those had no producer left to move (§Accepted wire-behaviour
+ * changes). Field by field:
+ *
+ *    0      version                     unchanged
+ *    1      network mode                producer retired -> served as 0
+ *    2      state                       unchanged (record_state)
+ *    3      flags: pll lock, test run   unchanged
+ *    4..7   boot epoch                  unchanged
+ *    8..11  uptime ms                   unchanged
+ *   12..15  IPv4 address                aius_network_teensy_address()
+ *   16..21  MAC                         unchanged (g_mac)
+ *   22      NTP validity                unchanged, still 0
+ *   23      pipeline classification     unchanged
+ *   24      pipeline create status      unchanged
+ *   25..28  sample rate                 unchanged
+ *   29..32  block count                 unchanged
+ *   33..36  overrun count               unchanged
+ *   37/38   retired mode/mix, reserved  unchanged, still 0
+ *   39..54  event + network counters    unchanged
+ *   55..70  four HTTP counters          producer retired -> served as 0
+ *
+ * Every zero-served field is left to the memset rather than written, so no
+ * offset arithmetic changed with the producers. */
 static void put_status(uint8_t *payload, uint16_t *length)
 {
-	/* Versioned, explicitly packed status payload. The original 39 bytes remain
-	 * stable; diagnostic counters append at 39: event sequence, event overflow,
-	 * network drops, and network budget overruns. */
 	record_state();
 	noInterrupts();
 	uint32_t event_sequence = g_event_sequence;
 	uint32_t event_overflows = g_event_overflows;
 	uint32_t network_drops = g_network_drops;
 	uint32_t network_budget_overruns = g_network_budget_overruns;
-	uint32_t http_requests = g_http_requests;
-	uint32_t http_rejections = g_http_rejections;
-	uint32_t http_client_drops = g_http_client_drops;
-	uint32_t http_service_overruns = g_http_service_overruns;
 	interrupts();
+	uint8_t address[4];
+	(void)aius_network_teensy_address(&g_runtime.network_http.target, address);
 	memset(payload, 0, 71);
 	payload[0] = 1;
-	payload[1] = !g_network_ready ? 0 : (g_dhcp ? 1 : 2);
 	AiusPipelineClass klass = g_audio_processor.classification();
 	payload[2] = g_last_state;
 	if (AudioInputSPDIF3::pllLocked())
 		payload[3] |= 1u;
 	aius_net_put_u32(payload + 4, g_boot_epoch);
 	aius_net_put_u32(payload + 8, millis());
-	IPAddress ip = Ethernet.localIP();
-	for (unsigned i = 0; i < 4; i++)
-		payload[12 + i] = ip[i];
+	memcpy(payload + 12, address, sizeof(address));
 	memcpy(payload + 16, g_mac, sizeof(g_mac));
-	payload[22] = 0; /* NTP validity: not yet implemented by NativeEthernet adapter */
+	payload[22] = 0; /* NTP validity: not implemented by the network adapter */
 	if (g_test_running)
 		payload[3] |= 2u;
 	payload[23] = (uint8_t)klass;
@@ -1186,90 +672,11 @@ static void put_status(uint8_t *payload, uint16_t *length)
 	aius_net_put_u32(payload + 25, AudioInputSPDIF3::sampleRate());
 	aius_net_put_u32(payload + 29, g_audio_processor.block_count());
 	aius_net_put_u32(payload + 33, g_audio_processor.overrun_count());
-	/* Bytes 37/38 were the active mode/mix selection. The single-config model has
-	 * no selection; byte 37 now reports the active config source (0 = the const
-	 * factory default) and byte 38 is reserved. Both stay zero via the memset
-	 * above, keeping the fixed 71-byte binary status schema unchanged. */
 	aius_net_put_u32(payload + 39, event_sequence);
 	aius_net_put_u32(payload + 43, event_overflows);
 	aius_net_put_u32(payload + 47, network_drops);
 	aius_net_put_u32(payload + 51, network_budget_overruns);
-	aius_net_put_u32(payload + 55, http_requests);
-	aius_net_put_u32(payload + 59, http_rejections);
-	aius_net_put_u32(payload + 63, http_client_drops);
-	aius_net_put_u32(payload + 67, http_service_overruns);
 	*length = 71;
-}
-
-static void send_response(uint8_t type, uint32_t request_id,
-                          const uint8_t *payload, uint16_t length)
-{
-	uint8_t frame[AIUS_NET_MAX_FRAME];
-	size_t frame_len = aius_net_encode(frame, sizeof(frame), type, 0,
-	                                   request_id, payload, length);
-	if (frame_len == 0)
-		return;
-	g_udp.beginPacket(g_udp.remoteIP(), g_udp.remotePort());
-	g_udp.write(frame, frame_len);
-	g_udp.endPacket();
-}
-
-static void send_nack(uint32_t request_id, uint8_t error)
-{
-	uint8_t payload[1] = {error};
-	send_response(AIUS_NET_RSP_NACK, request_id, payload, sizeof(payload));
-}
-
-static int http_header_end(size_t *body_offset)
-{
-	for (size_t i = 3; i < g_http_request_length; i++) {
-		if (g_http_request[i - 3] == '\r' && g_http_request[i - 2] == '\n' &&
-		    g_http_request[i - 1] == '\r' && g_http_request[i] == '\n') {
-			*body_offset = i + 1;
-			return 1;
-		}
-	}
-	return 0;
-}
-
-static int http_expected_body(size_t header_end, size_t *expected)
-{
-	*expected = 0;
-	for (size_t i = 0; i + 16 < header_end; i++) {
-		if (memcmp(g_http_request + i, "Content-Length: ", 16) != 0)
-			continue;
-		i += 16;
-		uint32_t value = 0;
-		while (i < header_end && g_http_request[i] >= '0' && g_http_request[i] <= '9') {
-			uint32_t digit = (uint32_t)(g_http_request[i] - '0');
-			if (value > (UINT32_MAX - digit) / 10u)
-				return -1;
-			value = value * 10u + digit;
-			i++;
-		}
-		*expected = value;
-		return 1;
-	}
-	return 1;
-}
-
-static int http_has_content_length(size_t header_end)
-{
-	for (size_t i = 0; i + 16 < header_end; i++)
-		if (memcmp(g_http_request + i, "Content-Length: ", 16) == 0)
-			return 1;
-	return 0;
-}
-
-static unsigned http_error_status(AiusHttpResult result)
-{
-	switch (result) {
-	case AIUS_HTTP_ERR_TOO_LARGE: return 413;
-	case AIUS_HTTP_ERR_TIMEOUT: return 408;
-	case AIUS_HTTP_ERR_METHOD: return 405;
-	case AIUS_HTTP_ERR_ROUTE: return 404;
-	default: return 400;
-	}
 }
 
 static FLASHMEM bool http_json_append(char *body, size_t capacity, size_t *length,
@@ -1384,6 +791,25 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	return length;
 }
 
+/* GET /api/status. Every field keeps its key, position and type; the sources
+ * that moved at slice S2b are the network ones, and they are the only lines
+ * that changed:
+ *
+ *   ip                    put_status()'s bytes 12..15, from the adapter
+ *   link                  aius_network_teensy_link(), no longer gated on the
+ *                         retired network_mode -- an adapter with a link but no
+ *                         lease still reports the link honestly
+ *   dhcp_pending          aius_network_teensy_dhcp_pending()
+ *   dhcp_updates          the adapter's own lease counter
+ *   network_restarts      AiusRecoveryStatus
+ *   reset_source          AiusRecoveryStatus, now the raw value rather than
+ *                         the legacy low byte
+ *   network_mode          producer retired -> status[1] is 0 -> "offline"
+ *   dhcp_discovers        no producer without a vendor patch -> 0
+ *   http_server_rebinds   producer retired -> 0
+ *   the four http_* counters   producer retired -> read back as 0 from the
+ *                         payload's own bytes 55..70, so JSON and UDP cannot
+ *                         disagree about what is being served */
 static size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
@@ -1391,6 +817,9 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	put_status(status, &status_length);
 	if (capacity == 0 || status_length < 71)
 		return 0;
+	AiusRecoveryStatus recovery;
+	aius_runtime_teensy_status(&g_runtime, &recovery);
+	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
@@ -1406,12 +835,14 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 		g_config.valid, (unsigned)g_config.error_code, g_config.error_message,
 		(unsigned long)g_config_error_count,
 		network_mode, status[12], status[13], status[14], status[15],
-		(status[1] != 0 && Ethernet.linkStatus() == LinkON) ? 1u : 0u,
-		(unsigned long)g_network_restarts, g_dhcp_pending ? 1u : 0u,
-		(unsigned long)g_dhcp_discover_count,
-		(unsigned long)g_dhcp_update_count,
-		(unsigned long)g_reset_source,
-		(unsigned long)g_http_server_rebinds,
+		aius_network_teensy_link(network) ==
+			AIUS_NETWORK_TEENSY_LINK_UP ? 1u : 0u,
+		(unsigned long)recovery.network_restarts,
+		aius_network_teensy_dhcp_pending(network) ? 1u : 0u,
+		0ul,
+		(unsigned long)network->dhcp_updates,
+		(unsigned long)recovery.reset_source,
+		0ul,
 		(double)g_cpu_temp_c, g_cpu_temp_valid ? 1u : 0u,
 		(double)g_cpu_temp_max_c,
 		g_cpu_temp_valid ? (unsigned long)(millis() - g_cpu_temp_sample_ms) : 0ul,
@@ -1455,374 +886,6 @@ static size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)
 	body[length++] = '}';
 	body[length] = 0;
 	return length;
-}
-
-static void http_send_content(unsigned status, const char *content_type,
-                              const uint8_t *body, size_t body_length)
-{
-	size_t response_length = aius_http_write_response(g_http_response,
-		sizeof(g_http_response), status, content_type, body, body_length);
-	uint32_t last_progress = millis();
-	size_t offset = 0;
-	for (; response_length != 0 && offset < response_length;) {
-		if (!g_http_client || !g_http_client.connected() ||
-			(uint32_t)(millis() - last_progress) > AIUS_HTTP_WRITE_STALL_MS)
-			break;
-		int available = g_http_client.availableForWrite();
-		if (available < 1)
-			continue;
-		size_t length = response_length - offset;
-		if (length > 512u)
-			length = 512u;
-		if ((size_t)available < length)
-			length = (size_t)available;
-		size_t written = g_http_client.write(g_http_response + offset, length);
-		if (written == 0)
-			continue;
-		last_progress = millis();
-		offset += written;
-	}
-	if (response_length != 0 && offset < response_length)
-		g_http_client_drops++;
-	g_http_client.stop();
-	g_http_client = EthernetClient();
-}
-
-static void http_send(unsigned status, const uint8_t *body, size_t body_length)
-{
-	http_send_content(status, "application/json", body, body_length);
-}
-
-static bool http_sd_path(const AiusHttpRequest *request, char *path,
-                         size_t capacity, const char **content_type);
-
-static bool http_sd_authorized(const AiusHttpRequest &request)
-{
-	return aius_auth_token_matches(g_auth_token, (const char *)request.sd_auth,
-	                               request.sd_auth_length) != 0;
-}
-
-static bool http_sd_resource_is_config(const AiusHttpRequest &request)
-{
-	return request.resource_length >= 11u &&
-		memcmp(request.resource + request.resource_length - 11u,
-		       "config.json", 11u) == 0;
-}
-
-static bool http_sd_upload_begin_target(const char *target,
-                                        const char *content_type,
-                                        bool config_upload, bool replay_upload,
-                                        uint32_t expected,
-                                        size_t initial_offset, size_t initial_end,
-                                        bool dsp_upload = false)
-{
-	if (sd_job_active() || target == nullptr || content_type == nullptr ||
-		strlen(target) >= sizeof(g_sd_job.target_path))
-		return false;
-	strncpy(g_sd_job.target_path, target, sizeof(g_sd_job.target_path));
-	if (!sd_job_make_upload_paths(g_sd_job.target_path))
-		return false;
-	g_sd_job.content_type = content_type;
-	g_sd_job.config_upload = config_upload;
-	g_sd_job.dsp_upload = dsp_upload;
-	g_sd_job.replay_upload = replay_upload;
-	g_sd_job.expected = expected;
-	g_sd_job.initial_offset = (uint32_t)initial_offset;
-	g_sd_job.initial_end = (uint32_t)initial_end;
-	g_sd_job.mkdir_offset = 6u;
-	g_sd_job.state = LEGACY_SD_JOB_UPLOAD_MKDIR;
-	return true;
-}
-
-static bool http_sd_upload_begin(const AiusHttpRequest &request,
-                                 uint32_t expected, size_t initial_offset,
-                                 size_t initial_end)
-{
-	char target[sizeof(g_sd_job.target_path)];
-	const char *content_type = nullptr;
-	if (!http_sd_path(&request, target, sizeof(target), &content_type))
-		return false;
-	if (!http_sd_upload_begin_target(target, content_type, false,
-	                                 request.route == AIUS_HTTP_ROUTE_SD_REPLAY,
-	                                 expected, initial_offset, initial_end))
-		return false;
-	if (request.route == AIUS_HTTP_ROUTE_SD_REPLAY) {
-		int part_length = snprintf(g_sd_job.temp_path, sizeof(g_sd_job.temp_path),
-		                           "/aius/replays/%.*s.part",
-		                           (int)request.replay_id_length, request.replay_id);
-		if (part_length < 0 || (size_t)part_length >= sizeof(g_sd_job.temp_path))
-			return false;
-		g_sd_job.replay_offset = request.content_range_start;
-		g_sd_job.replay_total = request.content_range_total;
-		g_sd_job.replay_final = request.content_range_end + 1u == request.content_range_total;
-		if (g_sd_job.replay_offset == 0u) {
-			(void)SD.remove(g_sd_job.temp_path);
-		} else {
-			File partial = SD.open(g_sd_job.temp_path, FILE_READ);
-			bool valid = partial && (uint32_t)partial.size() == g_sd_job.replay_offset;
-			if (partial) partial.close();
-			if (!valid) return false;
-		}
-	}
-	return true;
-}
-
-static bool http_sd_stage_upload(void)
-{
-	if (!sd_job_active() ||
-	    (g_sd_job.state != LEGACY_SD_JOB_UPLOAD_OPEN &&
-	     g_sd_job.state != LEGACY_SD_JOB_UPLOAD_RECEIVE) ||
-	    g_sd_job.pending_length != 0 ||
-	    g_sd_job.received == g_sd_job.expected)
-		return true;
-	size_t remaining = g_sd_job.expected - g_sd_job.received;
-	if (g_sd_job.initial_offset < g_sd_job.initial_end) {
-		size_t available = g_sd_job.initial_end - g_sd_job.initial_offset;
-		size_t length = available < remaining ? available : remaining;
-		if (length > sizeof(g_sd_job.transfer))
-			length = sizeof(g_sd_job.transfer);
-		memcpy(g_sd_job.transfer, g_http_request + g_sd_job.initial_offset,
-		       length);
-		g_sd_job.initial_offset += (uint32_t)length;
-		g_sd_job.pending_length = (uint16_t)length;
-		g_sd_job.received += (uint32_t)length;
-		return true;
-	}
-	if (!g_http_client.available())
-		return true;
-	size_t available = (size_t)g_http_client.available();
-	size_t length = available < remaining ? available : remaining;
-	if (length > sizeof(g_sd_job.transfer))
-		length = sizeof(g_sd_job.transfer);
-	int got = g_http_client.read(g_sd_job.transfer, length);
-	if (got <= 0)
-		/* NativeEthernet can report bytes available immediately before a
-		 * non-blocking read observes the socket transition. Treat that as
-		 * temporary lack of progress; the receive idle timer owns timeout. */
-		return true;
-	g_http_last_byte_ms = millis();
-	g_sd_job.pending_length = (uint16_t)got;
-	g_sd_job.received += (uint32_t)got;
-	return true;
-}
-
-static void http_sd_upload_receive_service(void)
-{
-	if (!http_sd_stage_upload()) {
-		g_sd_job.error_status = 507;
-		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
-		return;
-	}
-}
-
-static bool http_sd_path(const AiusHttpRequest *request, char *path,
-                         size_t capacity, const char **content_type)
-{
-	if (request != nullptr && request->route == AIUS_HTTP_ROUTE_SD_REPLAY &&
-	    request->replay_id != nullptr && request->replay_id_length > 0u &&
-	    request->replay_id_length <= AIUS_HTTP_MAX_REPLAY_ID) {
-		int written = snprintf(path, capacity, "/aius/replays/%.*s.iec",
-		                       (int)request->replay_id_length, request->replay_id);
-		if (written < 0 || (size_t)written >= capacity) return false;
-		*content_type = "application/octet-stream";
-		return true;
-	}
-	if (request == nullptr || request->resource == nullptr ||
-		request->resource_length < 5u || request->resource_length > 96u ||
-		memcmp(request->resource, "www/", 4) != 0)
-		return false;
-	const char *resource = (const char *)request->resource;
-	size_t component_length = 0u;
-	for (size_t i = 4u; i < request->resource_length; i++) {
-		uint8_t ch = request->resource[i];
-		if (ch == '%' || ch == '\\' || ch == 0u)
-			return false;
-		if (ch == '/') {
-			if (i == 4u || i + 1u == request->resource_length ||
-				request->resource[i - 1u] == '/' || component_length > 32u)
-				return false;
-			component_length = 0u;
-			continue;
-		}
-		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'))
-			return false;
-		component_length++;
-		if (component_length > 32u)
-			return false;
-	}
-	for (size_t i = 4u; i + 1u < request->resource_length; i++)
-		if (resource[i] == '.' && resource[i + 1u] == '.' &&
-			(i == 4u || resource[i - 1u] == '/') &&
-			(i + 2u == request->resource_length || resource[i + 2u] == '/'))
-			return false;
-	if (component_length > 32u)
-		return false;
-	unsigned components = 1u;
-	for (size_t i = 4u; i < request->resource_length; i++)
-		if (resource[i] == '/') {
-			components++;
-			if (components > 8u)
-				return false;
-		}
-	const char *type = "application/octet-stream";
-	if (request->resource_length >= 5u &&
-		memcmp(resource + request->resource_length - 5u, ".html", 5u) == 0)
-		type = "text/html; charset=utf-8";
-	else if (request->resource_length >= 3u &&
-		memcmp(resource + request->resource_length - 3u, ".js", 3u) == 0)
-		type = "application/javascript";
-	else if (request->resource_length >= 4u &&
-		memcmp(resource + request->resource_length - 4u, ".css", 4u) == 0)
-		type = "text/css";
-	else if (request->resource_length >= 5u &&
-		memcmp(resource + request->resource_length - 5u, ".json", 5u) == 0)
-		type = "application/json";
-	int written = snprintf(path, capacity, "/aius/%.*s",
-		(int)request->resource_length, request->resource);
-	if (written < 0 || (size_t)written >= capacity)
-		return false;
-	*content_type = type;
-	return true;
-}
-
-static void http_sd_request(const AiusHttpRequest &request)
-{
-	if (!g_sd_ready) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
-		http_send(503, body, sizeof(body) - 1);
-		return;
-	}
-	if (request.route == AIUS_HTTP_ROUTE_SD_STATUS) {
-		static const uint8_t body[] = "{\"ready\":true}";
-		http_send(200, body, sizeof(body) - 1);
-		return;
-	}
-	char path[sizeof(g_sd_job.target_path)];
-	const char *content_type = nullptr;
-	if (!http_sd_path(&request, path, sizeof(path), &content_type)) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_path\"}";
-		http_send(404, body, sizeof(body) - 1);
-		return;
-	}
-	if (request.method != AIUS_HTTP_GET && http_sd_resource_is_config(request)) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"config_public_only\"}";
-		http_send(403, body, sizeof(body) - 1);
-		return;
-	}
-	if (request.method == AIUS_HTTP_PUT || request.method == AIUS_HTTP_DELETE) {
-		if (!http_sd_authorized(request)) {
-			static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
-			http_send(401, body, sizeof(body) - 1);
-			return;
-		}
-	}
-	if (request.method == AIUS_HTTP_GET) {
-		if (sd_job_active()) {
-			static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
-			http_send(503, body, sizeof(body) - 1);
-			return;
-		}
-		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
-		g_sd_job.content_type = content_type;
-		g_sd_job.progress_ms = millis();
-		g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_OPEN;
-		return;
-	}
-	if (request.method == AIUS_HTTP_DELETE) {
-		if (sd_job_active()) {
-			static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
-			http_send(503, body, sizeof(body) - 1);
-			return;
-		}
-		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
-		g_sd_job.state = LEGACY_SD_JOB_DELETE;
-		return;
-	}
-	static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_upload\"}";
-	http_send(400, error, sizeof(error) - 1);
-}
-
-static void http_config_public_request(const AiusHttpRequest &request)
-{
-	if (!g_sd_ready) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
-		http_send(503, body, sizeof(body) - 1);
-		return;
-	}
-	AiusConfig parsed;
-	size_t length = g_http_request_length - g_http_body_offset;
-	AiusConfigErrorCode error = aius_config_parse(
-		g_http_request + g_http_body_offset, length, &parsed);
-	if (error != AIUS_CONFIG_OK) {
-		g_config = parsed;
-		g_config_error_count++;
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"config_invalid\"}";
-		http_send(400, body, sizeof(body) - 1);
-		return;
-	}
-	if (!http_sd_upload_begin_target("/aius/config.json", "application/json",
-								true, false, (uint32_t)length, g_http_body_offset,
-	                                g_http_request_length)) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
-		http_send(503, body, sizeof(body) - 1);
-		return;
-	}
-	g_pending_config = parsed;
-	g_config_upload_pending = true;
-	(void)request;
-}
-
-/* PUT /api/dsp/config: authenticated (X-Aius-SD-Auth), validated, bounded body.
- * On success this only makes the write to /aius/dsp.json durable and stages the
- * validated model -- it does NOT apply it. The actual apply (and
- * config_generation increment) happens at the next audio block boundary
- * (AiusAudioProcessor::enqueue), once service_sd_job() reaches
- * LEGACY_SD_JOB_UPLOAD_CLEANUP for this job. Invalid input, a stale
- * base_generation, or an SD failure all leave both SD and the active DSP
- * snapshot untouched. */
-static FLASHMEM void http_dsp_config_put_request(const AiusHttpRequest &request)
-{
-	if (!http_sd_authorized(request)) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
-		http_send(401, body, sizeof(body) - 1);
-		return;
-	}
-	if (!g_sd_ready) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
-		http_send(503, body, sizeof(body) - 1);
-		return;
-	}
-	size_t length = g_http_request_length - g_http_body_offset;
-	AiusDspModel parsed;
-	AiusDspConfigErrorCode error = aius_dsp_config_parse_put(
-		g_http_request + g_http_body_offset, length, &parsed);
-	if (error != AIUS_DSP_CONFIG_OK) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"dsp_config_invalid\"}";
-		http_send(400, body, sizeof(body) - 1);
-		return;
-	}
-	if (parsed.base_generation != g_config_generation) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"stale_generation\"}";
-		http_send(409, body, sizeof(body) - 1);
-		return;
-	}
-	/* The raw accepted body is written to SD verbatim (same pattern as
-	 * config_upload above) -- it already carries "source":"sd" and a
-	 * "base_generation" field, so it re-parses cleanly with the same
-	 * aius_dsp_config_parse_put() at the next boot/hot-reinsert
-	 * (stage_dsp_sd_override); the stale base_generation it then contains is
-	 * simply never read for anything at that point. */
-	if (!http_sd_upload_begin_target("/aius/dsp.json", "application/json",
-	                                 false, false, (uint32_t)length,
-	                                 g_http_body_offset, g_http_request_length,
-	                                 true)) {
-		static const uint8_t body[] = "{\"ok\":false,\"error\":\"sd_busy\"}";
-		http_send(503, body, sizeof(body) - 1);
-		return;
-	}
-	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
-	g_dsp_upload_pending = true;
 }
 
 static void reset_application(void)
@@ -1952,656 +1015,23 @@ static size_t http_replay_list_json(uint8_t *body, size_t capacity)
 	return length;
 }
 
-static bool http_replay_body_id(char *id, size_t capacity, bool *loop)
-{
-	const char *body = (const char *)g_http_request + g_http_body_offset;
-	const char *id_start = strstr(body, "\"id\":\"");
-	if (id_start == nullptr) return false;
-	id_start += 6;
-	const char *id_end = strchr(id_start, '"');
-	if (id_end == nullptr || (size_t)(id_end - id_start) == 0u ||
-	    (size_t)(id_end - id_start) >= capacity) return false;
-	memcpy(id, id_start, (size_t)(id_end - id_start));
-	id[id_end - id_start] = '\0';
-	*loop = strstr(body, "\"loop\":true") != nullptr;
-	return aius_replay_id_is_valid(id);
-}
-
-static void http_replay_request(const AiusHttpRequest &request)
-{
-	uint8_t body[AIUS_HTTP_MAX_RESPONSE];
-	if (!(request.route == AIUS_HTTP_ROUTE_REPLAYS_STATUS ||
-	      (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_GET)) &&
-	    !http_sd_authorized(request)) {
-		static const uint8_t unauthorized[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
-		http_send(401, unauthorized, sizeof(unauthorized) - 1u);
-		return;
-	}
-	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STATUS) {
-		size_t length = http_replay_status_json(body, sizeof(body));
-		http_send(200, body, length);
-		return;
-	}
-	if (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_GET) {
-		size_t length = http_replay_list_json(body, sizeof(body));
-		http_send(length == 0u ? 500u : 200u, body, length);
-		return;
-	}
-	if (request.route == AIUS_HTTP_ROUTE_REPLAYS && request.method == AIUS_HTTP_DELETE) {
-		char id[AIUS_REPLAY_MAX_ID_LENGTH + 1u] = {};
-		bool loop = false;
-		(void)loop;
-		if (!http_replay_body_id(id, sizeof(id), &loop)) {
-			static const uint8_t bad[] = "{\"ok\":false,\"error\":\"replay_body\"}";
-			http_send(400, bad, sizeof(bad) - 1u);
-			return;
-		}
-		if (strcmp(id, g_replay_service.id) == 0 &&
-		    g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY) {
-			static const uint8_t active[] = "{\"ok\":false,\"error\":\"replay_active\"}";
-			http_send(409, active, sizeof(active) - 1u);
-			return;
-		}
-		char path[96];
-		snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
-		if (!SD.exists(path)) {
-			static const uint8_t missing[] = "{\"ok\":false,\"error\":\"replay_not_found\"}";
-			http_send(404, missing, sizeof(missing) - 1u);
-			return;
-		}
-		if (!SD.remove(path)) {
-			static const uint8_t failed[] = "{\"ok\":false,\"error\":\"replay_delete\"}";
-			http_send(503, failed, sizeof(failed) - 1u);
-			return;
-		}
-		int length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"deleted\":\"%s\"}", id);
-		http_send(200, body, (size_t)length);
-		return;
-	}
-	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_STOP) {
-		aius_replay_service_stop(&g_replay_service);
-		static const uint8_t stopped[] = "{\"ok\":true,\"state\":\"stopped\"}";
-		http_send(200, stopped, sizeof(stopped) - 1u);
-		return;
-	}
-	if (request.route == AIUS_HTTP_ROUTE_REPLAYS_START) {
-		char id[AIUS_REPLAY_MAX_ID_LENGTH + 1u] = {};
-		bool loop = false;
-		if (!g_sd_ready || !http_replay_body_id(id, sizeof(id), &loop)) {
-			static const uint8_t bad[] = "{\"ok\":false,\"error\":\"replay_body\"}";
-			http_send(400, bad, sizeof(bad) - 1u);
-			return;
-		}
-		snprintf(g_replay_path, sizeof(g_replay_path), "/aius/replays/%s.iec", id);
-		File file = SD.open(g_replay_path, FILE_READ);
-		if (!file) { static const uint8_t missing[] = "{\"ok\":false,\"error\":\"replay_not_found\"}"; http_send(404, missing, sizeof(missing) - 1u); return; }
-		uint32_t bytes = (uint32_t)file.size(); file.close();
-		AiusStatus replay_status = aius_replay_service_start(&g_replay_service, id, bytes, loop, &g_replay_reader);
-		if (replay_status != AIUS_OK) { static const uint8_t failed[] = "{\"ok\":false,\"error\":\"replay_start\"}"; http_send(409, failed, sizeof(failed) - 1u); return; }
-		int length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"%s\"}", id);
-		http_send(200, body, (size_t)length);
-		return;
-	}
-	static const uint8_t unsupported[] = "{\"ok\":false,\"error\":\"replay_method\"}";
-	http_send(405, unsupported, sizeof(unsupported) - 1u);
-}
-
-static void http_handle_request(void)
-{
-	AiusHttpRequest request;
-	AiusHttpResult result = aius_http_parse(g_http_request, g_http_request_length, &request);
-	if (result != AIUS_HTTP_OK) {
-		static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"invalid_request\"}";
-		g_http_rejections++;
-		http_send(http_error_status(result), error_body, sizeof(error_body) - 1);
-		return;
-	}
-	g_http_requests++;
-	uint8_t body[AIUS_HTTP_MAX_RESPONSE];
-	size_t body_length = 0;
-	unsigned status = 200;
-	switch (request.route) {
-	case AIUS_HTTP_ROUTE_CONFIG_PUBLIC:
-		http_config_public_request(request);
-		return;
-	case AIUS_HTTP_ROUTE_REPLAYS:
-	case AIUS_HTTP_ROUTE_REPLAYS_STATUS:
-	case AIUS_HTTP_ROUTE_REPLAYS_START:
-	case AIUS_HTTP_ROUTE_REPLAYS_STOP:
-		http_replay_request(request);
-		return;
-	case AIUS_HTTP_ROUTE_SD_STATUS:
-	case AIUS_HTTP_ROUTE_SD_FILE:
-	case AIUS_HTTP_ROUTE_SD_REPLAY:
-		http_sd_request(request);
-		return;
-	case AIUS_HTTP_ROUTE_HOME:
-		body_length = http_home_page(body, sizeof(body));
-		if (body_length == 0) {
-			static const uint8_t error_body[] = "<p>response_too_large</p>";
-			http_send_content(500, "text/html; charset=utf-8", error_body,
-			                 sizeof(error_body) - 1);
-			return;
-		}
-		http_send_content(status, "text/html; charset=utf-8", body, body_length);
-		return;
-	case AIUS_HTTP_ROUTE_STATUS:
-		body_length = http_status_json(body, sizeof(body));
-		break;
-	case AIUS_HTTP_ROUTE_DSP_CONFIG:
-		if (request.method == AIUS_HTTP_PUT) {
-			http_dsp_config_put_request(request);
-			return;
-		}
-		body_length = http_dsp_config_json(g_dsp_config_body, sizeof(g_dsp_config_body));
-		http_send_content(status, "application/json", g_dsp_config_body, body_length);
-		return;
-	case AIUS_HTTP_ROUTE_EVENTS:
-		body_length = http_events_json(request.cursor, body, sizeof(body));
-		break;
-	case AIUS_HTTP_ROUTE_START:
-		if (!g_test_running) {
-			g_test_running = true;
-			record_event(2, current_state(), 1);
-		}
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"running\":true}");
-		break;
-	case AIUS_HTTP_ROUTE_STOP:
-		if (g_test_running) {
-			g_test_running = false;
-			record_event(2, current_state(), 0);
-		}
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"running\":false}");
-		break;
-	case AIUS_HTTP_ROUTE_CLEAR:
-		g_audio_processor.clear_counters();
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true}");
-		break;
-	case AIUS_HTTP_ROUTE_REBOOT:
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":true,\"rebooting\":true}");
-		http_send(status, body, (size_t)body_length);
-		delay(20);
-		reset_application();
-		return;
-	default:
-		status = 404;
-		body_length = snprintf((char *)body, sizeof(body), "{\"ok\":false}");
-		break;
-	}
-	if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
-		static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"response_too_large\"}";
-		http_send(500, error_body, sizeof(error_body) - 1);
-		return;
-	}
-	http_send(status, body, (size_t)body_length);
-}
-
-static void service_http(void)
-{
-	uint32_t started = micros();
-	if (sd_job_active()) {
-		bool transport_open = g_http_client &&
-			(g_http_client.connected() || g_http_client.available());
-		bool upload_waiting =
-			g_sd_job.state == LEGACY_SD_JOB_UPLOAD_OPEN ||
-			g_sd_job.state == LEGACY_SD_JOB_UPLOAD_RECEIVE;
-		bool download_waiting =
-			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_OPEN ||
-			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_HEADER ||
-			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_READ ||
-			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_WRITE;
-		bool upload_can_wait = upload_waiting &&
-			(g_sd_job.pending_length != 0u ||
-			 g_sd_job.received == g_sd_job.expected ||
-			 (uint32_t)(millis() - g_http_last_byte_ms) <= AIUS_SD_UPLOAD_STALL_MS);
-		bool download_can_wait = download_waiting &&
-			(uint32_t)(millis() - g_sd_job.progress_ms) <= AIUS_SD_DOWNLOAD_STALL_MS;
-		if (!transport_open && !upload_can_wait && !download_can_wait) {
-			g_http_client_drops++;
-			sd_job_cancel();
-			sd_job_drop_client();
-			return;
-		}
-		if (g_sd_job.state == LEGACY_SD_JOB_UPLOAD_OPEN ||
-		    g_sd_job.state == LEGACY_SD_JOB_UPLOAD_RECEIVE) {
-			http_sd_upload_receive_service();
-			if (g_sd_job.received < g_sd_job.expected &&
-			    g_sd_job.pending_length == 0u &&
-			    (uint32_t)(millis() - g_http_last_byte_ms) > AIUS_SD_UPLOAD_STALL_MS) {
-				g_http_client_drops++;
-				sd_job_cancel();
-				sd_job_drop_client();
-			}
-		}
-		return;
-	}
-	if (!g_http_server) {
-		g_http_server.begin();
-		g_http_server_rebinds++;
-		return;
-	}
-	if (!g_http_client || !g_http_client.connected()) {
-		EthernetClient candidate = g_http_server.accept();
-		if (candidate) {
-			if (g_http_client)
-				g_http_client_drops++;
-			g_http_client = candidate;
-			g_http_request_length = 0;
-			g_http_last_byte_ms = millis();
-		}
-	}
-	if (!g_http_client)
-		return;
-	while (g_http_client.available() && g_http_request_length < AIUS_HTTP_MAX_REQUEST) {
-		int value = g_http_client.read();
-		if (value < 0)
-			break;
-		g_http_request[g_http_request_length++] = (uint8_t)value;
-		g_http_last_byte_ms = millis();
-		if ((uint32_t)(micros() - started) >= 1500u)
-			break;
-	}
-	if (g_http_request_length >= sizeof(g_http_request)) {
-		g_http_rejections++;
-		static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"request_too_large\"}";
-		http_send(413, error_body, sizeof(error_body) - 1);
-	} else {
-		size_t body_offset = 0;
-		if (http_header_end(&body_offset)) {
-			g_http_body_offset = body_offset;
-			size_t expected_body = 0;
-			int body_result = http_expected_body(body_offset - 2u, &expected_body);
-			AiusHttpRequest request;
-			AiusHttpResult parse_result = aius_http_parse(g_http_request, body_offset,
-			                                             &request);
-			if (parse_result == AIUS_HTTP_OK &&
-			    (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
-			     request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
-			    request.method == AIUS_HTTP_PUT &&
-			    http_sd_resource_is_config(request)) {
-				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"config_public_only\"}";
-				http_send(403, error_body, sizeof(error_body) - 1);
-			} else if (parse_result == AIUS_HTTP_OK &&
-			           (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
-			            request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
-			           request.method == AIUS_HTTP_PUT &&
-			           !http_sd_authorized(request)) {
-				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_auth\"}";
-				http_send(401, error_body, sizeof(error_body) - 1);
-			} else if (parse_result == AIUS_HTTP_OK &&
-			           (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
-			            request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
-			           request.method == AIUS_HTTP_PUT && !g_sd_ready) {
-				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_unavailable\"}";
-				http_send(503, error_body, sizeof(error_body) - 1);
-			} else if (parse_result == AIUS_HTTP_OK &&
-			           (request.route == AIUS_HTTP_ROUTE_SD_FILE ||
-			            request.route == AIUS_HTTP_ROUTE_SD_REPLAY) &&
-			           request.method == AIUS_HTTP_PUT) {
-				if (body_result < 0 || !http_has_content_length(body_offset - 2u) ||
-				    g_http_request_length - body_offset > expected_body ||
-				    !http_sd_upload_begin(request, (uint32_t)expected_body,
-				                          body_offset, g_http_request_length)) {
-					sd_job_clear();
-					g_http_rejections++;
-					static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"sd_upload\"}";
-					http_send(body_result < 0 ? 413 : 507, error_body,
-					          sizeof(error_body) - 1);
-				} else {
-					/* Keep the already-received body in the request buffer until
-					 * the receipt state stages it. No SD call occurs here. */
-					return;
-				}
-			} else if (body_result < 0 || g_http_request_length - body_offset > expected_body) {
-				g_http_rejections++;
-				static const uint8_t error_body[] = "{\"ok\":false,\"error\":\"body_too_large\"}";
-				http_send(413, error_body, sizeof(error_body) - 1);
-			} else if (g_http_request_length - body_offset == expected_body)
-				http_handle_request();
-		}
-	}
-	if (g_http_client && (uint32_t)(millis() - g_http_last_byte_ms) > 150u) {
-		g_http_client_drops++;
-		g_http_client.stop();
-		g_http_client = EthernetClient();
-		g_http_request_length = 0;
-	}
-	if ((uint32_t)(micros() - started) > 2000u)
-		g_http_service_overruns++;
-}
-
-static void service_usb_control(void)
-{
-	while (Serial.available()) {
-		int value = Serial.read();
-		if (value < 0)
-			return;
-		AiusUsbEvent event;
-		if (!aius_usb_control_feed(&g_usb_parser, (uint8_t)value, &event))
-			continue;
-		size_t response_length;
-		if (event.type == AIUS_USB_EVENT_ERROR) {
-			response_length = aius_usb_control_write_error(g_usb_response,
-			                                             sizeof(g_usb_response), 0,
-			                                             event.error);
-		} else {
-			const uint32_t request_id = event.command.request_id;
-			switch (event.command.kind) {
-			case AIUS_USB_COMMAND_PROTOCOL:
-				response_length = aius_usb_control_write_ok(g_usb_response,
-				                                             sizeof(g_usb_response),
-				                                             request_id, "PROTOCOL", "1");
-				break;
-			case AIUS_USB_COMMAND_ID: {
-				char payload[192];
-				IPAddress ip = Ethernet.localIP();
-				snprintf(payload, sizeof(payload),
-						"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u link=%u dhcp_pending=%u dhcp_discovers=%lu dhcp_updates=%lu",
-				         AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
-				         ip[0], ip[1], ip[2], ip[3],
-				         (unsigned)Ethernet.linkStatus(), g_dhcp_pending ? 1u : 0u,
-				         (unsigned long)g_dhcp_discover_count,
-				         (unsigned long)g_dhcp_update_count);
-				response_length = aius_usb_control_write_ok(g_usb_response,
-				                                             sizeof(g_usb_response),
-				                                             request_id, "ID", payload);
-				break;
-			}
-			case AIUS_USB_COMMAND_AUTH:
-				response_length = aius_usb_control_write_ok(g_usb_response,
-				                                             sizeof(g_usb_response),
-				                                             request_id, "AUTH", g_auth_token);
-				break;
-			case AIUS_USB_COMMAND_BOOTLOADER:
-				response_length = aius_usb_control_write_ok(g_usb_response,
-				                                             sizeof(g_usb_response),
-				                                             request_id, "BOOTLOADER", "entering");
-				Serial.write((const uint8_t *)g_usb_response, response_length);
-				Serial.flush();
-				delay(20);
-				_reboot_Teensyduino_();
-				return;
-			default:
-				response_length = aius_usb_control_write_error(g_usb_response,
-				                                             sizeof(g_usb_response), 0,
-				                                             AIUS_USB_ERROR_INTERNAL);
-				break;
-			}
-		}
-		if (response_length != 0)
-			Serial.write((const uint8_t *)g_usb_response, response_length);
-	}
-}
-
-static void service_network(void)
-{
-	uint32_t started = micros();
-	int packet_size = g_udp.parsePacket();
-	if (packet_size <= 0)
-		return;
-	uint8_t packet[AIUS_NET_MAX_FRAME];
-	if (packet_size > (int)sizeof(packet)) {
-		g_network_drops++;
-		while (g_udp.available())
-			(void)g_udp.read();
-		return;
-	}
-	int got = g_udp.read(packet, sizeof(packet));
-	if (got != packet_size) {
-		g_network_drops++;
-		return;
-	}
-	AiusNetFrame request;
-	if (aius_net_decode(packet, (size_t)got, &request) != AIUS_NET_OK) {
-		g_network_drops++;
-		return;
-	}
-	uint8_t payload[AIUS_NET_MAX_PAYLOAD];
-	uint16_t length = 0;
-	switch (request.type) {
-	case AIUS_NET_CMD_DISCOVER:
-		put_status(payload, &length);
-		send_response(AIUS_NET_RSP_DISCOVERY, request.request_id,
-		              payload, length);
-		break;
-	case AIUS_NET_CMD_GET_STATUS:
-		put_status(payload, &length);
-		send_response(AIUS_NET_RSP_STATUS, request.request_id,
-		              payload, length);
-		break;
-	case AIUS_NET_CMD_CLEAR_COUNTERS:
-		g_audio_processor.clear_counters();
-		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
-		break;
-	case AIUS_NET_CMD_SET_MODE:
-	case AIUS_NET_CMD_SET_MIX:
-		/* Mode/mix selection is retired by the single-config model. The command
-		 * IDs remain in the binary protocol, but there is no selection to set, so
-		 * the device rejects them rather than silently no-op-acking. */
-		send_nack(request.request_id, AIUS_NET_ERR_TYPE);
-		break;
-	case AIUS_NET_CMD_START_TEST:
-		if (!g_test_running) {
-			g_test_running = true;
-			record_event(2, current_state(), 1);
-		}
-		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
-		break;
-	case AIUS_NET_CMD_STOP_TEST:
-		if (g_test_running) {
-			g_test_running = false;
-			record_event(2, current_state(), 0);
-		}
-		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
-		break;
-	case AIUS_NET_CMD_REBOOT:
-		send_response(AIUS_NET_RSP_ACK, request.request_id, nullptr, 0);
-		_reboot_Teensyduino_();
-		break;
-	case AIUS_NET_CMD_GET_EVENTS: {
-		uint32_t cursor = request.payload_len >= 4 ?
-			aius_net_get_u32(request.payload) : 0;
-		uint8_t count = 0;
-		uint32_t first = g_event_sequence > 8u ? g_event_sequence - 7u : 1u;
-		for (uint32_t sequence = first; sequence <= g_event_sequence && count < 4; sequence++) {
-			const AiusEvent &event = g_events[(sequence - 1u) % 8u];
-			if (event.sequence != sequence || event.sequence <= cursor)
-				continue;
-			uint8_t *dst = payload + 1 + count * 12;
-			aius_net_put_u32(dst, event.sequence);
-			aius_net_put_u32(dst + 4, event.uptime_ms);
-			dst[8] = event.type;
-			dst[9] = event.state;
-			aius_net_put_u16(dst + 10, event.detail);
-			count++;
-		}
-		payload[0] = count;
-		length = (uint16_t)(1 + count * 12);
-		send_response(AIUS_NET_RSP_EVENTS, request.request_id, payload, length);
-		break;
-	}
-	default:
-		send_nack(request.request_id, AIUS_NET_ERR_TYPE);
-		break;
-	}
-	if ((uint32_t)(micros() - started) > 2000u)
-		g_network_budget_overruns++;
-}
-
-static bool ensure_dhcp_client(bool restart)
-{
-	fnet_netif_desc_t netif = fnet_netif_get_default();
-	if (netif == nullptr)
-		return false;
-	fnet_dhcp_cln_desc_t client = fnet_dhcp_cln_get_by_netif(netif);
-	if (client != nullptr && fnet_dhcp_cln_is_enabled(client)) {
-		if (!restart)
-			return true;
-		fnet_dhcp_cln_release(client);
-	}
-	static fnet_dhcp_cln_params_t params = {};
-	params.netif = netif;
-	client = fnet_dhcp_cln_init(&params);
-	if (client == nullptr)
-		return false;
-	fnet_dhcp_cln_set_response_timeout(client, 250);
-	fnet_dhcp_cln_set_callback_discover(
-		client,
-		[](fnet_dhcp_cln_desc_t, fnet_netif_desc_t, void *) {
-			g_dhcp_discover_count++;
-		},
-		nullptr);
-	fnet_dhcp_cln_set_callback_updated(
-		client,
-		[](fnet_dhcp_cln_desc_t, fnet_netif_desc_t, void *) {
-			g_dhcp_update_count++;
-		},
-		nullptr);
-	return true;
-}
-
-static void activate_network(bool dhcp)
-{
-	g_dhcp = dhcp;
-	g_dhcp_pending = false;
-	g_dhcp_attempts = 0;
-	g_network_ready = true;
-	g_udp.begin(AIUS_NET_PORT);
-	g_http_server.begin();
-	Serial.printf("AIUS Ethernet ready: dhcp=%u ip=%u.%u.%u.%u link=%u\\n",
-	              g_dhcp ? 1u : 0u, Ethernet.localIP()[0], Ethernet.localIP()[1],
-	              Ethernet.localIP()[2], Ethernet.localIP()[3],
-	              (unsigned)Ethernet.linkStatus());
-}
-
-static void reset_network_service(void)
-{
-	if (sd_job_active())
-		sd_job_clear();
-	if (g_http_client)
-		g_http_client.stop();
-	g_http_client = EthernetClient();
-	g_http_request_length = 0;
-	g_udp.stop();
-	g_network_ready = false;
-	g_dhcp = false;
-	g_dhcp_pending = false;
-	g_ethernet_initialized = false;
-	g_dhcp_attempts = 0;
-	g_network_link_down_at = 0;
-	g_network_retry_at = millis() + AIUS_NETWORK_RETRY_MS;
-	g_network_restarts++;
-}
-
-static void supervise_network_link(void)
-{
-	if (!g_ethernet_initialized || !g_network_ready)
-		return;
-	if (Ethernet.linkStatus() != LinkOFF) {
-		g_network_link_down_at = 0;
-		return;
-	}
-	uint32_t now = millis();
-	if (g_network_link_down_at == 0)
-		g_network_link_down_at = now;
-	else if ((uint32_t)(now - g_network_link_down_at) >=
-		         AIUS_NETWORK_LINK_DEBOUNCE_MS)
-		reset_network_service();
-}
-
-static void start_network(void)
-{
-	/* NativeEthernet provides a bounded DHCP attempt. Static mode is used only
-	 * after DHCP fails, keeping the fallback usable on a direct cable. */
-	if (g_network_ready)
-		return;
-	if (g_dhcp_pending) {
-		if (Ethernet.localIP() != IPAddress(0, 0, 0, 0)) {
-			activate_network(true);
-			return;
-		}
-		if ((int32_t)(millis() - g_dhcp_deadline) < 0)
-			return;
-		g_dhcp_pending = false;
-		if (g_dhcp_attempts < 2u) {
-			g_ethernet_initialized = false;
-			g_network_retry_at = millis();
-			return;
-		}
-	}
-	if (g_ethernet_initialized && Ethernet.linkStatus() == LinkOFF) {
-		g_network_retry_at = millis() + 5000u;
-		return;
-	}
-	if (g_ethernet_initialized && Ethernet.linkStatus() == LinkON) {
-		if (g_dhcp_attempts < 2u) {
-			g_ethernet_initialized = false;
-			g_network_retry_at = millis();
-			return;
-		}
-		Serial.printf("AIUS Ethernet DHCP retry exhausted; static fallback begin\\n");
-		Ethernet.begin(g_mac, g_static_ip, IPAddress(0, 0, 0, 0),
-		              IPAddress(0, 0, 0, 0), g_static_mask);
-		if (Ethernet.localIP() != IPAddress(0, 0, 0, 0)) {
-			activate_network(false);
-			return;
-		}
-	}
-	if (g_ethernet_initialized) {
-		g_network_retry_at = millis() + 5000u;
-		return;
-	}
-	Serial.printf("AIUS Ethernet MAC configured=%02x:%02x:%02x:%02x:%02x:%02x\\n",
-	              g_mac[0], g_mac[1], g_mac[2], g_mac[3], g_mac[4], g_mac[5]);
-	Serial.printf("AIUS Ethernet init: DHCP begin reset_source=%lu\\n",
-	              (unsigned long)g_reset_source);
-	g_ethernet_initialized = true;
-	g_dhcp_attempts++;
-	/* Keep the synchronous library probe below the watchdog budget. The FNET
-	 * client below owns the subsequent bounded retry cycle. */
-	g_dhcp = Ethernet.begin(g_mac, 1000, 250) != 0;
-	byte actual_mac[6] = {};
-	Ethernet.MACAddress(actual_mac);
-	Serial.printf("AIUS Ethernet MAC actual=%02x:%02x:%02x:%02x:%02x:%02x\\n",
-	              actual_mac[0], actual_mac[1], actual_mac[2], actual_mac[3],
-	              actual_mac[4], actual_mac[5]);
-	Serial.printf("AIUS Ethernet DHCP result=%u link=%u\\n", g_dhcp ? 1u : 0u,
-	              (unsigned)Ethernet.linkStatus());
-	if (g_dhcp) {
-		activate_network(true);
-		return;
-	}
-	if (ensure_dhcp_client(true)) {
-		g_dhcp_pending = true;
-		g_dhcp_deadline = millis() + 5000u;
-		Serial.printf("AIUS Ethernet DHCP client enabled after link callback gap\\n");
-		return;
-	}
-	g_network_retry_at = millis() + 5000u;
-	Serial.printf("AIUS Ethernet unavailable: link=%u hardware=%u\\n",
-	              (unsigned)Ethernet.linkStatus(),
-	              (unsigned)Ethernet.hardwareStatus());
-}
-
 /* ------------------------------------------------------------------ */
-/* AiusOpticalApp adapters -- Phase 14 slice S1                        */
+/* AiusOpticalApp adapters -- Phase 14 slices S1 and S2b               */
 /*                                                                     */
 /* The twenty callbacks aius_optical_app.h declares, as thin adapters  */
-/* over the serializers and request-handler bodies above. This slice   */
-/* is additive: nothing constructs the dispatcher yet (slice S2a), and */
-/* the legacy setup()/loop() path below is untouched and still runs.   */
+/* over the serializers above. Slice S1 wrote them over the legacy     */
+/* handler bodies while both paths existed; slice S2b deleted the      */
+/* legacy path, so these adapters and the serializers they call are    */
+/* now the only implementation of every route.                         */
 /*                                                                     */
 /* Every definition carries FLASHMEM on the definition itself. GCC     */
 /* does not inherit a `section` attribute from a forward declaration,  */
-/* so a prototype-only FLASHMEM would silently leave the code in ITCM, */
-/* and this image has ~1.4 kB of ITCM left.                            */
+/* so a prototype-only FLASHMEM would silently leave the code in ITCM. */
 /* ------------------------------------------------------------------ */
 
 /* Records the reboot request; the runtime performs the reset after the
- * response has been written, so there is no equivalent here of the legacy
- * inline reset_application() call in http_handle_request(). volatile because
- * the store is the whole point of the callback and its only reader arrives
- * with slice S2a's loop(). */
+ * response has been written, so nothing resets inline here. volatile because
+ * the store is the whole point of the callback and its reader is loop(). */
 static volatile bool g_reboot_requested;
 
 static FLASHMEM bool app_sd_ready(void *)
@@ -2769,9 +1199,17 @@ static FLASHMEM void app_request_reboot(void *)
 	g_reboot_requested = true;
 }
 
-/* service_usb_control()'s ID and AUTH arms. The dispatcher answers PROTOCOL and
- * BOOTLOADER itself and asks for no payload, so any other kind is a refusal.
- * AUTH copies rather than formats so no new format literal is introduced. */
+/* The legacy USB service's ID and AUTH arms. The dispatcher answers PROTOCOL
+ * and BOOTLOADER itself and asks for no payload, so any other kind is a
+ * refusal. AUTH copies rather than formats so no new format literal is
+ * introduced.
+ *
+ * ID keeps its exact key set and ordering. Slice S2b moved its four network
+ * values off the vendor object: the address and DHCP state come from the
+ * adapter's accessors, `link` stays the same three-valued number because
+ * AiusNetworkTeensyLink is deliberately numbered like the vendor enum
+ * (Unknown/On/Off), and `dhcp_discovers` is served as zero because producing it
+ * would need a vendor patch for a diagnostic counter. */
 static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
                                              char *payload, size_t capacity)
 {
@@ -2784,14 +1222,17 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 	}
 	if (kind != AIUS_USB_COMMAND_ID)
 		return 0u;
-	IPAddress ip = Ethernet.localIP();
+	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
+	uint8_t address[4];
+	(void)aius_network_teensy_address(network, address);
 	int written = snprintf(payload, capacity,
 		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u link=%u dhcp_pending=%u dhcp_discovers=%lu dhcp_updates=%lu",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
-		ip[0], ip[1], ip[2], ip[3],
-		(unsigned)Ethernet.linkStatus(), g_dhcp_pending ? 1u : 0u,
-		(unsigned long)g_dhcp_discover_count,
-		(unsigned long)g_dhcp_update_count);
+		address[0], address[1], address[2], address[3],
+		(unsigned)aius_network_teensy_link(network),
+		aius_network_teensy_dhcp_pending(network) ? 1u : 0u,
+		0ul,
+		(unsigned long)network->dhcp_updates);
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
 }
 
@@ -2838,29 +1279,22 @@ const AiusOpticalApp g_aius_optical_app = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Runtime composition -- Phase 14 slice S2a                           */
+/* Runtime composition -- Phase 14 slices S2a and S2b                  */
 /*                                                                     */
 /* setup() constructs the delivered AiusRuntimeTeensy and returns;     */
-/* loop() runs exactly one epoch through it. Every legacy service      */
-/* above still compiles and is still defined, but nothing reaches it   */
-/* any more: slice S2b deletes the dead path, the NativeEthernet/FNET  */
-/* includes and the rebind globals in one commit.                      */
+/* loop() runs exactly one epoch through it. Slice S2b deleted the     */
+/* legacy path this replaced, so the runtime is now the only route     */
+/* from this file to any transport, SD or watchdog effect.             */
+/*                                                                     */
+/* g_runtime itself is defined near the top of the file, because the   */
+/* status surface reads its network adapter.                           */
 /*                                                                     */
 /* Every definition below carries FLASHMEM on the definition itself.   */
 /* None of it runs per audio block -- the platform callbacks run once  */
-/* per runtime epoch and the construction helpers exactly once -- and  */
-/* this image has ~2.1 kB of ITCM left, so a prototype-only FLASHMEM   */
-/* (which GCC does not inherit) would be a silent regression.          */
+/* per runtime epoch and the construction helpers exactly once -- so a */
+/* prototype-only FLASHMEM (which GCC does not inherit) would be a     */
+/* silent regression.                                                  */
 /* ------------------------------------------------------------------ */
-
-/* The composed runtime, in OCRAM because aius_runtime_teensy.h requires it:
- * the object is roughly 35 kB, dominated by the HTTP request/response buffers
- * (13,312 + 8,192 B) and the model-sized application body buffer (12,288 B),
- * against a 22,684-byte DTCM free-for-locals zone. A DTCM instance could not
- * fit, and a stack one could not exist at all. aius_runtime_teensy_construct()
- * initializes every member it reads, so OCRAM's lack of startup zeroing is
- * harmless -- the same argument g_http_request/g_http_response carry. */
-DMAMEM static AiusRuntimeTeensy g_runtime;
 
 /* Retained boot state, captured once in setup() and published every epoch by
  * the RESET_CAPTURE platform callback. The ledger is the boot adapter's, so
@@ -3099,11 +1533,21 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 /* The last checkpoint is persisted before each service call, through the boot
  * adapter's double-slot retained storage. A torn write cannot be read back as
  * valid: the slot's committed marker is cleared first and restored last, and
- * the CRC covers sequence and ledger together. */
+ * the CRC covers sequence and ledger together.
+ *
+ * aius_fault_checkpoint() is then given the same checkpoint. In a production
+ * image AIUS_FAULT_STALL_CHECKPOINT is undefined and it compiles to a return,
+ * so it costs one call; in a teensy41-optical-fault image built for checkpoint
+ * N it stalls forever the first time N is reached. The call belongs AFTER the
+ * commit, so the retained ledger records the checkpoint that stalled and the
+ * watchdog reset that follows is attributable -- which is exactly what the
+ * Phase 16a live recovery smoke measures. Without this call every fault image
+ * would be incapable of failing and that proof would be vacuous. */
 static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)
 {
 	aius_boot_record_checkpoint(&g_boot_ledger, checkpoint);
 	(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);
+	aius_fault_checkpoint(checkpoint);
 }
 
 /* The one watchdog feed, reached only from the scheduler's EPOCH_COMPLETE, and
@@ -3146,11 +1590,11 @@ static FLASHMEM void capture_retained_boot_state(void)
 	AiusBootInput input;
 
 	g_boot_primitives = aius_boot_teensy_hardware_primitives();
+	/* Read once: the adapter clears the bits it reports. The status surfaces
+	 * take the value back out of AiusRecoveryStatus, which carries the raw
+	 * word rather than the legacy low byte. */
 	const uint32_t raw_reset_source =
 		aius_boot_teensy_reset_source(&g_boot_primitives);
-	/* The legacy status surfaces still report the low byte; slice S2b moves
-	 * them onto AiusRecoveryStatus, which carries the raw value. */
-	g_reset_source = raw_reset_source & 0xffu;
 
 	aius_boot_storage_teensy_init(&g_boot_storage, &g_boot_primitives);
 	memset(&retained, 0, sizeof(retained));
@@ -3196,8 +1640,9 @@ void setup(void)
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();
 
+	/* No parser is initialized here: the runtime's USB service owns its own
+	 * AiusUsbRuntime, and the legacy one died with service_usb_control(). */
 	Serial.begin(115200);
-	aius_usb_control_init(&g_usb_parser);
 	derive_auth_token();
 	aius_replay_service_init(&g_replay_service);
 	aius_config_set_defaults(&g_config);

@@ -12,9 +12,10 @@ FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 VENDOR_ROOT = FIRMWARE_ROOT / "vendor" / "NativeEthernet"
 SOURCE_ROOT = VENDOR_ROOT / "src"
 
-TEMPORARY_INCLUDE_EXCEPTIONS = {
-    PurePosixPath("src/optical_main.cpp"),
-}
+# The one application-level owner of a vendor transport header, and now the
+# only one: Phase 14 slice S2b deleted optical_main.cpp's legacy blocking
+# network path together with its NativeEthernet and FNET includes, and removed
+# the exact-path exception that had carried it in the same commit.
 DESIGNATED_INCLUDE_OWNER = PurePosixPath("src/aius_network_teensy.cpp")
 
 TARGET_FUNCTIONS = (
@@ -464,21 +465,13 @@ def test_server_and_stack_teardown_are_idempotent_and_bounded():
     assert not unbounded_loop(stack_end)
 
 
-def test_application_transport_header_guard_and_temporary_exception():
+def test_application_transport_header_guard_has_one_owner():
     violations = repository_transport_include_violations()
-    assert set(violations) == (
-        TEMPORARY_INCLUDE_EXCEPTIONS | {DESIGNATED_INCLUDE_OWNER}
-    ), violations
+    assert set(violations) == {DESIGNATED_INCLUDE_OWNER}, violations
     assert violations[DESIGNATED_INCLUDE_OWNER] == [
         "NativeEthernet.h",
         "NativeEthernetUdp.h",
         "fnet.h",
-    ]
-    assert violations[PurePosixPath("src/optical_main.cpp")] == [
-        "NativeEthernet.h",
-        "NativeEthernetUdp.h",
-        "service/dhcp/fnet_dhcp_cln.h",
-        "stack/fnet_netif.h",
     ]
 
     synthetic = '#include "service/dhcp/fnet_dhcp_cln.h"\n'
@@ -498,7 +491,7 @@ def main():
     test_begin_and_dhcp_ownership_contract()
     test_client_write_is_capacity_bounded_and_single_attempt()
     test_server_and_stack_teardown_are_idempotent_and_bounded()
-    test_application_transport_header_guard_and_temporary_exception()
+    test_application_transport_header_guard_has_one_owner()
     print("NativeEthernet source contract: PASS")
 
 

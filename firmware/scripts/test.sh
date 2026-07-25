@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
-#         runtime-target.
+#         optical-cutover, runtime-target.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -373,6 +373,14 @@ sd)
 		"$fw_root/lib/aius_sd/src/aius_sd.c" \
 		-o "$sd_out"
 	"$sd_out"
+	;;
+optical-cutover)
+	# Structural regression suite for the Phase 14 runtime cutover: reads
+	# src/optical_main.cpp as text and asserts both what the post-cutover file
+	# must have (construction-only setup, one-epoch loop, one watchdog feed) and
+	# what it must not contain (static fallback, raw FNET, rebind globals,
+	# blocking socket writes, a second watchdog feed). Both groups run.
+	python3 "$fw_root/test/optical-cutover/test_optical_cutover.py"
 	;;
 optical-app)
 	# Optical application dispatch: one bounded decision per HTTP route and USB
