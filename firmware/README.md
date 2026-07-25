@@ -129,6 +129,43 @@ returns an `UPLOAD` job, and the client's 200 is withheld until that write
 commits. One job runs at a time and neither owner preempts the other — a boot
 load that lands mid-upload waits, so a config can be late but never lost.
 
+### Provisioning the card, and the token you must keep
+
+The device serves its own control surface from the card, and every write to it
+over HTTP needs the SD maintenance token. **Read the token over USB and record it
+before the board is deployed without a USB host** — USB is the only channel that
+discloses it, so once the cable is gone there is no way to recover it from the
+device.
+
+```text
+$ AIUS AUTH 3
+AIUS/1 OK 3 AUTH 6b3ff32e4c2505cc
+```
+
+It is stable for the life of the board: `derive_auth_token()` derives it from the
+MAC words fused into the chip at manufacture, so it survives reboots, reflashes
+and card swaps, and it is unique per board. Keep it in the estate's secret store
+rather than in this repository — it authorises network writes to the card. If it
+is lost, reattaching USB and reading it again is the only recovery. Full contract:
+[`docs/reference/usb-control-protocol.md`](../docs/reference/usb-control-protocol.md).
+
+Upload the web tree with:
+
+```bash
+tools/aius-sd-sync.sh --device http://<address> --www sd/www --token <token>
+```
+
+The tool retries each file. That is not decoration: the device serves one HTTP
+client at a time and drops a connection arriving before the previous one is
+released, so a sequential run hits that window roughly once in ten uploads. A
+large upload has also been seen to fail once with `500 sd_failure` and succeed on
+retry, which is an open defect rather than an understood one — see the plan's
+Phase 14f notes before assuming a failed sync is benign.
+
+Confirm the result by opening `/sd/www/` in a browser: the directory index lists
+every file with its size, so a truncated or missing upload is visible rather than
+being indistinguishable from a file you simply have not requested.
+
 ### Recovery model
 
 **The watchdog is armed at a pinned 8 s and fed exactly once per complete

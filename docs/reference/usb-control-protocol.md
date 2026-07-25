@@ -163,6 +163,41 @@ or partial `ID` line.
 Commands are parsed in the main loop and never from the audio interrupt. The
 bootloader action is dispatched only by the USB CDC command handler.
 
+## The SD maintenance token
+
+**Read it over USB, then keep it — USB is the only channel that will ever tell
+you.** Every write to the card over HTTP requires it, so once the board is
+deployed without a USB host attached there is no way to recover it from the
+device.
+
+```text
+$ AIUS AUTH 3
+AIUS/1 OK 3 AUTH 6b3ff32e4c2505cc
+```
+
+Sixteen lowercase hexadecimal characters. Supply it to `PUT` and `DELETE` on
+`/sd/…` as the `X-Aius-SD-Auth` header, or to
+[`tools/aius-sd-sync.sh`](../../firmware/tools/aius-sd-sync.sh) as `--token` or
+the `AIUS_SD_AUTH` environment variable.
+
+**It is stable for the life of the board.** `derive_auth_token()`
+(`firmware/src/optical_main.cpp`) derives it from `HW_OCOTP_MAC0/1/2`, the MAC
+fused into the chip at manufacture, so it survives reboots, reflashes and SD card
+changes, and it is unique per board. Recording it once is enough. It would change
+only if the derivation itself changed, which is a firmware change and would be a
+breaking one for anything holding a stored copy.
+
+**Do not commit it to this repository.** It is a credential that authorises
+writes to the card over the network. Keep it in whatever secret store the rest of
+the estate uses, keyed by board. If it is lost, reattach USB and read it again —
+that is the only recovery, which is precisely why it is worth recording before
+the USB host goes away.
+
+Reading it is not privileged beyond physical access: the command is answered on
+the CDC channel to anyone attached to it. The protection model is that the token
+never leaves the board over HTTP or UDP, so a network attacker cannot obtain it
+from the device.
+
 ## Bootloader entry
 
 **The response is transmitted to the host before the device leaves the
