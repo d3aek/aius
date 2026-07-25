@@ -4917,6 +4917,53 @@ replies, so it could not distinguish an unanswered request from an answered one.
 The measurement script now reads each reply and reports boot generation and reset
 source between attempts.
 
+#### Readiness gate — measured, and it works
+
+Flashed and measured. The board now reaches service on its **first** network
+generation:
+
+| | before | after |
+|---|---|---|
+| `network_generation` | 2 | **1** |
+| `network_last_fault` | 1 `DHCP_TIMEOUT` | **0** |
+| `network_restarts` | 1 | **0** |
+| `net_diag.first` | a failed generation | **null** |
+| `dhcp_state_at_end` | 2 `SELECTING` | 5 `BOUND` |
+
+No teardown, no backoff, no failed generation. The board no longer needs a
+failure-and-recovery cycle to get online.
+
+The timings are worth reading rather than just the verdict. `beginNoWait()`
+returned at 1,625 ms; the gate then held `STACK_STARTED` until **3,010 ms**,
+waiting 1,385 ms for the first ambient frame to prove the interface was receiving.
+So the receive path really did take well over a second beyond the link reporting
+up — the gate is measuring something real, not padding.
+
+DHCP then bound at 7,013 ms, about 4,000 ms after it started. That is almost
+exactly FNET's DISCOVER retransmit interval, which says the *first* DISCOVER still
+went unanswered and the retransmit carried it. The transmit path evidently settles
+later than the receive path. The gate's value is that the whole exchange now fits
+inside one 5 s deadline instead of exhausting it, so the attempt succeeds where it
+previously had to fail and be retried on a fresh generation.
+
+That also means there is more to reclaim here if boot time ever matters: the
+remaining ~4 s is a lost first DISCOVER, not waiting. Nothing further should be
+done about it without measuring the transmit side the way the receive side was
+measured.
+
+#### The SD directory index, and what it immediately found
+
+`GET /sd/<dir>/` serves a listing on the device. Its first use found that the
+card's contents are stale against the repository: `replays.css` is 0 bytes on the
+card and downloads as 0, `replays.js` is 5,586 bytes against 6,799, and
+`index.html`, `dsp-editor.css` and `dsp-editor.js` are absent entirely — an old,
+partly-failed sync.
+
+That is the feature working. The condition was undiagnosable before, because a
+file could only be fetched by a name you already knew, and a truncated upload
+looked identical to a missing one. Re-sync with `tools/aius-sd-sync.sh` before the
+control surface is used for anything.
+
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
 validation log with one verdict per assumption and the evidence for it. A refuted
