@@ -25,6 +25,31 @@ supersedes the separate execution handoffs both documents previously carried. Bo
 plans are active, they share one critical path, and neither finishes without the
 other.
 
+### Deciding principle
+
+**Audio hot-path reliability decides every trade-off. Everything else is lower
+priority.** Recorded 2026-07-25 as the standing tie-breaker for the rest of this
+work, and it is not a tie-breaker of last resort — it is the first question to ask
+of any choice.
+
+Concretely, when a decision is contested:
+
+- A feature that cannot be made safe for the audio path is dropped or deferred,
+  not accommodated. Refusing a route is an acceptable outcome; risking a block
+  callback is not. The `POST /api/replays/start` refusal from S2a is this rule
+  applied.
+- ITCM headroom belongs to code that genuinely runs per audio block. Anything
+  else is `FLASHMEM` on each definition, and a slice that cannot hold to that is
+  re-scoped rather than granted an exception.
+- A bounded primitive beats a smaller diff. Where those conflict — as they did
+  when growing the SD transfer slice would have made every primitive a 12 KB
+  blocking call — the bound wins.
+- Memory that is genuinely free is not an argument. OCRAM is plentiful and DTCM's
+  free-for-locals zone is not; a change that spends the scarce bank to save the
+  plentiful one is backwards.
+- When a diagnostic or convenience field cannot be produced without reaching into
+  a path that touches the audio timing budget, serve it as absent and say so.
+
 ### Resume here
 
 **B3, Phase 14, is 7 of 11 slices in.** S0, P1a, P1b, R1, R2, P2 and S1 are
@@ -33,9 +58,15 @@ delivered and pushed; the breakdown and per-slice commits are in
 with the findings that forced the re-scope under "Prebuild review findings".
 
 **Next up is S2a**, which constructs the runtime and is the first slice that stops
-being additive. It needs the replay decision below settled first, because S2a is
-where `replay_start` must start refusing. S2b then deletes the legacy path; S3,
-S4 and S5 follow in order.
+being additive. S2b then deletes the legacy path; S3, S4 and S5 follow in order,
+then 14b, 14c and 14d.
+
+**Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
+the rest of this plan proceed without per-decision sign-off, resolved against
+§Deciding principle above, with a clean-room audit at the end for review rather
+than a decision gate at each step. Record each decision and its reasoning here as
+it is taken, so the audit has something to check and a later session is not left
+guessing why. Escalate only what the principle genuinely cannot resolve.
 
 Decisions already taken, so do not re-open them:
 
