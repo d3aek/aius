@@ -622,6 +622,20 @@ void aius_usb_runtime_step(
 	if (runtime == NULL || !runtime->valid)
 		return;
 
+	/* Reaching a step with the terminal state still set means the previous
+	 * step's ENTER_BOOTLOADER action returned instead of handing the board
+	 * to HalfKay, so the transition failed. Recover to IDLE: a one-shot
+	 * latch here would swallow every later AIUS BOOTLOADER without even a
+	 * response, which is the difference between "retry the command" and "the
+	 * board needs its Program button". */
+	if (runtime->state == AIUS_USB_RUNTIME_ENTER_BOOTLOADER) {
+		if (runtime->bootloader_entry_failures != UINT32_MAX)
+			runtime->bootloader_entry_failures++;
+		/* The parser is kept: the failed request was a complete line, and
+		 * a following line may already be part-fed. */
+		runtime_clear_transaction(runtime, false);
+	}
+
 	entry_state = runtime->state;
 	expected_write = runtime->write_outstanding;
 	rx_valid = (input.rx == NULL) == (input.rx_length == 0u);
@@ -668,6 +682,8 @@ void aius_usb_runtime_step(
 		return;
 	}
 
+	/* Emitted this step: the composition has yet to act on it, so nothing
+	 * else may run. The next step recovers the transaction above. */
 	if (runtime->state == AIUS_USB_RUNTIME_ENTER_BOOTLOADER)
 		return;
 

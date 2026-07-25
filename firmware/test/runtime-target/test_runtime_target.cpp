@@ -61,6 +61,15 @@ uint32_t micros(void)
 	return ++g_micros_now;
 }
 
+static uint32_t g_millis_now;
+
+/* Always advances: a stalled clock would hang the very drain loop the
+ * bootloader bound exists to cap. */
+uint32_t millis(void)
+{
+	return ++g_millis_now;
+}
+
 /* ------------------------------------------------------------------ */
 /* fake CDC / Serial                                                   */
 /* ------------------------------------------------------------------ */
@@ -68,6 +77,11 @@ uint32_t micros(void)
 struct SerialFake {
 	bool connected;
 	int available_for_write;
+	/* Transmit-ring drain script: after `drain_after_polls` further
+	 * availableForWrite() calls the ring reports `drained_available`, which
+	 * models the host retiring the queued transfer. Zero disables it. */
+	unsigned drain_after_polls;
+	int drained_available;
 	const uint8_t *rx;
 	size_t rx_length;
 	size_t rx_offset;
@@ -78,6 +92,10 @@ struct SerialFake {
 	unsigned read_calls;
 	unsigned write_calls;
 	unsigned capacity_calls;
+	unsigned flush_calls;
+	/* flush_calls sampled when _reboot_Teensyduino_() ran, so "flushed
+	 * before handing over" is provable rather than inferred. */
+	unsigned flush_calls_at_reboot;
 };
 
 static SerialFake g_serial;
@@ -100,6 +118,9 @@ int FakeUsbSerial::read()
 int FakeUsbSerial::availableForWrite()
 {
 	g_serial.capacity_calls++;
+	if (g_serial.drain_after_polls != 0u &&
+	    --g_serial.drain_after_polls == 0u)
+		g_serial.available_for_write = g_serial.drained_available;
 	return g_serial.available_for_write;
 }
 
@@ -116,9 +137,15 @@ size_t FakeUsbSerial::write(const uint8_t *data, size_t length)
 	return accepted;
 }
 
+void FakeUsbSerial::flush()
+{
+	g_serial.flush_calls++;
+}
+
 void _reboot_Teensyduino_(void)
 {
 	g_serial.reboots++;
+	g_serial.flush_calls_at_reboot = g_serial.flush_calls;
 }
 
 /* A scriptable CDC primitive table independent of the Serial fake, so the
@@ -128,12 +155,24 @@ struct CdcFake {
 	bool connected;
 	int read_value;
 	int capacity_value;
+	/* Transmit-ring drain script, as SerialFake's: after this many further
+	 * available_for_write() calls the ring reports drained_capacity_value.
+	 * Zero leaves capacity_value alone, so a ring that never returns to its
+	 * high-water mark models a host that never takes the response. */
+	unsigned drain_after_polls;
+	int drained_capacity_value;
 	size_t write_result;
+	uint32_t millis_value;
+	uint32_t millis_step;
 	unsigned connected_calls;
 	unsigned read_calls;
 	unsigned capacity_calls;
 	unsigned write_calls;
+	unsigned flush_calls;
+	unsigned millis_calls;
 	unsigned bootloader_calls;
+	/* flush_calls sampled when the entry primitive ran. */
+	unsigned flush_calls_at_entry;
 	size_t last_write_length;
 };
 
@@ -157,6 +196,9 @@ static int cdc_available_for_write(void *context)
 {
 	CHECK(context == g_cdc.expected_context);
 	g_cdc.capacity_calls++;
+	if (g_cdc.drain_after_polls != 0u &&
+	    --g_cdc.drain_after_polls == 0u)
+		g_cdc.capacity_value = g_cdc.drained_capacity_value;
 	return g_cdc.capacity_value;
 }
 
@@ -169,10 +211,28 @@ static size_t cdc_write(void *context, const uint8_t *data, size_t length)
 	return g_cdc.write_result != 0u ? g_cdc.write_result : length;
 }
 
+static void cdc_flush(void *context)
+{
+	CHECK(context == g_cdc.expected_context);
+	g_cdc.flush_calls++;
+}
+
+static uint32_t cdc_millis(void *context)
+{
+	CHECK(context == g_cdc.expected_context);
+	g_cdc.millis_calls++;
+	/* Always advances, whatever the test scripted: a stalled clock would
+	 * hang the drain loop the bootloader bound exists to cap. */
+	g_cdc.millis_value +=
+		g_cdc.millis_step != 0u ? g_cdc.millis_step : 1u;
+	return g_cdc.millis_value;
+}
+
 static void cdc_enter_bootloader(void *context)
 {
 	CHECK(context == g_cdc.expected_context);
 	g_cdc.bootloader_calls++;
+	g_cdc.flush_calls_at_entry = g_cdc.flush_calls;
 }
 
 static AiusCdcTeensyPrimitives cdc_primitives(void)
@@ -185,6 +245,8 @@ static AiusCdcTeensyPrimitives cdc_primitives(void)
 	primitives.read = cdc_read;
 	primitives.available_for_write = cdc_available_for_write;
 	primitives.write = cdc_write;
+	primitives.flush = cdc_flush;
+	primitives.millis = cdc_millis;
 	primitives.enter_bootloader = cdc_enter_bootloader;
 	g_cdc.expected_context = &g_cdc;
 	return primitives;
@@ -1069,7 +1131,8 @@ static void test_cdc_adapter(void)
 		"cdc.write.would-block",    "cdc.write.closed",
 		"cdc.write.oversize",       "cdc.write.bad-length",
 		"cdc.fault.saturates",      "cdc.bootloader",
-		"cdc.serial.table"
+		"cdc.bootloader.drain",     "cdc.bootloader.drain-bounded",
+		"cdc.bootloader.no-clock",  "cdc.serial.table"
 	};
 	AiusCdcTeensyPrimitives primitives = cdc_primitives();
 	AiusCdcTeensy adapter;
@@ -1078,14 +1141,14 @@ static void test_cdc_adapter(void)
 	uint8_t byte = 0u;
 	uint8_t payload[8] = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u};
 
-	validate_unique_keys("registry.cdc", keys, ARRAY_COUNT(keys), 19u);
+	validate_unique_keys("registry.cdc", keys, ARRAY_COUNT(keys), 22u);
 
 	current_key = "cdc.primitives.complete";
 	CHECK(aius_cdc_teensy_primitives_complete(&primitives));
 
 	current_key = "cdc.primitives.incomplete";
 	CHECK(!aius_cdc_teensy_primitives_complete(nullptr));
-	for (size_t i = 0; i < 5u; ++i) {
+	for (size_t i = 0; i < 7u; ++i) {
 		AiusCdcTeensyPrimitives broken = primitives;
 
 		switch (i) {
@@ -1093,6 +1156,8 @@ static void test_cdc_adapter(void)
 		case 1: broken.read = nullptr; break;
 		case 2: broken.available_for_write = nullptr; break;
 		case 3: broken.write = nullptr; break;
+		case 4: broken.flush = nullptr; break;
+		case 5: broken.millis = nullptr; break;
 		default: broken.enter_bootloader = nullptr; break;
 		}
 		CHECK(!aius_cdc_teensy_primitives_complete(&broken));
@@ -1260,8 +1325,111 @@ static void test_cdc_adapter(void)
 	{
 		const unsigned before = g_cdc.bootloader_calls;
 
+		/* The ring is already at the high-water mark this adapter has
+		 * seen, so the drain observes it on its first poll and the entry
+		 * is immediate -- but the flush still precedes it. */
+		g_cdc.capacity_value = 4096;
+		g_cdc.drain_after_polls = 0u;
+		g_cdc.flush_calls = 0u;
 		ops.enter_bootloader(ops.context);
 		CHECK(g_cdc.bootloader_calls == before + 1u);
+		CHECK(g_cdc.flush_calls == 1u);
+		CHECK(g_cdc.flush_calls_at_entry == 1u);
+		CHECK(adapter.tx_free_high_water == 4096u);
+		CHECK(adapter.bootloader_drained);
+	}
+
+	/* The defect this drain exists for: Serial.write() reports bytes
+	 * buffered, not transmitted, so a full-length write event is not
+	 * evidence the host has the response. The adapter must poll the ring
+	 * back to its idle free space before handing the board to HalfKay. */
+	current_key = "cdc.bootloader.drain";
+	{
+		AiusCdcTeensy drain_adapter;
+		AiusCdcTeensyOps drain_ops;
+		unsigned polls_before;
+
+		g_cdc.connected = true;
+		g_cdc.capacity_value = 6144;
+		g_cdc.drain_after_polls = 0u;
+		g_cdc.flush_calls = 0u;
+		g_cdc.millis_calls = 0u;
+		g_cdc.millis_value = 0u;
+		g_cdc.millis_step = 1u;
+		g_cdc.bootloader_calls = 0u;
+		aius_cdc_teensy_construct(&drain_adapter, &primitives);
+		drain_ops = aius_cdc_teensy_ops(&drain_adapter);
+
+		/* One ordinary idle epoch fixes the ring's idle capacity. */
+		CHECK(drain_ops.write_capacity(drain_ops.context) == 64u);
+		CHECK(drain_adapter.tx_free_high_water == 6144u);
+
+		/* The response is queued: the ring stays short of idle until the
+		 * host retires the transfer four polls later. */
+		g_cdc.capacity_value = 4096;
+		g_cdc.drained_capacity_value = 6144;
+		g_cdc.drain_after_polls = 4u;
+		polls_before = g_cdc.capacity_calls;
+		drain_ops.enter_bootloader(drain_ops.context);
+		CHECK(g_cdc.capacity_calls == polls_before + 4u);
+		CHECK(g_cdc.flush_calls == 1u);
+		CHECK(g_cdc.flush_calls_at_entry == 1u);
+		CHECK(g_cdc.bootloader_calls == 1u);
+		CHECK(drain_adapter.bootloader_drained);
+		CHECK(drain_adapter.bootloader_drain_ms <
+		      AIUS_CDC_TEENSY_DRAIN_BOUND_MS);
+	}
+
+	current_key = "cdc.bootloader.drain-bounded";
+	{
+		AiusCdcTeensy stuck_adapter;
+		AiusCdcTeensyOps stuck_ops;
+
+		g_cdc.capacity_value = 6144;
+		g_cdc.drain_after_polls = 0u;
+		g_cdc.flush_calls = 0u;
+		g_cdc.millis_calls = 0u;
+		g_cdc.millis_value = 0u;
+		g_cdc.millis_step = 1u;
+		g_cdc.bootloader_calls = 0u;
+		aius_cdc_teensy_construct(&stuck_adapter, &primitives);
+		stuck_ops = aius_cdc_teensy_ops(&stuck_adapter);
+		CHECK(stuck_ops.write_capacity(stuck_ops.context) == 64u);
+
+		/* A host that never takes the transfer must cost a bounded stall,
+		 * not the board: entry still happens. */
+		g_cdc.capacity_value = 4096;
+		stuck_ops.enter_bootloader(stuck_ops.context);
+		CHECK(!stuck_adapter.bootloader_drained);
+		CHECK(stuck_adapter.bootloader_drain_ms ==
+		      AIUS_CDC_TEENSY_DRAIN_BOUND_MS);
+		CHECK(g_cdc.flush_calls == 1u);
+		CHECK(g_cdc.bootloader_calls == 1u);
+		CHECK(g_cdc.flush_calls_at_entry == 1u);
+	}
+
+	current_key = "cdc.bootloader.no-clock";
+	{
+		AiusCdcTeensyPrimitives clockless = primitives;
+		AiusCdcTeensy clockless_adapter;
+		AiusCdcTeensyOps clockless_ops;
+
+		clockless.millis = nullptr;
+		g_cdc.capacity_value = 4096;
+		g_cdc.drain_after_polls = 0u;
+		g_cdc.flush_calls = 0u;
+		g_cdc.millis_calls = 0u;
+		g_cdc.bootloader_calls = 0u;
+		aius_cdc_teensy_construct(&clockless_adapter, &clockless);
+		clockless_ops = aius_cdc_teensy_ops(&clockless_adapter);
+
+		/* No clock means no bound, so there is no wait at all rather than
+		 * an unbounded one. */
+		clockless_ops.enter_bootloader(clockless_ops.context);
+		CHECK(g_cdc.millis_calls == 0u);
+		CHECK(g_cdc.flush_calls == 1u);
+		CHECK(g_cdc.bootloader_calls == 1u);
+		CHECK(clockless_adapter.bootloader_drain_ms == 0u);
 	}
 
 	current_key = "cdc.serial.table";
@@ -1294,8 +1462,18 @@ static void test_cdc_adapter(void)
 		                        sizeof(line));
 		CHECK(event.result == AIUS_IO_PROGRESS && event.bytes == 2u);
 		CHECK(g_serial.tx_length == 2u && g_serial.tx[0] == 'A');
+		/* The production table drains through the same path: the ring
+		 * returns to its idle free space three polls after the flush, and
+		 * only then is _reboot_Teensyduino_() reached. */
+		g_serial.available_for_write = 64;
+		g_serial.drained_available = 128;
+		g_serial.drain_after_polls = 3u;
 		serial_ops.enter_bootloader(serial_ops.context);
 		CHECK(g_serial.reboots == 1u);
+		CHECK(g_serial.flush_calls == 1u);
+		CHECK(g_serial.flush_calls_at_reboot == 1u);
+		CHECK(g_serial.drain_after_polls == 0u);
+		CHECK(serial_adapter.bootloader_drained);
 		g_serial.connected = false;
 		CHECK(!serial_ops.connected(serial_ops.context));
 		event = serial_ops.read_byte(serial_ops.context, &byte);
@@ -1557,15 +1735,15 @@ static void test_usb_tx(void)
 	static const char *const keys[] = {
 		"tx.protocol-round-trip", "tx.id-payload",
 		"tx.zero-capacity",       "tx.partial-write",
-		"tx.bootloader",          "tx.disconnect-clears",
-		"tx.rx-terminal"
+		"tx.bootloader",          "tx.bootloader-retry",
+		"tx.disconnect-clears",   "tx.rx-terminal"
 	};
 	const AiusRuntimeBudget *rx_budget =
 		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_USB_RX);
 	const AiusRuntimeBudget *tx_budget =
 		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_USB_TX);
 
-	validate_unique_keys("registry.tx", keys, ARRAY_COUNT(keys), 7u);
+	validate_unique_keys("registry.tx", keys, ARRAY_COUNT(keys), 8u);
 
 	current_key = "tx.protocol-round-trip";
 	reset_world(false);
@@ -1658,10 +1836,35 @@ static void test_usb_tx(void)
 	                                  &g_runtime.app));
 	CHECK(g_cdc.bootloader_calls == 1u);
 	CHECK(g_runtime.usb.bootloader_entered);
-	/* One-shot: later epochs emit nothing. */
+	CHECK(g_cdc.flush_calls == 1u);
+	CHECK(g_cdc.flush_calls_at_entry == 1u);
+	/* The entry primitive returned, so HalfKay was not reached and the board
+	 * is still running. The next epoch releases the terminal state instead
+	 * of latching it, and emits nothing on its own. */
 	CHECK(aius_runtime_usb_tx_service(&g_runtime.usb, tx_budget, 3u,
 	                                  &g_runtime.app));
 	CHECK(g_cdc.bootloader_calls == 1u);
+	CHECK(g_runtime.usb.runtime.state == AIUS_USB_RUNTIME_IDLE);
+	CHECK(g_runtime.usb.runtime.bootloader_entry_failures == 1u);
+
+	current_key = "tx.bootloader-retry";
+	/* A repeat request over the same runtime is answered and entered again.
+	 * A one-shot latch here would swallow it silently and leave the Program
+	 * button as the only way back into the loader. */
+	(void)serial_command(&g_runtime.usb, "AIUS BOOTLOADER 4\n");
+	CHECK(aius_runtime_usb_tx_service(&g_runtime.usb, tx_budget, 4u,
+	                                  &g_runtime.app));
+	CHECK(strcmp(g_runtime.usb.usb_verb, "BOOTLOADER") == 0);
+	CHECK(aius_runtime_usb_tx_service(&g_runtime.usb, tx_budget, 5u,
+	                                  &g_runtime.app));
+	CHECK(g_cdc.write_calls == 2u);
+	CHECK(g_runtime.usb.runtime.state == AIUS_USB_RUNTIME_ACK_PENDING);
+	CHECK(aius_runtime_usb_tx_service(&g_runtime.usb, tx_budget, 6u,
+	                                  &g_runtime.app));
+	CHECK(g_cdc.bootloader_calls == 2u);
+	CHECK(g_cdc.flush_calls == 2u);
+	CHECK(g_cdc.flush_calls_at_entry == 2u);
+	CHECK(g_runtime.usb.runtime.bootloader_entry_failures == 1u);
 
 	current_key = "tx.disconnect-clears";
 	reset_world(false);

@@ -158,10 +158,38 @@ or partial `ID` line.
 | `AIUS PROTOCOL 1` | Reports protocol version 1. |
 | `AIUS ID <id>` | Reports build identity, the leased address, and the ten recovery fields. See [§The ID response](#the-id-response). |
 | `AIUS AUTH [<id>]` | Returns the firmware-derived SD maintenance token. The token is disclosed only on this physical USB channel. |
-| `AIUS BOOTLOADER <id>` | Writes the success response, flushes USB for a bounded interval, then enters Teensy HalfKay. It has no HTTP or UDP equivalent. |
+| `AIUS BOOTLOADER <id>` | Writes the success response, drains USB for a bounded interval, then enters Teensy HalfKay. See [§Bootloader entry](#bootloader-entry). It has no HTTP or UDP equivalent. |
 
 Commands are parsed in the main loop and never from the audio interrupt. The
 bootloader action is dispatched only by the USB CDC command handler.
+
+## Bootloader entry
+
+**The response is transmitted to the host before the device leaves the
+application, and the command is repeatable.** Entering HalfKay halts the core or
+shuts USB down, so a handover that races the in-flight transfer both loses the
+response and usually fails to enter the loader at all. The device therefore
+performs a real drain, not a fixed settling delay.
+
+The observable sequence after `AIUS BOOTLOADER <id>`:
+
+1. `AIUS/1 OK <id> BOOTLOADER entering` is written to the CDC endpoint.
+2. The device submits the buffered packet and waits until the USB transmit ring
+   reports every queued transfer retired by the host — the host has the bytes.
+3. It enters HalfKay. The port disappears and the device re-enumerates as
+   VID/PID `16c0:0478`.
+
+**Each wait is bounded at 500 ms and never blocks indefinitely.** A host that
+stops accepting data delays entry by at most 500 ms while the response is being
+written, and at most a further 500 ms while it is being drained; the device then
+enters the loader regardless. The 8-second watchdog window covers both.
+
+**A failed entry leaves the device serving, and the next request is answered.**
+If the transition returns instead of reaching HalfKay, the control transaction is
+released rather than latched: sending `AIUS BOOTLOADER <id>` again produces a new
+`AIUS/1 OK <id> BOOTLOADER entering` and a fresh attempt. Earlier firmware
+answered the first request and then silently ignored every later one, which left
+the physical Program button as the only remaining route into the loader.
 
 ## Host procedure
 
@@ -170,7 +198,8 @@ bootloader action is dispatched only by the USB CDC command handler.
 3. Correlate commands using their request ID and ignore non-`AIUS/1` lines.
 4. To enter the loader without pressing the board button, send
    `AIUS BOOTLOADER <id>\n` and keep the loader waiting for VID/PID
-   `16c0:0478`.
+   `16c0:0478`. If the port is still present a second later, send the command
+   again with a new ID — see [§Bootloader entry](#bootloader-entry).
 
 The command is a physical-access control boundary, not cryptographic
 authentication. USB permissions and the enclosing host/guest topology remain

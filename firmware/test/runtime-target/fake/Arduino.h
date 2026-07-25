@@ -17,6 +17,7 @@ public:
 	int read();
 	int availableForWrite();
 	size_t write(const uint8_t *data, size_t length);
+	void flush();
 };
 
 extern FakeUsbSerial Serial;
@@ -24,5 +25,7 @@ extern FakeUsbSerial Serial;
 void _reboot_Teensyduino_(void);
 
 uint32_t micros(void);
+
+uint32_t millis(void);
 
 #endif

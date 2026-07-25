@@ -17,6 +17,10 @@ extern "C" {
 #define AIUS_USB_RUNTIME_MAX_RESPONSE 320u
 #define AIUS_USB_RUNTIME_RX_QUOTA 64u
 #define AIUS_USB_RUNTIME_TX_QUOTA 64u
+/* How long an authorized BOOTLOADER transaction keeps trying to place its
+ * response on the wire before it enters the loader regardless. The runtime
+ * spends it waiting for the write to complete; the CDC adapter spends the same
+ * budget waiting for the host to retire the transfer. */
 #define AIUS_USB_BOOTLOADER_DELAY_MS 500u
 
 typedef enum { AIUS_USB_EVENT_NONE = 0, AIUS_USB_EVENT_COMMAND, AIUS_USB_EVENT_ERROR } AiusUsbEventType;
@@ -81,6 +85,10 @@ typedef struct {
 	size_t response_offset;
 	uint32_t bootloader_deadline_ms;
 	uint32_t protocol_faults;
+	/* ENTER_BOOTLOADER actions whose composition returned instead of handing
+	 * the board to HalfKay. Each one resets the transaction to IDLE so the
+	 * next AIUS BOOTLOADER is served normally. Saturating. */
+	uint32_t bootloader_entry_failures;
 	size_t outstanding_length;
 	AiusUsbApplicationRequest pending_request;
 	bool valid;

@@ -299,6 +299,7 @@ static void test_init_and_prologues(void)
 	CHECK(fixture.runtime.response_offset == 0u);
 	CHECK(fixture.runtime.bootloader_deadline_ms == 0u);
 	CHECK(fixture.runtime.protocol_faults == 0u);
+	CHECK(fixture.runtime.bootloader_entry_failures == 0u);
 	CHECK(fixture.runtime.outstanding_length == 0u);
 	CHECK(fixture.runtime.pending_request.command.kind == AIUS_USB_COMMAND_NONE);
 	CHECK(fixture.runtime.pending_request.command.request_id == 0u);
@@ -818,8 +819,13 @@ static void test_transition(const TransitionCase *test)
 		CHECK(fixture.runtime.write_outstanding);
 		CHECK(fixture.runtime.outstanding_length == 9u);
 	} else {
+		/* T24 is the step after an ENTER_BOOTLOADER action whose
+		 * composition returned: HalfKay was not reached, so the terminal
+		 * state is released instead of latched and this step behaves as a
+		 * fresh IDLE one. */
 		enter_bootloader(&fixture);
 		before_faults = fixture.runtime.protocol_faults;
+		CHECK(fixture.runtime.bootloader_entry_failures == 0u);
 		input = input_connected();
 		response = success_response("ID", 2u, "x", 1u);
 		if (test->variant == 1u) {
@@ -834,11 +840,24 @@ static void test_transition(const TransitionCase *test)
 			input.connected = false;
 		}
 		action = runtime_step(&fixture, 1000u, input);
-		expect_none(&action);
-		CHECK(action.rx_consumed == 0u);
-		CHECK(fixture.runtime.state ==
-			AIUS_USB_RUNTIME_ENTER_BOOTLOADER);
-		CHECK(fixture.runtime.enter_emitted);
+		CHECK(fixture.runtime.bootloader_entry_failures == 1u);
+		CHECK(!fixture.runtime.enter_emitted);
+		CHECK(!fixture.runtime.bootloader_authorized);
+		CHECK(fixture.runtime.bootloader_deadline_ms == 0u);
+		CHECK(fixture.runtime.response_length == 0u);
+		if (test->variant == 1u) {
+			CHECK(action.kind == AIUS_USB_ACTION_DISPATCH);
+			CHECK(action.rx_consumed == strlen("AIUS ID 4\n"));
+			CHECK(action.request->command.kind ==
+				AIUS_USB_COMMAND_ID);
+			CHECK(action.request->command.request_id == 4u);
+			CHECK(fixture.runtime.state ==
+				AIUS_USB_RUNTIME_DISPATCH);
+		} else {
+			expect_none(&action);
+			CHECK(action.rx_consumed == 0u);
+			CHECK(fixture.runtime.state == AIUS_USB_RUNTIME_IDLE);
+		}
 		if (test->variant == 2u || test->variant == 3u)
 			CHECK(fixture.runtime.protocol_faults == before_faults + 1u);
 		else
@@ -1575,6 +1594,101 @@ static void test_reconnect_registry(void)
 	}
 }
 
+/* One complete authorized BOOTLOADER transaction driven from IDLE: request,
+ * application response, final write, write completion, entry action. Unlike
+ * enter_bootloader() it does not reinitialize the fixture, so a single runtime
+ * can be walked through several attempts in a row. */
+static void boot_attempt(
+	RuntimeFixture *fixture,
+	uint32_t now_ms,
+	uint32_t request_id,
+	const char *line)
+{
+	AiusUsbApplicationResponse response =
+		success_response("BOOTLOADER", 10u, NULL, 0u);
+	AiusUsbRuntimeAction action;
+
+	(void)dispatch_line(
+		fixture, now_ms, line, AIUS_USB_COMMAND_BOOTLOADER, request_id);
+	action = supply_response(
+		fixture, now_ms, &response, AIUS_USB_RUNTIME_TX_QUOTA);
+	CHECK(action.kind == AIUS_USB_ACTION_WRITE);
+	CHECK(action.tx_length == fixture->runtime.response_length);
+	CHECK(fixture->runtime.state == AIUS_USB_RUNTIME_ACK_PENDING);
+	action = complete_write(
+		fixture, now_ms + 1u, AIUS_IO_PROGRESS, action.tx_length, 0u, 0u);
+	CHECK(action.kind == AIUS_USB_ACTION_ENTER_BOOTLOADER);
+	CHECK(fixture->runtime.state == AIUS_USB_RUNTIME_ENTER_BOOTLOADER);
+	CHECK(fixture->runtime.enter_emitted);
+}
+
+static const KeyedCase retry_cases[] = {
+	{"retry.second-request-served", 0u},
+	{"retry.third-request-served", 1u},
+	{"retry.failure-counter-saturates", 2u}
+};
+
+/* A software bootloader entry that fails leaves the board running, so every
+ * later AIUS BOOTLOADER must be answered and retried rather than swallowed. */
+static void test_retry_registry(void)
+{
+	static const char *const lines[] = {
+		"AIUS BOOTLOADER 1\n",
+		"AIUS BOOTLOADER 2\n",
+		"AIUS BOOTLOADER 3\n"
+	};
+	static const char *const responses[] = {
+		"AIUS/1 OK 1 BOOTLOADER entering\n",
+		"AIUS/1 OK 2 BOOTLOADER entering\n",
+		"AIUS/1 OK 3 BOOTLOADER entering\n"
+	};
+	const char *keys[ARRAY_COUNT(retry_cases)];
+
+	for (size_t i = 0; i < ARRAY_COUNT(retry_cases); ++i)
+		keys[i] = retry_cases[i].key;
+	validate_unique_keys(
+		"registry.retry", keys, ARRAY_COUNT(retry_cases), 3u);
+
+	for (size_t i = 0; i < ARRAY_COUNT(retry_cases); ++i) {
+		const KeyedCase *test = &retry_cases[i];
+		RuntimeFixture fixture;
+		AiusUsbRuntimeAction action;
+		AiusUsbRuntimeInput input;
+		const unsigned attempts = test->mode == 1u ? 3u : 2u;
+		current_key = test->key;
+		fixture_init(&fixture);
+
+		if (test->mode == 2u) {
+			boot_attempt(&fixture, 100u, 1u, lines[0]);
+			fixture.runtime.bootloader_entry_failures = UINT32_MAX;
+			input = input_connected();
+			action = runtime_step(&fixture, 200u, input);
+			expect_none(&action);
+			CHECK(fixture.runtime.bootloader_entry_failures ==
+				UINT32_MAX);
+			CHECK(fixture.runtime.state == AIUS_USB_RUNTIME_IDLE);
+			continue;
+		}
+
+		for (unsigned attempt = 0u; attempt < attempts; ++attempt) {
+			const uint32_t now = 100u + (uint32_t)attempt * 10u;
+			boot_attempt(&fixture, now, attempt + 1u, lines[attempt]);
+			expect_response(&fixture, responses[attempt]);
+			/* The entry action returned, so the next step releases
+			 * the terminal state and the runtime is servable again. */
+			input = input_connected();
+			action = runtime_step(&fixture, now + 2u, input);
+			expect_none(&action);
+			CHECK(fixture.runtime.state == AIUS_USB_RUNTIME_IDLE);
+			CHECK(!fixture.runtime.enter_emitted);
+			CHECK(!fixture.runtime.bootloader_authorized);
+			CHECK(fixture.runtime.bootloader_entry_failures ==
+				attempt + 1u);
+		}
+		CHECK(fixture.runtime.protocol_faults == 0u);
+	}
+}
+
 static void test_partial_multi_slice_tx(void)
 {
 	RuntimeFixture fixture;
@@ -1684,9 +1798,11 @@ int main(void)
 	test_response_registry();
 	test_deadline_registry();
 	test_reconnect_registry();
+	test_retry_registry();
 	test_partial_multi_slice_tx();
 	test_fault_saturation_and_channel_order();
 	puts("ok usb control: 24 families, 36 variants, 12 malformed tx, "
-		"12 unsolicited, 8 rx, 21 responses, 6 deadlines, 4 reconnect");
+		"12 unsolicited, 8 rx, 21 responses, 6 deadlines, 4 reconnect, "
+		"3 retry");
 	return 0;
 }

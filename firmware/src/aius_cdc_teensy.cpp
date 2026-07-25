@@ -5,6 +5,9 @@
  * declaration, so a prototype-only FLASHMEM silently leaves the code in ITCM,
  * and the teensy41-optical image has ~1.4 kB of ITCM left. Nothing here runs
  * per audio block -- the whole file runs at the USB_RX/USB_TX checkpoints.
+ *
+ * ops_enter_bootloader() is the one op that blocks, for a bounded interval, on
+ * a terminal path; see aius_cdc_teensy.h §Bootloader drain.
  */
 
 #include "aius_cdc_teensy.h"
@@ -48,19 +51,30 @@ FLASHMEM bool ops_connected(void *context)
 	return adapter->primitives.connected(adapter->primitives.context);
 }
 
+/* The raw free space, folded into the idle high-water mark on the way past.
+ * False when the adapter cannot sample at all. */
+FLASHMEM bool sample_tx_free(AiusCdcTeensy *adapter, uint32_t *free_bytes)
+{
+	if (adapter == nullptr ||
+	    adapter->primitives.available_for_write == nullptr)
+		return false;
+	const int available = adapter->primitives.available_for_write(
+		adapter->primitives.context);
+	*free_bytes = available <= 0 ? 0u : static_cast<uint32_t>(available);
+	if (*free_bytes > adapter->tx_free_high_water)
+		adapter->tx_free_high_water = *free_bytes;
+	return true;
+}
+
 FLASHMEM size_t ops_write_capacity(void *context)
 {
 	AiusCdcTeensy *adapter = static_cast<AiusCdcTeensy *>(context);
-	if (adapter == nullptr ||
-	    adapter->primitives.available_for_write == nullptr)
+	uint32_t free_bytes = 0u;
+	if (!sample_tx_free(adapter, &free_bytes) || free_bytes == 0u)
 		return 0u;
-	const int available = adapter->primitives.available_for_write(
-		adapter->primitives.context);
-	if (available <= 0)
-		return 0u;
-	if (static_cast<unsigned>(available) > AIUS_CDC_TEENSY_MAX_WRITE)
+	if (free_bytes > AIUS_CDC_TEENSY_MAX_WRITE)
 		return AIUS_CDC_TEENSY_MAX_WRITE;
-	return static_cast<size_t>(available);
+	return static_cast<size_t>(free_bytes);
 }
 
 FLASHMEM AiusIoEvent ops_read_byte(void *context, uint8_t *byte)
@@ -100,12 +114,68 @@ FLASHMEM AiusIoEvent ops_write(void *context, const uint8_t *data, size_t length
 	return io_event(AIUS_IO_PROGRESS, accepted, 0u);
 }
 
+/* True once the transmit ring is back at its idle free space, i.e. the host has
+ * retired every queued transfer. An adapter that cannot sample reports drained,
+ * so a missing primitive degrades to the old immediate hand-over rather than to
+ * a stall. */
+FLASHMEM bool tx_drained(AiusCdcTeensy *adapter)
+{
+	uint32_t free_bytes = 0u;
+	if (!sample_tx_free(adapter, &free_bytes))
+		return true;
+	return free_bytes >= adapter->tx_free_high_water;
+}
+
+/* Push the buffered response out and wait for the host to take it -- see
+ * aius_cdc_teensy.h §Bootloader drain for why this blocks and what bounds it.
+ * Returns after at most AIUS_CDC_TEENSY_DRAIN_BOUND_MS whatever the host does,
+ * and immediately when the adapter has no clock to bound a wait with. */
+FLASHMEM void drain_before_bootloader(AiusCdcTeensy *adapter)
+{
+	uint32_t start;
+	uint32_t elapsed = 0u;
+	uint32_t free_bytes = 0u;
+
+	adapter->bootloader_drain_ms = 0u;
+	adapter->bootloader_drained = false;
+
+	/* Sampled before the flush so the ring's idle capacity is known even if
+	 * this epoch is the first to reach the adapter: the response still sits
+	 * in the head buffer, which available_for_write() does not count. */
+	(void)sample_tx_free(adapter, &free_bytes);
+
+	if (adapter->primitives.flush != nullptr)
+		adapter->primitives.flush(adapter->primitives.context);
+
+	if (adapter->primitives.millis == nullptr) {
+		adapter->bootloader_drained = tx_drained(adapter);
+		return;
+	}
+
+	start = adapter->primitives.millis(adapter->primitives.context);
+	for (;;) {
+		elapsed = adapter->primitives.millis(
+			          adapter->primitives.context) -
+		          start;
+		if (tx_drained(adapter)) {
+			adapter->bootloader_drained = true;
+			break;
+		}
+		if (elapsed >= AIUS_CDC_TEENSY_DRAIN_BOUND_MS) {
+			adapter->bootloader_drained = false;
+			break;
+		}
+	}
+	adapter->bootloader_drain_ms = elapsed;
+}
+
 FLASHMEM void ops_enter_bootloader(void *context)
 {
 	AiusCdcTeensy *adapter = static_cast<AiusCdcTeensy *>(context);
 	if (adapter == nullptr ||
 	    adapter->primitives.enter_bootloader == nullptr)
 		return;
+	drain_before_bootloader(adapter);
 	adapter->primitives.enter_bootloader(adapter->primitives.context);
 }
 
@@ -133,6 +203,21 @@ FLASHMEM size_t serial_write(void *context, const uint8_t *data, size_t length)
 	return Serial.write(data, length);
 }
 
+/* usb_serial_flush_output(): submits the partially filled head buffer to the
+ * CDC IN endpoint instead of leaving it for the 75 us auto-flush timer. It does
+ * not wait for the host -- drain_before_bootloader() does that. */
+FLASHMEM void serial_flush(void *context)
+{
+	(void)context;
+	Serial.flush();
+}
+
+FLASHMEM uint32_t serial_millis(void *context)
+{
+	(void)context;
+	return millis();
+}
+
 FLASHMEM void serial_enter_bootloader(void *context)
 {
 	(void)context;
@@ -150,6 +235,8 @@ FLASHMEM bool aius_cdc_teensy_primitives_complete(
 	       primitives->read != nullptr &&
 	       primitives->available_for_write != nullptr &&
 	       primitives->write != nullptr &&
+	       primitives->flush != nullptr &&
+	       primitives->millis != nullptr &&
 	       primitives->enter_bootloader != nullptr;
 }
 
@@ -188,6 +275,8 @@ FLASHMEM AiusCdcTeensyPrimitives aius_cdc_teensy_serial_primitives(void)
 	primitives.read = serial_read;
 	primitives.available_for_write = serial_available_for_write;
 	primitives.write = serial_write;
+	primitives.flush = serial_flush;
+	primitives.millis = serial_millis;
 	primitives.enter_bootloader = serial_enter_bootloader;
 	return primitives;
 }
