@@ -4823,48 +4823,66 @@ Reflashed with the link gate and both status fixes. Measured on the board:
   failed with `nfault=1` (`DHCP_TIMEOUT`), not `LINK_LOST`, and still needed
   generation 2 to acquire the lease.
 
-That is the discriminating measurement the fix was built to make, and it points
-back into the firmware rather than outward.
+The first DHCP attempt fails on every boot. Instrumentation settled it, and the
+cause is in the interface bring-up path, not anywhere beyond the host.
 
-**`Ethernet.linkStatus()` does not report the link. It reports a cached variable**
-(`vendor/NativeEthernet/src/NativeEthernet.cpp:316`) whose initial value is
-sampled inside `beginNoWait()` at `:166`, on the line immediately after
-`fnet_netif_init()` returns — before the MAC can possibly have completed bring-up.
-Thereafter it is only updated by the link service's own callback. So the value the
-gate consulted on generation 1 was an init-time snapshot, not an observation.
+**Measured on the board**, `GET /api/status` → `net_diag`:
 
-**And generation 1 and generation 2 do not run the same code.** `beginNoWait()`
-guards its initialisation with `if (!fnet_netif_is_initialized(...))` at `:151`.
-Generation 1 performs the real `fnet_netif_init()`; generation 2, after a teardown
-that does not de-initialise the netif, skips it entirely and reuses a warm
-interface. That asymmetry — not anything outside the board — is what distinguishes
-the attempt that fails from the attempt that succeeds, and it explains why the
-second one binds in under a second every time.
+| | generation 1 | generation 2 |
+|---|---|---|
+| `netif_init` | performed | skipped |
+| `stack_start_blocking_ms` | 1635 | 0 |
+| `dhcp_start_ms` | 1657 | 0 |
+| `end_ms` | 6657 (exactly +5000) | 19 |
+| `dhcp_state_at_end` | 2 — `SELECTING` | 5 — `BOUND` |
+| `tx_frames` / `rx_frames` | 4 / 4 | 6 / 6 |
+| `link_at_end` / `link_live_at_end` | 1 / 1 | 1 / 1 |
 
-So the working hypothesis is that generation 1 hands its DISCOVER to a MAC that
-has been initialised but is not yet transmitting, and the frame is lost inside the
-firmware. That is consistent with every observation: the server sees nothing, the
-link reads up, no fault is raised, and the retry on a warm interface always works.
+**The decisive number is `rx_frames: 4`.** Ambient broadcast traffic on this
+segment runs at roughly **24 frames per 5 seconds**, measured directly from the
+live board's counters across two idle windows (470 → 494 → 510). Generation 1
+received **four** frames in its entire five-second window — about six times below
+what merely being attached should deliver.
 
-**This is not yet proven, and it must not be asserted as though it were.** The next
-step is to measure inside the firmware — expose FNET's DHCP client state and the
-netif's readiness, and compare a cold boot against a warm one — rather than to
-infer further. What is settled is the direction: the asymmetry is in code this
-repository owns.
+So during generation 1 the MAC was barely receiving. That makes
+`dhcp_state_at_end: SELECTING` read correctly for the first time: FNET sent its
+DISCOVER and never received an OFFER, because the receive path was not carrying
+frames. The transmit side was impaired in the same window, which is why the DHCP
+server logs no DISCOVER for it while logging the generation-2 exchange in full.
 
-The gate is kept regardless: it is correct, it bounds a genuinely dead link at
-3 s, and it costs nothing when the link is already up. It simply does not address
-this, because the signal it consults is not the signal it needs.
+**Conclusion.** `fnet_netif_init()` returns, and `linkStatus()` reports up, while
+the interface is not yet passing traffic in either direction for several seconds.
+The 1,635 ms it spends hard-resetting the PHY and completing auto-negotiation is
+real work — `beginNoWait()` is not no-wait on the generation that initialises —
+but it is not sufficient for the FEC to be operational. Generation 2 succeeds
+because it *skips* initialisation entirely and inherits an interface that has by
+then settled.
 
-Two candidate fixes, once the measurement confirms the cause. Require a *fresh*
-readiness observation rather than the init-time snapshot, so the gate waits for
-the link service's own poll instead of trusting a value taken microseconds after
-init. Or make the two generations symmetric, so the first attempt runs on an
-interface in the same state the second one enjoys.
+**Two earlier explanations are retracted, both recorded so the reasoning is not
+repeated.** The delay was attributed to hardware beyond the development host on
+the strength of the server logging nothing — an absence says a packet did not
+arrive, never where it was lost, and the trusted-fixture boundary exists to stop
+exactly that inference. It was then attributed to a stale `linkStatus()` cache;
+that cache is refreshed by FNET's own link poll within 200 ms and was honest
+throughout, reporting up because the PHY genuinely was up.
 
-Bounded recovery is what keeps this a six-second delay rather than a failure, and
-that part is working as designed — but it is masking a firmware defect, not
-compensating for the environment.
+**Why the link gate is inert here**, and why it is nonetheless kept: it consults
+the one signal that was already saying up. The signal is not wrong about the PHY —
+it simply does not mean what the gate needed it to mean. The gate remains correct
+for a genuinely dead link, which it bounds at 3 s.
+
+**The fix direction is a readiness condition, not a longer fixed delay.** A fixed
+settle would encode one board's timing as a constant. The frame counters are a
+real signal: ambient traffic arrives continuously, so a receive counter that has
+started moving is direct evidence the interface is carrying traffic. Any condition
+must stay bounded — if nothing is ever received, the existing DHCP deadline and
+backoff must still apply rather than waiting indefinitely, and a quiet segment
+must not deadlock the board.
+
+Note for whoever implements it: `RMON_T_PACKETS` and its receive counterpart count
+**all** frames at the MAC, not DHCP specifically, and `fnet_netif_init()` zeroes
+them on the generation that initialises. Four transmitted frames never proved a
+DISCOVER egressed, and that mistake is worth not repeating.
 
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
