@@ -4884,6 +4884,39 @@ Note for whoever implements it: `RMON_T_PACKETS` and its receive counterpart cou
 them on the generation that initialises. Four transmitted frames never proved a
 DISCOVER egressed, and that mistake is worth not repeating.
 
+#### Bootloader entry — fixed and measured
+
+Software bootloader entry was unusable: 48 consecutive attempts without reaching
+HalfKay, against 4 for the pre-cutover image. Two defects, both fixed.
+
+The response was never on the wire. `Serial.write()` copies into a ring and arms a
+75 µs flush timer; its return value means buffered, not transmitted. The runtime
+took that as completion and entered the bootloader immediately, so
+`_reboot_Teensyduino_()` — which executes `bkpt #251` or writes `USB1_USBCMD = 0`
+— ran with the response still in flight. The legacy path avoided this with a flush
+and a 20 ms settle; the cutover dropped both, while the protocol reference
+continued to promise a bounded flush.
+
+Separately, the terminal state absorbed every later request: a second
+`AIUS BOOTLOADER` received no response at all, which for a mode whose only exit is
+that command was close to a brick.
+
+Entry now waits on `availableForWrite()` returning to its idle high-water mark —
+a genuine descriptor-retirement signal, stronger than a fixed delay — bounded at
+500 ms, after which it proceeds anyway so the board can never wedge. The terminal
+state is released on the following step, so a repeat request is answered.
+
+**Measured after the fix: five consecutive trials, each with a full reflash
+between them, entered HalfKay on the first attempt.** Note that a single trial on
+the *unfixed* image also succeeded first time — the failure was always a race, so
+one sample proves nothing and the repeated trials are the evidence.
+
+A caveat worth keeping: the earlier "48 attempts, each answered" was inference,
+not observation. That script only watched USB enumeration and never read the
+replies, so it could not distinguish an unanswered request from an answered one.
+The measurement script now reads each reply and reports boot generation and reset
+source between attempts.
+
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
 validation log with one verdict per assumption and the evidence for it. A refuted
