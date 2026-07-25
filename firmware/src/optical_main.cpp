@@ -130,24 +130,48 @@ static float g_cpu_temp_max_c;
 static uint32_t g_cpu_temp_sample_ms;
 static uint32_t g_cpu_temp_next_ms;
 static bool g_cpu_temp_valid;
-/* Media state and usage. Nothing probes SD until slice S3 lands the portable
- * PROBE and USAGE_REFRESH jobs, so these stay false/zero and every SD route
- * refuses -- the planned sequence, not a defect. */
+/* Media state and usage, published by slice S3b's root-initiated PROBE and
+ * USAGE_REFRESH jobs (see §SD lifecycle below). g_sd_ready gates every SD route
+ * exactly as it did before the cutover; the usage pair reads zero whenever the
+ * card is absent. */
 static bool g_sd_ready;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
+/* A committed write invalidates the reported usage, so the next probe tick
+ * follows it with a USAGE_REFRESH. The legacy job set the same flag from its
+ * upload-cleanup and delete arms. */
+static bool g_sd_usage_refresh_pending;
 static uint32_t g_boot_epoch;
 static AudioInputSPDIF3 g_spdif_in;
 static AiusConfig g_config;
 /* Staged by app_store_public_config() while the dispatcher's SD job writes the
- * accepted bytes. The legacy job's commit arm used to copy it into g_config;
- * that arm died with the legacy path and slice S3, which ports the SD lifecycle
- * onto the portable job, owns re-attaching the commit. The staging shape --
- * fully written, then gated -- is unchanged, so nothing has to be rewritten
- * when it does. */
+ * accepted bytes, and copied into g_config once that write commits. The legacy
+ * commit arm lived inside service_sd_job(); slice S3b re-attached it to the
+ * composed storage service's terminal result (sd_settle_http_write()). The
+ * staging shape -- fully written, then gated -- is unchanged. */
 static AiusConfig g_pending_config;
 static bool g_config_upload_pending;
 static uint32_t g_config_error_count;
+
+/* Which staged commit the current HTTP-owned write carries. The legacy job
+ * carried `config_upload` / `dsp_upload` booleans on itself; the portable
+ * AiusSdJob has no application fields, so the same fact lives here and is
+ * matched against the job's target path when its terminal result arrives. */
+typedef enum {
+	SD_COMMIT_NONE,
+	SD_COMMIT_PUBLIC_CONFIG,
+	SD_COMMIT_DSP_MODEL
+} SdCommitTarget;
+static SdCommitTarget g_sd_commit_target;
+/* The armed write has been observed HTTP-owned and non-terminal at least once,
+ * so a terminal state may now be attributed to it. Without this a commit armed
+ * at checkpoint 5 would settle in the same epoch against the PREVIOUS upload's
+ * still-retained DONE -- applying a model whose bytes had not been written. */
+static bool g_sd_commit_writing;
+/* Any HTTP-owned job has been observed in flight, so its terminal state is a
+ * transition rather than a leftover. Drives the usage-refresh arming for every
+ * write, which is what the legacy job did per arm. */
+static bool g_sd_http_job_seen;
 
 /* The effective DSP model (source == "default" | "sd") and its runtime-reported
  * generation counter. g_active_model mirrors AIUS_OPTICAL_CONFIG's shape so the
@@ -229,9 +253,10 @@ static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, Aius
 
 /* The SD-hosted DSP override used to be read here, a byte at a time into a
  * 12,288-byte stack array, from setup() and again from service_sd(). Slice S2b
- * deleted that read with the rest of the legacy SD lifecycle; slice S3 restores
- * it as a portable CONFIG_LOAD job with publish_capacity set for the model, so
- * /aius/dsp.json is simply not loaded at boot in between. */
+ * deleted that read; slice S3b restored the load as a root-initiated portable
+ * CONFIG_LOAD job whose bytes reach platform_publish_config() below, parsed by
+ * the same aius_dsp_config_parse_put() and staged for the same block-boundary
+ * apply. Nothing on this path waits on the card and no 12 KB frame exists. */
 
 static char g_auth_token[AIUS_AUTH_TOKEN_STORAGE_SIZE];
 
@@ -274,16 +299,23 @@ static void service_hw_metrics(void)
 	g_cpu_temp_valid = true;
 }
 
-static const char *sd_filesystem(void)
+/* status JSON's `sd_filesystem`. Served as absent rather than produced, decided
+ * at slice S3b.
+ *
+ * AiusSdResult carries media_present, total_bytes and used_bytes and no FAT type
+ * (aius_sd.h:214), so the only way to answer "fat32" is the legacy
+ * SD.sdfs.vol()->fatType() reach this replaced: a direct vendor call made from
+ * the HTTP serializer, outside the storage service that owns every SD primitive,
+ * against a volume a root or HTTP job may be mid-mount on. Extending the probe
+ * result is the alternative and belongs to whoever owns lib/aius_sd.
+ *
+ * §Deciding principle settles it -- a diagnostic that cannot be produced without
+ * reaching into a path that touches the audio timing budget is served as absent
+ * and said to be -- so a mounted card reports "unknown", which was already this
+ * field's value for a volume whose type the legacy switch did not recognise. */
+static FLASHMEM const char *sd_filesystem(void)
 {
-	if (!g_sd_ready)
-		return "none";
-	switch (SD.sdfs.vol()->fatType()) {
-	case 12: return "fat12";
-	case 16: return "fat16";
-	case 32: return "fat32";
-	default: return "unknown";
-	}
+	return g_sd_ready ? "unknown" : "none";
 }
 
 /* Whether the composed storage service can accept a new job this epoch. The
@@ -1100,7 +1132,11 @@ static FLASHMEM size_t app_write_replay_list(void *, uint8_t *body,
  * staged model keeps its existing shape: g_pending_config is fully written
  * before g_config_upload_pending arms it, and the SD-job lifecycle remains its
  * only consumer. Refusal order follows the legacy handler -- parse first (an
- * invalid body still updates the reported config error), then media state. */
+ * invalid body still updates the reported config error), then media state.
+ *
+ * The commit target is what tells sd_settle_http_write() which staging the
+ * write about to start carries, replacing the legacy job's `config_upload`
+ * boolean. It is armed last, with the write not yet observed. */
 static FLASHMEM AiusOpticalAppStoreResult app_store_public_config(
 	void *, const uint8_t *body, size_t length)
 {
@@ -1114,6 +1150,8 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_public_config(
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_config = parsed;
 	g_config_upload_pending = true;
+	g_sd_commit_target = SD_COMMIT_PUBLIC_CONFIG;
+	g_sd_commit_writing = false;
 	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
 }
 
@@ -1136,6 +1174,8 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
 	g_dsp_upload_pending = true;
+	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
+	g_sd_commit_writing = false;
 	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
 }
 
@@ -1512,14 +1552,349 @@ static FLASHMEM bool platform_udp(void *, const AiusRuntimeBudget *budget,
 	return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* SD lifecycle -- Phase 14 slice S3b                                  */
+/*                                                                     */
+/* The legacy service_sd() drove the card directly: SD.begin() while    */
+/* unmounted, SD.mediaPresent() at 1 Hz once mounted, SD.totalSize()/  */
+/* usedSize() when usage went stale, and byte-at-a-time blocking reads  */
+/* of /aius/config.json and /aius/dsp.json from setup() and again on a  */
+/* hot re-insert. All four are now root-initiated portable jobs started */
+/* through R1's aius_runtime_teensy_start_storage_job() and advanced by */
+/* exactly one SD primitive per epoch at checkpoint 8. Nothing below    */
+/* waits on the card and nothing runs from setup().                    */
+/*                                                                     */
+/* One primitive per epoch, total, is kept by construction: the driver  */
+/* holds a single owed-step slot, starts a job only when the storage    */
+/* service is idle, and never starts the next step before the previous  */
+/* one is terminal. The four steps chain probe -> public config -> DSP  */
+/* model -> usage, which is the order service_sd() ran them in.        */
+/*                                                                     */
+/* Every definition carries FLASHMEM on the definition itself; the      */
+/* driver runs once per epoch and the publication consumer once per     */
+/* loaded file, never per audio block.                                 */
+/* ------------------------------------------------------------------ */
+
+/* The two SD-hosted configs, spelled exactly as the dispatcher's own
+ * build_root_path() spells them, so the commit arm can match a write's
+ * canonicalized target_path against the staging it carries. */
+#define AIUS_SD_PUBLIC_CONFIG_PATH "/aius/config.json"
+#define AIUS_SD_DSP_MODEL_PATH "/aius/dsp.json"
+/* service_sd()'s cadence, unchanged: one probe per second, which is what makes
+ * a hot insert and a hot removal observable. */
+#define AIUS_SD_PROBE_INTERVAL_MS 1000u
+
+typedef enum {
+	SD_STEP_NONE,
+	SD_STEP_PROBE,
+	SD_STEP_LOAD_CONFIG,
+	SD_STEP_LOAD_DSP,
+	SD_STEP_USAGE
+} SdLifecycleStep;
+
+/* The one owed-or-running step. g_sd_step_running distinguishes "the storage
+ * service accepted it" from "it is still owed because the service was busy". */
+static SdLifecycleStep g_sd_step;
+static bool g_sd_step_running;
+static uint32_t g_sd_probe_at_ms;
+
+/* Re-attaches the config-commit arm that died with service_sd_job().
+ *
+ * The staging is unchanged -- app_store_public_config() / app_store_dsp_config()
+ * still fill g_pending_config / g_pending_dsp_model and arm their upload-pending
+ * flags -- and this is the consumer the legacy job's UPLOAD_CLEANUP arm used to
+ * be, moved onto the composed storage service's terminal result.
+ *
+ * Two facts are needed and neither is on the portable job: which staging the
+ * write carries (g_sd_commit_target, matched against the job's target path) and
+ * whether this terminal state belongs to that write rather than to the previous
+ * one (g_sd_commit_writing, set only after the job has been seen HTTP-owned and
+ * non-terminal). A drained job -- one whose HTTP owner was discarded -- reaches
+ * its terminal cancelled, so committed is false and the staging is disarmed
+ * without applying, which is exactly what the legacy FAIL_CLEANUP arm did.
+ *
+ * Reads memory only, and runs before any root job so the terminal state cannot
+ * be overwritten by a restart of the shared job object. */
+static FLASHMEM void sd_settle_http_write(void)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+	bool committed;
+
+	/* `draining` is included so a write whose HTTP owner was discarded is
+	 * still seen: its terminal state then disarms the staging instead of
+	 * leaving it armed forever. */
+	if ((storage.http_owned || storage.draining) && !storage.terminal_seen) {
+		g_sd_http_job_seen = true;
+		if (g_sd_commit_target != SD_COMMIT_NONE &&
+		    storage.job.kind == AIUS_SD_JOB_UPLOAD &&
+		    strcmp(storage.job.target_path,
+		           g_sd_commit_target == SD_COMMIT_PUBLIC_CONFIG ?
+		                   AIUS_SD_PUBLIC_CONFIG_PATH :
+		                   AIUS_SD_DSP_MODEL_PATH) == 0)
+			g_sd_commit_writing = true;
+		return;
+	}
+	if (!g_sd_http_job_seen || !storage.terminal_seen)
+		return;
+	g_sd_http_job_seen = false;
+	committed = storage.job.state == AIUS_SD_DONE;
+	/* A committed write or delete moves the usage figures; a download does
+	 * not. The legacy job armed the same refresh from the same two arms. */
+	if (committed && storage.job.kind != AIUS_SD_JOB_DOWNLOAD)
+		g_sd_usage_refresh_pending = true;
+	if (!g_sd_commit_writing)
+		return;
+	if (g_sd_commit_target == SD_COMMIT_DSP_MODEL) {
+		/* The SD write is durable; the audio-side apply happens at the
+		 * next block boundary (AiusAudioProcessor::enqueue), not here. */
+		if (committed && g_dsp_upload_pending)
+			g_dsp_apply_pending = true;
+		g_dsp_upload_pending = false;
+	} else {
+		if (committed && g_config_upload_pending)
+			g_config = g_pending_config;
+		g_config_upload_pending = false;
+	}
+	g_sd_commit_writing = false;
+	g_sd_commit_target = SD_COMMIT_NONE;
+}
+
+/* Whether a root-initiated job may start this epoch.
+ *
+ * The first three terms mirror aius_runtime_storage_start_root_job()'s own
+ * rejection conditions, so a refusal is anticipated rather than discovered. The
+ * fourth is the one only checkpoint 7 can see: checkpoint 5 produces at most one
+ * SD-backed HTTP action and checkpoint 8 consumes it, so a root job started on
+ * top of an undelivered action would have the storage service refuse an
+ * already-admitted route in-band with a correlated PROTOCOL fault. Yielding
+ * turns that into a start this driver simply does not make; the dispatcher's
+ * sd_busy callback then keeps the next epoch's routes off a running root job. */
+static FLASHMEM bool sd_storage_idle(void)
+{
+	const AiusRuntimeStorage &storage = g_runtime.storage;
+
+	return !storage.http_owned && !storage.http_authority &&
+	       !storage.http_event_present && !storage.draining &&
+	       storage.root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+	       !g_runtime.storage_action_present;
+}
+
+/* Memory only: builds the step's request and hands it to the runtime. Every
+ * request here is compile-time constant and satisfies aius_sd.c's validation --
+ * PROBE and USAGE_REFRESH carry no path and no publication, CONFIG_LOAD carries
+ * a canonical path, a content type and the caller's own publication bound. */
+static FLASHMEM bool sd_start_step(SdLifecycleStep step)
+{
+	AiusSdJobRequest request;
+
+	memset(&request, 0, sizeof(request));
+	switch (step) {
+	case SD_STEP_PROBE:
+		request.kind = AIUS_SD_JOB_PROBE;
+		break;
+	case SD_STEP_USAGE:
+		request.kind = AIUS_SD_JOB_USAGE_REFRESH;
+		break;
+	case SD_STEP_LOAD_CONFIG:
+		request.kind = AIUS_SD_JOB_CONFIG_LOAD;
+		request.target_path = AIUS_SD_PUBLIC_CONFIG_PATH;
+		request.content_type = "application/json";
+		request.publish = true;
+		/* Per caller: the feature-flag config's own bound, so an
+		 * oversized file faults at CONFIG_SIZE exactly as the legacy
+		 * 256-byte read buffer refused it. */
+		request.publish_capacity = AIUS_CONFIG_MAX_JSON_BYTES;
+		break;
+	case SD_STEP_LOAD_DSP:
+		request.kind = AIUS_SD_JOB_CONFIG_LOAD;
+		request.target_path = AIUS_SD_DSP_MODEL_PATH;
+		request.content_type = "application/json";
+		request.publish = true;
+		/* Per caller: the model bound slice S3a's publication buffer is
+		 * sized for. SD primitives stay 512 bytes either way -- the
+		 * engine reads a transfer slice at a time into that buffer. */
+		request.publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES;
+		break;
+	case SD_STEP_NONE:
+	default:
+		return false;
+	}
+	return aius_runtime_teensy_start_storage_job(&g_runtime, &request);
+}
+
+/* Consumes the terminal result of the step that was running and chooses the
+ * next. The result pointer is valid only until another job of either owner
+ * starts, which is why this runs before any start in the same pass. */
+static FLASHMEM void sd_step_complete(uint32_t now_ms)
+{
+	const AiusSdResult *result =
+		aius_runtime_storage_root_result(&g_runtime.storage);
+	const bool ok = result != nullptr &&
+	                result->kind != AIUS_SD_RESULT_FAULT;
+	const SdLifecycleStep step = g_sd_step;
+
+	g_sd_step = SD_STEP_NONE;
+	g_sd_step_running = false;
+
+	switch (step) {
+	case SD_STEP_PROBE: {
+		/* PROBE is BEGIN then MEDIA_PRESENT, so a card that will not
+		 * mount fails the job and a mounted-but-ejected one reports
+		 * media_present false; both mean absent. */
+		const bool present = ok && result->media_present;
+
+		g_sd_probe_at_ms = now_ms + AIUS_SD_PROBE_INTERVAL_MS;
+		if (present && !g_sd_ready) {
+			/* Boot and hot re-insert are the same transition, and
+			 * both reload the two SD-hosted configs -- the second
+			 * trigger service_sd() had. No mkdir is needed: the
+			 * portable UPLOAD job creates /aius itself, and a
+			 * CONFIG_LOAD against a missing directory simply fails
+			 * its open, which is the missing-file case. */
+			g_sd_ready = true;
+			g_sd_step = SD_STEP_LOAD_CONFIG;
+		} else if (!present && g_sd_ready) {
+			g_sd_ready = false;
+			g_sd_total_bytes = 0u;
+			g_sd_used_bytes = 0u;
+			g_sd_usage_refresh_pending = false;
+		} else if (present && g_sd_usage_refresh_pending) {
+			g_sd_step = SD_STEP_USAGE;
+		}
+		return;
+	}
+	case SD_STEP_LOAD_CONFIG:
+		/* On success the bytes were already parsed into g_config by the
+		 * publication consumer. A job that never got that far -- missing
+		 * file, empty or oversized file, IO fault -- leaves the defaults
+		 * and counts one config error, which is what load_sd_config()
+		 * did for its own missing-file case. The one surface difference
+		 * is that an empty or oversized file now reports "not loaded"
+		 * rather than "empty input" / "input too large", because the
+		 * bytes never reach a parser to say so. */
+		if (!ok) {
+			aius_config_set_defaults(&g_config);
+			g_config_error_count++;
+		}
+		g_sd_step = SD_STEP_LOAD_DSP;
+		return;
+	case SD_STEP_LOAD_DSP:
+		/* A missing or invalid /aius/dsp.json is the common case and is
+		 * not an error: the active model is left alone, exactly as
+		 * stage_dsp_sd_override() did. */
+		g_sd_step = SD_STEP_USAGE;
+		return;
+	case SD_STEP_USAGE:
+		if (ok) {
+			g_sd_total_bytes = result->total_bytes;
+			g_sd_used_bytes = result->used_bytes;
+		}
+		/* Cleared either way: a failed refresh is re-armed by the next
+		 * committed write, not retried by spinning on the card. */
+		g_sd_usage_refresh_pending = false;
+		return;
+	case SD_STEP_NONE:
+	default:
+		return;
+	}
+}
+
+/* One SD lifecycle pass, at checkpoint 7. Memory only -- every card access it
+ * causes happens at checkpoint 8, one primitive at a time.
+ *
+ * A refused start is not an error and costs nothing: the step stays owed, no
+ * state moves, and the next epoch retries it. That is the whole of the
+ * contention answer in this direction -- a boot load that lands while a route is
+ * mid-upload simply waits for the upload, which is why /aius/config.json and
+ * /aius/dsp.json can be late but never lost. */
+static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
+{
+	/* First, because a root job start would restart the shared job object
+	 * and destroy the terminal state the commit arm reads. */
+	sd_settle_http_write();
+
+	if (g_runtime.storage.root_state ==
+	    AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
+		return;
+	if (g_sd_step_running)
+		sd_step_complete(now_ms);
+	if (g_sd_step == SD_STEP_NONE) {
+		if ((int32_t)(now_ms - g_sd_probe_at_ms) < 0)
+			return;
+		g_sd_step = SD_STEP_PROBE;
+	}
+	if (!sd_storage_idle())
+		return;
+	if (sd_start_step(g_sd_step))
+		g_sd_step_running = true;
+	else
+		/* sd_storage_idle() already excluded every busy case, so only a
+		 * request the portable engine rejected outright can land here.
+		 * Every request above is constant, so retrying would spin: drop
+		 * the step and let the probe tick bring the next one. */
+		g_sd_step = SD_STEP_NONE;
+}
+
+/* The runtime's optional publication consumer, wired in at construction and
+ * called in SD-checkpoint context. The only publisher is this file's own
+ * CONFIG_LOAD -- both config PUTs write with publish false -- so the running
+ * step says which file the bytes are, and the payload is parsed in place from
+ * the delivered pointer rather than copied anywhere.
+ *
+ * Returning true acknowledges the payload and lets the job complete; a parse
+ * failure is a property of the file, not of the job, so it is recorded exactly
+ * as the legacy loaders recorded it rather than faulting the read. */
+static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
+                                             size_t length)
+{
+	if (data == nullptr || !g_sd_step_running)
+		return false;
+
+	if (g_sd_step == SD_STEP_LOAD_CONFIG) {
+		(void)aius_config_parse(data, length, &g_config);
+		if (!g_config.valid)
+			g_config_error_count++;
+		return true;
+	}
+	if (g_sd_step == SD_STEP_LOAD_DSP) {
+		AiusDspModel parsed;
+
+		/* A staged PUT owns g_pending_dsp_model until its commit arm
+		 * settles; a reinsert load must not write across it. */
+		if (g_dsp_upload_pending)
+			return true;
+		if (aius_dsp_config_parse_put(data, length, &parsed) !=
+		    AIUS_DSP_CONFIG_OK)
+			return true;
+		dsp_model_to_optical_config(parsed, g_pending_dsp_model);
+		/* Staged, not applied: the block-boundary swap in
+		 * AiusAudioProcessor::enqueue() remains the only place the
+		 * active model changes, where config_generation increments and
+		 * source becomes "sd". */
+		g_dsp_apply_pending = true;
+		return true;
+	}
+	/* No load is in flight, so these bytes belong to a job this file did not
+	 * start. Refusing faults that job (AIUS_SD_FAULT_PUBLISH) rather than
+	 * completing it as though it had published. */
+	return false;
+}
+
 /* Checkpoint 7, with the refill quota taken from the budget rather than the
  * legacy loop's literal 2,048. Inert while POST /api/replays/start is refused,
  * because nothing can put the service into REPLAY or PREBUFFERING; Phase 14c
- * restores the producer. */
+ * restores the producer.
+ *
+ * This checkpoint also drives the SD lifecycle, and it is the only slot that
+ * can: it is the last application callback before the SD checkpoint consumes
+ * the epoch's HTTP action, so it is the only point at which a root job can be
+ * started and still yield to a route admitted two checkpoints earlier
+ * (sd_storage_idle()). In recovery-safe mode the scheduler runs only the two USB
+ * checkpoints, so no SD job starts at all -- which is the intended behaviour for
+ * a board recovering from repeated watchdog resets. */
 static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
                                      uint32_t now_ms)
 {
-	(void)now_ms;
 	if (budget == nullptr ||
 	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_REPLAY)
 		return false;
@@ -1527,6 +1902,7 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
 		(void)aius_replay_service_refill(&g_replay_service,
 		                                 budget->max_rx_bytes);
+	sd_lifecycle_service(now_ms);
 	return true;
 }
 
@@ -1560,8 +1936,8 @@ static FLASHMEM void platform_feed_watchdog(void *)
 /* Returned by value rather than held as a file-scope const: Teensy 4 places
  * rodata in DTCM, and the epoch reads this table through the copy
  * aius_runtime_teensy_construct() takes, so a static one would cost DTCM for
- * nothing. publish_config is the one optional entry and stays null until slice
- * S3 lands the portable CONFIG_LOAD job that produces a payload to consume. */
+ * nothing. publish_config is the one optional entry, filled by slice S3b now
+ * that a root-initiated CONFIG_LOAD produces a payload to consume. */
 static FLASHMEM AiusRuntimeTeensyPlatformOps platform_ops(void)
 {
 	AiusRuntimeTeensyPlatformOps ops;
@@ -1574,7 +1950,7 @@ static FLASHMEM AiusRuntimeTeensyPlatformOps platform_ops(void)
 	ops.replay = platform_replay;
 	ops.checkpoint = platform_checkpoint;
 	ops.feed_watchdog = platform_feed_watchdog;
-	ops.publish_config = nullptr;
+	ops.publish_config = platform_publish_config;
 	return ops;
 }
 
@@ -1631,7 +2007,10 @@ static FLASHMEM void derive_auth_token(void)
  * peer transaction, and no loop waiting on anything external. Everything the
  * legacy setup() did beyond that is now epoch work: the network comes up
  * through the supervisor's retained initial action at checkpoint 4, and the SD
- * probe plus both config loads become portable jobs in slice S3. */
+ * probe plus both config loads are root-initiated portable jobs the checkpoint-7
+ * driver starts from the first epoch (sd_lifecycle_service()), never from here.
+ * g_sd_probe_at_ms is left at its static zero so that first epoch probes
+ * immediately rather than a second late. */
 void setup(void)
 {
 	capture_retained_boot_state();
