@@ -11,7 +11,9 @@ Two independently runnable groups, selected with `--group`:
   --group positive   properties the post-cutover file must HAVE:
                       setup() is construction-only, loop() delegates exactly
                       one runtime epoch, the watchdog is armed once at the
-                      pinned 8 s interval and fed exactly once per epoch.
+                      pinned 8 s interval and fed exactly once per epoch, and
+                      all three status channels (UDP, status JSON, USB ID)
+                      carry the recovery state.
   --group absence     constructs the post-cutover file must NOT contain: a
                       static-address fallback, raw FNET access, the
                       listener-rebind globals, a blocking socket write loop,
@@ -51,6 +53,25 @@ def without_comments_and_literals(text):
         re.DOTALL,
     )
     return pattern.sub(lambda match: " " * len(match.group(0)), text)
+
+
+def without_comments(text):
+    """Comments blanked, string and character literals KEPT. The status-channel
+    checks assert over format literals, so they cannot use the stripping helper
+    above; they still must not be satisfiable by a prose comment that merely
+    names a field. Literal-aware by construction: a literal is matched first and
+    returned unchanged, so a `//` inside one is never mistaken for a comment."""
+    pattern = re.compile(
+        r"(//[^\n]*|/\*.*?\*/)|(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')",
+        re.DOTALL,
+    )
+
+    def replace(match):
+        if match.group(1) is not None:
+            return " " * len(match.group(0))
+        return match.group(0)
+
+    return pattern.sub(replace, text)
 
 
 def matching_delimiter(text, opening, open_char, close_char):
@@ -198,12 +219,117 @@ def assert_watchdog_armed_once_fed_once_per_epoch(text):
     )
 
 
+# The recovery snapshot, paired by index: the UDP/status-JSON field name and the
+# abbreviated USB `ID` key naming the same AiusRecoveryStatus member. One tuple
+# pair rather than two independent lists, because the three channels sharing one
+# snapshot is the property under test -- see the reference doc,
+# docs/reference/usb-control-protocol.md, which documents the same mapping.
+RECOVERY_JSON_KEYS = (
+    "network_state",
+    "recovery_safe",
+    "network_last_fault",
+    "last_checkpoint",
+    "network_generation",
+    "boot_generation",
+    "reset_source",
+    "watchdog_early_resets",
+    "loop_epoch",
+    "network_restarts",
+)
+
+RECOVERY_ID_KEYS = (
+    "nstate",
+    "rsafe",
+    "nfault",
+    "ckpt",
+    "ngen",
+    "bgen",
+    "rsrc",
+    "early",
+    "epoch",
+    "nrst",
+)
+
+UDP_DISPATCH_MARKER = "static FLASHMEM void udp_dispatch(const AiusNetFrame *request)"
+RECOVERY_STATUS_MARKER = (
+    "static FLASHMEM uint16_t put_recovery_status(uint8_t *payload)"
+)
+STATUS_JSON_MARKER = (
+    "static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)"
+)
+USB_PAYLOAD_MARKER = (
+    "static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,"
+)
+
+
+def assert_udp_status_carries_recovery_payload(text):
+    """The UDP status path emits the 99-byte recovery shape, not only the legacy
+    71-byte one. Scoped to the two named functions, deliberately: a file-wide
+    absence of put_status() would be an absence assertion, and put_status() is a
+    live producer of bytes 0..70 that must stay."""
+    dispatch = without_comments(function_body(text, UDP_DISPATCH_MARKER))
+    assert "put_recovery_status(" in dispatch, (
+        "udp_dispatch() must answer status requests with put_recovery_status(), "
+        "the 99-byte recovery payload"
+    )
+    legacy = re.search(r"\bput_status\s*\(", dispatch)
+    assert legacy is None, (
+        "udp_dispatch() calls put_status() directly, so at least one arm still "
+        "answers with the legacy 71-byte payload instead of the recovery one"
+    )
+    producer = without_comments(function_body(text, RECOVERY_STATUS_MARKER))
+    assert "aius_net_status_encode(" in producer, (
+        "put_recovery_status() must build its payload with the portable "
+        "aius_net_status_encode(), so the device and tools/net share one layout"
+    )
+    length_present = (
+        re.search(r"\b99u?\b", producer) is not None
+        or "AIUS_NET_RECOVERY_STATUS_LEN" in producer
+    )
+    assert length_present, (
+        "put_recovery_status() names no 99-byte recovery length, so nothing "
+        "proves it returns the extended payload rather than the legacy one"
+    )
+
+
+def assert_status_json_carries_recovery_keys(text):
+    # The keys live inside a C string literal, so the needle carries the source's
+    # own backslash escapes: `\"network_state\":`.
+    body = without_comments(function_body(text, STATUS_JSON_MARKER))
+    missing = [key for key in RECOVERY_JSON_KEYS if f'\\"{key}\\":' not in body]
+    assert not missing, (
+        "the status JSON literal is missing recovery keys "
+        f"{missing!r}; GET /api/status must carry the whole snapshot"
+    )
+
+
+def assert_usb_id_carries_recovery_keys(text):
+    body = without_comments(function_body(text, USB_PAYLOAD_MARKER))
+    missing = [key for key in RECOVERY_ID_KEYS if f" {key}=" not in body]
+    assert not missing, (
+        f"the USB ID payload is missing recovery keys {missing!r}; ID is the "
+        "only channel that answers in recovery-safe mode, where the stack is down"
+    )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
     (
         "watchdog armed once at 8 s, fed exactly once per epoch",
         assert_watchdog_armed_once_fed_once_per_epoch,
+    ),
+    (
+        "UDP status carries the 99-byte recovery payload",
+        assert_udp_status_carries_recovery_payload,
+    ),
+    (
+        "status JSON carries all ten recovery keys",
+        assert_status_json_carries_recovery_keys,
+    ),
+    (
+        "USB ID carries all ten recovery keys",
+        assert_usb_id_carries_recovery_keys,
     ),
 )
 
@@ -339,6 +465,18 @@ def run_helper_self_test():
     assert "x += i;" in bodies[0], "for-loop brace body extraction is broken"
     assert "single_stmt();" in bodies[1], "while single-statement body extraction is broken"
 
+    commented = without_comments(
+        '\tconst char *f = "a // b"; /* gone */ // gone\n\tint x = 1;\n'
+    )
+    assert '"a // b"' in commented, "without_comments must keep string literals"
+    assert "gone" not in commented, "without_comments must blank both comment forms"
+    assert "int x = 1;" in commented, "without_comments must keep code"
+
+    assert len(RECOVERY_JSON_KEYS) == len(RECOVERY_ID_KEYS) == 10, (
+        "the recovery snapshot is ten fields, and the JSON and ID key tuples "
+        "pair by index"
+    )
+
 
 def run_self_test():
     # setup() construction-only.
@@ -400,6 +538,131 @@ def run_self_test():
     _expect_fail(
         assert_watchdog_armed_once_fed_once_per_epoch, bad_watchdog_feed_in_setup,
         "watchdog/feed-in-setup", "must not happen in setup",
+    )
+
+    # UDP status carries the 99-byte recovery payload. Raw strings throughout
+    # this block: the synthetic C must keep its own backslash escapes.
+    good_recovery_producer = r'''static FLASHMEM uint16_t put_recovery_status(uint8_t *payload)
+{
+	if (aius_net_status_encode(payload, AIUS_NET_MAX_PAYLOAD, legacy,
+	                           &recovery) == 99u)
+		return 99u;
+	memcpy(payload, legacy, legacy_length);
+	return legacy_length;
+}
+'''
+    good_udp_dispatch = r'''static FLASHMEM void udp_dispatch(const AiusNetFrame *request)
+{
+	switch (request->type) {
+	case AIUS_NET_CMD_DISCOVER:
+	case AIUS_NET_CMD_GET_STATUS:
+		length = put_recovery_status(g_udp_payload);
+		break;
+	}
+}
+'''
+    _expect_pass(
+        assert_udp_status_carries_recovery_payload,
+        good_udp_dispatch + good_recovery_producer,
+        "udp-recovery/good",
+    )
+    legacy_only_dispatch = good_udp_dispatch.replace(
+        "put_recovery_status(g_udp_payload)", "put_status(g_udp_payload, &length)", 1
+    )
+    _expect_fail(
+        assert_udp_status_carries_recovery_payload,
+        legacy_only_dispatch + good_recovery_producer,
+        "udp-recovery/legacy-only", "put_recovery_status()",
+    )
+    mixed_dispatch = good_udp_dispatch.replace(
+        "\t\tlength = put_recovery_status(g_udp_payload);\n",
+        "\t\tlength = put_recovery_status(g_udp_payload);\n"
+        "\t\tput_status(g_udp_payload, &length);\n",
+        1,
+    )
+    _expect_fail(
+        assert_udp_status_carries_recovery_payload,
+        mixed_dispatch + good_recovery_producer,
+        "udp-recovery/one-legacy-arm", "calls put_status() directly",
+    )
+    unencoded_producer = r'''static FLASHMEM uint16_t put_recovery_status(uint8_t *payload)
+{
+	memcpy(payload, legacy, legacy_length);
+	return legacy_length;
+}
+'''
+    _expect_fail(
+        assert_udp_status_carries_recovery_payload,
+        good_udp_dispatch + unencoded_producer,
+        "udp-recovery/no-encoder", "aius_net_status_encode()",
+    )
+    unlengthed_producer = r'''static FLASHMEM uint16_t put_recovery_status(uint8_t *payload)
+{
+	if (aius_net_status_encode(payload, AIUS_NET_MAX_PAYLOAD, legacy,
+	                           &recovery) == 71u)
+		return 71u;
+	return legacy_length;
+}
+'''
+    _expect_fail(
+        assert_udp_status_carries_recovery_payload,
+        good_udp_dispatch + unlengthed_producer,
+        "udp-recovery/legacy-length", "no 99-byte recovery length",
+    )
+
+    # status JSON carries all ten recovery keys.
+    good_status_json = r'''static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
+{
+	int written = snprintf((char *)body, capacity,
+		"{\"ip\":\"%u.%u.%u.%u\",\"network_restarts\":%lu,\"reset_source\":%lu,"
+		"\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,"
+		"\"last_checkpoint\":%u,\"network_generation\":%lu,"
+		"\"boot_generation\":%lu,\"watchdog_early_resets\":%u,"
+		"\"loop_epoch\":%lu}",
+		address[0]);
+	return written > 0 ? (size_t)written : 0u;
+}
+'''
+    _expect_pass(
+        assert_status_json_carries_recovery_keys, good_status_json, "status-json/good"
+    )
+    status_json_missing_key = good_status_json.replace(
+        r'"\"loop_epoch\":%lu}",', r'"}",', 1
+    )
+    _expect_fail(
+        assert_status_json_carries_recovery_keys, status_json_missing_key,
+        "status-json/missing-key", "loop_epoch",
+    )
+    status_json_comment_only = status_json_missing_key.replace(
+        "\treturn written", "\t/* loop_epoch is served elsewhere */\n\treturn written", 1
+    )
+    _expect_fail(
+        assert_status_json_carries_recovery_keys, status_json_comment_only,
+        "status-json/comment-is-not-a-field", "loop_epoch",
+    )
+
+    # USB ID carries all ten recovery keys.
+    good_usb_id = r'''static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
+                                             char *payload, size_t capacity)
+{
+	int written = snprintf(payload, capacity,
+		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu",
+		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
+	return written > 0 ? (size_t)written : 0u;
+}
+'''
+    _expect_pass(assert_usb_id_carries_recovery_keys, good_usb_id, "usb-id/good")
+    usb_id_missing_key = good_usb_id.replace(" nrst=%lu", "", 1)
+    _expect_fail(
+        assert_usb_id_carries_recovery_keys, usb_id_missing_key,
+        "usb-id/missing-key", "nrst",
+    )
+    usb_id_comment_only = usb_id_missing_key.replace(
+        "\treturn written", "\t/* nrst= is on GET /api/status */\n\treturn written", 1
+    )
+    _expect_fail(
+        assert_usb_id_carries_recovery_keys, usb_id_comment_only,
+        "usb-id/comment-is-not-a-field", "nrst",
     )
 
     # no static fallback.
