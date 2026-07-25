@@ -162,13 +162,15 @@ static void test_framing(void)
 		"PUT /api/config/public HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}x";
 	assert(aius_http_parse((const uint8_t *)excess, strlen(excess), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
+	/* Framing is decided before the route table is consulted, so any POST route
+	 * exercises these two; they moved off the retired /api/mode. */
 	const char *duplicate =
-		"POST /api/mode HTTP/1.0\r\nContent-Length: 0\r\n"
+		"POST /api/clear HTTP/1.0\r\nContent-Length: 0\r\n"
 		"Content-Length: 0\r\n\r\n";
 	assert(aius_http_parse((const uint8_t *)duplicate, strlen(duplicate), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
 	const char *transfer =
-		"POST /api/mode HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n";
+		"POST /api/clear HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n";
 	assert(aius_http_parse((const uint8_t *)transfer, strlen(transfer), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
 
@@ -234,8 +236,10 @@ static void test_parser_result_registry(void)
 		"X-Aius-SD-Auth: 0123456789abcdef0\r\n\r\n";
 	static const char method[] = "PUT /api/status HTTP/1.0\r\n\r\n";
 	static const char route[] = "GET /not-a-route HTTP/1.0\r\n\r\n";
+	/* ERR_BODY now comes from the replay-chunk rule: a complete PUT body on
+	 * /sd/replays/<id> with no Content-Range cannot be placed in the file. */
 	static const char body[] =
-		"POST /api/mode HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}";
+		"PUT /sd/replays/trailer-51 HTTP/1.0\r\nContent-Length: 4\r\n\r\nABCD";
 	static const struct ParserResultRow rows[] = {
 		{ "parse.ok", ok, sizeof(ok) - 1u, AIUS_HTTP_OK },
 		{ "parse.empty", "", 0, AIUS_HTTP_ERR_EMPTY },
@@ -283,10 +287,20 @@ int main(void)
 	parse_ok("GET /api/status HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_STATUS);
 	parse_ok("GET /api/events?cursor=42 HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_EVENTS);
 	parse_ok("GET /api/events HTTP/1.1\r\nHost: device\r\n\r\n", AIUS_HTTP_ROUTE_EVENTS);
-	parse_ok("POST /api/mode HTTP/1.0\r\nContent-Length: 15\r\n\r\n{\"mode\":\"flat\"}",
-	         AIUS_HTTP_ROUTE_MODE);
-	const char *mix = "POST /api/mix HTTP/1.0\r\n\r\n{\"mix\":\"clipfree\"}";
-	assert(aius_http_parse((const uint8_t *)mix, strlen(mix), &request) ==
+	/* /api/mode and /api/mix are retired: the route table no longer knows them,
+	 * so a well-formed request for either is an unknown route. */
+	const char *mode = "POST /api/mode HTTP/1.0\r\nContent-Length: 15\r\n\r\n{\"mode\":\"flat\"}";
+	assert(aius_http_parse((const uint8_t *)mode, strlen(mode), &request) ==
+	       AIUS_HTTP_ERR_ROUTE);
+	const char *retired_mix =
+		"POST /api/mix HTTP/1.0\r\nContent-Length: 18\r\n\r\n{\"mix\":\"clipfree\"}";
+	assert(aius_http_parse((const uint8_t *)retired_mix, strlen(retired_mix), &request) ==
+	       AIUS_HTTP_ERR_ROUTE);
+	/* Body bytes with no Content-Length are malformed whatever the POST route. */
+	const char *undeclared_post =
+		"POST /api/replays/stop HTTP/1.0\r\n\r\n{\"id\":\"take1\"}";
+	assert(aius_http_parse((const uint8_t *)undeclared_post,
+	                       strlen(undeclared_post), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
 	const char *get_start = "GET /api/start HTTP/1.0\r\n\r\n";
 	assert(aius_http_parse((const uint8_t *)get_start, strlen(get_start), &request) ==
@@ -297,7 +311,7 @@ int main(void)
 	assert(aius_http_parse((const uint8_t *)nope, strlen(nope), &request) == AIUS_HTTP_ERR_ROUTE);
 	parse_ok("GET /api/status HTTP/1.1\r\nHost: device\r\nConnection: close\r\n\r\n",
 	         AIUS_HTTP_ROUTE_STATUS);
-	const char *empty_body = "POST /api/mode HTTP/1.0\r\n\r\n{}";
+	const char *empty_body = "POST /api/replays/start HTTP/1.0\r\n\r\n{}";
 	assert(aius_http_parse((const uint8_t *)empty_body, strlen(empty_body), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
 	const char *truncated = "GET /api/status HTTP/1.0\r\n";

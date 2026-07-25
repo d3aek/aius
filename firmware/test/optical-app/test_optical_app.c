@@ -528,15 +528,6 @@ static void test_golden_immediate_routes(void)
 	expect_immediate(dispatch_request(&fixture, "POST /api/reboot", NULL, NULL, -1),
 	                 200, "{\"ok\":true,\"rebooting\":true}");
 	assert(fixture.fake.reboots == 1u);
-
-	/* /api/mode and /api/mix still parse but nothing dispatches them; they
-	 * answer exactly as the pre-cutover switch default did. */
-	expect_immediate(dispatch_request(&fixture, "POST /api/mode", NULL,
-	                                  "{\"mode\":\"flat\"}", -1), 404,
-	                 "{\"ok\":false}");
-	expect_immediate(dispatch_request(&fixture, "POST /api/mix", NULL,
-	                                  "{\"mix\":\"clipfree\"}", -1), 404,
-	                 "{\"ok\":false}");
 }
 
 static void test_serializer_exhaustion(void)
@@ -1045,7 +1036,8 @@ static void test_callback_isolation(void)
 		"auth_matches", "sd_ready", "store_dsp_config"
 	};
 	static const char *const unauthorized_calls[] = { "auth_matches" };
-	static const char *const mode_calls[] = { "" };
+	static const char *const unknown_route_calls[] = { "" };
+	AiusHttpRequest unknown;
 	fixture_init(&fixture);
 
 	(void)dispatch_get(&fixture, "GET /api/status");
@@ -1084,9 +1076,15 @@ static void test_callback_isolation(void)
 	                       "X-Aius-SD-Auth: wrong\r\n", "{}", -1);
 	expect_log(&fixture, unauthorized_calls, ARRAY_LENGTH(unauthorized_calls));
 
-	(void)dispatch_request(&fixture, "POST /api/mode", NULL,
-	                       "{\"mode\":\"flat\"}", -1);
-	expect_log(&fixture, mode_calls, 0u);
+	/* A route with no dispatch arm answers from the switch tail and touches no
+	 * application callback. The parser cannot produce one any more -- /api/mode
+	 * and /api/mix used to reach here -- so the request is built by hand. */
+	memset(&unknown, 0, sizeof(unknown));
+	unknown.method = AIUS_HTTP_POST;
+	unknown.route = AIUS_HTTP_ROUTE_UNKNOWN;
+	fixture_reset_log(&fixture);
+	(void)aius_optical_app_http_dispatch(&fixture.dispatcher, &unknown);
+	expect_log(&fixture, unknown_route_calls, 0u);
 }
 
 static void test_dispatch_counts(void)
@@ -1213,6 +1211,16 @@ static void test_unreachable_method_defaults(void)
 	expect_immediate(aius_optical_app_http_dispatch(&fixture.dispatcher,
 	                                                &request),
 	                 405, "{\"ok\":false,\"error\":\"replay_method\"}");
+
+	/* The switch tail. /api/mode and /api/mix reached it while they still
+	 * parsed; with them retired no byte sequence produces a dispatchable
+	 * unknown route, so the 404 is proven from a hand-built request. */
+	memset(&request, 0, sizeof(request));
+	request.method = AIUS_HTTP_POST;
+	request.route = AIUS_HTTP_ROUTE_UNKNOWN;
+	expect_immediate(aius_optical_app_http_dispatch(&fixture.dispatcher,
+	                                                &request),
+	                 404, "{\"ok\":false}");
 }
 
 /* Every route the parser can produce reaches a dispatch decision -- no route
@@ -1225,8 +1233,6 @@ static void test_route_coverage(void)
 		{ "GET /", NULL, NULL, -1 },
 		{ "GET /api/status", NULL, NULL, -1 },
 		{ "GET /api/events", NULL, NULL, -1 },
-		{ "POST /api/mode", NULL, "{\"mode\":\"flat\"}", -1 },
-		{ "POST /api/mix", NULL, "{\"mix\":\"standard\"}", -1 },
 		{ "POST /api/start", NULL, NULL, -1 },
 		{ "POST /api/stop", NULL, NULL, -1 },
 		{ "POST /api/clear", NULL, NULL, -1 },

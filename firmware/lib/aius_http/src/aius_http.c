@@ -117,10 +117,6 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return decimal_u32(cursor, cursor_length, &request->cursor) ?
 			AIUS_HTTP_ROUTE_EVENTS : AIUS_HTTP_ROUTE_UNKNOWN;
 	}
-	if (token_equals(path, length, "/api/mode"))
-		return AIUS_HTTP_ROUTE_MODE;
-	if (token_equals(path, length, "/api/mix"))
-		return AIUS_HTTP_ROUTE_MIX;
 	if (token_equals(path, length, "/api/start"))
 		return AIUS_HTTP_ROUTE_START;
 	if (token_equals(path, length, "/api/stop"))
@@ -229,18 +225,6 @@ static FLASHMEM AiusHttpResult extract_framing(const uint8_t *headers, size_t le
 		cursor = line_end + 2;
 	}
 	return AIUS_HTTP_OK;
-}
-
-static FLASHMEM int json_value(const uint8_t *body, size_t length, const char *key,
-	                    const char *value)
-{
-	char expected[64];
-	int expected_length = snprintf(expected, sizeof(expected), "{\"%s\":\"%s\"}",
-	                               key, value);
-	if (expected_length < 0 || (size_t)expected_length >= sizeof(expected))
-		return 0;
-	return length == (size_t)expected_length &&
-	       memcmp(body, expected, length) == 0;
 }
 
 static FLASHMEM AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
@@ -357,9 +341,8 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	if (request->route == AIUS_HTTP_ROUTE_UNKNOWN)
 		return AIUS_HTTP_ERR_ROUTE;
 	if (request->method == AIUS_HTTP_GET &&
-	    (request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX ||
-	     (request->route >= AIUS_HTTP_ROUTE_START &&
-	      request->route <= AIUS_HTTP_ROUTE_REBOOT)))
+	    request->route >= AIUS_HTTP_ROUTE_START &&
+	    request->route <= AIUS_HTTP_ROUTE_REBOOT)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->method == AIUS_HTTP_POST &&
 	    (request->route == AIUS_HTTP_ROUTE_STATUS || request->route == AIUS_HTTP_ROUTE_EVENTS))
@@ -421,21 +404,6 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 			return AIUS_HTTP_ERR_TOO_LARGE;
 		if (!request->body_complete)
 			return AIUS_HTTP_ERR_BODY;
-	}
-	if ((request->route == AIUS_HTTP_ROUTE_MODE || request->route == AIUS_HTTP_ROUTE_MIX) &&
-	    !request->has_body)
-		return AIUS_HTTP_ERR_BODY;
-	if (request->route == AIUS_HTTP_ROUTE_MODE) {
-		if (json_value(body, body_length, "mode", "flat")) request->mode = 0;
-		else if (json_value(body, body_length, "mode", "speech")) request->mode = 1;
-		else if (json_value(body, body_length, "mode", "bass-reduced")) request->mode = 2;
-		else return AIUS_HTTP_ERR_BODY;
-	}
-	if (request->route == AIUS_HTTP_ROUTE_MIX) {
-		if (json_value(body, body_length, "mix", "standard")) request->mix = 0;
-		else if (json_value(body, body_length, "mix", "lfe-minus10")) request->mix = 1;
-		else if (json_value(body, body_length, "mix", "clipfree")) request->mix = 2;
-		else return AIUS_HTTP_ERR_BODY;
 	}
 	return AIUS_HTTP_OK;
 }

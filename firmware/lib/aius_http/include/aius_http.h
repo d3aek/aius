@@ -34,8 +34,6 @@ typedef enum {
 	AIUS_HTTP_ROUTE_HOME,
 	AIUS_HTTP_ROUTE_STATUS,
 	AIUS_HTTP_ROUTE_EVENTS,
-	AIUS_HTTP_ROUTE_MODE,
-	AIUS_HTTP_ROUTE_MIX,
 	AIUS_HTTP_ROUTE_START,
 	AIUS_HTTP_ROUTE_STOP,
 	AIUS_HTTP_ROUTE_CLEAR,
@@ -69,8 +67,6 @@ typedef struct {
 	AiusHttpMethod method;
 	AiusHttpRoute route;
 	uint32_t cursor;
-	uint8_t mode;
-	uint8_t mix;
 	uint8_t has_body;
 	size_t header_length;
 	bool has_content_length;

@@ -759,11 +759,6 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		 * written. Dispatch records the request and returns. */
 		app->request_reboot(app->context);
 		return http_json(dispatcher, 200, "{\"ok\":true,\"rebooting\":true}");
-	/* /api/mode and /api/mix still parse into routes but the DSP single-config
-	 * work removed everything that dispatched them; they answer 404 exactly as
-	 * the pre-cutover switch default does. */
-	case AIUS_HTTP_ROUTE_MODE:
-	case AIUS_HTTP_ROUTE_MIX:
 	case AIUS_HTTP_ROUTE_UNKNOWN:
 	default:
 		break;
