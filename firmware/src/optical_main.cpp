@@ -727,6 +727,46 @@ static FLASHMEM void put_status(uint8_t *payload, uint16_t *length)
 	*length = 71;
 }
 
+/* The 99-byte UDP status payload: put_status()'s 71 bytes byte-for-byte,
+ * followed by the recovery fields the normative recovery contract makes
+ * observable. The extension is produced by the portable encoder
+ * (aius_net_status_encode, lib/aius_net), so the device and
+ * tools/net/aius_net_runner.py share one definition of the layout rather than
+ * two agreeing implementations:
+ *
+ *   71      network_state           AiusNetState, 0..5
+ *   72      recovery_safe           0 or 1
+ *   73      network_last_fault      AiusNetFault, 0..10
+ *   74      last_checkpoint         0..9, the last checkpoint persisted
+ *   75..78  network_generation      u32 LE
+ *   79..82  boot_generation         u32 LE
+ *   83..86  reset_source            u32 LE, the raw retained value
+ *   87      watchdog_early_resets   u8
+ *   88..90  reserved                zero, and the runner rejects non-zero
+ *   91..94  loop_epoch              u32 LE, completed epochs
+ *   95..98  network_restarts        u32 LE
+ *
+ * Bytes 0..70 are exactly what put_status() wrote, so this is an extension and
+ * not a wire change: a 71-byte reader is unaffected by construction and the
+ * runner accepts both lengths. The encoder rejects an out-of-domain enum,
+ * checkpoint or mode rather than emitting it; that answer is the legacy
+ * 71-byte payload, which is the shape every reader already handles, not a
+ * dropped response. */
+static FLASHMEM uint16_t put_recovery_status(uint8_t *payload)
+{
+	uint8_t legacy[71];
+	uint16_t legacy_length = 0;
+	AiusRecoveryStatus recovery;
+
+	put_status(legacy, &legacy_length);
+	aius_runtime_teensy_status(&g_runtime, &recovery);
+	if (aius_net_status_encode(payload, AIUS_NET_MAX_PAYLOAD, legacy,
+	                           &recovery) == 99u)
+		return 99u;
+	memcpy(payload, legacy, legacy_length);
+	return legacy_length;
+}
+
 static FLASHMEM bool http_json_append(char *body, size_t capacity, size_t *length,
 	                           const char *format, ...)
 {
@@ -857,7 +897,20 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
  *   http_server_rebinds   producer retired -> 0
  *   the four http_* counters   producer retired -> read back as 0 from the
  *                         payload's own bytes 55..70, so JSON and UDP cannot
- *                         disagree about what is being served */
+ *                         disagree about what is being served
+ *
+ * The eight recovery keys appended after http_service_overruns complete
+ * AiusRecoveryStatus on this channel: network_restarts and reset_source were
+ * already served above, and network_state, recovery_safe, network_last_fault,
+ * last_checkpoint, network_generation, boot_generation, watchdog_early_resets
+ * and loop_epoch join them. They come from the same one aius_runtime_teensy_status()
+ * snapshot the UDP payload encodes, so the two channels cannot disagree, and
+ * they are appended rather than interleaved so no existing key moves. Every
+ * value is an unsigned integer with the same domain the UDP encoder validates;
+ * recovery_safe is served as 0/1 like the other booleans on this route. The
+ * body grows by at most ~200 bytes against a 12,288-byte buffer
+ * (AIUS_RUNTIME_TEENSY_APP_BODY), and the capacity check below is unchanged:
+ * a body that does not fit is 0, which the dispatcher turns into a 500. */
 static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
@@ -871,7 +924,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	const char *network_mode = status[1] == 0 ? "offline" :
 		(status[1] == 1 ? "dhcp" : "static");
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"default\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"default\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -902,7 +955,15 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)aius_net_get_u32(status + 55),
 		(unsigned long)aius_net_get_u32(status + 59),
 		(unsigned long)aius_net_get_u32(status + 63),
-		(unsigned long)aius_net_get_u32(status + 67));
+		(unsigned long)aius_net_get_u32(status + 67),
+		(unsigned)recovery.network_state,
+		recovery.recovery_safe ? 1u : 0u,
+		(unsigned)recovery.network_last_fault,
+		(unsigned)recovery.last_checkpoint,
+		(unsigned long)recovery.network_generation,
+		(unsigned long)recovery.boot_generation,
+		(unsigned)recovery.watchdog_early_resets,
+		(unsigned long)recovery.loop_epoch);
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0;
 }
 
@@ -1255,17 +1316,67 @@ static FLASHMEM void app_request_reboot(void *)
 	g_reboot_requested = true;
 }
 
+/* Worst-case length of the ID payload below, summed field by field so the
+ * static_assert that follows is a proof rather than an estimate. The build
+ * stamps are compile-time literals, so their contribution is exact; the counters
+ * are bounded by their C type; and the four small values are bounded by the
+ * domains the portable status encoder validates (AiusNetState 0..5, AiusNetFault
+ * 0..10, checkpoint 0..9, and two booleans). snprintf's capacity check below is
+ * still the runtime backstop: an impossible value truncates, the arm returns 0,
+ * and the dispatcher answers INTERNAL rather than emitting a corrupt line. */
+static constexpr size_t AIUS_ID_U32_DIGITS = 10u;   /* 4294967295 */
+static constexpr size_t AIUS_ID_MAX_PAYLOAD =
+	(sizeof("protocol=1 revision=") - 1u) + (sizeof(AIUS_BUILD_GIT_REV) - 1u) +
+	(sizeof(" build=") - 1u) + (sizeof(AIUS_BUILD_UTC) - 1u) +
+	(sizeof(" mode=optical") - 1u) +
+	(sizeof(" ip=") - 1u) + 15u +
+	(sizeof(" rsafe=") - 1u) + 1u +
+	(sizeof(" nstate=") - 1u) + 1u +
+	(sizeof(" nfault=") - 1u) + 2u +
+	(sizeof(" ckpt=") - 1u) + 1u +
+	(sizeof(" early=") - 1u) + 3u +
+	(sizeof(" ngen=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" bgen=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" rsrc=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" epoch=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" nrst=") - 1u) + AIUS_ID_U32_DIGITS;
+static_assert(AIUS_ID_MAX_PAYLOAD <= AIUS_OPTICAL_APP_USB_PAYLOAD_MAX,
+	"the ID payload must fit the dispatcher's bound, or every ID answer is "
+	"a truncation-driven INTERNAL error");
+
 /* The legacy USB service's ID and AUTH arms. The dispatcher answers PROTOCOL
  * and BOOTLOADER itself and asks for no payload, so any other kind is a
  * refusal. AUTH copies rather than formats so no new format literal is
  * introduced.
  *
- * ID keeps its exact key set and ordering. Slice S2b moved its four network
- * values off the vendor object: the address and DHCP state come from the
- * adapter's accessors, `link` stays the same three-valued number because
- * AiusNetworkTeensyLink is deliberately numbered like the vendor enum
- * (Unknown/On/Off), and `dhcp_discovers` is served as zero because producing it
- * would need a vendor patch for a diagnostic counter. */
+ * ID carries the four documented identity fields, the leased address, and all
+ * ten AiusRecoveryStatus fields. Recovery-safe mode services bounded USB only
+ * -- Ethernet stays down -- so this is the one channel that must expose the
+ * recovery state when the board is actually in it, and Phase 16a's live smoke
+ * reads it here.
+ *
+ * The ten fields do not fit alongside everything slice S2b put on this line:
+ * AIUS_OPTICAL_APP_USB_PAYLOAD_MAX is 256 bytes, the identity fields plus the
+ * address already spend 118 of them, and ten keyed values cost 125 even with
+ * the short keys below. `link`, `dhcp_pending`, `dhcp_discovers` and
+ * `dhcp_updates` are therefore no longer on this line. That is a deliberate
+ * trade and not only a budget one: all four are served by GET /api/status,
+ * `dhcp_discovers` has had no producer since S2b and was always zero, all four
+ * are meaningless in recovery-safe mode where the stack is down, and `nstate` +
+ * `nfault` say strictly more about a stalled lease (DHCP_WAIT vs BACKOFF, and
+ * which fault caused it) than `link` and `dhcp_pending` ever did. The four
+ * fields the USB reference documents -- protocol, revision, build, mode -- are
+ * all still here.
+ *
+ * Keys are abbreviated because nothing longer fits; they map onto the JSON and
+ * UDP names one-for-one:
+ *
+ *   rsafe   recovery_safe          ngen    network_generation
+ *   nstate  network_state          bgen    boot_generation
+ *   nfault  network_last_fault     rsrc    reset_source
+ *   ckpt    last_checkpoint        epoch   loop_epoch
+ *   early   watchdog_early_resets  nrst    network_restarts
+ */
 static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
                                              char *payload, size_t capacity)
 {
@@ -1280,15 +1391,23 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 		return 0u;
 	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
 	uint8_t address[4];
+	AiusRecoveryStatus recovery;
 	(void)aius_network_teensy_address(network, address);
+	aius_runtime_teensy_status(&g_runtime, &recovery);
 	int written = snprintf(payload, capacity,
-		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u link=%u dhcp_pending=%u dhcp_discovers=%lu dhcp_updates=%lu",
+		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		address[0], address[1], address[2], address[3],
-		(unsigned)aius_network_teensy_link(network),
-		aius_network_teensy_dhcp_pending(network) ? 1u : 0u,
-		0ul,
-		(unsigned long)network->dhcp_updates);
+		recovery.recovery_safe ? 1u : 0u,
+		(unsigned)recovery.network_state,
+		(unsigned)recovery.network_last_fault,
+		(unsigned)recovery.last_checkpoint,
+		(unsigned)recovery.watchdog_early_resets,
+		(unsigned long)recovery.network_generation,
+		(unsigned long)recovery.boot_generation,
+		(unsigned long)recovery.reset_source,
+		(unsigned long)recovery.loop_epoch,
+		(unsigned long)recovery.network_restarts);
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
 }
 
@@ -1374,9 +1493,10 @@ static bool g_boot_marked_healthy;
  * (scheduler -> service -> HTTP transaction -> dispatcher) is deeper than the
  * legacy loop's, and these three buffers are 1,576 B of the 22,684-byte DTCM
  * free-for-locals zone. Every byte sent is written before it is read: the
- * receive buffer by the receive itself, the status payload by put_status()'s
- * memset, the events payload up to the count it reports, and the frame by the
- * encoder up to the length it returns. g_udp_packet must stay live while the
+ * receive buffer by the receive itself, the status payload by
+ * put_recovery_status() up to the length it returns, the events payload up to
+ * the count it reports, and the frame by the encoder up to the length it
+ * returns. g_udp_packet must stay live while the
  * frame is encoded because AiusNetFrame::payload points into it. */
 DMAMEM static uint8_t g_udp_packet[AIUS_NET_MAX_FRAME];
 DMAMEM static uint8_t g_udp_frame[AIUS_NET_MAX_FRAME];
@@ -1437,9 +1557,9 @@ static FLASHMEM uint16_t udp_put_events(const AiusNetFrame *request)
 }
 
 /* service_network()'s command switch: the same nine command types with the
- * same response types, the same 71-byte status payload (put_status() is reused
- * unchanged, so its length and every field offset are the same bytes), and the
- * same AIUS_NET_ERR_TYPE nack for the retired mode/mix commands and any
+ * same response types, the status payload extended from 71 to 99 bytes by
+ * put_recovery_status() (bytes 0..70 are still put_status()'s, unchanged), and
+ * the same AIUS_NET_ERR_TYPE nack for the retired mode/mix commands and any
  * unknown type. The three arms that mutate state go through slice S1's
  * adapters, which are the legacy bodies, so UDP and HTTP keep one producer
  * each. REBOOT is the one ordering change and it is the contract's: the
@@ -1451,12 +1571,12 @@ static FLASHMEM void udp_dispatch(const AiusNetFrame *request)
 
 	switch (request->type) {
 	case AIUS_NET_CMD_DISCOVER:
-		put_status(g_udp_payload, &length);
+		length = put_recovery_status(g_udp_payload);
 		(void)udp_send_frame(AIUS_NET_RSP_DISCOVERY, request->request_id,
 		                     g_udp_payload, length);
 		break;
 	case AIUS_NET_CMD_GET_STATUS:
-		put_status(g_udp_payload, &length);
+		length = put_recovery_status(g_udp_payload);
 		(void)udp_send_frame(AIUS_NET_RSP_STATUS, request->request_id,
 		                     g_udp_payload, length);
 		break;

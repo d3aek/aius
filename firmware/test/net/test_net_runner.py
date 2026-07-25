@@ -223,6 +223,29 @@ class RunnerProtocolTests(unittest.TestCase):
         self.assertEqual(status["network_last_fault"], 10)
         self.assertEqual(status["last_checkpoint"], 9)
 
+    def test_recovery_extension_leaves_the_legacy_decode_identical(self):
+        # The device produces the 99-byte payload by appending to the same 71
+        # bytes it used to send, so every legacy field must decode to the same
+        # value from either shape.
+        legacy = RUNNER.parse_status(RECOVERY_STATUS[:71])
+        recovery = RUNNER.parse_status(RECOVERY_STATUS)
+        for field, value in legacy.items():
+            with self.subTest(field=field):
+                self.assertEqual(recovery[field], value)
+        self.assertEqual(set(recovery) - set(legacy), set(EXPECTED_RECOVERY_STATUS) - set(legacy))
+
+    def test_recovery_shape_parses_the_network_mode_byte_the_device_sends(self):
+        # put_status() leaves byte 1 at 0: the mode producer was retired with
+        # the legacy network path, and the firmware encoder accepts 0 and 1.
+        for mode, expected in ((0, "unknown"), (1, "dhcp")):
+            payload = bytearray(RECOVERY_STATUS)
+            payload[1] = mode
+            with self.subTest(mode=mode):
+                status = RUNNER.parse_status(payload)
+                self.assertEqual(status["network_mode"], expected)
+                self.assertEqual(status["recovery_safe"], True)
+                self.assertEqual(status["last_checkpoint"], 9)
+
     def test_recovery_integer_fields_do_not_narrow(self):
         payload = bytearray(RECOVERY_STATUS)
         for offset in (75, 79, 83, 91, 95):
