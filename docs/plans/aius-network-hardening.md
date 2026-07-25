@@ -5005,6 +5005,36 @@ upload failure against the probe's job state, and against the SD fault code the
 job reported, would separate the two. A run with the probe cadence lengthened
 would settle it quickly.
 
+#### The memory gate under-reports DTCM by ~10.8 KB
+
+Found while assessing a syslog sender, and it invalidates a figure this plan and
+the firmware README have both been quoting.
+
+`mem_report.py` reports DTCM as 306,564 of 327,680 used, leaving **21,116 bytes**
+free. The linker symbols say otherwise:
+
+```
+_ebss   = 0x2004D7C0
+_estack = 0x20050000     ->  stack headroom = 10,304 bytes
+NonCacheable @ 0x20020AC0, size 0x261C = 9,756 bytes
+```
+
+`NonCacheable` is orphan-placed **inside** DTCM, between `.data` and `.bss`, so it
+consumes that address space — but the report excludes it from the used figure.
+`_estack - _ebss` is authoritative, and it is 10,304 bytes, not 21,116.
+
+**That free zone is the entire stack, main loop and audio ISR both.** `enqueue()`
+alone places about 4,096 bytes of frame there in the audio interrupt path, plus
+512 in `update()` — roughly 45 % of the true headroom, in the bank
+§Deciding principle names as scarcest. Every "DTCM has ~20 KB free" statement in
+this plan and in `firmware/README.md` should be read as half that.
+
+`tools/memory/mem_report.py` is also the gate `build.sh` fails the build on, and
+the 2026-07-25 suite audit found it has no test coverage of any kind. A
+regex-parsing release gate that silently overstates the scarcest bank by 10.8 KB
+is the highest-value untested surface in the firmware. Fixing the arithmetic and
+giving it a suite belongs ahead of any new I/O path.
+
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
 validation log with one verdict per assumption and the evidence for it. A refuted
@@ -5072,6 +5102,57 @@ buffers live in `DMAMEM` rather than the DTCM free-for-locals zone; that at most
 one SD primitive is spent per epoch and a wedged one is bounded by the watchdog
 rather than a false cooperative timeout; and that the meters snapshot crosses the
 boundary through a seqlock rather than a lock the audio path could wait on.
+
+### Network syslog — assessed and declined
+
+Assessed 2026-07-25 for realtime observability once deployed. **Recommendation:
+do not build it**, and the reason is not cost.
+
+**The event ring has two call sites.** `record_event` is reached only from the
+S/PDIF-lock and pipeline-class transition, and the test-tone toggle. Everything
+else observable — overruns, network drops, budget overruns, HTTP rejections, DHCP
+updates, config errors, network restarts, watchdog early resets — is a *counter*
+in the status payload, not an event. A syslog sender added today would carry a
+lock change and nothing else. **The deficiency is the source, not the transport.**
+
+**An absent collector is undetectable.** On-subnet, FNET's ARP resolution holds
+one netbuf and rate-limits requests, so the send reports success. Off-subnet, the
+datagram reaches the gateway and is lost silently. Neither produces back-pressure,
+so any design that queues in order to catch up is a design that grows with no
+signal to stop.
+
+**It cannot claim a timestamp.** There is no RTC read anywhere in the firmware and
+the status payload's NTP-validity byte is hardcoded zero. A line can honestly
+carry milliseconds since boot, the boot epoch, a sequence number and the fused-MAC
+identity — nothing more. RFC 5424 at least permits `-` for TIMESTAMP where 3164
+would force a fabrication.
+
+**Also corrected: there is no periodic UDP status.** The only send path is
+peer-limited to the source of the last received datagram. UDP status is pollable,
+strictly request/response; the firmware emits nothing unsolicited.
+
+**What to do instead.** `tools/net/aius_net_runner.py soak` already polls status
+and cursor-based events at a tunable interval and writes one JSON line per sample,
+with `event_sequence` and `event_overflows` reporting exactly what was missed.
+Pointed at the collector host as a unit, that is an ingest pipeline today. The one
+gap polling cannot close is the last events before a reset — and the retained boot
+ledger already survives the reset and reports `reset_source`, `last_checkpoint`,
+`boot_generation` and `watchdog_early_resets`, which is strictly more diagnostic
+than the final log lines would have been.
+
+**Spend the effort on `record_event` call sites**: edge-detect the counters that
+already exist, in the loop context where they are already read, at one comparison
+each and no new bank, transport or ISR exposure. That makes both existing channels
+more useful and is a prerequisite to a sender being worth anything.
+
+If it is built later it belongs **after B6**, not before: a push channel from an
+image whose recovery behaviour has never been validated reports on behaviour
+nobody has checked, and the sender would itself become a new I/O path for 14d to
+document and 14f to return a verdict on. The smallest safe shape, should it come
+to that, is a single unsent-cursor into the existing ring with a drop counter,
+emitted only on epochs the control path did not use, at most one datagram per
+fixed interval, reusing the open control socket — no queue, no retry, no ack, no
+new checkpoint.
 
 ### Phase 14e — Signal path and DSP reference
 
