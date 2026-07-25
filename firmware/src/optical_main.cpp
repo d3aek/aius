@@ -30,6 +30,12 @@ extern "C" {
 #include "aius_optical_config.h"
 #include "aius_auth.h"
 #include "aius_config.h"
+/* The portable dispatch seam. It pulls in aius_sd.h (and, through
+ * aius_http_transaction.h, aius_io.h) unconditionally, which is why slice S0
+ * had to rename this file's legacy SD symbols to LegacySdJob /
+ * LegacySdJobState / LEGACY_SD_JOB_* first. Nothing here constructs the
+ * dispatcher yet -- slice S2a does. */
+#include "aius_optical_app.h"
 
 #ifndef AIUS_BUILD_GIT_REV
 #define AIUS_BUILD_GIT_REV "unknown"
@@ -2560,6 +2566,255 @@ static void start_network(void)
 	              (unsigned)Ethernet.linkStatus(),
 	              (unsigned)Ethernet.hardwareStatus());
 }
+
+/* ------------------------------------------------------------------ */
+/* AiusOpticalApp adapters -- Phase 14 slice S1                        */
+/*                                                                     */
+/* The twenty callbacks aius_optical_app.h declares, as thin adapters  */
+/* over the serializers and request-handler bodies above. This slice   */
+/* is additive: nothing constructs the dispatcher yet (slice S2a), and */
+/* the legacy setup()/loop() path below is untouched and still runs.   */
+/*                                                                     */
+/* Every definition carries FLASHMEM on the definition itself. GCC     */
+/* does not inherit a `section` attribute from a forward declaration,  */
+/* so a prototype-only FLASHMEM would silently leave the code in ITCM, */
+/* and this image has ~1.4 kB of ITCM left.                            */
+/* ------------------------------------------------------------------ */
+
+/* Records the reboot request; the runtime performs the reset after the
+ * response has been written, so there is no equivalent here of the legacy
+ * inline reset_application() call in http_handle_request(). volatile because
+ * the store is the whole point of the callback and its only reader arrives
+ * with slice S2a's loop(). */
+static volatile bool g_reboot_requested;
+
+static FLASHMEM bool app_sd_ready(void *)
+{
+	return g_sd_ready;
+}
+
+static FLASHMEM bool app_sd_busy(void *)
+{
+	return sd_job_active();
+}
+
+static FLASHMEM bool app_auth_matches(void *, const uint8_t *token, size_t length)
+{
+	return aius_auth_token_matches(g_auth_token, (const char *)token,
+	                               length) != 0;
+}
+
+static FLASHMEM size_t app_write_home(void *, uint8_t *body, size_t capacity)
+{
+	return http_home_page(body, capacity);
+}
+
+static FLASHMEM size_t app_write_status(void *, uint8_t *body, size_t capacity)
+{
+	return http_status_json(body, capacity);
+}
+
+static FLASHMEM size_t app_write_events(void *, uint32_t cursor, uint8_t *body,
+                                        size_t capacity)
+{
+	return http_events_json(cursor, body, capacity);
+}
+
+static FLASHMEM size_t app_write_dsp_config(void *, uint8_t *body, size_t capacity)
+{
+	return http_dsp_config_json(body, capacity);
+}
+
+/* GET /api/meters has no serializer in this file: the meters wire shape is
+ * settled in aius-dsp-config-api.md §"Meters endpoint + accumulate wiring" and
+ * Phase 14b implements both it and this body. Until then this reports the
+ * callback's ordinary "does not fit" answer, 0, which the dispatcher turns into
+ * a deterministic 500 -- a consistent refusal rather than an invented body
+ * shape 14b would have to change. Phase 14b owns replacing this. */
+static FLASHMEM size_t app_write_meters(void *, uint8_t *, size_t)
+{
+	return 0u;
+}
+
+static FLASHMEM size_t app_write_replay_status(void *, uint8_t *body,
+                                               size_t capacity)
+{
+	return http_replay_status_json(body, capacity);
+}
+
+static FLASHMEM size_t app_write_replay_list(void *, uint8_t *body,
+                                             size_t capacity)
+{
+	return http_replay_list_json(body, capacity);
+}
+
+/* Validate and stage; write nothing. The dispatcher persists the accepted bytes
+ * through an SD job and withholds the client's 200 until that write commits, so
+ * unlike http_config_public_request() this never starts an upload itself. The
+ * staged model keeps its existing shape: g_pending_config is fully written
+ * before g_config_upload_pending arms it, and the SD-job lifecycle remains its
+ * only consumer. Refusal order follows the legacy handler -- parse first (an
+ * invalid body still updates the reported config error), then media state. */
+static FLASHMEM AiusOpticalAppStoreResult app_store_public_config(
+	void *, const uint8_t *body, size_t length)
+{
+	AiusConfig parsed;
+	if (aius_config_parse(body, length, &parsed) != AIUS_CONFIG_OK) {
+		g_config = parsed;
+		g_config_error_count++;
+		return AIUS_OPTICAL_APP_STORE_INVALID;
+	}
+	if (sd_job_active())
+		return AIUS_OPTICAL_APP_STORE_BUSY;
+	g_pending_config = parsed;
+	g_config_upload_pending = true;
+	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
+}
+
+/* Same contract for PUT /api/dsp/config: validated and staged in RAM, written
+ * by the dispatcher's SD job. Authentication and media state are the
+ * dispatcher's checks, so only the body's own failures remain here. The staged
+ * handoff keeps its single-writer/single-reader shape -- g_pending_dsp_model is
+ * fully populated, then g_dsp_upload_pending gates it for the job lifecycle;
+ * g_dsp_apply_pending is armed only once the write commits, never here, so a
+ * failed write can never reach the audio block boundary. */
+static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
+	void *, const uint8_t *body, size_t length)
+{
+	AiusDspModel parsed;
+	if (aius_dsp_config_parse_put(body, length, &parsed) != AIUS_DSP_CONFIG_OK)
+		return AIUS_OPTICAL_APP_STORE_INVALID;
+	if (parsed.base_generation != g_config_generation)
+		return AIUS_OPTICAL_APP_STORE_STALE;
+	if (sd_job_active())
+		return AIUS_OPTICAL_APP_STORE_BUSY;
+	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
+	g_dsp_upload_pending = true;
+	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
+}
+
+/* The dispatcher has already refused a missing card and an invalid id, so this
+ * is http_replay_request()'s START arm from the file open onwards. */
+static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
+                                                            const char *id,
+                                                            bool loop)
+{
+	snprintf(g_replay_path, sizeof(g_replay_path), "/aius/replays/%s.iec", id);
+	File file = SD.open(g_replay_path, FILE_READ);
+	if (!file)
+		return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
+	uint32_t bytes = (uint32_t)file.size();
+	file.close();
+	if (aius_replay_service_start(&g_replay_service, id, bytes, loop,
+	                              &g_replay_reader) != AIUS_OK)
+		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	return AIUS_OPTICAL_APP_REPLAY_OK;
+}
+
+static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
+                                                             const char *id)
+{
+	char path[96];
+	if (strcmp(id, g_replay_service.id) == 0 &&
+	    g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY)
+		return AIUS_OPTICAL_APP_REPLAY_ACTIVE;
+	snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
+	if (!SD.exists(path))
+		return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
+	return SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK :
+	                         AIUS_OPTICAL_APP_REPLAY_FAILED;
+}
+
+static FLASHMEM void app_replay_stop(void *)
+{
+	aius_replay_service_stop(&g_replay_service);
+}
+
+static FLASHMEM void app_set_test_running(void *, bool running)
+{
+	if (g_test_running == running)
+		return;
+	g_test_running = running;
+	record_event(2, current_state(), running ? 1u : 0u);
+}
+
+static FLASHMEM void app_clear_counters(void *)
+{
+	g_audio_processor.clear_counters();
+}
+
+static FLASHMEM void app_request_reboot(void *)
+{
+	g_reboot_requested = true;
+}
+
+/* service_usb_control()'s ID and AUTH arms. The dispatcher answers PROTOCOL and
+ * BOOTLOADER itself and asks for no payload, so any other kind is a refusal.
+ * AUTH copies rather than formats so no new format literal is introduced. */
+static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
+                                             char *payload, size_t capacity)
+{
+	if (kind == AIUS_USB_COMMAND_AUTH) {
+		size_t length = strlen(g_auth_token);
+		if (length == 0u || length >= capacity)
+			return 0u;
+		memcpy(payload, g_auth_token, length + 1u);
+		return length;
+	}
+	if (kind != AIUS_USB_COMMAND_ID)
+		return 0u;
+	IPAddress ip = Ethernet.localIP();
+	int written = snprintf(payload, capacity,
+		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u link=%u dhcp_pending=%u dhcp_discovers=%lu dhcp_updates=%lu",
+		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
+		ip[0], ip[1], ip[2], ip[3],
+		(unsigned)Ethernet.linkStatus(), g_dhcp_pending ? 1u : 0u,
+		(unsigned long)g_dhcp_discover_count,
+		(unsigned long)g_dhcp_update_count);
+	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
+}
+
+/* The dispatcher combines this with its own per-dispatch sequence to name the
+ * temporary and backup files, so the entropy source stays the one the legacy
+ * upload paths used: g_sd_job_sequence mixed with millis() and the boot epoch.
+ * Reading it through sd_job_id() also keeps that counter monotonic across both
+ * paths while the legacy one is still live. */
+static FLASHMEM uint32_t app_upload_id(void *)
+{
+	return sd_job_id();
+}
+
+/* Handed to aius_optical_app_init() by slice S2a. Deliberately external
+ * linkage: an internal-linkage table nothing references yet is exactly the
+ * shape -Wunused-variable reports, whereas an extern definition is never
+ * diagnosed, and --gc-sections still drops it (and, with it, every callback
+ * above) until S2a creates the reference -- so this costs no FLASH, no DTCM and
+ * no ITCM in the current image. Members are positional and in header order,
+ * matching g_replay_reader above. */
+extern const AiusOpticalApp g_aius_optical_app;
+const AiusOpticalApp g_aius_optical_app = {
+	nullptr,                  /* context: the adapters read file statics */
+	app_sd_ready,
+	app_sd_busy,
+	app_auth_matches,
+	app_write_home,
+	app_write_status,
+	app_write_events,
+	app_write_dsp_config,
+	app_write_meters,
+	app_write_replay_status,
+	app_write_replay_list,
+	app_store_public_config,
+	app_store_dsp_config,
+	app_replay_start,
+	app_replay_delete,
+	app_replay_stop,
+	app_set_test_running,
+	app_clear_counters,
+	app_request_reboot,
+	app_write_usb_payload,
+	app_upload_id
+};
 
 void setup(void)
 {
