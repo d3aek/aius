@@ -325,10 +325,17 @@ committed.
 
 ## Trusted fixture boundary
 
-Treat the DHCP server, network routing, and USB-to-fibre extender as reliable
-fixture components. A missing lease, unreachable service, failed software
+**The board is connected directly to the development host, and the network beyond
+that host is reliable fixture.** Treat the DHCP server and network routing as
+trusted components. A missing lease, unreachable service, failed software
 bootloader transition, or post-flash mismatch is a firmware or firmware-tooling
 failure until firmware evidence identifies a more specific cause.
+
+This is not a formality. Attributing a fault outward — to a switch, a cable, or
+anything past the host — without firmware evidence pointing there ends the
+investigation at the one place it cannot be fixed. If the evidence has not been
+found yet, the honest statement is that the cause is not yet identified, not that
+it is external.
 
 - DHCP is the production address source. Remove the static fallback and its
   separate initialization path.
@@ -336,8 +343,8 @@ failure until firmware evidence identifies a more specific cause.
   route diagnosis to firmware acceptance.
 - USB CDC is the recovery control plane. A running or watchdog-recovered image
   must accept a software bootloader command without a Program-button press.
-- HalfKay transfer over the USB-to-fibre path is trusted. A successful loader
-  exit followed by the wrong application revision is a release failure.
+- HalfKay transfer is trusted. A successful loader exit followed by the wrong
+  application revision is a release failure.
 
 This decision supersedes the DHCP/static-fallback requirements in
 [`aius-optical-prototype.md`](aius-optical-prototype.md) for the deployed optical
@@ -4816,39 +4823,48 @@ Reflashed with the link gate and both status fixes. Measured on the board:
   failed with `nfault=1` (`DHCP_TIMEOUT`), not `LINK_LOST`, and still needed
   generation 2 to acquire the lease.
 
-That is the discriminating measurement the fix was built to make, and it settles
-the question: **the vendor link signal reports up while the path cannot carry a
-packet.** `Ethernet.linkStatus()` is honest about the PHY's own link partner, but
-the end-to-end path — through the USB-to-fibre extender and the switch — is not
-usable for roughly five to six seconds after the stack starts. No firmware gate
-can observe that, because from the firmware's vantage point the link is up and the
-DISCOVER is being transmitted normally.
+That is the discriminating measurement the fix was built to make, and it points
+back into the firmware rather than outward.
+
+**`Ethernet.linkStatus()` does not report the link. It reports a cached variable**
+(`vendor/NativeEthernet/src/NativeEthernet.cpp:316`) whose initial value is
+sampled inside `beginNoWait()` at `:166`, on the line immediately after
+`fnet_netif_init()` returns — before the MAC can possibly have completed bring-up.
+Thereafter it is only updated by the link service's own callback. So the value the
+gate consulted on generation 1 was an init-time snapshot, not an observation.
+
+**And generation 1 and generation 2 do not run the same code.** `beginNoWait()`
+guards its initialisation with `if (!fnet_netif_is_initialized(...))` at `:151`.
+Generation 1 performs the real `fnet_netif_init()`; generation 2, after a teardown
+that does not de-initialise the netif, skips it entirely and reuses a warm
+interface. That asymmetry — not anything outside the board — is what distinguishes
+the attempt that fails from the attempt that succeeds, and it explains why the
+second one binds in under a second every time.
+
+So the working hypothesis is that generation 1 hands its DISCOVER to a MAC that
+has been initialised but is not yet transmitting, and the frame is lost inside the
+firmware. That is consistent with every observation: the server sees nothing, the
+link reads up, no fault is raised, and the retry on a warm interface always works.
+
+**This is not yet proven, and it must not be asserted as though it were.** The next
+step is to measure inside the firmware — expose FNET's DHCP client state and the
+netif's readiness, and compare a cold boot against a warm one — rather than to
+infer further. What is settled is the direction: the asymmetry is in code this
+repository owns.
 
 The gate is kept regardless: it is correct, it bounds a genuinely dead link at
-3 s, and it costs nothing when the link is already up. It simply cannot fix this
-particular delay.
+3 s, and it costs nothing when the link is already up. It simply does not address
+this, because the signal it consults is not the signal it needs.
 
-**So the six seconds is fixture settling, and bounded recovery is the right
-response to it rather than a workaround for it.** The firmware detects a lease
-that does not arrive, tears down, backs off and retries on a fresh generation,
-reaching service without help. That is the designed behaviour working, and it is
-what the legacy image could not do.
+Two candidate fixes, once the measurement confirms the cause. Require a *fresh*
+readiness observation rather than the init-time snapshot, so the gate waits for
+the link service's own poll instead of trusting a value taken microseconds after
+init. Or make the two generations symmetric, so the first attempt runs on an
+interface in the same state the second one enjoys.
 
-Three levers remain if the boot time matters, in increasing order of intrusiveness,
-none of which touches the audio path:
-
-- **Accept it.** Six seconds of boot, self-healing, one recorded restart. This is
-  the current state.
-- **Be more patient on the first attempt.** FNET retransmits DISCOVER at roughly
-  4 s intervals, so a DHCP deadline above ~8 s would likely let generation 1
-  succeed on its own retransmit, trading a longer worst case for avoiding a
-  teardown cycle entirely.
-- **Start the stack earlier in boot.** It currently starts 3.84 s in, so the
-  settling runs strictly after SD, config and audio init rather than overlapping
-  them. This is boot ordering, and the cheapest real saving.
-
-The fixture question — why the path takes that long to forward — is better
-answered from the switch side than from the firmware.
+Bounded recovery is what keeps this a six-second delay rather than a failure, and
+that part is working as designed — but it is masking a firmware defect, not
+compensating for the environment.
 
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a

@@ -143,14 +143,13 @@ landed host-tested during the board-free window.
    `AiusHostTransport` seam is implemented over the Teensy RawHID reports exposed
    as `/dev/hidraw*`; the runner, framer, and protocol remain unchanged from the
    P5 sim. The `teensy41-capability` target provides the matching firmware entry
-   point and uses acknowledged 32-byte command fragments for the USB-over-fibre
-   path. The physical corpus passed 40/40 vectors with zero allocation
-   violations; raw results and a summary are under `evidence/capability-results/`.
-   The USB-over-fibre KVM path must pass through a dedicated USB controller (or
-   provide equivalent host-side reattachment); individual VID/PID hostdevs and
-   hub passthrough do not follow Teensy re-enumeration. `scripts/flash_and_run.sh`
-   supplies bounded loader and application-interface discovery once that topology
-   is in place.
+   point and uses acknowledged 32-byte command fragments. The physical corpus
+   passed 40/40 vectors with zero allocation violations; raw results and a summary
+   are under `evidence/capability-results/`. The USB path must pass through a
+   dedicated USB controller (or provide equivalent host-side reattachment);
+   individual VID/PID hostdevs and hub passthrough do not follow Teensy
+   re-enumeration. `scripts/flash_and_run.sh` supplies bounded loader and
+   application-interface discovery once that topology is in place.
 7. **P7 — Soak.** Eight-hour run on the recorded firmware/cable/port. Any reset,
    protocol error, PCM mismatch, deadline miss, allocation, memory high-water
    growth, or crash fails it; retry cannot turn a failure green.

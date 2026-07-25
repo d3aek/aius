@@ -258,9 +258,9 @@ then run `scripts/flash_and_run.sh .pio/build/teensy41-capability/firmware.hex \
 tools/dts_vectors/vectors`. The wrapper requests the running image to enter
 HalfKay, flashes it, resolves the new application interface by VID/PID and
 interface number, and writes a raw transcript unless an audit path is supplied.
-Large RawHID commands use acknowledged 32-byte fragments because this USB
-extender corrupts longer logical reports. The physical P6 corpus passes all 40
-vectors; P7 soak remains.
+Large RawHID commands use acknowledged 32-byte fragments, because longer logical
+reports were observed to corrupt. The physical P6 corpus passes all 40 vectors;
+P7 soak remains.
 
 Set `AIUS_HID_ITERATIONS` when invoking `scripts/run_hid.sh` to repeat the full
 corpus in one device session; use `/dev/null` as the audit path for a long soak.

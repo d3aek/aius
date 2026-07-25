@@ -399,9 +399,8 @@ RawHID/device reset or transport loss, followed by a target-only allocation or
 memory-corruption fault. A controlled P6 reproduction reached the same boundary
 at approximately 60 iterations: the audit contained only `status=0` frame
 results, while the host then stopped progressing in hidraw I/O and the board
-still enumerated as `16c0:0486`. This materially favors a USB-over-fibre/KVM
-RawHID transport stall over a decoder failure. The optical image was restored
-after the reproduction.
+still enumerated as `16c0:0486`. This materially favors a RawHID transport stall
+over a decoder failure. The optical image was restored after the reproduction.
 
 The failure mode is actionable: a dropped fragment leaves the device cursor
 mid-frame while the host waits for that fragment's ACK. Subsequent frames start
