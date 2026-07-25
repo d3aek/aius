@@ -1465,6 +1465,13 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	size_t length = (size_t)written - 1u;
 	if (!http_net_diag_json((char *)body, capacity, &length, network))
 		return 0;
+	/* The storage service's own failure record. Two SD failures that are
+	 * identical on the wire -- a job refused because another owner held the
+	 * volume, and a card that refused the write -- both surface as
+	 * `500 sd_failure`, so the difference has to come from the device. */
+	if (!aius_runtime_storage_diag_json(&g_runtime.storage, (char *)body,
+	                                    capacity, &length))
+		return 0;
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }
 

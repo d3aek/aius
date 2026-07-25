@@ -11,6 +11,8 @@
 #include <Arduino.h>
 #endif
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifndef FLASHMEM
@@ -18,6 +20,84 @@
 #endif
 
 namespace {
+
+/* Latches one failed (or refused) job into the diagnostic record. Stores only,
+ * on a path that has already failed, so it costs nothing an epoch will notice.
+ *
+ * `refused` distinguishes the two shapes that reach the client as the same 500:
+ * a job that ran and faulted, and an action refused before a job existed
+ * because a root job owned the volume. In the refused case every job-shaped
+ * field describes the job that was RUNNING, which is exactly what a reader
+ * needs to know. */
+FLASHMEM void latch_failure(AiusRuntimeStorage *service,
+                            AiusRuntimeStorageOwner owner, bool refused,
+                            uint32_t now_ms)
+{
+	AiusRuntimeStorageFailure *record = &service->diag.last_failure;
+
+	if (record->sequence != UINT32_MAX)
+		record->sequence++;
+	record->at_ms = now_ms;
+	record->owner = (uint8_t)owner;
+	record->job_kind = (uint8_t)service->job.kind;
+	record->fault = (uint8_t)service->job.last_fault;
+	record->fault_phase = (uint8_t)service->job.fault_phase;
+	record->job_state = (uint8_t)service->job.state;
+	record->root_state = (uint8_t)service->root_state;
+	record->draining = service->draining;
+	record->refused = refused;
+	record->driver_fault = service->job.last_driver_fault;
+	record->adapter_fault = service->target.last_fault;
+	record->mounts_in_job =
+		service->target.mounts - service->job_mounts_at_start;
+	record->longest_primitive_us = service->target.longest_duration_us;
+	record->transferred = service->job.transferred;
+	if (refused) {
+		/* No job of the refused owner's ever existed, so the fault
+		 * fields would describe the running root job's history rather
+		 * than this refusal. Report the refusal itself. */
+		record->fault = (uint8_t)AIUS_SD_FAULT_PROTOCOL;
+		record->fault_phase = (uint8_t)AIUS_SD_PHASE_NONE;
+		record->driver_fault = 0u;
+	}
+}
+
+/* Job-start bookkeeping shared by both owners: the counters and the mount
+ * baseline a later failure reports its delta against. */
+FLASHMEM void note_job_start(AiusRuntimeStorage *service,
+                             AiusRuntimeStorageOwner owner)
+{
+	service->job_owner = (uint8_t)owner;
+	service->job_mounts_at_start = service->target.mounts;
+	if (owner == AIUS_RUNTIME_STORAGE_OWNER_ROOT) {
+		if (service->diag.root_jobs != UINT32_MAX)
+			service->diag.root_jobs++;
+		return;
+	}
+	if (service->diag.http_jobs != UINT32_MAX)
+		service->diag.http_jobs++;
+}
+
+/* Appends one formatted fragment, same contract as the status serializer's own
+ * helper: it advances `*length` only on a complete write, so a body that runs
+ * out of capacity is refused rather than truncated mid-object. */
+FLASHMEM __attribute__((format(printf, 4, 5))) bool diag_append(
+	char *output, size_t capacity, size_t *length, const char *format, ...)
+{
+	va_list arguments;
+	int written;
+
+	if (*length >= capacity)
+		return false;
+	va_start(arguments, format);
+	written = vsnprintf(output + *length, capacity - *length, format,
+	                    arguments);
+	va_end(arguments);
+	if (written < 0 || (size_t)written >= capacity - *length)
+		return false;
+	*length += (size_t)written;
+	return true;
+}
 
 FLASHMEM AiusSdEvent sd_event(AiusSdEventKind kind, uint64_t action_id,
                               uint32_t fault)
@@ -59,7 +139,7 @@ FLASHMEM void publish_http(AiusRuntimeStorage *service, AiusHttpSdEventKind kind
  * injected to drain an unacknowledged download chunk is filtered out; every
  * other pre-existing fault, including a rollback or cleanup fault that replaced
  * CANCELLED, stays authoritative. */
-FLASHMEM void publish_cancelled(AiusRuntimeStorage *service)
+FLASHMEM void publish_cancelled(AiusRuntimeStorage *service, uint32_t now_ms)
 {
 	const AiusSdResult *result = aius_sd_job_result(&service->job);
 	AiusSdFault fault = AIUS_SD_FAULT_NONE;
@@ -79,9 +159,19 @@ FLASHMEM void publish_cancelled(AiusRuntimeStorage *service)
 	publish_http(service, AIUS_HTTP_SD_CANCELLED);
 	service->pending_http_event.sd_fault = fault;
 	service->pending_http_event.sd_driver_fault = driver_fault;
+	if (service->diag.cancellations != UINT32_MAX)
+		service->diag.cancellations++;
+	/* A cancellation that carries a real fault is a failure the client sees
+	 * as one, so it is attributed like any other; a clean cancel is not. */
+	if (fault != AIUS_SD_FAULT_NONE)
+		latch_failure(service,
+		              service->draining ?
+			              AIUS_RUNTIME_STORAGE_OWNER_DRAIN :
+			              AIUS_RUNTIME_STORAGE_OWNER_HTTP,
+		              false, now_ms);
 }
 
-FLASHMEM void publish_failed(AiusRuntimeStorage *service)
+FLASHMEM void publish_failed(AiusRuntimeStorage *service, uint32_t now_ms)
 {
 	const AiusSdResult *result = aius_sd_job_result(&service->job);
 	AiusSdFault fault = AIUS_SD_FAULT_NONE;
@@ -99,33 +189,48 @@ FLASHMEM void publish_failed(AiusRuntimeStorage *service)
 	publish_http(service, AIUS_HTTP_SD_FAILED);
 	service->pending_http_event.sd_fault = fault;
 	service->pending_http_event.sd_driver_fault = driver_fault;
+	if (service->diag.http_failures != UINT32_MAX)
+		service->diag.http_failures++;
+	latch_failure(service, AIUS_RUNTIME_STORAGE_OWNER_HTTP, false, now_ms);
 }
 
 /* Correlated refusal of an HTTP action that arrived while a root-initiated job
  * owns the service. The running job is not read or touched, so no fault it has
  * recorded so far can leak into the refusal. */
-FLASHMEM void publish_busy(AiusRuntimeStorage *service)
+FLASHMEM void publish_busy(AiusRuntimeStorage *service, uint32_t now_ms)
 {
 	publish_http(service, AIUS_HTTP_SD_FAILED);
 	service->pending_http_event.sd_fault = AIUS_SD_FAULT_PROTOCOL;
 	service->pending_http_event.sd_driver_fault = 0u;
+	/* The one counter that separates the two hypotheses this record exists
+	 * to separate: the client's 500 came from the contention rule, not from
+	 * the card. Latched before root_state can move on. */
+	if (service->diag.busy_refusals != UINT32_MAX)
+		service->diag.busy_refusals++;
+	latch_failure(service, AIUS_RUNTIME_STORAGE_OWNER_HTTP, true, now_ms);
 }
 
 /* Settles a root-initiated job at its terminal action. A job with an HTTP owner
  * is left alone: its result travels through the correlated event instead. */
-FLASHMEM void root_terminal(AiusRuntimeStorage *service, bool failed)
+FLASHMEM void root_terminal(AiusRuntimeStorage *service, bool failed,
+                            uint32_t now_ms)
 {
 	if (service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
 		return;
 	service->root_state = failed ? AIUS_RUNTIME_STORAGE_ROOT_FAILED :
 	                               AIUS_RUNTIME_STORAGE_ROOT_COMPLETE;
+	if (!failed)
+		return;
+	if (service->diag.root_failures != UINT32_MAX)
+		service->diag.root_failures++;
+	latch_failure(service, AIUS_RUNTIME_STORAGE_OWNER_ROOT, false, now_ms);
 }
 
 /* True when the action produced a correlated HTTP result (or resolved the
  * epoch's work); false when nothing observable happened and HTTP authority must
  * stay outstanding for a later epoch. */
 FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *action,
-                           bool authoritative)
+                           bool authoritative, uint32_t now_ms)
 {
 	switch (action->kind) {
 	case AIUS_SD_ACTION_NONE:
@@ -188,11 +293,11 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 	case AIUS_SD_ACTION_COMPLETE:
 		service->terminal_seen = true;
 		service->draining = false;
-		root_terminal(service, false);
+		root_terminal(service, false, now_ms);
 		if (!authoritative)
 			return true;
 		if (service->cancelling) {
-			publish_cancelled(service);
+			publish_cancelled(service, now_ms);
 			return true;
 		}
 		publish_http(service, AIUS_HTTP_SD_COMPLETE);
@@ -200,14 +305,25 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 
 	case AIUS_SD_ACTION_FAIL:
 		service->terminal_seen = true;
+		/* Read before the flag is cleared: an ownerless failure is a
+		 * drain's, and nothing else publishes it. */
+		if (!authoritative &&
+		    service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
+		    service->draining) {
+			if (service->diag.drains != UINT32_MAX)
+				service->diag.drains++;
+			latch_failure(service,
+			              AIUS_RUNTIME_STORAGE_OWNER_DRAIN, false,
+			              now_ms);
+		}
 		service->draining = false;
-		root_terminal(service, true);
+		root_terminal(service, true, now_ms);
 		if (!authoritative)
 			return true;
 		if (service->cancelling)
-			publish_cancelled(service);
+			publish_cancelled(service, now_ms);
 		else
-			publish_failed(service);
+			publish_failed(service, now_ms);
 		return true;
 
 	default:
@@ -242,7 +358,7 @@ FLASHMEM bool advance(AiusRuntimeStorage *service, uint32_t now_ms,
 
 	memset(&action, 0, sizeof(action));
 	aius_sd_job_step(&service->job, now_ms, event, &action);
-	return route_action(service, &action, authoritative);
+	return route_action(service, &action, authoritative, now_ms);
 }
 
 } // namespace
@@ -272,6 +388,9 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	service->publish_dropped = 0u;
 	memset(&service->publish, 0, sizeof(service->publish));
 	service->root_state = AIUS_RUNTIME_STORAGE_ROOT_IDLE;
+	memset(&service->diag, 0, sizeof(service->diag));
+	service->job_mounts_at_start = 0u;
+	service->job_owner = (uint8_t)AIUS_RUNTIME_STORAGE_OWNER_NONE;
 	aius_sd_teensy_init(&service->target);
 	aius_sd_job_init(&service->job, service->sd_transfer,
 	                 sizeof(service->sd_transfer));
@@ -317,6 +436,7 @@ FLASHMEM bool aius_runtime_storage_start_root_job(
 	service->event_present = false;
 	memset(&service->pending_event, 0, sizeof(service->pending_event));
 	service->root_state = AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+	note_job_start(service, AIUS_RUNTIME_STORAGE_OWNER_ROOT);
 	aius_sd_job_start(&service->job, request, now_ms, 0u);
 	if (service->job.state == AIUS_SD_FAILED) {
 		/* A rejected start still owes one FAIL notification; draining it
@@ -380,7 +500,7 @@ FLASHMEM bool aius_runtime_storage_service(
 			/* The other direction of the contention rule: refuse the
 			 * action in-band instead of restarting or stepping the
 			 * root job underneath its owner. */
-			publish_busy(service);
+			publish_busy(service, now_ms);
 			*http_event = service->pending_http_event;
 			return true;
 		}
@@ -396,6 +516,8 @@ FLASHMEM bool aius_runtime_storage_service(
 			service->event_present = false;
 			memset(&service->pending_event, 0,
 			       sizeof(service->pending_event));
+			note_job_start(service,
+			               AIUS_RUNTIME_STORAGE_OWNER_HTTP);
 			aius_sd_job_start(&service->job, http_action->sd_request,
 			                  now_ms, 0u);
 			if (service->job.state == AIUS_SD_FAILED) {
@@ -403,7 +525,7 @@ FLASHMEM bool aius_runtime_storage_service(
 				 * notification; draining it here keeps the job
 				 * restartable and costs no primitive. */
 				(void)advance(service, now_ms, false);
-				publish_failed(service);
+				publish_failed(service, now_ms);
 				break;
 			}
 			publish_http(service, AIUS_HTTP_SD_STARTED);
@@ -414,7 +536,7 @@ FLASHMEM bool aius_runtime_storage_service(
 		case AIUS_HTTP_ACTION_SD_CANCEL:
 			service->cancelling = true;
 			if (service->terminal_seen) {
-				publish_cancelled(service);
+				publish_cancelled(service, now_ms);
 				break;
 			}
 			if (service->output_outstanding) {
@@ -478,6 +600,90 @@ FLASHMEM bool aius_runtime_storage_service(
 
 	if (service->http_event_present)
 		*http_event = service->pending_http_event;
+	return true;
+}
+
+FLASHMEM bool aius_runtime_storage_diag_json(
+	const AiusRuntimeStorage *service,
+	char *output,
+	size_t capacity,
+	size_t *length)
+{
+	const AiusRuntimeStorageFailure *failure;
+
+	if (service == nullptr || output == nullptr || length == nullptr)
+		return false;
+	failure = &service->diag.last_failure;
+	if (!diag_append(output, capacity, length,
+	                 ",\"sd_diag\":{\"http_jobs\":%lu,\"root_jobs\":%lu,"
+	                 "\"http_faults\":%lu,\"root_faults\":%lu,"
+	                 "\"busy_refusals\":%lu,\"cancels\":%lu,\"drains\":%lu,"
+	                 "\"publish_dropped\":%lu,",
+	                 (unsigned long)service->diag.http_jobs,
+	                 (unsigned long)service->diag.root_jobs,
+	                 (unsigned long)service->diag.http_failures,
+	                 (unsigned long)service->diag.root_failures,
+	                 (unsigned long)service->diag.busy_refusals,
+	                 (unsigned long)service->diag.cancellations,
+	                 (unsigned long)service->diag.drains,
+	                 (unsigned long)service->publish_dropped))
+		return false;
+	/* The adapter's own totals, beside the service's: `mounts` is every
+	 * SD.begin() the firmware has performed, so a probe cadence is visible
+	 * as a rate rather than inferred from the clock. */
+	if (!diag_append(output, capacity, length,
+	                 "\"mounts\":%lu,\"driver_faults\":%lu,"
+	                 "\"protocol_faults\":%lu,\"last_protocol_action\":%u,"
+	                 "\"last_primitive_us\":%lu,"
+	                 "\"longest_primitive_us\":%lu,",
+	                 (unsigned long)service->target.mounts,
+	                 (unsigned long)service->target.driver_faults,
+	                 (unsigned long)service->target.protocol_faults,
+	                 (unsigned)service->target.last_protocol_action,
+	                 (unsigned long)service->target.last_duration_us,
+	                 (unsigned long)service->target.longest_duration_us))
+		return false;
+	/* Live ownership, so a status read taken during a stuck job says who
+	 * holds the volume rather than only what failed last. */
+	if (!diag_append(output, capacity, length,
+	                 "\"root_state\":%u,\"http_owned\":%s,"
+	                 "\"draining\":%s,\"file_open\":%s,\"job_kind\":%u,"
+	                 "\"job_state\":%u,\"last_failure\":",
+	                 (unsigned)service->root_state,
+	                 service->http_owned ? "true" : "false",
+	                 service->draining ? "true" : "false",
+	                 service->target.file_open ? "true" : "false",
+	                 (unsigned)service->job.kind,
+	                 (unsigned)service->job.state))
+		return false;
+	if (failure->sequence == 0u)
+		return diag_append(output, capacity, length, "null}");
+	if (!diag_append(output, capacity, length,
+	                 "{\"seq\":%lu,\"at_ms\":%lu,\"owner\":%u,"
+	                 "\"refused\":%s,\"job_kind\":%u,\"job_state\":%u,"
+	                 "\"fault\":%u,\"fault_phase\":%u,",
+	                 (unsigned long)failure->sequence,
+	                 (unsigned long)failure->at_ms,
+	                 (unsigned)failure->owner,
+	                 failure->refused ? "true" : "false",
+	                 (unsigned)failure->job_kind,
+	                 (unsigned)failure->job_state,
+	                 (unsigned)failure->fault,
+	                 (unsigned)failure->fault_phase))
+		return false;
+	if (!diag_append(output, capacity, length,
+	                 "\"driver_fault\":%lu,\"adapter_fault\":%lu,"
+	                 "\"root_state\":%u,\"draining\":%s,"
+	                 "\"mounts_in_job\":%lu,\"longest_primitive_us\":%lu,"
+	                 "\"bytes\":%llu}}",
+	                 (unsigned long)failure->driver_fault,
+	                 (unsigned long)failure->adapter_fault,
+	                 (unsigned)failure->root_state,
+	                 failure->draining ? "true" : "false",
+	                 (unsigned long)failure->mounts_in_job,
+	                 (unsigned long)failure->longest_primitive_us,
+	                 (unsigned long long)failure->transferred))
+		return false;
 	return true;
 }
 

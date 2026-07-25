@@ -4911,6 +4911,136 @@ static void test_install_target_existence_fault_cleanup(void)
 	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_INSTALL, 65u);
 }
 
+/* fault_phase: where the authoritative fault landed, latched while it is still
+ * current.
+ *
+ * The reason it exists is the last case here. A failed upload reaches its
+ * terminal state through the cleanup arm, so by the time anyone reads the
+ * result `phase` is TERMINAL for every failure alike -- a card that refused the
+ * write and a card that refused the install rename are indistinguishable, and
+ * both surface to the client as one 500. fault_phase keeps them apart. */
+static void test_fault_phase_attribution(void)
+{
+	uint8_t buffer[CONFIG_LIMIT];
+	const uint8_t abc[] = {'a', 'b', 'c'};
+	AiusSdJob job;
+	AiusSdAction action;
+	AiusSdJobRequest request;
+
+	scenario = "fault_phase absent until a fault";
+	request = request_for(AIUS_SD_JOB_PROBE);
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_NONE,
+	      "fresh job carried a fault phase");
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MEDIA_PRESENT);
+	action = step_action(&job,
+	                     0u,
+	                     bool_event(action.action_id, true),
+	                     AIUS_SD_ACTION_COMPLETE);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_NONE,
+	      "successful probe recorded a fault phase");
+
+	scenario = "fault_phase BEGIN";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = step_action(
+		&job, 0u, fault_event(action.action_id, 20u), AIUS_SD_ACTION_FAIL);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_BEGIN,
+	      "mount failure phase mismatch");
+	CHECK(job.phase == AIUS_SD_PHASE_TERMINAL,
+	      "mount failure did not reach terminal");
+	CHECK(job.last_driver_fault == 20u,
+	      "mount failure lost its driver fault");
+
+	scenario = "fault_phase cleared by restart";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_NONE,
+	      "restart kept the previous job's fault phase");
+
+	scenario = "fault_phase UPLOAD_WRITE survives cleanup";
+	request = upload_request(AIUS_SD_INSTALL_REPLACE);
+	request.total = sizeof(abc);
+	action = begin_upload(&job,
+	                      &request,
+	                      buffer,
+	                      sizeof(buffer),
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	CHECK(aius_sd_job_supply(&job, abc, sizeof(abc)),
+	      "write-fault fixture supply rejected");
+	action = step_none(&job, AIUS_SD_ACTION_WRITE);
+	/* The card refusing the write, which is the alternative hypothesis for
+	 * the intermittent 500 the probe race is also a candidate for. */
+	action = step_action(&job,
+	                     0u,
+	                     fault_event(action.action_id, 31u),
+	                     AIUS_SD_ACTION_CLOSE);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_UPLOAD_WRITE,
+	      "write fault phase mismatch");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(&job, action, true, AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_IO, 31u);
+	CHECK(job.phase == AIUS_SD_PHASE_TERMINAL,
+	      "write fault did not reach terminal");
+	CHECK(job.fault_phase == AIUS_SD_PHASE_UPLOAD_WRITE,
+	      "cleanup overwrote the write fault phase");
+
+	scenario = "fault_phase UPLOAD_WRITE for a short write";
+	action = begin_upload(&job,
+	                      &request,
+	                      buffer,
+	                      sizeof(buffer),
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	CHECK(aius_sd_job_supply(&job, abc, sizeof(abc)),
+	      "short-write fixture supply rejected");
+	action = step_none(&job, AIUS_SD_ACTION_WRITE);
+	action = step_action(&job,
+	                     0u,
+	                     bytes_event(action.action_id, 0u),
+	                     AIUS_SD_ACTION_CLOSE);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_UPLOAD_WRITE,
+	      "short write fault phase mismatch");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = remove_disposable_temp(&job, action, true, AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_SHORT_IO, 0u);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_UPLOAD_WRITE,
+	      "short write fault phase drifted at terminal");
+
+	scenario = "fault_phase INSTALL_RENAME";
+	request.total = 0u;
+	action = begin_upload(&job,
+	                      &request,
+	                      buffer,
+	                      sizeof(buffer),
+	                      AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(&job, &action, AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = install_no_target(&job, action);
+	action = step_action(&job,
+	                     0u,
+	                     fault_event(action.action_id, 41u),
+	                     AIUS_SD_ACTION_FAIL);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_INSTALL_RENAME,
+	      "install rename fault phase mismatch");
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_INSTALL, 41u);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_INSTALL_RENAME,
+	      "install rename fault phase drifted at terminal");
+
+	scenario = "fault_phase CONFIG_OPEN";
+	request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = step_action(
+		&job, 0u, fault_event(action.action_id, 51u), AIUS_SD_ACTION_FAIL);
+	CHECK(job.fault_phase == AIUS_SD_PHASE_CONFIG_OPEN,
+	      "config open fault phase mismatch");
+}
+
 int main(void)
 {
 	test_pointer_and_start_contract();
@@ -4938,6 +5068,7 @@ int main(void)
 	test_reserved_action_id_properties();
 	test_exact_262_id_publication_reserve();
 	test_backup_rename_fault_temp_cleanup();
+	test_fault_phase_attribution();
 	size_t matrix_trials = test_fixture_cross_product();
 	size_t lifecycle_cases = test_existence_purpose_routes();
 	lifecycle_cases += test_active_no_outstanding_rows();

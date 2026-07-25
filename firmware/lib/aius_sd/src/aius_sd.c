@@ -109,14 +109,19 @@ static FLASHMEM void record_fault(AiusSdJob *job,
 	if (replace) {
 		job->last_fault = fault;
 		job->last_driver_fault = driver_fault;
+		/* Latched here rather than at the terminal state: this is the
+		 * only moment the failing phase is still current. */
+		job->fault_phase = job->phase;
 	}
 	job->abort_requested = true;
 }
 
 static FLASHMEM void finish_failure(AiusSdJob *job)
 {
-	if (job->last_fault == AIUS_SD_FAULT_NONE)
+	if (job->last_fault == AIUS_SD_FAULT_NONE) {
 		job->last_fault = AIUS_SD_FAULT_PROTOCOL;
+		job->fault_phase = job->phase;
+	}
 
 	clear_result(&job->result);
 	job->result.kind = AIUS_SD_RESULT_FAULT;
@@ -1132,6 +1137,9 @@ static FLASHMEM void clear_won_abort_at_commit(AiusSdJob *job)
 	    job->last_fault == AIUS_SD_FAULT_TIMEOUT) {
 		job->last_fault = AIUS_SD_FAULT_NONE;
 		job->last_driver_fault = 0u;
+		/* Cleared with the fault it describes: a job that committed
+		 * despite a lost cancel has no failing phase. */
+		job->fault_phase = AIUS_SD_PHASE_NONE;
 		job->abort_requested = false;
 	}
 	job->cancel_requested = false;

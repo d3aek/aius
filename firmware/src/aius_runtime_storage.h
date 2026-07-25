@@ -87,6 +87,73 @@ typedef struct {
 	bool (*deliver)(void *context, const uint8_t *data, size_t length);
 } AiusRuntimeStoragePublish;
 
+/* Who owned the job a diagnostic record describes. DRAIN is an HTTP-owned job
+ * whose owner was discarded and which finished on its own. */
+typedef enum {
+	AIUS_RUNTIME_STORAGE_OWNER_NONE,
+	AIUS_RUNTIME_STORAGE_OWNER_HTTP,
+	AIUS_RUNTIME_STORAGE_OWNER_ROOT,
+	AIUS_RUNTIME_STORAGE_OWNER_DRAIN
+} AiusRuntimeStorageOwner;
+
+/* One failed job, latched so a 500 on the wire can be attributed after the
+ * fact. Everything here is already known at the moment of failure and costs a
+ * handful of stores on a path that has already failed; nothing is sampled per
+ * epoch and nothing is read from the card.
+ *
+ * The fields answer the questions a failure cannot otherwise be told apart by:
+ *
+ *   refused      the job never ran -- an HTTP action arrived while a root job
+ *                owned the volume and was refused in-band. True here means the
+ *                contention rule fired, not that the card misbehaved.
+ *   job_kind     which job failed (or, when refused, which job was running).
+ *   fault_phase  where in the job the first fault landed. BEGIN separates a
+ *                mount failure from a write failure from an install rename.
+ *   driver_fault the adapter's own word: DRIVER means the card returned false,
+ *                PROTOCOL means this adapter refused to ask it.
+ *   root_state /
+ *   draining     what else owned the volume when it happened.
+ *   mounts_in_job  SD.begin() calls between this job's start and its failure.
+ *                A healthy job mounts exactly once, its own; two or more means
+ *                something remounted the volume underneath it.
+ */
+typedef struct {
+	/* Nth failure latched; zero means none has been, so the record is
+	 * absent rather than zeroed. */
+	uint32_t sequence;
+	uint32_t at_ms;
+	uint8_t owner;       /* AiusRuntimeStorageOwner */
+	uint8_t job_kind;    /* AiusSdJobKind */
+	uint8_t fault;       /* AiusSdFault */
+	uint8_t fault_phase; /* AiusSdPhase */
+	uint8_t job_state;   /* AiusSdState */
+	uint8_t root_state;  /* AiusRuntimeStorageRootState */
+	bool draining;
+	bool refused;
+	uint32_t driver_fault;
+	uint32_t adapter_fault;
+	uint32_t mounts_in_job;
+	uint32_t longest_primitive_us;
+	uint64_t transferred;
+} AiusRuntimeStorageFailure;
+
+/* Saturating lifetime counters plus the last failure. Read by the status
+ * surface; never by the audio path. */
+typedef struct {
+	uint32_t http_jobs;
+	uint32_t root_jobs;
+	uint32_t http_failures;
+	uint32_t root_failures;
+	/* HTTP actions refused because a root job owned the volume. This is the
+	 * decisive counter for the probe-versus-card question: a nonzero value
+	 * says an upload was refused by the contention rule rather than by the
+	 * card. */
+	uint32_t busy_refusals;
+	uint32_t cancellations;
+	uint32_t drains;
+	AiusRuntimeStorageFailure last_failure;
+} AiusRuntimeStorageDiag;
+
 typedef struct {
 	AiusSdJob job;
 	AiusSdTeensy target;
@@ -132,6 +199,15 @@ typedef struct {
 	/* The root-initiated job's lifecycle; RUNNING is the only state in which
 	 * the service advances a job with no HTTP action driving it. */
 	AiusRuntimeStorageRootState root_state;
+	/* Failure attribution -- see AiusRuntimeStorageDiag. */
+	AiusRuntimeStorageDiag diag;
+	/* The adapter's mount count when the running job started, so a failure
+	 * can report mounts during the job rather than since boot. */
+	uint32_t job_mounts_at_start;
+	/* Who started the running job, carried so a terminal failure names its
+	 * owner without re-deriving it from flags that the terminal itself
+	 * clears. */
+	uint8_t job_owner;
 } AiusRuntimeStorage;
 
 /* Memory only: initializes the job against the embedded transfer buffer, the
@@ -196,6 +272,23 @@ bool aius_runtime_storage_service(
 	uint32_t now_ms,
 	const AiusHttpAction *http_action,
 	AiusHttpEvent *http_event);
+
+/* Appends the `sd_diag` object to a JSON body being assembled at `*length`,
+ * advancing it. Memory only: every value is already latched, so nothing is
+ * sampled and no SD primitive is spent. Returns false on capacity exhaustion,
+ * leaving `*length` unchanged from the last complete append.
+ *
+ * It lives here rather than in the status serializer because this service owns
+ * every field: the counters, the adapter's own totals, and the shape a reader
+ * has to interpret. The serializer's job is one call.
+ *
+ * `last_failure` is served as null when none has been latched, so "no failure
+ * yet" cannot be misread as a failure with zeroed fields. */
+bool aius_runtime_storage_diag_json(
+	const AiusRuntimeStorage *service,
+	char *output,
+	size_t capacity,
+	size_t *length);
 
 /* Releases HTTP authority after the transaction was discarded (network
  * teardown). A nonterminal HTTP-owned job is cancelled once and then drained

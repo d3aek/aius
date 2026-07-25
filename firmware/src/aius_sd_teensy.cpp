@@ -97,6 +97,7 @@ FLASHMEM AiusSdEvent protocol_fault(
 	if (adapter->protocol_faults != UINT32_MAX)
 		adapter->protocol_faults++;
 	adapter->last_fault = AIUS_SD_TEENSY_PROTOCOL_FAULT;
+	adapter->last_protocol_action = (uint8_t)action->kind;
 	AiusSdEvent event =
 		action_event(AIUS_SD_EVENT_FAULT, action->action_id);
 	event.fault = AIUS_SD_TEENSY_PROTOCOL_FAULT;
@@ -105,6 +106,8 @@ FLASHMEM AiusSdEvent protocol_fault(
 
 FLASHMEM AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
 {
+	if (adapter->driver_faults != UINT32_MAX)
+		adapter->driver_faults++;
 	adapter->last_fault = AIUS_SD_TEENSY_DRIVER_FAULT;
 	AiusSdEvent event = action_event(AIUS_SD_EVENT_FAULT, action_id);
 	event.fault = AIUS_SD_TEENSY_DRIVER_FAULT;
@@ -146,6 +149,9 @@ FLASHMEM void aius_sd_teensy_init(AiusSdTeensy *adapter)
 	adapter->longest_duration_us = 0u;
 	adapter->protocol_faults = 0u;
 	adapter->last_fault = 0u;
+	adapter->mounts = 0u;
+	adapter->driver_faults = 0u;
+	adapter->last_protocol_action = (uint8_t)AIUS_SD_ACTION_NONE;
 }
 
 FLASHMEM AiusSdEvent aius_sd_teensy_execute(
@@ -171,6 +177,8 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !empty_payload(action) ||
 		    adapter->file_open)
 			return protocol_fault(adapter, action);
+		if (adapter->mounts != UINT32_MAX)
+			adapter->mounts++;
 		const uint32_t started = micros();
 		const bool success = SD.begin(BUILTIN_SDCARD);
 		const uint32_t ended = micros();

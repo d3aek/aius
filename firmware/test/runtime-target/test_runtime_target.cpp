@@ -283,6 +283,11 @@ struct SdFake {
 	unsigned remove_calls;
 	unsigned exists_calls;
 	bool file_open;
+	/* A card that accepts the open and then refuses the write, which is what
+	 * SdFat reports as a zero-length write. The alternative hypothesis for
+	 * the intermittent upload 500, staged so the diagnostic record can be
+	 * shown to tell it apart from the contention one. */
+	bool write_fails;
 };
 
 static SdFake g_sd;
@@ -339,6 +344,8 @@ size_t File::read(uint8_t *buffer, size_t length)
 size_t File::write(const uint8_t *buffer, size_t length)
 {
 	sd_primitive();
+	if (g_sd.write_fails)
+		return 0u;
 	for (size_t i = 0; i < length; ++i)
 		if (g_sd.data_length < sizeof(g_sd.data))
 			g_sd.data[g_sd.data_length++] = buffer[i];
@@ -2889,6 +2896,305 @@ static void test_root_storage_job(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 7c. failure attribution                                             */
+/* ------------------------------------------------------------------ */
+
+/* Runs one HTTP-owned upload to its terminal result, returning the last event.
+ * The transaction leg is driven directly for the reason sd.upload-supply gives:
+ * the buffered PUT routes cannot express an upload job. */
+static AiusHttpSdEventKind run_http_upload(AiusRuntimeStorage *storage,
+                                           uint32_t *now_ms)
+{
+	const AiusRuntimeBudget *budget =
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+	static const uint8_t payload[4] = {'a', 'b', 'c', 'd'};
+	AiusSdJobRequest request;
+	AiusHttpAction action;
+	AiusHttpEvent event;
+	unsigned guard = 0u;
+	uint64_t action_id = 1000u;
+
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_UPLOAD;
+	request.install_mode = AIUS_SD_INSTALL_REPLACE;
+	request.target_path = "/aius/a.bin";
+	request.temp_path = "/aius/b.tmp";
+	request.backup_path = "/aius/c.bak";
+	request.total = sizeof(payload);
+	memset(&action, 0, sizeof(action));
+	memset(&event, 0, sizeof(event));
+	action.kind = AIUS_HTTP_ACTION_SD_START;
+	action.action_id = action_id++;
+	action.sd_request = &request;
+	CHECK(aius_runtime_storage_service(storage, budget, (*now_ms)++, &action,
+	                                   &event));
+	if (event.sd_kind == AIUS_HTTP_SD_FAILED)
+		return event.sd_kind;
+	CHECK(event.sd_kind == AIUS_HTTP_SD_STARTED);
+
+	action.kind = AIUS_HTTP_ACTION_SD_STEP;
+	action.sd_request = nullptr;
+	action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+	while (guard < 60u && event.sd_kind != AIUS_HTTP_SD_COMPLETE &&
+	       event.sd_kind != AIUS_HTTP_SD_FAILED) {
+		if (event.sd_kind == AIUS_HTTP_SD_NEED_UPLOAD) {
+			action.sd_operation = AIUS_HTTP_SD_OP_SUPPLY_UPLOAD;
+			action.data = payload;
+			action.length = sizeof(payload);
+		} else {
+			action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+			action.data = nullptr;
+			action.length = 0u;
+		}
+		action.action_id = action_id++;
+		storage->http_event_present = false;
+		g_sd.primitive_calls_epoch = 0u;
+		CHECK(aius_runtime_storage_service(storage, budget, (*now_ms)++,
+		                                   &action, &event));
+		CHECK(g_sd.primitive_calls_epoch <= 1u);
+		guard++;
+	}
+	return event.sd_kind;
+}
+
+/* Two different causes reach the client as one 500 sd_failure: a job the card
+ * failed, and an action the contention rule refused because a root job owned
+ * the volume. Nothing on the wire tells them apart, and a 1-in-10 intermittent
+ * cannot be diagnosed by re-running it. These cases assert that the latched
+ * record does tell them apart, and name the reading that convicts each. */
+static void test_storage_diagnostics(void)
+{
+	static const char *const keys[] = {
+		"diag.clean",         "diag.busy-refusal",
+		"diag.card-refuses-write", "diag.mount-failure",
+		"diag.json-shape",    "diag.json-capacity",
+		"diag.null-guards"
+	};
+	const AiusRuntimeBudget *budget =
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+	AiusRuntimeStorage storage;
+	AiusSdJobRequest request;
+	AiusHttpEvent event;
+	char json[1024];
+	size_t length;
+	uint32_t now_ms = 1u;
+
+	validate_unique_keys("registry.diag", keys, ARRAY_COUNT(keys), 7u);
+
+	current_key = "diag.clean";
+	{
+		/* A healthy run leaves no failure record at all, so "absent"
+		 * is distinguishable from "zeroed". */
+		arm_root_storage(&storage, 0u, true);
+		CHECK(storage.diag.last_failure.sequence == 0u);
+		CHECK(storage.diag.root_jobs == 0u);
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_PROBE;
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		CHECK(storage.diag.root_jobs == 1u);
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(storage.diag.root_failures == 0u);
+		CHECK(storage.diag.busy_refusals == 0u);
+		CHECK(storage.diag.last_failure.sequence == 0u);
+		/* The probe mounted exactly once, its own. */
+		CHECK(storage.target.mounts == 1u);
+		CHECK(storage.target.driver_faults == 0u);
+		CHECK(storage.target.protocol_faults == 0u);
+
+		/* And a healthy upload after it: two mounts total, one each. */
+		CHECK(run_http_upload(&storage, &now_ms) ==
+		      AIUS_HTTP_SD_COMPLETE);
+		CHECK(storage.diag.http_jobs == 1u);
+		CHECK(storage.diag.http_failures == 0u);
+		CHECK(storage.diag.last_failure.sequence == 0u);
+		CHECK(storage.target.mounts == 2u);
+	}
+
+	current_key = "diag.busy-refusal";
+	{
+		/* The contention hypothesis. A root PROBE owns the volume when
+		 * an upload's SD_START arrives; the action is refused in-band
+		 * and the client sees 500 sd_failure with no card involved.
+		 *
+		 * Convicting reading: busy_refusals nonzero, last_failure
+		 * refused true, and its job_kind naming the ROOT job that was
+		 * running -- PROBE (0) for the one-second lifecycle tick. */
+		arm_root_storage(&storage, 0u, true);
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_PROBE;
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		/* One primitive in, so the probe is genuinely mid-job. */
+		CHECK(aius_runtime_storage_service(&storage, budget, now_ms++,
+		                                   nullptr, &event));
+		CHECK(storage.target.mounts == 1u);
+
+		CHECK(run_http_upload(&storage, &now_ms) ==
+		      AIUS_HTTP_SD_FAILED);
+		CHECK(storage.diag.busy_refusals == 1u);
+		CHECK(storage.diag.http_failures == 0u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+		CHECK(storage.diag.last_failure.refused);
+		CHECK(storage.diag.last_failure.owner ==
+		      AIUS_RUNTIME_STORAGE_OWNER_HTTP);
+		CHECK(storage.diag.last_failure.job_kind ==
+		      AIUS_SD_JOB_PROBE);
+		CHECK(storage.diag.last_failure.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		CHECK(storage.diag.last_failure.fault ==
+		      AIUS_SD_FAULT_PROTOCOL);
+		/* Nothing was asked of the card, so no card-side evidence
+		 * exists -- which is exactly how this differs from a genuine
+		 * write failure. */
+		CHECK(storage.diag.last_failure.driver_fault == 0u);
+		CHECK(storage.diag.last_failure.fault_phase ==
+		      AIUS_SD_PHASE_NONE);
+		CHECK(storage.target.driver_faults == 0u);
+		CHECK(storage.target.protocol_faults == 0u);
+		/* The refused action never started a job, so the HTTP job
+		 * counter did not move and the probe kept the volume. */
+		CHECK(storage.diag.http_jobs == 0u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+	}
+
+	current_key = "diag.card-refuses-write";
+	{
+		/* The card hypothesis, same 500 on the wire. Convicting
+		 * reading: refused false, fault_phase UPLOAD_WRITE, the root
+		 * job idle, and mounts_in_job exactly one -- the job's own, so
+		 * nothing remounted the volume underneath it. */
+		arm_root_storage(&storage, 0u, true);
+		g_sd.exists_result = true;
+		g_sd.remove_ok = true;
+		g_sd.write_fails = true;
+		now_ms = 1u;
+		CHECK(run_http_upload(&storage, &now_ms) ==
+		      AIUS_HTTP_SD_FAILED);
+		CHECK(storage.diag.busy_refusals == 0u);
+		CHECK(storage.diag.http_failures == 1u);
+		CHECK(storage.diag.http_jobs == 1u);
+		CHECK(storage.diag.last_failure.sequence == 1u);
+		CHECK(!storage.diag.last_failure.refused);
+		CHECK(storage.diag.last_failure.owner ==
+		      AIUS_RUNTIME_STORAGE_OWNER_HTTP);
+		CHECK(storage.diag.last_failure.job_kind ==
+		      AIUS_SD_JOB_UPLOAD);
+		CHECK(storage.diag.last_failure.fault ==
+		      AIUS_SD_FAULT_SHORT_IO);
+		CHECK(storage.diag.last_failure.fault_phase ==
+		      AIUS_SD_PHASE_UPLOAD_WRITE);
+		CHECK(storage.diag.last_failure.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_IDLE);
+		CHECK(!storage.diag.last_failure.draining);
+		CHECK(storage.diag.last_failure.mounts_in_job == 1u);
+		CHECK(storage.diag.last_failure.transferred == 0u);
+		/* The handle was released despite the failure. */
+		CHECK(!g_sd.file_open);
+	}
+
+	current_key = "diag.mount-failure";
+	{
+		/* A card that will not mount at all: same terminal shape, but
+		 * the phase is BEGIN and the adapter recorded the driver
+		 * saying no. */
+		arm_root_storage(&storage, 0u, true);
+		g_sd.begin_ok = false;
+		now_ms = 1u;
+		CHECK(run_http_upload(&storage, &now_ms) ==
+		      AIUS_HTTP_SD_FAILED);
+		CHECK(storage.diag.last_failure.fault_phase ==
+		      AIUS_SD_PHASE_BEGIN);
+		CHECK(storage.diag.last_failure.driver_fault ==
+		      AIUS_SD_TEENSY_DRIVER_FAULT);
+		CHECK(storage.diag.last_failure.adapter_fault ==
+		      AIUS_SD_TEENSY_DRIVER_FAULT);
+		CHECK(storage.diag.last_failure.mounts_in_job == 1u);
+		CHECK(storage.target.driver_faults == 1u);
+		CHECK(storage.target.protocol_faults == 0u);
+	}
+
+	current_key = "diag.json-shape";
+	{
+		arm_root_storage(&storage, 0u, true);
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, json,
+		                                     sizeof(json), &length));
+		CHECK(length == strlen(json));
+		CHECK(strstr(json, ",\"sd_diag\":{") == json);
+		/* No failure yet is served as null, never as a zeroed record. */
+		CHECK(strstr(json, "\"last_failure\":null}") != nullptr);
+		CHECK(strstr(json, "\"busy_refusals\":0") != nullptr);
+		CHECK(strstr(json, "\"mounts\":0") != nullptr);
+
+		g_sd.write_fails = true;
+		g_sd.exists_result = true;
+		g_sd.remove_ok = true;
+		now_ms = 1u;
+		CHECK(run_http_upload(&storage, &now_ms) ==
+		      AIUS_HTTP_SD_FAILED);
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, json,
+		                                     sizeof(json), &length));
+		CHECK(length == strlen(json));
+		CHECK(strstr(json, "\"last_failure\":{\"seq\":1,") != nullptr);
+		CHECK(strstr(json, "\"refused\":false") != nullptr);
+		CHECK(strstr(json, "\"mounts_in_job\":1") != nullptr);
+		CHECK(strstr(json, "\"http_faults\":1") != nullptr);
+		/* AIUS_SD_PHASE_UPLOAD_WRITE is the 18th phase; the wire
+		 * carries the number, and this pins it so a reader's decode
+		 * table cannot silently drift. */
+		CHECK(AIUS_SD_PHASE_UPLOAD_WRITE == 18);
+		CHECK(strstr(json, "\"fault_phase\":18") != nullptr);
+		CHECK(json[length - 1u] == '}');
+	}
+
+	current_key = "diag.json-capacity";
+	{
+		/* A body that cannot hold the object is refused, not truncated
+		 * into invalid JSON. Every prefix length is exercised. */
+		size_t full;
+
+		length = 0u;
+		CHECK(aius_runtime_storage_diag_json(&storage, json,
+		                                     sizeof(json), &length));
+		full = length;
+		/* The object joins a status body that already carries net_diag,
+		 * inside an 8 KiB response. Bounding it here keeps a later
+		 * field addition from discovering the ceiling on the board. */
+		CHECK(full > 32u && full < 640u);
+		for (size_t cap = 1u; cap <= full; ++cap) {
+			length = 0u;
+			CHECK(!aius_runtime_storage_diag_json(&storage, json,
+			                                      cap, &length));
+			CHECK(length < cap);
+		}
+		/* An already-full body refuses without writing. */
+		length = sizeof(json);
+		CHECK(!aius_runtime_storage_diag_json(&storage, json,
+		                                      sizeof(json), &length));
+	}
+
+	current_key = "diag.null-guards";
+	{
+		length = 0u;
+		CHECK(!aius_runtime_storage_diag_json(nullptr, json,
+		                                      sizeof(json), &length));
+		CHECK(!aius_runtime_storage_diag_json(&storage, nullptr,
+		                                      sizeof(json), &length));
+		CHECK(!aius_runtime_storage_diag_json(&storage, json,
+		                                      sizeof(json), nullptr));
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* 8. teardown discards HTTP before resource cleanup                   */
 /* ------------------------------------------------------------------ */
 
@@ -3122,6 +3428,7 @@ int main(void)
 	test_http_epoch();
 	test_storage_bridge();
 	test_root_storage_job();
+	test_storage_diagnostics();
 	test_teardown_ordering();
 	test_epoch_traces();
 	printf("ok runtime-target oracle\n");

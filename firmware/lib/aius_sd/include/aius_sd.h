@@ -287,6 +287,13 @@ typedef struct {
 	uint8_t mkdir_offset;
 	AiusSdFault last_fault;
 	uint32_t last_driver_fault;
+	/* The phase the authoritative fault landed in, latched beside last_fault
+	 * by the same replace rule and cleared with it. A terminal FAILED is
+	 * otherwise unattributable: `phase` has moved on to the cleanup arm and
+	 * then to TERMINAL by the time anyone reads the result, so an upload that
+	 * failed its write and one that failed its install rename are
+	 * indistinguishable. NONE while no fault has been recorded. */
+	AiusSdPhase fault_phase;
 	AiusSdResult result;
 	bool target_existed;
 	bool backup_moved;

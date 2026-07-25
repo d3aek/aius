@@ -868,6 +868,74 @@ void test_durations_and_counter_saturation()
 	assert(adapter.longest_duration_us == 17);
 }
 
+/* The diagnostic counters, which exist to attribute a failure that reaches a
+ * client as a bare 500.
+ *
+ * `mounts` is the load-bearing one: it counts SD.begin() calls that actually
+ * reached the card, so a job can be asked afterwards whether the volume was
+ * remounted while it held it. A BEGIN the file_open guard refused never touched
+ * the card and must not be counted -- that refusal is a protocol fault, and
+ * conflating the two would make a collision look like a mount. */
+void test_diagnostic_counters()
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	assert(adapter.mounts == 0);
+	assert(adapter.driver_faults == 0);
+	assert(adapter.last_protocol_action == AIUS_SD_ACTION_NONE);
+
+	/* A mount that reached the card counts, succeed or fail. */
+	AiusSdAction begin = make_action(AIUS_SD_ACTION_BEGIN);
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.kind == AIUS_SD_EVENT_OK);
+	assert(adapter.mounts == 1);
+	assert(adapter.driver_faults == 0);
+
+	reset_fake();
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(event.fault == AIUS_SD_TEENSY_DRIVER_FAULT);
+	assert(adapter.mounts == 2);
+	assert(adapter.driver_faults == 1);
+	assert(adapter.last_protocol_action == AIUS_SD_ACTION_NONE);
+
+	/* A BEGIN refused because a file is open never reaches the card. This is
+	 * the cross-owner collision case: the volume is not remounted, the
+	 * asking job fails, and last_protocol_action names what was refused. */
+	reset_fake();
+	adapter.file_open = true;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(event.fault == AIUS_SD_TEENSY_PROTOCOL_FAULT);
+	assert(g_fake.call_count == 0);
+	assert(adapter.mounts == 2);
+	assert(adapter.protocol_faults == 1);
+	assert(adapter.last_protocol_action == AIUS_SD_ACTION_BEGIN);
+
+	/* A refused open names itself too, so a second owner colliding on the
+	 * one shared handle is attributable to the action it tried. */
+	reset_fake();
+	AiusSdAction open_read = make_action(AIUS_SD_ACTION_OPEN_READ);
+	event = aius_sd_teensy_execute(&adapter, &open_read);
+	assert(event.fault == AIUS_SD_TEENSY_PROTOCOL_FAULT);
+	assert(adapter.protocol_faults == 2);
+	assert(adapter.last_protocol_action == AIUS_SD_ACTION_OPEN_READ);
+	assert(adapter.mounts == 2);
+
+	/* Both counters saturate rather than wrap. */
+	reset_fake();
+	reset_adapter(&adapter);
+	adapter.mounts = UINT32_MAX;
+	adapter.driver_faults = UINT32_MAX;
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.fault == AIUS_SD_TEENSY_DRIVER_FAULT);
+	assert(adapter.mounts == UINT32_MAX);
+	assert(adapter.driver_faults == UINT32_MAX);
+}
+
 } // namespace
 
 SDClass SD;
@@ -1016,5 +1084,6 @@ int main()
 	test_inert_null_unknown_and_duplicate();
 	test_media_present_reports_the_volume_type();
 	test_durations_and_counter_saturation();
+	test_diagnostic_counters();
 	return 0;
 }

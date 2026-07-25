@@ -21,6 +21,22 @@ typedef struct {
 	uint32_t longest_duration_us;
 	uint32_t protocol_faults;
 	uint32_t last_fault;
+	/* Diagnostics. The adapter is the firmware's only caller of any SD
+	 * primitive, so these are the whole truth about what reached the card.
+	 *
+	 * `mounts` counts SD.begin() calls that actually happened -- a BEGIN the
+	 * file_open guard refused is not one. Latched around a job it answers
+	 * "did the volume get remounted while this job held it", which is the
+	 * question a job spanning many epochs cannot answer for itself.
+	 *
+	 * `driver_faults` counts the card saying no; `protocol_faults` above
+	 * counts this adapter refusing to ask it. `last_protocol_action` names
+	 * the refused action, so a refusal raised against a job this service
+	 * never sees -- the replay refill job shares this adapter -- is still
+	 * attributable. */
+	uint32_t mounts;
+	uint32_t driver_faults;
+	uint8_t last_protocol_action;
 } AiusSdTeensy;
 
 void aius_sd_teensy_init(AiusSdTeensy *adapter);
