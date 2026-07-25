@@ -4805,6 +4805,51 @@ retired its producer and the plan accepted serving it as zero; and
 serializer without moving the information anywhere. Both are being fixed at the
 layer that owns the state rather than restored as raw calls.
 
+#### Second flash — the link gate is inert, and what that proves
+
+Reflashed with the link gate and both status fixes. Measured on the board:
+
+- **`network_mode` now reads `dhcp`** beside its real address, and
+  **`sd_filesystem` reads `fat32`** — both regressions closed, confirmed live.
+- **The link gate changed nothing.** The board passed `STACK_START` almost
+  immediately — observed in `DHCP_WAIT` on **generation 1** with `nfault=0` — then
+  failed with `nfault=1` (`DHCP_TIMEOUT`), not `LINK_LOST`, and still needed
+  generation 2 to acquire the lease.
+
+That is the discriminating measurement the fix was built to make, and it settles
+the question: **the vendor link signal reports up while the path cannot carry a
+packet.** `Ethernet.linkStatus()` is honest about the PHY's own link partner, but
+the end-to-end path — through the USB-to-fibre extender and the switch — is not
+usable for roughly five to six seconds after the stack starts. No firmware gate
+can observe that, because from the firmware's vantage point the link is up and the
+DISCOVER is being transmitted normally.
+
+The gate is kept regardless: it is correct, it bounds a genuinely dead link at
+3 s, and it costs nothing when the link is already up. It simply cannot fix this
+particular delay.
+
+**So the six seconds is fixture settling, and bounded recovery is the right
+response to it rather than a workaround for it.** The firmware detects a lease
+that does not arrive, tears down, backs off and retries on a fresh generation,
+reaching service without help. That is the designed behaviour working, and it is
+what the legacy image could not do.
+
+Three levers remain if the boot time matters, in increasing order of intrusiveness,
+none of which touches the audio path:
+
+- **Accept it.** Six seconds of boot, self-healing, one recorded restart. This is
+  the current state.
+- **Be more patient on the first attempt.** FNET retransmits DISCOVER at roughly
+  4 s intervals, so a DHCP deadline above ~8 s would likely let generation 1
+  succeed on its own retransmit, trading a longer worst case for avoiding a
+  teardown cycle entirely.
+- **Start the stack earlier in boot.** It currently starts 3.84 s in, so the
+  settling runs strictly after SD, config and audio init rather than overlapping
+  them. This is boot ordering, and the cheapest real saving.
+
+The fixture question — why the path takes that long to forward — is better
+answered from the switch side than from the firmware.
+
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
 validation log with one verdict per assumption and the evidence for it. A refuted
