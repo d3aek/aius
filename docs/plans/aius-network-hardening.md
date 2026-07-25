@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-07-24
+updated: 2026-07-25
 toc: true
 ---
 
@@ -27,16 +27,28 @@ other.
 
 ### Resume here
 
-**Next up is B3, Phase 14.** Its scoped slice breakdown is in
+**Next up is B3, Phase 14.** Its first slice breakdown was rejected by its
+prebuild gate on 2026-07-25 and re-scoped; the corrected one is in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
-awaiting review before any code. Start with P1 and P2, which are concurrent and do
-not touch `optical_main.cpp`.
+with the findings that forced it under "Prebuild review findings". Start with
+**S0, P1a, R1, R2 and P2**, which are mutually independent; only S0 touches
+`optical_main.cpp`.
 
 Decisions already taken, so do not re-open them:
 
-- **A `PUT` returns 200 only after the SD write commits.** That needs the
-  buffered-upload path in slice P1, because `accept_application()` admits an
-  upload job only for a streamed request.
+- **A `PUT` returns 200 only after the SD write commits, and the delivered
+  transaction already does this** — it buffers the formatted response and reaches
+  `SEND` only on `AIUS_HTTP_SD_COMPLETE`. What is optimistic is the dispatcher's
+  immediate 200. P1a relaxes one admission rule; P1b moves the two config routes
+  onto an SD job.
+- **The large DSP model streams; `AIUS_HTTP_MAX_RESPONSE` does not move.**
+  Raising it would grow two legacy DTCM stack frames while the legacy path is
+  still the only working one.
+- **Replay refill is deferred to Phase 14c**, landing before B6. It is a redesign
+  of the portable `aius_replay` reader seam, not a port, so it does not belong in
+  a slice serialized on `optical_main.cpp`. **`POST /api/replays/start` is refused
+  from S2a until 14c lands** — its start path blocks, and refusing it also keeps
+  any SD job from re-mounting the card under an open replay handle.
 - **The `/api/meters` wire shape is settled**, in
   [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters endpoint: dBFS
   floored at `-120.0`, six positional inputs, `[L, R]` output arrays, per-mille
@@ -85,11 +97,31 @@ carries DSP behaviour it did not originally own. Everything else in the DSP stra
 
 Recorded here because they are cheap to miss and expensive to hit mid-phase:
 
-- **`AiusSdJob` is a name collision.** `optical_main.cpp:118` declares its own
-  `struct AiusSdJob`, unrelated to the portable `AiusSdJob` in `aius_sd.h`. It
-  compiles today only because the file never includes that header. Phase 14
-  cannot include the portable header until the legacy struct and its
-  `service_sd_job()` state machine are gone.
+- **The legacy SD symbols collide with the portable header in two places.**
+  `optical_main.cpp:118` declares its own `struct AiusSdJob`, unrelated to the
+  portable one in `aius_sd.h`, and `optical_main.cpp:115` declares an
+  `AIUS_SD_JOB_DELETE` enumerator that redefines `aius_sd.h:20`. It compiles
+  today only because the file never includes that header — but
+  `aius_optical_app.h:21` includes it unconditionally, so merely naming the
+  callback table pulls it in. Both legacy names must be renamed before any
+  cutover work, which is what slice S0 is for.
+- **The composed storage service cannot start a job on its own.** It accepts
+  `AIUS_HTTP_ACTION_SD_START` and nothing else (`aius_runtime_storage.cpp:250`),
+  and it acknowledges `AIUS_SD_ACTION_PUBLISH_CONFIG` into a saturating
+  `publish_dropped` counter rather than delivering the payload
+  (`aius_runtime_storage.cpp:134`). Every boot-time SD load in Phase 14 needs
+  both gaps closed first.
+- **`AiusRecoveryStatus` carries no IP, link state or DHCP counters**
+  (`aius_net.h:146`), while `optical_main.cpp` reaches `Ethernet.localIP()` /
+  `linkStatus()` in fourteen places including the status JSON, the UDP status
+  payload and USB `ID`. Dropping the vendor include without first adding an
+  accessor to `aius_network_teensy` leaves the board undiscoverable headless.
+- **Any SD job remounts the card.** `aius_sd_job_start` enters
+  `AIUS_SD_PHASE_BEGIN` for every job kind (`aius_sd.c:407`) and the adapter's
+  `AIUS_SD_ACTION_BEGIN` calls `SD.begin(BUILTIN_SDCARD)`
+  (`aius_sd_teensy.cpp:137`), guarded only by its own `file_open` flag. It cannot
+  see a foreign handle such as `g_replay_file` (`optical_main.cpp:68`), so a
+  config `PUT` or a probe re-mounts the volume beneath an open replay file.
 - **`stage_dsp_sd_override()` is a blocking synchronous read.**
   `optical_main.cpp:279` reads up to 12,288 bytes one byte at a time from
   `setup()` and from `service_sd()`, and puts a 12,288-byte array on the stack
@@ -97,9 +129,9 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   one-SD-primitive-per-epoch rule head-on. Porting it is part of Phase 14, not
   optional cleanup.
 - **The legacy watchdog interval is 16 s, not the pinned 8 s.**
-  `watchdog_init()` writes `WDOG_WCR_WT(31)`, and `loop()` feeds at three
-  separate points. The normative contract is one 8 s interval with exactly one
-  feed after a complete epoch.
+  `watchdog_init()` writes `WDOG_WCR_WT(31)`, and the feed has three call sites —
+  `setup:2593`, `loop:2607` and `loop:2618`. The normative contract is one 8 s
+  interval with exactly one feed after a complete epoch.
 - **ITCM headroom is 1,416 bytes** (99.28 % used). Every new per-epoch service,
   dispatcher, and adapter must be `FLASHMEM` unless it genuinely runs per audio
   block. Apply the attribute on each definition — GCC does not inherit a
@@ -133,9 +165,10 @@ throughout. Track B is serialized because every phase in it touches
 | B0 | **Done** (`df9ea4483`) — Phase 10a, SD job publish-capacity generalization | `sd` + `http` suites, target build |
 | B1 | **Done** — Phase 11, optical application dispatch **including the DSP routes** | `optical-app` suite green |
 | B2 | **Done** — Phase 12, Teensy runtime service composition | `runtime-target` suite green |
-| B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port** | `optical-cutover` + all component suites |
+| B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port**, eleven slices after the 2026-07-25 re-scope | `optical-cutover` + all component suites |
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
 | B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
+| B5a | Phase 14c — replay refill onto a bounded SD job, deferred out of Phase 14 | `replay` + `sd` + `runtime-target` |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
@@ -3907,11 +3940,13 @@ commit-checkpoint:
   parent-commit: "refactor(aius): cut over the optical runtime lifecycle"
 ```
 
-#### Scoped slice breakdown — 2026-07-25, for review before any code
+#### Scoped slice breakdown — re-scoped 2026-07-25 after its prebuild review
 
 Phase 14 is the only phase that deletes a working path, and it has no hardware
-validation until B6. What follows is its slice breakdown, sized against the actual
-file.
+validation until B6. Its first breakdown was rejected by the prebuild gate; this
+is the corrected one, and
+[§Prebuild review findings](#prebuild-review-findings--2026-07-25) records what
+changed and why.
 
 **What survives in `optical_main.cpp`.** The audio processor and its
 `AudioConnection`s, the DSP model statics and the block-boundary `apply_config`
@@ -3922,9 +3957,11 @@ of it is touched.
 **What dies.** The legacy `AiusSdJobState` enum, `struct AiusSdJob` and
 `service_sd_job`; `service_http`, `service_usb_control`, `service_network`,
 `ensure_dhcp_client`, `activate_network`, `reset_network_service`,
-`supervise_network_link`, `start_network`; `watchdog_init` / `watchdog_feed`; the
-`g_dhcp` / `g_dhcp_pending` / `g_network_retry_at` / `g_ethernet_initialized` /
-`g_http_server_rebinds` global set; and the existing `setup()` / `loop()`.
+`supervise_network_link`, `start_network`; `service_sd`, `load_sd_config`,
+`refresh_sd_usage` and `stage_dsp_sd_override`; `watchdog_init` /
+`watchdog_feed`; the `g_dhcp` / `g_dhcp_pending` / `g_network_retry_at` /
+`g_ethernet_initialized` / `g_http_server_rebinds` global set; and the existing
+`setup()` / `loop()`.
 
 **What moves rather than dies, and is most of the work.** The seven serializers
 and the request handlers become the 20 entries of Phase 11's `AiusOpticalApp`
@@ -3947,32 +3984,50 @@ table. The mapping is one-to-one and mechanical:
 | `write_usb_payload` | `service_usb_control`'s ID/AUTH arms |
 | `upload_id` | `g_sd_job_sequence` |
 
-**Slices.** P1 and P2 are independent of each other and of `optical_main.cpp`, so
-they run concurrently. S1 through S4 are strictly serialized on that one file.
+**Slices.**
 
 | Slice | Work | Owned paths | Gate |
 |---|---|---|---|
-| P1 | Transaction ABI: raise the response capacity so a 12,288-byte DSP model fits, and add the buffered-upload path so a committed write precedes the 200 | `lib/aius_http/`, `test/http/` | `http`, `optical-app`, `runtime-target` green; target build |
-| P2 | The `optical-cutover` structural suite, and removing the vendor guard's exact-path exception | `test/optical-cutover/`, `test/network-transport/test_vendor_source.py` | suite runs and fails against the pre-cutover file, by construction |
-| S1 | Implement the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs | `src/optical_main.cpp` | target build; `optical-app` unchanged |
-| S2 | Construct `AiusRuntimeTeensy` in `DMAMEM`; `setup()` becomes construction only, `loop()` one epoch; delete everything in "what dies"; arm the 8 s watchdog through the boot adapter with one feed per epoch | `src/optical_main.cpp` | `optical-cutover` + every component suite; both images build |
-| S3 | Port the DSP SD override: `stage_dsp_sd_override` becomes a portable `CONFIG_LOAD` with `publish_capacity = 12288`, the config PUT becomes `UPLOAD/REPLACE` with `publish = false`, and the 12,288-byte stack frame goes | `src/optical_main.cpp` | `dsp-config`, `sd`, `runtime-target`; target build |
-| S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, fix the six dependent places in `test/http/test_http.c`, and wire the Phase 9 recovery fields into status JSON, USB `ID` and UDP | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
+| S0 | Rename the legacy SD symbols out of the portable namespace: `AiusSdJob` → `LegacySdJob`, `AiusSdJobState` → `LegacySdJobState`, `AIUS_SD_JOB_*` → `LEGACY_SD_JOB_*`. No behaviour change | `src/optical_main.cpp` | target build; every suite unchanged |
+| P1a | Transaction: admit an `UPLOAD` job for a complete buffered body, and serve a large immediate body from the application's own buffer instead of copying it into `response` | `lib/aius_http/`, `test/http/` | `http`, `runtime-target` green; target build |
+| P1b | Dispatcher: the two buffered config `PUT`s return an `UPLOAD/REPLACE` job rather than an immediate 200 | `src/aius_optical_app.{h,cpp}`, `test/optical-app/` | `optical-app` green |
+| R1 | Runtime seam: a root-initiated SD job entry point, and a publication-consumer callback so a `CONFIG_LOAD` payload reaches the application instead of being counted as dropped | `src/aius_runtime_storage.{h,cpp}`, `src/aius_runtime_teensy.{h,cpp}`, `test/runtime-target/` | `runtime-target` green; target build |
+| R2 | Network adapter: an IP and link-state accessor exposing no vendor type, so the status surface survives losing the `Ethernet.*` include | `src/aius_network_teensy.{h,cpp}`, `test/network-transport/` | `network-transport` green; target build |
+| P2 | The `optical-cutover` structural suite in two groups — **positive** (setup trace is construction-only, `loop()` delegates one epoch, exactly one feed) and **absence** (no static fallback, no rebind globals, no raw FNET) — authored and runnable but not yet part of the standing guard | `test/optical-cutover/` | both groups run and fail against the pre-cutover file, by construction |
+| S1 | Implement the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs | `src/optical_main.cpp` | target build; `optical-app` green |
+| S2a | Construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
+| S2b | Delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard | `src/optical_main.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` + `network-transport` + every component suite |
+| S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"` | `src/optical_main.cpp` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
+| S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, and fix the six dependent places in `test/http/test_http.c` | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
 | S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README | `platformio.ini`, `scripts/test.sh`, `README.md` | full suite sweep |
 
-**Why P1 comes before S1 rather than after S2.** S1's `store_dsp_config` and
-`store_public_config` semantics depend on whether the 200 is optimistic. Landing
-the ABI first means the store path is written once. The alternative, cutting over
-first to get the board bootable sooner and fixing the semantics before B6, gets
-hardware a phase earlier at the cost of writing that path twice, which is the
-rework this reconciliation exists to avoid.
+**Ordering.** S0, P1a, R1, R2 and P2 are mutually independent and start together.
+P1b starts after P1a. S1 starts after S0 and P1b, because the callback signatures
+it implements are the ones P1b settles. S2a starts after S1, P2 and R1. S2b starts
+after S2a and R2. S3, S4 and S5 follow in order. S2a through S4 are strictly
+serialized on `optical_main.cpp`.
 
-**Risk to hold in view.** S2 is the single riskiest change in either plan: it
-deletes the only currently-working path, and the `optical-cutover` structural
-suite is the only automated guard on "setup performs construction only". The
-memory picture also stops being hypothetical at S2, when roughly 9.4 KB of FLASH
-and ~907 bytes of DTCM string data from Phases 11 and 12 link for the first time.
-Expect the first real bank report of this work there, not before.
+Owned paths are disjoint across the five opening slices, but their **gate runs are
+not**: P1a and R1 both gate on `runtime-target`, and S0, P1a and R2 all gate on a
+target build, while `scripts/test.sh` uses one shared build directory per suite
+(`scripts/test.sh:435`) and the optical environment has a single `.pio` tree.
+Serialize the gate runs even though the edits are concurrent.
+
+**Why P1 comes before S1.** S1's `store_dsp_config` and `store_public_config`
+semantics depend on whether the 200 is optimistic. Landing the ABI first means the
+store path is written once. The alternative, cutting over first to get the board
+bootable sooner and fixing the semantics before B6, gets hardware a phase earlier
+at the cost of writing that path twice, which is the rework this reconciliation
+exists to avoid.
+
+**Risk to hold in view.** S2a and S2b are the single riskiest change in either
+plan: together they delete the only currently-working path, and the
+`optical-cutover` structural suite is the only automated guard on "setup performs
+construction only". The memory picture also stops being hypothetical at S2a, when
+roughly 9.4 KB of FLASH and ~907 bytes of DTCM string data from Phases 11 and 12
+link for the first time. Expect the first real bank report of this work there, not
+before. S2a's status output is knowingly transitional: it still reads the legacy
+globals, which are no longer being updated, until S2b rewrites it.
 
 This is the load-bearing phase: it swaps the legacy blocking network/SD path in
 `optical_main.cpp` for the delivered bounded lifecycle, so it carries the highest
@@ -3984,13 +4039,14 @@ production plus one fault image; the full per-checkpoint fault set is exercised
 by the Phase 16a live smoke, not rebuilt here.
 
 **This phase also carries the DSP strand's SD path**, because the DSP work built
-it on the legacy machinery this phase deletes. Three concrete pieces:
+it on the legacy machinery this phase deletes:
 
-- **The legacy `struct AiusSdJob` must go.** `optical_main.cpp:118` declares a
-  same-named, unrelated struct plus a `service_sd_job()` state machine and the
-  `config_upload` / `dsp_upload` / `replay_upload` bookkeeping bits. Nothing in
-  the file can include the portable `aius_sd.h` until they are gone, so this is
-  not deferrable cleanup — it is a precondition for the rest of the cutover.
+- **The legacy `struct AiusSdJob` must go**, and it collides more widely than
+  first recorded. `optical_main.cpp:118` declares a same-named, unrelated struct,
+  and `optical_main.cpp:115` declares an `AIUS_SD_JOB_DELETE` enumerator that
+  redefines `aius_sd.h:20`. Because `aius_optical_app.h:21` includes `aius_sd.h`
+  unconditionally, merely naming the callback table pulls the portable header in.
+  S0 exists to clear both before S1 can be additive at all.
 - **`stage_dsp_sd_override()` becomes a `CONFIG_LOAD` job.**
   `optical_main.cpp:279` currently reads `/aius/dsp.json` a byte at a time into
   a 12,288-byte stack array, from `setup()` and again from `service_sd()`. It
@@ -3999,7 +4055,10 @@ it on the legacy machinery this phase deletes. Three concrete pieces:
   epoch, with the published bytes parsed by the same
   `aius_dsp_config_parse_put()` and staged for the block-boundary apply exactly
   as today. This is the caller [Phase 10a](#phase-10a--sd-job-publish-capacity-generalization)
-  exists for.
+  exists for — but it needs R1 first, because the delivered storage service
+  starts a job only from an HTTP action (`aius_runtime_storage.cpp:250`) and
+  discards a publication payload rather than delivering it
+  (`aius_runtime_storage.cpp:134`).
 - **The DSP config `PUT` moves to `UPLOAD/REPLACE` with `publish = false`.**
   The model is already parsed and validated in RAM by the time the write starts,
   so re-publishing the written bytes would prove nothing the parser has not
@@ -4011,55 +4070,164 @@ The block-boundary apply itself does not move. It stays in the audio path, where
 `config_generation` increments and `source` becomes `sd`, and remains the only
 place the active model changes.
 
-#### Open decision — buffered PUTs cannot currently be SD jobs
+#### Prebuild review findings — 2026-07-25
 
-Phase 11 surfaced a hard constraint in the delivered transaction ABI.
-`accept_application()` (`aius_http_transaction.c:732`) accepts
-`AIUS_SD_JOB_UPLOAD` **only for a streamed request** — a PUT to `/sd/…` whose
-body flows straight to the card. `PUT /api/dsp/config` and
-`PUT /api/config/public` are buffered by design: the body is parsed and
-validated in full, then written verbatim. Neither can be expressed as an SD job
-today.
+The gate rejected the first breakdown and these are its material findings, each
+confirmed against source before the re-scope above was written. They are recorded
+because every one of them is cheap to re-introduce.
 
-Phase 11's dispatcher therefore returns an immediate 200 for both and hands the
-accepted bytes to a storage callback. That is a **wire-behaviour change** from
-the pre-cutover firmware, where `{"ok":true}` is emitted from the SD job's
-cleanup state after the write commits (`optical_main.cpp:649`), and where a
-failed write surfaces as `500 sd_commit` or `507 sd_write`. Under Phase 11's
-shape the 200 becomes optimistic and those two failure responses disappear.
+- **S1 could not have been additive.** `aius_optical_app.h:21` includes
+  `aius_sd.h`, so the callback table cannot be named without the portable header,
+  and two legacy symbols collide with it. S0 is the fix.
+- **The `CONFIG_LOAD` port had no seam to land on.** The composed storage service
+  accepts `AIUS_HTTP_ACTION_SD_START` and nothing else
+  (`aius_runtime_storage.cpp:250`), and acknowledges
+  `AIUS_SD_ACTION_PUBLISH_CONFIG` into a saturating `publish_dropped` counter
+  (`aius_runtime_storage.cpp:134`). Both gaps are known and documented at
+  `aius_runtime_storage.h:72`. R1 closes them; without it S3 has nowhere to go.
+- **The status surface would have lost `ip`, `link` and the DHCP counters.**
+  `AiusRecoveryStatus` (`aius_net.h:146`) carries none of them, while
+  `optical_main.cpp` reaches `Ethernet.localIP()` / `linkStatus()` in fourteen
+  places including the status JSON (`:1387`), the UDP status payload (`:1155`)
+  and USB `ID` (`:2275`, `:2280`). Removing the vendor-include exception without R2 would
+  ship a board that is undiscoverable headless over all three channels, and would
+  contradict `swagger.json`, which declares both fields and was committed at B5 as
+  accurate.
+- **The `optical-cutover` suite must not join the standing guard early.**
+  `network-transport` is a declared green gate for this phase and
+  `scripts/test.sh:334` runs the vendor guard inside it, so removing the
+  exact-path exception before the includes actually disappear would leave every
+  commit from P2 through S2a failing its own commit checkpoint. P2 now authors the
+  suite; S2b wires it in and removes the exception in the same commit.
+- **The six runtime platform callbacks were unlisted.**
+  `AiusRuntimeTeensyPlatformOps` requires `reset_capture`, `metrics`, `udp`,
+  `replay`, `checkpoint` and `feed_watchdog`, all non-null or the composition is
+  invalid (`aius_runtime_teensy.h:63`). Only the watchdog appeared. The `udp` one
+  is the largest single piece: `service_network` (`optical_main.cpp:2314`) handles
+  nine command types and must be re-expressed against
+  `aius_network_teensy_udp_receive_once` / `_send_once`. S2a owns the table.
+- **The wider SD lifecycle was unlisted.** `service_sd`
+  (`optical_main.cpp:777`) owns media-present polling, hot-insert `SD.begin`,
+  `load_sd_config()` (a second blocking byte-at-a-time read, `:379`) and
+  `refresh_sd_usage()` (`:368`), all of which feed the status JSON. S3 now owns
+  them alongside the DSP override.
+- **`loop()` feeds the watchdog at two points, not three.** The three call sites
+  are `setup:2593`, `loop:2607` and `loop:2618`. The contract is unchanged — one
+  8 s interval, one feed after a complete epoch — but the earlier count was wrong.
 
-Nothing is broken today — nothing constructs the dispatcher until Phase 12, so
-the deployed contract is unchanged, and the OpenAPI document committed at step
-B5 still describes the firmware accurately. **Phase 14 must pick one:**
+Two smaller traps worth carrying: `AIUS_OPTICAL_MODEL_MAX_JSON_BYTES` is a
+generated `static const uint32_t` (`scripts/build_config.py:212`), not a macro,
+so it is not interchangeable with `AIUS_DSP_MODEL_MAX_JSON_BYTES` in preprocessor
+context even though both are 12288; and `request_reboot` only records
+(`aius_optical_app.cpp:702`), so S2a must perform the actual reset after the
+epoch.
 
-- **Preserve the current semantics** by giving the transaction a buffered-upload
-  job kind, or by letting the storage service report completion
-  asynchronously. Keeps `200` meaning "durably written", keeps the 500/507
-  surface, and keeps the committed OpenAPI correct. Costs a change to a
-  delivered, tested ABI.
-- **Accept the optimistic 200** and update the OpenAPI document plus the SD
-  editor's expectations in the same commit. Cheaper, but the client loses any
-  signal that the SD write failed, and the editor's "applied" state would rest
-  entirely on its `config_generation` poll.
+#### Settled — buffered PUTs, and the large DSP response
 
-Recommended: the first. The editor already polls for a generation change so it
-would survive either, but silently losing the write-failure surface on a
-config-persistence route is a poor trade for the ABI change avoided.
+Both of these were open questions in the first breakdown. Both are now decided.
 
-Phase 11 also had to make three smaller behaviour choices that Phase 14
-inherits: serializer exhaustion now returns a deterministic
-`500 response_too_large` where the legacy path sent an empty 200 or empty 500; a
-streamed replay PUT without `Content-Range` is now `400 sd_upload` where the
-legacy path silently appended at offset 0 and never finalized; and
-`GET /api/replays` with no card keeps its pre-cutover `200` carrying
-`{"ok":false,"error":"sd_unavailable"}`.
+**A `PUT` returns 200 only after the SD write commits, and it is cheap.** The
+first breakdown assumed preserving that meant an expensive change to a delivered,
+tested ABI. It does not. `accept_application()` formats the response at
+`aius_http_transaction.c:753` but immediately enters `AIUS_HTTP_TX_SD_START`
+(`:762`) — the bytes are buffered, not sent. `SEND` is reached only on
+`AIUS_HTTP_SD_COMPLETE` (`:1004`), and on `AIUS_HTTP_SD_FAILED`
+`select_sd_error()` (`:827`) reformats 500 or 507 because `response_started` is
+still false. The delivered transaction already delivers commit-then-200
+semantics for SD jobs.
 
-Two further legacy behaviours die here. `watchdog_init()` currently arms a 16 s
-interval (`WDOG_WCR_WT(31)`) and `loop()` feeds at three points; the normative
-contract is the pinned 8 s interval with exactly one feed after a complete
-epoch. And the whole `g_dhcp` / `g_dhcp_pending` / `g_network_retry_at` /
-`g_ethernet_initialized` / `g_http_server_rebinds` global set is replaced by the
-supervisor's single live generation.
+What is actually optimistic is the *dispatcher*: `aius_optical_app.cpp:527` and
+`:539` return `dispatch_store(...)` → an `AIUS_HTTP_APP_IMMEDIATE` 200. So the
+work splits as P1a and P1b:
+
+- **P1a** relaxes one admission rule. `accept_application:732` requires
+  `was_streamed` for an `UPLOAD` job; it must also admit a complete buffered body
+  whose `sd_request.total` equals `body_expected`, with `upload_prefix_offset` /
+  `upload_prefix_length` set for the buffered case as `parse_ready_request:659`
+  already does for the streamed one. Nothing downstream needs to change:
+  `drive_sd` already supplies from `request + upload_prefix_offset +
+  upload_prefix_supplied`, and `discard_request_slices:672` nulls only
+  `parsed_request.body`, leaving the bytes in `transaction->request` where the
+  prefix path reads them.
+- **P1b** changes the two config routes to return that job instead of an
+  immediate 200, which is where the real work is: extending
+  `AiusOpticalAppStoreResult` and building target, temp and backup paths for
+  routes that have never had them. The `optical-app` suite pins today's behaviour
+  at `test/optical-app/test_optical_app.c:758`, so those two cases change with it.
+
+**The large DSP model streams; the response capacity does not move.**
+`AIUS_HTTP_MAX_RESPONSE` (8,192) is smaller than
+`AIUS_DSP_MODEL_MAX_JSON_BYTES` (12,288), so a large `GET /api/dsp/config`
+through the transaction would select the deterministic `500 response_too_large`.
+Raising the cap to 12,544 was rejected: it costs 4,352 B of OCRAM inside
+`AiusRuntimeNetworkHttp` (`aius_runtime_network_http.h:55`), forces a 12 KB
+memcpy and ~24.8 KB resident for one GET, and — decisively — the same constant
+sizes two *legacy* stack frames at `optical_main.cpp:1950` and `:2038`, which
+would grow from 8 KB to 12.5 KB inside the 22,684 B DTCM free-for-locals zone
+while the legacy path is still the only working one. P1a lands before S2b by
+design, so that window is real.
+
+Instead P1a copies the *shape* of the mechanism the transaction already has for
+downloads — headers written into `response`, body sent from a foreign pointer
+(`aius_http_transaction.c:968`, `:1324`) — and applies it to a large
+`AIUS_HTTP_APP_IMMEDIATE` body. No cap change, no legacy stack growth, 4.3 KB
+less OCRAM, and no 12 KB copy.
+
+**It must not reuse `response_is_download` and `download_data` themselves.** Both
+are load-bearing for SD download control flow: `drive_send:1337` emits
+`AIUS_HTTP_SD_OP_ACK_DOWNLOAD` once the foreign buffer drains, `drive_cleanup:1403`
+emits `FAIL_DOWNLOAD` whenever `download_data != NULL`, and `consume_sd_result:873`
+keys `releases_download` off the same pair. An immediate response has no SD job, so
+either arm is a protocol fault. P1a needs a distinct flag and pointer whose drain
+path falls through to `request_cleanup`. `response_started` (`:1128`) and
+`select_sd_error`'s `!response_started` guard (`:856`) are unaffected, because
+`select_sd_error` is unreachable without a job.
+
+**New invariant to record with it.** Streaming stretches the dispatcher's body
+borrow — `aius_optical_app.h:107` says "until the next dispatch call" — across
+roughly 25 writes at `AIUS_HTTP_TX_QUOTA` 512. That is safe today only because
+`dispatch_emitted` blocks re-dispatch while in `TX_SEND`
+(`aius_http_transaction.c:1533`), and because USB dispatch touches
+`usb_payload` / `usb_response` rather than `body` (`aius_optical_app.cpp:719`)
+despite sharing the dispatcher every epoch (`aius_runtime_teensy.cpp:120`). State
+it in the header before 14b adds `write_meters`.
+
+#### Accepted wire-behaviour changes
+
+Phase 11 made three behaviour choices this phase inherits: serializer exhaustion
+returns a deterministic `500 response_too_large` where the legacy path sent an
+empty 200 or empty 500; a streamed replay `PUT` without `Content-Range` is now
+`400 sd_upload` where the legacy path silently appended at offset 0 and never
+finalized; and `GET /api/replays` with no card keeps its pre-cutover `200`
+carrying `{"ok":false,"error":"sd_unavailable"}`.
+
+Three more are accepted here.
+
+**Counters that lose their producer at S2b are served as zero.** The HTTP
+counters `g_http_requests`, `g_http_rejections`, `g_http_client_drops` and
+`g_http_service_overruns` are incremented only in the dying `service_http`
+(`optical_main.cpp:2138` onward), and `http_server_rebinds` (`:1392`) goes with
+the rebind globals. `dhcp_pending`, `dhcp_discovers` and `dhcp_updates`
+(`:1388`) lose theirs too, because their FNET callbacks are installed only in
+`ensure_dhcp_client` (`:2426`), and `network_mode` is derived from
+`g_network_ready` / `g_dhcp` (`:1372`). All are emitted in the status JSON and at
+fixed offsets 55–70 of the 71-byte UDP status payload (`:1175`), so they are
+served as zero from S2b until a later phase gives them a producer; the UDP
+payload keeps its length and field offsets. `network_restarts` and `reset_source`
+do survive, through `AiusRecoveryStatus` (`aius_net.h:156`, `:153`). If R2 ends
+up exposing DHCP state anyway, the three DHCP fields come off this list.
+
+**`POST /api/replays/start` is refused from S2a until Phase 14c lands.**
+`aius_replay_service_start` opens the file and then fills the ring synchronously
+before returning (`aius_replay.c:159`), so as a `replay_start` callback it would
+block inside a dispatcher whose contract is that it "touches no SD primitive …
+and never delays" (`aius_optical_app.h:3`). Refusing it also removes the remount
+hazard recorded above, because no foreign replay handle can be open while an SD
+job runs. 14c restores the route.
+
+**The watchdog interval changes.** The legacy 16 s interval (`WDOG_WCR_WT(31)`)
+is replaced by the pinned 8 s interval with exactly one feed after a complete
+epoch.
 
 Watch ITCM. The pre-cutover build has 1,352 bytes free, and this phase adds the
 runtime composition on top. Everything it introduces runs in epoch or HTTP
@@ -4119,6 +4287,63 @@ occupy ITCM; the serializer and the route handler are `FLASHMEM`.
 It lands after Phase 14 rather than before because it wires into the audio
 callback and the dispatcher, both of which the cutover reshapes. Writing it
 first means writing it twice.
+
+### Phase 14c — Replay refill onto a bounded SD job
+
+```yaml
+unit: component-behind-interface
+seams: [AiusReplayReader, aius_replay service start/refill, AIUS_SD_JOB_REPLAY_REFILL]
+contract-artifact: spec-only
+dependencies: [phase-5, phase-10a, phase-14]
+outcome: "Replay refill spends one bounded SD primitive per epoch like every other consumer."
+acceptance:
+  - the replay callback performs no direct SD primitive
+  - service start no longer prebuffers to a watermark before returning, and POST /api/replays/start is restored
+  - an epoch runs at most one SD primitive with a replay active and a storage job in flight
+  - a storage job started while a replay is active does not invalidate the replay's read position
+  - replay audio output is unchanged for a file that previously played correctly
+review-intensity: standard
+commit-checkpoint:
+  green:
+    - firmware/scripts/test.sh --environment native --suite replay
+    - firmware/scripts/test.sh --environment native --suite sd
+    - firmware/scripts/test.sh --environment native --suite runtime-target
+  buildable:
+    - firmware/scripts/build.sh teensy41-optical
+  parent-commit: "refactor(aius): drive replay refill from a bounded SD job"
+```
+
+Deferred out of Phase 14 deliberately, and it lands **before** B6. Replay start is
+refused from S2a until it does — see §Accepted wire-behaviour changes.
+
+`replay_reader_open` / `_read` / `_close` (`optical_main.cpp:71`) call `SD.open`,
+`.seek` and `.read` directly, driven by
+`aius_replay_service_refill(&g_replay_service, 2048u)` from `loop()` (`:2614`).
+Post-cutover that becomes the runtime's `platform.replay` callback
+(`aius_runtime_teensy.h:78`), running in the same epoch as the storage service's
+own SD job. `AIUS_SD_JOB_REPLAY_REFILL` already exists in the portable machine
+(`aius_sd.h:21`) and has no caller.
+
+Two distinct problems, not one. The **budget** problem is two synchronous SD
+consumers per epoch against a normative contract of one. The **correctness**
+problem is worse and was missed on the first pass: every portable job begins at
+`AIUS_SD_PHASE_BEGIN` (`aius_sd.c:407`) and the adapter's `AIUS_SD_ACTION_BEGIN`
+calls `SD.begin(BUILTIN_SDCARD)` (`aius_sd_teensy.cpp:137`), guarded only by the
+adapter's own `file_open` flag. It cannot see `g_replay_file`, so any config
+`PUT`, download or probe re-mounts the volume beneath an open replay handle.
+
+It is deferred rather than folded into Phase 14 because it is not a port.
+`AiusReplayReader` is a synchronous pull seam embedded in `AiusReplayService`
+(`aius_replay.h:111`), and `aius_replay_service_start` opens the file and fills
+the ring before returning (`aius_replay.c:159`), so both the reader contract and
+the transactional start have to change. That is a redesign of a portable library,
+not `optical_main.cpp` work, and it does not belong in a slice serialized on that
+file. Refusing replay start in the interim keeps the deferral honest: with no
+replay handle open, neither problem above can occur.
+
+It lands before B6 because B6 is the single live-hardware session, and validating
+a soak against a board that cannot start a replay — or that corrupts one when an
+SD job runs — would waste the flash.
 
 ### Phase 15 — Button-free flash tooling
 
