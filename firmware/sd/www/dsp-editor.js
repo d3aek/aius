@@ -20,15 +20,15 @@
 
   const $ = (id) => document.getElementById(id);
 
-  const SAMPLE_MAX = 8388607; /* AIUS_DSP_SAMPLE_MAX (2^23 - 1) */
   const METER_POLL_MS = 100; /* 10 Hz, per the API contract */
   const METER_RETRY_MS = 5000; /* back-off while /api/meters is absent */
   const PENDING_POLL_MS = 500; /* the apply lands at an audio block boundary */
   const PENDING_POLL_MAX = 40; /* ~20 s before the page stops waiting */
   const WAVEFORM_MAX_POINTS = 128; /* AIUS_METER_WAVEFORM_MAX */
+  const WAVEFORM_FULL_SCALE = 1000; /* waveform points are per-mille of full scale */
+  const METER_FLOOR_DBFS = -120; /* every emitted level is finite, floored here */
   const MODEL_MAX_BYTES = 12288; /* AIUS_DSP_MODEL_MAX_JSON_BYTES */
   const EQ_SLOTS = 2; /* AIUS_DSP_MODEL_EQ_MAX */
-  const LINEAR_SAMPLE_UNITS_ABOVE = 1.5; /* see normaliseLevel */
 
   const CHANNELS = [
     ['fl', 'Front left'],
@@ -587,6 +587,11 @@
 
   /* ---- meters ------------------------------------------------------------ */
 
+  /* Three outcomes, not two. A non-2xx or a dead transport means the endpoint
+   * is unavailable and is worth backing off from; a 200 whose sequence is 0
+   * means the device is answering perfectly well and has simply never
+   * published (metering bypassed, or no block processed yet), which is a
+   * render state rather than a fault -- so it keeps the full 10 Hz poll. */
   async function pollMeters() {
     if (state.meterInFlight || Date.now() < state.meterRetryAt) return;
     state.meterInFlight = true;
@@ -597,40 +602,49 @@
       renderMetersAbsent(result);
       return;
     }
+    if (!(Number(result.body.sequence) > 0)) {
+      renderMetersIdle();
+      return;
+    }
     renderMeters(result.body);
+  }
+
+  function blankMeterRows() {
+    for (const [key] of CHANNELS) setMeterRow(`meter-in-${key}`, null, null);
+    setMeterRow('meter-out-l', null, null);
+    setMeterRow('meter-out-r', null, null);
+    drawWaveform([]);
   }
 
   function renderMetersAbsent(result) {
     $('meter-state').textContent = 'unavailable';
-    for (const [key] of CHANNELS) setMeterRow(`meter-in-${key}`, null, null);
-    setMeterRow('meter-out-l', null, null);
-    setMeterRow('meter-out-r', null, null);
+    blankMeterRows();
     $('meter-summary').textContent = `Meters unavailable -- ${describe(result)}. Retrying every ${METER_RETRY_MS / 1000} s.`;
-    drawWaveform([]);
   }
 
-  /* The snapshot's peak/RMS are documented as absolute linear sample magnitudes
-   * but the wire form is not frozen yet, so accept either: a *_dbfs field wins,
-   * otherwise a bare linear value is converted (values above 1.5 are treated as
-   * 24-bit sample units, at or below as already normalised full-scale). */
-  function levelDb(entry, key) {
-    if (!entry || typeof entry !== 'object') return null;
-    const direct = entry[`${key}_dbfs`];
-    if (Number.isFinite(direct)) return direct;
-    const linear = entry[key];
-    if (!Number.isFinite(linear)) return null;
-    return linearToDb(linear);
+  /* sequence 0 is the snapshot's own documented "never published" sentinel, so
+   * it renders as no data rather than as a genuine zero-level signal. */
+  function renderMetersIdle() {
+    $('meter-state').textContent = 'no data';
+    blankMeterRows();
+    $('meter-sequence').textContent = '0';
+    $('meter-queue').textContent = '--';
+    $('meter-latency').textContent = '--';
+    $('meter-cycles').textContent = '--';
+    $('meter-summary').textContent =
+      'No meter snapshot published yet -- metering is bypassed, or no audio block has been processed since the last config apply.';
   }
 
-  function linearToDb(linear) {
-    const magnitude = Math.abs(linear);
-    if (magnitude === 0) return -Infinity;
-    return 20 * Math.log10(magnitude > LINEAR_SAMPLE_UNITS_ABOVE ? magnitude / SAMPLE_MAX : magnitude);
-  }
+  /* Levels arrive as dBFS, floored at -120 so every number on the wire is
+   * finite; the page does no conversion of its own. A value at or below the
+   * floor is silence and reads as -inf. */
+  const dbfsOf = (entry, key) => (entry && Number.isFinite(entry[key]) ? entry[key] : null);
+  const channelDbfs = (values, index) =>
+    Array.isArray(values) && Number.isFinite(values[index]) ? values[index] : null;
 
   const formatDb = (value) => {
     if (value === null || value === undefined || Number.isNaN(value)) return '--';
-    if (!Number.isFinite(value) || value < -120) return '-inf';
+    if (!Number.isFinite(value) || value <= METER_FLOOR_DBFS) return '-inf';
     return value.toFixed(1);
   };
 
@@ -639,24 +653,19 @@
     $(`${id}-rms`).textContent = formatDb(rms);
   }
 
-  /* `output` may report one figure for the pair or a [left, right] pair. */
-  const channelOf = (value, index) => (Array.isArray(value) ? value[index] : value);
-
   function renderMeters(meters) {
     $('meter-state').textContent = 'live';
+    /* Six positional entries in AIUS_CH_* order; position is the identity. */
     const inputs = Array.isArray(meters.input) ? meters.input : [];
     CHANNELS.forEach(([key], index) => {
       const entry = inputs[index];
-      setMeterRow(`meter-in-${key}`, levelDb(entry, 'peak'), levelDb(entry, 'rms'));
+      setMeterRow(`meter-in-${key}`, dbfsOf(entry, 'peak_dbfs'), dbfsOf(entry, 'rms_dbfs'));
     });
 
+    /* The stereo output keeps both channels as [L, R] arrays. */
     const output = meters.output && typeof meters.output === 'object' ? meters.output : {};
     ['meter-out-l', 'meter-out-r'].forEach((id, index) => {
-      setMeterRow(
-        id,
-        levelDb({ peak_dbfs: channelOf(output.peak_dbfs, index), peak: channelOf(output.peak, index) }, 'peak'),
-        levelDb({ rms_dbfs: channelOf(output.rms_dbfs, index), rms: channelOf(output.rms, index) }, 'rms'),
-      );
+      setMeterRow(id, channelDbfs(output.peak_dbfs, index), channelDbfs(output.rms_dbfs, index));
     });
 
     $('meter-sequence').textContent = Number.isFinite(meters.sequence) ? String(meters.sequence) : '--';
@@ -674,15 +683,17 @@
     drawWaveform(meters.waveform);
   }
 
-  /* The snapshot's waveform is a bounded per-bucket peak-magnitude envelope, so
-   * it renders mirrored about the centre line. Values are scaled the same way
-   * as the level fields. Never more than the contract's 128 points. */
+  /* The waveform is a bounded per-bucket peak-magnitude envelope carried as
+   * per-mille integers 0..1000 of full scale, so it renders mirrored about the
+   * centre line. The array's own length is the count; never more than the
+   * contract's 128 points. */
   function normaliseWaveform(points) {
     if (!Array.isArray(points)) return [];
-    const values = points.slice(0, WAVEFORM_MAX_POINTS).map(Number).filter(Number.isFinite);
-    const peak = values.reduce((highest, value) => Math.max(highest, Math.abs(value)), 0);
-    const scale = peak > LINEAR_SAMPLE_UNITS_ABOVE ? 1 / SAMPLE_MAX : 1;
-    return values.map((value) => Math.max(-1, Math.min(1, value * scale)));
+    return points
+      .slice(0, WAVEFORM_MAX_POINTS)
+      .map(Number)
+      .filter(Number.isFinite)
+      .map((value) => Math.max(0, Math.min(1, value / WAVEFORM_FULL_SCALE)));
   }
 
   function drawWaveform(points) {

@@ -82,6 +82,18 @@ HOT_OBJECT = "src/optical_main.cpp.o"
 #    run once per AUDIO_BLOCK_SAMPLES block. Every one must be present: a
 #    missing entry means a rename, an inline-away, or a FLASHMEM landing on hot
 #    code, and the build should reject all three rather than quietly pass.
+#
+#    Phase 14b deliberately added nothing here. Its meter tap is genuinely hot,
+#    but it is written inline in `enqueue` rather than as a helper, so it grows
+#    an already-pinned section (424 -> 600 bytes) instead of introducing a
+#    fourth name. That is the honest placement AND the checkable one: a
+#    single-call-site static helper would almost certainly have been inlined by
+#    GCC at -O2, which would have made an entry added here fail the "no longer
+#    emits its audio-block code" check below -- so the allowlist would have had
+#    to describe a function that does not exist. Everything else 14b added --
+#    http_meters_json and its two conversion helpers, and the meter tunables
+#    apply_config resolves -- runs in HTTP or block-boundary context and carries
+#    FLASHMEM on its definition, which is why this list is still exactly three.
 HOT_SECTIONS = (
     ".text._ZN18AiusAudioProcessor6updateEv",
     ".text._ZN18AiusAudioProcessor7enqueueEPK12AiusPcmBlock",

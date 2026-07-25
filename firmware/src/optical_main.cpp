@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <new>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -230,6 +231,48 @@ DMAMEM static AiusOpticalConfig g_pending_dsp_model;
 static bool g_dsp_upload_pending;
 static volatile bool g_dsp_apply_pending;
 
+/* The coherent meter snapshot the audio path publishes and GET /api/meters
+ * serves (Phase 14b). aius_dsp.h owns the whole protocol; this file only wires
+ * it.
+ *
+ * OCRAM, exactly as the AiusMeter contract asks ("on target the adapter places
+ * this in OCRAM"). At ~1.4 kB it is far too big to spend on the 23 kB DTCM
+ * free-for-locals zone when OCRAM has 416 kB spare -- §Deciding principle's
+ * "memory that is genuinely free is not an argument" points the same way.
+ * DMAMEM is not zeroed at startup, so apply_config() runs aius_meter_init()
+ * before the first block ever reaches enqueue().
+ *
+ * ONE WRITER, ONE READER, NO LOCK. The writer is AiusAudioProcessor::enqueue()
+ * in audio-ISR context: it owns every accumulator, both seqlock increments and
+ * the published snapshot. The reader is http_meters_json() on the main thread
+ * and only ever calls aius_meter_read(). The reader never makes the audio path
+ * wait -- the writer takes no lock, tests no reader state and never retries;
+ * retry belongs entirely to the reader's side of the seqlock.
+ *
+ * WHY THAT CANNOT TEAR HERE. The two sides are not concurrent, they are
+ * nested: the audio interrupt preempts the main thread, runs a publish to
+ * completion and returns. A reader whose 676-byte copy is straddled by a
+ * publish therefore always observes seq advanced by two across the copy, fails
+ * the s1 == s2 check, and retries; it can never observe the payload half-old.
+ * The converse hazard -- a compiler sinking one of the writer's payload stores
+ * past the closing `seq++` -- is harmless for the same reason: the sunk store
+ * still retires before the exception return, so no reader can run between the
+ * two. aius_meter_read() lives in another translation unit and there is no LTO
+ * in this build, so its bracketing volatile reads cannot be reordered around
+ * the copy from the caller's side either. */
+DMAMEM static AiusMeter g_meter;
+
+/* Publish cadence, in publishes per second. Counted in FRAMES rather than
+ * blocks so the decoder's framing cannot move it: a 128-frame PCM block and a
+ * 512-frame decoded block yield the same 20 Hz. Chosen against the two
+ * consumers, which both poll at 10 Hz -- every poll then sees a snapshot at
+ * most one window old -- and against metering quality: RMS integrated over
+ * ~50 ms is a usable meter, whereas a per-block window is 2.7 ms of noise
+ * sampled at random by the client. It also keeps the one non-trivial cost in
+ * the tap (aius_meter_publish's 8 sqrt + 128-point copy) off 18 blocks in
+ * every 19 at 48 kHz with 128-frame blocks. */
+static constexpr uint32_t AIUS_METER_PUBLISH_HZ = 20u;
+
 static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, AiusOpticalConfig &out)
 {
 	out.sample_rate_hz = model.sample_rate_hz;
@@ -421,6 +464,11 @@ public:
 		noInterrupts();
 		g_blocks = 0;
 		g_overruns = 0;
+		/* The peak-cycle watermark is a counter like the other two: a soak that
+		 * clears counters wants the worst block SINCE the clear, not since
+		 * boot. Inside the same critical section because its only other writer
+		 * is the audio ISR. */
+		g_dsp_cycles_max = 0;
 		interrupts();
 	}
 
@@ -507,6 +555,14 @@ private:
 	bool g_input_stage_active = false;
 	AiusLimiter g_limiter = {};
 	bool g_limiter_active = false;
+	/* Meter tap state, all resolved by apply_config() so the audio path never
+	 * divides and never reads the config model. g_meters_active is the whole
+	 * cost of the tap when features.meters is false: one bool test per block. */
+	bool g_meters_active = false;
+	uint32_t g_meter_window_frames = 0;    /* frames per publish (~1/20 s) */
+	uint32_t g_meter_us_per_frame_q16 = 0; /* 1e6 / fs in Q16.16, hoisted */
+	uint32_t g_dsp_cycles_last = 0;
+	uint32_t g_dsp_cycles_max = 0;
 
 	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
@@ -544,9 +600,33 @@ private:
 		dsp.eq_state = g_eq_state;
 		dsp.input = g_input_stage_active ? &g_input_stage : nullptr;
 		dsp.limiter = g_limiter_active ? &g_limiter : nullptr;
+		/* Phase 14b meter tap, opened here and closed at the bottom of this
+		 * function. Everything it does is gated on one bool, so a config with
+		 * features.meters false costs exactly that test; nothing publishes,
+		 * and the snapshot keeps its "never published" sequence of 0, which
+		 * both consumers render as "no data".
+		 *
+		 * The DWT cycle counter brackets the whole per-block body -- DSP,
+		 * accumulate, the ring write and any publish -- so the device reports
+		 * its own worst-case block cost through the snapshot it is already
+		 * publishing, rather than the figure being an off-target estimate. Two
+		 * volatile PPB loads per block. */
+		const bool metering = g_meters_active;
+		const uint32_t cycles_begin = metering ? ARM_DWT_CYCCNT : 0u;
 		AiusStatus dsp_status = aius_dsp_process(&dsp, block, &processed);
 		if (dsp_status != AIUS_OK)
 			return dsp_status;
+		/* Both taps sit after a successful process so one window always covers
+		 * the same set of blocks on both sides; a block the DSP rejected
+		 * contributes to neither. Bounded and allocation-free by construction:
+		 * every helper walks block->frames once (already capped at
+		 * AUDIO_BLOCK_SAMPLES * 4 above) over caller-owned storage, and the
+		 * waveform decimation writes at most AIUS_METER_WAVEFORM_MAX points. */
+		if (metering) {
+			aius_meter_accumulate_input(&g_meter, block);
+			aius_meter_accumulate_output(&g_meter, processed_left,
+			                             processed_right, block->frames);
+		}
 		for (uint32_t i = 0; i < block->frames; i++) {
 			int32_t l = processed_left[i] >> 8;
 			int32_t r = processed_right[i] >> 8;
@@ -560,6 +640,29 @@ private:
 		}
 		g_count += block->frames;
 		g_blocks++;
+		if (metering) {
+			if (g_meter.out_frames >= g_meter_window_frames) {
+				/* Sampled once per window, not per block: the accessor takes a
+				 * libm log10, and a diagnostic field does not buy a log10 in
+				 * the block callback (§Deciding principle). The reported value
+				 * is therefore the instantaneous gain reduction at the publish
+				 * instant, not the window's peak. */
+				aius_meter_set_limiter_gr(&g_meter,
+					aius_dsp_limiter_gain_reduction_db(dsp.limiter));
+				/* No division: microseconds per frame was resolved to Q16.16
+				 * by apply_config(), and g_count <= RING_FRAMES, so this is one
+				 * 32x32 multiply and a shift. */
+				aius_meter_set_telemetry(&g_meter, g_count,
+					(uint32_t)(((uint64_t)g_count *
+					            g_meter_us_per_frame_q16) >> 16),
+					g_dsp_cycles_last, g_dsp_cycles_max);
+				aius_meter_publish(&g_meter);
+			}
+			const uint32_t cycles = ARM_DWT_CYCCNT - cycles_begin;
+			g_dsp_cycles_last = cycles;
+			if (cycles > g_dsp_cycles_max)
+				g_dsp_cycles_max = cycles;
+		}
 		return AIUS_OK;
 	}
 
@@ -646,6 +749,31 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	g_limiter.cfg.lookahead_ms = cfg.limiter.lookahead_ms;
 	memset(&g_limiter.state, 0, sizeof(g_limiter.state));
 	g_limiter_active = cfg.features.limiter != 0;
+
+	/* Meter tap, resolved here for the same reason the biquads are: this is the
+	 * one cold place that already knows the model, so the audio path reads
+	 * plain scalars and never divides, never reads cfg and never branches on a
+	 * feature struct.
+	 *
+	 * aius_meter_init() also re-zeroes the published snapshot, which is what
+	 * makes the three interesting transitions honest. Turning metering off
+	 * takes sequence back to 0 ("never published") instead of freezing a stale
+	 * window on the wire; turning it on starts a fresh window; and a sample-rate
+	 * change re-bases both the reported rate and the publish cadence. It is a
+	 * ~1.4 kB memset, run at a block boundary alongside the biquad trig that
+	 * already dominates this function, and never per block.
+	 *
+	 * A reader racing that memset is safe for the same reason a reader racing a
+	 * publish is: seq changes value across the copy, so the s1 == s2 check
+	 * fails and the reader retries. */
+	const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz
+	                                               : AIUS_OPTICAL_SAMPLE_RATE_HZ;
+	g_meter_window_frames = rate / AIUS_METER_PUBLISH_HZ;
+	if (g_meter_window_frames == 0u)
+		g_meter_window_frames = 1u;
+	g_meter_us_per_frame_q16 = (uint32_t)((1000000ull << 16) / rate);
+	g_meters_active = cfg.features.meters != 0;
+	aius_meter_init(&g_meter, rate);
 }
 
 uint8_t AiusAudioProcessor::g_arena_memory[AiusAudioProcessor::ARENA_BYTES]
@@ -877,6 +1005,140 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	                      cfg.limiter.release_ms, cfg.limiter.lookahead_ms))
 		return 0;
 	return length;
+}
+
+/* --- GET /api/meters ------------------------------------------------------
+ *
+ * The wire shape is settled and normative in
+ * docs/plans/aius-dsp-config-api.md §Meters endpoint: dBFS levels floored at
+ * -120.0, `input` as six positional entries in AIUS_CH_* order with no channel
+ * key, `output` as two-element [L, R] arrays, `waveform` as per-mille integers
+ * 0..1000 whose length is its own count, and sequence 0 served as an ordinary
+ * 200 meaning "never published" rather than a status-code special case.
+ *
+ * All of it is cold FLASHMEM. The conversion the struct's header delegates to
+ * the reader is done here, in the HTTP path, precisely because it is cold: the
+ * ~16 log10 calls and 128 integer scalings per snapshot cost the audio budget
+ * nothing, whereas log10(0) is -Infinity, which is not JSON, and silence is a
+ * meter's resting state rather than an edge case. */
+
+/* Silence, and anything quieter than this, reports exactly this value. Every
+ * emitted level is therefore finite and no client has to reinvent the clamp. */
+static constexpr double AIUS_METERS_FLOOR_DBFS = -120.0;
+
+/* Waveform points are per-mille of full scale, so the largest point is this. */
+static constexpr uint32_t AIUS_METERS_WAVEFORM_FULL_SCALE = 1000u;
+
+/* Worst-case body, so the response is fixed-size by construction rather than
+ * by hope. Allowing a generous 24 characters for every "%.1f" (the real range
+ * is [-120.0, +48.2]: the floor below, and a magnitude bounded by int32 above):
+ *
+ *   envelope + sequence + sample_rate_hz                            60
+ *   6 x {"peak_dbfs":<24>,"rms_dbfs":<24>} + separators            450
+ *   "output" with four [L, R] entries                              138
+ *   "limiter_gain_reduction_db"                                     53
+ *   "waveform" with 128 x "1000," points                           652
+ *   the four uint32 telemetry fields + close                       119
+ *                                                                 ----
+ *                                                                 1472
+ *
+ * Rounded up for the NUL and for arithmetic drift. Every append is still
+ * capacity-checked, so exceeding it would be a deterministic 0 (-> 500), never
+ * an overrun. */
+static constexpr size_t AIUS_METERS_MAX_JSON_BYTES = 1600u;
+static_assert(AIUS_METERS_MAX_JSON_BYTES <= AIUS_RUNTIME_TEENSY_APP_BODY,
+	"the meters body must fit the runtime's application response buffer");
+
+/* 20*log10(v / AIUS_DSP_SAMPLE_MAX), floored. The `!(v > 0)` test also takes
+ * NaN to the floor, so no non-finite value can reach the wire. */
+static FLASHMEM double meter_dbfs(double magnitude)
+{
+	if (!(magnitude > 0.0))
+		return AIUS_METERS_FLOOR_DBFS;
+	const double db = 20.0 * log10(magnitude / (double)AIUS_DSP_SAMPLE_MAX);
+	return db < AIUS_METERS_FLOOR_DBFS ? AIUS_METERS_FLOOR_DBFS : db;
+}
+
+/* One envelope point as a per-mille integer of full scale, rounded to nearest
+ * and clamped. aius_meter_decimate() emits magnitudes, so the negative arm is
+ * defensive only. */
+static FLASHMEM uint32_t meter_permille(int32_t point)
+{
+	const uint64_t magnitude = point < 0 ? (uint64_t)-(int64_t)point
+	                                     : (uint64_t)point;
+	const uint64_t scaled =
+		(magnitude * AIUS_METERS_WAVEFORM_FULL_SCALE +
+		 (uint64_t)(AIUS_DSP_SAMPLE_MAX / 2)) / (uint64_t)AIUS_DSP_SAMPLE_MAX;
+	return scaled > AIUS_METERS_WAVEFORM_FULL_SCALE
+		? AIUS_METERS_WAVEFORM_FULL_SCALE : (uint32_t)scaled;
+}
+
+/* Serialize the last complete snapshot. sequence == 0 is not special-cased: a
+ * board that has never published serves an ordinary 200 whose levels are all
+ * at the floor and whose waveform is empty, which is exactly what "no data"
+ * means, and reuses the sentinel the struct already documents instead of
+ * inventing a status-code convention.
+ *
+ * Returning 0 is reserved for the one genuine failure: aius_meter_read()
+ * refusing to hand back a torn snapshot after AIUS_METER_READ_RETRIES
+ * contended attempts. That is the dispatcher's ordinary "cannot serve" answer
+ * (a deterministic 500), and it needs a publish to straddle eight consecutive
+ * 676-byte copies to happen at all -- against a writer that publishes 20 times
+ * a second and completes in about a microsecond. */
+static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
+{
+	AiusMeterSnapshot snapshot;
+	if (!aius_meter_read(&g_meter, &snapshot))
+		return 0;
+	if (capacity > AIUS_METERS_MAX_JSON_BYTES)
+		capacity = AIUS_METERS_MAX_JSON_BYTES;
+	char *output = (char *)body;
+	size_t length = 0;
+	if (!http_json_append(output, capacity, &length,
+	                      "{\"sequence\":%lu,\"sample_rate_hz\":%lu,\"input\":[",
+	                      (unsigned long)snapshot.sequence,
+	                      (unsigned long)snapshot.sample_rate_hz))
+		return 0;
+	/* Six positional entries in AIUS_CH_* order (fl, fr, fc, lfe, sl, sr).
+	 * Position is the identity; there is deliberately no channel key. */
+	for (uint32_t channel = 0; channel < AIUS_METER_INPUT_CHANNELS; channel++) {
+		if (!http_json_append(output, capacity, &length,
+		                      "%s{\"peak_dbfs\":%.1f,\"rms_dbfs\":%.1f}",
+		                      channel == 0 ? "" : ",",
+		                      meter_dbfs(snapshot.input_peak[channel]),
+		                      meter_dbfs(snapshot.input_rms[channel])))
+			return 0;
+	}
+	/* The stereo output keeps both channels as [L, R]; flattening to a scalar
+	 * would discard information the pipeline already has.
+	 * limiter_gain_reduction_db is already dB (<= 0) and passes through
+	 * unconverted. */
+	if (!http_json_append(output, capacity, &length,
+	                      "],\"output\":{\"peak_dbfs\":[%.1f,%.1f],\"rms_dbfs\":[%.1f,%.1f]},"
+	                      "\"limiter_gain_reduction_db\":%.1f,\"waveform\":[",
+	                      meter_dbfs(snapshot.output_peak[0]),
+	                      meter_dbfs(snapshot.output_peak[1]),
+	                      meter_dbfs(snapshot.output_rms[0]),
+	                      meter_dbfs(snapshot.output_rms[1]),
+	                      snapshot.limiter_gain_reduction_db))
+		return 0;
+	uint32_t points = snapshot.waveform_count;
+	if (points > AIUS_METER_WAVEFORM_MAX)
+		points = AIUS_METER_WAVEFORM_MAX;
+	for (uint32_t point = 0; point < points; point++) {
+		if (!http_json_append(output, capacity, &length, "%s%lu",
+		                      point == 0 ? "" : ",",
+		                      (unsigned long)meter_permille(snapshot.waveform[point])))
+			return 0;
+	}
+	return http_json_append(output, capacity, &length,
+	                        "],\"queue_frames\":%lu,\"estimated_latency_us\":%lu,"
+	                        "\"dsp_cycles_last\":%lu,\"dsp_cycles_max\":%lu}",
+	                        (unsigned long)snapshot.queue_frames,
+	                        (unsigned long)snapshot.estimated_latency_us,
+	                        (unsigned long)snapshot.dsp_cycles_last,
+	                        (unsigned long)snapshot.dsp_cycles_max)
+		? length : 0;
 }
 
 /* GET /api/status. Every field keeps its key, position and type; the sources
@@ -1180,15 +1442,9 @@ static FLASHMEM size_t app_write_dsp_config(void *, uint8_t *body, size_t capaci
 	return http_dsp_config_json(body, capacity);
 }
 
-/* GET /api/meters has no serializer in this file: the meters wire shape is
- * settled in aius-dsp-config-api.md §"Meters endpoint + accumulate wiring" and
- * Phase 14b implements both it and this body. Until then this reports the
- * callback's ordinary "does not fit" answer, 0, which the dispatcher turns into
- * a deterministic 500 -- a consistent refusal rather than an invented body
- * shape 14b would have to change. Phase 14b owns replacing this. */
-static FLASHMEM size_t app_write_meters(void *, uint8_t *, size_t)
+static FLASHMEM size_t app_write_meters(void *, uint8_t *body, size_t capacity)
 {
-	return 0u;
+	return http_meters_json(body, capacity);
 }
 
 static FLASHMEM size_t app_write_replay_status(void *, uint8_t *body,

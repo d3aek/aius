@@ -10,11 +10,12 @@
  * Fixture provenance: `dsp-config-*.json` are the exact wire shape
  * `http_dsp_config_json()` emits (firmware/src/optical_main.cpp) and the
  * swagger `DspConfig` example; the SD one additionally carries every EQ type
- * and the clip-free matrix policy. `meters-*.json` follow the schema the DSP
- * plan pins for `GET /api/meters` -- that endpoint is not implemented in
- * firmware yet, so they are authored to the contract rather than captured from
- * a device, and cover both candidate level encodings (dBFS fields and raw
- * linear sample magnitudes).
+ * and the clip-free matrix policy. `meters-*.json` are the settled
+ * `GET /api/meters` shape that `http_meters_json()` emits as of Phase 14b --
+ * six positional dBFS input entries floored at -120, `[L, R]` output arrays,
+ * and a per-mille integer waveform -- authored to the contract rather than
+ * captured from a device, and covering the live, all-at-the-floor, and
+ * never-published (`sequence == 0`) cases.
  */
 
 import { readFileSync } from 'node:fs';
@@ -414,15 +415,45 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-summary').textContent).toContain('-1.8');
   });
 
-  it('converts raw linear sample magnitudes to dBFS', async () => {
-    await boot({ meters: fixture('meters-linear.json') });
+  it('renders levels at the -120 dBFS floor as silence, not as a number', async () => {
+    await boot({ meters: fixture('meters-silent.json') });
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(Number(el('meter-in-fl-peak').textContent)).toBeCloseTo(-6, 1);
-    expect(Number(el('meter-in-fr-peak').textContent)).toBeCloseTo(0, 1);
-    expect(el('meter-in-fc-peak').textContent).toBe('-inf');
-    expect(Number(el('meter-out-l-peak').textContent)).toBeCloseTo(0, 1);
-    expect(Number(el('meter-out-r-peak').textContent)).toBeCloseTo(-6, 1);
+    expect(el('meter-state').textContent).toBe('live');
+    expect(el('meter-in-fl-peak').textContent).toBe('-inf');
+    expect(el('meter-in-fl-rms').textContent).toBe('-inf');
+    expect(el('meter-in-fr-peak').textContent).toBe('-0.1');
+    expect(el('meter-out-l-peak').textContent).toBe('-0.1');
+    expect(el('meter-out-r-peak').textContent).toBe('-inf');
+    // The limiter's defensive fully-closed value is below the floor too.
+    expect(el('meter-summary').textContent).toContain('-inf');
+  });
+
+  it('shows "no data" for a never-published snapshot without backing off', async () => {
+    await boot({ meters: fixture('meters-idle.json') });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(el('meter-state').textContent).toBe('no data');
+    expect(el('meter-sequence').textContent).toBe('0');
+    // Not rendered as a genuine zero-level signal.
+    expect(el('meter-in-fl-peak').textContent).toBe('--');
+    expect(el('meter-out-l-rms').textContent).toBe('--');
+    expect(el('meter-queue').textContent).toBe('--');
+    expect(el('meter-latency').textContent).toBe('--');
+    expect(el('meter-cycles').textContent).toBe('--');
+    expect(el('meter-summary').textContent).toContain('No meter snapshot published yet');
+
+    // A valid 200 is not a fault, so the 10 Hz poll continues at full rate --
+    // unlike the absent-endpoint branch, which backs off to 5 s.
+    const afterFirst = device.calls.filter((call) => call.url === '/api/meters').length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(device.calls.filter((call) => call.url === '/api/meters').length).toBe(afterFirst + 10);
+
+    // Once the device starts publishing, the page goes live on the next poll.
+    device.meters = fixture('meters-snapshot.json');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(el('meter-state').textContent).toBe('live');
+    expect(el('meter-sequence').textContent).toBe('1287');
   });
 
   it('draws the waveform envelope mirrored about the centre line', async () => {
@@ -437,7 +468,8 @@ describe('Aius SD DSP editor — meters', () => {
     expect(paths).toHaveLength(2);
 
     const envelope = paths[1].filter((op) => op[0] === 'moveTo' || op[0] === 'lineTo');
-    // Five points across a 960x180 canvas: x = index * 240, y = 90 -/+ value * 90.
+    // Five per-mille points [0, 500, 1000, 500, 0] across a 960x180 canvas:
+    // x = index * 240, y = 90 -/+ (permille / 1000) * 90.
     expect(envelope[0]).toEqual(['moveTo', 0, 90]);
     expect(envelope[1][1]).toBe(240);
     expect(envelope[1][2]).toBeCloseTo(45, 3);
@@ -451,7 +483,7 @@ describe('Aius SD DSP editor — meters', () => {
   });
 
   it('caps rendering at the contract 128 points', async () => {
-    const oversized = { ...fixture('meters-snapshot.json'), waveform: Array.from({ length: 400 }, () => 0.5) };
+    const oversized = { ...fixture('meters-snapshot.json'), waveform: Array.from({ length: 400 }, () => 500) };
     await boot({ meters: oversized });
     await vi.advanceTimersByTimeAsync(100);
 

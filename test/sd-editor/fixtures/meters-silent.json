@@ -1,0 +1,19 @@
+{
+  "sequence": 41,
+  "sample_rate_hz": 48000,
+  "input": [
+    { "peak_dbfs": -120, "rms_dbfs": -120 },
+    { "peak_dbfs": -0.1, "rms_dbfs": -3.2 },
+    { "peak_dbfs": -120, "rms_dbfs": -120 },
+    { "peak_dbfs": -120, "rms_dbfs": -120 },
+    { "peak_dbfs": -120, "rms_dbfs": -120 },
+    { "peak_dbfs": -120, "rms_dbfs": -120 }
+  ],
+  "output": { "peak_dbfs": [-0.1, -120], "rms_dbfs": [-3.2, -120] },
+  "limiter_gain_reduction_db": -1000,
+  "waveform": [0, 0, 0, 0],
+  "queue_frames": 0,
+  "estimated_latency_us": 0,
+  "dsp_cycles_last": 0,
+  "dsp_cycles_max": 0
+}
