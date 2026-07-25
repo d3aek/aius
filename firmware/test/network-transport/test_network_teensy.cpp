@@ -718,6 +718,214 @@ void test_one_shot_io_matrix()
 	assert(g_fake.log[0] == OP_CLOSE && g_fake.log[1] == OP_CLOSE);
 }
 
+/* The status accessors must be callable in any supervisor state, must touch the
+ * stack at most once per call, and must do nothing else -- so every check below
+ * also asserts the adapter is unchanged and that no lifecycle or socket
+ * primitive ran. A call that returns at all is the "never blocks" evidence the
+ * fakes can give; the accessors contain no loop and no retry.
+ */
+void expect_link(const AiusNetworkTeensy *adapter,
+	             AiusNetworkTeensyLink expected)
+{
+	AiusNetworkTeensy before = {};
+	if (adapter != nullptr) {
+		memcpy(&before, adapter, sizeof(before));
+	}
+	const size_t log_before = g_fake.log_count;
+	const uint32_t address_reads_before =
+		aius_network_teensy_test_address_reads();
+	const size_t expected_reads =
+		(adapter != nullptr && adapter->stack_started) ? 1u : 0u;
+
+	assert(aius_network_teensy_link(adapter) == expected);
+
+	assert(g_fake.log_count == log_before + expected_reads);
+	if (expected_reads == 1u) {
+		assert(g_fake.log[g_fake.log_count - 1u] == OP_LINK_STATUS);
+	}
+	assert(aius_network_teensy_test_address_reads() ==
+	       address_reads_before);
+	if (adapter != nullptr) {
+		assert(memcmp(&before, adapter, sizeof(before)) == 0);
+	}
+}
+
+void expect_address(const AiusNetworkTeensy *adapter, bool usable,
+	                uint8_t first, uint8_t second, uint8_t third,
+	                uint8_t fourth)
+{
+	AiusNetworkTeensy before = {};
+	if (adapter != nullptr) {
+		memcpy(&before, adapter, sizeof(before));
+	}
+	uint8_t address[4] = {0xffu, 0xffu, 0xffu, 0xffu};
+	const size_t log_before = g_fake.log_count;
+	const uint32_t address_reads_before =
+		aius_network_teensy_test_address_reads();
+	const uint32_t expected_reads =
+		(adapter != nullptr && adapter->stack_started) ? 1u : 0u;
+
+	assert(aius_network_teensy_address(adapter, address) == usable);
+
+	assert(address[0] == first);
+	assert(address[1] == second);
+	assert(address[2] == third);
+	assert(address[3] == fourth);
+	assert(aius_network_teensy_test_address_reads() ==
+	       address_reads_before + expected_reads);
+	assert(g_fake.log_count == log_before);
+	if (adapter != nullptr) {
+		assert(memcmp(&before, adapter, sizeof(before)) == 0);
+	}
+}
+
+void drive_teardown(AiusNetworkTeensy *adapter, uint32_t generation)
+{
+	AiusNetEvent event = {};
+	aius_network_teensy_apply(adapter, 20u,
+	                         action(AIUS_NET_ACTION_TEARDOWN, generation),
+	                         &event);
+	for (size_t step = 0u; step < 4u &&
+	                       event.kind != AIUS_NET_EVENT_TEARDOWN_DONE;
+	     step++) {
+		aius_network_teensy_apply(adapter, 21u,
+		                         action(AIUS_NET_ACTION_NONE, 0u), &event);
+	}
+	expect_event(event, AIUS_NET_EVENT_TEARDOWN_DONE, generation,
+	             AIUS_NET_FAULT_NONE);
+	assert(!adapter->stack_started);
+	assert(!adapter->dhcp_started);
+	assert(!adapter->lease_acquired);
+}
+
+void test_status_accessors_across_lifecycle()
+{
+	const uint8_t first_lease[4] = {192u, 168u, 4u, 21u};
+	const uint8_t second_lease[4] = {10u, 0u, 0u, 7u};
+	const uint8_t no_lease[4] = {0u, 0u, 0u, 0u};
+	uint8_t scratch[4] = {0xffu, 0xffu, 0xffu, 0xffu};
+	AiusNetworkTeensy adapter;
+	reset_adapter(&adapter);
+
+	/* Before the stack starts there is nothing to ask, and the accessors ask
+	 * nothing.
+	 */
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	expect_address(&adapter, false, 0u, 0u, 0u, 0u);
+	assert(!aius_network_teensy_dhcp_pending(&adapter));
+	assert(g_fake.log_count == 0u);
+	assert(aius_network_teensy_test_address_reads() == 0u);
+
+	expect_link(nullptr, AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	expect_address(nullptr, false, 0u, 0u, 0u, 0u);
+	assert(!aius_network_teensy_address(&adapter, nullptr));
+	assert(!aius_network_teensy_dhcp_pending(nullptr));
+	assert(g_fake.log_count == 0u);
+	assert(aius_network_teensy_test_address_reads() == 0u);
+
+	/* Stack up, lease outstanding: the read happens and reports the address
+	 * as unusable rather than serializing a half-configured stack.
+	 */
+	make_stack_ready(&adapter);
+	g_fake.log_count = 0u;
+	assert(aius_network_teensy_dhcp_pending(&adapter));
+	expect_address(&adapter, false, 0u, 0u, 0u, 0u);
+	assert(aius_network_teensy_test_address_reads() == 1u);
+
+	/* Every link state maps one for one, and an out-of-contract driver value
+	 * degrades to UNKNOWN instead of leaking through.
+	 */
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UP);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_DOWN);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	g_fake.link = static_cast<AiusNetworkTeensyLink>(77);
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+
+	/* Lease acquired: pending clears, the update counter advances, and the
+	 * four octets reach the caller.
+	 */
+	aius_network_teensy_test_set_address(first_lease);
+	aius_network_teensy_test_callback(&adapter, 7u,
+	                                 AIUS_NET_EVENT_LEASE_ACQUIRED,
+	                                 AIUS_NET_FAULT_NONE);
+	assert(adapter.lease_acquired);
+	assert(adapter.dhcp_updates == 1u);
+	assert(!aius_network_teensy_dhcp_pending(&adapter));
+	expect_address(&adapter, true, 192u, 168u, 4u, 21u);
+
+	/* A lease callback captured under a dead generation neither clears
+	 * pending nor counts.
+	 */
+	aius_network_teensy_test_callback(&adapter, 6u,
+	                                  AIUS_NET_EVENT_LEASE_ACQUIRED,
+	                                  AIUS_NET_FAULT_NONE);
+	assert(adapter.dhcp_updates == 1u);
+
+	/* Online changes neither answer. */
+	AiusNetEvent event = {};
+	aius_network_teensy_apply(&adapter, 5u,
+	                         action(AIUS_NET_ACTION_PUBLISH_ONLINE), &event);
+	aius_network_teensy_apply(&adapter, 6u,
+	                         action(AIUS_NET_ACTION_NONE, 0u), &event);
+	assert(adapter.online);
+	expect_address(&adapter, true, 192u, 168u, 4u, 21u);
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UP);
+
+	/* After teardown the stack is gone: defined answers, no reads. */
+	drive_teardown(&adapter, 7u);
+	aius_network_teensy_test_set_address(no_lease);
+	g_fake.log_count = 0u;
+	const uint32_t reads_after_teardown =
+		aius_network_teensy_test_address_reads();
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	expect_address(&adapter, false, 0u, 0u, 0u, 0u);
+	assert(!aius_network_teensy_dhcp_pending(&adapter));
+	assert(g_fake.log_count == 0u);
+	assert(aius_network_teensy_test_address_reads() ==
+	       reads_after_teardown);
+
+	/* A restarted generation reports the new lease, and the update counter
+	 * stays monotonic across the restart.
+	 */
+	aius_network_teensy_apply(&adapter, 30u,
+	                         action(AIUS_NET_ACTION_START_STACK, 8u),
+	                         &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 8u,
+	             AIUS_NET_FAULT_NONE);
+	assert(!aius_network_teensy_dhcp_pending(&adapter));
+	expect_address(&adapter, false, 0u, 0u, 0u, 0u);
+	aius_network_teensy_apply(&adapter, 31u,
+	                         action(AIUS_NET_ACTION_START_DHCP, 8u), &event);
+	assert(aius_network_teensy_dhcp_pending(&adapter));
+
+	aius_network_teensy_test_callback(&adapter, 7u,
+	                                  AIUS_NET_EVENT_LEASE_ACQUIRED,
+	                                  AIUS_NET_FAULT_NONE);
+	assert(aius_network_teensy_dhcp_pending(&adapter));
+	assert(adapter.dhcp_updates == 1u);
+
+	aius_network_teensy_test_set_address(second_lease);
+	aius_network_teensy_test_callback(&adapter, 8u,
+	                                  AIUS_NET_EVENT_LEASE_ACQUIRED,
+	                                  AIUS_NET_FAULT_NONE);
+	assert(!aius_network_teensy_dhcp_pending(&adapter));
+	assert(adapter.dhcp_updates == 2u);
+	expect_address(&adapter, true, 10u, 0u, 0u, 7u);
+	expect_link(&adapter, AIUS_NETWORK_TEENSY_LINK_UP);
+
+	/* An unwired adapter answers without reaching for a table. */
+	aius_network_teensy_test_set_primitives(nullptr);
+	assert(aius_network_teensy_link(&adapter) ==
+	       AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	assert(!aius_network_teensy_address(&adapter, scratch));
+	assert(scratch[0] == 0u && scratch[1] == 0u && scratch[2] == 0u &&
+	       scratch[3] == 0u);
+	assert(aius_network_teensy_test_address_reads() == 0u);
+}
+
 } // namespace
 
 int main()
@@ -729,5 +937,6 @@ int main()
 	test_identical_teardown_reapplication_preserves_fault();
 	test_callback_fifo_stale_duplicate_overflow_and_health();
 	test_one_shot_io_matrix();
+	test_status_accessors_across_lifecycle();
 	return 0;
 }

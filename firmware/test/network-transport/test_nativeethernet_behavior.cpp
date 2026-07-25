@@ -37,6 +37,7 @@ struct FakeState {
     int recvfrom_result;
     int socket_error;
     int accepted_socket_number;
+    uint32_t ip4_address;
     int cleanup_callback_injections;
     int callback_socket_api_calls;
     bool fnet_active;
@@ -457,6 +458,27 @@ void test_adapter_socket_result_mapping()
     io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
            io.fault == 0u);
+
+    /* The status accessors against the real vendor path: FNET's address word
+     * reaches the caller as four octets in wire order, and the vendor link
+     * enum arrives without its type.
+     */
+    uint8_t address[4] = {0xffu, 0xffu, 0xffu, 0xffu};
+    assert(!aius_network_teensy_address(&adapter, address));
+    assert(address[0] == 0u && address[1] == 0u && address[2] == 0u &&
+           address[3] == 0u);
+    assert(aius_network_teensy_link(&adapter) ==
+           AIUS_NETWORK_TEENSY_LINK_DOWN);
+
+    fake.ip4_address = 0x1504a8c0u;
+    assert(aius_network_teensy_address(&adapter, address));
+    assert(address[0] == 192u && address[1] == 168u && address[2] == 4u &&
+           address[3] == 21u);
+
+    fake.link_callback(nullptr, true, fake.link_cookie);
+    assert(Ethernet.linkStatus() == LinkON);
+    assert(aius_network_teensy_link(&adapter) ==
+           AIUS_NETWORK_TEENSY_LINK_UP);
 }
 
 } // namespace
@@ -722,7 +744,7 @@ void *fnet_memset(void *dst, int value, size_t size) {
 }
 
 void fnet_netif_get_hw_addr(fnet_netif_desc_t, uint8_t *, size_t) {}
-uint32_t fnet_netif_get_ip4_addr(fnet_netif_desc_t) { return 0; }
+uint32_t fnet_netif_get_ip4_addr(fnet_netif_desc_t) { return fake.ip4_address; }
 uint32_t fnet_netif_get_ip4_subnet_mask(fnet_netif_desc_t) { return 0; }
 uint32_t fnet_netif_get_ip4_gateway(fnet_netif_desc_t) { return 0; }
 uint32_t fnet_netif_get_ip4_dns(fnet_netif_desc_t) { return 0; }

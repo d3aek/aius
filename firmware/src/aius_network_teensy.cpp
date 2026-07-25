@@ -8,15 +8,20 @@
 #include <fnet.h>
 #endif
 
+/* The status accessors run in epoch and HTTP context, never per audio block,
+ * so each of their definitions carries FLASHMEM -- on the definition rather
+ * than a prototype, because GCC does not inherit a section attribute from a
+ * forward declaration. The lifecycle and callback code below is deliberately
+ * left in the default section: the link and DHCP callbacks run in the FNET
+ * poll interrupt.
+ */
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 namespace {
 
 #ifndef AIUS_NETWORK_TEENSY_TESTING
-enum AiusNetworkTeensyLink {
-	AIUS_NETWORK_TEENSY_LINK_UNKNOWN,
-	AIUS_NETWORK_TEENSY_LINK_UP,
-	AIUS_NETWORK_TEENSY_LINK_DOWN
-};
-
 struct AiusNetworkTeensyPrimitives {
 	void (*callbacks_install)(AiusNetworkTeensy *adapter,
 	                          uint32_t generation);
@@ -80,7 +85,15 @@ void clear_active(AiusNetworkTeensy *adapter)
 void enqueue(AiusNetworkTeensy *adapter, uint32_t generation,
 	         AiusNetEventKind kind, AiusNetFault fault)
 {
-	if (adapter == nullptr || adapter->callback_overflow) {
+	if (adapter == nullptr) {
+		return;
+	}
+	if (kind == AIUS_NET_EVENT_LEASE_ACQUIRED &&
+	    generation == adapter->generation) {
+		adapter->lease_acquired = true;
+		adapter->dhcp_updates++;
+	}
+	if (adapter->callback_overflow) {
 		return;
 	}
 	if (adapter->pending_count == 4u) {
@@ -98,6 +111,18 @@ void enqueue(AiusNetworkTeensy *adapter, uint32_t generation,
 #ifdef AIUS_NETWORK_TEENSY_TESTING
 
 const AiusNetworkTeensyPrimitives *g_primitives;
+
+uint8_t g_test_address[4];
+uint32_t g_address_reads;
+
+FLASHMEM void read_local_address(uint8_t *address)
+{
+	g_address_reads++;
+	address[0] = g_test_address[0];
+	address[1] = g_test_address[1];
+	address[2] = g_test_address[2];
+	address[3] = g_test_address[3];
+}
 
 #else
 
@@ -201,6 +226,15 @@ AiusNetworkTeensyLink link_status()
 	default:
 		return AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
 	}
+}
+
+FLASHMEM void read_local_address(uint8_t *address)
+{
+	const IPAddress local = Ethernet.localIP();
+	address[0] = local[0];
+	address[1] = local[1];
+	address[2] = local[2];
+	address[3] = local[3];
 }
 
 AiusIoEvent accept_once()
@@ -373,6 +407,7 @@ void advance_teardown(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 {
 	if (adapter->action_step == 0u) {
 		adapter->online = false;
+		adapter->lease_acquired = false;
 		clear_pending(adapter);
 		if (!adapter->listener_open && !adapter->udp_open &&
 		    !adapter->stack_started && !adapter->dhcp_started) {
@@ -549,6 +584,7 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			return;
 		}
 		adapter->generation = action.generation;
+		adapter->lease_acquired = false;
 		g_primitives->callbacks_install(adapter, action.generation);
 		adapter->stack_started = true;
 		if (!g_primitives->stack_start()) {
@@ -732,6 +768,46 @@ AiusIoEvent aius_network_teensy_udp_send_once(AiusNetworkTeensy *adapter,
 	                        length);
 }
 
+FLASHMEM AiusNetworkTeensyLink aius_network_teensy_link(
+	const AiusNetworkTeensy *adapter)
+{
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+	}
+	const AiusNetworkTeensyLink link = g_primitives->link_status();
+	if (link != AIUS_NETWORK_TEENSY_LINK_UP &&
+	    link != AIUS_NETWORK_TEENSY_LINK_DOWN) {
+		return AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+	}
+	return link;
+}
+
+FLASHMEM bool aius_network_teensy_address(const AiusNetworkTeensy *adapter,
+	                                      uint8_t *address)
+{
+	if (address == nullptr) {
+		return false;
+	}
+	address[0] = 0u;
+	address[1] = 0u;
+	address[2] = 0u;
+	address[3] = 0u;
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return false;
+	}
+	read_local_address(address);
+	return (address[0] | address[1] | address[2] | address[3]) != 0u;
+}
+
+FLASHMEM bool aius_network_teensy_dhcp_pending(
+	const AiusNetworkTeensy *adapter)
+{
+	return adapter != nullptr && adapter->dhcp_started &&
+	       !adapter->lease_acquired;
+}
+
 #ifdef AIUS_NETWORK_TEENSY_TESTING
 
 void aius_network_teensy_test_set_primitives(
@@ -739,6 +815,24 @@ void aius_network_teensy_test_set_primitives(
 {
 	g_primitives = primitives;
 	g_stale_callbacks = 0u;
+	g_test_address[0] = 0u;
+	g_test_address[1] = 0u;
+	g_test_address[2] = 0u;
+	g_test_address[3] = 0u;
+	g_address_reads = 0u;
+}
+
+FLASHMEM void aius_network_teensy_test_set_address(const uint8_t *address)
+{
+	g_test_address[0] = address[0];
+	g_test_address[1] = address[1];
+	g_test_address[2] = address[2];
+	g_test_address[3] = address[3];
+}
+
+FLASHMEM uint32_t aius_network_teensy_test_address_reads()
+{
+	return g_address_reads;
 }
 
 void aius_network_teensy_test_callback(AiusNetworkTeensy *adapter,
