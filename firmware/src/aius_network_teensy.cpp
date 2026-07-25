@@ -41,6 +41,14 @@ struct AiusNetworkTeensyPrimitives {
 	AiusIoEvent (*udp_receive_once)(uint8_t *buffer, size_t capacity);
 	AiusIoEvent (*udp_send_once)(const uint8_t *buffer, size_t length);
 };
+
+struct AiusNetworkTeensyDiagPrimitives {
+	bool (*netif_initialized)(void);
+	AiusNetworkTeensyLink (*link_live)(void);
+	uint8_t (*dhcp_state)(void);
+	bool (*frames)(uint32_t *tx, uint32_t *rx);
+	uint32_t (*uptime_ms)(void);
+};
 #endif
 
 constexpr uint16_t kHttpPort = 80u;
@@ -120,6 +128,7 @@ void enqueue(AiusNetworkTeensy *adapter, uint32_t generation,
 #ifdef AIUS_NETWORK_TEENSY_TESTING
 
 const AiusNetworkTeensyPrimitives *g_primitives;
+const AiusNetworkTeensyDiagPrimitives *g_diag_primitives;
 
 uint8_t g_test_address[4];
 uint32_t g_address_reads;
@@ -350,6 +359,66 @@ AiusIoEvent udp_send_once(const uint8_t *buffer, size_t length)
 		       : io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
 }
 
+/* --- Diagnostic readers ---------------------------------------------------
+ *
+ * None of these participates in a decision. Each is called from the epoch's
+ * action path or from a status serializer, never from the audio path and never
+ * from a callback, so each carries FLASHMEM on its definition.
+ *
+ * fnet_netif_get_default() answers a null descriptor before fnet_init() has
+ * ever run, which is exactly the state START_STACK asks netif_initialized() in
+ * on the first generation of a cold boot. Every call below is null-safe there:
+ * fnet_netif_is_initialized() walks an empty list, fnet_dhcp_cln_get_by_netif()
+ * and fnet_netif_get_statistics() both test the descriptor first. The one that
+ * is not is fnet_netif_is_connected(), which returns "connected by default"
+ * for a null interface (fnet_netif.c:1015) -- so link_live() tests the
+ * descriptor itself rather than trusting that answer.
+ */
+
+FLASHMEM bool netif_initialized()
+{
+	return fnet_netif_is_initialized(fnet_netif_get_default()) != FNET_FALSE;
+}
+
+FLASHMEM AiusNetworkTeensyLink link_live()
+{
+	fnet_netif_desc_t netif = fnet_netif_get_default();
+
+	if (netif == nullptr) {
+		return AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+	}
+	return fnet_netif_is_connected(netif) != FNET_FALSE
+		       ? AIUS_NETWORK_TEENSY_LINK_UP
+		       : AIUS_NETWORK_TEENSY_LINK_DOWN;
+}
+
+FLASHMEM uint8_t dhcp_state()
+{
+	fnet_dhcp_cln_desc_t dhcp =
+		fnet_dhcp_cln_get_by_netif(fnet_netif_get_default());
+
+	return dhcp == nullptr ? AIUS_NETWORK_TEENSY_DHCP_STATE_NONE
+		                   : (uint8_t)fnet_dhcp_cln_get_state(dhcp);
+}
+
+FLASHMEM bool frames(uint32_t *tx, uint32_t *rx)
+{
+	struct fnet_netif_statistics statistics = {};
+
+	if (fnet_netif_get_statistics(fnet_netif_get_default(), &statistics) !=
+	    FNET_OK) {
+		return false;
+	}
+	*tx = (uint32_t)statistics.tx_packet;
+	*rx = (uint32_t)statistics.rx_packet;
+	return true;
+}
+
+FLASHMEM uint32_t uptime_ms()
+{
+	return (uint32_t)millis();
+}
+
 const AiusNetworkTeensyPrimitives kProductionPrimitives = {
 	callbacks_install,
 	callbacks_clear,
@@ -369,7 +438,17 @@ const AiusNetworkTeensyPrimitives kProductionPrimitives = {
 	udp_send_once,
 };
 
+const AiusNetworkTeensyDiagPrimitives kProductionDiagPrimitives = {
+	netif_initialized,
+	link_live,
+	dhcp_state,
+	frames,
+	uptime_ms,
+};
+
 const AiusNetworkTeensyPrimitives *g_primitives = &kProductionPrimitives;
+const AiusNetworkTeensyDiagPrimitives *g_diag_primitives =
+	&kProductionDiagPrimitives;
 
 #endif
 
@@ -393,6 +472,129 @@ bool primitives_ready()
 	       g_primitives->udp_send_once != nullptr;
 }
 
+/* --- Diagnostic bookkeeping -----------------------------------------------
+ *
+ * Every function below writes AiusNetworkTeensyDiag and nothing else. None is
+ * consulted by an action, an event or a deadline, and each optional primitive
+ * is null-checked at its own call site so a table without the diagnostic
+ * readers behaves exactly as one with them, minus the measurements.
+ */
+
+FLASHMEM uint32_t diag_uptime_ms()
+{
+	return g_diag_primitives != nullptr ? g_diag_primitives->uptime_ms() : 0u;
+}
+
+FLASHMEM uint8_t diag_dhcp_state()
+{
+	return g_diag_primitives != nullptr
+		       ? g_diag_primitives->dhcp_state()
+		       : (uint8_t)AIUS_NETWORK_TEENSY_DHCP_STATE_NONE;
+}
+
+FLASHMEM uint8_t diag_link_live()
+{
+	return g_diag_primitives != nullptr
+		       ? (uint8_t)g_diag_primitives->link_live()
+		       : (uint8_t)AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+}
+
+FLASHMEM bool diag_frames(uint32_t *tx, uint32_t *rx)
+{
+	*tx = 0u;
+	*rx = 0u;
+	return g_diag_primitives != nullptr && g_diag_primitives->frames(tx, rx);
+}
+
+/* Offsets are from stack start and clamped at zero: a diagnostic must never
+ * turn a clock that moved backwards into a 49-day interval.
+ */
+FLASHMEM uint32_t diag_offset(const AiusNetworkTeensy *adapter, uint32_t now_ms)
+{
+	const int32_t elapsed =
+		(int32_t)(now_ms - adapter->diag.stack_started_ms_absolute);
+
+	return elapsed > 0 ? (uint32_t)elapsed : 0u;
+}
+
+/* Opens the record for a generation, retaining the first generation that ever
+ * ended before the previous record is overwritten. */
+FLASHMEM void diag_begin(AiusNetworkTeensy *adapter, uint32_t generation,
+	                     uint32_t now_ms)
+{
+	if (!adapter->diag_first_valid && adapter->diag.generation != 0u &&
+	    adapter->diag.end_reason != AIUS_NETWORK_TEENSY_END_NONE) {
+		adapter->diag_first = adapter->diag;
+		adapter->diag_first_valid = true;
+	}
+	memset(&adapter->diag, 0, sizeof(adapter->diag));
+	adapter->diag.generation = generation;
+	adapter->diag.stack_started_ms_absolute = now_ms;
+	adapter->diag.dhcp_state_at_start = AIUS_NETWORK_TEENSY_DHCP_STATE_NONE;
+	adapter->diag.dhcp_state_at_end = AIUS_NETWORK_TEENSY_DHCP_STATE_NONE;
+}
+
+FLASHMEM void diag_note_link_up(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                            AiusNetworkTeensyLinkUpSource source)
+{
+	if (adapter->diag.link_up_source != AIUS_NETWORK_TEENSY_LINK_UP_NONE) {
+		return;
+	}
+	adapter->diag.link_up_source = (uint8_t)source;
+	adapter->diag.link_up_ms = diag_offset(adapter, now_ms);
+}
+
+/* The link service's own callback, counted whichever polarity it carries and
+ * timestamped on its first connected delivery -- including the delivery the
+ * exactly-once latch drops as a duplicate, which is precisely the case where
+ * the snapshot released the gate and the fresh read is the interesting one. */
+FLASHMEM void diag_note_link_callback(AiusNetworkTeensy *adapter,
+	                                  uint32_t now_ms, bool connected)
+{
+	if (adapter->diag.link_callbacks < 255u) {
+		adapter->diag.link_callbacks++;
+	}
+	if (connected && !adapter->diag.link_callback_up_seen) {
+		adapter->diag.link_callback_up_seen = true;
+		adapter->diag.link_callback_up_ms = diag_offset(adapter, now_ms);
+	}
+}
+
+FLASHMEM void diag_note_dhcp_start(AiusNetworkTeensy *adapter, uint32_t now_ms)
+{
+	adapter->diag.dhcp_started_seen = true;
+	adapter->diag.dhcp_start_ms = diag_offset(adapter, now_ms);
+	adapter->diag.dhcp_state_at_start = diag_dhcp_state();
+	adapter->diag.frames_valid =
+		diag_frames(&adapter->diag.tx_at_dhcp_start,
+		            &adapter->diag.rx_at_dhcp_start);
+}
+
+/* First end wins: a generation that goes online and is torn down later keeps
+ * the moment it succeeded rather than the moment it was retired. */
+FLASHMEM void diag_end(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                   AiusNetworkTeensyEnd reason)
+{
+	uint32_t tx = 0u;
+	uint32_t rx = 0u;
+
+	if (adapter->diag.generation == 0u ||
+	    adapter->diag.end_reason != AIUS_NETWORK_TEENSY_END_NONE) {
+		return;
+	}
+	adapter->diag.end_reason = (uint8_t)reason;
+	adapter->diag.end_ms = diag_offset(adapter, now_ms);
+	adapter->diag.dhcp_state_at_end = diag_dhcp_state();
+	adapter->diag.link_live_at_end = diag_link_live();
+	adapter->diag.link_at_end = adapter->diag.link_cached_last;
+	if (adapter->diag.frames_valid && diag_frames(&tx, &rx)) {
+		adapter->diag.tx_frames = tx - adapter->diag.tx_at_dhcp_start;
+		adapter->diag.rx_frames = rx - adapter->diag.rx_at_dhcp_start;
+	} else {
+		adapter->diag.frames_valid = false;
+	}
+}
+
 void protocol_fault(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 {
 	clear_active(adapter);
@@ -412,9 +614,11 @@ void finish_teardown(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 	     failed ? AIUS_NET_FAULT_TEARDOWN : AIUS_NET_FAULT_NONE);
 }
 
-void advance_teardown(AiusNetworkTeensy *adapter, AiusNetEvent *event)
+void advance_teardown(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                  AiusNetEvent *event)
 {
 	if (adapter->action_step == 0u) {
+		diag_end(adapter, now_ms, AIUS_NETWORK_TEENSY_END_TEARDOWN);
 		adapter->online = false;
 		adapter->lease_acquired = false;
 		adapter->link_up_reported = false;
@@ -464,7 +668,8 @@ void advance_teardown(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 	finish_teardown(adapter, event);
 }
 
-void advance_publish(AiusNetworkTeensy *adapter, AiusNetEvent *event)
+void advance_publish(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                 AiusNetEvent *event)
 {
 	if (adapter->action_step == 0u) {
 		adapter->listener_open = true;
@@ -486,6 +691,7 @@ void advance_publish(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 		return;
 	}
 	adapter->online = true;
+	diag_end(adapter, now_ms, AIUS_NETWORK_TEENSY_END_ONLINE);
 	clear_active(adapter);
 }
 
@@ -547,7 +753,7 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			adapter->active_action = action;
 			adapter->action_step = 0u;
 			adapter->action_fault = false;
-			advance_teardown(adapter, event);
+			advance_teardown(adapter, now_ms, event);
 			return;
 		}
 		if (action.kind != AIUS_NET_ACTION_NONE &&
@@ -557,9 +763,9 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			return;
 		}
 		if (adapter->active_action.kind == AIUS_NET_ACTION_PUBLISH_ONLINE) {
-			advance_publish(adapter, event);
+			advance_publish(adapter, now_ms, event);
 		} else {
-			advance_teardown(adapter, event);
+			advance_teardown(adapter, now_ms, event);
 		}
 		return;
 	}
@@ -583,7 +789,7 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		adapter->active_action = action;
 		adapter->action_step = 0u;
 		adapter->action_fault = false;
-		advance_teardown(adapter, event);
+		advance_teardown(adapter, now_ms, event);
 		return;
 	}
 
@@ -597,9 +803,28 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		adapter->lease_acquired = false;
 		adapter->link_up_reported = false;
 		adapter->stack_started_ms = now_ms;
+		diag_begin(adapter, action.generation, now_ms);
 		g_primitives->callbacks_install(adapter, action.generation);
 		adapter->stack_started = true;
-		if (!g_primitives->stack_start()) {
+		/* Diagnostic, measured around the call rather than after it,
+		 * because beginNoWait() is only "no wait" on a generation that
+		 * finds the interface already initialised: the one that runs
+		 * fnet_netif_init() resets the PHY and blocks in FNET's
+		 * autonegotiation wait for up to two seconds. Neither reading
+		 * changes what the call does or when it is made.
+		 */
+		adapter->diag.netif_init =
+			g_diag_primitives == nullptr
+				? AIUS_NETWORK_TEENSY_NETIF_INIT_UNKNOWN
+			: g_diag_primitives->netif_initialized()
+				? AIUS_NETWORK_TEENSY_NETIF_INIT_SKIPPED
+				: AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED;
+		const uint32_t entered_ms = diag_uptime_ms();
+		const bool started = g_primitives->stack_start();
+		const uint32_t blocked_ms = diag_uptime_ms() - entered_ms;
+		adapter->diag.stack_start_blocking_ms =
+			blocked_ms > 0xFFFFu ? 0xFFFFu : (uint16_t)blocked_ms;
+		if (!started) {
 			emit(event, AIUS_NET_EVENT_RESOURCE_FAULT, action.generation,
 			     AIUS_NET_FAULT_STACK_START);
 			return;
@@ -611,8 +836,13 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		 * callback -- it reports changes -- so the already-up case is
 		 * this one read. Anything else waits for poll().
 		 */
-		if (g_primitives->link_status() == AIUS_NETWORK_TEENSY_LINK_UP) {
+		const AiusNetworkTeensyLink link = g_primitives->link_status();
+		adapter->diag.link_at_stack_start = (uint8_t)link;
+		adapter->diag.link_cached_last = (uint8_t)link;
+		if (link == AIUS_NETWORK_TEENSY_LINK_UP) {
 			adapter->link_up_reported = true;
+			diag_note_link_up(adapter, now_ms,
+			                  AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
 			emit(event, AIUS_NET_EVENT_STACK_STARTED,
 			     action.generation);
 		}
@@ -636,6 +866,7 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			emit(event, AIUS_NET_EVENT_RESOURCE_FAULT, action.generation,
 			     AIUS_NET_FAULT_DHCP_START);
 		}
+		diag_note_dhcp_start(adapter, now_ms);
 		return;
 	}
 
@@ -648,7 +879,7 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	adapter->active_action = action;
 	adapter->action_step = 0u;
 	adapter->action_fault = false;
-	advance_publish(adapter, event);
+	advance_publish(adapter, now_ms, event);
 }
 
 void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
@@ -684,13 +915,26 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		/* The callback is one of three observers of a single link-up.
 		 * The latch keeps STACK_STARTED exactly-once per generation, so
 		 * a callback that follows the stack-start or poll read is
-		 * dropped here rather than delivered as a duplicate.
+		 * dropped here rather than delivered as a duplicate. The
+		 * diagnostic note is taken before the drop, deliberately: a
+		 * dropped duplicate is the case where the init-time snapshot
+		 * released the gate and the link service's own fresh read
+		 * arrived afterwards, which is the comparison being measured.
 		 */
+		if (queued.kind == AIUS_NET_EVENT_STACK_STARTED ||
+		    (queued.kind == AIUS_NET_EVENT_RESOURCE_FAULT &&
+		     queued.fault == AIUS_NET_FAULT_LINK_LOST)) {
+			diag_note_link_callback(
+				adapter, now_ms,
+				queued.kind == AIUS_NET_EVENT_STACK_STARTED);
+		}
 		if (queued.kind == AIUS_NET_EVENT_STACK_STARTED) {
 			if (adapter->link_up_reported) {
 				continue;
 			}
 			adapter->link_up_reported = true;
+			diag_note_link_up(adapter, now_ms,
+			                  AIUS_NETWORK_TEENSY_LINK_UP_CALLBACK);
 		}
 		*event = queued;
 		return;
@@ -701,6 +945,8 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	}
 
 	const AiusNetworkTeensyLink link = g_primitives->link_status();
+
+	adapter->diag.link_cached_last = (uint8_t)link;
 
 	if (adapter->link_up_reported) {
 		/* Past the gate this is the health check it always was. */
@@ -719,6 +965,8 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	 */
 	if (link == AIUS_NETWORK_TEENSY_LINK_UP) {
 		adapter->link_up_reported = true;
+		diag_note_link_up(adapter, now_ms,
+		                  AIUS_NETWORK_TEENSY_LINK_UP_POLL);
 		emit(event, AIUS_NET_EVENT_STACK_STARTED, adapter->generation);
 		return;
 	}
@@ -867,12 +1115,68 @@ FLASHMEM bool aius_network_teensy_dhcp_pending(
 	       !adapter->lease_acquired;
 }
 
+FLASHMEM const AiusNetworkTeensyDiag *aius_network_teensy_diag(
+	const AiusNetworkTeensy *adapter)
+{
+	return adapter == nullptr ? nullptr : &adapter->diag;
+}
+
+FLASHMEM const AiusNetworkTeensyDiag *aius_network_teensy_diag_first(
+	const AiusNetworkTeensy *adapter)
+{
+	return adapter == nullptr || !adapter->diag_first_valid
+		       ? nullptr
+		       : &adapter->diag_first;
+}
+
+FLASHMEM AiusNetworkTeensyLink aius_network_teensy_link_live(
+	const AiusNetworkTeensy *adapter)
+{
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return AIUS_NETWORK_TEENSY_LINK_UNKNOWN;
+	}
+	return (AiusNetworkTeensyLink)diag_link_live();
+}
+
+FLASHMEM uint8_t aius_network_teensy_dhcp_state(
+	const AiusNetworkTeensy *adapter)
+{
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return AIUS_NETWORK_TEENSY_DHCP_STATE_NONE;
+	}
+	return diag_dhcp_state();
+}
+
+FLASHMEM bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter,
+	                                     uint32_t *tx, uint32_t *rx)
+{
+	if (tx == nullptr || rx == nullptr) {
+		return false;
+	}
+	*tx = 0u;
+	*rx = 0u;
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return false;
+	}
+	return diag_frames(tx, rx);
+}
+
 #ifdef AIUS_NETWORK_TEENSY_TESTING
+
+void aius_network_teensy_test_set_diag_primitives(
+	const AiusNetworkTeensyDiagPrimitives *primitives)
+{
+	g_diag_primitives = primitives;
+}
 
 void aius_network_teensy_test_set_primitives(
 	const AiusNetworkTeensyPrimitives *primitives)
 {
 	g_primitives = primitives;
+	g_diag_primitives = nullptr;
 	g_stale_callbacks = 0u;
 	g_test_address[0] = 0u;
 	g_test_address[1] = 0u;

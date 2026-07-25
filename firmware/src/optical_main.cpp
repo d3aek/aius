@@ -1233,6 +1233,135 @@ static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 		? length : 0;
 }
 
+/* One generation's network measurement record, as a nested JSON object. Purely
+ * diagnostic: nothing here is a supervisor input, and the adapter fills every
+ * field from calls it makes once per generation in the epoch's action path.
+ *
+ * `netif_init` is the field the whole record exists for -- 1 says this
+ * generation performed the real fnet_netif_init(), 2 says it found the
+ * interface already initialised and skipped it, 0 says the probe was
+ * unavailable. `stack_start_blocking_ms` is how long beginNoWait() itself took,
+ * which on the initialising generation includes FNET's autonegotiation wait.
+ * `tx_frames` is the frame-level discriminator across the DHCP window: zero
+ * means no DISCOVER ever reached the MAC.
+ *
+ * Absent means absent: a generation that never started DHCP serves
+ * dhcp_start_ms as null rather than 0, so a reader cannot mistake "did not
+ * happen" for "happened immediately". */
+static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
+	                                          size_t *length, const char *key,
+	                                          const AiusNetworkTeensyDiag *diag)
+{
+	if (diag == nullptr)
+		return http_json_append(output, capacity, length, ",\"%s\":null", key);
+	if (!http_json_append(output, capacity, length,
+	                      ",\"%s\":{\"generation\":%lu,\"netif_init\":%u,"
+	                      "\"stack_start_blocking_ms\":%u,"
+	                      "\"link_at_stack_start\":%u,\"link_up_source\":%u,",
+	                      key, (unsigned long)diag->generation,
+	                      (unsigned)diag->netif_init,
+	                      (unsigned)diag->stack_start_blocking_ms,
+	                      (unsigned)diag->link_at_stack_start,
+	                      (unsigned)diag->link_up_source))
+		return false;
+	if (!http_json_append(output, capacity, length, "\"link_up_ms\":"))
+		return false;
+	if (!(diag->link_up_source != AIUS_NETWORK_TEENSY_LINK_UP_NONE
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->link_up_ms)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	if (!http_json_append(output, capacity, length,
+	                      ",\"link_callbacks\":%u,\"link_callback_up_ms\":",
+	                      (unsigned)diag->link_callbacks))
+		return false;
+	if (!(diag->link_callback_up_seen
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->link_callback_up_ms)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	if (!http_json_append(output, capacity, length, ",\"dhcp_start_ms\":"))
+		return false;
+	if (!(diag->dhcp_started_seen
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->dhcp_start_ms)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	if (!http_json_append(output, capacity, length,
+	                      ",\"dhcp_state_at_start\":%u,\"end_reason\":%u,",
+	                      (unsigned)diag->dhcp_state_at_start,
+	                      (unsigned)diag->end_reason))
+		return false;
+	if (!http_json_append(output, capacity, length, "\"end_ms\":"))
+		return false;
+	if (!(diag->end_reason != AIUS_NETWORK_TEENSY_END_NONE
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->end_ms)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	if (!http_json_append(output, capacity, length,
+	                      ",\"dhcp_state_at_end\":%u,\"link_at_end\":%u,"
+	                      "\"link_live_at_end\":%u,\"frames_valid\":%s,",
+	                      (unsigned)diag->dhcp_state_at_end,
+	                      (unsigned)diag->link_at_end,
+	                      (unsigned)diag->link_live_at_end,
+	                      diag->frames_valid ? "true" : "false"))
+		return false;
+	if (!http_json_append(output, capacity, length, "\"tx_frames\":"))
+		return false;
+	if (!(diag->frames_valid
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->tx_frames)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	if (!http_json_append(output, capacity, length, ",\"rx_frames\":"))
+		return false;
+	if (!(diag->frames_valid
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->rx_frames)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	return http_json_append(output, capacity, length, "}");
+}
+
+/* The `net_diag` object appended to GET /api/status: three live reads taken
+ * once per request in HTTP context, then the first generation that ever ended
+ * and the live one.
+ *
+ * `link` beside `link_live` is the comparison this exists to make -- the first
+ * is NativeEthernet's cached member, the second asks the interface. The live
+ * read costs at most one MDIO transaction per 200 ms, because FNET throttles
+ * the PHY register read itself and its own link service already polls at that
+ * rate; the DHCP-state and frame-counter reads cost a descriptor lookup and two
+ * register reads respectively, and none of the three touches a socket, waits,
+ * or runs anywhere near the audio path. */
+static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
+	                                    size_t *length,
+	                                    const AiusNetworkTeensy *network)
+{
+	uint32_t tx = 0;
+	uint32_t rx = 0;
+	const bool frames = aius_network_teensy_frames(network, &tx, &rx);
+
+	if (!http_json_append(output, capacity, length,
+	                      ",\"net_diag\":{\"link\":%u,\"link_live\":%u,"
+	                      "\"dhcp_state\":%u,\"frames_valid\":%s,"
+	                      "\"tx_frames\":%lu,\"rx_frames\":%lu",
+	                      (unsigned)aius_network_teensy_link(network),
+	                      (unsigned)aius_network_teensy_link_live(network),
+	                      (unsigned)aius_network_teensy_dhcp_state(network),
+	                      frames ? "true" : "false",
+	                      (unsigned long)tx, (unsigned long)rx))
+		return false;
+	if (!http_net_diag_generation(output, capacity, length, "first",
+	                              aius_network_teensy_diag_first(network)))
+		return false;
+	if (!http_net_diag_generation(output, capacity, length, "current",
+	                              aius_network_teensy_diag(network)))
+		return false;
+	return http_json_append(output, capacity, length, "}");
+}
+
 /* GET /api/status. Every field keeps its key, position and type; the sources
  * that moved at slice S2b are the network ones, and they are the only lines
  * that changed:
@@ -1325,7 +1454,18 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)recovery.boot_generation,
 		(unsigned)recovery.watchdog_early_resets,
 		(unsigned long)recovery.loop_epoch);
-	return written > 0 && (size_t)written < capacity ? (size_t)written : 0;
+	if (written <= 0 || (size_t)written >= capacity)
+		return 0;
+	/* The diagnostic object joins the same body rather than a second route:
+	 * it is read beside link, ip and network_state, and a separate route would
+	 * be a second snapshot of state that moves between requests. It is
+	 * appended by rewinding over the closing brace the literal above wrote and
+	 * re-closing after, so no existing key moves and the format string stays
+	 * one reviewable literal. */
+	size_t length = (size_t)written - 1u;
+	if (!http_net_diag_json((char *)body, capacity, &length, network))
+		return 0;
+	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }
 
 static FLASHMEM size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)

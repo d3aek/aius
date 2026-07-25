@@ -49,6 +49,14 @@ struct FakeState {
      * like: fnet_netif_init() has just released the PHY and nothing has
      * negotiated yet. */
     bool link_connected;
+    /* FNET's own DHCP client state and the MAC's frame counters, the two
+     * things the adapter's diagnostics ask the vendor stack for. */
+    fnet_uint8_t dhcp_state;
+    int dhcp_state_calls;
+    bool statistics_available;
+    int statistics_calls;
+    fnet_uint32_t tx_packet;
+    fnet_uint32_t rx_packet;
     fnet_link_callback_t link_callback;
     void *link_cookie;
     fnet_dhcp_cln_callback_t dhcp_callback;
@@ -341,9 +349,25 @@ void test_adapter_socket_result_mapping()
      * is not a usable link and STACK_STARTED -- the supervisor's cue to send a
      * DISCOVER -- is withheld until link-up is actually observed. */
     assert(!fake.link_connected);
+    fake.dhcp_state = 1;
+    fake.statistics_available = true;
+    fake.tx_packet = 7;
+    fake.rx_packet = 9;
     aius_network_teensy_apply(&adapter, 0u, start, &event);
     assert(event.kind == AIUS_NET_EVENT_NONE);
     assert(adapter.stack_started && !adapter.link_up_reported);
+
+    /* The diagnostics, measured through the real vendor code rather than a
+     * stand-in for it. This generation is the cold one: nothing was
+     * initialised, so beginNoWait()'s own guard let fnet_netif_init() run, and
+     * the cached link member it sampled on the way out reads down. */
+    const AiusNetworkTeensyDiag *diag = aius_network_teensy_diag(&adapter);
+    assert(diag->generation == 9u);
+    assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
+    assert(fake.netif_init_calls == 1);
+    assert(diag->link_at_stack_start == AIUS_NETWORK_TEENSY_LINK_DOWN);
+    assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_NONE);
+
     aius_network_teensy_poll(&adapter, 1u, &event);
     assert(event.kind == AIUS_NET_EVENT_NONE);
 
@@ -358,12 +382,47 @@ void test_adapter_socket_result_mapping()
     assert(event.generation == 9u);
     aius_network_teensy_poll(&adapter, 3u, &event);
     assert(event.kind == AIUS_NET_EVENT_NONE);
-    aius_network_teensy_apply(&adapter, 1u, dhcp, &event);
+
+    /* Link-up was released by the link service's own callback, not by the
+     * init-time snapshot -- which is exactly the distinction link_up_source
+     * exists to draw. */
+    assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_CALLBACK);
+    assert(diag->link_up_ms == 2u);
+    assert(diag->link_callback_up_seen && diag->link_callback_up_ms == 2u);
+    assert(diag->link_callbacks == 1u);
+
+    aius_network_teensy_apply(&adapter, 4u, dhcp, &event);
     assert(event.kind == AIUS_NET_EVENT_NONE);
-    aius_network_teensy_apply(&adapter, 2u, publish, &event);
+    /* FNET's own client state and the MAC's counters, read through the real
+     * fnet_dhcp_cln_get_by_netif()/get_state() and fnet_netif_get_statistics()
+     * calls the adapter makes. */
+    assert(diag->dhcp_started_seen && diag->dhcp_start_ms == 4u);
+    assert(diag->dhcp_state_at_start == 1u);
+    assert(diag->frames_valid);
+    assert(fake.dhcp_state_calls == 1);
+    assert(fake.statistics_calls == 1);
+    assert(aius_network_teensy_dhcp_state(&adapter) == 1u);
+    assert(aius_network_teensy_link_live(&adapter) ==
+           AIUS_NETWORK_TEENSY_LINK_UP);
+
+    fake.tx_packet = 11;
+    fake.rx_packet = 14;
+    fake.dhcp_state = 5;
+    aius_network_teensy_apply(&adapter, 5u, publish, &event);
     assert(adapter.listener_open && !adapter.udp_open);
-    aius_network_teensy_apply(&adapter, 3u, none, &event);
+    aius_network_teensy_apply(&adapter, 6u, none, &event);
     assert(adapter.online && adapter.udp_open);
+    /* Going online ends the record: four frames left the MAC across this
+     * generation's DHCP window and FNET reports the lease bound. */
+    assert(diag->end_reason == AIUS_NETWORK_TEENSY_END_ONLINE);
+    assert(diag->end_ms == 6u);
+    assert(diag->dhcp_state_at_end == 5u);
+    assert(diag->tx_frames == 4u && diag->rx_frames == 5u);
+    assert(diag->link_at_end == AIUS_NETWORK_TEENSY_LINK_UP);
+    assert(diag->link_live_at_end == AIUS_NETWORK_TEENSY_LINK_UP);
+    /* millis() is 0 in this harness, so the blocking measurement has nothing
+     * to see here; test_network_teensy.cpp covers it against a moving clock. */
+    assert(diag->stack_start_blocking_ms == 0u);
 
     AiusIoEvent io = aius_network_teensy_accept(&adapter);
     assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
@@ -508,6 +567,37 @@ void test_adapter_socket_result_mapping()
     assert(Ethernet.linkStatus() == LinkON);
     assert(aius_network_teensy_link(&adapter) ==
            AIUS_NETWORK_TEENSY_LINK_UP);
+
+    /* The asymmetry, through the vendor code that causes it. Teardown runs
+     * Ethernet.end(), which releases the link service and the DHCP client but
+     * does not de-initialise the netif -- so the next generation's beginNoWait()
+     * finds fnet_netif_is_initialized() true and skips the initialisation the
+     * first one performed. Two generations within one boot therefore do not run
+     * the same code, and this is where that stops being an inference.
+     */
+    const AiusNetAction teardown = {AIUS_NET_ACTION_TEARDOWN, 9u};
+    const AiusNetAction restart = {AIUS_NET_ACTION_START_STACK, 10u};
+    const int netif_inits = fake.netif_init_calls;
+    aius_network_teensy_apply(&adapter, 100u, teardown, &event);
+    for (int step = 0; step < 4 && event.kind != AIUS_NET_EVENT_TEARDOWN_DONE;
+         step++) {
+        aius_network_teensy_apply(&adapter, 101u, none, &event);
+    }
+    assert(event.kind == AIUS_NET_EVENT_TEARDOWN_DONE);
+    assert(!adapter.stack_started);
+
+    aius_network_teensy_apply(&adapter, 200u, restart, &event);
+    assert(adapter.stack_started);
+    assert(fake.netif_init_calls == netif_inits);
+    diag = aius_network_teensy_diag(&adapter);
+    assert(diag->generation == 10u);
+    assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_SKIPPED);
+
+    /* And the generation that failed is the one retained, not the last. */
+    const AiusNetworkTeensyDiag *first = aius_network_teensy_diag_first(&adapter);
+    assert(first != nullptr);
+    assert(first->generation == 9u);
+    assert(first->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
 }
 
 } // namespace
@@ -624,6 +714,28 @@ void fnet_dhcp_cln_get_options(
     fnet_dhcp_cln_desc_t, fnet_dhcp_cln_options *options)
 {
     std::memset(options, 0, sizeof(*options));
+}
+
+/* The two diagnostic readers, faked at the same seam as the rest of FNET.
+ * fnet_dhcp_cln_get_state() asserts its descriptor rather than tolerating a
+ * null: the real one dereferences without checking, so a caller that reaches it
+ * with nothing is a defect this fake must expose, not absorb. */
+fnet_uint8_t fnet_dhcp_cln_get_state(fnet_dhcp_cln_desc_t desc)
+{
+    assert(desc != nullptr);
+    fake.dhcp_state_calls++;
+    return fake.dhcp_state;
+}
+
+fnet_return_t fnet_netif_get_statistics(
+    fnet_netif_desc_t netif, fnet_netif_statistics *statistics)
+{
+    fake.statistics_calls++;
+    if (netif == nullptr || !fake.statistics_available)
+        return FNET_ERR;
+    statistics->tx_packet = fake.tx_packet;
+    statistics->rx_packet = fake.rx_packet;
+    return FNET_OK;
 }
 
 void fnet_poll() {}

@@ -76,9 +76,69 @@ bool operation(Operation operation)
 	return g_fake.succeeds[operation];
 }
 
+/* The diagnostic readers are a separate fake, matching the separate table the
+ * adapter exposes them through. Every other case in this file leaves that table
+ * uninstalled, which is what proves the measurements are optional: the whole
+ * lifecycle, callback, deadline and I/O suite runs with no diagnostic reader
+ * wired at all.
+ */
+struct DiagFake {
+	bool netif_initialized;
+	AiusNetworkTeensyLink link_live;
+	uint8_t dhcp_state;
+	bool frames_ok;
+	uint32_t tx;
+	uint32_t rx;
+	uint32_t uptime_ms;
+	/* Wall time the fake stack_start() consumes, so the adapter's
+	 * measurement of a blocking beginNoWait() has something to measure. */
+	uint32_t stack_start_cost_ms;
+	unsigned netif_initialized_calls;
+	unsigned link_live_calls;
+	unsigned dhcp_state_calls;
+	unsigned frames_calls;
+	unsigned uptime_calls;
+};
+
+DiagFake g_diag;
+
 bool stack_start()
 {
-	return operation(OP_STACK_START);
+	const bool started = operation(OP_STACK_START);
+	g_diag.uptime_ms += g_diag.stack_start_cost_ms;
+	return started;
+}
+
+bool diag_netif_initialized()
+{
+	g_diag.netif_initialized_calls++;
+	return g_diag.netif_initialized;
+}
+
+AiusNetworkTeensyLink diag_link_live()
+{
+	g_diag.link_live_calls++;
+	return g_diag.link_live;
+}
+
+uint8_t diag_dhcp_state()
+{
+	g_diag.dhcp_state_calls++;
+	return g_diag.dhcp_state;
+}
+
+bool diag_frames(uint32_t *tx, uint32_t *rx)
+{
+	g_diag.frames_calls++;
+	*tx = g_diag.tx;
+	*rx = g_diag.rx;
+	return g_diag.frames_ok;
+}
+
+uint32_t diag_uptime_ms()
+{
+	g_diag.uptime_calls++;
+	return g_diag.uptime_ms;
 }
 
 bool dhcp_start()
@@ -180,6 +240,14 @@ const AiusNetworkTeensyPrimitives kPrimitives = {
 	udp_send_once,
 };
 
+const AiusNetworkTeensyDiagPrimitives kDiagPrimitives = {
+	diag_netif_initialized,
+	diag_link_live,
+	diag_dhcp_state,
+	diag_frames,
+	diag_uptime_ms,
+};
+
 AiusNetAction action(AiusNetActionKind kind, uint32_t generation = 7u)
 {
 	return {kind, generation};
@@ -188,6 +256,7 @@ AiusNetAction action(AiusNetActionKind kind, uint32_t generation = 7u)
 void reset_fake()
 {
 	memset(&g_fake, 0, sizeof(g_fake));
+	memset(&g_diag, 0, sizeof(g_diag));
 	for (size_t index = 0u; index < OP_COUNT; index++) {
 		g_fake.succeeds[index] = true;
 	}
@@ -1097,6 +1166,273 @@ void test_status_accessors_across_lifecycle()
 	assert(aius_network_teensy_test_address_reads() == 0u);
 }
 
+void drive_teardown_at(AiusNetworkTeensy *adapter, uint32_t generation,
+	                   uint32_t now_ms)
+{
+	AiusNetEvent event = {};
+	aius_network_teensy_apply(adapter, now_ms,
+	                         action(AIUS_NET_ACTION_TEARDOWN, generation),
+	                         &event);
+	for (size_t step = 0u; step < 4u &&
+	                       event.kind != AIUS_NET_EVENT_TEARDOWN_DONE;
+	     step++) {
+		aius_network_teensy_apply(adapter, now_ms + 1u,
+		                         action(AIUS_NET_ACTION_NONE, 0u), &event);
+	}
+	expect_event(event, AIUS_NET_EVENT_TEARDOWN_DONE, generation,
+	             AIUS_NET_FAULT_NONE);
+}
+
+/* The measurement surface, driven through the shape it was built to settle: one
+ * boot in which generation 1 initialises a cold interface and its DHCP window
+ * expires, and generation 2 reuses the warm one and binds.
+ *
+ * These are assertions about what is *reported*, not about what the adapter
+ * does. Every action, event, deadline and call order asserted elsewhere in this
+ * file is driven through a table with no diagnostic readers at all, which is
+ * what makes "diagnostic only" checkable rather than claimed.
+ */
+void test_generation_diagnostics()
+{
+	AiusNetworkTeensy adapter;
+	AiusNetEvent event = {};
+	uint32_t tx = 9u;
+	uint32_t rx = 9u;
+
+	reset_adapter(&adapter);
+	aius_network_teensy_test_set_diag_primitives(&kDiagPrimitives);
+
+	/* Nothing measured, and nothing read, before a stack exists. */
+	assert(aius_network_teensy_diag_first(&adapter) == nullptr);
+	assert(aius_network_teensy_diag(&adapter)->generation == 0u);
+	assert(aius_network_teensy_link_live(&adapter) ==
+	       AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	assert(aius_network_teensy_dhcp_state(&adapter) ==
+	       AIUS_NETWORK_TEENSY_DHCP_STATE_NONE);
+	assert(!aius_network_teensy_frames(&adapter, &tx, &rx));
+	assert(tx == 0u && rx == 0u);
+	assert(g_diag.link_live_calls == 0u);
+	assert(g_diag.dhcp_state_calls == 0u);
+	assert(g_diag.frames_calls == 0u);
+
+	/* Generation 1, cold interface: beginNoWait() performs the real netif
+	 * init and blocks two seconds inside it, and the cached link reads up the
+	 * instant it returns -- so the gate is released by an init-time snapshot,
+	 * which is exactly what link_up_source has to be able to say.
+	 */
+	g_diag.netif_initialized = false;
+	g_diag.stack_start_cost_ms = 2013u;
+	g_diag.uptime_ms = 1800u;
+	g_diag.link_live = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	g_diag.dhcp_state = 1u;
+	g_diag.frames_ok = true;
+	g_diag.tx = 100u;
+	g_diag.rx = 200u;
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+
+	aius_network_teensy_apply(&adapter, 3820u,
+	                         action(AIUS_NET_ACTION_START_STACK, 1u), &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 1u,
+	             AIUS_NET_FAULT_NONE);
+	const AiusNetworkTeensyDiag *diag = aius_network_teensy_diag(&adapter);
+	assert(diag->generation == 1u);
+	assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
+	assert(diag->stack_start_blocking_ms == 2013u);
+	assert(diag->link_at_stack_start == AIUS_NETWORK_TEENSY_LINK_UP);
+	assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
+	assert(diag->link_up_ms == 0u);
+	assert(!diag->link_callback_up_seen);
+	assert(g_diag.netif_initialized_calls == 1u);
+	assert(g_diag.uptime_calls == 2u);
+
+	aius_network_teensy_apply(&adapter, 3824u,
+	                         action(AIUS_NET_ACTION_START_DHCP, 1u), &event);
+	assert(diag->dhcp_started_seen);
+	assert(diag->dhcp_start_ms == 4u);
+	assert(diag->dhcp_state_at_start == 1u);
+	assert(diag->frames_valid);
+	assert(g_diag.dhcp_state_calls == 1u);
+	assert(g_diag.frames_calls == 1u);
+
+	/* The link service's own fresh observation arrives afterwards. The latch
+	 * drops the duplicate STACK_STARTED; the measurement keeps it, because
+	 * "the snapshot released the gate and a fresh read agreed 30 ms later" is
+	 * precisely the distinction being drawn.
+	 */
+	aius_network_teensy_test_callback(&adapter, 1u,
+	                                  AIUS_NET_EVENT_STACK_STARTED,
+	                                  AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(&adapter, 3850u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(diag->link_callback_up_seen);
+	assert(diag->link_callback_up_ms == 30u);
+	assert(diag->link_callbacks == 1u);
+	assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
+
+	/* The epoch pays nothing. poll() is the one call the supervisor makes
+	 * every epoch, and it makes no diagnostic call at all.
+	 */
+	const unsigned link_live_calls = g_diag.link_live_calls;
+	const unsigned dhcp_state_calls = g_diag.dhcp_state_calls;
+	const unsigned frames_calls = g_diag.frames_calls;
+	const unsigned uptime_calls = g_diag.uptime_calls;
+	const unsigned netif_calls = g_diag.netif_initialized_calls;
+	for (uint32_t tick = 0u; tick < 32u; tick++) {
+		aius_network_teensy_poll(&adapter, 3900u + tick, &event);
+	}
+	assert(g_diag.link_live_calls == link_live_calls);
+	assert(g_diag.dhcp_state_calls == dhcp_state_calls);
+	assert(g_diag.frames_calls == frames_calls);
+	assert(g_diag.uptime_calls == uptime_calls);
+	assert(g_diag.netif_initialized_calls == netif_calls);
+
+	/* The DHCP deadline expires. FNET is still in its own SELECTING state --
+	 * it believes it sent a DISCOVER -- while the MAC's transmit counter has
+	 * not moved, and the cached link still reads up beside a fresh read that
+	 * does not. That triple is the whole measurement.
+	 */
+	g_diag.dhcp_state = 2u;
+	g_diag.link_live = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	drive_teardown_at(&adapter, 1u, 8834u);
+	assert(diag->end_reason == AIUS_NETWORK_TEENSY_END_TEARDOWN);
+	assert(diag->end_ms == 5014u);
+	assert(diag->dhcp_state_at_end == 2u);
+	assert(diag->link_at_end == AIUS_NETWORK_TEENSY_LINK_UP);
+	assert(diag->link_live_at_end == AIUS_NETWORK_TEENSY_LINK_DOWN);
+	assert(diag->frames_valid);
+	assert(diag->tx_frames == 0u);
+	assert(diag->rx_frames == 0u);
+
+	/* Generation 2, warm interface: the netif init is skipped entirely and
+	 * beginNoWait() returns at once. */
+	g_diag.netif_initialized = true;
+	g_diag.stack_start_cost_ms = 0u;
+	g_diag.dhcp_state = 1u;
+	g_diag.link_live = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_apply(&adapter, 9800u,
+	                         action(AIUS_NET_ACTION_START_STACK, 2u), &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 2u,
+	             AIUS_NET_FAULT_NONE);
+	const AiusNetworkTeensyDiag *first =
+		aius_network_teensy_diag_first(&adapter);
+	assert(first != nullptr);
+	assert(first->generation == 1u);
+	assert(first->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
+	assert(first->stack_start_blocking_ms == 2013u);
+	assert(first->tx_frames == 0u);
+	assert(diag->generation == 2u);
+	assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_SKIPPED);
+	assert(diag->stack_start_blocking_ms == 0u);
+	assert(diag->end_reason == AIUS_NETWORK_TEENSY_END_NONE);
+
+	aius_network_teensy_apply(&adapter, 9805u,
+	                         action(AIUS_NET_ACTION_START_DHCP, 2u), &event);
+	g_diag.tx = 104u;
+	g_diag.rx = 206u;
+	g_diag.dhcp_state = 5u;
+	aius_network_teensy_apply(&adapter, 9810u,
+	                         action(AIUS_NET_ACTION_PUBLISH_ONLINE, 2u),
+	                         &event);
+	aius_network_teensy_apply(&adapter, 9811u,
+	                         action(AIUS_NET_ACTION_NONE, 0u), &event);
+	assert(adapter.online);
+	assert(diag->end_reason == AIUS_NETWORK_TEENSY_END_ONLINE);
+	assert(diag->end_ms == 11u);
+	assert(diag->dhcp_state_at_end == 5u);
+	assert(diag->tx_frames == 4u);
+	assert(diag->rx_frames == 6u);
+
+	/* The retained record is the first generation, not the last: by the time
+	 * this surface is readable the board is already on a later one. */
+	assert(aius_network_teensy_diag_first(&adapter)->generation == 1u);
+
+	/* Live readers while a stack is up. The cached member and a fresh read
+	 * disagreeing is reportable rather than reconciled. */
+	drive_teardown_at(&adapter, 2u, 20000u);
+	aius_network_teensy_apply(&adapter, 20100u,
+	                         action(AIUS_NET_ACTION_START_STACK, 3u), &event);
+	assert(aius_network_teensy_diag_first(&adapter)->generation == 1u);
+	g_diag.link_live = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	assert(aius_network_teensy_link(&adapter) == AIUS_NETWORK_TEENSY_LINK_UP);
+	assert(aius_network_teensy_link_live(&adapter) ==
+	       AIUS_NETWORK_TEENSY_LINK_DOWN);
+	assert(aius_network_teensy_dhcp_state(&adapter) == 5u);
+	assert(aius_network_teensy_frames(&adapter, &tx, &rx));
+	assert(tx == 104u && rx == 206u);
+
+	/* A link-lost callback counts as a link callback of the other polarity
+	 * and leaves the first connected timestamp alone. */
+	aius_network_teensy_test_callback(&adapter, 3u,
+	                                  AIUS_NET_EVENT_RESOURCE_FAULT,
+	                                  AIUS_NET_FAULT_LINK_LOST);
+	aius_network_teensy_poll(&adapter, 20150u, &event);
+	expect_event(event, AIUS_NET_EVENT_RESOURCE_FAULT, 3u,
+	             AIUS_NET_FAULT_LINK_LOST);
+	assert(diag->link_callbacks == 1u);
+	assert(!diag->link_callback_up_seen);
+
+	/* After teardown the readers answer without touching a dead stack. */
+	drive_teardown_at(&adapter, 3u, 20200u);
+	const unsigned live_after = g_diag.link_live_calls;
+	const unsigned state_after = g_diag.dhcp_state_calls;
+	const unsigned frames_after = g_diag.frames_calls;
+	assert(aius_network_teensy_link_live(&adapter) ==
+	       AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	assert(aius_network_teensy_dhcp_state(&adapter) ==
+	       AIUS_NETWORK_TEENSY_DHCP_STATE_NONE);
+	assert(!aius_network_teensy_frames(&adapter, &tx, &rx));
+	assert(tx == 0u && rx == 0u);
+	assert(g_diag.link_live_calls == live_after);
+	assert(g_diag.dhcp_state_calls == state_after);
+	assert(g_diag.frames_calls == frames_after);
+}
+
+/* The diagnostic readers are optional, and the adapter drives identically
+ * without them: this is the property that keeps a measurement from being able
+ * to fault the transport, and it is what lets the runtime-target suite keep its
+ * own sixteen-entry table unchanged.
+ */
+void test_diagnostics_are_optional()
+{
+	AiusNetworkTeensy adapter;
+	uint32_t tx = 1u;
+	uint32_t rx = 1u;
+
+	reset_adapter(&adapter);
+	make_online(&adapter);
+
+	const AiusNetworkTeensyDiag *diag = aius_network_teensy_diag(&adapter);
+	assert(diag->generation == 7u);
+	assert(diag->end_reason == AIUS_NETWORK_TEENSY_END_ONLINE);
+	assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_UNKNOWN);
+	assert(diag->stack_start_blocking_ms == 0u);
+	assert(diag->dhcp_state_at_start == AIUS_NETWORK_TEENSY_DHCP_STATE_NONE);
+	assert(diag->dhcp_state_at_end == AIUS_NETWORK_TEENSY_DHCP_STATE_NONE);
+	assert(diag->link_live_at_end == AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	assert(!diag->frames_valid);
+	/* What the table does supply is still measured. */
+	assert(diag->link_at_stack_start == AIUS_NETWORK_TEENSY_LINK_UP);
+	assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
+
+	assert(aius_network_teensy_link_live(&adapter) ==
+	       AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	assert(aius_network_teensy_dhcp_state(&adapter) ==
+	       AIUS_NETWORK_TEENSY_DHCP_STATE_NONE);
+	assert(!aius_network_teensy_frames(&adapter, &tx, &rx));
+	assert(tx == 0u && rx == 0u);
+
+	/* And every reader answers for a null adapter or a null out-parameter. */
+	assert(aius_network_teensy_diag(nullptr) == nullptr);
+	assert(aius_network_teensy_diag_first(nullptr) == nullptr);
+	assert(aius_network_teensy_link_live(nullptr) ==
+	       AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
+	assert(aius_network_teensy_dhcp_state(nullptr) ==
+	       AIUS_NETWORK_TEENSY_DHCP_STATE_NONE);
+	assert(!aius_network_teensy_frames(nullptr, &tx, &rx));
+	assert(!aius_network_teensy_frames(&adapter, nullptr, &rx));
+	assert(!aius_network_teensy_frames(&adapter, &tx, nullptr));
+}
+
 } // namespace
 
 int main()
@@ -1110,5 +1446,7 @@ int main()
 	test_link_gate_before_dhcp();
 	test_one_shot_io_matrix();
 	test_status_accessors_across_lifecycle();
+	test_generation_diagnostics();
+	test_diagnostics_are_optional();
 	return 0;
 }

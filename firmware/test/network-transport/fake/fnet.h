@@ -164,6 +164,21 @@ void fnet_dhcp_cln_set_callback_updated(
 fnet_dhcp_cln_desc_t fnet_dhcp_cln_get_by_netif(fnet_netif_desc_t);
 void fnet_dhcp_cln_get_options(
     fnet_dhcp_cln_desc_t, fnet_dhcp_cln_options *);
+/* Diagnostic readers. fnet_dhcp_cln_get_state() returns FNET's own DHCP client
+ * state; the values come from the private enum in
+ * service/dhcp/fnet_dhcp_cln.c (0 disabled, 1 init, 2 selecting, 3 requesting,
+ * 4 probing, 5 bound, 6 renewing, 7 rebinding, 8 init-reboot, 9 rebooting).
+ * The real getter dereferences its descriptor without a null check, which is
+ * why the adapter looks the descriptor up first. */
+fnet_uint8_t fnet_dhcp_cln_get_state(fnet_dhcp_cln_desc_t);
+
+struct fnet_netif_statistics {
+    fnet_uint32_t tx_packet;
+    fnet_uint32_t rx_packet;
+};
+
+fnet_return_t fnet_netif_get_statistics(
+    fnet_netif_desc_t, fnet_netif_statistics *);
 
 void fnet_poll();
 fnet_service_desc_t fnet_service_register(fnet_service_poll_t, void *);
