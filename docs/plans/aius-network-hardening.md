@@ -179,6 +179,43 @@ are follow-up work, recorded here so they are not lost.
    today (`test/auth/test_auth.c`, `test/config/test_config.c`), both live code,
    both never run. The proposed `registry` suite is described in the audit commit
    and is not built.
+6. **"At most one SD primitive per epoch" is false at checkpoint 5**, found while
+   writing [§Phase 14d](#phase-14d--firmware-io-reference). Three routes reach the
+   card outside the job engine. `app_read_directory` (`optical_main.cpp:1993`) is
+   the designed case — bounded at 128 raw reads and gated on `!sd_busy()`
+   (`aius_optical_app.cpp:611`). The other two are not: `http_replay_list_json`
+   (`optical_main.cpp:1602`) walks `/aius/replays` with `for (;;) openNextFile()`
+   and **no scan cap and no `sd_busy()` gate** — its `GET` arm checks only
+   `sd_ready` (`aius_optical_app.cpp:856`) — and `app_replay_delete` spends
+   `SD.exists()` + `SD.remove()` ungated (`:1844`, `:1846`). This bounds the
+   *watchdog* argument rather than the audio one, and on a card with a large
+   replays directory it is **the most plausible unexplained 8 s reset in the
+   image**. It is also an ungated SD toucher overlapping HTTP-owned jobs, so it is
+   a live candidate for defect 2 above and should be excluded before that
+   investigation trusts its arithmetic.
+7. **The FNET poll timer shares the audio ISR's interrupt priority**, so the
+   plan's central isolation argument has a hole. `beginNoWait()` starts an
+   `IntervalTimer` running `fnet_poll` every 1,000 µs for the life of the network
+   generation (`vendor/NativeEthernet/src/NativeEthernet.cpp:167`). Teensy startup
+   sets every IRQ to priority 128 (`cores/teensy4/startup.c:136`), the S/PDIF DMA
+   attaches without overriding it
+   (`evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp:67`), and
+   `IntervalTimer` defaults to 128 (`cores/teensy4/IntervalTimer.h:108`). Equal
+   priority means neither preempts the other, so **every microsecond `fnet_poll`
+   spends at 1 kHz is a microsecond the 2.67 ms block callback waits.** The
+   isolation argument is framed throughout as "epoch loop, not audio ISR", which
+   is true of this firmware's own code and untrue of the stack it links. The
+   duration of one `fnet_poll` call is not recorded anywhere in the repo and is
+   the measurement that sizes this. Note this is also the only I/O actor outside
+   the epoch loop, and it owns the 9,756-byte `NonCacheable` FEC buffer inside
+   DTCM plus a 64 KiB FNET netheap from the OCRAM `new` heap
+   (`NativeEthernet.cpp:90`) that the 91,456-byte OCRAM figure does not include.
+8. **Five source comments still quote the pre-fix DTCM free figure** —
+   `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
+   `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
+   `firmware/README.md` was corrected with the gate fix; the source was not. Every
+   placement decision those comments justify is still correct — more so — but the
+   arithmetic in them is wrong.
 
 #### Decisions taken, so they are not re-opened
 

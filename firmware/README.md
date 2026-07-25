@@ -235,6 +235,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `auth` | The SD maintenance token's derivation, firmware side and the host generator together. |
 | `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
+| `recovery-runner` | The live recovery smoke's host runner: every gate on all three result paths against a scripted device on a virtual clock. |
 | `http` | Request parser + the bounded server transaction. |
 | `usb-control` | USB control command parser + runtime transaction. |
 | `replay` | Replay service over a fake reader. |
@@ -271,7 +272,17 @@ scripts/build.sh teensy41-optical-fault 0
 
 ### Optical flashing session rule
 
-Start the loader before asking for a button press:
+**The running optical image enters HalfKay on request — no Program button.** Send
+`AIUS BOOTLOADER <id>` over the USB CDC control plane and the image flushes its
+response, waits for the descriptor to retire (bounded at 500 ms), and enters the
+bootloader. Measured at five consecutive trials with a full reflash between each,
+every one entering on the first attempt. The Program button remains the
+unconditional fallback for an image that will not run at all.
+
+Note the two USB paths need different groups, and the login is stale, so both
+need a wrapper: `sg dialout -c` for the CDC port, `sg plugdev -c` for the loader.
+
+Start the loader before requesting bootloader entry:
 
 ```bash
 sg plugdev -c '$HOME/.platformio/packages/tool-teensy/teensy_loader_cli --mcu=imxrt1062 -w -v .pio/build/teensy41-optical/firmware.hex'
@@ -307,12 +318,27 @@ P7 soak remains.
 Set `AIUS_HID_ITERATIONS` when invoking `scripts/run_hid.sh` to repeat the full
 corpus in one device session; use `/dev/null` as the audit path for a long soak.
 
-The optical target has completed its runtime cutover on the host: both images
-build with every bank fitting, and the structural, component and composed-runtime
-suites are green. It has had no hardware validation yet. Two routes are
-deliberately not served: `GET /api/meters` has no serializer and returns a
-deterministic 500, and `POST /api/replays/start` is refused, because starting a
-replay would block inside a dispatcher contracted to touch no SD primitive.
+The optical target has completed its runtime cutover and **runs on hardware**,
+serving HTTP at its DHCP address. Confirmed live: boot, one epoch per `loop()`,
+the watchdog not resetting in normal operation, SD probe and both config loads,
+the status surface on all three channels, `POST /api/reboot`, software bootloader
+entry, the SD directory index, and DHCP reaching ONLINE on the first network
+generation. Both routes that were previously unserved now are: `GET /api/meters`
+has its serializer and per-block accumulate tap, and `POST /api/replays/start`
+runs refill on a bounded SD job rather than blocking the dispatcher.
+
+Not yet confirmed on hardware: the audio path. The optical input is unsoldered,
+so there is no S/PDIF carrier, the DSP has never run, and the per-block cost is
+still a static estimate.
+
+Three HTTP interop defects are open, all found by pointing a non-browser client
+at the board and all making the control surface work only for the exact byte
+shapes the bundled browser surface happens to emit: request header names are
+matched case-sensitively against `X-Aius-SD-Auth`, a request whose body arrives
+in a second TCP segment gets no response at all, and the replay body parser
+rejects the insignificant JSON whitespace `json.dumps` emits by default. Until
+they land, drive the board with compact JSON in a single write and exact header
+case.
 
 `tools/net/aius_http_runner.py` and `tools/net/aius_net_runner.py` exercise a
 running board over HTTP and UDP. The HTTP soak drives only routes the firmware

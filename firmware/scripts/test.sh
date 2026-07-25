@@ -9,7 +9,8 @@
 #
 # Suites: arena, auth, codec-api-contract, config, dsp-config, dts, dts-arena,
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
-#         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
+#         capability, pipeline, dsp, dsp-vectors, net, net-runner,
+#         recovery-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement.
@@ -282,6 +283,14 @@ net)
 net-runner)
 	python3 "$fw_root/test/net/test_net_runner.py"
 	python3 "$fw_root/test/net/test_aius_http_runner.py"
+	;;
+recovery-runner)
+	# The live recovery smoke's host runner, driven against a scripted device on
+	# a virtual clock: every gate on all three result paths (pass, fail, and the
+	# unresolved/unreachable one), plus its decode of the recovery status fields.
+	# No board, no socket, no serial port -- the 30-minute soak gate runs here in
+	# milliseconds because the runner takes its clock from the device link.
+	python3 "$fw_root/test/recovery-runner/test_recovery_smoke.py"
 	;;
 http)
 	http_out="$build_dir/http"

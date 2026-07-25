@@ -178,6 +178,19 @@ selection. It is cleared to `none` by every accepted start. Three values:
    today (`test/auth/test_auth.c`, `test/config/test_config.c`), both live code,
    both never run. The proposed `registry` suite is described in the audit commit
    and is not built.
+6. **"At most one SD primitive per epoch" is false at checkpoint 5.**
+   `http_replay_list_json` walks `/aius/replays` with `for (;;) openNextFile()`,
+   uncapped and ungated, and `app_replay_delete` spends `SD.exists()` +
+   `SD.remove()` ungated. The most plausible unexplained 8 s reset in the image,
+   and a live candidate for defect 2. Full detail in
+   [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
+7. **The FNET poll timer shares the audio ISR's interrupt priority** (both 128),
+   so its 1 kHz `fnet_poll` cannot be preempted by the block callback and vice
+   versa. The isolation argument is framed as "epoch loop, not audio ISR", which
+   is true of this firmware's code and untrue of the stack it links. Detail in
+   [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
+8. **Five source comments still quote the pre-fix DTCM free figure** (~22–24 kB
+   against a measured 9,280). The README was corrected; the source was not.
 
 #### Decisions taken, so they are not re-opened
 
