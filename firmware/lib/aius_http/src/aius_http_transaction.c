@@ -447,6 +447,9 @@ static void reset_client(AiusHttpTransaction *transaction, uint32_t now_ms)
 	transaction->upload_supplied = 0u;
 	transaction->response_length = 0u;
 	transaction->response_offset = 0u;
+	transaction->stream_body = NULL;
+	transaction->stream_body_length = 0u;
+	transaction->stream_body_offset = 0u;
 	transaction->download_data = NULL;
 	transaction->sd_capacity = 0u;
 	transaction->download_size = 0u;
@@ -477,6 +480,7 @@ static void reset_client(AiusHttpTransaction *transaction, uint32_t now_ms)
 	transaction->close_emitted = false;
 	transaction->response_started = false;
 	transaction->response_is_download = false;
+	transaction->response_streams_body = false;
 	transaction->sd_started = false;
 	transaction->sd_cancel_emitted = false;
 	transaction->sd_terminal = false;
@@ -497,6 +501,9 @@ static void restart_idle(AiusHttpTransaction *transaction)
 	transaction->upload_supplied = 0u;
 	transaction->response_length = 0u;
 	transaction->response_offset = 0u;
+	transaction->stream_body = NULL;
+	transaction->stream_body_length = 0u;
+	transaction->stream_body_offset = 0u;
 	transaction->download_data = NULL;
 	transaction->sd_capacity = 0u;
 	transaction->download_size = 0u;
@@ -514,17 +521,30 @@ static void restart_idle(AiusHttpTransaction *transaction)
 	transaction->close_emitted = false;
 	transaction->response_started = false;
 	transaction->response_is_download = false;
+	transaction->response_streams_body = false;
 	transaction->sd_started = false;
 	transaction->sd_cancel_emitted = false;
 	transaction->sd_terminal = false;
 	clear_outstanding(transaction);
 }
 
+static void clear_stream_body(AiusHttpTransaction *transaction)
+{
+	transaction->stream_body = NULL;
+	transaction->stream_body_length = 0u;
+	transaction->stream_body_offset = 0u;
+	transaction->response_streams_body = false;
+}
+
 static bool format_response(AiusHttpTransaction *transaction, unsigned status,
 	                        const char *content_type, const uint8_t *body,
 	                        size_t body_length)
 {
-	size_t length = aius_http_write_response(
+	size_t length;
+	/* Any reformat replaces the whole response, so a previously borrowed
+	 * body must not be appended to it. */
+	clear_stream_body(transaction);
+	length = aius_http_write_response(
 		transaction->response, transaction->response_capacity, status,
 		content_type, body, body_length);
 	if (length == 0u)
@@ -532,6 +552,33 @@ static bool format_response(AiusHttpTransaction *transaction, unsigned status,
 	transaction->response_length = length;
 	transaction->response_offset = 0u;
 	transaction->last_status = status;
+	return true;
+}
+
+/* Format headers only and keep the application's body where it is. Used when a
+ * complete AIUS_HTTP_APP_IMMEDIATE response does not fit in the response
+ * buffer -- AIUS_HTTP_MAX_RESPONSE is 8192 while a serialized DSP model reaches
+ * 12288. The drain path falls through to request_cleanup and emits no SD
+ * operation, which is why it must not reuse response_is_download. */
+static bool format_stream_response(AiusHttpTransaction *transaction,
+	                               unsigned status, const char *content_type,
+	                               const uint8_t *body, size_t body_length)
+{
+	size_t length;
+	if (body == NULL || body_length == 0u)
+		return false;
+	length = aius_http_write_headers(transaction->response,
+	                                 transaction->response_capacity, status,
+	                                 content_type, (uint64_t)body_length);
+	if (length == 0u)
+		return false;
+	transaction->response_length = length;
+	transaction->response_offset = 0u;
+	transaction->last_status = status;
+	transaction->stream_body = body;
+	transaction->stream_body_length = body_length;
+	transaction->stream_body_offset = 0u;
+	transaction->response_streams_body = true;
 	return true;
 }
 
@@ -715,7 +762,10 @@ static bool accept_application(AiusHttpTransaction *transaction,
 			return true;
 		}
 		if (!format_response(transaction, reply->status, reply->content_type,
-		                     reply->body, reply->body_length))
+		                     reply->body, reply->body_length) &&
+		    !format_stream_response(transaction, reply->status,
+		                            reply->content_type, reply->body,
+		                            reply->body_length))
 			response_overflow(transaction);
 		if (!transaction->cleanup_requested) {
 			transaction->state = AIUS_HTTP_TX_SEND;
@@ -730,9 +780,22 @@ static bool accept_application(AiusHttpTransaction *transaction,
 	    !copy_sd_request(transaction, &reply->sd_job))
 		return false;
 	if (transaction->sd_request.kind == AIUS_SD_JOB_UPLOAD) {
-		if (!was_streamed ||
-		    transaction->sd_request.total != transaction->body_expected)
+		if (transaction->sd_request.total != transaction->body_expected)
 			return false;
+		if (!was_streamed) {
+			/* A complete buffered body is admissible too: the whole
+			 * body already sits in transaction->request, which
+			 * discard_request_slices leaves untouched, so the upload
+			 * prefix covers it and no further read is needed. */
+			if (!transaction->parsed_request.body_complete ||
+			    (uint64_t)transaction->parsed_request.body_length !=
+				    transaction->body_expected)
+				return false;
+			transaction->upload_prefix_offset =
+				transaction->parsed_request.header_length;
+			transaction->upload_prefix_length =
+				transaction->parsed_request.body_length;
+		}
 	} else if (was_streamed) {
 		return false;
 	}
@@ -1129,6 +1192,8 @@ static void consume_io(AiusHttpTransaction *transaction,
 		if (transaction->response_offset <
 		    transaction->response_length) {
 			transaction->response_offset += event->io.bytes;
+		} else if (transaction->response_streams_body) {
+			transaction->stream_body_offset += event->io.bytes;
 		} else {
 			transaction->download_offset += event->io.bytes;
 			transaction->download_sent += event->io.bytes;
@@ -1318,6 +1383,19 @@ static void drive_send(AiusHttpTransaction *transaction,
 			remaining : AIUS_HTTP_TX_QUOTA;
 		emit_write(transaction, action,
 		           transaction->response + transaction->response_offset,
+		           offer);
+		return;
+	}
+	if (transaction->response_streams_body &&
+	    transaction->stream_body != NULL &&
+	    transaction->stream_body_offset < transaction->stream_body_length) {
+		remaining = transaction->stream_body_length -
+		            transaction->stream_body_offset;
+		offer = remaining < AIUS_HTTP_TX_QUOTA ?
+			remaining : AIUS_HTTP_TX_QUOTA;
+		emit_write(transaction, action,
+		           transaction->stream_body +
+			           transaction->stream_body_offset,
 		           offer);
 		return;
 	}

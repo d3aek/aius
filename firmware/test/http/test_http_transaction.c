@@ -584,19 +584,25 @@ static void test_application_validation_and_overflow(void)
 		assert(fixture.transaction.last_status == 400);
 	}
 
+	/* An SD-job acknowledgement body is copied into the response buffer or
+	 * it is nothing: only AIUS_HTTP_APP_IMMEDIATE streams from the
+	 * application's buffer, so this stays the deterministic 500. */
 	Fixture fixture;
 	init_fixture_at(&fixture, sizeof(fixture.request), 192, 0);
 	AiusHttpAction action =
-		feed_request(&fixture, "GET /api/status HTTP/1.0\r\n\r\n");
+		feed_request(&fixture, "DELETE /sd/x HTTP/1.0\r\n\r\n");
 	uint8_t huge[128];
 	memset(huge, 'x', sizeof(huge));
 	AiusHttpApplicationResponse response =
-		immediate(200, "application/octet-stream", huge, sizeof(huge));
+		sd_job(AIUS_SD_JOB_DELETE, 200, "application/json", huge,
+		       sizeof(huge), 0);
 	action = call_step(&fixture, 0, application_result(&action, &response));
 	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
 	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_RESPONSE_CAPACITY);
 	assert(fixture.transaction.last_status == 500);
 	assert(contains_bytes(action.data, action.length, "response_too_large"));
+	assert(!fixture.transaction.sd_started);
+	assert(!fixture.transaction.response_streams_body);
 }
 
 static AiusHttpApplicationResponse upload_application(
@@ -1243,6 +1249,377 @@ static void test_upload_invalid_completion_cancels(void)
 	assert_none_action(&action);
 	assert(fixture.transaction.state == AIUS_HTTP_TX_IDLE);
 	assert(fixture.cancels == 1);
+}
+
+/* Buffered PUT: the parser only reports OK once the whole body has arrived, so
+ * the request buffer holds it in full by dispatch time. */
+static AiusHttpAction dispatch_buffered_put(Fixture *fixture,
+	                                        const uint8_t *body,
+	                                        size_t body_length)
+{
+	static char raw[AIUS_HTTP_MAX_REQUEST];
+	int header = snprintf(
+		raw, sizeof(raw),
+		"PUT /api/dsp/config HTTP/1.0\r\nContent-Length: %zu\r\n\r\n",
+		body_length);
+	assert(header > 0);
+	assert((size_t)header + body_length + 1u < sizeof(raw));
+	memcpy(raw + header, body, body_length);
+	raw[(size_t)header + body_length] = '\0';
+	AiusHttpAction action = feed_request(fixture, raw);
+	assert(action.kind == AIUS_HTTP_ACTION_DISPATCH);
+	assert(action.request->body_complete);
+	assert(action.request->header_length == (size_t)header);
+	assert(action.request->body_length == body_length);
+	return action;
+}
+
+static AiusHttpApplicationResponse buffered_upload_application(uint64_t total)
+{
+	static const uint8_t ack[] = "{\"ok\":true}";
+	return sd_job(AIUS_SD_JOB_UPLOAD, 201, "application/json", ack,
+	              sizeof(ack) - 1u, total);
+}
+
+/* Drives a complete buffered upload to SD_COMPLETE, asserting every supplied
+ * chunk comes straight out of the request buffer and that no further READ is
+ * ever needed. Returns the number of supply steps. */
+static size_t supply_buffered_upload(Fixture *fixture, AiusHttpAction action,
+	                                 const uint8_t *body, size_t body_length,
+	                                 size_t header_length, size_t capacity)
+{
+	size_t supplied = 0;
+	size_t supplies = 0;
+	while (supplied < body_length) {
+		assert(action.kind == AIUS_HTTP_ACTION_SD_STEP);
+		assert(action.sd_operation == AIUS_HTTP_SD_OP_ADVANCE);
+		AiusHttpEvent need = sd_result(&action, AIUS_HTTP_SD_NEED_UPLOAD);
+		need.sd_length = capacity;
+		action = call_step(fixture, fixture->now, need);
+		assert(action.kind == AIUS_HTTP_ACTION_SD_STEP);
+		assert(action.sd_operation == AIUS_HTTP_SD_OP_SUPPLY_UPLOAD);
+		assert(action.data ==
+		       fixture->request + header_length + supplied);
+		assert(action.length == (body_length - supplied < capacity
+						 ? body_length - supplied
+						 : capacity));
+		assert(memcmp(action.data, body + supplied, action.length) == 0);
+		supplied += action.length;
+		supplies++;
+		action = call_step(fixture, fixture->now,
+		                   sd_result(&action, AIUS_HTTP_SD_PROGRESS));
+	}
+	assert(supplied == body_length);
+	assert(fixture->transaction.upload_supplied == body_length);
+	assert(action.kind == AIUS_HTTP_ACTION_SD_STEP);
+	assert(action.sd_operation == AIUS_HTTP_SD_OP_ADVANCE);
+	action = call_step(fixture, fixture->now,
+	                   sd_result(&action, AIUS_HTTP_SD_COMPLETE));
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(fixture->transaction.last_status == 201);
+	action = finish_all_writes(fixture, action);
+	finish_close(fixture, action);
+	return supplies;
+}
+
+static void test_buffered_upload_admission(void)
+{
+	static const uint8_t small[] = "{\"gain\":1}";
+	const size_t small_length = sizeof(small) - 1u;
+	static uint8_t wide[600];
+	for (size_t i = 0; i < sizeof(wide); ++i)
+		wide[i] = (uint8_t)('a' + (i % 26u));
+
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch =
+			dispatch_buffered_put(&fixture, small, small_length);
+		size_t header_length = dispatch.request->header_length;
+		AiusHttpApplicationResponse response =
+			buffered_upload_application(small_length);
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_SD_START);
+		assert(action.sd_request->kind == AIUS_SD_JOB_UPLOAD);
+		assert(action.sd_request->total == small_length);
+		assert(fixture.transaction.body_expected == small_length);
+		assert(fixture.transaction.upload_prefix_offset == header_length);
+		assert(fixture.transaction.upload_prefix_length == small_length);
+		assert(fixture.transaction.parsed_request.body == NULL);
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 4;
+		action = call_step(&fixture, 0, started);
+		size_t supplies = supply_buffered_upload(
+			&fixture, action, small, small_length, header_length, 4);
+		assert(supplies == 3);
+		assert(fixture.dispatches == 1);
+		assert(fixture.closes == 1);
+		assert(fixture.cancels == 0);
+	}
+
+	/* Spans several receive reads, so the prefix must survive reassembly. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch =
+			dispatch_buffered_put(&fixture, wide, sizeof(wide));
+		size_t header_length = dispatch.request->header_length;
+		AiusHttpApplicationResponse response =
+			buffered_upload_application(sizeof(wide));
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_SD_START);
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = AIUS_HTTP_SD_CAPACITY_MAX;
+		action = call_step(&fixture, 0, started);
+		size_t supplies = supply_buffered_upload(
+			&fixture, action, wide, sizeof(wide), header_length,
+			AIUS_HTTP_SD_CAPACITY_MAX);
+		assert(supplies == 2);
+		assert(fixture.cancels == 0);
+	}
+
+	/* total must still agree with the framed body length, either way. */
+	static const int64_t deltas[] = { -1, 1 };
+	size_t mismatch_trials = 0;
+	for (size_t i = 0; i < ARRAY_LENGTH(deltas); ++i) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch =
+			dispatch_buffered_put(&fixture, small, small_length);
+		AiusHttpApplicationResponse response =
+			buffered_upload_application(
+				(uint64_t)((int64_t)small_length + deltas[i]));
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_PROTOCOL);
+		assert(fixture.transaction.last_status == 400);
+		assert(!fixture.transaction.sd_started);
+		assert(fixture.transaction.upload_prefix_length == 0);
+		mismatch_trials++;
+	}
+	assert(mismatch_trials == 2);
+
+	/* A streamed request still rejects a mismatched total ... */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch = dispatch_upload_length(&fixture, 4);
+		AiusHttpApplicationResponse response =
+			upload_application(AIUS_SD_INSTALL_REPLACE, 5, 0, false);
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_PROTOCOL);
+		assert(!fixture.transaction.sd_started);
+	}
+
+	/* ... and every non-upload job on a streamed request. */
+	static const AiusSdJobKind streamed_rejects[] = {
+		AIUS_SD_JOB_PROBE,
+		AIUS_SD_JOB_CONFIG_LOAD,
+		AIUS_SD_JOB_USAGE_REFRESH,
+		AIUS_SD_JOB_DELETE,
+	};
+	size_t streamed_trials = 0;
+	for (size_t i = 0; i < ARRAY_LENGTH(streamed_rejects); ++i) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch = dispatch_upload_length(&fixture, 2);
+		AiusHttpApplicationResponse response =
+			control_application(streamed_rejects[i]);
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_PROTOCOL);
+		assert(fixture.transaction.last_status == 400);
+		assert(!fixture.transaction.sd_started);
+		streamed_trials++;
+	}
+	assert(streamed_trials == 4);
+}
+
+static size_t drain_writes_to_close(Fixture *fixture, AiusHttpAction action)
+{
+	size_t total = 0;
+	while (action.kind == AIUS_HTTP_ACTION_WRITE) {
+		total += action.length;
+		action = call_step(fixture, fixture->now,
+		                   io_result(&action, AIUS_IO_PROGRESS,
+		                             action.length, 0));
+	}
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	finish_close(fixture, action);
+	return total;
+}
+
+static void test_immediate_stream_body(void)
+{
+	static uint8_t model[AIUS_HTTP_MAX_BODY];
+	static uint8_t sizing[AIUS_HTTP_MAX_RESPONSE];
+	for (size_t i = 0; i < sizeof(model); ++i)
+		model[i] = (uint8_t)('0' + (i % 10u));
+	assert(sizeof(model) > AIUS_HTTP_MAX_RESPONSE);
+
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		assert(fixture.transaction.response_capacity ==
+		       AIUS_HTTP_MAX_RESPONSE);
+		AiusHttpAction dispatch = feed_request(
+			&fixture, "GET /api/dsp/config HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", model, sizeof(model));
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_status == 200);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_NONE);
+		assert(fixture.transaction.response_streams_body);
+		assert(fixture.transaction.stream_body == model);
+		assert(fixture.transaction.stream_body_length == sizeof(model));
+		/* The download arm must stay untouched: it would acknowledge an
+		 * SD job this response does not have. */
+		assert(!fixture.transaction.response_is_download);
+		assert(fixture.transaction.download_data == NULL);
+		size_t header_length = fixture.transaction.response_length;
+		assert(header_length ==
+		       aius_http_write_headers(sizing, sizeof(sizing), 200,
+		                               "application/json",
+		                               sizeof(model)));
+		assert(header_length < AIUS_HTTP_TX_QUOTA);
+		assert(action.data == fixture.response);
+		assert(action.length == header_length);
+		assert(contains_bytes(action.data, action.length,
+		                      "Content-Length: 12288"));
+		assert(fixture.transaction.deadline_active);
+		assert(fixture.transaction.deadline_ms == 100);
+
+		action = call_step(&fixture, 0,
+		                   io_result(&action, AIUS_IO_PROGRESS,
+		                             action.length, 0));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(action.data == model);
+		const uint8_t *offered = action.data;
+		size_t offered_length = action.length;
+		action = call_step(&fixture, 0,
+		                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(action.data == offered);
+		assert(action.length == offered_length);
+
+		size_t sent = 0;
+		size_t writes = 0;
+		while (action.kind == AIUS_HTTP_ACTION_WRITE) {
+			assert(action.data == model + sent);
+			assert(action.length ==
+			       (sizeof(model) - sent < AIUS_HTTP_TX_QUOTA
+					? sizeof(model) - sent
+					: AIUS_HTTP_TX_QUOTA));
+			assert(action.sd_operation == AIUS_HTTP_SD_OP_NONE);
+			sent += action.length;
+			writes++;
+			action = call_step(&fixture, 0,
+			                   io_result(&action, AIUS_IO_PROGRESS,
+			                             action.length, 0));
+		}
+		assert(sent == sizeof(model));
+		assert(writes == sizeof(model) / AIUS_HTTP_TX_QUOTA);
+		assert(writes == 24);
+		assert(fixture.transaction.stream_body_offset == sizeof(model));
+		assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+		assert(!fixture.transaction.sd_started);
+		assert(fixture.cancels == 0);
+		finish_close(&fixture, action);
+		assert(fixture.dispatches == 1);
+		assert(fixture.closes == 1);
+		assert(!fixture.transaction.response_streams_body);
+		assert(fixture.transaction.stream_body == NULL);
+	}
+
+	/* Copy and stream put identical bytes on the wire; only the source of
+	 * the body differs, and the split is exactly "does the copy fit". */
+	size_t boundary = 0;
+	while (boundary < sizeof(model) &&
+	       aius_http_write_response(sizing, sizeof(sizing), 200,
+	                                "application/json", model,
+	                                boundary + 1u) != 0u)
+		boundary++;
+	assert(boundary != 0);
+	assert(boundary + 1u < AIUS_HTTP_MAX_RESPONSE);
+	const size_t lengths[] = { 1, 4096, boundary - 1u, boundary,
+		                       boundary + 1u, AIUS_HTTP_MAX_RESPONSE,
+		                       AIUS_HTTP_MAX_BODY };
+	size_t copied = 0;
+	size_t streamed = 0;
+	for (size_t i = 0; i < ARRAY_LENGTH(lengths); ++i) {
+		bool copy_fits = aius_http_write_response(
+					 sizing, sizeof(sizing), 200,
+					 "application/json", model,
+					 lengths[i]) != 0u;
+		size_t header_length = aius_http_write_headers(
+			sizing, sizeof(sizing), 200, "application/json",
+			lengths[i]);
+		assert(header_length != 0);
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch = feed_request(
+			&fixture, "GET /api/dsp/config HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", model, lengths[i]);
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.last_status == 200);
+		assert(fixture.transaction.response_streams_body == !copy_fits);
+		assert(drain_writes_to_close(&fixture, action) ==
+		       header_length + lengths[i]);
+		if (copy_fits)
+			copied++;
+		else
+			streamed++;
+	}
+	assert(ARRAY_LENGTH(lengths) == 7);
+	assert(copied == 4);
+	assert(streamed == 3);
+
+	/* Peer close mid-body closes out without any SD operation. */
+	static const size_t body_writes_before_close[] = { 0, 2 };
+	size_t close_trials = 0;
+	for (size_t i = 0; i < ARRAY_LENGTH(body_writes_before_close); ++i) {
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction dispatch = feed_request(
+			&fixture, "GET /api/dsp/config HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", model, sizeof(model));
+		AiusHttpAction action = call_step(
+			&fixture, 0, application_result(&dispatch, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		for (size_t write = 0;
+		     write <= body_writes_before_close[i]; ++write) {
+			action = call_step(&fixture, 0,
+			                   io_result(&action, AIUS_IO_PROGRESS,
+			                             action.length, 0));
+			assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		}
+		AiusHttpEvent closed = no_event();
+		closed.kind = AIUS_HTTP_EVENT_PEER_CLOSED;
+		action = call_step(&fixture, 0, closed);
+		assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+		assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_TRANSPORT);
+		assert(fixture.transaction.response_length == 0);
+		assert(fixture.transaction.download_data == NULL);
+		assert(!fixture.transaction.response_is_download);
+		finish_close(&fixture, action);
+		assert(!fixture.transaction.sd_started);
+		assert(fixture.cancels == 0);
+		assert(fixture.closes == 1);
+		close_trials++;
+	}
+	assert(close_trials == 2);
 }
 
 static AiusHttpAction start_download(Fixture *fixture, uint32_t now)
@@ -1935,14 +2312,26 @@ static void test_all_application_statuses_and_field_edges(void)
 		aius_http_write_response(sizing, sizeof(sizing), 200,
 		                         "application/octet-stream", large,
 		                         sizeof(large));
+	size_t header_length =
+		aius_http_write_headers(sizing, sizeof(sizing), 200,
+		                        "application/octet-stream",
+		                        sizeof(large));
 	assert(fallback_length > 1);
 	assert(primary_length > fallback_length + 1u);
+	assert(header_length > 1);
+	assert(header_length < fallback_length);
+	/* An immediate body that does not fit is streamed from the
+	 * application's buffer, so only a capacity below the headers alone
+	 * still exhausts the response. */
 	size_t capacities[] = {
-		1, fallback_length - 1u, fallback_length,
-		fallback_length + 1u, primary_length - 1u, primary_length
+		1, header_length - 1u, header_length, fallback_length,
+		primary_length - 1u, primary_length
 	};
 	assert(ARRAY_LENGTH(capacities) == 6);
 	size_t capacity_trials = 0;
+	size_t copied = 0;
+	size_t streamed = 0;
+	size_t exhausted = 0;
 	for (size_t i = 0; i < ARRAY_LENGTH(capacities); ++i) {
 		Fixture fixture;
 		init_fixture_at(&fixture, sizeof(fixture.request), capacities[i], 0);
@@ -1952,18 +2341,42 @@ static void test_all_application_statuses_and_field_edges(void)
 			immediate(200, "application/octet-stream", large, sizeof(large));
 		action = call_step(&fixture, 0,
 		                   application_result(&action, &response));
-		if (capacities[i] >= fallback_length) {
+		if (capacities[i] >= primary_length) {
 			assert(action.kind == AIUS_HTTP_ACTION_WRITE);
-			assert(fixture.transaction.last_status ==
-			       (capacities[i] >= primary_length ? 200u : 500u));
+			assert(fixture.transaction.last_status == 200);
+			assert(!fixture.transaction.response_streams_body);
+			assert(fixture.transaction.response_length ==
+			       primary_length);
+			assert(action.data == fixture.response);
+			copied++;
+		} else if (capacities[i] >= header_length) {
+			assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+			assert(fixture.transaction.last_status == 200);
+			assert(fixture.transaction.last_fault ==
+			       AIUS_HTTP_FAULT_NONE);
+			assert(fixture.transaction.response_streams_body);
+			assert(fixture.transaction.response_length ==
+			       header_length);
+			assert(fixture.transaction.stream_body == large);
+			assert(fixture.transaction.stream_body_length ==
+			       sizeof(large));
+			assert(!fixture.transaction.response_is_download);
+			assert(fixture.transaction.download_data == NULL);
+			streamed++;
 		} else {
 			assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
 			assert(fixture.transaction.last_fault ==
 			       AIUS_HTTP_FAULT_RESPONSE_CAPACITY);
+			assert(!fixture.transaction.response_streams_body);
+			assert(fixture.transaction.response_length == 0);
+			exhausted++;
 		}
 		capacity_trials++;
 	}
 	assert(capacity_trials == 6);
+	assert(copied == 1);
+	assert(streamed == 3);
+	assert(exhausted == 2);
 }
 
 enum SdMatrixContext {
@@ -2448,13 +2861,15 @@ static AiusHttpAction select_fixed_response(
 			io_result(&read, AIUS_IO_PROGRESS, 0, 0));
 	}
 	case FIXED_RESPONSE_TOO_LARGE: {
+		/* Driven through an SD-job acknowledgement: an immediate body
+		 * that overflows the response buffer now streams instead. */
 		static uint8_t body[256];
 		AiusHttpAction dispatch =
 			feed_request(fixture,
-			             "GET /api/status HTTP/1.0\r\n\r\n");
+			             "DELETE /sd/x HTTP/1.0\r\n\r\n");
 		AiusHttpApplicationResponse response =
-			immediate(200, "application/octet-stream",
-			          body, sizeof(body));
+			sd_job(AIUS_SD_JOB_DELETE, 200, "application/json",
+			       body, sizeof(body), 0);
 		return call_step(
 			fixture, fixture->now,
 			application_result(&dispatch, &response));
@@ -3649,6 +4064,9 @@ int main(void)
 		  test_upload_read_transport_terminal_precedence },
 		{ "upload.invalid-complete-cancel",
 		  test_upload_invalid_completion_cancels },
+		{ "upload.buffered-admission", test_buffered_upload_admission },
+		{ "response.immediate-stream-body",
+		  test_immediate_stream_body },
 		{ "download.chunk-stability-ack",
 		  test_download_stable_chunks_and_ack },
 		{ "download.zero", test_zero_download },
@@ -3676,7 +4094,7 @@ int main(void)
 		{ "authority.duplicate-dispatch-close-cancel",
 		  test_duplicate_authority_registry },
 	};
-	assert(ARRAY_LENGTH(registry) == 33);
+	assert(ARRAY_LENGTH(registry) == 35);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

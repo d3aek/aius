@@ -41,6 +41,14 @@ typedef enum {
 	AIUS_HTTP_APP_SD_JOB
 } AiusHttpApplicationResponseKind;
 
+/* body is borrowed, never copied by the caller. An AIUS_HTTP_APP_IMMEDIATE body
+ * that does not fit alongside its headers in the response buffer is streamed
+ * directly from this pointer, so the borrow lasts until the transaction leaves
+ * AIUS_HTTP_TX_SEND -- roughly body_length / AIUS_HTTP_TX_QUOTA writes -- not
+ * just until the next dispatch. The transaction never re-dispatches while
+ * sending, so an application that owns one serializer buffer per response is
+ * safe; one that reuses the buffer for another surface in the same epoch is
+ * not. */
 typedef struct {
 	AiusHttpApplicationResponseKind kind;
 	unsigned status;
@@ -150,6 +158,11 @@ typedef struct {
 	size_t response_capacity;
 	size_t response_length;
 	size_t response_offset;
+	/* Immediate-response body streamed from the application's own buffer;
+	 * distinct from download_data, whose drain acknowledges an SD job. */
+	const uint8_t *stream_body;
+	size_t stream_body_length;
+	size_t stream_body_offset;
 	const uint8_t *download_data;
 	size_t sd_capacity;
 	uint64_t download_size;
@@ -182,6 +195,7 @@ typedef struct {
 	bool close_emitted;
 	bool response_started;
 	bool response_is_download;
+	bool response_streams_body;
 	bool sd_started;
 	bool sd_cancel_emitted;
 	bool sd_terminal;
