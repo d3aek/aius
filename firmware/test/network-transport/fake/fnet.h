@@ -8,7 +8,15 @@
 #define FNET_CFG_TLS 0
 #define FNET_OK 0
 #define FNET_ERR (-1)
+/* Error codes as the real stack/fnet_error.h numbers them. FNET does not use
+ * the POSIX receive convention: a connected socket with an empty receive buffer
+ * returns 0 from fnet_socket_recv() ("nothing yet"), and peer closure arrives as
+ * FNET_ERR with FNET_ERR_CONNCLOSED or FNET_ERR_NOTCONN from fnet_error_get()
+ * (stack/fnet_tcp.c _fnet_tcp_rcv(), lines 754-776). */
 #define FNET_ERR_AGAIN (-4)
+#define FNET_ERR_INVAL (-6)
+#define FNET_ERR_NOTCONN (-20)
+#define FNET_ERR_CONNCLOSED (-26)
 #define FNET_TRUE 1
 #define FNET_FALSE 0
 #define FNET_NULL nullptr

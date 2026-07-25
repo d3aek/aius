@@ -48,9 +48,16 @@ DTCM layout:
   0x2004dbc0 ..........  free for locals (9280B) up to _estack
 ```
 
-**The 9,280-byte DTCM free-for-locals zone is the spine of this document.** It is
-`_estack - _ebss`, and it is the entire stack — main loop and audio ISR both
-(`README.md:201`). `AiusAudioProcessor::enqueue()` alone places about 4 kB of frame
+**The DTCM free-for-locals zone is the spine of this document**, 9,280 bytes at
+the revision above. It is `_estack - _ebss`, and it is the entire stack — main
+loop and audio ISR both (`README.md:201`).
+
+**This figure moves with every commit that adds a static**, so treat the number
+here as the order of magnitude and `scripts/build.sh teensy41-optical` as the
+authority. It has already moved once since the table above: `c20a03c8e` added
+seven `uint32_t` edge-detection statics and took it to **9,248**. That is the
+point — a zone this small is measured, not remembered, which is why the gate that
+reports it was the first thing fixed in this sequence. `AiusAudioProcessor::enqueue()` alone places about 4 kB of frame
 in it from the audio interrupt path (`src/optical_main.cpp:662`), so roughly 45 % of
 the true headroom belongs to one hot function. Every placement decision below
 follows from that scarcity, and from §Deciding principle's rule that "memory that is

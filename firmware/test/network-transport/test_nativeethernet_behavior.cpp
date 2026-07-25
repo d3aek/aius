@@ -467,12 +467,40 @@ void test_adapter_socket_result_mapping()
     assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
            io.fault == 0u);
 
+    /* FNET's receive convention, not the POSIX one. _fnet_tcp_rcv() falls
+     * through to `return (fnet_int32_t)len;` with len == 0 for a connected
+     * socket whose receive buffer is empty (stack/fnet_tcp.c:776), so a zero
+     * return is "nothing yet" and must not tear the connection down -- a POST
+     * whose body arrives in a second TCP segment reads zero between the
+     * segments and would otherwise be answered with a zero-byte close. */
     fake.recv_result = 0;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+
+    /* Closure is FNET_ERR carrying one of the two closure codes: CONNCLOSED
+     * when the FIN arrived with the buffer drained (fnet_tcp.c:768-772),
+     * NOTCONN when the socket has already left SS_CONNECTED (754-757). */
+    fake.recv_result = FNET_ERR;
+    fake.socket_error = FNET_ERR_CONNCLOSED;
     io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
            io.fault == 0u);
 
-    fake.recv_result = FNET_ERR;
+    fake.socket_error = FNET_ERR_NOTCONN;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u &&
+           io.fault == 0u);
+
+    /* Anything else is a genuine socket fault: FNET_ERR_INVAL here, which the
+     * recvfrom wrapper raises for a null buffer (stack/fnet_socket.c:1098). */
+    fake.socket_error = FNET_ERR_INVAL;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+
+    /* And a code the adapter names nowhere at all (-9, FNET_ERR_NOPROTOOPT):
+     * the default is FAULT, not a guess at closure. */
     fake.socket_error = -9;
     io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&

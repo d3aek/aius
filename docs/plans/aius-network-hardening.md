@@ -240,7 +240,42 @@ are follow-up work, recorded here so they are not lost.
    `aius_dsp_config` instead was considered and rejected — its only public entry
    is a DSP-model parse, so it would need a new generic API on a schema-specific
    library and the same link edit anyway.
-9. **Five source comments still quote the pre-fix DTCM free figure** —
+9. **`write_once()` has the receive path's defect and cannot be fixed in place.**
+   `read_once()`'s FNET misclassification is fixed; the send path has the same
+   asymmetry one layer down. `EthernetClass::socketSend`
+   (`vendor/NativeEthernet/src/Nativesocket.cpp:327-334`) returns `0` for **both**
+   FNET outcomes — no room in the output buffer (`fnet_tcp.c:848-852`, a
+   would-block) and a socket that has left `SS_CONNECTED` (`:817-821`, a closure)
+   — and `EthernetClient::write` calls `setWriteError()` on the collapsed zero. So
+   **a peer that closes mid-response is reported as a socket fault rather than
+   `CLOSED`**, and **a transient netheap shortage is reported as a socket fault
+   rather than `WOULD_BLOCK`**. The second is reachable because
+   `socketSendAvailable()` is `SO_SNDBUF - SO_SNDNUM` and does not model
+   `_fnet_tcp_snd`'s extra clamp (`fnet_tcp.c:833-836`), so reported capacity can
+   exceed what the send will accept. Fixing it needs either a vendor patch —
+   pinned by `PATCHED_SHA256` and the source-contract suite — or replacing
+   `g_client.write()` with a raw `fnet_socket_send()`, which changes the write
+   contract and the `NOTICE.md` patch inventory. Neither is a drive-by.
+10. **The network-transport fake models FNET wrongly in five further places**,
+    which matters more than any single one of them: a committed test asserted the
+    `read_once()` defect *as correct behaviour* for months. The cause was a
+    vocabulary gap rather than a POSIX assumption — `fake/fnet.h` defined only
+    `FNET_ERR` and `FNET_ERR_AGAIN`, exactly the set the adapter referenced, so
+    `recv_result = 0` was the only expressible way to write a closure row. The
+    header was derived from the adapter, then the test confirmed the adapter
+    against the header, and nothing in that loop ever touched the dependency. The
+    tell nobody noticed: `udp_receive_once`'s `0 → WOULD_BLOCK` row sits about
+    forty lines below the TCP `0 → CLOSED` row **in the same test function**,
+    asserting the opposite mapping for the same return value. Still divergent:
+    `fnet_socket_close()` is `void` in the fake against `fnet_return_t` real, so
+    no test can express a failing close and `close_once()` nulls the descriptor
+    regardless; `fnet_socket_recv()` ignores `MSG_PEEK` and so is always a peek,
+    while the vendor's `socketRecvAvailable()` genuinely uses it; `fnet_error_get()`
+    returns `int8_t` rather than the enum; `fnet_socket_accept()` does not set
+    `AGAIN` on nothing-pending; and `getsockopt(SO_SNDNUM)` is hard-wired to 0,
+    which is precisely what conceals defect 9. **A fake derived from the caller
+    instead of the dependency can only ever confirm the caller's beliefs.**
+11. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every
@@ -1090,8 +1125,18 @@ underlying state-changing or socket I/O operation and returns. `write_once()`
 writes no more than current capacity and never waits. `close_once()` closes
 and clears the sole accepted client and is idempotent. Data calls return
 `PROGRESS` only with `1..capacity` bytes; zero capacity returns `WOULD_BLOCK`
-without a primitive call. FNET `AGAIN` is `WOULD_BLOCK`; peer closure is
-`CLOSED`; every other negative result or NativeEthernet write error is
+without a primitive call.
+
+FNET does not use the POSIX receive convention, and the mapping follows FNET's
+rather than POSIX's. **A zero-byte FNET receive on a connected socket is
+`WOULD_BLOCK`, not `CLOSED`** — `_fnet_tcp_rcv()` falls through to
+`return (fnet_int32_t)len;` with `len == 0` whenever the receive buffer is empty
+(`stack/fnet_tcp.c:776`), which is the ordinary state between two segments of one
+request. **Peer closure surfaces instead as `FNET_ERR` with `fnet_error_get()`
+returning `FNET_ERR_CONNCLOSED`** (FIN received, buffer drained; `fnet_tcp.c:768-772`)
+**or `FNET_ERR_NOTCONN`** (socket has left `SS_CONNECTED`; `754-757`), and both map
+to `CLOSED`. FNET `AGAIN` is `WOULD_BLOCK`, though this receive path never
+produces it. Every other negative result or NativeEthernet write error is
 `FAULT` with `AIUS_NET_FAULT_SOCKET`. Non-fault results have zero `fault`, and
 `FAULT` has zero bytes and a nonzero fault.
 

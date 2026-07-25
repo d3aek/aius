@@ -198,8 +198,10 @@ straight out of the audio path's headroom. Three rules, all enforced:
   source defines a no-op fallback so the host suites still compile Arduino-free.
 - **Large buffers in `DMAMEM`** (OCRAM). The composed runtime is roughly 35 kB,
   dominated by the HTTP request/response buffers and the model-sized application
-  body buffer, against a DTCM free-for-locals zone measured at **9,280 bytes**
-  (`_estack - _ebss`, `teensy41-optical`); a DTCM instance could not fit. The
+  body buffer, against a DTCM free-for-locals zone of **rather under 10 kB**
+  (`_estack - _ebss`, `teensy41-optical`; 9,248 bytes as of `c20a03c8e`, and it
+  moves with every static added, so read it from the build); a DTCM instance
+  could not fit. The
   active and pending DSP models, the replay service and the three UDP buffers are
   placed the same way. That zone is the whole stack, main loop and audio ISR
   both — `enqueue()` alone places about 4 kB of frame in it from the audio

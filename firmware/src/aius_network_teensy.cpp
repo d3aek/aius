@@ -287,10 +287,26 @@ AiusIoEvent read_once(uint8_t *buffer, size_t capacity)
 	if (result > 0) {
 		return io_event(AIUS_IO_PROGRESS, (size_t)result);
 	}
+	/* FNET does not use the POSIX "zero means EOF" rule. _fnet_tcp_rcv()
+	 * falls through to `return (fnet_int32_t)len;` with len == 0 for a
+	 * connected socket whose receive buffer is empty (fnet_tcp.c:776), so a
+	 * zero return is "nothing yet". Reading it as closure is what answered a
+	 * POST whose body landed in a second segment with a zero-byte close: the
+	 * read between the two segments tore the connection down.
+	 */
 	if (result == 0) {
+		return io_event(AIUS_IO_WOULD_BLOCK);
+	}
+	/* Closure is FNET_ERR carrying one of two codes -- CONNCLOSED once the
+	 * FIN has been received and the buffer is drained (fnet_tcp.c:768-772),
+	 * NOTCONN once the socket has left SS_CONNECTED (754-757). AGAIN is kept
+	 * because the contract names it, though this path never produces it.
+	 */
+	const int error = fnet_error_get();
+	if (error == FNET_ERR_CONNCLOSED || error == FNET_ERR_NOTCONN) {
 		return io_event(AIUS_IO_CLOSED);
 	}
-	return fnet_error_get() == FNET_ERR_AGAIN
+	return error == FNET_ERR_AGAIN
 		       ? io_event(AIUS_IO_WOULD_BLOCK)
 		       : io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
 }
