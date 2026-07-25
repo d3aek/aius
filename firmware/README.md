@@ -198,9 +198,12 @@ straight out of the audio path's headroom. Three rules, all enforced:
   source defines a no-op fallback so the host suites still compile Arduino-free.
 - **Large buffers in `DMAMEM`** (OCRAM). The composed runtime is roughly 35 kB,
   dominated by the HTTP request/response buffers and the model-sized application
-  body buffer, against a DTCM free-for-locals zone of about 24 kB; a DTCM
-  instance could not fit. The active and pending DSP models, the replay service
-  and the three UDP buffers are placed the same way.
+  body buffer, against a DTCM free-for-locals zone measured at **9,280 bytes**
+  (`_estack - _ebss`, `teensy41-optical`); a DTCM instance could not fit. The
+  active and pending DSP models, the replay service and the three UDP buffers are
+  placed the same way. That zone is the whole stack, main loop and audio ISR
+  both — `enqueue()` alone places about 4 kB of frame in it from the audio
+  interrupt path.
 - **Two post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
   run by every optical build. The first fails the link if any declared cold
   object emits executable `.text`, and makes the declaration non-optional: a new
@@ -243,6 +246,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, one watchdog feed, and the absence of the legacy path. |
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
+| `memory` | The per-bank release gate `build.sh` fails the build on, driven over a committed ELF reduction of a real optical image. |
 | `itcm-placement` | The two post-link ITCM guards, re-run over an existing optical build. |
 
 The `dts`/`dts-lfe` suites run against committed reference PCM, so `ffmpeg` /

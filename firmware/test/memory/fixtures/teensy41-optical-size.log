@@ -1,0 +1,10 @@
+Linking .pio/build/teensy41-optical/firmware.elf
+Calculating size .pio/build/teensy41-optical/firmware.elf
+Checking size .pio/build/teensy41-optical/firmware.elf
+Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
+teensy_size: Memory Usage on Teensy 4.1:
+teensy_size:   FLASH: code:378036, data:185104, headers:8728   free for files:7554596
+teensy_size:    RAM1: variables:308644, code:173576, padding:23032   free for local variables:19036
+teensy_size:    RAM2: variables:91456  free for malloc/new:432832
+Building .pio/build/teensy41-optical/firmware.hex
+========================= [SUCCESS] Took 26.63 seconds =========================

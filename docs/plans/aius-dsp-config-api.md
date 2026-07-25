@@ -46,87 +46,138 @@ Concretely, when a decision is contested:
 
 ### Resume here
 
-**B3, Phase 14, is 7 of 11 slices in.** S0, P1a, P1b, R1, R2, P2 and S1 are
-delivered and pushed; the breakdown and per-slice commits are in
-[§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
-with the findings that forced the re-scope under "Prebuild review findings".
+**Phase 14 is delivered and the board is running it.** All fifteen slices landed
+(S0, P1a, P1b, R1, R2, P2, S1, C1, S2a, S2b, S3a, S3b, S4, S5, S6, S7), plus 14b
+(meters) and 14c (replay refill onto a bounded job). Four of those slices were not
+in the original breakdown and were forced by what the work found: **C1** when S2a
+linked the portable engines and RAM1 went 8,612 bytes over, **S3a/S3b** when S3
+proved too large for one reviewable unit, and **S6/S7** when S5 found an
+acceptance criterion unmet and then that nothing proved the device met it.
 
-**Phase 14 is delivered.** All fifteen slices are landed and pushed: S0, P1a, P1b,
-R1, R2, P2, S1, C1, S2a, S2b, S3a, S3b, S4, S5, S6 and S7. The cutover is
-structurally complete — `optical-cutover` passes 6/6 positive and 5/5 absence, the
-standing guard set below is green, and both images build with all banks fitting
-and three post-link guards passing.
+#### The board, and how to reach it
 
-**"The standing suites are green" was not a checkable claim** until a registry
-audit on 2026-07-25 counted them: this document has said twelve in one place and
-eighteen in another, while **33 suites exist**. The twelve enumerated in
-§Corrections are the network-and-runtime guard for this phase's work, not the
-whole runner. The other 21 run and pass but belong to no routine sweep, which is
-worth knowing before reading any "all suites green" statement here as
-comprehensive.
+Serving at **192.0.2.66**. USB needs a group wrapper because the login is stale:
+`sg dialout -c "<command>"` for the CDC port, `sg plugdev -c "<command>"` for the
+Teensy loader — they are different groups and both are needed.
 
-Four slices were not in the original breakdown and were forced by what the work
-found: **C1** when S2a linked the portable engines and RAM1 went 8,612 bytes over,
-**S3a/S3b** when S3 proved too large for one reviewable unit, and **S6/S7** when
-S5 found an acceptance criterion unmet and then that nothing proved the device met
-it.
+Flashing is now reliable: `AIUS BOOTLOADER <id>` over CDC enters HalfKay on the
+first attempt (five consecutive trials with a reflash between each), against 48
+failed attempts before that fix. The SD maintenance token is read with
+`AIUS AUTH <id>`; it is stable for the life of the board and
+[`docs/reference/usb-control-protocol.md`](../../docs/reference/usb-control-protocol.md)
+explains why and where to keep it. The card's web tree is provisioned and correct.
 
-**14b is delivered** (`72ba01fe1`) — the meters endpoint and its per-block
-accumulate tap, the one genuinely hot addition in the plan. **14c is next**,
-restoring replay refill onto a bounded job and lifting the `replay_start` refusal.
+**Confirmed on hardware:** boot, one epoch per `loop()`, the watchdog not
+resetting in normal operation, SD probe and both config loads, the status surface
+on all three channels, `POST /api/reboot`, software bootloader entry, the SD
+directory index, and DHCP reaching ONLINE on generation 1 with no fault after the
+readiness gate landed.
 
-**Then flash the board.** [§Phase 14f](#phase-14f--first-flash-and-assumption-validation)
-comes before the two reference documents, deliberately: nothing in Phase 14 has
-ever executed, and 14d and 14e are both required to carry measured figures rather
-than estimates. Writing them first would mean writing numbers we would then have
-to correct.
+**Not yet confirmed on hardware:** anything in the audio path. There is no S/PDIF
+carrier — the optical input is unsoldered — so `blocks` is 0, the DSP has never
+run, and the meters endpoint has never published. The per-block cost in 14b is
+still a static estimate.
 
-**The board is reachable from this environment.** The agent user is in `dialout`
-with a stale login, so USB commands need `sg dialout -c "<command>"`. Confirmed
-2026-07-25. The deployed board currently runs the **pre-cutover** image
-(`062e96ed193d`, 2026-07-23) with `link=2` (`LinkOFF`), no lease and no HTTP,
-while its USB control plane answers — so the network is down at the physical
-layer, which is a firmware fault under §Trusted fixture boundary until firmware
-evidence says otherwise.
+**The next flash is the interesting one**, and carries three unvalidated things
+at once: the SD failure diagnostics (`0bcc32eec`), and the clock handover
+(`24ff70f7b`) which should make replay actually produce audio. What to look for,
+with the input still unsoldered: start a replay and **`blocks` on
+`GET /api/status` should climb continuously** while `overruns` stays at or near 0
+— both were frozen at 0, which is how the defect was found. Stop it and `blocks`
+should freeze with the output going digitally silent and `stop_reason:"request"`.
 
-After 14f, 14d and 14e land with real numbers, then the clean-room delivery audit.
+That run also finally yields the **measured per-block DSP cost** from the DWT
+counters on `GET /api/meters`, which is the last estimate standing in this plan
+and a prerequisite for Phase 14e.
 
-**Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
-the rest of this plan proceed without per-decision sign-off, resolved against
-§Deciding principle above, with a clean-room audit at the end for review rather
-than a decision gate at each step. Record each decision and its reasoning here as
-it is taken, so the audit has something to check and a later session is not left
-guessing why. Escalate only what the principle genuinely cannot resolve.
+Once the input is soldered: `blocks` must climb from passthrough alone with no
+replay, and starting a replay must end `stopped` with `stop_reason:"carrier"` and
+a type-3 event.
 
-Decisions already taken, so do not re-open them:
+#### What is in flight
 
-- **A `PUT` returns 200 only after the SD write commits, and the delivered
-  transaction already does this** — it buffers the formatted response and reaches
-  `SEND` only on `AIUS_HTTP_SD_COMPLETE`. What is optimistic is the dispatcher's
-  immediate 200. P1a relaxes one admission rule; P1b moves the two config routes
-  onto an SD job.
-- **The large DSP model streams; `AIUS_HTTP_MAX_RESPONSE` does not move.**
-  Raising it would grow two legacy DTCM stack frames while the legacy path is
-  still the only working one.
-- **Replay refill is deferred to Phase 14c**, landing before B6 — **accepted
-  2026-07-25**. It is a redesign of the portable `aius_replay` reader seam, not a
-  port, so it does not belong in a slice serialized on `optical_main.cpp`.
-  **`POST /api/replays/start` is refused from S2a until 14c lands** — its start
-  path blocks, and refusing it also keeps any SD job from re-mounting the card
-  under an open replay handle.
-- **The firmware I/O reference is Phase 14d**, scheduled deliberately last because
-  every earlier slice still moves I/O. It documents every I/O path, its buffers
-  and banks, the rationale for the implementation chosen, and why none of it can
-  perturb the DSP hot path.
-- **The `/api/meters` wire shape is settled**, in
-  [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters endpoint: dBFS
-  floored at `-120.0`, six positional inputs, `[L, R]` output arrays, per-mille
-  integer waveform, `sequence == 0` served as a valid 200.
-- **The the app dashboard is ignored until B9.** Its browser scenario fails
-  today and that is expected.
+Two slices were running when this session ended. **Check their state before
+starting anything**: `git status`, and re-run the standing sweep.
 
-Everything through B2 is delivered and pushed. Nothing is in flight and no
-question is outstanding.
+Both landed before the session closed. The memory gate now agrees with the linker
+symbols and reports `omits: NonCacheable 9756B` explicitly, and a `memory` suite is
+registered and green.
+
+#### The 409 refusal is the one piece of specified work not shipped
+
+The clock handover landed (`24ff70f7b`) but its refusal did not, because it needs
+three files that slice did not own. **This is the first thing to finish.**
+
+1. `src/aius_optical_app.h` — add `AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT` to
+   `AiusOpticalAppReplayResult`.
+2. `src/aius_optical_app.cpp` — a `replay_start` switch arm returning
+   `http_error(dispatcher, 409, "replay_carrier_present")`. The existing
+   `ACTIVE`/`FAILED` arms fall through to `409 "replay_start"`, which the owner
+   explicitly excluded — a client must be able to tell "bad id" from "live input
+   present".
+3. `test/optical-app/test_optical_app.c` — the replay-start error table asserts
+   exact bodies and needs the new case.
+
+Then two lines at the top of `app_replay_start()` in `optical_main.cpp` returning
+the new result when `AudioInputSPDIF3::pllLocked()`.
+
+Until that lands, a start issued with a live carrier returns **200** and is then
+stopped at the next checkpoint — observable as `stop_reason:"carrier"` plus a
+type-3 event, so visible rather than silent, but not the specified status. A
+half-refusal reusing the existing token was deliberately not shipped.
+
+Also undocumented: `stop_reason` is a wire-shape addition to
+`GET /api/replays/status` and needs a line in `aius-dsp-config-api.md`.
+
+#### Open defects, in the order they are worth taking
+
+1. ~~**`mem_report.py` under-reports DTCM by ~10.8 KB.**~~ **Fixed.** The gate now
+   reads the linked ELF's section table and linker symbols rather than regexing
+   `teensy_size:`, so an orphan-placed section cannot be invisible to it. Measured
+   DTCM free-for-locals on `teensy41-optical` is **9,280 bytes**, not 19,036; the
+   difference is `NonCacheable`, now named explicitly. A `memory` suite is
+   registered and green. Full account in
+   [`aius-network-hardening.md`](aius-network-hardening.md#the-memory-gate-under-reports-dtcm-by-108-kb).
+2. **`500 sd_failure` on large SD uploads**, roughly 1 in 15, succeeds on retry.
+   Diagnostics landed (`0bcc32eec`) and are **not yet flashed**. A structural hole
+   was found and is real — the root driver's yield cannot see an HTTP transaction
+   admitted but whose `SD_START` has not yet been emitted, a one-epoch window — but
+   the arithmetic gives ~1e-4 against an observed ~1-in-15, three orders of
+   magnitude short. The one-line fix is recorded in §Phase 14f and deliberately
+   **not applied**, because it would look like a resolution while possibly leaving
+   the real defect. Flash, reproduce, then read `sd_diag.last_failure`; the
+   convicting values for each hypothesis are tabulated there.
+3. **`"source":"default"` is a hardcoded literal** in the status JSON format
+   string, so that field never reflects the actual source and reads `default` even
+   mid-replay.
+4. **`record_event` has only two call sites** — the S/PDIF lock transition and the
+   test-tone toggle. Everything else observable is a counter, not an event. Closing
+   this is the prerequisite to any push observability being worth having; see the
+   syslog assessment.
+5. **The suite registry is hand-maintained with no guard.** Two orphans were found
+   today (`test/auth/test_auth.c`, `test/config/test_config.c`), both live code,
+   both never run. The proposed `registry` suite is described in the audit commit
+   and is not built.
+
+#### Decisions taken, so they are not re-opened
+
+- **A network syslog sender was assessed and declined.** Not on cost — the event
+  ring has two call sites, so it would carry a lock change and nothing else. An
+  absent collector is undetectable in both directions, and the board cannot claim
+  a timestamp. Polling with the existing runner closes most of the gap, and the
+  retained boot ledger already covers the pre-reset case better than log lines
+  would. If ever built, it belongs after B6. Full reasoning in §Network syslog.
+- **The link gate is kept though it is inert here**, because it is correct for a
+  genuinely dead link and bounds that at 3 s.
+- **The replay refill port stayed out of Phase 14** and landed as 14c.
+
+#### Next
+
+**14f, the first flash and assumption validation**, remains the gate before 14d
+and 14e — both are required to carry measured figures, and the memory gate above
+must be fixed first or they will document the wrong numbers. Then B6, the live
+recovery smoke, which has never run and is what proves the watchdog and recovery
+contract this whole plan exists to establish.
 
 ### Why the two strands are coupled
 

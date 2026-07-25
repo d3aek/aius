@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
-#         optical-cutover, runtime-target, itcm-placement.
+#         optical-cutover, runtime-target, memory, itcm-placement.
 #
 # Every suite is host-only and self-contained except `itcm-placement`, which
 # inspects the linked objects of an optical image and therefore needs a current
@@ -508,6 +508,16 @@ sd-target)
 		"$fw_root/src/aius_sd_teensy.cpp" \
 		-o "$sd_target_out"
 	"$sd_target_out"
+	;;
+memory)
+	# The per-bank memory report, tools/memory/mem_report.py -- the P4 release
+	# gate build.sh fails the build on. It derives every bank figure from the
+	# linked ELF's section table and linker symbols, so the suite drives its CLI
+	# over a committed reduction of a real optical image (section headers, program
+	# headers and linker symbols, byte-for-byte from the linker) plus the matching
+	# teensy_size log. Host-only: no cross-build and no cross toolchain, unlike
+	# itcm-placement below.
+	python3 "$fw_root/test/memory/test_mem_report.py"
 	;;
 itcm-placement)
 	# The post-link ITCM placement guard: two checks, cold objects emit no

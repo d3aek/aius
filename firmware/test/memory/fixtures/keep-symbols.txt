@@ -1,0 +1,14 @@
+_stext
+_etext
+_sdata
+_edata
+_sbss
+_ebss
+_estack
+_heap_start
+_heap_end
+_extram_start
+_extram_end
+_itcm_block_count
+_flashimagelen
+_ZN18AiusAudioProcessor14g_arena_memoryE
