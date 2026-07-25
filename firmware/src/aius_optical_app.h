@@ -40,11 +40,19 @@ extern "C" {
  * serializer callbacks receive whatever the caller supplied. */
 #define AIUS_OPTICAL_APP_MIN_BODY 256u
 
-/* Result of handing a validated request body to the application for storage.
- * BUSY means a storage transaction is already in flight, STALE that the body's
- * base_generation no longer matches the running configuration. */
+/* Result of handing a request body to the application for storage. Acceptance
+ * and the response are separate facts: ACCEPTED says the application validated
+ * the body and staged it in RAM but has written nothing, so the dispatcher owns
+ * persisting the raw bytes and the client's 200 is the SD job's -- withheld
+ * until the write commits, with a failed write surfacing as 500 sd_commit /
+ * 507 sd_write. OK says the application handled the body completely and nothing
+ * needs writing, so the 200 is immediate. BUSY means a storage transaction is
+ * already in flight, STALE that the body's base_generation no longer matches
+ * the running configuration, and INVALID that the body did not parse; all three
+ * answer immediately and reach the card not at all. */
 typedef enum {
 	AIUS_OPTICAL_APP_STORE_OK,
+	AIUS_OPTICAL_APP_STORE_ACCEPTED,
 	AIUS_OPTICAL_APP_STORE_INVALID,
 	AIUS_OPTICAL_APP_STORE_STALE,
 	AIUS_OPTICAL_APP_STORE_BUSY
@@ -77,6 +85,10 @@ typedef struct {
 	size_t (*write_replay_status)(void *context, uint8_t *body, size_t capacity);
 	size_t (*write_replay_list)(void *context, uint8_t *body, size_t capacity);
 
+	/* Validate and stage one complete request body; write nothing. On
+	 * ACCEPTED the dispatcher persists those exact bytes to /aius/config.json
+	 * and /aius/dsp.json respectively, so the stored file re-parses through the
+	 * same parser at the next boot. */
 	AiusOpticalAppStoreResult (*store_public_config)(void *context,
 	                                                 const uint8_t *body,
 	                                                 size_t length);
@@ -103,8 +115,26 @@ typedef struct {
 	uint32_t (*upload_id)(void *context);
 } AiusOpticalApp;
 
-/* Caller-owned dispatcher state. The returned response borrows this object's
- * storage until the next dispatch call on the same dispatcher. */
+/* Caller-owned dispatcher state.
+ *
+ * Borrow invariant: the returned response borrows this object's storage --
+ * `body`, `target_path`, `temp_path`, `backup_path`, `replay_id` -- until the
+ * next HTTP dispatch on the same dispatcher, and that is strictly later than
+ * the caller returning from the dispatch call. A body larger than
+ * AIUS_HTTP_MAX_RESPONSE is sent straight out of `body` over roughly 25 socket
+ * writes (aius_http_transaction.c format_stream_response), and an SD job reads
+ * the three path buffers for the whole job, so nothing here may be rewritten
+ * before the transaction reports the request finished.
+ *
+ * Two mechanisms make that exclusive today, and any storage added here -- the
+ * Phase 14b write_meters buffer included -- must hold both. First, the
+ * transaction emits AIUS_HTTP_ACTION_DISPATCH only from state
+ * AIUS_HTTP_TX_DISPATCH and only once per request (`dispatch_emitted`,
+ * aius_http_transaction.c:1611), so no second HTTP dispatch can run while a
+ * response drains in AIUS_HTTP_TX_SEND or an SD job runs in
+ * AIUS_HTTP_TX_SD_TRANSFER. Second, USB dispatch shares one dispatcher with
+ * HTTP every runtime epoch but writes only `usb_payload` / `usb_response`, so
+ * an interleaved USB command cannot disturb an in-flight HTTP response. */
 typedef struct {
 	AiusOpticalApp app;
 	uint8_t *body;

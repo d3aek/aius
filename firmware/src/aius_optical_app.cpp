@@ -21,6 +21,12 @@
 
 #define AIUS_OPTICAL_APP_SD_ROOT "/aius/"
 #define AIUS_OPTICAL_APP_REPLAY_ROOT "/aius/replays/"
+/* The two config files the pre-cutover firmware writes, under the same root:
+ * optical_main.cpp:1742 and :1794 pass "/aius/config.json" and "/aius/dsp.json"
+ * to http_sd_upload_begin_target(). Named once so the literal the /sd/ route's
+ * public-config refusal matches against is the same one the write targets. */
+#define AIUS_OPTICAL_APP_CONFIG_NAME "config.json"
+#define AIUS_OPTICAL_APP_DSP_NAME "dsp.json"
 
 static const char *const kContentJson = "application/json";
 static const char *const kContentHtml = "text/html; charset=utf-8";
@@ -139,9 +145,11 @@ static FLASHMEM bool path_append(char *path, size_t capacity, size_t *length,
 
 static FLASHMEM bool resource_is_config(const AiusHttpRequest *request)
 {
-	return request->resource != NULL && request->resource_length >= 11u &&
-	       memcmp(request->resource + request->resource_length - 11u,
-	              "config.json", 11u) == 0;
+	size_t name_length = sizeof(AIUS_OPTICAL_APP_CONFIG_NAME) - 1u;
+	return request->resource != NULL &&
+	       request->resource_length >= name_length &&
+	       memcmp(request->resource + request->resource_length - name_length,
+	              AIUS_OPTICAL_APP_CONFIG_NAME, name_length) == 0;
 }
 
 static FLASHMEM bool resource_suffix_is(const AiusHttpRequest *request,
@@ -233,16 +241,16 @@ static FLASHMEM bool build_replay_path(char *path, size_t capacity,
 	       path_append(path, capacity, &length, suffix, strlen(suffix));
 }
 
-/* /aius/<resource> */
-static FLASHMEM bool build_resource_path(char *path, size_t capacity,
-                                         const AiusHttpRequest *request)
+/* /aius/<name> -- one layout for both the /sd/ resource tree and the two config
+ * files the API writes. */
+static FLASHMEM bool build_root_path(char *path, size_t capacity,
+                                     const char *name, size_t name_length)
 {
 	size_t length = 0u;
 	path[0] = '\0';
 	return path_append(path, capacity, &length, AIUS_OPTICAL_APP_SD_ROOT,
 	                   sizeof(AIUS_OPTICAL_APP_SD_ROOT) - 1u) &&
-	       path_append(path, capacity, &length, (const char *)request->resource,
-	                   request->resource_length);
+	       path_append(path, capacity, &length, name, name_length);
 }
 
 /* Distinct per upload so an orphaned temporary from an earlier job can never be
@@ -440,8 +448,10 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 		                 sizeof("{\"ok\":true}") - 1u);
 	}
 	if (!resource_path_valid(request) ||
-	    !build_resource_path(dispatcher->target_path,
-	                         sizeof(dispatcher->target_path), request) ||
+	    !build_root_path(dispatcher->target_path,
+	                     sizeof(dispatcher->target_path),
+	                     (const char *)request->resource,
+	                     request->resource_length) ||
 	    !build_upload_scratch(dispatcher, true))
 		return http_error(dispatcher, 507, "sd_upload");
 	return sd_upload(dispatcher, AIUS_SD_INSTALL_REPLACE,
@@ -472,8 +482,10 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 		content_type = kContentBinary;
 	} else {
 		if (!resource_path_valid(request) ||
-		    !build_resource_path(dispatcher->target_path,
-		                         sizeof(dispatcher->target_path), request))
+		    !build_root_path(dispatcher->target_path,
+		                     sizeof(dispatcher->target_path),
+		                     (const char *)request->resource,
+		                     request->resource_length))
 			return http_error(dispatcher, 404, "sd_path");
 		content_type = resource_content_type(request);
 	}
@@ -492,11 +504,50 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 	return http_error(dispatcher, 405, "sd_method");
 }
 
+/* An accepted body becomes the write itself rather than an optimistic 200. The
+ * transaction formats this response now but buffers it, entering
+ * AIUS_HTTP_TX_SD_START immediately (aius_http_transaction.c:762) and reaching
+ * SEND only on AIUS_HTTP_SD_COMPLETE, so the client sees 200 only after the
+ * commit and a failed write still surfaces as the pre-cutover 500 sd_commit /
+ * 507 sd_write through select_sd_error(). P1a admits the complete buffered body
+ * that both these routes carry, provided total equals the body length.
+ *
+ * publish stays false by construction: the application parsed and validated the
+ * model into RAM before accepting, so republishing the written bytes would
+ * prove nothing the parser has not already proved.
+ *
+ * The on-card layout is the pre-cutover one -- /aius/<name> installed through
+ * the /aius/.upload-*.tmp + /aius/.backup-*.bak scratch pair that
+ * http_sd_upload_begin_target() built via sd_job_make_upload_paths()
+ * (optical_main.cpp:1490, :1742, :1794). A name that will not fit keeps that
+ * function's only refusal, 503 sd_busy. */
+static FLASHMEM const AiusHttpApplicationResponse *store_upload(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request,
+	const char *name, size_t name_length)
+{
+	if (!build_root_path(dispatcher->target_path,
+	                     sizeof(dispatcher->target_path), name, name_length) ||
+	    !build_upload_scratch(dispatcher, true))
+		return http_error(dispatcher, 503, "sd_busy");
+	/* total must equal the transaction's body_expected, which is the parsed
+	 * Content-Length; a buffered route reaches dispatch only with a complete
+	 * body, so that is also request->body_length. */
+	return sd_upload(dispatcher, AIUS_SD_INSTALL_REPLACE,
+	                 request->content_length, 0u,
+	                 (const uint8_t *)"{\"ok\":true}",
+	                 sizeof("{\"ok\":true}") - 1u);
+}
+
+/* Every refusal stays immediate and reaches the card not at all; only an
+ * accepted body becomes a job. */
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_store(
-	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppStoreResult result,
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request,
+	AiusOpticalAppStoreResult result, const char *name, size_t name_length,
 	const char *invalid_token)
 {
 	switch (result) {
+	case AIUS_OPTICAL_APP_STORE_ACCEPTED:
+		return store_upload(dispatcher, request, name, name_length);
 	case AIUS_OPTICAL_APP_STORE_OK:
 		return http_json(dispatcher, 200, "{\"ok\":true}");
 	case AIUS_OPTICAL_APP_STORE_STALE:
@@ -524,9 +575,11 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_dsp_config(
 		return http_error(dispatcher, 401, "sd_auth");
 	if (!app->sd_ready(app->context))
 		return http_error(dispatcher, 503, "sd_unavailable");
-	return dispatch_store(dispatcher,
+	return dispatch_store(dispatcher, request,
 	                      app->store_dsp_config(app->context, request->body,
 	                                            request->body_length),
+	                      AIUS_OPTICAL_APP_DSP_NAME,
+	                      sizeof(AIUS_OPTICAL_APP_DSP_NAME) - 1u,
 	                      "dsp_config_invalid");
 }
 
@@ -536,9 +589,11 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_config_public(
 	const AiusOpticalApp *app = &dispatcher->app;
 	if (!app->sd_ready(app->context))
 		return http_error(dispatcher, 503, "sd_unavailable");
-	return dispatch_store(dispatcher,
+	return dispatch_store(dispatcher, request,
 	                      app->store_public_config(app->context, request->body,
 	                                               request->body_length),
+	                      AIUS_OPTICAL_APP_CONFIG_NAME,
+	                      sizeof(AIUS_OPTICAL_APP_CONFIG_NAME) - 1u,
 	                      "config_invalid");
 }
 

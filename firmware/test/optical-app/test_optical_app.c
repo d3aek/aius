@@ -275,8 +275,10 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.sd_ready = true;
 	fixture->fake.sd_busy = false;
 	fixture->fake.serializers_fit = true;
-	fixture->fake.public_store = AIUS_OPTICAL_APP_STORE_OK;
-	fixture->fake.dsp_store = AIUS_OPTICAL_APP_STORE_OK;
+	/* The delivered store callbacks validate into RAM and write nothing, so a
+	 * good body is ACCEPTED and the dispatcher owns the write. */
+	fixture->fake.public_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
+	fixture->fake.dsp_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
 	fixture->fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.upload_id = 0x1234abcdu;
@@ -375,6 +377,38 @@ static void expect_immediate(const AiusHttpApplicationResponse *response,
 	assert(!response->sd_job.publish);
 	assert(response->sd_job.publish_capacity == 0u);
 	assert(!response->sd_job.require_existing);
+}
+
+/* An accepted config PUT answers with the write itself: an UPLOAD/REPLACE job
+ * whose 200 the transaction formats now but holds until the commit lands, so
+ * the pre-cutover 500 sd_commit / 507 sd_write surface survives. `total` is the
+ * one field accept_application cross-checks against the transaction's
+ * body_expected, and content_type must stay NULL on a non-publishing upload or
+ * sd_request_fields_valid refuses the whole response. */
+static void expect_config_job(const AiusHttpApplicationResponse *response,
+                              const char *target, unsigned long sequence,
+                              uint64_t total)
+{
+	char temp[AIUS_SD_PATH_STORAGE];
+	char backup[AIUS_SD_PATH_STORAGE];
+	snprintf(temp, sizeof(temp), "/aius/.upload-1234abcd-%08lx.tmp", sequence);
+	snprintf(backup, sizeof(backup), "/aius/.backup-1234abcd-%08lx.bak",
+	         sequence);
+	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
+	                "{\"ok\":true}");
+	assert(response->sd_job.kind == AIUS_SD_JOB_UPLOAD);
+	assert(response->sd_job.install_mode == AIUS_SD_INSTALL_REPLACE);
+	/* Publishing the written bytes back would prove nothing the store callback
+	 * has not already proved by parsing them. */
+	assert(!response->sd_job.publish);
+	assert(response->sd_job.publish_capacity == 0u);
+	assert(!response->sd_job.require_existing);
+	assert(response->sd_job.content_type == NULL);
+	assert(response->sd_job.initial_offset == 0u);
+	assert(response->sd_job.total == total);
+	assert(strcmp(response->sd_job.target_path, target) == 0);
+	assert(strcmp(response->sd_job.temp_path, temp) == 0);
+	assert(strcmp(response->sd_job.backup_path, backup) == 0);
 }
 
 static void expect_log(const Fixture *fixture, const char *const *expected,
@@ -587,6 +621,26 @@ static void test_sd_media_and_paths(void)
 		              "/aius/replays/take1.iec") == 0);
 	}
 
+	/* The /aius/<name> builder the config routes now share, at its limit: the
+	 * longest resource the parser and the /sd/ rules admit is 96 bytes (three
+	 * 30-byte components), and "/aius/" + that is 102 of the 128-byte path
+	 * storage. */
+	{
+		static const char *const segment = "abcdefghijabcdefghijabcdefghij";
+		char line[160];
+		char expected[AIUS_SD_PATH_STORAGE];
+		const AiusHttpApplicationResponse *response;
+		snprintf(line, sizeof(line), "GET /sd/www/%s/%s/%s", segment, segment,
+		         segment);
+		snprintf(expected, sizeof(expected), "/aius/www/%s/%s/%s", segment,
+		         segment, segment);
+		assert(strlen(expected) == 102u);
+		response = dispatch_get(&fixture, line);
+		expect_response(response, AIUS_HTTP_APP_SD_JOB, 200,
+		                "application/octet-stream", NULL);
+		assert(strcmp(response->sd_job.target_path, expected) == 0);
+	}
+
 	fixture.fake.sd_busy = true;
 	expect_immediate(dispatch_get(&fixture, "GET /sd/www/index.html"), 503,
 	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
@@ -742,8 +796,7 @@ static void test_dsp_config_put(void)
 		AiusOpticalAppStoreResult result;
 		unsigned status;
 		const char *body;
-	} rows[] = {
-		{ AIUS_OPTICAL_APP_STORE_OK, 200, "{\"ok\":true}" },
+	} refusals[] = {
 		{ AIUS_OPTICAL_APP_STORE_INVALID, 400,
 		  "{\"ok\":false,\"error\":\"dsp_config_invalid\"}" },
 		{ AIUS_OPTICAL_APP_STORE_STALE, 409,
@@ -751,18 +804,47 @@ static void test_dsp_config_put(void)
 		{ AIUS_OPTICAL_APP_STORE_BUSY, 503,
 		  "{\"ok\":false,\"error\":\"sd_busy\"}" }
 	};
+	static const char *const put_body = "{\"base_generation\":1}";
 	fixture_init(&fixture);
 
-	for (size_t i = 0; i < ARRAY_LENGTH(rows); ++i) {
-		fixture.fake.dsp_store = rows[i].result;
+	/* Accepted: the model is already staged in RAM, so the answer is the SD
+	 * write of the verbatim body to the pre-cutover /aius/dsp.json. */
+	expect_config_job(dispatch_request(&fixture, "PUT /api/dsp/config",
+	                                   "X-Aius-SD-Auth: token\r\n", put_body,
+	                                   -1),
+	                  "/aius/dsp.json", 1ul, strlen(put_body));
+	assert(fixture.fake.stored_length == strlen(put_body));
+
+	/* Consecutive writes never reuse a scratch name. */
+	expect_config_job(dispatch_request(&fixture, "PUT /api/dsp/config",
+	                                   "X-Aius-SD-Auth: token\r\n", put_body,
+	                                   -1),
+	                  "/aius/dsp.json", 2ul, strlen(put_body));
+
+	/* A store that handled the body completely keeps the immediate 200. */
+	fixture.fake.dsp_store = AIUS_OPTICAL_APP_STORE_OK;
+	expect_immediate(dispatch_request(&fixture, "PUT /api/dsp/config",
+	                                  "X-Aius-SD-Auth: token\r\n", put_body, -1),
+	                 200, "{\"ok\":true}");
+
+	/* Every store refusal stays immediate, with its pre-cutover status. */
+	for (size_t i = 0; i < ARRAY_LENGTH(refusals); ++i) {
+		fixture.fake.dsp_store = refusals[i].result;
 		expect_immediate(dispatch_request(&fixture, "PUT /api/dsp/config",
-		                                  "X-Aius-SD-Auth: token\r\n",
-		                                  "{\"base_generation\":1}", -1),
-		                 rows[i].status, rows[i].body);
-		assert(fixture.fake.stored_length == strlen("{\"base_generation\":1}"));
+		                                  "X-Aius-SD-Auth: token\r\n", put_body,
+		                                  -1),
+		                 refusals[i].status, refusals[i].body);
+		assert(fixture.fake.stored_length == strlen(put_body));
 	}
 
-	fixture.fake.dsp_store = AIUS_OPTICAL_APP_STORE_OK;
+	/* Neither the immediate 200 nor any refusal consumed a scratch name: the
+	 * next accepted write is still sequence 3. */
+	fixture.fake.dsp_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
+	expect_config_job(dispatch_request(&fixture, "PUT /api/dsp/config",
+	                                   "X-Aius-SD-Auth: token\r\n", put_body,
+	                                   -1),
+	                  "/aius/dsp.json", 3ul, strlen(put_body));
+
 	expect_immediate(dispatch_request(&fixture, "PUT /api/dsp/config",
 	                                  "X-Aius-SD-Auth: wrong\r\n", "{}", -1),
 	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
@@ -780,24 +862,67 @@ static void test_config_public_put(void)
 	Fixture fixture;
 	fixture_init(&fixture);
 
+	expect_config_job(dispatch_request(&fixture, "PUT /api/config/public", NULL,
+	                                   "{\"replay\":true}", -1),
+	                  "/aius/config.json", 1ul, strlen("{\"replay\":true}"));
+	assert(fixture.fake.stored_length == strlen("{\"replay\":true}"));
+
+	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_OK;
 	expect_immediate(dispatch_request(&fixture, "PUT /api/config/public", NULL,
 	                                  "{\"replay\":true}", -1),
 	                 200, "{\"ok\":true}");
-	assert(fixture.fake.stored_length == strlen("{\"replay\":true}"));
 
 	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_INVALID;
 	expect_immediate(dispatch_request(&fixture, "PUT /api/config/public", NULL,
 	                                  "{}", -1),
 	                 400, "{\"ok\":false,\"error\":\"config_invalid\"}");
+	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_STALE;
+	expect_immediate(dispatch_request(&fixture, "PUT /api/config/public", NULL,
+	                                  "{}", -1),
+	                 409, "{\"ok\":false,\"error\":\"stale_generation\"}");
 	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_BUSY;
 	expect_immediate(dispatch_request(&fixture, "PUT /api/config/public", NULL,
 	                                  "{}", -1),
 	                 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
-	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_OK;
+
+	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
+	expect_config_job(dispatch_request(&fixture, "PUT /api/config/public", NULL,
+	                                   "{}", -1),
+	                  "/aius/config.json", 2ul, strlen("{}"));
+
 	fixture.fake.sd_ready = false;
 	expect_immediate(dispatch_request(&fixture, "PUT /api/config/public", NULL,
 	                                  "{}", -1),
 	                 503, "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+}
+
+/* The two ends of the buffered body the write carries. `total` must equal the
+ * parsed Content-Length at both, because accept_application refuses the whole
+ * response when it does not match the transaction's body_expected. */
+static void test_config_put_body_bounds(void)
+{
+	static char large[AIUS_HTTP_MAX_BODY + 1u];
+	Fixture fixture;
+	fixture_init(&fixture);
+
+	/* AIUS_HTTP_MAX_BODY is the largest non-streamed body the parser admits,
+	 * and it is exactly the DSP model's serialized ceiling. */
+	memset(large, 'x', AIUS_HTTP_MAX_BODY);
+	large[0] = '{';
+	large[AIUS_HTTP_MAX_BODY - 1u] = '}';
+	large[AIUS_HTTP_MAX_BODY] = '\0';
+	expect_config_job(dispatch_request(&fixture, "PUT /api/dsp/config",
+	                                   "X-Aius-SD-Auth: token\r\n", large, -1),
+	                  "/aius/dsp.json", 1ul, (uint64_t)AIUS_HTTP_MAX_BODY);
+	assert(fixture.fake.stored_length == AIUS_HTTP_MAX_BODY);
+
+	/* An empty body is the application's judgement, not the dispatcher's; the
+	 * real parser rejects it, and that refusal must stay immediate. */
+	fixture.fake.public_store = AIUS_OPTICAL_APP_STORE_INVALID;
+	expect_immediate(dispatch_request(&fixture, "PUT /api/config/public", NULL,
+	                                  NULL, 0),
+	                 400, "{\"ok\":false,\"error\":\"config_invalid\"}");
+	assert(fixture.fake.stored_length == 0u);
 }
 
 static void test_replay_control(void)
@@ -906,7 +1031,17 @@ static void test_callback_isolation(void)
 	static const char *const upload_calls[] = {
 		"auth_matches", "sd_ready", "sd_busy", "upload_id"
 	};
+	/* An accepted store reaches upload_id, because the answer is now the write
+	 * and the write needs its scratch names. */
 	static const char *const dsp_put_calls[] = {
+		"auth_matches", "sd_ready", "store_dsp_config", "upload_id"
+	};
+	static const char *const config_put_calls[] = {
+		"sd_ready", "store_public_config", "upload_id"
+	};
+	/* A refused store stops there: no scratch name, so nothing was prepared for
+	 * the card. */
+	static const char *const dsp_put_refused_calls[] = {
 		"auth_matches", "sd_ready", "store_dsp_config"
 	};
 	static const char *const unauthorized_calls[] = { "auth_matches" };
@@ -933,6 +1068,16 @@ static void test_callback_isolation(void)
 	(void)dispatch_request(&fixture, "PUT /api/dsp/config",
 	                       "X-Aius-SD-Auth: token\r\n", "{}", -1);
 	expect_log(&fixture, dsp_put_calls, ARRAY_LENGTH(dsp_put_calls));
+
+	(void)dispatch_request(&fixture, "PUT /api/config/public", NULL, "{}", -1);
+	expect_log(&fixture, config_put_calls, ARRAY_LENGTH(config_put_calls));
+
+	fixture.fake.dsp_store = AIUS_OPTICAL_APP_STORE_INVALID;
+	(void)dispatch_request(&fixture, "PUT /api/dsp/config",
+	                       "X-Aius-SD-Auth: token\r\n", "{}", -1);
+	expect_log(&fixture, dsp_put_refused_calls,
+	           ARRAY_LENGTH(dsp_put_refused_calls));
+	fixture.fake.dsp_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
 
 	/* A refused write stops at the refusal: no store, no media probe. */
 	(void)dispatch_request(&fixture, "PUT /api/dsp/config",
@@ -1137,6 +1282,7 @@ int main(void)
 	RUN_TEST(test_replay_chunk_upload);
 	RUN_TEST(test_dsp_config_put);
 	RUN_TEST(test_config_public_put);
+	RUN_TEST(test_config_put_body_bounds);
 	RUN_TEST(test_replay_control);
 	RUN_TEST(test_callback_isolation);
 	RUN_TEST(test_dispatch_counts);
