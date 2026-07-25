@@ -57,21 +57,23 @@ delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
 with the findings that forced the re-scope under "Prebuild review findings".
 
-**Next up is S3**, which ports the SD lifecycle onto R1's job entry. It carries
-three things the cutover left owing: the `PROBE` and `USAGE_REFRESH` jobs that
-restore SD readiness and usage, the `CONFIG_LOAD` jobs that restore the SD-hosted
-DSP and public configs at boot, and **re-attaching the config-commit arm** that
-died with the legacy job — the store adapters still stage into
-`g_pending_config` / `g_pending_dsp_model`, but nothing consumes them, so a
-successful config `PUT` currently writes to the card without applying. The staging
-shape is unchanged, so this is a re-attachment rather than a rewrite. S4 and S5
-follow, then 14b, 14c and 14d.
+**Phase 14 is delivered.** All fifteen slices are landed and pushed: S0, P1a, P1b,
+R1, R2, P2, S1, C1, S2a, S2b, S3a, S3b, S4, S5, S6 and S7. The cutover is
+structurally complete — `optical-cutover` passes 6/6 positive and 5/5 absence, all
+eighteen standing suites are green, and both images build with all banks fitting
+and three post-link guards passing.
 
-The legacy path is gone as of `1e6391c93`, and the `optical-cutover` suite passes
-both groups. Slice C1 preceded it, forced when S2a linked the portable engines for
-the first time and RAM1 went 8,612 bytes over — see §Structural obstacles. FlexRAM
-now has 24,412 bytes free, OCRAM dropped to 16.3 % used when the legacy buffers
-went, and a post-link guard keeps ITCM honest.
+Four slices were not in the original breakdown and were forced by what the work
+found: **C1** when S2a linked the portable engines and RAM1 went 8,612 bytes over,
+**S3a/S3b** when S3 proved too large for one reviewable unit, and **S6/S7** when
+S5 found an acceptance criterion unmet and then that nothing proved the device met
+it.
+
+**Next up is 14b**, the meters endpoint and accumulate wiring — the one genuinely
+hot addition left, and the first code this phase adds that runs per audio block.
+Then 14c restores replay refill onto a bounded job and lifts the `replay_start`
+refusal, and 14d writes the firmware I/O reference. The clean-room delivery audit
+follows.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
@@ -3982,6 +3984,7 @@ OCRAM retention until the live smoke (Phase 16) confirms it.
 
 ```yaml
 unit: refactor-target
+status: completed
 seams: [setup, loop, AiusRuntimeTeensy, AiusBootStorageTeensy]
 contract-artifact: spec-only
 dependencies:
@@ -4106,10 +4109,12 @@ table. The mapping is one-to-one and mechanical:
 | S2a | **Done** (`d1dfcdfb7`) — construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
 | C1 | **Done** (`6a170cd6f`), forced by S2a — move the wholly-cold portable engines and Teensy adapters out of ITCM with a portable cold-section macro on every definition, and add a post-link guard so an unannotated engine fails the build rather than silently taking the audio path's headroom | `lib/aius_http/`, `lib/aius_sd/`, `lib/aius_net/`, `lib/aius_runtime/`, `lib/aius_boot/`, `src/aius_sd_teensy.cpp`, `src/aius_boot_teensy.cpp`, `platformio.ini` + its post-link scripts | optical target builds with all banks fitting; the new guard passes; `http`, `sd`, `net`, `boot`, `runtime`, `sd-target`, `boot-target`, `runtime-target`, `optical-app` green |
 | S2b | **Done** (`1e6391c93`) — delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard. **Also wire `aius_fault_checkpoint()`** — see below | `src/optical_main.cpp`, `src/aius_fault_teensy.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` **both groups** + `network-transport` + every component suite |
-| S3a | Engine half, split out as the plan anticipated: the publish-only buffer on `AiusSdJob` with its setter and capacity checks, the chunked config read that keeps SD primitives at 512 bytes, and the model-sized publish buffer on the storage service | `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `sd`, `sd-target`, `runtime-target`, `http`; target build + ITCM guard |
-| S3b | Application half: the DSP override and the public config load become `CONFIG_LOAD`, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and **the config-commit arm is re-attached** so a staged model applies after a committed write. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. Depends on S3a | `src/optical_main.cpp` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
+| S3a | **Done** (`ee957f383`) — engine half, split out as the plan anticipated: the publish-only buffer on `AiusSdJob` with its setter and capacity checks, the chunked config read that keeps SD primitives at 512 bytes, and the model-sized publish buffer on the storage service | `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `sd`, `sd-target`, `runtime-target`, `http`; target build + ITCM guard |
+| S3b | **Done** (`79481d195`) — application half: the DSP override and the public config load become `CONFIG_LOAD`, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and **the config-commit arm is re-attached** so a staged model applies after a committed write. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. Depends on S3a | `src/optical_main.cpp` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
 | S4 | **Done** — parts 2–3 (`df5906dcd`) swept `FLASHMEM` across `optical_main.cpp`, eliminated the never-running runtime destructor, and gave the post-link guard a per-symbol allowlist so only genuinely hot code may sit in ITCM; part 1 retired the `MODE` / `MIX` enumerators, their parser entries and body-parsing arms, and repaired the six dependent `test/http` cases. The plan had under-scoped part 1 — the dispatcher carried live `case` labels and `test/optical-app/` held the route-exhaustiveness assertion | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp`, `src/aius_optical_app.cpp`, `test/optical-app/` | `http`, `net`, `optical-app`, `optical-cutover` |
-| S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README. **Also retire the dead `MODE` / `MIX` drives from the soak tool** — `tools/net/aius_http_runner.py` and `test/net/test_aius_http_runner.py` still exercise both routes and carry now-meaningless `MODES` / `MIXES` tables, so an on-hardware soak would spend requests on paths that are gone | `platformio.ini`, `scripts/test.sh`, `README.md`, `tools/net/`, `test/net/` | full suite sweep |
+| S5 | **Done** (`4b28a151e`) — `platformio.ini` / `scripts/test.sh` integration, the `itcm-placement` named suite, the firmware README, and retiring the dead `MODE` / `MIX` drives from the soak tool | `platformio.ini`, `scripts/test.sh`, `README.md`, `tools/net/`, `test/net/` | full suite sweep |
+| S6 | **Done** (`545a841f0`), forced by an acceptance criterion S5 found unmet — expose the ten recovery fields on all three status channels: UDP extends 71 to 99 bytes to match the shape the runner already decoded, the status JSON gains eight keys, and USB `ID` gains the recovery set at the cost of four network fields that do not fit and are meaningless in recovery-safe mode | `src/optical_main.cpp`, `test/net/`, `swagger.json`, `test/swagger.test.js` | `net`, `net-runner`, `usb-control`, vitest OpenAPI; both images |
+| S7 | **Done** (`793982ec7`) — prove the device actually emits those shapes, since no native suite compiles `optical_main.cpp` and all three channels had zero automated coverage; and correct the USB control protocol reference, stale since before this phase | `test/optical-cutover/`, `docs/reference/usb-control-protocol.md` | `optical-cutover` 6/6 positive, 5/5 absence |
 
 **Ordering.** S0, P1a, R1, R2 and P2 are mutually independent and start together.
 P1b starts after P1a. S1 starts after S0 and P1b, because the callback signatures

@@ -51,21 +51,23 @@ delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
 with the findings that forced the re-scope under "Prebuild review findings".
 
-**Next up is S3**, which ports the SD lifecycle onto R1's job entry. It carries
-three things the cutover left owing: the `PROBE` and `USAGE_REFRESH` jobs that
-restore SD readiness and usage, the `CONFIG_LOAD` jobs that restore the SD-hosted
-DSP and public configs at boot, and **re-attaching the config-commit arm** that
-died with the legacy job — the store adapters still stage into
-`g_pending_config` / `g_pending_dsp_model`, but nothing consumes them, so a
-successful config `PUT` currently writes to the card without applying. The staging
-shape is unchanged, so this is a re-attachment rather than a rewrite. S4 and S5
-follow, then 14b, 14c and 14d.
+**Phase 14 is delivered.** All fifteen slices are landed and pushed: S0, P1a, P1b,
+R1, R2, P2, S1, C1, S2a, S2b, S3a, S3b, S4, S5, S6 and S7. The cutover is
+structurally complete — `optical-cutover` passes 6/6 positive and 5/5 absence, all
+eighteen standing suites are green, and both images build with all banks fitting
+and three post-link guards passing.
 
-The legacy path is gone as of `1e6391c93`, and the `optical-cutover` suite passes
-both groups. Slice C1 preceded it, forced when S2a linked the portable engines for
-the first time and RAM1 went 8,612 bytes over — see §Structural obstacles. FlexRAM
-now has 24,412 bytes free, OCRAM dropped to 16.3 % used when the legacy buffers
-went, and a post-link guard keeps ITCM honest.
+Four slices were not in the original breakdown and were forced by what the work
+found: **C1** when S2a linked the portable engines and RAM1 went 8,612 bytes over,
+**S3a/S3b** when S3 proved too large for one reviewable unit, and **S6/S7** when
+S5 found an acceptance criterion unmet and then that nothing proved the device met
+it.
+
+**Next up is 14b**, the meters endpoint and accumulate wiring — the one genuinely
+hot addition left, and the first code this phase adds that runs per audio block.
+Then 14c restores replay refill onto a bounded job and lifts the `replay_start`
+refusal, and 14d writes the firmware I/O reference. The clean-room delivery audit
+follows.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
