@@ -4106,9 +4106,10 @@ table. The mapping is one-to-one and mechanical:
 | S2a | **Done** (`d1dfcdfb7`) — construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
 | C1 | **Done** (`6a170cd6f`), forced by S2a — move the wholly-cold portable engines and Teensy adapters out of ITCM with a portable cold-section macro on every definition, and add a post-link guard so an unannotated engine fails the build rather than silently taking the audio path's headroom | `lib/aius_http/`, `lib/aius_sd/`, `lib/aius_net/`, `lib/aius_runtime/`, `lib/aius_boot/`, `src/aius_sd_teensy.cpp`, `src/aius_boot_teensy.cpp`, `platformio.ini` + its post-link scripts | optical target builds with all banks fitting; the new guard passes; `http`, `sd`, `net`, `boot`, `runtime`, `sd-target`, `boot-target`, `runtime-target`, `optical-app` green |
 | S2b | **Done** (`1e6391c93`) — delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard. **Also wire `aius_fault_checkpoint()`** — see below | `src/optical_main.cpp`, `src/aius_fault_teensy.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` **both groups** + `network-transport` + every component suite |
-| S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. **Needs the publish-buffer change settled above, which widens S3's owned paths to `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/` and `test/runtime-target/` — split it out as S3a if the diff gets large** | `src/optical_main.cpp`, `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
-| S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, and fix the six dependent places in `test/http/test_http.c` | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
-| S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README | `platformio.ini`, `scripts/test.sh`, `README.md` | full suite sweep |
+| S3a | Engine half, split out as the plan anticipated: the publish-only buffer on `AiusSdJob` with its setter and capacity checks, the chunked config read that keeps SD primitives at 512 bytes, and the model-sized publish buffer on the storage service | `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `sd`, `sd-target`, `runtime-target`, `http`; target build + ITCM guard |
+| S3b | Application half: the DSP override and the public config load become `CONFIG_LOAD`, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and **the config-commit arm is re-attached** so a staged model applies after a committed write. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. Depends on S3a | `src/optical_main.cpp` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
+| S4 | **Done** — parts 2–3 (`df5906dcd`) swept `FLASHMEM` across `optical_main.cpp`, eliminated the never-running runtime destructor, and gave the post-link guard a per-symbol allowlist so only genuinely hot code may sit in ITCM; part 1 retired the `MODE` / `MIX` enumerators, their parser entries and body-parsing arms, and repaired the six dependent `test/http` cases. The plan had under-scoped part 1 — the dispatcher carried live `case` labels and `test/optical-app/` held the route-exhaustiveness assertion | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp`, `src/aius_optical_app.cpp`, `test/optical-app/` | `http`, `net`, `optical-app`, `optical-cutover` |
+| S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README. **Also retire the dead `MODE` / `MIX` drives from the soak tool** — `tools/net/aius_http_runner.py` and `test/net/test_aius_http_runner.py` still exercise both routes and carry now-meaningless `MODES` / `MIXES` tables, so an on-hardware soak would spend requests on paths that are gone | `platformio.ini`, `scripts/test.sh`, `README.md`, `tools/net/`, `test/net/` | full suite sweep |
 
 **Ordering.** S0, P1a, R1, R2 and P2 are mutually independent and start together.
 P1b starts after P1a. S1 starts after S0 and P1b, because the callback signatures
@@ -4271,6 +4272,24 @@ Recorded as they were taken, so the final audit has something to check.
   fell 34,848 bytes to 16.3 %, while FLASH moved 1,024, ITCM 512 and DTCM 256. The
   lesson generalizes on this target: deleting unreferenced static code is free
   because the linker already did it, and the real saving is always the statics.
+
+- **ITCM held 1,936 bytes of cold code in `optical_main.cpp`, and "what may live
+  there" was an opinion until S4.** Of 5,484 ITCM bytes only 880 were genuinely
+  per-audio-block — the audio processor's `update`, `enqueue` and `consume_block`.
+  A file-wide `FLASHMEM` sweep reclaimed 1,300, and the never-running
+  `AiusRuntimeTeensy` destructor was eliminated by placement-new'ing the object
+  rather than declaring it, since an embedded SD `File` made the implicit
+  destructor non-trivial and registered an `__aeabi_atexit` teardown that cannot
+  run on this target. The 636-byte static-init thunk is irreducible from inside
+  the file: the pinned linker script routes `.text*` to ITCM, only `.flashmem*`
+  reaches FLASH, and the thunk has no declaration to annotate.
+
+  The post-link guard now carries a per-symbol allowlist for that object — three
+  pinned hot sections that must be *present*, the one thunk, and the framework
+  COMDAT classes — so any other ITCM symbol fails the link by name. Note the
+  32 KiB block granularity: the reclaimed bytes show as padding rather than
+  free-for-locals until the next boundary, which is exactly where they would
+  otherwise have cost 32 KiB of DTCM.
 
 - **The config-commit arm died with the legacy job, and S3 must re-attach it.**
   `app_store_public_config` and `app_store_dsp_config` still stage into
@@ -4451,6 +4470,18 @@ job runs. 14c restores the route.
 **The watchdog interval changes.** The legacy 16 s interval (`WDOG_WCR_WT(31)`)
 is replaced by the pinned 8 s interval with exactly one feed after a complete
 epoch.
+
+**Retiring `MODE` and `MIX` changes their 404 body, and `GET /api/mode` becomes a
+404 rather than a 405.** Both routes already answered 404 for `POST`, but they got
+there by parsing successfully and falling through the dispatcher's tail, which
+returns `{"ok":false}`. Once the enumerators are gone they fail at route
+resolution, so the transaction serves the standard `{"ok":false,"error":
+"not_found"}`; and `GET` no longer reaches the method guard that produced the 405.
+Both are inseparable from retirement — there is no way to delete the enumerators
+and keep the old bodies — and both make the routes behave exactly like every other
+unknown path. Accepted because nothing consumes them: `swagger.json` omits both,
+`swagger.test.js` asserts their absence, and the dashboard that used them is
+queued for deletion at B9.
 
 Watch ITCM. The pre-cutover build has 1,352 bytes free, and this phase adds the
 runtime composition on top. Everything it introduces runs in epoch or HTTP
