@@ -4655,11 +4655,47 @@ board, which answered `AIUS ID` on `/dev/ttyACM0` (`16c0:0483`).
 
 **State of the deployed board before this phase**, captured 2026-07-25:
 revision `062e96ed193d`, built 2026-07-23 — the pre-cutover image. `ip=0.0.0.0`,
-`link=2` (`LinkOFF`), `dhcp_pending=1`. The USB control plane answers; the network
-is down at the physical layer. Per §Trusted fixture boundary that is a firmware
-fault until firmware evidence says otherwise, and it is the failure this plan
-exists to close — but note the symptom differs from the crash-looping recorded
-earlier, so the earlier diagnosis may itself have been incomplete.
+`link=2`, `dhcp_pending=1`, USB control plane answering.
+
+**The defect on that image is now identified, and it is not a dead link.** The
+DHCP server is issuing DHCPACK; the legacy stack simply never progresses past it.
+So `link=2` is itself a firmware misreport — a lease cannot bind over a dead
+link — and the real fault is that the application never publishes readiness after
+the lease is applied, leaving `ip` at `0.0.0.0` and HTTP unbound. That is
+[clean-room finding 3](#clean-room-findings) exactly: network ownership is split
+between NativeEthernet's link callback and the firmware's own DHCP client
+handling, so `g_ethernet_initialized` describes intent rather than the FNET
+lifecycle. The image's own boot log names the workaround it was already
+attempting — "DHCP client enabled after link callback gap".
+
+**The prediction for the cutover image, recorded so 14f can falsify it.** The new
+adapter should not reproduce this, for three independent reasons, each verified in
+source rather than assumed:
+
+- **Callbacks are armed before anything can fire them.** `START_STACK` calls
+  `callbacks_install()` *before* `beginNoWait()` (`aius_network_teensy.cpp:588`
+  precedes `:590`), and `START_DHCP` runs in a later epoch still. There is no
+  window in which a lease can bind with no callback installed.
+- **The install is order-independent anyway.** `setDhcpCallback` only stores a
+  pointer into a static that the library's own FNET-level shim forwards through
+  (`vendor/NativeEthernet/src/NativeEthernet.cpp:271`, `:430`).
+- **FNET fires the callback on the initial bind, not only on renewal.**
+  `_fnet_dhcp_cln_apply_params()` applies the address, enters `BOUND` and raises
+  `callback_updated`, and it is called directly from the DHCPACK arm of
+  `REQUESTING` — so the first lease produces `LEASE_ACQUIRED`, which takes the
+  supervisor `DHCP_WAIT → ONLINE → PUBLISH_ONLINE`.
+
+And if that reasoning is wrong anyway, the failure is bounded rather than silent:
+a missed lease event expires the 5 s DHCP deadline, which drives teardown and
+backoff and retries with a fresh generation. The legacy path had no such bound,
+which is why it sits indefinitely.
+
+**So 14f has a specific diagnosis to make.** If the board obtains an address and
+serves HTTP, the finding is closed. If it instead cycles through DHCP timeouts
+while the server logs DHCPACK, then the lease event is being missed despite the
+ordering above, and the fix is a belt-and-braces poll of the bound address in
+`poll()` rather than sole reliance on the callback — bounded, one read per epoch,
+consistent with the ABI's existing allowance for a link-status read.
 
 **Assumptions to validate.** Each has been asserted somewhere in this plan and
 none has been measured. Record a verdict for every one.
