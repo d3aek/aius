@@ -13,6 +13,7 @@
  */
 
 #include <Arduino.h>
+#include <new>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -80,14 +81,29 @@ static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
  * Defined here rather than beside the rest of the slice S2a composition below
  * because slice S2b's status surface reads it: put_status(), http_status_json()
  * and app_write_usb_payload() all take their address, link state and DHCP state
- * from the embedded network adapter. */
-DMAMEM static AiusRuntimeTeensy g_runtime;
+ * from the embedded network adapter.
+ *
+ * Constructed into its own storage rather than declared as a plain object, to
+ * keep a never-running destructor out of ITCM. AiusRuntimeTeensy embeds an SD
+ * `File` (aius_sd_teensy.h:18), so its implicit destructor is non-trivial; a
+ * namespace-scope object of that type makes GCC register an __aeabi_atexit
+ * teardown, which odr-uses -- and therefore emits -- a 228-byte destructor in
+ * ITCM. That teardown can never run: main() never returns on a Teensy and this
+ * object lives for the life of the board. Placement-new default-initializes
+ * exactly as the plain declaration did (File's constructor runs, the rest is
+ * left to aius_runtime_teensy_construct(), which initializes every member it
+ * reads) and registers nothing. */
+DMAMEM static uint8_t g_runtime_storage[sizeof(AiusRuntimeTeensy)];
+static_assert(alignof(AiusRuntimeTeensy) <= 32u,
+	"DMAMEM aligns to 32 bytes; a stricter runtime alignment needs its own");
+static AiusRuntimeTeensy &g_runtime =
+	*::new (static_cast<void *>(g_runtime_storage)) AiusRuntimeTeensy;
 
 DMAMEM static AiusReplayService g_replay_service;
 static File g_replay_file;
 static char g_replay_path[96];
 
-static AiusStatus replay_reader_open(void *, uint32_t file_bytes)
+static FLASHMEM AiusStatus replay_reader_open(void *, uint32_t file_bytes)
 {
 	(void)file_bytes;
 	if (g_replay_file) g_replay_file.close();
@@ -95,7 +111,7 @@ static AiusStatus replay_reader_open(void *, uint32_t file_bytes)
 	return g_replay_file ? AIUS_OK : AIUS_MALFORMED;
 }
 
-static AiusStatus replay_reader_read(void *, uint32_t offset, uint8_t *buffer,
+static FLASHMEM AiusStatus replay_reader_read(void *, uint32_t offset, uint8_t *buffer,
 	                                  size_t capacity, size_t *bytes_read)
 {
 	if (!g_replay_file || buffer == nullptr || bytes_read == nullptr ||
@@ -106,7 +122,7 @@ static AiusStatus replay_reader_read(void *, uint32_t offset, uint8_t *buffer,
 	return AIUS_OK;
 }
 
-static void replay_reader_close(void *)
+static FLASHMEM void replay_reader_close(void *)
 {
 	if (g_replay_file) g_replay_file.close();
 }
@@ -276,14 +292,14 @@ static bool g_test_running;
 static volatile uint32_t g_network_drops;
 static volatile uint32_t g_network_budget_overruns;
 
-static uint8_t current_state(void);
+static FLASHMEM uint8_t current_state(void);
 
 /* The legacy watchdog pair is gone. The pinned 8 s interval is armed once from
  * setup() through the boot adapter and fed exactly once per complete epoch by
  * the runtime's EPOCH_COMPLETE callback; this file writes no watchdog register
  * of its own, which the optical-cutover absence group asserts file-wide. */
 
-static void service_hw_metrics(void)
+static FLASHMEM void service_hw_metrics(void)
 {
 	uint32_t now = millis();
 	if ((int32_t)(now - g_cpu_temp_next_ms) < 0)
@@ -335,12 +351,12 @@ static FLASHMEM bool sd_job_active(void)
 	       storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
 }
 
-static uint32_t sd_job_id(void)
+static FLASHMEM uint32_t sd_job_id(void)
 {
 	return ++g_sd_job_sequence ^ millis() ^ g_boot_epoch;
 }
 
-static void record_event(uint8_t type, uint8_t state, uint16_t detail)
+static FLASHMEM void record_event(uint8_t type, uint8_t state, uint16_t detail)
 {
 	AiusEvent &event = g_events[g_event_sequence % 8u];
 	if (g_event_sequence >= 8u)
@@ -352,7 +368,7 @@ static void record_event(uint8_t type, uint8_t state, uint16_t detail)
 	event.detail = detail;
 }
 
-static void record_state(void)
+static FLASHMEM void record_state(void)
 {
 	uint8_t state = current_state();
 	if (state == g_last_state)
@@ -642,7 +658,7 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
 static AudioConnection g_audio_left(g_audio_processor, 0, g_spdif_out, 0);
 static AudioConnection g_audio_right(g_audio_processor, 1, g_spdif_out, 1);
 
-static uint8_t current_state(void)
+static FLASHMEM uint8_t current_state(void)
 {
 	AiusPipelineClass klass = g_audio_processor.classification();
 	return !AudioInputSPDIF3::pllLocked() ? 2 :
@@ -675,7 +691,7 @@ static uint8_t current_state(void)
  *
  * Every zero-served field is left to the memset rather than written, so no
  * offset arithmetic changed with the producers. */
-static void put_status(uint8_t *payload, uint16_t *length)
+static FLASHMEM void put_status(uint8_t *payload, uint16_t *length)
 {
 	record_state();
 	noInterrupts();
@@ -842,7 +858,7 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
  *   the four http_* counters   producer retired -> read back as 0 from the
  *                         payload's own bytes 55..70, so JSON and UDP cannot
  *                         disagree about what is being served */
-static size_t http_status_json(uint8_t *body, size_t capacity)
+static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
 	uint16_t status_length = 0;
@@ -890,7 +906,7 @@ static size_t http_status_json(uint8_t *body, size_t capacity)
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0;
 }
 
-static size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)
+static FLASHMEM size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)
 {
 	int written = snprintf((char *)body, capacity, "{\"cursor\":%lu,\"next\":%lu,\"events\":[",
 		(unsigned long)cursor, (unsigned long)g_event_sequence);
@@ -920,7 +936,7 @@ static size_t http_events_json(uint32_t cursor, uint8_t *body, size_t capacity)
 	return length;
 }
 
-static void reset_application(void)
+static FLASHMEM void reset_application(void)
 {
 	__disable_irq();
 	SCB_AIRCR = 0x05FA0004;
@@ -929,7 +945,7 @@ static void reset_application(void)
 		asm volatile("isb" ::: "memory");
 }
 
-static size_t http_home_page(uint8_t *body, size_t capacity)
+static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 {
 	int length = snprintf((char *)body, capacity,
 		"<!doctype html><html><head><meta charset=\"utf-8\"><title>Aius</title>"
@@ -970,7 +986,7 @@ static size_t http_home_page(uint8_t *body, size_t capacity)
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
-static size_t http_replay_status_json(uint8_t *body, size_t capacity)
+static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
 {
 	AiusReplayStatus replay = {};
 	(void)aius_replay_service_status(&g_replay_service, &replay);
@@ -990,7 +1006,7 @@ static size_t http_replay_status_json(uint8_t *body, size_t capacity)
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
-static size_t http_replay_list_json(uint8_t *body, size_t capacity)
+static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 {
 	if (!g_sd_ready) return (size_t)snprintf((char *)body, capacity,
 		"{\"ok\":false,\"error\":\"sd_unavailable\"}");
@@ -2010,8 +2026,15 @@ static FLASHMEM void derive_auth_token(void)
  * probe plus both config loads are root-initiated portable jobs the checkpoint-7
  * driver starts from the first epoch (sd_lifecycle_service()), never from here.
  * g_sd_probe_at_ms is left at its static zero so that first epoch probes
- * immediately rather than a second late. */
-void setup(void)
+ * immediately rather than a second late.
+ *
+ * FLASHMEM because it runs once, before the first audio block: ITCM belongs to
+ * code that runs per block (§Deciding principle). `wiring.h` declares setup()
+ * and loop() without a section, and GCC does not merge a section attribute from
+ * a declaration into a later definition -- so the attribute has to sit here, on
+ * the definition, exactly as it does on every other cold definition in this
+ * file. */
+FLASHMEM void setup(void)
 {
 	capture_retained_boot_state();
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);
@@ -2042,8 +2065,12 @@ void setup(void)
  *
  * request_reboot() only records (aius_optical_app.cpp), because the dispatcher
  * never resets or delays, so the reset happens here -- after the epoch, so the
- * HTTP response or UDP ack that asked for it has already been written. */
-void loop(void)
+ * HTTP response or UDP ack that asked for it has already been written.
+ *
+ * FLASHMEM for the same reason as setup(): loop() is the epoch driver, not
+ * per-block work. The audio path reaches the processor through AudioStream's
+ * interrupt, never through here, so nothing in this function runs per block. */
+FLASHMEM void loop(void)
 {
 	const uint32_t now_ms = millis();
 	const bool completed = aius_runtime_teensy_epoch(&g_runtime, now_ms);
