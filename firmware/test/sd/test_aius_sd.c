@@ -531,6 +531,282 @@ static void test_config_load(void)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* the publish-only buffer                                             */
+/* ------------------------------------------------------------------ */
+
+/* A job may publish more bytes than one transfer slice by accumulating into a
+ * caller-owned buffer registered with aius_sd_job_set_publish_buffer(). The
+ * point of the design is that the buffer grows and the per-epoch SD primitive
+ * does not, so these cases assert the read slice as hard as the payload.
+ *
+ * PUBLISH_LIMIT mirrors the application's AIUS_DSP_MODEL_MAX_JSON_BYTES and
+ * TRANSFER_LIMIT its SD transfer slice; the engine knows neither constant, so
+ * the suite pins the numbers the caller actually uses. Buffers are file-scope
+ * to keep a 12 KB payload out of the test's stack frame. */
+#define TRANSFER_LIMIT 512u
+#define PUBLISH_LIMIT 12288u
+
+static uint8_t publish_transfer[TRANSFER_LIMIT];
+static uint8_t publish_area[PUBLISH_LIMIT];
+static uint8_t publish_expected[PUBLISH_LIMIT];
+
+static bool all_zero(const uint8_t *bytes, size_t length)
+{
+	for (size_t index = 0u; index < length; ++index)
+		if (bytes[index] != 0u)
+			return false;
+	return true;
+}
+
+/* Initializes a job over the 512-byte transfer slice and registers (or, with a
+ * null buffer, clears) the publication buffer, asserting that init itself
+ * leaves no registration behind. */
+static void arm_publish_job(AiusSdJob *job, uint8_t *buffer, size_t capacity)
+{
+	aius_sd_job_init(job, publish_transfer, sizeof(publish_transfer));
+	CHECK(job->publish_buffer == NULL, "init left a publish buffer");
+	CHECK(job->publish_buffer_capacity == 0u, "init left a publish capacity");
+	aius_sd_job_set_publish_buffer(job, buffer, capacity);
+	CHECK(job->capacity == TRANSFER_LIMIT,
+	      "publish registration moved the transfer slice");
+}
+
+/* Drives an armed job's CONFIG_LOAD to the action following its size event. */
+static AiusSdAction start_publish_config_load(
+	AiusSdJob *job,
+	size_t publish_capacity,
+	uint64_t size,
+	AiusSdActionKind after_size)
+{
+	AiusSdJobRequest request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
+	AiusSdAction action;
+
+	request.publish_capacity = publish_capacity;
+	aius_sd_job_start(job, &request, 0u, 0u);
+	action = begin_job(job);
+	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_OPEN_READ);
+	action = acknowledge_ok(job, &action, AIUS_SD_ACTION_FILE_SIZE);
+	return step_action(
+		job, 0u, size_event(action.action_id, size), after_size);
+}
+
+static void test_publish_buffer(void)
+{
+	AiusSdJob job;
+	AiusSdAction action;
+	AiusSdJobRequest request;
+	unsigned reads;
+	size_t offset;
+
+	for (size_t index = 0u; index < sizeof(publish_expected); ++index)
+		publish_expected[index] = (uint8_t)((index * 31u + 7u) & 0xffu);
+
+	scenario = "full-capacity publication in one-slice primitives";
+	memset(publish_area, 0, sizeof(publish_area));
+	memset(publish_transfer, 0, sizeof(publish_transfer));
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	CHECK(job.publish_buffer == publish_area,
+	      "publish buffer was not registered");
+	CHECK(job.publish_buffer_capacity == PUBLISH_LIMIT,
+	      "publish capacity was not registered");
+	action = start_publish_config_load(
+		&job, PUBLISH_LIMIT, PUBLISH_LIMIT, AIUS_SD_ACTION_READ);
+	reads = 0u;
+	offset = 0u;
+	while (offset < PUBLISH_LIMIT) {
+		CHECK(action.kind == AIUS_SD_ACTION_READ,
+		      "publication left the read phase early");
+		CHECK(action.length == TRANSFER_LIMIT,
+		      "publication read exceeded one transfer slice");
+		CHECK(action.buffer == publish_area + offset,
+		      "publication read missed the publish buffer");
+		CHECK(action.offset == (uint64_t)offset,
+		      "publication read offset mismatch");
+		memcpy(action.buffer, publish_expected + offset, TRANSFER_LIMIT);
+		offset += TRANSFER_LIMIT;
+		reads++;
+		action = step_action(&job,
+		                     0u,
+		                     bytes_event(action.action_id, TRANSFER_LIMIT),
+		                     offset == PUBLISH_LIMIT
+			                     ? AIUS_SD_ACTION_CLOSE
+			                     : AIUS_SD_ACTION_READ);
+	}
+	CHECK(reads == PUBLISH_LIMIT / TRANSFER_LIMIT,
+	      "publication read count is not one per slice");
+	CHECK(reads == 24u, "a 12 KB publication is not 24 bounded reads");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_PUBLISH_CONFIG);
+	CHECK(job.phase == AIUS_SD_PHASE_CONFIG_PUBLISH,
+	      "publish phase mismatch");
+	CHECK(action.buffer == publish_area,
+	      "publish did not carry the publish buffer");
+	CHECK(action.length == PUBLISH_LIMIT,
+	      "publish length is not the whole file");
+	CHECK(memcmp(action.buffer, publish_expected, PUBLISH_LIMIT) == 0,
+	      "published bytes differ from the file");
+	CHECK(all_zero(publish_transfer, sizeof(publish_transfer)),
+	      "publication passed through the transfer buffer");
+	/* Single-shot: the publish is followed by the terminal action, never by
+	 * a second publish. */
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.result.transferred_bytes == PUBLISH_LIMIT,
+	      "publication transferred count mismatch");
+
+	scenario = "short read re-slices without growing the primitive";
+	memset(publish_area, 0, sizeof(publish_area));
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	action = start_publish_config_load(
+		&job, PUBLISH_LIMIT, 1000u, AIUS_SD_ACTION_READ);
+	CHECK(action.length == TRANSFER_LIMIT && action.offset == 0u,
+	      "first slice of a 1000-byte publication mismatch");
+	memcpy(action.buffer, publish_expected, 200u);
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 200u), AIUS_SD_ACTION_READ);
+	/* A short read moves the accumulation offset, not the slice size. */
+	CHECK(action.length == TRANSFER_LIMIT,
+	      "short read shrank the next slice");
+	CHECK(action.offset == 200u, "short read did not advance the offset");
+	CHECK(action.buffer == publish_area + 200u,
+	      "short read landed off the publish buffer");
+	memcpy(action.buffer, publish_expected + 200u, TRANSFER_LIMIT);
+	action = step_action(&job,
+	                     0u,
+	                     bytes_event(action.action_id, TRANSFER_LIMIT),
+	                     AIUS_SD_ACTION_READ);
+	/* The tail is the remainder, which is below one slice. */
+	CHECK(action.length == 1000u - 712u, "tail slice is not the remainder");
+	CHECK(action.offset == 712u, "tail slice offset mismatch");
+	CHECK(action.buffer == publish_area + 712u, "tail slice buffer mismatch");
+	memcpy(action.buffer, publish_expected + 712u, 1000u - 712u);
+	action = step_action(&job,
+	                     0u,
+	                     bytes_event(action.action_id, 1000u - 712u),
+	                     AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_PUBLISH_CONFIG);
+	CHECK(action.buffer == publish_area && action.length == 1000u,
+	      "short-read publication mismatch");
+	CHECK(memcmp(action.buffer, publish_expected, 1000u) == 0,
+	      "short-read published bytes differ from the file");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	CHECK(job.result.transferred_bytes == 1000u,
+	      "short-read transferred count mismatch");
+
+	scenario = "read event above one slice is a protocol fault";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	action = start_publish_config_load(
+		&job, PUBLISH_LIMIT, PUBLISH_LIMIT, AIUS_SD_ACTION_READ);
+	CHECK(action.length == TRANSFER_LIMIT, "slice under test mismatch");
+	{
+		/* The whole file would once have been a legal answer here; with the
+		 * slice bound it is not, and the event is refused rather than
+		 * overrunning the emitted window. Authority stays with the read
+		 * until a well-formed event releases it. */
+		const uint64_t read_id = action.action_id;
+		step_action(&job,
+		            0u,
+		            bytes_event(read_id, TRANSFER_LIMIT + 1u),
+		            AIUS_SD_ACTION_NONE);
+		CHECK(job.config_bytes == 0u,
+		      "refused read event still accumulated");
+		action = step_action(&job,
+		                     0u,
+		                     bytes_event(read_id, TRANSFER_LIMIT),
+		                     AIUS_SD_ACTION_CLOSE);
+	}
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_PROTOCOL,
+	      "oversized read event was accepted");
+
+	scenario = "null registration falls back to the transfer buffer";
+	memset(publish_area, 0, sizeof(publish_area));
+	arm_publish_job(&job, NULL, 0u);
+	CHECK(job.publish_buffer == NULL,
+	      "null registration retained a buffer");
+	CHECK(job.publish_buffer_capacity == 0u,
+	      "null registration retained a capacity");
+	action = start_publish_config_load(
+		&job, AIUS_CONFIG_MAX_JSON_BYTES, 5u, AIUS_SD_ACTION_READ);
+	CHECK(action.buffer == publish_transfer && action.length == 5u &&
+		      action.offset == 0u,
+	      "fallback read did not use the transfer buffer");
+	memcpy(action.buffer, "abcde", 5u);
+	action = step_action(
+		&job, 0u, bytes_event(action.action_id, 5u), AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_PUBLISH_CONFIG);
+	CHECK(action.buffer == publish_transfer && action.length == 5u,
+	      "fallback publish did not use the transfer buffer");
+	CHECK(memcmp(action.buffer, "abcde", 5u) == 0,
+	      "fallback published bytes changed");
+	CHECK(all_zero(publish_area, sizeof(publish_area)),
+	      "fallback wrote into the publish buffer");
+	acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+
+	scenario = "zero capacity clears the registration";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	aius_sd_job_set_publish_buffer(&job, publish_area, 0u);
+	CHECK(job.publish_buffer == NULL && job.publish_buffer_capacity == 0u,
+	      "zero capacity kept the registration");
+	/* Cleared, the transfer slice bounds the publication again. */
+	request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
+	request.publish_capacity = PUBLISH_LIMIT;
+	aius_sd_job_start(&job, &request, 0u, 0u);
+	expect_terminal(&job,
+	                AIUS_SD_ACTION_FAIL,
+	                AIUS_SD_RESULT_FAULT,
+	                AIUS_SD_FAULT_CAPACITY,
+	                0u);
+	aius_sd_job_set_publish_buffer(NULL, publish_area, PUBLISH_LIMIT);
+
+	scenario = "publish capacity above the registered buffer is rejected";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	request = request_for(AIUS_SD_JOB_CONFIG_LOAD);
+	request.publish_capacity = PUBLISH_LIMIT + 1u;
+	aius_sd_job_start(&job, &request, 0u, 0u);
+	expect_terminal(&job,
+	                AIUS_SD_ACTION_FAIL,
+	                AIUS_SD_RESULT_FAULT,
+	                AIUS_SD_FAULT_CAPACITY,
+	                0u);
+
+	scenario = "file above the publish buffer is rejected at the size event";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	action = start_publish_config_load(
+		&job, PUBLISH_LIMIT, PUBLISH_LIMIT + 1u, AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_CAPACITY,
+	      "oversized file was accepted");
+
+	scenario = "the declared publish capacity still bounds below the buffer";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	action = start_publish_config_load(
+		&job, 1024u, 1025u, AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	CHECK(action.fault == AIUS_SD_FAULT_CAPACITY,
+	      "file above the declared publish capacity was accepted");
+
+	scenario = "registration is construction-time and survives a restart";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	action = start_publish_config_load(
+		&job, PUBLISH_LIMIT, 600u, AIUS_SD_ACTION_READ);
+	aius_sd_job_set_publish_buffer(
+		&job, publish_transfer, sizeof(publish_transfer));
+	CHECK(job.publish_buffer == publish_area,
+	      "in-flight registration swapped the buffer");
+	CHECK(job.publish_buffer_capacity == PUBLISH_LIMIT,
+	      "in-flight registration swapped the capacity");
+	action = step_action(
+		&job, 0u, fault_event(action.action_id, 5u), AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FAIL);
+	CHECK(job.publish_buffer == publish_area,
+	      "a terminal job lost the registration");
+	action = start_publish_config_load(
+		&job, PUBLISH_LIMIT, 600u, AIUS_SD_ACTION_READ);
+	CHECK(action.buffer == publish_area && action.length == TRANSFER_LIMIT,
+	      "restart lost the publish buffer");
+}
+
 static void open_sized_seek(
 	AiusSdJob *job,
 	uint64_t file_size,
@@ -2744,6 +3020,89 @@ static AiusSdAction reach_post_commit_publish(
 	return acknowledge_ok(job, &action, AIUS_SD_ACTION_PUBLISH_CONFIG);
 }
 
+/* The symmetric post-commit path: an installed file re-read and published from
+ * the registered publish buffer, in the same bounded slices. begin_upload()
+ * re-inits the job, so the registration is made after it rather than before. */
+static void test_post_commit_publish_buffer(void)
+{
+	static const char *const replace_dirs[] = {"/final",  "/final/dir",
+	                                           "/temp",   "/temp/dir",
+	                                           "/backup", "/backup/dir"};
+	const size_t total = 1024u;
+	AiusSdJobRequest request = upload_request(AIUS_SD_INSTALL_REPLACE);
+	AiusSdJob job;
+	AiusSdAction action;
+	size_t offset;
+	unsigned reads;
+
+	scenario = "post-commit publication above one slice";
+	memset(publish_area, 0, sizeof(publish_area));
+	request.total = total;
+	request.publish = true;
+	request.publish_capacity = total;
+	request.content_type = "application/json";
+	arm_publish_job(&job, publish_area, sizeof(publish_area));
+	aius_sd_job_start(&job, &request, 0u, 0u);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = accept_parent_paths(&job,
+	                             action,
+	                             replace_dirs,
+	                             ARRAY_COUNT(replace_dirs),
+	                             AIUS_SD_ACTION_OPEN_WRITE_BEGIN);
+	action = acknowledge_write_begin(
+		&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	for (offset = 0u; offset < total; offset += TRANSFER_LIMIT) {
+		CHECK(action.length == TRANSFER_LIMIT,
+		      "upload input window is not one slice");
+		action = supply_and_write(&job,
+		                          action,
+		                          publish_expected + offset,
+		                          TRANSFER_LIMIT,
+		                          TRANSFER_LIMIT,
+		                          offset + TRANSFER_LIMIT == total
+			                          ? AIUS_SD_ACTION_CLOSE
+			                          : AIUS_SD_ACTION_NEED_INPUT);
+	}
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = install_existing_target(&job, action, true);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_RENAME);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+	action = finish_committed_backup(
+		&job, action, true, AIUS_SD_ACTION_OPEN_READ);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_FILE_SIZE);
+	action = step_action(
+		&job, 0u, size_event(action.action_id, total), AIUS_SD_ACTION_READ);
+
+	reads = 0u;
+	for (offset = 0u; offset < total; offset += TRANSFER_LIMIT) {
+		CHECK(action.length == TRANSFER_LIMIT,
+		      "post-commit read exceeded one transfer slice");
+		CHECK(action.buffer == publish_area + offset,
+		      "post-commit read missed the publish buffer");
+		CHECK(action.offset == (uint64_t)offset,
+		      "post-commit read offset mismatch");
+		memcpy(action.buffer, publish_expected + offset, TRANSFER_LIMIT);
+		reads++;
+		action = step_action(&job,
+		                     0u,
+		                     bytes_event(action.action_id, TRANSFER_LIMIT),
+		                     offset + TRANSFER_LIMIT == total
+			                     ? AIUS_SD_ACTION_CLOSE
+			                     : AIUS_SD_ACTION_READ);
+	}
+	CHECK(reads == 2u, "post-commit publication read count drifted");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_PUBLISH_CONFIG);
+	CHECK(action.buffer == publish_area && action.length == total,
+	      "post-commit publish did not carry the whole publication");
+	CHECK(memcmp(action.buffer, publish_expected, total) == 0,
+	      "post-commit published bytes differ from the file");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+	CHECK(job.result.transferred_bytes == total,
+	      "post-commit transferred count mismatch");
+}
+
 static void test_post_commit_fault_matrix(void)
 {
 	uint8_t buffer[CONFIG_LIMIT];
@@ -4455,6 +4814,7 @@ int main(void)
 	test_pointer_and_start_contract();
 	test_probe_usage_delete();
 	test_config_load();
+	test_publish_buffer();
 	test_download_and_refill();
 	test_upload_modes();
 	test_install_publication_and_authority();
@@ -4471,6 +4831,7 @@ int main(void)
 	test_partial_abort_and_commit_precedence();
 	test_abort_install_failed_authority();
 	test_post_commit_fault_matrix();
+	test_post_commit_publish_buffer();
 	test_complete_request_boundary_matrix();
 	test_reserved_action_id_properties();
 	test_exact_262_id_publication_reserve();

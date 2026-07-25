@@ -173,8 +173,8 @@ typedef struct {
 	 * action's name). publish_capacity is the caller-supplied maximum byte
 	 * count for that publish (e.g. AIUS_CONFIG_MAX_JSON_BYTES for the
 	 * feature-flag config, or a different caller-owned limit for another
-	 * config-like file); required and validated against job capacity when
-	 * publish is true, must be zero otherwise. */
+	 * config-like file); required and validated against the job's publication
+	 * capacity when publish is true, must be zero otherwise. */
 	bool publish;
 	size_t publish_capacity;
 	bool require_existing;
@@ -234,6 +234,15 @@ typedef struct {
 	const char *content_type;
 	uint8_t *buffer;
 	size_t capacity;
+	/* Optional accumulation buffer for a publishing job, and the only field
+	 * that may exceed `capacity`. Null (the default) means the publication
+	 * accumulates into `buffer` bounded by `capacity`, which is what every
+	 * caller that never calls aius_sd_job_set_publish_buffer() gets. The
+	 * transfer slice is unaffected either way: a publishing read still asks
+	 * the driver for at most `capacity` bytes per action, so the per-epoch SD
+	 * primitive stays bounded however large the publication is. */
+	uint8_t *publish_buffer;
+	size_t publish_buffer_capacity;
 	size_t buffer_offset;
 	uint64_t initial_offset;
 	uint64_t end_offset;
@@ -268,6 +277,17 @@ typedef struct {
 } AiusSdJob;
 
 void aius_sd_job_init(AiusSdJob *job, uint8_t *buffer, size_t capacity);
+
+/* Points a publishing job's accumulation at a caller-owned buffer that may be
+ * larger than the transfer slice, so a file bigger than `capacity` can be
+ * published in one AIUS_SD_ACTION_PUBLISH_CONFIG while each read action stays
+ * bounded by `capacity`. A null `buffer` or a zero `capacity` restores the
+ * default (accumulate into the job's own buffer). Construction-time wiring:
+ * aius_sd_job_init() clears it, so call this after init, and a call while a job
+ * is in flight is ignored rather than swapping the buffer under it. */
+void aius_sd_job_set_publish_buffer(AiusSdJob *job,
+	                           uint8_t *buffer,
+	                           size_t capacity);
 
 void aius_sd_job_start(AiusSdJob *job,
 	               const AiusSdJobRequest *request,

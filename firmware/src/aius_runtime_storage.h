@@ -1,8 +1,9 @@
 /* Bounded SD storage runtime service.
  *
- * One concern: owning the portable SD job, its 512-byte transfer buffer and the
- * one-shot Teensy SD adapter, and bridging them to the HTTP transaction's
- * correlated SD action/event protocol. Construction touches memory only.
+ * One concern: owning the portable SD job, its 512-byte transfer buffer, its
+ * model-sized publication buffer and the one-shot Teensy SD adapter, and
+ * bridging them to the HTTP transaction's correlated SD action/event protocol.
+ * Construction touches memory only.
  *
  * The normative rule this service exists to keep is one SD primitive per epoch.
  * The Teensy SD library is synchronous and offers no cancellable call, so a
@@ -27,6 +28,7 @@
 #error "aius_runtime_storage.h requires C++ (AiusSdTeensy embeds an SD File)"
 #endif
 
+#include "aius_dsp_config.h"
 #include "aius_http_transaction.h"
 #include "aius_runtime.h"
 #include "aius_sd.h"
@@ -46,6 +48,20 @@
 static_assert(AIUS_RUNTIME_STORAGE_TRANSFER == AIUS_HTTP_SD_CAPACITY_MAX,
               "SD transfer slice must equal the HTTP SD capacity bound");
 
+/* The publication accumulation buffer, sized for the largest file the
+ * application publishes: the DSP model JSON. It is deliberately NOT the transfer
+ * slice. Growing the slice to match would size every transfer -- download reads
+ * and upload input included -- making each SD primitive a 12 KB blocking call,
+ * against the one-primitive-per-epoch rule this service exists to keep. Instead
+ * the engine reads into this buffer AIUS_RUNTIME_STORAGE_TRANSFER bytes at a
+ * time and publishes it once. It lives inside the DMAMEM-placed runtime object,
+ * so it costs OCRAM and leaves DTCM untouched. */
+#define AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY AIUS_DSP_MODEL_MAX_JSON_BYTES
+
+static_assert(AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY >=
+                      AIUS_RUNTIME_STORAGE_TRANSFER,
+              "publication buffer must hold at least one transfer slice");
+
 /* driver_fault reported when a registered publication consumer refuses the
  * payload, mapped by the portable engine to AIUS_SD_FAULT_PUBLISH. Distinct
  * from AIUS_HTTP_SD_OUTPUT_CANCEL_FAULT so the two are told apart in a log. */
@@ -63,7 +79,7 @@ typedef enum {
 } AiusRuntimeStorageRootState;
 
 /* The publication consumer: where a job's AIUS_SD_ACTION_PUBLISH_CONFIG bytes
- * go. `data` is the job's own transfer buffer and is valid only for the call.
+ * go. `data` is the job's publication buffer and is valid only for the call.
  * Returning false faults the job with AIUS_SD_FAULT_PUBLISH rather than
  * completing it, so a consumer that cannot accept the content says so. */
 typedef struct {
@@ -75,6 +91,9 @@ typedef struct {
 	AiusSdJob job;
 	AiusSdTeensy target;
 	uint8_t sd_transfer[AIUS_RUNTIME_STORAGE_TRANSFER];
+	/* Accumulates a publishing job's bytes across its many bounded reads, so
+	 * one AIUS_SD_ACTION_PUBLISH_CONFIG can carry a whole model-sized file. */
+	uint8_t sd_publish[AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY];
 	/* The adapter result awaiting delivery to the job. */
 	AiusSdEvent pending_event;
 	/* The correlated HTTP event awaiting delivery to the transaction. */
@@ -115,8 +134,9 @@ typedef struct {
 	AiusRuntimeStorageRootState root_state;
 } AiusRuntimeStorage;
 
-/* Memory only: initializes the job against the embedded transfer buffer and the
- * SD adapter, with no publication consumer. No SD primitive is called. */
+/* Memory only: initializes the job against the embedded transfer buffer, the
+ * embedded publication buffer and the SD adapter, with no publication consumer.
+ * No SD primitive is called. */
 void aius_runtime_storage_construct(AiusRuntimeStorage *service);
 
 /* Memory only: registers (or, with a null `ops` or a null `ops->deliver`,

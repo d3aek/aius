@@ -254,6 +254,7 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	if (service == nullptr)
 		return;
 	memset(&service->sd_transfer, 0, sizeof(service->sd_transfer));
+	memset(&service->sd_publish, 0, sizeof(service->sd_publish));
 	memset(&service->pending_event, 0, sizeof(service->pending_event));
 	memset(&service->pending_http_event, 0,
 	       sizeof(service->pending_http_event));
@@ -274,6 +275,12 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	aius_sd_teensy_init(&service->target);
 	aius_sd_job_init(&service->job, service->sd_transfer,
 	                 sizeof(service->sd_transfer));
+	/* Order matters: init clears the registration, so the publication buffer
+	 * is wired after it. The transfer slice stays 512 bytes -- this only
+	 * changes where a publishing job accumulates, never how much a single SD
+	 * primitive moves. */
+	aius_sd_job_set_publish_buffer(&service->job, service->sd_publish,
+	                               sizeof(service->sd_publish));
 }
 
 FLASHMEM void aius_runtime_storage_set_publish(

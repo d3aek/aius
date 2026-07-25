@@ -21,6 +21,13 @@
 #endif
 
 #define AIUS_SD_MAX_TRANSFER 512u
+/* Ids held back for the post-commit publication tail, which must be able to
+ * finish after a committed install however close to exhaustion the lifetime is.
+ * Sized against that tail's worst case at the feature-flag publish limit (256
+ * one-byte reads plus open, size, close, publish and the two backup-cleanup
+ * actions). Only AIUS_SD_PHASE_INSTALL_PUBLISH_* actions draw on it; a
+ * CONFIG_LOAD emits unreserved actions throughout, so a publish buffer larger
+ * than the transfer slice does not enlarge the tail this constant covers. */
 #define AIUS_SD_RESERVED_ACTION_IDS UINT64_C(262)
 
 typedef enum {
@@ -50,6 +57,32 @@ static FLASHMEM bool job_is_quiescent(const AiusSdJob *job)
 	return (job->state == AIUS_SD_DONE ||
 	        job->state == AIUS_SD_FAILED) &&
 	       job->terminal_emitted;
+}
+
+/* Where a publication accumulates and how much of it there is. With no publish
+ * buffer registered both fall back to the job's own transfer buffer, which is
+ * the delivered behaviour and what every caller that never registers one keeps.
+ * Neither answer touches the transfer slice: `capacity` still bounds each READ
+ * action, so the per-epoch SD primitive is the same size either way. */
+static FLASHMEM uint8_t *publication_buffer(const AiusSdJob *job)
+{
+	return job->publish_buffer != NULL ? job->publish_buffer : job->buffer;
+}
+
+static FLASHMEM size_t publication_capacity(const AiusSdJob *job)
+{
+	return job->publish_buffer != NULL ? job->publish_buffer_capacity
+	                                   : job->capacity;
+}
+
+/* Bytes still to read into the publication, clamped to one transfer slice. */
+static FLASHMEM size_t publication_read_length(const AiusSdJob *job)
+{
+	uint64_t remaining =
+		job->captured_size - (uint64_t)job->config_bytes;
+
+	return remaining < (uint64_t)job->capacity ? (size_t)remaining
+	                                           : job->capacity;
 }
 
 static FLASHMEM void set_phase(AiusSdJob *job, AiusSdPhase phase, AiusSdState state)
@@ -133,12 +166,18 @@ static FLASHMEM void reset_for_start(AiusSdJob *job)
 {
 	uint8_t *buffer = job->buffer;
 	size_t capacity = job->capacity;
+	/* Registered once at construction, like the transfer buffer, so it must
+	 * survive a restart the same way. */
+	uint8_t *publish_buffer = job->publish_buffer;
+	size_t publish_buffer_capacity = job->publish_buffer_capacity;
 	uint64_t next_action_id = job->next_action_id;
 	bool action_ids_exhausted = job->action_ids_exhausted;
 
 	memset(job, 0, sizeof(*job));
 	job->buffer = buffer;
 	job->capacity = capacity;
+	job->publish_buffer = publish_buffer;
+	job->publish_buffer_capacity = publish_buffer_capacity;
 	job->next_action_id = next_action_id;
 	job->action_ids_exhausted = action_ids_exhausted;
 	job->state = AIUS_SD_IDLE;
@@ -265,7 +304,9 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 		    !request->publish || request->content_type == NULL ||
 		    request->temp_path != NULL || request->backup_path != NULL)
 			return AIUS_SD_FAULT_INVALID_REQUEST;
-		if (job->capacity < request->publish_capacity)
+		/* The publication capacity, not the transfer slice: a registered
+		 * publish buffer is what the accumulated bytes have to fit. */
+		if (publication_capacity(job) < request->publish_capacity)
 			return AIUS_SD_FAULT_CAPACITY;
 		if (!copy_canonical_path(request->target_path, target))
 			return AIUS_SD_FAULT_PATH;
@@ -314,7 +355,8 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 				    request->total == 0u ||
 				    request->total > request->publish_capacity)
 					return AIUS_SD_FAULT_INVALID_REQUEST;
-				if (job->capacity < request->publish_capacity)
+				if (publication_capacity(job) <
+				    request->publish_capacity)
 					return AIUS_SD_FAULT_CAPACITY;
 			} else if (request->content_type != NULL) {
 				return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -345,7 +387,8 @@ static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 				    final_size == 0u ||
 				    final_size > request->publish_capacity)
 					return AIUS_SD_FAULT_INVALID_REQUEST;
-				if (job->capacity < request->publish_capacity)
+				if (publication_capacity(job) <
+				    request->publish_capacity)
 					return AIUS_SD_FAULT_CAPACITY;
 			} else if (request->content_type != NULL) {
 				return AIUS_SD_FAULT_INVALID_REQUEST;
@@ -367,6 +410,21 @@ FLASHMEM void aius_sd_job_init(AiusSdJob *job, uint8_t *buffer, size_t capacity)
 	job->buffer = buffer;
 	job->capacity = capacity;
 	job->next_action_id = 1u;
+}
+
+FLASHMEM void aius_sd_job_set_publish_buffer(AiusSdJob *job,
+	                           uint8_t *buffer,
+	                           size_t capacity)
+{
+	if (job == NULL || !job_is_quiescent(job))
+		return;
+	if (buffer == NULL || capacity == 0u) {
+		job->publish_buffer = NULL;
+		job->publish_buffer_capacity = 0u;
+		return;
+	}
+	job->publish_buffer = buffer;
+	job->publish_buffer_capacity = capacity;
 }
 
 FLASHMEM void aius_sd_job_start(AiusSdJob *job,
@@ -766,10 +824,14 @@ static FLASHMEM void emit_read(AiusSdJob *job,
 	uint8_t *buffer;
 
 	if (config_read) {
-		length = (size_t)(job->captured_size -
-		                  (uint64_t)job->config_bytes);
+		/* config_bytes is the accumulation offset here: how much of the
+		 * publication is already in the buffer, hence both where the next
+		 * slice lands and what file offset it comes from. The slice is
+		 * one transfer at most, so a publication larger than `capacity`
+		 * costs more read actions rather than a larger primitive. */
+		length = publication_read_length(job);
 		offset = (uint64_t)job->config_bytes;
-		buffer = job->buffer + job->config_bytes;
+		buffer = publication_buffer(job) + job->config_bytes;
 	} else {
 		uint64_t absolute = job->initial_offset + job->transferred;
 		uint64_t remaining = job->end_offset - absolute;
@@ -831,17 +893,19 @@ static FLASHMEM void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 	case AIUS_SD_PHASE_DOWNLOAD_CLOSE:
 		(void)emit_correlated(job, action, AIUS_SD_ACTION_CLOSE, false);
 		break;
+	/* Single-shot: config_bytes has stopped being an offset and is now the
+	 * complete published length, delivered in one action. */
 	case AIUS_SD_PHASE_CONFIG_PUBLISH:
 		if (emit_correlated(job, action,
 		                    AIUS_SD_ACTION_PUBLISH_CONFIG, false)) {
-			action->buffer = job->buffer;
+			action->buffer = publication_buffer(job);
 			action->length = job->config_bytes;
 		}
 		break;
 	case AIUS_SD_PHASE_INSTALL_PUBLISH:
 		if (emit_correlated(job, action,
 		                    AIUS_SD_ACTION_PUBLISH_CONFIG, true)) {
-			action->buffer = job->buffer;
+			action->buffer = publication_buffer(job);
 			action->length = job->config_bytes;
 		}
 		break;
@@ -1297,8 +1361,10 @@ static FLASHMEM void handle_size_event(AiusSdJob *job, uint64_t size)
 	switch (job->phase) {
 	case AIUS_SD_PHASE_CONFIG_SIZE:
 		job->captured_size = size;
+		/* Both bounds still apply: the request's declared limit, and the
+		 * buffer the bytes actually accumulate into. */
 		if (size == 0u || size > job->publish_capacity ||
-		    size > job->capacity) {
+		    size > publication_capacity(job)) {
 			record_fault(job, AIUS_SD_FAULT_CAPACITY, 0u);
 		} else {
 			job->config_bytes = 0u;
@@ -1362,7 +1428,7 @@ static FLASHMEM void handle_size_event(AiusSdJob *job, uint64_t size)
 		job->captured_size = size;
 		if (size != job->end_offset || size == 0u ||
 		    size > job->publish_capacity ||
-		    size > job->capacity) {
+		    size > publication_capacity(job)) {
 			record_fault(job, AIUS_SD_FAULT_PUBLISH, 0u);
 			set_phase(job, AIUS_SD_PHASE_CLEANUP_CLOSE,
 			          AIUS_SD_CANCEL_CLOSE);
@@ -1580,8 +1646,7 @@ static FLASHMEM size_t outstanding_byte_length(const AiusSdJob *job)
 		return job->pending;
 	if (job->phase == AIUS_SD_PHASE_CONFIG_READ ||
 	    job->phase == AIUS_SD_PHASE_INSTALL_PUBLISH_READ)
-		return (size_t)(job->captured_size -
-		                (uint64_t)job->config_bytes);
+		return publication_read_length(job);
 	if (job->phase == AIUS_SD_PHASE_DOWNLOAD_READ) {
 		uint64_t absolute = job->initial_offset + job->transferred;
 		uint64_t remaining = job->end_offset - absolute;

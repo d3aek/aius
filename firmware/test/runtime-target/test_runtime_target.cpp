@@ -200,7 +200,9 @@ struct SdFake {
 	bool exists_result;
 	bool remove_ok;
 	bool open_ok;
-	uint8_t data[1024];
+	/* One byte past the service's publication capacity, so a file the job
+	 * must refuse can be staged as well as the largest it must accept. */
+	uint8_t data[AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY + 1u];
 	size_t data_length;
 	size_t read_offset;
 	unsigned primitive_calls;
@@ -208,6 +210,9 @@ struct SdFake {
 	unsigned open_calls;
 	unsigned close_calls;
 	unsigned read_calls;
+	/* Every read primitive's requested length, so a bounded-slice claim is
+	 * checked per call rather than inferred from the call count. */
+	size_t read_lengths[64];
 	unsigned remove_calls;
 	unsigned exists_calls;
 	bool file_open;
@@ -253,6 +258,8 @@ size_t File::read(uint8_t *buffer, size_t length)
 	size_t remaining;
 
 	sd_primitive();
+	if (g_sd.read_calls < ARRAY_COUNT(g_sd.read_lengths))
+		g_sd.read_lengths[g_sd.read_calls] = length;
 	g_sd.read_calls++;
 	remaining = g_sd.data_length - g_sd.read_offset;
 	if (length > remaining)
@@ -672,7 +679,11 @@ struct PublishFake {
 	bool accept;
 	unsigned calls;
 	size_t last_length;
-	uint8_t last[AIUS_RUNTIME_STORAGE_TRANSFER];
+	/* The consumer's own bound, per row: the service may now publish up to a
+	 * model-sized payload, so a row that expects no more than one transfer
+	 * slice says so instead of relying on `last` being that small. */
+	size_t max_length;
+	uint8_t last[AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY];
 };
 
 static PublishFake g_publish;
@@ -682,6 +693,8 @@ static bool publish_config(void *context, const uint8_t *data, size_t length)
 	CHECK(context == g_publish.expected_context);
 	CHECK(data != nullptr);
 	CHECK(length <= sizeof(g_publish.last));
+	CHECK(g_publish.max_length != 0u);
+	CHECK(length <= g_publish.max_length);
 	g_publish.calls++;
 	g_publish.last_length = length;
 	memcpy(g_publish.last, data, length);
@@ -931,6 +944,7 @@ static void reset_world(bool recovery_safe)
 	/* platform_ops() ran before the memsets above cleared the fake. */
 	g_publish.expected_context = &g_platform;
 	g_publish.accept = true;
+	g_publish.max_length = AIUS_RUNTIME_STORAGE_TRANSFER;
 	g_platform.expected_context = &g_platform;
 	g_platform.reset_capture_ok = true;
 	g_platform.metrics_ok = true;
@@ -2164,6 +2178,7 @@ static void arm_root_storage(AiusRuntimeStorage *storage, size_t length,
 	memset(&g_publish, 0, sizeof(g_publish));
 	g_publish.expected_context = &g_publish;
 	g_publish.accept = true;
+	g_publish.max_length = AIUS_RUNTIME_STORAGE_TRANSFER;
 	g_sd.begin_ok = true;
 	g_sd.open_ok = true;
 	g_sd.media_present = true;
@@ -2217,7 +2232,9 @@ static void drive_root_job(AiusRuntimeStorage *storage, uint32_t *now_ms,
 static void test_root_storage_job(void)
 {
 	static const char *const keys[] = {
-		"root.publish-intact",       "root.publish-dropped",
+		"root.publish-intact",       "root.publish-wiring",
+		"root.publish-model-sized",  "root.publish-oversize",
+		"root.publish-dropped",
 		"root.publish-refused",      "root.probe",
 		"root.invalid-request",      "root.rejects-under-http",
 		"root.refuses-http",         "root.survives-release",
@@ -2230,13 +2247,14 @@ static void test_root_storage_job(void)
 	AiusHttpEvent event;
 	uint32_t now_ms = 1u;
 
-	validate_unique_keys("registry.root", keys, ARRAY_COUNT(keys), 10u);
+	validate_unique_keys("registry.root", keys, ARRAY_COUNT(keys), 13u);
 
 	current_key = "root.publish-intact";
 	{
-		/* A payload filling the whole publish capacity, which is the
-		 * transfer slice: the portable engine refuses a publish larger
-		 * than the job buffer (aius_sd.c:251). */
+		/* A payload filling one whole transfer slice, delivered by a
+		 * single read. The publication buffer is larger, so this is the
+		 * boundary at which the read stops being one primitive rather
+		 * than the boundary at which the job stops being startable. */
 		arm_root_storage(&storage, AIUS_RUNTIME_STORAGE_TRANSFER, true);
 		request = config_load_request(AIUS_RUNTIME_STORAGE_TRANSFER);
 		now_ms = 1u;
@@ -2259,6 +2277,92 @@ static void test_root_storage_job(void)
 		CHECK(aius_runtime_storage_root_result(&storage) != nullptr);
 		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
 		      AIUS_SD_FAULT_NONE);
+		CHECK(g_sd.read_calls == 1u);
+		CHECK(g_sd.read_lengths[0] == AIUS_RUNTIME_STORAGE_TRANSFER);
+	}
+
+	current_key = "root.publish-wiring";
+	{
+		/* The service owns both buffers and keeps them distinct: the
+		 * transfer slice sizes every primitive, the publication buffer
+		 * only the accumulated payload. */
+		arm_root_storage(&storage, 0u, true);
+		CHECK(storage.job.capacity == AIUS_RUNTIME_STORAGE_TRANSFER);
+		CHECK(storage.job.buffer == storage.sd_transfer);
+		CHECK(storage.job.publish_buffer == storage.sd_publish);
+		CHECK(storage.job.publish_buffer_capacity ==
+		      AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY);
+		/* Above the publication buffer the engine still refuses. */
+		request = config_load_request(
+			AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY + 1u);
+		CHECK(!aius_runtime_storage_start_root_job(&storage, &request,
+		                                           1u));
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_CAPACITY);
+		CHECK(g_sd.primitive_calls == 0u);
+	}
+
+	current_key = "root.publish-model-sized";
+	{
+		/* The S3 case: a model-sized config published intact, read in
+		 * transfer-slice primitives, one per epoch. */
+		arm_root_storage(&storage,
+		                 AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY, true);
+		g_publish.max_length = AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY;
+		request = config_load_request(
+			AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		CHECK(g_sd.primitive_calls == 0u);
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		/* One publish, carrying every byte, unchanged. */
+		CHECK(g_publish.calls == 1u);
+		CHECK(g_publish.last_length ==
+		      AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY);
+		CHECK(memcmp(g_publish.last, g_sd.data,
+		             AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY) == 0);
+		CHECK(storage.publish_dropped == 0u);
+		/* The buffer grew; the primitive did not. */
+		CHECK(g_sd.read_calls ==
+		      AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY /
+			      AIUS_RUNTIME_STORAGE_TRANSFER);
+		CHECK(g_sd.read_calls == 24u);
+		for (unsigned index = 0u; index < g_sd.read_calls; ++index)
+			CHECK(g_sd.read_lengths[index] ==
+			      AIUS_RUNTIME_STORAGE_TRANSFER);
+		CHECK(g_sd.close_calls == 1u);
+		CHECK(!g_sd.file_open);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_NONE);
+		CHECK(aius_runtime_storage_root_result(&storage)
+		              ->transferred_bytes ==
+		      AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY);
+	}
+
+	current_key = "root.publish-oversize";
+	{
+		/* One byte past the publication buffer is refused at the size
+		 * event, before any of it is read. */
+		arm_root_storage(&storage,
+		                 AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY + 1u,
+		                 true);
+		g_publish.max_length = AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY;
+		request = config_load_request(
+			AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 64u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_CAPACITY);
+		CHECK(g_publish.calls == 0u);
+		CHECK(g_sd.read_calls == 0u);
+		CHECK(!g_sd.file_open);
 	}
 
 	current_key = "root.publish-dropped";
