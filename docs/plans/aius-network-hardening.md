@@ -97,8 +97,11 @@ counters on `GET /api/meters`, which is the last estimate standing in this plan
 and a prerequisite for Phase 14e.
 
 Once the input is soldered: `blocks` must climb from passthrough alone with no
-replay, and starting a replay must end `stopped` with `stop_reason:"carrier"` and
-a type-3 event.
+replay, and **starting a replay against a live carrier must be refused with
+`409 replay_carrier_present`** — the refusal landed, so the start no longer
+reaches `stopped`. `stop_reason:"carrier"` and its type-3 event are now reachable
+only when the carrier arrives *during* an already-running replay, which is the
+one case the refusal cannot cover.
 
 #### What is in flight
 
@@ -109,31 +112,32 @@ Both landed before the session closed. The memory gate now agrees with the linke
 symbols and reports `omits: NonCacheable 9756B` explicitly, and a `memory` suite is
 registered and green.
 
-#### The 409 refusal is the one piece of specified work not shipped
+#### The 409 refusal — shipped
 
-The clock handover landed (`24ff70f7b`) but its refusal did not, because it needs
-three files that slice did not own. **This is the first thing to finish.**
+`AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT` runs from the enum through the
+dispatcher arm, the replay-start error table and the `app_replay_start()` guard,
+so a start against a live carrier now returns `409 replay_carrier_present`
+instead of being admitted and reversed at the next checkpoint. It is a distinct
+token from the generic `409 replay_start` on purpose: a client must be able to
+tell "that id is unusable", which it retries with a different id, from "the input
+is live", which clears only when the carrier goes away. A half-refusal reusing
+the existing token was deliberately not shipped.
 
-1. `src/aius_optical_app.h` — add `AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT` to
-   `AiusOpticalAppReplayResult`.
-2. `src/aius_optical_app.cpp` — a `replay_start` switch arm returning
-   `http_error(dispatcher, 409, "replay_carrier_present")`. The existing
-   `ACTIVE`/`FAILED` arms fall through to `409 "replay_start"`, which the owner
-   explicitly excluded — a client must be able to tell "bad id" from "live input
-   present".
-3. `test/optical-app/test_optical_app.c` — the replay-start error table asserts
-   exact bodies and needs the new case.
+The guard sits ahead of the `g_sd_ready` and id-validity check, so a live carrier
+refuses regardless of SD state and the client gets the accurate reason rather
+than `replay_start` from an unrelated precondition.
 
-Then two lines at the top of `app_replay_start()` in `optical_main.cpp` returning
-the new result when `AudioInputSPDIF3::pllLocked()`.
+**The guard itself has no native coverage and cannot have any.** `optical_main.cpp`
+is target-only and `optical-cutover` is a structural suite; the dispatcher half is
+covered by `optical-app`, but `AudioInputSPDIF3::pllLocked()` is proven only by
+the target build and the on-device pass with the input soldered.
 
-Until that lands, a start issued with a live carrier returns **200** and is then
-stopped at the next checkpoint — observable as `stop_reason:"carrier"` plus a
-type-3 event, so visible rather than silent, but not the specified status. A
-half-refusal reusing the existing token was deliberately not shipped.
-
-Also undocumented: `stop_reason` is a wire-shape addition to
-`GET /api/replays/status` and needs a line in `aius-dsp-config-api.md`.
+`stop_reason` is documented in [`aius-dsp-config-api.md`](aius-dsp-config-api.md)
+§The 409 refusal, with all three values. Its durable home is arguably
+[`aius-replay-manager.md`](aius-replay-manager.md)'s status-JSON bullet alongside
+`state`, and `swagger.json` carries no replay schemas at all —
+`input_class`, `loops_completed` and `stop_reason` are undocumented there. Both
+are follow-up work, recorded here so they are not lost.
 
 #### Open defects, in the order they are worth taking
 
@@ -156,9 +160,17 @@ Also undocumented: `stop_reason` is a wire-shape addition to
    **not applied**, because it would look like a resolution while possibly leaving
    the real defect. Flash, reproduce, then read `sd_diag.last_failure`; the
    convicting values for each hypothesis are tabulated there.
-3. **`"source":"default"` is a hardcoded literal** in the status JSON format
-   string, so that field never reflects the actual source and reads `default` even
-   mid-replay.
+3. ~~**`"source":"default"` is a hardcoded literal** in the status JSON format
+   string.~~ **Fixed.** It now serves `g_dsp_source_sd ? "sd" : "default"` — the
+   same fact, from the same variable, as `GET /api/dsp/config`, so the two can no
+   longer disagree. Note the field is the **effective DSP model source**, not the
+   audio source: `optical_main.cpp:246`, the DSP GET serializer and the `Status`
+   schema in `swagger.json` all pin it to `default | sd`, and the
+   audio source is `state`. This entry previously read as though it should track
+   the audio source; that reading contradicts the wire contract and was not
+   implemented. `g_dsp_source_sd` is a latch — set on a successful SD override
+   load and never cleared — so status inherits exactly the DSP GET's behaviour,
+   latch included.
 4. **`record_event` has only two call sites** — the S/PDIF lock transition and the
    test-tone toggle. Everything else observable is a counter, not an event. Closing
    this is the prerequisite to any push observability being worth having; see the

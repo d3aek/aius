@@ -1267,6 +1267,13 @@ static void test_replay_control(void)
 	                                  "X-Aius-SD-Auth: token\r\n",
 	                                  "{\"id\":\"take1\"}", -1),
 	                 409, "{\"ok\":false,\"error\":\"replay_start\"}");
+	/* A live carrier refuses with its own token, so a client can tell it from
+	 * every other 409 on this route. */
+	fixture.fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT;
+	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"take1\"}", -1),
+	                 409, "{\"ok\":false,\"error\":\"replay_carrier_present\"}");
 
 	/* A malformed or unusable id never reaches the application. */
 	static const char *const bad_bodies[] = {

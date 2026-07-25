@@ -838,6 +838,11 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 				         dispatcher->replay_id));
 		case AIUS_OPTICAL_APP_REPLAY_NOT_FOUND:
 			return http_error(dispatcher, 404, "replay_not_found");
+		case AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT:
+			/* Its own token, not the generic 409 below: the live input owns
+			 * the audio path, so this refusal clears when the carrier goes
+			 * away rather than when the request changes. */
+			return http_error(dispatcher, 409, "replay_carrier_present");
 		case AIUS_OPTICAL_APP_REPLAY_ACTIVE:
 		case AIUS_OPTICAL_APP_REPLAY_FAILED:
 		default:

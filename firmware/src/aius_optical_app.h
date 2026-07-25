@@ -88,11 +88,18 @@ typedef enum {
 	AIUS_OPTICAL_APP_STORE_BUSY
 } AiusOpticalAppStoreResult;
 
+/* CARRIER_PRESENT is a start-only refusal and deliberately its own value: a live
+ * S/PDIF carrier always owns the audio path, so a replay cannot start against
+ * one. It is distinct from FAILED because a client must be able to tell "that id
+ * is unusable" from "the input is live" -- the first is retried with a different
+ * id, the second only once the carrier goes away. Appended so no existing value
+ * moves. */
 typedef enum {
 	AIUS_OPTICAL_APP_REPLAY_OK,
 	AIUS_OPTICAL_APP_REPLAY_NOT_FOUND,
 	AIUS_OPTICAL_APP_REPLAY_ACTIVE,
-	AIUS_OPTICAL_APP_REPLAY_FAILED
+	AIUS_OPTICAL_APP_REPLAY_FAILED,
+	AIUS_OPTICAL_APP_REPLAY_CARRIER_PRESENT
 } AiusOpticalAppReplayResult;
 
 /* One directory entry, as the application read it off the card. `name` is the
