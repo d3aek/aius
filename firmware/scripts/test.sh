@@ -13,7 +13,11 @@
 #         recovery-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
-#         optical-cutover, runtime-target, memory, itcm-placement.
+#         optical-cutover, runtime-target, memory, itcm-placement, registry.
+#
+# That list is not documentation: the `registry` suite fails when it, the suites
+# table in README.md, and the arms of the `case` below disagree with the
+# directories under test/.
 #
 # Every suite is host-only and self-contained except `itcm-placement`, which
 # inspects the linked objects of an optical image and therefore needs a current
@@ -562,6 +566,17 @@ itcm-placement)
 	fi
 	python3 "$fw_root/test/itcm-placement/verify_target.py" \
 		"$itcm_build" --readelf "$itcm_readelf"
+	;;
+registry)
+	# The guard on this file. Every other arm is hand-maintained, so a suite
+	# directory only ever runs if somebody remembered to add its arm here, its
+	# name to the `# Suites:` header above and its row to README.md -- and
+	# twice they did not: test/auth/ and test/config/test_config.c were
+	# committed, compiling code that had never once executed. This suite parses
+	# the arms out of this file and fails when they, the two catalogues and the
+	# directories under test/ disagree. It compiles nothing and needs no
+	# toolchain.
+	python3 "$fw_root/test/registry/test_registry.py"
 	;;
 *)
 	echo "unknown suite: $suite" >&2

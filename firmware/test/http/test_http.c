@@ -87,8 +87,22 @@ static void test_sd_auth_header(void)
 	const char *duplicate = "GET /api/status HTTP/1.0\r\n"
 	                       "X-Aius-SD-Auth: 0123456789abcdef\r\n"
 	                       "X-Aius-SD-Auth: fedcba9876543210\r\n\r\n";
-	const char *wrong_case = "GET /api/status HTTP/1.0\r\n"
+	/* Field names are case-insensitive (RFC 9110 5.1), so a lowercase spelling
+	 * binds the token exactly as the canonical one does. Name-case coverage
+	 * proper lives in test_sd_auth_header_name_case(). */
+	const char *other_case = "GET /api/status HTTP/1.0\r\n"
 	                        "x-aius-sd-auth: 0123456789abcdef\r\n\r\n";
+	/* Duplicate rejection is name-folded too: these two spellings are one
+	 * header, so the second is still a duplicate. */
+	const char *duplicate_mixed_case = "GET /api/status HTTP/1.0\r\n"
+	                       "X-Aius-SD-Auth: 0123456789abcdef\r\n"
+	                       "x-AiUs-Sd-AuTh: fedcba9876543210\r\n\r\n";
+	/* The length and malformed guards fire on a folded name, not just the
+	 * canonical one. */
+	const char *malformed_folded = "GET /api/status HTTP/1.0\r\n"
+	                        "X-AIUS-SD-AUTH:\r\n\r\n";
+	const char *oversized_folded = "GET /api/status HTTP/1.0\r\n"
+	                       "x-aius-sd-auth: 0123456789abcdef0\r\n\r\n";
 
 	assert(aius_http_parse((const uint8_t *)absent, strlen(absent), &request) == AIUS_HTTP_OK);
 	assert(request.sd_auth == NULL);
@@ -102,10 +116,219 @@ static void test_sd_auth_header(void)
 	       AIUS_HTTP_ERR_TOO_LARGE);
 	assert(aius_http_parse((const uint8_t *)duplicate, strlen(duplicate), &request) ==
 	       AIUS_HTTP_ERR_MALFORMED);
-	assert(aius_http_parse((const uint8_t *)wrong_case, strlen(wrong_case), &request) ==
+	assert(aius_http_parse((const uint8_t *)other_case, strlen(other_case), &request) ==
 	       AIUS_HTTP_OK);
-	assert(request.sd_auth == NULL);
-	assert(request.sd_auth_length == 0);
+	assert(request.sd_auth_length == AIUS_HTTP_MAX_SD_AUTH);
+	assert(memcmp(request.sd_auth, "0123456789abcdef", AIUS_HTTP_MAX_SD_AUTH) == 0);
+	assert(aius_http_parse((const uint8_t *)duplicate_mixed_case,
+	                       strlen(duplicate_mixed_case), &request) ==
+	       AIUS_HTTP_ERR_MALFORMED);
+	assert(aius_http_parse((const uint8_t *)malformed_folded,
+	                       strlen(malformed_folded), &request) ==
+	       AIUS_HTTP_ERR_MALFORMED);
+	assert(aius_http_parse((const uint8_t *)oversized_folded,
+	                       strlen(oversized_folded), &request) ==
+	       AIUS_HTTP_ERR_TOO_LARGE);
+}
+
+/* RFC 9110 5.1 -- "Field names are case-insensitive". Every spelling of the
+ * name below must bind the same token, and the token VALUE must survive
+ * byte-for-byte: `token` is deliberately mixed case, so a fold that leaked from
+ * the name onto the value would fail the memcmp.
+ *
+ * The `matches == 0` rows are near misses. "bit5-non-alpha" is the one a
+ * careless `| 0x20` (or XOR 0x20) fold gets wrong: it equates any two bytes
+ * differing only in bit 5, including non-alphabetic pairs such as '_' 0x5F /
+ * '?' 0x3F. This name's only reachable such pair is '-' 0x2D / CR 0x0D, so the
+ * row swaps the first hyphen for a bare CR -- which is not "\r\n" and so does
+ * not end the header line. A correct ASCII-only fold rejects it; a bit-5 fold
+ * accepts a corrupted field name. */
+static void test_sd_auth_header_name_case(void)
+{
+	static const char token[] = "AbCdEf0123456789";
+	static const struct {
+		const char *key;
+		const char *name;
+		int matches;
+	} rows[] = {
+		{ "canonical", "X-Aius-SD-Auth", 1 },
+		{ "lower", "x-aius-sd-auth", 1 },
+		{ "upper", "X-AIUS-SD-AUTH", 1 },
+		{ "mixed", "x-AiUs-Sd-AuTh", 1 },
+		/* urllib.request title-cases field names; this is the live 401. */
+		{ "title", "X-aius-sd-auth", 1 },
+		{ "suffixed", "X-Aius-SD-Auth-Extra", 0 },
+		{ "truncated", "X-Aius-SD-Aut", 0 },
+		{ "letter-differs", "X-Aius-SD-Autz", 0 },
+		{ "bit5-non-alpha", "X\rAius-SD-Auth", 0 }
+	};
+
+	for (size_t i = 0; i < ARRAY_LENGTH(rows); ++i) {
+		AiusHttpRequest request;
+		char raw[160];
+		int length;
+		AiusHttpResult result;
+		for (size_t j = 0; j < i; ++j)
+			assert(strcmp(rows[i].key, rows[j].key) != 0);
+		length = snprintf(raw, sizeof(raw),
+		                  "GET /api/status HTTP/1.0\r\n%s: %s\r\n\r\n",
+		                  rows[i].name, token);
+		assert(length > 0);
+		assert((size_t)length < sizeof(raw));
+		result = aius_http_parse((const uint8_t *)raw, (size_t)length, &request);
+		if (result != AIUS_HTTP_OK)
+			fprintf(stderr, "sd-auth name %s: expected result %d, actual %d\n",
+			        rows[i].key, (int)AIUS_HTTP_OK, (int)result);
+		assert(result == AIUS_HTTP_OK);
+		if (rows[i].matches) {
+			if (request.sd_auth == NULL)
+				fprintf(stderr, "sd-auth name %s: expected a bound token\n",
+				        rows[i].key);
+			assert(request.sd_auth != NULL);
+			assert(request.sd_auth_length == strlen(token));
+			/* Byte-for-byte: the value keeps its own case. */
+			assert(memcmp(request.sd_auth, token, strlen(token)) == 0);
+		} else {
+			if (request.sd_auth != NULL)
+				fprintf(stderr, "sd-auth name %s: expected no match, bound %zu bytes\n",
+				        rows[i].key, request.sd_auth_length);
+			assert(request.sd_auth == NULL);
+			assert(request.sd_auth_length == 0);
+		}
+	}
+}
+
+/* Same rule for Content-Range: the NAME folds, the value does not. A "BYTES"
+ * unit token is an unrecognised range and is ignored exactly as before, which
+ * on a complete PUT to /sd/replays/<id> surfaces as ERR_BODY -- that is what
+ * every non-matching row asserts. */
+static void test_content_range_header_name_case(void)
+{
+	static const struct {
+		const char *key;
+		const char *name;
+		const char *value;
+		int matches;
+	} rows[] = {
+		{ "canonical", "Content-Range", " bytes 0-3/8", 1 },
+		{ "lower", "content-range", " bytes 0-3/8", 1 },
+		{ "upper", "CONTENT-RANGE", " bytes 0-3/8", 1 },
+		{ "mixed", "CoNtEnT-RaNgE", " bytes 0-3/8", 1 },
+		{ "suffixed", "Content-Range-Extra", " bytes 0-3/8", 0 },
+		{ "truncated", "Content-Rang", " bytes 0-3/8", 0 },
+		{ "bit5-non-alpha", "Content\rRange", " bytes 0-3/8", 0 },
+		/* Value stays case-sensitive: an upper-case unit is not "bytes". */
+		{ "value-case", "Content-Range", " BYTES 0-3/8", 0 }
+	};
+
+	for (size_t i = 0; i < ARRAY_LENGTH(rows); ++i) {
+		AiusHttpRequest request;
+		char raw[192];
+		int length;
+		AiusHttpResult result;
+		AiusHttpResult expected = rows[i].matches ? AIUS_HTTP_OK : AIUS_HTTP_ERR_BODY;
+		for (size_t j = 0; j < i; ++j)
+			assert(strcmp(rows[i].key, rows[j].key) != 0);
+		length = snprintf(raw, sizeof(raw),
+		                  "PUT /sd/replays/take1 HTTP/1.0\r\n%s:%s\r\n"
+		                  "Content-Length: 4\r\n\r\nABCD",
+		                  rows[i].name, rows[i].value);
+		assert(length > 0);
+		assert((size_t)length < sizeof(raw));
+		result = aius_http_parse((const uint8_t *)raw, (size_t)length, &request);
+		if (result != expected)
+			fprintf(stderr, "content-range name %s: expected result %d, actual %d\n",
+			        rows[i].key, (int)expected, (int)result);
+		assert(result == expected);
+		if (rows[i].matches) {
+			assert(request.has_content_range);
+			assert(request.content_range_start == 0);
+			assert(request.content_range_end == 3);
+			assert(request.content_range_total == 8);
+		} else {
+			assert(!request.has_content_range);
+		}
+	}
+}
+
+/* Content-Length and Transfer-Encoding already folded their names; these rows
+ * pin that, including the same bit-5 near miss, so the three parsed headers
+ * share one proven rule. */
+static void test_framing_header_name_case(void)
+{
+	static const struct {
+		const char *key;
+		const char *name;
+		int matches;
+	} lengths[] = {
+		{ "canonical", "Content-Length", 1 },
+		{ "lower", "content-length", 1 },
+		{ "upper", "CONTENT-LENGTH", 1 },
+		{ "mixed", "CoNtEnT-LeNgTh", 1 },
+		{ "suffixed", "Content-Length-Extra", 0 },
+		{ "bit5-non-alpha", "Content\rLength", 0 }
+	};
+	static const struct {
+		const char *key;
+		const char *name;
+		int matches;
+	} encodings[] = {
+		{ "canonical", "Transfer-Encoding", 1 },
+		{ "lower", "transfer-encoding", 1 },
+		{ "upper", "TRANSFER-ENCODING", 1 },
+		{ "mixed", "TrAnSfEr-EnCoDiNg", 1 },
+		{ "suffixed", "Transfer-Encoding-Extra", 0 },
+		{ "bit5-non-alpha", "Transfer\rEncoding", 0 }
+	};
+	AiusHttpRequest request;
+	/* One header spelled two ways is still a duplicate. */
+	const char *duplicate =
+		"POST /api/clear HTTP/1.0\r\nContent-Length: 0\r\ncontent-length: 0\r\n\r\n";
+
+	for (size_t i = 0; i < ARRAY_LENGTH(lengths); ++i) {
+		char raw[192];
+		int length;
+		AiusHttpResult result;
+		/* Body bytes with no recognised Content-Length are malformed, so a
+		 * missed name is observable without a second assertion path. */
+		AiusHttpResult expected =
+			lengths[i].matches ? AIUS_HTTP_OK : AIUS_HTTP_ERR_MALFORMED;
+		length = snprintf(raw, sizeof(raw),
+		                  "PUT /api/config/public HTTP/1.0\r\n%s: 2\r\n\r\n{}",
+		                  lengths[i].name);
+		assert(length > 0);
+		assert((size_t)length < sizeof(raw));
+		result = aius_http_parse((const uint8_t *)raw, (size_t)length, &request);
+		if (result != expected)
+			fprintf(stderr, "content-length name %s: expected result %d, actual %d\n",
+			        lengths[i].key, (int)expected, (int)result);
+		assert(result == expected);
+		if (lengths[i].matches) {
+			assert(request.has_content_length);
+			assert(request.content_length == 2);
+		}
+	}
+
+	for (size_t i = 0; i < ARRAY_LENGTH(encodings); ++i) {
+		char raw[192];
+		int length;
+		AiusHttpResult result;
+		AiusHttpResult expected =
+			encodings[i].matches ? AIUS_HTTP_ERR_MALFORMED : AIUS_HTTP_OK;
+		length = snprintf(raw, sizeof(raw),
+		                  "POST /api/clear HTTP/1.0\r\n%s: chunked\r\n\r\n",
+		                  encodings[i].name);
+		assert(length > 0);
+		assert((size_t)length < sizeof(raw));
+		result = aius_http_parse((const uint8_t *)raw, (size_t)length, &request);
+		if (result != expected)
+			fprintf(stderr, "transfer-encoding name %s: expected result %d, actual %d\n",
+			        encodings[i].key, (int)expected, (int)result);
+		assert(result == expected);
+	}
+
+	assert(aius_http_parse((const uint8_t *)duplicate, strlen(duplicate), &request) ==
+	       AIUS_HTTP_ERR_MALFORMED);
 }
 
 static void test_replay_routes(void)
@@ -301,6 +524,9 @@ int main(void)
 {
 	AiusHttpRequest request;
 	test_sd_auth_header();
+	test_sd_auth_header_name_case();
+	test_content_range_header_name_case();
+	test_framing_header_name_case();
 	test_sd_directory_resource();
 	test_dsp_config_route();
 	test_replay_routes();

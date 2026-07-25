@@ -73,6 +73,11 @@ static FLASHMEM int decimal_u64(const uint8_t *value, size_t length, uint64_t *r
 	return 1;
 }
 
+/* RFC 9110 5.1: field names are case-insensitive. Fold ASCII A-Z only -- never
+ * tolower(), whose locale dependence would fold non-ASCII bytes, and never the
+ * `| 0x20` shortcut, which also equates byte pairs differing solely in bit 5
+ * ('-' 0x2D / CR 0x0D, '_' 0x5F / '?' 0x3F) and would match a corrupted name.
+ * Field VALUES stay byte-exact: only the name passes through here. */
 static FLASHMEM int ascii_equal_fold(uint8_t left, char right)
 {
 	if (left >= 'A' && left <= 'Z')
@@ -158,16 +163,23 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 static FLASHMEM AiusHttpResult extract_content_range(const uint8_t *headers, size_t length,
 	                                         AiusHttpRequest *request)
 {
-	static const char prefix[] = "Content-Range: bytes ";
+	/* Name folds (RFC 9110 5.1); the unit token stays byte-exact, so a
+	 * "BYTES" unit is still an unrecognised range and is ignored, as before. */
+	static const char value_prefix[] = " bytes ";
+	const size_t value_prefix_length = sizeof(value_prefix) - 1u;
 	const uint8_t *cursor = headers;
 	const uint8_t *end = headers + length;
 	while (cursor < end) {
 		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor), "\r\n", 2);
+		const uint8_t *colon;
 		if (line_end == NULL) line_end = end;
 		size_t line_length = (size_t)(line_end - cursor);
-		if (line_length >= sizeof(prefix) - 1u &&
-		    memcmp(cursor, prefix, sizeof(prefix) - 1u) == 0) {
-			const uint8_t *value = cursor + sizeof(prefix) - 1u;
+		colon = (const uint8_t *)memchr(cursor, ':', line_length);
+		if (colon != NULL &&
+		    header_name_equals(cursor, (size_t)(colon - cursor), "Content-Range") &&
+		    (size_t)(line_end - (colon + 1)) >= value_prefix_length &&
+		    memcmp(colon + 1, value_prefix, value_prefix_length) == 0) {
+			const uint8_t *value = colon + 1 + value_prefix_length;
 			const uint8_t *dash = (const uint8_t *)memchr(value, '-',
 				(size_t)(line_end - value));
 			const uint8_t *slash = dash == NULL ? NULL : (const uint8_t *)memchr(dash + 1,
@@ -230,21 +242,23 @@ static FLASHMEM AiusHttpResult extract_framing(const uint8_t *headers, size_t le
 static FLASHMEM AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
 	                                   AiusHttpRequest *request)
 {
-	static const char header_name[] = "X-Aius-SD-Auth";
-	const size_t header_name_length = sizeof(header_name) - 1u;
+	/* Name folds (RFC 9110 5.1) so urllib's "X-aius-sd-auth" and any other
+	 * conforming spelling reach the same token check; the token itself is
+	 * still compared byte-for-byte by the caller. */
 	const uint8_t *cursor = headers;
 	const uint8_t *end = headers + length;
 
 	while (cursor < end) {
 		const uint8_t *line_end = find_bytes(cursor, (size_t)(end - cursor),
 		                                     "\r\n", 2);
+		const uint8_t *colon;
 		if (line_end == NULL)
 			line_end = end;
 		size_t line_length = (size_t)(line_end - cursor);
-		if (line_length > header_name_length &&
-		    memcmp(cursor, header_name, header_name_length) == 0 &&
-		    cursor[header_name_length] == ':') {
-			const uint8_t *value = cursor + header_name_length + 1u;
+		colon = (const uint8_t *)memchr(cursor, ':', line_length);
+		if (colon != NULL &&
+		    header_name_equals(cursor, (size_t)(colon - cursor), "X-Aius-SD-Auth")) {
+			const uint8_t *value = colon + 1u;
 			const uint8_t *value_end = line_end;
 			while (value < value_end && (*value == ' ' || *value == '\t'))
 				value++;

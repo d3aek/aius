@@ -175,10 +175,24 @@ are follow-up work, recorded here so they are not lost.
    test-tone toggle. Everything else observable is a counter, not an event. Closing
    this is the prerequisite to any push observability being worth having; see the
    syslog assessment.
-5. **The suite registry is hand-maintained with no guard.** Two orphans were found
-   today (`test/auth/test_auth.c`, `test/config/test_config.c`), both live code,
-   both never run. The proposed `registry` suite is described in the audit commit
-   and is not built.
+5. ~~**The suite registry is hand-maintained with no guard.**~~ **Fixed.** The
+   `registry` suite parses `scripts/test.sh` — it does not carry its own copy of
+   the list — and fails on five kinds of drift: a suite directory with no arm, an
+   arm naming a path that does not exist, an **entry point a registered arm never
+   runs**, and either catalogue (the `# Suites:` header, the README table)
+   disagreeing with the arms in either direction. The third check is the sharper
+   one and is the class `test/config/test_config.c` actually was: a registered
+   directory whose arm had forgotten one of its sources, which a directory-level
+   check alone would miss. Suite name and directory name are deliberately not
+   assumed equal — `test/dts/` backs three arms and `codec-api-contract` lives in
+   `test/codec-api/` — so ownership derives from the paths each arm names. The
+   non-suite allowlist is one explicit entry (`fixtures/`, shared LFS data with no
+   runner), enumerated rather than pattern-matched so a real suite can never be
+   excused. **Running it found no remaining orphans**: the audit's three were
+   closed by earlier sessions, and the guard is now what keeps them closed. The
+   true count is **36 arms over 30 suite directories**, not the "33 suites" this
+   plan previously asserted. Adding a suite is now three lines the failure message
+   dictates verbatim.
 6. **"At most one SD primitive per epoch" is false at checkpoint 5**, found while
    writing [§Phase 14d](#phase-14d--firmware-io-reference). Three routes reach the
    card outside the job engine. `app_read_directory` (`optical_main.cpp:1993`) is

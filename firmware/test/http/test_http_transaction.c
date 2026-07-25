@@ -4030,6 +4030,226 @@ static void test_duplicate_authority_registry(void)
 	assert(rows == 3);
 }
 
+/* Chunk-boundary equivalence.
+ *
+ * TCP may split a request at any byte, and every mainstream client library
+ * (python http.client, requests, Go, .NET, Java) writes headers and body as
+ * separate writes; curl's coalesced small POST -- the shape every manual test
+ * used -- is the exception, not the rule. So the transaction must accumulate
+ * across epochs until the declared body is complete and answer identically
+ * wherever the boundaries fall. The feed below reports WOULD_BLOCK for a read
+ * that has nothing yet, which is what an empty non-blocking socket means; an
+ * adapter that reports it as CLOSED instead makes the transaction discard the
+ * response and close silently on every split request. */
+typedef struct {
+	uint8_t bytes[AIUS_HTTP_MAX_RESPONSE];
+	size_t length;
+} ObservedResponse;
+
+/* Delivers `raw` as `count` chunks ending at the offsets in `bounds`, one
+ * WOULD_BLOCK per boundary, and records every response byte the client would
+ * see. */
+static void feed_chunked(Fixture *fixture, const char *raw, size_t length,
+	                     const char *expect_body, size_t expect_body_length,
+	                     const size_t *bounds, size_t count,
+	                     ObservedResponse *observed)
+{
+	static const uint8_t reply_body[] =
+		"{\"ok\":true,\"state\":\"prebuffering\"}";
+	AiusHttpApplicationResponse reply =
+		immediate(200u, "application/json", reply_body,
+		          sizeof(reply_body) - 1u);
+	AiusHttpAction action = accept_client(fixture);
+	size_t offset = 0;
+	size_t chunk = 0;
+	size_t chunk_end = bounds[0];
+
+	memset(observed, 0, sizeof(*observed));
+	while (action.kind == AIUS_HTTP_ACTION_READ) {
+		size_t available = chunk_end - offset;
+		size_t take = available < action.length ? available : action.length;
+		if (take == 0u) {
+			/* The transaction may only ask for more once a boundary
+			 * is still short of the declared body. */
+			assert(chunk + 1u < count);
+			chunk_end = bounds[++chunk];
+			action = call_step(
+				fixture, fixture->now,
+				io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
+			continue;
+		}
+		memcpy(action.read_buffer, raw + offset, take);
+		offset += take;
+		action = call_step(fixture, fixture->now,
+		                   io_result(&action, AIUS_IO_PROGRESS, take, 0));
+	}
+	assert(offset == length);
+	assert(action.kind == AIUS_HTTP_ACTION_DISPATCH);
+	assert(action.request->body_complete);
+	assert(action.request->body_length == expect_body_length);
+	assert(memcmp(action.request->body, expect_body, expect_body_length) == 0);
+
+	action = call_step(fixture, fixture->now,
+	                   application_result(&action, &reply));
+	while (action.kind == AIUS_HTTP_ACTION_WRITE) {
+		assert(observed->length + action.length <=
+		       sizeof(observed->bytes));
+		memcpy(observed->bytes + observed->length, action.data,
+		       action.length);
+		observed->length += action.length;
+		action = call_step(
+			fixture, fixture->now,
+			io_result(&action, AIUS_IO_PROGRESS, action.length, 0));
+	}
+	finish_close(fixture, action);
+	assert(fixture->dispatches == 1);
+}
+
+static void assert_same_response(const char *label,
+	                             const ObservedResponse *reference,
+	                             const ObservedResponse *observed)
+{
+	if (reference->length != observed->length ||
+	    memcmp(reference->bytes, observed->bytes, reference->length) != 0) {
+		fprintf(stderr,
+		        "chunk boundary %s: expected %zu bytes \"%.*s\", "
+		        "actual %zu bytes \"%.*s\"\n",
+		        label, reference->length, (int)reference->length,
+		        (const char *)reference->bytes, observed->length,
+		        (int)observed->length, (const char *)observed->bytes);
+	}
+	assert(observed->length == reference->length);
+	assert(memcmp(observed->bytes, reference->bytes, reference->length) == 0);
+}
+
+static void test_receive_chunk_boundary_equivalence(void)
+{
+	static const char body[] = "{\"id\":\"channel_id_51e\",\"loop\":true}";
+	static const char raw[] =
+		"POST /api/replays/start HTTP/1.1\r\n"
+		"Host: 192.0.2.66\r\n"
+		"X-Aius-SD-Auth: 0123456789abcdef\r\n"
+		"Content-Type: application/json\r\n"
+		"Content-Length: 35\r\n"
+		"Connection: close\r\n"
+		"\r\n"
+		"{\"id\":\"channel_id_51e\",\"loop\":true}";
+	const size_t body_length = sizeof(body) - 1u;
+	const size_t length = sizeof(raw) - 1u;
+	const size_t header_length = length - body_length;
+	const size_t name_offset = (size_t)(strstr(raw, "Content-Length") - raw);
+	Fixture fixture;
+	ObservedResponse reference;
+	ObservedResponse observed;
+	size_t bounds[sizeof(raw)];
+	size_t rows = 0;
+
+	assert(body_length == 35u);
+	init_fixture(&fixture);
+	bounds[0] = length;
+	feed_chunked(&fixture, raw, length, body, body_length, bounds, 1u,
+	             &reference);
+	assert(contains_bytes(reference.bytes, reference.length, "200 OK"));
+	assert(contains_bytes(reference.bytes, reference.length, "prebuffering"));
+
+	{
+		/* Every boundary a segment can land on, each fed as two chunks. */
+		const struct {
+			const char *label;
+			size_t split;
+		} table[] = {
+			{ "mid-request-line", 4u },
+			{ "mid-header-name", name_offset + 7u },
+			{ "mid-content-length-value", name_offset +
+				  sizeof("Content-Length: ") },
+			{ "inside-header-terminator-1", header_length - 3u },
+			{ "inside-header-terminator-2", header_length - 2u },
+			{ "inside-header-terminator-3", header_length - 1u },
+			{ "headers-then-body", header_length },
+			{ "one-body-byte-with-headers", header_length + 1u },
+			{ "last-body-byte-alone", length - 1u },
+		};
+		for (size_t i = 0; i < ARRAY_LENGTH(table); ++i) {
+			assert(table[i].split > 0u && table[i].split < length);
+			init_fixture(&fixture);
+			bounds[0] = table[i].split;
+			bounds[1] = length;
+			feed_chunked(&fixture, raw, length, body, body_length,
+			             bounds, 2u, &observed);
+			assert_same_response(table[i].label, &reference,
+			                     &observed);
+			rows++;
+		}
+	}
+
+	init_fixture(&fixture);
+	for (size_t i = 0; i < length; ++i)
+		bounds[i] = i + 1u;
+	feed_chunked(&fixture, raw, length, body, body_length, bounds, length,
+	             &observed);
+	assert_same_response("byte-at-a-time", &reference, &observed);
+	rows++;
+	assert(rows == 10);
+}
+
+/* The same equivalence for a body that spans many RX epochs: PUT
+ * /api/dsp/config carries up to AIUS_HTTP_MAX_BODY bytes, so its body alone is
+ * 48 reads at AIUS_HTTP_RX_QUOTA and a boundary can fall anywhere in it. */
+static void test_receive_large_body_chunk_boundaries(void)
+{
+	static const char head[] =
+		"PUT /api/dsp/config HTTP/1.1\r\n"
+		"Host: 192.0.2.66\r\n"
+		"Content-Type: application/json\r\n"
+		"Content-Length: 12288\r\n"
+		"\r\n";
+	static char raw[sizeof(head) + AIUS_HTTP_MAX_BODY];
+	const size_t header_length = sizeof(head) - 1u;
+	const size_t body_length = AIUS_HTTP_MAX_BODY;
+	const size_t length = header_length + body_length;
+	Fixture fixture;
+	ObservedResponse reference;
+	ObservedResponse observed;
+	size_t bounds[4];
+	size_t rows = 0;
+
+	assert(body_length == 12288u);
+	memcpy(raw, head, header_length);
+	for (size_t i = 0; i < body_length; ++i)
+		raw[header_length + i] = (char)('a' + (i % 26u));
+	assert(length <= AIUS_HTTP_MAX_REQUEST);
+
+	init_fixture(&fixture);
+	bounds[0] = length;
+	feed_chunked(&fixture, raw, length, raw + header_length, body_length,
+	             bounds, 1u, &reference);
+	assert(contains_bytes(reference.bytes, reference.length, "200 OK"));
+
+	{
+		const struct {
+			const char *label;
+			size_t split;
+		} table[] = {
+			{ "large-headers-then-body", header_length },
+			{ "large-mid-body", header_length + (body_length / 2u) },
+			{ "large-quota-boundary", header_length +
+				  AIUS_HTTP_RX_QUOTA },
+			{ "large-last-body-byte-alone", length - 1u },
+		};
+		for (size_t i = 0; i < ARRAY_LENGTH(table); ++i) {
+			init_fixture(&fixture);
+			bounds[0] = table[i].split;
+			bounds[1] = length;
+			feed_chunked(&fixture, raw, length, raw + header_length,
+			             body_length, bounds, 2u, &observed);
+			assert_same_response(table[i].label, &reference,
+			                     &observed);
+			rows++;
+		}
+	}
+	assert(rows == 4);
+}
+
 int main(void)
 {
 	struct RegistryRow {
@@ -4093,8 +4313,12 @@ int main(void)
 		{ "lifecycle.multiple-restarts", test_multiple_restart_registry },
 		{ "authority.duplicate-dispatch-close-cancel",
 		  test_duplicate_authority_registry },
+		{ "receive.chunk-boundary-equivalence",
+		  test_receive_chunk_boundary_equivalence },
+		{ "receive.large-body-chunk-boundaries",
+		  test_receive_large_body_chunk_boundaries },
 	};
-	assert(ARRAY_LENGTH(registry) == 35);
+	assert(ARRAY_LENGTH(registry) == 37);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

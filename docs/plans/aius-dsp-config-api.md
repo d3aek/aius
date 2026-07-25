@@ -174,10 +174,12 @@ selection. It is cleared to `none` by every accepted start. Three values:
    test-tone toggle. Everything else observable is a counter, not an event. Closing
    this is the prerequisite to any push observability being worth having; see the
    syslog assessment.
-5. **The suite registry is hand-maintained with no guard.** Two orphans were found
-   today (`test/auth/test_auth.c`, `test/config/test_config.c`), both live code,
-   both never run. The proposed `registry` suite is described in the audit commit
-   and is not built.
+5. ~~**The suite registry is hand-maintained with no guard.**~~ **Fixed.** The
+   `registry` suite parses `scripts/test.sh` and fails on a suite directory with
+   no arm, an arm naming a missing path, an entry point a registered arm never
+   runs, or either catalogue disagreeing with the arms. No remaining orphans; the
+   true count is **36 arms over 30 suite directories**. Detail in
+   [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
 6. **"At most one SD primitive per epoch" is false at checkpoint 5.**
    `http_replay_list_json` walks `/aius/replays` with `for (;;) openNextFile()`,
    uncapped and ungated, and `app_replay_delete` spends `SD.exists()` +

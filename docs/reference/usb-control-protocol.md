@@ -180,6 +180,12 @@ Sixteen lowercase hexadecimal characters. Supply it to `PUT` and `DELETE` on
 [`tools/aius-sd-sync.sh`](../../firmware/tools/aius-sd-sync.sh) as `--token` or
 the `AIUS_SD_AUTH` environment variable.
 
+**The header name is matched case-insensitively; the token value is not.** Any
+spelling of the field name is accepted — `x-aius-sd-auth`, `X-AIUS-SD-AUTH`, the
+`X-aius-sd-auth` that Python's `urllib.request` emits — per RFC 9110 §5.1, which
+makes field names case-insensitive. The token itself is compared byte-for-byte,
+so it must be sent exactly as the board reported it.
+
 **It is stable for the life of the board.** `derive_auth_token()`
 (`firmware/src/optical_main.cpp`) derives it from `HW_OCOTP_MAC0/1/2`, the MAC
 fused into the chip at manufacture, so it survives reboots, reflashes and SD card
