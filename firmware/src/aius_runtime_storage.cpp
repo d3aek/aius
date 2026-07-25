@@ -48,6 +48,11 @@ FLASHMEM void publish_http(AiusRuntimeStorage *service, AiusHttpSdEventKind kind
 	service->pending_http_event.sd_kind = kind;
 	service->http_event_present = true;
 	service->http_authority = false;
+	/* A terminal result ends the job, not just the action, so HTTP stops
+	 * owning the service and a root-initiated start becomes admissible. */
+	if (kind == AIUS_HTTP_SD_COMPLETE || kind == AIUS_HTTP_SD_FAILED ||
+	    kind == AIUS_HTTP_SD_CANCELLED)
+		service->http_owned = false;
 }
 
 /* Terminal cancellation result. The synthetic pair the transaction itself
@@ -96,6 +101,26 @@ FLASHMEM void publish_failed(AiusRuntimeStorage *service)
 	service->pending_http_event.sd_driver_fault = driver_fault;
 }
 
+/* Correlated refusal of an HTTP action that arrived while a root-initiated job
+ * owns the service. The running job is not read or touched, so no fault it has
+ * recorded so far can leak into the refusal. */
+FLASHMEM void publish_busy(AiusRuntimeStorage *service)
+{
+	publish_http(service, AIUS_HTTP_SD_FAILED);
+	service->pending_http_event.sd_fault = AIUS_SD_FAULT_PROTOCOL;
+	service->pending_http_event.sd_driver_fault = 0u;
+}
+
+/* Settles a root-initiated job at its terminal action. A job with an HTTP owner
+ * is left alone: its result travels through the correlated event instead. */
+FLASHMEM void root_terminal(AiusRuntimeStorage *service, bool failed)
+{
+	if (service->root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
+		return;
+	service->root_state = failed ? AIUS_RUNTIME_STORAGE_ROOT_FAILED :
+	                               AIUS_RUNTIME_STORAGE_ROOT_COMPLETE;
+}
+
 /* True when the action produced a correlated HTTP result (or resolved the
  * epoch's work); false when nothing observable happened and HTTP authority must
  * stay outstanding for a later epoch. */
@@ -132,14 +157,29 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 		return true;
 
 	case AIUS_SD_ACTION_PUBLISH_CONFIG:
-		/* Correlated application action with no consumer until Phase 14
-		 * routes CONFIG_LOAD publication to the application. Accepting
-		 * it keeps the job advancing to its terminal result; the count
-		 * makes the drop observable rather than silent. */
-		if (service->publish_dropped != UINT32_MAX)
-			service->publish_dropped++;
-		service->pending_event =
-			sd_event(AIUS_SD_EVENT_OK, action->action_id, 0u);
+		/* Correlated application action. With a consumer registered the
+		 * complete payload is handed over here and acknowledged; a
+		 * refusal faults the job so the caller sees FAULT_PUBLISH rather
+		 * than a success that published nothing. With no consumer the
+		 * bytes are acknowledged and dropped, and the count makes the
+		 * drop observable rather than silent. */
+		if (service->publish.deliver != nullptr) {
+			if (service->publish.deliver(service->publish.context,
+			                             action->buffer,
+			                             action->length)) {
+				service->pending_event = sd_event(
+					AIUS_SD_EVENT_OK, action->action_id, 0u);
+			} else {
+				service->pending_event = sd_event(
+					AIUS_SD_EVENT_FAULT, action->action_id,
+					AIUS_RUNTIME_STORAGE_PUBLISH_REJECT_FAULT);
+			}
+		} else {
+			if (service->publish_dropped != UINT32_MAX)
+				service->publish_dropped++;
+			service->pending_event = sd_event(
+				AIUS_SD_EVENT_OK, action->action_id, 0u);
+		}
 		service->event_present = true;
 		if (authoritative)
 			publish_http(service, AIUS_HTTP_SD_PROGRESS);
@@ -148,6 +188,7 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 	case AIUS_SD_ACTION_COMPLETE:
 		service->terminal_seen = true;
 		service->draining = false;
+		root_terminal(service, false);
 		if (!authoritative)
 			return true;
 		if (service->cancelling) {
@@ -160,6 +201,7 @@ FLASHMEM bool route_action(AiusRuntimeStorage *service, const AiusSdAction *acti
 	case AIUS_SD_ACTION_FAIL:
 		service->terminal_seen = true;
 		service->draining = false;
+		root_terminal(service, true);
 		if (!authoritative)
 			return true;
 		if (service->cancelling)
@@ -220,15 +262,72 @@ FLASHMEM void aius_runtime_storage_construct(AiusRuntimeStorage *service)
 	service->event_present = false;
 	service->http_event_present = false;
 	service->http_authority = false;
+	service->http_owned = false;
 	service->output_action_id = 0u;
 	service->output_outstanding = false;
 	service->cancelling = false;
 	service->terminal_seen = false;
 	service->draining = false;
 	service->publish_dropped = 0u;
+	memset(&service->publish, 0, sizeof(service->publish));
+	service->root_state = AIUS_RUNTIME_STORAGE_ROOT_IDLE;
 	aius_sd_teensy_init(&service->target);
 	aius_sd_job_init(&service->job, service->sd_transfer,
 	                 sizeof(service->sd_transfer));
+}
+
+FLASHMEM void aius_runtime_storage_set_publish(
+	AiusRuntimeStorage *service,
+	const AiusRuntimeStoragePublish *ops)
+{
+	if (service == nullptr)
+		return;
+	if (ops == nullptr || ops->deliver == nullptr) {
+		memset(&service->publish, 0, sizeof(service->publish));
+		return;
+	}
+	service->publish = *ops;
+}
+
+FLASHMEM bool aius_runtime_storage_start_root_job(
+	AiusRuntimeStorage *service,
+	const AiusSdJobRequest *request,
+	uint32_t now_ms)
+{
+	if (service == nullptr || request == nullptr)
+		return false;
+	/* Reject rather than queue or preempt: one job, one buffer, and an HTTP
+	 * owner whose correlated authority must never be abandoned. */
+	if (service->http_owned || service->http_authority ||
+	    service->http_event_present || service->draining ||
+	    service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
+		return false;
+
+	service->cancelling = false;
+	service->terminal_seen = false;
+	service->output_outstanding = false;
+	service->output_action_id = 0u;
+	service->event_present = false;
+	memset(&service->pending_event, 0, sizeof(service->pending_event));
+	service->root_state = AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+	aius_sd_job_start(&service->job, request, now_ms, 0u);
+	if (service->job.state == AIUS_SD_FAILED) {
+		/* A rejected start still owes one FAIL notification; draining it
+		 * here settles root_state and costs no primitive. */
+		(void)advance(service, now_ms, false);
+		return false;
+	}
+	return true;
+}
+
+FLASHMEM const AiusSdResult *aius_runtime_storage_root_result(
+	const AiusRuntimeStorage *service)
+{
+	if (service == nullptr ||
+	    service->root_state == AIUS_RUNTIME_STORAGE_ROOT_IDLE ||
+	    service->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING)
+		return nullptr;
+	return aius_sd_job_result(&service->job);
 }
 
 FLASHMEM bool aius_runtime_storage_service(
@@ -268,6 +367,17 @@ FLASHMEM bool aius_runtime_storage_service(
 		service->http_action = http_action->kind;
 		service->http_action_id = http_action->action_id;
 		clear_http_result(service);
+
+		if (service->root_state ==
+		    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) {
+			/* The other direction of the contention rule: refuse the
+			 * action in-band instead of restarting or stepping the
+			 * root job underneath its owner. */
+			publish_busy(service);
+			*http_event = service->pending_http_event;
+			return true;
+		}
+		service->http_owned = true;
 
 		switch (http_action->kind) {
 		case AIUS_HTTP_ACTION_SD_START:
@@ -350,7 +460,12 @@ FLASHMEM bool aius_runtime_storage_service(
 			}
 			break;
 		}
-	} else if (service->draining && !service->terminal_seen) {
+	} else if ((service->draining ||
+	            service->root_state ==
+	                    AIUS_RUNTIME_STORAGE_ROOT_RUNNING) &&
+	           !service->terminal_seen) {
+		/* No HTTP action this epoch: advance the ownerless job -- a
+		 * drain or a root-initiated job -- by one primitive. */
 		(void)advance(service, now_ms, false);
 	}
 
@@ -367,6 +482,11 @@ FLASHMEM void aius_runtime_storage_release_http(AiusRuntimeStorage *service)
 	service->http_authority = false;
 	service->http_action = AIUS_HTTP_ACTION_NONE;
 	service->http_action_id = 0u;
+	/* Only an HTTP-owned job loses its owner here. A root-initiated job has
+	 * none to lose, so a network teardown must not cancel it. */
+	if (!service->http_owned)
+		return;
+	service->http_owned = false;
 	if (service->terminal_seen ||
 	    service->job.state == AIUS_SD_IDLE)
 		return;

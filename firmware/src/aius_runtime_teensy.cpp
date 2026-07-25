@@ -199,6 +199,14 @@ FLASHMEM void aius_runtime_teensy_construct(
 	                                 sizeof(runtime->app_body));
 	if (platform_ops != nullptr)
 		runtime->platform = *platform_ops;
+	if (runtime->platform.publish_config != nullptr) {
+		AiusRuntimeStoragePublish publish;
+
+		memset(&publish, 0, sizeof(publish));
+		publish.context = runtime->platform.context;
+		publish.deliver = runtime->platform.publish_config;
+		aius_runtime_storage_set_publish(&runtime->storage, &publish);
+	}
 
 	runtime->valid = app_valid &&
 	                 aius_cdc_teensy_primitives_complete(cdc_primitives) &&
@@ -229,6 +237,18 @@ FLASHMEM bool aius_runtime_teensy_epoch(
 	if (completed && runtime->completed_epochs != UINT32_MAX)
 		runtime->completed_epochs++;
 	return completed;
+}
+
+FLASHMEM bool aius_runtime_teensy_start_storage_job(
+	AiusRuntimeTeensy *runtime,
+	const AiusSdJobRequest *request)
+{
+	if (runtime == nullptr || !runtime->valid)
+		return false;
+	/* The root's latched clock sample, so a job started inside an epoch and
+	 * one started between epochs agree with the services on `now`. */
+	return aius_runtime_storage_start_root_job(&runtime->storage, request,
+	                                           runtime->epoch_now_ms);
 }
 
 FLASHMEM void aius_runtime_teensy_status(

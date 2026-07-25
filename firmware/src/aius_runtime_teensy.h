@@ -59,7 +59,8 @@ typedef struct {
 } AiusRuntimeTeensyBootStatus;
 
 /* The platform seam: the four checkpoints the composition does not own, plus
- * checkpoint recording and the sole watchdog feed. Every entry is required. */
+ * checkpoint recording and the sole watchdog feed. Every entry is required
+ * except publish_config, the one optional entry. */
 typedef struct {
 	void *context;
 	bool (*reset_capture)(
@@ -81,6 +82,13 @@ typedef struct {
 		uint32_t now_ms);
 	void (*checkpoint)(void *context, uint16_t checkpoint);
 	void (*feed_watchdog)(void *context);
+	/* Optional: consumes a job's published bytes (a CONFIG_LOAD payload).
+	 * Wired into the storage service at construction and called in SD
+	 * checkpoint context. Returning false faults the job with
+	 * AIUS_SD_FAULT_PUBLISH. Null leaves the payload unconsumed and counted
+	 * in `storage.publish_dropped`; the composition stays valid either way,
+	 * because a board with no config file to parse is a legal one. */
+	bool (*publish_config)(void *context, const uint8_t *data, size_t length);
 } AiusRuntimeTeensyPlatformOps;
 
 typedef struct {
@@ -127,6 +135,21 @@ void aius_runtime_teensy_construct(
 bool aius_runtime_teensy_epoch(
 	AiusRuntimeTeensy *runtime,
 	uint32_t now_ms);
+
+/* Starts a root-initiated SD job -- a boot-time CONFIG_LOAD, PROBE or
+ * USAGE_REFRESH that no HTTP client asked for. Memory only: no SD primitive is
+ * called, so it is legal from setup() before the first epoch as well as from a
+ * platform callback inside one. The job is then advanced one primitive per
+ * epoch at checkpoint 8, like every other job.
+ *
+ * Returns false for an invalid composition, and otherwise exactly what
+ * aius_runtime_storage_start_root_job() returns -- see it for the contention
+ * rule. The job's terminal result is read with
+ * aius_runtime_storage_root_result(&runtime->storage); the composition adds no
+ * pass-through accessor for it. */
+bool aius_runtime_teensy_start_storage_job(
+	AiusRuntimeTeensy *runtime,
+	const AiusSdJobRequest *request);
 
 /* Pure snapshot of the retained boot facts, last checkpoint and network
  * counters. Performs no platform call. */

@@ -664,6 +664,30 @@ static void platform_feed(void *context)
 	g_platform.feeds++;
 }
 
+/* The publication consumer, shared by the composed platform table and the
+ * standalone storage-service rows. `expected_context` pins whichever context
+ * the registration under test promised to hand back. */
+struct PublishFake {
+	void *expected_context;
+	bool accept;
+	unsigned calls;
+	size_t last_length;
+	uint8_t last[AIUS_RUNTIME_STORAGE_TRANSFER];
+};
+
+static PublishFake g_publish;
+
+static bool publish_config(void *context, const uint8_t *data, size_t length)
+{
+	CHECK(context == g_publish.expected_context);
+	CHECK(data != nullptr);
+	CHECK(length <= sizeof(g_publish.last));
+	g_publish.calls++;
+	g_publish.last_length = length;
+	memcpy(g_publish.last, data, length);
+	return g_publish.accept;
+}
+
 static AiusRuntimeTeensyPlatformOps platform_ops(void)
 {
 	AiusRuntimeTeensyPlatformOps ops;
@@ -676,7 +700,9 @@ static AiusRuntimeTeensyPlatformOps platform_ops(void)
 	ops.replay = platform_replay;
 	ops.checkpoint = platform_checkpoint;
 	ops.feed_watchdog = platform_feed;
+	ops.publish_config = publish_config;
 	g_platform.expected_context = &g_platform;
+	g_publish.expected_context = &g_platform;
 	return ops;
 }
 
@@ -899,8 +925,12 @@ static void reset_world(bool recovery_safe)
 	memset(&g_sd, 0, sizeof(g_sd));
 	memset(&g_net, 0, sizeof(g_net));
 	memset(&g_app, 0, sizeof(g_app));
+	memset(&g_publish, 0, sizeof(g_publish));
 
 	g_cdc.expected_context = &g_cdc;
+	/* platform_ops() ran before the memsets above cleared the fake. */
+	g_publish.expected_context = &g_platform;
+	g_publish.accept = true;
 	g_platform.expected_context = &g_platform;
 	g_platform.reset_capture_ok = true;
 	g_platform.metrics_ok = true;
@@ -2118,6 +2148,394 @@ static void test_storage_bridge(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 7b. root-initiated jobs and the publication consumer                */
+/* ------------------------------------------------------------------ */
+
+/* Prepares a standalone storage service over a fake card holding `length`
+ * bytes of a deterministic pattern, with the publication consumer registered
+ * only when `consume` is set. */
+static void arm_root_storage(AiusRuntimeStorage *storage, size_t length,
+                             bool consume)
+{
+	AiusRuntimeStoragePublish publish;
+
+	aius_runtime_storage_construct(storage);
+	memset(&g_sd, 0, sizeof(g_sd));
+	memset(&g_publish, 0, sizeof(g_publish));
+	g_publish.expected_context = &g_publish;
+	g_publish.accept = true;
+	g_sd.begin_ok = true;
+	g_sd.open_ok = true;
+	g_sd.media_present = true;
+	CHECK(length <= sizeof(g_sd.data));
+	for (size_t i = 0; i < length; ++i)
+		g_sd.data[i] = (uint8_t)((i * 7u + 3u) & 0xffu);
+	g_sd.data_length = length;
+	if (!consume)
+		return;
+	memset(&publish, 0, sizeof(publish));
+	publish.context = &g_publish;
+	publish.deliver = publish_config;
+	aius_runtime_storage_set_publish(storage, &publish);
+}
+
+static AiusSdJobRequest config_load_request(size_t publish_capacity)
+{
+	AiusSdJobRequest request;
+
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_CONFIG_LOAD;
+	request.target_path = "/aius/dsp.json";
+	request.content_type = "application/json";
+	request.publish = true;
+	request.publish_capacity = publish_capacity;
+	return request;
+}
+
+/* Advances an ownerless job with no HTTP action, one epoch at a time, until it
+ * leaves RUNNING. Each pass asserts the epoch's one-primitive budget. */
+static void drive_root_job(AiusRuntimeStorage *storage, uint32_t *now_ms,
+                           unsigned limit)
+{
+	const AiusRuntimeBudget *budget =
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+	AiusHttpEvent event;
+	unsigned guard = 0u;
+
+	while (guard < limit &&
+	       storage->root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING) {
+		g_sd.primitive_calls_epoch = 0u;
+		CHECK(aius_runtime_storage_service(storage, budget,
+		                                   (*now_ms)++, nullptr,
+		                                   &event));
+		CHECK(event.kind == AIUS_HTTP_EVENT_NONE);
+		CHECK(g_sd.primitive_calls_epoch <= 1u);
+		guard++;
+	}
+}
+
+static void test_root_storage_job(void)
+{
+	static const char *const keys[] = {
+		"root.publish-intact",       "root.publish-dropped",
+		"root.publish-refused",      "root.probe",
+		"root.invalid-request",      "root.rejects-under-http",
+		"root.refuses-http",         "root.survives-release",
+		"root.composed-epoch",       "root.composed-invalid"
+	};
+	const AiusRuntimeBudget *budget =
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
+	AiusRuntimeStorage storage;
+	AiusSdJobRequest request;
+	AiusHttpEvent event;
+	uint32_t now_ms = 1u;
+
+	validate_unique_keys("registry.root", keys, ARRAY_COUNT(keys), 10u);
+
+	current_key = "root.publish-intact";
+	{
+		/* A payload filling the whole publish capacity, which is the
+		 * transfer slice: the portable engine refuses a publish larger
+		 * than the job buffer (aius_sd.c:251). */
+		arm_root_storage(&storage, AIUS_RUNTIME_STORAGE_TRANSFER, true);
+		request = config_load_request(AIUS_RUNTIME_STORAGE_TRANSFER);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		/* Starting is memory only. */
+		CHECK(g_sd.primitive_calls == 0u);
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_publish.calls == 1u);
+		CHECK(g_publish.last_length == AIUS_RUNTIME_STORAGE_TRANSFER);
+		CHECK(memcmp(g_publish.last, g_sd.data,
+		             AIUS_RUNTIME_STORAGE_TRANSFER) == 0);
+		CHECK(storage.publish_dropped == 0u);
+		CHECK(!g_sd.file_open);
+		CHECK(g_sd.close_calls == 1u);
+		CHECK(aius_runtime_storage_root_result(&storage) != nullptr);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_NONE);
+	}
+
+	current_key = "root.publish-dropped";
+	{
+		arm_root_storage(&storage, 3u, false);
+		request = config_load_request(64u);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(storage.publish_dropped == 1u);
+		CHECK(g_publish.calls == 0u);
+	}
+
+	current_key = "root.publish-refused";
+	{
+		arm_root_storage(&storage, 8u, true);
+		g_publish.accept = false;
+		request = config_load_request(64u);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(g_publish.calls == 1u);
+		/* A refusal is a job fault, not a silent drop. */
+		CHECK(storage.publish_dropped == 0u);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_PUBLISH);
+		CHECK(aius_runtime_storage_root_result(&storage)
+		              ->driver_fault ==
+		      AIUS_RUNTIME_STORAGE_PUBLISH_REJECT_FAULT);
+	}
+
+	current_key = "root.probe";
+	{
+		arm_root_storage(&storage, 0u, true);
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_PROBE;
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(aius_runtime_storage_root_result(&storage)
+		              ->media_present);
+		CHECK(g_publish.calls == 0u);
+	}
+
+	current_key = "root.invalid-request";
+	{
+		arm_root_storage(&storage, 0u, true);
+		memset(&request, 0, sizeof(request));
+		/* PROBE forbids every path. */
+		request.kind = AIUS_SD_JOB_PROBE;
+		request.target_path = "/aius/x";
+		CHECK(!aius_runtime_storage_start_root_job(&storage, &request,
+		                                           1u));
+		CHECK(storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_FAILED);
+		CHECK(aius_runtime_storage_root_result(&storage)->fault ==
+		      AIUS_SD_FAULT_INVALID_REQUEST);
+		CHECK(g_sd.primitive_calls == 0u);
+		/* Null rows, and a rejected start leaves the service usable. */
+		CHECK(!aius_runtime_storage_start_root_job(nullptr, &request,
+		                                           1u));
+		CHECK(!aius_runtime_storage_start_root_job(&storage, nullptr,
+		                                           1u));
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_PROBE;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          2u));
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		CHECK(aius_runtime_storage_root_result(&storage) == nullptr);
+	}
+
+	current_key = "root.rejects-under-http";
+	{
+		AiusHttpAction action;
+		unsigned guard = 0u;
+
+		arm_root_storage(&storage, 10u, true);
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_DOWNLOAD;
+		request.target_path = "/aius/data.bin";
+		request.content_type = "application/octet-stream";
+		memset(&action, 0, sizeof(action));
+		action.kind = AIUS_HTTP_ACTION_SD_START;
+		action.action_id = 201u;
+		action.sd_request = &request;
+		CHECK(aius_runtime_storage_service(&storage, budget, 1u,
+		                                   &action, &event));
+		CHECK(event.sd_kind == AIUS_HTTP_SD_STARTED);
+		CHECK(storage.http_owned);
+
+		/* Direction one: the root defers to a live HTTP job, with no
+		 * side effect on the service. */
+		{
+			AiusSdJobRequest probe;
+
+			memset(&probe, 0, sizeof(probe));
+			probe.kind = AIUS_SD_JOB_PROBE;
+			CHECK(!aius_runtime_storage_start_root_job(
+				&storage, &probe, 2u));
+			CHECK(storage.root_state ==
+			      AIUS_RUNTIME_STORAGE_ROOT_IDLE);
+			CHECK(storage.job.kind == AIUS_SD_JOB_DOWNLOAD);
+			/* The undelivered STARTED result alone blocks it. */
+			CHECK(storage.http_event_present);
+
+			action.kind = AIUS_HTTP_ACTION_SD_STEP;
+			action.sd_operation = AIUS_HTTP_SD_OP_ADVANCE;
+			action.sd_request = nullptr;
+			while (guard < 24u &&
+			       event.sd_kind != AIUS_HTTP_SD_COMPLETE &&
+			       event.sd_kind != AIUS_HTTP_SD_FAILED) {
+				action.action_id = 210u + guard;
+				storage.http_event_present = false;
+				CHECK(aius_runtime_storage_service(
+					&storage, budget, 3u + guard, &action,
+					&event));
+				if (event.sd_kind ==
+				    AIUS_HTTP_SD_DOWNLOAD_DATA) {
+					action.sd_operation =
+						AIUS_HTTP_SD_OP_ACK_DOWNLOAD;
+				} else {
+					action.sd_operation =
+						AIUS_HTTP_SD_OP_ADVANCE;
+				}
+				CHECK(!aius_runtime_storage_start_root_job(
+					&storage, &probe, 3u + guard));
+				guard++;
+			}
+			CHECK(event.sd_kind == AIUS_HTTP_SD_COMPLETE);
+			/* The terminal result ends HTTP's ownership, so the
+			 * root may start once that result is delivered. */
+			CHECK(!storage.http_owned);
+			storage.http_event_present = false;
+			CHECK(aius_runtime_storage_start_root_job(&storage,
+			                                          &probe, 60u));
+			CHECK(storage.root_state ==
+			      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		}
+	}
+
+	current_key = "root.refuses-http";
+	{
+		AiusHttpAction action;
+		AiusSdJobRequest download;
+		unsigned open_calls;
+
+		arm_root_storage(&storage, 8u, true);
+		request = config_load_request(64u);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		/* Get the root job past its first primitive. */
+		g_sd.primitive_calls_epoch = 0u;
+		CHECK(aius_runtime_storage_service(&storage, budget, now_ms++,
+		                                   nullptr, &event));
+		CHECK(g_sd.primitive_calls_epoch == 1u);
+		open_calls = g_sd.open_calls;
+
+		/* Direction two: HTTP is refused in-band rather than restarting
+		 * the root job underneath it. */
+		memset(&download, 0, sizeof(download));
+		download.kind = AIUS_SD_JOB_DOWNLOAD;
+		download.target_path = "/aius/data.bin";
+		download.content_type = "application/octet-stream";
+		memset(&action, 0, sizeof(action));
+		action.kind = AIUS_HTTP_ACTION_SD_START;
+		action.action_id = 301u;
+		action.sd_request = &download;
+		g_sd.primitive_calls_epoch = 0u;
+		CHECK(aius_runtime_storage_service(&storage, budget, now_ms++,
+		                                   &action, &event));
+		CHECK(event.kind == AIUS_HTTP_EVENT_SD_RESULT);
+		CHECK(event.action_id == 301u);
+		CHECK(event.sd_kind == AIUS_HTTP_SD_FAILED);
+		CHECK(event.sd_fault == AIUS_SD_FAULT_PROTOCOL);
+		CHECK(event.sd_driver_fault == 0u);
+		CHECK(g_sd.primitive_calls_epoch == 0u);
+		/* The root job kept both its kind and its open handle. */
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		CHECK(storage.job.kind == AIUS_SD_JOB_CONFIG_LOAD);
+		CHECK(g_sd.open_calls == open_calls);
+		CHECK(!storage.http_owned);
+		CHECK(!storage.http_authority);
+
+		storage.http_event_present = false;
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_publish.calls == 1u);
+		CHECK(g_publish.last_length == 8u);
+	}
+
+	current_key = "root.survives-release";
+	{
+		arm_root_storage(&storage, 8u, true);
+		request = config_load_request(64u);
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		CHECK(aius_runtime_storage_service(&storage, budget, now_ms++,
+		                                   nullptr, &event));
+		/* A network teardown has no authority over a root job. */
+		aius_runtime_storage_release_http(&storage);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		CHECK(!storage.draining);
+		CHECK(!storage.cancelling);
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(g_publish.calls == 1u);
+	}
+
+	current_key = "root.composed-epoch";
+	{
+		unsigned guard = 0u;
+
+		reset_world(false);
+		now_ms = 1u;
+		memcpy(g_sd.data, "{\"dsp\":1}", 9u);
+		g_sd.data_length = 9u;
+		request = config_load_request(64u);
+		CHECK(aius_runtime_teensy_start_storage_job(&g_runtime,
+		                                            &request));
+		CHECK(g_runtime.storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_RUNNING);
+		CHECK(g_sd.primitive_calls == 0u);
+		while (guard < 24u &&
+		       g_runtime.storage.root_state ==
+			       AIUS_RUNTIME_STORAGE_ROOT_RUNNING) {
+			CHECK(run_epoch(now_ms++));
+			guard++;
+		}
+		CHECK(g_runtime.storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		/* The platform table's optional entry carried the payload. */
+		CHECK(g_publish.calls == 1u);
+		CHECK(g_publish.last_length == 9u);
+		CHECK(memcmp(g_publish.last, "{\"dsp\":1}", 9u) == 0);
+		CHECK(g_runtime.storage.publish_dropped == 0u);
+	}
+
+	current_key = "root.composed-invalid";
+	{
+		AiusOpticalApp app = app_table();
+		AiusCdcTeensyPrimitives cdc = cdc_primitives();
+		AiusRuntimeTeensyPlatformOps platform = platform_ops();
+
+		request = config_load_request(64u);
+		CHECK(!aius_runtime_teensy_start_storage_job(nullptr,
+		                                             &request));
+		platform.feed_watchdog = nullptr;
+		aius_runtime_teensy_construct(&g_runtime, &app, &cdc, &platform,
+		                             0u, false);
+		CHECK(!g_runtime.valid);
+		CHECK(!aius_runtime_teensy_start_storage_job(&g_runtime,
+		                                             &request));
+		/* A composition with no consumer keeps the counting path. */
+		platform = platform_ops();
+		platform.publish_config = nullptr;
+		aius_runtime_teensy_construct(&g_runtime, &app, &cdc, &platform,
+		                             0u, false);
+		CHECK(g_runtime.valid);
+		CHECK(g_runtime.storage.publish.deliver == nullptr);
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* 8. teardown discards HTTP before resource cleanup                   */
 /* ------------------------------------------------------------------ */
 
@@ -2350,6 +2768,7 @@ int main(void)
 	test_network_precedence();
 	test_http_epoch();
 	test_storage_bridge();
+	test_root_storage_job();
 	test_teardown_ordering();
 	test_epoch_traces();
 	printf("ok runtime-target oracle\n");
