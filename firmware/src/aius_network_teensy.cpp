@@ -54,6 +54,14 @@ struct AiusNetworkTeensyDiagPrimitives {
 constexpr uint16_t kHttpPort = 80u;
 constexpr uint16_t kControlPort = 4242u;
 
+/* The readiness fallback is one DHCP deadline by construction, not by
+ * coincidence: waiting for evidence that a DISCOVER can leave the board must
+ * never cost more than sending one and discovering the same thing the hard way.
+ */
+static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS ==
+	              AIUS_NET_DHCP_DEADLINE_MS,
+	          "the receive-readiness fallback is bounded by one DHCP deadline");
+
 uint32_t g_stale_callbacks;
 
 AiusNetEvent none_event()
@@ -595,6 +603,84 @@ FLASHMEM void diag_end(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	}
 }
 
+/* --- Receive-readiness gate -----------------------------------------------
+ *
+ * Between link-up and STACK_STARTED, for the one generation that actually
+ * initialised the interface. Everything here runs in the epoch's action or poll
+ * path, never in a callback and never per audio block, so each definition
+ * carries FLASHMEM.
+ */
+
+FLASHMEM void rx_ready_release(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                           AiusNetworkTeensyRxReady source)
+{
+	adapter->rx_ready_pending = false;
+	adapter->rx_ready_baseline_valid = false;
+	adapter->rx_ready_baseline = 0u;
+	adapter->diag.rx_ready_source = (uint8_t)source;
+	adapter->diag.rx_ready_ms = diag_offset(adapter, now_ms);
+}
+
+/* One link-up observation, from whichever of the three observers saw it first.
+ *
+ * Returns whether STACK_STARTED may be emitted now. A generation that skipped
+ * fnet_netif_init() inherits an interface that is already carrying traffic and
+ * releases here, in the same call it always did. A generation that performed the
+ * initialisation has an interface that reports link up several seconds before
+ * the FEC passes a frame in either direction, so it opens the readiness gate
+ * instead and poll() releases it.
+ */
+FLASHMEM bool link_up_observed(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                           AiusNetworkTeensyLinkUpSource source)
+{
+	adapter->link_up_reported = true;
+	diag_note_link_up(adapter, now_ms, source);
+	if (!adapter->rx_ready_required) {
+		adapter->diag.rx_ready_source =
+			(uint8_t)AIUS_NETWORK_TEENSY_RX_READY_NOT_REQUIRED;
+		return true;
+	}
+	adapter->rx_ready_pending = true;
+	adapter->rx_ready_baseline_valid = false;
+	adapter->rx_ready_baseline = 0u;
+	return false;
+}
+
+/* One epoch of the wait, spending the epoch's single underlying read on the
+ * frame counters rather than on the link status. Returns whether the gate
+ * released.
+ *
+ * The baseline is sampled lazily, on the first poll of the wait, so opening the
+ * gate costs no call of its own. Movement is an unsigned difference against it:
+ * these are free-running MAC counters that wrap, and a wrap is traffic, not the
+ * absence of it. A driver that refuses the statistics call leaves the deadline
+ * as the only release, which is the same bounded fallback a silent segment gets.
+ */
+FLASHMEM bool rx_ready_step(AiusNetworkTeensy *adapter, uint32_t now_ms)
+{
+	uint32_t tx = 0u;
+	uint32_t rx = 0u;
+
+	if (diag_frames(&tx, &rx)) {
+		if (!adapter->rx_ready_baseline_valid) {
+			adapter->rx_ready_baseline = rx;
+			adapter->rx_ready_baseline_valid = true;
+		} else if (rx - adapter->rx_ready_baseline != 0u) {
+			rx_ready_release(adapter, now_ms,
+			                 AIUS_NETWORK_TEENSY_RX_READY_COUNTER);
+			return true;
+		}
+	}
+	if (deadline_reached(now_ms,
+		                 adapter->stack_started_ms +
+		                     AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS)) {
+		rx_ready_release(adapter, now_ms,
+		                 AIUS_NETWORK_TEENSY_RX_READY_DEADLINE);
+		return true;
+	}
+	return false;
+}
+
 void protocol_fault(AiusNetworkTeensy *adapter, AiusNetEvent *event)
 {
 	clear_active(adapter);
@@ -622,6 +708,10 @@ void advance_teardown(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		adapter->online = false;
 		adapter->lease_acquired = false;
 		adapter->link_up_reported = false;
+		adapter->rx_ready_required = false;
+		adapter->rx_ready_pending = false;
+		adapter->rx_ready_baseline_valid = false;
+		adapter->rx_ready_baseline = 0u;
 		adapter->stack_started_ms = 0u;
 		clear_pending(adapter);
 		if (!adapter->listener_open && !adapter->udp_open &&
@@ -802,21 +892,33 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		adapter->generation = action.generation;
 		adapter->lease_acquired = false;
 		adapter->link_up_reported = false;
+		adapter->rx_ready_pending = false;
+		adapter->rx_ready_baseline_valid = false;
+		adapter->rx_ready_baseline = 0u;
 		adapter->stack_started_ms = now_ms;
 		diag_begin(adapter, action.generation, now_ms);
 		g_primitives->callbacks_install(adapter, action.generation);
 		adapter->stack_started = true;
-		/* Diagnostic, measured around the call rather than after it,
-		 * because beginNoWait() is only "no wait" on a generation that
-		 * finds the interface already initialised: the one that runs
-		 * fnet_netif_init() resets the PHY and blocks in FNET's
-		 * autonegotiation wait for up to two seconds. Neither reading
-		 * changes what the call does or when it is made.
+		/* The one netif-init probe of the generation, and the only place
+		 * the readiness requirement is decided. Measured around the call
+		 * rather than after it, because beginNoWait() is only "no wait"
+		 * on a generation that finds the interface already initialised:
+		 * the one that runs fnet_netif_init() resets the PHY and blocks
+		 * in FNET's autonegotiation wait for up to two seconds. Neither
+		 * reading changes what the call does or when it is made.
+		 *
+		 * The decision reads these locals rather than the record it also
+		 * fills: the record stays diagnostic, and an adapter with no
+		 * measurement table requires no wait at all.
 		 */
+		const bool netif_probed = g_diag_primitives != nullptr;
+		const bool netif_already_up =
+			netif_probed && g_diag_primitives->netif_initialized();
+		adapter->rx_ready_required = netif_probed && !netif_already_up;
 		adapter->diag.netif_init =
-			g_diag_primitives == nullptr
+			!netif_probed
 				? AIUS_NETWORK_TEENSY_NETIF_INIT_UNKNOWN
-			: g_diag_primitives->netif_initialized()
+			: netif_already_up
 				? AIUS_NETWORK_TEENSY_NETIF_INIT_SKIPPED
 				: AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED;
 		const uint32_t entered_ms = diag_uptime_ms();
@@ -835,14 +937,19 @@ void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 		 * A link that is already up produces no NativeEthernet
 		 * callback -- it reports changes -- so the already-up case is
 		 * this one read. Anything else waits for poll().
+		 *
+		 * Nor is link-up evidence that the interface passes traffic.
+		 * The generation that initialised it reads up here and still
+		 * cannot carry a DISCOVER, so it opens the readiness gate and
+		 * poll() releases STACK_STARTED; only the generation that
+		 * inherits a settled interface releases in this call.
 		 */
 		const AiusNetworkTeensyLink link = g_primitives->link_status();
 		adapter->diag.link_at_stack_start = (uint8_t)link;
 		adapter->diag.link_cached_last = (uint8_t)link;
-		if (link == AIUS_NETWORK_TEENSY_LINK_UP) {
-			adapter->link_up_reported = true;
-			diag_note_link_up(adapter, now_ms,
-			                  AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
+		if (link == AIUS_NETWORK_TEENSY_LINK_UP &&
+		    link_up_observed(adapter, now_ms,
+		                     AIUS_NETWORK_TEENSY_LINK_UP_STACK_START)) {
 			emit(event, AIUS_NET_EVENT_STACK_STARTED,
 			     action.generation);
 		}
@@ -932,15 +1039,36 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 			if (adapter->link_up_reported) {
 				continue;
 			}
-			adapter->link_up_reported = true;
-			diag_note_link_up(adapter, now_ms,
-			                  AIUS_NETWORK_TEENSY_LINK_UP_CALLBACK);
+			/* Link-up is observed here, but a generation that
+			 * initialised the interface does not pass STACK_STARTED
+			 * on: the readiness gate opens instead and the drain
+			 * continues, so the callback is consumed rather than
+			 * delivered early.
+			 */
+			if (!link_up_observed(
+				    adapter, now_ms,
+				    AIUS_NETWORK_TEENSY_LINK_UP_CALLBACK)) {
+				continue;
+			}
 		}
 		*event = queued;
 		return;
 	}
 
 	if (!adapter->stack_started) {
+		return;
+	}
+
+	/* The readiness wait owns this epoch's one underlying read while it is
+	 * open, so the counter read never joins the link read -- it replaces it.
+	 * Link loss in this window still reaches the supervisor through the
+	 * NativeEthernet link callback drained above.
+	 */
+	if (adapter->rx_ready_pending) {
+		if (rx_ready_step(adapter, now_ms)) {
+			emit(event, AIUS_NET_EVENT_STACK_STARTED,
+			     adapter->generation);
+		}
 		return;
 	}
 
@@ -962,12 +1090,16 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	 * just keeps waiting. The deadline is what makes the wait bounded: no
 	 * link at all becomes a resource fault, which the supervisor turns into
 	 * teardown, backoff and the next generation rather than a stall.
+	 *
+	 * Observing link-up may open the readiness gate rather than release
+	 * STACK_STARTED, in which case the next epoch's read is the counter one.
 	 */
 	if (link == AIUS_NETWORK_TEENSY_LINK_UP) {
-		adapter->link_up_reported = true;
-		diag_note_link_up(adapter, now_ms,
-		                  AIUS_NETWORK_TEENSY_LINK_UP_POLL);
-		emit(event, AIUS_NET_EVENT_STACK_STARTED, adapter->generation);
+		if (link_up_observed(adapter, now_ms,
+			                 AIUS_NETWORK_TEENSY_LINK_UP_POLL)) {
+			emit(event, AIUS_NET_EVENT_STACK_STARTED,
+			     adapter->generation);
+		}
 		return;
 	}
 	if (deadline_reached(now_ms, adapter->stack_started_ms +

@@ -37,6 +37,40 @@ typedef enum {
  */
 #define AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS 3000u
 
+/* How long a generation that initialised the interface may spend, measured from
+ * the same stack start the link deadline is measured from, waiting for evidence
+ * that the interface is actually carrying traffic before DHCP starts anyway.
+ *
+ * Link-up is not that evidence. Measured on the board: generation 1 reported
+ * link up throughout, spent 1,635 ms inside beginNoWait() resetting the PHY and
+ * completing autonegotiation, started DHCP 22 ms later, and then received four
+ * frames in five seconds on a segment whose ambient broadcast traffic delivers
+ * about twenty-four -- so FNET sent a DISCOVER the FEC never carried and sat in
+ * SELECTING until the deadline. Generation 2 skips fnet_netif_init() entirely,
+ * inherits the settled interface and binds in 19 ms.
+ *
+ * The receive frame counter is the evidence, because ambient traffic arrives
+ * continuously: a counter that has moved since the wait began is a frame the MAC
+ * actually clocked in. This deadline is what keeps the wait bounded when it has
+ * not moved -- a silent segment must not deadlock the board, so DHCP starts
+ * anyway and the existing 5 s DHCP deadline, teardown and backoff apply exactly
+ * as before.
+ *
+ * The value is one DHCP deadline (AIUS_NET_DHCP_DEADLINE_MS, asserted equal in
+ * the implementation): waiting for evidence that a DISCOVER can leave the board
+ * is never allowed to cost more than discovering the same thing the hard way.
+ * Measuring it from stack start rather than from link-up is what keeps a whole
+ * generation's pre-DHCP time bounded by that one figure -- the 1,635 ms
+ * beginNoWait() already spends is counted against the budget rather than added
+ * to it, which on the measured board leaves about 3.4 s of settle time.
+ *
+ * It costs the fast path nothing. Only a generation whose beginNoWait() actually
+ * ran fnet_netif_init() arms the wait at all; the generation that skips
+ * initialisation -- the one that binds in 19 ms today -- releases STACK_STARTED
+ * in the same call it always did, with no extra underlying call.
+ */
+#define AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS 5000u
+
 /* "No DHCP client is registered on the interface", reported where FNET's own
  * DHCP client state would otherwise go. FNET's state enum is private to
  * service/dhcp/fnet_dhcp_cln.c and its public getter, fnet_dhcp_cln_get_state(),
@@ -67,6 +101,19 @@ typedef enum {
 	AIUS_NETWORK_TEENSY_NETIF_INIT_SKIPPED = 2
 } AiusNetworkTeensyNetifInit;
 
+/* What released the generation's receive-readiness gate, and therefore its
+ * STACK_STARTED. NOT_REQUIRED is the generation that skipped fnet_netif_init()
+ * and never waited; COUNTER is the frame the MAC clocked in; DEADLINE is the
+ * bounded fallback that starts DHCP on a segment that delivered nothing. NONE
+ * means the gate is still closed, or the generation never reached link-up.
+ */
+typedef enum {
+	AIUS_NETWORK_TEENSY_RX_READY_NONE = 0,
+	AIUS_NETWORK_TEENSY_RX_READY_NOT_REQUIRED = 1,
+	AIUS_NETWORK_TEENSY_RX_READY_COUNTER = 2,
+	AIUS_NETWORK_TEENSY_RX_READY_DEADLINE = 3
+} AiusNetworkTeensyRxReady;
+
 /* Why a generation's diagnostic record stopped accumulating. */
 typedef enum {
 	AIUS_NETWORK_TEENSY_END_NONE = 0,
@@ -74,9 +121,18 @@ typedef enum {
 	AIUS_NETWORK_TEENSY_END_ONLINE = 2
 } AiusNetworkTeensyEnd;
 
-/* Per-generation measurement record. Diagnostic only: nothing here is read by
- * the adapter's own decisions, and removing the whole block would not change
+/* Per-generation measurement record. The record itself is diagnostic: no field
+ * below is read by an adapter decision, and deleting the struct would not change
  * one action, event or deadline.
+ *
+ * The readers behind it are no longer purely diagnostic, and saying so is the
+ * point of this paragraph. Two entries of AiusNetworkTeensyDiagPrimitives feed
+ * the receive-readiness gate as well as this record -- netif_initialized() says
+ * whether the generation must wait at all, and frames() supplies the evidence it
+ * waits for. An adapter wired without that table still behaves identically: no
+ * probe means no readiness requirement, so the gate is transparent and every
+ * measurement reads unavailable, which is exactly how the whole lifecycle suite
+ * drives it.
  *
  * It exists to settle one question with data rather than inference -- why the
  * first DHCP attempt of every boot receives nothing for its full deadline while
@@ -85,12 +141,16 @@ typedef enum {
  * the reader has and the offset is what the question is about.
  *
  * What each field costs, so a later reader does not have to re-derive it: the
- * whole record is filled from at most ten underlying calls per generation, all
- * of them in the epoch's action path (START_STACK, START_DHCP, teardown,
- * publish-online). None is per-epoch, none is per audio block, and the only one
- * that can reach the PHY is the fresh link read, which FNET itself throttles to
- * one MDIO transaction per 200 ms across all callers (fnet_netif.c:1021) and
- * which its own link service already performs at exactly that rate.
+ * whole record is filled from at most ten underlying calls per generation in the
+ * epoch's action path (START_STACK, START_DHCP, teardown, publish-online), plus
+ * one frame-counter read per epoch while a readiness gate is open. That read is
+ * not additional: it replaces the link-status read the same epoch would
+ * otherwise have made, so an epoch still performs exactly one underlying read,
+ * and only the generation that initialised the interface pays it at all. None is
+ * per audio block, and the only one that can reach the PHY is the fresh link
+ * read, which FNET itself throttles to one MDIO transaction per 200 ms across
+ * all callers (fnet_netif.c:1021) and which its own link service already
+ * performs at exactly that rate.
  */
 typedef struct {
 	uint32_t generation;
@@ -148,6 +208,17 @@ typedef struct {
 	uint32_t link_callback_up_ms;
 	uint8_t link_callbacks;
 
+	/* What released the receive-readiness gate and when, as an offset from
+	 * stack start. AiusNetworkTeensyRxReady; rx_ready_ms is meaningful only
+	 * when the source is COUNTER or DEADLINE. This is the field that says
+	 * whether the gate did its job: COUNTER means a frame arrived and DHCP
+	 * started on evidence, DEADLINE means nothing arrived within the bound
+	 * and DHCP started anyway. dhcp_start_ms shows the same story in
+	 * milliseconds; this shows the reason.
+	 */
+	uint8_t rx_ready_source;
+	uint32_t rx_ready_ms;
+
 	/* When START_DHCP ran, and FNET's own DHCP client state immediately after
 	 * dhcpStart() returned.
 	 */
@@ -192,7 +263,20 @@ typedef struct {
  * link_up_reported is the generation-scoped latch that makes STACK_STARTED
  * exactly-once: the stack-start link read, the NativeEthernet link callback and
  * the poll link read are three observers of one event, and whichever sees it
- * first sets the latch. stack_started_ms stamps the link-wait deadline above.
+ * first sets the latch. stack_started_ms stamps both bounded waits below.
+ *
+ * The rx_ready_* fields are the receive-readiness gate, and they are decision
+ * state rather than measurement. rx_ready_required is set once per generation
+ * from the netif-init probe: only the generation that actually initialised the
+ * interface waits, so the generation that inherits a settled one is never
+ * delayed. rx_ready_pending is open between link-up and the release, and it is
+ * what makes poll() spend its one underlying read on the frame counters instead
+ * of the link status for that window. rx_ready_baseline is the first counter
+ * value sampled once the gate opens -- lazily, on the first poll of the wait, so
+ * arming costs no call of its own -- and rx_ready_baseline_valid says whether it
+ * has been taken. Movement is an unsigned difference against that baseline, so
+ * these free-running MAC counters may wrap without the gate concluding that
+ * nothing arrived.
  *
  * diag records the live generation; diag_first keeps the first generation that
  * ever ended, because the generation under investigation is always generation 1
@@ -208,6 +292,10 @@ typedef struct {
 	bool listener_open;
 	bool udp_open;
 	bool link_up_reported;
+	bool rx_ready_required;
+	bool rx_ready_pending;
+	bool rx_ready_baseline_valid;
+	uint32_t rx_ready_baseline;
 	uint32_t stack_started_ms;
 	AiusNetEvent pending[4];
 	uint8_t pending_read;
@@ -225,20 +313,34 @@ typedef struct {
 void aius_network_teensy_init(AiusNetworkTeensy *adapter);
 
 /* START_STACK starts the stack and then takes the one permitted link read. It
- * emits STACK_STARTED only when that read says the link is already up;
- * otherwise it emits nothing and the wait continues in poll(). now_ms stamps
- * the link-wait deadline.
+ * emits STACK_STARTED only when that read says the link is already up *and*
+ * this generation needs no receive-readiness wait -- which is the generation
+ * that skipped fnet_netif_init(), the one that binds in 19 ms today. Otherwise
+ * it emits nothing and the wait continues in poll(). now_ms stamps both the
+ * link-wait and readiness deadlines.
  */
 void aius_network_teensy_apply(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	                           AiusNetAction action, AiusNetEvent *event);
 
-/* Drains at most one queued callback event, then takes at most one link read.
- * While a started generation has not yet reported link-up, that read emits
+/* Drains at most one queued callback event, then takes at most one underlying
+ * read -- of the link status, or, while a receive-readiness gate is open, of the
+ * MAC's frame counters instead. Never both, so the per-epoch cost is unchanged.
+ *
+ * While a started generation has not yet reported link-up, the link read emits
  * STACK_STARTED on the first UP, or one RESOURCE_FAULT once
  * AIUS_NETWORK_TEENSY_LINK_DEADLINE_MS has passed since the stack started.
- * After link-up has been reported it is the health check it always was: a DOWN
- * read is AIUS_NET_FAULT_LINK_LOST. A queued STACK_STARTED for a generation
- * that already reported link-up is dropped rather than delivered twice.
+ * A generation that initialised the interface does not emit STACK_STARTED on
+ * link-up; it opens the readiness gate instead, and the counter read emits
+ * STACK_STARTED on the first frame received since the gate opened, or at
+ * AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS after the stack started, whichever
+ * comes first.
+ *
+ * After link-up has been reported and the gate has released, the link read is
+ * the health check it always was: a DOWN read is AIUS_NET_FAULT_LINK_LOST.
+ * Link loss during the readiness window is still seen -- the NativeEthernet link
+ * callback is an independent observer and its event is drained ahead of the
+ * read. A queued STACK_STARTED for a generation that already reported link-up is
+ * dropped rather than delivered twice.
  */
 void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	                          AiusNetEvent *event);
@@ -345,13 +447,19 @@ typedef struct {
 	AiusIoEvent (*udp_send_once)(const uint8_t *buffer, size_t length);
 } AiusNetworkTeensyPrimitives;
 
-/* The diagnostic readers, deliberately a second table rather than five more
+/* The measurement readers, deliberately a second table rather than five more
  * entries in the one above. That table is the lifecycle and socket-I/O
  * failure-injection seam and every entry in it is required; these are optional
- * as a unit, and an adapter wired without them behaves identically and reports
- * every measurement as unavailable. Keeping them separate is what makes
- * "diagnostic only" checkable: the whole existing suite drives the adapter with
- * no diagnostic table installed at all.
+ * as a unit, and an adapter wired without them behaves as it did before the
+ * receive-readiness gate existed and reports every measurement as unavailable.
+ *
+ * Two of them are no longer purely diagnostic: netif_initialized() decides
+ * whether a generation arms the readiness gate, and frames() supplies the
+ * evidence that releases it. That is deliberate -- the counters were already
+ * read for the record, and the alternative was a second mechanism observing the
+ * same thing. Keeping the table separate and optional is still what makes the
+ * claim checkable: with no table installed the gate never arms, which is how the
+ * whole lifecycle, callback, deadline and I/O suite drives the adapter.
  */
 typedef struct {
 	bool (*netif_initialized)(void);

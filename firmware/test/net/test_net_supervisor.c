@@ -663,6 +663,122 @@ static void test_stack_start_waits_for_its_event(void)
 	assert(supervisor.deadline_ms == 9000 + AIUS_NET_DHCP_DEADLINE_MS);
 }
 
+/* The Teensy adapter delays STACK_STARTED twice over before DHCP may start: once
+ * while it waits for link-up, and again while it waits for evidence that the
+ * interface is actually carrying traffic, because the board reports link up for
+ * seconds before the FEC passes a frame. Both waits are bounded there. What has
+ * to be true here is that the supervisor charges neither of them to DHCP: the
+ * deadline is armed when STACK_STARTED arrives, however late that is, so a
+ * delayed attempt is a whole attempt rather than a truncated one.
+ */
+static void test_delayed_stack_started_keeps_full_dhcp_budget(void)
+{
+	/* Nothing in the adapter can make a delay longer than its two bounds,
+	 * but the supervisor's answer must not depend on the figure at all --
+	 * including across a millis() wrap, where a naive comparison would place
+	 * the deadline in the past. */
+	const uint32_t starts[] = {0u,
+	                           1u,
+	                           1635u,
+	                           3000u + AIUS_NET_DHCP_DEADLINE_MS,
+	                           AIUS_NET_DHCP_DEADLINE_MS * 100u,
+	                           UINT32_MAX - 1u,
+	                           UINT32_MAX};
+
+	for (size_t index = 0; index < sizeof(starts) / sizeof(starts[0]);
+	     index++) {
+		AiusNetSupervisor supervisor;
+		AiusNetAction action;
+		AiusNetEvent none = {
+			.kind = AIUS_NET_EVENT_NONE,
+			.generation = 0,
+			.fault = AIUS_NET_FAULT_NONE,
+		};
+		AiusNetEvent started = {
+			.kind = AIUS_NET_EVENT_STACK_STARTED,
+			.generation = 1,
+			.fault = AIUS_NET_FAULT_NONE,
+		};
+
+		aius_net_supervisor_init(&supervisor, 0, false, &action);
+		assert(action.kind == AIUS_NET_ACTION_START_STACK);
+
+		aius_net_supervisor_step(&supervisor, starts[index], started,
+		                         &action);
+		assert(supervisor.state == AIUS_NET_STATE_DHCP_WAIT);
+		assert(action.kind == AIUS_NET_ACTION_START_DHCP);
+		assert(supervisor.deadline_ms ==
+		       (uint32_t)(starts[index] + AIUS_NET_DHCP_DEADLINE_MS));
+
+		/* One millisecond short of the deadline is still DHCP_WAIT, so
+		 * the delayed attempt genuinely gets its full budget. */
+		aius_net_supervisor_step(
+			&supervisor,
+			(uint32_t)(starts[index] + AIUS_NET_DHCP_DEADLINE_MS - 1u),
+			none, &action);
+		assert(supervisor.state == AIUS_NET_STATE_DHCP_WAIT);
+		assert(action.kind == AIUS_NET_ACTION_NONE);
+
+		/* A lease at the last moment is still a lease. */
+		AiusNetEvent lease = {
+			.kind = AIUS_NET_EVENT_LEASE_ACQUIRED,
+			.generation = 1,
+			.fault = AIUS_NET_FAULT_NONE,
+		};
+		aius_net_supervisor_step(
+			&supervisor,
+			(uint32_t)(starts[index] + AIUS_NET_DHCP_DEADLINE_MS),
+			lease, &action);
+		assert(supervisor.state == AIUS_NET_STATE_ONLINE);
+		assert(action.kind == AIUS_NET_ACTION_PUBLISH_ONLINE);
+	}
+
+	/* And a delayed attempt that does expire is still bounded recovery, not
+	 * a stall: the composition of the adapter's waits with this deadline
+	 * reaches BACKOFF and the next generation exactly as a prompt one does.
+	 */
+	AiusNetSupervisor supervisor;
+	AiusNetAction action;
+	AiusNetEvent none = {
+		.kind = AIUS_NET_EVENT_NONE,
+		.generation = 0,
+		.fault = AIUS_NET_FAULT_NONE,
+	};
+	AiusNetEvent started = {
+		.kind = AIUS_NET_EVENT_STACK_STARTED,
+		.generation = 1,
+		.fault = AIUS_NET_FAULT_NONE,
+	};
+	AiusNetEvent done = {
+		.kind = AIUS_NET_EVENT_TEARDOWN_DONE,
+		.generation = 1,
+		.fault = AIUS_NET_FAULT_NONE,
+	};
+	const uint32_t late = 3000u + AIUS_NET_DHCP_DEADLINE_MS;
+
+	aius_net_supervisor_init(&supervisor, 0, false, &action);
+	aius_net_supervisor_step(&supervisor, late, started, &action);
+	assert(supervisor.state == AIUS_NET_STATE_DHCP_WAIT);
+
+	aius_net_supervisor_step(&supervisor, late + AIUS_NET_DHCP_DEADLINE_MS,
+	                         none, &action);
+	assert(supervisor.state == AIUS_NET_STATE_TEARDOWN);
+	assert(supervisor.last_fault == AIUS_NET_FAULT_DHCP_TIMEOUT);
+	assert(action.kind == AIUS_NET_ACTION_TEARDOWN);
+	assert(action.generation == 1);
+
+	aius_net_supervisor_step(&supervisor, late + AIUS_NET_DHCP_DEADLINE_MS,
+	                         done, &action);
+	assert(supervisor.state == AIUS_NET_STATE_BACKOFF);
+	aius_net_supervisor_step(&supervisor,
+	                         late + AIUS_NET_DHCP_DEADLINE_MS +
+	                             AIUS_NET_BACKOFF_MS,
+	                         none, &action);
+	assert(supervisor.state == AIUS_NET_STATE_STACK_START);
+	assert(supervisor.generation == 2);
+	assert(action.kind == AIUS_NET_ACTION_START_STACK);
+}
+
 static uint32_t random_next(uint32_t *state)
 {
 	*state = *state * 1664525u + 1013904223u;
@@ -782,6 +898,7 @@ int main(void)
 	test_generation_wrap_and_counter_saturation();
 	test_duplicates_and_reachability();
 	test_stack_start_waits_for_its_event();
+	test_delayed_stack_started_keeps_full_dhcp_budget();
 	test_generated_sequences();
 	puts("ok network supervisor");
 	return 0;

@@ -1232,8 +1232,10 @@ void test_generation_diagnostics()
 
 	aius_network_teensy_apply(&adapter, 3820u,
 	                         action(AIUS_NET_ACTION_START_STACK, 1u), &event);
-	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 1u,
-	             AIUS_NET_FAULT_NONE);
+	/* Link-up is observed here and STACK_STARTED is still withheld: this is
+	 * the generation that ran the real netif init, and on the board that one
+	 * reports link up for seconds before the FEC carries a frame. */
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
 	const AiusNetworkTeensyDiag *diag = aius_network_teensy_diag(&adapter);
 	assert(diag->generation == 1u);
 	assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
@@ -1244,15 +1246,9 @@ void test_generation_diagnostics()
 	assert(!diag->link_callback_up_seen);
 	assert(g_diag.netif_initialized_calls == 1u);
 	assert(g_diag.uptime_calls == 2u);
-
-	aius_network_teensy_apply(&adapter, 3824u,
-	                         action(AIUS_NET_ACTION_START_DHCP, 1u), &event);
-	assert(diag->dhcp_started_seen);
-	assert(diag->dhcp_start_ms == 4u);
-	assert(diag->dhcp_state_at_start == 1u);
-	assert(diag->frames_valid);
-	assert(g_diag.dhcp_state_calls == 1u);
-	assert(g_diag.frames_calls == 1u);
+	assert(adapter.link_up_reported);
+	assert(adapter.rx_ready_required && adapter.rx_ready_pending);
+	assert(diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_NONE);
 
 	/* The link service's own fresh observation arrives afterwards. The latch
 	 * drops the duplicate STACK_STARTED; the measurement keeps it, because
@@ -1269,8 +1265,39 @@ void test_generation_diagnostics()
 	assert(diag->link_callbacks == 1u);
 	assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
 
+	/* While the gate is open the epoch's single read is the counter one, and
+	 * it is a replacement rather than an addition: thirty-two epochs spend
+	 * thirty-two statistics reads and not one link_live, dhcp_state or netif
+	 * probe. Nothing has arrived, so nothing is released.
+	 */
+	const unsigned waiting_link_live = g_diag.link_live_calls;
+	const unsigned waiting_dhcp_state = g_diag.dhcp_state_calls;
+	const unsigned waiting_frames = g_diag.frames_calls;
+	const unsigned waiting_netif = g_diag.netif_initialized_calls;
+	for (uint32_t tick = 0u; tick < 32u; tick++) {
+		aius_network_teensy_poll(&adapter, 3900u + tick, &event);
+		expect_event(event, AIUS_NET_EVENT_NONE, 0u,
+		             AIUS_NET_FAULT_NONE);
+	}
+	assert(g_diag.frames_calls == waiting_frames + 32u);
+	assert(g_diag.link_live_calls == waiting_link_live);
+	assert(g_diag.dhcp_state_calls == waiting_dhcp_state);
+	assert(g_diag.netif_initialized_calls == waiting_netif);
+	assert(adapter.rx_ready_pending);
+
+	/* One ambient frame reaches the MAC. That is the evidence, and the gate
+	 * releases on it -- 170 ms after stack start, not at the fallback. */
+	g_diag.rx = 201u;
+	aius_network_teensy_poll(&adapter, 3990u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 1u,
+	             AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_pending);
+	assert(diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_COUNTER);
+	assert(diag->rx_ready_ms == 170u);
+
 	/* The epoch pays nothing. poll() is the one call the supervisor makes
-	 * every epoch, and it makes no diagnostic call at all.
+	 * every epoch, and once the gate has released it makes no diagnostic
+	 * call at all.
 	 */
 	const unsigned link_live_calls = g_diag.link_live_calls;
 	const unsigned dhcp_state_calls = g_diag.dhcp_state_calls;
@@ -1278,13 +1305,22 @@ void test_generation_diagnostics()
 	const unsigned uptime_calls = g_diag.uptime_calls;
 	const unsigned netif_calls = g_diag.netif_initialized_calls;
 	for (uint32_t tick = 0u; tick < 32u; tick++) {
-		aius_network_teensy_poll(&adapter, 3900u + tick, &event);
+		aius_network_teensy_poll(&adapter, 4000u + tick, &event);
 	}
 	assert(g_diag.link_live_calls == link_live_calls);
 	assert(g_diag.dhcp_state_calls == dhcp_state_calls);
 	assert(g_diag.frames_calls == frames_calls);
 	assert(g_diag.uptime_calls == uptime_calls);
 	assert(g_diag.netif_initialized_calls == netif_calls);
+
+	aius_network_teensy_apply(&adapter, 4100u,
+	                         action(AIUS_NET_ACTION_START_DHCP, 1u), &event);
+	assert(diag->dhcp_started_seen);
+	assert(diag->dhcp_start_ms == 280u);
+	assert(diag->dhcp_state_at_start == 1u);
+	assert(diag->frames_valid);
+	assert(g_diag.dhcp_state_calls == dhcp_state_calls + 1u);
+	assert(g_diag.frames_calls == frames_calls + 1u);
 
 	/* The DHCP deadline expires. FNET is still in its own SELECTING state --
 	 * it believes it sent a DISCOVER -- while the MAC's transmit counter has
@@ -1303,16 +1339,21 @@ void test_generation_diagnostics()
 	assert(diag->tx_frames == 0u);
 	assert(diag->rx_frames == 0u);
 
-	/* Generation 2, warm interface: the netif init is skipped entirely and
-	 * beginNoWait() returns at once. */
+	/* Generation 2, warm interface: the netif init is skipped entirely,
+	 * beginNoWait() returns at once, and nothing is waited for. This is the
+	 * generation that binds in 19 ms on the board, so STACK_STARTED lands in
+	 * the apply call and not one counter read is spent getting there. */
 	g_diag.netif_initialized = true;
 	g_diag.stack_start_cost_ms = 0u;
 	g_diag.dhcp_state = 1u;
 	g_diag.link_live = AIUS_NETWORK_TEENSY_LINK_UP;
+	const unsigned frames_before_warm = g_diag.frames_calls;
 	aius_network_teensy_apply(&adapter, 9800u,
 	                         action(AIUS_NET_ACTION_START_STACK, 2u), &event);
 	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 2u,
 	             AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_required && !adapter.rx_ready_pending);
+	assert(g_diag.frames_calls == frames_before_warm);
 	const AiusNetworkTeensyDiag *first =
 		aius_network_teensy_diag_first(&adapter);
 	assert(first != nullptr);
@@ -1320,15 +1361,19 @@ void test_generation_diagnostics()
 	assert(first->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
 	assert(first->stack_start_blocking_ms == 2013u);
 	assert(first->tx_frames == 0u);
+	assert(first->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_COUNTER);
+	assert(first->rx_ready_ms == 170u);
 	assert(diag->generation == 2u);
 	assert(diag->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_SKIPPED);
 	assert(diag->stack_start_blocking_ms == 0u);
 	assert(diag->end_reason == AIUS_NETWORK_TEENSY_END_NONE);
+	assert(diag->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_NOT_REQUIRED);
 
 	aius_network_teensy_apply(&adapter, 9805u,
 	                         action(AIUS_NET_ACTION_START_DHCP, 2u), &event);
 	g_diag.tx = 104u;
-	g_diag.rx = 206u;
+	g_diag.rx = 207u;
 	g_diag.dhcp_state = 5u;
 	aius_network_teensy_apply(&adapter, 9810u,
 	                         action(AIUS_NET_ACTION_PUBLISH_ONLINE, 2u),
@@ -1358,7 +1403,7 @@ void test_generation_diagnostics()
 	       AIUS_NETWORK_TEENSY_LINK_DOWN);
 	assert(aius_network_teensy_dhcp_state(&adapter) == 5u);
 	assert(aius_network_teensy_frames(&adapter, &tx, &rx));
-	assert(tx == 104u && rx == 206u);
+	assert(tx == 104u && rx == 207u);
 
 	/* A link-lost callback counts as a link callback of the other polarity
 	 * and leaves the first connected timestamp alone. */
@@ -1387,6 +1432,233 @@ void test_generation_diagnostics()
 	assert(g_diag.frames_calls == frames_after);
 }
 
+size_t count_operations(Operation wanted)
+{
+	size_t seen = 0u;
+	for (size_t index = 0u; index < g_fake.log_count; index++) {
+		if (g_fake.log[index] == wanted) {
+			seen++;
+		}
+	}
+	return seen;
+}
+
+/* Opens generation 7 on an interface this generation initialises, with the link
+ * already up: START_STACK observes link-up and withholds STACK_STARTED, because
+ * link-up is the signal that was already saying "up" while the FEC carried
+ * nothing.
+ */
+void begin_cold_generation(AiusNetworkTeensy *adapter, uint32_t now_ms,
+	                       uint32_t rx, bool frames_ok)
+{
+	AiusNetEvent event = {};
+
+	reset_adapter(adapter);
+	aius_network_teensy_test_set_diag_primitives(&kDiagPrimitives);
+	g_diag.netif_initialized = false;
+	g_diag.frames_ok = frames_ok;
+	g_diag.tx = 3u;
+	g_diag.rx = rx;
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+
+	aius_network_teensy_apply(adapter, now_ms,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter->stack_started);
+	assert(adapter->link_up_reported);
+	assert(adapter->rx_ready_required && adapter->rx_ready_pending);
+	assert(aius_network_teensy_diag(adapter)->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_NONE);
+}
+
+/* The receive-readiness gate: the fix for the first-attempt DHCP failure, whose
+ * measured cause is an interface that reports link up and passes no traffic.
+ *
+ * Every case here asserts one of the four properties the gate has to have --
+ * released early on evidence, released anyway on a bound, never armed for the
+ * generation that already works, and wrap-safe against free-running hardware
+ * counters that can and do wrap.
+ */
+void test_receive_readiness_gate()
+{
+	AiusNetworkTeensy adapter;
+	AiusNetEvent event = {};
+
+	/* Bound: one DHCP deadline. Waiting for evidence that a DISCOVER can
+	 * leave the board never costs more than sending one and finding out. */
+	static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS ==
+		              AIUS_NET_DHCP_DEADLINE_MS,
+		          "readiness fallback must equal the DHCP deadline");
+
+	/* Evidence arrives, so DHCP starts on it rather than on the bound. The
+	 * counter read replaces the link read for the wait: no OP_LINK_STATUS is
+	 * logged across it, so the epoch's single underlying read is unchanged. */
+	begin_cold_generation(&adapter, 1000u, 500u, true);
+	const size_t link_reads = count_operations(OP_LINK_STATUS);
+	aius_network_teensy_poll(&adapter, 1001u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(g_diag.frames_calls == 1u);
+	aius_network_teensy_poll(&adapter, 1002u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	g_diag.rx = 501u;
+	aius_network_teensy_poll(&adapter, 1003u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_pending);
+	assert(count_operations(OP_LINK_STATUS) == link_reads);
+	assert(g_diag.frames_calls == 3u);
+	const AiusNetworkTeensyDiag *diag = aius_network_teensy_diag(&adapter);
+	assert(diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_COUNTER);
+	assert(diag->rx_ready_ms == 3u);
+
+	/* And it is released exactly once: the next epoch is an ordinary link
+	 * health read again, not a second STACK_STARTED. */
+	aius_network_teensy_poll(&adapter, 1004u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(count_operations(OP_LINK_STATUS) == link_reads + 1u);
+
+	/* DHCP then gets its whole deadline from where it actually starts. The
+	 * gate delays the attempt; it never shortens it. */
+	aius_network_teensy_apply(&adapter, 1005u,
+	                         action(AIUS_NET_ACTION_START_DHCP), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.dhcp_started);
+	assert(diag->dhcp_start_ms == 5u);
+
+	/* Nothing ever arrives. A silent segment must not deadlock the board, so
+	 * the bound releases STACK_STARTED anyway -- at the deadline, not before
+	 * it, and not never. */
+	begin_cold_generation(&adapter, 1000u, 77u, true);
+	aius_network_teensy_poll(&adapter, 1001u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(
+		&adapter, 1000u + AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS - 1u,
+		&event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.rx_ready_pending);
+	aius_network_teensy_poll(
+		&adapter, 1000u + AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS,
+		&event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_pending);
+	diag = aius_network_teensy_diag(&adapter);
+	assert(diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_DEADLINE);
+	assert(diag->rx_ready_ms == AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS);
+
+	/* A driver that refuses the statistics call leaves no evidence to wait
+	 * for. That is the same bounded fallback, not a stall. */
+	begin_cold_generation(&adapter, 2000u, 5u, false);
+	aius_network_teensy_poll(&adapter, 2001u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_baseline_valid);
+	aius_network_teensy_poll(
+		&adapter, 2000u + AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS,
+		&event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(aius_network_teensy_diag(&adapter)->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_DEADLINE);
+
+	/* Wrap safety, both clocks that matter. RMON_R_PACKETS is a free-running
+	 * 32-bit hardware counter: a frame received across its wrap is still a
+	 * frame, and a comparison that read it as "went backwards, so nothing
+	 * arrived" would hold DHCP to the fallback for no reason. */
+	begin_cold_generation(&adapter, 1000u, 0xFFFFFFFFu, true);
+	aius_network_teensy_poll(&adapter, 1001u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.rx_ready_baseline == 0xFFFFFFFFu);
+	g_diag.rx = 1u;
+	aius_network_teensy_poll(&adapter, 1002u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(aius_network_teensy_diag(&adapter)->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_COUNTER);
+
+	/* One step short of the wrap is still movement. */
+	begin_cold_generation(&adapter, 1000u, 0xFFFFFFFEu, true);
+	aius_network_teensy_poll(&adapter, 1001u, &event);
+	g_diag.rx = 0xFFFFFFFFu;
+	aius_network_teensy_poll(&adapter, 1002u, &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+
+	/* And the millis() wrap the fallback deadline is computed across cannot
+	 * turn a five-second wait into a forty-nine-day one. */
+	begin_cold_generation(&adapter, 0xFFFFF000u, 12u, true);
+	aius_network_teensy_poll(&adapter, 0xFFFFF001u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(&adapter,
+		                     0xFFFFF000u +
+		                         AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS,
+		                     &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(aius_network_teensy_diag(&adapter)->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_DEADLINE);
+
+	/* The generation that inherits a settled interface waits for nothing and
+	 * spends no counter read. It is the one that binds in 19 ms today, and
+	 * nothing here may slow it down. */
+	reset_adapter(&adapter);
+	aius_network_teensy_test_set_diag_primitives(&kDiagPrimitives);
+	g_diag.netif_initialized = true;
+	g_diag.frames_ok = true;
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_apply(&adapter, 1000u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 7u,
+	             AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_required && !adapter.rx_ready_pending);
+	assert(g_diag.frames_calls == 0u);
+	assert(aius_network_teensy_diag(&adapter)->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_NOT_REQUIRED);
+	aius_network_teensy_poll(&adapter, 1001u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(g_diag.frames_calls == 0u);
+
+	/* A link that comes up late arms the gate from the callback, not only
+	 * from the stack-start read, and losing the link inside the wait still
+	 * reaches the supervisor: the callback is an independent observer and
+	 * its event is drained ahead of the counter read. */
+	reset_adapter(&adapter);
+	aius_network_teensy_test_set_diag_primitives(&kDiagPrimitives);
+	g_diag.netif_initialized = false;
+	g_diag.frames_ok = true;
+	g_diag.rx = 40u;
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	aius_network_teensy_apply(&adapter, 1000u,
+	                         action(AIUS_NET_ACTION_START_STACK), &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.rx_ready_required && !adapter.link_up_reported);
+	aius_network_teensy_test_callback(&adapter, 7u,
+	                                  AIUS_NET_EVENT_STACK_STARTED,
+	                                  AIUS_NET_FAULT_NONE);
+	aius_network_teensy_poll(&adapter, 1010u, &event);
+	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	assert(adapter.link_up_reported && adapter.rx_ready_pending);
+	assert(aius_network_teensy_diag(&adapter)->link_up_source ==
+	       AIUS_NETWORK_TEENSY_LINK_UP_CALLBACK);
+	aius_network_teensy_test_callback(&adapter, 7u,
+	                                  AIUS_NET_EVENT_RESOURCE_FAULT,
+	                                  AIUS_NET_FAULT_LINK_LOST);
+	aius_network_teensy_poll(&adapter, 1020u, &event);
+	expect_event(event, AIUS_NET_EVENT_RESOURCE_FAULT, 7u,
+	             AIUS_NET_FAULT_LINK_LOST);
+
+	/* Teardown closes the gate with the generation that owned it, and the
+	 * next generation decides for itself whether it needs one. */
+	drive_teardown_at(&adapter, 7u, 1030u);
+	assert(!adapter.rx_ready_required && !adapter.rx_ready_pending);
+	g_diag.netif_initialized = true;
+	g_fake.link = AIUS_NETWORK_TEENSY_LINK_UP;
+	aius_network_teensy_apply(&adapter, 1040u,
+	                         action(AIUS_NET_ACTION_START_STACK, 8u), &event);
+	expect_event(event, AIUS_NET_EVENT_STACK_STARTED, 8u,
+	             AIUS_NET_FAULT_NONE);
+	assert(!adapter.rx_ready_required && !adapter.rx_ready_pending);
+}
+
 /* The diagnostic readers are optional, and the adapter drives identically
  * without them: this is the property that keeps a measurement from being able
  * to fault the transport, and it is what lets the runtime-target suite keep its
@@ -1413,6 +1685,11 @@ void test_diagnostics_are_optional()
 	/* What the table does supply is still measured. */
 	assert(diag->link_at_stack_start == AIUS_NETWORK_TEENSY_LINK_UP);
 	assert(diag->link_up_source == AIUS_NETWORK_TEENSY_LINK_UP_STACK_START);
+	/* And with no netif probe there is no readiness requirement, so the gate
+	 * is transparent: this whole file's lifecycle, callback, deadline and I/O
+	 * coverage drives an adapter the gate never arms on. */
+	assert(diag->rx_ready_source ==
+	       AIUS_NETWORK_TEENSY_RX_READY_NOT_REQUIRED);
 
 	assert(aius_network_teensy_link_live(&adapter) ==
 	       AIUS_NETWORK_TEENSY_LINK_UNKNOWN);
@@ -1447,6 +1724,7 @@ int main()
 	test_one_shot_io_matrix();
 	test_status_accessors_across_lifecycle();
 	test_generation_diagnostics();
+	test_receive_readiness_gate();
 	test_diagnostics_are_optional();
 	return 0;
 }
