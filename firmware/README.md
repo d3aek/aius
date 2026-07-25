@@ -229,7 +229,8 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, and the same through the public DSP interface over the DTS corpus. |
-| `config`, `dsp-config` | Feature-flag config builder + the `PUT /api/dsp/config` validator. |
+| `auth` | The SD maintenance token's derivation, firmware side and the host generator together. |
+| `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
 | `http` | Request parser + the bounded server transaction. |
 | `usb-control` | USB control command parser + runtime transaction. |

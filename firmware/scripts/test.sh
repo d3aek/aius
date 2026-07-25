@@ -114,7 +114,21 @@ dts_build() {
 
 case "$suite" in
 config)
+	# Two halves of "configuration": the build-time optical DSP header generator,
+	# and the runtime feature-flag parser in lib/aius_config that optical_main.cpp
+	# runs over /aius/config.json at boot, on hot-reinsert, and on an HTTP body.
 	python3 "$fw_root/test/config/test_build_config.py"
+	# The runtime parser is bounded and heap-free by contract, so the test links
+	# --wrap over the libc allocators and asserts zero allocations per parse. Same
+	# LINK-time interception the DTS suites use, here with no arena and no
+	# vendored core, so the wrap list is spelled out rather than via dts_build.
+	config_out="$build_dir/config"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_config/include" \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
+		"$fw_root/test/config/test_config.c" \
+		"$fw_root/lib/aius_config/src/aius_config.c" \
+		-o "$config_out"
+	"$config_out"
 	;;
 dsp-config)
 	# Bounded, allocation-free PUT /api/dsp/config validator: parses the DSP model

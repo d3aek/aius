@@ -53,9 +53,17 @@ with the findings that forced the re-scope under "Prebuild review findings".
 
 **Phase 14 is delivered.** All fifteen slices are landed and pushed: S0, P1a, P1b,
 R1, R2, P2, S1, C1, S2a, S2b, S3a, S3b, S4, S5, S6 and S7. The cutover is
-structurally complete — `optical-cutover` passes 6/6 positive and 5/5 absence, all
-eighteen standing suites are green, and both images build with all banks fitting
+structurally complete — `optical-cutover` passes 6/6 positive and 5/5 absence, the
+standing guard set below is green, and both images build with all banks fitting
 and three post-link guards passing.
+
+**"The standing suites are green" was not a checkable claim** until a registry
+audit on 2026-07-25 counted them: this document has said twelve in one place and
+eighteen in another, while **33 suites exist**. The twelve enumerated in
+§Corrections are the network-and-runtime guard for this phase's work, not the
+whole runner. The other 21 run and pass but belong to no routine sweep, which is
+worth knowing before reading any "all suites green" statement here as
+comprehensive.
 
 Four slices were not in the original breakdown and were forced by what the work
 found: **C1** when S2a linked the portable engines and RAM1 went 8,612 bytes over,
