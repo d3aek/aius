@@ -69,11 +69,25 @@ found: **C1** when S2a linked the portable engines and RAM1 went 8,612 bytes ove
 S5 found an acceptance criterion unmet and then that nothing proved the device met
 it.
 
-**Next up is 14b**, the meters endpoint and accumulate wiring — the one genuinely
-hot addition left, and the first code this phase adds that runs per audio block.
-Then 14c restores replay refill onto a bounded job and lifts the `replay_start`
-refusal, and 14d writes the firmware I/O reference. The clean-room delivery audit
-follows.
+**14b is delivered** (`72ba01fe1`) — the meters endpoint and its per-block
+accumulate tap, the one genuinely hot addition in the plan. **14c is next**,
+restoring replay refill onto a bounded job and lifting the `replay_start` refusal.
+
+**Then flash the board.** [§Phase 14f](#phase-14f--first-flash-and-assumption-validation)
+comes before the two reference documents, deliberately: nothing in Phase 14 has
+ever executed, and 14d and 14e are both required to carry measured figures rather
+than estimates. Writing them first would mean writing numbers we would then have
+to correct.
+
+**The board is reachable from this environment.** The agent user is in `dialout`
+with a stale login, so USB commands need `sg dialout -c "<command>"`. Confirmed
+2026-07-25. The deployed board currently runs the **pre-cutover** image
+(`062e96ed193d`, 2026-07-23) with `link=2` (`LinkOFF`), no lease and no HTTP,
+while its USB control plane answers — so the network is down at the physical
+layer, which is a firmware fault under §Trusted fixture boundary until firmware
+evidence says otherwise.
+
+After 14f, 14d and 14e land with real numbers, then the clean-room delivery audit.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
@@ -246,7 +260,9 @@ throughout. Track B is serialized because every phase in it touches
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
 | B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
 | B5a | Phase 14c — replay refill onto a bounded SD job, deferred out of Phase 14 | `replay` + `sd` + `runtime-target` |
-| B5b | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
+| B5b | **Phase 14f — first flash and assumption validation.** Nothing in Phase 14 has ever executed; this is where the plan's assertions become measurements | the recorded validation log, one verdict per assumption |
+| B5c | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
+| B5d | Phase 14e — the signal path and DSP reference: block diagram, per-stage implementation, memory, and the measured per-block budget | `dsp` suite + figures taken from the device |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
@@ -4604,6 +4620,95 @@ It lands before B6 because B6 is the single live-hardware session, and validatin
 a soak against a board that cannot start a replay — or that corrupts one when an
 SD job runs — would waste the flash.
 
+### Phase 14f — First flash and assumption validation
+
+```yaml
+unit: parent-only
+seams: [the deployed board, USB CDC control plane, Ethernet, SD, audio output]
+contract-artifact: spec-only
+dependencies: [phase-14, phase-14b, phase-14c]
+outcome: "The cutover firmware runs on real hardware and the plan's untested assumptions become measurements."
+acceptance:
+  - the board boots the new image and answers AIUS ID with the expected revision
+  - every assumption in the list below is confirmed or recorded as refuted
+  - each refutation is filed as a defect with its evidence, not smoothed over
+review-intensity: active
+commit-checkpoint:
+  green:
+    - the recorded validation log, with a verdict per assumption
+  buildable:
+    - firmware/scripts/build.sh teensy41-optical
+  parent-commit: "test(aius): record the first live validation of the cutover firmware"
+```
+
+**Nothing in Phase 14 has ever executed.** Fifteen slices, plus 14b and 14c, were
+proven by native suites and a target build that links. A link proves the image
+fits and resolves; it proves nothing about boot order, hardware init, timing, or
+whether the thing serves a single byte. This phase is where that changes, and it
+comes before the recovery smoke because a board that does not boot cannot be
+smoke-tested.
+
+**The USB control plane is reachable from this environment.** The agent user is in
+`dialout` but its login is stale, so commands must be wrapped:
+`sg dialout -c "<command>"`. Confirmed working 2026-07-25 against the deployed
+board, which answered `AIUS ID` on `/dev/ttyACM0` (`16c0:0483`).
+
+**State of the deployed board before this phase**, captured 2026-07-25:
+revision `062e96ed193d`, built 2026-07-23 — the pre-cutover image. `ip=0.0.0.0`,
+`link=2` (`LinkOFF`), `dhcp_pending=1`. The USB control plane answers; the network
+is down at the physical layer. Per §Trusted fixture boundary that is a firmware
+fault until firmware evidence says otherwise, and it is the failure this plan
+exists to close — but note the symptom differs from the crash-looping recorded
+earlier, so the earlier diagnosis may itself have been incomplete.
+
+**Assumptions to validate.** Each has been asserted somewhere in this plan and
+none has been measured. Record a verdict for every one.
+
+*Boot and lifecycle*
+- `setup()` returns without waiting, and the first epoch runs.
+- The watchdog is armed at 8 s and fed once per epoch — the board does not reset
+  in normal operation.
+- Retained OCRAM survives a watchdog reset, and the boot ledger's CRC and
+  double-slot commit behave as the target oracle claims. **The plan explicitly
+  says not to claim OCRAM retention until this is confirmed.**
+- The ten-second healthy mark clears the early-reset count.
+
+*Network*
+- The link comes up at all — the current board says it does not.
+- DHCP obtains a lease within the 7 s the contract states, and HTTP serves within
+  8 s.
+- A DHCP deadline drives bounded teardown and backoff rather than a hang.
+- One generation owns every socket; a restart does not leak a listener.
+
+*SD*
+- The probe detects the card, and hot insert and removal are seen.
+- `/aius/dsp.json` and `/aius/config.json` load through `CONFIG_LOAD` and apply.
+- A config `PUT` commits and the model applies at the block boundary — the arm
+  S3b re-attached.
+- One SD primitive per epoch holds in practice, not just by construction.
+
+*Audio and DSP*
+- Default audio is unchanged from the pre-cutover image.
+- The meters accumulate tap's real per-block cost, from the DWT counter 14b wired.
+  The estimate is ~1.9 % of a 128-frame block period and ~1.4 % of a 512-frame
+  one; **replace both with measurements.**
+- No dropouts under sustained load with metering enabled.
+- Replay start no longer refuses, plays, and does not tear when an SD job runs.
+
+*Status surfaces*
+- The 99-byte UDP payload decodes in the runner.
+- Status JSON, USB `ID` and UDP agree, since they share one snapshot.
+- The recovery fields report real values after an induced reset.
+
+**Method.** Flash from a clean committed tree, never a working tree with
+in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
+validation log with one verdict per assumption and the evidence for it. A refuted
+assumption is a defect with a plan entry, not a footnote.
+
+**Recovery if the image is bad.** The Program button always reaches HalfKay
+regardless of firmware state, so a failed image is recoverable by hand. The fault
+images and recovery-safe mode exist for exactly this session.
+
 ### Phase 14d — Firmware I/O reference
 
 ```yaml
@@ -4662,6 +4767,60 @@ buffers live in `DMAMEM` rather than the DTCM free-for-locals zone; that at most
 one SD primitive is spent per epoch and a wedged one is bounded by the watchdog
 rather than a false cooperative timeout; and that the meters snapshot crosses the
 boundary through a seqlock rather than a lock the audio path could wait on.
+
+### Phase 14e — Signal path and DSP reference
+
+```yaml
+unit: parent-only
+seams: [S/PDIF input, decode, DSP chain, output, the audio block boundary]
+contract-artifact: spec-only
+dependencies: [phase-14, phase-14b, phase-14c]
+outcome: "One checked-in reference explains the audio signal path end to end, with a diagram, implementation detail and measured cost."
+acceptance:
+  - a block diagram carries the signal from optical input to analogue and digital output
+  - every processing stage names the module and function that implements it
+  - each stage states its buffers, their sizes and their memory bank
+  - the per-block time budget is stated, with each stage's measured share of it
+  - fixed-point and floating-point boundaries are explicit, including where conversion happens and why
+  - the channel layout and downmix rules are stated once, authoritatively
+  - every number comes from a real build or a real device, never an estimate presented as fact
+review-intensity: standard
+commit-checkpoint:
+  green:
+    - firmware/scripts/test.sh --environment native --suite dsp
+  buildable:
+    - firmware/scripts/build.sh teensy41-optical
+  parent-commit: "docs(aius): describe the audio signal path and DSP chain"
+```
+
+**Home:** `docs/reference/signal-path.md`, component scope.
+
+Companion to [§Phase 14d](#phase-14d--firmware-io-reference), and deliberately
+separate from it. 14d answers "what I/O exists and why it cannot disturb the audio
+path"; this answers "what the audio path actually *is*". A reader who wants to
+change the DSP should not have to reconstruct the chain from source.
+
+**Required coverage.** The block diagram is the spine: optical S/PDIF in, the
+IEC 61937 framing and DTS decode branch versus the PCM passthrough branch, the
+channel map, the downmix, the EQ stages, the limiter, and both outputs. Mermaid,
+per the repo's markdown rules.
+
+Around it, per stage: the module and function that implements it; its buffers with
+sizes and bank; its arithmetic domain, since the chain crosses between integer
+sample units and floating point and the boundaries are not obvious from any one
+file; and its share of the per-block budget.
+
+**The budget section is the point.** State the block period at each supported rate
+and block size, then each stage's measured cost against it, then the headroom left.
+Phase 14b established the pattern by wiring the DWT cycle counter around the
+per-block body and reporting it through `GET /api/meters` — so these numbers come
+from the device, not from instruction counting. Note where a figure is still an
+estimate and say so plainly.
+
+**Record the decisions, not just the shapes.** Where a stage's implementation was
+chosen over an alternative — fixed versus floating point, the decimation strategy,
+the ring sizing, where metering taps sit and why — say so, so the next reader
+inherits the reasoning rather than re-deriving it.
 
 ### Phase 15 — Button-free flash tooling
 

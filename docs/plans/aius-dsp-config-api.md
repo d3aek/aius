@@ -63,11 +63,25 @@ found: **C1** when S2a linked the portable engines and RAM1 went 8,612 bytes ove
 S5 found an acceptance criterion unmet and then that nothing proved the device met
 it.
 
-**Next up is 14b**, the meters endpoint and accumulate wiring — the one genuinely
-hot addition left, and the first code this phase adds that runs per audio block.
-Then 14c restores replay refill onto a bounded job and lifts the `replay_start`
-refusal, and 14d writes the firmware I/O reference. The clean-room delivery audit
-follows.
+**14b is delivered** (`72ba01fe1`) — the meters endpoint and its per-block
+accumulate tap, the one genuinely hot addition in the plan. **14c is next**,
+restoring replay refill onto a bounded job and lifting the `replay_start` refusal.
+
+**Then flash the board.** [§Phase 14f](#phase-14f--first-flash-and-assumption-validation)
+comes before the two reference documents, deliberately: nothing in Phase 14 has
+ever executed, and 14d and 14e are both required to carry measured figures rather
+than estimates. Writing them first would mean writing numbers we would then have
+to correct.
+
+**The board is reachable from this environment.** The agent user is in `dialout`
+with a stale login, so USB commands need `sg dialout -c "<command>"`. Confirmed
+2026-07-25. The deployed board currently runs the **pre-cutover** image
+(`062e96ed193d`, 2026-07-23) with `link=2` (`LinkOFF`), no lease and no HTTP,
+while its USB control plane answers — so the network is down at the physical
+layer, which is a firmware fault under §Trusted fixture boundary until firmware
+evidence says otherwise.
+
+After 14f, 14d and 14e land with real numbers, then the clean-room delivery audit.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
@@ -240,7 +254,9 @@ throughout. Track B is serialized because every phase in it touches
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
 | B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
 | B5a | Phase 14c — replay refill onto a bounded SD job, deferred out of Phase 14 | `replay` + `sd` + `runtime-target` |
-| B5b | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
+| B5b | **Phase 14f — first flash and assumption validation.** Nothing in Phase 14 has ever executed; this is where the plan's assertions become measurements | the recorded validation log, one verdict per assumption |
+| B5c | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
+| B5d | Phase 14e — the signal path and DSP reference: block diagram, per-stage implementation, memory, and the measured per-block budget | `dsp` suite + figures taken from the device |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
