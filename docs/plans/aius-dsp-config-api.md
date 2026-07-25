@@ -51,16 +51,21 @@ delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
 with the findings that forced the re-scope under "Prebuild review findings".
 
-**Next up is S2b**, which deletes the legacy path, rewrites the status surface onto
-`AiusRecoveryStatus` plus R2's accessors, removes the vendor includes and their
-guard exception, wires the `optical-cutover` suite into the standing guard, and
-wires `aius_fault_checkpoint()`. S3, S4 and S5 follow in order, then 14b, 14c and
-14d.
+**Next up is S3**, which ports the SD lifecycle onto R1's job entry. It carries
+three things the cutover left owing: the `PROBE` and `USAGE_REFRESH` jobs that
+restore SD readiness and usage, the `CONFIG_LOAD` jobs that restore the SD-hosted
+DSP and public configs at boot, and **re-attaching the config-commit arm** that
+died with the legacy job — the store adapters still stage into
+`g_pending_config` / `g_pending_dsp_model`, but nothing consumes them, so a
+successful config `PUT` currently writes to the card without applying. The staging
+shape is unchanged, so this is a re-attachment rather than a rewrite. S4 and S5
+follow, then 14b, 14c and 14d.
 
-S2a is delivered, and with it slice C1 — forced when S2a linked the portable
-engines for the first time and RAM1 went 8,612 bytes over. See §Structural
-obstacles. FlexRAM now has 24,156 bytes free and a post-link guard keeps it that
-way.
+The legacy path is gone as of `1e6391c93`, and the `optical-cutover` suite passes
+both groups. Slice C1 preceded it, forced when S2a linked the portable engines for
+the first time and RAM1 went 8,612 bytes over — see §Structural obstacles. FlexRAM
+now has 24,412 bytes free, OCRAM dropped to 16.3 % used when the legacy buffers
+went, and a post-link guard keeps ITCM honest.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against

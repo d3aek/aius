@@ -57,16 +57,21 @@ delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
 with the findings that forced the re-scope under "Prebuild review findings".
 
-**Next up is S2b**, which deletes the legacy path, rewrites the status surface onto
-`AiusRecoveryStatus` plus R2's accessors, removes the vendor includes and their
-guard exception, wires the `optical-cutover` suite into the standing guard, and
-wires `aius_fault_checkpoint()`. S3, S4 and S5 follow in order, then 14b, 14c and
-14d.
+**Next up is S3**, which ports the SD lifecycle onto R1's job entry. It carries
+three things the cutover left owing: the `PROBE` and `USAGE_REFRESH` jobs that
+restore SD readiness and usage, the `CONFIG_LOAD` jobs that restore the SD-hosted
+DSP and public configs at boot, and **re-attaching the config-commit arm** that
+died with the legacy job — the store adapters still stage into
+`g_pending_config` / `g_pending_dsp_model`, but nothing consumes them, so a
+successful config `PUT` currently writes to the card without applying. The staging
+shape is unchanged, so this is a re-attachment rather than a rewrite. S4 and S5
+follow, then 14b, 14c and 14d.
 
-S2a is delivered, and with it slice C1 — forced when S2a linked the portable
-engines for the first time and RAM1 went 8,612 bytes over. See §Structural
-obstacles. FlexRAM now has 24,156 bytes free and a post-link guard keeps it that
-way.
+The legacy path is gone as of `1e6391c93`, and the `optical-cutover` suite passes
+both groups. Slice C1 preceded it, forced when S2a linked the portable engines for
+the first time and RAM1 went 8,612 bytes over — see §Structural obstacles. FlexRAM
+now has 24,412 bytes free, OCRAM dropped to 16.3 % used when the legacy buffers
+went, and a post-link guard keeps ITCM honest.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
@@ -4100,7 +4105,7 @@ table. The mapping is one-to-one and mechanical:
 | S1 | **Done** (`7606632a5`) — the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs. Costs 2,048 B FLASH and **gains** 704 B of ITCM | `src/optical_main.cpp` | target build; `optical-app` green |
 | S2a | **Done** (`d1dfcdfb7`) — construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
 | C1 | **Done** (`6a170cd6f`), forced by S2a — move the wholly-cold portable engines and Teensy adapters out of ITCM with a portable cold-section macro on every definition, and add a post-link guard so an unannotated engine fails the build rather than silently taking the audio path's headroom | `lib/aius_http/`, `lib/aius_sd/`, `lib/aius_net/`, `lib/aius_runtime/`, `lib/aius_boot/`, `src/aius_sd_teensy.cpp`, `src/aius_boot_teensy.cpp`, `platformio.ini` + its post-link scripts | optical target builds with all banks fitting; the new guard passes; `http`, `sd`, `net`, `boot`, `runtime`, `sd-target`, `boot-target`, `runtime-target`, `optical-app` green |
-| S2b | Delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard. **Also wire `aius_fault_checkpoint()`** — see below | `src/optical_main.cpp`, `src/aius_fault_teensy.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` **both groups** + `network-transport` + every component suite |
+| S2b | **Done** (`1e6391c93`) — delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard. **Also wire `aius_fault_checkpoint()`** — see below | `src/optical_main.cpp`, `src/aius_fault_teensy.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` **both groups** + `network-transport` + every component suite |
 | S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. **Needs the publish-buffer change settled above, which widens S3's owned paths to `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/` and `test/runtime-target/` — split it out as S3a if the diff gets large** | `src/optical_main.cpp`, `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
 | S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, and fix the six dependent places in `test/http/test_http.c` | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
 | S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README | `platformio.ini`, `scripts/test.sh`, `README.md` | full suite sweep |
@@ -4256,6 +4261,24 @@ Recorded as they were taken, so the final audit has something to check.
   the same reason; and the status surface still reads the legacy globals until
   S2b rewrites it. Eight `-Wunused-function` warnings appear, all on the "what
   dies" list.
+
+- **Deleting the legacy path freed OCRAM, not FLASH, and the plan expected the
+  wrong bank again.** Those legacy functions were internal-linkage and already
+  unreferenced once S2a stopped calling them, so GCC had discarded them at S2a —
+  which is exactly what the eight unused-function warnings were reporting. What
+  S2b actually reclaimed is the ~34.8 KB of `DMAMEM` statics they owned: the HTTP
+  request and response buffers, the DSP body buffer and the legacy job. OCRAM used
+  fell 34,848 bytes to 16.3 %, while FLASH moved 1,024, ITCM 512 and DTCM 256. The
+  lesson generalizes on this target: deleting unreferenced static code is free
+  because the linker already did it, and the real saving is always the statics.
+
+- **The config-commit arm died with the legacy job, and S3 must re-attach it.**
+  `app_store_public_config` and `app_store_dsp_config` still stage into
+  `g_pending_config` / `g_pending_dsp_model` and arm their upload-pending flags,
+  but the arm that consumed them on a committed write lived inside
+  `service_sd_job`. Until S3 re-attaches it, a successful config `PUT` writes to
+  the card without the model ever applying. The staging shape is deliberately
+  unchanged, so this is a re-attachment rather than a rewrite.
 
 #### Prebuild review findings — 2026-07-25
 
