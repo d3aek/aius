@@ -210,7 +210,23 @@ are follow-up work, recorded here so they are not lost.
    the epoch loop, and it owns the 9,756-byte `NonCacheable` FEC buffer inside
    DTCM plus a 64 KiB FNET netheap from the OCRAM `new` heap
    (`NativeEthernet.cpp:90`) that the 91,456-byte OCRAM figure does not include.
-8. **Five source comments still quote the pre-fix DTCM free figure** —
+8. **Three JSON cursors, one seam, not hoisted.** `lib/aius_config/src/aius_config.c`
+   and `lib/aius_dsp_config/src/aius_dsp_config.c` carry the same recursive-descent
+   cursor primitives — `aius_dsp_config.c:103` says so in its own comment
+   (`/* ---- Cursor primitives (mirror aius_config.c) ---- */`) — and the replay
+   body reader now carries a third, a `BodyCursor` local to
+   `aius_optical_app.cpp`. Three concrete consumers clears
+   [§Architectural posture](../../../../CLAUDE.md)'s seam-arity rule, so the
+   duplication should become `lib/aius_json` (at-end / peek / skip-whitespace /
+   consume / string / literal / number) with all three depending on it. It was
+   deliberately **not** done in the whitespace fix: it rewrites two clean
+   libraries that do not have the defect, and adds a source to four link lines in
+   `scripts/test.sh`. The third cursor was written to the same primitive shape so
+   the hoist is a mechanical lift-and-delete. Routing the replay body through
+   `aius_dsp_config` instead was considered and rejected — its only public entry
+   is a DSP-model parse, so it would need a new generic API on a schema-specific
+   library and the same link edit anyway.
+9. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every

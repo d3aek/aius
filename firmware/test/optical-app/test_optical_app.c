@@ -1327,6 +1327,169 @@ static void test_replay_control(void)
 	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
 }
 
+/* RFC 8259 §2 makes whitespace insignificant before and after every structural
+ * character, so a body is identified by what it means, not by how it is spaced.
+ * The compact form the bundled page happens to emit (JSON.stringify) and the
+ * spaced form every Python client emits (json.dumps) are the same request.
+ *
+ * Whitespace inside the quotes is data, not structure: it must survive into the
+ * id and then fail the id charset, exactly as it did before. */
+static void test_replay_body_whitespace(void)
+{
+	/* Each body carries id "take1" and, where a loop key is present, loop true. */
+	static const struct {
+		const char *body;
+		bool loop;
+	} accepted[] = {
+		/* the pre-fix compact form, unchanged */
+		{ "{\"id\":\"take1\",\"loop\":true}", true },
+		{ "{\"id\":\"take1\"}", false },
+		/* json.dumps default: one space after every colon and comma */
+		{ "{\"id\": \"take1\", \"loop\": true}", true },
+		{ "{\"id\": \"take1\"}", false },
+		/* space before the colon, and around the comma */
+		{ "{\"id\" : \"take1\" , \"loop\" : true}", true },
+		/* leading and trailing whitespace around the whole body */
+		{ "  {\"id\":\"take1\"}  ", false },
+		{ "\r\n\t{\"id\":\"take1\",\"loop\":true}\n", true },
+		/* newlines and tabs are whitespace wherever a space would be */
+		{ "{\n\t\"id\": \"take1\",\n\t\"loop\": true\n}", true },
+		{ "{\r\n  \"id\" :\t\"take1\"\r\n}", false },
+		/* inside the braces, either side of the first key */
+		{ "{ \"id\":\"take1\" }", false },
+		/* loop false is a value, not an absent key */
+		{ "{\"id\": \"take1\", \"loop\": false}", false },
+		/* key order is not part of the grammar */
+		{ "{\"loop\" : true , \"id\" : \"take1\"}", true },
+	};
+	/* Whitespace tolerance is not licence for junk: every entry here is either
+	 * invalid JSON or a valid document this route does not accept. */
+	static const char *const rejected[] = {
+		/* the pre-fix rejections, still rejected */
+		"{}", "{\"id\":\"\"}", "{\"id\":\"bad id\"}", "{\"id\":\"bad/id\"}",
+		"{\"id\":\"unterminated}",
+		/* whitespace inside the string is preserved, so it still fails the
+		 * charset -- a parser that stripped it would admit "badid" */
+		"{\"id\": \"bad id\"}", "{\"id\":\"\tbad\"}", "{\"id\":\"take1 \"}",
+		"{ \"id\" : \" \" }",
+		/* whitespace does not repair a broken document */
+		"", "   ", "{", "}", "{\"id\": }", "{\"id\" \"take1\"}",
+		"{\"id\": \"take1\",}", "{\"id\": \"take1\" \"loop\": true}",
+		"{\"id\": \"take1\"} trailing", "{\"id\": \"take1\"}{",
+		"[{\"id\": \"take1\"}]", "\"take1\"",
+		/* wrong-typed or unparsable loop */
+		"{\"id\": \"take1\", \"loop\": \"true\"}",
+		"{\"id\": \"take1\", \"loop\": 1}",
+		"{\"id\": \"take1\", \"loop\": truex}",
+		"{\"id\": \"take1\", \"loop\": null}",
+		/* wrong-typed id */
+		"{\"id\": 1}", "{\"id\": true}", "{\"id\": [\"take1\"]}",
+		/* unknown field, duplicate key, missing key */
+		"{\"id\": \"take1\", \"speed\": 2}", "{\"identity\": \"take1\"}",
+		"{\"id\": \"take1\", \"id\": \"take2\"}",
+		"{\"loop\": true, \"loop\": false, \"id\": \"take1\"}",
+		"{\"loop\": true}",
+		/* an over-long id (49 chars, one past AIUS_HTTP_MAX_REPLAY_ID) */
+		"{\"id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+	};
+	/* The substring scan this parser replaced accepted every one of these: it
+	 * hunted "id":" anywhere in the bytes and never read the document around
+	 * it, so junk, an extra field, a second id, a non-boolean loop and even a
+	 * body that was not JSON all started a replay. Reading the object left to
+	 * right is what refuses them, and they are compact on purpose -- spelled
+	 * with a space the old scan refused them for the wrong reason. */
+	static const char *const newly_rejected[] = {
+		"{\"id\":\"take1\",\"speed\":2}",
+		"{\"identity\":\"take1\",\"id\":\"take1\"}",
+		"{\"id\":\"take1\",\"id\":\"take2\"}",
+		"{\"id\":\"take1\",\"loop\":\"true\"}",
+		"{\"id\":\"take1\",\"loop\":1}",
+		"{\"id\":\"take1\",\"loop\":truex}",
+		"{\"id\":\"take1\",\"loop\":true,\"loop\":false}",
+		"{\"id\":\"take1\",\"loop\":true",
+		"{\"id\":\"take1\"} trailing",
+		"{\"id\":\"take1\"}{",
+		"[{\"id\":\"take1\"}]",
+		"garbage{\"id\":\"take1\"}",
+		"{\"nested\":{\"id\":\"take1\"}}",
+		"not json at all \"id\":\"take1\" either"
+	};
+	Fixture fixture;
+	fixture_init(&fixture);
+
+	for (size_t i = 0; i < ARRAY_LENGTH(accepted); ++i) {
+		fixture.fake.last_replay_id[0] = '\0';
+		fixture.fake.last_replay_loop = !accepted[i].loop;
+		expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+		                                  "X-Aius-SD-Auth: token\r\n",
+		                                  accepted[i].body, -1),
+		                 200,
+		                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"take1\"}");
+		if (strcmp(fixture.fake.last_replay_id, "take1") != 0)
+			fprintf(stderr, "body \"%s\" yielded id \"%s\"\n", accepted[i].body,
+			        fixture.fake.last_replay_id);
+		assert(strcmp(fixture.fake.last_replay_id, "take1") == 0);
+		if (fixture.fake.last_replay_loop != accepted[i].loop)
+			fprintf(stderr, "body \"%s\" yielded loop %d\n", accepted[i].body,
+			        (int)fixture.fake.last_replay_loop);
+		assert(fixture.fake.last_replay_loop == accepted[i].loop);
+
+		/* DELETE reads the same body through the same parser. */
+		fixture.fake.last_replay_id[0] = '\0';
+		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
+		                                  "X-Aius-SD-Auth: token\r\n",
+		                                  accepted[i].body, -1),
+		                 200, "{\"ok\":true,\"deleted\":\"take1\"}");
+		assert(strcmp(fixture.fake.last_replay_id, "take1") == 0);
+	}
+
+	for (size_t i = 0; i < ARRAY_LENGTH(rejected); ++i) {
+		const AiusHttpApplicationResponse *response;
+		fixture.fake.last_replay_id[0] = '\0';
+		response = dispatch_request(&fixture, "POST /api/replays/start",
+		                            "X-Aius-SD-Auth: token\r\n", rejected[i], -1);
+		if (response == NULL || response->status != 400)
+			fprintf(stderr, "body \"%s\" was not refused\n", rejected[i]);
+		expect_immediate(response, 400,
+		                 "{\"ok\":false,\"error\":\"replay_body\"}");
+		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
+		                                  "X-Aius-SD-Auth: token\r\n",
+		                                  rejected[i], -1),
+		                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
+		/* A refused body never named a replay to the application. */
+		assert(fixture.fake.last_replay_id[0] == '\0');
+	}
+
+	for (size_t i = 0; i < ARRAY_LENGTH(newly_rejected); ++i) {
+		const AiusHttpApplicationResponse *response;
+		fixture.fake.last_replay_id[0] = '\0';
+		response = dispatch_request(&fixture, "POST /api/replays/start",
+		                            "X-Aius-SD-Auth: token\r\n",
+		                            newly_rejected[i], -1);
+		if (response == NULL || response->status != 400)
+			fprintf(stderr, "body \"%s\" was not refused\n", newly_rejected[i]);
+		expect_immediate(response, 400,
+		                 "{\"ok\":false,\"error\":\"replay_body\"}");
+		expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
+		                                  "X-Aius-SD-Auth: token\r\n",
+		                                  newly_rejected[i], -1),
+		                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
+		assert(fixture.fake.last_replay_id[0] == '\0');
+	}
+
+	/* The longest id the route admits still parses when spaced out. */
+	fixture.fake.last_replay_id[0] = '\0';
+	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{ \"id\" : "
+	                                  "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" }",
+	                                  -1),
+	                 200,
+	                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\""
+	                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
+	assert(strlen(fixture.fake.last_replay_id) == AIUS_HTTP_MAX_REPLAY_ID);
+}
+
 /* One dispatch touches exactly the callbacks its decision needs -- no probing,
  * no speculative serialization, and nothing after a refusal. */
 static void test_callback_isolation(void)
@@ -1614,6 +1777,7 @@ int main(void)
 	RUN_TEST(test_config_public_put);
 	RUN_TEST(test_config_put_body_bounds);
 	RUN_TEST(test_replay_control);
+	RUN_TEST(test_replay_body_whitespace);
 	RUN_TEST(test_callback_isolation);
 	RUN_TEST(test_dispatch_counts);
 	RUN_TEST(test_usb_commands);

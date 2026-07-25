@@ -189,7 +189,13 @@ selection. It is cleared to `none` by every accepted start. Three values:
    versa. The isolation argument is framed as "epoch loop, not audio ISR", which
    is true of this firmware's code and untrue of the stack it links. Detail in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
-8. **Five source comments still quote the pre-fix DTCM free figure** (~22–24 kB
+8. **Three JSON cursors, one seam, not hoisted.** `aius_config.c` and
+   `aius_dsp_config.c` duplicate the same recursive-descent primitives, and the
+   replay body reader now carries a third. Three consumers clears the seam-arity
+   rule, so this should become `lib/aius_json`; it was deliberately deferred
+   because it rewrites two libraries that do not have the defect. Detail in
+   [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
+9. **Five source comments still quote the pre-fix DTCM free figure** (~22–24 kB
    against a measured 9,280). The README was corrected; the source was not.
 
 #### Decisions taken, so they are not re-opened

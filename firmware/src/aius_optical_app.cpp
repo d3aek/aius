@@ -306,43 +306,163 @@ static FLASHMEM bool build_upload_scratch(AiusOpticalAppDispatcher *dispatcher,
 /* request body helpers                                                */
 /* ------------------------------------------------------------------ */
 
-static FLASHMEM const uint8_t *find_bytes(const uint8_t *data, size_t length,
-                                          const char *needle)
+/* A read cursor over a request body: three words, no buffer, no allocation and
+ * no recursion, so it costs the epoch loop nothing beyond the bytes it walks.
+ * The transport buffer is not NUL-terminated, so every read is bounded by
+ * `length` rather than by a terminator, and no strlen() ever sees the body. */
+typedef struct {
+	const uint8_t *data;
+	size_t length;
+	size_t pos;
+} BodyCursor;
+
+static FLASHMEM bool body_at_end(const BodyCursor *cursor)
 {
-	size_t needle_length = strlen(needle);
-	if (data == NULL || needle_length == 0u || length < needle_length)
-		return NULL;
-	for (size_t i = 0; i + needle_length <= length; i++)
-		if (memcmp(data + i, needle, needle_length) == 0)
-			return data + i;
-	return NULL;
+	return cursor->pos >= cursor->length;
 }
 
-/* Extracts {"id":"<id>"[,"loop":true]} from a bounded body. No allocation, no
- * NUL-termination assumption about the transport buffer. */
+static FLASHMEM uint8_t body_peek(const BodyCursor *cursor)
+{
+	return body_at_end(cursor) ? 0u : cursor->data[cursor->pos];
+}
+
+/* RFC 8259 §2 insignificant whitespace, and nothing else: space, tab, LF, CR. A
+ * form feed, a vertical tab or an embedded NUL is not JSON whitespace and stays
+ * a parse failure. */
+static FLASHMEM void body_skip_whitespace(BodyCursor *cursor)
+{
+	while (!body_at_end(cursor)) {
+		uint8_t ch = cursor->data[cursor->pos];
+		if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r')
+			return;
+		cursor->pos++;
+	}
+}
+
+/* Consumes one structural character together with the whitespace RFC 8259
+ * permits before it. Every structural character in the grammar below goes
+ * through here, which is what makes the spacing insignificant. */
+static FLASHMEM bool body_consume(BodyCursor *cursor, uint8_t expected)
+{
+	body_skip_whitespace(cursor);
+	if (body_peek(cursor) != expected)
+		return false;
+	cursor->pos++;
+	return true;
+}
+
+/* Borrows a string's raw bytes in place -- nothing is copied and nothing is
+ * unescaped, so whitespace between the quotes survives as the data it is.
+ * A backslash is refused outright rather than decoded: the two consumers are
+ * this object's key set and replay_id_chars_valid(), and an escape can only
+ * ever spell a byte one of them already accepts literally, so decoding would
+ * add a second spelling for an id the card already has under its plain name. */
+static FLASHMEM bool body_take_string(BodyCursor *cursor, const uint8_t **text,
+                                      size_t *length)
+{
+	size_t start;
+	if (!body_consume(cursor, '"'))
+		return false;
+	start = cursor->pos;
+	while (!body_at_end(cursor)) {
+		uint8_t ch = cursor->data[cursor->pos];
+		if (ch == '"') {
+			*text = cursor->data + start;
+			*length = cursor->pos - start;
+			cursor->pos++;
+			return true;
+		}
+		if (ch == '\\' || ch < 0x20u)
+			return false;
+		cursor->pos++;
+	}
+	return false;
+}
+
+/* `true` / `false`. A trailing character is not this function's business: the
+ * object grammar demands a comma or a closing brace next, so `truex` fails
+ * there. */
+static FLASHMEM bool body_take_literal(BodyCursor *cursor, const char *text)
+{
+	size_t text_length = strlen(text);
+	body_skip_whitespace(cursor);
+	if (cursor->length - cursor->pos < text_length ||
+	    memcmp(cursor->data + cursor->pos, text, text_length) != 0)
+		return false;
+	cursor->pos += text_length;
+	return true;
+}
+
+static FLASHMEM bool body_key_is(const uint8_t *key, size_t key_length,
+                                 const char *expected, size_t expected_length)
+{
+	return key_length == expected_length &&
+	       memcmp(key, expected, expected_length) == 0;
+}
+
+/* Parses {"id":"<id>"[,"loop":<bool>]} in either key order, tolerating the
+ * insignificant whitespace RFC 8259 §2 permits around every structural
+ * character -- json.dumps' `{"id": "x", "loop": true}` and JSON.stringify's
+ * compact form are the same request, which is the whole point of the rewrite
+ * away from the substring scan this replaced.
+ *
+ * The object is flat, so one left-to-right cursor pass is the entire grammar:
+ * no recursion, no allocation, no buffer beyond the dispatcher's existing
+ * replay_id, and one bounded walk of a body the transport already capped.
+ *
+ * Whitespace is the only thing newly admitted. The pass is stricter than the
+ * scan everywhere else, because it reads the document rather than hunting a
+ * needle inside it: an unknown key, a duplicate key, a non-boolean `loop`, a
+ * non-string `id`, a body that is not a lone object, or anything trailing the
+ * closing brace is refused instead of ignored. */
 static FLASHMEM bool replay_body_id(AiusOpticalAppDispatcher *dispatcher,
                                     const AiusHttpRequest *request, bool *loop)
 {
-	const uint8_t *body = request->body;
-	size_t length = request->body_length;
-	const uint8_t *start = find_bytes(body, length, "\"id\":\"");
-	const uint8_t *end;
-	size_t id_length;
+	BodyCursor cursor = { request->body, request->body_length, 0u };
+	const uint8_t *id = NULL;
+	size_t id_length = 0u;
+	bool parsed_loop = false;
+	bool seen_loop = false;
+
 	dispatcher->replay_id[0] = '\0';
 	*loop = false;
-	if (start == NULL)
+	if (request->body == NULL || !body_consume(&cursor, '{'))
 		return false;
-	start += sizeof("\"id\":\"") - 1u;
-	end = (const uint8_t *)memchr(start, '"', (size_t)(body + length - start));
-	if (end == NULL)
+	for (;;) {
+		const uint8_t *key;
+		size_t key_length;
+		if (!body_take_string(&cursor, &key, &key_length) ||
+		    !body_consume(&cursor, ':'))
+			return false;
+		if (body_key_is(key, key_length, "id", 2u)) {
+			/* A second "id" is a duplicate key, not an override. */
+			if (id != NULL || !body_take_string(&cursor, &id, &id_length))
+				return false;
+		} else if (body_key_is(key, key_length, "loop", 4u)) {
+			if (seen_loop)
+				return false;
+			seen_loop = true;
+			if (body_take_literal(&cursor, "true"))
+				parsed_loop = true;
+			else if (!body_take_literal(&cursor, "false"))
+				return false;
+		} else {
+			return false;
+		}
+		if (!body_consume(&cursor, ','))
+			break;
+	}
+	if (!body_consume(&cursor, '}'))
 		return false;
-	id_length = (size_t)(end - start);
-	if (!replay_id_chars_valid(start, id_length) ||
+	body_skip_whitespace(&cursor);
+	if (!body_at_end(&cursor))
+		return false;
+	if (id == NULL || !replay_id_chars_valid(id, id_length) ||
 	    id_length >= sizeof(dispatcher->replay_id))
 		return false;
-	memcpy(dispatcher->replay_id, start, id_length);
+	memcpy(dispatcher->replay_id, id, id_length);
 	dispatcher->replay_id[id_length] = '\0';
-	*loop = find_bytes(body, length, "\"loop\":true") != NULL;
+	*loop = parsed_loop;
 	return true;
 }
 
