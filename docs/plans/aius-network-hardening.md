@@ -25,6 +25,28 @@ supersedes the separate execution handoffs both documents previously carried. Bo
 plans are active, they share one critical path, and neither finishes without the
 other.
 
+### Resume here
+
+**Next up is B3, Phase 14.** Its scoped slice breakdown is in
+[§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
+awaiting review before any code. Start with P1 and P2, which are concurrent and do
+not touch `optical_main.cpp`.
+
+Decisions already taken, so do not re-open them:
+
+- **A `PUT` returns 200 only after the SD write commits.** That needs the
+  buffered-upload path in slice P1, because `accept_application()` admits an
+  upload job only for a streamed request.
+- **The `/api/meters` wire shape is settled**, in
+  [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters endpoint: dBFS
+  floored at `-120.0`, six positional inputs, `[L, R]` output arrays, per-mille
+  integer waveform, `sequence == 0` served as a valid 200.
+- **The the app dashboard is ignored until B9.** Its browser scenario fails
+  today and that is expected.
+
+Everything through B2 is delivered and pushed. Nothing is in flight and no
+question is outstanding.
+
 ### Why the two strands are coupled
 
 A firmware flash attempt during the DSP `PUT /api/dsp/config` work found the
@@ -3884,6 +3906,73 @@ commit-checkpoint:
     - firmware/scripts/build.sh teensy41-optical-fault 0
   parent-commit: "refactor(aius): cut over the optical runtime lifecycle"
 ```
+
+#### Scoped slice breakdown — 2026-07-25, for review before any code
+
+Phase 14 is the only phase that deletes a working path, and it has no hardware
+validation until B6. What follows is its slice breakdown, sized against the actual
+file.
+
+**What survives in `optical_main.cpp`.** The audio processor and its
+`AudioConnection`s, the DSP model statics and the block-boundary `apply_config`
+path, the `AiusEvent` ring with `record_event` / `record_state`, the replay reader
+callbacks, and `current_state`. None of that is network or SD lifecycle and none
+of it is touched.
+
+**What dies.** The legacy `AiusSdJobState` enum, `struct AiusSdJob` and
+`service_sd_job`; `service_http`, `service_usb_control`, `service_network`,
+`ensure_dhcp_client`, `activate_network`, `reset_network_service`,
+`supervise_network_link`, `start_network`; `watchdog_init` / `watchdog_feed`; the
+`g_dhcp` / `g_dhcp_pending` / `g_network_retry_at` / `g_ethernet_initialized` /
+`g_http_server_rebinds` global set; and the existing `setup()` / `loop()`.
+
+**What moves rather than dies, and is most of the work.** The seven serializers
+and the request handlers become the 20 entries of Phase 11's `AiusOpticalApp`
+table. The mapping is one-to-one and mechanical:
+
+| Callback | Existing body |
+|---|---|
+| `write_home` | `http_home_page` |
+| `write_status` | `http_status_json` |
+| `write_events` | `http_events_json` |
+| `write_dsp_config` | `http_dsp_config_json` |
+| `write_replay_status` / `write_replay_list` | `http_replay_status_json` / `http_replay_list_json` |
+| `write_meters` | **new, Phase 14b** |
+| `store_public_config` | `http_config_public_request` |
+| `store_dsp_config` | `http_dsp_config_put_request` |
+| `replay_start` / `replay_stop` / `replay_delete` | `http_replay_request` arms |
+| `set_test_running` / `clear_counters` / `request_reboot` | `http_handle_request` arms |
+| `auth_matches` | `http_sd_authorized` |
+| `sd_ready` / `sd_busy` | `g_sd_ready` / `sd_job_active` |
+| `write_usb_payload` | `service_usb_control`'s ID/AUTH arms |
+| `upload_id` | `g_sd_job_sequence` |
+
+**Slices.** P1 and P2 are independent of each other and of `optical_main.cpp`, so
+they run concurrently. S1 through S4 are strictly serialized on that one file.
+
+| Slice | Work | Owned paths | Gate |
+|---|---|---|---|
+| P1 | Transaction ABI: raise the response capacity so a 12,288-byte DSP model fits, and add the buffered-upload path so a committed write precedes the 200 | `lib/aius_http/`, `test/http/` | `http`, `optical-app`, `runtime-target` green; target build |
+| P2 | The `optical-cutover` structural suite, and removing the vendor guard's exact-path exception | `test/optical-cutover/`, `test/network-transport/test_vendor_source.py` | suite runs and fails against the pre-cutover file, by construction |
+| S1 | Implement the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs | `src/optical_main.cpp` | target build; `optical-app` unchanged |
+| S2 | Construct `AiusRuntimeTeensy` in `DMAMEM`; `setup()` becomes construction only, `loop()` one epoch; delete everything in "what dies"; arm the 8 s watchdog through the boot adapter with one feed per epoch | `src/optical_main.cpp` | `optical-cutover` + every component suite; both images build |
+| S3 | Port the DSP SD override: `stage_dsp_sd_override` becomes a portable `CONFIG_LOAD` with `publish_capacity = 12288`, the config PUT becomes `UPLOAD/REPLACE` with `publish = false`, and the 12,288-byte stack frame goes | `src/optical_main.cpp` | `dsp-config`, `sd`, `runtime-target`; target build |
+| S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, fix the six dependent places in `test/http/test_http.c`, and wire the Phase 9 recovery fields into status JSON, USB `ID` and UDP | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
+| S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README | `platformio.ini`, `scripts/test.sh`, `README.md` | full suite sweep |
+
+**Why P1 comes before S1 rather than after S2.** S1's `store_dsp_config` and
+`store_public_config` semantics depend on whether the 200 is optimistic. Landing
+the ABI first means the store path is written once. The alternative, cutting over
+first to get the board bootable sooner and fixing the semantics before B6, gets
+hardware a phase earlier at the cost of writing that path twice, which is the
+rework this reconciliation exists to avoid.
+
+**Risk to hold in view.** S2 is the single riskiest change in either plan: it
+deletes the only currently-working path, and the `optical-cutover` structural
+suite is the only automated guard on "setup performs construction only". The
+memory picture also stops being hypothetical at S2, when roughly 9.4 KB of FLASH
+and ~907 bytes of DTCM string data from Phases 11 and 12 link for the first time.
+Expect the first real bank report of this work there, not before.
 
 This is the load-bearing phase: it swaps the legacy blocking network/SD path in
 `optical_main.cpp` for the delivered bounded lifecycle, so it carries the highest

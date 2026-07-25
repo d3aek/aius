@@ -19,6 +19,28 @@ supersedes the separate execution handoffs both documents previously carried. Bo
 plans are active, they share one critical path, and neither finishes without the
 other.
 
+### Resume here
+
+**Next up is B3, Phase 14.** Its scoped slice breakdown is in
+[§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
+awaiting review before any code. Start with P1 and P2, which are concurrent and do
+not touch `optical_main.cpp`.
+
+Decisions already taken, so do not re-open them:
+
+- **A `PUT` returns 200 only after the SD write commits.** That needs the
+  buffered-upload path in slice P1, because `accept_application()` admits an
+  upload job only for a streamed request.
+- **The `/api/meters` wire shape is settled**, in
+  [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters endpoint: dBFS
+  floored at `-120.0`, six positional inputs, `[L, R]` output arrays, per-mille
+  integer waveform, `sequence == 0` served as a valid 200.
+- **The the app dashboard is ignored until B9.** Its browser scenario fails
+  today and that is expected.
+
+Everything through B2 is delivered and pushed. Nothing is in flight and no
+question is outstanding.
+
 ### Why the two strands are coupled
 
 A firmware flash attempt during the DSP `PUT /api/dsp/config` work found the
