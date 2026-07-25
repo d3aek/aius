@@ -96,27 +96,27 @@ static AiusReplayReader g_replay_reader = {
 	nullptr, replay_reader_open, replay_reader_read, replay_reader_close
 };
 
-enum AiusSdJobState : uint8_t {
-	AIUS_SD_JOB_IDLE = 0,
-	AIUS_SD_JOB_UPLOAD_OPEN,
-	AIUS_SD_JOB_UPLOAD_MKDIR,
-	AIUS_SD_JOB_UPLOAD_RECEIVE,
-	AIUS_SD_JOB_UPLOAD_WRITE,
-	AIUS_SD_JOB_UPLOAD_CHECK_TARGET,
-	AIUS_SD_JOB_UPLOAD_BACKUP,
-	AIUS_SD_JOB_UPLOAD_INSTALL,
-	AIUS_SD_JOB_UPLOAD_ROLLBACK,
-	AIUS_SD_JOB_UPLOAD_CLEANUP,
-	AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP,
-	AIUS_SD_JOB_DOWNLOAD_OPEN,
-	AIUS_SD_JOB_DOWNLOAD_HEADER,
-	AIUS_SD_JOB_DOWNLOAD_READ,
-	AIUS_SD_JOB_DOWNLOAD_WRITE,
-	AIUS_SD_JOB_DELETE
+enum LegacySdJobState : uint8_t {
+	LEGACY_SD_JOB_IDLE = 0,
+	LEGACY_SD_JOB_UPLOAD_OPEN,
+	LEGACY_SD_JOB_UPLOAD_MKDIR,
+	LEGACY_SD_JOB_UPLOAD_RECEIVE,
+	LEGACY_SD_JOB_UPLOAD_WRITE,
+	LEGACY_SD_JOB_UPLOAD_CHECK_TARGET,
+	LEGACY_SD_JOB_UPLOAD_BACKUP,
+	LEGACY_SD_JOB_UPLOAD_INSTALL,
+	LEGACY_SD_JOB_UPLOAD_ROLLBACK,
+	LEGACY_SD_JOB_UPLOAD_CLEANUP,
+	LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP,
+	LEGACY_SD_JOB_DOWNLOAD_OPEN,
+	LEGACY_SD_JOB_DOWNLOAD_HEADER,
+	LEGACY_SD_JOB_DOWNLOAD_READ,
+	LEGACY_SD_JOB_DOWNLOAD_WRITE,
+	LEGACY_SD_JOB_DELETE
 };
 
-struct AiusSdJob {
-	AiusSdJobState state;
+struct LegacySdJob {
+	LegacySdJobState state;
 	File file;
 	char target_path[128];
 	char temp_path[64];
@@ -145,7 +145,7 @@ struct AiusSdJob {
 	char response_header[192];
 };
 
-DMAMEM static AiusSdJob g_sd_job = {};
+DMAMEM static LegacySdJob g_sd_job = {};
 static uint32_t g_sd_job_sequence;
 static size_t g_http_request_length;
 static size_t g_http_body_offset;
@@ -404,14 +404,14 @@ static void http_send(unsigned status, const uint8_t *body, size_t body_length);
 
 static bool sd_job_active(void)
 {
-	return g_sd_job.state != AIUS_SD_JOB_IDLE;
+	return g_sd_job.state != LEGACY_SD_JOB_IDLE;
 }
 
 static void sd_job_clear(void)
 {
 	if (g_sd_job.file)
 		g_sd_job.file.close();
-	g_sd_job.state = AIUS_SD_JOB_IDLE;
+	g_sd_job.state = LEGACY_SD_JOB_IDLE;
 	g_sd_job.target_path[0] = 0;
 	g_sd_job.temp_path[0] = 0;
 	g_sd_job.backup_path[0] = 0;
@@ -444,11 +444,11 @@ static void sd_job_cancel(void)
 	if (g_sd_job.file)
 		g_sd_job.file.close();
 	if (g_sd_job.backup_moved &&
-	    (g_sd_job.state == AIUS_SD_JOB_UPLOAD_INSTALL ||
-     g_sd_job.state == AIUS_SD_JOB_UPLOAD_ROLLBACK)) {
+	    (g_sd_job.state == LEGACY_SD_JOB_UPLOAD_INSTALL ||
+     g_sd_job.state == LEGACY_SD_JOB_UPLOAD_ROLLBACK)) {
 		g_sd_job.pending_length = 0;
 		g_sd_job.error_status = 0;
-		g_sd_job.state = AIUS_SD_JOB_UPLOAD_ROLLBACK;
+		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_ROLLBACK;
 		return;
 	}
 	if (!g_sd_ready) {
@@ -456,14 +456,14 @@ static void sd_job_cancel(void)
 		 * uniquely named temporary file can be removed by service_sd. */
 		g_sd_job.pending_length = 0;
 		g_sd_job.error_status = 0;
-		g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		return;
 	}
 	/* Cleanup is deferred as well. In particular, disconnect handling must not
 	 * turn an HTTP service call into an SD write. */
 	g_sd_job.pending_length = 0;
 	g_sd_job.error_status = 0;
-	g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+	g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 }
 
 static void sd_job_drop_client(void)
@@ -521,10 +521,10 @@ static void sd_job_send_error(unsigned status, const char *error)
 static void service_sd_job(void)
 {
 	switch (g_sd_job.state) {
-	case AIUS_SD_JOB_UPLOAD_MKDIR: {
+	case LEGACY_SD_JOB_UPLOAD_MKDIR: {
 		const char *separator = strchr(g_sd_job.target_path + g_sd_job.mkdir_offset, '/');
 		if (separator == nullptr) {
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_OPEN;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_OPEN;
 			return;
 		}
 		char directory[sizeof(g_sd_job.target_path)];
@@ -535,29 +535,29 @@ static void service_sd_job(void)
 		g_sd_job.mkdir_offset = (uint16_t)(length + 1u);
 		return;
 	}
-	case AIUS_SD_JOB_UPLOAD_OPEN:
+	case LEGACY_SD_JOB_UPLOAD_OPEN:
 		g_sd_job.file = SD.open(g_sd_job.temp_path, FILE_WRITE);
 		if (!g_sd_job.file) {
 			g_sd_job.error_status = 507;
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		} else {
 			/* FILE_WRITE is append mode. Replay upload validation already
 			 * proved that the existing .part size equals replay_offset, so a
 			 * seek to the exact end is both redundant and rejected by some
 			 * SdFat/Arduino SD combinations. */
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_RECEIVE;
 		}
 		return;
-	case AIUS_SD_JOB_UPLOAD_RECEIVE:
+	case LEGACY_SD_JOB_UPLOAD_RECEIVE:
 		if (g_sd_job.pending_length != 0)
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_WRITE;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_WRITE;
 		else if (g_sd_job.written == g_sd_job.expected)
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_CHECK_TARGET;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_CHECK_TARGET;
 		return;
-	case AIUS_SD_JOB_UPLOAD_WRITE:
+	case LEGACY_SD_JOB_UPLOAD_WRITE:
 		if (!g_sd_job.file || g_sd_job.pending_length == 0) {
 			g_sd_job.error_status = 507;
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 			return;
 		}
 		{
@@ -576,52 +576,52 @@ static void service_sd_job(void)
 			if (remaining == 0) {
 				g_sd_job.written += g_sd_job.pending_length;
 				g_sd_job.pending_length = 0;
-				g_sd_job.state = AIUS_SD_JOB_UPLOAD_RECEIVE;
+				g_sd_job.state = LEGACY_SD_JOB_UPLOAD_RECEIVE;
 				return;
 			}
 			g_sd_job.error_status = 507;
 			g_sd_job.file.close();
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 			return;
 		}
-	case AIUS_SD_JOB_UPLOAD_CHECK_TARGET:
+	case LEGACY_SD_JOB_UPLOAD_CHECK_TARGET:
 		if (g_sd_job.file)
 			g_sd_job.file.close();
 		if (g_sd_job.replay_upload && !g_sd_job.replay_final) {
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_CLEANUP;
 			return;
 		}
 		g_sd_job.target_existed = SD.exists(g_sd_job.target_path);
 		g_sd_job.state = g_sd_job.target_existed ?
-			AIUS_SD_JOB_UPLOAD_BACKUP : AIUS_SD_JOB_UPLOAD_INSTALL;
+			LEGACY_SD_JOB_UPLOAD_BACKUP : LEGACY_SD_JOB_UPLOAD_INSTALL;
 		return;
-	case AIUS_SD_JOB_UPLOAD_BACKUP:
+	case LEGACY_SD_JOB_UPLOAD_BACKUP:
 		if (!SD.rename(g_sd_job.target_path, g_sd_job.backup_path)) {
 			g_sd_job.error_status = 500;
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 			return;
 		}
 		g_sd_job.backup_moved = true;
-		g_sd_job.state = AIUS_SD_JOB_UPLOAD_INSTALL;
+		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_INSTALL;
 		return;
-	case AIUS_SD_JOB_UPLOAD_INSTALL:
+	case LEGACY_SD_JOB_UPLOAD_INSTALL:
 		if (SD.rename(g_sd_job.temp_path, g_sd_job.target_path)) {
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_CLEANUP;
 		} else if (g_sd_job.backup_moved) {
 			g_sd_job.error_status = 500;
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_ROLLBACK;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_ROLLBACK;
 		} else {
 			g_sd_job.error_status = 500;
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		}
 		return;
-	case AIUS_SD_JOB_UPLOAD_ROLLBACK:
+	case LEGACY_SD_JOB_UPLOAD_ROLLBACK:
 		/* The target was moved aside before the install. Keep retrying this
 		 * single filesystem operation until the old target is restored. */
 		if (SD.rename(g_sd_job.backup_path, g_sd_job.target_path))
-			g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+			g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		return;
-	case AIUS_SD_JOB_UPLOAD_CLEANUP:
+	case LEGACY_SD_JOB_UPLOAD_CLEANUP:
 		if (g_sd_job.replay_upload && !g_sd_job.replay_final) {
 			char response[96];
 			int length = snprintf(response, sizeof(response),
@@ -649,7 +649,7 @@ static void service_sd_job(void)
 		http_send(200, upload_ok, sizeof(upload_ok) - 1);
 		sd_job_clear();
 		return;
-	case AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP: {
+	case LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP: {
 		if (g_sd_job.file)
 			g_sd_job.file.close();
 		if (g_sd_job.temp_path[0] != 0 &&
@@ -668,7 +668,7 @@ static void service_sd_job(void)
 		}
 		return;
 	}
-	case AIUS_SD_JOB_DOWNLOAD_OPEN: {
+	case LEGACY_SD_JOB_DOWNLOAD_OPEN: {
 		g_sd_job.file = SD.open(g_sd_job.target_path, FILE_READ);
 		if (!g_sd_job.file) {
 			sd_job_send_error(404, "not_found");
@@ -687,10 +687,10 @@ static void service_sd_job(void)
 		}
 		g_sd_job.response_length = (uint16_t)length;
 		g_sd_job.response_offset = 0;
-		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_HEADER;
+		g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_HEADER;
 		return;
 	}
-	case AIUS_SD_JOB_DOWNLOAD_HEADER: {
+	case LEGACY_SD_JOB_DOWNLOAD_HEADER: {
 		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
 			sd_job_abort_download();
 			return;
@@ -713,10 +713,10 @@ static void service_sd_job(void)
 		g_sd_job.progress_ms = millis();
 		g_sd_job.response_offset += (uint16_t)written;
 		if (g_sd_job.response_offset == g_sd_job.response_length)
-			g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_READ;
+			g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_READ;
 		return;
 	}
-	case AIUS_SD_JOB_DOWNLOAD_READ: {
+	case LEGACY_SD_JOB_DOWNLOAD_READ: {
 		size_t length = g_sd_job.file.read(g_sd_job.transfer,
 		                                  sizeof(g_sd_job.transfer));
 		if (length == 0) {
@@ -728,10 +728,10 @@ static void service_sd_job(void)
 			return;
 		}
 		g_sd_job.pending_length = (uint16_t)length;
-		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_WRITE;
+		g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_WRITE;
 		return;
 	}
-	case AIUS_SD_JOB_DOWNLOAD_WRITE: {
+	case LEGACY_SD_JOB_DOWNLOAD_WRITE: {
 		if ((uint32_t)(millis() - g_sd_job.progress_ms) > AIUS_SD_DOWNLOAD_STALL_MS) {
 			sd_job_abort_download();
 			return;
@@ -756,10 +756,10 @@ static void service_sd_job(void)
 		}
 		g_sd_job.pending_length -= (uint16_t)written;
 		if (g_sd_job.pending_length == 0)
-			g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_READ;
+			g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_READ;
 		return;
 	}
-	case AIUS_SD_JOB_DELETE:
+	case LEGACY_SD_JOB_DELETE:
 		if (!SD.remove(g_sd_job.target_path))
 			sd_job_send_error(404, "not_found");
 		else {
@@ -769,7 +769,7 @@ static void service_sd_job(void)
 			sd_job_clear();
 		}
 		return;
-	case AIUS_SD_JOB_IDLE:
+	case LEGACY_SD_JOB_IDLE:
 		return;
 	}
 }
@@ -1508,7 +1508,7 @@ static bool http_sd_upload_begin_target(const char *target,
 	g_sd_job.initial_offset = (uint32_t)initial_offset;
 	g_sd_job.initial_end = (uint32_t)initial_end;
 	g_sd_job.mkdir_offset = 6u;
-	g_sd_job.state = AIUS_SD_JOB_UPLOAD_MKDIR;
+	g_sd_job.state = LEGACY_SD_JOB_UPLOAD_MKDIR;
 	return true;
 }
 
@@ -1548,8 +1548,8 @@ static bool http_sd_upload_begin(const AiusHttpRequest &request,
 static bool http_sd_stage_upload(void)
 {
 	if (!sd_job_active() ||
-	    (g_sd_job.state != AIUS_SD_JOB_UPLOAD_OPEN &&
-	     g_sd_job.state != AIUS_SD_JOB_UPLOAD_RECEIVE) ||
+	    (g_sd_job.state != LEGACY_SD_JOB_UPLOAD_OPEN &&
+	     g_sd_job.state != LEGACY_SD_JOB_UPLOAD_RECEIVE) ||
 	    g_sd_job.pending_length != 0 ||
 	    g_sd_job.received == g_sd_job.expected)
 		return true;
@@ -1588,7 +1588,7 @@ static void http_sd_upload_receive_service(void)
 {
 	if (!http_sd_stage_upload()) {
 		g_sd_job.error_status = 507;
-		g_sd_job.state = AIUS_SD_JOB_UPLOAD_FAIL_CLEANUP;
+		g_sd_job.state = LEGACY_SD_JOB_UPLOAD_FAIL_CLEANUP;
 		return;
 	}
 }
@@ -1704,7 +1704,7 @@ static void http_sd_request(const AiusHttpRequest &request)
 		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
 		g_sd_job.content_type = content_type;
 		g_sd_job.progress_ms = millis();
-		g_sd_job.state = AIUS_SD_JOB_DOWNLOAD_OPEN;
+		g_sd_job.state = LEGACY_SD_JOB_DOWNLOAD_OPEN;
 		return;
 	}
 	if (request.method == AIUS_HTTP_DELETE) {
@@ -1714,7 +1714,7 @@ static void http_sd_request(const AiusHttpRequest &request)
 			return;
 		}
 		strncpy(g_sd_job.target_path, path, sizeof(g_sd_job.target_path));
-		g_sd_job.state = AIUS_SD_JOB_DELETE;
+		g_sd_job.state = LEGACY_SD_JOB_DELETE;
 		return;
 	}
 	static const uint8_t error[] = "{\"ok\":false,\"error\":\"sd_upload\"}";
@@ -1756,7 +1756,7 @@ static void http_config_public_request(const AiusHttpRequest &request)
  * validated model -- it does NOT apply it. The actual apply (and
  * config_generation increment) happens at the next audio block boundary
  * (AiusAudioProcessor::enqueue), once service_sd_job() reaches
- * AIUS_SD_JOB_UPLOAD_CLEANUP for this job. Invalid input, a stale
+ * LEGACY_SD_JOB_UPLOAD_CLEANUP for this job. Invalid input, a stale
  * base_generation, or an SD failure all leave both SD and the active DSP
  * snapshot untouched. */
 static FLASHMEM void http_dsp_config_put_request(const AiusHttpRequest &request)
@@ -2121,13 +2121,13 @@ static void service_http(void)
 		bool transport_open = g_http_client &&
 			(g_http_client.connected() || g_http_client.available());
 		bool upload_waiting =
-			g_sd_job.state == AIUS_SD_JOB_UPLOAD_OPEN ||
-			g_sd_job.state == AIUS_SD_JOB_UPLOAD_RECEIVE;
+			g_sd_job.state == LEGACY_SD_JOB_UPLOAD_OPEN ||
+			g_sd_job.state == LEGACY_SD_JOB_UPLOAD_RECEIVE;
 		bool download_waiting =
-			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_OPEN ||
-			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_HEADER ||
-			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_READ ||
-			g_sd_job.state == AIUS_SD_JOB_DOWNLOAD_WRITE;
+			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_OPEN ||
+			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_HEADER ||
+			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_READ ||
+			g_sd_job.state == LEGACY_SD_JOB_DOWNLOAD_WRITE;
 		bool upload_can_wait = upload_waiting &&
 			(g_sd_job.pending_length != 0u ||
 			 g_sd_job.received == g_sd_job.expected ||
@@ -2140,8 +2140,8 @@ static void service_http(void)
 			sd_job_drop_client();
 			return;
 		}
-		if (g_sd_job.state == AIUS_SD_JOB_UPLOAD_OPEN ||
-		    g_sd_job.state == AIUS_SD_JOB_UPLOAD_RECEIVE) {
+		if (g_sd_job.state == LEGACY_SD_JOB_UPLOAD_OPEN ||
+		    g_sd_job.state == LEGACY_SD_JOB_UPLOAD_RECEIVE) {
 			http_sd_upload_receive_service();
 			if (g_sd_job.received < g_sd_job.expected &&
 			    g_sd_job.pending_length == 0u &&
