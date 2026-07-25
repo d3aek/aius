@@ -747,7 +747,25 @@ typedef struct {
     AiusNetAction active_action;
     uint8_t action_step;
     bool action_fault;
+    bool lease_acquired;       /* added in Phase 14 R2; generation-scoped */
+    uint32_t dhcp_updates;     /* added in Phase 14 R2; monotonic since init */
 } AiusNetworkTeensy;
+
+typedef enum {
+    AIUS_NETWORK_TEENSY_LINK_UNKNOWN = 0,
+    AIUS_NETWORK_TEENSY_LINK_UP = 1,
+    AIUS_NETWORK_TEENSY_LINK_DOWN = 2
+} AiusNetworkTeensyLink;
+
+AiusNetworkTeensyLink aius_network_teensy_link(
+    const AiusNetworkTeensy *adapter);
+
+bool aius_network_teensy_address(
+    const AiusNetworkTeensy *adapter,
+    uint8_t address[4]);
+
+bool aius_network_teensy_dhcp_pending(
+    const AiusNetworkTeensy *adapter);
 
 void aius_network_teensy_init(
     AiusNetworkTeensy *adapter);
@@ -789,6 +807,20 @@ AiusIoEvent aius_network_teensy_udp_send_once(
     const uint8_t *buffer,
     size_t length);
 ```
+
+The three status accessors are read-only and carry no vendor type. Each performs
+exactly one underlying read, and only while `stack_started` — a null, unwired or
+stopped adapter returns its not-available answer (`UNKNOWN`, or `false` with
+`0.0.0.0` written) without touching a primitive at all, so pre-start and
+post-teardown are safe by construction rather than by the vendor tolerating a dead
+stack. `AiusNetworkTeensyLink`'s values are pinned to the NativeEthernet
+`EthernetLinkStatus` ordering so the numeric `link` field in status JSON, USB `ID`
+and `swagger.json` keeps its meaning across the cutover; an out-of-contract driver
+value degrades to `UNKNOWN`. The address read is a compile-time seam rather than an
+`AiusNetworkTeensyPrimitives` entry, because that table is the lifecycle and
+socket-I/O failure-injection seam and a status read needs no failure injection —
+and because appending to it would break the positional aggregate initializer in
+`test/runtime-target/`. Moving it into the table later is a coordinated edit.
 
 `aius_network_teensy_apply()` fully initializes `event` to `NONE`, accepts or
 advances at most one action, and emits an event only for that action's
@@ -4058,7 +4090,33 @@ it on the legacy machinery this phase deletes:
   exists for — but it needs R1 first, because the delivered storage service
   starts a job only from an HTTP action (`aius_runtime_storage.cpp:250`) and
   discards a publication payload rather than delivering it
-  (`aius_runtime_storage.cpp:134`).
+  (`aius_runtime_storage.cpp:134`). **R1 delivered both seams and found a third
+  obstacle, which S3 must settle before it starts** — see below.
+
+**Open decision for S3 — `publish_capacity` is capped at 512 today.**
+`aius_sd.c:251` rejects a `CONFIG_LOAD` whose `publish_capacity` exceeds the
+job's capacity, and the composed job's capacity *is* the 512-byte transfer slice
+(`AIUS_RUNTIME_STORAGE_TRANSFER`, `static_assert`-locked to
+`AIUS_HTTP_SD_CAPACITY_MAX` at `aius_runtime_storage.h:46`). So the planned
+`publish_capacity = AIUS_DSP_MODEL_MAX_JSON_BYTES` (12,288) fails at start with
+`AIUS_SD_FAULT_CAPACITY`. Three ways out, none free:
+
+- **A dedicated publish buffer** on the storage service, sized to the DSP model.
+  Costs ~12 KB on a runtime object already at ~35 KB, but the model can be parsed
+  in place with no second copy.
+- **Decouple the transfer slice from the HTTP capacity bound** and grow it to
+  12,288. Same ~12 KB, and it also widens the HTTP SD transfer semantics that the
+  512-byte bound currently pins.
+- **Publish incrementally**, calling R1's consumer repeatedly with 512-byte chunks
+  so the application accumulates into the buffer it already owns. Zero memory
+  growth, and it matches the reasoning that rejected the response-capacity bump in
+  P1a — but it changes `CONFIG_LOAD` semantics in the delivered portable engine,
+  which today buffers the whole file before publishing once.
+
+The third is the most consistent with the rest of this phase and the only one that
+does not duplicate a buffer the application already has. It is also the widest
+blast radius, so it needs its own review against `aius_sd`'s delivered contract
+before S3 starts.
 - **The DSP config `PUT` moves to `UPLOAD/REPLACE` with `publish = false`.**
   The model is already parsed and validated in RAM by the time the write starts,
   so re-publishing the written bytes would prove nothing the parser has not
@@ -4201,21 +4259,34 @@ empty 200 or empty 500; a streamed replay `PUT` without `Content-Range` is now
 finalized; and `GET /api/replays` with no card keeps its pre-cutover `200`
 carrying `{"ok":false,"error":"sd_unavailable"}`.
 
+**P1a supersedes the first of those for immediate bodies.** A body that exceeds
+the response buffer now streams from the application's own buffer instead of
+selecting `500 response_too_large`, which is the entire point of the slice — a
+large `GET /api/dsp/config` serves its model rather than erroring.
+`response_too_large` stays reachable, and covered, on the SD-job acknowledgement
+path, which still copies or fails.
+
 Three more are accepted here.
 
 **Counters that lose their producer at S2b are served as zero.** The HTTP
 counters `g_http_requests`, `g_http_rejections`, `g_http_client_drops` and
 `g_http_service_overruns` are incremented only in the dying `service_http`
 (`optical_main.cpp:2138` onward), and `http_server_rebinds` (`:1392`) goes with
-the rebind globals. `dhcp_pending`, `dhcp_discovers` and `dhcp_updates`
-(`:1388`) lose theirs too, because their FNET callbacks are installed only in
-`ensure_dhcp_client` (`:2426`), and `network_mode` is derived from
-`g_network_ready` / `g_dhcp` (`:1372`). All are emitted in the status JSON and at
+the rebind globals. `network_mode` is derived from `g_network_ready` / `g_dhcp`
+(`:1372`) and loses its producer too. All are emitted in the status JSON and at
 fixed offsets 55–70 of the 71-byte UDP status payload (`:1175`), so they are
 served as zero from S2b until a later phase gives them a producer; the UDP
 payload keeps its length and field offsets. `network_restarts` and `reset_source`
-do survive, through `AiusRecoveryStatus` (`aius_net.h:156`, `:153`). If R2 ends
-up exposing DHCP state anyway, the three DHCP fields come off this list.
+survive through `AiusRecoveryStatus` (`aius_net.h:156`, `:153`).
+
+**R2 rescued two of the three DHCP fields.** `dhcp_pending` and `dhcp_updates`
+are served from the adapter's own generation-scoped state, so they keep their
+producers. Only **`dhcp_discovers`** stays an accepted zero: the pinned
+NativeEthernet snapshot wires `set_callback_updated` but installs no discover
+callback, so producing it would need either a new vendor patch with its manifest
+entries or the adapter reaching for the FNET DHCP descriptor that the library
+deliberately owns — which §Bounded target transport ABI forbids. Not worth a
+vendor patch for a diagnostic counter.
 
 **`POST /api/replays/start` is refused from S2a until Phase 14c lands.**
 `aius_replay_service_start` opens the file and then fills the ring synchronously
