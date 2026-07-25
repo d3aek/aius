@@ -2,6 +2,23 @@
 
 #include <string.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * UDP control-frame codec and the network supervisor oracle), so every
+ * definition below carries FLASHMEM and lands in FLASH instead of the shared
+ * FlexRAM/ITCM pool the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 #define AIUS_NET_MAGIC0 0x41u
 #define AIUS_NET_MAGIC1 0x55u
 #define AIUS_NET_MAGIC2 0x4Eu
@@ -9,31 +26,31 @@
 #define AIUS_NET_LEGACY_STATUS_LEN 71u
 #define AIUS_NET_RECOVERY_STATUS_LEN 99u
 
-static void aius_net_action_none(AiusNetAction *action)
+static FLASHMEM void aius_net_action_none(AiusNetAction *action)
 {
 	action->kind = AIUS_NET_ACTION_NONE;
 	action->generation = 0;
 }
 
-static void aius_net_action_set(AiusNetAction *action, AiusNetActionKind kind,
+static FLASHMEM void aius_net_action_set(AiusNetAction *action, AiusNetActionKind kind,
 	                            uint32_t generation)
 {
 	action->kind = kind;
 	action->generation = generation;
 }
 
-static void aius_net_saturating_increment(uint32_t *value)
+static FLASHMEM void aius_net_saturating_increment(uint32_t *value)
 {
 	if (*value != UINT32_MAX)
 		(*value)++;
 }
 
-static bool aius_net_deadline_reached(uint32_t now_ms, uint32_t deadline_ms)
+static FLASHMEM bool aius_net_deadline_reached(uint32_t now_ms, uint32_t deadline_ms)
 {
 	return (int32_t)(now_ms - deadline_ms) >= 0;
 }
 
-static void aius_net_begin_teardown(AiusNetSupervisor *supervisor,
+static FLASHMEM void aius_net_begin_teardown(AiusNetSupervisor *supervisor,
 	                                AiusNetFault fault,
 	                                AiusNetAction *action)
 {
@@ -45,7 +62,7 @@ static void aius_net_begin_teardown(AiusNetSupervisor *supervisor,
 	                    supervisor->generation);
 }
 
-uint32_t aius_net_crc32(const uint8_t *data, size_t len)
+FLASHMEM uint32_t aius_net_crc32(const uint8_t *data, size_t len)
 {
 	uint32_t crc = 0xffffffffu;
 	for (size_t i = 0; i < len; i++) {
@@ -56,7 +73,7 @@ uint32_t aius_net_crc32(const uint8_t *data, size_t len)
 	return ~crc;
 }
 
-size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
+FLASHMEM size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
                        uint16_t flags, uint32_t request_id,
                        const uint8_t *payload, uint16_t payload_len)
 {
@@ -81,7 +98,7 @@ size_t aius_net_encode(uint8_t *dst, size_t dst_cap, uint8_t type,
 	return total;
 }
 
-size_t aius_net_status_encode(
+FLASHMEM size_t aius_net_status_encode(
 	uint8_t *output,
 	size_t capacity,
 	const uint8_t legacy_status[AIUS_NET_LEGACY_STATUS_LEN],
@@ -118,7 +135,7 @@ size_t aius_net_status_encode(
 	return sizeof(encoded);
 }
 
-AiusNetError aius_net_decode(const uint8_t *src, size_t len,
+FLASHMEM AiusNetError aius_net_decode(const uint8_t *src, size_t len,
                              AiusNetFrame *out)
 {
 	if (src == NULL || out == NULL)
@@ -152,7 +169,7 @@ AiusNetError aius_net_decode(const uint8_t *src, size_t len,
 	return AIUS_NET_OK;
 }
 
-void aius_net_supervisor_init(AiusNetSupervisor *supervisor, uint32_t now_ms,
+FLASHMEM void aius_net_supervisor_init(AiusNetSupervisor *supervisor, uint32_t now_ms,
 	                          bool recovery_safe,
 	                          AiusNetAction *initial_action)
 {
@@ -174,7 +191,7 @@ void aius_net_supervisor_init(AiusNetSupervisor *supervisor, uint32_t now_ms,
 		                    supervisor->generation);
 }
 
-void aius_net_supervisor_step(AiusNetSupervisor *supervisor, uint32_t now_ms,
+FLASHMEM void aius_net_supervisor_step(AiusNetSupervisor *supervisor, uint32_t now_ms,
 	                          AiusNetEvent event, AiusNetAction *action)
 {
 	if (supervisor == NULL || action == NULL)

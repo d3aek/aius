@@ -4,6 +4,23 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * per-connection HTTP transaction state machine), so every definition below
+ * carries FLASHMEM and lands in FLASH instead of the shared FlexRAM/ITCM pool
+ * the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 #define REQUEST_TIMEOUT_MS UINT32_C(150)
 #define RESPONSE_TIMEOUT_MS UINT32_C(100)
 #define SD_TIMEOUT_MS UINT32_C(2000)
@@ -34,33 +51,33 @@ static const uint8_t sd_capacity_body[] =
 static const uint8_t sd_failure_body[] =
 	"{\"ok\":false,\"error\":\"sd_failure\"}";
 
-static void clear_action(AiusHttpAction *action)
+static FLASHMEM void clear_action(AiusHttpAction *action)
 {
 	memset(action, 0, sizeof(*action));
 	action->kind = AIUS_HTTP_ACTION_NONE;
 	action->sd_operation = AIUS_HTTP_SD_OP_NONE;
 }
 
-static bool deadline_expired(uint32_t now_ms, uint32_t deadline_ms)
+static FLASHMEM bool deadline_expired(uint32_t now_ms, uint32_t deadline_ms)
 {
 	return (int32_t)(now_ms - deadline_ms) >= 0;
 }
 
-static void arm_deadline(AiusHttpTransaction *transaction, uint32_t now_ms,
+static FLASHMEM void arm_deadline(AiusHttpTransaction *transaction, uint32_t now_ms,
 	                     uint32_t interval)
 {
 	transaction->deadline_ms = now_ms + interval;
 	transaction->deadline_active = true;
 }
 
-static void clear_outstanding(AiusHttpTransaction *transaction)
+static FLASHMEM void clear_outstanding(AiusHttpTransaction *transaction)
 {
 	transaction->outstanding_action = AIUS_HTTP_ACTION_NONE;
 	transaction->outstanding_action_id = 0u;
 	transaction->outstanding_length = 0u;
 }
 
-static bool emit_action(AiusHttpTransaction *transaction,
+static FLASHMEM bool emit_action(AiusHttpTransaction *transaction,
 	                    AiusHttpAction *action, AiusHttpActionKind kind)
 {
 	uint64_t id = transaction->next_action_id;
@@ -78,12 +95,12 @@ static bool emit_action(AiusHttpTransaction *transaction,
 	return true;
 }
 
-static bool supported_status(unsigned status)
+static FLASHMEM bool supported_status(unsigned status)
 {
 	return aius_http_reason(status) != NULL;
 }
 
-static bool copy_string(char *output, size_t capacity, const char *input,
+static FLASHMEM bool copy_string(char *output, size_t capacity, const char *input,
 	                    bool required)
 {
 	size_t length = 0u;
@@ -101,7 +118,7 @@ static bool copy_string(char *output, size_t capacity, const char *input,
 	return true;
 }
 
-static bool valid_path(const char *path)
+static FLASHMEM bool valid_path(const char *path)
 {
 	size_t length = 0u;
 	size_t segment = 0u;
@@ -132,12 +149,12 @@ static bool valid_path(const char *path)
 	return true;
 }
 
-static bool paths_equal(const char *left, const char *right)
+static FLASHMEM bool paths_equal(const char *left, const char *right)
 {
 	return left != NULL && right != NULL && strcmp(left, right) == 0;
 }
 
-static bool sd_request_fields_valid(const AiusSdJobRequest *request)
+static FLASHMEM bool sd_request_fields_valid(const AiusSdJobRequest *request)
 {
 	bool target = request->target_path != NULL;
 	bool temp = request->temp_path != NULL;
@@ -221,7 +238,7 @@ static bool sd_request_fields_valid(const AiusSdJobRequest *request)
 	}
 }
 
-static bool copy_sd_request(AiusHttpTransaction *transaction,
+static FLASHMEM bool copy_sd_request(AiusHttpTransaction *transaction,
 	                        const AiusSdJobRequest *source)
 {
 	if (!sd_request_fields_valid(source))
@@ -260,7 +277,7 @@ static bool copy_sd_request(AiusHttpTransaction *transaction,
 	return true;
 }
 
-static bool zero_sd_request(const AiusSdJobRequest *request)
+static FLASHMEM bool zero_sd_request(const AiusSdJobRequest *request)
 {
 	return request->kind == AIUS_SD_JOB_PROBE &&
 	       request->install_mode == AIUS_SD_INSTALL_REPLACE &&
@@ -271,7 +288,7 @@ static bool zero_sd_request(const AiusSdJobRequest *request)
 	       !request->require_existing;
 }
 
-static bool event_common_zero(const AiusHttpEvent *event)
+static FLASHMEM bool event_common_zero(const AiusHttpEvent *event)
 {
 	return event->action_id == 0u &&
 	       event->completed_action == AIUS_HTTP_ACTION_NONE &&
@@ -284,7 +301,7 @@ static bool event_common_zero(const AiusHttpEvent *event)
 	       event->sd_driver_fault == 0u && event->peer_fault == 0u;
 }
 
-static bool io_payload_valid(const AiusHttpTransaction *transaction,
+static FLASHMEM bool io_payload_valid(const AiusHttpTransaction *transaction,
 	                         const AiusHttpEvent *event)
 {
 	AiusIoResult result = event->io.result;
@@ -324,7 +341,7 @@ static bool io_payload_valid(const AiusHttpTransaction *transaction,
 	         result == AIUS_IO_CLOSED);
 }
 
-static bool app_event_valid(const AiusHttpTransaction *transaction,
+static FLASHMEM bool app_event_valid(const AiusHttpTransaction *transaction,
 	                        const AiusHttpEvent *event)
 {
 	return event->action_id != 0u &&
@@ -340,7 +357,7 @@ static bool app_event_valid(const AiusHttpTransaction *transaction,
 	       event->sd_driver_fault == 0u && event->peer_fault == 0u;
 }
 
-static bool sd_payload_shape_valid(const AiusHttpEvent *event)
+static FLASHMEM bool sd_payload_shape_valid(const AiusHttpEvent *event)
 {
 	switch (event->sd_kind) {
 	case AIUS_HTTP_SD_STARTED:
@@ -387,7 +404,7 @@ static bool sd_payload_shape_valid(const AiusHttpEvent *event)
 	}
 }
 
-static bool sd_event_correlated(const AiusHttpTransaction *transaction,
+static FLASHMEM bool sd_event_correlated(const AiusHttpTransaction *transaction,
 	                            const AiusHttpEvent *event)
 {
 	if (event->action_id == 0u ||
@@ -403,7 +420,7 @@ static bool sd_event_correlated(const AiusHttpTransaction *transaction,
 	return true;
 }
 
-static bool peer_event_valid(const AiusHttpEvent *event)
+static FLASHMEM bool peer_event_valid(const AiusHttpEvent *event)
 {
 	if (event->action_id != 0u ||
 	    event->completed_action != AIUS_HTTP_ACTION_NONE ||
@@ -420,21 +437,21 @@ static bool peer_event_valid(const AiusHttpEvent *event)
 	return event->peer_fault != 0u;
 }
 
-static bool is_sd_action(AiusHttpActionKind action)
+static FLASHMEM bool is_sd_action(AiusHttpActionKind action)
 {
 	return action == AIUS_HTTP_ACTION_SD_START ||
 	       action == AIUS_HTTP_ACTION_SD_STEP ||
 	       action == AIUS_HTTP_ACTION_SD_CANCEL;
 }
 
-static bool is_transport_action(AiusHttpActionKind action)
+static FLASHMEM bool is_transport_action(AiusHttpActionKind action)
 {
 	return action == AIUS_HTTP_ACTION_READ ||
 	       action == AIUS_HTTP_ACTION_WRITE ||
 	       action == AIUS_HTTP_ACTION_CLOSE;
 }
 
-static void reset_client(AiusHttpTransaction *transaction, uint32_t now_ms)
+static FLASHMEM void reset_client(AiusHttpTransaction *transaction, uint32_t now_ms)
 {
 	transaction->state = AIUS_HTTP_TX_RECEIVE;
 	transaction->sd_phase = AIUS_HTTP_SD_PHASE_NONE;
@@ -488,7 +505,7 @@ static void reset_client(AiusHttpTransaction *transaction, uint32_t now_ms)
 	arm_deadline(transaction, now_ms, REQUEST_TIMEOUT_MS);
 }
 
-static void restart_idle(AiusHttpTransaction *transaction)
+static FLASHMEM void restart_idle(AiusHttpTransaction *transaction)
 {
 	transaction->state = AIUS_HTTP_TX_IDLE;
 	transaction->sd_phase = AIUS_HTTP_SD_PHASE_NONE;
@@ -528,7 +545,7 @@ static void restart_idle(AiusHttpTransaction *transaction)
 	clear_outstanding(transaction);
 }
 
-static void clear_stream_body(AiusHttpTransaction *transaction)
+static FLASHMEM void clear_stream_body(AiusHttpTransaction *transaction)
 {
 	transaction->stream_body = NULL;
 	transaction->stream_body_length = 0u;
@@ -536,7 +553,7 @@ static void clear_stream_body(AiusHttpTransaction *transaction)
 	transaction->response_streams_body = false;
 }
 
-static bool format_response(AiusHttpTransaction *transaction, unsigned status,
+static FLASHMEM bool format_response(AiusHttpTransaction *transaction, unsigned status,
 	                        const char *content_type, const uint8_t *body,
 	                        size_t body_length)
 {
@@ -560,7 +577,7 @@ static bool format_response(AiusHttpTransaction *transaction, unsigned status,
  * buffer -- AIUS_HTTP_MAX_RESPONSE is 8192 while a serialized DSP model reaches
  * 12288. The drain path falls through to request_cleanup and emits no SD
  * operation, which is why it must not reuse response_is_download. */
-static bool format_stream_response(AiusHttpTransaction *transaction,
+static FLASHMEM bool format_stream_response(AiusHttpTransaction *transaction,
 	                               unsigned status, const char *content_type,
 	                               const uint8_t *body, size_t body_length)
 {
@@ -582,27 +599,27 @@ static bool format_stream_response(AiusHttpTransaction *transaction,
 	return true;
 }
 
-static void request_cleanup(AiusHttpTransaction *transaction)
+static FLASHMEM void request_cleanup(AiusHttpTransaction *transaction)
 {
 	transaction->cleanup_requested = true;
 	transaction->deadline_active = false;
 }
 
-static void record_fault(AiusHttpTransaction *transaction,
+static FLASHMEM void record_fault(AiusHttpTransaction *transaction,
 	                     AiusHttpFault fault)
 {
 	if (transaction->last_fault == AIUS_HTTP_FAULT_NONE)
 		transaction->last_fault = fault;
 }
 
-static void record_transport_driver_fault(
+static FLASHMEM void record_transport_driver_fault(
 	AiusHttpTransaction *transaction, uint32_t fault)
 {
 	if (fault != 0u && transaction->last_transport_fault == 0u)
 		transaction->last_transport_fault = fault;
 }
 
-static void select_fixed(AiusHttpTransaction *transaction, unsigned status,
+static FLASHMEM void select_fixed(AiusHttpTransaction *transaction, unsigned status,
 	                     const uint8_t *body, size_t body_length,
 	                     AiusHttpFault fault)
 {
@@ -621,13 +638,13 @@ static void select_fixed(AiusHttpTransaction *transaction, unsigned status,
 	request_cleanup(transaction);
 }
 
-static void protocol_fault(AiusHttpTransaction *transaction)
+static FLASHMEM void protocol_fault(AiusHttpTransaction *transaction)
 {
 	select_fixed(transaction, 400u, protocol_body, sizeof(protocol_body),
 	             AIUS_HTTP_FAULT_PROTOCOL);
 }
 
-static void transport_fault(AiusHttpTransaction *transaction, uint32_t fault)
+static FLASHMEM void transport_fault(AiusHttpTransaction *transaction, uint32_t fault)
 {
 	record_fault(transaction, AIUS_HTTP_FAULT_TRANSPORT);
 	record_transport_driver_fault(transaction, fault);
@@ -635,14 +652,14 @@ static void transport_fault(AiusHttpTransaction *transaction, uint32_t fault)
 	request_cleanup(transaction);
 }
 
-static bool streamed_request(const AiusHttpRequest *request)
+static FLASHMEM bool streamed_request(const AiusHttpRequest *request)
 {
 	return request->method == AIUS_HTTP_PUT &&
 	       (request->route == AIUS_HTTP_ROUTE_SD_FILE ||
 	        request->route == AIUS_HTTP_ROUTE_SD_REPLAY);
 }
 
-static size_t find_header_end(const uint8_t *data, size_t length,
+static FLASHMEM size_t find_header_end(const uint8_t *data, size_t length,
 	                          size_t old_length)
 {
 	size_t start = old_length > 3u ? old_length - 3u : 0u;
@@ -652,7 +669,7 @@ static size_t find_header_end(const uint8_t *data, size_t length,
 	return 0u;
 }
 
-static void parse_ready_request(AiusHttpTransaction *transaction)
+static FLASHMEM void parse_ready_request(AiusHttpTransaction *transaction)
 {
 	AiusHttpResult result =
 		aius_http_parse(transaction->request, transaction->request_length,
@@ -716,7 +733,7 @@ static void parse_ready_request(AiusHttpTransaction *transaction)
 	transaction->deadline_active = false;
 }
 
-static void discard_request_slices(AiusHttpTransaction *transaction)
+static FLASHMEM void discard_request_slices(AiusHttpTransaction *transaction)
 {
 	transaction->parsed_request.body = NULL;
 	transaction->parsed_request.resource = NULL;
@@ -724,7 +741,7 @@ static void discard_request_slices(AiusHttpTransaction *transaction)
 	transaction->parsed_request.sd_auth = NULL;
 }
 
-static bool application_fields_valid(const AiusHttpApplicationResponse *reply)
+static FLASHMEM bool application_fields_valid(const AiusHttpApplicationResponse *reply)
 {
 	char ignored[AIUS_HTTP_CONTENT_TYPE_STORAGE];
 	if ((unsigned)reply->kind > (unsigned)AIUS_HTTP_APP_SD_JOB ||
@@ -737,7 +754,7 @@ static bool application_fields_valid(const AiusHttpApplicationResponse *reply)
 	return true;
 }
 
-static void response_overflow(AiusHttpTransaction *transaction)
+static FLASHMEM void response_overflow(AiusHttpTransaction *transaction)
 {
 	transaction->last_fault = AIUS_HTTP_FAULT_RESPONSE_CAPACITY;
 	if (!format_response(transaction, 500u, "application/json",
@@ -749,7 +766,7 @@ static void response_overflow(AiusHttpTransaction *transaction)
 	request_cleanup(transaction);
 }
 
-static bool accept_application(AiusHttpTransaction *transaction,
+static FLASHMEM bool accept_application(AiusHttpTransaction *transaction,
 	                           const AiusHttpApplicationResponse *reply,
 	                           uint32_t now_ms)
 {
@@ -828,13 +845,13 @@ static bool accept_application(AiusHttpTransaction *transaction,
 	return true;
 }
 
-static uint32_t sd_interval(const AiusHttpTransaction *transaction)
+static FLASHMEM uint32_t sd_interval(const AiusHttpTransaction *transaction)
 {
 	return transaction->sd_request.kind == AIUS_SD_JOB_DOWNLOAD ?
 		DOWNLOAD_TIMEOUT_MS : SD_TIMEOUT_MS;
 }
 
-static AiusHttpFault sd_timeout_fault(const AiusHttpTransaction *transaction)
+static FLASHMEM AiusHttpFault sd_timeout_fault(const AiusHttpTransaction *transaction)
 {
 	if (transaction->sd_request.kind == AIUS_SD_JOB_UPLOAD)
 		return AIUS_HTTP_FAULT_UPLOAD_TIMEOUT;
@@ -843,7 +860,7 @@ static AiusHttpFault sd_timeout_fault(const AiusHttpTransaction *transaction)
 	return AIUS_HTTP_FAULT_SD_TIMEOUT;
 }
 
-static bool sd_kind_allowed(const AiusHttpTransaction *transaction,
+static FLASHMEM bool sd_kind_allowed(const AiusHttpTransaction *transaction,
 	                        AiusHttpSdEventKind kind)
 {
 	if (transaction->outstanding_action == AIUS_HTTP_ACTION_SD_START)
@@ -887,7 +904,7 @@ static bool sd_kind_allowed(const AiusHttpTransaction *transaction,
 	}
 }
 
-static void select_sd_error(AiusHttpTransaction *transaction,
+static FLASHMEM void select_sd_error(AiusHttpTransaction *transaction,
 	                        AiusSdFault fault, uint32_t driver_fault)
 {
 	unsigned status = 500u;
@@ -928,7 +945,7 @@ static void select_sd_error(AiusHttpTransaction *transaction,
 	request_cleanup(transaction);
 }
 
-static bool consume_sd_result(AiusHttpTransaction *transaction,
+static FLASHMEM bool consume_sd_result(AiusHttpTransaction *transaction,
 	                          const AiusHttpEvent *event, uint32_t now_ms)
 {
 	size_t supplied = transaction->outstanding_length;
@@ -1097,7 +1114,7 @@ static bool consume_sd_result(AiusHttpTransaction *transaction,
 	return true;
 }
 
-static void timeout_transaction(AiusHttpTransaction *transaction)
+static FLASHMEM void timeout_transaction(AiusHttpTransaction *transaction)
 {
 	if (is_transport_action(transaction->outstanding_action) &&
 	    transaction->outstanding_action != AIUS_HTTP_ACTION_CLOSE)
@@ -1119,7 +1136,7 @@ static void timeout_transaction(AiusHttpTransaction *transaction)
 	request_cleanup(transaction);
 }
 
-static void consume_io(AiusHttpTransaction *transaction,
+static FLASHMEM void consume_io(AiusHttpTransaction *transaction,
 	                   const AiusHttpEvent *event, uint32_t now_ms)
 {
 	AiusHttpActionKind completed = transaction->outstanding_action;
@@ -1209,7 +1226,7 @@ static void consume_io(AiusHttpTransaction *transaction,
 	}
 }
 
-static void handle_malformed(AiusHttpTransaction *transaction)
+static FLASHMEM void handle_malformed(AiusHttpTransaction *transaction)
 {
 	if (!transaction->client_active) {
 		transaction->last_fault = AIUS_HTTP_FAULT_PROTOCOL;
@@ -1224,7 +1241,7 @@ static void handle_malformed(AiusHttpTransaction *transaction)
 	protocol_fault(transaction);
 }
 
-static bool validate_and_consume_event(AiusHttpTransaction *transaction,
+static FLASHMEM bool validate_and_consume_event(AiusHttpTransaction *transaction,
 	                                   uint32_t now_ms,
 	                                   const AiusHttpEvent *event,
 	                                   bool *progress)
@@ -1311,7 +1328,7 @@ static bool validate_and_consume_event(AiusHttpTransaction *transaction,
 	}
 }
 
-static void emit_read(AiusHttpTransaction *transaction,
+static FLASHMEM void emit_read(AiusHttpTransaction *transaction,
 	                  AiusHttpAction *action, uint8_t *buffer, size_t length)
 {
 	if (!emit_action(transaction, action, AIUS_HTTP_ACTION_READ))
@@ -1321,7 +1338,7 @@ static void emit_read(AiusHttpTransaction *transaction,
 	transaction->outstanding_length = length;
 }
 
-static void emit_write(AiusHttpTransaction *transaction,
+static FLASHMEM void emit_write(AiusHttpTransaction *transaction,
 	                   AiusHttpAction *action, const uint8_t *data,
 	                   size_t length)
 {
@@ -1332,7 +1349,7 @@ static void emit_write(AiusHttpTransaction *transaction,
 	transaction->outstanding_length = length;
 }
 
-static void emit_sd_step(AiusHttpTransaction *transaction,
+static FLASHMEM void emit_sd_step(AiusHttpTransaction *transaction,
 	                     AiusHttpAction *action, AiusHttpSdOperation operation,
 	                     const uint8_t *data, size_t length)
 {
@@ -1346,7 +1363,7 @@ static void emit_sd_step(AiusHttpTransaction *transaction,
 	transaction->outstanding_length = length;
 }
 
-static void drive_receive(AiusHttpTransaction *transaction,
+static FLASHMEM void drive_receive(AiusHttpTransaction *transaction,
 	                      AiusHttpAction *action)
 {
 	size_t available;
@@ -1371,7 +1388,7 @@ static void drive_receive(AiusHttpTransaction *transaction,
 	          transaction->request + transaction->request_length, offer);
 }
 
-static void drive_send(AiusHttpTransaction *transaction,
+static FLASHMEM void drive_send(AiusHttpTransaction *transaction,
 	                   AiusHttpAction *action)
 {
 	size_t remaining;
@@ -1423,7 +1440,7 @@ static void drive_send(AiusHttpTransaction *transaction,
 	request_cleanup(transaction);
 }
 
-static void drive_sd(AiusHttpTransaction *transaction,
+static FLASHMEM void drive_sd(AiusHttpTransaction *transaction,
 	                 AiusHttpAction *action)
 {
 	size_t remaining;
@@ -1475,7 +1492,7 @@ static void drive_sd(AiusHttpTransaction *transaction,
 	emit_sd_step(transaction, action, AIUS_HTTP_SD_OP_ADVANCE, NULL, 0u);
 }
 
-static void drive_cleanup(AiusHttpTransaction *transaction,
+static FLASHMEM void drive_cleanup(AiusHttpTransaction *transaction,
 	                      uint32_t now_ms, AiusHttpAction *action)
 {
 	if (transaction->download_data != NULL) {
@@ -1519,7 +1536,7 @@ static void drive_cleanup(AiusHttpTransaction *transaction,
 	restart_idle(transaction);
 }
 
-void aius_http_transaction_init(AiusHttpTransaction *transaction,
+FLASHMEM void aius_http_transaction_init(AiusHttpTransaction *transaction,
 	                            uint8_t *request, size_t request_capacity,
 	                            uint8_t *response, size_t response_capacity,
 	                            uint32_t now_ms)
@@ -1555,7 +1572,7 @@ void aius_http_transaction_init(AiusHttpTransaction *transaction,
 	transaction->last_fault = AIUS_HTTP_FAULT_NONE;
 }
 
-void aius_http_transaction_step(AiusHttpTransaction *transaction,
+FLASHMEM void aius_http_transaction_step(AiusHttpTransaction *transaction,
 	                            uint32_t now_ms, AiusHttpEvent event,
 	                            AiusHttpAction *action)
 {

@@ -6,13 +6,31 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * retained boot-slot store, the reset-source decode and the watchdog
+ * primitives, all per-reset or per-epoch), so every definition below carries
+ * FLASHMEM and lands in FLASH instead of the shared FlexRAM/ITCM pool the audio
+ * pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the
+ * no-op. The attribute must sit on each DEFINITION: GCC does not merge a
+ * `section` attribute from a forward declaration, so a prototype-only FLASHMEM
+ * silently leaves the code in ITCM. Enforced post-link by
+ * test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 namespace {
 
 constexpr uint8_t kNoActiveSlot = UINT8_MAX;
 constexpr size_t kSlotCrcBytes = sizeof(uint32_t) + sizeof(AiusBootLedger);
 constexpr size_t kCacheLineBytes = 32u;
 
-bool primitives_complete(const AiusBootTeensyPrimitives *primitives)
+FLASHMEM bool primitives_complete(const AiusBootTeensyPrimitives *primitives)
 {
 	return primitives != nullptr &&
 	       primitives->read_slot != nullptr &&
@@ -27,13 +45,13 @@ bool primitives_complete(const AiusBootTeensyPrimitives *primitives)
 	       primitives->write_watchdog_wsr != nullptr;
 }
 
-void put_u16(uint8_t *destination, uint16_t value)
+FLASHMEM void put_u16(uint8_t *destination, uint16_t value)
 {
 	destination[0] = static_cast<uint8_t>(value);
 	destination[1] = static_cast<uint8_t>(value >> 8);
 }
 
-void put_u32(uint8_t *destination, uint32_t value)
+FLASHMEM void put_u32(uint8_t *destination, uint32_t value)
 {
 	destination[0] = static_cast<uint8_t>(value);
 	destination[1] = static_cast<uint8_t>(value >> 8);
@@ -41,7 +59,7 @@ void put_u32(uint8_t *destination, uint32_t value)
 	destination[3] = static_cast<uint8_t>(value >> 24);
 }
 
-void serialize_ledger(uint8_t *destination, const AiusBootLedger &ledger)
+FLASHMEM void serialize_ledger(uint8_t *destination, const AiusBootLedger &ledger)
 {
 	put_u32(&destination[0], ledger.magic);
 	put_u16(&destination[4], ledger.version);
@@ -55,7 +73,7 @@ void serialize_ledger(uint8_t *destination, const AiusBootLedger &ledger)
 	put_u32(&destination[24], ledger.crc32);
 }
 
-uint32_t crc32_update(uint32_t crc, uint8_t byte)
+FLASHMEM uint32_t crc32_update(uint32_t crc, uint8_t byte)
 {
 	crc ^= byte;
 	for (unsigned int bit = 0; bit < 8; ++bit) {
@@ -65,7 +83,7 @@ uint32_t crc32_update(uint32_t crc, uint8_t byte)
 	return crc;
 }
 
-uint32_t slot_crc32(uint32_t sequence, const AiusBootLedger &ledger)
+FLASHMEM uint32_t slot_crc32(uint32_t sequence, const AiusBootLedger &ledger)
 {
 	uint8_t bytes[kSlotCrcBytes];
 	put_u32(bytes, sequence);
@@ -77,14 +95,14 @@ uint32_t slot_crc32(uint32_t sequence, const AiusBootLedger &ledger)
 	return crc ^ UINT32_MAX;
 }
 
-bool slot_valid(const AiusBootSlot &slot)
+FLASHMEM bool slot_valid(const AiusBootSlot &slot)
 {
 	return slot.committed == AIUS_BOOT_SLOT_COMMITTED &&
 	       slot.slot_crc32 == slot_crc32(slot.sequence, slot.ledger) &&
 	       aius_boot_is_valid(&slot.ledger);
 }
 
-uint8_t newest_slot(const AiusBootSlot (&slots)[2],
+FLASHMEM uint8_t newest_slot(const AiusBootSlot (&slots)[2],
                     const bool (&valid)[2])
 {
 	if (valid[0] && !valid[1])
@@ -98,7 +116,7 @@ uint8_t newest_slot(const AiusBootSlot (&slots)[2],
 	return delta < UINT32_C(0x80000000) ? 0u : 1u;
 }
 
-bool write_bytes(const AiusBootStorageTeensy &storage,
+FLASHMEM bool write_bytes(const AiusBootStorageTeensy &storage,
                  uint8_t slot,
                  size_t offset,
                  const uint8_t *bytes,
@@ -108,7 +126,7 @@ bool write_bytes(const AiusBootStorageTeensy &storage,
 		storage.primitives.context, slot, offset, bytes, length);
 }
 
-bool hardware_read_slot(void *, uint8_t slot, AiusBootSlot *out)
+FLASHMEM bool hardware_read_slot(void *, uint8_t slot, AiusBootSlot *out)
 {
 	if (slot >= 2u || out == nullptr)
 		return false;
@@ -117,7 +135,7 @@ bool hardware_read_slot(void *, uint8_t slot, AiusBootSlot *out)
 	return true;
 }
 
-bool hardware_write_slot_bytes(void *,
+FLASHMEM bool hardware_write_slot_bytes(void *,
                                uint8_t slot,
                                size_t offset,
                                const uint8_t *data,
@@ -134,7 +152,7 @@ bool hardware_write_slot_bytes(void *,
 	return true;
 }
 
-void hardware_flush_slot_range(void *,
+FLASHMEM void hardware_flush_slot_range(void *,
                                uint8_t slot,
                                size_t offset,
                                size_t length)
@@ -147,7 +165,7 @@ void hardware_flush_slot_range(void *,
 	arm_dcache_flush(address, static_cast<uint32_t>(length));
 }
 
-void hardware_barrier(void *)
+FLASHMEM void hardware_barrier(void *)
 {
 #if defined(__IMXRT1062__)
 	asm volatile("dsb sy" ::: "memory");
@@ -156,32 +174,32 @@ void hardware_barrier(void *)
 #endif
 }
 
-uint32_t hardware_read_reset_source(void *)
+FLASHMEM uint32_t hardware_read_reset_source(void *)
 {
 	return SRC_SRSR;
 }
 
-void hardware_clear_reset_source(void *, uint32_t captured)
+FLASHMEM void hardware_clear_reset_source(void *, uint32_t captured)
 {
 	SRC_SRSR = captured;
 }
 
-void hardware_enable_watchdog_clock(void *)
+FLASHMEM void hardware_enable_watchdog_clock(void *)
 {
 	CCM_CCGR3 |= CCM_CCGR3_WDOG1(3);
 }
 
-void hardware_write_watchdog_wmcr(void *, uint16_t value)
+FLASHMEM void hardware_write_watchdog_wmcr(void *, uint16_t value)
 {
 	WDOG1_WMCR = value;
 }
 
-void hardware_write_watchdog_wcr(void *, uint16_t value)
+FLASHMEM void hardware_write_watchdog_wcr(void *, uint16_t value)
 {
 	WDOG1_WCR = value;
 }
 
-void hardware_write_watchdog_wsr(void *, uint16_t value)
+FLASHMEM void hardware_write_watchdog_wsr(void *, uint16_t value)
 {
 	WDOG1_WSR = value;
 }
@@ -190,7 +208,7 @@ void hardware_write_watchdog_wsr(void *, uint16_t value)
 
 DMAMEM AiusBootSlot g_aius_boot_slots[2] __attribute__((used));
 
-extern "C" void aius_boot_storage_teensy_init(
+extern "C" FLASHMEM void aius_boot_storage_teensy_init(
 	AiusBootStorageTeensy *storage,
 	const AiusBootTeensyPrimitives *primitives)
 {
@@ -206,7 +224,7 @@ extern "C" void aius_boot_storage_teensy_init(
 	storage->valid = true;
 }
 
-extern "C" bool aius_boot_storage_teensy_load(
+extern "C" FLASHMEM bool aius_boot_storage_teensy_load(
 	AiusBootStorageTeensy *storage,
 	AiusBootLedger *ledger)
 {
@@ -236,7 +254,7 @@ extern "C" bool aius_boot_storage_teensy_load(
 	return true;
 }
 
-extern "C" bool aius_boot_storage_teensy_commit(
+extern "C" FLASHMEM bool aius_boot_storage_teensy_commit(
 	AiusBootStorageTeensy *storage,
 	const AiusBootLedger *ledger)
 {
@@ -316,7 +334,7 @@ extern "C" bool aius_boot_storage_teensy_commit(
 	return true;
 }
 
-extern "C" uint32_t aius_boot_teensy_reset_source(
+extern "C" FLASHMEM uint32_t aius_boot_teensy_reset_source(
 	const AiusBootTeensyPrimitives *primitives)
 {
 	if (primitives == nullptr ||
@@ -330,7 +348,7 @@ extern "C" uint32_t aius_boot_teensy_reset_source(
 	return captured;
 }
 
-extern "C" AiusResetKind aius_boot_teensy_reset_kind(
+extern "C" FLASHMEM AiusResetKind aius_boot_teensy_reset_kind(
 	uint32_t raw_reset_source)
 {
 	if ((raw_reset_source & SRC_SRSR_WDOG_RST_B) != 0u)
@@ -344,7 +362,7 @@ extern "C" AiusResetKind aius_boot_teensy_reset_kind(
 	return AIUS_RESET_OTHER;
 }
 
-extern "C" bool aius_boot_teensy_watchdog_arm(
+extern "C" FLASHMEM bool aius_boot_teensy_watchdog_arm(
 	const AiusBootTeensyPrimitives *primitives)
 {
 	if (primitives == nullptr ||
@@ -363,7 +381,7 @@ extern "C" bool aius_boot_teensy_watchdog_arm(
 	return true;
 }
 
-extern "C" bool aius_boot_teensy_watchdog_feed(
+extern "C" FLASHMEM bool aius_boot_teensy_watchdog_feed(
 	const AiusBootTeensyPrimitives *primitives)
 {
 	if (primitives == nullptr ||
@@ -375,7 +393,7 @@ extern "C" bool aius_boot_teensy_watchdog_feed(
 	return true;
 }
 
-extern "C" AiusBootTeensyPrimitives
+extern "C" FLASHMEM AiusBootTeensyPrimitives
 aius_boot_teensy_hardware_primitives(void)
 {
 	AiusBootTeensyPrimitives primitives = {};

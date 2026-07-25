@@ -2,6 +2,23 @@
 
 #include <stddef.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * per-epoch checkpoint walk), so every definition below carries FLASHMEM and
+ * lands in FLASH instead of the shared FlexRAM/ITCM pool the audio pipeline
+ * needs. FLASHMEM is Teensyduino's __attribute__((section(".flashmem"))) from
+ * <avr/pgmspace.h>; TEENSYDUINO is a project-wide compiler -D, so the native
+ * host suites fall through to the no-op and this file keeps its portable,
+ * Arduino-free compile. The attribute must sit on each DEFINITION: GCC does not
+ * merge a `section` attribute from a forward declaration, so a prototype-only
+ * FLASHMEM silently leaves the code in ITCM. Enforced post-link by
+ * test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 static const AiusRuntimeBudget runtime_budgets[] = {
 	{AIUS_BOOT_CHECKPOINT_RESET_CAPTURE, 2u, 0u, 0u, 250u},
 	{AIUS_BOOT_CHECKPOINT_USB_RX, 64u, 64u, 0u, 0u},
@@ -15,7 +32,7 @@ static const AiusRuntimeBudget runtime_budgets[] = {
 	{AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE, 0u, 0u, 0u, 0u},
 };
 
-static bool runtime_service(
+static FLASHMEM bool runtime_service(
     const AiusRuntimeOps *ops,
     uint16_t checkpoint)
 {
@@ -25,7 +42,7 @@ static bool runtime_service(
 	return ops->service(ops->context, budget);
 }
 
-const AiusRuntimeBudget *aius_runtime_budget(
+FLASHMEM const AiusRuntimeBudget *aius_runtime_budget(
     uint16_t checkpoint)
 {
 	if (checkpoint > AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE)
@@ -34,7 +51,7 @@ const AiusRuntimeBudget *aius_runtime_budget(
 	return &runtime_budgets[checkpoint];
 }
 
-bool aius_runtime_epoch(
+FLASHMEM bool aius_runtime_epoch(
     const AiusRuntimeOps *ops,
     bool recovery_safe)
 {

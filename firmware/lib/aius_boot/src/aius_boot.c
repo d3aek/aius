@@ -3,9 +3,26 @@
 #include <stddef.h>
 #include <string.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * boot ledger, touched once per reset and once per checkpoint), so every
+ * definition below carries FLASHMEM and lands in FLASH instead of the shared
+ * FlexRAM/ITCM pool the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 #define AIUS_BOOT_CRC_BYTES 24u
 
-static uint32_t crc32_update(uint32_t crc, uint8_t byte)
+static FLASHMEM uint32_t crc32_update(uint32_t crc, uint8_t byte)
 {
 	crc ^= byte;
 	for (unsigned int bit = 0; bit < 8; bit++) {
@@ -15,13 +32,13 @@ static uint32_t crc32_update(uint32_t crc, uint8_t byte)
 	return crc;
 }
 
-static void put_u16(uint8_t *destination, uint16_t value)
+static FLASHMEM void put_u16(uint8_t *destination, uint16_t value)
 {
 	destination[0] = (uint8_t)(value & 0xffu);
 	destination[1] = (uint8_t)(value >> 8);
 }
 
-static void put_u32(uint8_t *destination, uint32_t value)
+static FLASHMEM void put_u32(uint8_t *destination, uint32_t value)
 {
 	destination[0] = (uint8_t)(value & 0xffu);
 	destination[1] = (uint8_t)((value >> 8) & 0xffu);
@@ -29,7 +46,7 @@ static void put_u32(uint8_t *destination, uint32_t value)
 	destination[3] = (uint8_t)(value >> 24);
 }
 
-static uint32_t ledger_crc32(const AiusBootLedger *ledger)
+static FLASHMEM uint32_t ledger_crc32(const AiusBootLedger *ledger)
 {
 	uint8_t bytes[AIUS_BOOT_CRC_BYTES];
 	put_u32(&bytes[0], ledger->magic);
@@ -48,24 +65,24 @@ static uint32_t ledger_crc32(const AiusBootLedger *ledger)
 	return crc ^ UINT32_MAX;
 }
 
-static void update_crc(AiusBootLedger *ledger)
+static FLASHMEM void update_crc(AiusBootLedger *ledger)
 {
 	ledger->crc32 = ledger_crc32(ledger);
 }
 
-static void saturating_increment_u32(uint32_t *value)
+static FLASHMEM void saturating_increment_u32(uint32_t *value)
 {
 	if (*value != UINT32_MAX)
 		(*value)++;
 }
 
-static void saturating_increment_u8(uint8_t *value)
+static FLASHMEM void saturating_increment_u8(uint8_t *value)
 {
 	if (*value != UINT8_MAX)
 		(*value)++;
 }
 
-bool aius_boot_is_valid(const AiusBootLedger *ledger)
+FLASHMEM bool aius_boot_is_valid(const AiusBootLedger *ledger)
 {
 	if (ledger == NULL)
 		return false;
@@ -83,7 +100,7 @@ bool aius_boot_is_valid(const AiusBootLedger *ledger)
 	return ledger->reserved == 0u;
 }
 
-void aius_boot_init(AiusBootLedger *ledger,
+FLASHMEM void aius_boot_init(AiusBootLedger *ledger,
 	            const AiusBootLedger *retained,
 	            AiusBootInput input)
 {
@@ -124,7 +141,7 @@ void aius_boot_init(AiusBootLedger *ledger,
 	*ledger = next;
 }
 
-void aius_boot_record_checkpoint(AiusBootLedger *ledger,
+FLASHMEM void aius_boot_record_checkpoint(AiusBootLedger *ledger,
 	                         uint16_t checkpoint)
 {
 	if (!aius_boot_is_valid(ledger) ||
@@ -134,7 +151,7 @@ void aius_boot_record_checkpoint(AiusBootLedger *ledger,
 	update_crc(ledger);
 }
 
-void aius_boot_mark_healthy(AiusBootLedger *ledger)
+FLASHMEM void aius_boot_mark_healthy(AiusBootLedger *ledger)
 {
 	if (!aius_boot_is_valid(ledger))
 		return;

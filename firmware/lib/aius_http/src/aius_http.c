@@ -3,7 +3,24 @@
 #include <stdio.h>
 #include <string.h>
 
-static const uint8_t *find_bytes(const uint8_t *data, size_t length,
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is
+ * per-request HTTP parsing and response framing), so every definition below
+ * carries FLASHMEM and lands in FLASH instead of the shared FlexRAM/ITCM pool
+ * the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the no-op
+ * and this file keeps its portable, Arduino-free compile. The attribute must
+ * sit on each DEFINITION: GCC does not merge a `section` attribute from a
+ * forward declaration, so a prototype-only FLASHMEM silently leaves the code in
+ * ITCM. Enforced post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
+static FLASHMEM const uint8_t *find_bytes(const uint8_t *data, size_t length,
 	                                const char *needle, size_t needle_length)
 {
 	if (needle_length == 0 || length < needle_length)
@@ -14,14 +31,14 @@ static const uint8_t *find_bytes(const uint8_t *data, size_t length,
 	return NULL;
 }
 
-static int has_prefix(const uint8_t *value, size_t length,
+static FLASHMEM int has_prefix(const uint8_t *value, size_t length,
 	                     const char *prefix)
 {
 	size_t prefix_length = strlen(prefix);
 	return length >= prefix_length && memcmp(value, prefix, prefix_length) == 0;
 }
 
-static int decimal_u32(const uint8_t *value, size_t length, uint32_t *result)
+static FLASHMEM int decimal_u32(const uint8_t *value, size_t length, uint32_t *result)
 {
 	uint32_t parsed = 0;
 	if (length == 0 || length > 10)
@@ -38,7 +55,7 @@ static int decimal_u32(const uint8_t *value, size_t length, uint32_t *result)
 	return 1;
 }
 
-static int decimal_u64(const uint8_t *value, size_t length, uint64_t *result)
+static FLASHMEM int decimal_u64(const uint8_t *value, size_t length, uint64_t *result)
 {
 	uint64_t parsed = 0;
 	if (length == 0)
@@ -56,7 +73,7 @@ static int decimal_u64(const uint8_t *value, size_t length, uint64_t *result)
 	return 1;
 }
 
-static int ascii_equal_fold(uint8_t left, char right)
+static FLASHMEM int ascii_equal_fold(uint8_t left, char right)
 {
 	if (left >= 'A' && left <= 'Z')
 		left = (uint8_t)(left + ('a' - 'A'));
@@ -65,7 +82,7 @@ static int ascii_equal_fold(uint8_t left, char right)
 	return left == (uint8_t)right;
 }
 
-static int header_name_equals(const uint8_t *line, size_t length,
+static FLASHMEM int header_name_equals(const uint8_t *line, size_t length,
 	                          const char *name)
 {
 	size_t name_length = strlen(name);
@@ -77,13 +94,13 @@ static int header_name_equals(const uint8_t *line, size_t length,
 	return 1;
 }
 
-static int token_equals(const uint8_t *value, size_t length, const char *token)
+static FLASHMEM int token_equals(const uint8_t *value, size_t length, const char *token)
 {
 	size_t token_length = strlen(token);
 	return length == token_length && memcmp(value, token, token_length) == 0;
 }
 
-static AiusHttpRoute route_for(const uint8_t *path, size_t length,
+static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 	                             AiusHttpRequest *request)
 {
 	if (token_equals(path, length, "/"))
@@ -142,7 +159,7 @@ static AiusHttpRoute route_for(const uint8_t *path, size_t length,
 	return AIUS_HTTP_ROUTE_UNKNOWN;
 }
 
-static AiusHttpResult extract_content_range(const uint8_t *headers, size_t length,
+static FLASHMEM AiusHttpResult extract_content_range(const uint8_t *headers, size_t length,
 	                                         AiusHttpRequest *request)
 {
 	static const char prefix[] = "Content-Range: bytes ";
@@ -175,7 +192,7 @@ static AiusHttpResult extract_content_range(const uint8_t *headers, size_t lengt
 	return AIUS_HTTP_OK;
 }
 
-static AiusHttpResult extract_framing(const uint8_t *headers, size_t length,
+static FLASHMEM AiusHttpResult extract_framing(const uint8_t *headers, size_t length,
 	                                  AiusHttpRequest *request)
 {
 	const uint8_t *cursor = headers;
@@ -214,7 +231,7 @@ static AiusHttpResult extract_framing(const uint8_t *headers, size_t length,
 	return AIUS_HTTP_OK;
 }
 
-static int json_value(const uint8_t *body, size_t length, const char *key,
+static FLASHMEM int json_value(const uint8_t *body, size_t length, const char *key,
 	                    const char *value)
 {
 	char expected[64];
@@ -226,7 +243,7 @@ static int json_value(const uint8_t *body, size_t length, const char *key,
 	       memcmp(body, expected, length) == 0;
 }
 
-static AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
+static FLASHMEM AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
 	                                   AiusHttpRequest *request)
 {
 	static const char header_name[] = "X-Aius-SD-Auth";
@@ -266,14 +283,14 @@ static AiusHttpResult extract_sd_auth(const uint8_t *headers, size_t length,
 	return AIUS_HTTP_OK;
 }
 
-static int is_streamed_request(const AiusHttpRequest *request)
+static FLASHMEM int is_streamed_request(const AiusHttpRequest *request)
 {
 	return request->method == AIUS_HTTP_PUT &&
 	       (request->route == AIUS_HTTP_ROUTE_SD_FILE ||
 	        request->route == AIUS_HTTP_ROUTE_SD_REPLAY);
 }
 
-AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
+FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	                               AiusHttpRequest *request)
 {
 	if (data == NULL || request == NULL || length == 0)
@@ -423,7 +440,7 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	return AIUS_HTTP_OK;
 }
 
-const char *aius_http_reason(unsigned status)
+FLASHMEM const char *aius_http_reason(unsigned status)
 {
 	switch (status) {
 	case 200: return "OK";
@@ -445,7 +462,7 @@ const char *aius_http_reason(unsigned status)
 	}
 }
 
-static int valid_content_type(const char *content_type)
+static FLASHMEM int valid_content_type(const char *content_type)
 {
 	size_t length = 0;
 	if (content_type == NULL)
@@ -459,7 +476,7 @@ static int valid_content_type(const char *content_type)
 	return length != 0u && length < AIUS_HTTP_CONTENT_TYPE_STORAGE;
 }
 
-size_t aius_http_write_headers(uint8_t *output, size_t capacity,
+FLASHMEM size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 	                           unsigned status, const char *content_type,
 	                           uint64_t content_length)
 {
@@ -478,7 +495,7 @@ size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 	return (size_t)header_length;
 }
 
-size_t aius_http_write_response(uint8_t *output, size_t capacity,
+FLASHMEM size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              unsigned status, const char *content_type,
 	                              const uint8_t *body, size_t body_length)
 {

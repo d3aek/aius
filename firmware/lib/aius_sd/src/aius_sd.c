@@ -3,6 +3,23 @@
 #include <limits.h>
 #include <string.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * per-epoch SD job state machine), so every definition below carries FLASHMEM
+ * and lands in FLASH instead of the shared FlexRAM/ITCM pool the audio pipeline
+ * needs. FLASHMEM is Teensyduino's __attribute__((section(".flashmem"))) from
+ * <avr/pgmspace.h>; TEENSYDUINO is a project-wide compiler -D, so the native
+ * host suites fall through to the no-op and this file keeps its portable,
+ * Arduino-free compile. The attribute must sit on each DEFINITION: GCC does not
+ * merge a `section` attribute from a forward declaration, so a prototype-only
+ * FLASHMEM silently leaves the code in ITCM. Enforced post-link by
+ * test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 #define AIUS_SD_MAX_TRANSFER 512u
 #define AIUS_SD_RESERVED_ACTION_IDS UINT64_C(262)
 
@@ -15,18 +32,18 @@ typedef enum {
 static void route_abort(AiusSdJob *job);
 static void emit_for_phase(AiusSdJob *job, AiusSdAction *action);
 
-static void clear_action(AiusSdAction *action)
+static FLASHMEM void clear_action(AiusSdAction *action)
 {
 	if (action != NULL)
 		memset(action, 0, sizeof(*action));
 }
 
-static void clear_result(AiusSdResult *result)
+static FLASHMEM void clear_result(AiusSdResult *result)
 {
 	memset(result, 0, sizeof(*result));
 }
 
-static bool job_is_quiescent(const AiusSdJob *job)
+static FLASHMEM bool job_is_quiescent(const AiusSdJob *job)
 {
 	if (job->state == AIUS_SD_IDLE)
 		return true;
@@ -35,13 +52,13 @@ static bool job_is_quiescent(const AiusSdJob *job)
 	       job->terminal_emitted;
 }
 
-static void set_phase(AiusSdJob *job, AiusSdPhase phase, AiusSdState state)
+static FLASHMEM void set_phase(AiusSdJob *job, AiusSdPhase phase, AiusSdState state)
 {
 	job->phase = phase;
 	job->state = state;
 }
 
-static void record_fault(AiusSdJob *job,
+static FLASHMEM void record_fault(AiusSdJob *job,
 	                 AiusSdFault fault,
 	                 uint32_t driver_fault)
 {
@@ -63,7 +80,7 @@ static void record_fault(AiusSdJob *job,
 	job->abort_requested = true;
 }
 
-static void finish_failure(AiusSdJob *job)
+static FLASHMEM void finish_failure(AiusSdJob *job)
 {
 	if (job->last_fault == AIUS_SD_FAULT_NONE)
 		job->last_fault = AIUS_SD_FAULT_PROTOCOL;
@@ -79,7 +96,7 @@ static void finish_failure(AiusSdJob *job)
 	set_phase(job, AIUS_SD_PHASE_TERMINAL, AIUS_SD_FAILED);
 }
 
-static void finish_success(AiusSdJob *job)
+static FLASHMEM void finish_success(AiusSdJob *job)
 {
 	clear_result(&job->result);
 
@@ -112,7 +129,7 @@ static void finish_success(AiusSdJob *job)
 	set_phase(job, AIUS_SD_PHASE_TERMINAL, AIUS_SD_DONE);
 }
 
-static void reset_for_start(AiusSdJob *job)
+static FLASHMEM void reset_for_start(AiusSdJob *job)
 {
 	uint8_t *buffer = job->buffer;
 	size_t capacity = job->capacity;
@@ -127,7 +144,7 @@ static void reset_for_start(AiusSdJob *job)
 	job->state = AIUS_SD_IDLE;
 }
 
-static void reject_start(AiusSdJob *job, AiusSdFault fault)
+static FLASHMEM void reject_start(AiusSdJob *job, AiusSdFault fault)
 {
 	reset_for_start(job);
 	job->last_fault = fault;
@@ -135,7 +152,7 @@ static void reject_start(AiusSdJob *job, AiusSdFault fault)
 	finish_failure(job);
 }
 
-static bool copy_canonical_path(const char *source,
+static FLASHMEM bool copy_canonical_path(const char *source,
 	                        char destination[AIUS_SD_PATH_STORAGE])
 {
 	size_t length = 0u;
@@ -177,7 +194,7 @@ static bool copy_canonical_path(const char *source,
 	return true;
 }
 
-static bool paths_are_distinct(const char *first,
+static FLASHMEM bool paths_are_distinct(const char *first,
 	                       const char *second,
 	                       const char *third)
 {
@@ -190,7 +207,7 @@ static bool paths_are_distinct(const char *first,
 	return true;
 }
 
-static AiusSdFault validate_request(const AiusSdJob *job,
+static FLASHMEM AiusSdFault validate_request(const AiusSdJob *job,
 	                            const AiusSdJobRequest *request,
 	                            uint32_t now_ms,
 	                            uint32_t deadline_ms,
@@ -341,7 +358,7 @@ static AiusSdFault validate_request(const AiusSdJob *job,
 	return AIUS_SD_FAULT_NONE;
 }
 
-void aius_sd_job_init(AiusSdJob *job, uint8_t *buffer, size_t capacity)
+FLASHMEM void aius_sd_job_init(AiusSdJob *job, uint8_t *buffer, size_t capacity)
 {
 	if (job == NULL)
 		return;
@@ -352,7 +369,7 @@ void aius_sd_job_init(AiusSdJob *job, uint8_t *buffer, size_t capacity)
 	job->next_action_id = 1u;
 }
 
-void aius_sd_job_start(AiusSdJob *job,
+FLASHMEM void aius_sd_job_start(AiusSdJob *job,
 	               const AiusSdJobRequest *request,
 	               uint32_t now_ms,
 	               uint32_t deadline_ms)
@@ -407,7 +424,7 @@ void aius_sd_job_start(AiusSdJob *job,
 	set_phase(job, AIUS_SD_PHASE_BEGIN, AIUS_SD_PREPARE);
 }
 
-void aius_sd_job_cancel(AiusSdJob *job)
+FLASHMEM void aius_sd_job_cancel(AiusSdJob *job)
 {
 	if (job == NULL || job->state == AIUS_SD_IDLE ||
 	    job->state == AIUS_SD_DONE || job->state == AIUS_SD_FAILED)
@@ -415,7 +432,7 @@ void aius_sd_job_cancel(AiusSdJob *job)
 	job->cancel_requested = true;
 }
 
-static bool is_replace_temp_disposable(const AiusSdJob *job)
+static FLASHMEM bool is_replace_temp_disposable(const AiusSdJob *job)
 {
 	return job->kind == AIUS_SD_JOB_UPLOAD &&
 	       job->install_mode == AIUS_SD_INSTALL_REPLACE &&
@@ -423,7 +440,7 @@ static bool is_replace_temp_disposable(const AiusSdJob *job)
 	       !job->install_failed;
 }
 
-static void select_existence(AiusSdJob *job,
+static FLASHMEM void select_existence(AiusSdJob *job,
 	                     AiusSdExistencePurpose purpose,
 	                     AiusSdState state)
 {
@@ -431,7 +448,7 @@ static void select_existence(AiusSdJob *job,
 	set_phase(job, AIUS_SD_PHASE_PATH_EXISTS, state);
 }
 
-static void continue_after_committed_backup(AiusSdJob *job)
+static FLASHMEM void continue_after_committed_backup(AiusSdJob *job)
 {
 	job->backup_moved = false;
 	if (job->publish) {
@@ -445,7 +462,7 @@ static void continue_after_committed_backup(AiusSdJob *job)
 	}
 }
 
-static void route_abort(AiusSdJob *job)
+static FLASHMEM void route_abort(AiusSdJob *job)
 {
 	if (!job->abort_requested ||
 	    job->outstanding_action != AIUS_SD_ACTION_NONE ||
@@ -496,7 +513,7 @@ static void route_abort(AiusSdJob *job)
 	finish_failure(job);
 }
 
-bool aius_sd_job_supply(AiusSdJob *job,
+FLASHMEM bool aius_sd_job_supply(AiusSdJob *job,
 	                const uint8_t *data,
 	                size_t length)
 {
@@ -537,12 +554,12 @@ bool aius_sd_job_supply(AiusSdJob *job,
 	return true;
 }
 
-const AiusSdResult *aius_sd_job_result(const AiusSdJob *job)
+FLASHMEM const AiusSdResult *aius_sd_job_result(const AiusSdJob *job)
 {
 	return job == NULL ? NULL : &job->result;
 }
 
-static bool emit_correlated(AiusSdJob *job,
+static FLASHMEM bool emit_correlated(AiusSdJob *job,
 	                    AiusSdAction *action,
 	                    AiusSdActionKind kind,
 	                    bool reserved)
@@ -591,20 +608,20 @@ static bool emit_correlated(AiusSdJob *job,
 	return true;
 }
 
-static void emit_uncorrelated(AiusSdAction *action,
+static FLASHMEM void emit_uncorrelated(AiusSdAction *action,
 	                      AiusSdActionKind kind)
 {
 	action->kind = kind;
 }
 
-static const char *upload_file_path(const AiusSdJob *job)
+static FLASHMEM const char *upload_file_path(const AiusSdJob *job)
 {
 	return job->install_mode == AIUS_SD_INSTALL_APPEND_PART
 		       ? job->target_path
 		       : job->temp_path;
 }
 
-static const char *mkdir_source_path(const AiusSdJob *job, uint8_t index)
+static FLASHMEM const char *mkdir_source_path(const AiusSdJob *job, uint8_t index)
 {
 	if (index == 0u)
 		return job->target_path;
@@ -613,7 +630,7 @@ static const char *mkdir_source_path(const AiusSdJob *job, uint8_t index)
 	return job->backup_path;
 }
 
-static bool prepare_next_directory(AiusSdJob *job)
+static FLASHMEM bool prepare_next_directory(AiusSdJob *job)
 {
 	uint8_t path_count =
 		job->install_mode == AIUS_SD_INSTALL_APPEND_PART ? 1u : 3u;
@@ -643,7 +660,7 @@ static bool prepare_next_directory(AiusSdJob *job)
 	return false;
 }
 
-static const char *existence_path(const AiusSdJob *job)
+static FLASHMEM const char *existence_path(const AiusSdJob *job)
 {
 	switch (job->existence_purpose) {
 	case AIUS_SD_EXISTS_MKDIR:
@@ -678,14 +695,14 @@ static const char *existence_path(const AiusSdJob *job)
 	}
 }
 
-static bool existence_uses_reserved_id(const AiusSdJob *job)
+static FLASHMEM bool existence_uses_reserved_id(const AiusSdJob *job)
 {
 	return job->existence_purpose ==
 		       AIUS_SD_EXISTS_REMOVE_COMMITTED_BACKUP ||
 	       job->existence_purpose == AIUS_SD_EXISTS_CLEANUP_TEMP;
 }
 
-static void emit_existence(AiusSdJob *job, AiusSdAction *action)
+static FLASHMEM void emit_existence(AiusSdJob *job, AiusSdAction *action)
 {
 	const char *path = existence_path(job);
 
@@ -700,7 +717,7 @@ static void emit_existence(AiusSdJob *job, AiusSdAction *action)
 		action->path = path;
 }
 
-static void emit_upload_open(AiusSdJob *job, AiusSdAction *action)
+static FLASHMEM void emit_upload_open(AiusSdJob *job, AiusSdAction *action)
 {
 	set_phase(job, AIUS_SD_PHASE_UPLOAD_OPEN, AIUS_SD_OPEN);
 	AiusSdActionKind kind =
@@ -711,7 +728,7 @@ static void emit_upload_open(AiusSdJob *job, AiusSdAction *action)
 		action->path = upload_file_path(job);
 }
 
-static void emit_mkdir_or_next(AiusSdJob *job, AiusSdAction *action)
+static FLASHMEM void emit_mkdir_or_next(AiusSdJob *job, AiusSdAction *action)
 {
 	if (job->directory_path[0] != '\0') {
 		if (emit_correlated(job, action, AIUS_SD_ACTION_MKDIR, false))
@@ -739,7 +756,7 @@ static void emit_mkdir_or_next(AiusSdJob *job, AiusSdAction *action)
 			               : job->temp_path;
 }
 
-static void emit_read(AiusSdJob *job,
+static FLASHMEM void emit_read(AiusSdJob *job,
 	              AiusSdAction *action,
 	              bool config_read,
 	              bool reserved)
@@ -770,7 +787,7 @@ static void emit_read(AiusSdJob *job,
 	}
 }
 
-static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
+static FLASHMEM void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 {
 	switch (job->phase) {
 	case AIUS_SD_PHASE_NONE:
@@ -984,7 +1001,7 @@ static void emit_for_phase(AiusSdJob *job, AiusSdAction *action)
 	}
 }
 
-static void select_after_begin(AiusSdJob *job)
+static FLASHMEM void select_after_begin(AiusSdJob *job)
 {
 	switch (job->kind) {
 	case AIUS_SD_JOB_PROBE:
@@ -1016,7 +1033,7 @@ static void select_after_begin(AiusSdJob *job)
 	}
 }
 
-static void select_after_upload_close(AiusSdJob *job)
+static FLASHMEM void select_after_upload_close(AiusSdJob *job)
 {
 	if (job->install_mode == AIUS_SD_INSTALL_APPEND_PART) {
 		finish_success(job);
@@ -1028,7 +1045,7 @@ static void select_after_upload_close(AiusSdJob *job)
 	}
 }
 
-static void select_post_commit(AiusSdJob *job)
+static FLASHMEM void select_post_commit(AiusSdJob *job)
 {
 	if (job->backup_moved) {
 		select_existence(
@@ -1045,7 +1062,7 @@ static void select_post_commit(AiusSdJob *job)
 	}
 }
 
-static void clear_won_abort_at_commit(AiusSdJob *job)
+static FLASHMEM void clear_won_abort_at_commit(AiusSdJob *job)
 {
 	if (job->last_fault == AIUS_SD_FAULT_CANCELLED ||
 	    job->last_fault == AIUS_SD_FAULT_TIMEOUT) {
@@ -1056,7 +1073,7 @@ static void clear_won_abort_at_commit(AiusSdJob *job)
 	job->cancel_requested = false;
 }
 
-static void handle_ok_event(AiusSdJob *job)
+static FLASHMEM void handle_ok_event(AiusSdJob *job)
 {
 	switch (job->phase) {
 	case AIUS_SD_PHASE_BEGIN:
@@ -1201,7 +1218,7 @@ static void handle_ok_event(AiusSdJob *job)
 	}
 }
 
-static void handle_bool_event(AiusSdJob *job, bool value)
+static FLASHMEM void handle_bool_event(AiusSdJob *job, bool value)
 {
 	if (job->phase == AIUS_SD_PHASE_PROBE_MEDIA) {
 		finish_success(job);
@@ -1275,7 +1292,7 @@ static void handle_bool_event(AiusSdJob *job, bool value)
 	}
 }
 
-static void handle_size_event(AiusSdJob *job, uint64_t size)
+static FLASHMEM void handle_size_event(AiusSdJob *job, uint64_t size)
 {
 	switch (job->phase) {
 	case AIUS_SD_PHASE_CONFIG_SIZE:
@@ -1361,7 +1378,7 @@ static void handle_size_event(AiusSdJob *job, uint64_t size)
 	}
 }
 
-static void handle_bytes_event(AiusSdJob *job, size_t bytes)
+static FLASHMEM void handle_bytes_event(AiusSdJob *job, size_t bytes)
 {
 	if (bytes == 0u) {
 		record_fault(job,
@@ -1415,13 +1432,13 @@ static void handle_bytes_event(AiusSdJob *job, size_t bytes)
 	}
 }
 
-static bool is_post_commit_publish_phase(AiusSdPhase phase)
+static FLASHMEM bool is_post_commit_publish_phase(AiusSdPhase phase)
 {
 	return phase >= AIUS_SD_PHASE_INSTALL_PUBLISH_OPEN &&
 	       phase <= AIUS_SD_PHASE_INSTALL_PUBLISH;
 }
 
-static AiusSdFault map_driver_fault(const AiusSdJob *job,
+static FLASHMEM AiusSdFault map_driver_fault(const AiusSdJob *job,
 	                            AiusSdActionKind action)
 {
 	if (job->phase == AIUS_SD_PHASE_PATH_EXISTS) {
@@ -1466,7 +1483,7 @@ static AiusSdFault map_driver_fault(const AiusSdJob *job,
 	return AIUS_SD_FAULT_IO;
 }
 
-static void handle_fault_event(AiusSdJob *job,
+static FLASHMEM void handle_fault_event(AiusSdJob *job,
 	                       AiusSdActionKind action,
 	                       uint32_t driver_fault)
 {
@@ -1516,7 +1533,7 @@ static void handle_fault_event(AiusSdJob *job,
 	}
 }
 
-static bool event_is_empty_none(AiusSdEvent event)
+static FLASHMEM bool event_is_empty_none(AiusSdEvent event)
 {
 	return event.kind == AIUS_SD_EVENT_NONE &&
 	       event.action_id == 0u &&
@@ -1526,7 +1543,7 @@ static bool event_is_empty_none(AiusSdEvent event)
 	       event.fault == 0u;
 }
 
-static AiusSdEventKind expected_event_kind(AiusSdActionKind action)
+static FLASHMEM AiusSdEventKind expected_event_kind(AiusSdActionKind action)
 {
 	switch (action) {
 	case AIUS_SD_ACTION_MEDIA_PRESENT:
@@ -1557,7 +1574,7 @@ static AiusSdEventKind expected_event_kind(AiusSdActionKind action)
 	}
 }
 
-static size_t outstanding_byte_length(const AiusSdJob *job)
+static FLASHMEM size_t outstanding_byte_length(const AiusSdJob *job)
 {
 	if (job->outstanding_action == AIUS_SD_ACTION_WRITE)
 		return job->pending;
@@ -1574,7 +1591,7 @@ static size_t outstanding_byte_length(const AiusSdJob *job)
 	return 0u;
 }
 
-static bool success_payload_is_valid(AiusSdEvent event,
+static FLASHMEM bool success_payload_is_valid(AiusSdEvent event,
 	                             AiusSdEventKind expected)
 {
 	switch (expected) {
@@ -1595,13 +1612,13 @@ static bool success_payload_is_valid(AiusSdEvent event,
 	}
 }
 
-static void clear_outstanding(AiusSdJob *job)
+static FLASHMEM void clear_outstanding(AiusSdJob *job)
 {
 	job->outstanding_action = AIUS_SD_ACTION_NONE;
 	job->outstanding_action_id = 0u;
 }
 
-static AiusSdEventDisposition consume_event(AiusSdJob *job,
+static FLASHMEM AiusSdEventDisposition consume_event(AiusSdJob *job,
 	                                    AiusSdEvent event)
 {
 	if (job->outstanding_action == AIUS_SD_ACTION_NONE) {
@@ -1671,13 +1688,13 @@ static AiusSdEventDisposition consume_event(AiusSdJob *job,
 	return AIUS_SD_EVENT_CONSUMED;
 }
 
-static bool deadline_expired(const AiusSdJob *job, uint32_t now_ms)
+static FLASHMEM bool deadline_expired(const AiusSdJob *job, uint32_t now_ms)
 {
 	return job->deadline_ms != 0u &&
 	       (int32_t)(now_ms - job->deadline_ms) >= 0;
 }
 
-static bool continue_post_commit_publication(const AiusSdJob *job)
+static FLASHMEM bool continue_post_commit_publication(const AiusSdJob *job)
 {
 	return job->installed &&
 	       job->last_fault == AIUS_SD_FAULT_CLEANUP &&
@@ -1685,7 +1702,7 @@ static bool continue_post_commit_publication(const AiusSdJob *job)
 	       job->state != AIUS_SD_FAILED;
 }
 
-void aius_sd_job_step(AiusSdJob *job,
+FLASHMEM void aius_sd_job_step(AiusSdJob *job,
 	              uint32_t now_ms,
 	              AiusSdEvent event,
 	              AiusSdAction *action)

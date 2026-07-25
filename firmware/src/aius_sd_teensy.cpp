@@ -2,16 +2,35 @@
 
 #include <limits.h>
 
+/* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
+ * one-shot SD driver adapter, stepped once per epoch), so every definition
+ * below carries FLASHMEM and lands in FLASH instead of the shared FlexRAM/ITCM
+ * pool the audio pipeline needs. FLASHMEM is Teensyduino's
+ * __attribute__((section(".flashmem"))) from <avr/pgmspace.h>; TEENSYDUINO is a
+ * project-wide compiler -D, so the native host suites fall through to the
+ * no-op. The attribute must sit on each DEFINITION: GCC does not merge a
+ * `section` attribute from a forward declaration, so a prototype-only FLASHMEM
+ * silently leaves the code in ITCM. The SDFile/File/StreamFile members that
+ * <SD.h> emits here are framework COMDAT copies, not definitions of this file;
+ * they are deduplicated at link time and stay outside this contract. Enforced
+ * post-link by test/itcm-placement/verify_target.py. */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 namespace {
 
 constexpr size_t kMaximumTransfer = 512u;
 
-AiusSdEvent none_event()
+FLASHMEM AiusSdEvent none_event()
 {
 	return {};
 }
 
-AiusSdEvent action_event(AiusSdEventKind kind, uint64_t action_id)
+FLASHMEM AiusSdEvent action_event(AiusSdEventKind kind, uint64_t action_id)
 {
 	AiusSdEvent event{};
 	event.kind = kind;
@@ -19,33 +38,33 @@ AiusSdEvent action_event(AiusSdEventKind kind, uint64_t action_id)
 	return event;
 }
 
-bool empty_payload(const AiusSdAction *action)
+FLASHMEM bool empty_payload(const AiusSdAction *action)
 {
 	return action->path == nullptr && action->path_to == nullptr &&
 	       action->buffer == nullptr && action->length == 0u &&
 	       action->offset == 0u && action->fault == 0u;
 }
 
-bool path_payload(const AiusSdAction *action)
+FLASHMEM bool path_payload(const AiusSdAction *action)
 {
 	return action->path != nullptr && action->path_to == nullptr &&
 	       action->buffer == nullptr && action->length == 0u &&
 	       action->offset == 0u && action->fault == 0u;
 }
 
-bool rename_payload(const AiusSdAction *action)
+FLASHMEM bool rename_payload(const AiusSdAction *action)
 {
 	return action->path != nullptr && action->path_to != nullptr &&
 	       action->buffer == nullptr && action->length == 0u &&
 	       action->offset == 0u && action->fault == 0u;
 }
 
-bool truncate_payload(const AiusSdAction *action)
+FLASHMEM bool truncate_payload(const AiusSdAction *action)
 {
 	return empty_payload(action);
 }
 
-bool seek_payload(const AiusSdAction *action)
+FLASHMEM bool seek_payload(const AiusSdAction *action)
 {
 	return action->path == nullptr && action->path_to == nullptr &&
 	       action->buffer == nullptr && action->length == 0u &&
@@ -53,7 +72,7 @@ bool seek_payload(const AiusSdAction *action)
 	       action->fault == 0u;
 }
 
-bool transfer_payload(const AiusSdAction *action)
+FLASHMEM bool transfer_payload(const AiusSdAction *action)
 {
 	return action->path == nullptr && action->path_to == nullptr &&
 	       action->buffer != nullptr && action->length != 0u &&
@@ -62,7 +81,7 @@ bool transfer_payload(const AiusSdAction *action)
 	       action->fault == 0u;
 }
 
-void record_duration(AiusSdTeensy *adapter, uint32_t started, uint32_t ended)
+FLASHMEM void record_duration(AiusSdTeensy *adapter, uint32_t started, uint32_t ended)
 {
 	const uint32_t duration = ended - started;
 	adapter->last_duration_us = duration;
@@ -70,7 +89,7 @@ void record_duration(AiusSdTeensy *adapter, uint32_t started, uint32_t ended)
 		adapter->longest_duration_us = duration;
 }
 
-AiusSdEvent protocol_fault(
+FLASHMEM AiusSdEvent protocol_fault(
 	AiusSdTeensy *adapter,
 	const AiusSdAction *action)
 {
@@ -84,7 +103,7 @@ AiusSdEvent protocol_fault(
 	return event;
 }
 
-AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
+FLASHMEM AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
 {
 	adapter->last_fault = AIUS_SD_TEENSY_DRIVER_FAULT;
 	AiusSdEvent event = action_event(AIUS_SD_EVENT_FAULT, action_id);
@@ -92,14 +111,14 @@ AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
 	return event;
 }
 
-bool action_id_valid(const AiusSdAction *action)
+FLASHMEM bool action_id_valid(const AiusSdAction *action)
 {
 	return action->action_id != 0u;
 }
 
 }
 
-void aius_sd_teensy_init(AiusSdTeensy *adapter)
+FLASHMEM void aius_sd_teensy_init(AiusSdTeensy *adapter)
 {
 	if (adapter == nullptr)
 		return;
@@ -110,7 +129,7 @@ void aius_sd_teensy_init(AiusSdTeensy *adapter)
 	adapter->last_fault = 0u;
 }
 
-AiusSdEvent aius_sd_teensy_execute(
+FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 	AiusSdTeensy *adapter,
 	const AiusSdAction *action)
 {
