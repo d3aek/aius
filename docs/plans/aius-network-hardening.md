@@ -5137,6 +5137,65 @@ remaining ~4 s is a lost first DISCOVER, not waiting. Nothing further should be
 done about it without measuring the transmit side the way the receive side was
 measured.
 
+#### Third flash — the audio path runs, and what it measured
+
+Flashed `8895628a36e6` from a clean tree. Boot generation 15, network generation
+**1** with `network_last_fault=0` — the readiness gate still holds. First-attempt
+HalfKay again.
+
+**The DSP has run for the first time since the cutover.** `blocks` advances,
+`GET /api/meters` publishes real values, and `stop_reason` is on the wire. The
+clock handover (`24ff70f7b`) is confirmed on hardware: before this flash a replay
+reported `playing` while `offset_bytes` sat at 4,096, `queue_words` at the
+watermark and `blocks` at 0 — nothing consumed the queue.
+
+**All three HTTP interop defects are closed on the device, proven with a stock
+client rather than a crafted one.** A default `urllib` request trips every one at
+once and none of them deliberately — it title-cases the field name to
+`X-aius-sd-auth`, `http.client` writes headers and body in separate segments, and
+`json.dumps` puts a space after every colon. Status, replay start, replay status
+and replay stop: 4/4, no workarounds.
+
+**The measured per-block DSP cost, the last estimate standing in this plan.**
+From the DWT counters at 48 kHz with 512-frame blocks:
+
+| | measured | this plan's estimate |
+|---|---|---|
+| `dsp_cycles_last` | 398,591 (664 µs at 600 MHz) | — |
+| `dsp_cycles_max` | 431,995 (720 µs) | — |
+| share of the 10,667 µs block period | **6.2 – 6.8 %** | ~1.4 % |
+
+**So the estimate was low by roughly 4.5x.** It is still comfortable — 93 % of the
+block period is free — but every figure derived from the old number is wrong, and
+Phase 14e must carry these instead. Note this is a replay-fed measurement with no
+S/PDIF carrier; the passthrough and DTS-decode paths are still unmeasured.
+
+**Defect found: the replay refill runs at 65 % of realtime.** Sampled over 18 s:
+
+```
+     t   blocks     d/s  overrun     o/s    offset    kB/s  queue  under
+   2.2     2057    62.6     3688    95.8    282624   125.3      0      5
+   5.4     2252    61.6     4006    98.9    688128   123.2      0      5
+  10.8     2582    61.2     4542   100.2   1363968   122.5      0      5
+```
+
+`blocks` advances at ~61/s against a realtime 93.8/s, and the file offset at
+~123 kB/s against 187.5 kB/s. Both are the same 65 % ratio, so one bottleneck
+gates both. **`queue_words` is 0 on every sample** — the consumer drains it
+instantly and then overruns at ~99/s. The DSP is not the cause; it uses 6.2 % of
+its budget. The bounded refill introduced by 14c simply does not deliver enough
+bytes per second. `underruns` sits frozen at 5 throughout, so whatever it counts,
+it is not counting this — a second, smaller defect.
+
+**The event ring earned itself immediately.** The type-4 overrun events widened in
+`c20a03c8e` are what made the overrun rate visible as a rate rather than a
+number. They also expose a flaw in that widening: at ~99 overruns/s an eight-entry
+ring overflows continuously (`event_overflows` 2,625 against `event_sequence`
+2,633), so during a storm the ring carries only the storm. One event per counter
+per epoch is not a tight enough bound for a counter that advances every epoch;
+it should edge-detect entry to and exit from a sustained condition rather than
+report every epoch's delta.
+
 #### The SD directory index, and what it immediately found
 
 `GET /sd/<dir>/` serves a listing on the device. Its first use found that the
