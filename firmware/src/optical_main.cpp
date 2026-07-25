@@ -380,6 +380,49 @@ struct AiusEvent {
 	uint16_t detail;
 };
 
+/* The ring's `type` byte is a wire contract: GET /api/events serves it verbatim,
+ * tools/net/aius_net_runner.py reads it, and the status compatibility contract
+ * pins it. Values are allocated once and never renumbered -- a reader meeting an
+ * unknown type has one field it cannot name, a reader meeting a moved one is
+ * silently wrong about every field beside it. Naming them here rather than
+ * writing the digits at the call sites is what makes that checkable.
+ *
+ *    1  STATE                 the S/PDIF lock or pipeline classification moved.
+ *                             `state` carries the new value; detail is 0.
+ *    2  TEST_TONE             the test tone was toggled. detail 1 running, 0 not.
+ *    3  REPLAY_STOP           a replay ended by itself. detail is the stop reason.
+ *
+ * 4..10 are counter edges, emitted by service_event_edges() at the bottom of this
+ * file. Each says "a counter the status payload already carries advanced", with
+ * the delta or the code that explains it in `detail` -- the fact a poller could
+ * previously only infer from two samples of a number, and never order against
+ * anything else. Their bound (at most one event per counter per epoch, carrying
+ * the delta rather than one event per increment) belongs to that function and is
+ * documented there.
+ *
+ *    4  OVERRUN               audio blocks the pipeline refused. detail: delta.
+ *    5  NETWORK_DROP          datagrams that failed decode. detail: delta.
+ *    6  NETWORK_BUDGET        UDP service calls over their budget. detail: delta.
+ *    7  CONFIG_ERROR          a config parse failed. detail: AiusConfigError.
+ *    8  NETWORK_RESTART       the supervisor restarted the stack. detail: the
+ *                             AiusNetFault that caused it.
+ *    9  DHCP_UPDATE           the adapter bound a new lease. detail: delta.
+ *   10  WATCHDOG_EARLY_RESET  the retained ledger's early-reset count, reported
+ *                             on the first epoch that observes it. detail: the
+ *                             count, which is fixed for the life of the boot. */
+enum AiusEventType : uint8_t {
+	AIUS_EVENT_STATE = 1,
+	AIUS_EVENT_TEST_TONE = 2,
+	AIUS_EVENT_REPLAY_STOP = 3,
+	AIUS_EVENT_OVERRUN = 4,
+	AIUS_EVENT_NETWORK_DROP = 5,
+	AIUS_EVENT_NETWORK_BUDGET = 6,
+	AIUS_EVENT_CONFIG_ERROR = 7,
+	AIUS_EVENT_NETWORK_RESTART = 8,
+	AIUS_EVENT_DHCP_UPDATE = 9,
+	AIUS_EVENT_WATCHDOG_EARLY_RESET = 10,
+};
+
 static AiusEvent g_events[8];
 static uint32_t g_event_sequence;
 static uint32_t g_event_overflows;
@@ -488,7 +531,7 @@ static FLASHMEM void record_state(void)
 	if (state == g_last_state)
 		return;
 	g_last_state = state;
-	record_event(1, state, 0);
+	record_event(AIUS_EVENT_STATE, state, 0);
 }
 
 class AiusAudioProcessor : public AudioStream
@@ -1861,7 +1904,7 @@ static FLASHMEM void app_set_test_running(void *, bool running)
 	if (g_test_running == running)
 		return;
 	g_test_running = running;
-	record_event(2, current_state(), running ? 1u : 0u);
+	record_event(AIUS_EVENT_TEST_TONE, current_state(), running ? 1u : 0u);
 }
 
 static FLASHMEM void app_clear_counters(void *)
@@ -2919,7 +2962,8 @@ static FLASHMEM void replay_clock_service(void)
 		replay_job_cancel();
 		aius_replay_service_stop(&g_replay_service);
 		g_replay_stop_reason = REPLAY_STOP_CARRIER;
-		record_event(3, current_state(), REPLAY_STOP_CARRIER);
+		record_event(AIUS_EVENT_REPLAY_STOP, current_state(),
+		             REPLAY_STOP_CARRIER);
 	}
 	/* Exactly the predicate AiusAudioProcessor::update() branches on, ANDed
 	 * with the absence of a carrier, so the clock owner and the audio source
@@ -3134,7 +3178,135 @@ FLASHMEM void setup(void)
 	g_boot_healthy_at_ms = millis() + AIUS_BOOT_HEALTHY_MS;
 }
 
-/* Exactly one runtime epoch, then the two things the epoch itself must not do.
+/* ------------------------------------------------------------------ */
+/* Counter edges -> events                                             */
+/*                                                                     */
+/* Before this, record_event() had three reachable call sites and the  */
+/* ring answered almost nothing: every other observable fact on the    */
+/* device -- overruns, dropped datagrams, budget overruns, config      */
+/* errors, network restarts, DHCP updates, early watchdog resets --    */
+/* was a counter in the status payload and nothing else, so a poller   */
+/* saw a number that had changed but not when, and could not order it  */
+/* against anything. These seven edges are the fix, and every          */
+/* constraint below is load-bearing:                                   */
+/*                                                                     */
+/*  - Epoch-loop context only. loop() calls this once per pass, after  */
+/*    the epoch that may have advanced the counters. Nothing here runs */
+/*    in the audio ISR, and nothing new is exposed to it: the one      */
+/*    value the ISR owns (g_overruns) is read through the processor's  */
+/*    existing critical-section accessor, exactly as put_status() has  */
+/*    always read it.                                                  */
+/*                                                                     */
+/*  - One comparison per counter per epoch, against a scalar static.   */
+/*    Seven uint32_t of .bss, no bank, no array, no queue, no          */
+/*    transport. DTCM's free-for-locals zone is the whole stack for    */
+/*    both the main loop and the audio ISR, so anything larger than a  */
+/*    scalar per counter would be paid for out of it.                  */
+/*                                                                     */
+/*  - At most one event per counter per epoch, carrying the delta      */
+/*    rather than one event per increment, so no burst can outrun the  */
+/*    eight-entry ring. Two counters really can advance many times     */
+/*    between two passes: g_overruns, written by the audio ISR once    */
+/*    per refused block and so unbounded against an epoch that stalls, */
+/*    and g_config_error_count, which has one HTTP producer and two SD */
+/*    ones. The remaining five are bounded to +1 by their producers    */
+/*    (one datagram received per epoch, one budget check per epoch,    */
+/*    one supervisor step, one lease, one retained ledger read) and    */
+/*    are collapsed the same way regardless, so the bound is a         */
+/*    property of this function and not of a producer that may change. */
+/*                                                                     */
+/*  - The ring's accounting stays exactly as truthful as it was. A     */
+/*    burst overwrites the oldest entry and increments                 */
+/*    g_event_overflows in record_event(); that counter is what the    */
+/*    soak reads to know what it missed, and nothing here grows to     */
+/*    avoid incrementing it.                                           */
+/*                                                                     */
+/*  - current_state() is called per emitted event rather than per      */
+/*    epoch, because it reads the S/PDIF peripheral. Events are rare;  */
+/*    epochs are not.                                                  */
+/*                                                                     */
+/* Not included, deliberately: the four http_* counters, whose         */
+/* producer was retired at the cutover and which the status payload    */
+/* therefore serves as constant zero (see put_status()) -- an edge on  */
+/* a constant is a call site that can never fire. And record_state()   */
+/* is NOT called from here: a state edge is already an event, and a    */
+/* flapping carrier detected per epoch rather than per poll would fill */
+/* the ring with the one thing it already reported.                    */
+/* ------------------------------------------------------------------ */
+
+static uint32_t g_prev_overruns;
+static uint32_t g_prev_network_drops;
+static uint32_t g_prev_network_budget_overruns;
+static uint32_t g_prev_config_errors;
+static uint32_t g_prev_network_restarts;
+static uint32_t g_prev_dhcp_updates;
+static uint32_t g_prev_watchdog_early_resets;
+
+/* One counter's edge in one comparison: the advance since the previous epoch,
+ * clamped to the ring's 16-bit detail field, or 0 for "nothing to report".
+ *
+ * The static is resynchronised on every call, including a decrease: POST
+ * /api/counters clears g_overruns, and a clear must cost one missed edge rather
+ * than a permanent four-billion delta on the next real one. */
+static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)
+{
+	const uint32_t delta = current - *previous;
+
+	*previous = current;
+	if (delta == 0u || delta > 0x7FFFFFFFu)
+		return 0u;
+	return delta > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)delta;
+}
+
+static FLASHMEM void service_event_edges(void)
+{
+	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
+	const AiusNetSupervisor *supervisor = &g_runtime.network_http.supervisor;
+	uint16_t delta;
+
+	delta = counter_edge(g_audio_processor.overrun_count(), &g_prev_overruns);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_OVERRUN, current_state(), delta);
+
+	delta = counter_edge(g_network_drops, &g_prev_network_drops);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_NETWORK_DROP, current_state(), delta);
+
+	delta = counter_edge(g_network_budget_overruns,
+	                     &g_prev_network_budget_overruns);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_NETWORK_BUDGET, current_state(), delta);
+
+	/* detail is the error code, not the delta: which parse failed is the
+	 * diagnostic, and the count itself is already in the status payload. */
+	delta = counter_edge(g_config_error_count, &g_prev_config_errors);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_CONFIG_ERROR, current_state(),
+		             (uint16_t)g_config.error_code);
+
+	/* Likewise: a restart's delta is always 1, and the fault that caused it
+	 * is the only thing a reader of this event wants. */
+	delta = counter_edge(supervisor->restarts, &g_prev_network_restarts);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_NETWORK_RESTART, current_state(),
+		             (uint16_t)supervisor->last_fault);
+
+	delta = counter_edge(network->dhcp_updates, &g_prev_dhcp_updates);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_DHCP_UPDATE, current_state(), delta);
+
+	/* Fixed for the life of the boot, so this fires at most once: on the
+	 * first epoch after the RESET_CAPTURE checkpoint publishes it. That is
+	 * the point -- it puts the retained early-reset count into the same
+	 * ordered stream as everything that happened after it. */
+	delta = counter_edge(g_runtime.boot_status.watchdog_early_resets,
+	                     &g_prev_watchdog_early_resets);
+	if (delta != 0u)
+		record_event(AIUS_EVENT_WATCHDOG_EARLY_RESET, current_state(),
+		             delta);
+}
+
+/* Exactly one runtime epoch, then the three things the epoch itself must not do.
  *
  * The epoch runs checkpoints 0..8 in order, records EPOCH_COMPLETE and feeds
  * the watchdog once; an incomplete epoch returns false without that feed, which
@@ -3144,6 +3316,10 @@ FLASHMEM void setup(void)
  * never resets or delays, so the reset happens here -- after the epoch, so the
  * HTTP response or UDP ack that asked for it has already been written.
  *
+ * service_event_edges() is the epoch's one observability step and the sole call
+ * site of the counter edges above; it belongs here rather than at a checkpoint
+ * because an aborted epoch must still get its counters read.
+ *
  * FLASHMEM for the same reason as setup(): loop() is the epoch driver, not
  * per-block work. The audio path reaches the processor through AudioStream's
  * interrupt, never through here, so nothing in this function runs per block. */
@@ -3152,6 +3328,9 @@ FLASHMEM void loop(void)
 	const uint32_t now_ms = millis();
 	const bool completed = aius_runtime_teensy_epoch(&g_runtime, now_ms);
 
+	/* After the epoch, and unconditionally: an epoch that aborted before
+	 * EPOCH_COMPLETE is exactly the case whose counters explain the abort. */
+	service_event_edges();
 	if (completed && !g_boot_marked_healthy &&
 	    (int32_t)(now_ms - g_boot_healthy_at_ms) >= 0) {
 		/* Persisted by the next checkpoint, which commits the ledger. */

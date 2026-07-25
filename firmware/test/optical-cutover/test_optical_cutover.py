@@ -535,6 +535,202 @@ def assert_replay_clock_handover_is_bounded(text):
     )
 
 
+# Counter-edge events.
+#
+# record_event() had two reachable call sites, so the ring reported a lock
+# change and nothing else: every other observable fact -- overruns, dropped
+# datagrams, budget overruns, config errors, network restarts, DHCP updates,
+# early watchdog resets -- was a counter in the status payload, which tells a
+# poller that a number changed but never when, nor in what order against
+# anything else. service_event_edges() turns those counters into ring entries.
+#
+# Four properties are structural, and each is a real failure mode:
+#
+#   1. The emission sites are in the EPOCH LOOP. A counter edge detected from
+#      the audio callback would put ring writes, millis() and the S/PDIF
+#      peripheral read in AiusAudioProcessor::update(), which is the one
+#      context this whole cutover exists to keep clear -- and the ITCM guard
+#      would then be policing a section that must not exist.
+#   2. The per-epoch bound EXISTS. g_overruns advances once per refused audio
+#      block and is unbounded against an epoch that stalls; one event per
+#      increment would blow the eight-entry ring and bury everything rare in
+#      it. One `counter_edge()` per counter, one guarded `record_event()` per
+#      counter, and no loop in the body IS that bound, stated in a form this
+#      file can read.
+#   3. FLASHMEM is on each definition. The prototype cannot carry it (GCC does
+#      not merge a section attribute from a declaration), and a cold function
+#      without it emits .text from the one object the ITCM allowlist pins.
+#   4. The type values are ALLOCATED, never renumbered. `type` is served
+#      verbatim by GET /api/events and read by tools/net/aius_net_runner.py, so
+#      a renumber silently changes what every stored sample means.
+#
+# What this file CANNOT reach, stated plainly rather than faked: that a counter
+# advancing actually produces an event, that the delta is arithmetically right,
+# and that the ring drops the oldest entry while g_event_overflows stays
+# truthful. No native suite compiles optical_main.cpp, so those are device
+# facts, observed through GET /api/events on a board.
+EVENT_TYPE_VALUES = {
+    "AIUS_EVENT_STATE": 1,
+    "AIUS_EVENT_TEST_TONE": 2,
+    "AIUS_EVENT_REPLAY_STOP": 3,
+    "AIUS_EVENT_OVERRUN": 4,
+    "AIUS_EVENT_NETWORK_DROP": 5,
+    "AIUS_EVENT_NETWORK_BUDGET": 6,
+    "AIUS_EVENT_CONFIG_ERROR": 7,
+    "AIUS_EVENT_NETWORK_RESTART": 8,
+    "AIUS_EVENT_DHCP_UPDATE": 9,
+    "AIUS_EVENT_WATCHDOG_EARLY_RESET": 10,
+}
+# The three that predate the counter edges; the rest are the edges themselves.
+COUNTER_EDGE_TYPES = tuple(
+    name for name, value in EVENT_TYPE_VALUES.items() if value > 3
+)
+EDGE_SERVICE = "service_event_edges"
+EDGE_HELPER = "counter_edge"
+AUDIO_CALLBACK_MARKER = "void update(void) override"
+ENUM_ENTRY = re.compile(r"\b(AIUS_EVENT_[A-Z0-9_]+)\s*=\s*(\d+)\s*[,}]")
+PREVIOUS_STATIC = re.compile(r"^static\b.*\bg_prev_")
+PREVIOUS_SCALAR = re.compile(r"static uint32_t g_prev_[a-z0-9_]+;")
+
+
+def assert_event_types_are_allocated_not_renumbered(text):
+    clean = without_comments_and_literals(text)
+    allocated = {}
+    for name, value in ENUM_ENTRY.findall(clean):
+        assert name not in allocated, (
+            f"event type {name} is allocated twice in the enum"
+        )
+        allocated[name] = int(value)
+    assert allocated == EVENT_TYPE_VALUES, (
+        "the event-type allocation moved. `type` is a wire contract: GET "
+        "/api/events serves it verbatim and tools/net/aius_net_runner.py reads "
+        "it, so a value may be ADDED but never renumbered or reused. Expected "
+        f"{EVENT_TYPE_VALUES}, found {allocated}"
+    )
+    values = list(allocated.values())
+    assert len(set(values)) == len(values), (
+        f"two event types share one value: {sorted(values)}"
+    )
+    for name in EVENT_TYPE_VALUES:
+        assert re.search(rf"record_event\(\s*{name}\b", clean) is not None, (
+            f"{name} is allocated but never recorded. An allocated type with no "
+            "producer is a value no reader can ever see -- and the value is "
+            "then spent, because it may not be reused"
+        )
+
+
+def assert_counter_edges_are_epoch_loop_bound(text):
+    clean = without_comments_and_literals(text)
+    definitions = function_definitions(text)
+
+    for name in (EDGE_SERVICE, EDGE_HELPER):
+        assert name in definitions, (
+            f"{name}() is not defined; the counters that explain a fault are "
+            "back to being numbers with no time and no order"
+        )
+        assert re.search(
+            rf"^static\s+FLASHMEM\s+\w+\s+{name}\s*\(", clean, re.MULTILINE
+        ) is not None, (
+            f"{name}() carries no FLASHMEM on its DEFINITION. A prototype "
+            "cannot carry it -- GCC does not merge a section attribute from a "
+            "declaration -- so this cold function would emit .text from the "
+            "one object the ITCM allowlist pins"
+        )
+
+    loop_body = without_comments_and_literals(function_body(text, LOOP_MARKER))
+    assert loop_body.count(EDGE_SERVICE + "(") == 1, (
+        f"loop() must call {EDGE_SERVICE}() exactly once per epoch; found "
+        f"{loop_body.count(EDGE_SERVICE + '(')}. Zero is dead code and the "
+        "defect unfixed; more than one is more than one event per counter per "
+        "epoch, which is the burst the eight-entry ring cannot absorb"
+    )
+    reachable = clean.count(EDGE_SERVICE + "(")
+    assert reachable == 2, (
+        f"{EDGE_SERVICE}() has {reachable - 1} call sites; exactly one, in the "
+        "epoch loop, is what makes the per-epoch bound a property of the code "
+        "rather than of whoever calls it"
+    )
+
+    audio_body = without_comments_and_literals(
+        function_body(text, AUDIO_CALLBACK_MARKER)
+    )
+    for needle in ("record_event(", EDGE_SERVICE + "(", EDGE_HELPER + "("):
+        assert needle not in audio_body, (
+            f"the audio callback contains {needle!r}. Event emission is epoch "
+            "work: a ring write, a millis() read and a peripheral read do not "
+            "belong in AiusAudioProcessor::update()"
+        )
+
+    body = without_comments_and_literals(definitions[EDGE_SERVICE])
+    expected = len(COUNTER_EDGE_TYPES)
+    edges = body.count(EDGE_HELPER + "(")
+    assert edges == expected, (
+        f"{EDGE_SERVICE}() performs {edges} counter comparisons, expected "
+        f"{expected} -- one per instrumented counter, no more and no fewer"
+    )
+    emissions = body.count("record_event(")
+    assert emissions == expected, (
+        f"{EDGE_SERVICE}() has {emissions} record_event() sites against "
+        f"{expected} counters. More than one per counter is one event per "
+        "increment, which is the storm this bound exists to refuse"
+    )
+    assert re.search(r"\b(?:for|while)\s*\(", body) is None, (
+        f"{EDGE_SERVICE}() contains a loop, so one epoch can emit an unbounded "
+        "number of events -- the bound is one event per counter per epoch, "
+        "carrying the delta"
+    )
+    guards = len(re.findall(r"\bif\s*\(", body))
+    assert guards == expected, (
+        f"{EDGE_SERVICE}() has {guards} conditionals guarding {emissions} "
+        "emissions; an unguarded record_event() fires every epoch forever"
+    )
+    recorded = re.findall(r"record_event\(\s*(AIUS_EVENT_[A-Z0-9_]+)", body)
+    assert sorted(recorded) == sorted(COUNTER_EDGE_TYPES), (
+        f"{EDGE_SERVICE}() records {sorted(recorded)}, expected "
+        f"{sorted(COUNTER_EDGE_TYPES)}"
+    )
+    for name in COUNTER_EDGE_TYPES:
+        sites = len(re.findall(rf"record_event\(\s*{name}\b", clean))
+        assert sites == 1, (
+            f"{name} is recorded from {sites} call sites in the file; a "
+            "counter edge has exactly one, inside the bounded service"
+        )
+
+    helper = without_comments_and_literals(definitions[EDGE_HELPER])
+    store = re.search(r"\*\s*previous\s*=\s*current\s*;", helper)
+    assert store is not None, (
+        f"{EDGE_HELPER}() never writes back the previous value, so every epoch "
+        "re-reports the same edge forever"
+    )
+    first_return = helper.find("return")
+    assert first_return == -1 or store.start() < first_return, (
+        f"{EDGE_HELPER}() writes back the previous value only on some paths. "
+        "It must resynchronise unconditionally: POST /api/counters clears "
+        "g_overruns, and a clear has to cost one missed edge rather than a "
+        "permanent four-billion delta on the next real one"
+    )
+    assert "0xFFFF" in helper, (
+        f"{EDGE_HELPER}() does not clamp to the ring's 16-bit detail field, so "
+        "a large delta is reported as a small one"
+    )
+
+    previous = [
+        line.strip()
+        for line in clean.splitlines()
+        if PREVIOUS_STATIC.match(line.strip())
+    ]
+    assert len(previous) == expected, (
+        f"found {len(previous)} previous-value statics against {expected} "
+        "counters; the edge state is one scalar per counter"
+    )
+    for line in previous:
+        assert PREVIOUS_SCALAR.fullmatch(line) is not None, (
+            f"previous-value static {line!r} is not a plain scalar. DTCM's "
+            "free-for-locals zone is the whole stack for the main loop AND the "
+            "audio ISR; an array here is paid for out of it"
+        )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -561,6 +757,14 @@ POSITIVE_CHECKS = (
     (
         "the clock handover exists and is bounded to the replay path",
         assert_replay_clock_handover_is_bounded,
+    ),
+    (
+        "event types are allocated, never renumbered",
+        assert_event_types_are_allocated_not_renumbered,
+    ),
+    (
+        "counter edges emit from the epoch loop, one per counter per epoch",
+        assert_counter_edges_are_epoch_loop_bound,
     ),
 )
 
@@ -740,6 +944,68 @@ def run_helper_self_test():
     )
     assert qualified_text[sites[0]:].startswith("Shim::set(true)"), (
         "qualified_call_sites returned an offset into the wrong string"
+    )
+
+
+def _synthetic_counter_edges():
+    """A minimal file with the counter-edge shape: the allocated enum, one
+    scalar static and one guarded emission per counter, the three transition
+    events that predate them, an audio callback, and a loop() that reaches the
+    service exactly once. Generated from EVENT_TYPE_VALUES so the fixture cannot
+    drift from the contract the checks assert."""
+    enum_body = "".join(
+        f"\t{name} = {value},\n" for name, value in EVENT_TYPE_VALUES.items()
+    )
+    statics = "".join(
+        f"static uint32_t g_prev_{index};\n"
+        for index in range(len(COUNTER_EDGE_TYPES))
+    )
+    edges = "".join(
+        f"\tdelta = counter_edge(source_{index}(), &g_prev_{index});\n"
+        f"\tif (delta != 0u)\n"
+        f"\t\trecord_event({name}, current_state(), delta);\n"
+        for index, name in enumerate(COUNTER_EDGE_TYPES)
+    )
+    return (
+        "enum AiusEventType : uint8_t {\n" + enum_body + "};\n"
+        + statics
+        + "static FLASHMEM void record_state(void)\n"
+          "{\n"
+          "\trecord_event(AIUS_EVENT_STATE, state, 0);\n"
+          "}\n"
+          "static FLASHMEM void app_set_test_running(void *, bool running)\n"
+          "{\n"
+          "\trecord_event(AIUS_EVENT_TEST_TONE, current_state(), running ? 1u : 0u);\n"
+          "}\n"
+          "static FLASHMEM void replay_clock_service(void)\n"
+          "{\n"
+          "\trecord_event(AIUS_EVENT_REPLAY_STOP, current_state(), REPLAY_STOP_CARRIER);\n"
+          "}\n"
+          "static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)\n"
+          "{\n"
+          "\tconst uint32_t delta = current - *previous;\n"
+          "\t*previous = current;\n"
+          "\tif (delta == 0u || delta > 0x7FFFFFFFu)\n"
+          "\t\treturn 0u;\n"
+          "\treturn delta > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)delta;\n"
+          "}\n"
+          "static FLASHMEM void service_event_edges(void)\n"
+          "{\n"
+          "\tuint16_t delta;\n"
+        + edges
+        + "}\n"
+          "class AiusAudioProcessor : public AudioStream\n"
+          "{\n"
+          "\tvoid update(void) override\n"
+          "\t{\n"
+          "\t\temit_block();\n"
+          "\t}\n"
+          "};\n"
+          "FLASHMEM void loop(void)\n"
+          "{\n"
+          "\taius_runtime_teensy_epoch(&g_runtime, millis());\n"
+          "\tservice_event_edges();\n"
+          "}\n"
     )
 
 
@@ -1103,6 +1369,112 @@ def run_self_test():
     _expect_fail(
         assert_replay_clock_handover_is_bounded, clock_unreached,
         "clock/never-called", "never calls replay_clock_service()",
+    )
+
+    # counter edges: allocated types, epoch-loop emission, one per epoch.
+    good_edges = _synthetic_counter_edges()
+    _expect_pass(
+        assert_event_types_are_allocated_not_renumbered, good_edges, "types/good"
+    )
+    _expect_pass(
+        assert_counter_edges_are_epoch_loop_bound, good_edges, "edges/good"
+    )
+    # The wire contract broken the way it actually gets broken: a value reused
+    # for a new meaning, and an existing one shifted to make room.
+    types_renumbered = good_edges.replace(
+        "AIUS_EVENT_OVERRUN = 4,", "AIUS_EVENT_OVERRUN = 11,", 1
+    )
+    _expect_fail(
+        assert_event_types_are_allocated_not_renumbered, types_renumbered,
+        "types/renumbered", "never renumbered or reused",
+    )
+    types_collided = good_edges.replace(
+        "AIUS_EVENT_NETWORK_DROP = 5,", "AIUS_EVENT_NETWORK_DROP = 4,", 1
+    )
+    _expect_fail(
+        assert_event_types_are_allocated_not_renumbered, types_collided,
+        "types/collision", "never renumbered or reused",
+    )
+    # Dead code: the service exists, is correct, and nothing reaches it.
+    edges_unreached = good_edges.replace("\tservice_event_edges();\n", "", 1)
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_unreached,
+        "edges/never-called", "exactly once per epoch",
+    )
+    # A second call site: two passes over the counters in one epoch.
+    edges_second_site = good_edges.replace(
+        "\taius_runtime_teensy_epoch(&g_runtime, millis());\n",
+        "\taius_runtime_teensy_epoch(&g_runtime, millis());\n"
+        "\tservice_event_edges();\n",
+        1,
+    )
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_second_site,
+        "edges/second-call-site", "exactly once per epoch",
+    )
+    # Cold code without FLASHMEM on the definition: .text out of the one object
+    # the ITCM allowlist pins.
+    edges_no_flashmem = good_edges.replace(
+        "static FLASHMEM void service_event_edges(void)",
+        "static void service_event_edges(void)",
+        1,
+    )
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_no_flashmem,
+        "edges/no-flashmem", "no FLASHMEM on its DEFINITION",
+    )
+    # One event per increment rather than one per epoch.
+    edges_per_increment = good_edges.replace(
+        "\tif (delta != 0u)\n"
+        "\t\trecord_event(AIUS_EVENT_OVERRUN, current_state(), delta);\n",
+        "\tfor (uint16_t i = 0; i < delta; i++)\n"
+        "\t\trecord_event(AIUS_EVENT_OVERRUN, current_state(), 1u);\n",
+        1,
+    )
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_per_increment,
+        "edges/per-increment", "contains a loop",
+    )
+    # An emission nothing guards: every epoch, forever.
+    edges_unguarded = good_edges.replace(
+        "\tif (delta != 0u)\n"
+        "\t\trecord_event(AIUS_EVENT_OVERRUN, current_state(), delta);\n",
+        "\trecord_event(AIUS_EVENT_OVERRUN, current_state(), delta);\n",
+        1,
+    )
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_unguarded,
+        "edges/unguarded", "an unguarded record_event()",
+    )
+    # The emission migrated into the audio callback.
+    edges_in_isr = good_edges.replace(
+        "\t\temit_block();\n",
+        "\t\temit_block();\n"
+        "\t\trecord_event(AIUS_EVENT_OVERRUN, current_state(), 1u);\n",
+        1,
+    )
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_in_isr,
+        "edges/audio-callback", "the audio callback contains",
+    )
+    # Edge state as an array: DTCM out of the free-for-locals zone.
+    edges_array_state = good_edges.replace(
+        "static uint32_t g_prev_0;\n", "static uint32_t g_prev_all[8];\n", 1
+    )
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_array_state,
+        "edges/array-state", "not a plain scalar",
+    )
+    # A resync only on the emitting path: a cleared counter would then re-report
+    # the same edge every epoch.
+    edges_conditional_resync = good_edges.replace(
+        "\t*previous = current;\n\tif (delta == 0u",
+        "\tif (delta == 0u",
+        1,
+    ).replace("\t\treturn 0u;\n", "\t\treturn 0u;\n\t*previous = current;\n", 1)
+    _expect_fail(
+        assert_counter_edges_are_epoch_loop_bound, edges_conditional_resync,
+        "edges/conditional-resync", "resynchronise unconditionally",
     )
 
     # no static fallback.
