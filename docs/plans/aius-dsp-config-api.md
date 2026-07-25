@@ -21,12 +21,15 @@ other.
 
 ### Resume here
 
-**Next up is B3, Phase 14.** Its first slice breakdown was rejected by its
-prebuild gate on 2026-07-25 and re-scoped; the corrected one is in
+**B3, Phase 14, is 7 of 11 slices in.** S0, P1a, P1b, R1, R2, P2 and S1 are
+delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
-with the findings that forced it under "Prebuild review findings". Start with
-**S0, P1a, R1, R2 and P2**, which are mutually independent; only S0 touches
-`optical_main.cpp`.
+with the findings that forced the re-scope under "Prebuild review findings".
+
+**Next up is S2a**, which constructs the runtime and is the first slice that stops
+being additive. It needs the replay decision below settled first, because S2a is
+where `replay_start` must start refusing. S2b then deletes the legacy path; S3,
+S4 and S5 follow in order.
 
 Decisions already taken, so do not re-open them:
 
@@ -126,12 +129,19 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   `watchdog_init()` writes `WDOG_WCR_WT(31)`, and the feed has three call sites —
   `setup:2593`, `loop:2607` and `loop:2618`. The normative contract is one 8 s
   interval with exactly one feed after a complete epoch.
-- **ITCM headroom is 1,416 bytes** (99.28 % used). Every new per-epoch service,
-  dispatcher, and adapter must be `FLASHMEM` unless it genuinely runs per audio
-  block. Apply the attribute on each definition — GCC does not inherit a
-  `section` attribute from a forward declaration, so a prototype-only `FLASHMEM`
-  silently leaves the code in ITCM. Phases 11 and 12 both held to zero ITCM this
-  way.
+- **ITCM headroom is 2,120 bytes** (98.92 % used) as of slice S1. Every new
+  per-epoch service, dispatcher, and adapter must be `FLASHMEM` unless it
+  genuinely runs per audio block. Apply the attribute on each definition — GCC
+  does not inherit a `section` attribute from a forward declaration, so a
+  prototype-only `FLASHMEM` silently leaves the code in ITCM. Phases 11 and 12
+  both held to zero ITCM this way.
+
+  The figure was 1,416 bytes until S1, which **gained** 704 bytes of headroom
+  rather than spending any. Referencing the previously single-use static
+  serializers from the new callbacks changed GCC's inlining decisions, pushing
+  code that had been inlined into ITCM callers out into the FLASHMEM adapters.
+  Behaviour is unchanged; codegen is not. Expect the same effect to run in
+  reverse at S2b, when the legacy callers those serializers shared are deleted.
 - **The bank report does not yet include Phases 11 or 12.** Nothing references
   the dispatcher or the composed runtime, so `--gc-sections` drops every section
   and `nm` on `firmware.elf` finds none of their symbols. Phase 14 is where

@@ -27,12 +27,15 @@ other.
 
 ### Resume here
 
-**Next up is B3, Phase 14.** Its first slice breakdown was rejected by its
-prebuild gate on 2026-07-25 and re-scoped; the corrected one is in
+**B3, Phase 14, is 7 of 11 slices in.** S0, P1a, P1b, R1, R2, P2 and S1 are
+delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
-with the findings that forced it under "Prebuild review findings". Start with
-**S0, P1a, R1, R2 and P2**, which are mutually independent; only S0 touches
-`optical_main.cpp`.
+with the findings that forced the re-scope under "Prebuild review findings".
+
+**Next up is S2a**, which constructs the runtime and is the first slice that stops
+being additive. It needs the replay decision below settled first, because S2a is
+where `replay_start` must start refusing. S2b then deletes the legacy path; S3,
+S4 and S5 follow in order.
 
 Decisions already taken, so do not re-open them:
 
@@ -132,12 +135,19 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   `watchdog_init()` writes `WDOG_WCR_WT(31)`, and the feed has three call sites —
   `setup:2593`, `loop:2607` and `loop:2618`. The normative contract is one 8 s
   interval with exactly one feed after a complete epoch.
-- **ITCM headroom is 1,416 bytes** (99.28 % used). Every new per-epoch service,
-  dispatcher, and adapter must be `FLASHMEM` unless it genuinely runs per audio
-  block. Apply the attribute on each definition — GCC does not inherit a
-  `section` attribute from a forward declaration, so a prototype-only `FLASHMEM`
-  silently leaves the code in ITCM. Phases 11 and 12 both held to zero ITCM this
-  way.
+- **ITCM headroom is 2,120 bytes** (98.92 % used) as of slice S1. Every new
+  per-epoch service, dispatcher, and adapter must be `FLASHMEM` unless it
+  genuinely runs per audio block. Apply the attribute on each definition — GCC
+  does not inherit a `section` attribute from a forward declaration, so a
+  prototype-only `FLASHMEM` silently leaves the code in ITCM. Phases 11 and 12
+  both held to zero ITCM this way.
+
+  The figure was 1,416 bytes until S1, which **gained** 704 bytes of headroom
+  rather than spending any. Referencing the previously single-use static
+  serializers from the new callbacks changed GCC's inlining decisions, pushing
+  code that had been inlined into ITCM callers out into the FLASHMEM adapters.
+  Behaviour is unchanged; codegen is not. Expect the same effect to run in
+  reverse at S2b, when the legacy callers those serializers shared are deleted.
 - **The bank report does not yet include Phases 11 or 12.** Nothing references
   the dispatcher or the composed runtime, so `--gc-sections` drops every section
   and `nm` on `firmware.elf` finds none of their symbols. Phase 14 is where
@@ -4020,13 +4030,13 @@ table. The mapping is one-to-one and mechanical:
 
 | Slice | Work | Owned paths | Gate |
 |---|---|---|---|
-| S0 | Rename the legacy SD symbols out of the portable namespace: `AiusSdJob` → `LegacySdJob`, `AiusSdJobState` → `LegacySdJobState`, `AIUS_SD_JOB_*` → `LEGACY_SD_JOB_*`. No behaviour change | `src/optical_main.cpp` | target build; every suite unchanged |
-| P1a | Transaction: admit an `UPLOAD` job for a complete buffered body, and serve a large immediate body from the application's own buffer instead of copying it into `response` | `lib/aius_http/`, `test/http/` | `http`, `runtime-target` green; target build |
-| P1b | Dispatcher: the two buffered config `PUT`s return an `UPLOAD/REPLACE` job rather than an immediate 200 | `src/aius_optical_app.{h,cpp}`, `test/optical-app/` | `optical-app` green |
-| R1 | Runtime seam: a root-initiated SD job entry point, and a publication-consumer callback so a `CONFIG_LOAD` payload reaches the application instead of being counted as dropped | `src/aius_runtime_storage.{h,cpp}`, `src/aius_runtime_teensy.{h,cpp}`, `test/runtime-target/` | `runtime-target` green; target build |
-| R2 | Network adapter: an IP and link-state accessor exposing no vendor type, so the status surface survives losing the `Ethernet.*` include | `src/aius_network_teensy.{h,cpp}`, `test/network-transport/` | `network-transport` green; target build |
-| P2 | The `optical-cutover` structural suite in two groups — **positive** (setup trace is construction-only, `loop()` delegates one epoch, exactly one feed) and **absence** (no static fallback, no rebind globals, no raw FNET) — authored and runnable but not yet part of the standing guard | `test/optical-cutover/` | both groups run and fail against the pre-cutover file, by construction |
-| S1 | Implement the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs | `src/optical_main.cpp` | target build; `optical-app` green |
+| S0 | **Done** (`64de970b0`) — rename the legacy SD symbols out of the portable namespace: `AiusSdJob` → `LegacySdJob`, `AiusSdJobState` → `LegacySdJobState`, `AIUS_SD_JOB_*` → `LEGACY_SD_JOB_*`. No behaviour change | `src/optical_main.cpp` | target build; every suite unchanged |
+| P1a | **Done** (`c76258485`) — transaction: admit an `UPLOAD` job for a complete buffered body, and serve a large immediate body from the application's own buffer instead of copying it into `response` | `lib/aius_http/`, `test/http/` | `http`, `runtime-target` green; target build |
+| P1b | **Done** (`f4b5faa21`) — dispatcher: the two buffered config `PUT`s return an `UPLOAD/REPLACE` job rather than an immediate 200 | `src/aius_optical_app.{h,cpp}`, `test/optical-app/` | `optical-app` green |
+| R1 | **Done** (`99fede35f`) — runtime seam: a root-initiated SD job entry point, and a publication-consumer callback so a `CONFIG_LOAD` payload reaches the application instead of being counted as dropped | `src/aius_runtime_storage.{h,cpp}`, `src/aius_runtime_teensy.{h,cpp}`, `test/runtime-target/` | `runtime-target` green; target build |
+| R2 | **Done** (`2c3c4818f`) — network adapter: an IP and link-state accessor exposing no vendor type, so the status surface survives losing the `Ethernet.*` include | `src/aius_network_teensy.{h,cpp}`, `test/network-transport/` | `network-transport` green; target build |
+| P2 | **Done** (`9ce6417e3`) — the `optical-cutover` structural suite in two groups — **positive** (setup trace is construction-only, `loop()` delegates one epoch, exactly one feed) and **absence** (no static fallback, no rebind globals, no raw FNET) — authored and runnable but not yet part of the standing guard | `test/optical-cutover/` | both groups run and fail against the pre-cutover file, by construction |
+| S1 | **Done** (`7606632a5`) — the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs. Costs 2,048 B FLASH and **gains** 704 B of ITCM | `src/optical_main.cpp` | target build; `optical-app` green |
 | S2a | Construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
 | S2b | Delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard | `src/optical_main.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` + `network-transport` + every component suite |
 | S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"` | `src/optical_main.cpp` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
