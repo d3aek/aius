@@ -4736,6 +4736,75 @@ none has been measured. Record a verdict for every one.
 - Status JSON, USB `ID` and UDP agree, since they share one snapshot.
 - The recovery fields report real values after an induced reset.
 
+#### First flash — results, 2026-07-25
+
+**Flashed and running.** `d716e43a5d69+teensy41-optical` went onto the board
+through software bootloader entry — `AIUS BOOTLOADER 9` over USB CDC, **no
+Program-button press**, on the *legacy* image. That closes one of this plan's
+oldest open questions: the recovery control plane works. Note the loader needs the
+`plugdev` group where the CDC port needs `dialout`; both are reachable with `sg`.
+
+**The board serves HTTP.** `GET /api/status` returns in 8 ms at `192.0.2.66`,
+with `link=1`, an SD card detected and sized through the portable `PROBE` job,
+config loaded and valid, and all ten recovery fields present. The failure this
+plan was written to fix is closed.
+
+Confirmed live, against the assumption list above: `setup()` returns and epochs
+run; the watchdog does not reset in normal operation
+(`watchdog_early_resets=0`); SD probe and usage work; config loads; the status
+channels carry the recovery state; and `POST /api/reboot` genuinely resets the
+board (`boot_generation` increments, `reset_source` changes to the software-reset
+value).
+
+**Defect found, and it is the interesting one.** On *every* boot the first DHCP
+attempt receives nothing for the full 5 s deadline, then teardown, 1 s backoff,
+and generation 2 acquires a lease almost immediately. Measured across reboots:
+
+```
+t+3.84s  BOOTED       -> DHCP_WAIT  gen=1  ip=0.0.0.0
+t+8.79s  BACKOFF      gen=1  fault=1 (DHCP_TIMEOUT)   <- 4.95 s, no response
+t+9.74s  ONLINE       gen=2  ip=192.0.2.66            <- lease in under 1 s
+```
+
+The bounded recovery this plan exists to build is what saves it — the legacy image
+hit a comparable condition and sat in it indefinitely, while this one detects,
+tears down and retries without help. But the first attempt is dead time on every
+boot, and the network generation is always 2.
+
+**Confirmed from the DHCP server**, whose clock is authoritative (it is also the
+NTP source; its log displays BST, one hour ahead of the UTC figures above). Across
+two consecutive boots the server logged **nothing at all** during either
+generation-1 window, then a complete exchange the instant generation 2 began:
+
+```
+14:51:03.65 UTC  boot -> DHCP_WAIT gen=1        server: (nothing, 5 s)
+14:51:09    UTC  gen=2 -> ONLINE                server: DISCOVER/OFFER/REQUEST/ACK
+14:51:23.48 UTC  boot -> DHCP_WAIT gen=1        server: (nothing, 5 s)
+14:51:29    UTC  gen=2 -> ONLINE                server: DISCOVER/OFFER/REQUEST/ACK
+```
+
+Two things follow. The firmware is **not** ignoring a valid `DHCPOFFER` — the
+worse of the two possible faults is ruled out, because nothing is transmitted at
+all. And when a DISCOVER does reach the wire the whole four-packet exchange
+completes inside one second, so the 5 s deadline is pure dead air rather than slow
+negotiation.
+
+**Cause.** `apply()` emits `AIUS_NET_EVENT_STACK_STARTED` as soon as
+`beginNoWait()` returns, and the supervisor takes that as its cue to start DHCP.
+`beginNoWait()` deliberately does not wait for link, so the first DISCOVER is sent
+before the PHY has negotiated. By the time backoff expires the link is up, which
+is why generation 2 always succeeds instantly. The fix must gate DHCP on actual
+link-up **without** introducing a hang when the link is already up at stack start —
+NativeEthernet reports link *changes*, so a callback-only trigger would wait
+forever. `poll()`'s permitted link-status read is the natural observer.
+
+**Two status regressions the live board exposed**, neither visible in any suite:
+`network_mode` reads `"offline"` beside a real IP and `link=1`, because S2b
+retired its producer and the plan accepted serving it as zero; and
+`sd_filesystem` reads `"unknown"` because S3b removed a raw vendor call from the
+serializer without moving the information anywhere. Both are being fixed at the
+layer that owns the state rather than restored as raw calls.
+
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
 validation log with one verdict per assumption and the evidence for it. A refuted
