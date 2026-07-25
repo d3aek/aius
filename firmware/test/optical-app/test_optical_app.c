@@ -24,7 +24,18 @@
 #define LOG_ENTRIES 32u
 #define LOG_STORAGE 40u
 
+/* The fake card may hold more than one listing's worth, so the cap is provable
+ * from the outside. */
+#define FAKE_DIR_ENTRIES (AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES + 16u)
+#define FAKE_DIR_NAME_STORAGE 64u
+
 static const char *const AUTH_TOKEN = "token";
+
+typedef struct {
+	char name[FAKE_DIR_NAME_STORAGE];
+	uint64_t size;
+	bool is_directory;
+} FakeDirEntry;
 
 typedef struct {
 	bool sd_ready;
@@ -37,6 +48,14 @@ typedef struct {
 	size_t usb_payload_length;
 	char usb_payload[AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE + 8u];
 	uint32_t upload_id;
+
+	/* What the card holds for the next listing, what the application could not
+	 * represent, and where it was asked to look. */
+	FakeDirEntry dir_entries[FAKE_DIR_ENTRIES];
+	size_t dir_entry_count;
+	size_t dir_hidden;
+	AiusOpticalAppDirResult dir_result;
+	char dir_path[AIUS_SD_PATH_STORAGE];
 
 	char log[LOG_ENTRIES][LOG_STORAGE];
 	size_t log_count;
@@ -166,6 +185,39 @@ static AiusOpticalAppStoreResult fake_store_dsp_config(void *context,
 	return fake->dsp_store;
 }
 
+/* One bounded batch, exactly as the header specifies it: fill up to `capacity`,
+ * report what was left behind, never touch `entries` or `capacity`. A name too
+ * long for the entry storage is counted in `hidden` by the application, which is
+ * what the real adapter must do -- the dispatcher's own rejection path is
+ * exercised separately, by returning a name it will refuse to link. */
+static AiusOpticalAppDirResult fake_read_directory(void *context,
+                                                   const char *path,
+                                                   AiusOpticalAppDirBatch *batch)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "read_directory");
+	snprintf(fake->dir_path, sizeof(fake->dir_path), "%s", path);
+	assert(batch->entries != NULL);
+	assert(batch->capacity == AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES);
+	if (fake->dir_result != AIUS_OPTICAL_APP_DIR_OK)
+		return fake->dir_result;
+	batch->hidden = fake->dir_hidden;
+	for (size_t i = 0; i < fake->dir_entry_count; ++i) {
+		AiusOpticalAppDirEntry *entry;
+		if (batch->count == batch->capacity) {
+			batch->more = true;
+			break;
+		}
+		entry = &batch->entries[batch->count];
+		snprintf(entry->name, sizeof(entry->name), "%s",
+		         fake->dir_entries[i].name);
+		entry->size_bytes = fake->dir_entries[i].size;
+		entry->is_directory = fake->dir_entries[i].is_directory;
+		batch->count++;
+	}
+	return AIUS_OPTICAL_APP_DIR_OK;
+}
+
 static AiusOpticalAppReplayResult fake_replay_start(void *context,
                                                     const char *id, bool loop)
 {
@@ -253,6 +305,7 @@ static AiusOpticalApp fake_app(Fake *fake)
 	app.write_replay_list = fake_write_replay_list;
 	app.store_public_config = fake_store_public_config;
 	app.store_dsp_config = fake_store_dsp_config;
+	app.read_directory = fake_read_directory;
 	app.replay_start = fake_replay_start;
 	app.replay_delete = fake_replay_delete;
 	app.replay_stop = fake_replay_stop;
@@ -281,6 +334,7 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.dsp_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
 	fixture->fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_OK;
+	fixture->fake.dir_result = AIUS_OPTICAL_APP_DIR_OK;
 	fixture->fake.upload_id = 0x1234abcdu;
 	snprintf(fixture->fake.usb_payload, sizeof(fixture->fake.usb_payload),
 	         "protocol=1 revision=test");
@@ -553,9 +607,10 @@ static void test_serializer_exhaustion(void)
 static void test_sd_media_and_paths(void)
 {
 	Fixture fixture;
+	/* "GET /sd/www/" is absent deliberately: a trailing slash names a directory
+	 * and is the index route (test_sd_index), not a rejected file path. */
 	static const char *const rejected[] = {
 		"GET /sd/x",
-		"GET /sd/www/",
 		"GET /sd/etc/passwd",
 		"GET /sd/www/../secret",
 		"GET /sd/www/a//b",
@@ -636,6 +691,263 @@ static void test_sd_media_and_paths(void)
 	expect_immediate(dispatch_get(&fixture, "GET /sd/www/index.html"), 503,
 	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
 	fixture.fake.sd_busy = false;
+}
+
+/* ------------------------------------------------------------------ */
+/* directory index                                                      */
+/* ------------------------------------------------------------------ */
+
+#define INDEX_PROLOGUE(path) \
+	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">" \
+	"<title>/sd/" path "</title></head><body><h1>/sd/" path "</h1><ul>"
+#define INDEX_PARENT "<li><a href=\"../\">../</a></li>"
+#define INDEX_FOOTER(shown, hidden, truncated) \
+	"</ul><p>" shown " shown, " hidden " hidden, truncated: " truncated \
+	". Sizes in bytes; at most 64 entries per listing.</p></body></html>"
+
+static void fake_dir_add(Fake *fake, const char *name, uint64_t size,
+                         bool is_directory)
+{
+	assert(fake->dir_entry_count < FAKE_DIR_ENTRIES);
+	snprintf(fake->dir_entries[fake->dir_entry_count].name,
+	         FAKE_DIR_NAME_STORAGE, "%s", name);
+	fake->dir_entries[fake->dir_entry_count].size = size;
+	fake->dir_entries[fake->dir_entry_count].is_directory = is_directory;
+	fake->dir_entry_count++;
+}
+
+static void expect_index(const AiusHttpApplicationResponse *response,
+                         const char *body)
+{
+	expect_response(response, AIUS_HTTP_APP_IMMEDIATE, 200,
+	                "text/html; charset=utf-8", body);
+}
+
+static void copy_body(const AiusHttpApplicationResponse *response, char *out,
+                      size_t capacity)
+{
+	assert(response->body != NULL);
+	assert(response->body_length < capacity);
+	memcpy(out, response->body, response->body_length);
+	out[response->body_length] = '\0';
+}
+
+static size_t count_occurrences(const char *haystack, const char *needle)
+{
+	size_t count = 0u;
+	const char *cursor = haystack;
+	for (;;) {
+		cursor = strstr(cursor, needle);
+		if (cursor == NULL)
+			return count;
+		cursor += strlen(needle);
+		count++;
+	}
+}
+
+/* The listing a browser gets, byte for byte: relative links back into the same
+ * /sd/ namespace, a size per file, and a footer that states the counts. */
+static void test_sd_index_listing(void)
+{
+	Fixture fixture;
+	fixture_init(&fixture);
+
+	/* An empty directory is a 200 with an empty list, not a 404. */
+	expect_index(dispatch_get(&fixture, "GET /sd/www/"),
+	             INDEX_PROLOGUE("www/") INDEX_FOOTER("0", "0", "no"));
+	assert(strcmp(fixture.fake.dir_path, "/aius/www") == 0);
+	{
+		static const char *const calls[] = {
+			"sd_ready", "sd_busy", "read_directory"
+		};
+		expect_log(&fixture, calls, ARRAY_LENGTH(calls));
+	}
+
+	fake_dir_add(&fixture.fake, "index.html", 4096u, false);
+	fake_dir_add(&fixture.fake, "sub", 0u, true);
+	expect_index(dispatch_get(&fixture, "GET /sd/www/"),
+	             INDEX_PROLOGUE("www/")
+	             "<li><a href=\"index.html\">index.html</a> 4096</li>"
+	             "<li><a href=\"sub/\">sub/</a> dir</li>"
+	             INDEX_FOOTER("2", "0", "no"));
+
+	/* A nested listing names the nested card path and offers the parent link;
+	 * the subtree root does not, because "../" from www/ leaves /sd/. */
+	expect_index(dispatch_get(&fixture, "GET /sd/www/sub/"),
+	             INDEX_PROLOGUE("www/sub/") INDEX_PARENT
+	             "<li><a href=\"index.html\">index.html</a> 4096</li>"
+	             "<li><a href=\"sub/\">sub/</a> dir</li>"
+	             INDEX_FOOTER("2", "0", "no"));
+	assert(strcmp(fixture.fake.dir_path, "/aius/www/sub") == 0);
+}
+
+/* Names the /sd/ route could not serve are reported, not drawn as dead links
+ * and not silently dropped -- which is also what keeps the body HTML-safe. */
+static void test_sd_index_hidden_entries(void)
+{
+	Fixture fixture;
+	fixture_init(&fixture);
+
+	fake_dir_add(&fixture.fake, "ok.bin", 7u, false);
+	fake_dir_add(&fixture.fake, "two words.txt", 1u, false);
+	fake_dir_add(&fixture.fake, "\"><script>x</script>", 1u, false);
+	/* Dot entries are not entries a reader wants and are not "hidden". */
+	fake_dir_add(&fixture.fake, ".", 0u, true);
+	fake_dir_add(&fixture.fake, "..", 0u, true);
+	/* Two more the application itself could not represent (a name longer than
+	 * the entry storage). */
+	fixture.fake.dir_hidden = 2u;
+
+	expect_index(dispatch_get(&fixture, "GET /sd/www/"),
+	             INDEX_PROLOGUE("www/")
+	             "<li><a href=\"ok.bin\">ok.bin</a> 7</li>"
+	             INDEX_FOOTER("1", "4", "no"));
+}
+
+/* The bound, from both sides: the entry cap and the response buffer. */
+static void test_sd_index_bounds(void)
+{
+	Fixture fixture;
+	/* The worst case the cap admits: every name at the 32-byte maximum and
+	 * every size a full 20-digit uint64. */
+	static const char *const longest = "abcdefghijabcdefghijabcdefghij12";
+	char body[AIUS_HTTP_MAX_RESPONSE + 1u];
+	const AiusHttpApplicationResponse *response;
+	fixture_init(&fixture);
+
+	for (size_t i = 0; i < FAKE_DIR_ENTRIES; ++i)
+		fake_dir_add(&fixture.fake, longest, UINT64_MAX, false);
+	assert(FAKE_DIR_ENTRIES > AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES);
+
+	response = dispatch_get(&fixture, "GET /sd/www/");
+	copy_body(response, body, sizeof(body));
+	assert(response->kind == AIUS_HTTP_APP_IMMEDIATE);
+	assert(response->status == 200u);
+	/* Exactly the cap is listed, and the body says the listing stopped. */
+	assert(count_occurrences(body, "<li>") ==
+	       AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES);
+	assert(strstr(body, INDEX_FOOTER("64", "0", "yes")) != NULL);
+	/* And the whole worst case still frames as an ordinary response: it never
+	 * needs the transaction's streaming path. */
+	assert(response->body_length <= AIUS_HTTP_MAX_RESPONSE);
+
+	/* A response buffer too small for the cap truncates on capacity instead,
+	 * and says so the same way. */
+	{
+		Fixture small;
+		AiusOpticalApp app;
+		uint8_t small_body[1024];
+		size_t shown;
+		memcpy(&small, &fixture, sizeof(small));
+		app = fake_app(&small.fake);
+		assert(aius_optical_app_init(&small.dispatcher, &app, small_body,
+		                             sizeof(small_body)));
+		response = dispatch_get(&small, "GET /sd/www/");
+		assert(response->status == 200u);
+		copy_body(response, body, sizeof(body));
+		shown = count_occurrences(body, "<li>");
+		assert(shown > 0u && shown < AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES);
+		assert(strstr(body, ", truncated: yes.") != NULL);
+		assert(response->body_length <= sizeof(small_body));
+	}
+
+	/* A buffer that cannot even hold the framing degrades to the same
+	 * deterministic 500 every other over-large body produces. */
+	{
+		Fixture tiny;
+		AiusOpticalApp app;
+		uint8_t tiny_body[AIUS_OPTICAL_APP_MIN_BODY];
+		memcpy(&tiny, &fixture, sizeof(tiny));
+		app = fake_app(&tiny.fake);
+		assert(aius_optical_app_init(&tiny.dispatcher, &app, tiny_body,
+		                             sizeof(tiny_body)));
+		expect_response(dispatch_get(&tiny, "GET /sd/www/"),
+		                AIUS_HTTP_APP_IMMEDIATE, 500,
+		                "text/html; charset=utf-8", "<p>response_too_large</p>");
+	}
+}
+
+static void test_sd_index_refusals(void)
+{
+	Fixture fixture;
+	static const char *const bad_paths[] = {
+		"GET /sd/etc/",
+		"GET /sd/www//",
+		"GET /sd/www/../",
+		"GET /sd/www/a//b/",
+		"GET /sd/www/../../"
+	};
+	static const char *const path_calls[] = { "sd_ready" };
+	static const char *const busy_calls[] = { "sd_ready", "sd_busy" };
+	fixture_init(&fixture);
+	fake_dir_add(&fixture.fake, "ok.bin", 1u, false);
+
+	/* A path outside the subtree, or one the download route would refuse,
+	 * never reaches the card. */
+	for (size_t i = 0; i < ARRAY_LENGTH(bad_paths); ++i) {
+		expect_immediate(dispatch_get(&fixture, bad_paths[i]), 404,
+		                 "{\"ok\":false,\"error\":\"sd_path\"}");
+		expect_log(&fixture, path_calls, ARRAY_LENGTH(path_calls));
+	}
+
+	/* No raw enumeration while a job holds the volume. */
+	fixture.fake.sd_busy = true;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	expect_log(&fixture, busy_calls, ARRAY_LENGTH(busy_calls));
+	fixture.fake.sd_busy = false;
+
+	fixture.fake.sd_ready = false;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+	expect_log(&fixture, path_calls, ARRAY_LENGTH(path_calls));
+	fixture.fake.sd_ready = true;
+
+	/* The three answers the card itself can give. */
+	fixture.fake.dir_result = AIUS_OPTICAL_APP_DIR_NOT_FOUND;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/missing/"), 404,
+	                 "{\"ok\":false,\"error\":\"sd_not_found\"}");
+	fixture.fake.dir_result = AIUS_OPTICAL_APP_DIR_NOT_DIRECTORY;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/index.html/"), 404,
+	                 "{\"ok\":false,\"error\":\"sd_not_directory\"}");
+	fixture.fake.dir_result = AIUS_OPTICAL_APP_DIR_FAILED;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_index\"}");
+	fixture.fake.dir_result = AIUS_OPTICAL_APP_DIR_OK;
+
+	/* A directory is not an upload target and not a delete target, and neither
+	 * refusal touches the application. */
+	expect_immediate(dispatch_request(&fixture, "PUT /sd/www/",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
+	                 405, "{\"ok\":false,\"error\":\"sd_directory\"}");
+	expect_log(&fixture, path_calls, 0u);
+	expect_immediate(dispatch_request(&fixture, "DELETE /sd/www/sub/",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
+	                 405, "{\"ok\":false,\"error\":\"sd_directory\"}");
+	expect_log(&fixture, path_calls, 0u);
+}
+
+/* read_directory is the one optional callback: a runtime that has not wired it
+ * still initialises and still serves every other route, and the index route
+ * answers a deterministic 503 rather than a null call. */
+static void test_sd_index_unwired(void)
+{
+	Fixture fixture;
+	AiusOpticalApp app;
+	static const char *const no_calls[] = { "" };
+	fixture_init(&fixture);
+	app = fake_app(&fixture.fake);
+	app.read_directory = NULL;
+	assert(aius_optical_app_init(&fixture.dispatcher, &app, fixture.body,
+	                             sizeof(fixture.body)));
+
+	expect_immediate(dispatch_get(&fixture, "GET /sd/www/"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_index_unavailable\"}");
+	expect_log(&fixture, no_calls, 0u);
+	/* The rest of the table is untouched by the hole. */
+	expect_response(dispatch_get(&fixture, "GET /api/status"),
+	                AIUS_HTTP_APP_IMMEDIATE, 200, "application/json",
+	                "{\"body\":\"status\"}");
 }
 
 static void test_sd_delete(void)
@@ -1283,6 +1595,11 @@ int main(void)
 	RUN_TEST(test_golden_immediate_routes);
 	RUN_TEST(test_serializer_exhaustion);
 	RUN_TEST(test_sd_media_and_paths);
+	RUN_TEST(test_sd_index_listing);
+	RUN_TEST(test_sd_index_hidden_entries);
+	RUN_TEST(test_sd_index_bounds);
+	RUN_TEST(test_sd_index_refusals);
+	RUN_TEST(test_sd_index_unwired);
 	RUN_TEST(test_sd_delete);
 	RUN_TEST(test_sd_upload);
 	RUN_TEST(test_replay_chunk_upload);

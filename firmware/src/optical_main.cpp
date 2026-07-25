@@ -1941,6 +1941,63 @@ static FLASHMEM uint32_t app_upload_id(void *)
 	return sd_job_id();
 }
 
+/* Directory enumeration for GET /sd/<dir>/. Raw SD access, like
+ * http_replay_list_json above it and for the same reason: the portable engine
+ * has no directory job kind, so there is nothing bounded to drive. Two things
+ * keep it honest until one exists. The dispatcher calls this only when
+ * app_sd_busy() is false, so it cannot run while a job holds the volume -- a
+ * gate the replay listing does not have. And the scan is capped at
+ * AIUS_OPTICAL_APP_INDEX_SCAN_MAX reads rather than running to the end of an
+ * unknown directory, so the epoch stays bounded even on a large card.
+ *
+ * The handle is never retained past the call, and `entries`/`capacity` belong
+ * to the caller. */
+static FLASHMEM AiusOpticalAppDirResult app_read_directory(
+	void *, const char *path, AiusOpticalAppDirBatch *batch)
+{
+	if (!g_sd_ready)
+		return AIUS_OPTICAL_APP_DIR_FAILED;
+	File directory = SD.open(path);
+	if (!directory)
+		return AIUS_OPTICAL_APP_DIR_NOT_FOUND;
+	if (!directory.isDirectory()) {
+		directory.close();
+		return AIUS_OPTICAL_APP_DIR_NOT_DIRECTORY;
+	}
+	unsigned scanned = 0u;
+	while (batch->count < batch->capacity &&
+	       scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {
+		File entry = directory.openNextFile();
+		if (!entry) {
+			directory.close();
+			return AIUS_OPTICAL_APP_DIR_OK;
+		}
+		scanned++;
+		const char *name = entry.name();
+		const char *base = strrchr(name, '/');
+		base = base == nullptr ? name : base + 1;
+		if (strlen(base) > AIUS_OPTICAL_APP_INDEX_NAME_MAX) {
+			batch->hidden++;
+		} else {
+			AiusOpticalAppDirEntry *slot = &batch->entries[batch->count];
+			snprintf(slot->name, sizeof(slot->name), "%s", base);
+			slot->is_directory = entry.isDirectory();
+			slot->size_bytes = slot->is_directory ?
+				0u : (uint64_t)entry.size();
+			batch->count++;
+		}
+		entry.close();
+	}
+	/* Stopped on a bound rather than at the end: is anything left? */
+	File extra = directory.openNextFile();
+	if (extra) {
+		batch->more = true;
+		extra.close();
+	}
+	directory.close();
+	return AIUS_OPTICAL_APP_DIR_OK;
+}
+
 /* Handed to aius_optical_app_init() by slice S2a. Deliberately external
  * linkage: an internal-linkage table nothing references yet is exactly the
  * shape -Wunused-variable reports, whereas an extern definition is never
@@ -1969,7 +2026,8 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_clear_counters,
 	app_request_reboot,
 	app_write_usb_payload,
-	app_upload_id
+	app_upload_id,
+	app_read_directory
 };
 
 /* ------------------------------------------------------------------ */

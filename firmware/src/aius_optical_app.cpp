@@ -176,23 +176,23 @@ static FLASHMEM const char *resource_content_type(const AiusHttpRequest *request
 
 /* Rejects traversal, percent-encoding, backslashes, empty or over-long path
  * components, and anything outside the /aius/www/ subtree -- the same rules the
- * pre-cutover http_sd_path() enforces. */
-static FLASHMEM bool resource_path_valid(const AiusHttpRequest *request)
+ * pre-cutover http_sd_path() enforces. Takes the resource slice rather than the
+ * request so the directory form below can validate its body by handing over the
+ * same bytes with the trailing slash removed. */
+static FLASHMEM bool resource_path_valid(const uint8_t *resource, size_t length)
 {
-	const char *resource = (const char *)request->resource;
 	size_t component_length = 0u;
 	unsigned components = 1u;
-	if (request->resource == NULL || request->resource_length < 5u ||
-	    request->resource_length > 96u ||
-	    memcmp(request->resource, "www/", 4u) != 0)
+	if (resource == NULL || length < 5u || length > 96u ||
+	    memcmp(resource, "www/", 4u) != 0)
 		return false;
-	for (size_t i = 4u; i < request->resource_length; i++) {
-		uint8_t ch = request->resource[i];
+	for (size_t i = 4u; i < length; i++) {
+		uint8_t ch = resource[i];
 		if (ch == '%' || ch == '\\' || ch == 0u)
 			return false;
 		if (ch == '/') {
-			if (i == 4u || i + 1u == request->resource_length ||
-			    request->resource[i - 1u] == '/' || component_length > 32u)
+			if (i == 4u || i + 1u == length || resource[i - 1u] == '/' ||
+			    component_length > 32u)
 				return false;
 			component_length = 0u;
 			components++;
@@ -207,12 +207,34 @@ static FLASHMEM bool resource_path_valid(const AiusHttpRequest *request)
 		if (component_length > 32u)
 			return false;
 	}
-	for (size_t i = 4u; i + 1u < request->resource_length; i++)
+	for (size_t i = 4u; i + 1u < length; i++)
 		if (resource[i] == '.' && resource[i + 1u] == '.' &&
 		    (i == 4u || resource[i - 1u] == '/') &&
-		    (i + 2u == request->resource_length || resource[i + 2u] == '/'))
+		    (i + 2u == length || resource[i + 2u] == '/'))
 			return false;
 	return component_length <= 32u;
+}
+
+/* A resource that names a directory is the same resource spelled with a
+ * trailing slash -- the shape a browser already produces when a listing's
+ * relative links are followed, and the reason the index needed no new route and
+ * no parser change. */
+static FLASHMEM bool resource_is_directory(const AiusHttpRequest *request)
+{
+	return request->resource != NULL && request->resource_length != 0u &&
+	       request->resource[request->resource_length - 1u] == '/';
+}
+
+/* "www/" is the subtree root and has no body to check; anything deeper must be
+ * a resource the download route would also accept, so the index and /sd/ admit
+ * exactly the same paths. */
+static FLASHMEM bool resource_directory_valid(const uint8_t *resource,
+                                              size_t length)
+{
+	if (resource == NULL || length < 4u || length > 96u ||
+	    resource[length - 1u] != '/' || memcmp(resource, "www/", 4u) != 0)
+		return false;
+	return length == 4u || resource_path_valid(resource, length - 1u);
 }
 
 static FLASHMEM bool replay_id_chars_valid(const uint8_t *id, size_t length)
@@ -447,7 +469,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 		                 (const uint8_t *)"{\"ok\":true}",
 		                 sizeof("{\"ok\":true}") - 1u);
 	}
-	if (!resource_path_valid(request) ||
+	if (!resource_path_valid(request->resource, request->resource_length) ||
 	    !build_root_path(dispatcher->target_path,
 	                     sizeof(dispatcher->target_path),
 	                     (const char *)request->resource,
@@ -460,11 +482,196 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_upload(
 	                 sizeof("{\"ok\":true}") - 1u);
 }
 
+/* ------------------------------------------------------------------ */
+/* directory index                                                     */
+/* ------------------------------------------------------------------ */
+
+/* The listing draws a link per entry, so it lists only names the /sd/ download
+ * route would accept -- one component's worth of [A-Za-z0-9._-], at most
+ * AIUS_OPTICAL_APP_INDEX_NAME_MAX bytes. Everything else is counted as hidden.
+ * Excluding the rest is what makes the body HTML-safe without an escaper: no
+ * quote, angle bracket or ampersand can survive this test. */
+static FLASHMEM bool index_name_servable(const char *name)
+{
+	size_t length = 0u;
+	while (name[length] != '\0') {
+		char ch = name[length];
+		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+		      (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-'))
+			return false;
+		length++;
+		if (length > AIUS_OPTICAL_APP_INDEX_NAME_MAX)
+			return false;
+	}
+	return length != 0u;
+}
+
+/* Neither is an entry a reader wants listed, and neither is "hidden" in the
+ * sense the footer reports, so both are dropped uncounted. */
+static FLASHMEM bool index_name_is_dot(const char *name)
+{
+	return name[0] == '.' &&
+	       (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'));
+}
+
+/* Bytes held back from the row loop so the footer -- the part that states the
+ * counts and whether the listing is complete -- can always be written. Its
+ * longest form is 147 bytes, with both counts at 20 digits. */
+#define AIUS_OPTICAL_APP_INDEX_FOOTER_RESERVE 192u
+
+/* Formats one listing into the response buffer, returning its length or 0 when
+ * even the framing does not fit (which becomes the same deterministic 500 as
+ * any other over-large body).
+ *
+ * The listing is bounded twice over, and states which bound stopped it. The
+ * application already stopped at AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES; this loop
+ * additionally stops when the next row would eat the footer's reserve, so a
+ * dispatcher with a small body buffer truncates honestly instead of overrunning
+ * or emitting a 500. Either way `truncated: yes` appears in the body. */
+static FLASHMEM size_t index_write(AiusOpticalAppDispatcher *dispatcher,
+                                   const AiusHttpRequest *request,
+                                   const AiusOpticalAppDirBatch *batch)
+{
+	char *body = (char *)dispatcher->body;
+	size_t capacity = dispatcher->body_capacity;
+	size_t length;
+	size_t shown = 0u;
+	size_t hidden = batch->hidden;
+	bool truncated = batch->more;
+	int written;
+
+	if (capacity <= AIUS_OPTICAL_APP_INDEX_FOOTER_RESERVE)
+		return 0u;
+	written = snprintf(body, capacity,
+	                   "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+	                   "<title>/sd/%.*s</title></head><body><h1>/sd/%.*s</h1>"
+	                   "<ul>",
+	                   (int)request->resource_length,
+	                   (const char *)request->resource,
+	                   (int)request->resource_length,
+	                   (const char *)request->resource);
+	if (written <= 0 ||
+	    (size_t)written >= capacity - AIUS_OPTICAL_APP_INDEX_FOOTER_RESERVE)
+		return 0u;
+	length = (size_t)written;
+	/* "../" resolves to the parent listing in the browser, so the link only
+	 * exists below the subtree root; from www/ it would resolve to /sd/, which
+	 * is not a route. */
+	if (request->resource_length > 4u) {
+		written = snprintf(body + length, capacity - length,
+		                   "<li><a href=\"../\">../</a></li>");
+		if (written <= 0 ||
+		    (size_t)written >= capacity - length -
+			    AIUS_OPTICAL_APP_INDEX_FOOTER_RESERVE)
+			return 0u;
+		length += (size_t)written;
+	}
+	for (size_t i = 0; i < batch->count; i++) {
+		const AiusOpticalAppDirEntry *entry = &batch->entries[i];
+		if (index_name_is_dot(entry->name))
+			continue;
+		if (!index_name_servable(entry->name)) {
+			hidden++;
+			continue;
+		}
+		if (entry->is_directory)
+			written = snprintf(body + length, capacity - length,
+			                   "<li><a href=\"%s/\">%s/</a> dir</li>",
+			                   entry->name, entry->name);
+		else
+			written = snprintf(body + length, capacity - length,
+			                   "<li><a href=\"%s\">%s</a> %llu</li>",
+			                   entry->name, entry->name,
+			                   (unsigned long long)entry->size_bytes);
+		if (written <= 0 ||
+		    (size_t)written >= capacity - length -
+			    AIUS_OPTICAL_APP_INDEX_FOOTER_RESERVE) {
+			truncated = true;
+			break;
+		}
+		length += (size_t)written;
+		shown++;
+	}
+	written = snprintf(body + length, capacity - length,
+	                   "</ul><p>%lu shown, %lu hidden, truncated: %s. Sizes in "
+	                   "bytes; at most %u entries per listing.</p></body>"
+	                   "</html>",
+	                   (unsigned long)shown, (unsigned long)hidden,
+	                   truncated ? "yes" : "no",
+	                   (unsigned)AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES);
+	if (written <= 0 || (size_t)written >= capacity - length)
+		return 0u;
+	return length + (size_t)written;
+}
+
+/* GET /sd/<dir>/ -- the /sd/ resource tree describing itself.
+ *
+ * Order of refusal: the method is a fact about the request, so it answers
+ * first; then the capability, the media, the path, and finally the volume. The
+ * sd_busy() gate is load-bearing rather than cosmetic -- read_directory reaches
+ * the card directly, so it must never run while an SD job owns the volume. */
+static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd_index(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
+{
+	const AiusOpticalApp *app = &dispatcher->app;
+	AiusOpticalAppDirBatch batch;
+
+	if (request->method != AIUS_HTTP_GET)
+		return http_error(dispatcher, 405, "sd_directory");
+	if (app->read_directory == NULL)
+		return http_error(dispatcher, 503, "sd_index_unavailable");
+	if (!app->sd_ready(app->context))
+		return http_error(dispatcher, 503, "sd_unavailable");
+	if (!resource_directory_valid(request->resource,
+	                              request->resource_length) ||
+	    !build_root_path(dispatcher->target_path,
+	                     sizeof(dispatcher->target_path),
+	                     (const char *)request->resource,
+	                     request->resource_length - 1u))
+		return http_error(dispatcher, 404, "sd_path");
+	if (app->sd_busy(app->context))
+		return http_error(dispatcher, 503, "sd_busy");
+
+	memset(dispatcher->index_entries, 0, sizeof(dispatcher->index_entries));
+	memset(&batch, 0, sizeof(batch));
+	batch.entries = dispatcher->index_entries;
+	batch.capacity = AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES;
+	switch (app->read_directory(app->context, dispatcher->target_path,
+	                            &batch)) {
+	case AIUS_OPTICAL_APP_DIR_OK:
+		break;
+	case AIUS_OPTICAL_APP_DIR_NOT_FOUND:
+		return http_error(dispatcher, 404, "sd_not_found");
+	case AIUS_OPTICAL_APP_DIR_NOT_DIRECTORY:
+		return http_error(dispatcher, 404, "sd_not_directory");
+	case AIUS_OPTICAL_APP_DIR_FAILED:
+	default:
+		return http_error(dispatcher, 503, "sd_index");
+	}
+	/* An application that over-reports is held to the cap here rather than
+	 * trusted: the storage is the dispatcher's and so is the bound. */
+	if (batch.count > AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES) {
+		batch.count = AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES;
+		batch.more = true;
+	}
+	batch.entries = dispatcher->index_entries;
+	for (size_t i = 0; i < batch.count; i++)
+		dispatcher->index_entries[i].name[AIUS_OPTICAL_APP_INDEX_NAME_MAX] =
+			'\0';
+	return http_serialized_html(dispatcher,
+	                            index_write(dispatcher, request, &batch));
+}
+
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
 	const AiusOpticalApp *app = &dispatcher->app;
 	const char *content_type;
+	/* A resource naming a directory is a listing on GET and nothing else on any
+	 * other method -- it is not an upload target and not a delete target. */
+	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
+	    resource_is_directory(request))
+		return dispatch_sd_index(dispatcher, request);
 	if (request->method == AIUS_HTTP_PUT)
 		return dispatch_sd_upload(dispatcher, request);
 	if (!app->sd_ready(app->context))
@@ -481,7 +688,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 			return http_error(dispatcher, 404, "sd_path");
 		content_type = kContentBinary;
 	} else {
-		if (!resource_path_valid(request) ||
+		if (!resource_path_valid(request->resource, request->resource_length) ||
 		    !build_root_path(dispatcher->target_path,
 		                     sizeof(dispatcher->target_path),
 		                     (const char *)request->resource,
@@ -674,6 +881,9 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 /* public entry points                                                 */
 /* ------------------------------------------------------------------ */
 
+/* read_directory is deliberately absent: it is the one optional entry, and a
+ * table without it must still init so every other route keeps working on a
+ * runtime that has not wired the listing yet. */
 static FLASHMEM bool app_complete(const AiusOpticalApp *app)
 {
 	return app->sd_ready != NULL && app->sd_busy != NULL &&

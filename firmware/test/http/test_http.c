@@ -45,6 +45,35 @@ static void test_dsp_config_route(void)
 	       AIUS_HTTP_ERR_ROUTE);
 }
 
+/* The directory index rides the existing /sd/ parse: a resource ending in a
+ * slash is an ordinary AIUS_HTTP_ROUTE_SD_FILE resource, and the trailing slash
+ * survives into `resource` for the dispatcher to read. That is why the listing
+ * needed no new route and no parser change, and this pins it. */
+static void test_sd_directory_resource(void)
+{
+	AiusHttpRequest request;
+	static const struct { const char *raw; const char *resource; } rows[] = {
+		{ "GET /sd/www/ HTTP/1.0\r\n\r\n", "www/" },
+		{ "GET /sd/www/sub/ HTTP/1.0\r\n\r\n", "www/sub/" },
+		{ "GET /sd/www/index.html HTTP/1.0\r\n\r\n", "www/index.html" }
+	};
+	/* "/sd/" alone stays unknown: the prefix match needs at least one byte of
+	 * resource, so the card root is not browsable and the subtree root is
+	 * spelled /sd/www/. */
+	const char *root = "GET /sd/ HTTP/1.0\r\n\r\n";
+
+	for (size_t i = 0; i < ARRAY_LENGTH(rows); ++i) {
+		assert(aius_http_parse((const uint8_t *)rows[i].raw,
+		                       strlen(rows[i].raw), &request) == AIUS_HTTP_OK);
+		assert(request.route == AIUS_HTTP_ROUTE_SD_FILE);
+		assert(request.resource_length == strlen(rows[i].resource));
+		assert(memcmp(request.resource, rows[i].resource,
+		              request.resource_length) == 0);
+	}
+	assert(aius_http_parse((const uint8_t *)root, strlen(root), &request) ==
+	       AIUS_HTTP_ERR_ROUTE);
+}
+
 static void test_sd_auth_header(void)
 {
 	AiusHttpRequest request;
@@ -272,6 +301,7 @@ int main(void)
 {
 	AiusHttpRequest request;
 	test_sd_auth_header();
+	test_sd_directory_resource();
 	test_dsp_config_route();
 	test_replay_routes();
 	test_framing();

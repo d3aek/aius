@@ -35,6 +35,36 @@ extern "C" {
 #define AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE (AIUS_OPTICAL_APP_USB_PAYLOAD_MAX + 1u)
 #define AIUS_OPTICAL_APP_REPLAY_ID_STORAGE (AIUS_HTTP_MAX_REPLAY_ID + 1u)
 
+/* Directory index -- GET /sd/<dir>/ ---------------------------------------
+ *
+ * Longest entry name the index lists. The /sd/ download route accepts a path
+ * component of at most 32 bytes drawn from [A-Za-z0-9._-], so a longer or
+ * differently spelled name is one the link a listing would draw could not
+ * fetch. The index therefore lists exactly the set /sd/ can serve and reports
+ * everything else as hidden rather than drawing a dead link -- which also means
+ * no byte that could close an HTML attribute ever reaches the body. */
+#define AIUS_OPTICAL_APP_INDEX_NAME_MAX 32u
+#define AIUS_OPTICAL_APP_INDEX_NAME_STORAGE (AIUS_OPTICAL_APP_INDEX_NAME_MAX + 1u)
+
+/* Hard cap on one listing, and the whole bounding argument for a route that is
+ * otherwise unbounded by nature.
+ *
+ * 64 entries * the 109-byte worst-case row (a 32-byte name twice over plus a
+ * 20-digit size) + 216 bytes of framing is 7,192 bytes, under
+ * AIUS_HTTP_MAX_RESPONSE (8,192), so even a full listing frames as one ordinary
+ * response and never needs the streaming path. It also bounds the
+ * epoch: the application performs at most this many entry reads plus the scan
+ * bound below, instead of walking a directory of unknown size. Past the cap the
+ * listing stops and says so in its own footer -- see AiusOpticalAppDirBatch. */
+#define AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES 64u
+
+/* Bound on the raw directory reads one read_directory call may perform. The
+ * application stops at this many reads even when it has filled fewer than
+ * `capacity` entries (a directory whose first 128 names are all unservable, for
+ * instance) and reports `more`. One epoch's enumeration is bounded by this
+ * number, not by the directory's size. */
+#define AIUS_OPTICAL_APP_INDEX_SCAN_MAX 128u
+
 /* Smallest response-body buffer a dispatcher accepts. Every dynamically
  * formatted body the dispatcher writes itself fits well inside this; the
  * serializer callbacks receive whatever the caller supplied. */
@@ -65,10 +95,53 @@ typedef enum {
 	AIUS_OPTICAL_APP_REPLAY_FAILED
 } AiusOpticalAppReplayResult;
 
-/* The application seam. Every entry is required; aius_optical_app_init()
- * rejects an incomplete table so a missing callback can never surface as a
- * null call at dispatch time. Serializers return the written length, or 0 for
- * "does not fit" -- the dispatcher turns that into a deterministic 500. */
+/* One directory entry, as the application read it off the card. `name` is the
+ * base name only -- no directory part, NUL-terminated, and truncated by the
+ * dispatcher at AIUS_OPTICAL_APP_INDEX_NAME_MAX before it is read. */
+typedef struct {
+	uint64_t size_bytes;
+	char name[AIUS_OPTICAL_APP_INDEX_NAME_STORAGE];
+	bool is_directory;
+} AiusOpticalAppDirEntry;
+
+/* One bounded batch of directory entries. The dispatcher owns `entries` and
+ * sets `entries`/`capacity` before the call; the application fills `count`
+ * entries and reports what it left behind. There is exactly one batch per
+ * request: this is a hard cap, not a pagination cursor, so `more` is the honest
+ * statement that the listing stopped early rather than an offset to resume
+ * from.
+ *
+ * `hidden` counts entries the application skipped because it could not
+ * represent them -- a name longer than AIUS_OPTICAL_APP_INDEX_NAME_MAX, most
+ * commonly. The dispatcher adds its own rejections to that count, so a name it
+ * would not draw a link for is reported rather than silently dropped. `.` and
+ * `..` are not entries in this sense and are dropped without counting.
+ *
+ * `more` is set when the card holds further entries beyond `count`, whether the
+ * call stopped at `capacity` or at AIUS_OPTICAL_APP_INDEX_SCAN_MAX reads. */
+typedef struct {
+	AiusOpticalAppDirEntry *entries;
+	size_t capacity;
+	size_t count;
+	size_t hidden;
+	bool more;
+} AiusOpticalAppDirBatch;
+
+typedef enum {
+	AIUS_OPTICAL_APP_DIR_OK,
+	/* Nothing exists at the path. */
+	AIUS_OPTICAL_APP_DIR_NOT_FOUND,
+	/* Something exists, but it is a file. */
+	AIUS_OPTICAL_APP_DIR_NOT_DIRECTORY,
+	/* The card refused the enumeration. */
+	AIUS_OPTICAL_APP_DIR_FAILED
+} AiusOpticalAppDirResult;
+
+/* The application seam. Every entry is required except `read_directory`;
+ * aius_optical_app_init() rejects an otherwise incomplete table so a missing
+ * callback can never surface as a null call at dispatch time. Serializers
+ * return the written length, or 0 for "does not fit" -- the dispatcher turns
+ * that into a deterministic 500. */
 typedef struct {
 	void *context;
 
@@ -113,6 +186,31 @@ typedef struct {
 	                            char *payload, size_t capacity);
 	/* Per-upload entropy for temporary/backup file names. */
 	uint32_t (*upload_id)(void *context);
+
+	/* Reads one bounded batch of directory entries from `path` (an absolute
+	 * card path with no trailing slash, e.g. "/aius/www" or "/aius/www/sub").
+	 *
+	 * This is the ONE optional entry in the table, and deliberately so: the
+	 * dispatcher owns the route and its bound, while the enumeration itself is
+	 * card access only the target adapter can perform. A null callback leaves
+	 * GET /sd/<dir>/ answering a deterministic 503 sd_index_unavailable instead
+	 * of refusing the whole table at init -- so a runtime that has not wired it
+	 * keeps every other route working, and wiring it is purely additive.
+	 *
+	 * It is LAST for the same reason. optical_main.cpp's g_aius_optical_app is
+	 * a positional aggregate initializer, so a new member anywhere else shifts
+	 * every entry below it; appending leaves that table correct and value-
+	 * initializes this slot to null. A new initializer belongs at the end of
+	 * that list, never in the middle.
+	 *
+	 * The dispatcher calls this at most once per request, and only after
+	 * sd_ready() and !sd_busy(), so the enumeration can never run while an SD
+	 * job holds the volume. The implementation must not scan more than
+	 * AIUS_OPTICAL_APP_INDEX_SCAN_MAX raw entries, must not retain the
+	 * directory handle beyond the call, and must leave `batch->entries` and
+	 * `batch->capacity` alone. */
+	AiusOpticalAppDirResult (*read_directory)(void *context, const char *path,
+	                                          AiusOpticalAppDirBatch *batch);
 } AiusOpticalApp;
 
 /* Caller-owned dispatcher state.
@@ -144,6 +242,12 @@ typedef struct {
 	char backup_path[AIUS_SD_PATH_STORAGE];
 	char replay_id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
 	char usb_payload[AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE];
+	/* Scratch for one directory listing, ~3 KB. Written and read entirely
+	 * inside a single dispatch call -- the response borrows `body`, never this
+	 * -- so it does not extend the borrow invariant above. It lives here rather
+	 * than on the stack because the composed runtime instance is DMAMEM
+	 * (OCRAM), and the DTCM free-for-locals zone is the scarce bank. */
+	AiusOpticalAppDirEntry index_entries[AIUS_OPTICAL_APP_INDEX_MAX_ENTRIES];
 	AiusHttpApplicationResponse http_response;
 	AiusUsbApplicationResponse usb_response;
 	uint32_t upload_sequence;
