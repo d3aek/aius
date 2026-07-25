@@ -33,15 +33,30 @@ extern "C" {
 /* The portable dispatch seam. It pulls in aius_sd.h (and, through
  * aius_http_transaction.h, aius_io.h) unconditionally, which is why slice S0
  * had to rename this file's legacy SD symbols to LegacySdJob /
- * LegacySdJobState / LEGACY_SD_JOB_* first. Nothing here constructs the
- * dispatcher yet -- slice S2a does. */
+ * LegacySdJobState / LEGACY_SD_JOB_* first. Slice S1 filled the callback table
+ * and slice S2a constructs the dispatcher inside the composed runtime below. */
 #include "aius_optical_app.h"
+/* Slice S2a's composition: the bounded runtime setup() constructs and loop()
+ * drives one epoch of, the retained boot adapter that owns the ledger, the
+ * pinned 8 s watchdog interval and the sole per-epoch feed, the production
+ * `Serial` primitive table the runtime's USB service consumes, and the network
+ * adapter whose UDP primitives the UDP platform callback reaches through. */
+#include "aius_boot_teensy.h"
+#include "aius_cdc_teensy.h"
+#include "aius_network_teensy.h"
+#include "aius_runtime_teensy.h"
 
 #ifndef AIUS_BUILD_GIT_REV
 #define AIUS_BUILD_GIT_REV "unknown"
 #endif
 #ifndef AIUS_BUILD_UTC
 #define AIUS_BUILD_UTC "unknown"
+#endif
+/* build_metadata.py defines this for every PlatformIO image; the fallback keeps
+ * the file compilable outside that build, exactly as the two stamps above do. A
+ * build id change is what clears the retained early-reset count. */
+#ifndef AIUS_BUILD_ID
+#define AIUS_BUILD_ID 0u
 #endif
 
 static constexpr uint16_t AIUS_NET_PORT = 4242;
@@ -323,16 +338,17 @@ static volatile uint32_t g_network_budget_overruns;
 
 static uint8_t current_state(void);
 
+/* Retired by slice S2a, which is the interval change §Accepted wire-behaviour
+ * changes records: the legacy sixteen-second arming is replaced by the pinned
+ * eight-second one, armed once from setup() through the boot adapter. This body
+ * is emptied rather than left in place because the raw interval literal must
+ * not survive the cutover -- the optical-cutover positive group asserts the
+ * pinned interval comes from the adapter and is not reimplemented here.
+ *
+ * Nothing calls this any more, so g_watchdog_enabled stays false and the legacy
+ * watchdog_feed() below is a no-op. Slice S2b deletes all three. */
 static void watchdog_init(void)
 {
-	CCM_CCGR3 |= CCM_CCGR3_WDOG1(3);
-	WDOG1_WMCR = 0;
-	/* Sixteen seconds covers setup's SD probe plus the bounded DHCP attempt,
-	 * while still recovering from a wedged driver or socket write. */
-	constexpr uint8_t timeout = 31u;
-	WDOG1_WCR |= WDOG_WCR_SRS | WDOG_WCR_WT(timeout);
-	WDOG1_WCR |= WDOG_WCR_WDE | WDOG_WCR_WDT | WDOG_WCR_SRE;
-	g_watchdog_enabled = true;
 }
 
 static void watchdog_feed(void)
@@ -2693,22 +2709,27 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
 }
 
-/* The dispatcher has already refused a missing card and an invalid id, so this
- * is http_replay_request()'s START arm from the file open onwards. */
+/* POST /api/replays/start is refused from slice S2a until Phase 14c lands, as
+ * §Accepted wire-behaviour changes records. Two reasons, both structural:
+ * aius_replay_service_start() opens the file and then fills the ring
+ * synchronously before returning (aius_replay.c:159), so starting from here
+ * would block inside a dispatcher contracted to touch no SD primitive and never
+ * delay; and every SD job calls SD.begin(), which would remount the card
+ * underneath an open replay handle. Refusing removes both.
+ *
+ * FAILED is the refusal the callback contract affords for "could not start":
+ * the dispatcher maps it to 409 {"ok":false,"error":"replay_start"}
+ * (aius_optical_app.cpp:639), which is exactly what the legacy route already
+ * returned when the start failed (http_replay_request()'s START arm), so the
+ * route's failure surface is unchanged. NOT_FOUND would be a lie -- the file is
+ * never looked for. Phase 14c owns restoring the route on a bounded SD job. */
 static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
                                                             const char *id,
                                                             bool loop)
 {
-	snprintf(g_replay_path, sizeof(g_replay_path), "/aius/replays/%s.iec", id);
-	File file = SD.open(g_replay_path, FILE_READ);
-	if (!file)
-		return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;
-	uint32_t bytes = (uint32_t)file.size();
-	file.close();
-	if (aius_replay_service_start(&g_replay_service, id, bytes, loop,
-	                              &g_replay_reader) != AIUS_OK)
-		return AIUS_OPTICAL_APP_REPLAY_FAILED;
-	return AIUS_OPTICAL_APP_REPLAY_OK;
+	(void)id;
+	(void)loop;
+	return AIUS_OPTICAL_APP_REPLAY_FAILED;
 }
 
 static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
@@ -2816,59 +2837,399 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_upload_id
 };
 
-void setup(void)
+/* ------------------------------------------------------------------ */
+/* Runtime composition -- Phase 14 slice S2a                           */
+/*                                                                     */
+/* setup() constructs the delivered AiusRuntimeTeensy and returns;     */
+/* loop() runs exactly one epoch through it. Every legacy service      */
+/* above still compiles and is still defined, but nothing reaches it   */
+/* any more: slice S2b deletes the dead path, the NativeEthernet/FNET  */
+/* includes and the rebind globals in one commit.                      */
+/*                                                                     */
+/* Every definition below carries FLASHMEM on the definition itself.   */
+/* None of it runs per audio block -- the platform callbacks run once  */
+/* per runtime epoch and the construction helpers exactly once -- and  */
+/* this image has ~2.1 kB of ITCM left, so a prototype-only FLASHMEM   */
+/* (which GCC does not inherit) would be a silent regression.          */
+/* ------------------------------------------------------------------ */
+
+/* The composed runtime, in OCRAM because aius_runtime_teensy.h requires it:
+ * the object is roughly 35 kB, dominated by the HTTP request/response buffers
+ * (13,312 + 8,192 B) and the model-sized application body buffer (12,288 B),
+ * against a 22,684-byte DTCM free-for-locals zone. A DTCM instance could not
+ * fit, and a stack one could not exist at all. aius_runtime_teensy_construct()
+ * initializes every member it reads, so OCRAM's lack of startup zeroing is
+ * harmless -- the same argument g_http_request/g_http_response carry. */
+DMAMEM static AiusRuntimeTeensy g_runtime;
+
+/* Retained boot state, captured once in setup() and published every epoch by
+ * the RESET_CAPTURE platform callback. The ledger is the boot adapter's, so
+ * the checkpoint callback persists it through the same double-slot storage the
+ * Phase 13 target oracle covers, and its mode is what selects recovery-safe
+ * operation for the whole runtime. */
+static AiusBootTeensyPrimitives g_boot_primitives;
+static AiusBootStorageTeensy g_boot_storage;
+static AiusBootLedger g_boot_ledger;
+static bool g_recovery_safe;
+
+/* Ten seconds of completed normal epochs clears the retained early-reset count
+ * (§Normative recovery contract). Without it a second watchdog reset any time
+ * later in the board's life would latch recovery-safe mode permanently, since
+ * its only exit is a new image. */
+static constexpr uint32_t AIUS_BOOT_HEALTHY_MS = 10000u;
+static uint32_t g_boot_healthy_at_ms;
+static bool g_boot_marked_healthy;
+
+/* UDP scratch in OCRAM rather than on the epoch stack. The epoch call chain
+ * (scheduler -> service -> HTTP transaction -> dispatcher) is deeper than the
+ * legacy loop's, and these three buffers are 1,576 B of the 22,684-byte DTCM
+ * free-for-locals zone. Every byte sent is written before it is read: the
+ * receive buffer by the receive itself, the status payload by put_status()'s
+ * memset, the events payload up to the count it reports, and the frame by the
+ * encoder up to the length it returns. g_udp_packet must stay live while the
+ * frame is encoded because AiusNetFrame::payload points into it. */
+DMAMEM static uint8_t g_udp_packet[AIUS_NET_MAX_FRAME];
+DMAMEM static uint8_t g_udp_frame[AIUS_NET_MAX_FRAME];
+DMAMEM static uint8_t g_udp_payload[AIUS_NET_MAX_PAYLOAD];
+
+/* send_response()'s body against the network adapter instead of the legacy
+ * EthernetUDP object. The adapter latches the peer on every receive and sends
+ * back to it, which is exactly the beginPacket(remoteIP(), remotePort())
+ * request/response pairing the legacy path had, so the encoded frame and its
+ * destination are both unchanged. One attempt, no retry: a WOULD_BLOCK is this
+ * epoch's answer, not something to wait out. */
+static FLASHMEM bool udp_send_frame(uint8_t type, uint32_t request_id,
+                                    const uint8_t *payload, uint16_t length)
 {
-	g_reset_source = SRC_SRSR & 0xffu;
-	SRC_SRSR = g_reset_source;
-	watchdog_init();
-	Serial.begin(115200);
-	aius_usb_control_init(&g_usb_parser);
+	const size_t frame_length = aius_net_encode(g_udp_frame,
+	                                            sizeof(g_udp_frame), type, 0,
+	                                            request_id, payload, length);
+	if (frame_length == 0u)
+		return false;
+	const AiusIoEvent event = aius_network_teensy_udp_send_once(
+		&g_runtime.network_http.target, g_udp_frame, frame_length);
+	return event.result == AIUS_IO_PROGRESS && event.bytes == frame_length;
+}
+
+/* send_nack()'s body. */
+static FLASHMEM bool udp_send_nack(uint32_t request_id, uint8_t error)
+{
+	const uint8_t payload[1] = {error};
+
+	return udp_send_frame(AIUS_NET_RSP_NACK, request_id, payload,
+	                      sizeof(payload));
+}
+
+/* service_network()'s GET_EVENTS arm verbatim, writing into the OCRAM payload
+ * buffer instead of a stack one. Returns the payload length. */
+static FLASHMEM uint16_t udp_put_events(const AiusNetFrame *request)
+{
+	const uint32_t cursor = request->payload_len >= 4 ?
+		aius_net_get_u32(request->payload) : 0u;
+	uint8_t count = 0;
+	uint32_t first = g_event_sequence > 8u ? g_event_sequence - 7u : 1u;
+
+	for (uint32_t sequence = first;
+	     sequence <= g_event_sequence && count < 4; sequence++) {
+		const AiusEvent &event = g_events[(sequence - 1u) % 8u];
+		if (event.sequence != sequence || event.sequence <= cursor)
+			continue;
+		uint8_t *dst = g_udp_payload + 1 + count * 12;
+		aius_net_put_u32(dst, event.sequence);
+		aius_net_put_u32(dst + 4, event.uptime_ms);
+		dst[8] = event.type;
+		dst[9] = event.state;
+		aius_net_put_u16(dst + 10, event.detail);
+		count++;
+	}
+	g_udp_payload[0] = count;
+	return (uint16_t)(1 + count * 12);
+}
+
+/* service_network()'s command switch: the same nine command types with the
+ * same response types, the same 71-byte status payload (put_status() is reused
+ * unchanged, so its length and every field offset are the same bytes), and the
+ * same AIUS_NET_ERR_TYPE nack for the retired mode/mix commands and any
+ * unknown type. The three arms that mutate state go through slice S1's
+ * adapters, which are the legacy bodies, so UDP and HTTP keep one producer
+ * each. REBOOT is the one ordering change and it is the contract's: the
+ * dispatcher records the request and the runtime performs the reset after the
+ * epoch, so the ack still leaves before the board resets. */
+static FLASHMEM void udp_dispatch(const AiusNetFrame *request)
+{
+	uint16_t length = 0;
+
+	switch (request->type) {
+	case AIUS_NET_CMD_DISCOVER:
+		put_status(g_udp_payload, &length);
+		(void)udp_send_frame(AIUS_NET_RSP_DISCOVERY, request->request_id,
+		                     g_udp_payload, length);
+		break;
+	case AIUS_NET_CMD_GET_STATUS:
+		put_status(g_udp_payload, &length);
+		(void)udp_send_frame(AIUS_NET_RSP_STATUS, request->request_id,
+		                     g_udp_payload, length);
+		break;
+	case AIUS_NET_CMD_CLEAR_COUNTERS:
+		app_clear_counters(nullptr);
+		(void)udp_send_frame(AIUS_NET_RSP_ACK, request->request_id,
+		                     nullptr, 0);
+		break;
+	case AIUS_NET_CMD_SET_MODE:
+	case AIUS_NET_CMD_SET_MIX:
+		/* Mode/mix selection is retired by the single-config model. The
+		 * command IDs remain in the binary protocol, but there is no
+		 * selection to set, so the device rejects them rather than
+		 * silently no-op-acking. */
+		(void)udp_send_nack(request->request_id, AIUS_NET_ERR_TYPE);
+		break;
+	case AIUS_NET_CMD_START_TEST:
+		app_set_test_running(nullptr, true);
+		(void)udp_send_frame(AIUS_NET_RSP_ACK, request->request_id,
+		                     nullptr, 0);
+		break;
+	case AIUS_NET_CMD_STOP_TEST:
+		app_set_test_running(nullptr, false);
+		(void)udp_send_frame(AIUS_NET_RSP_ACK, request->request_id,
+		                     nullptr, 0);
+		break;
+	case AIUS_NET_CMD_REBOOT:
+		(void)udp_send_frame(AIUS_NET_RSP_ACK, request->request_id,
+		                     nullptr, 0);
+		app_request_reboot(nullptr);
+		break;
+	case AIUS_NET_CMD_GET_EVENTS:
+		length = udp_put_events(request);
+		(void)udp_send_frame(AIUS_NET_RSP_EVENTS, request->request_id,
+		                     g_udp_payload, length);
+		break;
+	default:
+		(void)udp_send_nack(request->request_id, AIUS_NET_ERR_TYPE);
+		break;
+	}
+}
+
+/* Checkpoint 0. The retained facts are captured once, in setup(); this
+ * publishes them, so a failed capture can never be half-published and the read
+ * is not repeated against a register the capture already cleared. */
+static FLASHMEM bool platform_reset_capture(void *,
+                                            const AiusRuntimeBudget *budget,
+                                            uint32_t now_ms,
+                                            AiusRuntimeTeensyBootStatus *status)
+{
+	(void)now_ms;
+	if (budget == nullptr ||
+	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_RESET_CAPTURE ||
+	    status == nullptr)
+		return false;
+	status->boot_generation = g_boot_ledger.boot_generation;
+	status->reset_source = g_boot_ledger.reset_source;
+	status->watchdog_early_resets = g_boot_ledger.early_watchdog_resets;
+	return true;
+}
+
+/* Checkpoint 3. service_hw_metrics() is already its own one-sample-per-second
+ * rate limiter, so the budget's "one sample" is what it does. */
+static FLASHMEM bool platform_metrics(void *, const AiusRuntimeBudget *budget,
+                                      uint32_t now_ms)
+{
+	(void)now_ms;
+	if (budget == nullptr ||
+	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_METRICS)
+		return false;
+	service_hw_metrics();
+	return true;
+}
+
+/* Checkpoint 6: one frame in, at most one frame out, inside the budget's 2 ms.
+ *
+ * The boolean is the scheduler's "this service call was valid", not "the
+ * datagram went out" -- returning false aborts the epoch before the single
+ * watchdog feed, which is a reset, so no transport condition may produce it.
+ * A quiet socket, a would-block send and a decode failure are all ordinary
+ * outcomes of an epoch that did its work, exactly as the delivered network and
+ * HTTP services treat theirs. An oversized datagram is truncated by the
+ * receive and then fails decode, so it still lands in g_network_drops as the
+ * legacy explicit length check did. */
+static FLASHMEM bool platform_udp(void *, const AiusRuntimeBudget *budget,
+                                  uint32_t now_ms)
+{
+	(void)now_ms;
+	if (budget == nullptr || budget->checkpoint != AIUS_BOOT_CHECKPOINT_UDP)
+		return false;
+
+	const uint32_t started = micros();
+	const size_t capacity = budget->max_rx_bytes < sizeof(g_udp_packet) ?
+		budget->max_rx_bytes : sizeof(g_udp_packet);
+	const AiusIoEvent received = aius_network_teensy_udp_receive_once(
+		&g_runtime.network_http.target, g_udp_packet, capacity);
+	AiusNetFrame request;
+
+	if (received.result != AIUS_IO_PROGRESS)
+		return true;
+	if (aius_net_decode(g_udp_packet, received.bytes, &request) !=
+	    AIUS_NET_OK) {
+		g_network_drops++;
+		return true;
+	}
+	udp_dispatch(&request);
+	if ((uint32_t)(micros() - started) > budget->service_budget_ms * 1000u)
+		g_network_budget_overruns++;
+	return true;
+}
+
+/* Checkpoint 7, with the refill quota taken from the budget rather than the
+ * legacy loop's literal 2,048. Inert while POST /api/replays/start is refused,
+ * because nothing can put the service into REPLAY or PREBUFFERING; Phase 14c
+ * restores the producer. */
+static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
+                                     uint32_t now_ms)
+{
+	(void)now_ms;
+	if (budget == nullptr ||
+	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_REPLAY)
+		return false;
+	if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
+	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
+		(void)aius_replay_service_refill(&g_replay_service,
+		                                 budget->max_rx_bytes);
+	return true;
+}
+
+/* The last checkpoint is persisted before each service call, through the boot
+ * adapter's double-slot retained storage. A torn write cannot be read back as
+ * valid: the slot's committed marker is cleared first and restored last, and
+ * the CRC covers sequence and ledger together. */
+static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)
+{
+	aius_boot_record_checkpoint(&g_boot_ledger, checkpoint);
+	(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);
+}
+
+/* The one watchdog feed, reached only from the scheduler's EPOCH_COMPLETE, and
+ * the only place the file writes the watchdog service register at all. */
+static FLASHMEM void platform_feed_watchdog(void *)
+{
+	(void)aius_boot_teensy_watchdog_feed(&g_boot_primitives);
+}
+
+/* Returned by value rather than held as a file-scope const: Teensy 4 places
+ * rodata in DTCM, and the epoch reads this table through the copy
+ * aius_runtime_teensy_construct() takes, so a static one would cost DTCM for
+ * nothing. publish_config is the one optional entry and stays null until slice
+ * S3 lands the portable CONFIG_LOAD job that produces a payload to consume. */
+static FLASHMEM AiusRuntimeTeensyPlatformOps platform_ops(void)
+{
+	AiusRuntimeTeensyPlatformOps ops;
+
+	memset(&ops, 0, sizeof(ops));
+	ops.context = nullptr;
+	ops.reset_capture = platform_reset_capture;
+	ops.metrics = platform_metrics;
+	ops.udp = platform_udp;
+	ops.replay = platform_replay;
+	ops.checkpoint = platform_checkpoint;
+	ops.feed_watchdog = platform_feed_watchdog;
+	ops.publish_config = nullptr;
+	return ops;
+}
+
+/* Retained reset state, captured exactly once. The adapter reads SRC_SRSR and
+ * clears the bits it read in one call, so this must not be repeated per epoch:
+ * a second read would report zero. The retained ledger then decides this boot's
+ * generation, its early-reset count and its mode -- a watchdog reset whose last
+ * checkpoint was not EPOCH_COMPLETE increments the count, and the second
+ * consecutive one selects recovery-safe. A changed build id clears both. */
+static FLASHMEM void capture_retained_boot_state(void)
+{
+	AiusBootLedger retained;
+	AiusBootInput input;
+
+	g_boot_primitives = aius_boot_teensy_hardware_primitives();
+	const uint32_t raw_reset_source =
+		aius_boot_teensy_reset_source(&g_boot_primitives);
+	/* The legacy status surfaces still report the low byte; slice S2b moves
+	 * them onto AiusRecoveryStatus, which carries the raw value. */
+	g_reset_source = raw_reset_source & 0xffu;
+
+	aius_boot_storage_teensy_init(&g_boot_storage, &g_boot_primitives);
+	memset(&retained, 0, sizeof(retained));
+	(void)aius_boot_storage_teensy_load(&g_boot_storage, &retained);
+
+	memset(&input, 0, sizeof(input));
+	input.build_id = (uint32_t)AIUS_BUILD_ID;
+	input.raw_reset_source = raw_reset_source;
+	input.reset_kind = aius_boot_teensy_reset_kind(raw_reset_source);
+	/* A zeroed or corrupt retained ledger fails validation inside
+	 * aius_boot_init(), which then starts a normal generation-1 boot. */
+	aius_boot_init(&g_boot_ledger, &retained, input);
+	g_recovery_safe = g_boot_ledger.mode == AIUS_BOOT_MODE_RECOVERY_SAFE;
+}
+
+/* The per-device auth token, derived from the fused MAC words. Memory only. */
+static FLASHMEM void derive_auth_token(void)
+{
 	uint8_t auth_material[AIUS_AUTH_DEVICE_MATERIAL_SIZE];
 	uint32_t mac0 = HW_OCOTP_MAC0;
 	uint32_t mac1 = HW_OCOTP_MAC1;
 	uint32_t mac2 = HW_OCOTP_MAC2;
+
 	memcpy(auth_material, &mac0, sizeof(mac0));
 	memcpy(auth_material + 4u, &mac1, sizeof(mac1));
 	memcpy(auth_material + 8u, &mac2, sizeof(mac2));
 	memcpy(auth_material + 12u, &mac0, sizeof(mac0));
 	(void)aius_auth_derive_token(auth_material, g_auth_token);
-	aius_replay_service_init(&g_replay_service);
-	aius_config_set_defaults(&g_config);
-	AudioMemory(24);
-	g_audio_processor.begin_pipeline();
-	g_boot_epoch = micros();
-	g_sd_ready = SD.begin(BUILTIN_SDCARD);
-	if (g_sd_ready) {
-		(void)SD.mkdir("/aius");
-		load_sd_config();
-		stage_dsp_sd_override();
-	}
-	refresh_sd_usage();
-	Serial.printf("AIUS SD ready=%u\\n", g_sd_ready ? 1u : 0u);
-	watchdog_feed();
-	start_network();
 }
 
+/* Construction only, per §Normative recovery contract: capture retained reset
+ * state, arm the watchdog, place audio output in its safe state, construct the
+ * service objects, return. No SD probe, no link or DHCP wait, no USB wait, no
+ * peer transaction, and no loop waiting on anything external. Everything the
+ * legacy setup() did beyond that is now epoch work: the network comes up
+ * through the supervisor's retained initial action at checkpoint 4, and the SD
+ * probe plus both config loads become portable jobs in slice S3. */
+void setup(void)
+{
+	capture_retained_boot_state();
+	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);
+
+	AudioMemory(24);
+	g_audio_processor.begin_pipeline();
+
+	Serial.begin(115200);
+	aius_usb_control_init(&g_usb_parser);
+	derive_auth_token();
+	aius_replay_service_init(&g_replay_service);
+	aius_config_set_defaults(&g_config);
+	g_boot_epoch = micros();
+
+	const AiusCdcTeensyPrimitives cdc = aius_cdc_teensy_serial_primitives();
+	const AiusRuntimeTeensyPlatformOps platform = platform_ops();
+	aius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, &cdc,
+	                              &platform, millis(), g_recovery_safe);
+	g_boot_healthy_at_ms = millis() + AIUS_BOOT_HEALTHY_MS;
+}
+
+/* Exactly one runtime epoch, then the two things the epoch itself must not do.
+ *
+ * The epoch runs checkpoints 0..8 in order, records EPOCH_COMPLETE and feeds
+ * the watchdog once; an incomplete epoch returns false without that feed, which
+ * is what makes a wedged service a bounded reset rather than a hang.
+ *
+ * request_reboot() only records (aius_optical_app.cpp), because the dispatcher
+ * never resets or delays, so the reset happens here -- after the epoch, so the
+ * HTTP response or UDP ack that asked for it has already been written. */
 void loop(void)
 {
-	service_usb_control();
-	service_hw_metrics();
-	supervise_network_link();
-	if (g_network_ready) {
-		service_http();
-		/* HTTP is the recovery/control plane. Do not let a UDP/FNET poll stall
-		 * starve it, and establish a watchdog checkpoint before entering the
-		 * secondary discovery service. */
-		watchdog_feed();
-		service_network();
-	} else if ((int32_t)(millis() - g_network_retry_at) >= 0) {
-		start_network();
+	const uint32_t now_ms = millis();
+	const bool completed = aius_runtime_teensy_epoch(&g_runtime, now_ms);
+
+	if (completed && !g_boot_marked_healthy &&
+	    (int32_t)(now_ms - g_boot_healthy_at_ms) >= 0) {
+		/* Persisted by the next checkpoint, which commits the ledger. */
+		aius_boot_mark_healthy(&g_boot_ledger);
+		g_boot_marked_healthy = true;
 	}
-	if (g_dhcp || g_dhcp_pending)
-		(void)Ethernet.maintain();
-	if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
-	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
-		(void)aius_replay_service_refill(&g_replay_service, 2048u);
-	service_sd();
-	watchdog_feed();
+	if (g_reboot_requested)
+		reset_application();
 }
