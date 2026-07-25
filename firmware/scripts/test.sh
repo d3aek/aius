@@ -11,7 +11,8 @@
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
-#         runtime, network-transport, sd, sd-target, optical-app.
+#         runtime, network-transport, sd, sd-target, optical-app,
+#         runtime-target.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -400,6 +401,54 @@ optical-app)
 		"$optical_app_parser" \
 		-o "$optical_app_out"
 	"$optical_app_out"
+	;;
+runtime-target)
+	# Composed Teensy runtime: the composition root, the three bounded target
+	# services and the CDC adapter, driven through the real portable engines
+	# against fake network/SD/CDC/clock/checkpoint/watchdog primitives.
+	#
+	# The portable engines compile as strict C11 objects; the target .cpp
+	# files and the oracle compile as C++17 and link through g++. The fake
+	# include dir must come first so <Arduino.h> and <SD.h> resolve to the
+	# host stand-ins, and aius_network_teensy.cpp needs its TESTING define so
+	# the primitive table is injectable instead of NativeEthernet-bound.
+	runtime_target_inc=("-I$fw_root/test/runtime-target/fake" \
+		"-I$fw_root/lib/aius_boot/include" \
+		"-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/lib/aius_http/include" \
+		"-I$fw_root/lib/aius_sd/include" \
+		"-I$fw_root/lib/aius_config/include" \
+		"-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_runtime/include" \
+		"-I$fw_root/lib/aius_usb_control/include" \
+		"-I$fw_root/src")
+	runtime_target_portable=()
+	for portable in aius_net/src/aius_net aius_http/src/aius_http \
+		aius_http/src/aius_http_transaction aius_sd/src/aius_sd \
+		aius_usb_control/src/aius_usb_control \
+		aius_runtime/src/aius_runtime; do
+		object="$build_dir/runtime-target-$(basename "$portable").o"
+		"$cc" "${cflags[@]}" -Wpedantic "${runtime_target_inc[@]}" \
+			-c "$fw_root/lib/$portable.c" -o "$object"
+		runtime_target_portable+=("$object")
+	done
+	runtime_target_out="$build_dir/runtime-target"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -Wpedantic -O1 -g \
+		-fsanitize=address,undefined -fno-sanitize=enum \
+		-DAIUS_NETWORK_TEENSY_TESTING \
+		"${runtime_target_inc[@]}" \
+		"$fw_root/test/runtime-target/test_runtime_target.cpp" \
+		"$fw_root/src/aius_cdc_teensy.cpp" \
+		"$fw_root/src/aius_network_teensy.cpp" \
+		"$fw_root/src/aius_sd_teensy.cpp" \
+		"$fw_root/src/aius_optical_app.cpp" \
+		"$fw_root/src/aius_runtime_network_http.cpp" \
+		"$fw_root/src/aius_runtime_storage.cpp" \
+		"$fw_root/src/aius_runtime_usb.cpp" \
+		"$fw_root/src/aius_runtime_teensy.cpp" \
+		"${runtime_target_portable[@]}" \
+		-o "$runtime_target_out"
+	"$runtime_target_out"
 	;;
 sd-target)
 	python3 "$fw_root/test/sd-target/test_source_guard.py"

@@ -41,17 +41,17 @@ carries DSP behaviour it did not originally own. Everything else in the DSP stra
 
 ### Corrections to earlier claims in both plans
 
-- **`runtime-target` is not a delivered regression suite.**
-  `firmware/test/runtime-target/` does not exist; Phase 12 creates it. The
-  standing guard is `net`, `boot`, `network-transport`, `sd`, `http`,
-  `usb-control`, `runtime`, `boot-target`, and `fault-target`. `optical-app`,
-  `optical-cutover`, `flash`, and `recovery-runner` likewise do not exist yet and
-  are created by Phases 11, 14, 15, and 16.
-- **`PUT /api/dsp/config` is not described in OpenAPI.** The write phase shipped
-  the firmware but `swagger.json` still documents only the `GET`,
-  and `test/swagger.test.js` asserts only the `GET`. The DSP plan's
-  OpenAPI acceptance gate is therefore not met. `GET /api/meters` is also absent,
-  as expected. Both land with their owning phases below.
+- **`runtime-target` was wrongly listed as a delivered regression suite.** It did
+  not exist when this section was written; Phase 12 has since created it, along
+  with `optical-app` from Phase 11. The standing guard is now `net`, `boot`,
+  `network-transport`, `sd`, `sd-target`, `http`, `usb-control`, `runtime`,
+  `runtime-target`, `optical-app`, `boot-target`, and `fault-target`.
+  `optical-cutover`, `flash`, and `recovery-runner` still do not exist and are
+  created by Phases 14, 15, and 16.
+- **`PUT /api/dsp/config` was not described in OpenAPI.** The write phase shipped
+  the firmware without reaching `swagger.json`, so the DSP plan's
+  OpenAPI gate was quietly unmet. Closed at step B5. `GET /api/meters` is still
+  absent and lands with 14b.
 - **Phase 10a's stated justification was wrong in one detail.** The DSP config
   `PUT` does not need the SD publish mechanism: it parses and validates the model
   from the HTTP body itself and writes the accepted bytes verbatim. The real
@@ -78,12 +78,18 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   `watchdog_init()` writes `WDOG_WCR_WT(31)`, and `loop()` feeds at three
   separate points. The normative contract is one 8 s interval with exactly one
   feed after a complete epoch.
-- **ITCM headroom is 1,352 bytes.** The current `teensy41-optical` build reports
-  ITCM 99.31 % used. Every new per-epoch service, dispatcher, and adapter added
-  by Phases 11, 12, and 14 must be `FLASHMEM` unless it genuinely runs per audio
+- **ITCM headroom is 1,416 bytes** (99.28 % used). Every new per-epoch service,
+  dispatcher, and adapter must be `FLASHMEM` unless it genuinely runs per audio
   block. Apply the attribute on each definition — GCC does not inherit a
   `section` attribute from a forward declaration, so a prototype-only `FLASHMEM`
-  silently leaves the code in ITCM.
+  silently leaves the code in ITCM. Phases 11 and 12 both held to zero ITCM this
+  way.
+- **The bank report does not yet include Phases 11 or 12.** Nothing references
+  the dispatcher or the composed runtime, so `--gc-sections` drops every section
+  and `nm` on `firmware.elf` finds none of their symbols. Phase 14 is where
+  roughly 9.4 KB of FLASH and ~907 bytes of DTCM string data become real, and
+  where the ~35 KB runtime instance must be placed in `DMAMEM` rather than the
+  22,684-byte DTCM free-for-locals zone.
 
 ### Critical path
 
@@ -103,11 +109,11 @@ throughout. Track B is serialized because every phase in it touches
 | Step | Work | Gate |
 |---|---|---|
 | B0 | **Done** (`df9ea4483`) — Phase 10a, SD job publish-capacity generalization | `sd` + `http` suites, target build |
-| B1 | Phase 11 — optical application dispatch, **including the DSP routes** | `optical-app` suite |
-| B2 | Phase 12 — Teensy runtime service composition | `runtime-target` suite |
+| B1 | **Done** — Phase 11, optical application dispatch **including the DSP routes** | `optical-app` suite green |
+| B2 | **Done** — Phase 12, Teensy runtime service composition | `runtime-target` suite green |
 | B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port** | `optical-cutover` + all component suites |
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
-| B5 | OpenAPI catch-up — `PUT /api/dsp/config` and `GET /api/meters` | Vitest OpenAPI contract suite |
+| B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
@@ -3685,6 +3691,82 @@ target build. After the parent verifies every public header, a fresh
 source-blind oracle reads only the committed contract and headers, then
 implements fake-service coverage and runner registration without reading any
 service or composition source.
+
+**Delivered.** `src/aius_cdc_teensy.{h,cpp}` (the only `Serial` reference in the
+new runtime), the three services `aius_runtime_network_http`,
+`aius_runtime_storage` and `aius_runtime_usb`, and the `aius_runtime_teensy`
+composition, with a `runtime-target` suite driving them through fake Arduino and
+SD primitives. All ten standing suites plus `optical-app` stay green;
+`teensy41-optical` builds with all banks fitting. Every new object is `.text 0`,
+`.data 0`, `.bss 0` and **`.rodata 0`** — the services carry no string literals
+at all — for 5,820 bytes of `.flashmem` across the five.
+
+**Still nothing is linked.** `nm` on `firmware.elf` finds no symbol from any of
+the five, nor from `aius_optical_app`, nor from the portable engines they drive.
+`optical_main.cpp` is untouched, so nothing references the composition and
+`--gc-sections` drops it. The bank report is byte-identical to the Phase 11
+baseline and remains uninformative about this work's real cost. **Phase 14 should
+expect roughly 9.4 KB of FLASH and Phase 11's ~907 bytes of DTCM string data to
+become real at the moment it constructs the runtime.**
+
+**Phase 14 must place the runtime instance in `DMAMEM`.** The composed object is
+about 35 KB (13,312-byte HTTP request buffer, 8,192-byte response, 12,288-byte
+app body, plus the services) against 22,684 bytes of DTCM free-for-locals. The
+requirement is stated normatively in `aius_runtime_teensy.h`.
+
+#### Correction to the NETWORK precedence — deadlines were unreachable
+
+The literal `NETWORK` precedence in [§Optical target-composition
+ABI](#optical-target-composition-abi) steps the supervisor only when an event is
+retained. But the supervisor's two time-driven transitions have no event source:
+an absent DHCP lease is silence, and after teardown `poll()` returns `NONE`
+forever because `stack_started` is false. Read literally, `DHCP_WAIT` and
+`BACKOFF` are therefore **terminal** — the composition could never time out DHCP
+or restart the network, which is precisely the unbounded recovery this plan
+exists to close.
+
+**Resolution:** an idle poll (event `NONE`) is followed by one
+`aius_net_supervisor_step(NONE)`. That still spends at most one adapter operation
+per epoch and never applies and polls in the same epoch, so the budget table
+holds. Covered by `net.dhcp-deadline` and `net.backoff-restart`. The ABI section
+above should be amended to say so; this block is the normative statement until it
+is.
+
+#### Two further findings for Phase 14 and 14b
+
+- **`AIUS_HTTP_MAX_RESPONSE` (8,192) is smaller than
+  `AIUS_DSP_MODEL_MAX_JSON_BYTES` (12,288).** The dispatcher can serialize a DSP
+  model the transaction's response buffer cannot carry, so a large
+  `GET /api/dsp/config` would select the deterministic
+  `500 response_too_large`. Pre-cutover this does not bite, because
+  `optical_main.cpp` writes the socket itself from its own 12,288-byte
+  `g_dsp_config_body`. It becomes a **cutover regression** the moment the route
+  goes through the transaction. Phase 14 or 14b must raise the response capacity
+  or stream the model.
+- **Phase 11's delivered header, not this plan's sketch, is the ABI.** The
+  conceptual `AiusOpticalAppOps`, the `usb_verb` / `usb_verb_capacity` init
+  parameters, and the out-parameter dispatch signatures described above do not
+  exist. What shipped is `AiusOpticalApp` (the 20-entry callback table),
+  `AiusOpticalAppDispatcher`, a `bool`-returning `aius_optical_app_init()` that
+  adopts a caller-owned body buffer, and dispatch functions returning
+  `const …*`. Compose against the header.
+
+Composition details worth keeping: an `AiusRuntimeStorage` `pending_action` pair
+described above was removed under the deletion test, no path ever needing to
+defer a driver action; a root-owned `storage_action` slot carries the checkpoint-5
+action to checkpoint 8 so services still never call each other; and a
+`release_http` path cancels a stranded SD job once and then drains at one
+primitive per epoch, so a mid-job teardown cannot leave an open `File` behind an
+owner that no longer exists.
+
+**Not proven:** the HTTP-driven upload leg, because `accept_application()` admits
+`AIUS_SD_JOB_UPLOAD` only for a streamed request, so no route reaches it
+end-to-end today — the `NEED_UPLOAD` / `SUPPLY_UPLOAD` mapping is driven directly
+against the storage service instead. `AIUS_SD_ACTION_PUBLISH_CONFIG` likewise has
+no consumer yet; the storage service acknowledges it so the job still reaches a
+terminal result and counts the drop in a saturating `publish_dropped`, making it
+observable rather than silent. Both close with Phase 14's buffered-upload
+decision.
 
 ### Phase 13 — Teensy retained watchdog adapter
 

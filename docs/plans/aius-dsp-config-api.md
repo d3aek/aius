@@ -35,17 +35,17 @@ carries DSP behaviour it did not originally own. Everything else in the DSP stra
 
 ### Corrections to earlier claims in both plans
 
-- **`runtime-target` is not a delivered regression suite.**
-  `firmware/test/runtime-target/` does not exist; Phase 12 creates it. The
-  standing guard is `net`, `boot`, `network-transport`, `sd`, `http`,
-  `usb-control`, `runtime`, `boot-target`, and `fault-target`. `optical-app`,
-  `optical-cutover`, `flash`, and `recovery-runner` likewise do not exist yet and
-  are created by Phases 11, 14, 15, and 16.
-- **`PUT /api/dsp/config` is not described in OpenAPI.** The write phase shipped
-  the firmware but `swagger.json` still documents only the `GET`,
-  and `test/swagger.test.js` asserts only the `GET`. The DSP plan's
-  OpenAPI acceptance gate is therefore not met. `GET /api/meters` is also absent,
-  as expected. Both land with their owning phases below.
+- **`runtime-target` was wrongly listed as a delivered regression suite.** It did
+  not exist when this section was written; Phase 12 has since created it, along
+  with `optical-app` from Phase 11. The standing guard is now `net`, `boot`,
+  `network-transport`, `sd`, `sd-target`, `http`, `usb-control`, `runtime`,
+  `runtime-target`, `optical-app`, `boot-target`, and `fault-target`.
+  `optical-cutover`, `flash`, and `recovery-runner` still do not exist and are
+  created by Phases 14, 15, and 16.
+- **`PUT /api/dsp/config` was not described in OpenAPI.** The write phase shipped
+  the firmware without reaching `swagger.json`, so the DSP plan's
+  OpenAPI gate was quietly unmet. Closed at step B5. `GET /api/meters` is still
+  absent and lands with 14b.
 - **Phase 10a's stated justification was wrong in one detail.** The DSP config
   `PUT` does not need the SD publish mechanism: it parses and validates the model
   from the HTTP body itself and writes the accepted bytes verbatim. The real
@@ -72,12 +72,18 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   `watchdog_init()` writes `WDOG_WCR_WT(31)`, and `loop()` feeds at three
   separate points. The normative contract is one 8 s interval with exactly one
   feed after a complete epoch.
-- **ITCM headroom is 1,352 bytes.** The current `teensy41-optical` build reports
-  ITCM 99.31 % used. Every new per-epoch service, dispatcher, and adapter added
-  by Phases 11, 12, and 14 must be `FLASHMEM` unless it genuinely runs per audio
+- **ITCM headroom is 1,416 bytes** (99.28 % used). Every new per-epoch service,
+  dispatcher, and adapter must be `FLASHMEM` unless it genuinely runs per audio
   block. Apply the attribute on each definition — GCC does not inherit a
   `section` attribute from a forward declaration, so a prototype-only `FLASHMEM`
-  silently leaves the code in ITCM.
+  silently leaves the code in ITCM. Phases 11 and 12 both held to zero ITCM this
+  way.
+- **The bank report does not yet include Phases 11 or 12.** Nothing references
+  the dispatcher or the composed runtime, so `--gc-sections` drops every section
+  and `nm` on `firmware.elf` finds none of their symbols. Phase 14 is where
+  roughly 9.4 KB of FLASH and ~907 bytes of DTCM string data become real, and
+  where the ~35 KB runtime instance must be placed in `DMAMEM` rather than the
+  22,684-byte DTCM free-for-locals zone.
 
 ### Critical path
 
@@ -97,11 +103,11 @@ throughout. Track B is serialized because every phase in it touches
 | Step | Work | Gate |
 |---|---|---|
 | B0 | **Done** (`df9ea4483`) — Phase 10a, SD job publish-capacity generalization | `sd` + `http` suites, target build |
-| B1 | Phase 11 — optical application dispatch, **including the DSP routes** | `optical-app` suite |
-| B2 | Phase 12 — Teensy runtime service composition | `runtime-target` suite |
+| B1 | **Done** — Phase 11, optical application dispatch **including the DSP routes** | `optical-app` suite green |
+| B2 | **Done** — Phase 12, Teensy runtime service composition | `runtime-target` suite green |
 | B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port** | `optical-cutover` + all component suites |
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
-| B5 | OpenAPI catch-up — `PUT /api/dsp/config` and `GET /api/meters` | Vitest OpenAPI contract suite |
+| B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
