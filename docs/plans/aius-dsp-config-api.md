@@ -51,9 +51,16 @@ delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
 with the findings that forced the re-scope under "Prebuild review findings".
 
-**Next up is S2a**, which constructs the runtime and is the first slice that stops
-being additive. S2b then deletes the legacy path; S3, S4 and S5 follow in order,
-then 14b, 14c and 14d.
+**Next up is S2b**, which deletes the legacy path, rewrites the status surface onto
+`AiusRecoveryStatus` plus R2's accessors, removes the vendor includes and their
+guard exception, wires the `optical-cutover` suite into the standing guard, and
+wires `aius_fault_checkpoint()`. S3, S4 and S5 follow in order, then 14b, 14c and
+14d.
+
+S2a is delivered, and with it slice C1 — forced when S2a linked the portable
+engines for the first time and RAM1 went 8,612 bytes over. See §Structural
+obstacles. FlexRAM now has 24,156 bytes free and a post-link guard keeps it that
+way.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
@@ -178,6 +185,23 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   code that had been inlined into ITCM callers out into the FLASHMEM adapters.
   Behaviour is unchanged; codegen is not. Expect the same effect to run in
   reverse at S2b, when the legacy callers those serializers shared are deleted.
+- **The portable engines land in ITCM, not FLASH, and this broke the build at
+  S2a.** On Teensy 4.1 a function with no `FLASHMEM` attribute goes to ITCM, and
+  ITCM shares FlexRAM with DTCM — so engine code competes directly with the audio
+  path's own budget. Phases 11 and 12 held their *services* to zero ITCM, but
+  nobody had annotated the engines underneath them, which were unreferenced and
+  therefore invisible until S2a linked them. Measured at that point:
+  `aius_http_transaction.c` 8,688 B, `aius_sd.c` 8,292 B, `aius_sd_teensy.cpp`
+  7,156 B, `aius_http.c` 3,464 B, `aius_network_teensy.cpp` 3,284 B,
+  `aius_boot_teensy.cpp` + `aius_boot.c` 1,936 B, `aius_net.c` +
+  `aius_runtime.c` 1,272 B — against 2,120 B of headroom. RAM1 overflowed by
+  8,612 bytes and the build went red.
+
+  **The plan predicted this cost would land in FLASH. It does not.** Slice C1
+  moves the wholly-cold units to flash and adds a post-link guard so a new
+  unannotated engine fails the build instead of silently eating the audio path's
+  headroom. `aius_dsp`, `aius_pipeline`, `aius_iec61937` and `aius_audio` stay in
+  ITCM because they genuinely run per audio block.
 - **The bank report does not yet include Phases 11 or 12.** Nothing references
   the dispatcher or the composed runtime, so `--gc-sections` drops every section
   and `nm` on `firmware.elf` finds none of their symbols. Phase 14 is where

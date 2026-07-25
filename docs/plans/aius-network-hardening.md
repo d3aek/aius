@@ -57,9 +57,16 @@ delivered and pushed; the breakdown and per-slice commits are in
 [§Phase 14](#phase-14--optical-runtime-cutover) under "Scoped slice breakdown",
 with the findings that forced the re-scope under "Prebuild review findings".
 
-**Next up is S2a**, which constructs the runtime and is the first slice that stops
-being additive. S2b then deletes the legacy path; S3, S4 and S5 follow in order,
-then 14b, 14c and 14d.
+**Next up is S2b**, which deletes the legacy path, rewrites the status surface onto
+`AiusRecoveryStatus` plus R2's accessors, removes the vendor includes and their
+guard exception, wires the `optical-cutover` suite into the standing guard, and
+wires `aius_fault_checkpoint()`. S3, S4 and S5 follow in order, then 14b, 14c and
+14d.
+
+S2a is delivered, and with it slice C1 — forced when S2a linked the portable
+engines for the first time and RAM1 went 8,612 bytes over. See §Structural
+obstacles. FlexRAM now has 24,156 bytes free and a post-link guard keeps it that
+way.
 
 **Remaining decisions are delegated.** As of 2026-07-25 the owner has asked that
 the rest of this plan proceed without per-decision sign-off, resolved against
@@ -184,6 +191,23 @@ Recorded here because they are cheap to miss and expensive to hit mid-phase:
   code that had been inlined into ITCM callers out into the FLASHMEM adapters.
   Behaviour is unchanged; codegen is not. Expect the same effect to run in
   reverse at S2b, when the legacy callers those serializers shared are deleted.
+- **The portable engines land in ITCM, not FLASH, and this broke the build at
+  S2a.** On Teensy 4.1 a function with no `FLASHMEM` attribute goes to ITCM, and
+  ITCM shares FlexRAM with DTCM — so engine code competes directly with the audio
+  path's own budget. Phases 11 and 12 held their *services* to zero ITCM, but
+  nobody had annotated the engines underneath them, which were unreferenced and
+  therefore invisible until S2a linked them. Measured at that point:
+  `aius_http_transaction.c` 8,688 B, `aius_sd.c` 8,292 B, `aius_sd_teensy.cpp`
+  7,156 B, `aius_http.c` 3,464 B, `aius_network_teensy.cpp` 3,284 B,
+  `aius_boot_teensy.cpp` + `aius_boot.c` 1,936 B, `aius_net.c` +
+  `aius_runtime.c` 1,272 B — against 2,120 B of headroom. RAM1 overflowed by
+  8,612 bytes and the build went red.
+
+  **The plan predicted this cost would land in FLASH. It does not.** Slice C1
+  moves the wholly-cold units to flash and adds a post-link guard so a new
+  unannotated engine fails the build instead of silently eating the audio path's
+  headroom. `aius_dsp`, `aius_pipeline`, `aius_iec61937` and `aius_audio` stay in
+  ITCM because they genuinely run per audio block.
 - **The bank report does not yet include Phases 11 or 12.** Nothing references
   the dispatcher or the composed runtime, so `--gc-sections` drops every section
   and `nm` on `firmware.elf` finds none of their symbols. Phase 14 is where
@@ -4074,8 +4098,9 @@ table. The mapping is one-to-one and mechanical:
 | R2 | **Done** (`2c3c4818f`) — network adapter: an IP and link-state accessor exposing no vendor type, so the status surface survives losing the `Ethernet.*` include | `src/aius_network_teensy.{h,cpp}`, `test/network-transport/` | `network-transport` green; target build |
 | P2 | **Done** (`9ce6417e3`) — the `optical-cutover` structural suite in two groups — **positive** (setup trace is construction-only, `loop()` delegates one epoch, exactly one feed) and **absence** (no static fallback, no rebind globals, no raw FNET) — authored and runnable but not yet part of the standing guard | `test/optical-cutover/` | both groups run and fail against the pre-cutover file, by construction |
 | S1 | **Done** (`7606632a5`) — the 20 callbacks as thin adapters over the existing serializer bodies. Additive: the legacy path still runs. Costs 2,048 B FLASH and **gains** 704 B of ITCM | `src/optical_main.cpp` | target build; `optical-app` green |
-| S2a | Construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
-| S2b | Delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard | `src/optical_main.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` + `network-transport` + every component suite |
+| S2a | **Done** (`d1dfcdfb7`) — construct `AiusRuntimeTeensy` in `DMAMEM`, implement the six platform callbacks, `setup()` becomes construction only and `loop()` one epoch, arm the 8 s watchdog through the boot adapter with one feed per epoch, and refuse `replay_start` pending 14c. The legacy path is still present but unreachable | `src/optical_main.cpp` | `optical-cutover` **positive group**; every component suite; both images build |
+| C1 | **Done** (`6a170cd6f`), forced by S2a — move the wholly-cold portable engines and Teensy adapters out of ITCM with a portable cold-section macro on every definition, and add a post-link guard so an unannotated engine fails the build rather than silently taking the audio path's headroom | `lib/aius_http/`, `lib/aius_sd/`, `lib/aius_net/`, `lib/aius_runtime/`, `lib/aius_boot/`, `src/aius_sd_teensy.cpp`, `src/aius_boot_teensy.cpp`, `platformio.ini` + its post-link scripts | optical target builds with all banks fitting; the new guard passes; `http`, `sd`, `net`, `boot`, `runtime`, `sd-target`, `boot-target`, `runtime-target`, `optical-app` green |
+| S2b | Delete everything in "what dies"; rewrite status JSON, UDP status and USB `ID` onto `AiusRecoveryStatus` plus R2's accessor; drop the NativeEthernet/FNET includes, the vendor guard's exact-path exception, and wire `optical-cutover` into the standing guard. **Also wire `aius_fault_checkpoint()`** — see below | `src/optical_main.cpp`, `src/aius_fault_teensy.cpp`, `test/network-transport/test_vendor_source.py`, `scripts/test.sh` | `optical-cutover` **both groups** + `network-transport` + every component suite |
 | S3 | Port the SD lifecycle onto R1's job entry: the DSP override and the public config load become `CONFIG_LOAD` with `publish_capacity` set per caller, probe and usage refresh become `PROBE` / `USAGE_REFRESH`, and both 12 KB stack frames go. Also resolve `sd_filesystem` — `AiusSdResult` carries `media_present` / `total_bytes` / `used_bytes` and no FAT type (`aius_sd.h:214`), so either extend the probe result or serve the field as `"unknown"`. **Needs the publish-buffer change settled above, which widens S3's owned paths to `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/` and `test/runtime-target/` — split it out as S3a if the diff gets large** | `src/optical_main.cpp`, `lib/aius_sd/`, `src/aius_runtime_storage.{h,cpp}`, `test/sd/`, `test/runtime-target/` | `dsp-config`, `config`, `sd`, `runtime-target`; target build |
 | S4 | Retire the firmware-side `MODE` / `MIX` route enumerators and their parser entries, and fix the six dependent places in `test/http/test_http.c` | `lib/aius_http/`, `test/http/`, `src/optical_main.cpp` | `http`, `net`, `net-runner`, `optical-cutover` |
 | S5 | `platformio.ini` / `scripts/test.sh` integration and the firmware README | `platformio.ini`, `scripts/test.sh`, `README.md` | full suite sweep |
@@ -4200,6 +4225,37 @@ per-epoch primitive bound is a watchdog-safety property and OCRAM is not scarce.
 The block-boundary apply itself does not move. It stays in the audio path, where
 `config_generation` increments and `source` becomes `sd`, and remains the only
 place the active model changes.
+
+#### Findings from the slices themselves
+
+Recorded as they were taken, so the final audit has something to check.
+
+- **The `optical-cutover` positive group carried an absence assertion, and it
+  cost a legacy mutation.** "No raw `WDOG_WCR_WT(` literal file-wide" was a
+  positive-group check, but a file-wide absence is only satisfiable once the
+  legacy arming is deleted — which is S2b's job. S2a could only pass its own gate
+  by gutting `watchdog_init()`'s body, in a slice explicitly told not to touch
+  legacy code. The assertion has moved to the absence group, beside the existing
+  "legacy `watchdog_init()` is gone" check where it belongs. `watchdog_init()` is
+  left emptied rather than restored: it is unreachable, it dies at S2b, and an
+  inert body cannot arm a conflicting 16 s interval if anything ever called it.
+
+- **`aius_fault_checkpoint()` is called from nowhere, so no fault image can
+  stall.** The plan requires the Phase 16a live smoke to build a fault image per
+  checkpoint `0..8`, each stalling immediately after persisting its checkpoint.
+  Its only sensible call site is the runtime's checkpoint callback. S2a left it
+  unwired because `aius_fault_checkpoint` is not `FLASHMEM` and wiring it would
+  have spent the ITCM headroom that slice was told not to touch — the right call
+  at the time, and moot once C1 lands. **S2b owns wiring it**, with `FLASHMEM` on
+  its definition in `aius_fault_teensy.cpp`. Without this the whole watchdog
+  recovery proof at B6 is vacuous: it would test images that cannot fail.
+
+- **S2a's cutover has expected consequences that are not defects.** Nothing
+  probes SD any more, so `g_sd_ready` stays false and every SD route refuses
+  until S3 lands the `PROBE` and `CONFIG_LOAD` jobs; usage fields read zero for
+  the same reason; and the status surface still reads the legacy globals until
+  S2b rewrites it. Eight `-Wunused-function` warnings appear, all on the "what
+  dies" list.
 
 #### Prebuild review findings — 2026-07-25
 
