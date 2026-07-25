@@ -101,42 +101,78 @@ static AiusRuntimeTeensy &g_runtime =
 	*::new (static_cast<void *>(g_runtime_storage)) AiusRuntimeTeensy;
 
 DMAMEM static AiusReplayService g_replay_service;
-static File g_replay_file;
 static char g_replay_path[96];
 
-static FLASHMEM AiusStatus replay_reader_open(void *, uint32_t file_bytes)
-{
-	(void)file_bytes;
-	if (g_replay_file) g_replay_file.close();
-	g_replay_file = SD.open(g_replay_path, FILE_READ);
-	return g_replay_file ? AIUS_OK : AIUS_MALFORMED;
-}
+/* ------------------------------------------------------------------ */
+/* Replay refill -- Phase 14c                                          */
+/*                                                                     */
+/* The replay used to own an SD `File` and read it synchronously from   */
+/* inside the refill call. Two things were wrong with that. It spent a  */
+/* second blocking SD primitive in an epoch whose contract is one; and  */
+/* -- worse -- every portable SD job begins at AIUS_SD_PHASE_BEGIN,     */
+/* whose adapter action calls SD.begin(BUILTIN_SDCARD), so any config   */
+/* PUT, download or probe re-mounted the volume underneath that open    */
+/* handle. Refusing POST /api/replays/start was the interim answer.     */
+/*                                                                     */
+/* Both are structural now, not ordering. The replay's read position is */
+/* a byte OFFSET held by the portable service, never a handle, and the  */
+/* read is an AIUS_SD_JOB_REPLAY_REFILL job that opens and closes       */
+/* inside itself. The job runs through the storage service's own        */
+/* AiusSdTeensy adapter, which is therefore still the single owner of   */
+/* the only card handle in the firmware: a foreign handle no longer     */
+/* exists for a mount to happen underneath, and the adapter's file_open */
+/* guard would reject a BEGIN that tried.                               */
+/*                                                                     */
+/* One primitive per epoch, total, is kept the same way the SD          */
+/* lifecycle keeps it: this job starts only when the storage service is */
+/* completely idle (sd_storage_idle()), sd_job_active() reports it so   */
+/* the dispatcher keeps SD routes off the card while it runs, and       */
+/* sd_lifecycle_service() yields to it for the same reason. A refusal   */
+/* is free -- the plan is abandoned and re-made next epoch.             */
+/*                                                                     */
+/* Every definition below carries FLASHMEM on the definition itself:    */
+/* the driver runs once per epoch, never per audio block.               */
+/* ------------------------------------------------------------------ */
 
-static FLASHMEM AiusStatus replay_reader_read(void *, uint32_t offset, uint8_t *buffer,
-	                                  size_t capacity, size_t *bytes_read)
-{
-	if (!g_replay_file || buffer == nullptr || bytes_read == nullptr ||
-	    !g_replay_file.seek(offset)) return AIUS_MALFORMED;
-	int count = g_replay_file.read(buffer, capacity);
-	if (count < 0) return AIUS_MALFORMED;
-	*bytes_read = (size_t)count;
-	return AIUS_OK;
-}
+/* The refill job and its own transfer slice. The storage service's buffer
+ * belongs to the storage service's job; sharing it would couple two jobs that
+ * are deliberately only serialized, not merged. DMAMEM for the same reason the
+ * runtime is there: ~1.2 kB has no business in the 22 kB DTCM locals zone. */
+DMAMEM static AiusSdJob g_replay_job;
+DMAMEM static uint8_t g_replay_transfer[AIUS_RUNTIME_STORAGE_TRANSFER];
+/* The slice is what one AIUS_SD_ACTION_OUTPUT carries, and the replay service
+ * decodes a delivery in one batch out of a fixed scratch array. Keep the two
+ * bounds in lockstep at compile time rather than discovering a widened transfer
+ * slice as a run-time NO_SPACE that faults the refill. */
+static_assert(AIUS_RUNTIME_STORAGE_TRANSFER <= AIUS_REPLAY_DELIVER_MAX_BYTES,
+	"a refill chunk must fit the replay service's delivery bound");
+/* The adapter result awaiting delivery to the job, exactly as the storage
+ * service retains its own: one primitive per epoch means the event produced by
+ * this epoch's action is consumed by the next epoch's step. */
+static AiusSdEvent g_replay_job_event;
+static bool g_replay_job_event_present;
+static bool g_replay_job_active;
+/* The job outlived the selection that asked for it (a new start, or a stop), so
+ * its remaining chunks are acknowledged and dropped and its terminal state is
+ * not reported to the service. */
+static bool g_replay_job_cancelling;
+static bool g_replay_job_size_published;
 
-static FLASHMEM void replay_reader_close(void *)
-{
-	if (g_replay_file) g_replay_file.close();
-}
+/* Reported when the service refuses a delivered chunk, which can only mean the
+ * job and the service disagree about the read position. Distinct from the
+ * adapter's own faults so the two are told apart in a job result. */
+#define AIUS_REPLAY_DELIVER_REJECT_FAULT UINT32_C(0x52504C59)
 
-/* Unreferenced between slices S2b and 14c, and GCC says so: the only caller was
- * the legacy POST /api/replays/start, and app_replay_start() refuses the route
- * until Phase 14c lands replay refill on a bounded SD job. Kept rather than
- * deleted because 14c needs a working SD-backed reader to redesign, and a
- * deletion here would only be re-typed there. The -Wunused-variable warning on
- * this line is the expected marker of that deferral. */
-static AiusReplayReader g_replay_reader = {
-	nullptr, replay_reader_open, replay_reader_read, replay_reader_close
-};
+/* Abandons an in-flight refill without waiting for it. Memory only, so it is
+ * legal from the dispatcher: the job drains through its own CLOSE over the next
+ * epochs while the service already belongs to the new selection. */
+static FLASHMEM void replay_job_cancel(void)
+{
+	if (!g_replay_job_active)
+		return;
+	g_replay_job_cancelling = true;
+	aius_sd_job_cancel(&g_replay_job);
+}
 
 /* Entropy for the temporary and backup file names the dispatcher builds, mixed
  * with millis() and the boot epoch by sd_job_id(). Outlived the legacy SD job
@@ -386,12 +422,19 @@ static FLASHMEM const char *sd_filesystem(void)
  * The dispatcher checks this before it admits a store, so the two store
  * adapters' own checks below are the second line of defence against a job that
  * starts between the dispatcher's check and theirs. */
+/* Whether the card is spoken for. The replay refill job is included because it
+ * holds the shared adapter's file open across the epochs it spans: while it
+ * does, an SD route admitted at checkpoint 5 would reach checkpoint 8 and start
+ * a job whose BEGIN the adapter must reject. A 503 sd_busy the client retries is
+ * the coherent answer, and it is the answer this callback already gives for a
+ * root-initiated lifecycle job. */
 static FLASHMEM bool sd_job_active(void)
 {
 	const AiusRuntimeStorage &storage = g_runtime.storage;
 
 	return storage.http_owned || storage.draining ||
-	       storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING;
+	       storage.root_state == AIUS_RUNTIME_STORAGE_ROOT_RUNNING ||
+	       g_replay_job_active;
 }
 
 static FLASHMEM uint32_t sd_job_id(void)
@@ -1512,35 +1555,57 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 	return AIUS_OPTICAL_APP_STORE_ACCEPTED;
 }
 
-/* POST /api/replays/start is refused from slice S2a until Phase 14c lands, as
- * §Accepted wire-behaviour changes records. Two reasons, both structural:
- * aius_replay_service_start() opens the file and then fills the ring
- * synchronously before returning (aius_replay.c:159), so starting from here
- * would block inside a dispatcher contracted to touch no SD primitive and never
- * delay; and every SD job calls SD.begin(), which would remount the card
- * underneath an open replay handle. Refusing removes both.
+/* POST /api/replays/start, restored by Phase 14c. Memory only: it selects the
+ * replay, records the path the refill job will open, and returns. No file is
+ * opened, no byte is read and nothing waits, so the dispatcher's "touches no SD
+ * primitive and never delays" contract holds.
  *
- * FAILED is the refusal the callback contract affords for "could not start":
- * the dispatcher maps it to 409 {"ok":false,"error":"replay_start"}
- * (aius_optical_app.cpp:639), which is exactly what the legacy route already
- * returned when the start failed (http_replay_request()'s START arm), so the
- * route's failure surface is unchanged. NOT_FOUND would be a lie -- the file is
- * never looked for. Phase 14c owns restoring the route on a bounded SD job. */
+ * WHAT THE ROUTE ANSWERS. OK maps to the dispatcher's existing 200
+ * {"ok":true,"state":"prebuffering","id":"..."} (aius_optical_app.cpp), which
+ * is now literally true rather than a claim about a ring that was already full:
+ * the ring reaches its watermark over the following epochs and GET
+ * /api/replays/status reports the progression prebuffering -> playing. Until it
+ * does, the audio path keeps taking optical input, because it gates on
+ * SOURCE_REPLAY (AiusAudioProcessor::update) and start publishes only
+ * SWITCHING_TO_REPLAY.
+ *
+ * WHAT IT NO LONGER ANSWERS. 404 replay_not_found is unreachable from here: the
+ * file's existence is a property only the card can report, and asking would be
+ * the very SD primitive this callback must not perform. A missing or unreadable
+ * file now fails the first refill job instead, and surfaces as state "error" on
+ * the status route. The dispatcher's 404 arm stays for app_replay_delete(),
+ * which does still stat the card. */
 static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
                                                             const char *id,
                                                             bool loop)
 {
-	(void)id;
-	(void)loop;
-	return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	int written;
+
+	if (!g_sd_ready || !aius_replay_id_is_valid(id))
+		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	written = snprintf(g_replay_path, sizeof(g_replay_path),
+	                   "/aius/replays/%s.iec", id);
+	if (written <= 0 || (size_t)written >= sizeof(g_replay_path))
+		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	/* Any refill still running belongs to the previous selection. */
+	replay_job_cancel();
+	if (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)
+		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	return AIUS_OPTICAL_APP_REPLAY_OK;
 }
 
+/* SWITCHING_TO_REPLAY joins REPLAY in the active test because 14c made
+ * prebuffering an observable state that outlives the start call: a delete
+ * admitted during it would remove the file underneath the refill job that is
+ * reading it. Before 14c, start returned already playing, so the window did not
+ * exist. */
 static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
                                                              const char *id)
 {
 	char path[96];
 	if (strcmp(id, g_replay_service.id) == 0 &&
-	    g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY)
+	    (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
+	     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY))
 		return AIUS_OPTICAL_APP_REPLAY_ACTIVE;
 	snprintf(path, sizeof(path), "/aius/replays/%s.iec", id);
 	if (!SD.exists(path))
@@ -1549,8 +1614,11 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
 	                         AIUS_OPTICAL_APP_REPLAY_FAILED;
 }
 
+/* Stop is memory only for the same reason start is: the in-flight refill is
+ * cancelled, not waited on, and drains through its own CLOSE. */
 static FLASHMEM void app_replay_stop(void *)
 {
+	replay_job_cancel();
 	aius_replay_service_stop(&g_replay_service);
 }
 
@@ -1682,8 +1750,7 @@ static FLASHMEM uint32_t app_upload_id(void *)
  * shape -Wunused-variable reports, whereas an extern definition is never
  * diagnosed, and --gc-sections still drops it (and, with it, every callback
  * above) until S2a creates the reference -- so this costs no FLASH, no DTCM and
- * no ITCM in the current image. Members are positional and in header order,
- * matching g_replay_reader above. */
+ * no ITCM in the current image. Members are positional and in header order. */
 extern const AiusOpticalApp g_aius_optical_app;
 const AiusOpticalApp g_aius_optical_app = {
 	nullptr,                  /* context: the adapters read file statics */
@@ -2068,7 +2135,7 @@ static FLASHMEM bool sd_storage_idle(void)
 	return !storage.http_owned && !storage.http_authority &&
 	       !storage.http_event_present && !storage.draining &&
 	       storage.root_state != AIUS_RUNTIME_STORAGE_ROOT_RUNNING &&
-	       !g_runtime.storage_action_present;
+	       !g_runtime.storage_action_present && !g_replay_job_active;
 }
 
 /* Memory only: builds the step's request and hands it to the runtime. Every
@@ -2272,29 +2339,189 @@ static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
 	return false;
 }
 
-/* Checkpoint 7, with the refill quota taken from the budget rather than the
- * legacy loop's literal 2,048. Inert while POST /api/replays/start is refused,
- * because nothing can put the service into REPLAY or PREBUFFERING; Phase 14c
- * restores the producer.
+/* Builds one event for the refill job, in the adapter's own shape. */
+static FLASHMEM AiusSdEvent replay_job_make_event(AiusSdEventKind kind,
+                                                  uint64_t action_id,
+                                                  uint32_t fault)
+{
+	AiusSdEvent event;
+
+	memset(&event, 0, sizeof(event));
+	event.kind = kind;
+	event.action_id = action_id;
+	event.fault = fault;
+	return event;
+}
+
+/* The refill job's action sink, and the counterpart of the storage service's
+ * route_action(). Only two action kinds are handled here rather than executed:
+ * the download chunk, which is the whole point of the job and goes to the
+ * replay service instead of to an HTTP client, and the terminal pair. Everything
+ * else is exactly one adapter primitive, whose result is retained for the next
+ * epoch's step. */
+static FLASHMEM void replay_job_route(const AiusSdAction *action)
+{
+	switch (action->kind) {
+	case AIUS_SD_ACTION_NONE:
+	case AIUS_SD_ACTION_COMPLETE:
+	case AIUS_SD_ACTION_FAIL:
+		return;
+
+	case AIUS_SD_ACTION_OUTPUT: {
+		/* A cancelled job's chunk is acknowledged and dropped: the
+		 * service has already moved on to another selection, and
+		 * delivering into it would be the stale read the offset check
+		 * exists to refuse. */
+		const bool taken =
+			!g_replay_job_cancelling &&
+			aius_replay_service_deliver(
+				&g_replay_service, (uint32_t)action->offset,
+				action->buffer, action->length) == AIUS_OK;
+
+		g_replay_job_event = replay_job_make_event(
+			taken || g_replay_job_cancelling ? AIUS_SD_EVENT_OK :
+			                                   AIUS_SD_EVENT_FAULT,
+			action->action_id,
+			taken || g_replay_job_cancelling ?
+				0u : AIUS_REPLAY_DELIVER_REJECT_FAULT);
+		g_replay_job_event_present = true;
+		return;
+	}
+
+	default:
+		break;
+	}
+
+	/* The one SD primitive this epoch, through the storage service's adapter
+	 * -- the single owner of the only card handle in the firmware. */
+	g_replay_job_event =
+		aius_sd_teensy_execute(&g_runtime.storage.target, action);
+	g_replay_job_event_present = true;
+}
+
+/* One bounded job advance: deliver at most one retained adapter result, take at
+ * most one emitted action, spend at most one SD primitive. */
+static FLASHMEM void replay_job_advance(uint32_t now_ms)
+{
+	AiusSdAction action;
+	AiusSdEvent event;
+
+	if (g_replay_job_event_present) {
+		event = g_replay_job_event;
+		g_replay_job_event_present = false;
+		memset(&g_replay_job_event, 0, sizeof(g_replay_job_event));
+	} else {
+		event = replay_job_make_event(AIUS_SD_EVENT_NONE, 0u, 0u);
+	}
+
+	memset(&action, 0, sizeof(action));
+	aius_sd_job_step(&g_replay_job, now_ms, event, &action);
+	replay_job_route(&action);
+
+	/* The job's own FILE_SIZE is the only place the service can learn how
+	 * long the file is, now that nothing else stats the card. Published once
+	 * per job; an odd or shrinking size is refused by the service, which
+	 * then falls back to finding the end from a short refill. */
+	if (!g_replay_job_size_published && !g_replay_job_cancelling &&
+	    g_replay_job.captured_size != 0u &&
+	    g_replay_job.captured_size <= UINT32_MAX) {
+		(void)aius_replay_service_set_file_bytes(
+			&g_replay_service,
+			(uint32_t)g_replay_job.captured_size);
+		g_replay_job_size_published = true;
+	}
+
+	if (action.kind != AIUS_SD_ACTION_COMPLETE &&
+	    action.kind != AIUS_SD_ACTION_FAIL)
+		return;
+
+	/* Terminal: the handle is closed and the card is free again. A cancelled
+	 * job reports nothing -- its selection no longer exists. */
+	if (!g_replay_job_cancelling)
+		aius_replay_service_refill_complete(
+			&g_replay_service,
+			action.kind == AIUS_SD_ACTION_COMPLETE);
+	g_replay_job_active = false;
+	g_replay_job_cancelling = false;
+	g_replay_job_size_published = false;
+	g_replay_job_event_present = false;
+	memset(&g_replay_job_event, 0, sizeof(g_replay_job_event));
+}
+
+/* Memory only: the request is the planned range, against the path
+ * app_replay_start() built. The engine clamps the range to the file's real
+ * length for AIUS_SD_JOB_REPLAY_REFILL, so a plan that runs past the end
+ * completes short rather than faulting -- which is how the service finds EOF. */
+static FLASHMEM void replay_job_start(const AiusReplayRefill *refill,
+                                      uint32_t now_ms)
+{
+	AiusSdJobRequest request;
+
+	memset(&request, 0, sizeof(request));
+	request.kind = AIUS_SD_JOB_REPLAY_REFILL;
+	request.target_path = g_replay_path;
+	request.total = refill->byte_count;
+	request.initial_offset = refill->offset_bytes;
+	g_replay_job_active = true;
+	g_replay_job_cancelling = false;
+	g_replay_job_size_published = false;
+	g_replay_job_event_present = false;
+	memset(&g_replay_job_event, 0, sizeof(g_replay_job_event));
+	aius_sd_job_start(&g_replay_job, &request, now_ms, 0u);
+}
+
+/* One replay refill pass, at checkpoint 7. Spends at most one SD primitive.
  *
- * This checkpoint also drives the SD lifecycle, and it is the only slot that
- * can: it is the last application callback before the SD checkpoint consumes
- * the epoch's HTTP action, so it is the only point at which a root job can be
- * started and still yield to a route admitted two checkpoints earlier
- * (sd_storage_idle()). In recovery-safe mode the scheduler runs only the two USB
- * checkpoints, so no SD job starts at all -- which is the intended behaviour for
- * a board recovering from repeated watchdog resets. */
+ * A running job is advanced. Otherwise the service is asked whether it wants a
+ * read -- the call that also settles the drained-EOF transition, so it is made
+ * every epoch -- and the plan is turned into a job only if the storage service
+ * is completely idle. It is not idle when an HTTP action admitted at checkpoint
+ * 5 is waiting for checkpoint 8, which is what keeps a refill from preempting a
+ * route, and the abandoned plan costs nothing. */
+static FLASHMEM void replay_refill_service(size_t budget_words, uint32_t now_ms)
+{
+	AiusReplayRefill refill;
+
+	if (g_replay_job_active) {
+		replay_job_advance(now_ms);
+		return;
+	}
+	if (!aius_replay_service_plan_refill(&g_replay_service, budget_words,
+	                                     &refill))
+		return;
+	if (!sd_storage_idle()) {
+		aius_replay_service_abandon_refill(&g_replay_service);
+		return;
+	}
+	replay_job_start(&refill, now_ms);
+	replay_job_advance(now_ms);
+}
+
+/* Checkpoint 7: the SD lifecycle and the replay refill, in that order, with the
+ * refill quota taken from the budget rather than the legacy loop's literal
+ * 2,048.
+ *
+ * This checkpoint is the only slot either can use: it is the last application
+ * callback before the SD checkpoint consumes the epoch's HTTP action, so it is
+ * the only point at which a job can be started and still yield to a route
+ * admitted two checkpoints earlier (sd_storage_idle()). In recovery-safe mode
+ * the scheduler runs only the two USB checkpoints, so neither runs at all --
+ * which is the intended behaviour for a board recovering from repeated watchdog
+ * resets.
+ *
+ * The lifecycle goes first because it is rate-limited -- one probe per second,
+ * and the two config loads only on a card transition -- so giving it the first
+ * refusal cannot starve replay, whereas the reverse could starve the probe that
+ * makes a hot card removal observable. Each yields to the other's running job,
+ * so the epoch still spends at most one SD primitive between them. */
 static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
                                      uint32_t now_ms)
 {
 	if (budget == nullptr ||
 	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_REPLAY)
 		return false;
-	if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||
-	    g_replay_service.state == AIUS_REPLAY_PREBUFFERING)
-		(void)aius_replay_service_refill(&g_replay_service,
-		                                 budget->max_rx_bytes);
 	sd_lifecycle_service(now_ms);
+	replay_refill_service(budget->max_rx_bytes, now_ms);
 	return true;
 }
 
@@ -2423,6 +2650,11 @@ FLASHMEM void setup(void)
 	Serial.begin(115200);
 	derive_auth_token();
 	aius_replay_service_init(&g_replay_service);
+	/* Memory only, like every other construction here: the refill job's
+	 * transfer slice is registered now so checkpoint 7 can start a job
+	 * without allocating or touching the card. */
+	aius_sd_job_init(&g_replay_job, g_replay_transfer,
+	                 sizeof(g_replay_transfer));
 	aius_config_set_defaults(&g_config);
 	g_boot_epoch = micros();
 

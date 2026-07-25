@@ -21,12 +21,21 @@ extern "C" {
 /* The replay seam is deliberately fixed-size.  The producer is the service
  * task and the consumer is the audio callback. */
 #define AIUS_REPLAY_WORD_RING_CAPACITY 4096u
-#define AIUS_REPLAY_BYTE_BUFFER_SIZE 4096u
-#define AIUS_REPLAY_BYTE_BUFFER_COUNT 2u
 #define AIUS_REPLAY_START_WATERMARK_WORDS 2048u
 #define AIUS_REPLAY_MAX_ID_LENGTH 48u
 #define AIUS_REPLAY_WORDS_PER_SECOND 48000u
 #define AIUS_REPLAY_BYTES_PER_SECOND 192000u
+
+/* The largest byte range one planned refill may cover, and the largest chunk
+ * one delivery may carry.
+ *
+ * The refill bound caps how long a single bounded SD job holds the card, which
+ * is what the platform's other consumers wait on; it is deliberately about one
+ * ring's worth so a refill is one job per ~40 ms of audio rather than a dribble
+ * of jobs per epoch.  The delivery bound is one transfer slice, matching the
+ * portable SD engine's per-primitive read, and is what sizes `scratch_words`. */
+#define AIUS_REPLAY_REFILL_MAX_BYTES 4096u
+#define AIUS_REPLAY_DELIVER_MAX_BYTES 512u
 
 typedef struct {
 	uint16_t words[AIUS_REPLAY_WORD_RING_CAPACITY];
@@ -105,47 +114,55 @@ typedef struct {
 	AiusReplayDecoderStatus decoder;
 } AiusReplayStatus;
 
-/* Reader callbacks are called only by the service task.  A successful read may
- * return fewer bytes than requested, but must return an even byte count.  A
- * zero-byte successful read is EOF. */
+/* One bounded byte range the service wants read, produced by
+ * aius_replay_service_plan_refill() and performed by the platform's bounded SD
+ * job.  `byte_count` is never zero, always even, never more than
+ * AIUS_REPLAY_REFILL_MAX_BYTES, and never more than the ring can accept. */
 typedef struct {
-	void *ctx;
-	AiusStatus (*open)(void *ctx, uint32_t file_bytes);
-	AiusStatus (*read)(void *ctx, uint32_t offset_bytes, uint8_t *buffer,
-	                   size_t capacity, size_t *bytes_read);
-	void (*close)(void *ctx);
-} AiusReplayReader;
-
-typedef struct {
-	AiusReplayReader reader;
-	uint32_t file_bytes;
 	uint32_t offset_bytes;
-	uint32_t loops_completed;
-	uint8_t buffer_index;
-	size_t buffer_bytes;
-	size_t buffer_position;
-	bool eof;
-	bool open;
-} AiusReplayStream;
+	uint32_t byte_count;
+} AiusReplayRefill;
 
 /* This object is caller-owned and may be placed in OCRAM/DMAMEM by the target
- * integration.  No member is dynamically allocated. */
+ * integration.  No member is dynamically allocated.
+ *
+ * WHY THERE IS NO READER CALLBACK.  Refill used to run through an
+ * AiusReplayReader whose open/read/close returned immediately, which forced the
+ * platform to own an SD file handle and to block inside its own service call.
+ * On a target whose every storage job re-mounts the volume, an outlived handle
+ * is not merely slow -- it is a correctness bug, because the mount happens
+ * underneath it.  The seam is therefore a plan/deliver pair: the service owns a
+ * byte OFFSET and never a handle, and the platform performs the read with the
+ * same bounded, one-primitive-per-epoch job every other consumer uses.  A
+ * storage job started mid-replay can no longer invalidate anything, because
+ * there is nothing of the replay's open across it. */
 typedef struct {
 	AiusReplayWordRing ring;
-	uint8_t byte_buffers[AIUS_REPLAY_BYTE_BUFFER_COUNT]
-	                    [AIUS_REPLAY_BYTE_BUFFER_SIZE];
-	uint16_t candidate_words[AIUS_REPLAY_START_WATERMARK_WORDS];
-	uint16_t scratch_words[256];
-	AiusReplayStream active;
-	AiusReplayStream candidate;
+	/* One delivery's worth of decoded words, so a delivery converts in one
+	 * batch instead of pushing word by word. */
+	uint16_t scratch_words[AIUS_REPLAY_DELIVER_MAX_BYTES / 2u];
 	char id[AIUS_REPLAY_MAX_ID_LENGTH + 1u];
 	uint32_t watermark_words;
 	uint32_t underruns;
 	AiusReplayState state;
 	AiusReplaySource source;
 	bool loop;
+	/* Zero until the platform publishes the size it learned from the file
+	 * itself; the service treats zero as "not yet known" and leans on a
+	 * short refill to find the end instead. */
 	uint32_t file_bytes;
-	uint32_t candidate_word_count;
+	/* The whole of the replay's read position: the next byte to read.  This
+	 * is what replaces the open file handle. */
+	uint32_t offset_bytes;
+	uint32_t loops_completed;
+	bool eof;
+	/* A replay is selected: start() has run and stop() has not. */
+	bool started;
+	/* The one in-flight planned refill, so the service (not the platform)
+	 * owns the accounting that decides EOF. */
+	bool refill_planned;
+	uint32_t refill_offset;
+	uint32_t refill_bytes;
 	AiusReplayDecoderStatus decoder;
 } AiusReplayService;
 
@@ -153,19 +170,61 @@ void aius_replay_service_init(AiusReplayService *service);
 AiusStatus aius_replay_service_init_with_watermark(AiusReplayService *service,
 	                                               uint32_t watermark_words);
 
-/* Start opens and prebuffers before publishing SOURCE_REPLAY.  If already in
- * replay, this is transactional: the old source remains in the active ring
- * until the replacement reaches the watermark. */
+/* Selects a replay and publishes PREBUFFERING / SWITCHING_TO_REPLAY.
+ *
+ * MEMORY ONLY.  It opens nothing, reads nothing and waits for nothing, so it is
+ * legal from a dispatcher contracted to touch no SD primitive and never delay.
+ * The ring reaches its watermark later, through planned refills; until it does,
+ * `source` stays SWITCHING_TO_REPLAY and an integration that gates its audio on
+ * SOURCE_REPLAY keeps playing its live input.  The caller learns the outcome
+ * from the status surface, not from this call. */
 AiusStatus aius_replay_service_start(AiusReplayService *service,
-	                                 const char *id, uint32_t file_bytes,
-	                                 bool loop, const AiusReplayReader *reader);
+	                                 const char *id, bool loop);
 
-/* Refill is service-side and bounded by the caller's consumption budget.  A
- * zero budget performs no I/O.  The service never runs a reader in pop_words. */
-AiusStatus aius_replay_service_refill(AiusReplayService *service,
-	                                  size_t budget_words);
+/* Publishes the file size the platform learned while performing a refill.  Used
+ * for the reported duration and for the EOF boundary; a size that disagrees with
+ * an already-consumed offset, or an odd one, is rejected and leaves the service
+ * on its short-refill EOF detection. */
+AiusStatus aius_replay_service_set_file_bytes(AiusReplayService *service,
+	                                          uint32_t file_bytes);
 
-/* The callback-facing wrapper marks a short pop as an underrun. */
+/* One service tick, called once per platform epoch.  Memory only.
+ *
+ * Settles the drained-EOF transition, then decides whether a bounded read is
+ * wanted: true with `out` filled, false when the ring is above its watermark,
+ * the file is exhausted, a refill is already in flight, or no replay is
+ * selected.  A false is not an error and costs nothing -- a platform whose
+ * shared SD primitive is busy simply asks again next epoch. */
+bool aius_replay_service_plan_refill(AiusReplayService *service,
+	                                 size_t budget_words,
+	                                 AiusReplayRefill *out);
+
+/* Hands one chunk of the planned range to the ring.  `offset_bytes` must be the
+ * service's current read position, so a stale or reordered chunk is rejected
+ * rather than decoded into the audio stream.  At most
+ * AIUS_REPLAY_DELIVER_MAX_BYTES per call, always even.  Promotes PREBUFFERING to
+ * PLAYING once the ring reaches the watermark. */
+AiusStatus aius_replay_service_deliver(AiusReplayService *service,
+	                                   uint32_t offset_bytes,
+	                                   const uint8_t *bytes,
+	                                   size_t byte_count);
+
+/* Drops the in-flight plan without consuming it: the platform could not perform
+ * the read this epoch (its shared primitive belongs to someone else) and will
+ * ask again.  Memory only, and deliberately NOT the same as a zero-byte
+ * completion -- a refusal is not the end of the file. */
+void aius_replay_service_abandon_refill(AiusReplayService *service);
+
+/* Settles the in-flight refill.  `ok` false means the platform's read failed,
+ * which is an ERROR the status surface reports and one decoder error.  `ok` true
+ * with fewer bytes delivered than planned means the file ended: the service
+ * either wraps to zero (loop) or stops asking. */
+void aius_replay_service_refill_complete(AiusReplayService *service, bool ok);
+
+/* The callback-facing wrapper marks a short pop as an underrun.
+ *
+ * UNCHANGED BY THE REFILL REDESIGN, deliberately: this runs per audio block, so
+ * it must not gain a lock, a branch that can wait, or any refill work. */
 size_t aius_replay_service_pop_words(AiusReplayService *service,
 	                                uint16_t *out, size_t capacity);
 

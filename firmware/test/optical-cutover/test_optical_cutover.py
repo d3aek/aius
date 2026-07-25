@@ -11,9 +11,10 @@ Two independently runnable groups, selected with `--group`:
   --group positive   properties the post-cutover file must HAVE:
                       setup() is construction-only, loop() delegates exactly
                       one runtime epoch, the watchdog is armed once at the
-                      pinned 8 s interval and fed exactly once per epoch, and
-                      all three status channels (UDP, status JSON, USB ID)
-                      carry the recovery state.
+                      pinned 8 s interval and fed exactly once per epoch, all
+                      three status channels (UDP, status JSON, USB ID) carry
+                      the recovery state, and the replay refill path performs
+                      no direct SD primitive.
   --group absence     constructs the post-cutover file must NOT contain: a
                       static-address fallback, raw FNET access, the
                       listener-rebind globals, a blocking socket write loop,
@@ -124,6 +125,35 @@ def loop_bodies(text):
                 continue
             bodies.append(text[cursor:end + 1])
     return bodies
+
+
+def function_definitions(text):
+    """Every file-scope C-style function DEFINITION in `text`, as
+    name -> brace-matched body.
+
+    A definition is a line-initial declarator whose closing `)` is followed
+    (modulo whitespace) by `{` -- which is what separates it from a prototype, a
+    call, or a macro. Comments and literals are blanked for the scan and the
+    brace match; the returned body is the original text. Qualified C++ member
+    definitions (`Class::member`) are deliberately not matched: nothing this
+    suite scopes to is one, and admitting `::` would also admit statements."""
+    clean = without_comments_and_literals(text)
+    definitions = {}
+    for match in re.finditer(
+        r"^[A-Za-z_][A-Za-z0-9_ \t*&]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        clean,
+        re.MULTILINE,
+    ):
+        opening = clean.find("(", match.start(1))
+        closing = matching_delimiter(clean, opening, "(", ")")
+        cursor = closing + 1
+        while cursor < len(clean) and clean[cursor] in " \t\r\n":
+            cursor += 1
+        if cursor >= len(clean) or clean[cursor] != "{":
+            continue
+        body_end = matching_delimiter(clean, cursor, "{", "}")
+        definitions[match.group(1)] = text[cursor + 1: body_end]
+    return definitions
 
 
 def call_count(text, callee):
@@ -312,6 +342,77 @@ def assert_usb_id_carries_recovery_keys(text):
     )
 
 
+# Phase 14c: the replay path holds no card handle of its own.
+#
+# Nothing else can catch a regression here. No native suite compiles
+# optical_main.cpp, and the failure this prevents is silent on the bench: a
+# replay that reads the card directly keeps a file open across epochs, and every
+# portable SD job begins with SD.begin(BUILTIN_SDCARD), so the next config PUT,
+# download or probe re-mounts the volume underneath it. The replay then reads
+# from a handle whose volume moved, which sounds like a glitch rather than a
+# fault.
+#
+# The scan is by function NAME rather than by an enumerated list, so a replay
+# function added later is covered by construction rather than by remembering to
+# add it here.
+REPLAY_FUNCTION_NAME = re.compile(r"replay", re.IGNORECASE)
+
+# Replay functions that legitimately still reach the card directly, each with the
+# reason. Both are HTTP-context routes that Phase 14c does not own: they stat and
+# enumerate rather than stream, and the portable SD engine has no directory job
+# to move the listing onto. Naming them keeps the carve-out reviewable -- any
+# OTHER replay function reaching the card still fails.
+REPLAY_SD_EXEMPT = {
+    "app_replay_delete": "DELETE /api/replays stats and removes the file",
+    "http_replay_list_json": "GET /api/replays enumerates /aius/replays",
+}
+
+# A direct card primitive: an `SD.<method>(` call, or a file-handle method that
+# only an owned `File` has.
+SD_PRIMITIVE = re.compile(
+    r"\bSD\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\("
+    r"|\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*"
+    r"(?:open|read|write|seek|close|truncate|size)\s*\("
+)
+
+# The refill must be the portable bounded job, not an ad-hoc read loop. Asserted
+# positively so the check cannot pass by the replay path having no I/O at all.
+REPLAY_REFILL_JOB = "AIUS_SD_JOB_REPLAY_REFILL"
+REPLAY_REQUIRED_FUNCTIONS = ("platform_replay",)
+
+
+def assert_replay_path_has_no_direct_sd(text):
+    definitions = function_definitions(text)
+    scanned = {
+        name: body
+        for name, body in definitions.items()
+        if REPLAY_FUNCTION_NAME.search(name) and name not in REPLAY_SD_EXEMPT
+    }
+    missing = [
+        name for name in REPLAY_REQUIRED_FUNCTIONS if name not in scanned
+    ]
+    assert not missing, (
+        f"replay functions {missing!r} were not found, so this check would "
+        "pass without scanning the refill path at all"
+    )
+    offenders = {}
+    for name, body in scanned.items():
+        match = SD_PRIMITIVE.search(without_comments_and_literals(body))
+        if match is not None:
+            offenders[name] = match.group(0).strip()
+    assert not offenders, (
+        f"the replay path calls a card primitive directly: {offenders!r}. "
+        "A replay read must go through the bounded "
+        f"{REPLAY_REFILL_JOB} job, which opens and closes inside itself, so no "
+        "replay handle can survive the SD.begin() every other job performs"
+    )
+    named = "".join(scanned.values())
+    assert REPLAY_REFILL_JOB in without_comments_and_literals(named), (
+        f"no replay function names {REPLAY_REFILL_JOB}, so nothing shows the "
+        "refill goes through the bounded SD job rather than some other read"
+    )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -330,6 +431,10 @@ POSITIVE_CHECKS = (
     (
         "USB ID carries all ten recovery keys",
         assert_usb_id_carries_recovery_keys,
+    ),
+    (
+        "the replay path performs no direct SD primitive",
+        assert_replay_path_has_no_direct_sd,
     ),
 )
 
@@ -476,6 +581,26 @@ def run_helper_self_test():
         "the recovery snapshot is ten fields, and the JSON and ID key tuples "
         "pair by index"
     )
+
+    definition_text = (
+        "static int prototype_only(void);\n"
+        "static FLASHMEM bool one(void *ctx,\n"
+        "                         int wide)\n"
+        "{\n"
+        "\tif (wide) { return false; }\n"
+        "\treturn one_helper(ctx);\n"
+        "}\n"
+        "static void two(void) { call(); }\n"
+    )
+    definitions = function_definitions(definition_text)
+    assert set(definitions) == {"one", "two"}, (
+        f"function_definitions must find definitions only, found "
+        f"{sorted(definitions)}"
+    )
+    assert "one_helper(ctx);" in definitions["one"], (
+        "multi-line signature body extraction is broken"
+    )
+    assert "call();" in definitions["two"], "single-line body extraction is broken"
 
 
 def run_self_test():
@@ -663,6 +788,77 @@ def run_self_test():
     _expect_fail(
         assert_usb_id_carries_recovery_keys, usb_id_comment_only,
         "usb-id/comment-is-not-a-field", "nrst",
+    )
+
+    # the replay path performs no direct SD primitive.
+    good_replay = (
+        "static FLASHMEM void replay_refill_service(size_t budget, uint32_t now)\n"
+        "{\n"
+        "\tAiusReplayRefill refill;\n"
+        "\tif (!aius_replay_service_plan_refill(&g_replay_service, budget, &refill))\n"
+        "\t\treturn;\n"
+        "\trequest.kind = AIUS_SD_JOB_REPLAY_REFILL;\n"
+        "\taius_sd_job_start(&g_replay_job, &request, now, 0u);\n"
+        "}\n"
+        "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *b,\n"
+        "                                     uint32_t now)\n"
+        "{\n"
+        "\treplay_refill_service(b->max_rx_bytes, now);\n"
+        "\treturn true;\n"
+        "}\n"
+    )
+    _expect_pass(assert_replay_path_has_no_direct_sd, good_replay, "replay-sd/good")
+
+    # The pre-14c shape: a reader that owns a File and reads it inline. This is
+    # the regression the check exists to prevent, so it must fail on exactly it.
+    legacy_reader = good_replay + (
+        "static FLASHMEM AiusStatus replay_reader_read(void *, uint32_t offset,\n"
+        "                                             uint8_t *buffer, size_t cap)\n"
+        "{\n"
+        "\tif (!g_replay_file.seek(offset)) return AIUS_MALFORMED;\n"
+        "\tint count = g_replay_file.read(buffer, cap);\n"
+        "\treturn count < 0 ? AIUS_MALFORMED : AIUS_OK;\n"
+        "}\n"
+    )
+    _expect_fail(
+        assert_replay_path_has_no_direct_sd, legacy_reader, "replay-sd/legacy-reader",
+        "replay_reader_read",
+    )
+    mounted_in_callback = good_replay.replace(
+        "\treplay_refill_service(b->max_rx_bytes, now);\n",
+        "\tg_replay_file = SD.open(g_replay_path, FILE_READ);\n",
+        1,
+    )
+    _expect_fail(
+        assert_replay_path_has_no_direct_sd, mounted_in_callback,
+        "replay-sd/callback-opens", "platform_replay",
+    )
+    # Vacuous-pass guard: a replay path with no card access at all, and no
+    # bounded job either, is not a pass.
+    no_job = good_replay.replace(
+        "\trequest.kind = AIUS_SD_JOB_REPLAY_REFILL;\n", "", 1
+    )
+    _expect_fail(
+        assert_replay_path_has_no_direct_sd, no_job, "replay-sd/no-bounded-job",
+        "AIUS_SD_JOB_REPLAY_REFILL",
+    )
+    # And a check that scans nothing is not a pass either.
+    _expect_fail(
+        assert_replay_path_has_no_direct_sd,
+        "static void unrelated(void) { return; }\n",
+        "replay-sd/nothing-scanned", "platform_replay",
+    )
+    # The two named carve-outs really are exempt, and only they are.
+    exempt_delete = good_replay + (
+        "static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,\n"
+        "                                                             const char *id)\n"
+        "{\n"
+        "\tif (!SD.exists(path)) return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;\n"
+        "\treturn SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK : AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
+        "}\n"
+    )
+    _expect_pass(
+        assert_replay_path_has_no_direct_sd, exempt_delete, "replay-sd/exempt"
     )
 
     # no static fallback.
