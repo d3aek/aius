@@ -26,6 +26,23 @@ private:
 	bool valid_;
 };
 
+/* SD.sdfs.vol()->fatType(): the mounted volume's cached type. Not a card
+ * primitive -- the real SdFat reads a member the mount already filled -- so the
+ * fake deliberately does not record a call, and the adapter's one-primitive
+ * accounting is unaffected by reading it. */
+class FsVolume {
+public:
+	uint8_t fatType() const;
+};
+
+class SdFs {
+public:
+	FsVolume *vol();
+
+private:
+	FsVolume volume_;
+};
+
 class SDClass {
 public:
 	bool begin(uint8_t chip_select);
@@ -37,6 +54,8 @@ public:
 	bool remove(const char *path);
 	uint64_t totalSize();
 	uint64_t usedSize();
+
+	SdFs sdfs;
 };
 
 extern SDClass SD;

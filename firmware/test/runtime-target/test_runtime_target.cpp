@@ -197,6 +197,11 @@ static AiusCdcTeensyPrimitives cdc_primitives(void)
 struct SdFake {
 	bool begin_ok;
 	bool media_present;
+	/* SdFat's own FAT-type numbering for the mounted volume, and how many
+	 * times the adapter read it. The read is not a card primitive, so it
+	 * must never move primitive_calls. */
+	uint8_t fat_type;
+	unsigned fat_type_reads;
 	bool exists_result;
 	bool remove_ok;
 	bool open_ok;
@@ -358,6 +363,19 @@ uint64_t SDClass::usedSize()
 {
 	sd_primitive();
 	return 512u;
+}
+
+/* Deliberately not sd_primitive(): the real fatType() reads the type the mount
+ * already cached on the volume, so it starts no card transaction. */
+uint8_t FsVolume::fatType() const
+{
+	g_sd.fat_type_reads++;
+	return g_sd.fat_type;
+}
+
+FsVolume *SdFs::vol()
+{
+	return &volume_;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2402,6 +2420,11 @@ static void test_root_storage_job(void)
 	current_key = "root.probe";
 	{
 		arm_root_storage(&storage, 0u, true);
+		/* The composed probe is the only producer of the status
+		 * surface's filesystem type, so it is asserted end to end:
+		 * driver numbering in, portable enum out, and -- through
+		 * drive_root_job()'s per-epoch check -- no extra primitive. */
+		g_sd.fat_type = 32u;
 		memset(&request, 0, sizeof(request));
 		request.kind = AIUS_SD_JOB_PROBE;
 		now_ms = 1u;
@@ -2412,7 +2435,30 @@ static void test_root_storage_job(void)
 		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
 		CHECK(aius_runtime_storage_root_result(&storage)
 		              ->media_present);
+		CHECK(aius_runtime_storage_root_result(&storage)->filesystem ==
+		      AIUS_SD_FILESYSTEM_FAT32);
+		/* BEGIN then MEDIA_PRESENT, and nothing else. */
+		CHECK(g_sd.primitive_calls == 2u);
+		CHECK(g_sd.fat_type_reads == 1u);
 		CHECK(g_publish.calls == 0u);
+
+		/* No card: the type the driver still holds is not reported. */
+		arm_root_storage(&storage, 0u, true);
+		g_sd.media_present = false;
+		g_sd.fat_type = 16u;
+		memset(&request, 0, sizeof(request));
+		request.kind = AIUS_SD_JOB_PROBE;
+		now_ms = 1u;
+		CHECK(aius_runtime_storage_start_root_job(&storage, &request,
+		                                          now_ms++));
+		drive_root_job(&storage, &now_ms, 32u);
+		CHECK(storage.root_state ==
+		      AIUS_RUNTIME_STORAGE_ROOT_COMPLETE);
+		CHECK(!aius_runtime_storage_root_result(&storage)
+		               ->media_present);
+		CHECK(aius_runtime_storage_root_result(&storage)->filesystem ==
+		      AIUS_SD_FILESYSTEM_UNKNOWN);
+		CHECK(g_sd.fat_type_reads == 0u);
 	}
 
 	current_key = "root.invalid-request";

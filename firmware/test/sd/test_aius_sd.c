@@ -51,6 +51,16 @@ static AiusSdEvent bool_event(uint64_t id, bool value)
 	return event;
 }
 
+/* A media-present answer that also carries the volume type, which is the only
+ * event the driver may attach one to. */
+static AiusSdEvent media_event(uint64_t id, bool value,
+	                       AiusSdFilesystem filesystem)
+{
+	AiusSdEvent event = bool_event(id, value);
+	event.filesystem = filesystem;
+	return event;
+}
+
 static AiusSdEvent size_event(uint64_t id, uint64_t size)
 {
 	AiusSdEvent event = {0};
@@ -347,11 +357,16 @@ static void test_probe_usage_delete(void)
 	CHECK(job.phase == AIUS_SD_PHASE_PROBE_MEDIA, "probe phase mismatch");
 	action = step_action(&job,
 	                     0u,
-	                     bool_event(action.action_id, false),
+	                     media_event(action.action_id, false,
+	                                 AIUS_SD_FILESYSTEM_FAT32),
 	                     AIUS_SD_ACTION_COMPLETE);
 	CHECK(action.kind == AIUS_SD_ACTION_COMPLETE, "probe did not complete");
 	expect_result(&job, AIUS_SD_RESULT_PROBE, AIUS_SD_FAULT_NONE, 0u);
 	CHECK(!job.result.media_present, "absent media became present");
+	/* A driver that answers "no card" but still names a type is reporting a
+	 * volume nobody can read; the result keeps UNKNOWN. */
+	CHECK(job.result.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN,
+	      "absent media reported a filesystem");
 	step_none(&job, AIUS_SD_ACTION_NONE);
 
 	scenario = "probe present";
@@ -363,6 +378,93 @@ static void test_probe_usage_delete(void)
 	            bool_event(action.action_id, true),
 	            AIUS_SD_ACTION_COMPLETE);
 	CHECK(job.result.media_present, "present media became absent");
+	CHECK(job.result.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN,
+	      "unnamed volume type became known");
+
+	scenario = "probe reports the volume type";
+	{
+		static const AiusSdFilesystem kFilesystems[] = {
+			AIUS_SD_FILESYSTEM_UNKNOWN,
+			AIUS_SD_FILESYSTEM_FAT12,
+			AIUS_SD_FILESYSTEM_FAT16,
+			AIUS_SD_FILESYSTEM_FAT32,
+		};
+		size_t index;
+
+		for (index = 0u; index < ARRAY_COUNT(kFilesystems); index++) {
+			start_valid(&job, buffer, sizeof(buffer), &request);
+			action = begin_job(&job);
+			action = acknowledge_ok(&job, &action,
+			                        AIUS_SD_ACTION_MEDIA_PRESENT);
+			step_action(&job,
+			            0u,
+			            media_event(action.action_id, true,
+			                        kFilesystems[index]),
+			            AIUS_SD_ACTION_COMPLETE);
+			expect_result(&job, AIUS_SD_RESULT_PROBE,
+			              AIUS_SD_FAULT_NONE, 0u);
+			CHECK(job.result.filesystem == kFilesystems[index],
+			      "probe filesystem mismatch");
+		}
+	}
+
+	/* A malformed event is refused where it arrives: the action stays
+	 * outstanding and the fault surfaces once the driver answers it
+	 * properly, which is how every other payload rejection here behaves. */
+	scenario = "probe rejects an out-of-domain volume type";
+	start_valid(&job, buffer, sizeof(buffer), &request);
+	action = begin_job(&job);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_MEDIA_PRESENT);
+	step_action(&job,
+	            0u,
+	            media_event(action.action_id, true,
+	                        (AiusSdFilesystem)(AIUS_SD_FILESYSTEM_FAT32 + 1)),
+	            AIUS_SD_ACTION_NONE);
+	step_action(&job,
+	            0u,
+	            bool_event(action.action_id, true),
+	            AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_PROTOCOL, 0u);
+
+	scenario = "only the media check may carry a volume type";
+	{
+		/* An EXISTS answer is the other BOOL event, and a DELETE is the
+		 * shortest job that asks for one. A volume type on it is a
+		 * driver contract break, not a value to ignore. */
+		AiusSdJobRequest delete_request =
+			request_for(AIUS_SD_JOB_DELETE);
+
+		start_valid(&job, buffer, sizeof(buffer), &delete_request);
+		action = begin_job(&job);
+		action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_EXISTS);
+		step_action(&job,
+		            0u,
+		            media_event(action.action_id, true,
+		                        AIUS_SD_FILESYSTEM_FAT32),
+		            AIUS_SD_ACTION_NONE);
+		step_action(&job,
+		            0u,
+		            bool_event(action.action_id, true),
+		            AIUS_SD_ACTION_FAIL);
+		expect_result(&job, AIUS_SD_RESULT_FAULT,
+		              AIUS_SD_FAULT_PROTOCOL, 0u);
+
+		/* Same for a non-BOOL answer: BEGIN's OK carries nothing. */
+		start_valid(&job, buffer, sizeof(buffer), &request);
+		action = begin_job(&job);
+		{
+			AiusSdEvent event = ok_event(action.action_id);
+
+			event.filesystem = AIUS_SD_FILESYSTEM_FAT32;
+			step_action(&job, 0u, event, AIUS_SD_ACTION_NONE);
+		}
+		step_action(&job,
+		            0u,
+		            ok_event(action.action_id),
+		            AIUS_SD_ACTION_FAIL);
+		expect_result(&job, AIUS_SD_RESULT_FAULT,
+		              AIUS_SD_FAULT_PROTOCOL, 0u);
+	}
 
 	scenario = "usage";
 	request = request_for(AIUS_SD_JOB_USAGE_REFRESH);

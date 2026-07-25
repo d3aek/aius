@@ -40,6 +40,14 @@ INERT = (
 
 PRIMITIVE = re.compile("|".join(f"(?:{pattern})" for pattern in ELIGIBLE.values()))
 
+# The mounted volume's cached type. Not a primitive -- it starts no card
+# transaction -- but it is a vendor reach, so it is pinned to the one action that
+# may make it: the probe's media check, which already holds the mounted volume.
+# Anywhere else it would be a read against a volume another job could be
+# mid-mount on, which is the defect this contract exists to prevent.
+VOLUME_TYPE = re.compile(r"\bSD\s*\.\s*sdfs\b")
+VOLUME_TYPE_ACTION = "MEDIA_PRESENT"
+
 
 def without_comments_and_literals(text):
     pattern = re.compile(
@@ -114,6 +122,14 @@ def assert_one_shot_body(body):
             primitive_sites += len(PRIMITIVE.findall(fragment))
     assert primitive_sites == 17, "eligible primitive catalog is not exact"
 
+    volume_reads = len(VOLUME_TYPE.findall(clean))
+    assert volume_reads == 1, "volume type is not read exactly once"
+    probe_reads = sum(
+        len(VOLUME_TYPE.findall(fragment))
+        for fragment in case_fragments(clean, VOLUME_TYPE_ACTION)
+    )
+    assert probe_reads == 1, f"volume type is read outside {VOLUME_TYPE_ACTION}"
+
     for action in INERT:
         for fragment in case_fragments(clean, action):
             assert not PRIMITIVE.search(fragment), f"primitive in inert {action}"
@@ -155,6 +171,13 @@ def test_source_and_mutation_sensitivity():
             "missing primitive",
             lambda source: source.replace(
                 "SD.begin(BUILTIN_SDCARD)", "true", 1
+            ),
+        ),
+        ("volume type outside the probe", append("SD.sdfs.vol()->fatType();")),
+        (
+            "volume type removed",
+            lambda source: source.replace(
+                "SD.sdfs.vol()->fatType()", "0u", 1
             ),
         ),
     )

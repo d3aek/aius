@@ -34,6 +34,11 @@ struct Fake {
 	uint32_t clocks[2];
 	bool succeeds[PRIMITIVE_COUNT];
 	bool media_present;
+	/* The driver's own FAT-type numbering, as SdFat reports it. 0 is an
+	 * unmounted volume, which is what every case that does not care about
+	 * the volume type gets. */
+	uint8_t fat_type;
+	unsigned fat_type_reads;
 	bool exists;
 	bool open_valid;
 	size_t read_result;
@@ -172,8 +177,11 @@ void assert_none_event(const AiusSdEvent &event)
 	assert(event.size == 0);
 	assert(!event.value);
 	assert(event.fault == 0);
+	assert(event.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN);
 }
 
+/* Every assertion below the volume-type test uses an unmounted fake volume, so
+ * the expected filesystem is UNKNOWN throughout and only that test states one. */
 void assert_event(const AiusSdEvent &event, AiusSdEventKind kind,
 	              uint64_t action_id, size_t bytes, uint64_t size,
 	              bool value, uint32_t fault)
@@ -184,6 +192,7 @@ void assert_event(const AiusSdEvent &event, AiusSdEventKind kind,
 	assert(event.size == size);
 	assert(event.value == value);
 	assert(event.fault == fault);
+	assert(event.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN);
 }
 
 void assert_protocol_event(const AiusSdEvent &event, uint64_t action_id)
@@ -758,6 +767,73 @@ void test_inert_null_unknown_and_duplicate()
 	assert(g_fake.clock_calls == 4);
 }
 
+/* The probe reports the mounted volume's type, and reading it is not a second
+ * card primitive. Both halves matter: the status surface went blind when this
+ * information had no producer, and the one-primitive-per-epoch rule is what
+ * bounds the watchdog's worst case. */
+void test_media_present_reports_the_volume_type()
+{
+	struct Row {
+		uint8_t fat_type;
+		AiusSdFilesystem filesystem;
+	};
+	/* 64 is exFAT and 255 is nothing at all; both are UNKNOWN because the
+	 * status wire vocabulary names FAT12, FAT16 and FAT32 only. */
+	static const Row kRows[] = {
+		{ 0u, AIUS_SD_FILESYSTEM_UNKNOWN },
+		{ 12u, AIUS_SD_FILESYSTEM_FAT12 },
+		{ 16u, AIUS_SD_FILESYSTEM_FAT16 },
+		{ 32u, AIUS_SD_FILESYSTEM_FAT32 },
+		{ 64u, AIUS_SD_FILESYSTEM_UNKNOWN },
+		{ 255u, AIUS_SD_FILESYSTEM_UNKNOWN },
+	};
+	for (size_t i = 0; i < sizeof(kRows) / sizeof(kRows[0]); ++i) {
+		reset_fake();
+		AiusSdTeensy adapter;
+		reset_adapter(&adapter);
+		g_fake.fat_type = kRows[i].fat_type;
+		AiusSdAction action =
+			make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+		AiusSdEvent event =
+			aius_sd_teensy_execute(&adapter, &action);
+		assert(event.kind == AIUS_SD_EVENT_BOOL);
+		assert(event.action_id == 47);
+		assert(event.value);
+		assert(event.fault == 0);
+		assert(event.filesystem == kRows[i].filesystem);
+		assert(g_fake.call_count == 1);
+		assert(g_fake.calls[0] == PRIMITIVE_MEDIA_PRESENT);
+		assert(g_fake.fat_type_reads == 1);
+		assert(g_fake.clock_calls == 2);
+		assert(adapter.last_fault == 0);
+	}
+
+	/* No card, no volume to ask: the type is UNKNOWN and unread. */
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	g_fake.media_present = false;
+	g_fake.fat_type = 32u;
+	AiusSdAction action = make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &action);
+	assert(event.kind == AIUS_SD_EVENT_BOOL);
+	assert(!event.value);
+	assert(event.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN);
+	assert(g_fake.fat_type_reads == 0);
+	assert(g_fake.call_count == 1);
+
+	/* EXISTS is the other action answering with a BOOL, and never carries a
+	 * volume type -- the portable engine faults a job whose event does. */
+	reset_fake();
+	reset_adapter(&adapter);
+	g_fake.fat_type = 32u;
+	action = make_action(AIUS_SD_ACTION_EXISTS);
+	event = aius_sd_teensy_execute(&adapter, &action);
+	assert(event.kind == AIUS_SD_EVENT_BOOL);
+	assert(event.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN);
+	assert(g_fake.fat_type_reads == 0);
+}
+
 void test_durations_and_counter_saturation()
 {
 	reset_fake();
@@ -909,6 +985,20 @@ uint64_t SDClass::usedSize()
 	return g_fake.used_size;
 }
 
+/* Deliberately not recorded as a primitive: the real fatType() reads a member
+ * the mount already filled. Counting the reads separately is what lets the
+ * volume-type test assert the probe still spends exactly one card primitive. */
+uint8_t FsVolume::fatType() const
+{
+	g_fake.fat_type_reads++;
+	return g_fake.fat_type;
+}
+
+FsVolume *SdFs::vol()
+{
+	return &volume_;
+}
+
 uint32_t micros()
 {
 	size_t index = g_fake.clock_calls++;
@@ -924,6 +1014,7 @@ int main()
 	test_boolean_and_integer_boundaries();
 	test_exact_payload_validation();
 	test_inert_null_unknown_and_duplicate();
+	test_media_present_reports_the_volume_type();
 	test_durations_and_counter_saturation();
 	return 0;
 }

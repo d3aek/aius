@@ -188,6 +188,10 @@ static bool g_cpu_temp_valid;
  * exactly as it did before the cutover; the usage pair reads zero whenever the
  * card is absent. */
 static bool g_sd_ready;
+/* The volume type the last PROBE read off the mounted card, carried on that
+ * job's AiusSdResult. UNKNOWN until a probe answers, and again whenever the card
+ * goes away, so it can never outlive the media it describes. */
+static AiusSdFilesystem g_sd_filesystem;
 static uint64_t g_sd_total_bytes;
 static uint64_t g_sd_used_bytes;
 /* A committed write invalidates the reported usage, so the next probe tick
@@ -394,23 +398,34 @@ static FLASHMEM void service_hw_metrics(void)
 	g_cpu_temp_valid = true;
 }
 
-/* status JSON's `sd_filesystem`. Served as absent rather than produced, decided
- * at slice S3b.
+/* status JSON's `sd_filesystem`, reported from what the probe found.
  *
- * AiusSdResult carries media_present, total_bytes and used_bytes and no FAT type
- * (aius_sd.h:214), so the only way to answer "fat32" is the legacy
- * SD.sdfs.vol()->fatType() reach this replaced: a direct vendor call made from
- * the HTTP serializer, outside the storage service that owns every SD primitive,
- * against a volume a root or HTTP job may be mid-mount on. Extending the probe
- * result is the alternative and belongs to whoever owns lib/aius_sd.
+ * Slice S3b served this as "unknown" because AiusSdResult carried no FAT type,
+ * and the only other answer was the legacy SD.sdfs.vol()->fatType() reach it
+ * deleted: a raw vendor call from the HTTP serializer, outside the storage
+ * service that owns every SD primitive, against a volume a root or HTTP job
+ * could be mid-mount on. The result now carries the type instead, read by the
+ * SD adapter inside the probe's own media check while it holds the mounted
+ * volume, so this serializer reads memory and touches no card -- and the raw
+ * call stays deleted.
  *
- * §Deciding principle settles it -- a diagnostic that cannot be produced without
- * reaching into a path that touches the audio timing budget is served as absent
- * and said to be -- so a mounted card reports "unknown", which was already this
- * field's value for a volume whose type the legacy switch did not recognise. */
+ * "none" is no card. "unknown" keeps exactly the meaning it always had here: a
+ * mounted volume whose type the driver does not name, exFAT included. */
 static FLASHMEM const char *sd_filesystem(void)
 {
-	return g_sd_ready ? "unknown" : "none";
+	if (!g_sd_ready)
+		return "none";
+	switch (g_sd_filesystem) {
+	case AIUS_SD_FILESYSTEM_FAT12:
+		return "fat12";
+	case AIUS_SD_FILESYSTEM_FAT16:
+		return "fat16";
+	case AIUS_SD_FILESYSTEM_FAT32:
+		return "fat32";
+	case AIUS_SD_FILESYSTEM_UNKNOWN:
+	default:
+		return "unknown";
+	}
 }
 
 /* Whether the composed storage service can accept a new job this epoch. The
@@ -837,13 +852,45 @@ static FLASHMEM uint8_t current_state(void)
 	       klass == AIUS_PIPELINE_PCM ? 3 : 2;
 }
 
+/* Byte 1 of the UDP status payload, and the only producer of the status JSON's
+ * `network_mode` -- the JSON renders this byte rather than deriving a second
+ * answer, so the two channels cannot disagree by construction.
+ *
+ * The byte is binary, and not by choice: aius_net_status_encode() refuses a
+ * legacy_status[1] above 1 (aius_net.c:112), so a third value would silently
+ * cost every 99-byte reader its recovery fields. That suits the post-cutover
+ * board exactly, because this plan removed static addressing: the only two
+ * reachable states are "addressed by DHCP" and "not addressed at all".
+ *
+ * 1 requires both halves of that claim. AIUS_NET_STATE_ONLINE is the supervisor
+ * state entered on LEASE_ACQUIRED (aius_net.c:226) and left on any resource
+ * fault, so it means a DHCP lease is bound on the current generation; the
+ * adapter's address read then confirms the lease actually produced an address.
+ * Every other supervisor state -- stack start, DHCP wait, teardown, backoff and
+ * recovery-safe -- has no lease, and reports 0.
+ *
+ * Slice S2b served this as 0 because its legacy producer was retired, which
+ * rendered "offline" next to a real IP address on a board that was demonstrably
+ * online. Both inputs here are memory reads of state the runtime already
+ * publishes; neither costs an SD or network primitive. */
+static FLASHMEM uint8_t network_mode_byte(bool address_usable)
+{
+	AiusRecoveryStatus recovery;
+
+	aius_runtime_teensy_status(&g_runtime, &recovery);
+	return recovery.network_state == AIUS_NET_STATE_ONLINE && address_usable
+	               ? 1u
+	               : 0u;
+}
+
 /* The 71-byte UDP status payload. Its length and every field offset are exactly
  * what they were before the cutover; only the producers of four fields moved,
- * and three of those had no producer left to move (§Accepted wire-behaviour
+ * and two of those had no producer left to move (§Accepted wire-behaviour
  * changes). Field by field:
  *
  *    0      version                     unchanged
- *    1      network mode                producer retired -> served as 0
+ *    1      network mode                network_mode_byte(): 1 iff a DHCP
+ *                                       lease is bound and addressed, else 0
  *    2      state                       unchanged (record_state)
  *    3      flags: pll lock, test run   unchanged
  *    4..7   boot epoch                  unchanged
@@ -872,9 +919,11 @@ static FLASHMEM void put_status(uint8_t *payload, uint16_t *length)
 	uint32_t network_budget_overruns = g_network_budget_overruns;
 	interrupts();
 	uint8_t address[4];
-	(void)aius_network_teensy_address(&g_runtime.network_http.target, address);
+	const bool addressed = aius_network_teensy_address(
+		&g_runtime.network_http.target, address);
 	memset(payload, 0, 71);
 	payload[0] = 1;
+	payload[1] = network_mode_byte(addressed);
 	AiusPipelineClass klass = g_audio_processor.classification();
 	payload[2] = g_last_state;
 	if (AudioInputSPDIF3::pllLocked())
@@ -1197,7 +1246,15 @@ static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
  *   network_restarts      AiusRecoveryStatus
  *   reset_source          AiusRecoveryStatus, now the raw value rather than
  *                         the legacy low byte
- *   network_mode          producer retired -> status[1] is 0 -> "offline"
+ *   network_mode          the payload's own byte 1, so the JSON string and the
+ *                         UDP byte are one value with two renderings. The
+ *                         vocabulary is two words, not three: "static" was
+ *                         reachable only through the static-addressing fallback
+ *                         this plan removed, and the UDP encoder rejects any
+ *                         byte above 1 anyway. "dhcp" means a bound lease with
+ *                         an address; "offline" means no lease -- which is what
+ *                         a reader wants from the field it reads first, and is
+ *                         corroborated by ip, link and dhcp_pending beside it
  *   dhcp_discovers        no producer without a vendor patch -> 0
  *   http_server_rebinds   producer retired -> 0
  *   the four http_* counters   producer retired -> read back as 0 from the
@@ -1226,8 +1283,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	AiusRecoveryStatus recovery;
 	aius_runtime_teensy_status(&g_runtime, &recovery);
 	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
-	const char *network_mode = status[1] == 0 ? "offline" :
-		(status[1] == 1 ? "dhcp" : "static");
+	const char *network_mode = status[1] == 1u ? "dhcp" : "offline";
 	int written = snprintf((char *)body, capacity,
 		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"default\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu}",
 		status[0], status[2], status[3] & 1u, status[23],
@@ -2202,6 +2258,10 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 		 * media_present false; both mean absent. */
 		const bool present = ok && result->media_present;
 
+		/* Republished on every probe tick, so a card swap re-reports the
+		 * new volume's type rather than the old one's. */
+		g_sd_filesystem = present ? result->filesystem
+		                          : AIUS_SD_FILESYSTEM_UNKNOWN;
 		g_sd_probe_at_ms = now_ms + AIUS_SD_PROBE_INTERVAL_MS;
 		if (present && !g_sd_ready) {
 			/* Boot and hot re-insert are the same transition, and

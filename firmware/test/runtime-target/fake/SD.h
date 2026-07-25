@@ -32,6 +32,22 @@ private:
 	bool valid_;
 };
 
+/* SD.sdfs.vol()->fatType(): the mounted volume's cached type, read by the probe
+ * while it holds the volume. Not a card primitive, so the fake must not count
+ * one -- that is what proves the volume type costs no extra SD primitive. */
+class FsVolume {
+public:
+	uint8_t fatType() const;
+};
+
+class SdFs {
+public:
+	FsVolume *vol();
+
+private:
+	FsVolume volume_;
+};
+
 class SDClass {
 public:
 	bool begin(uint8_t chip_select);
@@ -43,6 +59,8 @@ public:
 	bool remove(const char *path);
 	uint64_t totalSize();
 	uint64_t usedSize();
+
+	SdFs sdfs;
 };
 
 extern SDClass SD;

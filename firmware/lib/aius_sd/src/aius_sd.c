@@ -1282,11 +1282,16 @@ static FLASHMEM void handle_ok_event(AiusSdJob *job)
 	}
 }
 
-static FLASHMEM void handle_bool_event(AiusSdJob *job, bool value)
+static FLASHMEM void handle_bool_event(AiusSdJob *job, bool value,
+	                               AiusSdFilesystem filesystem)
 {
 	if (job->phase == AIUS_SD_PHASE_PROBE_MEDIA) {
 		finish_success(job);
 		job->result.media_present = value;
+		/* The volume type belongs to a card that is there. An absent
+		 * card reports UNKNOWN however the driver answered. */
+		job->result.filesystem =
+			value ? filesystem : AIUS_SD_FILESYSTEM_UNKNOWN;
 		return;
 	}
 	if (job->phase != AIUS_SD_PHASE_PATH_EXISTS ||
@@ -1606,7 +1611,8 @@ static FLASHMEM bool event_is_empty_none(AiusSdEvent event)
 	       event.bytes == 0u &&
 	       event.size == 0u &&
 	       !event.value &&
-	       event.fault == 0u;
+	       event.fault == 0u &&
+	       event.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN;
 }
 
 static FLASHMEM AiusSdEventKind expected_event_kind(AiusSdActionKind action)
@@ -1654,6 +1660,21 @@ static FLASHMEM size_t outstanding_byte_length(const AiusSdJob *job)
 		                                 : job->capacity;
 	}
 	return 0u;
+}
+
+/* The volume type is payload of exactly one action -- the probe's media check --
+ * and is in domain there. Everywhere else it must be absent, so a driver that
+ * attaches it to an unrelated event is a protocol break rather than a value
+ * silently ignored. */
+static FLASHMEM bool filesystem_payload_is_valid(AiusSdEvent event,
+	                                 AiusSdActionKind action)
+{
+	if (action != AIUS_SD_ACTION_MEDIA_PRESENT)
+		return event.filesystem == AIUS_SD_FILESYSTEM_UNKNOWN;
+	/* Cast rather than a two-sided compare: the enum's underlying type is
+	 * implementation-defined, so `>= 0` is either redundant or a warning. */
+	return (unsigned)event.filesystem <=
+	       (unsigned)AIUS_SD_FILESYSTEM_FAT32;
 }
 
 static FLASHMEM bool success_payload_is_valid(AiusSdEvent event,
@@ -1705,7 +1726,9 @@ static FLASHMEM AiusSdEventDisposition consume_event(AiusSdJob *job,
 	AiusSdActionKind action = job->outstanding_action;
 	if (event.kind == AIUS_SD_EVENT_FAULT) {
 		if (event.bytes != 0u || event.size != 0u || event.value ||
-		    event.fault == 0u) {
+		    event.fault == 0u ||
+		    !filesystem_payload_is_valid(event,
+		                                 AIUS_SD_ACTION_NONE)) {
 			record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
 			return AIUS_SD_EVENT_REJECTED;
 		}
@@ -1716,7 +1739,8 @@ static FLASHMEM AiusSdEventDisposition consume_event(AiusSdJob *job,
 
 	AiusSdEventKind expected = expected_event_kind(action);
 	if (event.kind != expected ||
-	    !success_payload_is_valid(event, expected)) {
+	    !success_payload_is_valid(event, expected) ||
+	    !filesystem_payload_is_valid(event, action)) {
 		record_fault(job, AIUS_SD_FAULT_PROTOCOL, 0u);
 		return AIUS_SD_EVENT_REJECTED;
 	}
@@ -1738,7 +1762,7 @@ static FLASHMEM AiusSdEventDisposition consume_event(AiusSdJob *job,
 		handle_ok_event(job);
 		break;
 	case AIUS_SD_EVENT_BOOL:
-		handle_bool_event(job, event.value);
+		handle_bool_event(job, event.value, event.filesystem);
 		break;
 	case AIUS_SD_EVENT_SIZE:
 		handle_size_event(job, event.size);

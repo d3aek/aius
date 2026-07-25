@@ -116,6 +116,25 @@ FLASHMEM bool action_id_valid(const AiusSdAction *action)
 	return action->action_id != 0u;
 }
 
+/* The driver's own FAT-type numbering, translated to the portable enum. 12, 16
+ * and 32 are the values the status surface has always named; everything else --
+ * an unmounted volume (0) and exFAT (64) among them -- is UNKNOWN, which is the
+ * answer the legacy switch this restores gave for a type it did not recognise.
+ * Widening the vocabulary would be a wire change rather than a fix. */
+FLASHMEM AiusSdFilesystem filesystem_of(uint8_t fat_type)
+{
+	switch (fat_type) {
+	case 12u:
+		return AIUS_SD_FILESYSTEM_FAT12;
+	case 16u:
+		return AIUS_SD_FILESYSTEM_FAT16;
+	case 32u:
+		return AIUS_SD_FILESYSTEM_FAT32;
+	default:
+		return AIUS_SD_FILESYSTEM_UNKNOWN;
+	}
+}
+
 }
 
 FLASHMEM void aius_sd_teensy_init(AiusSdTeensy *adapter)
@@ -166,11 +185,21 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 			return protocol_fault(adapter, action);
 		const uint32_t started = micros();
 		const bool present = SD.mediaPresent();
+		/* Not a second SD primitive and not an extra epoch: fatType()
+		 * returns the type the mount already recorded in the volume
+		 * descriptor -- no card transaction, no wait, no failure mode.
+		 * Reading it here, inside the probe the adapter already runs and
+		 * while it holds the mounted volume, is the only place the
+		 * status surface can learn it without a caller reaching past
+		 * this adapter at a moment a job may be mid-mount. */
+		const uint8_t fat_type =
+			present ? SD.sdfs.vol()->fatType() : 0u;
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
 		AiusSdEvent event =
 			action_event(AIUS_SD_EVENT_BOOL, action->action_id);
 		event.value = present;
+		event.filesystem = filesystem_of(fat_type);
 		return event;
 	}
 

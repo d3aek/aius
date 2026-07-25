@@ -112,6 +112,23 @@ typedef enum {
 	AIUS_SD_EVENT_FAULT
 } AiusSdEventKind;
 
+/* The volume type a PROBE found, as a plain enumerated value rather than a
+ * driver type: the portable engine stays free of vendor headers, and the driver
+ * is the only layer that knows what its own FAT-type numbering means.
+ *
+ * UNKNOWN is the honest answer for three distinct cases the wire deliberately
+ * does not distinguish -- no card, a card that would not mount, and a mounted
+ * volume whose type the driver does not recognise (exFAT is one: the legacy
+ * status surface this restores recognised 12, 16 and 32 only, and widening the
+ * vocabulary is a wire change, not a bug fix). Zero is UNKNOWN so a
+ * zero-initialized event or result reports it without anyone setting it. */
+typedef enum {
+	AIUS_SD_FILESYSTEM_UNKNOWN = 0,
+	AIUS_SD_FILESYSTEM_FAT12 = 1,
+	AIUS_SD_FILESYSTEM_FAT16 = 2,
+	AIUS_SD_FILESYSTEM_FAT32 = 3
+} AiusSdFilesystem;
+
 typedef struct {
 	AiusSdEventKind kind;
 	uint64_t action_id;
@@ -119,6 +136,12 @@ typedef struct {
 	uint64_t size;
 	bool value;
 	uint32_t fault;
+	/* Only an AIUS_SD_ACTION_MEDIA_PRESENT event may carry a value other
+	 * than UNKNOWN; the engine faults the job with AIUS_SD_FAULT_PROTOCOL
+	 * for any other event that does, exactly as it does for a stray `bytes`
+	 * or `size`. The driver reports it from the volume the same primitive
+	 * already mounted, so it costs no extra SD primitive. */
+	AiusSdFilesystem filesystem;
 } AiusSdEvent;
 
 typedef enum {
@@ -214,6 +237,10 @@ typedef enum {
 typedef struct {
 	AiusSdResultKind kind;
 	bool media_present;
+	/* AIUS_SD_RESULT_PROBE only, and meaningful only with media_present: the
+	 * volume type the probe's own media check read off the mounted card. A
+	 * probe that found no media, or any other job kind, leaves it UNKNOWN. */
+	AiusSdFilesystem filesystem;
 	uint64_t total_bytes;
 	uint64_t used_bytes;
 	uint64_t transferred_bytes;
