@@ -72,13 +72,28 @@ upload_file() {
             ;;
     esac
     printf 'PUT /sd/www/%s\n' "$relative"
-    curl --fail-with-body --silent --show-error \
-        --request PUT \
-        --header "X-Aius-SD-Auth: $auth_token" \
-        --header 'Content-Type: application/octet-stream' \
-        --upload-file "$file" \
-        "$device_url/sd/www/$resource"
-    printf '\n'
+    # The device serves one HTTP client at a time and drops a connection that
+    # arrives before the previous one is fully released, so a sequential upload
+    # run hits that window intermittently -- observed as one failure in ten,
+    # closing in 0.04s rather than timing out. Retry rather than widening the
+    # firmware's socket budget, which is bounded on purpose.
+    local attempt
+    for attempt in 1 2 3 4; do
+        if curl --fail-with-body --silent --show-error \
+            --request PUT \
+            --header "X-Aius-SD-Auth: $auth_token" \
+            --header 'Content-Type: application/octet-stream' \
+            --upload-file "$file" \
+            "$device_url/sd/www/$resource"
+        then
+            printf '\n'
+            return 0
+        fi
+        printf '  retry %d/3 for %s\n' "$attempt" "$relative" >&2
+        sleep 1
+    done
+    printf 'upload failed after 4 attempts: %s\n' "$relative" >&2
+    exit 1
 }
 
 while IFS= read -r -d '' file; do

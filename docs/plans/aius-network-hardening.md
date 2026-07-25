@@ -4964,6 +4964,39 @@ file could only be fetched by a name you already knew, and a truncated upload
 looked identical to a missing one. Re-sync with `tools/aius-sd-sync.sh` before the
 control surface is used for anything.
 
+#### SD provisioning — two intermittent upload failures
+
+The card was re-synced from the repository web tree. Five of six files landed
+first time; the largest, a 29,566-byte script, failed. Investigating it found
+**two distinct intermittent failures**, neither a size limit — a bisection at
+4 KB, 8 KB, 12 KB, 16 KB, 24 KB and 29.5 KB had 24 KB fail while 29.5 KB
+succeeded.
+
+**A dropped connection, understood and mitigated.** Repeating a fixed upload ten
+times failed once, and the failure closed in 0.04 s against 0.16 s for a success —
+dropped immediately, not timed out. That is the bounded listener working as
+designed: the transaction serves one client, and a connection arriving before the
+previous one is fully released is dropped. Any sequential tool hits that window
+eventually. Fixed in the tool with a bounded retry rather than by widening the
+firmware's socket budget, which is deliberately small.
+
+**A `500 sd_failure` on a large upload, not understood.** A later run failed the
+same 29,566-byte file with `{"ok":false,"error":"sd_failure"}` — the SD write
+itself failing, not a transport drop. It succeeded on retry. This is an open
+defect and should not be treated as closed because the retry hides it.
+
+The obvious suspect is the 1 Hz probe job introduced with the SD lifecycle port:
+a probe runs `SD.begin()` every second, an upload of this size spans several
+epochs, so they overlap routinely. The design says a root job cannot preempt an
+HTTP-owned one, and the probe yields on exactly that predicate — so if this is the
+cause, the yield is not covering something. **That has not been demonstrated**, and
+the alternative that the card itself intermittently fails a write is not excluded.
+
+To investigate: the storage service already counts faults, so correlating an
+upload failure against the probe's job state, and against the SD fault code the
+job reported, would separate the two. A run with the probe cadence lengthened
+would settle it quickly.
+
 **Method.** Flash from a clean committed tree, never a working tree with
 in-flight slice edits. Capture the `AIUS ID` line before and after. Keep a
 validation log with one verdict per assumption and the evidence for it. A refuted
