@@ -143,6 +143,14 @@ def forbidden_transport_includes(source_text):
     return forbidden
 
 
+# Build output, never authored source. `.pio/` in particular can contain whole
+# copies of the repository: the removed evidence apparatus left
+# `.pio/source-snapshots/<sha>/…/repository/…` trees behind, and scanning those
+# reports every snapshotted `optical_main.cpp` and vendored NativeEthernet file
+# as a fresh violation. Both directories are gitignored.
+BUILD_OUTPUT_DIRS = {".pio", ".build"}
+
+
 def repository_transport_include_violations():
     violations = {}
     vendor_prefix = VENDOR_ROOT.relative_to(FIRMWARE_ROOT)
@@ -153,6 +161,8 @@ def repository_transport_include_violations():
         if relative == vendor_prefix or vendor_prefix in relative.parents:
             continue
         if relative.parts[0] == "test":
+            continue
+        if relative.parts[0] in BUILD_OUTPUT_DIRS:
             continue
         headers = forbidden_transport_includes(path.read_text())
         if headers:
