@@ -47,11 +47,16 @@ Decisions already taken, so do not re-open them:
 - **The large DSP model streams; `AIUS_HTTP_MAX_RESPONSE` does not move.**
   Raising it would grow two legacy DTCM stack frames while the legacy path is
   still the only working one.
-- **Replay refill is deferred to Phase 14c**, landing before B6. It is a redesign
-  of the portable `aius_replay` reader seam, not a port, so it does not belong in
-  a slice serialized on `optical_main.cpp`. **`POST /api/replays/start` is refused
-  from S2a until 14c lands** — its start path blocks, and refusing it also keeps
-  any SD job from re-mounting the card under an open replay handle.
+- **Replay refill is deferred to Phase 14c**, landing before B6 — **accepted
+  2026-07-25**. It is a redesign of the portable `aius_replay` reader seam, not a
+  port, so it does not belong in a slice serialized on `optical_main.cpp`.
+  **`POST /api/replays/start` is refused from S2a until 14c lands** — its start
+  path blocks, and refusing it also keeps any SD job from re-mounting the card
+  under an open replay handle.
+- **The firmware I/O reference is Phase 14d**, scheduled deliberately last because
+  every earlier slice still moves I/O. It documents every I/O path, its buffers
+  and banks, the rationale for the implementation chosen, and why none of it can
+  perturb the DSP hot path.
 - **The `/api/meters` wire shape is settled**, in
   [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters endpoint: dBFS
   floored at `-120.0`, six positional inputs, `[L, R]` output arrays, per-mille
@@ -179,6 +184,7 @@ throughout. Track B is serialized because every phase in it touches
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
 | B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
 | B5a | Phase 14c — replay refill onto a bounded SD job, deferred out of Phase 14 | `replay` + `sd` + `runtime-target` |
+| B5b | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
@@ -4451,6 +4457,65 @@ replay handle open, neither problem above can occur.
 It lands before B6 because B6 is the single live-hardware session, and validating
 a soak against a board that cannot start a replay — or that corrupts one when an
 SD job runs — would waste the flash.
+
+### Phase 14d — Firmware I/O reference
+
+```yaml
+unit: parent-only
+seams: [every firmware I/O path, the audio block boundary]
+contract-artifact: spec-only
+dependencies: [phase-14, phase-14b, phase-14c]
+outcome: "One checked-in reference describes every I/O operation, its cost, and why it cannot disturb the audio path."
+acceptance:
+  - every I/O path in the firmware appears, with none omitted
+  - each entry states its buffers, their sizes and their memory bank
+  - each entry gives the rationale for the implementation actually chosen, including rejected alternatives where the choice is non-obvious
+  - each entry justifies why it cannot perturb the DSP hot path, in terms of execution context, bank residency and bounded work
+  - every claim cites the source that makes it true, so the document can be re-checked rather than trusted
+  - the bank figures match a real build, not an estimate
+review-intensity: standard
+commit-checkpoint:
+  green:
+    - the repo tooling tool doc-index -- --check
+  buildable:
+    - firmware/scripts/build.sh teensy41-optical
+  parent-commit: "docs(aius): describe every firmware I/O path and its audio-path isolation"
+```
+
+**Deliberately scheduled last.** This lands after 14c because every earlier slice
+still moves I/O: S2b deletes the legacy network and SD path, S3 moves the config
+loads onto portable jobs, 14b adds the meters accumulate tap — the one genuinely
+hot addition in the remaining work — and 14c moves replay refill onto a bounded
+job. A document written before those describes a surface that no longer exists,
+and its central claim, that nothing disturbs the audio path, would be unverifiable
+against the shipped firmware.
+
+**Home:** `docs/reference/firmware-io.md`, component scope.
+
+**Required coverage.** Every I/O path, not merely the interesting ones. At the
+time of writing that means: the I2S audio in and out that constitute the hot path
+itself; the SD job engine and its Teensy adapter; the HTTP transaction over the
+bounded TCP adapter; UDP discovery and control; USB CDC as the recovery control
+plane; the retained OCRAM boot slots read and written each epoch; the replay file
+reader; and the codec control transport. Confirm the inventory against the source
+at the time rather than against this list, and say so if it has changed.
+
+**What each entry must carry.** Its buffers with sizes and bank (`FLASH`, `ITCM`,
+`DTCM`, `OCRAM`/`DMAMEM`), taken from a real build's bank report rather than
+estimated. The rationale for the implementation chosen — and where this plan
+rejected an alternative, the rejection and its reason, so the reasoning survives
+the sessions that produced it. And the audio-path justification: which execution
+context it runs in, why it cannot extend a block callback, what bounds its work
+per epoch, and what would happen if that bound were violated.
+
+**The audio-path argument is the point of the document.** The mechanisms it must
+make explicit are the ones this plan spent its phases establishing: that every
+service runs in the epoch loop rather than the audio ISR; that `FLASHMEM` on each
+definition keeps ITCM free for code that genuinely runs per block; that large
+buffers live in `DMAMEM` rather than the DTCM free-for-locals zone; that at most
+one SD primitive is spent per epoch and a wedged one is bounded by the watchdog
+rather than a false cooperative timeout; and that the meters snapshot crosses the
+boundary through a seqlock rather than a lock the audio path could wait on.
 
 ### Phase 15 — Button-free flash tooling
 

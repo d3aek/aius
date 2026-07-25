@@ -41,11 +41,16 @@ Decisions already taken, so do not re-open them:
 - **The large DSP model streams; `AIUS_HTTP_MAX_RESPONSE` does not move.**
   Raising it would grow two legacy DTCM stack frames while the legacy path is
   still the only working one.
-- **Replay refill is deferred to Phase 14c**, landing before B6. It is a redesign
-  of the portable `aius_replay` reader seam, not a port, so it does not belong in
-  a slice serialized on `optical_main.cpp`. **`POST /api/replays/start` is refused
-  from S2a until 14c lands** — its start path blocks, and refusing it also keeps
-  any SD job from re-mounting the card under an open replay handle.
+- **Replay refill is deferred to Phase 14c**, landing before B6 — **accepted
+  2026-07-25**. It is a redesign of the portable `aius_replay` reader seam, not a
+  port, so it does not belong in a slice serialized on `optical_main.cpp`.
+  **`POST /api/replays/start` is refused from S2a until 14c lands** — its start
+  path blocks, and refusing it also keeps any SD job from re-mounting the card
+  under an open replay handle.
+- **The firmware I/O reference is Phase 14d**, scheduled deliberately last because
+  every earlier slice still moves I/O. It documents every I/O path, its buffers
+  and banks, the rationale for the implementation chosen, and why none of it can
+  perturb the DSP hot path.
 - **The `/api/meters` wire shape is settled**, in
   [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Meters endpoint: dBFS
   floored at `-120.0`, six positional inputs, `[L, R]` output arrays, per-mille
@@ -173,6 +178,7 @@ throughout. Track B is serialized because every phase in it touches
 | B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
 | B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
 | B5a | Phase 14c — replay refill onto a bounded SD job, deferred out of Phase 14 | `replay` + `sd` + `runtime-target` |
+| B5b | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
 | B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
