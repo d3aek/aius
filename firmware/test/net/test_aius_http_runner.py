@@ -31,6 +31,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    do_PUT = do_POST
+
     def log_message(self, *_args):
         pass
 
@@ -42,13 +44,32 @@ class HttpRunnerTests(unittest.TestCase):
         thread.start()
         try:
             target = ("127.0.0.1", server.server_port)
-            result = RUNNER.request(target, "POST", "/api/mode", {"mode": "flat"})
+            result = RUNNER.request(target, "PUT", "/api/dsp/config",
+                                    {"base_generation": 0})
             self.assertEqual(result["status"], 200)
             self.assertEqual(result["body"], {"ok": True})
         finally:
             server.shutdown()
             thread.join()
             server.server_close()
+
+    def test_soak_drives_only_routes_the_firmware_still_serves(self):
+        """The retired POST /api/mode and POST /api/mix must stay retired.
+
+        Slice S4 deleted both routes, so a soak that still drove them would
+        spend two of every seven requests on 404s and report them as covered.
+        """
+        driven = [
+            (method, template.format(cursor=0))
+            for method, template, _body in RUNNER.SOAK_REQUESTS
+        ]
+        self.assertEqual(driven, [
+            ("GET", "/api/status"),
+            ("GET", "/api/events?cursor=0"),
+            ("POST", "/api/start"),
+            ("POST", "/api/stop"),
+            ("POST", "/api/clear"),
+        ])
 
     def test_raw_response_records_clean_connection_close(self):
         result = RUNNER.raw_response_record(b"")

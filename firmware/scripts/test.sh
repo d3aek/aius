@@ -12,7 +12,20 @@
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
-#         optical-cutover, runtime-target.
+#         optical-cutover, runtime-target, itcm-placement.
+#
+# Every suite is host-only and self-contained except `itcm-placement`, which
+# inspects the linked objects of an optical image and therefore needs a current
+# cross-build; it exits 3 with the build command to run when one is absent.
+#
+# Env vars:
+#   CC, CXX              host compilers                        (default: gcc, g++)
+#   AIUS_ITCM_ENV        image `itcm-placement` inspects       (default: teensy41-optical)
+#   PLATFORMIO_CORE_DIR  toolchain cache holding readelf       (default: ~/.platformio)
+#
+# Exit codes: 0 ok; 2 usage error or unknown suite; 3 a suite's prerequisite
+#             artifact or tool is absent; any other non-zero is the failing
+#             suite's own status.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -470,6 +483,41 @@ sd-target)
 		"$fw_root/src/aius_sd_teensy.cpp" \
 		-o "$sd_target_out"
 	"$sd_target_out"
+	;;
+itcm-placement)
+	# The post-link ITCM placement guard: two checks, cold objects emit no
+	# ITCM and the one hot object emits exactly its pinned audio-block
+	# allowlist. Named here so it is reachable the way its siblings are --
+	# boot-target runs the mutation tests for its own post-link verifier, and
+	# network-transport runs the vendor-header source contract, while this
+	# guard was reachable only through platformio.ini's post-link hook.
+	#
+	# This re-runs the guard over the objects a build already left behind; it
+	# does not build, and it cannot substitute for a build. A green result is
+	# only as current as .pio/build/$AIUS_ITCM_ENV.
+	itcm_env="${AIUS_ITCM_ENV:-teensy41-optical}"
+	itcm_build="$fw_root/.pio/build/$itcm_env"
+	if [ ! -f "$itcm_build/firmware.elf" ]; then
+		echo "==> itcm-placement needs a linked $itcm_env image." >&2
+		echo "    Not found: $itcm_build/firmware.elf" >&2
+		echo "    Build one first: scripts/build.sh $itcm_env" >&2
+		exit 3
+	fi
+	# The guard reads ARM object files, so it needs the cross readelf. That is
+	# not on PATH here; build.sh resolves the same toolchain the same way.
+	itcm_readelf="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}"
+	itcm_readelf="$itcm_readelf/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-readelf"
+	if [ ! -x "$itcm_readelf" ]; then
+		itcm_readelf="arm-none-eabi-readelf"
+	fi
+	if ! command -v "$itcm_readelf" >/dev/null 2>&1; then
+		echo "==> itcm-placement needs arm-none-eabi-readelf." >&2
+		echo "    Neither the PlatformIO toolchain nor PATH provides it." >&2
+		echo "    Provision PlatformIO per scripts/build.sh's header." >&2
+		exit 3
+	fi
+	python3 "$fw_root/test/itcm-placement/verify_target.py" \
+		"$itcm_build" --readelf "$itcm_readelf"
 	;;
 *)
 	echo "unknown suite: $suite" >&2

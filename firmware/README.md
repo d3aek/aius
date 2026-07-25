@@ -1,8 +1,11 @@
 # Aius firmware
 
-The Teensy 4.1 capability firmware and its portable, host-testable codec code.
-See the [capability gate](../docs/plans/aius-capability-gate.md) for the phased
-plan and the measured pass/fail budgets.
+The Teensy 4.1 firmware: portable, host-testable codec code, and the optical
+bring-up target that serves it over Ethernet, USB and SD. See the
+[capability gate](../docs/plans/aius-capability-gate.md) for the phased plan and
+the measured pass/fail budgets, and
+[network and firmware recovery hardening](../docs/plans/aius-network-hardening.md)
+for the bounded runtime the optical target now runs on.
 
 The optical target's application-level USB control commands are defined in the
 [USB control protocol reference](../docs/reference/usb-control-protocol.md).
@@ -21,9 +24,21 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_pipeline/` | PCM/DTS classifier + parser→decoder end-to-end chaining. |
 | `lib/aius_dsp/` | 5.1→stereo downmix + biquad EQ output DSP. |
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
+| `lib/aius_replay/` | Replay service over a caller-supplied `AiusReplayReader`. |
+| `lib/aius_boot/` | Retained boot ledger: generation, checkpoint, reset kind, recovery mode. |
+| `lib/aius_runtime/` | Epoch scheduler + the per-checkpoint budget table. |
+| `lib/aius_net/` | UDP frame codec + the network generation supervisor. |
+| `lib/aius_http/` | HTTP request parser + the one bounded server transaction. |
+| `lib/aius_sd/` | Bounded SD job machine (probe, config load, upload, download, delete). |
+| `lib/aius_usb_control/` | USB control command parser + runtime transaction. |
+| `lib/aius_config/`, `lib/aius_dsp_config/` | Feature-flag config + DSP model JSON validators. |
+| `lib/aius_auth/` | Physical-access token derived from the fused MAC words. |
+| `lib/aius_audio/` | Subset build of the PJRC S/PDIF3 input/output units + the audio clock, from the retained source snapshots (the framework `Audio` library is `lib_ignore`d). |
 | `vendor/dcadec-core/` | Minimal `dcadec` fixed-point DTS Core (LGPL 2.1, verbatim; see its `NOTICE.md`). |
-| `src/` | Teensy entry point (`main.cpp`) — the P4 decode-footprint harness. |
+| `vendor/NativeEthernet/` | Pinned Ethernet stack; the framework copy is `lib_ignore`d and the pin is proved post-link. |
+| `src/` | Teensy entry points (`main.cpp`, `capability_main.cpp`, `optical_main.cpp`) + the Teensy adapters. |
 | `tools/device/` | Simulated device + host runner, including the P6 hidraw transport. |
+| `tools/net/` | HTTP and UDP exercisers for a running optical board. |
 | `tools/dts_vectors/`, `tools/iec_corpus/` | Committed DTS/IEC test corpora + generators. |
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
 | `tools/memory/` | Linker-map → per-bank memory report. |
@@ -34,6 +49,132 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `scripts/flash_and_run.sh` | Bounded flash, re-enumeration wait, and P6 proof. |
 | `scripts/flash_optical.sh` | Optical-image flash wrapper; waits for HalfKay and reports completion. |
 | `platformio.ini` | Teensy 4.1 cross-build environments. |
+
+## Optical runtime
+
+`src/optical_main.cpp` is the Ethernet bring-up target, built as
+`teensy41-optical`. Since the Phase 14 cutover `setup()` constructs and `loop()`
+runs one bounded epoch, and every transport, SD and watchdog effect leaves
+through that runtime rather than through a blocking call in this file. What
+remains here is the audio processor and its DSP model, the event ring, the
+serializers, and the platform callbacks the runtime asks for.
+
+**`setup()` performs construction only.** It captures the retained reset state,
+arms the watchdog, brings up audio memory and the S/PDIF pipeline, derives the
+device auth token, and constructs `AiusRuntimeTeensy`. There is no SD probe, no
+link or DHCP wait, no USB wait, and no loop waiting on anything external. The
+network comes up through the supervisor's retained initial action at checkpoint
+4, and the SD probe plus both config loads are jobs the first epoch starts.
+
+**`loop()` runs exactly one epoch, then the two things the epoch itself must not
+do**: mark the boot healthy on the first complete epoch at least 10 s after
+construction, and perform a requested reset — after the epoch, so the HTTP
+response or UDP ack that asked for it has already been written.
+
+An epoch walks the checkpoints in order, each with a fixed call/byte/time budget
+from `lib/aius_runtime/`:
+
+| # | Checkpoint | Work |
+| --- | --- | --- |
+| 0 | `RESET_CAPTURE` | Publishes the retained reset facts `setup()` captured once. |
+| 1–2 | `USB_RX`, `USB_TX` | Bounded CDC drain into a 64-byte staging buffer, then one control-transaction step. |
+| 3 | `METRICS` | One hardware-metrics sample. |
+| 4 | `NETWORK` | One supervisor step or one adapter operation, never both. |
+| 5 | `HTTP` | One transaction step; at most one SD-backed action is admitted. |
+| 6 | `UDP` | One datagram in, at most one reply out. |
+| 7 | `REPLAY` | Replay refill, and the SD lifecycle driver. |
+| 8 | `SD` | At most one SD primitive. |
+| 9 | `EPOCH_COMPLETE` | Recorded, then the single watchdog feed. |
+
+A service that cannot complete returns false and the epoch ends there, without
+the feed — which is what makes a wedged call a bounded reset rather than a hang.
+
+### Portable engines behind Teensy adapters
+
+Every bounded state machine is portable C compiled by the host suites; the
+Teensy-specific code is a one-shot adapter underneath it, and the composition
+root wires the two together.
+
+| Engine | Adapter | Runtime service |
+| --- | --- | --- |
+| `lib/aius_net/` supervisor | `src/aius_network_teensy.cpp` | `src/aius_runtime_network_http.cpp` |
+| `lib/aius_http/` parser + transaction | (same adapter) | (same service) |
+| `lib/aius_sd/` job machine | `src/aius_sd_teensy.cpp` | `src/aius_runtime_storage.cpp` |
+| `lib/aius_usb_control/` | `src/aius_cdc_teensy.cpp` | `src/aius_runtime_usb.cpp` |
+| `lib/aius_boot/` ledger | `src/aius_boot_teensy.cpp` | (platform callbacks) |
+| `lib/aius_runtime/` scheduler | — | `src/aius_runtime_teensy.cpp` |
+
+`src/aius_optical_app.cpp` is the dispatcher between them and the application:
+one bounded decision per HTTP route and USB command, over the twenty callbacks
+`optical_main.cpp` implements. It touches no SD primitive and never delays, so
+`request_reboot` only records the request and `loop()` performs the reset.
+
+`src/aius_fault_teensy.cpp` is inert in a production image; in a
+`teensy41-optical-fault` build it stalls forever at the selected checkpoint, so
+the recovery path has something real to recover from.
+
+### SD lifecycle — bounded jobs, one primitive per epoch
+
+The Teensy SD library is synchronous and offers no cancellable call, so a
+checkpoint performing two primitives would double the worst case the watchdog
+has to absorb. Every SD path is therefore a portable job driven one primitive
+per epoch at checkpoint 8, with the checkpoint-7 driver in `optical_main.cpp`
+choosing the next step.
+
+The root-initiated lifecycle is a `PROBE` on a one-second tick; a card that
+appears runs `CONFIG_LOAD` for `/aius/config.json` then `/aius/dsp.json`, then a
+`USAGE_REFRESH`. Boot and hot re-insert are the same transition. HTTP config
+`PUT`s take the other owner: the dispatcher stages the validated bytes and
+returns an `UPLOAD` job, and the client's 200 is withheld until that write
+commits. One job runs at a time and neither owner preempts the other — a boot
+load that lands mid-upload waits, so a config can be late but never lost.
+
+### Recovery model
+
+**The watchdog is armed at a pinned 8 s and fed exactly once per complete
+epoch.** `aius_boot_teensy_watchdog_arm()` writes `WDOG_WCR_WT(15)`, i.e.
+16 × 0.5 s, and `platform_feed_watchdog()` — reached only from
+`EPOCH_COMPLETE` — is the only place the firmware writes the service register.
+
+Before each service call the current checkpoint is committed to a retained
+ledger through the boot adapter's double-slot storage in `.bss.dma`, CRC-covered
+so a torn write reads back invalid. After a reset the ledger decides the boot
+generation, the early-reset count and the mode: a watchdog reset whose last
+checkpoint was not `EPOCH_COMPLETE` increments the count, and the second
+consecutive one selects **recovery-safe** mode. A changed build id clears both.
+
+In recovery-safe mode the scheduler runs only `USB_RX` and `USB_TX` before
+`EPOCH_COMPLETE`. No network, SD or replay work happens at all, so a board
+looping on a wedged service still enumerates over USB and can be re-flashed.
+
+The count is cleared by a complete epoch reached at least 10 s after
+construction, but only in normal mode — recovery-safe is deliberately sticky and
+is left only by flashing an image with a different build id.
+
+### Memory discipline
+
+ITCM shares the 512 KiB FlexRAM with DTCM, so cold code left in ITCM is taken
+straight out of the audio path's headroom. Three rules, all enforced:
+
+- **`FLASHMEM` on every cold definition** — not on a prototype, because GCC does
+  not merge a `section` attribute from a forward declaration. Each portable
+  source defines a no-op fallback so the host suites still compile Arduino-free.
+- **Large buffers in `DMAMEM`** (OCRAM). The composed runtime is roughly 35 kB,
+  dominated by the HTTP request/response buffers and the model-sized application
+  body buffer, against a DTCM free-for-locals zone of about 24 kB; a DTCM
+  instance could not fit. The active and pending DSP models, the replay service
+  and the three UDP buffers are placed the same way.
+- **Two post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
+  run by every optical build. The first fails the link if any declared cold
+  object emits executable `.text`, and makes the declaration non-optional: a new
+  object under a cold engine tree that nobody declared fails the build. The
+  second pins the one object that may contribute ITCM, `optical_main.cpp`, to an
+  exact per-symbol allowlist of its audio-block functions, so "this is
+  legitimately hot" is a reviewable claim rather than an opinion.
+
+`scripts/build.sh` prints the per-bank report and fails when a bank is over
+capacity; `scripts/test.sh --suite itcm-placement` re-runs the two guards over
+an existing build.
 
 ## Running host tests
 
@@ -50,7 +191,21 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
-| `dsp` | Downmix + EQ known-answer. |
+| `dsp`, `dsp-vectors` | Downmix + EQ known-answer, and the same through the public DSP interface over the DTS corpus. |
+| `config`, `dsp-config` | Feature-flag config builder + the `PUT /api/dsp/config` validator. |
+| `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
+| `http` | Request parser + the bounded server transaction. |
+| `usb-control` | USB control command parser + runtime transaction. |
+| `replay` | Replay service over a fake reader. |
+| `boot`, `boot-target` | Retained ledger and recovery-mode rules; the Teensy boot adapter + its post-link verifier. |
+| `sd`, `sd-target` | Portable SD job machine; the one-shot Teensy SD adapter. |
+| `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |
+| `network-transport` | NativeEthernet behaviour + the vendor-header source contract. |
+| `optical-app` | One bounded dispatch decision per HTTP route and USB command. |
+| `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, one watchdog feed, and the absence of the legacy path. |
+| `fault-target` | Fault-image source guard + checkpoint selection. |
+| `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
+| `itcm-placement` | The two post-link ITCM guards, re-run over an existing optical build. |
 
 The `dts`/`dts-lfe` suites run against committed reference PCM, so `ffmpeg` /
 `dcadec` are needed only to regenerate the corpora, not to run the suites. This
@@ -58,14 +213,25 @@ firmware's own `scripts/test.sh` is the test entry point; the repo-root
 `scripts/test.sh` is a .NET/vitest/pytest discovery runner and does not drive the
 C suites.
 
+Every suite is host-only and self-contained except `itcm-placement`, which
+inspects the linked objects of a cross-build. It exits 3 with the build command
+to run when no image is present, and reads
+`.pio/build/$AIUS_ITCM_ENV` (default `teensy41-optical`).
+
 Cross-build for the Teensy with `scripts/build.sh` (needs PlatformIO; see its
-header for the pinned-venv recipe).
+header for the pinned-venv recipe). Both optical images must build with every
+bank fitting and both ITCM guards passing:
+
+```bash
+scripts/build.sh teensy41-optical
+scripts/build.sh teensy41-optical-fault 0
+```
 
 ### Optical flashing session rule
 
 Start the loader before asking for a button press:
 
-```sh
+```bash
 sg plugdev -c '$HOME/.platformio/packages/tool-teensy/teensy_loader_cli --mcu=imxrt1062 -w -v .pio/build/teensy41-optical/firmware.hex'
 ```
 
@@ -98,3 +264,15 @@ vectors; P7 soak remains.
 
 Set `AIUS_HID_ITERATIONS` when invoking `scripts/run_hid.sh` to repeat the full
 corpus in one device session; use `/dev/null` as the audit path for a long soak.
+
+The optical target has completed its runtime cutover on the host: both images
+build with every bank fitting, and the structural, component and composed-runtime
+suites are green. It has had no hardware validation yet. Two routes are
+deliberately not served: `GET /api/meters` has no serializer and returns a
+deterministic 500, and `POST /api/replays/start` is refused, because starting a
+replay would block inside a dispatcher contracted to touch no SD primitive.
+
+`tools/net/aius_http_runner.py` and `tools/net/aius_net_runner.py` exercise a
+running board over HTTP and UDP. The HTTP soak drives only routes the firmware
+still serves; the coverage that leaves behind is recorded in its module
+docstring.

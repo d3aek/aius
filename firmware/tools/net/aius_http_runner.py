@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Bounded HTTP exerciser for the Aius device control surface."""
+"""Bounded HTTP exerciser for the Aius device control surface.
+
+The soak drives only routes the firmware still serves. POST /api/mode and
+POST /api/mix went with the single-config model (Phase 14 slice S4), so driving
+them would spend every iteration on two 404s.
+
+What that costs, stated rather than hidden: no request in the soak loop carries
+a JSON body any more, because mode and mix were the only body-bearing routes
+cheap enough to drive once a second. The two that remain -- PUT
+/api/config/public and PUT /api/dsp/config -- each commit an SD write, and a
+per-second soak must not spend the card. The loop therefore covers the
+serializers, the command routes and the malformed-request paths, but not a
+complete buffered body. The buffered-body path is covered instead by the host
+`http` suite; the one body the soak still exercises is the abandoned one.
+"""
 
 import argparse
 import http.client
@@ -9,8 +23,16 @@ import time
 from pathlib import Path
 
 
-MODES = ("flat", "speech", "bass-reduced")
-MIXES = ("standard", "lfe-minus10", "clipfree")
+# One soak iteration's drive, cursor substituted per iteration. Every path here
+# must be a route lib/aius_http/src/aius_http.c still resolves; a retired one
+# turns its slot into a 404 and measures nothing.
+SOAK_REQUESTS = (
+    ("GET", "/api/status", None),
+    ("GET", "/api/events?cursor={cursor}", None),
+    ("POST", "/api/start", None),
+    ("POST", "/api/stop", None),
+    ("POST", "/api/clear", None),
+)
 
 
 def request(target, method, path, body=None, timeout=0.5):
@@ -49,9 +71,19 @@ def request_bytes(target, method, path, body=None, content_type="application/oct
 
 
 def abandoned_request(target):
+    """Promise a body, then disconnect -- the incomplete-body recovery path.
+
+    The route has to be one that genuinely accepts a buffered body. The parser
+    resolves the route and checks the method before it checks the body
+    (aius_http.c), so an unknown or method-mismatched path is answered from the
+    headers alone and the device never waits for the body this never sends.
+    PUT /api/dsp/config is the canonical buffered-body route; no SD write can
+    follow, because an incomplete body is never dispatched.
+    """
     host, port = target
     connection = socket.create_connection((host, port), timeout=0.5)
-    connection.sendall(b"POST /api/mode HTTP/1.0\r\nContent-Length: 256\r\n\r\n")
+    connection.sendall(
+        b"PUT /api/dsp/config HTTP/1.0\r\nContent-Length: 256\r\n\r\n")
     connection.close()
 
 
@@ -62,17 +94,10 @@ def raw_response_record(response):
     return {"method": "MALFORMED", "status": None, "outcome": "connection_closed"}
 
 
-def exercise_once(target, cursor, mode, mix):
+def exercise_once(target, cursor):
     records = []
-    for method, path, body in (
-        ("GET", "/api/status", None),
-        ("GET", f"/api/events?cursor={cursor}", None),
-        ("POST", "/api/mode", {"mode": mode}),
-        ("POST", "/api/mix", {"mix": mix}),
-        ("POST", "/api/start", None),
-        ("POST", "/api/stop", None),
-        ("POST", "/api/clear", None),
-    ):
+    for method, template, body in SOAK_REQUESTS:
+        path = template.format(cursor=cursor)
         result = request(target, method, path, body)
         records.append({"method": method, "path": path, **result})
     for raw in (
@@ -104,13 +129,11 @@ def run_soak(target, duration, interval, evidence):
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     with evidence_path.open("a", encoding="utf-8") as stream:
         while time.monotonic() < deadline:
-            mode = MODES[index % len(MODES)]
-            mix = MIXES[index % len(MIXES)]
             started = time.monotonic()
             record = {"kind": "http_iteration", "iteration": index,
-                      "started_at": time.time(), "mode": mode, "mix": mix}
+                      "started_at": time.time()}
             try:
-                records = exercise_once(target, cursor, mode, mix)
+                records = exercise_once(target, cursor)
                 status = request(target, "GET", "/api/status")
                 events = request(target, "GET", f"/api/events?cursor={cursor}")
                 if isinstance(events.get("body"), dict):
