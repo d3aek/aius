@@ -404,6 +404,116 @@ delivered-phase blocks are historical and are not re-run.
   earlier in the sequence depends on it, including Phase 14's removal of the
   firmware-side `MODE`/`MIX` route enumerators.
 
+## Audio-quality roadmap — accepted 2026-07-26
+
+Everything above concerns the DSP's *plumbing*: the config surface, persistence,
+meters and wire shapes. This section is about whether it **sounds** good, which
+is a separate axis and was never assessed until an audit on 2026-07-26 read the
+chain end to end.
+
+**[`docs/reference/signal-path.md`](../reference/signal-path.md) (Phase 14e) is
+the living record of the signal chain, and every item below updates it in the
+commit that ships the change.** A quality roadmap whose document lags the code
+is worse than none, because the next reader cannot tell which stage they are
+listening to. Treat that document the way §Commit cadence treats a plan: it is
+part of the work, not a follow-up.
+
+### Three defects found and accepted for fix
+
+Being implemented now; each is a defect rather than a preference.
+
+1. **The 16-bit output truncated with no dither.** `optical_main.cpp` reduced the
+   24-bit result with an arithmetic `>> 8`, which rounds toward −∞ (a −0.5 LSB DC
+   offset and asymmetric distortion) and adds no dither, so quantisation error was
+   *correlated with the signal* rather than benign noise. Audible as grunge on
+   fades — precisely where a decoder is judged. Note the irony this closes: the
+   DSP is double-precision, no-FMA, bit-exact host-to-target, and then discarded
+   that care in one shift.
+2. **The default downmix clipped.** Center and surround both at 1/√2 with
+   `AIUS_DSP_HEADROOM_DEFAULT = 1.0` sums to +7.6 dB worst case, and
+   `aius_downmix_clipfree_headroom()` — which returns the correct 0.414 — existed
+   and was not the default. Not hypothetical: `dsp-vectors` reported
+   `surround51_impulse … out_peak=8388607/8388607`, exactly `AIUS_DSP_SAMPLE_MAX`,
+   so the **committed corpus was clipping**. The fix is not simply the clip-free
+   value: −7.6 dB assumes six correlated full-scale channels, a case real
+   programme material never presents, and paying it makes the device audibly quiet.
+   The choice is being made against the measured corpus peak distribution.
+3. **The "true-peak safety limiter" was neither.** It read sample magnitudes with
+   no oversampling, so inter-sample peaks passed through to clip in the DAC's
+   reconstruction filter downstream of anything observable; and with
+   `lookahead_ms` defaulting to 0 against a 1 ms attack, gain reduction *lagged
+   the peak it existed to catch*.
+
+### Accepted order for the next level
+
+Accepted 2026-07-26 in this order, with the reasoning that chose it.
+
+1. **A 24-bit output path.** `audio_block_t` is `int16_t data[]`
+   (`cores/teensy4/AudioStream.h:76`), so the engine is hard 16-bit and everything
+   downstream of the DSP is capped at a ~−93 dBFS noise floor. S/PDIF carries
+   24-bit and the IMXRT transmit registers are 24-bit, so **the hardware is not
+   the limit — the block format is.** This firmware is unusually well placed to
+   fix it: it already `lib_ignore`s the framework `Audio` library and builds its
+   own S/PDIF subset, so the change is bypassing `audio_block_t` for the final
+   hop rather than fighting a dependency. **First because it is the ceiling every
+   other improvement runs into**, and it demotes dither from a workaround to a
+   refinement.
+2. **LFE fold-in and bass management.** `AIUS_DSP_LFE_GAIN_DEFAULT` is `0.0`.
+   Discarding LFE is defensible per BS.775 when a subwoofer follows, but for
+   stereo speakers it throws away the bottom octave of film content entirely.
+   Fold LFE into L/R through a low-pass around 120 Hz with level compensation.
+   Related and wholly absent: there is no crossover or bass management — the
+   generic biquad EQ is not a Linkwitz-Riley crossover.
+3. **A measurement loopback.** There is currently **no way to measure output
+   quality on this device**: everything is proven by host known-answer vectors,
+   and the meters report peak and RMS, not distortion. So every item here would
+   be believed rather than verified. The replay path is already a signal
+   generator; feeding the S/PDIF output back into the input would let the board
+   measure its own THD+N, SNR and frequency response, with the DWT counters
+   already giving per-block cost. Third rather than first only because items 1
+   and 2 are the two most audible; it is what makes the rest checkable, and the
+   1.4-semitone pitch error that survived on a board reporting every counter
+   clean is the argument for it.
+4. **Surround decorrelation in the downmix.** The coefficients are
+   standard-correct, which is arithmetic rather than psychoacoustics. Summing
+   FL+FC and FR+FC with correlated content comb-filters, and surrounds summed
+   straight into L/R collapse envelopment. A short allpass or few-millisecond
+   delay on Ls/Rs is what separates a downmix that sounds like a mix from one
+   that sounds like an average — the largest perceptual gap between "correct"
+   and "good" in this chain.
+
+**Noise shaping is the hedge**, not a step: if the 24-bit path proves too
+invasive, psychoacoustically weighted shaping on the 16-bit reduction buys
+10–20 dB of *perceived* SNR for very little CPU and composes with the dither
+already landing.
+
+**Budget for all of it.** Measured 398,591–431,995 cycles of 6,400,000 per
+512-frame block at 48 kHz — 6.2–6.8 % used, ~93 % free — and ~310 kB of OCRAM
+free. The binding constraint is DTCM at **9,248 bytes** for the entire stack,
+main loop and audio ISR both, so anything carrying real state goes in `DMAMEM`.
+
+**Sequencing note:** the true-peak limiter needs 4× oversampling, which builds
+infrastructure a linear-phase or oversampled chain would reuse. And the 24-bit
+output path overlaps the output stage with
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md), so that design
+must account for it before being finalised.
+
+### Noted for later, deliberately not scheduled
+
+- **Linear-phase FIR EQ.** RBJ biquads are minimum-phase, so group delay varies
+  with frequency — audible on transients once corrections get large. An FIR is
+  affordable against 93 % free budget but costs latency, so it is a choice rather
+  than an upgrade.
+- **DTS dialnorm / DRC.** `core_decoder.h:61` parses `drc_present` and the
+  stream's dynamic-range data is read and then discarded, so loudness varies
+  between sources. Whether the coefficients are reachable through the decoder's
+  interface is unverified — the flag is confirmed, the data is not.
+- **Remove inter-stage requantisation.** The signal requantises to 24-bit integer
+  between every stage (input EQ, downmix, output EQ, limiter). At 24 bits each
+  step is ~−140 dBFS so it is inaudible, but carrying double end to end and
+  quantising once is both cleaner and marginally faster.
+- **A DC blocker** around 5 Hz.
+
 ## DSP work breakdown
 
 The signal path below (steps 1–3) and the write/SD-persistence phase (PUT
