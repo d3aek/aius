@@ -1308,37 +1308,67 @@ void test_adapter_socket_result_mapping()
     assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
            io.fault == 0u);
 
-    /* A datagram larger than the caller's buffer is FNET_ERR/FNET_ERR_MSGSIZE
-     * and the datagram is dropped, so the adapter reports a socket fault for a
-     * packet any host on the segment can send. Pinned as it behaves today; see
-     * the audit note on udp_receive_once(). */
+    /* A datagram larger than the caller's buffer is FNET_ERR/FNET_ERR_MSGSIZE,
+     * and _fnet_socket_buffer_read_address() has already dequeued it
+     * (fnet_socket.c:1827-1843) -- so the datagram is gone whatever the adapter
+     * concludes. It is oversized *input*, not a broken socket: any host on the
+     * segment can send one to port 4242 with no credential, so classifying it
+     * as a socket fault handed an unauthenticated peer one fault per packet.
+     * The receive drops it and reports "nothing this epoch" instead, and counts
+     * it, because a drop nothing counts is the invisibility this suite exists to
+     * remove. */
+    assert(aius_network_teensy_udp_oversize_drops() == 0u);
     deliver(control, sizeof(buffer) + 1u);
     io = aius_network_teensy_udp_receive_once(
         &adapter, buffer, sizeof(buffer));
-    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
-           io.fault == AIUS_NET_FAULT_SOCKET);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
     assert(fnet_error_get() == FNET_ERR_MSGSIZE);
     assert(control->recv_count == 0u);
+    assert(aius_network_teensy_udp_oversize_drops() == 1u);
+
+    /* One drop per packet, and the socket survives every one of them: a second
+     * oversized datagram counts again and still reports no fault. That is the
+     * whole difference between rejecting an input and faulting a transport --
+     * a flood of these costs the generation nothing but the counter. */
+    deliver(control, sizeof(buffer) + 1u);
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(aius_network_teensy_udp_oversize_drops() == 2u);
 
     /* Learn a peer, then send. UDP send has no zero return: it answers the
-     * whole length or FNET_ERR (fnet_udp.c:602-611). */
+     * whole length or FNET_ERR (fnet_udp.c:602-611). The receive that follows
+     * two dropped datagrams is an ordinary one, and it does not count. */
     deliver(control, 3u);
     io = aius_network_teensy_udp_receive_once(
         &adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_PROGRESS && io.bytes == 3u);
+    assert(aius_network_teensy_udp_oversize_drops() == 2u);
     io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
     assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
            io.fault == 0u);
 
-    /* A netbuf shortage on the send is FNET_ERR/FNET_ERR_NOMEM, which the
-     * adapter reports as a socket fault rather than a retry. Same shape as the
-     * TCP row above. */
+    /* A netbuf shortage on the send is FNET_ERR/FNET_ERR_NOMEM
+     * (fnet_udp.c:543-547): the netheap could not spare one datagram's worth of
+     * buffer at this instant. That is a transient shortage and not a dead
+     * socket, so it is a retry: a socket fault would be the transport declaring
+     * the socket unusable over a condition the next epoch may well have
+     * cleared. */
     fake.netheap_max = 0u;
     io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
-    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
-           io.fault == AIUS_NET_FAULT_SOCKET);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
     assert(fnet_error_get() == FNET_ERR_NOMEM);
     fake.netheap_max = kNetheapPlenty;
+
+    /* And the retry is a real one: the same socket sends normally the moment the
+     * netheap recovers, which is what makes WOULD_BLOCK the truthful answer
+     * rather than a softer way of saying "lost". */
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
+           io.fault == 0u);
 
     fake.force_send_error = FNET_ERR_AGAIN;
     io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
@@ -1352,6 +1382,28 @@ void test_adapter_socket_result_mapping()
     assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
            io.fault == 0u);
     fake.force_recv_error = FNET_ERR_OK;
+
+    /* Narrowing the fault classification must not empty it. Neither code below
+     * is reachable on FNET's UDP paths -- FNET_ERR_SHUTDOWN needs a
+     * fnet_socket_shutdown() this adapter never calls, and FNET_ERR_NOPROTOOPT
+     * only ever arrives latched from an ICMP report on a *connected* socket,
+     * which the control socket is not -- so both are injected. Both must still
+     * be a socket fault, and neither may be counted as a dropped datagram. */
+    const uint32_t drops_before_faults =
+        aius_network_teensy_udp_oversize_drops();
+    fake.force_send_error = FNET_ERR_SHUTDOWN;
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+    fake.force_send_error = FNET_ERR_OK;
+
+    fake.force_recv_error = FNET_ERR_NOPROTOOPT;
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
+           io.fault == AIUS_NET_FAULT_SOCKET);
+    fake.force_recv_error = FNET_ERR_OK;
+    assert(aius_network_teensy_udp_oversize_drops() == drops_before_faults);
 
     /* --- close --------------------------------------------------------- */
 

@@ -297,6 +297,101 @@ def test_platformio_selects_repository_snapshot():
     assert "NativeEthernet" in values["lib_ignore"]
 
 
+def defined_flag_values(flags, macro):
+    """Every value `flags` gives `macro`, in order; a bare -Dmacro is 1 in C.
+
+    An empty list means the macro is not defined on that command line at all,
+    which is the shape of the original defect: FNET then applies its own
+    `#ifndef` default and nobody reading platformio.ini can see what it is.
+    """
+    values = []
+    for flag in flags:
+        if flag == f"-D{macro}":
+            values.append("1")
+        elif flag.startswith(f"-D{macro}="):
+            values.append(flag.split("=", 1)[1])
+    return values
+
+
+def suite_arm_flag_values(runner_text, suite, macro):
+    """The same, read out of one `case` arm of scripts/test.sh."""
+    arm = runner_text.split(f"\n{suite})", 1)[1].split("\n\t;;", 1)[0]
+    return [
+        found or "1"
+        for found in re.findall(rf"-D{macro}(?:=(\S+))?", arm)
+    ]
+
+
+def test_target_and_suite_pin_the_same_fnet_cfg_tls():
+    """The suite must compile the transport the image contains.
+
+    FNET defaults FNET_CFG_TLS to 2 behind an `#ifndef`
+    (fnet_user_config.h:443-445). platformio.ini overrode nothing, so the target
+    compiled the vendor transport's `#if FNET_CFG_TLS` branches -- the TLS
+    members of EthernetClient/EthernetServer, socketSend's tls/plain fork,
+    EthernetServer::begin()'s fnet_tls_init() arm -- while scripts/test.sh
+    compiled this suite with -DFNET_CFG_TLS=0. Every assertion the suite made
+    about the send path was made against a function the image did not have.
+
+    Nothing here is TLS-specific in spirit: it is the general rule that a
+    configuration macro the fake fixes must be pinned on the target too, and the
+    only way to keep it is to compare the two build descriptions. The value is
+    read from the *resolved* environment rather than the [common] section, so
+    inheritance breaking counts as drift.
+    """
+    resolved = json.loads(
+        subprocess.run(
+            ["pio", "project", "config", "--json-output"],
+            cwd=FIRMWARE_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+    )
+    optical = dict(
+        next(
+            section[1] for section in resolved
+            if section[0] == "env:teensy41-optical"
+        )
+    )
+    target_values = defined_flag_values(optical["build_flags"], "FNET_CFG_TLS")
+    assert target_values == ["0"], (
+        "env:teensy41-optical must pin -DFNET_CFG_TLS=0 exactly once; resolved "
+        f"{target_values or 'nothing, so FNET_CFG_TLS defaults to 2'}"
+    )
+
+    runner = (FIRMWARE_ROOT / "scripts" / "test.sh").read_text()
+    suite_values = suite_arm_flag_values(
+        runner, "network-transport", "FNET_CFG_TLS")
+    assert suite_values == ["0"], (
+        "the network-transport arm of scripts/test.sh must pass "
+        f"-DFNET_CFG_TLS=0 exactly once; found {suite_values}"
+    )
+    assert target_values == suite_values
+
+    # Both readers must see the drift they exist for: the original defect was an
+    # *absent* target flag against a present suite one, and a future one is just
+    # as likely to be a non-zero value.
+    assert defined_flag_values(["-O2", "-DFNET_CFG_IP6=0"], "FNET_CFG_TLS") == []
+    assert defined_flag_values(["-DFNET_CFG_TLS=2"], "FNET_CFG_TLS") == ["2"]
+    assert defined_flag_values(["-DFNET_CFG_TLS"], "FNET_CFG_TLS") == ["1"]
+    assert suite_arm_flag_values(
+        "\nfoo)\n\t\"$cxx\" -DFNET_CFG_TLS=2 \\\n\t\t-o x\n\t;;\n",
+        "foo", "FNET_CFG_TLS") == ["2"]
+    assert suite_arm_flag_values(
+        "\nfoo)\n\t\"$cxx\" -O1 -o x\n\t;;\n", "foo", "FNET_CFG_TLS") == []
+
+    # The fake declares no fnet_tls_* function, so a target compiled with TLS on
+    # is not something this suite could link even if it wanted to. Comments are
+    # stripped first: fake/fnet.h discusses the flag at length and must be free
+    # to keep doing so.
+    tls_declarations = [
+        name for name in declared_signatures(FAKE_FNET.read_text())
+        if name.startswith("fnet_tls")
+    ]
+    assert tls_declarations == [], tls_declarations
+
+
 def test_one_shot_source_guard_and_guard_sensitivity():
     sources = {path.name: path.read_text() for path in SOURCE_ROOT.glob("*.cpp")}
     assert_target_functions_are_one_shot(sources)
@@ -685,6 +780,7 @@ def main():
     test_provenance_and_snapshot_shape()
     test_upstream_hash_baselines_and_explicit_patch_set()
     test_platformio_selects_repository_snapshot()
+    test_target_and_suite_pin_the_same_fnet_cfg_tls()
     test_one_shot_source_guard_and_guard_sensitivity()
     test_begin_and_dhcp_ownership_contract()
     test_client_write_is_capacity_bounded_and_single_attempt()

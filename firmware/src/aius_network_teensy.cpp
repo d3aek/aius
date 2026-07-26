@@ -64,6 +64,15 @@ static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS ==
 
 uint32_t g_stale_callbacks;
 
+/* Control datagrams the receive dropped because they exceeded the capacity the
+ * caller offered. File-scope rather than a member of AiusNetworkTeensy for the
+ * same reason g_stale_callbacks is: there is one FNET stack and one control
+ * socket behind these primitives, and the primitive that observes the drop is
+ * handed a buffer, not an adapter. Free-running since boot and never cleared by
+ * a teardown -- it counts what the segment sent, not what one generation saw.
+ */
+uint32_t g_udp_oversize_drops;
+
 AiusNetEvent none_event()
 {
 	return {AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE};
@@ -352,10 +361,35 @@ AiusIoEvent udp_receive_once(uint8_t *buffer, size_t capacity)
 		g_udp_peer_valid = true;
 		return io_event(AIUS_IO_PROGRESS, (size_t)result);
 	}
+	/* An empty datagram queue is a plain 0 and nothing else
+	 * (fnet_socket.c:1845-1848). FNET has no POSIX EOF here either, but unlike
+	 * the TCP path this one never had the closure reading to lose.
+	 */
 	if (result == 0) {
 		return io_event(AIUS_IO_WOULD_BLOCK);
 	}
-	if (result == FNET_ERR && fnet_error_get() == FNET_ERR_AGAIN) {
+	const fnet_error_t error = fnet_error_get();
+	/* MSGSIZE is the only error this receive can actually raise, and it is
+	 * rejected *input* rather than a broken socket: a datagram larger than
+	 * `capacity` makes _fnet_socket_buffer_read_address() answer FNET_ERR
+	 * (fnet_socket.c:1827-1830) after it has already dequeued the datagram
+	 * (:1832-1843), so the packet is gone whatever is concluded here. Any host
+	 * on the segment can send one to the control port with no credential, so
+	 * calling it a socket fault let an unauthenticated peer raise one transport
+	 * fault per packet. The only reason that was not already a remote network
+	 * teardown is that the UDP checkpoint discards every non-PROGRESS result it
+	 * gets (optical_main.cpp platform_udp) -- so the misclassification was
+	 * silent rather than harmless, and the first consumer to act on this fault
+	 * would have inherited the teardown. Drop it, count it, and answer the epoch
+	 * honestly: there is nothing to dispatch. The counter is what stops the drop
+	 * being silent in the other direction.
+	 */
+	if (error == FNET_ERR_MSGSIZE) {
+		g_udp_oversize_drops++;
+		return io_event(AIUS_IO_WOULD_BLOCK);
+	}
+	/* Not reachable from _fnet_udp_rcv(); kept because the contract names it. */
+	if (error == FNET_ERR_AGAIN) {
 		return io_event(AIUS_IO_WOULD_BLOCK);
 	}
 	return io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
@@ -375,12 +409,25 @@ AiusIoEvent udp_send_once(const uint8_t *buffer, size_t length)
 	if (result > 0) {
 		return io_event(AIUS_IO_PROGRESS, (size_t)result);
 	}
+	/* _fnet_udp_snd() has no zero return -- it answers the whole length or
+	 * FNET_ERR (fnet_udp.c:602-611) -- so this arm exists for the contract.
+	 */
 	if (result == 0) {
 		return io_event(AIUS_IO_WOULD_BLOCK);
 	}
-	return fnet_error_get() == FNET_ERR_AGAIN
-		       ? io_event(AIUS_IO_WOULD_BLOCK)
-		       : io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
+	const fnet_error_t error = fnet_error_get();
+	/* A netheap with no netbuf to spare for this datagram is a transient
+	 * shortage, not a dead socket: _fnet_netbuf_from_buf() failing is
+	 * FNET_ERR/NOMEM (fnet_udp.c:543-547) and so is the IP header allocation
+	 * one layer down (fnet_ip4.c:252-256). The next epoch's send may take it,
+	 * so a socket fault would be this transport declaring its own socket
+	 * unusable over a condition that clears itself. AGAIN is unreachable on this
+	 * path and kept for the contract, exactly as on the receive side.
+	 */
+	if (error == FNET_ERR_NOMEM || error == FNET_ERR_AGAIN) {
+		return io_event(AIUS_IO_WOULD_BLOCK);
+	}
+	return io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
 }
 
 /* --- Diagnostic readers ---------------------------------------------------
@@ -1310,6 +1357,11 @@ FLASHMEM bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter,
 		return false;
 	}
 	return diag_frames(tx, rx);
+}
+
+FLASHMEM uint32_t aius_network_teensy_udp_oversize_drops()
+{
+	return g_udp_oversize_drops;
 }
 
 #ifdef AIUS_NETWORK_TEENSY_TESTING

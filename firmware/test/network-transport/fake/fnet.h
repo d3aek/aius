@@ -35,12 +35,15 @@
  * leaves it commented, stack/fnet_stack_config.h:49 defaults it to 0),
  * FNET_CFG_MULTITHREADING = 1, FNET_CFG_TIMER_ALT = 1, little-endian CPU.
  *
- * KNOWN CONFIGURATION DIVERGENCE, not fixable from this file: the real default
- * is FNET_CFG_TLS = 2 (fnet_user_config.h:443-445) and platformio.ini defines
- * nothing, so the *target* compiles the vendor transport with TLS enabled while
- * scripts/test.sh compiles this suite with -DFNET_CFG_TLS=0. The `#if
- * FNET_CFG_TLS` branches in Nativesocket.cpp, NativeEthernetClient.cpp and
- * NativeEthernetServer.cpp are therefore live on the board and dead here.
+ * FNET_CFG_TLS is 0 on both sides, and that is now a pin rather than a
+ * coincidence. FNET's own default is 2 (fnet_user_config.h:443-445, behind an
+ * #ifndef), and platformio.ini used to override nothing -- so the *target*
+ * compiled the vendor transport's `#if FNET_CFG_TLS` branches in
+ * Nativesocket.cpp, NativeEthernetClient.cpp and NativeEthernetServer.cpp while
+ * scripts/test.sh compiled this suite with -DFNET_CFG_TLS=0, and the suite was
+ * proving code the image did not contain. `[common] build_flags` in
+ * platformio.ini now carries -DFNET_CFG_TLS=0, so the two agree. Do not remove
+ * either flag without removing both.
  */
 
 #include <stddef.h>
@@ -56,11 +59,11 @@
 #define FNET_CFG_IP6 0
 #define FNET_CFG_MULTITHREADING 1
 #define FNET_CFG_TIMER_ALT 1
-/* Deliberately 0 rather than FNET's own default of 2 -- see the configuration
- * divergence noted above. Defaulting it to 2 here would compile the vendor's
+/* 0, which is what platformio.ini now pins the target to as well -- not FNET's
+ * own #ifndef default of 2. Defaulting it to 2 here would compile the vendor's
  * `#if FNET_CFG_TLS` branches against fnet_tls_* declarations this fake does not
- * provide, so closing that gap means faking the TLS service as well, not
- * flipping this line. */
+ * provide, so the gap was always going to close by pinning the target rather
+ * than by faking a TLS service nobody wants compiled. */
 #ifndef FNET_CFG_TLS
 #define FNET_CFG_TLS 0
 #endif

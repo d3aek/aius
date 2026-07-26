@@ -300,6 +300,43 @@ are follow-up work, recorded here so they are not lost.
     `AGAIN` on nothing-pending; and `getsockopt(SO_SNDNUM)` is hard-wired to 0,
     which is precisely what conceals defect 9. **A fake derived from the caller
     instead of the dependency can only ever confirm the caller's beliefs.**
+
+    **The two UDP mappings are now fixed, with one correction to how they were
+    described here.** `MSGSIZE` is a counted drop
+    (`WOULD_BLOCK` plus `aius_network_teensy_udp_oversize_drops()`) and a send-side
+    `NOMEM` is `WOULD_BLOCK`. But **the remote teardown was latent rather than
+    live**: both UDP call sites in `optical_main.cpp` discard every non-`PROGRESS`
+    result — `platform_udp` returns `true` regardless, and nobody escalates
+    `udp_send_frame`'s bool — and the supervisor consumes `AiusNetEvent`, not
+    `AiusIoEvent`. So the misclassification was **silent, not harmful**, and the
+    first consumer to act on that fault, which defect 4's observability work would
+    naturally have been, would have inherited the teardown. The earlier "any host
+    on the segment can force a network teardown" framing overstated it, and the
+    correction is worth keeping because it is the difference between a live
+    vulnerability and a trap laid for the next change.
+
+    The reachable error set is now exactly three on receive (`>0`, `0`, `MSGSIZE`),
+    and the ICMP-latched rows are *provably* unreachable because this socket is
+    never `connect()`ed — which is what makes the new `MSGSIZE` arm unambiguous.
+
+    **Four further findings, reported not fixed.** `DESTADDRREQ` is remotely
+    triggerable and still faults: FNET performs no source-address validation, so a
+    datagram from **0.0.0.0** is accepted and latched as the reply peer, and the
+    reply then fails. Same family as the two fixed rows — a peer with no usable
+    return address, not a dead socket — and the right fix is at the cause, refusing
+    to latch an unspecified peer. Relatedly **the peer latch is written by a
+    receive that failed**, because FNET copies the foreign address *before* the
+    `MSGSIZE` check, so a dropped oversized datagram repoints the reply
+    destination. A send-side `NOMEM` drop is still uncounted, for the same reason
+    the oversize counter is not yet published: every serializer lives in
+    `optical_main.cpp`. And **datagrams above 2,048 bytes are refused at FNET's
+    input with no error latched at all**, so that class of flood stays traceless
+    inside the vendor stack and the new counter cannot see it.
+
+    One comment retired with it: `optical_main.cpp` claimed an oversized datagram
+    "is truncated by the receive and then fails decode, so it still lands in
+    `g_network_drops`". FNET answers `FNET_ERR` rather than a short length, so no
+    decode ever ran and nothing was counted — it was never true.
 11. **The output clock is 44.1 kHz while everything claims 48 kHz.** Measured on
     the board: 86.1 blocks/s × 512 frames = 44,083 Hz, matching the Teensy audio
     engine's default `AUDIO_SAMPLE_RATE_EXACT` of `44100.0f`

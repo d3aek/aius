@@ -425,6 +425,20 @@ uint8_t aius_network_teensy_dhcp_state(const AiusNetworkTeensy *adapter);
 bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter, uint32_t *tx,
 	                            uint32_t *rx);
 
+/* Control datagrams the receive dropped because they were larger than the
+ * capacity the caller offered. FNET dequeues such a datagram before answering
+ * FNET_ERR/FNET_ERR_MSGSIZE (fnet_socket.c:1827-1843), so it is gone whatever
+ * the adapter decides: the receive reports WOULD_BLOCK rather than a socket
+ * fault -- an oversized datagram is rejected input, and any host on the segment
+ * can send one -- and this counter is the only trace the drop leaves. Reads a
+ * plain word; free-running since boot and never cleared by a teardown, so a
+ * reader compares two samples rather than trusting one.
+ *
+ * A serializer should surface this alongside the frames it decodes; until one
+ * does, the count is reachable only from here.
+ */
+uint32_t aius_network_teensy_udp_oversize_drops(void);
+
 #ifdef AIUS_NETWORK_TEENSY_TESTING
 
 typedef struct {
