@@ -22,14 +22,14 @@
     "center_gain_linear": 0.7071067811865475,
     "surround_gain_linear": 0.7071067811865475,
     "lfe_gain_linear": 0,
-    "headroom_linear": 1,
+    "headroom_linear": 0.5,
     "clipfree": false
   },
   "limiter": {
-    "enabled": false,
-    "threshold_dbfs": 0,
-    "attack_ms": 1,
+    "enabled": true,
+    "threshold_dbfs": -1,
+    "attack_ms": 0.5,
     "release_ms": 100,
-    "lookahead_ms": 0
+    "lookahead_ms": 2
   }
 }

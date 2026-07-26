@@ -57,7 +57,12 @@ static void test_stereo_passthrough(void)
     out.planes[0] = ol;
     out.planes[1] = or_;
 
+    /* Subject is ROUTING, so headroom is pinned to unity explicitly rather than
+     * taken from the default (which is 0.5 -- see test_shipped_defaults). A
+     * routing test that silently depended on the default level would fail for the
+     * wrong reason the next time the level moved. */
     AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
     assert(out.channels == 2);
     assert(out.channel_mask == (AIUS_CH_FL | AIUS_CH_FR));
@@ -81,6 +86,7 @@ static void test_mono_to_both(void)
     out.planes[1] = or_;
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0; /* routing test: see test_stereo_passthrough */
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
     for (int i = 0; i < 3; i++) {
         assert(ol[i] == m[i]); /* unity replicate */
@@ -104,6 +110,7 @@ static void test_fc_equal_lr(void)
     out.planes[1] = or_;
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0; /* routing test: see test_stereo_passthrough */
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
     assert(ol[0] == or_[0]); /* equal into both */
     double expect = (double)fc[0] * AIUS_DSP_DOWNMIX_CENTER_DEFAULT;
@@ -125,6 +132,7 @@ static void test_surround_routing(void)
     out.planes[0] = ol;
     out.planes[1] = or_;
     AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0; /* routing test: see test_stereo_passthrough */
 
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
     double expect = (double)sl[0] * AIUS_DSP_DOWNMIX_SURROUND_DEFAULT;
@@ -156,6 +164,7 @@ static void test_clip_headroom(void)
     out.planes[1] = or_;
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;                    /* the case this test is named for */
     cfg.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB; /* worst case, LFE folded in */
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
     assert(ol[0] == AIUS_DSP_SAMPLE_MAX); /* saturated, not overflowed */
@@ -500,20 +509,59 @@ static void test_process_input_trim_scales(void)
 
 /* --- true-peak safety limiter --------------------------------------------- */
 
-static void test_limiter_default_disabled(void)
+/* An EXPLICITLY disabled limiter is a pure bypass: no gain change, no delay, and
+ * no true-peak FIR. (The default is now enabled -- see test_shipped_defaults --
+ * so this constructs the disabled case rather than relying on it.) */
+static void test_limiter_disabled_is_bypass(void)
 {
-    AiusLimiterConfig c = aius_limiter_config_default();
-    assert(c.enabled == 0);
     AiusLimiter lim;
     memset(&lim, 0, sizeof lim);
-    lim.cfg = c;
+    lim.cfg = aius_limiter_config_default();
+    lim.cfg.enabled = 0;
     int32_t l[4] = {10, AIUS_DSP_SAMPLE_MAX, -30, 40};
     int32_t r[4] = {50, -60, AIUS_DSP_SAMPLE_MIN, 80};
     aius_dsp_limiter_run(&lim, 48000.0, l, r, 4);
     assert(l[0] == 10 && l[1] == AIUS_DSP_SAMPLE_MAX && l[2] == -30 && l[3] == 40);
     assert(r[0] == 50 && r[1] == -60 && r[2] == AIUS_DSP_SAMPLE_MIN && r[3] == 80);
     assert(close(aius_dsp_limiter_gain_reduction_db(&lim), 0.0, 1e-12));
-    printf("ok limiter disabled is transparent\n");
+    printf("ok limiter explicitly disabled is a pure bypass\n");
+}
+
+/* The shipped defaults, pinned. This is the regression guard for defects 2 and 3
+ * as PRODUCT decisions: headroom is modest-not-unity, and the limiter that covers
+ * the residual is ON with a lookahead that actually leads its attack.
+ *
+ * The lookahead > attack relation is the one that matters and the one that was
+ * broken (lookahead 0 against a 1 ms attack, so the reduction trailed the peak by
+ * about a millisecond). Asserting the RELATION rather than only the two numbers
+ * means retuning either one cannot quietly reintroduce the defect. */
+static void test_shipped_defaults(void)
+{
+    AiusDownmixConfig d = aius_downmix_config_default();
+    assert(d.headroom == 0.5); /* exact: a power of two, so no tolerance needed */
+    assert(d.headroom < 1.0);  /* the defect: unity headroom clipped the corpus */
+    assert(d.center == AIUS_DSP_DOWNMIX_CENTER_DEFAULT);
+    assert(d.surround == AIUS_DSP_DOWNMIX_SURROUND_DEFAULT);
+    assert(d.lfe == 0.0);
+    /* Deliberately NOT the clip-free value: that costs 7.66 dB to cover a case
+     * the limiter is there for. */
+    assert(d.headroom > aius_downmix_clipfree_headroom(&d));
+
+    AiusLimiterConfig c = aius_limiter_config_default();
+    assert(c.enabled == 1); /* modest headroom REQUIRES an active limiter */
+    assert(c.threshold_dbfs == -1.0);
+    assert(c.threshold_dbfs < 0.0); /* margin for the bounded attack overshoot */
+    assert(c.attack_ms == 0.5);
+    assert(c.release_ms == 100.0);
+    assert(c.lookahead_ms == 2.0);
+    /* The defect-3 relation: the reduction must LEAD the peak, by several attack
+     * time constants, not trail it. */
+    assert(c.lookahead_ms > 0.0);
+    assert(c.lookahead_ms >= 4.0 * c.attack_ms);
+    printf("ok shipped defaults (headroom %.3f, limiter on @ %.1f dBFS, "
+           "lookahead %.1f ms = %.0f x attack)\n",
+           d.headroom, c.threshold_dbfs, c.lookahead_ms,
+           c.lookahead_ms / c.attack_ms);
 }
 
 /* Enabled, lookahead 0, all samples below threshold: exact passthrough. */
@@ -539,8 +587,16 @@ static void test_limiter_transparent_below_threshold(void)
     printf("ok limiter transparent below threshold\n");
 }
 
-/* Constant input above threshold: gain converges so the output peak settles to
- * the threshold, and the reported gain reduction matches T/peak. */
+/* Constant input above threshold: gain converges so the output TRUE peak settles
+ * to the threshold, and the reported gain reduction matches T/true-peak.
+ *
+ * This is where sample-peak and true-peak limiting visibly differ. The BS.1770-4
+ * interpolation filter has a small passband ripple (about +0.012 dB), so a
+ * constant full-scale input has a true peak slightly ABOVE full scale, and a
+ * limiter that settles the true peak to T therefore leaves the SAMPLES a shade
+ * below T. The ripple factor is measured here through aius_dsp_true_peak rather
+ * than hardcoded, so the assertion describes the semantics instead of restating
+ * the coefficient table. */
 static void test_limiter_threshold_steady_state(void)
 {
     AiusLimiter lim;
@@ -553,7 +609,13 @@ static void test_limiter_threshold_steady_state(void)
     lim.cfg.lookahead_ms = 0.0;
 
     double T = pow(10.0, -6.0 / 20.0) * (double)AIUS_DSP_SAMPLE_MAX;
-    enum { N = 8192 };
+    /* 32768 samples is 683 ms, about seven release time constants. 8192 was not
+     * enough: the silence-to-full-scale STEP at sample 0 has a genuine
+     * inter-sample overshoot of about +0.64 dB (a step is not band-limited), the
+     * detector correctly sees it, and with a 100 ms release that transient was
+     * still 0.11 dB from settled at 8192 -- which is a property of the release
+     * time, not of the steady state this test is about. */
+    enum { N = 32768 };
     static int32_t l[N], r[N];
     for (int i = 0; i < N; i++) {
         l[i] = AIUS_DSP_SAMPLE_MAX;
@@ -561,15 +623,23 @@ static void test_limiter_threshold_steady_state(void)
     }
     aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
 
-    /* Steady state near the end: output settled to ~threshold. */
-    double tol = T * 0.001;
-    assert(fabs((double)l[N - 1] - T) <= tol);
-    assert(fabs((double)r[N - 1] - T) <= tol);
-    /* Gain converged to T / full-scale. */
-    double expect_db = 20.0 * log10(T / (double)AIUS_DSP_SAMPLE_MAX);
-    assert(close(aius_dsp_limiter_gain_reduction_db(&lim), expect_db, 0.01));
-    printf("ok limiter converges output peak to threshold (%d ~ %.0f)\n",
-           l[N - 1], T);
+    /* Settled. A true-peak limiter pulls the SAMPLES to just under T, because the
+     * detector reads the interpolated peak and that sits a hundredth of a dB above
+     * the sample value for a constant. Assert the band, not the exact ripple: the
+     * ripple belongs to the BS.1770-4 table, and
+     * test_limiter_catches_intersample_peak is where the interpolation semantics
+     * are pinned. Under a sample-peak follower these would settle exactly AT T. */
+    double floor_db = T * pow(10.0, -0.05 / 20.0); /* no more than 0.05 dB under */
+    assert((double)l[N - 1] <= T);
+    assert((double)l[N - 1] >= floor_db);
+    assert((double)r[N - 1] <= T);
+    assert((double)r[N - 1] >= floor_db);
+    /* The reported reduction agrees with the settled output it produced. */
+    double g = pow(10.0, aius_dsp_limiter_gain_reduction_db(&lim) / 20.0);
+    assert(fabs((double)l[N - 1] - (double)AIUS_DSP_SAMPLE_MAX * g) <= 2.0);
+    printf("ok limiter converges output true peak to threshold "
+           "(samples %d, T %.0f, %.4f dB under)\n",
+           l[N - 1], T, 20.0 * log10((double)l[N - 1] / T));
 }
 
 /* Lookahead delays the signal by exactly `delay` samples (transparent content).
@@ -603,7 +673,19 @@ static void test_limiter_lookahead_delay(void)
     printf("ok limiter lookahead delays by exactly %d samples\n", D);
 }
 
-/* Attack pulls the gain down monotonically; release recovers it monotonically. */
+/* Attack pulls the gain down monotonically; release recovers it monotonically.
+ *
+ * MONOTONICITY IS ASSERTED TO 1e-6 dB, not exactly. A true-peak detector reads an
+ * interpolated peak, and on a signal whose curvature is changing (the first few
+ * samples of a fade) that reading can creep up by a relative 1e-9 as the filter
+ * window fills with the new shape -- so the envelope wobbles by ~1e-8 dB. That is
+ * below the resolution at which "monotone" is a meaningful claim about a gain
+ * envelope, and it is orders of magnitude below the multi-dB motion this test is
+ * actually about (which is still pinned exactly, by the converged-value and
+ * recovered-value assertions below). A sample-peak follower was exactly monotone
+ * here only because it could not see between the samples. */
+#define ENV_MONOTONE_TOL_DB 1e-6
+
 static void test_limiter_attack_release_envelope(void)
 {
     AiusLimiter lim;
@@ -615,15 +697,30 @@ static void test_limiter_attack_release_envelope(void)
     lim.cfg.release_ms = 50.0;
     lim.cfg.lookahead_ms = 0.0;
 
-    /* Attack: constant above-threshold input, gain must be non-increasing, and
-     * runs long enough to converge to the steady-state reduction (~ -6 dB). */
-    double prev = 0.0; /* gain reduction dB, starts at 0 */
+    /* Attack: above-threshold input faded in, then held. Gain must be
+     * non-increasing throughout, and the run is long enough to converge to the
+     * steady-state reduction (~ -6 dB).
+     *
+     * The fade-in is what a true-peak detector requires of this test and a
+     * sample-peak one did not. Switching from silence to full scale in one sample
+     * is a STEP, which is not band-limited and has a real inter-sample overshoot of
+     * about +0.64 dB; the detector correctly reports it, the envelope's instant
+     * attack latches it, and it then releases -- so the reduction would dip and
+     * recover, and "monotone attack" would be measuring the step artefact rather
+     * than the attack. A 20 ms raised-cosine onset is band-limited enough that the
+     * interpolated peak tracks the envelope and the assertion means what it says. */
+    enum { FADE = 960 }; /* 20 ms at 48 kHz, derived from FS, not a magic count */
+    double prev = 0.0;   /* gain reduction dB, starts at 0 */
     int attacked = 0;
     for (int i = 0; i < 4000; i++) {
-        int32_t l = AIUS_DSP_SAMPLE_MAX, r = AIUS_DSP_SAMPLE_MAX;
+        double env = i < FADE
+                         ? 0.5 * (1.0 - cos(M_PI * (double)i / (double)FADE))
+                         : 1.0;
+        int32_t v = (int32_t)(env * (double)AIUS_DSP_SAMPLE_MAX);
+        int32_t l = v, r = v;
         aius_dsp_limiter_run(&lim, 48000.0, &l, &r, 1);
         double db = aius_dsp_limiter_gain_reduction_db(&lim);
-        assert(db <= prev + 1e-9); /* monotone non-increasing */
+        assert(db <= prev + ENV_MONOTONE_TOL_DB); /* monotone non-increasing */
         if (db < -0.5) attacked = 1;
         prev = db;
     }
@@ -631,13 +728,21 @@ static void test_limiter_attack_release_envelope(void)
     double after_attack = prev;
     assert(after_attack < -5.5 && after_attack > -6.5); /* converged near -6 dB */
 
-    /* Release: silence, gain reduction must recover (non-decreasing) toward 0. */
+    /* Release: fade to silence, then hold it. Gain reduction must recover
+     * (non-decreasing) toward 0. Faded for the same reason the onset is: cutting
+     * to zero in one sample is a falling step, and the detector correctly sees the
+     * ringing that trailing edge puts BETWEEN the samples, which would latch a
+     * fresh reduction part-way through the release. */
     double rprev = after_attack;
     for (int i = 0; i < 20000; i++) {
-        int32_t l = 0, r = 0;
+        double env = i < FADE
+                         ? 0.5 * (1.0 + cos(M_PI * (double)i / (double)FADE))
+                         : 0.0;
+        int32_t v = (int32_t)(env * (double)AIUS_DSP_SAMPLE_MAX);
+        int32_t l = v, r = v;
         aius_dsp_limiter_run(&lim, 48000.0, &l, &r, 1);
         double db = aius_dsp_limiter_gain_reduction_db(&lim);
-        assert(db >= rprev - 1e-9); /* monotone non-decreasing */
+        assert(db >= rprev - ENV_MONOTONE_TOL_DB); /* monotone non-decreasing */
         rprev = db;
     }
     assert(rprev > -0.1); /* recovered essentially to unity */
@@ -803,6 +908,267 @@ static void test_process_full_path(void)
         assert(or_[i] >= AIUS_DSP_SAMPLE_MIN && or_[i] <= AIUS_DSP_SAMPLE_MAX);
     }
     printf("ok process full path (input+downmix+eq+limiter)\n");
+}
+
+/* --- true-peak detection: the discriminating tests ------------------------ */
+
+/* THE test for defect 3. A signal whose INTER-SAMPLE peak is over threshold while
+ * every one of its samples sits comfortably under it -- so a sample-peak follower
+ * provably does nothing, and a true-peak follower must act.
+ *
+ * The construction is the canonical worst case: a sinusoid at fs/4 offset 45
+ * degrees, so every sample lands at +-A/sqrt(2) and the waveform peaks at A
+ * exactly halfway between samples. That is +3.01 dB of inter-sample peak, all of
+ * it invisible to a sample-peak detector and all of it real to the DAC's
+ * reconstruction filter -- which is where the old "true-peak safety limiter"
+ * name was a lie and this is the assertion that would fail if it became one
+ * again. Nothing here hardcodes fs: the frequency is expressed as a fraction of
+ * the rate passed to the limiter. */
+static void test_truepeak_catches_intersample_peak(void)
+{
+    const double T = pow(10.0, AIUS_DSP_LIMITER_THRESHOLD_DEFAULT_DBFS / 20.0) *
+                     (double)AIUS_DSP_SAMPLE_MAX;
+    /* Samples 1.94 dB BELOW threshold; continuous peak 1.12 dB ABOVE it. */
+    const double S = 0.80 * T;
+    const double A = S * sqrt(2.0);
+
+    enum { N = 4096, SETTLE = 960 /* 20 ms: past the fresh-state onset */ };
+    static int32_t l[N], r[N];
+    for (int n = 0; n < N; n++) {
+        double v = A * cos(2.0 * M_PI * (double)n / 4.0 + M_PI / 4.0);
+        l[n] = (int32_t)(v >= 0.0 ? floor(v + 0.5) : ceil(v - 0.5));
+        r[n] = l[n];
+    }
+
+    /* 1. A sample-peak detector would see nothing: every sample is under T. */
+    int32_t sample_pk = peak_abs_i(l, N);
+    assert((double)sample_pk < T);
+
+    /* 2. The true-peak detector sees it, and it is over threshold AND over full
+     *    scale -- this is the peak that would have clipped downstream. */
+    double true_pk = aius_dsp_true_peak(l, N);
+    assert(true_pk > T);
+    assert(true_pk > (double)AIUS_DSP_SAMPLE_MAX);
+    /* The inter-sample excess is the theoretical +3.01 dB, within the BS.1770-4
+     * filter's ~0.2 dB accuracy. */
+    double excess_db = 20.0 * log10(true_pk / (double)sample_pk);
+    assert(excess_db > 2.8 && excess_db < 3.3);
+
+    /* 3. The limiter, at its shipped defaults, acts on it. */
+    static int32_t ol[N], or_[N];
+    memcpy(ol, l, sizeof l);
+    memcpy(or_, r, sizeof r);
+    AiusLimiter lim;
+    memset(&lim, 0, sizeof lim);
+    lim.cfg = aius_limiter_config_default();
+    assert(lim.cfg.enabled == 1); /* on by default, or this catches nothing */
+    aius_dsp_limiter_run(&lim, 48000.0, ol, or_, N);
+    double gr = aius_dsp_limiter_gain_reduction_db(&lim);
+    assert(gr < -0.5); /* it engaged; a sample-peak limiter would report 0.0 */
+
+    /* 4. And the settled output true peak is held at the threshold, back inside
+     *    full scale. Measured past the onset: the limiter starts from a fresh
+     *    state (gain 1, envelope 0) so the first few ms pass unattenuated. */
+    double out_tp = aius_dsp_true_peak(ol + SETTLE, N - SETTLE);
+    assert(out_tp <= T * pow(10.0, 0.05 / 20.0)); /* at most 0.05 dB over T */
+    assert(out_tp < (double)AIUS_DSP_SAMPLE_MAX); /* no longer over full scale */
+    printf("ok true-peak catches inter-sample peak (samples %+.2f dB, "
+           "true peak %+.2f dB vs T; gr %.2f dB -> settled %+.4f dB vs T)\n",
+           20.0 * log10((double)sample_pk / T), 20.0 * log10(true_pk / T), gr,
+           20.0 * log10(out_tp / T));
+}
+
+/* The FIR skip gate must not be able to miss an over. It is sound only if
+ * 33142/16384 really is an upper bound on every phase's l1 norm, so measure the
+ * worst phase's gain through the public interface: driving a phase with the sign
+ * pattern of its own coefficients produces exactly its l1 norm times the
+ * amplitude. The sign pattern is restated here independently of the table in
+ * aius_dsp.c, so a table edit that changed the norm would fail here rather than
+ * silently widening the window in which the gate skips. */
+static void test_truepeak_gate_bound_holds(void)
+{
+    /* Phase 1 of BS.1770-4 Table 3, signs only, newest sample first. */
+    static const int sign[AIUS_DSP_TRUEPEAK_TAPS] = {
+        -1, +1, -1, +1, -1, +1, +1, -1, +1, -1, +1, -1,
+    };
+    const double A = 1000000.0;
+    /* hist[k] is x[n-k], so the sample that lands at tap k is at index n-k. Place
+     * the aligned window at the end of the buffer. */
+    enum { N = 64 };
+    int32_t x[N];
+    memset(x, 0, sizeof x);
+    for (int k = 0; k < AIUS_DSP_TRUEPEAK_TAPS; k++)
+        x[N - 1 - k] = (int32_t)(sign[k] * A);
+
+    double measured = aius_dsp_true_peak(x, N) / A;
+    double bound = AIUS_DSP_TRUEPEAK_L1_NUM / AIUS_DSP_TRUEPEAK_L1_DEN;
+    /* The gate's constant is a true upper bound... */
+    assert(measured <= bound + 1e-9);
+    /* ...and a TIGHT one: it is the worst phase, not a loose guess, so the gate
+     * skips as much work as it soundly can. */
+    assert(measured >= bound - 1e-9);
+    printf("ok true-peak gate bound is exact (l1 %.10f == %.10f)\n",
+           measured, bound);
+}
+
+/* --- 24 -> 16 bit output stage -------------------------------------------- */
+
+/* Defect 1, first half: the conversion ROUNDS, where the old code shifted. Every
+ * row is a case where `x >> 8` and round-to-nearest disagree, including the one
+ * that names the bug: -1 >> 8 is -1, a whole 16-bit LSB of error on a sample that
+ * should map to zero. Dither is off so the rounding rule is visible alone. */
+static void test_out16_rounds_not_truncates(void)
+{
+    struct { int32_t in; int32_t want; int32_t shifted; } k[] = {
+        {     0,      0,      0 },
+        {   127,      0,      0 }, /*  0.496 -> 0 */
+        {   128,      1,      0 }, /*  0.5   -> 1, ties away from zero */
+        {   255,      1,      0 }, /*  0.996 -> 1; the shift throws it away */
+        {   256,      1,      1 }, /*  exact */
+        {    -1,      0,     -1 }, /* THE defect: a shift rounds to -1 LSB */
+        {  -127,      0,     -1 },
+        {  -128,     -1,     -1 }, /* -0.5   -> -1, ties away from zero */
+        {  -255,     -1,     -1 },
+        {  -256,     -1,     -1 }, /*  exact */
+        {  -384,     -2,     -2 }, /* -1.5   -> -2, ties away from zero */
+        {   384,      2,      1 }, /*  1.5   -> 2 (shift gives 1) */
+    };
+    int differ = 0;
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++) {
+        assert(aius_out16_sample(NULL, 0, k[i].in) == k[i].want);
+        assert((k[i].in >> 8) == k[i].shifted); /* the old behaviour, for contrast */
+        if (k[i].shifted != k[i].want) differ++;
+    }
+    /* If these two rules ever agreed everywhere, this test would be vacuous. */
+    assert(differ >= 5);
+
+    /* Saturation, not wrap: 24-bit full scale is 32767.996 in 16-bit units and
+     * must clamp to 32767, never round up into -32768. */
+    assert(aius_out16_sample(NULL, 0, AIUS_DSP_SAMPLE_MAX) == AIUS_DSP_OUT16_MAX);
+    assert(aius_out16_sample(NULL, 0, AIUS_DSP_SAMPLE_MIN) == AIUS_DSP_OUT16_MIN);
+
+    /* The DC offset the shift introduced, measured. Over a symmetric sweep the
+     * rounded conversion has zero mean error; the shift has -0.5 LSB. */
+    double err_round = 0.0, err_shift = 0.0;
+    int n = 0;
+    for (int32_t v = -100000; v <= 100000; v += 7) {
+        double ideal = (double)v / AIUS_DSP_OUT16_LSB;
+        err_round += (double)aius_out16_sample(NULL, 0, v) - ideal;
+        err_shift += (double)(v >> 8) - ideal;
+        n++;
+    }
+    err_round /= (double)n;
+    err_shift /= (double)n;
+    assert(fabs(err_round) < 0.01); /* unbiased */
+    assert(err_shift < -0.4);       /* the -0.5 LSB the shift always cost */
+    printf("ok out16 rounds not truncates (mean error %.4f LSB vs shift %.4f LSB)\n",
+           err_round, err_shift);
+}
+
+/* Defect 1, second half: the conversion is DITHERED, and the dither does the one
+ * thing dither is for -- it carries information that sits below the quantiser's
+ * own step. An input of 100 (0.39 of a 16-bit LSB) rounds to exactly zero forever
+ * without dither: the signal is simply gone. With TPDF dither the individual
+ * samples still only take the values 0 and 1, but their MEAN reproduces the input
+ * exactly, which is what makes the error noise instead of distortion. */
+static void test_out16_dither_carries_sub_lsb(void)
+{
+    enum { N = 200000 };
+    const int32_t level = 100; /* 100/256 = 0.390625 LSB */
+    const double ideal = (double)level / AIUS_DSP_OUT16_LSB;
+
+    /* Undithered: the sub-LSB signal vanishes completely. */
+    AiusOut16Stage flat;
+    aius_out16_init(&flat, AIUS_DSP_DITHER_SEED_DEFAULT, 0);
+    assert(flat.dither == 0);
+    for (int i = 0; i < 64; i++)
+        assert(aius_out16_sample(&flat.stream[0], flat.dither, level) == 0);
+
+    /* Dithered: mean preserved, and the output actually varies. */
+    AiusOut16Stage st = aius_out16_stage_default();
+    assert(st.dither == 1); /* dither is ON by default -- that is the defect fix */
+    /* q = 0.390625 + d with d triangular on (-1, 1), so the reachable codes are
+     * exactly {-1, 0, 1} -- and all three must actually appear, or the dither is
+     * not spanning its stated amplitude. */
+    double sum = 0.0;
+    int saw[3] = {0, 0, 0};
+    int out_of_range = 0;
+    for (int i = 0; i < N; i++) {
+        int32_t v = aius_out16_sample(&st.stream[0], st.dither, level);
+        if (v >= -1 && v <= 1) saw[v + 1] = 1;
+        else out_of_range++;
+        sum += (double)v;
+    }
+    assert(saw[0] && saw[1] && saw[2]); /* -1, 0 and 1 all occur */
+    assert(out_of_range == 0);          /* +-1 LSB TPDF reaches no further */
+    double mean = sum / (double)N;
+    assert(fabs(mean - ideal) < 0.01); /* ~9 sigma for this N */
+
+    /* And the dither is bounded: a mid-scale input never moves by more than one
+     * 16-bit LSB from the undithered answer. */
+    const int32_t mid = 1000 * 256 + 40;
+    int32_t base = aius_out16_sample(NULL, 0, mid);
+    for (int i = 0; i < 20000; i++) {
+        int32_t v = aius_out16_sample(&st.stream[1], 1, mid);
+        assert(v >= base - 1 && v <= base + 1);
+    }
+    printf("ok out16 TPDF dither carries sub-LSB detail (mean %.6f ~ %.6f LSB)\n",
+           mean, ideal);
+}
+
+/* The determinism half of the dither contract: random-looking, but a pure function
+ * of (seed, sample index), so a bit-exact host/target path and reproducible golden
+ * fixtures both survive. This is the assertion that would fail if anyone reached
+ * for rand(), a clock, or the hardware RNG. */
+static void test_out16_dither_deterministic(void)
+{
+    enum { N = 512 };
+    static int32_t x24[N];
+    for (int i = 0; i < N; i++)
+        x24[i] = (int32_t)((i * 37) % 65536) - 32768;
+
+    static int16_t a_l[N], a_r[N], b_l[N], b_r[N], c_l[N], c_r[N];
+
+    AiusOut16Stage a = aius_out16_stage_default();
+    aius_out16_run(&a, x24, x24, a_l, a_r, N);
+
+    /* Same seed again -- i.e. exactly what a RESET does. Bit-identical. */
+    AiusOut16Stage b = aius_out16_stage_default();
+    aius_out16_run(&b, x24, x24, b_l, b_r, N);
+    assert(memcmp(a_l, b_l, sizeof a_l) == 0);
+    assert(memcmp(a_r, b_r, sizeof a_r) == 0);
+
+    /* A different seed gives a different sequence, or the seed does nothing. */
+    AiusOut16Stage c;
+    aius_out16_init(&c, AIUS_DSP_DITHER_SEED_DEFAULT ^ 0xA5A5A5A5u, 1);
+    aius_out16_run(&c, x24, x24, c_l, c_r, N);
+    assert(memcmp(a_l, c_l, sizeof a_l) != 0);
+
+    /* L and R are INDEPENDENT streams: identical input on both channels must not
+     * produce identical dither, or the noise would image dead centre. */
+    assert(memcmp(a_l, a_r, sizeof a_l) != 0);
+    /* ...but both must still track the signal: never more than 1 LSB apart. */
+    for (int i = 0; i < N; i++) {
+        int d = (int)a_l[i] - (int)a_r[i];
+        assert(d >= -2 && d <= 2);
+    }
+
+    /* Block form and per-sample form agree, so a test that pins one pins both. */
+    AiusOut16Stage d = aius_out16_stage_default();
+    for (int i = 0; i < N; i++) {
+        int32_t sl = aius_out16_sample(&d.stream[0], d.dither, x24[i]);
+        int32_t sr = aius_out16_sample(&d.stream[1], d.dither, x24[i]);
+        assert(sl == a_l[i]);
+        assert(sr == a_r[i]);
+    }
+
+    /* Undithered conversion is trivially deterministic AND stream-independent. */
+    AiusOut16Stage e;
+    aius_out16_init(&e, 12345u, 0);
+    static int16_t e_l[N], e_r[N];
+    aius_out16_run(&e, x24, x24, e_l, e_r, N);
+    assert(memcmp(e_l, e_r, sizeof e_l) == 0);
+    printf("ok out16 dither is deterministic (reset reproduces, L/R independent)\n");
 }
 
 /* --- coherent meter snapshot ---------------------------------------------- */
@@ -1254,7 +1620,8 @@ int main(void)
     test_input_two_section_eq();
     test_process_input_identity_equals_downmix();
     test_process_input_trim_scales();
-    test_limiter_default_disabled();
+    test_shipped_defaults();
+    test_limiter_disabled_is_bypass();
     test_limiter_transparent_below_threshold();
     test_limiter_threshold_steady_state();
     test_limiter_lookahead_delay();
@@ -1263,6 +1630,11 @@ int main(void)
     test_limiter_bounded_finite();
     test_limiter_block_boundary();
     test_process_full_path();
+    test_truepeak_catches_intersample_peak();
+    test_truepeak_gate_bound_holds();
+    test_out16_rounds_not_truncates();
+    test_out16_dither_carries_sub_lsb();
+    test_out16_dither_deterministic();
     test_meter_input_peak_rms();
     test_meter_output_and_silence();
     test_meter_tone_rms();

@@ -400,12 +400,94 @@ static AiusStatus input_stage_apply(const AiusInputStage *stage,
 AiusLimiterConfig aius_limiter_config_default(void)
 {
     AiusLimiterConfig c;
-    c.enabled = 0;
-    c.threshold_dbfs = 0.0;
-    c.attack_ms = 1.0;
-    c.release_ms = 100.0;
-    c.lookahead_ms = 0.0;
+    c.enabled = AIUS_DSP_LIMITER_ENABLED_DEFAULT;
+    c.threshold_dbfs = AIUS_DSP_LIMITER_THRESHOLD_DEFAULT_DBFS;
+    c.attack_ms = AIUS_DSP_LIMITER_ATTACK_DEFAULT_MS;
+    c.release_ms = AIUS_DSP_LIMITER_RELEASE_DEFAULT_MS;
+    c.lookahead_ms = AIUS_DSP_LIMITER_LOOKAHEAD_DEFAULT_MS;
     return c;
+}
+
+/* ITU-R BS.1770-4 Annex 2, Table 3: the 4-phase, 12-tap polyphase FIR that
+ * 4x-oversamples for true-peak measurement. Every coefficient is an exact
+ * multiple of 2^-14, so each is spelled as its integer numerator over 16384 --
+ * exactly representable in double, evaluated by the compiler, and therefore
+ * bit-identical on host and target with no transcription rounding to argue about.
+ *
+ * Two structural properties worth knowing, because they are what a reviewer can
+ * check the table against: phase 3 is phase 0 reversed and phase 2 is phase 1
+ * reversed (the filter is linear phase), and the largest phase's l1 norm is
+ * exactly 33142/16384 -- the constant the skip gate in aius_dsp_limiter_run
+ * depends on for soundness. */
+static const double k_truepeak[AIUS_DSP_TRUEPEAK_PHASES][AIUS_DSP_TRUEPEAK_TAPS] = {
+    {    28.0 / 16384.0,   180.0 / 16384.0,  -322.0 / 16384.0,   544.0 / 16384.0,
+       -974.0 / 16384.0,  2250.0 / 16384.0, 15924.0 / 16384.0, -1676.0 / 16384.0,
+        780.0 / 16384.0,  -436.0 / 16384.0,   244.0 / 16384.0,  -136.0 / 16384.0 },
+    {  -478.0 / 16384.0,   480.0 / 16384.0,  -848.0 / 16384.0,  1460.0 / 16384.0,
+      -2728.0 / 16384.0,  7620.0 / 16384.0, 12776.0 / 16384.0, -3282.0 / 16384.0,
+       1664.0 / 16384.0,  -954.0 / 16384.0,   542.0 / 16384.0,  -310.0 / 16384.0 },
+    {  -310.0 / 16384.0,   542.0 / 16384.0,  -954.0 / 16384.0,  1664.0 / 16384.0,
+      -3282.0 / 16384.0, 12776.0 / 16384.0,  7620.0 / 16384.0, -2728.0 / 16384.0,
+       1460.0 / 16384.0,  -848.0 / 16384.0,   480.0 / 16384.0,  -478.0 / 16384.0 },
+    {  -136.0 / 16384.0,   244.0 / 16384.0,  -436.0 / 16384.0,   780.0 / 16384.0,
+      -1676.0 / 16384.0, 15924.0 / 16384.0,  2250.0 / 16384.0,  -974.0 / 16384.0,
+        544.0 / 16384.0,  -322.0 / 16384.0,   180.0 / 16384.0,    28.0 / 16384.0 },
+};
+
+#define AIUS_TP_MASK ((uint32_t)(AIUS_DSP_TRUEPEAK_RING - 1))
+
+/* Write `x` into a channel's interpolation history at `pos` and return the
+ * true-peak magnitude for this sample: max(|x|, |each interpolated phase|).
+ *
+ * `run_fir` is the gate. When it is 0 only |x| is returned, which is why the raw
+ * sample is folded into the max unconditionally -- the detector is then never
+ * worse than a sample-peak detector, whether the gate is open or shut, and the
+ * FIR's zero-primed startup cannot under-read either.
+ *
+ * The history is a power-of-two ring so tap k is a mask rather than a modulo and
+ * pushing a sample is one store rather than a 12-element shift. No oversampled
+ * buffer is materialized: only the maximum is wanted, so this adds nothing to the
+ * caller's stack frame. */
+static double truepeak_push(double *hist, uint32_t pos, double x, int run_fir)
+{
+    hist[pos & AIUS_TP_MASK] = x;
+    double m = x < 0.0 ? -x : x;
+    if (!run_fir) {
+        return m;
+    }
+    for (int p = 0; p < AIUS_DSP_TRUEPEAK_PHASES; p++) {
+        double acc = 0.0;
+        for (uint32_t k = 0; k < AIUS_DSP_TRUEPEAK_TAPS; k++) {
+            acc += k_truepeak[p][k] * hist[(pos - k) & AIUS_TP_MASK];
+        }
+        double a = acc < 0.0 ? -acc : acc;
+        if (a > m) {
+            m = a;
+        }
+    }
+    return m;
+}
+
+double aius_dsp_true_peak(const int32_t *samples, uint32_t frames)
+{
+    if (samples == NULL || frames == 0) {
+        return 0.0;
+    }
+    /* Own history: this is a measurement helper, not the audio path (the limiter
+     * carries its history in AiusLimiterState so its own frame stays flat). */
+    double hist[AIUS_DSP_TRUEPEAK_RING];
+    memset(hist, 0, sizeof hist);
+    double pk = 0.0;
+    for (uint32_t i = 0; i < frames; i++) {
+        /* Interpolate only over full windows, so the zeroed history is not read as
+         * a step into the first sample. */
+        int run_fir = i >= (uint32_t)(AIUS_DSP_TRUEPEAK_TAPS - 1);
+        double m = truepeak_push(hist, i, (double)samples[i], run_fir);
+        if (m > pk) {
+            pk = m;
+        }
+    }
+    return pk;
 }
 
 /* One-pole smoothing coefficient for a time constant `ms` at `fs` Hz:
@@ -440,6 +522,16 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
         delay = AIUS_DSP_LIMITER_MAX_LOOKAHEAD;
     }
 
+    /* Skip gate for the 48-tap true-peak FIR. The largest interpolation phase has
+     * l1 norm 33142/16384, so a 12-sample window in which every sample satisfies
+     * |x| <= thr_lin / (33142/16384) provably cannot interpolate above thr_lin.
+     * Below the gate the FIR is skipped with no possibility of missing an over;
+     * above it, the FIR runs for the whole window the loud sample participates in.
+     * This is what keeps quiet material at one compare per sample instead of 48
+     * multiply-accumulates. */
+    double gate_lin =
+        thr_lin * (AIUS_DSP_TRUEPEAK_L1_DEN / AIUS_DSP_TRUEPEAK_L1_NUM);
+
     AiusLimiterState *s = &lim->state;
     if (!s->primed || s->delay != delay) {
         s->gain = 1.0;
@@ -448,6 +540,11 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
         s->pos = 0;
         memset(s->buf_l, 0, sizeof s->buf_l);
         memset(s->buf_r, 0, sizeof s->buf_r);
+        memset(s->tp_l, 0, sizeof s->tp_l);
+        memset(s->tp_r, 0, sizeof s->tp_r);
+        s->tp_pos = 0;
+        s->tp_run = 0;
+        s->tp_fill = 0;
         s->primed = 1;
     }
 
@@ -455,11 +552,39 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
         int32_t cur_l = l[i];
         int32_t cur_r = r[i];
 
-        /* Peak follower on the incoming (lookahead-leading) sample: instant
-         * attack, release-timed decay. */
-        double al = cur_l < 0 ? -(double)cur_l : (double)cur_l;
-        double ar = cur_r < 0 ? -(double)cur_r : (double)cur_r;
-        double m = al > ar ? al : ar;
+        /* True-peak follower on the incoming (lookahead-leading) sample: instant
+         * attack, release-timed decay. `m` is the 4x-oversampled magnitude, not
+         * the sample magnitude, so an inter-sample peak that sits above every
+         * sample around it still opens the reduction. */
+        double xl = (double)cur_l;
+        double xr = (double)cur_r;
+        double raw_l = xl < 0.0 ? -xl : xl;
+        double raw_r = xr < 0.0 ? -xr : xr;
+        double raw = raw_l > raw_r ? raw_l : raw_r;
+
+        /* Arm the FIR for the TAPS samples this sample stays inside the window.
+         * Set before the push so the current sample is covered, decremented after
+         * it, so exactly samples n..n+TAPS-1 run. Shared across the pair because
+         * the gain is stereo-linked anyway. */
+        if (raw > gate_lin) {
+            s->tp_run = AIUS_DSP_TRUEPEAK_TAPS;
+        }
+        /* Interpolate only once the history has filled since the last reset, so a
+         * config apply mid-stream does not read its own zeroed history as a step
+         * and dip the gain for a release constant afterwards. */
+        int run_fir = s->tp_run > 0u &&
+                      s->tp_fill >= (uint32_t)(AIUS_DSP_TRUEPEAK_TAPS - 1);
+        double tp_l = truepeak_push(s->tp_l, s->tp_pos, xl, run_fir);
+        double tp_r = truepeak_push(s->tp_r, s->tp_pos, xr, run_fir);
+        s->tp_pos = (s->tp_pos + 1u) & AIUS_TP_MASK;
+        if (s->tp_fill < (uint32_t)AIUS_DSP_TRUEPEAK_TAPS) {
+            s->tp_fill++;
+        }
+        if (s->tp_run > 0u) {
+            s->tp_run--;
+        }
+
+        double m = tp_l > tp_r ? tp_l : tp_r;
         if (m > s->env) {
             s->env = m; /* instant attack: never miss a peak */
         } else {
@@ -505,6 +630,126 @@ double aius_dsp_limiter_gain_reduction_db(const AiusLimiter *lim)
         g = 1.0;
     }
     return 20.0 * log10(g);
+}
+
+/* --- 24 -> 16 bit output stage: TPDF dither, round to nearest, saturate ---- */
+
+/* See aius_dsp.h for why this is a real stage with a seeded PRNG rather than a
+ * shift at the call site, and for the determinism argument. Everything below is
+ * integer-only except the final scale/round, which is exact.
+ *
+ * ROTATE: k is only ever 7 or 11 here, so 32 - k is never 32 and the shift is
+ * always defined. */
+static uint32_t aius_rotl32(uint32_t x, unsigned k)
+{
+    return (uint32_t)((x << k) | (x >> (32u - k)));
+}
+
+/* xoshiro128++ 1.0 (Blackman & Vigna), verbatim. Period 2^128-1; all 32 output
+ * bits are scrambled, which is what lets both halves of the word be used as
+ * independent uniform draws. uint32 arithmetic wraps by definition, so there is
+ * no signed overflow for UBSan to find. */
+static uint32_t aius_xoshiro128pp(AiusDitherState *st)
+{
+    uint32_t *s = st->s;
+    const uint32_t result = aius_rotl32(s[0] + s[3], 7) + s[0];
+    const uint32_t t = s[1] << 9;
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = aius_rotl32(s[3], 11);
+    return result;
+}
+
+/* SplitMix32, used only to expand one seed into well-separated xoshiro states.
+ * A seed expanded by copying would leave the four words correlated and the
+ * generator's first outputs poor. */
+static uint32_t aius_splitmix32(uint32_t *x)
+{
+    uint32_t z = (*x += 0x9E3779B9u);
+    z = (z ^ (z >> 16)) * 0x21F0AAADu;
+    z = (z ^ (z >> 15)) * 0x735A2D97u;
+    return z ^ (z >> 15);
+}
+
+void aius_out16_init(AiusOut16Stage *st, uint32_t seed, int dither)
+{
+    if (st == NULL) {
+        return;
+    }
+    st->dither = dither ? 1 : 0;
+    /* Eight consecutive SplitMix32 outputs of the one seed: the first four seed
+     * L, the next four R. One seed, two streams, and the pair is reproducible
+     * from that seed alone -- which is what makes a reset replay the same
+     * sequence. */
+    uint32_t x = seed;
+    for (int c = 0; c < 2; c++) {
+        for (int k = 0; k < 4; k++) {
+            st->stream[c].s[k] = aius_splitmix32(&x);
+        }
+        /* All-zero is xoshiro's fixed point (it would emit zeros forever).
+         * SplitMix32 will not produce it from any seed, but a stage that can only
+         * fail silently should not depend on that. */
+        if ((st->stream[c].s[0] | st->stream[c].s[1] | st->stream[c].s[2] |
+             st->stream[c].s[3]) == 0u) {
+            st->stream[c].s[0] = 1u;
+        }
+    }
+}
+
+AiusOut16Stage aius_out16_stage_default(void)
+{
+    AiusOut16Stage st;
+    aius_out16_init(&st, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
+    return st;
+}
+
+int32_t aius_out16_sample(AiusDitherState *d, int dither, int32_t x24)
+{
+    /* Into 16-bit units. Exact: AIUS_DSP_OUT16_LSB is a power of two, so this is
+     * an exponent decrement and loses nothing. */
+    double q = (double)x24 / AIUS_DSP_OUT16_LSB;
+
+    if (dither && d != NULL) {
+        /* Two uniform draws from one word. Their difference is triangular on
+         * (-65536, 65536), i.e. +-1 LSB after the divide -- 2 LSB peak-to-peak
+         * TPDF, the amplitude that makes the error power signal-independent.
+         * Both operands are in [0, 65535] so the difference cannot overflow, and
+         * an integer under 2^17 over 65536 is exactly representable, so the
+         * dither adds no rounding of its own. */
+        uint32_t w = aius_xoshiro128pp(d);
+        int32_t hi = (int32_t)(w >> 16);
+        int32_t lo = (int32_t)(w & 0xFFFFu);
+        q += (double)(hi - lo) / 65536.0;
+    }
+
+    /* Round to nearest, ties away from zero -- the same rule as aius_quantize, so
+     * the two quantizers in this module cannot disagree about a boundary. This is
+     * the half of the fix that removes the shift's -0.5 LSB DC offset. */
+    double r = (q >= 0.0) ? floor(q + 0.5) : ceil(q - 0.5);
+    if (r > (double)AIUS_DSP_OUT16_MAX) {
+        return AIUS_DSP_OUT16_MAX;
+    }
+    if (r < (double)AIUS_DSP_OUT16_MIN) {
+        return AIUS_DSP_OUT16_MIN;
+    }
+    return (int32_t)r;
+}
+
+void aius_out16_run(AiusOut16Stage *st,
+                    const int32_t *l24, const int32_t *r24,
+                    int16_t *l16, int16_t *r16, uint32_t frames)
+{
+    if (st == NULL || l24 == NULL || r24 == NULL || l16 == NULL || r16 == NULL) {
+        return;
+    }
+    const int dither = st->dither;
+    for (uint32_t i = 0; i < frames; i++) {
+        l16[i] = (int16_t)aius_out16_sample(&st->stream[0], dither, l24[i]);
+        r16[i] = (int16_t)aius_out16_sample(&st->stream[1], dither, r24[i]);
+    }
 }
 
 /* --- coherent meter snapshot ---------------------------------------------- */

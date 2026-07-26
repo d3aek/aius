@@ -675,6 +675,7 @@ public:
 	void begin_pipeline(void)
 	{
 		apply_config(AIUS_OPTICAL_CONFIG);
+		aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
 		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 			g_create_status = AIUS_NO_SPACE;
 			return;
@@ -778,8 +779,13 @@ private:
 	AiusArena g_arena;
 	AiusPipeline *g_pipeline = nullptr;
 	AiusStatus g_create_status = AIUS_INVALID_ARG;
-	int32_t g_left[RING_FRAMES];
-	int32_t g_right[RING_FRAMES];
+	/* The playback ring holds ENGINE samples, so it is int16_t: the 24->16
+	 * conversion happens once, in aius_out16_run() on the way in, rather than as a
+	 * narrowing cast on the way out. Being honest about the type also halves the
+	 * ring from 16 KB to 8 KB of DTCM, which more than pays for the true-peak
+	 * FIR history the limiter state grew. */
+	int16_t g_left[RING_FRAMES];
+	int16_t g_right[RING_FRAMES];
 	uint32_t g_read = 0;
 	uint32_t g_write = 0;
 	uint32_t g_count = 0;
@@ -802,6 +808,12 @@ private:
 	bool g_input_stage_active = false;
 	AiusLimiter g_limiter = {};
 	bool g_limiter_active = false;
+	/* The 24->16 output stage and its two dither streams. Seeded ONCE in
+	 * begin_pipeline(), deliberately not in apply_config(): re-seeding on every
+	 * staged config change would restart the noise sequence and make the output a
+	 * function of config-change history rather than of the sample index alone (see
+	 * aius_dsp.h §DETERMINISM). */
+	AiusOut16Stage g_out16 = {};
 	/* Meter tap state, all resolved by apply_config() so the audio path never
 	 * divides and never reads the config model. g_meters_active is the whole
 	 * cost of the tap when features.meters is false: one bool test per block. */
@@ -874,17 +886,26 @@ private:
 			aius_meter_accumulate_output(&g_meter, processed_left,
 			                             processed_right, block->frames);
 		}
-		for (uint32_t i = 0; i < block->frames; i++) {
-			int32_t l = processed_left[i] >> 8;
-			int32_t r = processed_right[i] >> 8;
-			if (l > 32767) l = 32767;
-			if (l < -32768) l = -32768;
-			if (r > 32767) r = 32767;
-			if (r < -32768) r = -32768;
-			g_left[g_write] = l;
-			g_right[g_write] = r;
-			g_write = (g_write + 1) % RING_FRAMES;
-		}
+		/* 24 -> 16 bit for the AudioStream engine. This used to be an arithmetic
+		 * right shift, which rounds toward -infinity (a -0.5 LSB DC offset and an
+		 * asymmetric transfer curve) and dithers not at all (so the quantisation
+		 * error was correlated with the programme -- distortion, audible as grunge
+		 * on fades). aius_out16_run() is TPDF dither, then round to nearest, then
+		 * saturate; the determinism argument for dithering a bit-exact path is in
+		 * aius_dsp.h. Two calls because the destination is a ring the block can
+		 * wrap: enqueue() has already bounded frames to the free space, so there is
+		 * at most one wrap and the dither streams advance in the same order a
+		 * single contiguous call would use. */
+		uint32_t first = block->frames;
+		if (first > RING_FRAMES - g_write)
+			first = RING_FRAMES - g_write;
+		aius_out16_run(&g_out16, processed_left, processed_right,
+		               &g_left[g_write], &g_right[g_write], first);
+		if (first < block->frames)
+			aius_out16_run(&g_out16, processed_left + first,
+			               processed_right + first, &g_left[0], &g_right[0],
+			               block->frames - first);
+		g_write = (g_write + block->frames) % RING_FRAMES;
 		g_count += block->frames;
 		g_blocks++;
 		if (metering) {
@@ -925,8 +946,8 @@ private:
 		}
 		for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
 			if (g_count != 0) {
-				left->data[i] = (int16_t)g_left[g_read];
-				right->data[i] = (int16_t)g_right[g_read];
+				left->data[i] = g_left[g_read];
+				right->data[i] = g_right[g_read];
 				g_read = (g_read + 1) % RING_FRAMES;
 				g_count--;
 			} else {

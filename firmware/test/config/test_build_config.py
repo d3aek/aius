@@ -33,9 +33,13 @@ def test_valid_fixture_and_model_bound():
     assert "AIUS_OPTICAL_MODEL_MAX_JSON_BYTES = 12288u" in header
     assert "AIUS_OPTICAL_CONFIG PROGMEM = {" in header
     assert "static const AiusOpticalConfig AIUS_OPTICAL_CONFIG PROGMEM" in header
-    # The default carries the standard-mix downmix coefficients verbatim so the
-    # audio path stays bit-identical: center/surround 1/sqrt(2), lfe 0, headroom 1.
-    assert "{0.70710678118654746, 0.70710678118654746, 0, 1, 0}" in header
+    # The default carries the standard-mix downmix coefficients verbatim:
+    # center/surround 1/sqrt(2), lfe 0, headroom 0.5. Headroom was 1.0 until
+    # 2026-07-26, which summed to +7.66 dB worst case and demonstrably clipped
+    # the committed corpus -- surround51_impulse saturated at SAMPLE_MAX. 0.5 is
+    # the smallest exactly-representable power of two that clears the corpus,
+    # with 0.79 dB spare. See aius-dsp-config-api.md #audio-quality-roadmap.
+    assert "{0.70710678118654746, 0.70710678118654746, 0, 0.5, 0}" in header
     # Six identity input channels (unity trim, no EQ) and no output EQ sections.
     assert "{0, 0, {{0, 0, 0, 0}, {0, 0, 0, 0}}}" in header
     # profiles[]/mixes[] machinery is gone.

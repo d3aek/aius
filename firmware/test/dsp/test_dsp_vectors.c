@@ -34,6 +34,12 @@
 
 static int g_fail;
 
+/* Samples the corpus would clip at unity headroom, accumulated over every vector.
+ * The defect-2 negative control: asserted non-zero in main so the "default headroom
+ * does not clip" checks cannot pass vacuously on a corpus that never stressed the
+ * downmix matrix. */
+static uint32_t g_unity_clipped;
+
 #define CHECK(cond, ...)                                                        \
     do {                                                                        \
         if (!(cond)) {                                                          \
@@ -358,6 +364,15 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
 
+    /* Routing and per-channel GAIN math is asserted at unity headroom. The shipped
+     * default headroom is 0.5 (defect 2: unity clipped this very corpus), so a
+     * routing assertion that folded the output level in would break every time the
+     * level was retuned, for a reason that has nothing to do with routing. `cfg`
+     * stays the shipped default everywhere the LEVEL is the subject -- the golden
+     * signature, the clip check, and the reference comparison. */
+    AiusDownmixConfig unity = cfg;
+    unity.headroom = 1.0;
+
     /* --- full-vector default downmix through the public interface --------- */
     AiusPcmBlock in;
     memset(&in, 0, sizeof in);
@@ -478,14 +493,36 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 
     /* --- channel-routing signal math via isolated real content ------------ */
     if (v->channels == 2) {
-        /* Stereo: FL/FR passthrough + isolation (no cross-bleed). */
+        /* Stereo: FL/FR passthrough + isolation (no cross-bleed), at unity. */
+        int32_t *uL = malloc(F * sizeof(int32_t));
+        int32_t *uR = malloc(F * sizeof(int32_t));
+        AiusPcmBlock uo;
+        memset(&uo, 0, sizeof uo);
+        uo.planes[0] = uL;
+        uo.planes[1] = uR;
+        CHECK(aius_dsp_downmix(&unity, &in, &uo) == AIUS_OK, "%s unity dmix",
+              v->name);
         int exactL = 1, exactR = 1;
         for (uint32_t n = 0; n < F; n++) {
-            if (outL[n] != p.ch[0][n]) exactL = 0;
-            if (outR[n] != p.ch[1][n]) exactR = 0;
+            if (uL[n] != p.ch[0][n]) exactL = 0;
+            if (uR[n] != p.ch[1][n]) exactR = 0;
         }
-        CHECK(exactL, "%s FL->L not exact passthrough", v->name);
-        CHECK(exactR, "%s FR->R not exact passthrough", v->name);
+        CHECK(exactL, "%s FL->L not exact passthrough at unity", v->name);
+        CHECK(exactR, "%s FR->R not exact passthrough at unity", v->name);
+
+        /* And the shipped default is EXACTLY that scaled by the headroom -- so the
+         * level change between the two is the intended 0.5, sample for sample, and
+         * not an accidental gain or a rounding artefact. This is the assertion that
+         * distinguishes an intended level change from an accidental one. */
+        int scaled = 1;
+        for (uint32_t n = 0; n < F; n++) {
+            if (outL[n] != ref_quantize((double)p.ch[0][n] * cfg.headroom) ||
+                outR[n] != ref_quantize((double)p.ch[1][n] * cfg.headroom))
+                scaled = 0;
+        }
+        CHECK(scaled, "%s default downmix != unity scaled by headroom", v->name);
+        free(uL);
+        free(uR);
     } else {
         /* 5.1: isolate each decoded channel into a mask-consistent block and
          * prove placement + gain through the public downmix. */
@@ -509,11 +546,12 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1],
                                 (int32_t *)pl[2], 0, 0, 0}, (uint16_t)nch, F,
                                48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC };
-            CHECK(aius_dsp_downmix(&cfg, &b, &isoOut) == AIUS_OK, "%s FC iso", v->name);
+            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s FC iso",
+                  v->name);
             int sym = 1, gain = 1;
             for (uint32_t n = 0; n < F; n++) {
                 if (iL[n] != iR[n]) sym = 0;
-                if (iL[n] != ref_quantize((double)p.ch[iFC][n] * cfg.center)) gain = 0;
+                if (iL[n] != ref_quantize((double)p.ch[iFC][n] * unity.center)) gain = 0;
             }
             CHECK(sym, "%s FC not symmetric L==R", v->name);
             CHECK(gain, "%s FC gain != center", v->name);
@@ -524,10 +562,11 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
                                      p.ch[iSL], zero, pl);
             AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1], 0, 0, 0, 0},
                                (uint16_t)nch, F, 48000, AIUS_CH_FL | AIUS_CH_SL };
-            CHECK(aius_dsp_downmix(&cfg, &b, &isoOut) == AIUS_OK, "%s SL iso", v->name);
+            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s SL iso",
+                  v->name);
             int placed = 1, quiet = 1;
             for (uint32_t n = 0; n < F; n++) {
-                if (iL[n] != ref_quantize((double)p.ch[iSL][n] * cfg.surround)) placed = 0;
+                if (iL[n] != ref_quantize((double)p.ch[iSL][n] * unity.surround)) placed = 0;
                 if (iR[n] != 0) quiet = 0;
             }
             CHECK(placed, "%s SL->L gain wrong", v->name);
@@ -539,10 +578,11 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
                                      p.ch[iSR], zero, pl);
             AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1], 0, 0, 0, 0},
                                (uint16_t)nch, F, 48000, AIUS_CH_FR | AIUS_CH_SR };
-            CHECK(aius_dsp_downmix(&cfg, &b, &isoOut) == AIUS_OK, "%s SR iso", v->name);
+            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s SR iso",
+                  v->name);
             int placed = 1, quiet = 1;
             for (uint32_t n = 0; n < F; n++) {
-                if (iR[n] != ref_quantize((double)p.ch[iSR][n] * cfg.surround)) placed = 0;
+                if (iR[n] != ref_quantize((double)p.ch[iSR][n] * unity.surround)) placed = 0;
                 if (iL[n] != 0) quiet = 0;
             }
             CHECK(placed, "%s SR->R gain wrong", v->name);
@@ -556,13 +596,14 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
                                 (int32_t *)pl[2], 0, 0, 0}, (uint16_t)nch, F,
                                48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE };
             /* default: LFE excluded -> stereo silent. */
-            CHECK(aius_dsp_downmix(&cfg, &b, &isoOut) == AIUS_OK, "%s LFE def", v->name);
+            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s LFE def",
+                  v->name);
             int silent = 1;
             for (uint32_t n = 0; n < F; n++)
                 if (iL[n] != 0 || iR[n] != 0) silent = 0;
             CHECK(silent, "%s LFE not excluded by default", v->name);
             /* -10 dB fold: symmetric into both. */
-            AiusDownmixConfig lc = cfg;
+            AiusDownmixConfig lc = unity;
             lc.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
             CHECK(aius_dsp_downmix(&lc, &b, &isoOut) == AIUS_OK, "%s LFE fold", v->name);
             int folded = 1, nonzero = 0;
@@ -576,6 +617,43 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         }
         free(iL);
         free(iR);
+    }
+
+    /* --- defect 2: the SHIPPED default downmix must not clip this corpus --- */
+    {
+        /* `out`/outL/outR above is the shipped-default downmix. Not one sample of
+         * it may sit on a rail. Unity headroom put 10 samples of
+         * surround51_impulse exactly on AIUS_DSP_SAMPLE_MAX -- the committed corpus
+         * clipped -- and this is the check that stays red if that comes back. */
+        uint32_t at_rail = 0;
+        for (uint32_t n = 0; n < F; n++) {
+            if (outL[n] >= AIUS_DSP_SAMPLE_MAX || outL[n] <= AIUS_DSP_SAMPLE_MIN ||
+                outR[n] >= AIUS_DSP_SAMPLE_MAX || outR[n] <= AIUS_DSP_SAMPLE_MIN)
+                at_rail++;
+        }
+        CHECK(at_rail == 0, "%s DEFAULT downmix clipped %u samples (headroom %.6f)",
+              v->name, at_rail, cfg.headroom);
+
+        /* The negative control, in the suite rather than in a reviewer's head:
+         * unity headroom really does clip this corpus. Without it, the check above
+         * could pass on a corpus that never stressed the matrix at all, and the
+         * defect would be untestable. Accumulated across vectors and asserted once
+         * in main, because only one of the four is hot enough to clip. */
+        int32_t *ul = malloc(F * sizeof(int32_t));
+        int32_t *ur = malloc(F * sizeof(int32_t));
+        AiusPcmBlock uo2;
+        memset(&uo2, 0, sizeof uo2);
+        uo2.planes[0] = ul;
+        uo2.planes[1] = ur;
+        CHECK(aius_dsp_downmix(&unity, &in, &uo2) == AIUS_OK, "%s unity clip probe",
+              v->name);
+        for (uint32_t n = 0; n < F; n++) {
+            if (ul[n] >= AIUS_DSP_SAMPLE_MAX || ul[n] <= AIUS_DSP_SAMPLE_MIN ||
+                ur[n] >= AIUS_DSP_SAMPLE_MAX || ur[n] <= AIUS_DSP_SAMPLE_MIN)
+                g_unity_clipped++;
+        }
+        free(ul);
+        free(ur);
     }
 
     /* --- clip-free headroom: real vector never saturates ------------------ */
@@ -678,7 +756,8 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     {
         AiusLimiter lim;
         memset(&lim, 0, sizeof lim);
-        lim.cfg = aius_limiter_config_default(); /* enabled == 0 */
+        lim.cfg = aius_limiter_config_default();
+        lim.cfg.enabled = 0; /* the shipped default is now ENABLED (defect 3) */
         int32_t *ll = malloc(F * sizeof(int32_t));
         int32_t *lr = malloc(F * sizeof(int32_t));
         AiusPcmBlock lo;
@@ -990,7 +1069,14 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         printf("  %-20s ch=%u frames=%u in_peak", v->name, sig.channels, sig.frames);
         for (int c = 0; c < p.channels; c++)
             printf(" %d", sig.in_peak[c]);
-        printf(" out_peak=%d/%d\n", sig.out_peak_l, sig.out_peak_r);
+        /* Peak reported in dBFS as well as raw units: a reviewer comparing this
+         * against a golden change wants to see how close to the rail it lands, and
+         * "8388607/8388607" versus "0 dBFS" is the difference between reading a
+         * number and reading a clip. */
+        printf(" out_peak=%d/%d (%+.2f/%+.2f dBFS)\n",
+               sig.out_peak_l, sig.out_peak_r,
+               20.0 * log10((double)sig.out_peak_l / (double)AIUS_DSP_SAMPLE_MAX),
+               20.0 * log10((double)sig.out_peak_r / (double)AIUS_DSP_SAMPLE_MAX));
     }
 
 done:
@@ -1023,6 +1109,15 @@ int main(int argc, char **argv)
            dump ? " [DUMP]" : "");
     for (size_t i = 0; i < sizeof(k_vectors) / sizeof(k_vectors[0]); i++)
         run_vector(vec_dir, golden_dir, &k_vectors[i], dump);
+
+    /* Defect-2 negative control (see g_unity_clipped): the corpus must still be hot
+     * enough to clip at unity headroom, or the per-vector "default headroom does not
+     * clip" checks are proving nothing. */
+    CHECK(g_unity_clipped > 0,
+          "corpus no longer clips at unity headroom, so the default-headroom "
+          "checks are vacuous -- the corpus stopped stressing the matrix");
+    printf("  corpus would clip %u sample(s) at unity headroom; "
+           "the shipped default clips 0\n", g_unity_clipped);
 
     if (g_fail) {
         printf("RESULT: %d check(s) FAILED\n", g_fail);

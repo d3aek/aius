@@ -14,13 +14,26 @@ extern "C" {
 /* Aius output DSP: 5.1-to-stereo downmix + parametric EQ.
  *
  * Turns a decoded PCM block (1..6 channels, planar, 24-bit range sign-extended
- * into int32, at 48 kHz) into a 2-channel 48 kHz stereo block. The path is two
- * stages the caller can run together (aius_dsp_process) or separately:
+ * into int32, at the block's own sample rate) into a 2-channel stereo block at
+ * that same rate. NO FUNCTION HERE ASSUMES A SAMPLE RATE: every rate-dependent
+ * coefficient takes `fs` as a parameter. The path is the stages below, which the
+ * caller can run together (aius_dsp_process) or separately:
  *
  *   1. Downmix   (aius_dsp_downmix)  N channels -> L/R per ITU-R BS.775 /
  *                                    ATSC A/52 (see AiusDownmixConfig).
  *   2. EQ        (aius_dsp_eq_run)   a Direct Form I biquad cascade per channel,
  *                                    coefficients supplied by the caller.
+ *   3. Limiter   (aius_dsp_limiter_run)  true-peak safety limiter tail.
+ *
+ * ...and then, at the boundary to a 16-bit playback engine, the separate output
+ * stage:
+ *
+ *   4. Out16     (aius_out16_run)    24 -> 16 bit with TPDF dither, round to
+ *                                    nearest and saturation. NOT part of
+ *                                    aius_dsp_process: the 24-bit block is the
+ *                                    module's output, and the word-width
+ *                                    reduction belongs to whichever engine
+ *                                    consumes it.
  *
  * ARITHMETIC / DETERMINISM. All processing is IEEE-754 double precision. Double
  * was chosen over fixed-point because a biquad's feedback path is precision
@@ -32,6 +45,23 @@ extern "C" {
  * extended precision. Build both host and target with -ffp-contract=off (and,
  * on any x87 host, -mfpmath=sse) to guarantee bit-exactness. This module
  * itself writes no fused multiply-add and holds all state in double.
+ *
+ * THAT PRECONDITION IS CURRENTLY UNMET ON THE TARGET, and it is a real divergence
+ * rather than a theoretical one. scripts/test.sh passes -ffp-contract=off for the
+ * dsp and dsp-vectors suites, but platformio.ini's build_flags do not, and GCC
+ * defaults to -ffp-contract=fast under -std=gnu++17. Disassembling
+ * .pio/build/teensy41-optical/lib1a3/aius_dsp/aius_dsp.c.o shows 25 vfma.f64
+ * instructions -- in truepeak_push, run_cascade, aius_dsp_downmix and
+ * aius_dsp_limiter_run -- where the host emits a separate vmul and vadd. So the
+ * downmix and EQ have not in fact been bit-identical host-to-target, and the
+ * 48-tap true-peak FIR is now the largest single source of it. THE FIX IS ONE
+ * FLAG: add -ffp-contract=off to platformio.ini [common] build_flags. It is very
+ * unlikely to cost anything and may even be faster on the Cortex-M7, whose
+ * double-precision VFMA latency is longer than a VMUL/VADD pair that can
+ * pipeline. (One contraction is benign by construction: the vfma in
+ * aius_out16_sample multiplies an exact integer by a power of two, so fused and
+ * unfused agree bit-for-bit -- see the output-stage note below.) platformio.ini is
+ * not this module's to edit; the flag is owed.
  *
  * NO HEAP ON THE PROCESS PATH. Every function here is allocation-free. Output
  * planes and biquad state are caller-owned; aius_dsp_alloc_stereo is a
@@ -65,13 +95,43 @@ extern "C" {
 #define AIUS_DSP_LFE_GAIN_MINUS10DB 0.31622776601683793320  /* 10^(-10/20) */
 
 /* Overall post-downmix gain applied to L' and R' before the saturating clamp.
- * 1.0 leaves level untouched and relies on the clamp as a clip safety net (a
- * fully correlated full-scale 5.1 signal will saturate). A caller wanting a
- * guaranteed clip-free downmix sets headroom to 1/(1 + center + surround + lfe)
- * — see aius_downmix_clipfree_headroom. Default is unity; the clip-free trade
- * (quieter but never saturating) is a PRODUCT DECISION the owner should
- * confirm. */
-#define AIUS_DSP_HEADROOM_DEFAULT 1.0
+ *
+ * WHY 0.5 AND NOT 1.0. The downmix quantizes and SATURATES into the 24-bit range
+ * at the end of aius_dsp_downmix (and the EQ cascade saturates again), so every
+ * later stage — the limiter included — sees an already-clamped signal. A limiter
+ * downstream of a saturating matrix cannot recover an over the matrix has
+ * already destroyed, so the headroom, not the limiter, is what has to keep the
+ * matrix sum inside full scale. That rules out "unity headroom, let the limiter
+ * catch the overs" until the pipeline carries an unclamped intermediate.
+ *
+ * The committed DTS corpus (tools/dts_vectors/vectors, 4 vectors x 5120 frames,
+ * measured through this matrix at unity headroom) distributes like this:
+ *
+ *   vector               sample peak   p50      p99.9   samples over full scale
+ *   stereo_tones          -22.50 dBFS  -26.33   -22.50   0
+ *   surround51_tones      -17.17 dBFS  -26.34   -17.17   0
+ *   stereo_impulse         -2.05 dBFS -100.86   -33.46   0
+ *   surround51_impulse     +5.23 dBFS  -86.31   -20.81  10 of 10240
+ *
+ * So exactly one vector clips, on 10 of its 10240 samples, and it is the
+ * synthetic all-channel-simultaneous full-scale impulse: 99.9% of even that
+ * vector sits below -20 dBFS. Paying the theoretical clip-free 0.414214
+ * (-7.66 dB, aius_downmix_clipfree_headroom) to accommodate those 10 samples
+ * would make the device audibly quiet against every other source.
+ *
+ * 0.5 is the choice: it clears the whole corpus (worst case becomes -0.79 dBFS)
+ * with 0.79 dB spare, costs 6.02 dB rather than 7.66, and is an exact power of
+ * two, so the headroom multiply is bit-exact (an exponent decrement, no rounding
+ * at all) on host and target alike. It is deliberately NOT clip-free in theory —
+ * a fully correlated full-scale 5.1 input still reaches 2.4142 * 0.5 = +1.63
+ * dBFS — which is why the shipped limiter default is ENABLED (see
+ * AiusLimiterConfig): modest headroom plus an active true-peak limiter, not
+ * clip-free headroom with the limiter off.
+ *
+ * Still a PRODUCT DECISION, now an evidenced one; a caller wanting the
+ * theoretical guarantee instead sets headroom from
+ * aius_downmix_clipfree_headroom and may then turn the limiter off. */
+#define AIUS_DSP_HEADROOM_DEFAULT 0.5
 
 /* Downmix configuration. Fill from aius_downmix_config_default() then override. */
 typedef struct {
@@ -205,8 +265,103 @@ AiusInputStage aius_input_stage_default(void);
 
 /* Lookahead is bounded to [0, 5] ms; at 48 kHz that is at most 240 samples. The
  * delay lines are fixed at this size so the process path never allocates. A
- * higher sample rate clamps the delay to this cap. */
+ * higher sample rate clamps the delay to this cap (5 ms at 48 kHz, 2.5 ms at
+ * 96 kHz, and so on) — the CONFIGURED UNIT IS MILLISECONDS and the sample count
+ * is always derived from the `fs` passed to aius_dsp_limiter_run, so nothing here
+ * assumes a rate. */
 #define AIUS_DSP_LIMITER_MAX_LOOKAHEAD 240
+
+/* TRUE PEAK, per ITU-R BS.1770-4 Annex 2. The peak follower does NOT read sample
+ * magnitudes: a downmix readily generates inter-sample peaks that sit above every
+ * sample around them, and those clip in the DAC's reconstruction filter where
+ * nothing on this side can see them. The detector therefore 4x-oversamples with
+ * the polyphase FIR the standard specifies (4 phases x 12 taps, every coefficient
+ * an exact multiple of 2^-14, so the table is bit-exact on host and target) and
+ * follows the largest interpolated magnitude.
+ *
+ * TWO DELIBERATE DEVIATIONS from a literal reading of the standard, both
+ * conservative:
+ *
+ *   - The standard's 12.04 dB pre-attenuation exists to stop a fixed-point
+ *     implementation overflowing inside the filter. This one is double precision,
+ *     so it is omitted; the arithmetic is otherwise identical.
+ *   - The reported peak is max(|x[n]|, |interpolated|) rather than the
+ *     interpolated maximum alone. Phase 0 of the specified filter has a 0.9722
+ *     centre tap, so a literal 4x meter can read an isolated impulse ~0.2 dB
+ *     BELOW its own sample value. Folding the raw sample into the max makes this
+ *     detector a strict superset of a sample-peak detector, which is the only
+ *     defensible behaviour for a stage whose job is safety.
+ *
+ * At fs > 48 kHz, 4x is comfortably past the standard's 192 kHz recommendation.
+ * At 44.1 kHz it lands at 176.4 kHz, marginally under it; the residual
+ * under-read is a small fraction of a dB and the threshold default carries more
+ * margin than that.
+ *
+ * PRIMING, and it is not cosmetic. An FIR history zeroed at reset makes the first
+ * sample look like a STEP from silence, and a step has a genuine inter-sample
+ * overshoot of about +0.6 dB, so a naive detector reports a peak that the signal
+ * does not contain. The limiter state is zeroed on every config apply, so that
+ * would have put a spurious ~0.6 dB gain dip -- decaying over a whole release
+ * constant -- into the audio every time a control changed. The detector therefore
+ * contributes only |x[n]| until the history has been fully populated since the
+ * reset (AIUS_DSP_TRUEPEAK_TAPS-1 samples, 229 us at 48 kHz), degrading
+ * gracefully to sample-peak behaviour rather than inventing an edge. Since the raw
+ * sample is always folded into the max, the priming window still cannot under-read
+ * below the sample peak.
+ *
+ * COST CONTROL. 4 phases x 12 taps is 48 multiply-accumulates per sample per
+ * channel and is by far the most expensive thing in this module, so it is gated:
+ * the FIR runs only while a sample within the filter's 12-sample window could
+ * possibly push the interpolated value over threshold. The bound is rigorous
+ * rather than heuristic — the largest phase has an l1 norm of exactly
+ * 33142/16384, so a window in which every sample satisfies
+ * |x| <= threshold / 33142/16384 CANNOT produce an interpolated magnitude above
+ * threshold, and skipping the filter there cannot miss an over. Quiet material
+ * pays one compare per sample; only material within ~6.1 dB of threshold pays the
+ * full 48 taps. */
+#define AIUS_DSP_TRUEPEAK_PHASES 4
+#define AIUS_DSP_TRUEPEAK_TAPS   12
+
+/* Ring capacity for the FIR history: the next power of two at or above
+ * AIUS_DSP_TRUEPEAK_TAPS, so tap indexing is a mask rather than a modulo and the
+ * history costs one store per sample instead of a 12-element shift. */
+#define AIUS_DSP_TRUEPEAK_RING 16
+
+/* l1 norm of the largest interpolation phase, as the exact rational the
+ * coefficient table gives (sum of |numerator| over 2^14). The skip gate above is
+ * only sound if this is an upper bound on every phase's l1 norm; a change to the
+ * table must recompute it, and the dsp suite checks the two against each other. */
+#define AIUS_DSP_TRUEPEAK_L1_NUM 33142.0
+#define AIUS_DSP_TRUEPEAK_L1_DEN 16384.0
+
+/* Safety-limiter defaults. Named so the shipped numbers are reviewable in one
+ * place and so a test can pin them.
+ *
+ * ENABLED BY DEFAULT, unlike every earlier revision, and that pairs with
+ * AIUS_DSP_HEADROOM_DEFAULT: 0.5 headroom is modest rather than clip-free, so
+ * something has to cover the residual (a fully correlated full-scale 5.1 input
+ * still reaches +1.63 dBFS through the matrix) plus the inter-sample peaks no
+ * amount of headroom addresses. The two sensible combinations are
+ * (modest headroom + limiter on) and (clip-free headroom + limiter off); this is
+ * the first.
+ *
+ * LOOKAHEAD LEADS THE REDUCTION. It used to default to 0 while attack_ms was
+ * 1.0, which is the pathological case: the gain is one-pole smoothed toward its
+ * target, so with no lookahead the reduction TRAILED the peak it existed to
+ * catch and roughly a millisecond of over-threshold signal went out unattenuated.
+ * The peak follower reads the incoming sample while the gain is applied to the
+ * DELAYED sample, so `lookahead_ms` is exactly how far the reduction leads.
+ * 2.0 ms of lead against a 0.5 ms attack is four attack time constants, so the
+ * gain is within e^-4 = 1.8% of its target by the time the sample it was computed
+ * for is emitted. That residual is a bounded overshoot, not zero: a peak 3 dB
+ * over threshold emerges about 0.065 dB over it. The -1.0 dBFS threshold is what
+ * makes that safe — the overshoot lands near -0.93 dBFS, still inside full scale,
+ * and the final quantize saturation remains the last-ditch clamp. */
+#define AIUS_DSP_LIMITER_ENABLED_DEFAULT        1
+#define AIUS_DSP_LIMITER_THRESHOLD_DEFAULT_DBFS (-1.0)
+#define AIUS_DSP_LIMITER_ATTACK_DEFAULT_MS      0.5
+#define AIUS_DSP_LIMITER_RELEASE_DEFAULT_MS     100.0
+#define AIUS_DSP_LIMITER_LOOKAHEAD_DEFAULT_MS   2.0
 
 /* Safety-limiter controls (bounds per the config contract). A safety limiter is
  * transparent below `threshold_dbfs` and applies a bounded, stereo-linked gain
@@ -219,22 +374,34 @@ typedef struct {
     double lookahead_ms;     /* [0, 5] delay so reduction leads the peak */
 } AiusLimiterConfig;
 
-/* A disabled (transparent) limiter with neutral time constants. */
+/* The shipped default: enabled, -1.0 dBFS, 0.5 ms attack, 100 ms release, 2.0 ms
+ * lookahead (the AIUS_DSP_LIMITER_*_DEFAULT set above). */
 AiusLimiterConfig aius_limiter_config_default(void);
 
-/* Running state + lookahead delay lines. Zero-initialize before first use; the
- * envelope coefficients and delay length are derived from the config and sample
- * rate inside aius_dsp_limiter_run and re-derived when either changes (reset-safe
- * config apply). `gain` and the ring carry across blocks for seamless boundaries.
- */
+/* Running state + lookahead delay lines + true-peak FIR history. Zero-initialize
+ * before first use; the envelope coefficients and delay length are derived from
+ * the config and sample rate inside aius_dsp_limiter_run and re-derived when
+ * either changes (reset-safe config apply). `gain`, the delay ring and the FIR
+ * history carry across blocks for seamless boundaries.
+ *
+ * `tp_l` / `tp_r` are the only growth here (2 * 16 doubles = 256 bytes). They are
+ * PERSISTENT STATE, not stack: the detector needs the max of the interpolated
+ * values, never the values themselves, so it materializes no oversampled buffer
+ * and aius_dsp_limiter_run's stack frame is unchanged. That matters because this
+ * runs in the audio ISR. */
 typedef struct {
-    double   env;            /* peak-follower envelope (sample units) */
+    double   env;            /* true-peak follower envelope (sample units) */
     double   gain;           /* current smoothed gain reduction, (0, 1] */
     uint32_t delay;          /* active lookahead length in samples */
     uint32_t pos;            /* ring write cursor, mod delay */
     int      primed;         /* gain/env initialized on the first run */
     int32_t  buf_l[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
     int32_t  buf_r[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
+    double   tp_l[AIUS_DSP_TRUEPEAK_RING]; /* interpolation history, L */
+    double   tp_r[AIUS_DSP_TRUEPEAK_RING]; /* interpolation history, R */
+    uint32_t tp_pos;         /* history write cursor, masked to the ring */
+    uint32_t tp_run;         /* samples left for which the FIR must run */
+    uint32_t tp_fill;        /* samples since reset, until the history is full */
 } AiusLimiterState;
 
 /* A limiter is its config plus its running state, so the whole tail stage is one
@@ -246,19 +413,169 @@ typedef struct {
 
 /* Run the true-peak safety limiter over the stereo pair (`l`, `r`) in place at
  * `fs` Hz. A peak follower (instant attack, release-timed decay) tracks the
- * incoming true peak; a single stereo-linked gain (so the L/R image is
- * preserved) is smoothed toward T/peak with the attack/release time constants
- * and applied to the signal delayed by the lookahead, so the reduction leads the
- * peak. Below threshold the gain is unity (transparent). cfg.enabled == 0 is a
- * pure bypass with no delay. Output frame count equals input (the last `delay`
- * samples stay in the ring as bounded latency). Allocation-free; lim == NULL or
- * a NULL plane is a no-op. */
+ * incoming TRUE peak — max(|sample|, 4x-oversampled interpolated magnitude) per
+ * the BS.1770-4 note above, so an inter-sample peak a sample-peak detector cannot
+ * see still opens the gain reduction. A single stereo-linked gain (so the L/R
+ * image is preserved) is smoothed toward T/peak with the attack/release time
+ * constants and applied to the signal delayed by the lookahead, so the reduction
+ * LEADS the peak by cfg.lookahead_ms. Below threshold the gain is unity
+ * (transparent). cfg.enabled == 0 is a pure bypass with no delay and no FIR.
+ * Output frame count equals input (the last `delay` samples stay in the ring as
+ * bounded latency). Allocation-free; lim == NULL or a NULL plane is a no-op. */
 void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
                           int32_t *l, int32_t *r, uint32_t frames);
+
+/* The true peak of one plane, as the limiter's detector measures it: the maximum
+ * over every sample of max(|x[n]|, the four BS.1770-4 interpolated phases). In
+ * 24-bit sample units, like every other magnitude here. Stateless (it runs its own
+ * history), so it is a measurement tool rather than part of the audio path: the
+ * tests use it to talk about inter-sample peaks in the same units the limiter
+ * thresholds on.
+ *
+ * Primed the same way the limiter is: the interpolated phases are only counted once
+ * the 12-sample window is full, so a buffer that begins part-way up a waveform is
+ * not reported as containing the step that splicing it after silence would create.
+ * The result is therefore the true peak of the buffer's INTERIOR, and is always at
+ * least the buffer's sample peak. samples == NULL or frames == 0 returns 0.0.
+ * Allocation-free. */
+double aius_dsp_true_peak(const int32_t *samples, uint32_t frames);
 
 /* Current gain reduction in dB (<= 0), for later metering. 0.0 dB means no
  * reduction. lim == NULL returns 0.0. Reads state only; does not process. */
 double aius_dsp_limiter_gain_reduction_db(const AiusLimiter *lim);
+
+/* --- 24 -> 16 bit output stage: TPDF dither, round to nearest, saturate ---- */
+
+/* The word width of a 16-bit playback engine (the Teensy AudioStream engine is
+ * the concrete one). Retarget alongside AIUS_DSP_SAMPLE_MAX/MIN; this is a DAC
+ * word width, never a sample rate. */
+#define AIUS_DSP_OUT16_MAX ((int32_t)32767)
+#define AIUS_DSP_OUT16_MIN ((int32_t)-32768)
+
+/* One 16-bit LSB in 24-bit input units: (2^23) / (2^15) = 2^8. */
+#define AIUS_DSP_OUT16_LSB 256.0
+
+/* WHY THIS STAGE EXISTS. Handing a 24-bit result to a 16-bit engine with an
+ * arithmetic right shift is wrong twice over, and both faults are audible:
+ *
+ *   - A shift rounds toward -infinity, so negatives round away from zero while
+ *     positives round toward it. That is a -0.5 LSB DC offset and an asymmetric
+ *     transfer curve — distortion, not noise. (-1 >> 8 is -1, a full 16-bit LSB,
+ *     where the correct answer is 0.)
+ *   - Undithered truncation makes the quantisation error a deterministic function
+ *     OF THE SIGNAL, so the error is correlated with the programme: harmonic and
+ *     intermodulation products rather than a benign noise floor, worst on fades
+ *     and low-level detail, which is exactly where a decoder gets judged.
+ *
+ * The fix is the textbook one, in this order: add TPDF dither, then round to
+ * nearest (ties away from zero, as aius_quantize), then saturate.
+ *
+ * DITHER AMPLITUDE. Triangular PDF spanning +-1 LSB of the 16-bit target (2 LSB
+ * peak-to-peak), formed as the difference of two independent uniform draws. This
+ * is the standard optimal choice: it decorrelates the error from the signal AND
+ * makes the total error power independent of the signal, so there is no noise
+ * modulation as the level moves. It costs about 4.8 dB of noise floor against
+ * undithered truncation, buying a noise floor near -93 dBFS in exchange for
+ * removing signal-correlated distortion entirely.
+ *
+ * NO NOISE SHAPING, and that is a recommendation rather than an oversight.
+ * Shaping the dither noise out of the ear's sensitive band would buy the usual
+ * 10-15 dB of perceived SNR for two doubles of error-feedback state and a couple
+ * of multiplies per sample, which is affordable. It is declined because: flat
+ * TPDF already puts the noise floor near -93 dBFS, below both the DTS Core source
+ * and any DAC this feeds; the error-feedback path would have to be given defined
+ * behaviour when the output saturates (an unshaped stage simply clamps, a shaped
+ * one can wind up), which is new contract surface on a safety path; and the
+ * feedback state would need clearing on reset, reintroducing the settling
+ * transient that this stage's statelessness-apart-from-the-PRNG avoids. Revisit
+ * only if measurement shows the 16-bit floor is actually the limit.
+ *
+ * DETERMINISM, which is the interesting part: dither is random and this module is
+ * contractually bit-exact between host and target. Both hold, because the
+ * randomness is a seeded PRNG rather than an entropy source.
+ *
+ *   GENERATOR: xoshiro128++ 1.0 (Blackman & Vigna). 128-bit state in four
+ *   uint32, period 2^128-1, output = rotl(s0+s3, 7) + s0. Chosen because it is
+ *   INTEGER-ONLY — add, xor, shift, rotate on uint32 — so it is bit-identical on
+ *   x86-64 and Cortex-M7 with no FPU, no libc, no locale and no rounding mode in
+ *   the loop. Explicitly NOT rand() (implementation-defined, so host and target
+ *   would diverge immediately), not any other libc facility, and not the
+ *   hardware RNG (a true entropy source would break bit-exactness by
+ *   construction and make every golden fixture unreproducible).
+ *
+ *   ADEQUACY AS A DITHER SOURCE: dither needs a flat spectrum, the right
+ *   amplitude distribution, and independence from the signal — not
+ *   unpredictability. xoshiro128++ is equidistributed and passes BigCrush on
+ *   every bit position (the ++ scrambler is what fixes the low-bit linear
+ *   artefacts of the plain-addition variants, which matters here because both
+ *   halves of the word are used). Its period is 2.2e26 years at 48 kHz, so there
+ *   is no repetition to become tonal. Independence from the signal is structural:
+ *   the state advances with the sample index and never sees a sample value, which
+ *   is precisely the property that turns quantisation distortion into
+ *   quantisation noise. It is not cryptographic, and nothing here needs it to be.
+ *
+ *   ONE DRAW PER SAMPLE: the two uniform draws the triangular PDF needs are the
+ *   high and low 16 bits of one 32-bit output. The map word -> (hi, lo) is a
+ *   bijection onto the 2^32 square, so the pair is exactly as uniform as the word
+ *   and the resulting PDF is exactly triangular; taking two separate draws would
+ *   double the generator cost for no distributional gain.
+ *
+ *   EXACT ARITHMETIC: the dither offset is (hi - lo) / 65536 LSB, an integer
+ *   under 2^17 over a power of two, so it is EXACTLY representable in double and
+ *   adds no rounding of its own. The whole conversion is therefore one
+ *   well-defined round-to-nearest, identical on both platforms.
+ *
+ *   L AND R ARE INDEPENDENT STREAMS, seeded from eight consecutive SplitMix32
+ *   outputs of the one seed (first four -> L, next four -> R). Correlated dither
+ *   across the pair would image as a phantom-centre hiss and would correlate the
+ *   two channels' errors; independent streams put it where noise belongs.
+ *
+ *   ACROSS A RESET: aius_out16_init re-seeds to the same constant, so the
+ *   sequence restarts at index 0 and the dither is a pure function of (seed,
+ *   sample index). Replaying identical input after a reset therefore reproduces
+ *   identical output — which is what makes the golden fixtures possible and what
+ *   the bit-exactness contract demands. Audibly this is nil: it is the same noise
+ *   ensemble either way, near -93 dBFS. There is no reset transient because the
+ *   stage holds no filter memory, which is a direct consequence of declining
+ *   noise shaping above. */
+#define AIUS_DSP_DITHER_SEED_DEFAULT 0x41555331u /* "AUS1" */
+
+/* One xoshiro128++ stream. Opaque; seed it with aius_out16_init. Never all-zero
+ * after seeding (that is the generator's fixed point). */
+typedef struct {
+    uint32_t s[4];
+} AiusDitherState;
+
+/* The output stage: a dither enable plus one independent stream per channel.
+ * Caller-owned and allocation-free like every other stage here. */
+typedef struct {
+    int             dither;   /* 1 = TPDF dither (the default), 0 = round+saturate only */
+    AiusDitherState stream[2]; /* [0] = L, [1] = R */
+} AiusOut16Stage;
+
+/* Seed both streams from `seed` and set the dither enable. Call once before the
+ * steady-state loop, NOT per config apply: re-seeding mid-stream restarts the
+ * noise sequence, which is harmless but makes the output depend on config-change
+ * history instead of on the sample index alone. */
+void aius_out16_init(AiusOut16Stage *st, uint32_t seed, int dither);
+
+/* The shipped default: dither on, AIUS_DSP_DITHER_SEED_DEFAULT. */
+AiusOut16Stage aius_out16_stage_default(void);
+
+/* Convert one 24-bit sample to the 16-bit range with dither (when `dither` is
+ * non-zero), round to nearest ties away from zero, and saturation to
+ * [AIUS_DSP_OUT16_MIN, AIUS_DSP_OUT16_MAX]. Advances `d` by one draw when
+ * dithering. `d` may be NULL only when dither is 0. Exposed so a test can pin the
+ * per-sample rule directly; the block form below is what the audio path calls. */
+int32_t aius_out16_sample(AiusDitherState *d, int dither, int32_t x24);
+
+/* Convert `frames` samples of the 24-bit stereo pair (`l24`, `r24`) into the
+ * 16-bit planes (`l16`, `r16`), advancing each channel's dither stream. The input
+ * and output planes may not overlap. st == NULL or any NULL plane is a no-op.
+ * Allocation-free; no per-sample state beyond the two PRNG words. */
+void aius_out16_run(AiusOut16Stage *st,
+                    const int32_t *l24, const int32_t *r24,
+                    int16_t *l16, int16_t *r16, uint32_t frames);
 
 /* --- coherent meter snapshot: diagnostic taps, never configuration --------- */
 
