@@ -36,6 +36,27 @@ static int aius_plane_index(uint32_t mask, uint32_t bit)
     return aius_popcount(mask & (bit - 1u));
 }
 
+/* One Direct Form I biquad section, in double, advancing the caller's delay
+ * memory: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2].
+ *
+ * THE ONLY DEFINITION of the recurrence in this module. Both consumers go through
+ * it: run_cascade (the EQ and input stages, which quantize the result) and the
+ * LFE fold-in crossover (which does not, because its output is summed into the
+ * matrix accumulator while still in double). The expression is written out in one
+ * place precisely because the two must stay bit-identical -- and because
+ * -ffp-contract=off means what is written is what executes, term by term, with no
+ * fused multiply-add on either host or target. */
+static double biquad_step(const AiusBiquad *q, AiusBiquadState *st, double x)
+{
+    double y = q->b0 * x + q->b1 * st->x1 + q->b2 * st->x2
+               - q->a1 * st->y1 - q->a2 * st->y2;
+    st->x2 = st->x1;
+    st->x1 = x;
+    st->y2 = st->y1;
+    st->y1 = y;
+    return y;
+}
+
 /* Round to nearest (ties away from zero) and saturate into the 24-bit range.
  * Deterministic: no library rounding-mode dependence. */
 static int32_t aius_quantize(double x)
@@ -50,6 +71,87 @@ static int32_t aius_quantize(double x)
     return (int32_t)r;
 }
 
+/* --- LFE fold-in crossover (LR4 low-pass) ---------------------------------
+ *
+ * Ahead of the downmix because the downmix consumes it. aius_lfe_fold_init calls
+ * aius_biquad_lowpass, whose definition is further down; it is declared in
+ * aius_dsp.h, so the ordering is a reading choice rather than a constraint. */
+
+void aius_lfe_fold_reset(AiusLfeFold *fold)
+{
+    if (fold == NULL) {
+        return;
+    }
+    memset(fold->state, 0, sizeof fold->state);
+}
+
+AiusStatus aius_lfe_fold_init(AiusLfeFold *fold, double fs, double crossover_hz)
+{
+    if (fold == NULL) {
+        return AIUS_INVALID_ARG;
+    }
+    /* Leave an unusable request RESET AND UNDESIGNED rather than half-built: a
+     * zero designed_hz is what the downmix reads as "no usable crossover", and it
+     * then skips the LFE instead of folding it unfiltered. Zero first, so an
+     * early return cannot leave stale coefficients behind. */
+    memset(fold, 0, sizeof *fold);
+    if (!(fs > 0.0) || !(crossover_hz > 0.0) || !(crossover_hz < fs / 2.0)) {
+        return AIUS_INVALID_ARG;
+    }
+    for (int k = 0; k < AIUS_DSP_LFE_CROSSOVER_SECTIONS; k++) {
+        fold->lp[k] = aius_biquad_lowpass(fs, crossover_hz,
+                                          AIUS_DSP_LFE_CROSSOVER_Q);
+    }
+    fold->designed_hz = crossover_hz;
+    fold->designed_fs = fs;
+    return AIUS_OK;
+}
+
+/* Run one raw LFE sample through the designed cascade. No quantize: the result is
+ * summed into the matrix accumulator while still in double, so the fold-in adds no
+ * requantisation step of its own. */
+static double lfe_fold_sample(AiusLfeFold *fold, double x)
+{
+    for (int k = 0; k < AIUS_DSP_LFE_CROSSOVER_SECTIONS; k++) {
+        x = biquad_step(&fold->lp[k], &fold->state[k], x);
+    }
+    return x;
+}
+
+/* Resolve the crossover for this block, off the per-sample path.
+ *
+ * Returns the fold to run the LFE plane through, NULL for an unfiltered fold, or
+ * -- via `*skip_lfe` -- the fail-closed verdict: a configured corner with no state
+ * to hold it, or a corner the rate cannot carry, drops the LFE entirely rather
+ * than folding it unfiltered (see aius_dsp.h §AiusDownmixConfig).
+ *
+ * Re-derives the sections when the corner or the rate has moved since they were
+ * designed, which is what keeps "designed from fs, never from an assumed rate"
+ * true when the engine rate becomes runtime data. At most once per change. */
+static AiusLfeFold *resolve_lfe_fold(const AiusDownmixConfig *cfg, double fs,
+                                     int *skip_lfe)
+{
+    *skip_lfe = 0;
+    if (cfg->lfe == 0.0) {
+        return NULL; /* branch is skipped anyway; nothing to resolve */
+    }
+    if (cfg->lfe_crossover_hz <= 0.0) {
+        return NULL; /* explicitly unfiltered fold: no state required */
+    }
+    AiusLfeFold *fold = cfg->lfe_fold;
+    if (fold == NULL) {
+        *skip_lfe = 1; /* fail closed: LFE excluded, never folded unfiltered */
+        return NULL;
+    }
+    if (fold->designed_hz != cfg->lfe_crossover_hz || fold->designed_fs != fs) {
+        if (aius_lfe_fold_init(fold, fs, cfg->lfe_crossover_hz) != AIUS_OK) {
+            *skip_lfe = 1; /* corner unusable at this rate: same fail-closed rule */
+            return NULL;
+        }
+    }
+    return fold;
+}
+
 /* --- downmix -------------------------------------------------------------- */
 
 AiusDownmixConfig aius_downmix_config_default(void)
@@ -59,6 +161,8 @@ AiusDownmixConfig aius_downmix_config_default(void)
     c.surround = AIUS_DSP_DOWNMIX_SURROUND_DEFAULT;
     c.lfe = AIUS_DSP_LFE_GAIN_DEFAULT;
     c.headroom = AIUS_DSP_HEADROOM_DEFAULT;
+    c.lfe_crossover_hz = AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ;
+    c.lfe_fold = NULL; /* caller-owned state; see aius_dsp.h */
     return c;
 }
 
@@ -124,6 +228,17 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
         const int32_t *pSL = iSL >= 0 ? in->planes[iSL] : NULL;
         const int32_t *pSR = iSR >= 0 ? in->planes[iSR] : NULL;
 
+        /* LFE fold-in crossover, resolved once per block rather than per sample:
+         * the design/redesign decision, the unfiltered selection and the
+         * fail-closed rule all cost nothing in the loop. `skip_lfe` folds into
+         * pLFE so the per-sample path keeps exactly the one null test it had. */
+        int skip_lfe = 0;
+        AiusLfeFold *fold =
+            resolve_lfe_fold(cfg, (double)in->sample_rate_hz, &skip_lfe);
+        if (skip_lfe) {
+            pLFE = NULL;
+        }
+
         for (uint32_t i = 0; i < in->frames; i++) {
             double l = 0.0;
             double r = 0.0;
@@ -139,7 +254,15 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
                 r += c;
             }
             if (pLFE) {
-                double e = (double)pLFE[i] * cfg->lfe;
+                /* Low-pass the raw sample, THEN apply the fold gain, so the
+                 * crossover state stays in raw sample units and a gain change
+                 * needs no reset. Symmetric into both: one mono channel, no
+                 * image. */
+                double e = (double)pLFE[i];
+                if (fold != NULL) {
+                    e = lfe_fold_sample(fold, e);
+                }
+                e *= cfg->lfe;
                 l += e;
                 r += e;
             }
@@ -289,15 +412,7 @@ static void run_cascade(double pregain, const AiusBiquad *sections, size_t n,
     for (uint32_t i = 0; i < frames; i++) {
         double s = (double)samples[i] * pregain;
         for (size_t k = 0; k < n; k++) {
-            const AiusBiquad *q = &sections[k];
-            AiusBiquadState *st = &state[k];
-            double y = q->b0 * s + q->b1 * st->x1 + q->b2 * st->x2
-                       - q->a1 * st->y1 - q->a2 * st->y2;
-            st->x2 = st->x1;
-            st->x1 = s;
-            st->y2 = st->y1;
-            st->y1 = y;
-            s = y;
+            s = biquad_step(&sections[k], &state[k], s);
         }
         samples[i] = aius_quantize(s);
     }

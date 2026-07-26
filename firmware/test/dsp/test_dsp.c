@@ -171,8 +171,14 @@ static void test_clip_headroom(void)
     out.planes[1] = or_;
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
-    cfg.headroom = 1.0;                    /* the case this test is named for */
-    cfg.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB; /* worst case, LFE folded in */
+    cfg.headroom = 1.0; /* the case this test is named for */
+    /* Worst case, with the LFE genuinely folded in: the shipped -10 dB gain
+     * through the shipped 120 Hz LR4, so the sixth matrix term is present rather
+     * than silently failing closed. */
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    cfg.lfe_fold = &fold;
+    assert(cfg.lfe == AIUS_DSP_LFE_GAIN_MINUS10DB);
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
     assert(ol[0] == AIUS_DSP_SAMPLE_MAX); /* saturated, not overflowed */
     assert(or_[0] == AIUS_DSP_SAMPLE_MAX);
@@ -200,7 +206,12 @@ static void test_clipfree_headroom(void)
     out.planes[0] = ol;
     out.planes[1] = or_;
 
-    AiusDownmixConfig cfg = aius_downmix_config_default(); /* lfe = 0 */
+    /* The block is 5.0 -- no LFE plane -- so the config's LFE term is pinned to
+     * excluded to match. Leaving the shipped fold gain in place would put a
+     * contributor the input cannot supply into the clip-free denominator and make
+     * this test assert a level 1.08 dB below the one it is named for. */
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
     cfg.headroom = aius_downmix_clipfree_headroom(&cfg);
     assert(cfg.headroom > 0.0 && cfg.headroom < 1.0);
     assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
@@ -208,6 +219,586 @@ static void test_clipfree_headroom(void)
     assert(ol[0] <= AIUS_DSP_SAMPLE_MAX);
     assert(ol[0] >= AIUS_DSP_SAMPLE_MAX - 1);
     printf("ok clip-free headroom maps full scale to full scale\n");
+}
+
+/* --- LFE fold-in crossover (roadmap item 2) -------------------------------- */
+
+/* |H(f)| of a normalized biquad at `f` Hz, evaluated on the unit circle. An
+ * INDEPENDENT reference computation: it reads only the public coefficients, so it
+ * checks the designed filter rather than re-running the module's own evaluator. */
+static double biquad_mag_hz(const AiusBiquad *q, double fs, double f)
+{
+    double w = 2.0 * M_PI * f / fs;
+    double nr = q->b0 + q->b1 * cos(w) + q->b2 * cos(2.0 * w);
+    double ni = -(q->b1 * sin(w) + q->b2 * sin(2.0 * w));
+    double dr = 1.0 + q->a1 * cos(w) + q->a2 * cos(2.0 * w);
+    double di = -(q->a1 * sin(w) + q->a2 * sin(2.0 * w));
+    return sqrt((nr * nr + ni * ni) / (dr * dr + di * di));
+}
+
+/* |H(f)| of the whole cascade. */
+static double fold_mag_hz(const AiusLfeFold *f, double fs, double hz)
+{
+    double m = 1.0;
+    for (int k = 0; k < AIUS_DSP_LFE_CROSSOVER_SECTIONS; k++)
+        m *= biquad_mag_hz(&f->lp[k], fs, hz);
+    return m;
+}
+
+/* Downmix an LFE-only block (FL/FR silent) and return L. The isolated fold-in
+ * contribution, which is what every level assertion below is about. */
+static void fold_lfe_only(const AiusDownmixConfig *cfg, const int32_t *lfe,
+                          uint32_t n, int32_t *outL, int32_t *outR)
+{
+    int32_t *zero = calloc(n, sizeof(int32_t));
+    assert(zero != NULL);
+    AiusPcmBlock in = {{zero, zero, (int32_t *)lfe, 0, 0, 0}, 3, n, 48000,
+                       AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = outL;
+    out.planes[1] = outR;
+    assert(aius_dsp_downmix(cfg, &in, &out) == AIUS_OK);
+    free(zero);
+}
+
+static double rms_tail(const int32_t *s, uint32_t n, uint32_t skip)
+{
+    double acc = 0.0;
+    for (uint32_t i = skip; i < n; i++)
+        acc += (double)s[i] * (double)s[i];
+    return sqrt(acc / (double)(n - skip));
+}
+
+/* The designed LR4 has two exact known answers at any rate, and they are the
+ * whole reason Q = 1/sqrt(2) is the right per-section value:
+ *
+ *   |H(DC)| == 1 exactly   -- the RBJ low-pass numerator and denominator both sum
+ *                             to 2(1-cos w0)/a0 at z = 1.
+ *   |H(f0)| == Q exactly   -- at z = e^jw0 the RBJ low-pass reduces to
+ *                             sin^2(w0) / (2*alpha*sin(w0)) = Q. Two sections at
+ *                             Q = 1/sqrt(2) therefore give exactly 0.5, i.e.
+ *                             -6.02 dB at the corner, which is the LR4 alignment.
+ *
+ * Both are asserted as identities rather than tolerances, so a change to the
+ * coefficient math or to the Q cannot pass on a loose epsilon. */
+static void test_lfe_fold_design(void)
+{
+    AiusLfeFold f;
+    assert(aius_lfe_fold_init(&f, FS, 120.0) == AIUS_OK);
+    assert(f.designed_hz == 120.0);
+    assert(f.designed_fs == FS);
+
+    /* Both sections identical: the cascade is one Butterworth squared. */
+    assert(f.lp[0].b0 == f.lp[1].b0 && f.lp[0].b1 == f.lp[1].b1 &&
+           f.lp[0].b2 == f.lp[1].b2 && f.lp[0].a1 == f.lp[1].a1 &&
+           f.lp[0].a2 == f.lp[1].a2);
+
+    /* Unity at DC, -6.02 dB at the corner. */
+    assert(close(fold_mag_hz(&f, FS, 0.0), 1.0, 1e-12));
+    assert(close(biquad_mag_hz(&f.lp[0], FS, 120.0), AIUS_DSP_LFE_CROSSOVER_Q,
+                 1e-12));
+    assert(close(fold_mag_hz(&f, FS, 120.0), 0.5, 1e-12));
+
+    /* Never above unity anywhere, and monotonically decreasing -- the property
+     * aius_downmix_clipfree_headroom's frequency-domain bound relies on. */
+    double prev = 1.0 + 1e-15;
+    for (double hz = 0.0; hz < FS / 2.0; hz += 25.0) {
+        double m = fold_mag_hz(&f, FS, hz);
+        assert(m <= 1.0 + 1e-12);
+        assert(m <= prev + 1e-12);
+        prev = m;
+    }
+
+    /* 24 dB/octave in the stopband: 240 -> 480 Hz must drop ~24 dB. */
+    double slope = 20.0 * log10(fold_mag_hz(&f, FS, 480.0) /
+                                fold_mag_hz(&f, FS, 240.0));
+    assert(slope < -23.0 && slope > -25.0);
+
+    /* The order claim, stated as a comparison rather than an assertion about one
+     * number: 2nd order would leave far more of the band the filter exists to
+     * remove. 375 Hz is the DTS 64x-decimated LFE reconstruction Nyquist at
+     * 48 kHz, so this is the frequency the choice was actually made against. */
+    double lr4 = 20.0 * log10(fold_mag_hz(&f, FS, 375.0));
+    double lr2 = 20.0 * log10(biquad_mag_hz(&f.lp[0], FS, 375.0));
+    assert(lr4 < -35.0);
+    assert(lr2 > -22.0);
+    printf("ok LFE fold LR4 design (corner -%.2f dB, 375 Hz: LR4 %.1f dB vs "
+           "one section %.1f dB, slope %.1f dB/oct)\n",
+           -20.0 * log10(fold_mag_hz(&f, FS, 120.0)), lr4, lr2, slope);
+}
+
+/* The corner is the same ANALOG frequency at every rate, which is what "take fs
+ * as a parameter" has to mean in practice. Both identities hold at each rate. */
+static void test_lfe_fold_rate_independent(void)
+{
+    static const double rates[] = {32000.0, 44100.0, 48000.0, 96000.0, 192000.0};
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        AiusLfeFold f;
+        assert(aius_lfe_fold_init(&f, rates[i], 120.0) == AIUS_OK);
+        /* 1e-9, not the 1e-12 used at 48 kHz above, and the slack is in the
+         * REFERENCE rather than in the filter. As fs/f0 grows the low-pass poles
+         * crowd z = 1 (at 192 kHz, a1 = -1.99444 and a2 = +0.99445), so evaluating
+         * 1 + a1 + a2 in this test's own reference cancels to ~1.5e-5 out of
+         * operands near 1 and carries ~1e-11 of relative error. The designed
+         * filter is exact; the textbook way to evaluate it here is not. */
+        assert(close(fold_mag_hz(&f, rates[i], 0.0), 1.0, 1e-9));
+        assert(close(fold_mag_hz(&f, rates[i], 120.0), 0.5, 1e-9));
+        /* And the shape follows the corner, not the rate: one octave up is the
+         * same attenuation at every rate. */
+        assert(close(20.0 * log10(fold_mag_hz(&f, rates[i], 240.0)), -24.6, 0.3));
+    }
+    printf("ok LFE fold corner is rate-independent (32k..192k)\n");
+}
+
+/* An unusable design leaves the fold RESET AND UNDESIGNED, which is what the
+ * downmix reads as "no usable crossover" and therefore fails closed on. */
+static void test_lfe_fold_init_rejects(void)
+{
+    assert(aius_lfe_fold_init(NULL, FS, 120.0) == AIUS_INVALID_ARG);
+
+    AiusLfeFold f;
+    assert(aius_lfe_fold_init(&f, FS, 120.0) == AIUS_OK);
+    assert(f.designed_hz == 120.0);
+    /* Each rejection must also CLEAR the previously good design, so a rate change
+     * to something unusable cannot leave stale coefficients running. */
+    assert(aius_lfe_fold_init(&f, 0.0, 120.0) == AIUS_INVALID_ARG);
+    assert(f.designed_hz == 0.0 && f.designed_fs == 0.0);
+
+    assert(aius_lfe_fold_init(&f, FS, 0.0) == AIUS_INVALID_ARG);
+    assert(aius_lfe_fold_init(&f, FS, -10.0) == AIUS_INVALID_ARG);
+    assert(aius_lfe_fold_init(&f, FS, FS / 2.0) == AIUS_INVALID_ARG); /* Nyquist */
+    assert(aius_lfe_fold_init(&f, FS, FS) == AIUS_INVALID_ARG);
+    /* A 500 Hz corner (the schema maximum) is fine at 8 kHz but not at 800 Hz. */
+    assert(aius_lfe_fold_init(&f, 8000.0, AIUS_DSP_LFE_CROSSOVER_MAX_HZ) == AIUS_OK);
+    assert(aius_lfe_fold_init(&f, 800.0, AIUS_DSP_LFE_CROSSOVER_MAX_HZ) ==
+           AIUS_INVALID_ARG);
+    printf("ok LFE fold init rejects unusable designs and clears them\n");
+}
+
+/* NEGATIVE CONTROL 1, and the reason the feature is genuinely opt-in: lfe == 0.0
+ * reproduces the pre-fold-in output BIT-EXACTLY, in every combination of the two
+ * crossover fields. Without this the fold-in could be silently changing output
+ * that is supposed to be untouched. */
+static void test_lfe_fold_zero_gain_bit_exact(void)
+{
+    enum { N = 512 };
+    int32_t fl[N], fr[N], fc[N], lfe[N], sl[N], sr[N];
+    uint32_t seed = 0x5EEDu;
+    for (int i = 0; i < N; i++) {
+        int32_t *pl[6] = {fl, fr, fc, lfe, sl, sr};
+        for (int c = 0; c < 6; c++) {
+            seed = seed * 1103515245u + 12345u;
+            pl[c][i] = (int32_t)((seed >> 9) % 4000000u) - 2000000;
+        }
+    }
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                    AIUS_CH_SL | AIUS_CH_SR;
+    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, N, 48000, mask};
+
+    /* The reference: what this matrix produced before the fold-in existed --
+     * computed here, from the documented formula, with no LFE term at all. */
+    int32_t refL[N], refR[N];
+    AiusDownmixConfig d = aius_downmix_config_default();
+    for (int i = 0; i < N; i++) {
+        double l = (double)fl[i] + (double)fc[i] * d.center +
+                   (double)sl[i] * d.surround;
+        double r = (double)fr[i] + (double)fc[i] * d.center +
+                   (double)sr[i] * d.surround;
+        refL[i] = (int32_t)(l * d.headroom >= 0.0 ? floor(l * d.headroom + 0.5)
+                                                  : ceil(l * d.headroom - 0.5));
+        refR[i] = (int32_t)(r * d.headroom >= 0.0 ? floor(r * d.headroom + 0.5)
+                                                  : ceil(r * d.headroom - 0.5));
+    }
+
+    /* Four shapes of "LFE excluded", all of which must be that reference. */
+    AiusLfeFold fold;
+    struct { double xover; int with_state; const char *what; } cases[] = {
+        {AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ, 1, "default corner + state"},
+        {AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ, 0, "default corner, no state"},
+        {0.0, 0, "no corner"},
+        {0.0, 1, "no corner, state present"},
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        int32_t ol[N], orr[N];
+        AiusPcmBlock out;
+        memset(&out, 0, sizeof out);
+        out.planes[0] = ol;
+        out.planes[1] = orr;
+        AiusDownmixConfig cfg = aius_downmix_config_default();
+        cfg.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+        cfg.lfe_crossover_hz = cases[c].xover;
+        memset(&fold, 0, sizeof fold);
+        cfg.lfe_fold = cases[c].with_state ? &fold : NULL;
+        assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
+        for (int i = 0; i < N; i++) {
+            assert(ol[i] == refL[i]);
+            assert(orr[i] == refR[i]);
+        }
+        /* And nothing touched the crossover state: an excluded LFE does not even
+         * advance the filter. */
+        if (cases[c].with_state)
+            assert(fold.state[0].x1 == 0.0 && fold.state[1].y1 == 0.0);
+    }
+
+    /* Not vacuous: the SHIPPED default (LFE folded) must differ from that
+     * reference on this block, or "bit-exact at zero gain" proves nothing. */
+    {
+        int32_t ol[N], orr[N];
+        AiusPcmBlock out;
+        memset(&out, 0, sizeof out);
+        out.planes[0] = ol;
+        out.planes[1] = orr;
+        AiusDownmixConfig cfg = aius_downmix_config_default();
+        memset(&fold, 0, sizeof fold);
+        cfg.lfe_fold = &fold;
+        assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
+        int differs = 0;
+        for (int i = 0; i < N; i++)
+            if (ol[i] != refL[i] || orr[i] != refR[i]) differs++;
+        assert(differs > N / 4);
+    }
+    printf("ok LFE gain 0.0 is bit-exactly the pre-fold-in output (4 shapes)\n");
+}
+
+/* NEGATIVE CONTROL 2, and the one that matters most: the low-pass ACTUALLY
+ * ATTENUATES. A fold-in with a broken (or absent, or bypassed) filter still
+ * "works" -- it produces plausible audio -- and sounds worse, so the only way to
+ * know the filter is doing its job is to put content above the corner in and
+ * measure that it is gone.
+ *
+ * Content: a 1 kHz sine on the LFE plane, three octaves above the corner, at the
+ * same amplitude as a 40 Hz sine in the passband. Measured against the
+ * INDEPENDENTLY computed |H(f)| of the designed sections. */
+static void test_lfe_fold_attenuates_above_corner(void)
+{
+    enum { N = 8192, SKIP = 2048 }; /* SKIP discards the settling transient */
+    const double amp = 4000000.0;
+    int32_t *lo = malloc(N * sizeof(int32_t));
+    int32_t *hi = malloc(N * sizeof(int32_t));
+    int32_t *ol = malloc(N * sizeof(int32_t));
+    int32_t *orr = malloc(N * sizeof(int32_t));
+    assert(lo && hi && ol && orr);
+    for (int i = 0; i < N; i++) {
+        lo[i] = (int32_t)floor(amp * sin(2.0 * M_PI * 40.0 * i / FS) + 0.5);
+        hi[i] = (int32_t)floor(amp * sin(2.0 * M_PI * 1000.0 * i / FS) + 0.5);
+    }
+
+    AiusLfeFold fold;
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0; /* the subject is the FILTER, not the level */
+    cfg.lfe = 1.0;      /* ditto: unity fold isolates |H(f)| */
+    cfg.lfe_crossover_hz = AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ;
+    memset(&fold, 0, sizeof fold);
+    cfg.lfe_fold = &fold;
+
+    const double expect_rms = amp / sqrt(2.0);
+
+    /* 40 Hz: essentially unaltered (-0.107 dB by design). */
+    memset(&fold, 0, sizeof fold);
+    fold_lfe_only(&cfg, lo, N, ol, orr);
+    double pass_rms = rms_tail(ol, N, SKIP);
+    double pass_gain = pass_rms / expect_rms;
+    assert(close(20.0 * log10(pass_gain),
+                 20.0 * log10(fold_mag_hz(&fold, FS, 40.0)), 0.05));
+    assert(pass_gain > 0.95); /* the fold-in's own band survives the filter */
+
+    /* 1 kHz: gone. */
+    memset(&fold, 0, sizeof fold);
+    fold_lfe_only(&cfg, hi, N, ol, orr);
+    double stop_rms = rms_tail(ol, N, SKIP);
+    double stop_gain = stop_rms / expect_rms;
+    double measured_db = 20.0 * log10(stop_gain);
+    double designed_db = 20.0 * log10(fold_mag_hz(&fold, FS, 1000.0));
+    assert(close(measured_db, designed_db, 0.5));
+    assert(measured_db < -60.0); /* the blunt version of the same claim */
+
+    /* The contrast, which is the actual negative control: the SAME signal folded
+     * with the crossover bypassed comes through at full level, so the 60+ dB above
+     * is attributable to the filter and not to the signal being quiet. */
+    AiusDownmixConfig flat = cfg;
+    flat.lfe_crossover_hz = 0.0;
+    flat.lfe_fold = NULL;
+    fold_lfe_only(&flat, hi, N, ol, orr);
+    double unfiltered_gain = rms_tail(ol, N, SKIP) / expect_rms;
+    assert(close(20.0 * log10(unfiltered_gain), 0.0, 0.05));
+    assert(20.0 * log10(unfiltered_gain / stop_gain) > 60.0);
+
+    printf("ok LFE fold attenuates above the corner (40 Hz %+.2f dB, 1 kHz "
+           "%+.1f dB vs designed %+.1f dB, unfiltered %+.2f dB)\n",
+           20.0 * log10(pass_gain), measured_db, designed_db,
+           20.0 * log10(unfiltered_gain));
+    free(lo);
+    free(hi);
+    free(ol);
+    free(orr);
+}
+
+/* A zero corner is an explicit UNFILTERED fold: exactly the flat multiply the
+ * matrix did before this change, sample for sample. Kept reachable through the
+ * API (the JSON schema forbids it) so the filter's effect is measurable against
+ * it -- which is what the test above does. */
+static void test_lfe_fold_unfiltered_is_flat_multiply(void)
+{
+    enum { N = 64 };
+    int32_t lfe[N];
+    for (int i = 0; i < N; i++)
+        lfe[i] = (i % 2 ? -1 : 1) * (int32_t)(i * 100000);
+    int32_t ol[N], orr[N];
+
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
+    cfg.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
+    cfg.lfe_crossover_hz = 0.0;
+    cfg.lfe_fold = NULL;
+    fold_lfe_only(&cfg, lfe, N, ol, orr);
+    for (int i = 0; i < N; i++) {
+        double e = (double)lfe[i] * AIUS_DSP_LFE_GAIN_MINUS10DB;
+        int32_t q = (int32_t)(e >= 0.0 ? floor(e + 0.5) : ceil(e - 0.5));
+        assert(ol[i] == q);
+        assert(orr[i] == q); /* symmetric: one mono channel, no image */
+    }
+    printf("ok unfiltered fold is an exact flat multiply into both channels\n");
+}
+
+/* THE MISCONFIGURATION, and it must FAIL CLOSED. A configured corner with no
+ * state to hold it drops the LFE -- BS.775's own default -- rather than folding it
+ * unfiltered. An unfiltered fallback would make the muddy fold reachable by
+ * omission, and an error return would take the audio path down over a cold
+ * config helper's missing pointer. */
+static void test_lfe_fold_missing_state_fails_closed(void)
+{
+    enum { N = 64 };
+    int32_t lfe[N];
+    for (int i = 0; i < N; i++)
+        lfe[i] = 3000000 + i * 1000;
+    int32_t ol[N], orr[N], zl[N], zr[N], fl_[N], fr_[N];
+
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
+
+    /* (a) corner configured, no state -> the LFE is skipped, no error. */
+    cfg.lfe_fold = NULL;
+    fold_lfe_only(&cfg, lfe, N, ol, orr);
+
+    /* (b) what "LFE excluded" looks like on the same input. */
+    AiusDownmixConfig excluded = cfg;
+    excluded.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+    fold_lfe_only(&excluded, lfe, N, zl, zr);
+
+    /* (c) what an unfiltered fallback WOULD have produced -- the wrong answer. */
+    AiusDownmixConfig flat = cfg;
+    flat.lfe_crossover_hz = 0.0;
+    fold_lfe_only(&flat, lfe, N, fl_, fr_);
+
+    int matches_excluded = 1, matches_flat = 1;
+    for (int i = 0; i < N; i++) {
+        if (ol[i] != zl[i] || orr[i] != zr[i]) matches_excluded = 0;
+        if (ol[i] == fl_[i] && orr[i] == fr_[i]) continue;
+        matches_flat = 0;
+    }
+    assert(matches_excluded); /* failed closed */
+    assert(!matches_flat);    /* and not to the unfiltered fold */
+
+    /* Same rule when the corner is unusable at the rate rather than unheld: a
+     * 500 Hz corner at an 800 Hz rate cannot be designed, so the LFE is skipped
+     * instead of being folded through whatever was there before. */
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    AiusPcmBlock in = {{zl, zr, lfe, 0, 0, 0}, 3, N, 800,
+                       AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    memset(zl, 0, sizeof zl);
+    memset(zr, 0, sizeof zr);
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = ol;
+    out.planes[1] = orr;
+    AiusDownmixConfig bad = aius_downmix_config_default();
+    bad.headroom = 1.0;
+    bad.lfe_crossover_hz = AIUS_DSP_LFE_CROSSOVER_MAX_HZ;
+    bad.lfe_fold = &fold;
+    assert(aius_dsp_downmix(&bad, &in, &out) == AIUS_OK);
+    for (int i = 0; i < N; i++)
+        assert(ol[i] == 0 && orr[i] == 0);
+    printf("ok missing/unusable crossover fails closed to LFE-excluded\n");
+}
+
+/* The fold gain is applied AFTER the filter, so the crossover state is in raw
+ * sample units and doubling the gain exactly doubles the contribution. That is
+ * what makes a gain change not need a state reset. */
+static void test_lfe_fold_gain_applied_after_filter(void)
+{
+    enum { N = 2048 };
+    int32_t *lfe = malloc(N * sizeof(int32_t));
+    int32_t *a = malloc(N * sizeof(int32_t));
+    int32_t *b = malloc(N * sizeof(int32_t));
+    int32_t *tmp = malloc(N * sizeof(int32_t));
+    assert(lfe && a && b && tmp);
+    for (int i = 0; i < N; i++)
+        lfe[i] = (int32_t)floor(3000000.0 * sin(2.0 * M_PI * 55.0 * i / FS) + 0.5);
+
+    AiusLfeFold fold;
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
+    cfg.lfe_crossover_hz = AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ;
+    cfg.lfe_fold = &fold;
+
+    cfg.lfe = 0.25;
+    memset(&fold, 0, sizeof fold);
+    fold_lfe_only(&cfg, lfe, N, a, tmp);
+    cfg.lfe = 0.5;
+    memset(&fold, 0, sizeof fold);
+    fold_lfe_only(&cfg, lfe, N, b, tmp);
+
+    /* 2x within one quantization step per sample (each side rounds once). */
+    for (int i = 0; i < N; i++)
+        assert(fabs((double)b[i] - 2.0 * (double)a[i]) <= 1.5);
+    printf("ok fold gain applies after the filter (2x gain -> 2x output)\n");
+    free(lfe);
+    free(a);
+    free(b);
+    free(tmp);
+}
+
+/* Block boundaries are seamless: the crossover carries its delay memory across
+ * calls, so splitting a block is bit-identical to processing it whole. A 4th-order
+ * IIR makes this non-trivial -- a dropped state would show immediately. */
+static void test_lfe_fold_block_boundary_seamless(void)
+{
+    enum { N = 1024, H = 400 };
+    int32_t *lfe = malloc(N * sizeof(int32_t));
+    int32_t *whole_l = malloc(N * sizeof(int32_t));
+    int32_t *whole_r = malloc(N * sizeof(int32_t));
+    int32_t *split_l = malloc(N * sizeof(int32_t));
+    int32_t *split_r = malloc(N * sizeof(int32_t));
+    int32_t *zero = calloc(N, sizeof(int32_t));
+    assert(lfe && whole_l && whole_r && split_l && split_r && zero);
+    for (int i = 0; i < N; i++)
+        lfe[i] = (int32_t)floor(2500000.0 * sin(2.0 * M_PI * 85.0 * i / FS) +
+                                900000.0 * sin(2.0 * M_PI * 700.0 * i / FS) + 0.5);
+
+    AiusLfeFold fold;
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
+    cfg.lfe_fold = &fold;
+
+    memset(&fold, 0, sizeof fold);
+    fold_lfe_only(&cfg, lfe, N, whole_l, whole_r);
+
+    memset(&fold, 0, sizeof fold);
+    uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE;
+    AiusPcmBlock ha = {{zero, zero, lfe, 0, 0, 0}, 3, H, 48000, mask};
+    AiusPcmBlock hb = {{zero, zero, lfe + H, 0, 0, 0}, 3, N - H, 48000, mask};
+    AiusPcmBlock oa;
+    memset(&oa, 0, sizeof oa);
+    oa.planes[0] = split_l;
+    oa.planes[1] = split_r;
+    AiusPcmBlock ob;
+    memset(&ob, 0, sizeof ob);
+    ob.planes[0] = split_l + H;
+    ob.planes[1] = split_r + H;
+    assert(aius_dsp_downmix(&cfg, &ha, &oa) == AIUS_OK);
+    assert(aius_dsp_downmix(&cfg, &hb, &ob) == AIUS_OK);
+    for (int i = 0; i < N; i++) {
+        assert(split_l[i] == whole_l[i]);
+        assert(split_r[i] == whole_r[i]);
+    }
+    /* Not vacuous: the second half must actually carry signal that depends on the
+     * first half's state, so a zeroed-state second call would differ. */
+    int nonzero = 0;
+    for (int i = H; i < N; i++)
+        if (whole_l[i] != 0) nonzero++;
+    assert(nonzero > (N - H) / 2);
+    printf("ok LFE fold is seamless across a block boundary\n");
+    free(lfe);
+    free(whole_l);
+    free(whole_r);
+    free(split_l);
+    free(split_r);
+    free(zero);
+}
+
+/* The corner and the rate are re-derived from the config and the block, not
+ * remembered from whatever they were first: a change to either redesigns the
+ * sections and resets the memory. That is the contract the runtime-rate work
+ * depends on. */
+static void test_lfe_fold_redesign_on_change(void)
+{
+    enum { N = 256 };
+    int32_t lfe[N], ol[N], orr[N];
+    for (int i = 0; i < N; i++)
+        lfe[i] = (int32_t)floor(2000000.0 * sin(2.0 * M_PI * 200.0 * i / FS) + 0.5);
+
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
+    cfg.lfe = 1.0;
+    cfg.lfe_fold = &fold;
+
+    /* First block designs at (120, 48000). */
+    fold_lfe_only(&cfg, lfe, N, ol, orr);
+    assert(fold.designed_hz == 120.0 && fold.designed_fs == 48000.0);
+    double coeff_120 = fold.lp[0].a1;
+
+    /* A corner change redesigns and resets. */
+    cfg.lfe_crossover_hz = 80.0;
+    fold_lfe_only(&cfg, lfe, N, ol, orr);
+    assert(fold.designed_hz == 80.0);
+    assert(fold.lp[0].a1 != coeff_120);
+    assert(close(fold_mag_hz(&fold, FS, 80.0), 0.5, 1e-12));
+
+    /* A RATE change redesigns too, from the block's own sample_rate_hz, so the
+     * corner stays the same analog frequency. fold_lfe_only pins 48 kHz, so drive
+     * a 96 kHz block directly. */
+    int32_t *zero = calloc(N, sizeof(int32_t));
+    assert(zero != NULL);
+    AiusPcmBlock in96 = {{zero, zero, lfe, 0, 0, 0}, 3, N, 96000,
+                         AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = ol;
+    out.planes[1] = orr;
+    assert(aius_dsp_downmix(&cfg, &in96, &out) == AIUS_OK);
+    assert(fold.designed_fs == 96000.0 && fold.designed_hz == 80.0);
+    /* 1e-9 for the reference's own cancellation at fs/f0 = 1200; see
+     * test_lfe_fold_rate_independent. */
+    assert(close(fold_mag_hz(&fold, 96000.0, 80.0), 0.5, 1e-9));
+    free(zero);
+    printf("ok LFE fold redesigns on a corner or rate change\n");
+}
+
+/* reset() clears the memory and keeps the design, so a reset fold reproduces a
+ * freshly designed one on the same input. */
+static void test_lfe_fold_reset(void)
+{
+    enum { N = 512 };
+    int32_t lfe[N], a_l[N], a_r[N], b_l[N], b_r[N];
+    for (int i = 0; i < N; i++)
+        lfe[i] = (int32_t)floor(2000000.0 * sin(2.0 * M_PI * 60.0 * i / FS) + 0.5);
+
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.headroom = 1.0;
+    cfg.lfe_fold = &fold;
+
+    fold_lfe_only(&cfg, lfe, N, a_l, a_r); /* designs, then runs */
+    double a1 = fold.lp[0].a1;
+    assert(fold.state[0].y1 != 0.0); /* memory is populated */
+    aius_lfe_fold_reset(&fold);
+    assert(fold.state[0].x1 == 0.0 && fold.state[0].y1 == 0.0);
+    assert(fold.state[1].x1 == 0.0 && fold.state[1].y1 == 0.0);
+    assert(fold.lp[0].a1 == a1);                                  /* design kept */
+    assert(fold.designed_hz == 120.0 && fold.designed_fs == FS);   /* and its key */
+
+    fold_lfe_only(&cfg, lfe, N, b_l, b_r);
+    for (int i = 0; i < N; i++) {
+        assert(b_l[i] == a_l[i]);
+        assert(b_r[i] == a_r[i]);
+    }
+    aius_lfe_fold_reset(NULL); /* no-op, must not fault */
+    printf("ok LFE fold reset clears memory and keeps the design\n");
 }
 
 /* --- biquad known answers ------------------------------------------------- */
@@ -549,10 +1140,28 @@ static void test_shipped_defaults(void)
     assert(d.headroom < 1.0);  /* the defect: unity headroom clipped the corpus */
     assert(d.center == AIUS_DSP_DOWNMIX_CENTER_DEFAULT);
     assert(d.surround == AIUS_DSP_DOWNMIX_SURROUND_DEFAULT);
-    assert(d.lfe == 0.0);
+    /* The LFE is now FOLDED IN, not discarded. Roadmap item 2: 0.0 threw away the
+     * bottom octave of film content on a device whose only output is a stereo
+     * pair. -10 dB is 20 dB below A/52's +10 dB reference fold-in gain, for the
+     * reasons recorded in aius_dsp.h. */
+    assert(d.lfe == AIUS_DSP_LFE_GAIN_MINUS10DB);
+    assert(d.lfe > 0.0);
+    assert(d.lfe < 1.0); /* the reference gain is > 1; this device attenuates */
+    /* And the fold is FILTERED by default: a corner is configured, so a caller
+     * that supplies state gets the LR4 and a caller that does not gets no LFE.
+     * Neither gets an unfiltered fold. */
+    assert(d.lfe_crossover_hz == AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ);
+    assert(d.lfe_crossover_hz == 120.0);
+    assert(d.lfe_fold == NULL); /* caller-owned state; a value cannot carry it */
     /* Deliberately NOT the clip-free value: that costs 7.66 dB to cover a case
      * the limiter is there for. */
     assert(d.headroom > aius_downmix_clipfree_headroom(&d));
+    /* The fold makes the clip-free answer stricter, and the shipped headroom is
+     * still above it: 1/(1 + 0.7071 + 0.7071 + 0.316228) = 0.36626. */
+    assert(close(aius_downmix_clipfree_headroom(&d),
+                 1.0 / (1.0 + AIUS_DSP_DOWNMIX_CENTER_DEFAULT +
+                        AIUS_DSP_DOWNMIX_SURROUND_DEFAULT +
+                        AIUS_DSP_LFE_GAIN_DEFAULT), 1e-15));
 
     AiusLimiterConfig c = aius_limiter_config_default();
     assert(c.enabled == 1); /* modest headroom REQUIRES an active limiter */
@@ -1224,8 +1833,12 @@ static void test_tx24_carries_low_bits_the_old_path_discarded(void)
     AiusOut16Stage st16 = aius_out16_stage_default();
     aius_out16_run(&st16, l24, r24, o16_l, o16_r, FRAMES);
     for (int i = 0; i < FRAMES; i++) {
-        old_tx[2 * i] = (int32_t)o16_l[i] << 8;
-        old_tx[2 * i + 1] = (int32_t)o16_r[i] << 8;
+        /* The snapshot's `<< 8` verbatim, but reached through uint32_t: shifting
+         * a negative signed value is undefined, and UBSan says so on every run.
+         * The two's-complement result is identical, which is the point -- this
+         * models the old wire word exactly. */
+        old_tx[2 * i] = (int32_t)((uint32_t)(int32_t)o16_l[i] << 8);
+        old_tx[2 * i + 1] = (int32_t)((uint32_t)(int32_t)o16_r[i] << 8);
     }
     /* The defect as an assertion: every word the old path put on the wire is a
      * multiple of 256, so the low 8 bits are ALWAYS zero and this signal is
@@ -1845,6 +2458,17 @@ int main(void)
     test_surround_routing();
     test_clip_headroom();
     test_clipfree_headroom();
+    test_lfe_fold_design();
+    test_lfe_fold_rate_independent();
+    test_lfe_fold_init_rejects();
+    test_lfe_fold_zero_gain_bit_exact();
+    test_lfe_fold_attenuates_above_corner();
+    test_lfe_fold_unfiltered_is_flat_multiply();
+    test_lfe_fold_missing_state_fails_closed();
+    test_lfe_fold_gain_applied_after_filter();
+    test_lfe_fold_block_boundary_seamless();
+    test_lfe_fold_redesign_on_change();
+    test_lfe_fold_reset();
     test_biquad_gain_bypass();
     test_biquad_feedback_recurrence();
     test_biquad_gain_scale();

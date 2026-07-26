@@ -454,6 +454,7 @@ static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, Aius
 	out.matrix.center_gain_linear = model.matrix.center_gain_linear;
 	out.matrix.surround_gain_linear = model.matrix.surround_gain_linear;
 	out.matrix.lfe_gain_linear = model.matrix.lfe_gain_linear;
+	out.matrix.lfe_crossover_hz = model.matrix.lfe_crossover_hz;
 	out.matrix.headroom_linear = model.matrix.headroom_linear;
 	out.matrix.clipfree = model.matrix.clipfree;
 	out.limiter.enabled = model.limiter.enabled;
@@ -843,6 +844,10 @@ private:
 	int32_t g_input_scratch[AIUS_MAX_CHANNELS][INPUT_SCRATCH_FRAMES];
 	bool g_input_stage_active = false;
 	AiusLimiter g_limiter = {};
+	/* The LFE fold's LR4 low-pass state, 160 B. Beside g_limiter so it lands in
+	 * the same DTCM .bss as the other DSP state rather than the free-for-locals
+	 * zone, and adds no stack local to the audio path. */
+	AiusLfeFold g_lfe_fold = {};
 	bool g_limiter_active = false;
 	/* The output stage's dither streams, seeded ONCE in begin_pipeline() and
 	 * deliberately not in apply_config(): re-seeding on every staged config change
@@ -1003,10 +1008,25 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 				section.frequency_hz, section.q, section.gain_db);
 	}
 	memset(g_eq_state, 0, sizeof(g_eq_state));
+	/* Hoisted above the matrix block so the LFE crossover can be designed here,
+	 * cold: aius_lfe_fold_init() evaluates two cos/sin pairs, which belongs
+	 * beside the biquad trig below rather than in the audio ISR. The downmix
+	 * would design lazily on the first block otherwise. */
+	const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz
+	                                               : AIUS_OPTICAL_SAMPLE_RATE_HZ;
 	g_downmix = aius_downmix_config_default();
 	g_downmix.center = cfg.matrix.center_gain_linear;
 	g_downmix.surround = cfg.matrix.surround_gain_linear;
 	g_downmix.lfe = cfg.matrix.lfe_gain_linear;
+	/* The LFE fold's low-pass. The DTS core does not band-limit its LFE plane to
+	 * the crossover -- it carries LFE decimated by 64 or 128, so up to 375 Hz of
+	 * reconstruction imaging survives -- which is why this is LR4 rather than one
+	 * section. If the live stream's rate differs from the config's, the downmix
+	 * redesigns from the block's real rate, which is the intended behaviour. */
+	g_downmix.lfe_crossover_hz = cfg.matrix.lfe_crossover_hz;
+	g_downmix.lfe_fold = &g_lfe_fold;
+	(void)aius_lfe_fold_init(&g_lfe_fold, (double)rate,
+	                         cfg.matrix.lfe_crossover_hz);
 	if (cfg.matrix.clipfree)
 		g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
 	else
@@ -1060,8 +1080,6 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	 * A reader racing that memset is safe for the same reason a reader racing a
 	 * publish is: seq changes value across the copy, so the s1 == s2 check
 	 * fails and the reader retries. */
-	const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz
-	                                               : AIUS_OPTICAL_SAMPLE_RATE_HZ;
 	g_meter_window_frames = rate / AIUS_METER_PUBLISH_HZ;
 	if (g_meter_window_frames == 0u)
 		g_meter_window_frames = 1u;
@@ -1337,11 +1355,13 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	resolved.lfe = cfg.matrix.lfe_gain_linear;
 	double headroom = cfg.matrix.clipfree ?
 		aius_downmix_clipfree_headroom(&resolved) : cfg.matrix.headroom_linear;
+	/* lfe_crossover_hz is required by the PUT validator, so omitting it here
+	 * would make a GET -> PUT round-trip fail 400 on a missing key. */
 	if (!http_json_append(output, capacity, &length,
-	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s},",
+	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s},",
 	                      cfg.matrix.center_gain_linear, cfg.matrix.surround_gain_linear,
-	                      cfg.matrix.lfe_gain_linear, headroom,
-	                      cfg.matrix.clipfree ? "true" : "false"))
+	                      cfg.matrix.lfe_gain_linear, cfg.matrix.lfe_crossover_hz,
+	                      headroom, cfg.matrix.clipfree ? "true" : "false"))
 		return 0;
 	if (!http_json_append(output, capacity, &length,
 	                      "\"limiter\":{\"enabled\":%s,\"threshold_dbfs\":%.17g,\"attack_ms\":%.17g,\"release_ms\":%.17g,\"lookahead_ms\":%.17g}}",

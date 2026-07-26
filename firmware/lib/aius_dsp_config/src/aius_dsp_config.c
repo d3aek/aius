@@ -38,6 +38,11 @@
 #define INPUT_TRIM_MIN_DB -60.0
 #define INPUT_TRIM_MAX_DB 12.0
 #define MATRIX_GAIN_MAX_LINEAR 4.0
+/* LFE fold-in crossover corner, mirroring build_config.py's LFE_CROSSOVER_*_HZ
+ * and aius_dsp.h's AIUS_DSP_LFE_CROSSOVER_{MIN,MAX}_HZ. 0 is deliberately outside
+ * the range: see the AiusDspModelMatrix comment. */
+#define MATRIX_LFE_CROSSOVER_MIN_HZ 20.0
+#define MATRIX_LFE_CROSSOVER_MAX_HZ 500.0
 #define LIMITER_THRESHOLD_MIN_DBFS -24.0
 #define LIMITER_THRESHOLD_MAX_DBFS 0.0
 #define LIMITER_ATTACK_MIN_MS 0.1
@@ -646,7 +651,7 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
-	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0u};
+	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0.0, 0u};
 	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
@@ -668,6 +673,8 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 				field = 3u;
 			else if (aius_json_key_is(key, key_len, overflow, "clipfree"))
 				field = 4u;
+			else if (aius_json_key_is(key, key_len, overflow, "lfe_crossover_hz"))
+				field = 5u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
 
@@ -703,8 +710,13 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 					matrix.headroom_linear = headroom;
 				break;
 			}
-			default:
+			case 4u:
 				error = take_bool(parser, &matrix.clipfree);
+				break;
+			default:
+				error = take_bounded(parser, MATRIX_LFE_CROSSOVER_MIN_HZ,
+				                     MATRIX_LFE_CROSSOVER_MAX_HZ,
+				                     &matrix.lfe_crossover_hz);
 				break;
 			}
 			if (error != AIUS_DSP_CONFIG_OK)
@@ -719,7 +731,7 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 		}
 	}
 
-	if (seen != 0x1Fu)
+	if (seen != 0x3Fu)
 		return AIUS_DSP_CONFIG_ERR_MISSING_KEY;
 	*out = matrix;
 	return AIUS_DSP_CONFIG_OK;

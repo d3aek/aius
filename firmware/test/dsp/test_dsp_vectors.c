@@ -18,6 +18,14 @@
  * recomputes and strictly compares; a missing golden fails loudly. Regenerate
  * with AIUS_DSP_VECTORS_DUMP=1 (writes the golden files) after a reviewed change.
  *
+ * THE OUTPUT SIGNATURE MOVES WHEN THE SHIPPED DEFAULT MOVES, which is what makes
+ * it worth retaining and also what makes a regeneration a reviewable event rather
+ * than a formality. It moved twice so far: for the 0.5 headroom (defect 2) and for
+ * the LFE fold-in (roadmap item 2). A regeneration must be able to account for
+ * every changed number, so the harness prints `lfe_delta_peak` per vector and
+ * asserts the blast radius directly -- a vector with no LFE plane must be
+ * BIT-IDENTICAL with the fold-in enabled, and a vector with one must differ.
+ *
  * Usage: test_dsp_vectors <vectors_dir> <golden_dir>
  * Exit 0 on all-pass, 1 on any failure.
  */
@@ -39,6 +47,14 @@ static int g_fail;
  * does not clip" checks cannot pass vacuously on a corpus that never stressed the
  * downmix matrix. */
 static uint32_t g_unity_clipped;
+
+/* Roadmap item 2's own negative control, the same shape as g_unity_clipped: how
+ * many vectors actually exercised the LFE fold-in, and the peak sample delta the
+ * fold accounts for on the vector being reported. Asserted non-zero in main, so
+ * the "stereo output is untouched" checks cannot pass on a corpus in which nothing
+ * carries LFE at all. */
+static uint32_t g_lfe_folded_vectors;
+static int32_t g_lfe_delta_peak;
 
 #define CHECK(cond, ...)                                                        \
     do {                                                                        \
@@ -210,7 +226,21 @@ static int mask_plane(uint32_t mask, uint32_t bit)
     return idx;
 }
 
-/* Independent Lo/Ro downmix of a planar block per the documented formula. */
+/* Independent Lo/Ro downmix of a planar block per the documented formula,
+ * including the LFE fold-in and its crossover.
+ *
+ * THE SPLIT OF RESPONSIBILITY for the crossover, because it matters for what this
+ * proves. The reference runs its OWN Direct Form I recurrence over its OWN delay
+ * memory, so the fold's integration into the matrix -- filter before gain, one
+ * quantize per output sample, symmetric into L and R, state carried across the
+ * whole vector -- is checked against an implementation that shares no code with
+ * the module. It reads the DESIGNED coefficients from the fold rather than
+ * re-deriving them, because the coefficient math is pinned separately and more
+ * strongly in the `dsp` suite, as exact identities (|H(0)| == 1, |H(f0)| == Q at
+ * every rate) that no transcription here could match for rigour. Re-transcribing
+ * the RBJ formulas here would also risk a last-bit disagreement on a knife-edge
+ * sample, which would make this a flaky test of arithmetic order rather than a
+ * firm test of routing. */
 static void ref_downmix(const AiusDownmixConfig *cfg, const struct pcm *p,
                         int32_t *outL, int32_t *outR)
 {
@@ -220,12 +250,42 @@ static void ref_downmix(const AiusDownmixConfig *cfg, const struct pcm *p,
     int iLFE = mask_plane(p->channel_mask, AIUS_CH_LFE);
     int iSL = mask_plane(p->channel_mask, AIUS_CH_SL);
     int iSR = mask_plane(p->channel_mask, AIUS_CH_SR);
+
+    /* The reference's own crossover: designed here (so the harness never depends
+     * on the module having been called first) with its own state. */
+    AiusLfeFold ref_fold;
+    int filtered = cfg->lfe != 0.0 && cfg->lfe_crossover_hz > 0.0 &&
+                   cfg->lfe_fold != NULL &&
+                   aius_lfe_fold_init(&ref_fold, (double)p->sample_rate,
+                                      cfg->lfe_crossover_hz) == AIUS_OK;
+    double x1[AIUS_DSP_LFE_CROSSOVER_SECTIONS] = {0};
+    double x2[AIUS_DSP_LFE_CROSSOVER_SECTIONS] = {0};
+    double y1[AIUS_DSP_LFE_CROSSOVER_SECTIONS] = {0};
+    double y2[AIUS_DSP_LFE_CROSSOVER_SECTIONS] = {0};
+
     for (uint32_t n = 0; n < p->frames; n++) {
         double l = 0.0, r = 0.0;
         if (iFL >= 0) l += (double)p->ch[iFL][n];
         if (iFR >= 0) r += (double)p->ch[iFR][n];
         if (iFC >= 0) { double c = (double)p->ch[iFC][n] * cfg->center; l += c; r += c; }
-        if (iLFE >= 0) { double e = (double)p->ch[iLFE][n] * cfg->lfe; l += e; r += e; }
+        if (iLFE >= 0) {
+            double e = (double)p->ch[iLFE][n];
+            if (filtered) {
+                for (int k = 0; k < AIUS_DSP_LFE_CROSSOVER_SECTIONS; k++) {
+                    const AiusBiquad *q = &ref_fold.lp[k];
+                    double y = q->b0 * e + q->b1 * x1[k] + q->b2 * x2[k]
+                               - q->a1 * y1[k] - q->a2 * y2[k];
+                    x2[k] = x1[k];
+                    x1[k] = e;
+                    y2[k] = y1[k];
+                    y1[k] = y;
+                    e = y;
+                }
+            }
+            e *= cfg->lfe;
+            l += e;
+            r += e;
+        }
         if (iSL >= 0) l += (double)p->ch[iSL][n] * cfg->surround;
         if (iSR >= 0) r += (double)p->ch[iSR][n] * cfg->surround;
         outL[n] = ref_quantize(l * cfg->headroom);
@@ -362,7 +422,19 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         goto done;
     }
 
+    /* THE SHIPPED DEFAULT NOW CARRIES STATE, which changes how this harness has to
+     * be read. The LFE fold-in's crossover is a 4th-order IIR whose delay memory
+     * persists across calls, so every INDEPENDENT run below -- each of which
+     * re-processes the whole vector from its first sample -- must start from zero
+     * memory or it inherits the previous run's filter history and the two results
+     * differ for the first few hundred samples. `aius_lfe_fold_reset(&fold)`
+     * immediately before a run is what says "this run starts fresh"; the two
+     * block-split tests deliberately do NOT reset between halves, because carrying
+     * the state is the property they exist to prove. */
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
     AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe_fold = &fold;
 
     /* Routing and per-channel GAIN math is asserted at unity headroom. The shipped
      * default headroom is 0.5 (defect 2: unity clipped this very corpus), so a
@@ -387,6 +459,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     memset(&out, 0, sizeof out);
     out.planes[0] = outL;
     out.planes[1] = outR;
+    aius_lfe_fold_reset(&fold);
     CHECK(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK, "%s downmix", v->name);
 
     /* Bounded latency: no buffering, output frame count == input. */
@@ -394,7 +467,8 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     CHECK(out.channels == 2 && out.channel_mask == (AIUS_CH_FL | AIUS_CH_FR),
           "%s stereo layout", v->name);
 
-    /* Independent reference downmix: sample-exact over the whole real vector. */
+    /* Independent reference downmix: sample-exact over the whole real vector,
+     * fold-in and crossover included (ref_downmix runs its own recurrence). */
     ref_downmix(&cfg, &p, refL, refR);
     {
         uint32_t diff = 0, first = 0;
@@ -419,6 +493,63 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         CHECK(inrange, "%s output out of 24-bit range", v->name);
     }
 
+    /* --- the fold-in's blast radius, asserted rather than assumed ---------- */
+    /* Every vector gets the same comparison: the shipped default against LFE
+     * excluded, over the whole decoded vector.
+     *
+     *   - A vector with no LFE in its layout must be BIT-IDENTICAL. The fold-in is
+     *     allowed to change 5.1 output and is not allowed to touch stereo, and this
+     *     is the check that says so at every sample rather than leaving it implied
+     *     by an unchanged golden file.
+     *   - A vector WITH LFE must differ, or the golden it just regenerated would be
+     *     recording a feature that is not running.
+     *
+     * `lfe_delta_peak` is reported alongside the signature so a reviewer reading a
+     * changed golden can see how much of the change the fold-in accounts for. */
+    {
+        int32_t *xl = malloc(F * sizeof(int32_t));
+        int32_t *xr = malloc(F * sizeof(int32_t));
+        if (xl == NULL || xr == NULL) {
+            fprintf(stderr, "FAIL %s: OOM\n", v->name);
+            g_fail++;
+        } else {
+            AiusPcmBlock xo;
+            memset(&xo, 0, sizeof xo);
+            xo.planes[0] = xl;
+            xo.planes[1] = xr;
+            AiusDownmixConfig ex = cfg;
+            ex.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+            aius_lfe_fold_reset(&fold);
+            CHECK(aius_dsp_downmix(&ex, &in, &xo) == AIUS_OK, "%s excluded dmix",
+                  v->name);
+            uint32_t diff = 0;
+            int32_t dpk = 0;
+            for (uint32_t n = 0; n < F; n++) {
+                if (outL[n] != xl[n] || outR[n] != xr[n]) diff++;
+                int32_t d = outL[n] - xl[n];
+                if (d < 0) d = -d;
+                if (d > dpk) dpk = d;
+                d = outR[n] - xr[n];
+                if (d < 0) d = -d;
+                if (d > dpk) dpk = d;
+            }
+            if (p.channel_mask & AIUS_CH_LFE) {
+                CHECK(diff > 0,
+                      "%s carries LFE but the fold-in changed nothing -- the "
+                      "default is not folding", v->name);
+                g_lfe_folded_vectors++;
+            } else {
+                CHECK(diff == 0,
+                      "%s has no LFE plane but the fold-in changed %u sample(s) "
+                      "(peak delta %d) -- stereo output must be untouched",
+                      v->name, diff, dpk);
+            }
+            g_lfe_delta_peak = dpk;
+        }
+        free(xl);
+        free(xr);
+    }
+
     /* --- process(bypass EQ) == bare downmix (trim/EQ bypass equivalence) --- */
     {
         AiusBiquad eq[1];
@@ -432,6 +563,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         pout.planes[0] = pl;
         pout.planes[1] = pr;
         AiusDspConfig dc = { cfg, eq, ns, st, NULL, NULL };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&dc, &in, &pout) == AIUS_OK, "%s process", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
@@ -459,6 +591,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         wout.planes[0] = wl;
         wout.planes[1] = wr;
         AiusDspConfig wc = { cfg, eq, 1, wst, NULL, NULL };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&wc, &in, &wout) == AIUS_OK, "%s eq whole", v->name);
 
         /* two halves, state carried */
@@ -481,6 +614,10 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         AiusPcmBlock ob;
         memset(&ob, 0, sizeof ob);
         ob.planes[0] = sl + h; ob.planes[1] = sr + h;
+        /* Reset before half A only. The crossover memory MUST carry from A into B
+         * -- that, and the EQ state, is what "seamless block boundary" means now
+         * that the matrix itself holds a filter. */
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&sc, &ha, &oa) == AIUS_OK, "%s eq half a", v->name);
         CHECK(aius_dsp_process(&sc, &hb, &ob) == AIUS_OK, "%s eq half b", v->name);
 
@@ -588,32 +725,85 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             CHECK(placed, "%s SR->R gain wrong", v->name);
             CHECK(quiet, "%s SR leaked to L", v->name);
         }
-        /* LFE gain: excluded by default (0), folded at -10 dB when configured. */
+        /* LFE fold-in, on real decoded LFE content isolated onto its own block.
+         * Four claims, in the order they were built: excluded at gain 0, exact flat
+         * multiply with no corner, low-passed and symmetric at the shipped default,
+         * and failing closed with no state. */
         {
             int nch = build_isolated(AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE,
                                      AIUS_CH_LFE, p.ch[iLFE], zero, pl);
             AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1],
                                 (int32_t *)pl[2], 0, 0, 0}, (uint16_t)nch, F,
                                48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE };
-            /* default: LFE excluded -> stereo silent. */
-            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s LFE def",
+
+            /* (1) NEGATIVE CONTROL at vector scale: gain 0 -> stereo silent, so
+             * the fold-in is genuinely opt-in on real content and not just on a
+             * synthetic block. */
+            AiusDownmixConfig ec = unity;
+            ec.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+            aius_lfe_fold_reset(&fold);
+            CHECK(aius_dsp_downmix(&ec, &b, &isoOut) == AIUS_OK, "%s LFE excluded",
                   v->name);
             int silent = 1;
             for (uint32_t n = 0; n < F; n++)
                 if (iL[n] != 0 || iR[n] != 0) silent = 0;
-            CHECK(silent, "%s LFE not excluded by default", v->name);
-            /* -10 dB fold: symmetric into both. */
+            CHECK(silent, "%s LFE not excluded at gain 0", v->name);
+
+            /* (2) -10 dB with NO corner: still the exact flat multiply the matrix
+             * always did, symmetric into both. The unfiltered fold stays reachable
+             * through the API even though the JSON schema forbids it. */
             AiusDownmixConfig lc = unity;
             lc.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
-            CHECK(aius_dsp_downmix(&lc, &b, &isoOut) == AIUS_OK, "%s LFE fold", v->name);
+            lc.lfe_crossover_hz = 0.0;
+            lc.lfe_fold = NULL;
+            CHECK(aius_dsp_downmix(&lc, &b, &isoOut) == AIUS_OK, "%s LFE flat fold",
+                  v->name);
             int folded = 1, nonzero = 0;
+            int32_t flat_peak = 0;
             for (uint32_t n = 0; n < F; n++) {
                 int32_t e = ref_quantize((double)p.ch[iLFE][n] * AIUS_DSP_LFE_GAIN_MINUS10DB);
                 if (iL[n] != e || iR[n] != e) folded = 0;
                 if (e != 0) nonzero = 1;
+                int32_t a = e < 0 ? -e : e;
+                if (a > flat_peak) flat_peak = a;
             }
-            CHECK(folded, "%s LFE fold gain wrong", v->name);
+            CHECK(folded, "%s LFE flat fold gain wrong", v->name);
             CHECK(nonzero, "%s LFE test signal silent", v->name);
+
+            /* (3) THE SHIPPED FOLD: same gain, 120 Hz LR4. Symmetric, and audibly
+             * REDUCED against the unfiltered fold -- which is the whole point, and
+             * is only checkable because (2) measured the unfiltered case on the same
+             * content. The corpus's LFE planes carry 21% of their power above the
+             * corner, so this must come out below the flat fold. */
+            AiusDownmixConfig fc = unity;
+            fc.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
+            aius_lfe_fold_reset(&fold);
+            CHECK(aius_dsp_downmix(&fc, &b, &isoOut) == AIUS_OK, "%s LFE LR4 fold",
+                  v->name);
+            int sym = 1;
+            int32_t lp_peak = 0;
+            for (uint32_t n = 0; n < F; n++) {
+                if (iL[n] != iR[n]) sym = 0;
+                int32_t a = iL[n] < 0 ? -iL[n] : iL[n];
+                if (a > lp_peak) lp_peak = a;
+            }
+            CHECK(sym, "%s LR4 fold not symmetric L==R", v->name);
+            CHECK(lp_peak > 0, "%s LR4 fold silent (filter killed everything)",
+                  v->name);
+            CHECK(lp_peak < flat_peak,
+                  "%s LR4 fold peak %d not below the unfiltered %d -- the crossover "
+                  "is not attenuating", v->name, lp_peak, flat_peak);
+
+            /* (4) And with no state to hold the corner it fails CLOSED, to (1)
+             * rather than to (2): silent, not an unfiltered fold. */
+            AiusDownmixConfig nc = fc;
+            nc.lfe_fold = NULL;
+            CHECK(aius_dsp_downmix(&nc, &b, &isoOut) == AIUS_OK, "%s LFE no state",
+                  v->name);
+            int closed = 1;
+            for (uint32_t n = 0; n < F; n++)
+                if (iL[n] != 0 || iR[n] != 0) closed = 0;
+            CHECK(closed, "%s missing crossover state did not fail closed", v->name);
         }
         free(iL);
         free(iR);
@@ -645,6 +835,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&uo2, 0, sizeof uo2);
         uo2.planes[0] = ul;
         uo2.planes[1] = ur;
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_downmix(&unity, &in, &uo2) == AIUS_OK, "%s unity clip probe",
               v->name);
         for (uint32_t n = 0; n < F; n++) {
@@ -658,7 +849,10 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 
     /* --- clip-free headroom: real vector never saturates ------------------ */
     {
+        AiusLfeFold cfold;
+        memset(&cfold, 0, sizeof cfold);
         AiusDownmixConfig cc = aius_downmix_config_default();
+        cc.lfe_fold = &cfold; /* the clip-free bound covers the fold, so run it */
         cc.headroom = aius_downmix_clipfree_headroom(&cc);
         CHECK(cc.headroom > 0.0 && cc.headroom <= 1.0, "%s clipfree headroom", v->name);
         AiusPcmBlock co;
@@ -695,6 +889,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         po.planes[0] = pl;
         po.planes[1] = pr;
         AiusDspConfig dc = { cfg, NULL, 0, NULL, &stage, NULL };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&dc, &in, &po) == AIUS_OK, "%s input-id", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
@@ -723,6 +918,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&ro, 0, sizeof ro);
         ro.planes[0] = rl;
         ro.planes[1] = rr;
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_downmix(&cfg, &rin, &ro) == AIUS_OK, "%s trim ref", v->name);
 
         AiusInputStage stage = aius_input_stage_default();
@@ -739,6 +935,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         to.planes[0] = tl;
         to.planes[1] = tr;
         AiusDspConfig tc = { cfg, NULL, 0, NULL, &stage, NULL };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&tc, &in, &to) == AIUS_OK, "%s trim proc", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
@@ -765,6 +962,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         lo.planes[0] = ll;
         lo.planes[1] = lr;
         AiusDspConfig lc = { cfg, NULL, 0, NULL, NULL, &lim };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&lc, &in, &lo) == AIUS_OK, "%s lim off", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
@@ -791,6 +989,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         lo.planes[0] = ll;
         lo.planes[1] = lr;
         AiusDspConfig lc = { cfg, NULL, 0, NULL, NULL, &lim };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&lc, &in, &lo) == AIUS_OK, "%s lim on", v->name);
 
         int32_t base_pk = peak_abs(outL, F);
@@ -855,6 +1054,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         wo.planes[0] = wl;
         wo.planes[1] = wr;
         AiusDspConfig wc = { cfg, oeq, 1, west, &stage, &wlim };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&wc, &in, &wo) == AIUS_OK, "%s full whole", v->name);
         CHECK(wo.frames == F, "%s full frames %u != %u", v->name, wo.frames, F);
 
@@ -884,6 +1084,9 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&ob, 0, sizeof ob);
         ob.planes[0] = sl + hh;
         ob.planes[1] = sr + hh;
+        /* Reset before half A only: the crossover, the EQ and the limiter all carry
+         * their state into half B, which is what makes this a boundary test. */
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&sc, &ha, &oa) == AIUS_OK, "%s full half a", v->name);
         CHECK(aius_dsp_process(&sc, &hb, &ob) == AIUS_OK, "%s full half b", v->name);
 
@@ -935,7 +1138,12 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 
         /* Arm the shim AFTER every buffer is allocated; the process path, the
          * caller-driven meter taps, publish, and read must not touch
-         * malloc/calloc/realloc. */
+         * malloc/calloc/realloc. The crossover is reset BEFORE arming so its
+         * design happens inside the guarded call -- the redesign path evaluates
+         * cos/sin and must be allocation-free too, which is exactly what the fold
+         * being caller-owned state buys. */
+        aius_lfe_fold_reset(&fold);
+        memset(&fold, 0, sizeof fold); /* force a redesign inside the guard */
         aius_alloc_shim_set_arena(&guard);
         aius_alloc_shim_reset_count();
         AiusStatus gs = aius_dsp_process(&gc, &in, &go);
@@ -977,6 +1185,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(st, 0, sizeof st);
         size_t ns = aius_eq_default(eq, 1);
         AiusDspConfig mc = { cfg, eq, ns, st, NULL, NULL };
+        aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&mc, &in, &mo) == AIUS_OK, "%s meter proc", v->name);
 
         uint32_t diff = 0;
@@ -1073,10 +1282,11 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
          * against a golden change wants to see how close to the rail it lands, and
          * "8388607/8388607" versus "0 dBFS" is the difference between reading a
          * number and reading a clip. */
-        printf(" out_peak=%d/%d (%+.2f/%+.2f dBFS)\n",
+        printf(" out_peak=%d/%d (%+.2f/%+.2f dBFS) lfe_delta_peak=%d\n",
                sig.out_peak_l, sig.out_peak_r,
                20.0 * log10((double)sig.out_peak_l / (double)AIUS_DSP_SAMPLE_MAX),
-               20.0 * log10((double)sig.out_peak_r / (double)AIUS_DSP_SAMPLE_MAX));
+               20.0 * log10((double)sig.out_peak_r / (double)AIUS_DSP_SAMPLE_MAX),
+               g_lfe_delta_peak);
     }
 
 done:
@@ -1118,6 +1328,15 @@ int main(int argc, char **argv)
           "checks are vacuous -- the corpus stopped stressing the matrix");
     printf("  corpus would clip %u sample(s) at unity headroom; "
            "the shipped default clips 0\n", g_unity_clipped);
+
+    /* Item-2 negative control: at least one vector must carry LFE, or "the fold-in
+     * leaves stereo untouched" is being proved on a corpus with no LFE anywhere. */
+    CHECK(g_lfe_folded_vectors > 0,
+          "no vector exercised the LFE fold-in, so the stereo-unchanged checks are "
+          "vacuous -- the corpus stopped carrying an LFE channel");
+    printf("  %u of %zu vectors exercised the LFE fold-in; the other(s) are "
+           "bit-identical with it enabled\n",
+           g_lfe_folded_vectors, sizeof(k_vectors) / sizeof(k_vectors[0]));
 
     if (g_fail) {
         printf("RESULT: %d check(s) FAILED\n", g_fail);

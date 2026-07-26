@@ -65,7 +65,8 @@ static const char *const VALID_BODY =
 	"\"output_eq\":[{\"type\":\"peaking\",\"frequency_hz\":8000,\"q\":2,"
 	"\"gain_db\":-6}],"
 	"\"matrix\":{\"center_gain_linear\":0.7071067811865475,"
-	"\"surround_gain_linear\":0.5,\"lfe_gain_linear\":2,\"headroom_linear\":0.9,"
+	"\"surround_gain_linear\":0.5,\"lfe_gain_linear\":2,"
+	"\"lfe_crossover_hz\":80,\"headroom_linear\":0.9,"
 	"\"clipfree\":true},"
 	"\"limiter\":{\"enabled\":true,\"threshold_dbfs\":-3,\"attack_ms\":5,"
 	"\"release_ms\":200,\"lookahead_ms\":2},"
@@ -120,6 +121,7 @@ static void test_valid_roundtrip(void)
 	check(m.matrix.center_gain_linear == 0.7071067811865475 &&
 	          m.matrix.surround_gain_linear == 0.5 &&
 	          m.matrix.lfe_gain_linear == 2.0 &&
+	          m.matrix.lfe_crossover_hz == 80.0 &&
 	          m.matrix.headroom_linear == 0.9 && m.matrix.clipfree == 1u,
 	      "valid: matrix round-trip wrong");
 
@@ -135,7 +137,8 @@ static void test_valid_roundtrip(void)
 		" \"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},"
 		" \"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		" \"output_eq\":[], \"input_channels\":{"
 		"\"fl\":{\"gain_db\":0,\"eq\":[]},\"fr\":{\"gain_db\":0,\"eq\":[]},"
 		"\"fc\":{\"gain_db\":0,\"eq\":[]},\"lfe\":{\"gain_db\":0,\"eq\":[]},"
@@ -195,7 +198,8 @@ static void test_malformed(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0} trailing",
 		AIUS_DSP_CONFIG_ERR_MALFORMED_JSON, "trailing garbage");
@@ -217,7 +221,8 @@ static void test_unknown_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0,"
 		"\"extra\":1}",
@@ -233,7 +238,8 @@ static void test_unknown_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY, "features unknown key");
@@ -248,7 +254,8 @@ static void test_unknown_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY, "input channel unknown key");
@@ -265,7 +272,8 @@ static void test_unknown_keys(void)
 		"\"output_eq\":[{\"type\":\"peaking\",\"frequency_hz\":1000,\"q\":1,"
 		"\"gain_db\":0,\"slope\":1}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY, "eq section unknown key");
@@ -280,7 +288,8 @@ static void test_unknown_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false,"
 		"\"extra\":0},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
@@ -296,7 +305,8 @@ static void test_unknown_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0,\"knee\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY, "limiter unknown key");
@@ -314,7 +324,8 @@ static void test_missing_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0}}",
 		AIUS_DSP_CONFIG_ERR_MISSING_KEY, "missing base_generation");
@@ -329,7 +340,8 @@ static void test_missing_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_MISSING_KEY, "missing features.meters");
@@ -344,7 +356,8 @@ static void test_missing_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]}},"
 		"\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_MISSING_KEY, "missing input_channels.sr");
@@ -359,7 +372,8 @@ static void test_missing_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_MISSING_KEY, "missing fl.eq");
@@ -374,7 +388,7 @@ static void test_missing_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,\"headroom_linear\":1},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_MISSING_KEY, "missing matrix.clipfree");
@@ -389,7 +403,8 @@ static void test_missing_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_MISSING_KEY, "missing limiter.lookahead_ms");
@@ -415,7 +430,8 @@ static void test_bounds(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "input trim below min");
@@ -430,7 +446,8 @@ static void test_bounds(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "input trim above max");
@@ -447,7 +464,8 @@ static void test_bounds(void)
 		"\"output_eq\":[{\"type\":\"peaking\",\"frequency_hz\":24001,\"q\":1,"
 		"\"gain_db\":0}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "eq frequency too high");
@@ -464,7 +482,8 @@ static void test_bounds(void)
 		"\"output_eq\":[{\"type\":\"peaking\",\"frequency_hz\":1000,\"q\":0.05,"
 		"\"gain_db\":0}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "eq q too low");
@@ -481,7 +500,8 @@ static void test_bounds(void)
 		"\"output_eq\":[{\"type\":\"peaking\",\"frequency_hz\":1000,\"q\":1,"
 		"\"gain_db\":25}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "eq gain too high");
@@ -496,7 +516,8 @@ static void test_bounds(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":4.5,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "matrix gain above 4");
@@ -511,7 +532,8 @@ static void test_bounds(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0.5,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "limiter threshold above 0");
@@ -526,10 +548,69 @@ static void test_bounds(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":6},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "limiter lookahead above 5");
+}
+
+/* The LFE fold-in crossover corner, bounded [20, 500].
+ *
+ * 0 IS OUT OF RANGE AND THAT IS THE INTERESTING CASE. The DSP reads a zero corner
+ * as "fold the LFE unfiltered" (aius_dsp.h §AiusDownmixConfig), which is a real API
+ * capability and not a product option -- an unfiltered fold is the mud the
+ * crossover exists to prevent, and admitting 0 here would let a PUT reach it. The
+ * way to turn the fold off is lfe_gain_linear = 0, which is bit-exactly the
+ * pre-fold-in output. So this bound is a deliberate narrowing of the DSP's own
+ * accepted range, and this test is what pins the narrowing. */
+static void test_lfe_crossover(void)
+{
+	/* A body with the crossover set to `corner`, otherwise minimal and valid. */
+#define LFE_XOVER_BODY(corner)                                                     \
+	"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"     \
+	"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"      \
+	"\"limiter\":true,\"meters\":true},"                                       \
+	"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"                    \
+	"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"       \
+	"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"      \
+	"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"                      \
+	"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"         \
+	"\"lfe_gain_linear\":0.31622776601683794,\"lfe_crossover_hz\":" corner "," \
+	"\"headroom_linear\":0.5,\"clipfree\":false},"                             \
+	"\"limiter\":{\"enabled\":true,\"threshold_dbfs\":-1,\"attack_ms\":0.5,"   \
+	"\"release_ms\":100,\"lookahead_ms\":2},\"base_generation\":0}"
+
+	body_bound(LFE_XOVER_BODY("0"), AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	           "lfe_crossover_hz 0 (unfiltered fold is not configurable)");
+	body_bound(LFE_XOVER_BODY("19.99"), AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	           "lfe_crossover_hz below 20");
+	body_bound(LFE_XOVER_BODY("500.01"), AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	           "lfe_crossover_hz above 500");
+	body_bound(LFE_XOVER_BODY("-120"), AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE,
+	           "lfe_crossover_hz negative");
+	body_bound(LFE_XOVER_BODY("\"120\""), AIUS_DSP_CONFIG_ERR_WRONG_TYPE,
+	           "lfe_crossover_hz string");
+
+	/* Both endpoints and the shipped default parse, and the value round-trips. */
+	static const char *const accepted[] = {"20", "80", "120", "500"};
+	static const double expected[] = {20.0, 80.0, 120.0, 500.0};
+	static const char *const bodies[] = {
+		LFE_XOVER_BODY("20"), LFE_XOVER_BODY("80"),
+		LFE_XOVER_BODY("120"), LFE_XOVER_BODY("500"),
+	};
+	for (size_t i = 0; i < sizeof bodies / sizeof bodies[0]; i++) {
+		AiusDspModel m;
+		memset(&m, 0xa5, sizeof(m));
+		AiusDspConfigErrorCode error = parse(bodies[i], &m);
+		check(error == AIUS_DSP_CONFIG_OK, "lfe_crossover_hz %s: error %d (%s)",
+		      accepted[i], (int)error, aius_dsp_config_error_message(error));
+		if (error == AIUS_DSP_CONFIG_OK)
+			check(m.matrix.lfe_crossover_hz == expected[i],
+			      "lfe_crossover_hz %s round-tripped as %.17g", accepted[i],
+			      m.matrix.lfe_crossover_hz);
+	}
+#undef LFE_XOVER_BODY
 }
 
 static void test_headroom(void)
@@ -544,7 +625,8 @@ static void test_headroom(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":0,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":0,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "headroom == 0");
@@ -559,7 +641,8 @@ static void test_headroom(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1.5,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1.5,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "headroom > 1");
@@ -578,7 +661,8 @@ static void test_sample_rate(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "sample_rate non-integer");
@@ -593,7 +677,8 @@ static void test_sample_rate(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "sample_rate zero");
@@ -608,7 +693,8 @@ static void test_sample_rate(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "sample_rate negative");
@@ -626,7 +712,8 @@ static void test_wrong_types(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "sample_rate string");
@@ -641,7 +728,8 @@ static void test_wrong_types(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "features.input_eq number");
@@ -655,7 +743,8 @@ static void test_wrong_types(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "features boolean");
@@ -671,7 +760,8 @@ static void test_wrong_types(void)
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},"
 		"\"output_eq\":[{\"type\":2,\"frequency_hz\":1000,\"q\":1,\"gain_db\":0}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "eq type number");
@@ -691,7 +781,8 @@ static void test_eq_type(void)
 		"\"output_eq\":[{\"type\":\"lowshelf\",\"frequency_hz\":1000,\"q\":1,"
 		"\"gain_db\":0}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_INVALID_EQ_TYPE, "unsupported eq type");
@@ -707,7 +798,8 @@ static void test_eq_type(void)
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},"
 		"\"output_eq\":[{\"frequency_hz\":1000,\"q\":1,\"gain_db\":0}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_INVALID_EQ_TYPE, "missing eq type");
@@ -727,7 +819,8 @@ static void test_too_many_eq(void)
 		"\"output_eq\":[{\"type\":\"bypass\"},{\"type\":\"bypass\"},"
 		"{\"type\":\"bypass\"}],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_TOO_MANY_EQ, "output_eq three sections");
@@ -743,7 +836,8 @@ static void test_too_many_eq(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_TOO_MANY_EQ, "input channel three sections");
@@ -761,7 +855,8 @@ static void test_source(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_INVALID_SOURCE, "source default");
@@ -776,7 +871,8 @@ static void test_source(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_INVALID_SOURCE, "source arbitrary");
@@ -791,7 +887,8 @@ static void test_source(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "source number");
@@ -809,7 +906,8 @@ static void test_base_generation(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":-1}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "base_generation negative");
@@ -824,7 +922,8 @@ static void test_base_generation(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":1.5}",
 		AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "base_generation fractional");
@@ -839,7 +938,8 @@ static void test_base_generation(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":\"1\"}",
 		AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "base_generation string");
@@ -858,7 +958,8 @@ static void test_duplicate_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false},"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_DUPLICATE_KEY, "duplicate top-level key");
@@ -873,7 +974,8 @@ static void test_duplicate_keys(void)
 		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
 		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
 		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
-		"\"lfe_gain_linear\":0,\"headroom_linear\":1,\"clipfree\":false,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false,"
 		"\"clipfree\":true},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
@@ -888,6 +990,7 @@ int main(void)
 	test_unknown_keys();
 	test_missing_keys();
 	test_bounds();
+	test_lfe_crossover();
 	test_headroom();
 	test_sample_rate();
 	test_wrong_types();

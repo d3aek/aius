@@ -34,12 +34,27 @@ def test_valid_fixture_and_model_bound():
     assert "AIUS_OPTICAL_CONFIG PROGMEM = {" in header
     assert "static const AiusOpticalConfig AIUS_OPTICAL_CONFIG PROGMEM" in header
     # The default carries the standard-mix downmix coefficients verbatim:
-    # center/surround 1/sqrt(2), lfe 0, headroom 0.5. Headroom was 1.0 until
-    # 2026-07-26, which summed to +7.66 dB worst case and demonstrably clipped
-    # the committed corpus -- surround51_impulse saturated at SAMPLE_MAX. 0.5 is
-    # the smallest exactly-representable power of two that clears the corpus,
-    # with 0.79 dB spare. See aius-dsp-config-api.md #audio-quality-roadmap.
-    assert "{0.70710678118654746, 0.70710678118654746, 0, 0.5, 0}" in header
+    # center/surround 1/sqrt(2), lfe -10 dB through a 120 Hz crossover,
+    # headroom 0.5.
+    #
+    # Headroom was 1.0 until 2026-07-26, which summed to +7.66 dB worst case and
+    # demonstrably clipped the committed corpus -- surround51_impulse saturated at
+    # SAMPLE_MAX. 0.5 is the smallest exactly-representable power of two that
+    # clears the corpus, with 0.79 dB spare.
+    #
+    # lfe_gain_linear was 0 (the LFE discarded entirely, per BS.775) until roadmap
+    # item 2. On a device that downmixes to STEREO that threw away the bottom
+    # octave of film content, so it now folds in at -10 dB -- 20 dB below A/52's
+    # +10 dB reference fold-in gain -- through the 4th-order Linkwitz-Riley
+    # low-pass at lfe_crossover_hz. Re-measured: 0.5 headroom still clears the
+    # corpus, the binding vector moving only from -0.791 to -0.790 dBFS.
+    # See aius-dsp-config-api.md #audio-quality-roadmap and aius_dsp.h.
+    assert (
+        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0}"
+        in header
+    )
+    # The generated struct grew the crossover field alongside it.
+    assert "double lfe_crossover_hz;" in header
     # Six identity input channels (unity trim, no EQ) and no output EQ sections.
     assert "{0, 0, {{0, 0, 0, 0}, {0, 0, 0, 0}}}" in header
     # profiles[]/mixes[] machinery is gone.
@@ -177,6 +192,37 @@ def test_matrix_and_limiter_bounds():
     config = copy.deepcopy(fixture)
     config["matrix"]["tilt"] = 1
     expect_invalid(config, "unknown matrix key")
+
+    # The LFE fold-in crossover corner. Required like every other matrix key, and
+    # bounded [20, 500] -- a range that deliberately EXCLUDES 0, because the DSP
+    # reads a zero corner as "fold the LFE unfiltered" and an unfiltered fold is
+    # the mud the crossover exists to prevent. Turning the fold off is
+    # lfe_gain_linear = 0, which reproduces the pre-fold-in output bit-exactly.
+    config = copy.deepcopy(fixture)
+    del config["matrix"]["lfe_crossover_hz"]
+    expect_invalid(config, "matrix is missing key: lfe_crossover_hz")
+
+    config = copy.deepcopy(fixture)
+    config["matrix"]["lfe_crossover_hz"] = 0
+    expect_invalid(config, "lfe_crossover_hz must be between")
+
+    config = copy.deepcopy(fixture)
+    config["matrix"]["lfe_crossover_hz"] = 19.99
+    expect_invalid(config, "lfe_crossover_hz must be between")
+
+    config = copy.deepcopy(fixture)
+    config["matrix"]["lfe_crossover_hz"] = 500.01
+    expect_invalid(config, "lfe_crossover_hz must be between")
+
+    config = copy.deepcopy(fixture)
+    config["matrix"]["lfe_crossover_hz"] = float("nan")
+    expect_invalid(config, "finite number")
+
+    # Both endpoints are accepted, and so is the ubiquitous 80 Hz sub crossover.
+    for corner in (20, 80, 500):
+        config = copy.deepcopy(fixture)
+        config["matrix"]["lfe_crossover_hz"] = corner
+        build_config.generate_header(config)
 
     config = copy.deepcopy(fixture)
     config["limiter"]["threshold_dbfs"] = -24.01

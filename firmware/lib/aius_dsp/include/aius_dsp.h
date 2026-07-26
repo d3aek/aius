@@ -20,7 +20,13 @@ extern "C" {
  * caller can run together (aius_dsp_process) or separately:
  *
  *   1. Downmix   (aius_dsp_downmix)  N channels -> L/R per ITU-R BS.775 /
- *                                    ATSC A/52 (see AiusDownmixConfig).
+ *                                    ATSC A/52 (see AiusDownmixConfig),
+ *                                    including the LFE fold-in and its 4th-order
+ *                                    Linkwitz-Riley low-pass (AiusLfeFold). The
+ *                                    fold is part of the matrix rather than a
+ *                                    stage of its own: it contributes one term to
+ *                                    the same accumulator, so it adds no
+ *                                    requantisation and no latency.
  *   2. EQ        (aius_dsp_eq_run)   a Direct Form I biquad cascade per channel,
  *                                    coefficients supplied by the caller.
  *   3. Limiter   (aius_dsp_limiter_run)  true-peak safety limiter tail.
@@ -55,22 +61,24 @@ extern "C" {
  * on any x87 host, -mfpmath=sse) to guarantee bit-exactness. This module
  * itself writes no fused multiply-add and holds all state in double.
  *
- * THAT PRECONDITION IS CURRENTLY UNMET ON THE TARGET, and it is a real divergence
- * rather than a theoretical one. scripts/test.sh passes -ffp-contract=off for the
- * dsp and dsp-vectors suites, but platformio.ini's build_flags do not, and GCC
- * defaults to -ffp-contract=fast under -std=gnu++17. Disassembling
- * .pio/build/teensy41-optical/lib1a3/aius_dsp/aius_dsp.c.o shows 25 vfma.f64
+ * THAT PRECONDITION IS NOW MET ON BOTH SIDES. scripts/test.sh passes
+ * -ffp-contract=off for the dsp and dsp-vectors suites, and platformio.ini's
+ * [common] build_flags now pin it too (platformio.ini:95). It was a real
+ * divergence until 2026-07-26, not a theoretical one: GCC defaults to
+ * -ffp-contract=fast under -std=gnu++17, and disassembling
+ * .pio/build/teensy41-optical/lib1a3/aius_dsp/aius_dsp.c.o showed 25 vfma.f64
  * instructions -- in truepeak_push, run_cascade, aius_dsp_downmix and
- * aius_dsp_limiter_run -- where the host emits a separate vmul and vadd. So the
- * downmix and EQ have not in fact been bit-identical host-to-target, and the
- * 48-tap true-peak FIR is now the largest single source of it. THE FIX IS ONE
- * FLAG: add -ffp-contract=off to platformio.ini [common] build_flags. It is very
- * unlikely to cost anything and may even be faster on the Cortex-M7, whose
- * double-precision VFMA latency is longer than a VMUL/VADD pair that can
- * pipeline. (One contraction is benign by construction: the vfma in
+ * aius_dsp_limiter_run -- where the host emitted a separate vmul and vadd, so the
+ * downmix and EQ had not in fact been bit-identical host-to-target. The fix was
+ * that one flag. (One contraction had been benign by construction: the vfma in
  * aius_out16_sample multiplies an exact integer by a power of two, so fused and
- * unfused agree bit-for-bit -- see the output-stage note below.) platformio.ini is
- * not this module's to edit; the flag is owed.
+ * unfused agree bit-for-bit -- see the output-stage note below.)
+ *
+ * EVERY NEW STAGE INHERITS THE SAME OBLIGATION, and the LFE fold-in crossover is
+ * the newest: a 4th-order IIR in the matrix accumulator is precision-sensitive in
+ * exactly the way the biquad feedback path is, its state is double, and its
+ * recurrence is written once (biquad_step in aius_dsp.c) so the EQ and the
+ * crossover cannot diverge in arithmetic order.
  *
  * NO HEAP ON THE PROCESS PATH. Every function here is allocation-free. Output
  * planes and biquad state are caller-owned; aius_dsp_alloc_stereo is a
@@ -94,14 +102,149 @@ extern "C" {
 #define AIUS_DSP_DOWNMIX_CENTER_DEFAULT   0.70710678118654752440  /* 1/sqrt(2) */
 #define AIUS_DSP_DOWNMIX_SURROUND_DEFAULT 0.70710678118654752440  /* 1/sqrt(2) */
 
-/* LFE handling. ATSC A/52 and ITU-R BS.775 EXCLUDE the LFE from the default
- * stereo downmix, so the default gain is 0.0. The common alternative for small
- * stereo playback that would otherwise lose all sub-bass is to fold the LFE in
- * at -10 dB; AIUS_DSP_LFE_GAIN_MINUS10DB is provided for that. This is a
- * clearly-marked configurable (AiusDownmixConfig.lfe) and a PRODUCT DECISION the
- * owner should confirm. */
-#define AIUS_DSP_LFE_GAIN_DEFAULT   0.0
+/* LFE handling. ATSC A/52 and ITU-R BS.775 EXCLUDE the LFE from the stereo
+ * downmix they specify, and this module's default did the same (0.0) until the
+ * audio-quality roadmap's item 2. Excluding it is right when a subwoofer follows
+ * the decoder and wrong here: THIS DEVICE DOWNMIXES TO STEREO, so a discarded
+ * LFE is the bottom octave of film content thrown away — the impact and the
+ * rumble — for every listener on ordinary speakers. The default is now a fold-in
+ * (AIUS_DSP_LFE_GAIN_DEFAULT below), low-passed by the crossover in
+ * AiusDownmixConfig.
+ *
+ * THE LEVEL IS THE HARD PART, not the filter, and it has a standards answer that
+ * this device deliberately does not use.
+ *
+ *   THE REFERENCE. BS.775 gives the LFE channel 10 dB of additional gain in its
+ *   REPRODUCTION path relative to each main channel; that is what buys the
+ *   effects channel its extra in-band headroom, and it is a property of the
+ *   monitor chain, not of the recorded samples. A stereo fold-in has no such
+ *   path, so preserving the mix's intended acoustic balance means re-applying
+ *   that +10 dB to the folded signal. ATSC A/52 encodes exactly this: its
+ *   optional LFE downmix is scaled by `lfemixlevcod`, gain = 10 - code dB, so
+ *   the standard's reference fold-in gain at code 0 is +10 dB, attenuated from
+ *   there by the encoder's own judgement. +10 dB is therefore the acoustically
+ *   "correct" number, and unity is NOT a neutral choice sitting between two
+ *   options — it is already 10 dB below the reference.
+ *
+ *   WHY NOT +10 dB HERE. Three reasons, in the order they bind:
+ *     - Headroom. At lfe = 3.1623 the clip-free headroom
+ *       (aius_downmix_clipfree_headroom) falls from 0.414214 to 0.179, 8.9 dB
+ *       below the 0.5 this device ships. Honouring the reference costs the WHOLE
+ *       PROGRAMME that 8.9 dB, to accommodate a channel whose content is
+ *       intermittent.
+ *     - The mains already carry their own low frequency. A 5.1 mix is not
+ *       bass-managed at the encode side: the main channels are full range and
+ *       the LFE is an ADDITIONAL effects channel. A stereo downmix therefore
+ *       already reproduces every channel's low frequency except the LFE's, so
+ *       folding the LFE in at the reference gain gives the effects channel 10 dB
+ *       more weight than the mix's own bass.
+ *     - The speakers this serves cannot use it. The reference gain assumes a
+ *       driver with 10 dB of spare excursion below 120 Hz. Ordinary stereo
+ *       speakers turn that into intermodulation distortion, not weight.
+ *
+ *   THE CHOICE: -10 dB (AIUS_DSP_LFE_GAIN_MINUS10DB, 0.316228), i.e. 20 dB below
+ *   the A/52 reference. It is the level this module already named for exactly
+ *   this case before it became the default, so the change is a default flip
+ *   rather than a new invention, and it puts the LFE's contribution just below
+ *   the mains' own low frequency — added weight on impacts without re-balancing
+ *   the mix. What it costs is one bounded, arithmetic thing: the theoretical
+ *   worst case a fully correlated full-scale 5.1 input reaches through the matrix
+ *   at the shipped 0.5 headroom goes from +1.635 dBFS to +2.700 dBFS, which is
+ *   the limiter's job either way (see AIUS_DSP_HEADROOM_DEFAULT). The same
+ *   arithmetic is what rules the reference gain out: +10 dB would make that
+ *   +8.905 dBFS, i.e. nearly 9 dB of permanent gain reduction on any loud
+ *   passage, which is a limiter holding the programme down rather than catching
+ *   overs.
+ *
+ *   WHAT THE CORPUS DID NOT DECIDE, said plainly because the headroom default
+ *   above WAS chosen on corpus evidence and this was not. Measured through this
+ *   matrix at 0.5 headroom, EVERY candidate from 0.0 to +10 dB clears full scale
+ *   on all four committed vectors — the binding vector (surround51_impulse) moves
+ *   only from -0.791 to -0.790 dBFS at -10 dB and to -0.782 dBFS at +10 dB,
+ *   because its LFE plane peaks at 35,202 and does not coincide with the
+ *   full-scale impulse in the mains. So the corpus constrains the HEADROOM
+ *   question and cannot constrain the LEVEL question; no committed vector carries
+ *   hot LFE under a loud transient. The level rests on the standards and the
+ *   worst-case arithmetic above, and a vector that does present that coincidence
+ *   would be the way to test it.
+ *
+ * Still a clearly-marked configurable (AiusDownmixConfig.lfe) and still a PRODUCT
+ * DECISION; it is now an evidenced one, and 0.0 remains available and remains
+ * exactly the pre-fold behaviour, bit for bit. */
 #define AIUS_DSP_LFE_GAIN_MINUS10DB 0.31622776601683793320  /* 10^(-10/20) */
+#define AIUS_DSP_LFE_GAIN_DEFAULT   AIUS_DSP_LFE_GAIN_MINUS10DB
+#define AIUS_DSP_LFE_GAIN_EXCLUDED  0.0  /* BS.775/A52: no LFE in the downmix */
+
+/* --- the LFE fold-in crossover: a 4th-order Linkwitz-Riley low-pass -------- */
+
+/* WHY A LOW-PASS AT ALL, and it is not decoration. LFE content above the
+ * crossover is not meant to be heard: the channel exists to carry 20-120 Hz
+ * effects, and everything above that in the plane is either production spill or
+ * reconstruction artefact. Folding it in unfiltered adds mud rather than weight,
+ * and — the concrete reason for this decoder rather than a general principle —
+ * THE DTS CORE DOES NOT BAND-LIMIT ITS LFE PLANE TO 120 Hz. The core carries LFE
+ * decimated by 128 or by 64 and reconstructs it with an interpolation FIR
+ * (vendor/dcadec-core, interpolate_lfe_*), so the reconstructed plane's Nyquist
+ * is fs/256 or fs/128 — 187.5 Hz or 375 Hz at 48 kHz. Up to 1.6 octaves above
+ * the LFE's intended band edge therefore arrives in that plane and would go
+ * straight into the mains. The low-pass is what makes the fold-in a bass fold
+ * rather than a leak.
+ *
+ * ORDER: 4, as two cascaded 2nd-order Butterworth sections (Q = 1/sqrt(2) each) —
+ * a Linkwitz-Riley LR4, 24 dB/octave, -6.02 dB at the corner. Three reasons, and
+ * the first is the one that decides it:
+ *   - 12 dB/octave leaves too much of the thing the filter exists to remove.
+ *     Measured at a 120 Hz corner and 48 kHz, a single Butterworth section is
+ *     only -8.43 dB at 187.5 Hz and -19.84 dB at 375 Hz — the two DTS LFE
+ *     reconstruction Nyquists above. LR4 is -16.85 dB and -39.69 dB. Since the
+ *     entire justification is "that content is not meant to be heard", 2nd order
+ *     does not clear the bar. And the content is really there: 21% of the
+ *     committed corpus's LFE-plane POWER sits above the corner on both 5.1
+ *     vectors (surround51_tones 21.3%, surround51_impulse 20.9%), and
+ *     surround51_tones is nominally a 60 Hz tone — where the LR4 should remove
+ *     0.53 dB and in fact removes 1.04 dB. The surplus is reconstruction
+ *     imaging, measured rather than assumed.
+ *   - LR4 is the bass-management crossover shape. Its magnitude at the corner is
+ *     exactly -6 dB rather than -3, which is what makes a matched LR4 low-pass
+ *     and high-pass sum to unity magnitude, in phase. So if a real crossover is
+ *     ever built (see §BASS MANAGEMENT below), this low-pass is already its
+ *     correct half rather than something to be replaced.
+ *   - It costs two biquads on ONE plane, not per output channel: the fold is
+ *     symmetric (the same filtered value is summed into L and into R), because
+ *     the LFE is one mono channel and has no image to preserve.
+ *
+ * CORNER: 120 Hz by default. It is the LFE band edge every relevant document
+ * uses — BS.775's LFE band, A/52's nominal LFE bandwidth, and the ubiquitous
+ * consumer-receiver default — and at LR4 the corner is 6 dB down, so the region
+ * the fold-in exists to recover passes essentially unaltered (measured: -0.007 dB
+ * at 20 Hz, -0.107 dB at 40 Hz, -0.53 dB at 60 Hz, -1.57 dB at 80 Hz) while the
+ * band above it is gone within an octave. Configurable per
+ * AiusDownmixConfig.lfe_crossover_hz; a corner is a room-and-speaker property and
+ * pinning it in firmware would be wrong.
+ *
+ * DESIGNED FROM `fs`, NEVER FROM AN ASSUMED RATE. The sections are derived from
+ * the (fs, corner) pair at apply time, and re-derived when either changes, so the
+ * corner is the same ANALOG frequency at every rate (the |H(f0)| = 0.5 identity
+ * below is exact and rate-independent). That is the same contract every other
+ * rate-dependent coefficient in this module holds to. */
+#define AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ 120.0
+#define AIUS_DSP_LFE_CROSSOVER_MIN_HZ      20.0
+#define AIUS_DSP_LFE_CROSSOVER_MAX_HZ     500.0
+
+/* Two cascaded Butterworth sections IS the LR4; the count is named so the state
+ * size and the order cannot drift apart. */
+#define AIUS_DSP_LFE_CROSSOVER_SECTIONS 2
+
+/* Butterworth Q for each section of the cascade. 1/sqrt(2) per section gives the
+ * maximally-flat, monotonic response whose product is the LR4 alignment; the RBJ
+ * low-pass satisfies |H(f0)| = Q exactly at any rate, so the cascade is exactly
+ * -6.02 dB at the corner and exactly unity at DC. Both are asserted by the dsp
+ * suite as known answers rather than tolerances. */
+#define AIUS_DSP_LFE_CROSSOVER_Q 0.70710678118654752440  /* 1/sqrt(2) */
+
+/* The crossover's coefficients and its running state, defined after the biquad
+ * types below. Forward-declared here because AiusDownmixConfig refers to it. */
+typedef struct AiusLfeFold AiusLfeFold;
 
 /* Overall post-downmix gain applied to L' and R' before the saturating clamp.
  *
@@ -114,7 +257,9 @@ extern "C" {
  * catch the overs" until the pipeline carries an unclamped intermediate.
  *
  * The committed DTS corpus (tools/dts_vectors/vectors, 4 vectors x 5120 frames,
- * measured through this matrix at unity headroom) distributes like this:
+ * measured through this matrix at unity headroom, LFE EXCLUDED — this table
+ * predates the fold-in and is kept as the baseline the fold-in is measured
+ * against) distributes like this:
  *
  *   vector               sample peak   p50      p99.9   samples over full scale
  *   stereo_tones          -22.50 dBFS  -26.33   -22.50   0
@@ -137,26 +282,108 @@ extern "C" {
  * AiusLimiterConfig): modest headroom plus an active true-peak limiter, not
  * clip-free headroom with the limiter off.
  *
+ * RE-MEASURED WITH THE LFE FOLDED IN, because that default was chosen against
+ * evidence and adding a sixth contributor to the matrix sum obliges the same
+ * evidence again. 0.5 STILL CLEARS THE CORPUS, and comfortably. Measured through
+ * this matrix at the shipped fold (lfe = 0.316228, 120 Hz LR4) and 0.5 headroom:
+ *
+ *   vector               sample peak       true peak   samples on a rail
+ *   stereo_tones         -28.520 dBFS      -28.508     0   (no LFE: unchanged)
+ *   stereo_impulse        -8.073 dBFS       -8.073     0   (no LFE: unchanged)
+ *   surround51_tones     -22.218 dBFS      -22.200     0
+ *   surround51_impulse    -0.790 dBFS       -0.790     0
+ *
+ * The binding vector is still surround51_impulse and it moved by 0.001 dB, from
+ * -0.791 to -0.790 dBFS: 0.79 dB of spare margin survives the fold-in intact.
+ * surround51_tones is where the fold-in is actually audible in the corpus, and it
+ * rises 0.97 dB (-23.186 -> -22.218 dBFS) without approaching the rail.
+ *
+ * WHAT DID CHANGE is the theoretical worst case, not the measured one: correlated
+ * full scale now reaches 2.7303 * 0.5 = +2.70 dBFS instead of +1.63, and 1.09 dB
+ * of transient headroom beyond that (see aius_downmix_clipfree_headroom). The
+ * limiter absorbs it — that pairing is exactly why it ships enabled — and the
+ * -1.0 dBFS threshold has not moved. No headroom change was made and none is
+ * needed; 0.5 was chosen against evidence and the evidence still supports it.
+ *
  * Still a PRODUCT DECISION, now an evidenced one; a caller wanting the
  * theoretical guarantee instead sets headroom from
  * aius_downmix_clipfree_headroom and may then turn the limiter off. */
 #define AIUS_DSP_HEADROOM_DEFAULT 0.5
 
-/* Downmix configuration. Fill from aius_downmix_config_default() then override. */
+/* Downmix configuration. Fill from aius_downmix_config_default() then override.
+ *
+ * The last two fields are the LFE fold-in crossover, and they split into a VALUE
+ * (the corner) and a POINTER TO STATE (the filter memory) for a reason that is
+ * easy to get wrong: this struct is copied by value into a per-block stack local
+ * on the audio path, so any filter state embedded in it would be discarded every
+ * block. The state therefore lives wherever the caller keeps its own long-lived
+ * DSP objects, and this struct only points at it.
+ *
+ * THE THREE REACHABLE COMBINATIONS, all safe:
+ *   lfe == 0.0                       -> the LFE branch is skipped entirely. Bit
+ *                                       for bit the pre-fold-in output, whatever
+ *                                       the other two fields say. This is the
+ *                                       negative control, and it is exact.
+ *   lfe != 0, crossover > 0, fold    -> the fold-in: LFE low-passed by the LR4 at
+ *                                       `lfe_crossover_hz`, then scaled by `lfe`
+ *                                       and summed into both L and R.
+ *   lfe != 0, crossover == 0         -> an UNFILTERED fold, no state needed. Kept
+ *                                       reachable so a caller that band-limits
+ *                                       upstream is not forced through a second
+ *                                       filter, and so the filter's effect is
+ *                                       measurable against it. The JSON config
+ *                                       schema deliberately does NOT permit it
+ *                                       (lfe_crossover_hz is bounded to
+ *                                       [20, 500]): it is an API capability, not
+ *                                       a product option, because it is the mud
+ *                                       the crossover exists to prevent.
+ *
+ * AND THE ONE MISCONFIGURATION, which FAILS CLOSED: lfe != 0 and
+ * lfe_crossover_hz > 0 with fold == NULL skips the LFE, exactly as lfe == 0
+ * would. It does NOT fall back to an unfiltered fold and it does NOT return an
+ * error. Both alternatives were considered and rejected: an unfiltered fallback
+ * would make the muddy fold reachable by omission (a wiring mistake that still
+ * "works" and sounds worse is the worst failure mode this stage has), and an
+ * AIUS_INVALID_ARG would take the whole audio path down on every 5.1 block
+ * because a cold config helper forgot a pointer — and audio hot-path reliability
+ * decides every trade-off here. Failing closed lands on BS.775's own default,
+ * which is a defensible output rather than a broken one, and it is audible as
+ * "no sub-bass" the moment anyone listens. */
 typedef struct {
     double center;   /* FC gain into both L and R */
     double surround; /* SL->L and SR->R gain */
-    double lfe;      /* LFE gain into both L and R */
+    double lfe;      /* LFE gain into both L and R, applied AFTER the crossover */
     double headroom; /* overall output gain before the clamp */
+    double lfe_crossover_hz; /* LR4 low-pass corner; 0 = fold unfiltered */
+    AiusLfeFold *lfe_fold;   /* crossover state; required when the corner is > 0 */
 } AiusDownmixConfig;
 
-/* The documented default: BS.775/A52 -3 dB center+surround, LFE excluded, unity
- * headroom. */
+/* The shipped default: BS.775/A52 -3 dB center+surround, the LFE folded in at
+ * -10 dB through a 120 Hz LR4 low-pass, and AIUS_DSP_HEADROOM_DEFAULT. `lfe_fold`
+ * is NULL — the caller owns the crossover state and points this at it (see the
+ * fail-closed note above), which is the one field a value-returning constructor
+ * cannot supply. */
 AiusDownmixConfig aius_downmix_config_default(void);
 
 /* The headroom that makes a fully correlated full-scale input downmix to exactly
  * full scale (no saturation) for the given config: 1/(1 + center + surround +
- * |lfe|), clamped to (0, 1]. */
+ * |lfe|), clamped to (0, 1].
+ *
+ * IT IGNORES THE CROSSOVER, and that is a deliberate, documented approximation
+ * rather than an oversight. The formula is a FREQUENCY-DOMAIN bound on a
+ * correlated full-scale input, and the LR4 low-pass has |H(f)| <= 1 everywhere
+ * (Butterworth cascades are monotonic, and the measured DC gain is exactly
+ * 1.000000000), so no steady tone can make the folded LFE contribute more than
+ * the flat fold this formula assumes. What the bound does not cover is a
+ * TRANSIENT: the measured l1 norm of the LR4's impulse response is 1.133016 at a
+ * 120 Hz corner and 48 kHz (+1.085 dB; step-response overshoot +0.526 dB), so a
+ * worst-case transient can push the folded contribution 1.085 dB past the
+ * flat-fold term. At the default lfe = 0.316228 that widens the whole matrix bound
+ * from 2.730335 to 2.772566 — 0.133 dB — against a shipped headroom (0.5) that
+ * already sits 2.70 dB above this function's own answer for that config and is
+ * backed by an enabled true-peak limiter. The bound was never rigorous under EQ
+ * either; the measured corpus peak is the evidence that matters, and it is
+ * recorded at AIUS_DSP_HEADROOM_DEFAULT. */
 double aius_downmix_clipfree_headroom(const AiusDownmixConfig *cfg);
 
 /* Downmix `in` (1..6 channels, mask-driven) into stereo `out`.
@@ -165,11 +392,24 @@ double aius_downmix_clipfree_headroom(const AiusDownmixConfig *cfg);
  * narrower inputs are handled without a mode flag:
  *   - mono   (channels == 1): the lone plane is copied to BOTH L and R at unity
  *            gain (headroom still applies), regardless of which mask bit is set.
+ *            The LFE fold-in does NOT apply on this path: a one-channel block is
+ *            a mono programme, not an effects channel, whatever its mask bit.
  *   - stereo (FL|FR):          FL->L, FR->R at unity -> exact passthrough.
  *   - 3.0/4.0/5.0/5.1 etc.:    every present channel routed per its AIUS_CH_*
  *                              rule above; absent channels contribute nothing.
  * Planes must be tightly packed to `channels` in AIUS_CH_* bit order, as the
  * decoder emits them.
+ *
+ * The LFE fold-in runs here, inside the matrix accumulation and in DOUBLE: the
+ * crossover reads the LFE plane's integer sample and its filtered result is
+ * summed straight into the l/r accumulators, so the fold adds NO intermediate
+ * requantisation (there is exactly one quantize per output sample, as before).
+ * cfg->lfe is applied AFTER the filter rather than before, which is
+ * mathematically identical for a linear filter but means the crossover state is
+ * held in raw sample units — so changing the LFE gain does not invalidate the
+ * filter memory and needs no reset. The crossover advances only while an LFE
+ * plane is present; a layout change that drops LFE freezes its state rather than
+ * decaying it, and the next config apply resets it.
  *
  * `out` must have out->planes[0] (L) and out->planes[1] (R) pointing at
  * caller-owned buffers of at least in->frames int32 samples each; the other
@@ -207,6 +447,117 @@ AiusBiquad aius_biquad_highshelf(double fs, double f0, double q, double gain_db)
  * provable end-to-end without shaping the signal. Populates up to `cap` sections
  * and returns the count used (1). */
 size_t aius_eq_default(AiusBiquad *sections, size_t cap);
+
+/* --- LFE fold-in crossover state ------------------------------------------ */
+
+/* The LR4 low-pass the fold-in runs the LFE plane through: its two designed
+ * Butterworth sections, their delay memory, and the (corner, fs) pair they were
+ * designed for. 160 bytes. Caller-owned and zero-initialized before first use,
+ * like every other state object here; it belongs in the caller's long-lived DSP
+ * object, NOT in a stack local — the audio path's DTCM free-for-locals zone is
+ * the scarcest bank on the target and this state has to survive across blocks
+ * anyway.
+ *
+ * `designed_hz`/`designed_fs` are what make the "designed from fs at apply time"
+ * contract self-enforcing: aius_dsp_downmix compares them against the config's
+ * corner and the block's rate and re-derives the sections (zeroing the state)
+ * when either has moved. So the sections cannot silently belong to a rate the
+ * engine no longer runs at, which is the failure the runtime-rate work in
+ * aius-sample-rate-following.md would otherwise introduce. The re-derivation
+ * costs two cos/sin pairs and happens at most once per change, never per block;
+ * a caller that wants even that off the audio path calls aius_lfe_fold_init
+ * itself from its cold config-apply path, which is what the target does. */
+struct AiusLfeFold {
+    AiusBiquad      lp[AIUS_DSP_LFE_CROSSOVER_SECTIONS];
+    AiusBiquadState state[AIUS_DSP_LFE_CROSSOVER_SECTIONS];
+    double          designed_hz; /* corner these sections were designed for */
+    double          designed_fs; /* sample rate they were designed at */
+};
+
+/* Design the LR4 low-pass for `crossover_hz` at `fs` and zero the delay memory.
+ * Both cascade sections are aius_biquad_lowpass(fs, crossover_hz,
+ * AIUS_DSP_LFE_CROSSOVER_Q). Returns AIUS_INVALID_ARG for a NULL fold, a
+ * non-positive rate, or a corner outside (0, fs/2); on failure the fold is left
+ * RESET AND UNDESIGNED (designed_hz == 0), which the downmix reads as "no usable
+ * crossover" and therefore skips the LFE rather than folding it unfiltered.
+ * Bounded, allocation-free, and evaluates transcendentals — call it cold. */
+AiusStatus aius_lfe_fold_init(AiusLfeFold *fold, double fs, double crossover_hz);
+
+/* Zero the delay memory, keeping the designed sections. For a stream
+ * discontinuity that should not re-run the coefficient math. fold == NULL is a
+ * no-op. */
+void aius_lfe_fold_reset(AiusLfeFold *fold);
+
+/* BASS MANAGEMENT — what is built, what is NOT, and why the difference is a
+ * recommendation rather than an omission.
+ *
+ * BUILT: the low-pass half of an LR4 crossover, on the LFE path, at a
+ * configurable corner. Nothing else.
+ *
+ * NOT BUILT: the crossover network — a matched LR4 high-pass on L/R, a summed
+ * mono bass bus, and the redirect. The recommendation is that it should not be
+ * built for this device, and the reason is not cost:
+ *
+ *   BASS MANAGEMENT IS A REDIRECT, AND THIS DEVICE HAS NOWHERE TO REDIRECT TO.
+ *   The point of a crossover network is to move low frequency from drivers that
+ *   cannot reproduce it to one that can. This firmware has exactly one output —
+ *   a stereo S/PDIF pair — so a high-pass on the mains would DELETE the bottom
+ *   two octaves from the only signal there is. That is not bass management; it is
+ *   a loss, and it would undo the fold-in that this very change exists to add.
+ *   The missing prerequisite is a third output (a sub feed, a second I2S sink),
+ *   which is hardware, not DSP.
+ *
+ *   THE SPEAKER-PROTECTION CASE IS ALREADY SERVED, so a dedicated stage would be
+ *   duplicate machinery. Someone whose speakers unload below 40 Hz wants a
+ *   high-pass on the output, and the model already has one: `output_eq` accepts
+ *   two sections and `highpass` is already one of its section types. Two of them
+ *   at Q = 1/sqrt(2) and a shared corner IS an LR4 high-pass, expressible today
+ *   through the config surface with no firmware change. Building a second,
+ *   differently-named way to do the same thing would be a seam invented for a
+ *   hypothetical (§Seam arity).
+ *
+ *   WHAT WOULD BE NEEDED IF IT IS EVER BUILT, so the next reader does not
+ *   re-derive it: an output channel to redirect into; the matched LR4 high-pass
+ *   on L and R at the SAME corner as this low-pass (which is precisely why LR4
+ *   was chosen — matched LR4 halves sum to unity magnitude and stay in phase, so
+ *   the two halves reconstruct the input rather than notching or bumping the
+ *   crossover region); a mono bass sum of L + R + the folded LFE through this
+ *   same low-pass; and a per-output delay to align the two paths acoustically.
+ *   The low-pass half of that design is what this change ships, deliberately, so
+ *   the remaining work is additive rather than a replacement.
+ *
+ * A defensible smaller thing with the reasoning recorded, not a speculative
+ * network. */
+
+/* COST, PREDICTED, so the next on-device measurement has something to falsify.
+ *
+ * MEMORY: 160 bytes of AiusLfeFold (two AiusBiquad + two AiusBiquadState + the
+ * design key) plus 16 bytes on AiusDownmixConfig, which grew 32 -> 48. The fold
+ * belongs in the caller's long-lived DSP object, so on target it lands in the
+ * same DTCM .bss the downmix config and limiter already occupy, NOT in the
+ * 25,376-byte free-for-locals zone: 160 bytes of state and no new stack local, on
+ * a per-block frame that is unchanged. The 16 bytes on AiusDownmixConfig DO land
+ * on the audio path's stack, once, because enqueue() builds an AiusDspConfig per
+ * block.
+ *
+ * CYCLES: two double-precision Direct Form I sections per LFE SAMPLE -- 10
+ * multiplies, 8 adds and 8 state moves, on a serial dependency chain. Measured on
+ * this host (x86-64, -O2, -ffp-contract=off) the crossover costs 9.48 ns/frame,
+ * about 38 host cycles; the sixth matrix term without the filter is free inside
+ * measurement noise. Scaling to the Cortex-M7 against the one calibrated
+ * data point this firmware has -- 71 cycles per aius_out16_sample(), which is a
+ * VDIV.F64 plus ~10 cheap operations -- puts the cascade at 60-85 cycles/frame,
+ * so 31,000-43,500 cycles per 512-frame block. Predicted:
+ *
+ *   dsp_cycles_last  534,411 -> ~565,000-578,000
+ *   dsp_cycles_max   565,024 -> ~596,000-609,000
+ *   share of 6,400,000   8.4-8.8 %  ->  8.8-9.5 %
+ *
+ * i.e. about half a point of block budget, and only while an LFE plane is
+ * present: stereo and PCM passthrough pay the per-block resolve (a few compares)
+ * and nothing per sample. If the measurement lands materially above this, the
+ * first thing to check is whether the M7 is spilling the cascade's state to the
+ * stack each sample rather than keeping it in FPU registers. */
 
 /* Run an `n`-section cascade in place over one plane of `frames` int32 samples.
  * `state` is an array of `n` AiusBiquadState (one per section), advanced across

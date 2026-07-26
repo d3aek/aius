@@ -51,8 +51,14 @@ typedef struct {
 	uint8_t input_eq, matrix, output_eq, limiter, meters;
 } AiusDspModelFeatures;
 
+/* `lfe_crossover_hz` is the LFE fold-in crossover corner (the LR4 low-pass in
+ * aius_dsp.h). Bounded [20, 500] and REQUIRED, like every other matrix key: the
+ * range excludes 0 on purpose, because the DSP reads a zero corner as "fold the
+ * LFE unfiltered" and that is an API capability rather than a product option.
+ * Disabling the fold is lfe_gain_linear = 0. */
 typedef struct {
-	double center_gain_linear, surround_gain_linear, lfe_gain_linear, headroom_linear;
+	double center_gain_linear, surround_gain_linear, lfe_gain_linear;
+	double lfe_crossover_hz, headroom_linear;
 	uint8_t clipfree;
 } AiusDspModelMatrix;
 
