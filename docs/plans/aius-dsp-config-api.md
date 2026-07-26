@@ -444,6 +444,28 @@ Being implemented now; each is a defect rather than a preference.
    `lookahead_ms` defaulting to 0 against a 1 ms attack, gain reduction *lagged
    the peak it existed to catch*.
 
+**Measured on the board after the three fixes landed** (`f789aa449c6e`, 24 s of
+replay, 93.3–94.2 blocks/s, **zero overruns and zero underruns**):
+
+| | before | after |
+|---|---|---|
+| `dsp_cycles_last` | 398,591 | **607,086** |
+| `dsp_cycles_max` | 431,995 | **638,204** |
+| share of the 6,400,000-cycle block | 6.2–6.8 % | **9.5–10.0 %** |
+| DTCM free for locals | 9,248 B | **17,152 B** |
+
+So the three fixes cost about **3.3 points of block budget** and *returned* 7,904
+bytes of the scarcest bank — the playback ring became `int16_t`, which it always
+should have been, freeing 8,192 against 256 for the true-peak FIR history. **The
+constraint that shaped most placement decisions in this plan has nearly doubled**,
+which is worth knowing before the next item spends it.
+
+The measurement landed above the predicted quiet-path figure (6.6–7.1 %) and
+below the predicted worst case (10.0–13.0 %), which is consistent with cinematic
+programme material opening the true-peak gate often rather than rarely. Note the
+prediction was made before `-ffp-contract=off` landed, and removing fused
+multiply-adds costs cycles as well as fixing determinism.
+
 ### Accepted order for the next level
 
 Accepted 2026-07-26 in this order, with the reasoning that chose it.
