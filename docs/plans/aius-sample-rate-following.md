@@ -476,6 +476,91 @@ retune, no mute on the steady-state path, no receiver re-lock.**
   [`aius-hardware-spec.md`](aius-hardware-spec.md); pin 16 is half a UART pair
   and pin 40 is an ADC.
 
+## The two hardware questions, and why they do not block
+
+Both open questions — whether a live `PLL_AUDIO_NUM` trim is glitch-free, and
+whether the production board accepts the pin 40 → pin 16 trace — need hardware
+answers that are not available yet. **Neither blocks implementation, and the
+difference is not material to what gets built next.** Recorded 2026-07-26 so the
+reasoning is not re-derived.
+
+**Phases 1 and 2 are common substrate under every option.** Making the rate
+runtime data, counting the underrun, publishing `ratio_ppm`, refusing an
+unsupported rate, the offline coefficient generator, the Q31 polyphase kernel,
+the placement between downmix and output EQ, and the transmitter becoming
+permanent clock master — none of that changes whichever way the two hardware
+questions resolve. So build them.
+
+**Where the options actually diverge is one thing: what actuates the drift
+correction.** Every candidate needs the same measurement (ring level trend) and
+the same slow control loop; they differ only in what the loop pushes on:
+
+| Future | Actuator | Cost |
+|---|---|---|
+| Fixed-ratio, digital correction | drop or duplicate one frame | ~4.8 corrections/s at 100 ppm |
+| Adaptive ratio | the Q32 phase increment | +4.1 % of block budget, no corrections |
+| PLL trim (if the trim is glitch-free) | `CCM_ANALOG_PLL_AUDIO_NUM` | ~0 %, no corrections, literal clock-following |
+
+### The seam: `AiusClockCorrector`
+
+**One interface, at the actuator, because that is the only place the futures
+differ.** Shape it as the plan's other seams are shaped — a small vtable the
+composition root wires, with the control loop above it and the actuator below:
+
+```c
+typedef struct {
+    void *context;
+    /* Signed parts-per-million the output is running fast (+) or slow (-)
+     * relative to the source, computed by the shared control loop. */
+    void (*apply)(void *context, int32_t error_ppm);
+    /* Observable, for the `clock` object; a corrector with no discrete
+     * corrections reports 0 forever. */
+    uint32_t (*corrections)(const void *context);
+} AiusClockCorrector;
+```
+
+Three implementations become possible without touching the loop, the kernel or
+the reporting surface: a frame drop/duplicate corrector (Phase 2), a phase-increment
+corrector (Phase 3), and a PLL-trim corrector (Phase 3b, if the measurement
+permits). **Two of those are concrete needs today** — Phase 2 ships the first and
+Phase 3 needs the second regardless of how the PLL question resolves — so this
+clears the seam-arity rule rather than being a hypothetical.
+
+### Why the FIR kernel needs no seam
+
+The adaptive kernel is **additive to the fixed-ratio kernel, not a replacement**:
+same 160-phase table, same MAC structure, same Q31 arithmetic. Adaptive adds a
+Q32 phase accumulator, a second coefficient read and a lerp between adjacent
+phases. So there is nothing to abstract — Phase 3 extends Phase 2's kernel in
+place, behind the existing bypass-at-unity guard.
+
+Putting a seam in the hot loop to hide that would cost an indirect call per output
+sample for no benefit, which §Deciding principle rejects outright.
+
+### Why the pin 40 → pin 16 question needs no seam either
+
+`STC[TxClk_Source]` is already a runtime register write, and Phase 4 already
+specifies the mandatory PLL4 fallback for the DPLL-unlocked case. Selecting the
+clock source is therefore configuration, not architecture. **The only thing that
+would foreclose the option is designing it out**, so:
+
+- Do not assume the transmit clock is always PLL4 in any new code; read it from
+  the clock-source state.
+- Keep the Phase 4 note in the hardware plan live so the trace is considered
+  before the production layout is released, per §Hardware release gates.
+
+### The most likely path, and what is being proceeded with
+
+**Phase 1, then Phase 2 with the frame drop/duplicate corrector behind the seam.**
+That is the most likely path on the evidence: it is the common substrate, it is
+fully provable on this board, and **on this board drift is identically zero**
+because a replay's producer and consumer share one crystal — so nothing testable
+is being left untested.
+
+The deferred choice is genuinely deferred rather than pre-empted: Phase 3 picks
+the phase-increment corrector or the PLL-trim corrector once the measurement
+exists, and both plug into the same seam.
+
 ## Placement, and why it costs no DTCM
 
 ```text
@@ -727,20 +812,35 @@ muted and reported instead of stuttering silently.
 3. Split `aius_dsp_process()` and site the resampler.
 4. Make the transmitter permanent clock master.
 5. Enable arm 2 for 44,100.
-6. Ring-level drift reporting; corrections counted and rate-limited.
+6. Ring-level drift reporting, and the `AiusClockCorrector` seam with its first
+   implementation: drop or duplicate one frame, counted and rate-limited.
 
 **Provable via a 44.1 kHz replay fixture. Not provable here: the asynchronous
 part** — both clocks come from the same crystal on a replay, so drift is
 identically zero. Ships with `corrections` expected to read 0 here and non-zero
 on production.
 
-### Phase 3 — adaptive ratio, drift eliminated
+### Phase 3 — eliminate drift, actuator chosen by measurement
 
-1. Q32 phase increment plus linear phase interpolation.
-2. The control loop on ring level, separately tested.
+The control loop is common; **which corrector it drives is the deferred hardware
+decision** ([§The two hardware questions](#the-two-hardware-questions-and-why-they-do-not-block)).
+Both plug into the seam Phase 2 established.
+
+1. The control loop on ring level, as a separately tested pure state machine.
+2. **Either** 3a — a phase-increment corrector: Q32 phase accumulator plus linear
+   interpolation between adjacent phases, extending Phase 2's kernel in place at
+   +4.1 % of block budget; **or** 3b — a PLL-trim corrector writing
+   `CCM_ANALOG_PLL_AUDIO_NUM`, at ~0 % and delivering literal clock-following,
+   **if and only if the live trim proves glitch-free on the device.**
 3. Extend the supported set to 32 kHz.
 
-**Needs the production hardware.** Two independent crystals is the entire point.
+**Measure before choosing.** 3b is strictly better if it works — no FIR cost, no
+discrete corrections at all — and the measurement that decides it is item 1 of
+[§What could not be established](#what-could-not-be-established). 3a is the
+fallback and needs no hardware permission.
+
+**Needs the production hardware to validate either.** Two independent crystals is
+the entire point.
 
 ### Phase 4 — the hardware option, if the board accepts it
 
