@@ -266,7 +266,17 @@ Three gaps for A/B specifically:
    fresh trial from recovery-safe.
 2. **There is no notion of "which slot am I running".** The ledger identifies a
    build, not a slot.
-3. **Power-cycle survival is unaddressed.** Retained OCRAM survival across a
+3. **The ledger's address is layout-dependent, which A/B has to solve.** Measured
+   2026-07-26: adding a 16,396-byte `DMAMEM` ring pushed `g_aius_boot_slots` from
+   `0x20201120` to `0x20205140`, so the retained ledger no longer validated and
+   `boot_generation` restarted at 1. Benign there — the CRC check creates a fresh
+   ledger by design, and the changed `build_id` would have cleared the same state
+   anyway. **But two A/B images will differ in `DMAMEM` layout by construction, so
+   they cannot share a ledger across a switch.** An A/B design must either pin the
+   slots at a fixed address independent of section layout, or carry image health
+   somewhere layout-independent. This is the concrete form of the "identifies a
+   build, not a slot" gap above.
+4. **Power-cycle survival is unaddressed.** Retained OCRAM survival across a
    *watchdog reset* is designed for and **explicitly not to be claimed until B6
    confirms it**; survival across a power cycle is not discussed anywhere. An A/B
    scheme probably needs the latter, and DTCM was rejected because startup clears

@@ -466,6 +466,33 @@ programme material opening the true-peak gate often rather than rarely. Note the
 prediction was made before `-ffp-contract=off` landed, and removing fused
 multiply-adds costs cycles as well as fixing determinism.
 
+**Item 1 delivered and measured on the board** (`f76baa87c67d`, 20 s of replay,
+93.3–94.5 blocks/s, zero overruns and zero underruns):
+
+| | 16-bit path | 24-bit path | predicted |
+|---|---|---|---|
+| `dsp_cycles_last` | 607,086 | **534,411** | ~560,000 |
+| `dsp_cycles_max` | 638,204 | **565,024** | ~590,000 |
+| share of block | 9.5–10.0 % | **8.4–8.8 %** | 8.5–9.5 % |
+| DTCM free for locals | 17,152 | **25,376** | — |
+
+**Better than predicted on both axes.** Removing 1,024 `aius_out16_sample()` calls
+per block — each ~45–60 cycles of xoshiro, two `vcmpe`/`vmrs` pairs and a
+`vrintm` — cost more than the estimate credited, and the ring's move to `DMAMEM`
+*returned* 8,224 bytes of DTCM rather than spending it. The audio path is now
+lossless from `aius_dsp_process` to `SPDIF_STL`.
+
+**One layout consequence worth knowing before the next `DMAMEM` change.** Adding
+the 16,396-byte ring at `0x20200000` pushed `g_aius_boot_slots` from `0x20201120`
+to `0x20205140`, so the retained ledger at the old address no longer validated and
+`boot_generation` restarted at 1. The post-link guard still passes and the ledger
+degrades safely by design — an invalid CRC creates a fresh normal ledger — and the
+changed `build_id` would have cleared the same state anyway. But it means **the
+retained ledger's address is layout-dependent**, which matters for
+[`aius-ota-upgrade.md`](aius-ota-upgrade.md): two A/B images with different
+`DMAMEM` layouts cannot share a ledger across a switch, so an A/B design must
+either pin the slots' address or carry image health somewhere layout-independent.
+
 ### Accepted order for the next level
 
 Accepted 2026-07-26 in this order, with the reasoning that chose it.
