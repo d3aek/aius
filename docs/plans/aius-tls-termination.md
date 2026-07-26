@@ -24,6 +24,33 @@ is a memory-placement problem with a measured solution, an integration seam that
 does not exist yet, and a host-tooling rewrite that is the largest slice of the
 work.
 
+## Parked 2026-07-26 — do not start building
+
+**The owner deferred the implement/decline decision. This document is an analysis,
+not an accepted commitment, and no phase of it is cleared to start.** Read it, cite
+it, extend it with new evidence; do not open a build task against it, and do not
+treat "feasible" as approval. `status: draft` in the front-matter says the same thing
+in the field the doc index reads, so this plan will keep appearing in
+`docs/TODO.md`'s planned-but-unimplemented view — that is correct and is not a
+prompt to act.
+
+Two constraints from the analysis are **live regardless of whether TLS is ever
+built**, because they are properties of the current firmware rather than of this
+proposal, and both are recorded where they belong rather than only here:
+
+- **The entropy source is weak and mbedTLS is told it is strong** (§Security
+  posture). This is latent today only because no TLS code runs. It becomes a real
+  key-disclosure risk the moment any of it does, so it gates the first line of
+  implementation, not the last.
+- **Open defect 14 (the unused 128 KB DTS arena) is now coupled to this work.**
+  Restoring the `--wrap` allocator flags would leak 21.6 KB of TLS record buffers
+  per connection into the DTCM arena. Whoever resolves defect 14 must read
+  §Memory first, whether or not TLS is on the table.
+
+Also settled and worth not re-litigating if this is revived: the owner chose a cert
+issued from their own CA against a DNS name, and accepted an unencrypted private key
+on FAT32 as a documented risk. Those are decisions, not open questions.
+
 Companion to [`aius-network-hardening.md`](aius-network-hardening.md), whose
 §Deciding principle governs, [`aius-ota-upgrade.md`](aius-ota-upgrade.md), and
 [`firmware-io.md`](../reference/firmware-io.md).
