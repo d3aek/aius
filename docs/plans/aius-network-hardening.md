@@ -193,20 +193,27 @@ are follow-up work, recorded here so they are not lost.
    true count is **36 arms over 30 suite directories**, not the "33 suites" this
    plan previously asserted. Adding a suite is now three lines the failure message
    dictates verbatim.
-6. **"At most one SD primitive per epoch" is false at checkpoint 5**, found while
-   writing [§Phase 14d](#phase-14d--firmware-io-reference). Three routes reach the
-   card outside the job engine. `app_read_directory` (`optical_main.cpp:1993`) is
-   the designed case — bounded at 128 raw reads and gated on `!sd_busy()`
-   (`aius_optical_app.cpp:611`). The other two are not: `http_replay_list_json`
-   (`optical_main.cpp:1602`) walks `/aius/replays` with `for (;;) openNextFile()`
-   and **no scan cap and no `sd_busy()` gate** — its `GET` arm checks only
-   `sd_ready` (`aius_optical_app.cpp:856`) — and `app_replay_delete` spends
-   `SD.exists()` + `SD.remove()` ungated (`:1844`, `:1846`). This bounds the
-   *watchdog* argument rather than the audio one, and on a card with a large
-   replays directory it is **the most plausible unexplained 8 s reset in the
-   image**. It is also an ungated SD toucher overlapping HTTP-owned jobs, so it is
-   a live candidate for defect 2 above and should be excluded before that
-   investigation trusts its arithmetic.
+6. ~~**"At most one SD primitive per epoch" is false at checkpoint 5.**~~
+   **FIXED 2026-07-26 (`5429235c1`), and the entry was stale for a day —
+   2026-07-26 evening's handoff still listed it open.** Both ungated walks got
+   the `app_read_directory` treatment in the replay-epoch commit, which shares
+   the file and the contract: `http_replay_list_json` and `app_replay_delete`
+   gate on `sd_busy()` and refuse `503 sd_busy` (existing vocabulary), the
+   listing caps at the same 128-entry constant `app_read_directory` uses and
+   reports `"truncated"` so a cut-short listing cannot pass for complete, and
+   the memory-only start/stop/status arms are deliberately not gated — asserted,
+   so a start stays admissible while the previous selection's refill drains.
+   Known consequence: during playback the refill owns ~61 % of epochs, so
+   `GET /api/replays` refuses about that often. The gate also makes an
+   upload/listing overlap impossible — a plausible but unproven contributor to
+   defect 2, deliberately not claimed as closed there.
+
+   The original entry, for what it bounded: three routes reached the card
+   outside the job engine; `app_read_directory` was the designed, bounded case,
+   while the listing walked `/aius/replays` with `for (;;) openNextFile()` — no
+   cap, no gate — and the delete spent `SD.exists()` + `SD.remove()` ungated.
+   On a card with a large replays directory that was the most plausible
+   unexplained 8 s reset in the image.
 7. **FIXED 2026-07-26, and this entry understated it.** The demotion is
    `NVIC_SET_PRIORITY(IRQ_PIT, 224)` in `stack_start()`
    (`aius_network_teensy.cpp`), guarded three ways: a source guard that reads
@@ -411,8 +418,34 @@ are follow-up work, recorded here so they are not lost.
     make some surface report the *ratio* rather than each side's own belief; a
     device that cannot tell you its clock disagrees with its content will hide
     this again.
-12. **`POST /api/reboot` resets the board but never answers**, found by the first
-    run of the B6 reboots gate on 2026-07-26. Two consecutive attempts each timed
+12. ~~**`POST /api/reboot` resets the board but never answers**~~ **FIXED
+    2026-07-26 (`ee3470f13`), both halves, and wire-confirmed by the B6 run that
+    evening — gate 2 passed against `3576c3e3560f`, which is the client actually
+    observing the 200.** The reset now waits on `AIUS_HTTP_TX_IDLE` with no
+    action outstanding (a drain signal, reachable only after the last `WRITE`
+    was accepted and the `CLOSE` completed), bounded at 500 ms after which the
+    reset happens regardless — the request is honoured, only the
+    acknowledgement is best-effort. One correction to the mechanism as pinned
+    below: `accept_application()` formats *and* emits the first write in the
+    same step, so N+1 writes and "off by two" was one epoch generous; the
+    verified ordering is in the comments now.
+
+    The auth half is equally closed, and the follow-up audit this entry asked
+    for ("verify which paths still take no auth") finds none: the four control
+    routes (`/api/reboot`, `/api/start`, `/api/stop`, `/api/clear`) are gated
+    **before** the dispatch switch so a fifth control route cannot silently
+    skip the check, and every other mutating arm was already gated —
+    `dispatch_replays` requires the token for everything but its two public
+    reads (status, `GET` listing), the DSP-config and SD-file `PUT`s and the
+    replay `DELETE` all call `auth_matches`. Read-only routes stay open,
+    positively pinned by test. The token's honest strength (FNV-1a over the
+    broadcast MAC through a repo salt — stops accidents, not attackers) is
+    recorded in the commit and the auth header itself. Host tooling moved in
+    the same change: `aius_recovery_smoke.py` authenticates its reboot, and
+    `aius_http_runner.py` threads `--auth-token` / `AIUS_SD_TOKEN` through its
+    soak and reboot paths.
+
+    The original entry: two consecutive attempts each timed
     out client-side while `boot_generation` advanced 21 → 22 → 23, so the reset is
     performed and the response is never delivered. **This blocks the B6 reboots
     gate outright** — the runner cannot distinguish "reboot refused" from "reboot
@@ -448,13 +481,11 @@ are follow-up work, recorded here so they are not lost.
     than a fixed epoch delay, which would be fragile against `WOULD_BLOCK`
     retries.
 
-    **Separately and worse: `POST /api/reboot` requires no authentication.** It
-    performs no `auth_matches` call and is in none of the auth-gated arms, so
-    **any host on the subnet can reset the board at will, including mid-upload.**
-    `POST /api/start`, `/api/stop` and `/api/clear` are equally open. That is a
-    security defect in its own right, not a consequence of the acknowledgement
-    bug, and it should be fixed in the same change since both touch the same
-    route.
+    **Separately and worse: `POST /api/reboot` required no authentication** —
+    no `auth_matches` call, in none of the auth-gated arms, so any host on the
+    subnet could reset the board at will, including mid-upload; `/api/start`,
+    `/api/stop` and `/api/clear` were equally open. Fixed with the
+    acknowledgement half as recorded above.
 13. **PCM passthrough sits 48.16 dB below the DTS path, and the limiter can never
     engage on it.** Found writing [§Phase 14e](#phase-14e--signal-path-and-dsp-reference).
     `pcm_feed` does `int32_t sample = (int32_t)(int16_t)w[i]` with **no left shift**
