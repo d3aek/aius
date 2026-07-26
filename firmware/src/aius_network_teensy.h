@@ -439,6 +439,22 @@ bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter, uint32_t *tx,
  */
 uint32_t aius_network_teensy_udp_oversize_drops(void);
 
+/* Control datagrams the receive dropped because their source address could not
+ * serve as the reply peer: a family other than AF_INET, the unspecified address
+ * 0.0.0.0, the limited broadcast address, a multicast group, or port 0. FNET
+ * validates no source address at all (fnet_ip4.c:556-576 checks the
+ * *destination*), so any host on the segment can put any of those in a datagram
+ * aimed at the control port. Latching one made the next reply fail -- with
+ * FNET_ERR_DESTADDRREQ for 0.0.0.0 -- so the refusal is at the cause: the
+ * datagram is dropped, the previously learned peer is left alone, and a request
+ * that cannot be answered never reaches the dispatcher.
+ *
+ * Same reading discipline as the oversize count above: a plain word,
+ * free-running since boot, never cleared by a teardown, and reachable only from
+ * here until a serializer surfaces it.
+ */
+uint32_t aius_network_teensy_udp_unusable_peer_drops(void);
+
 #ifdef AIUS_NETWORK_TEENSY_TESTING
 
 typedef struct {

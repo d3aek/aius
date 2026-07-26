@@ -73,6 +73,13 @@ uint32_t g_stale_callbacks;
  */
 uint32_t g_udp_oversize_drops;
 
+/* Control datagrams the receive dropped because their source address could not
+ * serve as the reply peer. Same shape and same reasons as the counter above:
+ * one FNET stack, one control socket, free-running since boot, and the only
+ * trace a refused datagram leaves.
+ */
+uint32_t g_udp_unusable_peer_drops;
+
 AiusNetEvent none_event()
 {
 	return {AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE};
@@ -320,19 +327,100 @@ AiusIoEvent read_once(uint8_t *buffer, size_t capacity)
 		       : io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
 }
 
+/* Whether an FNET_ERR from this socket's send means the connection is gone
+ * rather than that the socket is broken.
+ *
+ * The set is larger than the receive side's two codes, and the reason is
+ * _fnet_socket_set_error() (fnet_socket.c:102-113): when a socket carries a
+ * latched `local_error` it *substitutes* that code for the one the failing call
+ * chose. TCP latches one on an ICMP report or a timer expiry --
+ * FNET_ERR_MSGSIZE for a forced fragmentation drop, FNET_ERR_HOSTUNREACH for
+ * the three unreachable notifications, FNET_ERR_NOPROTOOPT for a parameter
+ * problem, FNET_ERR_CONNRESET for an unreachable port or protocol
+ * (fnet_tcp.c:359-377), FNET_ERR_CONNABORTED and FNET_ERR_TIMEDOUT from the
+ * abort and connection timers (2816-2853) -- so the code a failed send reports
+ * is not reliably the code that send computed.
+ *
+ * What makes every one of them a closure here is that the substitution only
+ * fires on a call that is *already* failing, and on this socket the only
+ * reachable structural failure is "no longer connected": the length check
+ * (fnet_tcp.c:810-814, FNET_ERR_INVAL above 0xfff0000 bytes) cannot trigger
+ * because every write is at most one AIUS_HTTP_TX_QUOTA of 512 bytes, the null
+ * buffer and bad descriptor rows are refused by this adapter before FNET sees
+ * them, FNET_ERR_SHUTDOWN needs a fnet_socket_shutdown() this adapter never
+ * calls, and FNET_ERR_OPNOTSUPP needs a protocol with no prot_snd. Four of the
+ * latch codes close the socket themselves (fnet_tcp.c:375, 2820, 2853, which
+ * sets SS_CLOSED and zeroes the foreign address at 3991-3992); the other two
+ * surface later, on the first call that fails because a timer already did.
+ *
+ * FNET_ERR_CONNCLOSED is not produced on the send path at all -- it is
+ * _fnet_tcp_rcv()'s drained-after-FIN code -- and is listed so the two
+ * directions classify the same code the same way.
+ */
+bool send_error_is_closure(fnet_error_t error)
+{
+	switch (error) {
+	case FNET_ERR_NOTCONN:
+	case FNET_ERR_CONNCLOSED:
+	case FNET_ERR_CONNRESET:
+	case FNET_ERR_CONNABORTED:
+	case FNET_ERR_TIMEDOUT:
+	case FNET_ERR_HOSTUNREACH:
+	case FNET_ERR_NOPROTOOPT:
+	case FNET_ERR_MSGSIZE:
+	case FNET_ERR_SHUTDOWN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* The send half of read_once()'s asymmetry, closed at the same seam: FNET
+ * directly, not through EthernetClient.
+ *
+ * EthernetClass::socketSend() answers 0 for a would-block and 0 for every
+ * FNET_ERR alike (Nativesocket.cpp:327-334, printing the error to Serial from
+ * the epoch loop on the way), and EthernetClient::write() calls
+ * setWriteError() on the collapsed zero (NativeEthernetClient.cpp:196-199). So
+ * a peer that closed mid-response and a netheap that could not spare a netbuf
+ * for this segment both arrived here as a socket fault. The second was the live
+ * one: a socket fault abandons the response and cleans the transaction up
+ * (aius_http_transaction.c:1177), so a shortage that the next epoch would have
+ * cleared truncated a reply the client had already been promised.
+ */
 AiusIoEvent write_once(const uint8_t *buffer, size_t length)
 {
-	if (g_client.getSocketNumber() >= MAX_SOCK_NUM) {
+	const uint8_t socket = g_client.getSocketNumber();
+	if (socket >= MAX_SOCK_NUM || Ethernet.socket_ptr[socket] == nullptr) {
 		return io_event(AIUS_IO_CLOSED);
 	}
-	g_client.clearWriteError();
-	const size_t result = g_client.write(buffer, length);
-	if (result != 0u) {
-		return io_event(AIUS_IO_PROGRESS, result);
+	const fnet_ssize_t result = fnet_socket_send(
+		Ethernet.socket_ptr[socket], buffer, (fnet_size_t)length, 0);
+	if (result > 0) {
+		return io_event(AIUS_IO_PROGRESS, (size_t)result);
 	}
-	return g_client.getWriteError() == 0
-		       ? io_event(AIUS_IO_WOULD_BLOCK)
-		       : io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
+	/* A zero is the whole would-block family and nothing else. _fnet_tcp_snd()
+	 * answers it when the output buffer has no room, when the netheap cannot
+	 * hand out one and a half Ethernet MTUs so the window collapses to zero
+	 * whatever the buffer reports (fnet_tcp.c:828-851), when
+	 * _fnet_netbuf_from_buf() fails outright (910-913) and when appending the
+	 * record fails (956-960). Every one of them is this instant's shortage: the
+	 * segment was not queued, the socket is untouched, and the next epoch's
+	 * write may take it.
+	 */
+	if (result == 0) {
+		return io_event(AIUS_IO_WOULD_BLOCK);
+	}
+	const fnet_error_t error = fnet_error_get();
+	/* Unreachable from _fnet_tcp_snd(), kept because the contract names it --
+	 * the same arm, for the same reason, as on the receive side. */
+	if (error == FNET_ERR_AGAIN) {
+		return io_event(AIUS_IO_WOULD_BLOCK);
+	}
+	if (send_error_is_closure(error)) {
+		return io_event(AIUS_IO_CLOSED);
+	}
+	return io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
 }
 
 AiusIoEvent close_once()
@@ -348,16 +436,83 @@ AiusIoEvent close_once()
 	return io_event(AIUS_IO_PROGRESS);
 }
 
+/* Whether a datagram's source address can be this socket's reply destination.
+ *
+ * FNET performs no source-address validation whatsoever. _fnet_ip4_input_low()
+ * checks the length, the version, the header length, the checksum and the
+ * *destination* address (fnet_ip4.c:556-576); _fnet_udp_input() demultiplexes
+ * on the local address and port only (fnet_udp.c:269-345); and
+ * _fnet_ip4_set_socket_addr() copies the source word out of the header verbatim
+ * (fnet_ip4.c:486-492). So whatever a sender puts in the source field of a
+ * datagram aimed at the control port arrives here as the candidate peer, from
+ * any host on the segment, with no credential.
+ *
+ * Four kinds of source cannot be a reply destination:
+ *
+ *   - a family other than AF_INET, which the reply's own
+ *     _fnet_socket_addr_check_len() answers FNET_ERR_AFNOSUPPORT for
+ *     (fnet_socket.c:1874-1885). A zeroed sockaddr reads as family 0 and lands
+ *     here, which is what a peer never written by any receive looks like;
+ *   - the unspecified address, 0.0.0.0, which the reply answers
+ *     FNET_ERR_DESTADDRREQ for (fnet_socket.c:988-992) -- tested with FNET's own
+ *     predicate rather than a local comparison;
+ *   - the limited broadcast address and any multicast group, because a reply to
+ *     either turns one unauthenticated datagram into a frame every host on the
+ *     segment receives;
+ *   - port 0, which no reply can be delivered to.
+ *
+ * Refusing to latch is the fix at the cause. The alternative -- latch nothing
+ * but deliver the datagram -- was not taken: the control protocol answers every
+ * request, so admitting one whose acknowledgement cannot be addressed either
+ * loses the answer or sends it to whichever legitimate peer was latched before,
+ * and the dispatcher has no way to know which. A request that cannot be answered
+ * is not serviceable, so the epoch is told there was nothing to service and the
+ * counter carries the drop.
+ */
+bool peer_usable(const fnet_sockaddr *peer)
+{
+	fnet_ip4_addr_t address = 0u;
+
+	if ((peer->sa_family & AF_INET) == 0u) {
+		return false;
+	}
+	if (fnet_socket_addr_is_unspecified(peer) != FNET_FALSE) {
+		return false;
+	}
+	if (peer->sa_port == 0u) {
+		return false;
+	}
+	if (fnet_socket_addr_is_multicast(peer) != FNET_FALSE) {
+		return false;
+	}
+	memcpy(&address, peer->sa_data, sizeof(address));
+	return address != INADDR_BROADCAST;
+}
+
 AiusIoEvent udp_receive_once(uint8_t *buffer, size_t capacity)
 {
 	if (g_udp.sockindex >= MAX_SOCK_NUM) {
 		return io_event(AIUS_IO_CLOSED);
 	}
-	fnet_size_t peer_size = sizeof(g_udp_peer);
+	/* The foreign address goes into a local rather than straight into the
+	 * latch, and that is structural: _fnet_socket_buffer_read_address()
+	 * copies the address at fnet_socket.c:1825 and only then decides whether
+	 * the datagram fitted (:1827-1830), so handing it the latch let a *dropped*
+	 * oversized datagram repoint the reply destination of a conversation it was
+	 * never part of. A receive that delivers nothing now cannot touch the peer
+	 * at all, whatever FNET writes.
+	 */
+	fnet_sockaddr source = {};
+	fnet_size_t peer_size = sizeof(source);
 	const fnet_ssize_t result =
 		fnet_socket_recvfrom(Ethernet.socket_ptr[g_udp.sockindex], buffer,
-		                    capacity, 0, &g_udp_peer, &peer_size);
+		                    capacity, 0, &source, &peer_size);
 	if (result > 0) {
+		if (!peer_usable(&source)) {
+			g_udp_unusable_peer_drops++;
+			return io_event(AIUS_IO_WOULD_BLOCK);
+		}
+		g_udp_peer = source;
 		g_udp_peer_valid = true;
 		return io_event(AIUS_IO_PROGRESS, (size_t)result);
 	}
@@ -423,8 +578,19 @@ AiusIoEvent udp_send_once(const uint8_t *buffer, size_t length)
 	 * so a socket fault would be this transport declaring its own socket
 	 * unusable over a condition that clears itself. AGAIN is unreachable on this
 	 * path and kept for the contract, exactly as on the receive side.
+	 *
+	 * FNET_ERR_DESTADDRREQ is the same family one step further out: the latched
+	 * peer carries no usable address, so this datagram has nowhere to go
+	 * (fnet_socket.c:988-992). That is a property of the destination, not of the
+	 * socket -- the socket sends normally the moment a usable peer is learned --
+	 * so it is a withheld send, exactly like the no-peer-yet arm above, and not
+	 * a transport fault an unauthenticated sender could raise at will. The
+	 * receive's peer_usable() gate now makes it unreachable from here, which is
+	 * the point: the cause and the classification are fixed independently, so
+	 * neither depends on the other having been right.
 	 */
-	if (error == FNET_ERR_NOMEM || error == FNET_ERR_AGAIN) {
+	if (error == FNET_ERR_NOMEM || error == FNET_ERR_AGAIN ||
+	    error == FNET_ERR_DESTADDRREQ) {
 		return io_event(AIUS_IO_WOULD_BLOCK);
 	}
 	return io_event(AIUS_IO_FAULT, 0u, AIUS_NET_FAULT_SOCKET);
@@ -1362,6 +1528,11 @@ FLASHMEM bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter,
 FLASHMEM uint32_t aius_network_teensy_udp_oversize_drops()
 {
 	return g_udp_oversize_drops;
+}
+
+FLASHMEM uint32_t aius_network_teensy_udp_unusable_peer_drops()
+{
+	return g_udp_unusable_peer_drops;
 }
 
 #ifdef AIUS_NETWORK_TEENSY_TESTING

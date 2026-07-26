@@ -496,6 +496,16 @@ fnet_return_t fnet_socket_getopt(
     fnet_size_t *);
 fnet_return_t fnet_socket_getpeername(
     fnet_socket_t, struct fnet_sockaddr *, fnet_size_t *);
+/* fnet_socket.h:1398,1415. FNET's own address predicates, which the adapter uses
+ * to decide whether a datagram's source address can be latched as the reply
+ * peer -- rather than open-coding the same comparisons, which is how a caller
+ * ends up disagreeing with its dependency about what 0.0.0.0 means.
+ * fnet_socket_addr_is_unspecified() answers FNET_TRUE for a family that is
+ * neither AF_INET nor AF_INET6 as well (fnet_socket.c:1951-1975: `result` is
+ * initialised FNET_TRUE and both branches are skipped), which is exactly what a
+ * zeroed sockaddr reads as. */
+fnet_bool_t fnet_socket_addr_is_unspecified(const struct fnet_sockaddr *);
+fnet_bool_t fnet_socket_addr_is_multicast(const struct fnet_sockaddr *);
 
 /* --- stack/fnet_error.h ------------------------------------------------- */
 /* fnet_error.h:205,222. The error is one global word, and fnet_error.h:200-201

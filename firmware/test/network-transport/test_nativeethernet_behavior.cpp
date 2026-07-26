@@ -106,6 +106,17 @@ struct FakeFnetSocket {
     bool recv_shutdown;
     bool send_shutdown;
     fnet_error_t error;
+    /* fnet_socket_prv.h:95 -- the ICMP/timeout latch. Set by
+     * _fnet_tcp_control_input() on an ICMP report (fnet_tcp.c:359-377) and by
+     * the abort and connection timers (2816-2853), consumed and cleared by the
+     * next _fnet_socket_set_error() on this socket, which substitutes it for
+     * whatever code the failing call chose. */
+    fnet_error_t local_error;
+    /* The source address stored alongside a queued datagram, which
+     * _fnet_socket_buffer_read_address() copies into the caller's sockaddr
+     * (fnet_socket.c:1825). FNET validates no source address anywhere on the
+     * input path, so this is whatever the sender wrote. */
+    struct fnet_sockaddr recv_from;
     fnet_size_t send_max;
     fnet_size_t send_count;
     fnet_size_t recv_max;
@@ -182,6 +193,13 @@ struct FakeState {
     fnet_size_t accept_addrlen_seen;
     bool accept_addrlen_seen_valid;
     bool accept_addrlen_enforced;
+    /* The destination the last fnet_socket_sendto() was handed. This is how a
+     * test observes the adapter's reply peer: the latch is file-scope state
+     * inside the adapter with no accessor, and the only thing that can be
+     * observed about it is where a reply actually goes -- which is also the only
+     * thing that matters. */
+    struct fnet_sockaddr sendto_addr;
+    bool sendto_addr_valid;
 
     std::vector<std::string> events;
 } fake = {};
@@ -201,6 +219,8 @@ void reset_socket_model()
     fake.force_send_error = FNET_ERR_OK;
     fake.accept_addrlen_seen = 0u;
     fake.accept_addrlen_seen_valid = false;
+    fake.sendto_addr = fnet_sockaddr{};
+    fake.sendto_addr_valid = false;
     /* Off by default, and the reason is a defect rather than convenience:
      * EthernetServer::poll() declares `fnet_size_t fromlen;` and passes it
      * without ever assigning it (NativeEthernetServer.cpp:339-340), while real
@@ -271,31 +291,52 @@ void set_error(fnet_error_t error)
     fake.socket_error = error;
 }
 
-/* _fnet_socket_set_error() (fnet_socket.c:102): a socket-scoped failure writes
- * both the socket's own SO_ERROR and the one global word. */
+/* _fnet_socket_set_error() (fnet_socket.c:102-113): a socket-scoped failure
+ * writes both the socket's own SO_ERROR and the one global word -- but a latched
+ * ICMP or timer error takes precedence over the code the failing call chose, and
+ * is consumed as it is reported. That substitution is why the send path's
+ * closure set is larger than the receive path's two codes, so it is modelled
+ * here rather than assumed away. */
 void set_socket_error(FakeFnetSocket *socket, fnet_error_t error)
 {
+    if (socket->local_error != FNET_ERR_OK) {
+        error = socket->local_error;
+        socket->local_error = FNET_ERR_OK;
+    }
     socket->error = error;
     fake.socket_error = error;
 }
 
-struct fnet_sockaddr test_peer_address()
+struct fnet_sockaddr peer_address(uint8_t a, uint8_t b, uint8_t c, uint8_t d,
+                                  fnet_uint16_t port)
 {
     struct fnet_sockaddr address = {};
-    const fnet_ip4_addr_t peer = FNET_IP4_ADDR_INIT(192, 168, 4, 99);
+    const fnet_ip4_addr_t peer = FNET_IP4_ADDR_INIT(a, b, c, d);
 
     address.sa_family = AF_INET;
-    address.sa_port = FNET_HTONS(51000u);
+    address.sa_port = FNET_HTONS(port);
     std::memcpy(address.sa_data, &peer, sizeof(peer));
     return address;
 }
 
+struct fnet_sockaddr test_peer_address()
+{
+    return peer_address(192, 168, 4, 99, 51000u);
+}
+
+bool same_address(const struct fnet_sockaddr *left,
+                  const struct fnet_sockaddr *right)
+{
+    return left->sa_family == right->sa_family &&
+           left->sa_port == right->sa_port &&
+           std::memcmp(left->sa_data, right->sa_data,
+                       sizeof(left->sa_data)) == 0;
+}
+
 bool address_is_unspecified(const struct fnet_sockaddr *address)
 {
-    fnet_ip4_addr_t value = 0u;
-
-    std::memcpy(&value, address->sa_data, sizeof(value));
-    return value == 0u;
+    /* FNET's own predicate, which is also what the adapter consults. */
+    return fnet_socket_addr_is_unspecified(address) != FNET_FALSE;
 }
 
 /* _fnet_socket_addr_check_len() (fnet_socket.c:1856). A zero length is not
@@ -357,7 +398,7 @@ fnet_ssize_t udp_receive(FakeFnetSocket *socket, void *buffer,
     const fnet_size_t queued = socket->recv_count;
 
     if (from != nullptr) {
-        *from = queued != 0u ? test_peer_address() : fnet_sockaddr{};
+        *from = queued != 0u ? socket->recv_from : fnet_sockaddr{};
     }
     if (queued == 0u) {
         return 0;
@@ -491,7 +532,12 @@ FakeFnetSocket *listening_socket()
     return found;
 }
 
-void deliver(FakeFnetSocket *socket, size_t length)
+/* A datagram from a given sender. The source address is part of what arrives,
+ * not a property of the socket, which is the whole point of the peer-latch
+ * rows: FNET copies whatever the sender wrote (fnet_ip4.c:486-492) and validates
+ * none of it. */
+void deliver_from(FakeFnetSocket *socket, size_t length,
+                  const struct fnet_sockaddr &from)
 {
     assert(length <= kSocketDataCapacity);
     for (size_t index = 0; index < length; index++) {
@@ -499,6 +545,12 @@ void deliver(FakeFnetSocket *socket, size_t length)
     }
     socket->recv_count = static_cast<fnet_size_t>(length);
     socket->recv_read = 0u;
+    socket->recv_from = from;
+}
+
+void deliver(FakeFnetSocket *socket, size_t length)
+{
+    deliver_from(socket, length, test_peer_address());
 }
 
 void set_send_freespace(FakeFnetSocket *socket, fnet_size_t freespace)
@@ -1234,46 +1286,100 @@ void test_adapter_socket_result_mapping()
            io.fault == 0u);
     fake.force_recv_error = FNET_ERR_OK;
 
-    /* --- the send classification --------------------------------------- */
+    /* --- the send classification, from socket state ---------------------- */
 
+    /* Room for four of the sixteen bytes offered: _fnet_tcp_snd() takes what
+     * fits and reports it, and the transaction re-offers the rest. */
     set_send_freespace(client, 4u);
     io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
            io.fault == 0u);
 
+    /* No room at all is a plain 0 (fnet_tcp.c:848-851). The send is attempted
+     * and its own answer classifies -- EthernetClient::write() used to return
+     * without ever calling FNET when socketSendAvailable() read zero, which is
+     * the one case its collapse got right by accident. */
     int sends = fake.send_calls;
     set_send_freespace(client, 0u);
     io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
-           io.fault == 0u && fake.send_calls == sends);
+           io.fault == 0u);
+    assert(fake.send_calls == sends + 1);
 
-    /* Open defect 9 at the adapter seam. Capacity is reported, the send takes
-     * nothing because the netheap is short, and the collapse in
-     * EthernetClass::socketSend() plus EthernetClient::write() turns a
-     * would-block into a socket fault. Deliberately pinned as it behaves today:
-     * this row flips the moment write_once() stops going through
-     * g_client.write(). */
+    /* Reported capacity exceeding what the send will accept, which is the case
+     * socketSendAvailable() cannot see: SO_SNDBUF - SO_SNDNUM says the buffer is
+     * empty while the netheap cannot spare one and a half Ethernet MTUs, so
+     * _fnet_tcp_snd() collapses the window to zero whatever the buffer reports
+     * (fnet_tcp.c:828-836) and answers 0. This is the live half of the send
+     * defect: a socket fault here abandons the response and cleans the
+     * transaction up (aius_http_transaction.c:1177), so a shortage the next
+     * epoch would have cleared truncated a reply already promised to a client. */
     set_send_freespace(client, client->send_max);
     fake.netheap_max = kNetbufFloor - 1u;
     sends = fake.send_calls;
     io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
-    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
-           io.fault == AIUS_NET_FAULT_SOCKET);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
     assert(fake.send_calls == sends + 1);
     fake.netheap_max = kNetheapPlenty;
 
-    /* And the same fault for the opposite cause: the peer closed mid-response.
-     * FNET says FNET_ERR/FNET_ERR_NOTCONN, the adapter reports a socket fault
-     * where AIUS_IO_CLOSED is the truth. Also open defect 9. */
+    /* And the retry is a real one: the same socket takes the whole offer the
+     * moment the netheap recovers, which is what makes WOULD_BLOCK the truthful
+     * answer rather than a softer way of saying "lost". */
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == sizeof(buffer) &&
+           io.fault == 0u);
+    set_send_freespace(client, client->send_max);
+
+    /* The peer closed mid-response: the socket has left SS_CONNECTED, so
+     * _fnet_tcp_snd() answers FNET_ERR/FNET_ERR_NOTCONN (fnet_tcp.c:817-821).
+     * The connection is gone, which is CLOSED and not a broken socket. */
     client->state = SS_CLOSING;
     io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
-    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
-           io.fault == AIUS_NET_FAULT_SOCKET);
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u && io.fault == 0u);
     assert(fnet_error_get() == FNET_ERR_NOTCONN);
+
+    /* The same closure, reported under a code this send never computed. An ICMP
+     * unreachable-port report latches FNET_ERR_CONNRESET and closes the socket
+     * (fnet_tcp.c:370-377), and _fnet_socket_set_error() then substitutes the
+     * latched code for the NOTCONN the send chose (fnet_socket.c:104-108). A
+     * mapping that recognised only NOTCONN and CONNCLOSED -- the receive path's
+     * two codes -- calls this a socket fault. */
+    client->local_error = FNET_ERR_CONNRESET;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u && io.fault == 0u);
+    assert(fnet_error_get() == FNET_ERR_CONNRESET);
+    /* Latched once, reported once (fnet_socket.c:107). */
+    assert(client->local_error == FNET_ERR_OK);
+
+    /* The connection timer giving up latches FNET_ERR_TIMEDOUT and closes the
+     * socket the same way (fnet_tcp.c:2847-2853). */
+    client->local_error = FNET_ERR_TIMEDOUT;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u && io.fault == 0u);
+    assert(fnet_error_get() == FNET_ERR_TIMEDOUT);
+
+    /* An ICMP report that does not close the socket latches all the same
+     * (fnet_tcp.c:359-368) and surfaces on the first call that fails for its own
+     * reason -- here the closed connection. FNET_ERR_MSGSIZE is a code this send
+     * path cannot compute for itself, because its own length check answers
+     * FNET_ERR_INVAL (fnet_tcp.c:810-814), so on a send it means the latch and
+     * therefore means the connection. */
+    client->local_error = FNET_ERR_MSGSIZE;
+    io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u && io.fault == 0u);
+    assert(fnet_error_get() == FNET_ERR_MSGSIZE);
+
     client->state = SS_CONNECTED;
     set_send_freespace(client, client->send_max);
 
-    fake.force_send_error = FNET_ERR_NOPROTOOPT;
+    /* Narrowing the fault classification must not empty it. FNET_ERR_INVAL is
+     * what a null buffer answers (fnet_socket.c:1014-1017) and what a length
+     * above FNET_TCP_MAX_BUFFER answers; this adapter reaches neither -- its
+     * public entry refuses a null buffer and every write is at most one 512-byte
+     * AIUS_HTTP_TX_QUOTA -- so it is injected, and it must stay a socket fault
+     * rather than be read as a closure. */
+    fake.force_send_error = FNET_ERR_INVAL;
     io = aius_network_teensy_write_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
            io.fault == AIUS_NET_FAULT_SOCKET);
@@ -1296,6 +1402,67 @@ void test_adapter_socket_result_mapping()
         &adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
            io.fault == 0u);
+
+    /* A datagram whose source address is the unspecified address. FNET accepts
+     * it: _fnet_ip4_input_low() validates the length, the version, the checksum
+     * and the *destination* and never looks at the source (fnet_ip4.c:556-576),
+     * _fnet_udp_input() demultiplexes on the local address only
+     * (fnet_udp.c:269-345), and _fnet_ip4_set_socket_addr() copies the source
+     * word out of the header verbatim (fnet_ip4.c:486-492). So any host on the
+     * segment can put 0.0.0.0 in the source field of a datagram aimed at port
+     * 4242, with no credential.
+     *
+     * Latching it made the reply fail with FNET_ERR_DESTADDRREQ
+     * (fnet_socket.c:988-992), which the adapter classified as a socket fault --
+     * a transport fault an unauthenticated sender could raise at will. The
+     * refusal is at the cause: no peer is learned, the datagram is dropped and
+     * counted, and the socket is untouched. */
+    assert(aius_network_teensy_udp_unusable_peer_drops() == 0u);
+    deliver_from(control, 5u, peer_address(0, 0, 0, 0, 51000u));
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(aius_network_teensy_udp_unusable_peer_drops() == 1u);
+    /* The datagram is gone either way -- a plain receive consumes it. */
+    assert(control->recv_count == 0u);
+
+    /* Nothing was learned, so the reply is still withheld rather than aimed
+     * somewhere, and no send is attempted at all. */
+    const int sendtos_before_learning = fake.sendto_calls;
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(fake.sendto_calls == sendtos_before_learning);
+
+    /* The other three unusable sources, each refused for its own reason. A reply
+     * to the limited broadcast address or to a multicast group turns one
+     * unauthenticated datagram into a frame the whole segment receives, and port
+     * 0 can never receive one. */
+    deliver_from(control, 5u, peer_address(255, 255, 255, 255, 51000u));
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(aius_network_teensy_udp_unusable_peer_drops() == 2u);
+
+    deliver_from(control, 5u, peer_address(239, 1, 2, 3, 51000u));
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(aius_network_teensy_udp_unusable_peer_drops() == 3u);
+
+    deliver_from(control, 5u, peer_address(192, 168, 4, 77, 0u));
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(aius_network_teensy_udp_unusable_peer_drops() == 4u);
+
+    /* None of the four is an oversize drop, and none of them faulted the
+     * socket: a flood of them costs the generation nothing but the counter. */
+    assert(aius_network_teensy_udp_oversize_drops() == 0u);
 
     deliver(control, 5u);
     io = aius_network_teensy_udp_receive_once(
@@ -1349,6 +1516,58 @@ void test_adapter_socket_result_mapping()
     io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
     assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
            io.fault == 0u);
+    /* And it went to the host that sent the request, which is the whole purpose
+     * of the latch. Where a reply is addressed is the only thing observable
+     * about it, and the only thing that matters. */
+    assert(fake.sendto_addr_valid);
+    const struct fnet_sockaddr learned = test_peer_address();
+    assert(same_address(&fake.sendto_addr, &learned));
+
+    /* The latch is not written by a receive that delivered nothing.
+     * _fnet_socket_buffer_read_address() copies the foreign address at
+     * fnet_socket.c:1825 and only then decides at :1827 that the datagram did
+     * not fit -- so an oversized datagram from another host repointed the reply
+     * destination of a conversation it was never part of. Any host on the segment
+     * could redirect this board's control replies with one 2 KB packet, which is
+     * the second remotely triggerable defect hiding behind the first. */
+    const struct fnet_sockaddr other = peer_address(192, 168, 4, 77, 51000u);
+    deliver_from(control, sizeof(buffer) + 1u, other);
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(fnet_error_get() == FNET_ERR_MSGSIZE);
+    assert(aius_network_teensy_udp_oversize_drops() == 3u);
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
+           io.fault == 0u);
+    assert(same_address(&fake.sendto_addr, &learned));
+
+    /* Nor by a refused source: an unusable one arriving mid-conversation leaves
+     * the peer that was learned in place rather than clearing or repointing it. */
+    deliver_from(control, 5u, peer_address(0, 0, 0, 0, 51000u));
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(aius_network_teensy_udp_unusable_peer_drops() == 5u);
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
+           io.fault == 0u);
+    assert(same_address(&fake.sendto_addr, &learned));
+
+    /* And the latch still follows a real conversation: a usable datagram from a
+     * second host repoints it, so the refusals narrow what may be latched
+     * without freezing it. */
+    deliver_from(control, 5u, other);
+    io = aius_network_teensy_udp_receive_once(
+        &adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 5u &&
+           io.fault == 0u);
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_PROGRESS && io.bytes == 4u &&
+           io.fault == 0u);
+    assert(same_address(&fake.sendto_addr, &other));
 
     /* A netbuf shortage on the send is FNET_ERR/FNET_ERR_NOMEM
      * (fnet_udp.c:543-547): the netheap could not spare one datagram's worth of
@@ -1376,6 +1595,21 @@ void test_adapter_socket_result_mapping()
            io.fault == 0u);
     fake.force_send_error = FNET_ERR_OK;
 
+    /* FNET_ERR_DESTADDRREQ says the destination carries no usable address
+     * (fnet_socket.c:988-992). That is a property of the destination and not of
+     * the socket -- the same socket sends normally the moment a usable peer is
+     * learned -- so it is a withheld send, exactly like the no-peer-yet arm, and
+     * not a transport fault an unauthenticated sender can raise. It is injected
+     * because the receive's refusal now makes it unreachable, which is the point:
+     * the cause and the classification are independent, so neither rests on the
+     * other having been right. */
+    fake.force_send_error = FNET_ERR_DESTADDRREQ;
+    io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
+    assert(io.result == AIUS_IO_WOULD_BLOCK && io.bytes == 0u &&
+           io.fault == 0u);
+    assert(fnet_error_get() == FNET_ERR_DESTADDRREQ);
+    fake.force_send_error = FNET_ERR_OK;
+
     fake.force_recv_error = FNET_ERR_AGAIN;
     io = aius_network_teensy_udp_receive_once(
         &adapter, buffer, sizeof(buffer));
@@ -1391,6 +1625,8 @@ void test_adapter_socket_result_mapping()
      * be a socket fault, and neither may be counted as a dropped datagram. */
     const uint32_t drops_before_faults =
         aius_network_teensy_udp_oversize_drops();
+    const uint32_t refusals_before_faults =
+        aius_network_teensy_udp_unusable_peer_drops();
     fake.force_send_error = FNET_ERR_SHUTDOWN;
     io = aius_network_teensy_udp_send_once(&adapter, buffer, 4u);
     assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
@@ -1404,6 +1640,8 @@ void test_adapter_socket_result_mapping()
            io.fault == AIUS_NET_FAULT_SOCKET);
     fake.force_recv_error = FNET_ERR_OK;
     assert(aius_network_teensy_udp_oversize_drops() == drops_before_faults);
+    assert(aius_network_teensy_udp_unusable_peer_drops() ==
+           refusals_before_faults);
 
     /* --- close --------------------------------------------------------- */
 
@@ -1899,7 +2137,37 @@ fnet_ssize_t fnet_socket_sendto(
 {
     observe_socket_access();
     fake.sendto_calls++;
+    if (to != nullptr) {
+        fake.sendto_addr = *to;
+        fake.sendto_addr_valid = true;
+    }
     return socket_send_impl(descriptor, buffer, length, flags, to, tolen);
+}
+
+/* fnet_socket.c:1951-1975 and 1898-1923 over fnet_ip4.h:85-90. Both answer for
+ * the family in the address rather than for a bare word, and
+ * fnet_socket_addr_is_unspecified() answers FNET_TRUE for a family it does not
+ * recognise -- a zeroed sockaddr included. */
+fnet_bool_t fnet_socket_addr_is_unspecified(const struct fnet_sockaddr *addr)
+{
+    fnet_ip4_addr_t address = 0u;
+
+    if (addr == nullptr || (addr->sa_family & AF_INET) == 0u)
+        return FNET_TRUE;
+    std::memcpy(&address, addr->sa_data, sizeof(address));
+    return address == INADDR_ANY ? FNET_TRUE : FNET_FALSE;
+}
+
+fnet_bool_t fnet_socket_addr_is_multicast(const struct fnet_sockaddr *addr)
+{
+    fnet_ip4_addr_t address = 0u;
+
+    if (addr == nullptr || (addr->sa_family & AF_INET) == 0u)
+        return FNET_FALSE;
+    std::memcpy(&address, addr->sa_data, sizeof(address));
+    return (address & FNET_HTONL(0xf0000000u)) == FNET_HTONL(0xe0000000u)
+               ? FNET_TRUE
+               : FNET_FALSE;
 }
 
 /* fnet_socket_recvfrom() (fnet_socket.c:1051-1119); fnet_socket_recv() is the
