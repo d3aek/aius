@@ -339,13 +339,23 @@ bool address_is_unspecified(const struct fnet_sockaddr *address)
     return fnet_socket_addr_is_unspecified(address) != FNET_FALSE;
 }
 
-/* _fnet_socket_addr_check_len() (fnet_socket.c:1856). A zero length is not
- * checked at all -- the real guard is `if(addr && addr_len)` -- and FNET_CFG_IP6
- * is 0 here, so anything below sizeof(struct fnet_sockaddr_in) is invalid. */
+/* _fnet_socket_addr_check_len() (fnet_socket.c:1856-1893). FNET_CFG_IP6 is 0
+ * here, so anything below sizeof(struct fnet_sockaddr_in) is invalid --
+ * INCLUDING zero, which this modelled backwards until 2026-07-26.
+ *
+ * THE TRAP, because it is worth naming rather than just fixing. The real function
+ * opens `if(addr && addr_len)` and closes with `else { result = FNET_ERR_INVAL; }`
+ * (:1887-1890), so a zero length is refused, not skipped. The old comment here
+ * quoted that same `if(addr && addr_len)` as proof that zero is "not checked at
+ * all" -- confusing it with the *caller's* guard at :896, `if(addr && addrlen)`,
+ * where both operands are POINTERS. The two conditions are textually identical
+ * and mean different things: one asks whether the caller supplied an address at
+ * all, the other whether the length it supplied is usable. Reading either in
+ * place of the other inverts the answer. */
 fnet_error_t addr_check_len(fnet_address_family_t family, fnet_size_t length)
 {
     if (length == 0u)
-        return FNET_ERR_OK;
+        return FNET_ERR_INVAL;
     if ((family & AF_INET) == 0u)
         return FNET_ERR_AFNOSUPPORT;
     return length < sizeof(struct fnet_sockaddr_in) ? FNET_ERR_INVAL
@@ -868,10 +878,31 @@ void test_accept_addrlen_contract()
     assert(fnet_error_get() == FNET_ERR_INVAL);
     assert(fake.pending_connections == 1);
 
-    /* Zero is not checked at all -- the real guard is `if(addr && addr_len)`
-     * around the check, so a zeroed length is accepted where a small non-zero
-     * one is not. */
+    /* A ZERO length is refused too, and this row asserted the opposite until
+     * 2026-07-26. `_fnet_socket_addr_check_len()` ends with
+     * `else { result = FNET_ERR_INVAL; }` (fnet_socket.c:1887-1890), so zero
+     * takes the else and is invalid. The old row read the caller's pointer guard
+     * at :896 as if it were the value guard at :1860 -- see addr_check_len().
+     *
+     * THIS IS THE ROW THAT MATTERS, because the vendored caller hits it:
+     * `EthernetServer::poll()` declares `fnet_size_t fromlen;` UNINITIALISED and
+     * passes `&fromlen` (NativeEthernetServer.cpp:339-340). Both pointers are
+     * non-null, so the check runs against whatever that stack slot holds, and
+     * every value below sizeof(struct fnet_sockaddr_in) fails the accept **while
+     * leaving the connection queued** -- a retry loop, not a dropped connection.
+     * Stack remnants are not uniformly random; they are dominated by small
+     * integers, zeros and prior loop counters, so the failing range is far more
+     * reachable than 16/2^32 suggests. Asserting the queue is untouched is the
+     * load-bearing half: it is what makes this a stall rather than a loss. */
     length = 0u;
+    assert(fnet_socket_accept(listener, &from, &length) == nullptr);
+    assert(fnet_error_get() == FNET_ERR_INVAL);
+    assert(fake.pending_connections == 1);
+
+    /* And the boundary either side of it, so the fix is pinned as a range rather
+     * than as one special case: exactly sizeof(struct fnet_sockaddr_in) is the
+     * first accepted length. */
+    length = sizeof(struct fnet_sockaddr_in);
     fnet_socket_t accepted = fnet_socket_accept(listener, &from, &length);
     assert(accepted != nullptr);
     assert(fake.pending_connections == 0);
