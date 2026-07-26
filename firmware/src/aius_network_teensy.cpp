@@ -299,6 +299,11 @@ AiusIoEvent accept_once()
 	return io_event(AIUS_IO_PROGRESS);
 }
 
+/* Defined below with the send path, whose error table established the set. Shared
+ * rather than duplicated: the two directions drifted apart once already, and that
+ * asymmetry is what defect 9 was. */
+bool send_error_is_closure(fnet_error_t error);
+
 AiusIoEvent read_once(uint8_t *buffer, size_t capacity)
 {
 	const uint8_t socket = g_client.getSocketNumber();
@@ -320,13 +325,32 @@ AiusIoEvent read_once(uint8_t *buffer, size_t capacity)
 	if (result == 0) {
 		return io_event(AIUS_IO_WOULD_BLOCK);
 	}
-	/* Closure is FNET_ERR carrying one of two codes -- CONNCLOSED once the
-	 * FIN has been received and the buffer is drained (fnet_tcp.c:768-772),
-	 * NOTCONN once the socket has left SS_CONNECTED (754-757). AGAIN is kept
-	 * because the contract names it, though this path never produces it.
-	 */
+	/* Closure is FNET_ERR carrying any of the codes send_error_is_closure()
+	 * enumerates -- the SAME set as the send path, and for the same reason.
+	 *
+	 * `_fnet_tcp_rcv()` itself only ever fails with CONNCLOSED (once the FIN has
+	 * been received and the buffer is drained, fnet_tcp.c:768-772) or NOTCONN
+	 * (once the socket has left SS_CONNECTED, :754-757), and those two were all
+	 * this arm recognised. But `_fnet_socket_set_error()` **substitutes** a
+	 * socket's latched `local_error` for whatever code the failing call computed
+	 * (fnet_socket.c:104-108), so an ICMP- or timer-latched CONNRESET, TIMEDOUT,
+	 * CONNABORTED, HOSTUNREACH, NOPROTOOPT or MSGSIZE can surface here too. Every
+	 * one of them means the connection is gone, so mapping them to FAULT tore down
+	 * a transaction that should simply have ended.
+	 *
+	 * MSGSIZE is the clearest case, and it is why the shared set is right rather
+	 * than merely convenient: a receive cannot compute MSGSIZE for a TCP socket at
+	 * all, so seeing it here can only be the latch, and therefore can only mean the
+	 * connection.
+	 *
+	 * Sharing the predicate with the send path is deliberate. The two directions
+	 * had drifted apart once already -- that asymmetry is what defect 9 was -- and
+	 * one enumeration cannot drift from itself.
+	 *
+	 * AGAIN is kept because the contract names it, though this path never
+	 * produces it. */
 	const int error = fnet_error_get();
-	if (error == FNET_ERR_CONNCLOSED || error == FNET_ERR_NOTCONN) {
+	if (send_error_is_closure((fnet_error_t)error)) {
 		return io_event(AIUS_IO_CLOSED);
 	}
 	return error == FNET_ERR_AGAIN

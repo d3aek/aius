@@ -1293,21 +1293,39 @@ void test_adapter_socket_result_mapping()
     assert(fnet_error_get() == FNET_ERR_NOTCONN);
     client->state = SS_CONNECTED;
 
-    /* The remaining arms of the adapter's switch. Neither code is reachable on
-     * FNET's TCP receive path, which is why they are injected rather than
-     * staged: FNET_ERR_INVAL is what the recvfrom wrapper raises for a null
-     * buffer (fnet_socket.c:1098) and FNET_ERR_NOPROTOOPT is a code the adapter
-     * names nowhere at all. Both must be a socket fault, not a guess at
-     * closure. */
+    /* FNET_ERR_INVAL stays a socket fault. It is genuinely a programming error --
+     * what the recvfrom wrapper raises for a null buffer (fnet_socket.c:1098) --
+     * and it is not a code `_fnet_socket_set_error()` ever latches, so seeing it
+     * cannot mean the connection. Injected rather than staged because the receive
+     * path cannot produce it. */
     fake.force_recv_error = FNET_ERR_INVAL;
     io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
     assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
            io.fault == AIUS_NET_FAULT_SOCKET);
 
+    /* FNET_ERR_NOPROTOOPT is CLOSED, and this row asserted FAULT until
+     * 2026-07-26. The old comment called it "a code the adapter names nowhere at
+     * all", which was true of the adapter and not of FNET:
+     * `_fnet_socket_set_error()` **substitutes** a socket's latched `local_error`
+     * for whatever code the failing call computed (fnet_socket.c:104-108), and
+     * NOPROTOOPT is one of the codes ICMP handling latches. `_fnet_tcp_rcv()`
+     * itself fails only with CONNCLOSED or NOTCONN, so any other FNET_ERR
+     * surfacing on a receive can only be the latch -- and every latched code means
+     * the connection is gone. Mapping it to FAULT tore down a transaction that
+     * should simply have ended.
+     *
+     * This is the receive half of defect 9's asymmetry, closed with the SAME
+     * predicate the send path uses, so the two cannot drift apart again. */
     fake.force_recv_error = FNET_ERR_NOPROTOOPT;
     io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
-    assert(io.result == AIUS_IO_FAULT && io.bytes == 0u &&
-           io.fault == AIUS_NET_FAULT_SOCKET);
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u && io.fault == 0u);
+
+    /* And one more of the latched set, so the row proves the shared predicate
+     * rather than one remembered code. MSGSIZE is the sharpest: a TCP receive
+     * cannot compute it, so on this path it can ONLY be the latch. */
+    fake.force_recv_error = FNET_ERR_MSGSIZE;
+    io = aius_network_teensy_read_once(&adapter, buffer, sizeof(buffer));
+    assert(io.result == AIUS_IO_CLOSED && io.bytes == 0u && io.fault == 0u);
 
     /* FNET_ERR_AGAIN is likewise unreachable from _fnet_tcp_rcv(), but the
      * adapter keeps an arm for it because the contract names it. */
