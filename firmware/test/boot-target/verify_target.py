@@ -13,10 +13,32 @@ from typing import Mapping
 
 
 SLOT_SYMBOL = "g_aius_boot_slots"
-SLOT_SECTION = ".bss.dma"
+SLOT_SECTION = ".bss.aius_retained"
 SLOT_SIZE = 128
 SLOT_ALIGNMENT = 32
 CRASH_REPORT_START = 0x2027FF80
+
+# ORIGIN(RAM) in the framework's imxrt1062_t41.ld: the start of OCRAM, and the
+# address link/aius_teensy41.ld pins the retained region to. Fixed by
+# construction rather than by luck -- see that script's header.
+RETAINED_ORIGIN = 0x20200000
+
+# THE BOOT ROM'S OCRAM FOOTPRINT, measured on the deployed board 2026-07-26 by
+# filling 0x20200000..0x2027F800 with a self-describing pattern, resetting, and
+# scanning it from startup_early_hook before any other code runs. Identical for a
+# SYSRESETREQ (SRC_SRSR=0x02) and a WDOG1 timeout (SRC_SRSR=0x10). Retained state
+# placed inside any of these does not survive a reset; that is exactly what
+# happened when the 24-bit output ring pushed the slots to 0x20205140, and the
+# previous version of this file passed anyway because it checked placement and the
+# CrashReport bound and never asked whether the address retains.
+#
+# Re-measure before trusting these on a different chip or bootloader. The probe is
+# recorded in docs/reference/firmware-io.md §Retained OCRAM.
+BOOT_ROM_CLOBBERED = (
+    (0x20200C60, 0x20201100),
+    (0x20201B80, 0x20201C40),
+    (0x20203A60, 0x20207F60),
+)
 
 SECTION_LINE = re.compile(r"^\s*\[\s*(\d+)\]\s+(\S+)(?:\s|$)")
 SYMBOL_LINE = re.compile(
@@ -104,6 +126,19 @@ def verify_linked_contract(
             f"{SLOT_SYMBOL} ends at 0x{end:08x}, beyond CrashReport boundary "
             f"0x{CRASH_REPORT_START:08x}"
         )
+    if symbol.address != RETAINED_ORIGIN:
+        raise VerificationError(
+            f"{SLOT_SYMBOL} is at 0x{symbol.address:08x}, expected the pinned "
+            f"retained origin 0x{RETAINED_ORIGIN:08x}; a floating address is "
+            "what broke retention once already"
+        )
+    for start, stop in BOOT_ROM_CLOBBERED:
+        if symbol.address < stop and start < end:
+            raise VerificationError(
+                f"{SLOT_SYMBOL} 0x{symbol.address:08x}..0x{end:08x} intersects "
+                f"the boot ROM's OCRAM scratch 0x{start:08x}..0x{stop:08x}, so "
+                "it cannot survive a reset"
+            )
     return symbol
 
 
@@ -140,7 +175,8 @@ def verify_retained_slots(source, target, env) -> None:
     print(
         "retained boot slots: PASS "
         f"(0x{symbol.address:08x}.."
-        f"0x{symbol.address + symbol.size:08x}, {SLOT_SECTION})"
+        f"0x{symbol.address + symbol.size:08x}, {SLOT_SECTION}, clear of the "
+        f"{len(BOOT_ROM_CLOBBERED)} measured boot-ROM OCRAM runs)"
     )
 
 

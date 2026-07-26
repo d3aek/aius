@@ -281,6 +281,36 @@ are follow-up work, recorded here so they are not lost.
    pinned by `PATCHED_SHA256` and the source-contract suite — or replacing
    `g_client.write()` with a raw `fnet_socket_send()`, which changes the write
    contract and the `NOTICE.md` patch inventory. Neither is a drive-by.
+
+   **FIXED 2026-07-26, and "cannot be fixed in place" was wrong.** The raw
+   `fnet_socket_send()` route needed **no vendor patch, no `NOTICE.md` change and no
+   `PATCHED_SHA256` movement at all** — the adapter is already the designated owner
+   of `fnet.h`, so calling the primitive directly is exactly what `read_once()`
+   already does. The entry over-estimated the blast radius and deferred a fix that
+   was a like-for-like change.
+
+   The correction that matters more is the *classification*, which this entry also
+   got too small. Mapping the send's error set needs more than the receive path's
+   two codes, because `_fnet_socket_set_error()` **substitutes** a socket's latched
+   `local_error` for whatever code the failing call computed
+   (`fnet_socket.c:104-108`). So an ICMP- or timer-latched `CONNRESET`,
+   `TIMEDOUT`, `CONNABORTED`, `HOSTUNREACH`, `NOPROTOOPT` or `MSGSIZE` can surface
+   from a send. Every *structural* failure row is unreachable by construction on
+   this socket (bounded 512-byte writes, never `shutdown()`, never a null buffer,
+   TCP always has `prot_snd`, urgent data compiled out), which is what makes the
+   enlarged set unambiguous rather than a guess: an `FNET_ERR` here means the socket
+   left `SS_CONNECTED`, whichever code appears. `MSGSIZE` is the sharpest case — the
+   send path's own length check answers `INVAL`, so `MSGSIZE` on a send can *only*
+   be the latch, and therefore can only mean the connection.
+
+   Live-or-latent, split rather than one answer: the **`WOULD_BLOCK`-as-`FAULT` half
+   was live** — a write `FAULT` runs `transport_fault()`, which zeroes
+   `response_length` and tears the transaction down, so a transient netheap shortage
+   truncated a response already promised to a client. The `CLOSED`-as-`FAULT` half
+   was latent, because for a `WRITE` both arms produce identical control flow and
+   the only difference, `last_transport_fault`, has no production reader.
+10. **The network-transport fake models FNET wrongly in five further places**,
+    which matters more than any single one of them: a committed test asserted the
 10. **The network-transport fake models FNET wrongly in five further places**,
     which matters more than any single one of them: a committed test asserted the
     `read_once()` defect *as correct behaviour* for months. The cause was a
@@ -408,6 +438,29 @@ are follow-up work, recorded here so they are not lost.
     [`aius-sample-rate-following.md`](aius-sample-rate-following.md) inventories both
     branches' *rates* meticulously and never mentions their *levels* — the same
     blind spot in a different dimension.
+
+    **FIXED 2026-07-26, and two of this entry's own predictions were wrong** — kept
+    because the corrections are the useful part. Details in
+    [`signal-path.md` §Stage 4c](../reference/signal-path.md#stage-4c--pcm-passthrough).
+
+    - **"a `<< 8` at the passthrough boundary" was the wrong place.** It would have
+      worked and would have left the next producer free to repeat the mistake. The
+      actual cause is that `AiusPcmBlock` documented its planes only as "signed
+      32-bit" and **never declared a sample scale**, so the decoder's 24-bit choice
+      and the pass-through's 16-bit choice were *both conformant*. The fix declares
+      the scale once in `aius_codec.h`, derives `AIUS_DSP_SAMPLE_MAX`/`_MIN` from it
+      rather than restating the number, and binds both implementations with a
+      `_Static_assert` — §Convention enforcement's compile-time rung, which a shift
+      at one call site does not reach.
+    - **"plus golden updates" was not needed, and that is itself diagnostic.** All
+      four `dsp-vectors` goldens are DTS, so every one was byte-unchanged. A defect
+      that changes real audio while touching no golden vector means the corpus does
+      not cover that branch — not that the change was small. The pass-through has no
+      committed vector at all; its only coverage was a hand-written test that
+      asserted the block against a copy of `pcm_feed`'s own expression, which is
+      exactly why it printed "1024 frames byte-exact" for the whole life of the
+      defect. Reverting the fix still leaves that check green; only the new
+      contract-terms check (`pcm-scale`) fails, reporting the measured −48.16 dB.
 14. **The DTS decoder does not use the 128 KB DTCM arena reserved for it.**
     `[env:teensy41-optical]` `build_unflags` removes
     `-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free`
@@ -438,12 +491,153 @@ are follow-up work, recorded here so they are not lost.
     run through `run_cascade(1.0, NULL, 0, …)` — an int-to-double convert and an
     `aius_quantize` per sample for an exact identity, **3,072 quantizes per block**.
     There is no per-channel identity skip.
-17. **Five source comments still quote the pre-fix DTCM free figure** —
+17. ~~**The retained boot ledger no longer survives a reset, and B6 gate 2 is
+    blocked on it.**~~ **FIXED 2026-07-26.** The cause was neither a neighbouring
+    symbol stomp nor anything in this firmware: **the i.MX RT1062 boot ROM
+    overwrites three fixed runs of OCRAM on every reset**, and the 24-bit output
+    ring moved `g_aius_boot_slots` into the largest of them.
+
+    Measured directly, on the board, before any other code runs — the raw slot
+    bytes were byte-identical at `startup_early_hook`, `startup_middle_hook`,
+    `startup_late_hook` and inside `aius_boot_storage_teensy_load()`, which rules
+    out the Teensy startup path and this firmware; and a fill-reset-scan probe of
+    `0x20200000`..`0x2027F800` returns the same three runs for a `SYSRESETREQ`
+    (`SRC_SRSR=0x02`) and for a WDOG1 timeout (`SRC_SRSR=0x10`):
+    `0x20200C60`..`0x20201100`, `0x20201B80`..`0x20201C40`,
+    `0x20203A60`..`0x20207F60`. `0x20205140` is inside the third.
+
+    **Both addresses were accidents.** `0x20201120` retained because it happened to
+    fall in the 2,688-byte hole between the first two runs. `DMAMEM` packs
+    `.bss.dma` in object order, so the ledger's address was a function of every DMA
+    buffer declared ahead of it — which is why a 16 KiB audio ring broke retention
+    with no diff to the boot adapter at all. The fix is placement, not a
+    workaround: `link/aius_teensy41.ld` (selected by `board_build.ldscript`) carves
+    `.bss.aius_retained` out immediately before `.bss.dma`, pinning the slots to
+    `ORIGIN(RAM)` = `0x20200000` by construction and below `_heap_start` by
+    construction. The full measured map and the probe method are recorded in
+    [`firmware-io.md` §Retained OCRAM](../reference/firmware-io.md).
+
+    **The guard was promoted, because it passed while retention was broken.** It
+    checked alignment, size, section and the CrashReport bound — all necessary,
+    none sufficient. Now: two link-time `ASSERT`s (the address equals
+    `ORIGIN(RAM)`; the region fits below the ROM's first run at
+    `ORIGIN(RAM)+0xC60`), a post-link check that the symbol is at exactly the
+    pinned origin and intersects none of the three measured runs, a source guard
+    that rejects a `DMAMEM` declaration outright, and a drift test that keeps our
+    copy of the framework linker script byte-identical to the framework's apart
+    from the carve-out.
+
+    **Live proof.** `boot_generation` increments on every software reset —
+    1→2→3→4→5, then 11→12→13→14→15→16 during the bring-up timing run, then 20→21→22
+    — each with `reset_source=2`. For the watchdog case, a `teensy41-optical-fault`
+    image stalling at checkpoint 5 came back in **recovery-safe mode**, twice
+    independently, which is reachable only when a retained `early_watchdog_resets`
+    is incremented to 2 across two consecutive watchdog resets. The ledger now also
+    survives a HalfKay reflash of a different build id, with the generation
+    carrying across.
+
+17a. **`boot_generation`, `reset_source` and `watchdog_early_resets` all read 0 in
+    recovery-safe mode**, on both `/api/status` and USB `AIUS ID`. Recovery-safe
+    runs only checkpoints 1 and 2 (`aius_runtime.c:81`), so
+    `platform_reset_capture()` at checkpoint 0 never runs and never populates
+    `AiusRecoveryStatus`. The consequence is that **the moment the recovery
+    boundary engages, the three fields that would explain why read zero** — so B6
+    gate 3 cannot distinguish "latched correctly after two watchdog resets" from
+    "the ledger is broken again". Found while proving 17; not fixed, because the
+    fix is in `optical_main.cpp`/the scheduler rather than the boot adapter. The
+    cheapest form is probably to publish the reset-capture snapshot from
+    `capture_retained_boot_state()` rather than from a checkpoint callback.
+
+17b. **The 24-bit output ring assumes DMAMEM is zeroed at reset, and it is not.**
+    `aius_spdif_sources.cpp:21-24` says the ring is "uninitialised at reset, which
+    is correct -- both cursors start at zero". `.bss.dma` is `NOLOAD` and the Teensy
+    startup clears only `_sbss.._ebss` (DTCM), so `written`, `consumed` and
+    `underruns` hold whatever survived — and after a reset that is boot-ROM scratch,
+    because they sit at `g_aius_spdif_tx24 + 0x4000`, inside the ROM's third
+    clobbered run. `aius_spdif_tx24_fill()` then transmits ring contents for
+    `written - consumed` frames, an unsigned difference that can be arbitrarily
+    large. Bounded (the index is masked, so there is no out-of-bounds write) but
+    audible. Not fixed: `lib/aius_audio/**` is outside the boot work's remit and the
+    one-line fix — zero the three cursors in `aius_spdif_tx24_begin()` — wants an
+    audible check.
+18. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every
    placement decision those comments justify is still correct — more so — but the
    arithmetic in them is wrong.
+19. **`read_once()` has the same latch-substitution hole the send path just had, and
+    a committed row asserts the misclassification.** Found fixing defect 9.
+    `_fnet_tcp_rcv()` itself fails only with `NOTCONN`/`CONNCLOSED`, so a *latched*
+    `CONNRESET`, `TIMEDOUT`, `CONNABORTED`, `HOSTUNREACH`, `NOPROTOOPT` or `MSGSIZE`
+    surfacing on a receive equally means the connection is gone — but `read_once()`
+    maps everything outside its two codes to `FAULT`. `send_error_is_closure()`
+    applies unchanged, so the fix is a one-line reuse. What makes it more than a
+    tidy-up: `test_nativeethernet_behavior.cpp:1224` **pins the wrong answer**
+    (`force_recv_error = FNET_ERR_NOPROTOOPT` → `FAULT`), so this is a committed
+    contract row to invert, not a gap to fill. Left deliberately — the same shape as
+    the two write rows just flipped, but outside that fix's brief.
+20. **The fake gets `_fnet_socket_addr_check_len(addr, 0)` backwards, and the suite
+    asserts the wrong answer — and the real behaviour implicates the vendor's
+    accept path.** `test_nativeethernet_behavior.cpp:871-877` claims a zero length
+    "is not checked at all". Real FNET is
+    `if (addr && addr_len) {...} else { result = FNET_ERR_INVAL; }`
+    (`fnet_socket.c:1856-1893`), and at the accept call site `addr` is
+    `&sock->local_addr`, never null — so a zero `addrlen` is **refused with
+    `FNET_ERR_INVAL`**, not skipped. That matters beyond the fake:
+    `EthernetServer::poll()` passes an **uninitialised** `fnet_size_t fromlen`
+    (`NativeEthernetServer.cpp:339`), measured as 0 on the host. On the board, a
+    stack slot that happens to hold 0 makes every `poll()` accept fail *while the
+    connection stays queued* — a retry loop rather than a dropped connection, which
+    is a plausible contributor to accept-path stalls and should be checked against
+    §Phase 12's poll-priority work (defect 12) rather than in isolation.
+21. **B6 gate 2's four "never became ready" lines were the ledger defect, not a
+    second failure — but there is still a real timing gap, and it is on the board.**
+    `observe_ready()` counts a channel ready only once `_is_new_boot()` is true
+    (`aius_recovery_smoke.py:455-488`), i.e. once `boot_generation` exceeds the
+    baseline. With the ledger broken that could never happen, so all four channels
+    read "never" no matter how fast the network came up. One root cause, four
+    symptoms.
+
+    Re-measured with the ledger fixed, five cycles, `--serial` attached, the gate's
+    own observer and its deadlines untouched (only `ready_limit` widened so a miss
+    is timed rather than recorded as "never"). Every cycle `reset=software`
+    (`SYSRESETREQ`, not cold), `early=0`, `rsafe=False`, `network_restarts=0`,
+    `network_last_fault=0`, and `boot_generation` +1:
+
+    | Channel | min | max | mean | deadline |
+    |---|---|---|---|---|
+    | `usb` | 4.04 s | 4.09 s | 4.06 s | 2.0 s |
+    | `dhcp` | 8.90 s | 10.56 s | 9.90 s | 7.0 s |
+    | `udp` | 8.90 s | 10.56 s | 9.90 s | 8.0 s |
+    | `http` | 9.15 s | 10.82 s | 10.16 s | 8.0 s |
+
+    Stable, not variable: `dhcp`/`udp` are bimodal at exactly 8.90 s or 10.56 s and
+    `http` is always one 0.25 s poll behind them, so HTTP is not separately slow —
+    the three come up together with the lease and the 1.66 s step looks like one
+    discrete retry.
+
+    **The latency is the board's own, not the ack or the host.** `/api/events` on the
+    boot that measured 10.56 s reports `DHCP_UPDATE` at `uptime_ms=9688` and the
+    `ONLINE` state change at `uptime_ms=10539` — board uptime, so the ack-to-reset
+    and host-side overheads are under 0.1 s. It is also **not DHCP negotiation
+    overrunning**: `AIUS_NET_DHCP_DEADLINE_MS` is 5,000 and no
+    `AIUS_NET_FAULT_DHCP_TIMEOUT` fired (`network_last_fault=0`,
+    `network_restarts=0`), so the DHCP wait completed inside its own 5 s budget and
+    started late. The unexplained time is therefore in stack/PHY bring-up before the
+    DHCP wait begins — `Ethernet.begin()` and link establishment — and that is what
+    to instrument next. Defect 20's uninitialised `fromlen` is a candidate for the
+    `http`-after-`udp` gap but cannot explain a lease at 9.7 s.
+
+    **The `usb` figure is a measurement artifact and should not be read as a board
+    defect.** The normative deadline is "after USB enumeration, `AIUS ID` must
+    respond within 2 s" (§Runtime order and budgets), but every cycle reported
+    `usb_basis=ack`: `observe_ready()` never observed the port absent, so it charged
+    the board for host CDC re-enumeration. It cannot observe it — each loop iteration
+    spends up to 1 s on `http_status()` and up to 3 s on `udp_status()` (timeout 1 s
+    × 3 retries) while the board is down, so the ~1.5 s enumeration gap falls between
+    two `usb_present()` samples. Fixing the basis is a runner change, and the
+    deadlines were deliberately left alone pending a decision on the DHCP figure.
 
 #### Decisions taken, so they are not re-opened
 

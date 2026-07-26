@@ -812,17 +812,22 @@ path that is about to stop existing.
 The ledger that survives a reset, and the register writes that arm and feed the
 watchdog.
 
-**Buffers.** `g_aius_boot_slots[2]`, 128 B total, `DMAMEM` and `used`, each 64-byte
-element on its own 32-byte cache line (`src/aius_boot_teensy.cpp:209`,
-`docs/plans/aius-network-hardening.md:770`).
+**Buffers.** `g_aius_boot_slots[2]`, 128 B total, in `.aius_retained` and `used`,
+each 64-byte element on its own 32-byte cache line
+(`src/aius_boot_teensy.cpp:209`, `docs/plans/aius-network-hardening.md:770`).
 
 **Why this implementation, and two rejected alternatives.** **DTCM was rejected
 because startup clears it. Flash and EEPROM were rejected because a checkpoint write
-occurs every epoch** (`docs/plans/aius-network-hardening.md:764`). OCRAM
-`.dmabuffers` survives a watchdog reset and tolerates a per-epoch write; a post-link
-check fails every production and fault build unless the linked symbol is 32-byte
-aligned, occupies exactly 128 bytes, and ends below the core-reserved CrashReport area
-at `0x2027ff80` (`docs/plans/aius-network-hardening.md:878`).
+occurs every epoch** (`docs/plans/aius-network-hardening.md:764`). OCRAM survives a
+reset and tolerates a per-epoch write, but *which* OCRAM matters — see
+[§Retained OCRAM](#retained-ocram--which-addresses-actually-survive-a-reset). The
+slots are pinned to `ORIGIN(RAM)` = `0x20200000` by `link/aius_teensy41.ld`, with
+link-time `ASSERT`s on the address and on the headroom to the boot ROM's scratch, and
+a post-link check that fails every production and fault build unless the linked
+symbol is 32-byte aligned, occupies exactly 128 bytes, sits in
+`.bss.aius_retained` at exactly that address, stays below the core-reserved
+CrashReport area at `0x2027ff80`, and lies outside every measured boot-ROM run
+(`test/boot-target/verify_target.py`).
 
 Double-slot with a committed marker written last, so a reset between any two writes
 leaves the previous slot authoritative; the fake oracle injects a reset after every
@@ -849,6 +854,46 @@ without a complete checkpoint trace — the watchdog would stop being a bound on
 wedged service, which is the mechanism every other entry in this document leans on.
 The `optical-cutover` absence group asserts file-wide that no other watchdog write
 exists (`src/optical_main.cpp:393`).
+
+## Retained OCRAM — which addresses actually survive a reset
+
+**The i.MX RT1062 boot ROM runs on every reset and uses OCRAM as its own scratch, so
+"OCRAM is retained" is false as stated.** Three runs come back overwritten before the
+first instruction of `startup_early_hook`, and they are the same for a `SYSRESETREQ`
+(`SRC_SRSR=0x02`) and for a WDOG1 timeout (`SRC_SRSR=0x10`):
+
+| Range | Bytes |
+|---|---|
+| `0x20200C60`..`0x20201100` | 1,184 |
+| `0x20201B80`..`0x20201C40` | 192 |
+| `0x20203A60`..`0x20207F60` | 17,664 |
+
+Everything else from `0x20200000` to `0x2027F800` survives both. Retained state must
+live outside those runs *and* outside the malloc/new heap, which starts at
+`_heap_start` (the end of `.bss.dma`) and grew to about `0x20255000` in the measured
+image.
+
+**How it was measured**, so it can be repeated on a different chip or bootloader:
+fill `0x20200000`..`0x2027F800` with a self-describing pattern (word at address `A` =
+`A ^ 0x5A5A5A5A`), record a phase marker in a scratch page above the filled range,
+flush the D-cache, reset, and scan the same window from an overridden
+`startup_early_hook` — the earliest C in the image, before `memory_clear()`, before
+the cache is configured and before the C++ constructors — recording contiguous runs
+of mismatching 32-byte blocks. Snapshotting the retained slots at
+`startup_early_hook`, `startup_middle_hook`, `startup_late_hook` and again inside
+`aius_boot_storage_teensy_load()` showed byte-identical corruption at all four, which
+is what rules out the Teensy startup path and this firmware as the writer.
+
+**Why this bit once.** `g_aius_boot_slots` was `DMAMEM`, so it floated inside
+`.bss.dma`, packed in object order behind every DMA buffer declared ahead of it. At
+`0x20201120` it happened to land in the 2,688-byte hole between the first two runs and
+`boot_generation` incremented across resets; the 24-bit S/PDIF output ring added 16 KiB
+ahead of it, moved it to `0x20205140` — inside the third run — and every reset produced
+a fresh generation-1 ledger, which also made recovery-safe mode unreachable because
+`early_watchdog_resets` could never reach two. The address was never chosen either
+time. It is now: `link/aius_teensy41.ld` places `.bss.aius_retained` immediately
+before `.bss.dma`, which pins it to `ORIGIN(RAM)` by construction and below
+`_heap_start` by construction.
 
 ## Hardware metrics and one-shot register reads
 

@@ -371,6 +371,17 @@ boot-target)
 	python3 "$fw_root/test/boot-target/test_source_guard.py" \
 		"$fw_root/src/aius_boot_teensy.cpp"
 	python3 "$fw_root/test/boot-target/test_verify_target.py"
+	# The optical envs link through our own copy of the framework's
+	# imxrt1062_t41.ld (board_build.ldscript) so the retained OCRAM region can be
+	# carved out ahead of .bss.dma. Prove the copy is still the framework body
+	# plus exactly the Aius additions. Exit 3 = framework package absent; the
+	# native suite must stay runnable without the Teensy toolchain installed.
+	ldscript_drift_status=0
+	python3 "$fw_root/test/boot-target/test_ldscript_drift.py" \
+		"$fw_root/link/aius_teensy41.ld" || ldscript_drift_status=$?
+	if [[ $ldscript_drift_status -ne 0 && $ldscript_drift_status -ne 3 ]]; then
+		exit "$ldscript_drift_status"
+	fi
 	boot_target_core="$build_dir/boot-target-aius-boot.o"
 	"$cc" "${cflags[@]}" -Wpedantic \
 		"-I$fw_root/lib/aius_boot/include" \

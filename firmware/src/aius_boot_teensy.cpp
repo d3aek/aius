@@ -206,7 +206,22 @@ FLASHMEM void hardware_write_watchdog_wsr(void *, uint16_t value)
 
 } // namespace
 
-DMAMEM AiusBootSlot g_aius_boot_slots[2] __attribute__((used));
+/* NOT DMAMEM. `.dmabuffers` is a floating region: the linker packs it in object
+ * order, so this array's address was a function of every DMA buffer declared
+ * ahead of it -- and the i.MX RT1062 boot ROM overwrites three fixed runs of
+ * OCRAM on every reset, so a floating address means retention is luck. It was
+ * luck: at 0x20201120 the slots sat in a hole between two of those runs and
+ * survived; the 24-bit output ring added 16 KiB ahead of them, moved them to
+ * 0x20205140 -- inside the ROM's largest run -- and every reset came back with a
+ * fresh generation-1 ledger.
+ *
+ * `.aius_retained` is placed at ORIGIN(RAM) by link/aius_teensy41.ld, which also
+ * ASSERTs that address and the headroom to the ROM's first clobbered run at
+ * ORIGIN(RAM)+0xC60. The measured map and the reproduction are in that file.
+ * aligned(32) so the section's own alignment does not depend on this being the
+ * only member. */
+__attribute__((section(".aius_retained"), used, aligned(32)))
+AiusBootSlot g_aius_boot_slots[2];
 
 extern "C" FLASHMEM void aius_boot_storage_teensy_init(
 	AiusBootStorageTeensy *storage,
