@@ -980,9 +980,16 @@ service unaided — a boundary that had never once executed on a real board.
     would verify against revision alone; the timestamp is what separates "the
     flash landed" from "the loader did nothing".
 
-- **B8** is now the only remaining phase that changes what an operator has to do
-  physically — the zero-button-press gate (Phase 16b) run against the tooling
-  B7 just delivered.
+- ~~**B8** is now the only remaining phase that changes what an operator has to
+  do physically — the zero-button-press gate (Phase 16b) run against the
+  tooling B7 just delivered.~~ **DELIVERED 2026-07-26, and nothing an operator
+  does for this board involves a button any more.** One button-free CDC flash
+  and one production restore, each verified by revision *and* build stamp:
+  `cff77ab4641b` (23:34:49Z) → `8623061c2fa7` (23:47:59Z) → restored
+  `cff77ab4641b` byte-for-byte from the saved production hex, the runner
+  confirming both the outgoing and incoming identity on each leg. Board
+  healthy after restore (`boot_generation` 247, `config_valid 1`,
+  `recovery_safe 0`). Details under Phase 16b below.
 - **Open defects 22 and 23**, both raised by the passing run rather than by a
   failure, and both design calls rather than repairs.
 - **B9**, the dashboard retirement, which is independent of all of the above.
@@ -1125,8 +1132,8 @@ throughout. Track B is serialized because every phase in it touches
 | B5c | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
 | B5d | Phase 14e — the signal path and DSP reference: block diagram, per-stage implementation, memory, and the measured per-block budget | `dsp` suite + figures taken from the device |
 | B6 | ~~Phase 16a — live recovery smoke on the deployed board~~ **DONE 2026-07-26** on `3576c3e3560f` | gates 2, 4, 5 PASS; gate 3 PASS on all seven recoverable checkpoints; 1 and 2 UNRESOLVED, structurally |
-| B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
-| B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
+| B7 | ~~Phase 15 — button-free flash tooling~~ **DONE 2026-07-26** (`7670c5e03`) | `flash` + `usb-control` suites |
+| B8 | ~~Phase 16b — the zero-button-press flash gate, re-run once B7 exists~~ **DONE 2026-07-26**: flash `cff77ab4641b`→`8623061c2fa7` and restore, both runner-verified, zero presses | one clean button-free flash and restore |
 | B9 | Retire the the app dashboard, keeping `swagger.json` and its contract suite | `ui-contract` and Vitest suites green after removal |
 
 Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
@@ -6405,6 +6412,15 @@ The proportionate live smoke on the deployed device, run once after cutover:
 
 1. **(16b, after Phase 15.)** One button-free CDC flash and one production
    restore, each verified by build revision, with zero button presses.
+   **PASSED 2026-07-26** with the B7 tooling: flashed
+   `8623061c2fa7+teensy41-optical` (built 23:47:59Z) over the running
+   `cff77ab4641b` (23:34:49Z), then restored the saved production hex —
+   the runner verified the outgoing and incoming identity (revision *and*
+   build stamp, per the B7 rule that revision alone cannot distinguish a
+   rebuild) on each leg, and the whole gate touched no button. The two
+   images differed only by two docs commits, which is what made a
+   distinct-revision round trip free. Board healthy after restore:
+   `boot_generation` 247, `config_valid 1`, `recovery_safe 0`.
 2. A handful of software reboots (about five) with DHCP, USB, HTTP, and UDP
    ready inside the normative deadlines and no unexpected watchdog reset.
 3. One induced stall at each injectable checkpoint `0..8`, each resetting inside
