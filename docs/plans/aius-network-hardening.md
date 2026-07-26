@@ -822,10 +822,12 @@ are follow-up work, recorded here so they are not lost.
     measured two- and three-`DISCOVER` frequencies, and note the trade — waiting
     longer is right when the lease is merely delayed, and wrong when the segment
     will never answer, which is what the backoff-and-retry path is for.
-24. **About 4 % of rapid sequential HTTP requests fail outright, and the device's
-    own counters say nothing happened.** Found while establishing a baseline for
-    defect 7's fix, on a board with **no carrier and `blocks: 0`** — so this is
-    not audio contention.
+24. ~~**About 4 % of rapid sequential HTTP requests fail outright, and the
+    device's own counters say nothing happened.**~~ **CLOSED 2026-07-26 as
+    characterized vendor-stack behaviour — instrumented, counted, bounded,
+    self-recovering; disposition and full measurement below.** Found while
+    establishing a baseline for defect 7's fix, on a board with **no carrier
+    and `blocks: 0`** — so this is not audio contention.
 
     Measured, 200 sequential `GET /api/status` at ~40–55 req/s, four runs (two
     with the poll-priority fix, two without it):
@@ -849,15 +851,68 @@ are follow-up work, recorded here so they are not lost.
     no-op. The counters were the §Accepted wire-behaviour changes zero from
     slice S2b.)
 
-    **The instrument now exists — reinstated 2026-07-26.** The counters are
-    produced at the seams that can actually see the transaction (semantics in
-    `aius_runtime_network_http.h` and §Accepted wire-behaviour changes'
-    addendum). Re-run the 200-request baseline and read the deltas:
-    `http_requests` short of the client's sent count means the loss is
-    pre-dispatch (connect/accept/read); `http_client_drops` naming it means the
-    transport reported it; everything still zero with client-visible failures
-    means the loss never reached the listener, which is the lost-SYN
-    hypothesis.
+    **CHARACTERIZED 2026-07-26, same evening the instrument landed.** Flashed
+    `cff77ab4641b` (counters live) and re-measured. Every hypothesis the entry
+    carried is now answered, and **the lost-SYN one is dead**: the failures
+    reach dispatch (`http_requests` counts them) and die on the send path.
+    Five runs, the signature identical in all:
+
+    - **Every client-visible failure is `RemoteDisconnected` at ~103 ms and is
+      counted by `http_client_drops`, one for one** (plus the ambient poller's
+      own losses — see below). 103 ms is `RESPONSE_TIMEOUT_MS` (100 ms) plus
+      overhead: the transaction dispatched, formatted, and could not transmit
+      within its deadline, so it dropped the client — the bounded machine
+      doing exactly what it was designed to do.
+    - **The trigger is a connection count, not a rate.** 150-request bursts
+      are clean at 278/s (max 5.3 ms); 200-request runs fail at ~#180 whether
+      driven at 37/s or 82/s; a 400-request run fails at #28–32 and again at
+      #236–239 (~204 apart). Decisive: two 150-bursts ~2 s apart — first
+      clean, second fails at #28, i.e. cumulative ~187 since the window
+      opened. Lingering per-connection state accumulates across bursts.
+    - **The stall and the drops are one event.** Each failure burst is
+      preceded or accompanied by one *successful* request at ~1 s, ~2 s, ~3 s
+      or ~4.1 s (this and the original table's 1,039–3,103 ms outliers are
+      FNET slow-timer multiples, 500 ms tick). ~5–8 drops per event, then bulk
+      recovery and another ~200 clean connections.
+    - **The runtime is exonerated by its own numbers**: `http_service_overruns`
+      0 across 59k epochs including the stall (no HTTP service call exceeded
+      2 ms), `network_budget_overruns`, `network_drops`, `network_restarts`,
+      `event_overflows`, `overruns` all 0. The wedge is the vendored stack not
+      draining, not this firmware's scheduling.
+
+    **Working model** (the one thing not yet pinned to a source line): each
+    closed connection lingers in TIME_WAIT — `FNET_TCP_TIME_WAIT` is 48 slow
+    ticks = **24 s** — holding its control state out of the wrapper's 64 KiB
+    FNET netheap (`FNET_STACK_HEAP_DEFAULT_SIZE`, `NativeEthernet.h:42`).
+    64 KiB / ~190-connection threshold ≈ ~345 B per lingering connection,
+    which is TCB-sized. What performs the bulk reclaim at exhaustion is not
+    yet identified (FNET has abort-on-pressure paths; the wrapper's slot table
+    is nulled at `close_once()` and is not the accumulator). If it ever needs
+    pinning, the next instrument is a netheap gauge — FNET's mempool free
+    stats surfaced into `net_diag` — not more black-box runs.
+
+    **Disposition: no firmware change.** The 100 ms response deadline
+    converting a stack wedge into a counted, bounded drop is correct
+    behaviour; the alternative — waiting out a 1–4 s stall per transaction —
+    is the unbounded shape this plan exists to remove. No realistic client
+    approaches the trigger (the dashboard polls at 1 Hz; ~22 connections ever
+    linger in the window). A client that genuinely needs >150 requests in
+    under 24 s should reuse connections. Raising the netheap would move the
+    threshold, not remove the cliff, and costs OCRAM against no observed
+    need.
+
+    **Two side-findings from the same runs:**
+
+    - **An ambient poller exists.** ~0.93 req/s of `GET /api/status` from
+      elsewhere on the subnet (almost certainly a browser tab left on the SD
+      dashboard) — invisible until the counters landed, and it perturbs
+      measurement runs: it shares the single transaction, its requests queue
+      behind and drop alongside a saturating run's (`http_client_drops`
+      advanced by 8 and 12 against 6 and 9 client-visible failures). Baseline
+      arithmetic on this board must subtract ~1/s, or the tab should be
+      closed first.
+    - `http_requests` climbs ~1/s on an "idle" board for the same reason —
+      a zero-rate expectation would be wrong, not the counter.
 
     Two candidates worth separating first: the second-order accept behaviour
     behind defect 20 (the vendor `fromlen` patch is applied, but the accept path
