@@ -836,7 +836,28 @@ static FLASHMEM AiusDspConfigErrorCode parse_source(AiusJsonCursor *parser)
 	}
 	if (!aius_json_take_string(parser, value, sizeof(value), &value_len, &overflow))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-	if (!aius_json_key_is(value, value_len, overflow, "sd"))
+	/* Both values GET can serve are accepted, and the value is then IGNORED.
+	 *
+	 * `source` is a read-only status field: it reports which model is active, and
+	 * `GET /api/dsp/config` emits `g_dsp_source_sd ? "sd" : "default"`. But it is
+	 * also one of the nine REQUIRED top-level keys, and this function used to
+	 * accept only "sd" -- so on a board with no SD-hosted config, which serves
+	 * "default", the natural GET-then-PUT round-trip was refused 400
+	 * `dsp_config_invalid`. That is how B6 gate 5 failed: not a runner problem, a
+	 * contract defect on an untouched board.
+	 *
+	 * Ignoring the value is correct rather than lax. A successful PUT always
+	 * writes `/aius/dsp.json`, so the resulting source is always "sd" whatever the
+	 * body claimed; honouring the field would mean letting a client assert a fact
+	 * the server determines. Rejecting a well-formed round-trip to defend a field
+	 * that cannot influence the outcome is the worst of both.
+	 *
+	 * Still validated as an enum rather than skipped: an unrecognised string is
+	 * still INVALID_SOURCE, so a typo or a wrong-shaped body is caught. The SD
+	 * editor sends "sd" and is unaffected either way -- it hardcodes the value,
+	 * which is exactly why this went unnoticed. */
+	if (!aius_json_key_is(value, value_len, overflow, "sd") &&
+	    !aius_json_key_is(value, value_len, overflow, "default"))
 		return AIUS_DSP_CONFIG_ERR_INVALID_SOURCE;
 	return AIUS_DSP_CONFIG_OK;
 }

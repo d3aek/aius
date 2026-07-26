@@ -845,8 +845,14 @@ static void test_too_many_eq(void)
 
 static void test_source(void)
 {
-	/* source == "default" rejected. */
-	body_bound(
+	/* source == "default" ACCEPTED, and this row asserted the opposite until
+	 * 2026-07-26. `GET /api/dsp/config` serves "default" on a board with no
+	 * SD-hosted config, and `source` is a required key, so rejecting it made the
+	 * natural GET-then-PUT round-trip fail 400 on an untouched board -- which is
+	 * how B6 gate 5 failed on hardware. The value is accepted and ignored: a
+	 * successful PUT always writes /aius/dsp.json, so the resulting source is "sd"
+	 * whatever the body claimed. */
+	static const char *const DEFAULT_SOURCE_BODY =
 		"{\"source\":\"default\",\"config_generation\":0,\"sample_rate_hz\":48000,"
 		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
 		"\"limiter\":true,\"meters\":true},"
@@ -858,10 +864,30 @@ static void test_source(void)
 		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
 		"\"headroom_linear\":1,\"clipfree\":false},"
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
-		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
-		AIUS_DSP_CONFIG_ERR_INVALID_SOURCE, "source default");
+		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}";
 
-	/* arbitrary source string rejected. */
+	/* A direct parse, not body_bound(): that helper also asserts the model was
+	 * reset to safe defaults, which is a FAILURE-path property. Using it for a
+	 * success case reports "failure did not restore safe defaults" and would
+	 * tempt the wrong fix. */
+	AiusDspModel default_source_model;
+	memset(&default_source_model, 0xa5, sizeof(default_source_model));
+	AiusDspConfigErrorCode default_source_error =
+		parse(DEFAULT_SOURCE_BODY, &default_source_model);
+	check(default_source_error == AIUS_DSP_CONFIG_OK,
+	      "source default: got error %d (%s), want OK",
+	      (int)default_source_error,
+	      aius_dsp_config_error_message(default_source_error));
+	/* And the body really was applied rather than merely not rejected -- if the
+	 * parse bailed early the model would still hold the 0xa5 fill. */
+	check(default_source_model.sample_rate_hz == 48000u,
+	      "source default: body not applied (sample_rate_hz %lu)",
+	      (unsigned long)default_source_model.sample_rate_hz);
+
+	/* arbitrary source string still rejected -- widening the enum to the two
+	 * values GET can serve is not the same as skipping the field, so a typo or a
+	 * wrong-shaped body is still caught. This row is what keeps the fix a
+	 * widening rather than a removal. */
 	body_bound(
 		"{\"source\":\"usb\",\"config_generation\":0,\"sample_rate_hz\":48000,"
 		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
