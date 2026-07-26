@@ -207,7 +207,39 @@ are follow-up work, recorded here so they are not lost.
    image**. It is also an ungated SD toucher overlapping HTTP-owned jobs, so it is
    a live candidate for defect 2 above and should be excluded before that
    investigation trusts its arithmetic.
-7. **The FNET poll timer shares the audio ISR's interrupt priority**, so the
+7. **FIXED 2026-07-26, and this entry understated it.** The demotion is
+   `NVIC_SET_PRIORITY(IRQ_PIT, 224)` in `stack_start()`
+   (`aius_network_teensy.cpp`), guarded three ways: a source guard that reads
+   the framework's own `IRQ_SOFTWARE` value rather than pinning it, a
+   behavioural assertion in `network-transport` that the demotion is re-applied
+   on **every** network generation, and `IRQ_PIT` registered in `fake-fidelity`.
+
+   **Two corrections, and the first inverts the conclusion.** "Equal priority
+   means neither preempts" describes `fnet_poll` against the S/PDIF **DMA** ISR
+   (both 128). It does not describe the path that carries the signal
+   processing: `update_all()`, `enqueue()` and the whole of `aius_dsp_process`
+   run in the audio **software** interrupt, which `AudioStream::update_setup()`
+   sets to **208** (`cores/teensy4/AudioStream.cpp:424`). Lower is stronger on
+   the NVIC, so `fnet_poll` did not merely fail to yield to the DSP — **it
+   preempted it, a thousand times a second, mid-block.**
+
+   Second: the fix cannot be applied once at boot.
+   `IntervalTimer::beginCycles()` re-applies the instance's own default on every
+   `begin()`, and `beginNoWait()` runs afresh per generation, so a setup-time
+   override is silently undone by the first network restart. Observed as a
+   negative control: a once-only variant passes every other assertion and fails
+   exactly the per-generation one.
+
+   224 is one *implemented* level below 208 — this M7 decodes four priority
+   bits, so 209 would have been the same level and a no-op. That is the
+   discriminating assertion the guard makes, and asserting `224 > 208` instead
+   would have accepted the no-op. No vendor patch was needed: all four PIT
+   channels share `IRQ_PIT`, so the NVIC write is exactly what the private
+   `IntervalTimer::priority()` would have done.
+
+   The original entry, retained because its measurement note still stands:
+
+   **The FNET poll timer shares the audio ISR's interrupt priority**, so the
    plan's central isolation argument has a hole. `beginNoWait()` starts an
    `IntervalTimer` running `fnet_poll` every 1,000 µs for the life of the network
    generation (`vendor/NativeEthernet/src/NativeEthernet.cpp:167`). Teensy startup
@@ -734,6 +766,41 @@ are follow-up work, recorded here so they are not lost.
     measured two- and three-`DISCOVER` frequencies, and note the trade — waiting
     longer is right when the lease is merely delayed, and wrong when the segment
     will never answer, which is what the backoff-and-retry path is for.
+24. **About 4 % of rapid sequential HTTP requests fail outright, and the device's
+    own counters say nothing happened.** Found while establishing a baseline for
+    defect 7's fix, on a board with **no carrier and `blocks: 0`** — so this is
+    not audio contention.
+
+    Measured, 200 sequential `GET /api/status` at ~40–55 req/s, four runs (two
+    with the poll-priority fix, two without it):
+
+    | | failures / 200 | p50 | p95 | max |
+    |---|---|---|---|---|
+    | poll at 224 | 9, 6 | 3.7 ms, 3.6 ms | 4.5 ms, 4.8 ms | 1,060 ms, 3,103 ms |
+    | poll at 128 | 8, 8 | 3.6 ms, 3.5 ms | 4.7 ms, 4.6 ms | 2,061 ms, 1,039 ms |
+
+    **The two are indistinguishable**, which is what clears the priority change
+    of causing it and is the only reason those columns are here.
+
+    The shape to explain: a tight median with a handful of complete failures and
+    multi-second outliers, while `network_drops`, `network_budget_overruns`,
+    `network_restarts`, `network_last_fault`, `http_server_rebinds` and
+    `event_overflows` all stay at 0 across the run. **A failure the device does
+    not count is the same blind spot as defect 16's four `http_*` counters with
+    no producer** — those are exactly the fields that would have named this, and
+    they serve constant zero. Close 16 before investigating this, or the
+    investigation has no instrument.
+
+    Two candidates worth separating first: the second-order accept behaviour
+    behind defect 20 (the vendor `fromlen` patch is applied, but the accept path
+    was never re-measured afterwards as that entry asked), and plain TCP
+    connection churn — the ~1 s and ~2–3 s outliers sit suspiciously close to
+    retransmission timeouts, which would make them a lost SYN rather than
+    anything in this firmware.
+
+    **This matters for signal testing specifically:** a UI that silently drops
+    one request in twenty-five looks like a device fault, and during bring-up it
+    would be attributed to whatever was just wired in.
 
 #### Decisions taken, so they are not re-opened
 

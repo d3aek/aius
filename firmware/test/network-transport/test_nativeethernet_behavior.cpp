@@ -24,6 +24,7 @@
 #include "utility/NativeW5100.h"
 
 FakeSerialClass Serial;
+uint8_t fake_nvic_priority[256];
 
 /* The constants, checked at compile time because a wrong number has no
  * behavioural witness to test: nothing in this transport reads back a value it
@@ -1783,6 +1784,51 @@ void test_adapter_socket_result_mapping()
     assert(first != nullptr);
     assert(first->generation == 9u);
     assert(first->netif_init == AIUS_NETWORK_TEENSY_NETIF_INIT_PERFORMED);
+
+    /* THE POLL TIMER IS DEMOTED ON EVERY GENERATION, NOT ONCE AT BOOT.
+     *
+     * FNET polls from an IntervalTimer at 1 kHz for the life of a generation,
+     * and IntervalTimer::beginCycles() re-applies its own default priority
+     * (128) on every begin(). The audio software interrupt that runs the DSP is
+     * at 208, and lower is stronger on the NVIC -- so at the default the poll
+     * PREEMPTS the block callback a thousand times a second. Demoting it once
+     * during setup would therefore be undone by the first network restart,
+     * which is exactly the sequence this function already drives.
+     *
+     * Asserted as the relationship rather than as the constant: repeating the
+     * adapter's own number here would prove the two agree and nothing about
+     * whether the audio path wins. test_poll_priority.py owns the cross-check
+     * against the framework's real value. */
+    const unsigned audio_isr_priority = 208u; /* cores/teensy4/AudioStream.cpp:424 */
+    const unsigned after_restart = fake_nvic_priority[IRQ_PIT];
+    assert(after_restart > audio_isr_priority);
+    assert((after_restart >> 4) > (audio_isr_priority >> 4));
+
+    /* Clear the observation and drive one more generation: the write must
+     * happen again, because begin() has re-armed the timer at 128 underneath
+     * it. A firmware that set the priority only at boot passes every assertion
+     * above and fails this one. */
+    fake_nvic_priority[IRQ_PIT] = 0u;
+    /* Teardown carries the CURRENT generation (10, from the restart above) and
+     * the next start opens a new one, matching the pair earlier in this
+     * function. */
+    const AiusNetAction teardown_again = {AIUS_NET_ACTION_TEARDOWN, 10u};
+    const AiusNetAction restart_again = {AIUS_NET_ACTION_START_STACK, 11u};
+    aius_network_teensy_apply(&adapter, 300u, teardown_again, &event);
+    for (int step = 0; step < 8 && event.kind != AIUS_NET_EVENT_TEARDOWN_DONE;
+         step++) {
+        aius_network_teensy_apply(&adapter, 301u, none, &event);
+    }
+    /* Asserted, not assumed. START_STACK protocol-faults and returns EARLY when
+     * any resource is still held, without clearing stack_started -- so an
+     * incomplete teardown here would leave `stack_started` true from before,
+     * make the obvious `assert(adapter.stack_started)` pass, and silently skip
+     * the stack_start() this case exists to observe. */
+    assert(event.kind == AIUS_NET_EVENT_TEARDOWN_DONE);
+    assert(!adapter.stack_started);
+    aius_network_teensy_apply(&adapter, 400u, restart_again, &event);
+    assert(adapter.stack_started);
+    assert(fake_nvic_priority[IRQ_PIT] == after_restart);
 }
 
 } // namespace

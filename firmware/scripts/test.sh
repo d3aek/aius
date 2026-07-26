@@ -428,6 +428,10 @@ runtime)
 	;;
 network-transport)
 	python3 "$fw_root/test/network-transport/test_vendor_source.py"
+	# FNET polls from an IntervalTimer, not from the epoch loop, so its NVIC
+	# priority is an audio-path contract: at the default 128 it preempts the
+	# DSP's software interrupt at 208, a thousand times a second.
+	python3 "$fw_root/test/network-transport/test_poll_priority.py"
 	transport_out="$build_dir/network-transport"
 	"$cxx" -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g \
 		-fsanitize=address,undefined -ffunction-sections -fdata-sections \

@@ -72,6 +72,16 @@ CHECKS = [
         ],
     ),
     (
+        # IRQ_PIT decides whether the fake observes the poll timer's demotion on
+        # the interrupt the hardware actually shares between all four PIT
+        # channels. A wrong number here would record the write at an index
+        # nothing reads, and the audio-priority assertion would pass against a
+        # firmware that had demoted the wrong interrupt.
+        "test/network-transport/fake/Arduino.h",
+        "cores/teensy4/imxrt.h",
+        ["IRQ_PIT"],
+    ),
+    (
         "test/sd-target/fake/SD.h",
         "cores/teensy4/FS.h",
         ["FILE_READ", "FILE_WRITE", "FILE_WRITE_BEGIN"],
@@ -103,7 +113,19 @@ def value_of(source: str, name: str):
     every single row and the guard would be discarded as noise."""
     m = re.search(r"^\s*#define\s+" + re.escape(name) + r"\b(?!\()(.*)$", source, re.M)
     if not m:
-        return None
+        # Enum members are constants too, and the framework spells some of the
+        # ones a fake must agree with that way -- IRQ_PIT is `IRQ_PIT = 122,`
+        # inside imxrt.h's interrupt enum, not a #define. Matching only #define
+        # would report "the framework does not define this" about a name it
+        # very much does, and the honest fix is to read both forms rather than
+        # to drop the constant from the guard.
+        # Anchored to where an enum member can legally begin -- start of line,
+        # or just after the `{` or `,` that separates members -- so a one-line
+        # `enum { IRQ_PIT = 122 };` is read while `x.IRQ_PIT = 5` is not.
+        m = re.search(r"(?:^|[{,])\s*" + re.escape(name) + r"\s*=\s*([^,}]+)[,}]",
+                      source, re.M)
+        if not m:
+            return None
     expr = m.group(1).split("//")[0].split("/*")[0].strip()
     # Strip C casts and fixed-width literal wrappers; what remains is arithmetic.
     expr = re.sub(r"\((?:unsigned\s+)?u?int\d+_t\)", "", expr)

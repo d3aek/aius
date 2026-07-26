@@ -79,7 +79,29 @@ public:
     template <typename Callback>
     bool begin(Callback, uint32_t) { return true; }
     void end() {}
+    /* Real IntervalTimer resolves this to NVIC_SET_PRIORITY(IRQ_PIT, n),
+     * because all four PIT channels share one interrupt
+     * (cores/teensy4/IntervalTimer.h:96). The fake routes it the same way so a
+     * test cannot tell the two spellings apart -- which is the point, since the
+     * adapter deliberately uses the NVIC form (_fnet_poll is private). */
+    void priority(uint8_t n);
 };
+
+/* The NVIC priority register file, modelled as the one thing a host test can
+ * observe about it: the last value written per interrupt.
+ *
+ * Modelled rather than stubbed away because FNET's poll timer preempting the
+ * audio software interrupt is a real defect with no other host-visible
+ * signature -- stubbing NVIC_SET_PRIORITY to nothing would make the suite
+ * report agreement with a firmware that had never set the priority at all. */
+enum { IRQ_PIT = 122 };
+
+extern uint8_t fake_nvic_priority[256];
+
+#define NVIC_SET_PRIORITY(irq, prio) \
+    (fake_nvic_priority[(unsigned)(irq) & 0xFFu] = (uint8_t)(prio))
+
+inline void IntervalTimer::priority(uint8_t n) { NVIC_SET_PRIORITY(IRQ_PIT, n); }
 
 class elapsedMillis {
 public:

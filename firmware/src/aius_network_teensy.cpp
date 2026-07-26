@@ -223,9 +223,59 @@ void callbacks_clear()
 	g_callback.valid = false;
 }
 
+/* NVIC priority handed to FNET's 1 kHz poll timer, and the reason the audio
+ * path is not at its mercy.
+ *
+ * THE STACK POLLS FROM AN INTERRUPT, NOT FROM THE EPOCH LOOP. beginNoWait()
+ * starts an IntervalTimer running fnet_poll every 1,000 us for the life of the
+ * network generation (vendor/NativeEthernet/src/NativeEthernet.cpp:167). This
+ * plan's isolation argument is framed throughout as "epoch loop, not audio
+ * ISR", which is true of this firmware's own code and untrue of the stack it
+ * links.
+ *
+ * AND THE DEFAULT IS THE WRONG WAY ROUND. IntervalTimer defaults to NVIC
+ * priority 128 (cores/teensy4/IntervalTimer.h:108) while the audio software
+ * interrupt -- the one that runs update_all(), enqueue() and the whole DSP --
+ * sits at 208 (cores/teensy4/AudioStream.cpp:424). Lower is stronger on the
+ * NVIC, so fnet_poll does not merely fail to yield to the DSP: it PREEMPTS it,
+ * a thousand times a second, in the middle of a block. Open defect 7 records
+ * this as "equal priority, neither preempts", which is the relationship between
+ * fnet_poll and the S/PDIF *DMA* ISR (both 128) rather than the one that
+ * carries the signal processing.
+ *
+ * 224 is one implemented level below 208. The Cortex-M7 here implements four
+ * priority bits, so only the top nibble is significant: 208 is level 13 and 224
+ * is level 14, making this the smallest demotion the hardware can express. The
+ * DSP now preempts network polling and never the other way round.
+ *
+ * STARVATION IS NOT THE TRADE. The DSP spends 8.4-8.8 % of a block, so the poll
+ * still gets over 90 % of the time; and a delayed poll costs a retransmit while
+ * a preempted block callback costs audio. §Deciding principle settles which way
+ * that goes.
+ *
+ * WHY HERE AND NOT ONCE AT SETUP. IntervalTimer::beginCycles() re-applies the
+ * instance's own nvic_priority on every begin(), and beginNoWait() is called
+ * afresh for each network generation -- so an override applied once at boot is
+ * silently undone by the first network restart. It belongs immediately after
+ * the call that arms the timer.
+ *
+ * Set through NVIC_SET_PRIORITY rather than IntervalTimer::priority() because
+ * _fnet_poll is private to EthernetClass. The two are equivalent: all four PIT
+ * channels share IRQ_PIT, so priority() resolves to this same write, and this
+ * firmware instantiates no IntervalTimer of its own for that resolution to
+ * disagree with. A vendor patch would buy nothing and cost a PATCHED_SHA256
+ * baseline. */
+#define AIUS_FNET_POLL_PRIORITY 224u
+
 bool stack_start()
 {
-	return Ethernet.beginNoWait(g_mac);
+	const bool started = Ethernet.beginNoWait(g_mac);
+
+	/* Unconditional: a begin() that reported failure may still have armed the
+	 * timer, and leaving it above the audio path on the failure route is the
+	 * case nobody would think to test. */
+	NVIC_SET_PRIORITY(IRQ_PIT, AIUS_FNET_POLL_PRIORITY);
+	return started;
 }
 
 bool dhcp_start()

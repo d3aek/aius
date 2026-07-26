@@ -186,10 +186,13 @@ selection. It is cleared to `none` by every accepted start. Three values:
    `SD.remove()` ungated. The most plausible unexplained 8 s reset in the image,
    and a live candidate for defect 2. Full detail in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
-7. **The FNET poll timer shares the audio ISR's interrupt priority** (both 128),
-   so its 1 kHz `fnet_poll` cannot be preempted by the block callback and vice
-   versa. The isolation argument is framed as "epoch loop, not audio ISR", which
-   is true of this firmware's code and untrue of the stack it links. Detail in
+7. ~~**The FNET poll timer shares the audio ISR's interrupt priority** (both
+   128).~~ **FIXED 2026-07-26, and "shares" was the wrong word — it outranked
+   it.** The DSP runs in the audio *software* interrupt at 208, not the DMA ISR
+   at 128, so `fnet_poll` **preempted the block callback** a thousand times a
+   second rather than merely failing to yield to it. `stack_start()` now demotes
+   `IRQ_PIT` to 224 on every network generation (once at boot is undone by the
+   first restart). Detail, including why 209 would have been a no-op, in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
 8. **Three JSON cursors, one seam, not hoisted.** `aius_config.c` and
    `aius_dsp_config.c` duplicate the same recursive-descent primitives, and the
