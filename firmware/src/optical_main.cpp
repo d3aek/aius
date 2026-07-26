@@ -180,6 +180,47 @@ static bool g_replay_job_active;
 static bool g_replay_job_cancelling;
 static bool g_replay_job_size_published;
 
+/* THE REFILL JOB'S OWN DIAGNOSTICS, because nothing else has them.
+ *
+ * The refill runs on g_replay_job, not on the storage service's job, so its
+ * failures never reach AiusRuntimeStorage's `last_failure` and never appear in
+ * sd_diag. When the first live loop-boundary fault landed, sd_diag showed
+ * driver_faults going 1 -> 2 and a `last_failure` still describing a CONFIG_LOAD
+ * from boot: the count moved and the record did not, so the one fault anyone
+ * wanted was the one fault nobody could see.
+ *
+ * The adapter's own duration figures have the same problem in the other
+ * direction. `longest_primitive_us` is a single running maximum across every
+ * primitive from every job, with no attribution: a 1,016,348 us reading proves
+ * something blocked for a second and says nothing about which action, which job
+ * or when. So this file times its own primitives, around its own call into the
+ * adapter, and keeps the worst one WITH the action that caused it.
+ *
+ * All of it lives here rather than in the storage service because the storage
+ * service is not this job's owner and src/aius_runtime_storage.* is outside this
+ * change's surface. Served as a `replay_diag` object beside `sd_diag` on
+ * GET /api/status. Everything below is a store on a path that runs at most once
+ * per epoch; nothing is sampled per audio block. */
+typedef struct {
+	uint32_t jobs;          /* refill jobs started */
+	uint32_t faults;        /* refill jobs that ended in FAIL */
+	uint32_t mounts;        /* AIUS_SD_ACTION_BEGIN performed by the refill */
+	uint32_t last_primitive_us;
+	uint32_t longest_primitive_us;
+	uint8_t longest_action;   /* AiusSdActionKind of the worst primitive */
+	uint8_t last_fault;       /* AiusSdFault of the last failed job */
+	uint8_t last_fault_phase; /* AiusSdPhase it landed in -- which primitive */
+	uint8_t last_fault_action;
+	uint32_t last_fault_driver;
+	uint32_t last_fault_offset_bytes;
+	uint32_t last_fault_at_ms;
+	uint32_t last_fault_loops;
+} ReplayJobDiag;
+/* DMAMEM like the job and the service it describes: a diagnostic record has no
+ * claim on the DTCM free-for-locals zone, which is the bank §Deciding principle
+ * names as scarcest. Written once per epoch at most, read by the status route. */
+DMAMEM static ReplayJobDiag g_replay_diag;
+
 /* Why the current selection is not playing, so /api/replays/status can tell a
  * replay the operator stopped from one a carrier displaced (replay_clock_service
  * below). Without it both read as plain `stopped`, which is the same class of
@@ -189,7 +230,12 @@ static bool g_replay_job_size_published;
 typedef enum {
 	REPLAY_STOP_NONE = 0, /* never stopped, or a selection is live */
 	REPLAY_STOP_REQUEST,  /* DELETE-ish: the operator asked, via app_replay_stop */
-	REPLAY_STOP_CARRIER   /* the optical input came up and took the audio path */
+	REPLAY_STOP_CARRIER,  /* the optical input came up and took the audio path */
+	/* The card failed AIUS_REPLAY_REFILL_FAULT_LIMIT refills in a row. Its own
+	 * reason because it is the one ending an operator cannot infer: a single
+	 * fault is now survivable, so reaching this means the card stopped
+	 * answering rather than hiccupped. Appended, so no value moves. */
+	REPLAY_STOP_FAULT
 } ReplayStopReason;
 static uint8_t g_replay_stop_reason;
 
@@ -1413,6 +1459,50 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
  * rate; the DHCP-state and frame-counter reads cost a descriptor lookup and two
  * register reads respectively, and none of the three touches a socket, waits,
  * or runs anywhere near the audio path. */
+/* The refill job's diagnostics (see ReplayJobDiag). Every field is attribution
+ * the adapter's single running maximum and the storage service's single failure
+ * record could not carry:
+ *
+ *   longest_primitive_us + longest_action   WHICH card action blocked longest
+ *   last_fault{,_phase,_action,_driver}     WHICH primitive failed, and why
+ *   last_fault_offset_bytes + _loops        WHERE in the file, and on which lap
+ *   mounts                                  refill remounts, apart from probes
+ *
+ * `fault_phase` is the load-bearing one: a terminal FAILED has already moved
+ * `phase` on to the cleanup arm, so without the latched copy an open failure and
+ * a read failure are indistinguishable after the fact. */
+static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
+	                                       size_t *length)
+{
+	return http_json_append(output, capacity, length,
+	                        ",\"replay_diag\":{\"jobs\":%lu,\"faults\":%lu,"
+	                        "\"mounts\":%lu,\"consecutive_faults\":%lu,"
+	                        "\"last_primitive_us\":%lu,"
+	                        "\"longest_primitive_us\":%lu,"
+	                        "\"longest_action\":%u,\"last_fault\":%u,"
+	                        "\"last_fault_phase\":%u,"
+	                        "\"last_fault_action\":%u,"
+	                        "\"last_fault_driver\":%lu,"
+	                        "\"last_fault_offset_bytes\":%lu,"
+	                        "\"last_fault_loops\":%lu,"
+	                        "\"last_fault_at_ms\":%lu}",
+	                        (unsigned long)g_replay_diag.jobs,
+	                        (unsigned long)g_replay_diag.faults,
+	                        (unsigned long)g_replay_diag.mounts,
+	                        (unsigned long)g_replay_service.refill_faults,
+	                        (unsigned long)g_replay_diag.last_primitive_us,
+	                        (unsigned long)g_replay_diag.longest_primitive_us,
+	                        (unsigned)g_replay_diag.longest_action,
+	                        (unsigned)g_replay_diag.last_fault,
+	                        (unsigned)g_replay_diag.last_fault_phase,
+	                        (unsigned)g_replay_diag.last_fault_action,
+	                        (unsigned long)g_replay_diag.last_fault_driver,
+	                        (unsigned long)
+					g_replay_diag.last_fault_offset_bytes,
+	                        (unsigned long)g_replay_diag.last_fault_loops,
+	                        (unsigned long)g_replay_diag.last_fault_at_ms);
+}
+
 static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	                                    size_t *length,
 	                                    const AiusNetworkTeensy *network)
@@ -1554,6 +1644,16 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!aius_runtime_storage_diag_json(&g_runtime.storage, (char *)body,
 	                                    capacity, &length))
 		return 0;
+	/* The refill job's own record, BESIDE sd_diag rather than inside it. The
+	 * two are different job streams with different owners: sd_diag belongs to
+	 * AiusRuntimeStorage, which never sees g_replay_job, so a refill fault has
+	 * always been absent from it -- visible only as driver_faults ticking while
+	 * `last_failure` described something else entirely. Folding this into that
+	 * object would mean writing src/aius_runtime_storage.*, and conflating two
+	 * job streams in one `last_failure` would make the next fault as hard to
+	 * attribute as this one was. */
+	if (!http_replay_diag_json((char *)body, capacity, &length))
+		return 0;
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }
 
@@ -1653,14 +1753,16 @@ static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
 	 * document it read before. */
 	const char *stop_reason =
 		g_replay_stop_reason == REPLAY_STOP_CARRIER ? "carrier" :
-		g_replay_stop_reason == REPLAY_STOP_REQUEST ? "request" : "none";
+		g_replay_stop_reason == REPLAY_STOP_REQUEST ? "request" :
+		g_replay_stop_reason == REPLAY_STOP_FAULT ? "fault" : "none";
 	int length = snprintf((char *)body, capacity,
-		"{\"ok\":true,\"state\":\"%s\",\"stop_reason\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu}",
+		"{\"ok\":true,\"state\":\"%s\",\"stop_reason\":\"%s\",\"id\":\"%s\",\"file_bytes\":%lu,\"offset_bytes\":%lu,\"duration_seconds\":%.3f,\"loop\":%s,\"loops_completed\":%lu,\"queue_words\":%lu,\"watermark_words\":%lu,\"underruns\":%lu,\"input_class\":\"%s\",\"decoder_errors\":%lu,\"refill_faults\":%lu}",
 		state, stop_reason, replay.id, (unsigned long)replay.file_bytes,
 		(unsigned long)replay.offset_bytes, replay.duration_seconds,
 		replay.loop ? "true" : "false", (unsigned long)replay.loops_completed,
 		(unsigned long)replay.queue_words, (unsigned long)replay.watermark_words,
-		(unsigned long)replay.underruns, klass, (unsigned long)replay.decoder_errors);
+		(unsigned long)replay.underruns, klass, (unsigned long)replay.decoder_errors,
+		(unsigned long)replay.refill_faults);
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
@@ -2817,10 +2919,26 @@ static FLASHMEM void replay_job_route(const AiusSdAction *action)
 	}
 
 	/* The one SD primitive this epoch, through the storage service's adapter
-	 * -- the single owner of the only card handle in the firmware. */
+	 * -- the single owner of the only card handle in the firmware.
+	 *
+	 * Timed here rather than read from the adapter because the adapter keeps
+	 * ONE running maximum across every job it serves and does not say which
+	 * action set it. That is how a 1.02 s primitive at a loop boundary stayed
+	 * unattributable: the number was real and named nothing. Two micros() reads
+	 * on a path that already blocks on the card. */
+	const uint32_t started_us = micros();
 	g_replay_job_event =
 		aius_sd_teensy_execute(&g_runtime.storage.target, action);
+	const uint32_t elapsed_us = micros() - started_us;
 	g_replay_job_event_present = true;
+
+	if (action->kind == AIUS_SD_ACTION_BEGIN)
+		g_replay_diag.mounts++;
+	g_replay_diag.last_primitive_us = elapsed_us;
+	if (elapsed_us > g_replay_diag.longest_primitive_us) {
+		g_replay_diag.longest_primitive_us = elapsed_us;
+		g_replay_diag.longest_action = (uint8_t)action->kind;
+	}
 }
 
 /* Does routing this action cost the epoch's one SD primitive?
@@ -2898,6 +3016,31 @@ static FLASHMEM void replay_job_advance(uint32_t now_ms)
 
 		if (action.kind == AIUS_SD_ACTION_COMPLETE ||
 		    action.kind == AIUS_SD_ACTION_FAIL) {
+			/* Latched BEFORE the service is told, and before the
+			 * job is reused, because everything that attributes the
+			 * failure lives on the job and is gone next epoch. This
+			 * is the record sd_diag could not hold: the phase names
+			 * which primitive failed, and the offset and lap number
+			 * say where in the file it happened -- which is how a
+			 * fault that only ever appears at a loop boundary
+			 * becomes a fact rather than a suspicion. */
+			if (action.kind == AIUS_SD_ACTION_FAIL &&
+			    !g_replay_job_cancelling) {
+				g_replay_diag.faults++;
+				g_replay_diag.last_fault =
+					(uint8_t)g_replay_job.last_fault;
+				g_replay_diag.last_fault_phase =
+					(uint8_t)g_replay_job.fault_phase;
+				g_replay_diag.last_fault_action =
+					(uint8_t)g_replay_job.outstanding_action;
+				g_replay_diag.last_fault_driver =
+					g_replay_job.last_driver_fault;
+				g_replay_diag.last_fault_offset_bytes =
+					g_replay_service.offset_bytes;
+				g_replay_diag.last_fault_loops =
+					g_replay_service.loops_completed;
+				g_replay_diag.last_fault_at_ms = now_ms;
+			}
 			/* Terminal: the handle is closed and the card is free
 			 * again. A cancelled job reports nothing -- its
 			 * selection no longer exists. */
@@ -2906,6 +3049,19 @@ static FLASHMEM void replay_job_advance(uint32_t now_ms)
 					&g_replay_service,
 					action.kind ==
 						AIUS_SD_ACTION_COMPLETE);
+			/* A fault run that reached the service's limit ends the
+			 * replay, and says so the way a carrier does: its own
+			 * reason on the status route and a transition in the
+			 * event ring, rather than a silent `stopped`. Read after
+			 * refill_complete(), which is what applies the limit. */
+			if (!g_replay_job_cancelling &&
+			    g_replay_service.state == AIUS_REPLAY_ERROR &&
+			    g_replay_stop_reason != REPLAY_STOP_FAULT) {
+				g_replay_stop_reason = REPLAY_STOP_FAULT;
+				record_event(AIUS_EVENT_REPLAY_STOP,
+				             current_state(),
+				             REPLAY_STOP_FAULT);
+			}
 			g_replay_job_active = false;
 			g_replay_job_cancelling = false;
 			g_replay_job_size_published = false;
@@ -2938,6 +3094,7 @@ static FLASHMEM void replay_job_start(const AiusReplayRefill *refill,
 	request.target_path = g_replay_path;
 	request.total = refill->byte_count;
 	request.initial_offset = refill->offset_bytes;
+	g_replay_diag.jobs++;
 	g_replay_job_active = true;
 	g_replay_job_cancelling = false;
 	g_replay_job_size_published = false;

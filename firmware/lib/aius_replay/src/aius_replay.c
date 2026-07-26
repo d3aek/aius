@@ -157,6 +157,9 @@ FLASHMEM AiusStatus aius_replay_service_start(AiusReplayService *service,
 	service->refill_planned = false;
 	service->refill_offset = 0u;
 	service->refill_bytes = 0u;
+	/* A new selection starts with a clean fault run: the previous one's card
+	 * trouble says nothing about this file. */
+	service->refill_faults = 0u;
 	aius_replay_word_ring_reset(&service->ring);
 	service->state = AIUS_REPLAY_PREBUFFERING;
 	service->source = AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY;
@@ -278,10 +281,40 @@ FLASHMEM void aius_replay_service_refill_complete(AiusReplayService *service, bo
 	service->refill_planned = false;
 	if (!ok) {
 		if (service->decoder.errors != UINT32_MAX) service->decoder.errors++;
-		service->state = AIUS_REPLAY_ERROR;
-		service->source = AIUS_REPLAY_SOURCE_ERROR;
+		service->refill_faults++;
+		/* A FAILED REFILL IS NOT THE END OF THE REPLAY, and treating it as
+		 * one is how a single transient SD fault killed playback outright:
+		 * the service went to ERROR, plan_refill() refuses to plan from
+		 * ERROR, and the device sat silent until an operator noticed.  The
+		 * live capture that found this had ONE fault, after one primitive
+		 * blocked for 1.02 s, on a file that had just played 1.9 MB
+		 * correctly.
+		 *
+		 * Recovery is free here because the seam owns an OFFSET and not a
+		 * handle.  Whatever chunks the job did deliver are already in the
+		 * ring, contiguous and valid, and offset_bytes already points past
+		 * them -- so there is nothing to roll back and nothing to re-read.
+		 * The next epoch simply plans again from where the bytes stopped.
+		 * The audible cost is a gap; the previous cost was the rest of the
+		 * replay.
+		 *
+		 * The bound is CONSECUTIVE faults, because that is what separates a
+		 * transient from a fault that is not going away.  A pulled card, a
+		 * deleted file or an unreadable region fails every attempt, reaches
+		 * the limit in a handful of epochs and stops the replay properly.
+		 * A card that fails one refill in ten never reaches the limit and
+		 * keeps playing with gaps, which is the right answer: `underruns`
+		 * and `decoder_errors` both count, so the degradation is visible
+		 * rather than silent, and stopping is the operator's call. */
+		if (service->refill_faults >= AIUS_REPLAY_REFILL_FAULT_LIMIT) {
+			service->state = AIUS_REPLAY_ERROR;
+			service->source = AIUS_REPLAY_SOURCE_ERROR;
+		}
 		return;
 	}
+	/* Any completed read clears the run: the bound is on faults in a row, so
+	 * one good refill means the card is answering again. */
+	service->refill_faults = 0u;
 	/* A job that returned less than it asked for read past the end of the
 	 * file, which is how EOF is found when the size is not yet published. */
 	if (delivered < service->refill_bytes) service->eof = true;
@@ -333,6 +366,7 @@ FLASHMEM AiusStatus aius_replay_service_status(const AiusReplayService *service,
 	out->loop = service->loop; out->loops_completed = service->loops_completed;
 	out->queue_words = (uint32_t)aius_replay_word_ring_available(&service->ring);
 	out->watermark_words = service->watermark_words; out->underruns = service->underruns;
+	out->refill_faults = service->refill_faults;
 	out->input_class = service->decoder.classification;
 	out->decoder_errors = service->decoder.errors; out->decoder = service->decoder;
 	return AIUS_OK;

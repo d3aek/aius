@@ -75,6 +75,18 @@ extern "C" {
 #define AIUS_REPLAY_REFILL_MAX_BYTES 32768u
 #define AIUS_REPLAY_DELIVER_MAX_BYTES 512u
 
+/* Consecutive failed refills before the replay gives up.
+ *
+ * A failed refill used to be terminal, which made every transient permanent.
+ * Eight in a row is the line between "the card hiccupped" and "the card is not
+ * going to answer", and it is deliberately a small number: a fault that is not
+ * going away fails fast -- an open against a deleted file costs two epochs, so
+ * the whole run is spent in well under a tenth of a second and the replay stops
+ * with a reason rather than hammering the card forever.  A successful refill
+ * clears the run, so this bounds a persistent fault and not an intermittent
+ * one. */
+#define AIUS_REPLAY_REFILL_FAULT_LIMIT 8u
+
 /* A refill is planned only while the ring is BELOW the watermark, so the space
  * above the watermark is all a plan can ever be given.  If a full-size refill
  * did not fit there, every plan would silently shrink and the epoch cost per
@@ -164,6 +176,10 @@ typedef struct {
 	uint32_t underruns;
 	AiusPipelineClass input_class;
 	uint32_t decoder_errors;
+	/* Consecutive failed refills right now.  Non-zero on a PLAYING service is
+	 * the observable difference between "recovering from a fault" and "fine",
+	 * which `decoder_errors` alone cannot say because it never goes down. */
+	uint32_t refill_faults;
 	uint32_t upload_next_offset;
 	AiusReplayDecoderStatus decoder;
 } AiusReplayStatus;
@@ -221,6 +237,10 @@ typedef struct {
 	bool refill_planned;
 	uint32_t refill_offset;
 	uint32_t refill_bytes;
+	/* Failed refills SINCE THE LAST SUCCESSFUL ONE, not since start: the bound
+	 * separates a transient from a fault that is not going away, and only a run
+	 * of them means the latter.  Reset by any completed refill. */
+	uint32_t refill_faults;
 	AiusReplayDecoderStatus decoder;
 } AiusReplayService;
 
@@ -274,10 +294,17 @@ AiusStatus aius_replay_service_deliver(AiusReplayService *service,
  * completion -- a refusal is not the end of the file. */
 void aius_replay_service_abandon_refill(AiusReplayService *service);
 
-/* Settles the in-flight refill.  `ok` false means the platform's read failed,
- * which is an ERROR the status surface reports and one decoder error.  `ok` true
- * with fewer bytes delivered than planned means the file ended: the service
- * either wraps to zero (loop) or stops asking. */
+/* Settles the in-flight refill.
+ *
+ * `ok` false is one decoder error and one consecutive fault, and is RECOVERABLE:
+ * the bytes the job did deliver stay in the ring, the read position stays where
+ * they left it, and the next epoch plans again from there.  Only
+ * AIUS_REPLAY_REFILL_FAULT_LIMIT faults IN A ROW publish ERROR and stop the
+ * replay, so a transient costs a gap in the audio rather than the rest of the
+ * file.  A completed refill clears the run.
+ *
+ * `ok` true with fewer bytes delivered than planned means the file ended: the
+ * service either wraps to zero (loop) or stops asking. */
 void aius_replay_service_refill_complete(AiusReplayService *service, bool ok);
 
 /* The callback-facing wrapper marks a short pop as an underrun.
