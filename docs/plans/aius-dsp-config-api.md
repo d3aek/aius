@@ -561,6 +561,74 @@ output path overlaps the output stage with
 [`aius-sample-rate-following.md`](aius-sample-rate-following.md), so that design
 must account for it before being finalised.
 
+### Item 3 design — the measurement loopback, software tap first
+
+Drafted 2026-07-26 as the phase contract for the item 3 build; the adversarial
+prebuild gate reviews this section before the first slice.
+
+**The physical TX→RX loop is not buildable today and is not what the roadmap
+needs first.** The optical input is unsoldered, so no cable can close the loop.
+What item 3 exists for — making the claims of items 1, 2 and 4 *measured*
+rather than believed — is observable one step earlier: the transmit ISR's
+`aius_spdif_tx24_fill()` is a verbatim copy of the ring's 24-bit words into
+`SPDIF_STL`/`SPDIF_STR`, so the words the producer commits **are** the words
+on the wire. A software tap at the producer measures everything from the
+decoder through the DSP to the last mutating stage. The physical loop stays as
+the *transport* validation (bit transparency, clock domains) when the input is
+soldered, and the tap seam is written so the physical capture can replace it
+without touching the analysis. An SPDIF-peripheral internal loopback (if the
+RT1062 even has one — unverified) is rejected for the same reason: it would
+re-measure the same words through an unproven peripheral mode.
+
+**Tap.** Producer-side, in `AiusAudioProcessor::enqueue()` beside the tx24
+staging: while a capture is armed, the same stereo 24-bit frames committed to
+the ring are also copied into a `DMAMEM` capture buffer. Proposed 16,384
+frames × 2 ch × `int32` = **128 KiB of OCRAM** (~293 KiB free), 341 ms at
+48 kHz — room for an 8,192-sample analysis window after discarding a settle
+prefix. Concurrency copies the ring's own discipline: one writer (the audio
+software ISR), a free-running write cursor, an `armed` flag the epoch side
+sets and the ISR side retires at completion; the analysis reads only a
+completed, frozen buffer. Estimated ISR cost is a 4 KiB sequential copy per
+512-frame block (<0.1 % of the block budget) — measure it with the DWT
+bracket before accepting, and reject the design if it shows in `dsp_cycles_*`.
+
+**Stimulus.** The replay path, looping a committed vector — it is already the
+signal generator, and a DTS-encoded stimulus deliberately measures the chain
+that actually plays (decoder included). `stereo_tones` (L 440 Hz / R 660 Hz)
+is the first vector; neither is bin-coherent over a power-of-two window, so
+the analysis is windowed by design rather than relying on coherent sampling.
+Dedicated measurement vectors (a per-channel single tone, a multitone for
+frequency-response points, a stepped sweep) are additions to the existing
+`dts_vectors` generator corpus, not a new mechanism.
+
+**Analysis.** Runs only over the frozen buffer, sliced in epoch context — a
+bounded number of samples per epoch through one Goertzel bank, the same
+"bounded unit per epoch" shape the SD jobs use; no epoch computes more than
+its budget and the result publishes when the pass completes. Hann window;
+Goertzel at the fundamental and harmonics 2–10 → THD; windowed total power
+minus the fundamental's leakage bins → THD+N and SNR; per-tone amplitudes
+across the multitone vector → frequency-response points. Double precision
+throughout, host-to-target agreement proven the way the DSP already proves
+it. Native known-answer tests synthesize signals with known THD/SNR (a pure
+sine, a sine plus a −60 dB third harmonic, a sine in −80 dB noise) and assert
+the measured figures inside tolerance, with a negative control observed.
+
+**Surface.** `POST /api/measure/start` (auth-gated — it arms a capture and is
+mutating) and `GET /api/measure` (public read: `idle | armed | capturing |
+analysing | done | failed`, plus the figures and the vector id they were
+measured against). Swagger and the contract suite move in the same commit, per
+the roadmap preamble. [`signal-path.md`](../reference/signal-path.md) gains
+the measured figures in the commit that ships the measurement — that document
+is the reason this item exists.
+
+**Open for the prebuild gate:** whether the analysis lives in `lib/aius_dsp`
+or a new `lib/aius_measure` (deletion test says a separate lib is only
+justified if the capture/analysis pair is reused — the sample-rate-following
+plan's monitor is the plausible second consumer); which checkpoint hosts the
+sliced analysis (REPLAY beside `replay_clock_service()`, or METRICS); and the
+capture length against the settle time the LR4 crossover and limiter release
+actually need.
+
 ### Noted for later, deliberately not scheduled
 
 - **Linear-phase FIR EQ.** RBJ biquads are minimum-phase, so group delay varies
