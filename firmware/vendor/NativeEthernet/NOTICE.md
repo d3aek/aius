@@ -43,6 +43,15 @@ the target adapter:
 - `Ethernet.end()` stops DHCP and closes each library-owned socket without
   waiting. The allocated FNET stack remains initialized for deterministic
   retry without repeated heap allocation.
+- the FNET service callback that accepts inbound connections initialises
+  `fromlen` to `sizeof(from)`. Upstream leaves it **uninitialised** and passes it
+  to `fnet_socket_accept()`, which refuses any length below
+  `sizeof(struct fnet_sockaddr_in)` — zero included, via the trailing `else` in
+  `_fnet_socket_addr_check_len()`. The accept therefore succeeded or failed on
+  whatever the stack slot held, and a failure leaves the connection **queued**, so
+  the symptom is a retried accept rather than a lost connection. This is the one
+  patch here that fixes an upstream defect rather than adapting upstream behaviour
+  to the Aius lifecycle; it is confined to one initialiser.
 
 The native `network-transport` suite guards these source contracts and the
 single temporary legacy FNET-include exception recorded there.

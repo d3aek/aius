@@ -336,7 +336,17 @@ void EthernetServer::poll(void* cookie){
             uint8_t stat = Ethernet.socketStatus(i);
             if (stat == SnSR::LISTEN) {
                 struct fnet_sockaddr from;
-                fnet_size_t fromlen;
+                /* Aius patch: upstream leaves fromlen uninitialised. FNET's
+                 * _fnet_socket_addr_check_len() refuses any length below
+                 * sizeof(struct fnet_sockaddr_in) -- zero included, via its
+                 * trailing else -- and fnet_socket_accept() runs that check
+                 * whenever both pointers are non-null. So the accept succeeded or
+                 * failed on whatever this stack slot happened to hold, and a
+                 * failure leaves the connection QUEUED: a retry loop, not a lost
+                 * connection. Stack remnants are dominated by small integers and
+                 * zeros, so the failing range is far more reachable than
+                 * 16/2^32 suggests. */
+                fnet_size_t fromlen = sizeof(from);
                 fnet_socket_t tmp = fnet_socket_accept(Ethernet.socket_ptr[i], &from, &fromlen);
                 if(tmp){
 #if FNET_CFG_TLS

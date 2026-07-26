@@ -79,7 +79,33 @@ typedef struct {
 	uint16_t payload_len;
 } AiusNetFrame;
 
-#define AIUS_NET_DHCP_DEADLINE_MS 5000u
+/* How long to wait for a lease before tearing the stack down and rebinding.
+ *
+ * MEASURED, not chosen. A lease arrives 4,003-4,008 ms after link-up on 21 of 21
+ * boots on this segment, and that floor is not the board's: dropping FNET's
+ * SELECTING response timeout 4,000 -> 1,000 ms made it send three or four
+ * DISCOVERs instead of one, and the lease still arrived 4,006-4,007 ms after the
+ * first on 11 of 13 boots. The server does not answer for ~4 s after link-up;
+ * asking more often does not move it. That experiment is recorded in
+ * aius_network_teensy.h so it is not retried.
+ *
+ * At 5,000 ms this left under a second of margin over an uncontrollable 4 s, so
+ * roughly **one boot in six hit the deadline** -- and hitting it is strictly worse
+ * than waiting: the stack is torn down and rebound, paying a second 1.6 s PHY
+ * reset and autonegotiation on generation 2. That is the entire 8.87 s tail in the
+ * bring-up distribution; without it the maximum is 8.03 s.
+ *
+ * 9,000 ms is ~2.2x the measured floor. Deliberately not tighter: the point of the
+ * margin is to absorb a slow or momentarily busy DHCP server, and the failure mode
+ * it guards against -- a segment that will never answer -- is not time-sensitive,
+ * since the backoff-and-retry below handles it either way. Deliberately not
+ * unbounded either: a board that never gets a lease must still reach the retry
+ * path rather than sit in DHCP_WAIT forever.
+ *
+ * This is a genuine correction, not a threshold loosened to make a gate pass: the
+ * old value made the common case take the failure path. Retighten it only against
+ * a re-measured distribution on the segment in question. */
+#define AIUS_NET_DHCP_DEADLINE_MS 9000u
 #define AIUS_NET_BACKOFF_MS 1000u
 
 typedef enum {

@@ -1484,11 +1484,16 @@ void test_receive_readiness_gate()
 	AiusNetworkTeensy adapter;
 	AiusNetEvent event = {};
 
-	/* Bound: one DHCP deadline. Waiting for evidence that a DISCOVER can
-	 * leave the board never costs more than sending one and finding out. */
-	static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS ==
+	/* Bound: at most one DHCP deadline. Waiting for evidence that a DISCOVER can
+	 * leave the board never costs more than sending one and finding out.
+	 *
+	 * `<=`, not `==`, matching the adapter's assert -- the two constants answer to
+	 * different measurements and were only coincidentally equal. See
+	 * aius_network_teensy.cpp for why raising this one to follow the DHCP deadline
+	 * would have lengthened bring-up for nothing. */
+	static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS <=
 		              AIUS_NET_DHCP_DEADLINE_MS,
-		          "readiness fallback must equal the DHCP deadline");
+		          "readiness fallback must not exceed the DHCP deadline");
 
 	/* Evidence arrives, so DHCP starts on it rather than on the bound. The
 	 * counter read replaces the link read for the wait: no OP_LINK_STATUS is

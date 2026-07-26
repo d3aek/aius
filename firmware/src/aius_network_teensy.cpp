@@ -54,11 +54,18 @@ struct AiusNetworkTeensyDiagPrimitives {
 constexpr uint16_t kHttpPort = 80u;
 constexpr uint16_t kControlPort = 4242u;
 
-/* The readiness fallback is one DHCP deadline by construction, not by
- * coincidence: waiting for evidence that a DISCOVER can leave the board must
- * never cost more than sending one and discovering the same thing the hard way.
- */
-static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS ==
+/* The readiness fallback is bounded BY a DHCP deadline, not equal to one:
+ * waiting for evidence that a DISCOVER can leave the board must never cost more
+ * than sending one and discovering the same thing the hard way.
+ *
+ * This was `==` until 2026-07-26, which is stricter than the invariant it states
+ * and coupled two constants that answer to different measurements. It fired when
+ * AIUS_NET_DHCP_DEADLINE_MS moved 5,000 -> 9,000 to clear the measured 4 s lease
+ * floor -- and satisfying it by raising this one too would have *lengthened*
+ * worst-case bring-up for nothing, since the rx-ready gate releases on RX counter
+ * movement at 0.85-2.11 s on every observed boot and never reaches its fallback.
+ * `<=` is what the sentence above actually says. */
+static_assert(AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS <=
 	              AIUS_NET_DHCP_DEADLINE_MS,
 	          "the receive-readiness fallback is bounded by one DHCP deadline");
 
