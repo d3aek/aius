@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""Source-contract tests for the repository-pinned NativeEthernet transport."""
+"""Source-contract tests for the repository-pinned NativeEthernet transport.
 
+Two contracts live here. The first pins the vendored NativeEthernet snapshot by
+hash and by structure. The second, added after the `read_once()` defect, pins the
+*fake* FNET header against the real one: `fake/fnet.h` had been derived from the
+adapter that calls it rather than from the dependency it stands for, so the suite
+could only ever confirm the adapter's beliefs. See
+test_fake_fnet_declares_the_dependencys_signatures().
+"""
+
+import os
 import re
 import hashlib
 import json
@@ -11,6 +20,10 @@ from pathlib import Path, PurePosixPath
 FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 VENDOR_ROOT = FIRMWARE_ROOT / "vendor" / "NativeEthernet"
 SOURCE_ROOT = VENDOR_ROOT / "src"
+FAKE_FNET = FIRMWARE_ROOT / "test" / "network-transport" / "fake" / "fnet.h"
+# The FNET the target links: a Teensy framework library, not a repository
+# snapshot, so it is located rather than vendored.
+FNET_RELATIVE = Path("packages/framework-arduinoteensy/libraries/FNET/src")
 
 # The one application-level owner of a vendor transport header, and now the
 # only one: Phase 14 slice S2b deleted optical_main.cpp's legacy blocking
@@ -465,6 +478,191 @@ def test_server_and_stack_teardown_are_idempotent_and_bounded():
     assert not unbounded_loop(stack_end)
 
 
+# --- the fake-FNET declaration contract ------------------------------------
+#
+# Qualifiers that carry no type information and appear on one side only.
+DROPPED_QUALIFIERS = frozenset(
+    {"extern", "FNET_COMP_PACKED_VAR", "FNET_COMP_PACKED", "register"}
+)
+# Tokens that are part of a type rather than a parameter name.
+TYPE_TOKENS = frozenset(
+    {
+        "void", "char", "short", "int", "long", "float", "double",
+        "unsigned", "signed", "const", "volatile", "struct", "union",
+        "enum", "size_t", "ssize_t",
+    }
+)
+DECLARATION_RE = re.compile(
+    r"(?P<returns>[A-Za-z_][A-Za-z_0-9 \t*]*?)\s*"
+    r"\b(?P<name>fnet_[A-Za-z_0-9]+)\s*"
+    r"\(\s*(?P<params>[^();]*?)\s*\)\s*;",
+    re.DOTALL,
+)
+
+
+def header_text(path):
+    """FNET ships at least one header with a stray non-UTF-8 byte."""
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
+def tokens_of(text):
+    return [
+        token
+        for token in re.findall(r"[A-Za-z_][A-Za-z_0-9]*|\*", text)
+        if token not in DROPPED_QUALIFIERS
+    ]
+
+
+def normalise_type(text):
+    return " ".join(tokens_of(text))
+
+
+def normalise_parameter(text):
+    tokens = tokens_of(text)
+    if not tokens:
+        return "void"
+    # Drop a trailing parameter name, but never the type itself.
+    if (
+        len(tokens) > 1
+        and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", tokens[-1])
+        and tokens[-1] not in TYPE_TOKENS
+        and any(token not in TYPE_TOKENS for token in tokens[:-1])
+    ):
+        tokens = tokens[:-1]
+    return " ".join(tokens)
+
+
+def split_parameters(text):
+    if not text.strip():
+        return ("void",)
+    parts = tuple(normalise_parameter(part) for part in text.split(","))
+    return ("void",) if parts == ("void",) else parts
+
+
+def declared_signatures(text):
+    """{name: {(return type, (parameter types, ...))}} for every fnet_* function."""
+    signatures = {}
+    for match in DECLARATION_RE.finditer(without_comments_and_literals(text)):
+        returns = normalise_type(match.group("returns"))
+        if not returns:
+            continue
+        signature = (returns, split_parameters(match.group("params")))
+        signatures.setdefault(match.group("name"), set()).add(signature)
+    return signatures
+
+
+def fnet_source_root():
+    core = os.environ.get("PLATFORMIO_CORE_DIR") or str(Path.home() / ".platformio")
+    root = Path(core) / FNET_RELATIVE
+    assert root.is_dir(), (
+        f"the real FNET headers are not at {root}.\n"
+        "      This contract compares test/network-transport/fake/fnet.h against\n"
+        "      the dependency it stands for, so it needs the Teensy framework\n"
+        "      package. Set PLATFORMIO_CORE_DIR, or install it with\n"
+        "      `pio pkg install -g -p teensy`."
+    )
+    return root
+
+
+def real_signatures():
+    signatures = {}
+    for path in sorted(fnet_source_root().rglob("*.h")):
+        if "third_party" in path.parts:
+            continue
+        for name, found in declared_signatures(header_text(path)).items():
+            signatures.setdefault(name, set()).update(found)
+    return signatures
+
+
+def fake_signature_mismatches(fake_text, real=None):
+    real = real_signatures() if real is None else real
+    fake = declared_signatures(fake_text)
+    assert len(fake) > 30, f"parsed only {len(fake)} declarations from the fake"
+    mismatches = []
+    for name, found in sorted(fake.items()):
+        assert len(found) == 1, f"{name} is declared more than once in the fake"
+        signature = next(iter(found))
+        if name not in real:
+            mismatches.append(
+                f"{name}: the fake declares it, FNET's headers do not."
+            )
+        elif signature not in real[name]:
+            mismatches.append(
+                f"{name}:\n"
+                f"      fake  {signature[0]} ({', '.join(signature[1])})\n"
+                + "".join(
+                    f"      FNET  {candidate[0]} ({', '.join(candidate[1])})\n"
+                    for candidate in sorted(real[name])
+                )
+            )
+    return mismatches
+
+
+def test_fake_fnet_declares_the_dependencys_signatures():
+    """Every function the fake declares must have FNET's own signature.
+
+    This is the guard the `read_once()` defect did not have. `fake/fnet.h` was
+    written from the adapter's call sites, so it published exactly the names the
+    adapter referenced, with whatever types made the adapter compile --
+    fnet_socket_close() as void, fnet_error_get() as int8_t, and no
+    FNET_ERR_CONNCLOSED at all. With no closure code in scope the only
+    expressible way to write a "peer closed" test row was `recv_result = 0`,
+    which is the POSIX convention rather than FNET's, and the suite then
+    confirmed the adapter against a header derived from it. Comparing the fake
+    to the dependency closes that loop; the numeric constants and structure
+    layouts are pinned by the static_assert block in
+    test_nativeethernet_behavior.cpp, which the compiler enforces.
+    """
+    mismatches = fake_signature_mismatches(FAKE_FNET.read_text())
+    assert not mismatches, (
+        f"{len(mismatches)} fake-FNET declaration(s) disagree with FNET:\n  - "
+        + "\n  - ".join(mismatches)
+    )
+
+
+def test_fake_fnet_contract_discriminates():
+    """The guard above is worthless if it cannot see the defect it exists for."""
+    real = real_signatures()
+    fake_text = FAKE_FNET.read_text()
+
+    regressions = (
+        # The original shape: a return type narrowed until the caller compiled.
+        (
+            "fnet_return_t fnet_socket_close(fnet_socket_t);",
+            "void fnet_socket_close(fnet_socket_t);",
+            "fnet_socket_close",
+        ),
+        (
+            "fnet_error_t fnet_error_get(void);",
+            "int8_t fnet_error_get(void);",
+            "fnet_error_get",
+        ),
+        # A parameter type quietly relaxed to whatever the caller passes.
+        (
+            "fnet_return_t fnet_socket_listen(fnet_socket_t, fnet_size_t);",
+            "fnet_return_t fnet_socket_listen(fnet_socket_t, int);",
+            "fnet_socket_listen",
+        ),
+        # A function invented by the caller and never present in FNET.
+        (
+            "void fnet_poll(void);",
+            "void fnet_poll(void);\nvoid fnet_socket_drain(fnet_socket_t);",
+            "fnet_socket_drain",
+        ),
+    )
+    for original, mutation, expected in regressions:
+        assert original in fake_text, f"missing declaration to mutate: {original}"
+        mismatches = fake_signature_mismatches(
+            fake_text.replace(original, mutation, 1), real
+        )
+        assert any(entry.startswith(f"{expected}:") for entry in mismatches), (
+            f"the fake-FNET contract accepted a synthetic regression in "
+            f"{expected}: {mismatches}"
+        )
+
+    assert not fake_signature_mismatches(fake_text, real)
+
+
 def test_application_transport_header_guard_has_one_owner():
     violations = repository_transport_include_violations()
     assert set(violations) == {DESIGNATED_INCLUDE_OWNER}, violations
@@ -492,7 +690,10 @@ def main():
     test_client_write_is_capacity_bounded_and_single_attempt()
     test_server_and_stack_teardown_are_idempotent_and_bounded()
     test_application_transport_header_guard_has_one_owner()
+    test_fake_fnet_declares_the_dependencys_signatures()
+    test_fake_fnet_contract_discriminates()
     print("NativeEthernet source contract: PASS")
+    print("fake-FNET declaration contract: PASS")
 
 
 if __name__ == "__main__":
