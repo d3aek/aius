@@ -1,5 +1,7 @@
 #include "aius_dsp_config.h"
 
+#include "aius_json.h"
+
 #include <math.h>
 #include <string.h>
 
@@ -44,12 +46,6 @@
 #define LIMITER_RELEASE_MAX_MS 1000.0
 #define LIMITER_LOOKAHEAD_MIN_MS 0.0
 #define LIMITER_LOOKAHEAD_MAX_MS 5.0
-
-typedef struct {
-	const uint8_t *data;
-	size_t len;
-	size_t pos;
-} AiusDspConfigParser;
 
 /* This parser only ever runs cold (an HTTP PUT or an SD-config (re)load), never
  * on the audio path, so every function in this file is FLASHMEM (FLASH-resident
@@ -100,290 +96,17 @@ FLASHMEM void aius_dsp_model_set_defaults(AiusDspModel *model)
 	memset(model, 0, sizeof(*model));
 }
 
-/* ---- Cursor primitives (mirror aius_config.c) ---------------------------- */
-
-static FLASHMEM int at_end(const AiusDspConfigParser *parser)
+/* The JSON cursor primitives -- at-end, peek, skip-whitespace, consume, string,
+ * literal, number, skip-value -- live in lib/aius_json and are shared with
+ * lib/aius_config and the replay body reader in src/aius_optical_app.cpp. What
+ * stays here is this schema: its key sets, required-key masks, numeric bounds,
+ * the double conversion, and this library's error vocabulary.
+ *
+ * Only the skip-unknown path recurses on attacker structure, and only to this
+ * schema's own cap, so every call goes through here rather than repeating it. */
+static FLASHMEM int skip_value(AiusJsonCursor *parser)
 {
-	return parser->pos == parser->len;
-}
-
-static FLASHMEM uint8_t peek(const AiusDspConfigParser *parser)
-{
-	if (at_end(parser))
-		return 0u;
-	return parser->data[parser->pos];
-}
-
-static FLASHMEM void skip_whitespace(AiusDspConfigParser *parser)
-{
-	while (!at_end(parser)) {
-		uint8_t ch = peek(parser);
-		if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
-			return;
-		parser->pos++;
-	}
-}
-
-static FLASHMEM int consume(AiusDspConfigParser *parser, uint8_t expected)
-{
-	if (peek(parser) != expected)
-		return 0;
-	parser->pos++;
-	return 1;
-}
-
-static FLASHMEM int hex_digit(uint8_t ch, uint16_t *value)
-{
-	if (ch >= '0' && ch <= '9') {
-		*value = (uint16_t)(ch - '0');
-		return 1;
-	}
-	if (ch >= 'a' && ch <= 'f') {
-		*value = (uint16_t)(ch - 'a' + 10u);
-		return 1;
-	}
-	if (ch >= 'A' && ch <= 'F') {
-		*value = (uint16_t)(ch - 'A' + 10u);
-		return 1;
-	}
-	return 0;
-}
-
-/* Parse and minimally decode a JSON string into a bounded buffer. A string that
- * overflows the buffer is fully consumed but reported via *overflow so it can
- * never match a schema key. */
-static FLASHMEM int parse_string(AiusDspConfigParser *parser, uint8_t *dst,
-	                        size_t dst_cap, size_t *length, int *overflow)
-{
-	size_t written = 0;
-	size_t decoded_len = 0;
-	int too_long = 0;
-
-	if (!consume(parser, '"'))
-		return 0;
-	while (!at_end(parser)) {
-		uint8_t ch = parser->data[parser->pos++];
-		if (ch == '"') {
-			if (length != NULL)
-				*length = decoded_len;
-			if (overflow != NULL)
-				*overflow = too_long;
-			if (dst != NULL && dst_cap != 0u && written < dst_cap)
-				dst[written] = '\0';
-			return 1;
-		}
-		if (ch < 0x20u)
-			return 0;
-		if (ch != '\\') {
-			decoded_len++;
-			if (dst != NULL) {
-				if (written + 1u < dst_cap)
-					dst[written++] = ch;
-				else
-					too_long = 1;
-			}
-			continue;
-		}
-
-		if (at_end(parser))
-			return 0;
-		ch = parser->data[parser->pos++];
-		if (ch == 'u') {
-			uint16_t codepoint = 0;
-			for (unsigned int i = 0; i < 4u; i++) {
-				uint16_t digit;
-				if (at_end(parser) || !hex_digit(parser->data[parser->pos++],
-				                                  &digit))
-					return 0;
-				codepoint = (uint16_t)((codepoint << 4) | digit);
-			}
-			decoded_len++;
-			uint8_t decoded = codepoint <= 0x7fu ? (uint8_t)codepoint : 0xffu;
-			if (dst != NULL) {
-				if (written + 1u < dst_cap)
-					dst[written++] = decoded;
-				else
-					too_long = 1;
-			}
-			continue;
-		}
-		if (ch != '"' && ch != '\\' && ch != '/' && ch != 'b' &&
-		    ch != 'f' && ch != 'n' && ch != 'r' && ch != 't')
-			return 0;
-		decoded_len++;
-		if (dst != NULL) {
-			uint8_t decoded = ch;
-			switch (ch) {
-			case 'b': decoded = '\b'; break;
-			case 'f': decoded = '\f'; break;
-			case 'n': decoded = '\n'; break;
-			case 'r': decoded = '\r'; break;
-			case 't': decoded = '\t'; break;
-			default: break;
-			}
-			if (written + 1u < dst_cap)
-				dst[written++] = decoded;
-			else
-				too_long = 1;
-		}
-	}
-	return 0;
-}
-
-static FLASHMEM int key_is(const uint8_t *key, size_t len, int overflow,
-	              const char *expected)
-{
-	return !overflow && strlen(expected) == len &&
-	       memcmp(key, expected, len) == 0;
-}
-
-static FLASHMEM int literal_boundary(uint8_t ch)
-{
-	return ch == ' ' || ch == '\t' || ch == '\r' ||
-	       ch == '\n' || ch == ',' || ch == '}' || ch == ']';
-}
-
-static FLASHMEM int value_boundary(const AiusDspConfigParser *parser)
-{
-	return at_end(parser) || literal_boundary(peek(parser));
-}
-
-static FLASHMEM int parse_literal(AiusDspConfigParser *parser, const char *text)
-{
-	size_t text_len = strlen(text);
-	if (parser->pos + text_len > parser->len ||
-	    memcmp(parser->data + parser->pos, text, text_len) != 0)
-		return 0;
-	if (parser->pos + text_len < parser->len &&
-	    !literal_boundary(parser->data[parser->pos + text_len]))
-		return 0;
-	parser->pos += text_len;
-	return 1;
-}
-
-/* Validate a JSON number's grammar (same state machine as aius_config.c's
- * parse_number) and record its [start, end) byte range for value extraction. */
-static FLASHMEM int scan_number(AiusDspConfigParser *parser, size_t *start, size_t *end)
-{
-	*start = parser->pos;
-	if (peek(parser) == '-') {
-		parser->pos++;
-		if (at_end(parser))
-			return 0;
-	}
-	if (peek(parser) == '0') {
-		parser->pos++;
-		if (!at_end(parser) && parser->data[parser->pos] >= '0' &&
-		    parser->data[parser->pos] <= '9')
-			return 0;
-	} else {
-		if (peek(parser) < '1' || peek(parser) > '9')
-			return 0;
-		do {
-			parser->pos++;
-		} while (!at_end(parser) && parser->data[parser->pos] >= '0' &&
-		         parser->data[parser->pos] <= '9');
-	}
-	if (peek(parser) == '.') {
-		parser->pos++;
-		if (at_end(parser) || peek(parser) < '0' || peek(parser) > '9')
-			return 0;
-		do {
-			parser->pos++;
-		} while (!at_end(parser) && parser->data[parser->pos] >= '0' &&
-		         parser->data[parser->pos] <= '9');
-	}
-	if (peek(parser) == 'e' || peek(parser) == 'E') {
-		parser->pos++;
-		if (peek(parser) == '+' || peek(parser) == '-')
-			parser->pos++;
-		if (at_end(parser) || peek(parser) < '0' || peek(parser) > '9')
-			return 0;
-		do {
-			parser->pos++;
-		} while (!at_end(parser) && parser->data[parser->pos] >= '0' &&
-		         parser->data[parser->pos] <= '9');
-	}
-	*end = parser->pos;
-	return value_boundary(parser);
-}
-
-/* ---- Skip-unknown trio (validates but discards) -------------------------- */
-
-static FLASHMEM int skip_json_value(AiusDspConfigParser *parser, unsigned int depth);
-
-static FLASHMEM int skip_json_object(AiusDspConfigParser *parser, unsigned int depth)
-{
-	if (depth > AIUS_DSP_CONFIG_MAX_NESTING || !consume(parser, '{'))
-		return 0;
-	skip_whitespace(parser);
-	if (consume(parser, '}'))
-		return 1;
-	for (;;) {
-		if (!parse_string(parser, NULL, 0u, NULL, NULL))
-			return 0;
-		skip_whitespace(parser);
-		if (!consume(parser, ':'))
-			return 0;
-		skip_whitespace(parser);
-		if (!skip_json_value(parser, depth + 1u))
-			return 0;
-		skip_whitespace(parser);
-		if (consume(parser, '}'))
-			return 1;
-		if (!consume(parser, ','))
-			return 0;
-		skip_whitespace(parser);
-		if (peek(parser) == '}')
-			return 0;
-	}
-}
-
-static FLASHMEM int skip_json_array(AiusDspConfigParser *parser, unsigned int depth)
-{
-	if (depth > AIUS_DSP_CONFIG_MAX_NESTING || !consume(parser, '['))
-		return 0;
-	skip_whitespace(parser);
-	if (consume(parser, ']'))
-		return 1;
-	for (;;) {
-		if (!skip_json_value(parser, depth + 1u))
-			return 0;
-		skip_whitespace(parser);
-		if (consume(parser, ']'))
-			return 1;
-		if (!consume(parser, ','))
-			return 0;
-		skip_whitespace(parser);
-		if (peek(parser) == ']')
-			return 0;
-	}
-}
-
-static FLASHMEM int skip_json_value(AiusDspConfigParser *parser, unsigned int depth)
-{
-	switch (peek(parser)) {
-	case '"':
-		return parse_string(parser, NULL, 0u, NULL, NULL);
-	case '{':
-		return skip_json_object(parser, depth);
-	case '[':
-		return skip_json_array(parser, depth);
-	case 'n':
-		return parse_literal(parser, "null");
-	case 't':
-		return parse_literal(parser, "true");
-	case 'f':
-		return parse_literal(parser, "false");
-	case '-':
-	case '0': case '1': case '2': case '3': case '4':
-	case '5': case '6': case '7': case '8': case '9': {
-		size_t start, end;
-		return scan_number(parser, &start, &end);
-	}
-	default:
-		return 0;
-	}
+	return aius_json_skip_value(parser, 0u, AIUS_DSP_CONFIG_MAX_NESTING);
 }
 
 /* ---- Typed value extraction --------------------------------------------- */
@@ -394,14 +117,14 @@ static FLASHMEM int is_number_start(uint8_t ch)
 }
 
 /* Convert an already grammar-validated JSON number's [start, end) byte range
- * (per scan_number) into a double via plain digit accumulation. Deliberately
- * NOT strtod(): pulling in newlib's general strtod/dtoa machinery costs
- * several KB of ITCM that this audio-critical firmware cannot spare, for a
+ * (per aius_json_scan_number) into a double via plain digit accumulation.
+ * Deliberately NOT strtod(): pulling in newlib's general strtod/dtoa machinery
+ * costs several KB of ITCM that this audio-critical firmware cannot spare, for a
  * bounded-config parser that only ever sees short, simple decimal numbers
  * (frequencies, gains, dB values, linear coefficients). Not bit-exact with
  * strtod() for pathological inputs (very long digit runs, denormals); well
  * within double precision for every value this schema's bounds allow. */
-static FLASHMEM double decode_scanned_number(const AiusDspConfigParser *parser,
+static FLASHMEM double decode_scanned_number(const AiusJsonCursor *parser,
 	                                            size_t start, size_t end)
 {
 	size_t i = start;
@@ -446,12 +169,12 @@ static FLASHMEM double decode_scanned_number(const AiusDspConfigParser *parser,
 /* Extract a finite JSON number as a double. A well-formed number whose text is
  * longer than the defensive cap, or that overflows to non-finite, is out of
  * range. A non-number JSON value is wrong type; garbage is malformed. */
-static FLASHMEM AiusDspConfigErrorCode take_number(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode take_number(AiusJsonCursor *parser,
 	                                          double *out)
 {
-	if (is_number_start(peek(parser))) {
+	if (is_number_start(aius_json_peek(parser))) {
 		size_t start, end;
-		if (!scan_number(parser, &start, &end))
+		if (!aius_json_scan_number(parser, &start, &end))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		if (end - start >= AIUS_DSP_CONFIG_NUMBER_BUFFER_MAX)
 			return AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE;
@@ -461,12 +184,12 @@ static FLASHMEM AiusDspConfigErrorCode take_number(AiusDspConfigParser *parser,
 		*out = value;
 		return AIUS_DSP_CONFIG_OK;
 	}
-	if (!skip_json_value(parser, 0u))
+	if (!skip_value(parser))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 	return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 }
 
-static FLASHMEM AiusDspConfigErrorCode take_bounded(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode take_bounded(AiusJsonCursor *parser,
 	                                           double low, double high,
 	                                           double *out)
 {
@@ -480,28 +203,28 @@ static FLASHMEM AiusDspConfigErrorCode take_bounded(AiusDspConfigParser *parser,
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode take_bool(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode take_bool(AiusJsonCursor *parser,
 	                                        uint8_t *out)
 {
-	if (peek(parser) == 'f') {
-		if (!parse_literal(parser, "false"))
+	if (aius_json_peek(parser) == 'f') {
+		if (!aius_json_literal(parser, "false"))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		*out = 0u;
 		return AIUS_DSP_CONFIG_OK;
 	}
-	if (peek(parser) == 't') {
-		if (!parse_literal(parser, "true"))
+	if (aius_json_peek(parser) == 't') {
+		if (!aius_json_literal(parser, "true"))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		*out = 1u;
 		return AIUS_DSP_CONFIG_OK;
 	}
-	if (!skip_json_value(parser, 0u))
+	if (!skip_value(parser))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 	return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 }
 
 /* A JSON number that is a non-negative integer (integral value, >= 0). */
-static FLASHMEM AiusDspConfigErrorCode take_non_negative_integer(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode take_non_negative_integer(AiusJsonCursor *parser,
 	                                                        double *out)
 {
 	double value = 0.0;
@@ -518,37 +241,37 @@ static FLASHMEM AiusDspConfigErrorCode take_non_negative_integer(AiusDspConfigPa
 
 /* Parse one `"key" :` pair prologue: the key string, the delimiter, and leave
  * the cursor at the value. On success returns OK and fills key/len/overflow. */
-static FLASHMEM AiusDspConfigErrorCode take_key(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode take_key(AiusJsonCursor *parser,
 	                                       uint8_t *key, size_t cap,
 	                                       size_t *key_len, int *overflow)
 {
-	if (!parse_string(parser, key, cap, key_len, overflow))
+	if (!aius_json_take_string(parser, key, cap, key_len, overflow))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode consume_colon(AiusDspConfigParser *parser)
+static FLASHMEM AiusDspConfigErrorCode consume_colon(AiusJsonCursor *parser)
 {
-	if (!consume(parser, ':'))
+	if (!aius_json_consume(parser, ':'))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 	return AIUS_DSP_CONFIG_OK;
 }
 
 /* Advance past a value separator. Returns 1 to continue the loop, 0 to stop on
  * '}', and sets *error on malformed separators. */
-static FLASHMEM int object_next(AiusDspConfigParser *parser, AiusDspConfigErrorCode *error)
+static FLASHMEM int object_next(AiusJsonCursor *parser, AiusDspConfigErrorCode *error)
 {
-	skip_whitespace(parser);
-	if (consume(parser, '}'))
+	aius_json_skip_whitespace(parser);
+	if (aius_json_consume(parser, '}'))
 		return 0;
-	if (!consume(parser, ',')) {
+	if (!aius_json_consume(parser, ',')) {
 		*error = AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return 0;
 	}
-	skip_whitespace(parser);
-	if (peek(parser) == '}') {
+	aius_json_skip_whitespace(parser);
+	if (aius_json_peek(parser) == '}') {
 		*error = AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return 0;
 	}
@@ -557,16 +280,16 @@ static FLASHMEM int object_next(AiusDspConfigParser *parser, AiusDspConfigErrorC
 
 /* ---- Schema object parsers ---------------------------------------------- */
 
-static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusJsonCursor *parser,
 	                                               AiusDspModelEq *out)
 {
-	if (peek(parser) != '{') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '{') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++; /* '{' */
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
 	uint8_t type = 0u;
@@ -574,7 +297,7 @@ static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusDspConfigParser *par
 	double freq = 0.0, q = 0.0, gain = 0.0;
 	int have_freq = 0, have_q = 0, have_gain = 0;
 
-	if (!consume(parser, '}')) {
+	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -585,13 +308,13 @@ static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusDspConfigParser *par
 				return error;
 
 			unsigned int field;
-			if (key_is(key, key_len, overflow, "type"))
+			if (aius_json_key_is(key, key_len, overflow, "type"))
 				field = 0u;
-			else if (key_is(key, key_len, overflow, "frequency_hz"))
+			else if (aius_json_key_is(key, key_len, overflow, "frequency_hz"))
 				field = 1u;
-			else if (key_is(key, key_len, overflow, "q"))
+			else if (aius_json_key_is(key, key_len, overflow, "q"))
 				field = 2u;
-			else if (key_is(key, key_len, overflow, "gain_db"))
+			else if (aius_json_key_is(key, key_len, overflow, "gain_db"))
 				field = 3u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
@@ -609,19 +332,20 @@ static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusDspConfigParser *par
 				uint8_t type_str[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 				size_t type_len = 0;
 				int type_overflow = 0;
-				if (peek(parser) != '"') {
-					if (!skip_json_value(parser, 0u))
+				if (aius_json_peek(parser) != '"') {
+					if (!skip_value(parser))
 						return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 					return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 				}
-				if (!parse_string(parser, type_str, sizeof(type_str),
-				                  &type_len, &type_overflow))
+				if (!aius_json_take_string(parser, type_str,
+				                           sizeof(type_str), &type_len,
+				                           &type_overflow))
 					return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-				if (key_is(type_str, type_len, type_overflow, "bypass"))
+				if (aius_json_key_is(type_str, type_len, type_overflow, "bypass"))
 					type = 0u;
-				else if (key_is(type_str, type_len, type_overflow, "highpass"))
+				else if (aius_json_key_is(type_str, type_len, type_overflow, "highpass"))
 					type = 1u;
-				else if (key_is(type_str, type_len, type_overflow, "peaking"))
+				else if (aius_json_key_is(type_str, type_len, type_overflow, "peaking"))
 					type = 2u;
 				else
 					return AIUS_DSP_CONFIG_ERR_INVALID_EQ_TYPE;
@@ -676,19 +400,19 @@ static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusDspConfigParser *par
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_eq_array(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_eq_array(AiusJsonCursor *parser,
 	                                             AiusDspModelEq *eq,
 	                                             uint8_t *count)
 {
 	*count = 0u;
-	if (peek(parser) != '[') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '[') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++; /* '[' */
-	skip_whitespace(parser);
-	if (consume(parser, ']'))
+	aius_json_skip_whitespace(parser);
+	if (aius_json_consume(parser, ']'))
 		return AIUS_DSP_CONFIG_OK;
 	for (;;) {
 		if (*count >= AIUS_DSP_MODEL_EQ_MAX)
@@ -697,27 +421,27 @@ static FLASHMEM AiusDspConfigErrorCode parse_eq_array(AiusDspConfigParser *parse
 		if (error != AIUS_DSP_CONFIG_OK)
 			return error;
 		(*count)++;
-		skip_whitespace(parser);
-		if (consume(parser, ']'))
+		aius_json_skip_whitespace(parser);
+		if (aius_json_consume(parser, ']'))
 			return AIUS_DSP_CONFIG_OK;
-		if (!consume(parser, ','))
+		if (!aius_json_consume(parser, ','))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-		skip_whitespace(parser);
-		if (peek(parser) == ']')
+		aius_json_skip_whitespace(parser);
+		if (aius_json_peek(parser) == ']')
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 	}
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_input_channel(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_input_channel(AiusJsonCursor *parser,
 	                                                  AiusDspModelInputChannel *out)
 {
-	if (peek(parser) != '{') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '{') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
 	double gain = 0.0;
@@ -725,7 +449,7 @@ static FLASHMEM AiusDspConfigErrorCode parse_input_channel(AiusDspConfigParser *
 	AiusDspModelEq eq[AIUS_DSP_MODEL_EQ_MAX];
 	memset(eq, 0, sizeof(eq));
 
-	if (!consume(parser, '}')) {
+	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -736,9 +460,9 @@ static FLASHMEM AiusDspConfigErrorCode parse_input_channel(AiusDspConfigParser *
 				return error;
 
 			unsigned int field;
-			if (key_is(key, key_len, overflow, "gain_db"))
+			if (aius_json_key_is(key, key_len, overflow, "gain_db"))
 				field = 0u;
-			else if (key_is(key, key_len, overflow, "eq"))
+			else if (aius_json_key_is(key, key_len, overflow, "eq"))
 				field = 1u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
@@ -777,22 +501,22 @@ static FLASHMEM AiusDspConfigErrorCode parse_input_channel(AiusDspConfigParser *
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_input_channels(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_input_channels(AiusJsonCursor *parser,
 	                                                   AiusDspModel *model)
 {
 	static const char *const names[AIUS_DSP_MODEL_INPUT_CHANNELS] = {
 		"fl", "fr", "fc", "lfe", "sl", "sr"
 	};
-	if (peek(parser) != '{') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '{') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
-	if (!consume(parser, '}')) {
+	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -804,7 +528,7 @@ static FLASHMEM AiusDspConfigErrorCode parse_input_channels(AiusDspConfigParser 
 
 			unsigned int index = AIUS_DSP_MODEL_INPUT_CHANNELS;
 			for (unsigned int i = 0; i < AIUS_DSP_MODEL_INPUT_CHANNELS; i++) {
-				if (key_is(key, key_len, overflow, names[i])) {
+				if (aius_json_key_is(key, key_len, overflow, names[i])) {
 					index = i;
 					break;
 				}
@@ -838,20 +562,20 @@ static FLASHMEM AiusDspConfigErrorCode parse_input_channels(AiusDspConfigParser 
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_features(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_features(AiusJsonCursor *parser,
 	                                             AiusDspModelFeatures *out)
 {
-	if (peek(parser) != '{') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '{') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
 	AiusDspModelFeatures features = {0u, 0u, 0u, 0u, 0u};
-	if (!consume(parser, '}')) {
+	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -862,15 +586,15 @@ static FLASHMEM AiusDspConfigErrorCode parse_features(AiusDspConfigParser *parse
 				return error;
 
 			unsigned int field;
-			if (key_is(key, key_len, overflow, "input_eq"))
+			if (aius_json_key_is(key, key_len, overflow, "input_eq"))
 				field = 0u;
-			else if (key_is(key, key_len, overflow, "matrix"))
+			else if (aius_json_key_is(key, key_len, overflow, "matrix"))
 				field = 1u;
-			else if (key_is(key, key_len, overflow, "output_eq"))
+			else if (aius_json_key_is(key, key_len, overflow, "output_eq"))
 				field = 2u;
-			else if (key_is(key, key_len, overflow, "limiter"))
+			else if (aius_json_key_is(key, key_len, overflow, "limiter"))
 				field = 3u;
-			else if (key_is(key, key_len, overflow, "meters"))
+			else if (aius_json_key_is(key, key_len, overflow, "meters"))
 				field = 4u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
@@ -910,20 +634,20 @@ static FLASHMEM AiusDspConfigErrorCode parse_features(AiusDspConfigParser *parse
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 	                                           AiusDspModelMatrix *out)
 {
-	if (peek(parser) != '{') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '{') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
 	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0u};
-	if (!consume(parser, '}')) {
+	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -934,15 +658,15 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusDspConfigParser *parser,
 				return error;
 
 			unsigned int field;
-			if (key_is(key, key_len, overflow, "center_gain_linear"))
+			if (aius_json_key_is(key, key_len, overflow, "center_gain_linear"))
 				field = 0u;
-			else if (key_is(key, key_len, overflow, "surround_gain_linear"))
+			else if (aius_json_key_is(key, key_len, overflow, "surround_gain_linear"))
 				field = 1u;
-			else if (key_is(key, key_len, overflow, "lfe_gain_linear"))
+			else if (aius_json_key_is(key, key_len, overflow, "lfe_gain_linear"))
 				field = 2u;
-			else if (key_is(key, key_len, overflow, "headroom_linear"))
+			else if (aius_json_key_is(key, key_len, overflow, "headroom_linear"))
 				field = 3u;
-			else if (key_is(key, key_len, overflow, "clipfree"))
+			else if (aius_json_key_is(key, key_len, overflow, "clipfree"))
 				field = 4u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
@@ -1001,20 +725,20 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusDspConfigParser *parser,
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_limiter(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_limiter(AiusJsonCursor *parser,
 	                                            AiusDspModelLimiter *out)
 {
-	if (peek(parser) != '{') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '{') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
 	parser->pos++;
-	skip_whitespace(parser);
+	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
 	AiusDspModelLimiter limiter = {0u, 0.0, 0.0, 0.0, 0.0};
-	if (!consume(parser, '}')) {
+	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -1025,15 +749,15 @@ static FLASHMEM AiusDspConfigErrorCode parse_limiter(AiusDspConfigParser *parser
 				return error;
 
 			unsigned int field;
-			if (key_is(key, key_len, overflow, "enabled"))
+			if (aius_json_key_is(key, key_len, overflow, "enabled"))
 				field = 0u;
-			else if (key_is(key, key_len, overflow, "threshold_dbfs"))
+			else if (aius_json_key_is(key, key_len, overflow, "threshold_dbfs"))
 				field = 1u;
-			else if (key_is(key, key_len, overflow, "attack_ms"))
+			else if (aius_json_key_is(key, key_len, overflow, "attack_ms"))
 				field = 2u;
-			else if (key_is(key, key_len, overflow, "release_ms"))
+			else if (aius_json_key_is(key, key_len, overflow, "release_ms"))
 				field = 3u;
-			else if (key_is(key, key_len, overflow, "lookahead_ms"))
+			else if (aius_json_key_is(key, key_len, overflow, "lookahead_ms"))
 				field = 4u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
@@ -1088,19 +812,19 @@ static FLASHMEM AiusDspConfigErrorCode parse_limiter(AiusDspConfigParser *parser
 	return AIUS_DSP_CONFIG_OK;
 }
 
-static FLASHMEM AiusDspConfigErrorCode parse_source(AiusDspConfigParser *parser)
+static FLASHMEM AiusDspConfigErrorCode parse_source(AiusJsonCursor *parser)
 {
 	uint8_t value[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 	size_t value_len = 0;
 	int overflow = 0;
-	if (peek(parser) != '"') {
-		if (!skip_json_value(parser, 0u))
+	if (aius_json_peek(parser) != '"') {
+		if (!skip_value(parser))
 			return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 		return AIUS_DSP_CONFIG_ERR_WRONG_TYPE;
 	}
-	if (!parse_string(parser, value, sizeof(value), &value_len, &overflow))
+	if (!aius_json_take_string(parser, value, sizeof(value), &value_len, &overflow))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-	if (!key_is(value, value_len, overflow, "sd"))
+	if (!aius_json_key_is(value, value_len, overflow, "sd"))
 		return AIUS_DSP_CONFIG_ERR_INVALID_SOURCE;
 	return AIUS_DSP_CONFIG_OK;
 }
@@ -1121,7 +845,7 @@ enum {
 };
 #define TOP_ALL_SEEN 0x1FFu
 
-static FLASHMEM AiusDspConfigErrorCode parse_top_value(AiusDspConfigParser *parser,
+static FLASHMEM AiusDspConfigErrorCode parse_top_value(AiusJsonCursor *parser,
 	                                              unsigned int field,
 	                                              AiusDspModel *model)
 {
@@ -1180,15 +904,15 @@ FLASHMEM AiusDspConfigErrorCode aius_dsp_config_parse_put(const uint8_t *json, s
 	AiusDspModel parsed;
 	aius_dsp_model_set_defaults(&parsed);
 
-	AiusDspConfigParser parser = {json, len, 0u};
-	skip_whitespace(&parser);
-	if (!consume(&parser, '{'))
-		return skip_json_value(&parser, 0u) ? AIUS_DSP_CONFIG_ERR_WRONG_TYPE
-		                                    : AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
-	skip_whitespace(&parser);
+	AiusJsonCursor parser = {json, len, 0u};
+	aius_json_skip_whitespace(&parser);
+	if (!aius_json_consume(&parser, '{'))
+		return skip_value(&parser) ? AIUS_DSP_CONFIG_ERR_WRONG_TYPE
+		                           : AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
+	aius_json_skip_whitespace(&parser);
 
 	unsigned int seen = 0u;
-	if (!consume(&parser, '}')) {
+	if (!aius_json_consume(&parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
 			size_t key_len = 0;
@@ -1199,23 +923,23 @@ FLASHMEM AiusDspConfigErrorCode aius_dsp_config_parse_put(const uint8_t *json, s
 				return error;
 
 			unsigned int field;
-			if (key_is(key, key_len, overflow, "source"))
+			if (aius_json_key_is(key, key_len, overflow, "source"))
 				field = TOP_SOURCE;
-			else if (key_is(key, key_len, overflow, "config_generation"))
+			else if (aius_json_key_is(key, key_len, overflow, "config_generation"))
 				field = TOP_CONFIG_GENERATION;
-			else if (key_is(key, key_len, overflow, "sample_rate_hz"))
+			else if (aius_json_key_is(key, key_len, overflow, "sample_rate_hz"))
 				field = TOP_SAMPLE_RATE;
-			else if (key_is(key, key_len, overflow, "features"))
+			else if (aius_json_key_is(key, key_len, overflow, "features"))
 				field = TOP_FEATURES;
-			else if (key_is(key, key_len, overflow, "input_channels"))
+			else if (aius_json_key_is(key, key_len, overflow, "input_channels"))
 				field = TOP_INPUT_CHANNELS;
-			else if (key_is(key, key_len, overflow, "output_eq"))
+			else if (aius_json_key_is(key, key_len, overflow, "output_eq"))
 				field = TOP_OUTPUT_EQ;
-			else if (key_is(key, key_len, overflow, "matrix"))
+			else if (aius_json_key_is(key, key_len, overflow, "matrix"))
 				field = TOP_MATRIX;
-			else if (key_is(key, key_len, overflow, "limiter"))
+			else if (aius_json_key_is(key, key_len, overflow, "limiter"))
 				field = TOP_LIMITER;
-			else if (key_is(key, key_len, overflow, "base_generation"))
+			else if (aius_json_key_is(key, key_len, overflow, "base_generation"))
 				field = TOP_BASE_GENERATION;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
@@ -1241,8 +965,8 @@ FLASHMEM AiusDspConfigErrorCode aius_dsp_config_parse_put(const uint8_t *json, s
 		}
 	}
 
-	skip_whitespace(&parser);
-	if (!at_end(&parser))
+	aius_json_skip_whitespace(&parser);
+	if (!aius_json_at_end(&parser))
 		return AIUS_DSP_CONFIG_ERR_MALFORMED_JSON;
 	if (seen != TOP_ALL_SEEN)
 		return AIUS_DSP_CONFIG_ERR_MISSING_KEY;

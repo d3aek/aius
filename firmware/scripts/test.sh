@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, auth, codec-api-contract, config, dsp-config, dts, dts-arena,
+# Suites: arena, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner,
 #         recovery-runner, http,
@@ -129,11 +129,27 @@ config)
 	# vendored core, so the wrap list is spelled out rather than via dts_build.
 	config_out="$build_dir/config"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_config/include" \
+		"-I$fw_root/lib/aius_json/include" \
 		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
 		"$fw_root/test/config/test_config.c" \
 		"$fw_root/lib/aius_config/src/aius_config.c" \
+		"$fw_root/lib/aius_json/src/aius_json.c" \
 		-o "$config_out"
 	"$config_out"
+	;;
+json)
+	# The shared JSON cursor the three bounded parsers depend on: lib/aius_config,
+	# lib/aius_dsp_config, and the replay body reader in src/aius_optical_app.cpp
+	# each carried its own copy until they were hoisted here. Allocation-free and
+	# non-recursive over untrusted input, so the test links --wrap over the libc
+	# allocators and asserts zero allocations, exactly as the config suite does.
+	json_out="$build_dir/json"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_json/include" \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
+		"$fw_root/test/json/test_json.c" \
+		"$fw_root/lib/aius_json/src/aius_json.c" \
+		-o "$json_out"
+	"$json_out"
 	;;
 dsp-config)
 	# Bounded, allocation-free PUT /api/dsp/config validator: parses the DSP model
@@ -142,8 +158,10 @@ dsp-config)
 	# and finite-range checks) -- no strtod(): see aius_dsp_config.c for why.
 	dsp_config_out="$build_dir/dsp-config"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_json/include" \
 		"$fw_root/test/dsp-config/test_dsp_config.c" \
 		"$fw_root/lib/aius_dsp_config/src/aius_dsp_config.c" \
+		"$fw_root/lib/aius_json/src/aius_json.c" \
 		-lm -o "$dsp_config_out"
 	"$dsp_config_out"
 	;;
@@ -442,15 +460,20 @@ optical-app)
 		"-I$fw_root/lib/aius_net/include" \
 		"-I$fw_root/lib/aius_sd/include" \
 		"-I$fw_root/lib/aius_usb_control/include" \
+		"-I$fw_root/lib/aius_json/include" \
 		"-I$fw_root/src")
 	optical_app_oracle="$build_dir/optical-app-oracle.o"
 	optical_app_parser="$build_dir/optical-app-http.o"
+	optical_app_json="$build_dir/optical-app-json.o"
 	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
 		-c "$fw_root/test/optical-app/test_optical_app.c" \
 		-o "$optical_app_oracle"
 	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
 		-c "$fw_root/lib/aius_http/src/aius_http.c" \
 		-o "$optical_app_parser"
+	"$cc" "${cflags[@]}" -Wpedantic "${optical_app_inc[@]}" \
+		-c "$fw_root/lib/aius_json/src/aius_json.c" \
+		-o "$optical_app_json"
 	optical_app_out="$build_dir/optical-app"
 	"$cxx" -std=c++17 -Wall -Wextra -Werror -Wpedantic -O1 -g \
 		-fsanitize=address,undefined \
@@ -458,6 +481,7 @@ optical-app)
 		"$fw_root/src/aius_optical_app.cpp" \
 		"$optical_app_oracle" \
 		"$optical_app_parser" \
+		"$optical_app_json" \
 		-o "$optical_app_out"
 	"$optical_app_out"
 	;;
@@ -478,13 +502,18 @@ runtime-target)
 		"-I$fw_root/lib/aius_sd/include" \
 		"-I$fw_root/lib/aius_config/include" \
 		"-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_json/include" \
 		"-I$fw_root/lib/aius_runtime/include" \
 		"-I$fw_root/lib/aius_usb_control/include" \
 		"-I$fw_root/src")
+	# aius_json is here because aius_optical_app.cpp's replay body reader is one
+	# of its three callers; the two config parsers are the others, and neither
+	# links into this suite.
 	runtime_target_portable=()
 	for portable in aius_net/src/aius_net aius_http/src/aius_http \
 		aius_http/src/aius_http_transaction aius_sd/src/aius_sd \
 		aius_usb_control/src/aius_usb_control \
+		aius_json/src/aius_json \
 		aius_runtime/src/aius_runtime; do
 		object="$build_dir/runtime-target-$(basename "$portable").o"
 		"$cc" "${cflags[@]}" -Wpedantic "${runtime_target_inc[@]}" \

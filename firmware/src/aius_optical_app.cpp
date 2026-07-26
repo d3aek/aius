@@ -8,6 +8,8 @@
 
 #include "aius_optical_app.h"
 
+#include "aius_json.h"
+
 #if defined(ARDUINO)
 #include <Arduino.h>
 #endif
@@ -306,65 +308,46 @@ static FLASHMEM bool build_upload_scratch(AiusOpticalAppDispatcher *dispatcher,
 /* request body helpers                                                */
 /* ------------------------------------------------------------------ */
 
-/* A read cursor over a request body: three words, no buffer, no allocation and
- * no recursion, so it costs the epoch loop nothing beyond the bytes it walks.
- * The transport buffer is not NUL-terminated, so every read is bounded by
- * `length` rather than by a terminator, and no strlen() ever sees the body. */
-typedef struct {
-	const uint8_t *data;
-	size_t length;
-	size_t pos;
-} BodyCursor;
+/* A read cursor over a request body: lib/aius_json's AiusJsonCursor -- three
+ * words, no buffer, no allocation and no recursion, so it costs the epoch loop
+ * nothing beyond the bytes it walks. The transport buffer is not
+ * NUL-terminated, so every read is bounded by the cursor's `len` rather than by
+ * a terminator, and no strlen() ever sees the body.
+ *
+ * Three of this grammar's primitives stay here rather than joining the shared
+ * kit, because each is this reader's contract and not the config parsers':
+ * whitespace is admitted before every structural character, a string's bytes
+ * are borrowed in place rather than unescaped into a buffer, and a literal is
+ * matched without a value-boundary check. Each is now a wrapper over a shared
+ * primitive rather than a second copy of it. */
 
-static FLASHMEM bool body_at_end(const BodyCursor *cursor)
+/* Consumes one structural character together with the whitespace RFC 8259 §2
+ * permits before it -- space, tab, LF, CR and nothing else, so a form feed, a
+ * vertical tab or an embedded NUL stays a parse failure. Every structural
+ * character in the grammar below goes through here, which is what makes the
+ * spacing insignificant. */
+static FLASHMEM bool body_consume(AiusJsonCursor *cursor, uint8_t expected)
 {
-	return cursor->pos >= cursor->length;
-}
-
-static FLASHMEM uint8_t body_peek(const BodyCursor *cursor)
-{
-	return body_at_end(cursor) ? 0u : cursor->data[cursor->pos];
-}
-
-/* RFC 8259 §2 insignificant whitespace, and nothing else: space, tab, LF, CR. A
- * form feed, a vertical tab or an embedded NUL is not JSON whitespace and stays
- * a parse failure. */
-static FLASHMEM void body_skip_whitespace(BodyCursor *cursor)
-{
-	while (!body_at_end(cursor)) {
-		uint8_t ch = cursor->data[cursor->pos];
-		if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r')
-			return;
-		cursor->pos++;
-	}
-}
-
-/* Consumes one structural character together with the whitespace RFC 8259
- * permits before it. Every structural character in the grammar below goes
- * through here, which is what makes the spacing insignificant. */
-static FLASHMEM bool body_consume(BodyCursor *cursor, uint8_t expected)
-{
-	body_skip_whitespace(cursor);
-	if (body_peek(cursor) != expected)
-		return false;
-	cursor->pos++;
-	return true;
+	aius_json_skip_whitespace(cursor);
+	return aius_json_consume(cursor, expected) != 0;
 }
 
 /* Borrows a string's raw bytes in place -- nothing is copied and nothing is
- * unescaped, so whitespace between the quotes survives as the data it is.
+ * unescaped, so whitespace between the quotes survives as the data it is. This
+ * is why aius_json_take_string() is not used here: that one decodes escapes
+ * into a bounded buffer, which this reader has no need of and no buffer for.
  * A backslash is refused outright rather than decoded: the two consumers are
  * this object's key set and replay_id_chars_valid(), and an escape can only
  * ever spell a byte one of them already accepts literally, so decoding would
  * add a second spelling for an id the card already has under its plain name. */
-static FLASHMEM bool body_take_string(BodyCursor *cursor, const uint8_t **text,
-                                      size_t *length)
+static FLASHMEM bool body_take_string(AiusJsonCursor *cursor,
+                                      const uint8_t **text, size_t *length)
 {
 	size_t start;
 	if (!body_consume(cursor, '"'))
 		return false;
 	start = cursor->pos;
-	while (!body_at_end(cursor)) {
+	while (!aius_json_at_end(cursor)) {
 		uint8_t ch = cursor->data[cursor->pos];
 		if (ch == '"') {
 			*text = cursor->data + start;
@@ -381,23 +364,22 @@ static FLASHMEM bool body_take_string(BodyCursor *cursor, const uint8_t **text,
 
 /* `true` / `false`. A trailing character is not this function's business: the
  * object grammar demands a comma or a closing brace next, so `truex` fails
- * there. */
-static FLASHMEM bool body_take_literal(BodyCursor *cursor, const char *text)
+ * there. That is why this is aius_json_match() rather than
+ * aius_json_literal() -- the latter would refuse `truex` one step earlier, on
+ * its own value-boundary check, which is the config parsers' grammar and not
+ * this one's. */
+static FLASHMEM bool body_take_literal(AiusJsonCursor *cursor, const char *text)
 {
-	size_t text_length = strlen(text);
-	body_skip_whitespace(cursor);
-	if (cursor->length - cursor->pos < text_length ||
-	    memcmp(cursor->data + cursor->pos, text, text_length) != 0)
-		return false;
-	cursor->pos += text_length;
-	return true;
+	aius_json_skip_whitespace(cursor);
+	return aius_json_match(cursor, text) != 0;
 }
 
+/* The body reader borrows its key bytes in place, so there is no buffer for a
+ * long key to overflow and the shared comparison's overflow flag is always 0. */
 static FLASHMEM bool body_key_is(const uint8_t *key, size_t key_length,
-                                 const char *expected, size_t expected_length)
+                                 const char *expected)
 {
-	return key_length == expected_length &&
-	       memcmp(key, expected, expected_length) == 0;
+	return aius_json_key_is(key, key_length, 0, expected) != 0;
 }
 
 /* Parses {"id":"<id>"[,"loop":<bool>]} in either key order, tolerating the
@@ -418,7 +400,7 @@ static FLASHMEM bool body_key_is(const uint8_t *key, size_t key_length,
 static FLASHMEM bool replay_body_id(AiusOpticalAppDispatcher *dispatcher,
                                     const AiusHttpRequest *request, bool *loop)
 {
-	BodyCursor cursor = { request->body, request->body_length, 0u };
+	AiusJsonCursor cursor = { request->body, request->body_length, 0u };
 	const uint8_t *id = NULL;
 	size_t id_length = 0u;
 	bool parsed_loop = false;
@@ -434,11 +416,11 @@ static FLASHMEM bool replay_body_id(AiusOpticalAppDispatcher *dispatcher,
 		if (!body_take_string(&cursor, &key, &key_length) ||
 		    !body_consume(&cursor, ':'))
 			return false;
-		if (body_key_is(key, key_length, "id", 2u)) {
+		if (body_key_is(key, key_length, "id")) {
 			/* A second "id" is a duplicate key, not an override. */
 			if (id != NULL || !body_take_string(&cursor, &id, &id_length))
 				return false;
-		} else if (body_key_is(key, key_length, "loop", 4u)) {
+		} else if (body_key_is(key, key_length, "loop")) {
 			if (seen_loop)
 				return false;
 			seen_loop = true;
@@ -454,8 +436,8 @@ static FLASHMEM bool replay_body_id(AiusOpticalAppDispatcher *dispatcher,
 	}
 	if (!body_consume(&cursor, '}'))
 		return false;
-	body_skip_whitespace(&cursor);
-	if (!body_at_end(&cursor))
+	aius_json_skip_whitespace(&cursor);
+	if (!aius_json_at_end(&cursor))
 		return false;
 	if (id == NULL || !replay_id_chars_valid(id, id_length) ||
 	    id_length >= sizeof(dispatcher->replay_id))

@@ -224,7 +224,32 @@ are follow-up work, recorded here so they are not lost.
    the epoch loop, and it owns the 9,756-byte `NonCacheable` FEC buffer inside
    DTCM plus a 64 KiB FNET netheap from the OCRAM `new` heap
    (`NativeEthernet.cpp:90`) that the 91,456-byte OCRAM figure does not include.
-8. **Three JSON cursors, one seam, not hoisted.** `lib/aius_config/src/aius_config.c`
+8. ~~**Three JSON cursors, one seam, not hoisted.**~~ **Fixed.** `lib/aius_json/`
+   now carries the eight primitives all three consumers genuinely share, and the
+   803 lines of duplication are gone. Nothing had to be loosened: the replay
+   parser's 60-body table passes unchanged, and the two places its grammar
+   legitimately diverges — a literal form with no boundary check, and a
+   borrow-in-place string reader that refuses backslash outright — are expressible
+   as two-line wrappers over shared primitives rather than second copies. Each
+   library keeps its own key set, bounds, depth cap and error enum, and
+   `aius_dsp_config`'s `strtod`-free number accumulation stayed with its caller
+   because hoisting a single-use helper is the accretion this seam exists to avoid.
+
+   **It paid more than it was expected to: −3,004 bytes of code, of which −2,088
+   came out of ITCM.** `aius_config.c` never carried `FLASHMEM` on its cursor, so
+   those primitives were competing with the audio pipeline for FlexRAM; the shared
+   library is `FLASHMEM` throughout and moved them to FLASH. Nobody had noticed.
+
+   Two corrections to the record while resolving it. The extracted cursor was
+   **not** more permissive than what it replaced on the `"1 2"` case — both
+   original `value_boundary()` implementations also accepted whitespace and relied
+   on the caller's next structural check, so the new rule (read past whitespace,
+   then require `,`, `}`, `]` or end, without moving the cursor) is *stricter* than
+   the code it replaced. And a test asserting that `skip_value` should refuse
+   `"[1],"` was itself wrong: all three consumers call it mid-object and then check
+   the separator themselves, so had `skip_value` consumed or refused the comma,
+   `{"unknown":[1],"known":2}` would have started failing — a real regression the
+   suite would have reported as green. `lib/aius_config/src/aius_config.c`
    and `lib/aius_dsp_config/src/aius_dsp_config.c` carry the same recursive-descent
    cursor primitives — `aius_dsp_config.c:103` says so in its own comment
    (`/* ---- Cursor primitives (mirror aius_config.c) ---- */`) — and the replay

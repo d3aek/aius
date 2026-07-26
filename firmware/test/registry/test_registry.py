@@ -62,7 +62,13 @@ from pathlib import Path
 #              elsewhere -- `test/fixtures/status/` holds the recorded status
 #              frames that the `net-runner` and `recovery-runner` suites decode.
 #              It has no runner of its own and nothing in it is compiled.
-NON_SUITE_DIRS = frozenset({"fixtures"})
+#   evidence/  Runtime OUTPUT, not input: the run logs the live recovery smoke
+#              (`tools/net/aius_recovery_smoke.py`) writes per invocation, into
+#              `evidence/network-hardening/`. Gitignored, so on a clean checkout
+#              the directory does not exist at all; it appears only once someone
+#              has run the smoke against a board. Nothing reads it back and
+#              nothing in it is compiled, so there is nothing here to register.
+NON_SUITE_DIRS = frozenset({"fixtures", "evidence"})
 
 # A test entry point is a file a suite arm is expected to name directly. Suite
 # support files (fakes, harness translation units, generators, vectors) are not
