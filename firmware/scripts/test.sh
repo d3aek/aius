@@ -10,7 +10,7 @@
 # Suites: arena, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, net, net-runner,
-#         recovery-runner, http,
+#         recovery-runner, flash, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
@@ -311,6 +311,15 @@ net)
 net-runner)
 	python3 "$fw_root/test/net/test_net_runner.py"
 	python3 "$fw_root/test/net/test_aius_http_runner.py"
+	;;
+flash)
+	# The button-free flash path, driven against a scripted CDC transport and
+	# synthesised Intel HEX images: bootloader entry judged by the port going
+	# away rather than by an acknowledgement, the image-identity oracle, and
+	# every fail-closed arm (unreadable image, failing loader, stale revision,
+	# a board that never re-enumerates). No board and no serial port.
+	python3 "$fw_root/test/flash/test_cdc_runner.py"
+	python3 "$fw_root/test/flash/test_flash_optical.py"
 	;;
 recovery-runner)
 	# The live recovery smoke's host runner, driven against a scripted device on

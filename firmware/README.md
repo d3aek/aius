@@ -273,6 +273,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `json` | The one JSON read cursor those two parsers and the replay body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
 | `recovery-runner` | The live recovery smoke's host runner: every gate on all three result paths against a scripted device on a virtual clock. |
+| `flash` | The button-free flash path: HalfKay entry judged by the port going away rather than by an acknowledgement, the image-identity oracle over synthesised Intel HEX, and every fail-closed arm. |
 | `http` | Request parser + the bounded server transaction. |
 | `usb-control` | USB control command parser + runtime transaction. |
 | `replay` | Replay service over a fake reader. |

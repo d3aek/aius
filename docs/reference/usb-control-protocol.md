@@ -232,6 +232,65 @@ released rather than latched: sending `AIUS BOOTLOADER <id>` again produces a ne
 answered the first request and then silently ignored every later one, which left
 the physical Program button as the only remaining route into the loader.
 
+## The 134-baud hatch, for a board that cannot answer
+
+**`AIUS BOOTLOADER` needs the epoch loop to be running. This does not.** Setting
+the CDC line coding to **134 baud** reboots a Teensy 4 into HalfKay from the
+USB SOF interrupt: the core arms `usb_reboot_timer` in the `SET_LINE_CODING`
+handler (`cores/teensy4/usb.c:841`) and fires it independently of the sketch
+(`:383`). So it recovers a board whose main loop is hung — which is the only
+route back from a fault image stalled at checkpoint 1 or 2, where the USB
+control path never runs at all and no command is ever parsed.
+
+It saved nine Program-button presses in a single B6 gate-3 run, and it is the
+fallback the flash tooling reaches for when the sanctioned command gets no
+answer.
+
+**The acknowledgement is not the proof of entry.** A bootloader request that is
+performed but whose response never drains looks identical, from the host, to one
+that was refused. Both this firmware's bootloader-entry race and its
+`POST /api/reboot` defect were exactly that confusion. A host tool must judge
+entry by the **port disappearing**, never by the `OK` line: a lost
+acknowledgement with the port gone is a success, and an acknowledged request
+with the port still present is not.
+
+## Tooling
+
+[`tools/net/aius_cdc_runner.py`](../../firmware/tools/net/aius_cdc_runner.py)
+implements everything above and is the supported host entry point.
+
+```bash
+scripts/flash_optical.sh                     # build output, verified
+scripts/flash_optical.sh firmware.hex        # a named image
+python3 tools/net/aius_cdc_runner.py id      # the AIUS ID fields
+python3 tools/net/aius_cdc_runner.py auth    # the SD maintenance token
+python3 tools/net/aius_cdc_runner.py identity firmware.hex   # what an image claims
+```
+
+**The flash verifies its own replacement, and fails closed.** The identity is
+read out of the `.hex` by parsing the image — not by re-running the build's
+metadata derivation — so a build that stamped the wrong thing is caught rather
+than confirmed. After the loader runs, `AIUS ID` must report exactly that
+identity. An image whose identity cannot be read is refused *before* the loader
+is allowed to touch the board.
+
+**Both `revision` and `build` are compared, and the second is the load-bearing
+one.** Rebuilding the same commit produces the same revision string, so a board
+still running the old image reports a revision identical to the one the new
+image claims; only the build timestamp separates "the flash landed" from "the
+loader did nothing".
+
+When the login is stale, the port and the loader need different groups:
+
+```bash
+sg dialout -c "sg plugdev -c 'scripts/flash_optical.sh'"
+```
+
+**Use the stable by-id path, never `/dev/ttyACMn`.** Linux hands the
+re-enumerated port the next free index, so a board that comes back as `ttyACM1`
+leaves a `ttyACM0` caller permanently looking at nothing. The runner discovers
+`/dev/serial/by-id/usb-Teensyduino_USB_Serial_*-if00` by default.
+
 ## Host procedure
 
 1. Open the current `/dev/ttyACM*` at any conventional serial speed.

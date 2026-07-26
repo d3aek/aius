@@ -764,11 +764,35 @@ service unaided — a boundary that had never once executed on a real board.
 
 **Next**, in the order they are worth doing:
 
-- **B7 (Phase 15, button-free flash tooling)** and then **B8**, which is the only
-  remaining phase that changes what an operator has to do physically. The
-  134-baud CDC line-coding reboot into HalfKay is the mechanism to build on: it
-  is proven, it works on a *hung* sketch, and it removed nine Program-button
-  presses from a single gate-3 run.
+- ~~**B7 (Phase 15, button-free flash tooling)**~~ **DELIVERED 2026-07-26.**
+  `tools/net/aius_cdc_runner.py` owns the CDC control protocol, HalfKay entry
+  and post-flash verification; `scripts/flash_optical.sh` is now a thin
+  dispatcher over it; the `flash` suite is registered and green (25 tests).
+  **Proven on hardware with zero button presses**: `8d71629652fb` →
+  `382aa531f042`, entered HalfKay via the CDC route and verified the running
+  identity against the one parsed out of the `.hex`.
+
+  Three design points worth not re-deriving:
+
+  - **Entry is judged by the port disappearing, never by the acknowledgement.**
+    A request performed but unacknowledged is indistinguishable from one
+    refused, which is the same confusion behind both the bootloader-entry race
+    and open defect 12. So a lost ack with the port gone is a success, and an
+    acknowledged request with the port still present is not.
+  - **The identity oracle parses the image rather than re-running
+    `build_metadata.py`.** A verifier that recomputes the build's own
+    expression proves agreement and nothing else — the recurring failure mode
+    this plan records. It is also why reassembly is by absolute address: a
+    naive concatenating reader fabricates a well-formed revision from two
+    halves 16 KB apart, observed as a negative control.
+  - **Both `revision` and `build` are compared.** Rebuilding the same commit
+    yields the same revision string, so a board still running the old image
+    would verify against revision alone; the timestamp is what separates "the
+    flash landed" from "the loader did nothing".
+
+- **B8** is now the only remaining phase that changes what an operator has to do
+  physically — the zero-button-press gate (Phase 16b) run against the tooling
+  B7 just delivered.
 - **Open defects 22 and 23**, both raised by the passing run rather than by a
   failure, and both design calls rather than repairs.
 - **B9**, the dashboard retirement, which is independent of all of the above.
@@ -6041,6 +6065,15 @@ the ring sizing, where metering taps sit and why — say so, so the next reader
 inherits the reasoning rather than re-deriving it.
 
 ### Phase 15 — Button-free flash tooling
+
+**DELIVERED 2026-07-26.** Shipped as `tools/net/aius_cdc_runner.py` (CDC control,
+HalfKay entry, image-identity oracle, verified flash), a thin
+`scripts/flash_optical.sh` dispatcher retaining the legacy RawHID handoff, and
+the `flash` suite over a scripted transport and synthesised Intel HEX. The
+fan-out below was not used — the slices were implemented in one pass because the
+oracle and the implementation share the `.hex` parser, and splitting them would
+have meant either duplicating it or inventing a seam for a single consumer.
+See §Next for the three design points the work established.
 
 ```yaml
 unit: phase-task
