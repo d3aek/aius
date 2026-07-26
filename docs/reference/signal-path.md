@@ -95,7 +95,7 @@ flowchart TD
     CLS{"aius_pipeline_classify<br/>Pa/Pb preamble in 512 words?"}
     IEC["IEC 61937 de-frame<br/>aius_iec61937_push"]
     DTS["DTS Core decode<br/>aius_dts_decode_access_unit<br/>24-bit planar, up to 6 planes"]
-    PCM["PCM passthrough<br/>pcm_feed, sign-extend 16 to 32"]
+    PCM["PCM passthrough<br/>pcm_feed, 16 left-aligned onto 24-bit"]
     ENQ["AiusAudioProcessor::enqueue<br/>93.75/s, 512 frames<br/>DWT bracket opens"]
     IN["Input stage: trim + EQ per channel<br/>aius_dsp_input_run"]
     DMX["Downmix matrix, 6 to 2<br/>aius_dsp_downmix<br/>headroom 0.5"]
@@ -134,7 +134,7 @@ the hardware does not carry, and the wire is the last stage the firmware owns.
 | 3 | Classify | `aius_pipeline_classify` | integer compare | `clsbuf[512]` 1,024 B, DTCM arena |
 | 4a | IEC 61937 de-frame | `aius_iec61937_push` | integer | 4,096 B payload, OCRAM heap |
 | 4b | DTS Core decode | `aius_dts_decode_access_unit` | fixed point → int32 | dcadec `ta` tree, OCRAM heap |
-| 4c | PCM passthrough | `pcm_feed` | sign-extend int16 → int32 | `pcm_l`/`pcm_r` 4,096 B, DTCM arena |
+| 4c | PCM passthrough | `pcm_feed` | int16 → int32, left-aligned onto 24-bit | `pcm_l`/`pcm_r` 4,096 B, DTCM arena |
 | 5 | Input trim + EQ | `aius_dsp_input_run` → `run_cascade` | int32 → double → int32 | `g_input_scratch` 12,288 B DTCM |
 | 6 | Downmix matrix | `aius_dsp_downmix` | int32 → double → int32 | writes caller planes |
 | 7 | Output EQ | `aius_dsp_eq_run` → `run_cascade` | int32 → double → int32 | `g_eq_state` 128 B DTCM |
@@ -240,22 +240,40 @@ is roughly 5.2 kB *derived* from its members — `clsbuf` 1,024 B plus `pcm_l`/`
 
 ### Stage 4c — PCM passthrough
 
-`pcm_feed` treats the words as interleaved L,R and sign-extends each into `int32`:
+`pcm_feed` treats the words as interleaved L,R and left-aligns each onto the
+`AiusPcmBlock` sample scale:
 
 ```c
-int32_t sample = (int32_t)(int16_t)w[i]; /* aius_pipeline.c:96 — sign-extend 16 -> 32 */
+const int32_t wire = (int32_t)(int16_t)word;              /* sign-extend 16 -> 32 */
+return (int32_t)((uint32_t)wire << PCM_WIRE_SHIFT);       /* left-align onto 24 bits */
 ```
+
+Through `uint32_t` because a left shift of a negative `int` is undefined behaviour
+(C17 6.5.7p4) and the host suites build with UBSan; the two's-complement result is
+identical, which is what makes the unsigned round-trip correct rather than merely quiet.
 
 Blocks are emitted at `AIUS_PIPELINE_PCM_BLOCK_FRAMES` = 512 frames, stamped
 `AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ` = 48,000 unconditionally
 (`lib/aius_pipeline/include/aius_pipeline.h:45`, `:48`).
 
-**There is no left shift, so the PCM branch enters the DSP at 16-bit magnitude while
-the DTS branch enters at 24-bit magnitude** — a 48.16 dB level step between the two
-branches, with the DSP's headroom and limiter threshold both expressed in 24-bit units.
-`test/pipeline/test_pipeline.c:281` pins the unshifted value, so this is committed
-behaviour rather than drift. Consequences and the correct place to fix it are in
-[§Open at this revision](#open-at-this-revision).
+**Both branches now enter the DSP at the same full scale, and the fix landed at the
+contract rather than at this call site.** Until 2026-07-26 there was no left shift, so
+the PCM branch entered at 16-bit magnitude against the DTS branch's 24-bit — a 48.16 dB
+level step, with the DSP's headroom and limiter threshold both expressed in 24-bit units.
+The root cause was that `AiusPcmBlock` documented its planes only as "signed 32-bit" and
+never declared a *sample* scale, so each producer picked its own and neither violated the
+contract. `aius_codec.h` §SAMPLE SCALE now declares it (`AIUS_PCM_SAMPLE_BITS` = 24 plus
+`_MAX`/`_MIN`), `aius_dsp.h` derives `AIUS_DSP_SAMPLE_MAX`/`_MIN` from it instead of
+restating the number, and both `aius_dsp.c` and `aius_pipeline.c` bind to it with a
+`_Static_assert`.
+
+`test/pipeline/test_pipeline.c` previously asserted the block against a copy of
+`pcm_feed`'s own expression, so it printed "1024 frames byte-exact" throughout — a test
+that cannot catch a scale error because both sides move together. It now carries a
+second, deliberately separate check (`pcm-scale`) written purely in the contract's terms:
+a full-scale wire word must reach full scale, with no mention of 16 bits, of a shift
+count, or of the producer's expression. Reverting the fix leaves the original check green
+and fails only the new one, reporting the measured −48.16 dB.
 
 ### Stage 5 — input trim and EQ
 
@@ -519,7 +537,7 @@ Where each conversion happens:
 | Receiver → engine | int32 subframe → int16 | `input_spdif3.cpp:118` | `>> 8`, truncating; the input ceiling |
 | Engine → pipeline | int16 → uint16 words | `optical_main.cpp:785` | reinterpret, no arithmetic |
 | DTS decode → DSP | dcadec fixed point → int32 | `aius_dts.c:242` | 24-bit range, sign-extended |
-| PCM → DSP | int16 → int32 | `aius_pipeline.c:96` | sign-extend only, **no scaling** |
+| PCM → DSP | int16 → int32 | `pcm_wire_to_sample` | sign-extend then left-align onto `AIUS_PCM_SAMPLE_BITS` |
 | Input stage | int32 → double → int32 | `aius_dsp.c:285` | one quantize per sample |
 | Downmix | int32 → double → int32 | `aius_dsp.c:152` | one quantize per sample |
 | Output EQ | int32 → double → int32 | `aius_dsp.c:302` | one quantize per sample |
@@ -619,12 +637,22 @@ FlexRAM      498912        25376       524288   95.16%    4.8%
 OCRAM        230784       293504       524288   44.02%   56.0%
 ```
 
-**DTCM free-for-locals is 25,376 bytes** — `_estack 0x20050000 − _ebss 0x20049ce0` —
-and that is the entire budget for the stack, the main loop and the audio ISR both.
-**OCRAM has 293,504 bytes free.** Those two figures are the constraint every placement
-decision in this chain answers to, and the first has nearly tripled since the 24-bit
-output path landed (9,280 → 17,152 → 25,376), which is worth knowing before the next
-roadmap item spends it.
+**DTCM free-for-locals was 25,376 bytes at that revision and is 43,328 now** — the
+LFE fold-in's banks re-measured it — `_estack 0x20050000 − _ebss 0x200456c0`. That is
+the entire budget for the stack, the main loop and the audio ISR both. **OCRAM has
+293,504 bytes free.** Those two figures are the constraint every placement decision
+in this chain answers to.
+
+**The figure has moved four times, and every stale copy of it is still quoted
+somewhere**: 9,280 → 17,152 → 25,376 → **43,328**. So a bare number in prose is not
+usable evidence — [`firmware-io.md`](firmware-io.md)'s table reports 9,280 (correct at
+*its* revision, pre-`FNET_CFG_TLS=0`), this section reported 25,376, and five source
+comments still quote pre-fix values (network-hardening open defect 18). A TLS
+feasibility assessment initially read the three live figures as a contradiction; they
+are not, they are four snapshots of a number that tripled and then nearly doubled
+again. **Take it from `tools/memory/mem_report.py` against the linked ELF, which is
+the only source that cannot go stale**, and state the revision beside any number
+copied out of it.
 
 Every audio-path object, with its measured size and bank:
 
@@ -830,16 +858,27 @@ because 16-bit IEC 61937 packing occupies exactly the bits the `>> 8` keeps. Fix
 the mirror of what the transmit side already did — a sibling receive path alongside the
 retained snapshot rather than a vendor patch — and no plan currently owns it.
 
-**PCM passthrough sits 48.16 dB below the DTS path in the DSP's own units.** `pcm_feed`
-sign-extends 16 → 32 with no left shift (`aius_pipeline.c:96`) while the decoder emits
-24-bit-range samples, so a full-scale 16-bit PCM carrier reaches the wire at
-32767 × 0.5 = 16,383 in 24-bit units, about −54.2 dBFS. Every threshold downstream — the
-limiter's −1.0 dBFS, the true-peak skip gate, the meters' peak and RMS — is expressed in
-24-bit units, so on the PCM branch the limiter can never engage and the meters read
-48 dB low. This is committed behaviour, pinned by `test/pipeline/test_pipeline.c:281`,
-and predates the 24-bit output path rather than being introduced by it. The correct fix
-is a `<< 8` at the passthrough boundary together with the golden-fixture update it
-implies; **do not fix it by widening the limiter threshold.**
+**~~PCM passthrough sits 48.16 dB below the DTS path in the DSP's own units.~~ Fixed
+2026-07-26** — see [§Stage 4c](#stage-4c--pcm-passthrough). Both branches now reach the
+DSP at the same full scale, so the limiter, the true-peak skip gate and the meters mean
+the same thing on both. Retained here for the two lessons rather than the defect:
+
+- **The fix belonged at the contract, not the call site.** The predicted remedy was "a
+  `<< 8` at the passthrough boundary", which would have worked and would have left the
+  next producer free to make the identical mistake. `AiusPcmBlock` described its planes
+  only as "signed 32-bit" and never declared a *sample* scale, so the DTS decoder's
+  24-bit choice and the pass-through's 16-bit choice were both conformant. Declaring the
+  scale once and deriving `AIUS_DSP_SAMPLE_MAX`/`_MIN` from it is the enforcement rung
+  that a shift at one call site does not reach.
+- **The golden-fixture update the entry predicted was not needed, and that was
+  diagnostic.** All four `dsp-vectors` goldens are DTS, so they were byte-unchanged. The
+  only test that moved was the pass-through's own — and it had been asserting the block
+  against a copy of the producer's expression, which is why it printed "byte-exact"
+  throughout. A defect that changes real behaviour while touching no golden vector is a
+  sign the corpus does not cover that branch, not a sign the change was small.
+
+**Do not fix it by widening the limiter threshold** — recorded because that remains the
+tempting wrong answer if the symptom ever recurs on the input side.
 
 **Nothing in the audio path resamples, and nothing counts a rate mismatch.** Neither
 peripheral converts rate: the receiver DMAs words into audio blocks at the incoming

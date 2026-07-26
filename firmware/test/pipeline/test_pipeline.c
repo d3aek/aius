@@ -10,8 +10,13 @@
  *   2. Classification. The DTS vector types as AIUS_PIPELINE_DTS; a synthetic
  *      linear-PCM word stream (no preamble) types as AIUS_PIPELINE_PCM. The
  *      stateless classifier is exercised on both plus window/undecided edges.
- *   3. PCM pass-through fidelity. Linear-PCM words emerge as 2ch/48k blocks whose
- *      samples are the input words sign-extended to int32, in order.
+ *   3. PCM pass-through fidelity AND sample scale. Linear-PCM words emerge as
+ *      2ch/48k blocks whose samples are the input words left-aligned to the
+ *      AiusPcmBlock sample scale, in order. The scale half is asserted in the
+ *      *contract's* terms (a full-scale wire word reaches full scale) rather than
+ *      against a copy of the producer's own expression -- which is how this test
+ *      previously held a 48.16 dB level defect green for the whole life of the
+ *      pass-through. See aius_codec.h §SAMPLE SCALE.
  *   4. No-heap steady state. Two back-to-back DTS bursts decode with a non-zero
  *      warmup allocation then zero allocations on the steady-state frame (via the
  *      --wrap alloc shim + decoder metrics).
@@ -20,6 +25,7 @@
  * Exit 0 on all-pass, 1 on any failure.
  */
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -254,6 +260,16 @@ static void test_dts_equivalence(const char *dir, const char *name)
 
 /* ---- test 2: PCM pass-through fidelity + classification ------------------ */
 
+/* The pass-through's documented rule, restated for the ordering/framing check
+ * below. Deliberately NOT reused by test 2b: a scale assertion written against
+ * this expression proves only that the test and the producer agree, which is the
+ * trap the old test fell into. */
+static int32_t pcm_expected_sample(uint16_t word)
+{
+	const int32_t wire = (int32_t)(int16_t)word;
+	return (int32_t)((uint32_t)wire << (AIUS_PCM_SAMPLE_BITS - 16));
+}
+
 static void test_pcm_passthrough(void)
 {
 	/* 1024 frames of synthetic interleaved L,R 16-bit PCM, no IEC preamble. */
@@ -278,8 +294,8 @@ static void test_pcm_passthrough(void)
 			break;
 		}
 		for (uint32_t f = 0; f < bc->frames; f++) {
-			int32_t expl = (int32_t)(int16_t)w[2 * (got + f)];
-			int32_t expr = (int32_t)(int16_t)w[2 * (got + f) + 1];
+			int32_t expl = pcm_expected_sample(w[2 * (got + f)]);
+			int32_t expr = pcm_expected_sample(w[2 * (got + f) + 1]);
 			if (bc->planes[0][f] != expl || bc->planes[1][f] != expr) {
 				ok = 0;
 				break;
@@ -290,6 +306,77 @@ static void test_pcm_passthrough(void)
 	CHECK(ok, "pcm: pass-through samples differ from input");
 	CHECK(got == FRAMES, "pcm: recovered %u frames != %u", got, (unsigned)FRAMES);
 	printf("  pcm            PCM pass-through 2ch/48k, %u frames byte-exact\n", got);
+
+	capture_free(&cap);
+	free(w);
+}
+
+/* ---- test 2b: the pass-through's sample scale, in the contract's terms ------
+ *
+ * THE DISCRIMINATING TEST, and the reason it is separate from test 2. Test 2
+ * compares the block against pcm_expected_sample(), which is the producer's rule
+ * restated -- so it proves ordering, framing and channel split, and it CANNOT
+ * catch a wrong scale, because both sides would move together. That is exactly
+ * what happened: for the whole life of the pass-through, test 2 was green while
+ * every PCM stream played 48.16 dB below every DTS stream.
+ *
+ * This test asserts the property a consumer actually depends on and that no
+ * producer expression appears in: **a full-scale wire word reaches full scale.**
+ * Nothing here refers to 16 bits, to a shift count, or to pcm_expected_sample. */
+static void test_pcm_sample_scale(void)
+{
+	/* Both wire extremes and the two values that bracket zero, interleaved so
+	 * each lands on a known plane. Long enough to classify as PCM unaided. */
+	enum { FRAMES = 512, WORDS = FRAMES * 2 };
+	uint16_t *w = malloc(WORDS * sizeof(uint16_t));
+	for (int f = 0; f < FRAMES; f++) {
+		w[2 * f] = 0x8000u;     /* -32768: 16-bit negative full scale */
+		w[2 * f + 1] = 0x7FFFu; /* +32767: 16-bit positive full scale */
+	}
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPipelineClass klass = run_pipeline(w, WORDS, WORDS, &cap);
+	CHECK(klass == AIUS_PIPELINE_PCM, "scale: class %d != PCM", klass);
+	CHECK(cap.n > 0, "scale: no blocks emitted");
+
+	int32_t neg_peak = 0, pos_peak = 0;
+	for (int b = 0; b < cap.n; b++) {
+		struct block_copy *bc = &cap.blocks[b];
+		for (uint32_t f = 0; f < bc->frames; f++) {
+			if (bc->planes[0][f] < neg_peak)
+				neg_peak = bc->planes[0][f];
+			if (bc->planes[1][f] > pos_peak)
+				pos_peak = bc->planes[1][f];
+		}
+	}
+
+	/* Negative full scale is EXACT. Two's complement's asymmetry works in our
+	 * favour here: the most negative wire word left-aligns onto the most negative
+	 * sample with no rounding at all. An == is therefore the right assertion, not
+	 * a tolerance. */
+	CHECK(neg_peak == AIUS_PCM_SAMPLE_MIN,
+	      "scale: negative full-scale wire word reached %ld, not AIUS_PCM_SAMPLE_MIN "
+	      "(%ld) -- pass-through PCM is %.2f dB off every other producer",
+	      (long)neg_peak, (long)AIUS_PCM_SAMPLE_MIN,
+	      20.0 * log10((double)-neg_peak / (double)-AIUS_PCM_SAMPLE_MIN));
+
+	/* Positive full scale lands 255 LSBs short (0x7FFF00 against 0x7FFFFF), and
+	 * that is CORRECT rather than tolerated: left-aligning zero-fills the new low
+	 * bits, which is bit-exact and reversible. Scaling by MAX/32767 instead would
+	 * hit the constant exactly and would introduce rounding error on every other
+	 * sample in exchange -- a worse trade for a 0.00026 dB difference. So the
+	 * bound is one wire LSB, tight enough to fail a missing or wrong-width
+	 * alignment (the old behaviour was 255 dB^-1... 48.16 dB down, i.e. off by 2^8)
+	 * and loose enough to permit the zero-fill. */
+	const int32_t one_wire_lsb = (AIUS_PCM_SAMPLE_MAX + 1) / 32768;
+	CHECK(pos_peak > AIUS_PCM_SAMPLE_MAX - one_wire_lsb,
+	      "scale: positive full-scale wire word reached %ld, not within one wire LSB "
+	      "(%ld) of AIUS_PCM_SAMPLE_MAX (%ld)",
+	      (long)pos_peak, (long)one_wire_lsb, (long)AIUS_PCM_SAMPLE_MAX);
+
+	printf("  pcm-scale      full-scale wire word -> full scale (%ld / %ld)\n",
+	       (long)neg_peak, (long)pos_peak);
 
 	capture_free(&cap);
 	free(w);
@@ -398,6 +485,7 @@ int main(int argc, char **argv)
 	test_dts_equivalence(dir, "dts_be16");
 	test_dts_equivalence(dir, "dts51_be16");
 	test_pcm_passthrough();
+	test_pcm_sample_scale();
 	test_classifier(dir);
 	test_no_heap_steady_state(dir);
 

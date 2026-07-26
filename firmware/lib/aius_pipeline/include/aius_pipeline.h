@@ -24,8 +24,14 @@ extern "C" {
  *                      and feeds each burst payload (a raw DTS Core access unit)
  *                      into AiusDtsDecoder, emitting decoded planar AiusPcmBlocks.
  *   AIUS_PIPELINE_PCM  the stream is IEC 60958 linear PCM. The words are treated
- *                      as interleaved L,R 16-bit samples, sign-extended to int32
- *                      and emitted verbatim (no decode) as 2ch / 48 kHz blocks.
+ *                      as interleaved L,R 16-bit samples and emitted (no decode)
+ *                      as 2ch / 48 kHz blocks, left-aligned to the AiusPcmBlock
+ *                      sample scale so they arrive at the same full scale as a
+ *                      decoded DTS block. Bit-exact -- the scaling is a shift, not
+ *                      a resample -- but NOT "verbatim": this header said verbatim
+ *                      while the samples stayed in 16-bit units, and that cost
+ *                      48.16 dB on every pass-through stream. See aius_codec.h
+ *                      §SAMPLE SCALE.
  *
  * Classification detects the IEC 61937 preamble (Pa=0xF872, Pb=0x4E1F, either
  * wire byte order) within a bounded word window; a stream with no preamble in the

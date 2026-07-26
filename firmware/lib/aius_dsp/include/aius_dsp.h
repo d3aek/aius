@@ -86,11 +86,12 @@ extern "C" {
  * before the steady-state loop.
  */
 
-/* Output sample range. The DTS Core reconstructs to 24 significant bits, so the
- * stereo output is clamped (saturated) into the signed 24-bit range. Change
- * these two constants together to retarget a different DAC word width. */
-#define AIUS_DSP_SAMPLE_MAX ((int32_t)8388607)   /*  2^23 - 1 */
-#define AIUS_DSP_SAMPLE_MIN ((int32_t)-8388608)  /* -2^23     */
+/* Output sample range: the AiusPcmBlock sample scale, which is also this stage's
+ * input scale, so the DSP neither widens nor narrows. Derived rather than
+ * restated -- a second copy of the number is how the pass-through and the decoder
+ * came to disagree by 48 dB (see aius_codec.h §SAMPLE SCALE). Retarget there. */
+#define AIUS_DSP_SAMPLE_MAX AIUS_PCM_SAMPLE_MAX
+#define AIUS_DSP_SAMPLE_MIN AIUS_PCM_SAMPLE_MIN
 
 /* Downmix coefficient defaults (ITU-R BS.775 / ATSC A/52 "Lo/Ro" style).
  *   L' = FL + center*FC + surround*SL + lfe*LFE

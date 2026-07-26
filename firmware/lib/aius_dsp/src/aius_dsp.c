@@ -12,6 +12,18 @@
 #include <math.h>
 #include <string.h>
 
+/* The saturation range and the declared sample width must describe the same
+ * format. Retargeting AIUS_PCM_SAMPLE_BITS without its MAX/MIN (or vice versa)
+ * would leave the DSP saturating to one width while every producer left-aligns to
+ * another -- silently, and 8 bits at a time. That is the 48 dB pass-through defect
+ * exactly (aius_codec.h §SAMPLE SCALE), so it is a compile error rather than a
+ * comment. Lives here and not in the header because aius_codec.h is included from
+ * C++ translation units, where _Static_assert is not the spelling. */
+_Static_assert(AIUS_DSP_SAMPLE_MAX == ((int32_t)1 << (AIUS_PCM_SAMPLE_BITS - 1)) - 1,
+               "AIUS_PCM_SAMPLE_MAX disagrees with AIUS_PCM_SAMPLE_BITS");
+_Static_assert(AIUS_DSP_SAMPLE_MIN == -((int32_t)1 << (AIUS_PCM_SAMPLE_BITS - 1)),
+               "AIUS_PCM_SAMPLE_MIN disagrees with AIUS_PCM_SAMPLE_BITS");
+
 /* --- helpers -------------------------------------------------------------- */
 
 /* popcount over the low channel-mask bits (mask is at most 6 bits). */

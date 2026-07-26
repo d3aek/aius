@@ -43,8 +43,35 @@ enum {
 	AIUS_CH_SR = 1u << 5   /* surround right */
 };
 
+/* SAMPLE SCALE — the contract every AiusPcmBlock producer owes its consumer.
+ *
+ * Planes are int32_t, but the *container* width is not the *sample* width, and
+ * leaving that unsaid cost 48 dB. This header used to say only "signed 32-bit",
+ * so each producer picked its own full scale: the DTS decoder reconstructs to 24
+ * significant bits, while the pipeline's linear-PCM pass-through sign-extended
+ * the 16-bit wire word and emitted it "verbatim". Both satisfied "signed 32-bit"
+ * and they differed by exactly 2^8, so switching a live source from DTS to PCM
+ * stepped the level by 48.16 dB. Neither was wrong against the contract, because
+ * there was no contract -- and the pass-through's own test asserted the block
+ * against a copy of the producer's expression, so it pinned the defect green.
+ *
+ * So: **a sample is signed, left-aligned to AIUS_PCM_SAMPLE_BITS, sign-extended
+ * into int32_t.** A producer whose native width is narrower scales UP to this
+ * range; it does not hand over its own units and leave the scale to the reader.
+ * Full scale is AIUS_PCM_SAMPLE_MAX/MIN, and dBFS is always relative to those.
+ *
+ * 24 because it is the widest source width in scope (the DTS Core's
+ * reconstruction) and the S/PDIF transmit word carries it whole, so the shipped
+ * path neither narrows nor widens. Retarget all three constants together; the DSP
+ * derives AIUS_DSP_SAMPLE_MAX/MIN from them rather than restating them, and both
+ * aius_dsp.c and aius_pipeline.c bind to them with a _Static_assert. */
+#define AIUS_PCM_SAMPLE_BITS 24
+#define AIUS_PCM_SAMPLE_MAX ((int32_t)8388607)  /*  2^23 - 1 */
+#define AIUS_PCM_SAMPLE_MIN ((int32_t)-8388608) /* -2^23     */
+
 /* One block of decoded audio: `channels` planar buffers of `frames` samples
- * each, signed 32-bit, at `sample_rate_hz`. Planes are arena- or caller-owned. */
+ * each, signed 32-bit at the sample scale above, at `sample_rate_hz`. Planes are
+ * arena- or caller-owned. */
 typedef struct {
 	int32_t *planes[AIUS_MAX_CHANNELS];
 	uint16_t channels;

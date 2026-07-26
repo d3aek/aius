@@ -90,10 +90,35 @@ static AiusStatus pcm_emit_block(AiusPipeline *p)
 	return st;
 }
 
+/* Wire word (16-bit, IEC 60958 subframe payload) -> AiusPcmBlock sample scale.
+ *
+ * The left-align is the whole point and it is not cosmetic: a bare sign-extend
+ * put pass-through PCM 48.16 dB below the DTS decoder's 24-bit output, so
+ * switching source material stepped the level by 8 bits. See aius_codec.h
+ * §SAMPLE SCALE.
+ *
+ * Scaled through uint32_t rather than shifting the signed value: left shift of a
+ * negative int is undefined behaviour (C17 6.5.7p4), and the host suites build
+ * with UBSan, so it is reported rather than merely latent. The two's-complement
+ * result is identical, which is what makes the unsigned round-trip correct here
+ * rather than just quieter. */
+#define PCM_WIRE_BITS 16
+#define PCM_WIRE_SHIFT (AIUS_PCM_SAMPLE_BITS - PCM_WIRE_BITS)
+
+_Static_assert(PCM_WIRE_SHIFT >= 0,
+               "AiusPcmBlock sample scale is narrower than the 16-bit wire word; "
+               "pcm_feed would have to dither and round, not left-align");
+
+static inline int32_t pcm_wire_to_sample(uint16_t word)
+{
+	const int32_t wire = (int32_t)(int16_t)word; /* sign-extend 16 -> 32 */
+	return (int32_t)((uint32_t)wire << PCM_WIRE_SHIFT);
+}
+
 static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 {
 	for (size_t i = 0; i < n; i++) {
-		int32_t sample = (int32_t)(int16_t)w[i]; /* sign-extend 16 -> 32 */
+		int32_t sample = pcm_wire_to_sample(w[i]);
 		if (!p->pcm_have_half) {
 			p->pcm_pending_l = sample;
 			p->pcm_have_half = 1;
