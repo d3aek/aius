@@ -536,10 +536,21 @@ invasive, psychoacoustically weighted shaping on the 16-bit reduction buys
 10–20 dB of *perceived* SNR for very little CPU and composes with the dither
 already landing.
 
-**Budget for all of it.** Measured 398,591–431,995 cycles of 6,400,000 per
-512-frame block at 48 kHz — 6.2–6.8 % used, ~93 % free — and ~310 kB of OCRAM
-free. The binding constraint is DTCM at **9,248 bytes** for the entire stack,
-main loop and audio ISR both, so anything carrying real state goes in `DMAMEM`.
+**Budget for all of it**, current as of item 1 landing and **not** the figures
+this paragraph carried before — those were superseded by the two measurement
+tables above and had gone stale inside their own document, which is exactly the
+drift the §Audio-quality roadmap preamble warns about. Measured **534,411–565,024
+cycles of 6,400,000** per 512-frame block at 48 kHz — **8.4–8.8 % used** — with
+**~293 kB of OCRAM** free and DTCM free-for-locals at **25,376 bytes**. Anything
+carrying real state still goes in `DMAMEM`; DTCM remains the scarcest bank even
+after item 1 returned 8 kB of it.
+
+**And there may be far more DTCM than that.** Phase 14e found that the 128 KB DTS
+arena is reserved and never used, because `[env:teensy41-optical]` unflags the
+`--wrap` set the shim depends on — see open defect 14 in
+[`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
+Resolving that either way changes the memory story for every item below it, so
+read the DTCM figure here as a floor rather than a fact.
 
 **Sequencing note:** the true-peak limiter needs 4× oversampling, which builds
 infrastructure a linear-phase or oversampled chain would reuse. And the 24-bit

@@ -356,7 +356,52 @@ are follow-up work, recorded here so they are not lost.
     security defect in its own right, not a consequence of the acknowledgement
     bug, and it should be fixed in the same change since both touch the same
     route.
-13. **Five source comments still quote the pre-fix DTCM free figure** —
+13. **PCM passthrough sits 48.16 dB below the DTS path, and the limiter can never
+    engage on it.** Found writing [§Phase 14e](#phase-14e--signal-path-and-dsp-reference).
+    `pcm_feed` does `int32_t sample = (int32_t)(int16_t)w[i]` with **no left shift**
+    (`lib/aius_pipeline/src/aius_pipeline.c:96`), while the DTS decoder emits
+    24-bit-range samples. So a full-scale 16-bit PCM carrier reaches the wire around
+    **−54.2 dBFS**. Worse than the level itself: **every downstream threshold is in
+    24-bit units** — the limiter's −1.0 dBFS, the true-peak skip gate, the meter
+    peak and RMS — so on the PCM branch **the limiter can never engage and the
+    meters read 48 dB low.** It is committed behaviour, pinned by
+    `test/pipeline/test_pipeline.c:281`, and predates the 24-bit output path. The fix
+    is a `<< 8` at the passthrough boundary plus golden updates, **not** widening the
+    limiter threshold. Note
+    [`aius-sample-rate-following.md`](aius-sample-rate-following.md) inventories both
+    branches' *rates* meticulously and never mentions their *levels* — the same
+    blind spot in a different dimension.
+14. **The DTS decoder does not use the 128 KB DTCM arena reserved for it.**
+    `[env:teensy41-optical]` `build_unflags` removes
+    `-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free`
+    (`platformio.ini:197`), and the shim's routing depends entirely on those flags.
+    Confirmed in the linked image: **zero `__wrap_malloc` symbols**, plain `malloc`
+    present. So the decoder handle, its scratch and the whole dcadec `ta` tree come
+    from the newlib OCRAM heap, and only the ≈5.2 kB `AiusPipeline` instance is
+    arena-allocated. **About 126 KB of the scarcest bank is reserved and never
+    touched** — 40 % of DTCM, on a bank whose free-for-locals zone is 25,376 bytes.
+    No plan records a rationale for that `build_unflags` line, and it contradicts
+    [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §Target memory strategy,
+    which says deterministic DTCM access "is the whole point for the decode/DSP
+    arena". **Do not simply delete the arena or restore the flags** — establish
+    first whether the unflag was deliberate (a wrap that misbehaved on target would
+    be a reason) and whether the decoder is latency-sensitive to heap placement.
+    Either outcome is worth having: reclaiming it would roughly sextuple the free
+    DTCM zone, and restoring it would give the decoder the determinism it was
+    designed for.
+15. **`features.matrix` and `features.output_eq` are inert.** Both are parsed,
+    stored, round-tripped through `GET`/`PUT /api/dsp/config` and serialised into
+    status JSON, and `apply_config()` never reads either — it reads only
+    `input_eq`, `limiter` and `meters`. The contract promises all five flags can
+    independently bypass their stage. Output-EQ bypass works by accident when the
+    section array is empty; matrix bypass has no mechanism at all.
+16. **The default config makes the input stage a no-op that still costs.**
+    `features.input_eq: true` with every channel at `gain_db: 0` and `eq: []`
+    leaves `g_input_stage_active` true, so all six planes are copied to scratch and
+    run through `run_cascade(1.0, NULL, 0, …)` — an int-to-double convert and an
+    `aius_quantize` per sample for an exact identity, **3,072 quantizes per block**.
+    There is no per-channel identity skip.
+17. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every
