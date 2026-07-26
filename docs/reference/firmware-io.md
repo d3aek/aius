@@ -52,6 +52,17 @@ DTCM layout:
 the revision above. It is `_estack - _ebss`, and it is the entire stack — main
 loop and audio ISR both (`README.md:201`).
 
+**That 9,280 is a snapshot and is now the tightest of four historical values — do not
+plan against it.** `-DFNET_CFG_TLS=0` alone returned 19,136 bytes of DTCM, and the
+figure has since gone 9,280 → 17,152 → 25,376 → **43,328**. Every number in the table
+above was correct when measured and none of them is current. The reasoning in this
+document stands, and stands more comfortably, because every constraint it argues from
+has loosened rather than tightened; only the arithmetic is stale. **Take the live
+figure from `tools/memory/mem_report.py` against the linked ELF** — the one source
+that cannot drift — and see
+[`signal-path.md`](signal-path.md) for the progression and why a bare number in prose
+is not usable evidence here.
+
 **This figure moves with every commit that adds a static**, so treat the number
 here as the order of magnitude and `scripts/build.sh teensy41-optical` as the
 authority. It has already moved once since the table above: `c20a03c8e` added
