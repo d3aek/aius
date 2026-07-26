@@ -68,6 +68,33 @@ typedef enum {
  * ran fnet_netif_init() arms the wait at all; the generation that skips
  * initialisation -- the one that binds in 19 ms today -- releases STACK_STARTED
  * in the same call it always did, with no extra underlying call.
+ *
+ * What the gate does NOT buy, measured 2026-07-26 over twenty-one software
+ * resets with the whole pre-DHCP window instrumented (net_diag now serves
+ * stack_started_ms, rx_ready_source and rx_ready_ms so this is checkable from
+ * GET /api/status): the gate releases on COUNTER every time, 0.9-2.1 s after
+ * link-up, and **DHCP still costs a flat four seconds after it.** The window
+ * from dhcp_start_ms to the lease was 4,003-4,008 ms on every one of those
+ * boots. Received frames are evidence the MAC clocks traffic in; they are not
+ * evidence the segment carries what the board sends, and that is the thing the
+ * DISCOVER needs.
+ *
+ * Four seconds is exactly FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS, the SELECTING
+ * wait for an OFFER, so the natural reading is "the first DISCOVER is lost and
+ * the retransmission is answered" -- and shortening the wait would then fix it.
+ * It does not. Setting it to 1,000 ms through FNET's own public
+ * fnet_dhcp_cln_set_response_timeout() (no vendor patch: the descriptor exists
+ * once Ethernet.dhcpStart() has registered the client) was tried on the board.
+ * The board sent three or four DISCOVERs instead of one -- tx_frames 12 against
+ * 6 -- and the lease still arrived 4,006-4,007 ms after the first on eleven of
+ * thirteen boots. It was reverted. The four seconds are the segment not
+ * answering, and asking more often does not move them.
+ *
+ * The consequence for the budgets: AIUS_NET_DHCP_DEADLINE_MS of 5,000 leaves
+ * under a second of margin over a figure the board does not control, which is
+ * why a boot occasionally reaches it, tears the stack down, backs off and
+ * rebinds in 3 ms on generation 2 against the interface generation 1 left
+ * initialised.
  */
 #define AIUS_NETWORK_TEENSY_RX_READY_DEADLINE_MS 5000u
 

@@ -1528,10 +1528,20 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
 	if (diag == nullptr)
 		return http_json_append(output, capacity, length, ",\"%s\":null", key);
 	if (!http_json_append(output, capacity, length,
-	                      ",\"%s\":{\"generation\":%lu,\"netif_init\":%u,"
+	                      ",\"%s\":{\"generation\":%lu,"
+	                      "\"stack_started_ms\":%lu,\"netif_init\":%u,"
 	                      "\"stack_start_blocking_ms\":%u,"
 	                      "\"link_at_stack_start\":%u,\"link_up_source\":%u,",
 	                      key, (unsigned long)diag->generation,
+	                      /* The record's one absolute value, and the only key
+	                       * that anchors every *_ms offset below to board
+	                       * uptime. Without it a reader can time the phases of
+	                       * a generation relative to each other but cannot say
+	                       * when the generation itself began -- which is what
+	                       * separates "the stack came up slowly" from "the
+	                       * stack started late", and those have different
+	                       * causes and different fixes. */
+	                      (unsigned long)diag->stack_started_ms_absolute,
 	                      (unsigned)diag->netif_init,
 	                      (unsigned)diag->stack_start_blocking_ms,
 	                      (unsigned)diag->link_at_stack_start,
@@ -1551,6 +1561,21 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
 	if (!(diag->link_callback_up_seen
 		      ? http_json_append(output, capacity, length, "%lu",
 		                         (unsigned long)diag->link_callback_up_ms)
+		      : http_json_append(output, capacity, length, "null")))
+		return false;
+	/* What released the receive-readiness gate, and when. This is the field
+	 * that says whether the gate did its job -- COUNTER means a frame arrived
+	 * and DHCP started on evidence, DEADLINE means nothing arrived inside the
+	 * bound and DHCP started anyway -- and without it the gap between link-up
+	 * and dhcp_start_ms is unattributed. */
+	if (!http_json_append(output, capacity, length,
+	                      ",\"rx_ready_source\":%u,\"rx_ready_ms\":",
+	                      (unsigned)diag->rx_ready_source))
+		return false;
+	if (!((diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_COUNTER ||
+	       diag->rx_ready_source == AIUS_NETWORK_TEENSY_RX_READY_DEADLINE)
+		      ? http_json_append(output, capacity, length, "%lu",
+		                         (unsigned long)diag->rx_ready_ms)
 		      : http_json_append(output, capacity, length, "null")))
 		return false;
 	if (!http_json_append(output, capacity, length, ",\"dhcp_start_ms\":"))
@@ -3665,8 +3690,21 @@ FLASHMEM void setup(void)
 	g_audio_processor.begin_pipeline();
 
 	/* No parser is initialized here: the runtime's USB service owns its own
-	 * AiusUsbRuntime, and the legacy one died with service_usb_control(). */
-	Serial.begin(115200);
+	 * AiusUsbRuntime, and the legacy one died with service_usb_control().
+	 *
+	 * There is no Serial.begin() either, and its absence is load-bearing.
+	 * usb_serial_class::begin() ignores the baud rate entirely on Teensy 4 --
+	 * the CDC endpoint is already up from the core's usb_init() -- and its whole
+	 * body is a wait for the host to assert DTR: up to 2,000 ms once enumerated,
+	 * 750 ms if the host has not begun enumeration (cores/teensy4/usb_serial.h).
+	 * That is a wait on something external in a construction-only setup(), which
+	 * §Normative recovery contract forbids, and it was costing 2,001 ms of every
+	 * boot before the network stack was even started, because nothing holds DTR
+	 * on this board. It was also the bring-up measurement's bimodality: with a
+	 * host program holding the port open the wait ends early, which is the 1.66 s
+	 * step between the two clusters. The CDC adapter needs none of it -- it reads
+	 * and writes Serial directly and uses the same DTR bool as its connected
+	 * predicate (aius_cdc_teensy.cpp serial_connected). */
 	derive_auth_token();
 	aius_replay_service_init(&g_replay_service);
 	/* Memory only, like every other construction here: the refill job's
@@ -3681,6 +3719,35 @@ FLASHMEM void setup(void)
 	const AiusRuntimeTeensyPlatformOps platform = platform_ops();
 	aius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, &cdc,
 	                              &platform, millis(), g_recovery_safe);
+	/* The retained boot facts are published HERE, before the first epoch, and
+	 * not only from checkpoint 0.
+	 *
+	 * They are setup-time constants: capture_retained_boot_state() above has
+	 * already read SRC_SRSR once and decided this boot's generation, early-reset
+	 * count and mode, and nothing changes any of them afterwards. Publishing
+	 * them from a per-epoch checkpoint made them a function of which checkpoints
+	 * run -- and recovery-safe mode runs only 1 and 2 (aius_runtime.c), so
+	 * checkpoint 0 never ran there and boot_generation, reset_source and
+	 * watchdog_early_resets all read 0 on every status channel at exactly the
+	 * moment the recovery boundary engaged and a reader needs them most.
+	 *
+	 * Two alternatives were rejected. Making reset capture unconditional, or
+	 * adding checkpoint 0 to the recovery-safe set, buys the same three fields
+	 * at the cost of the property that mode exists for: recovery-safe must run
+	 * almost nothing, and each added checkpoint is a platform callback plus a
+	 * ledger record-and-commit per epoch. Having the status serializers read
+	 * g_boot_ledger directly would leave runtime->boot_status as a second,
+	 * sometimes-stale copy of the same three values and put the retained facts
+	 * on a different path per channel.
+	 *
+	 * The platform callback is reused rather than reimplemented so there is
+	 * exactly one expression of what the three fields are; checkpoint 0 keeps
+	 * republishing the identical values in normal mode, which costs nothing and
+	 * keeps it an injectable checkpoint with a budget the scheduler checks. */
+	(void)platform_reset_capture(
+		nullptr,
+		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_RESET_CAPTURE),
+		millis(), &g_runtime.boot_status);
 	g_boot_healthy_at_ms = millis() + AIUS_BOOT_HEALTHY_MS;
 }
 

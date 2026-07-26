@@ -67,10 +67,10 @@ class FakeLink:
     def sleep(self, seconds):
         self.clock += max(0.0, seconds)
 
-    def http_status(self):
+    def http_status(self, timeout=None):
         raise SMOKE.LinkError("no HTTP")
 
-    def udp_status(self):
+    def udp_status(self, retries=3, timeout=None):
         raise SMOKE.LinkError("no UDP")
 
     def usb_present(self):
@@ -79,7 +79,7 @@ class FakeLink:
     def usb_id(self):
         raise SMOKE.LinkError("no USB")
 
-    def http_json(self, method, path, body=None, auth=False):
+    def http_json(self, method, path, body=None, auth=False, timeout=None):
         raise SMOKE.LinkError("no HTTP for %s %s" % (method, path))
 
     def http_bytes(self, path):
@@ -115,12 +115,12 @@ class RebootLink(FakeLink):
                       ip="192.0.2.45" if self.clock >= self.ready_at["dhcp"]
                       else "0.0.0.0")
 
-    def http_status(self):
+    def http_status(self, timeout=None):
         if self.clock < self.ready_at["http"]:
             raise SMOKE.LinkError("no HTTP")
         return self._status()
 
-    def udp_status(self):
+    def udp_status(self, retries=3, timeout=None):
         if self.clock < self.ready_at["udp"]:
             raise SMOKE.LinkError("no UDP")
         return self._status()
@@ -144,6 +144,73 @@ class RebootLink(FakeLink):
         return {"status": 200, "body": {"ok": True, "rebooting": True}}
 
 
+class BlockingRebootLink(RebootLink):
+    """A reboot fixture whose transport reads cost wall time, like the real ones.
+
+    The plain RebootLink advances the virtual clock only on sleep(), so a read
+    that fails is free and the CDC port can be sampled arbitrarily often for
+    nothing. On the board a failed http_status() costs one timeout and a failed
+    udp_status() costs one per retry, and that is what let the ~1.5 s CDC
+    enumeration gap fall between two presence samples -- every B6 reboot cycle
+    reported `usb_basis=ack` and charged the board for host re-enumeration.
+
+    This fixture charges each failed read its timeout and models the port
+    staying enumerated for `usb_detach` after the reboot acknowledgement, which
+    together are the two facts the defect needed.
+    """
+
+    def __init__(self, delays, usb_detach=0.3, timeout=1.0, udp_retries=3,
+                 usb_wait=3.0, **kwargs):
+        super().__init__(delays, **kwargs)
+        self.usb_detach = usb_detach
+        self.timeout = timeout
+        self.udp_retries = udp_retries
+        # DeviceLink._exchange() waits timeout + USB_ID_DEADLINE_S for the
+        # framed answer, returning the moment it arrives.
+        self.usb_wait = usb_wait
+        self.detach_at = None
+
+    def reboot(self):
+        result = super().reboot()
+        self.detach_at = self.clock + self.usb_detach
+        return result
+
+    def http_status(self, timeout=None):
+        if self.clock < self.ready_at["http"]:
+            self.clock += self.timeout
+            raise SMOKE.LinkError("no HTTP")
+        return self._status()
+
+    def udp_status(self, retries=None, timeout=None):
+        attempts = self.udp_retries if retries is None else retries
+        if self.clock < self.ready_at["udp"]:
+            self.clock += self.timeout * attempts
+            raise SMOKE.LinkError("no UDP")
+        return self._status()
+
+    def usb_present(self):
+        if self.detach_at is None or self.clock < self.detach_at:
+            return True
+        return self.clock >= self.ready_at["usb_enum"]
+
+    def usb_id(self):
+        """Block until the board answers, the port drops, or the bound expires."""
+        if not self.usb_present():
+            raise SMOKE.LinkError("no USB port")
+        answer_at = self.ready_at["usb_id"]
+        drop_at = (self.detach_at if self.detach_at is not None
+                   and self.clock < self.detach_at else None)
+        expiry = self.clock + self.usb_wait
+        if drop_at is not None and drop_at <= min(answer_at, expiry):
+            self.clock = drop_at
+            raise SMOKE.LinkError("USB port went away mid-exchange")
+        if answer_at <= expiry:
+            self.clock = max(self.clock, answer_at)
+            return self._status()
+        self.clock = expiry
+        raise SMOKE.LinkError("no USB answer")
+
+
 class StallLink(FakeLink):
     """A fault image that watchdog-resets every `period` seconds."""
 
@@ -156,12 +223,48 @@ class StallLink(FakeLink):
         self.recovery_safe = recovery_safe
         self.generation = generation
 
-    def http_status(self):
+    def http_status(self, timeout=None):
         generation = self.generation + int(self.clock // self.period)
         return status(generation, last_checkpoint=self.checkpoint,
                       reset_source=self.reset_source,
                       recovery_safe=self.recovery_safe,
                       watchdog_early_resets=1)
+
+
+class SilentThenRecoverySafeLink(FakeLink):
+    """A fault image as one actually behaves: unreadable, then recovery-safe.
+
+    Nothing answers for `silent_for` -- the board is resetting, and a stalled
+    epoch serves USB at most once per boot and never reaches the HTTP or UDP
+    checkpoints -- and then USB answers a board that has latched recovery-safe
+    and stopped resetting, so the generation never advances again.
+    """
+
+    def __init__(self, silent_for, checkpoint, recovery_safe=True,
+                 reset_source=WATCHDOG_RESET, early=2, generation=70):
+        super().__init__()
+        self.silent_for = silent_for
+        self.checkpoint = checkpoint
+        self.recovery_safe = recovery_safe
+        self.reset_source = reset_source
+        self.early = early
+        self.generation = generation
+
+    def _visible(self):
+        return self.clock >= self.silent_for
+
+    def usb_id(self):
+        if not self._visible():
+            raise SMOKE.LinkError("no USB answer")
+        # Recovery-safe runs checkpoints 1, 2 and EPOCH_COMPLETE only, so the
+        # live last_checkpoint can never be the stalled one.
+        return status(self.generation, last_checkpoint=9,
+                      reset_source=self.reset_source,
+                      watchdog_early_resets=self.early,
+                      recovery_safe=self.recovery_safe)
+
+    def usb_present(self):
+        return True
 
 
 class SoakLink(FakeLink):
@@ -176,7 +279,7 @@ class SoakLink(FakeLink):
         self.drift_after = drift_after
         self.samples = 0
 
-    def http_status(self):
+    def http_status(self, timeout=None):
         self.samples += 1
         if self.outage_after is not None and self.samples > self.outage_after:
             raise SMOKE.LinkError("no HTTP")
@@ -185,7 +288,7 @@ class SoakLink(FakeLink):
             body.update(self.drift)
         return SMOKE.normalize_recovery(body)
 
-    def http_json(self, method, path, body=None, auth=False):
+    def http_json(self, method, path, body=None, auth=False, timeout=None):
         if path.startswith("/api/events"):
             return {"status": 200, "body": {"next": self.samples}}
         raise SMOKE.LinkError("no HTTP for %s %s" % (method, path))
@@ -222,10 +325,10 @@ class DspLink(FakeLink):
         self.editor_body = editor_body
         self.status_body = status(30)
 
-    def http_status(self):
+    def http_status(self, timeout=None):
         return self.status_body
 
-    def http_json(self, method, path, body=None, auth=False):
+    def http_json(self, method, path, body=None, auth=False, timeout=None):
         if method == "GET" and path == "/api/dsp/config":
             return {"status": 200, "body": dict(self.model)}
         if method == "GET" and path == "/api/meters":
@@ -376,6 +479,37 @@ class RebootGateTests(unittest.TestCase):
         self.assertTrue(any("usb budget from enumeration" in line
                             for line in result.observations))
 
+    def test_usb_budget_starts_at_re_enumeration_when_reads_block(self):
+        """The B6 measurement defect: the enumeration gap fell between samples.
+
+        The port is enumerated for 0.3 s after the reboot ack, absent until
+        1.8 s, and every read while the board is down costs a full timeout. The
+        budget must therefore run from ~1.8 s (re-enumeration), not from the
+        acknowledgement -- and `AIUS ID` answering at 2.4 s is 0.6 s of board
+        time, inside the 2 s deadline, not 2.4 s of mostly-host time outside it.
+        """
+        link = BlockingRebootLink(
+            {"dhcp": 5.0, "udp": 5.0, "http": 5.2, "usb_enum": 1.8, "usb_id": 2.4})
+        baseline = link.generation
+        link.reboot()
+        latencies, basis = SMOKE.observe_ready(
+            link, options(serial="/dev/ttyACM0"), link.now(), baseline, True)
+        self.assertEqual(basis, "enumeration")
+        self.assertIsNotNone(latencies["usb"])
+        self.assertLess(latencies["usb"], SMOKE.USB_ID_DEADLINE_S)
+
+    def test_usb_budget_stays_on_the_ack_when_the_port_never_dropped(self):
+        """No absence observed is not the same evidence, and must not claim it."""
+        link = BlockingRebootLink(
+            {"dhcp": 2.0, "udp": 2.0, "http": 2.0, "usb_enum": 0.0, "usb_id": 1.0},
+            usb_detach=99.0)
+        baseline = link.generation
+        link.reboot()
+        latencies, basis = SMOKE.observe_ready(
+            link, options(serial="/dev/ttyACM0"), link.now(), baseline, True)
+        self.assertEqual(basis, "ack")
+        self.assertIsNotNone(latencies["usb"])
+
     def test_fail_when_http_and_dhcp_miss_the_normative_deadline(self):
         link = RebootLink({"dhcp": 9.0, "udp": 9.0, "http": 9.5})
         result = SMOKE.gate_reboots(link, options(allow_mutation=True))
@@ -480,7 +614,53 @@ class StallGateTests(unittest.TestCase):
         result = SMOKE.gate_stalls(FakeLink(),
                                    options(allow_mutation=True, checkpoint=4))
         self.assertEqual(result.outcome, SMOKE.UNRESOLVED)
-        self.assertIn("unreachable", result.detail)
+        self.assertIn("no channel answered", result.detail)
+
+    def test_pass_on_the_recovery_safe_latch_when_no_boot_is_observable(self):
+        """The shape every real fault image has: silent, then recovery-safe.
+
+        A stalled epoch serves USB at most once per boot and never reaches the
+        HTTP or UDP checkpoints, so nothing answers until two early watchdog
+        resets latch recovery-safe. The gate must accept that as evidence and
+        say which criteria it could not check.
+        """
+        link = SilentThenRecoverySafeLink(silent_for=18.0, checkpoint=6)
+        result = SMOKE.gate_stalls(link, options(allow_mutation=True, checkpoint=6,
+                                                 serial="/dev/ttyACM0",
+                                                 stall_horizon=45.0))
+        self.assertEqual(result.outcome, SMOKE.PASS)
+        self.assertIn("latched recovery-safe", result.detail)
+        joined = " ".join(result.observations)
+        self.assertIn("not checked on this path", joined)
+        self.assertIn("watchdog_early_resets=2", joined)
+
+    def test_fail_when_the_only_answer_is_a_board_that_never_reset(self):
+        """The other reading of one boot and no generation change."""
+        link = SilentThenRecoverySafeLink(silent_for=0.0, checkpoint=6,
+                                          recovery_safe=False,
+                                          reset_source=SOFTWARE_RESET, early=0)
+        result = SMOKE.gate_stalls(link, options(allow_mutation=True, checkpoint=6,
+                                                 serial="/dev/ttyACM0",
+                                                 stall_horizon=20.0))
+        self.assertEqual(result.outcome, SMOKE.FAIL)
+        self.assertIn("not in recovery-safe mode", result.detail)
+
+    def test_fail_when_recovery_safe_reports_a_zeroed_retained_ledger(self):
+        """Plan defect 17a: the two states this gate must tell apart.
+
+        A recovery-safe board whose boot_generation, reset_source and
+        watchdog_early_resets all read 0 is indistinguishable from a correctly
+        latched one unless the gate rejects it -- which is the whole reason the
+        retained facts are published before the first epoch rather than from
+        checkpoint 0.
+        """
+        link = SilentThenRecoverySafeLink(silent_for=12.0, checkpoint=6,
+                                          reset_source=0, early=0, generation=0)
+        result = SMOKE.gate_stalls(link, options(allow_mutation=True, checkpoint=6,
+                                                 serial="/dev/ttyACM0",
+                                                 stall_horizon=45.0))
+        self.assertEqual(result.outcome, SMOKE.FAIL)
+        self.assertIn("expected a watchdog reset", " ".join(result.observations))
 
 
 class SoakGateTests(unittest.TestCase):

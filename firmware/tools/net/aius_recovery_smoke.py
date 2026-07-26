@@ -88,6 +88,11 @@ HTTP_DEADLINE_S = 8.0
 UDP_DEADLINE_S = 8.0
 STALL_RESET_MIN_S = 8.0
 STALL_RESET_MAX_S = 10.0
+# How often observe_ready() samples the CDC port while waiting. A presence
+# sample is one path stat, so the cost is negligible next to the transport
+# reads it sits between; the value only has to be well under the ~1.5 s the
+# host takes to re-enumerate the port after a reset.
+USB_SAMPLE_INTERVAL_S = 0.05
 INJECTABLE_CHECKPOINTS = tuple(range(0, 9))
 CHECKPOINT_NAMES = ("RESET_CAPTURE", "USB_RX", "USB_TX", "METRICS", "NETWORK",
                     "HTTP", "UDP", "REPLAY", "SD", "EPOCH_COMPLETE")
@@ -150,6 +155,14 @@ class SmokeOptions:
     soak_interval: float = 1.0
     soak_tolerated_outages: int = 0
     poll_interval: float = 0.25
+    # Transport timeout used only by observe_ready()'s polls. Short because
+    # every failed poll's timeout is quantisation on the latencies the reboot
+    # gate reports, and the deadlines it reports them against start at 2 s.
+    ready_probe_timeout: float = 0.3
+    # Cap on the CDC re-enumeration watch at the start of observe_ready().
+    # Above the ~1.5 s the host takes and well below the earliest possible
+    # DHCP/HTTP/UDP answer, so the watch never hides a transport becoming ready.
+    usb_watch_limit: float = 4.0
     ready_limit: float = 20.0
     stall_horizon: float = 45.0
     reset_margin: float = 2.0
@@ -292,12 +305,13 @@ class DeviceLink:
     def sleep(self, seconds):
         time.sleep(max(0.0, seconds))
 
-    def http_json(self, method, path, body=None, auth=False):
+    def http_json(self, method, path, body=None, auth=False, timeout=None):
         if auth:
             return self._http_authenticated(method, path, body)
         try:
             return http_runner.request(self.http_target, method, path, body,
-                                       timeout=self.timeout)
+                                       timeout=self.timeout if timeout is None
+                                       else timeout)
         except (OSError, ValueError, http.client.HTTPException) as error:
             raise LinkError("%s %s: %s" % (method, path, error)) from error
 
@@ -339,16 +353,22 @@ class DeviceLink:
         except (OSError, ValueError, http.client.HTTPException) as error:
             raise LinkError("GET %s: %s" % (path, error)) from error
 
-    def http_status(self):
-        result = self.http_json("GET", "/api/status")
+    def http_status(self, timeout=None):
+        result = self.http_json("GET", "/api/status", timeout=timeout)
         if result["status"] != 200 or not isinstance(result["body"], dict):
             raise LinkError("GET /api/status answered %s" % result["status"])
         return normalize_recovery(result["body"])
 
-    def udp_status(self):
+    def udp_status(self, retries=3, timeout=None):
+        # `retries` is a parameter because the default three attempts make one
+        # call cost three timeouts, and a caller that is also watching the CDC
+        # port cannot afford a single unobserved 3 s window -- see
+        # observe_ready(). A plain status read still gets the retries.
         try:
             response, _address = udp_runner.request(
-                self.udp_target, udp_runner.CMD_GET_STATUS, timeout=self.timeout)
+                self.udp_target, udp_runner.CMD_GET_STATUS,
+                timeout=self.timeout if timeout is None else timeout,
+                retries=retries)
             return normalize_recovery(udp_runner.parse_status(response["payload"]))
         except (OSError, TimeoutError, ValueError) as error:
             raise LinkError("UDP status: %s" % error) from error
@@ -443,18 +463,105 @@ def observe_ready(link, options, started, baseline_generation, want_usb):
     A channel counts only once its status reports a boot generation past the
     baseline, so the outgoing boot answering one last request cannot be
     mistaken for the new one becoming ready.
+
+    The USB budget is the normative one -- "after USB enumeration, `AIUS ID`
+    must respond within 2 s" (§Runtime order and budgets) -- so the port has to
+    be *observed absent* for the board to be charged from re-enumeration rather
+    than from the reboot acknowledgement. Sampling it once per loop iteration
+    could not do that: an iteration spent up to 1 s in http_status() and up to
+    3 s in udp_status() (1 s x 3 retries) while the board was down, so the
+    ~1.5 s enumeration gap fell entirely between two samples and every cycle
+    reported `usb_basis=ack`, charging the board for host CDC re-enumeration it
+    did not cause.
+
+    The fix has three parts.
+
+    The port is watched, and nothing else, until it has dropped and come back --
+    bounded by `options.usb_watch_limit`. Nothing is lost by not probing the
+    transports meanwhile: the board's CDC re-enumerates around 1.5 s after the
+    reset and it cannot serve DHCP, HTTP or UDP for several seconds after that,
+    so the watch ends long before the first transport answer. This is what makes
+    re-enumeration observable to USB_SAMPLE_INTERVAL_S instead of to whatever a
+    blocking read left over.
+
+    The basis is then *derived at the end* rather than latched on the first
+    present sample. Latching would be wrong in the other direction now that the
+    first sample lands at t=0: the port is still enumerated for the few hundred
+    milliseconds between the reboot acknowledgement and the reset, so the first
+    sample sees it present and would conclude "it never went away" before it had
+    a chance to. Only a present-after-absent observation establishes
+    re-enumeration, and nothing else can.
+
+    Finally the transport polls use `options.ready_probe_timeout` rather than
+    `options.timeout`, and one UDP attempt rather than three. These reads all
+    fail while the board is down, so their timeouts are pure quantisation on
+    every latency this function reports: at the 1 s link timeout an iteration
+    cost 4 s and the four channels came back rounded to the same iteration
+    boundary. The board is being timed against a 2 s deadline; the instrument
+    cannot have 4 s of granularity.
+
+    A note on `--serial`: pass the stable
+    /dev/serial/by-id/usb-Teensyduino_USB_Serial_*-if00 path, not /dev/ttyACMn.
+    Linux hands the re-enumerated port the next free index, so a board that
+    comes back as ttyACM1 leaves a --serial of ttyACM0 permanently absent -- the
+    ID never answers, and `usb never became ready` is reported against the board
+    for a host naming artifact.
     """
     latencies = {"dhcp": None, "http": None, "udp": None}
     if want_usb:
         latencies["usb"] = None
-    usb_absent_seen = False
-    usb_enumerated_at = None
-    usb_basis = "ack"
+    usb = {"absent_seen": False, "reenumerated_at": None, "answered_at": None}
+    probe_timeout = options.ready_probe_timeout
+
+    def sample_usb():
+        """One presence observation. A path stat, so it is called often."""
+        if not want_usb or usb["reenumerated_at"] is not None:
+            return
+        if not link.usb_present():
+            usb["absent_seen"] = True
+        elif usb["absent_seen"]:
+            usb["reenumerated_at"] = link.now()
+
+    def wait(duration):
+        """Sleep, sampling the CDC port at USB_SAMPLE_INTERVAL_S while waiting."""
+        if not want_usb or usb["answered_at"] is not None:
+            link.sleep(duration)
+            return
+        remaining = duration
+        while remaining > 0.0:
+            slice_s = min(USB_SAMPLE_INTERVAL_S, remaining)
+            link.sleep(slice_s)
+            remaining -= slice_s
+            sample_usb()
+
+    # The re-enumeration watch. Nothing else runs until the port has dropped
+    # and returned, or the cap expires.
+    if want_usb:
+        watch_limit = started + options.usb_watch_limit
+        while link.now() < watch_limit and usb["reenumerated_at"] is None:
+            sample_usb()
+            if usb["reenumerated_at"] is None:
+                link.sleep(USB_SAMPLE_INTERVAL_S)
+
     limit = started + options.ready_limit
     while link.now() < limit:
+        sample_usb()
+        # The USB attempt leads the iteration. _exchange() blocks until the
+        # framed answer arrives or its own bound expires, so an attempt already
+        # in flight returns the instant the board answers -- it is the finest
+        # instrument here, and behind the transport reads it was quantised to
+        # their timeouts.
+        if want_usb and usb["answered_at"] is None and link.usb_present():
+            try:
+                status = link.usb_id()
+                if _is_new_boot(status, baseline_generation):
+                    usb["answered_at"] = link.now()
+            except LinkError:
+                pass
+            sample_usb()
         if latencies["http"] is None or latencies["dhcp"] is None:
             try:
-                status = link.http_status()
+                status = link.http_status(timeout=probe_timeout)
                 if _is_new_boot(status, baseline_generation):
                     if latencies["http"] is None:
                         latencies["http"] = link.now() - started
@@ -462,9 +569,10 @@ def observe_ready(link, options, started, baseline_generation, want_usb):
                         latencies["dhcp"] = link.now() - started
             except LinkError:
                 pass
+        sample_usb()
         if latencies["udp"] is None or latencies["dhcp"] is None:
             try:
-                status = link.udp_status()
+                status = link.udp_status(retries=1, timeout=probe_timeout)
                 if _is_new_boot(status, baseline_generation):
                     if latencies["udp"] is None:
                         latencies["udp"] = link.now() - started
@@ -472,23 +580,20 @@ def observe_ready(link, options, started, baseline_generation, want_usb):
                         latencies["dhcp"] = link.now() - started
             except LinkError:
                 pass
-        if want_usb and latencies["usb"] is None:
-            present = link.usb_present()
-            if not present:
-                usb_absent_seen = True
-            elif usb_enumerated_at is None:
-                usb_enumerated_at = link.now() if usb_absent_seen else started
-                usb_basis = "enumeration" if usb_absent_seen else "ack"
-            if usb_enumerated_at is not None:
-                try:
-                    status = link.usb_id()
-                    if _is_new_boot(status, baseline_generation):
-                        latencies["usb"] = link.now() - usb_enumerated_at
-                except LinkError:
-                    pass
-        if all(value is not None for value in latencies.values()):
+        sample_usb()
+        transports_ready = all(latencies[channel] is not None
+                               for channel in ("dhcp", "http", "udp"))
+        if transports_ready and (not want_usb or usb["answered_at"] is not None):
             break
-        link.sleep(options.poll_interval)
+        wait(options.poll_interval)
+
+    # The origin, and therefore the basis, is only decidable once the whole
+    # observation is over -- see the docstring.
+    usb_basis = "enumeration" if usb["reenumerated_at"] is not None else "ack"
+    if want_usb:
+        origin = usb["reenumerated_at"] if usb_basis == "enumeration" else started
+        latencies["usb"] = (None if usb["answered_at"] is None
+                            else usb["answered_at"] - origin)
     return latencies, usb_basis
 
 
@@ -592,6 +697,33 @@ def gate_stalls(link, options):
     checkpoint (src/aius_fault_teensy.cpp), so the runner does not induce
     anything itself: it observes the reset the stall causes. One checkpoint per
     invocation, because each needs its own image and its own restore.
+
+    **The board is not readable while it is resetting, and that is structural,
+    not a timing problem.** aius_fault_checkpoint() spins forever, and it is
+    called from the checkpoint callback *before* the checkpoint's service runs
+    -- so a fault image serves USB at most once per boot (the single USB_RX /
+    USB_TX pass of its one and only epoch) and never at all when the stall is at
+    checkpoint 0, 1 or 2. HTTP and UDP need checkpoints 4-6, which no fault
+    image reaches. So no channel answers between the induced resets; the board
+    becomes readable only once two consecutive early watchdog resets latch
+    recovery-safe mode, which runs checkpoints 1 and 2 only and therefore never
+    reaches the stall again.
+
+    This gate therefore has two evidence paths, and says which one it used:
+
+    - **cycle** -- two or more boots were actually observed. The full criteria
+      apply: the reset interval sits in the 8-10 s watchdog window, the reported
+      checkpoint matches, the reset source is the watchdog.
+    - **recovery-safe latch** -- nothing answered until the board came back in
+      recovery-safe mode. What that proves is still the substance of the plan's
+      step 3: the stall reset the board, it did so at least twice (early
+      watchdog resets reached the threshold), the reset source was the watchdog,
+      and service returned without intervention. What it cannot prove is the
+      8-10 s interval or the reported checkpoint, and both are reported as
+      unchecked rather than quietly passed. The stalled checkpoint is not
+      recoverable after the fact at all: AiusRecoveryStatus.last_checkpoint is
+      the live runtime's, and the retained ledger's copy is overwritten by the
+      recovered boot's own first checkpoint.
     """
     name = "stalls"
     checkpoint = options.checkpoint
@@ -609,17 +741,34 @@ def gate_stalls(link, options):
                           "read-only run: a fault image was not flashed",
                           ["pass --allow-mutation once the fault image is on the board"])
     want_usb = bool(options.serial)
-    try:
-        channel, baseline = read_any_status(link, want_usb)
-    except LinkError as error:
-        return GateResult(name, UNRESOLVED,
-                          "fault image unreachable: nothing was observed",
-                          [str(error)])
     label = "%d %s" % (checkpoint, CHECKPOINT_NAMES[checkpoint])
-    observations = ["checkpoint %s, baseline via %s: boot_generation=%s" %
-                    (label, channel, baseline.get("boot_generation"))]
+    observations = []
+    # The first read is retried across the whole horizon rather than taken once:
+    # a fault image is unreadable for as long as it is resetting, so an
+    # immediate failure means "the stall is working", not "nothing happened".
+    started = link.now()
+    horizon = started + options.stall_horizon
+    baseline = None
+    channel = None
+    last_error = None
+    while link.now() < horizon:
+        try:
+            channel, baseline = read_any_status(link, want_usb)
+            break
+        except LinkError as error:
+            last_error = error
+            link.sleep(options.poll_interval)
+    if baseline is None:
+        return GateResult(name, UNRESOLVED,
+                          "checkpoint %s: no channel answered within %.0fs" %
+                          (label, options.stall_horizon),
+                          observations + [str(last_error)])
+    observations.append(
+        "checkpoint %s, first answer via %s at %.2fs: boot_generation=%s "
+        "recovery_safe=%s early=%s" %
+        (label, channel, link.now() - started, baseline.get("boot_generation"),
+         baseline.get("recovery_safe"), baseline.get("watchdog_early_resets")))
     boots = [(baseline.get("boot_generation"), link.now(), baseline)]
-    horizon = link.now() + options.stall_horizon
     while link.now() < horizon and len(boots) < 3:
         try:
             _channel, status = read_any_status(link, want_usb)
@@ -633,9 +782,8 @@ def gate_stalls(link, options):
                                 (generation, link.now() - boots[0][1]))
         link.sleep(options.poll_interval)
     if len(boots) < 2:
-        return GateResult(name, FAIL,
-                          "no reset within %.0fs at checkpoint %s" %
-                          (options.stall_horizon, label), observations)
+        return _stall_recovery_safe_result(name, label, baseline, observations,
+                                           options)
     failures = []
     if len(boots) >= 3:
         interval = boots[2][1] - boots[1][1]
@@ -674,6 +822,50 @@ def gate_stalls(link, options):
     return GateResult(name, PASS,
                       "checkpoint %s reset in %.2fs and returned to %s service"
                       % (label, interval, service), observations)
+
+
+def _stall_recovery_safe_result(name, label, status, observations, options):
+    """The evidence path for a fault image that was never readable mid-loop.
+
+    Only reachable when no second boot was observed. A board that answered once
+    and never advanced its generation has either latched recovery-safe -- which
+    takes two early watchdog resets and is what the recovery boundary exists to
+    do -- or it never reset at all, and those two are exactly what the retained
+    fields distinguish. Before they were published in recovery-safe mode they
+    all read 0 and the two were indistinguishable on the wire.
+    """
+    early = status.get("watchdog_early_resets")
+    kind = reset_kind(status.get("reset_source"))
+    observations = observations + [
+        "no second boot observed: the fault image is unreadable while it "
+        "resets (see gate_stalls)",
+        "retained state: boot_generation=%s reset_source=%s (%s) "
+        "watchdog_early_resets=%s recovery_safe=%s" %
+        (status.get("boot_generation"), status.get("reset_source"), kind,
+         early, status.get("recovery_safe")),
+        "not checked on this path: the 8-10 s reset interval, and the "
+        "stalled checkpoint (not retained past the recovered boot)"]
+    if not status.get("recovery_safe"):
+        return GateResult(name, FAIL,
+                          "checkpoint %s: no reset within %.0fs and the board "
+                          "is not in recovery-safe mode" %
+                          (label, options.stall_horizon), observations)
+    failures = []
+    if kind != "watchdog":
+        failures.append("reset source %s, expected a watchdog reset" % kind)
+    if not early or early < 2:
+        failures.append("watchdog_early_resets=%s, expected at least 2 -- "
+                        "recovery-safe mode cannot be reached with fewer" % early)
+    if not status.get("boot_generation"):
+        failures.append("boot_generation=%s: the retained ledger did not "
+                        "survive the induced resets" % status.get("boot_generation"))
+    if failures:
+        return GateResult(name, FAIL, "checkpoint %s: %s" % (label, failures[0]),
+                          observations + failures)
+    return GateResult(name, PASS,
+                      "checkpoint %s latched recovery-safe after %s early "
+                      "watchdog resets and returned to service without "
+                      "intervention" % (label, early), observations)
 
 
 def gate_soak(link, options):
@@ -1044,6 +1236,10 @@ def build_parser():
     parser.add_argument("--soak-interval", type=float, default=1.0)
     parser.add_argument("--soak-tolerated-outages", type=int, default=0)
     parser.add_argument("--poll-interval", type=float, default=0.25)
+    parser.add_argument("--ready-probe-timeout", type=float, default=0.3,
+                        help="transport timeout for the readiness polls only")
+    parser.add_argument("--usb-watch-limit", type=float, default=4.0,
+                        help="cap on the CDC re-enumeration watch after a reboot")
     parser.add_argument("--ready-limit", type=float, default=20.0)
     parser.add_argument("--stall-horizon", type=float, default=45.0)
     parser.add_argument("--reset-margin", type=float, default=2.0)
@@ -1072,7 +1268,10 @@ def options_from_args(args, parser):
         checkpoint=args.checkpoint, soak_duration=args.soak_duration,
         soak_interval=args.soak_interval,
         soak_tolerated_outages=args.soak_tolerated_outages,
-        poll_interval=args.poll_interval, ready_limit=args.ready_limit,
+        poll_interval=args.poll_interval,
+        ready_probe_timeout=args.ready_probe_timeout,
+        usb_watch_limit=args.usb_watch_limit,
+        ready_limit=args.ready_limit,
         stall_horizon=args.stall_horizon, reset_margin=args.reset_margin,
         timeout=args.timeout,
         evidence_dir=args.evidence_dir or
