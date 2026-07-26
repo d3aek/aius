@@ -287,7 +287,51 @@ are follow-up work, recorded here so they are not lost.
     make some surface report the *ratio* rather than each side's own belief; a
     device that cannot tell you its clock disagrees with its content will hide
     this again.
-12. **Five source comments still quote the pre-fix DTCM free figure** —
+12. **`POST /api/reboot` resets the board but never answers**, found by the first
+    run of the B6 reboots gate on 2026-07-26. Two consecutive attempts each timed
+    out client-side while `boot_generation` advanced 21 → 22 → 23, so the reset is
+    performed and the response is never delivered. **This blocks the B6 reboots
+    gate outright** — the runner cannot distinguish "reboot refused" from "reboot
+    performed but unacknowledged", and reports `UNRESOLVED: the first reboot could
+    not be requested`.
+    This plan's §Optical runtime claims `loop()` performs the reset "after the
+    epoch, so the HTTP response or UDP ack that asked for it has already been
+    written" — and *written* is the load-bearing word. It means written into the
+    transaction's buffer, not flushed onto the wire and acknowledged by the peer.
+    **This is the same defect class as the bootloader-entry race**: `Serial.write()`
+    returned "buffered" and the runtime treated it as "transmitted", and the fix
+    there was to wait on a genuine descriptor-retirement signal bounded at 500 ms.
+    The reboot path needs the equivalent — do not reset until the transaction has
+    actually flushed and closed, bounded so a wedged peer cannot prevent a
+    requested reset. Note the earlier "confirmed live" claim for this route was
+    based on observing `boot_generation` increment, which is exactly the evidence
+    that does *not* distinguish these two cases.
+
+    **The mechanism is now pinned exactly, and it is off by two epochs.** In epoch
+    N checkpoint 5, the dispatcher sets `g_reboot_requested` and returns the 200,
+    and the service calls `retain_application_response()` — the response is stored
+    as a pending event and **is not even formatted yet**; `format_response()` runs
+    inside `accept_application()`, which only executes when the *next* step
+    consumes the retained event. So formatting would happen in epoch N+1 and the
+    first ≤512-byte `WRITE` in epoch N+2. `loop()` calls `reset_application()` at
+    the end of epoch **N**. The comments at `aius_optical_app.cpp:1092`,
+    `optical_main.cpp:3746` and `firmware-io.md:741` all claim the reset happens
+    "after the response has been written"; all three are wrong, because the
+    transaction is a strict one-action-per-epoch machine and "after the epoch that
+    dispatched" is two epochs *before* the first response byte. **The fix is to
+    gate the reset on the transaction reaching a drained terminal state** —
+    `AIUS_HTTP_TX_IDLE`, for which `restart_idle()` is the natural signal — rather
+    than a fixed epoch delay, which would be fragile against `WOULD_BLOCK`
+    retries.
+
+    **Separately and worse: `POST /api/reboot` requires no authentication.** It
+    performs no `auth_matches` call and is in none of the auth-gated arms, so
+    **any host on the subnet can reset the board at will, including mid-upload.**
+    `POST /api/start`, `/api/stop` and `/api/clear` are equally open. That is a
+    security defect in its own right, not a consequence of the acknowledgement
+    bug, and it should be fixed in the same change since both touch the same
+    route.
+13. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every

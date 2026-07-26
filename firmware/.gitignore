@@ -1,2 +1,5 @@
 .build/
 .pio/
+# Per-run recovery-smoke summaries written by tools/net/aius_recovery_smoke.py.
+# Host-local evidence of a device session, not a checked-in artifact.
+test/evidence/
