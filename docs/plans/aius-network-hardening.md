@@ -5853,6 +5853,29 @@ assumption is a defect with a plan entry, not a footnote.
 regardless of firmware state, so a failed image is recoverable by hand. The fault
 images and recovery-safe mode exist for exactly this session.
 
+**And the button is not the only way, which matters for any image that hangs.**
+Setting the CDC line coding to **134 baud** reboots the board into HalfKay from the
+Teensy core's SOF interrupt (`cores/teensy4/usb.c:841`, `:383`) — **independently of
+the running sketch**, so it works on firmware that is wedged and answering nothing.
+That is the difference between it and `AIUS BOOTLOADER <id>`, which needs a live
+USB-control path.
+
+Proven repeatedly during the B6 run: gate 3's checkpoints 1 and 2 are structurally
+unrecoverable (`aius_fault_checkpoint()` runs *before* the checkpoint's service, and
+recovery-safe runs exactly those two), so a fault image there hangs with no control
+path at all. The 134-baud reboot restored it first try, both times, and **removed
+nine Program-button presses from a single gate-3 run**. Any tooling that has to
+recover a hung board should reach for this before asking an operator to press
+anything — which makes it the natural mechanism for **B7**, the button-free flash
+phase.
+
+One caveat, learned the hard way: address the port through
+`/dev/serial/by-id/usb-Teensyduino_USB_Serial_*-if00`, never `/dev/ttyACMn`. Linux
+hands a re-enumerated port the next free index, so a board that returns as
+`ttyACM1` leaves `ttyACM0` permanently absent — and a runner watching the old path
+reports "usb never became ready" against the board for what is purely a host naming
+artifact.
+
 ### Phase 14d — Firmware I/O reference
 
 ```yaml
