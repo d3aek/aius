@@ -17,13 +17,12 @@ with watchdog fallback would look like on this part, and whether the network
 surface is observable enough to make that safe. Investigated 2026-07-26 at the
 owner's request.
 
-**This document is incomplete in one specific and important way.** The transport,
-rollback-substrate, observability and security questions are answered below with
-citations. **The central feasibility question — whether the Teensy 4.1 can safely
-self-program its own FLASH — was not reached** and is stated as open in
-[§The unanswered question](#the-unanswered-question). No recommendation to build
-should be taken from this document until that is settled, because everything else
-is moot if it is not.
+**The feasibility question is answered: yes, with one gating unknown.** The part
+can self-program its own flash using routines Teensyduino already ships, and
+hardware A/B image selection genuinely exists on the i.MX RT1062 — but it is
+gated behind an irreversible OTP fuse whose state on a Teensy cannot be
+determined from anything available locally. See
+[§Self-flashing is possible](#self-flashing-is-possible).
 
 Companion to [`aius-network-hardening.md`](aius-network-hardening.md), whose
 §Deciding principle governs, and [`firmware-io.md`](../reference/firmware-io.md).
@@ -57,35 +56,145 @@ observations do weaken the original boundary slightly, and both are worth statin
   retained-OCRAM survival that latches the mode is explicitly not to be claimed
   until B6 confirms it. So half the stated recovery boundary is unvalidated.
 
-## The unanswered question
+## Self-flashing is possible
 
-**Can the Teensy 4.1 safely self-program its own FLASH, and is there any hardware
-boot-image selection?**
+**Teensyduino already ships a working FlexSPI erase/program driver for the boot
+flash**, and it is exported for exactly this kind of use. `cores/teensy4/eeprom.c`
+declares, above the comment *"To be called from LittleFS_Program, any other use at
+your own risk!"*:
 
-Not established. This is the question the whole design turns on, and it needs:
+```c
+void eepromemu_flash_write(void *addr, const void *data, uint32_t len);
+void eepromemu_flash_erase_sector(void *addr);       /* 0x20, 4096 B */
+void eepromemu_flash_erase_32K_block(void *addr);    /* 0x52 */
+void eepromemu_flash_erase_64K_block(void *addr);    /* 0xD8 */
+```
 
-- Whether `FlasherX`-style self-flashing (buffer an image in upper FLASH, then a
-  small resident routine copies it down and reboots) is sound here — what must be
-  resident, in which bank, and what happens on power loss mid-copy.
-- Which address the part boots from, and whether the FCB/IVT arrangement permits
-  pointing at either of two images. **If hardware boot-image selection exists it
-  changes everything below**, because the arbiter stops being the application.
-- How long a FLASH write or erase stalls the CPU, against a 2.67 ms audio block
-  and an 8 s watchdog.
+All four drive **FLEXSPI instance 1**, the boot flash — distinct from `FLEXSPI2`,
+which serves the QSPI expansion sockets. They unlock the LUT, overwrite sequence
+15, trigger via `FLEXSPI_IPCMD`, and poll. Cache maintenance is explicit and
+mandatory: `arm_dcache_delete()` before each operation, then
+`FLEXSPI_MCR0 |= SWRESET` to purge the FlexSPI AHB read FIFO. Both layers matter.
 
-**Until those are answered, assume A/B is not achievable and read the rest of this
-document as describing the transport and safety work that any upgrade mechanism
-needs regardless.**
+**No `FlasherX` is vendored and none is needed** — nothing in the tree references
+it, and the primitives it would wrap are already present.
 
-### Why the ESP32 comparison does not carry over
+### The Teensy 4 memory model makes this safe by default, and it inverts a project rule
 
-On ESP32 a second-stage bootloader arbitrates between OTA partitions, validates
-them and rolls back — **the arbiter sits below the application.** Teensy 4.1 has
-HalfKay, which has no A/B awareness, no validation and no ability to choose
-between images. So on this part **the running application would have to arbitrate
-its own replacement**, which is a materially harder problem than the ESP32
-precedent suggests. That asymmetry is the single most important thing to
-understand before costing this.
+**On Teensy 4, RAM execution is the default, not the opt-in.** The linker maps
+`*(.text*)` into `.text.itcm > ITCM AT> FLASH`, and `startup.c` copies it to ITCM
+at boot. So ordinary compiled code runs from ITCM at `0x00000000`, and `FLASHMEM`
+is the opt-in to *stay* in flash. That is why the EEPROM driver needs no special
+annotation to be safe: verified against the compiled object, `flash_wait`,
+`eepromemu_flash_write` and the three erase functions all land in plain `.text.*`
+and therefore in ITCM.
+
+**This inverts one of this firmware's own rules for the self-flash path.**
+`firmware/README.md` requires `FLASHMEM` on every cold definition, enforced by two
+post-link ITCM guards — correct for ITCM budget, and **exactly backwards for an
+erase/program routine**, because a `FLASHMEM` function on that path becomes
+unexecutable while the flash is mid-operation. A self-flash implementation must
+have its whole call graph — including `memcpy` and any CRC or verify helper —
+deliberately **not** `FLASHMEM`, and must verify that post-link. The existing
+guards will not catch this; they check the opposite direction.
+
+RM p.279 states the two obligations, and note 3 is the one that bites:
+
+> 3. The user application must ensure that there is no FLASH access from any
+>    masters (for example, Cortex-M7, USB, PXP) during the FLASH erase/program…
+> 4. The user application should disable the global interrupt during the FLASH
+>    erase/program if the code is executing on the NOR FLASH…
+
+The core discharges note 4 with `__disable_irq()`. **Note 3 is not discharged** —
+it says *no master*, not just the M7, so any DMA or ISR touching a `FLASHMEM`
+function, a `PROGMEM` string or a `const` array in `.text.progmem` during the
+operation is undefined behaviour.
+
+Two gotchas in the shipped driver, both load-bearing:
+
+- **`flash_wait()` unconditionally calls `__enable_irq()`.** There is no
+  PRIMASK save/restore, so calling any of these from an already-interrupts-disabled
+  context silently re-enables interrupts on return.
+- **No bounds checking whatsoever.** The address is masked to 24 bits and passed
+  straight through. Erasing sector 0 destroys the FCB.
+
+### Hardware A/B selection exists — behind an OTP fuse
+
+Three mechanisms, all documented:
+
+- **A fuse-defined secondary image offset.** RM p.212, Table 9-10:
+  `0x6E0[23:16]` `FLASH_SEC_IMAGE_OFFSET`, where offset = 256 KiB × fuse value,
+  plus `0x6E0[15:12]` for image size. Shipped value 0 for both.
+- **A warm-reset-persistent selector.** RM p.209, Table 9-8:
+  `PERSIST_SECONDARY_BOOT` at `SRC_GPR10[30]`, and the table **explicitly names
+  FlexSPI NOR** as a user. Teensyduino deliberately does not expose `SRC_GPR1`–
+  `SRC_GPR10`, commenting that they are ROM-owned.
+- **The supported entry point: the ROM `runBootloader` API.** RM p.287 gives the
+  worked example verbatim — `uint32_t arg = 0xeb000001; runBootloader(&arg);` to
+  select the redundant image. **Teensyduino already calls this exact API**
+  (`usb.c:252`) with `0xEB120000` for the serial downloader, so the mechanism is
+  proven live in the core; OTA would pass `0xEB000001` instead.
+
+**The catch: those are complementary, not alternatives.** `runBootloader`
+selects *image 1*, but *where image 1 lives* comes from the OTP fuse. **With the
+fuse at 0 the secondary offset is 0 — the same address as the primary.** So
+hardware A/B on this part requires blowing an irreversible fuse.
+
+**And a soft reset re-enters the ROM**, which is the good news: `SCB_AIRCR`
+asserts `SYSRESETREQ`, reported as `SRC_SRSR_LOCKUP_SYSRESETREQ`, and the core
+visibly cleans up after the ROM on every entry (`startup.c` undoes ROM PIT usage).
+The image is entered through `ENTRY(ImageVectorTable)` at `0x60001000`, which only
+the ROM parses. So an image-selection decision is genuinely honoured on the next
+boot — unlike `bkpt #251`, which halts the core and never reaches the ROM.
+
+### HalfKay cannot be bricked, which lowers the stakes considerably
+
+**HalfKay is not in the RT1062 at all** — neither its flash nor its boot ROM. It
+is a physically separate chip that also owns power sequencing and RESET, reaching
+the RT1062 through its debug port. That is why `bkpt #251` works as a handoff.
+Consequences, all favourable:
+
+- **It occupies 0 bytes of the 8 MiB flash**; the whole region is application
+  addressable.
+- **Application code cannot damage it.**
+- Application code *can* make the board un-ROM-bootable by erasing the FCB at
+  `0x60000000` or the IVT at `0x60001000` — but HalfKay survives and can reflash,
+  so that is **recoverable, not fatal**. Worth designing for rather than fearing.
+
+### What remains genuinely unknown
+
+1. **Whether PJRC blows `0x6E0[23:16]` on Teensy 4.1.** The annotated RM covers
+   `BT_FUSE_SEL` and the GPIO boot pins but is silent on `BOOT_CONFIG_MISC`.
+   **This is the single gating fact for hardware A/B** and needs a runtime OCOTP
+   read on real hardware, or PJRC. Note `imxrt.h` stops at `HW_OCOTP_0x6C0`, so
+   there is no macro for it.
+2. **Whether the ROM auto-fails-over primary → secondary for FlexSPI NOR.** The
+   boot-flow figure shows no validity check and no fallback branch; documented
+   auto-fallback covers Serial NAND (ECC) and SD/eMMC only. **Assume
+   software-initiated switching only, and own the health check and revert.**
+3. **W25Q64JV erase/program timings.** No datasheet locally and no timing figures
+   in any core comment, so the audio-path stall cost is unquantified. This is the
+   measurement that decides whether OTA can run with audio live.
+4. Whether `bkpt #251` stays usable after the application has rewritten LUT
+   sequence 15, which the driver leaves holding the last opcode.
+
+### Sizing
+
+`_flashimagelen` is **585,728 bytes** against a usable **8,126,464**, so two
+copies fit comfortably. But the OTP secondary offset is quantised to 256 KiB, so a
+realistic slot B base is `0x60100000` or `0x60200000` — and **slot B needs its own
+FCB at its base and its own IVT at base+0x1000**, since the ROM applies the same
+4 KiB IVT offset to whichever image it selects. The `bootdata.c` structures are
+hard-coded to `0x60000000` and `.text.headers` is pinned by `ORIGIN(FLASH)`, so
+**a second linker script is required.**
+
+### Why the ESP32 comparison still does not carry over
+
+Even with hardware selection available, the ESP32 model has a bootloader that
+*validates* an image and rolls back on its own. Here the ROM does neither for
+FlexSPI NOR: there is no validity check and no automatic fallback. **The health
+check and the revert decision remain the application's**, which is the harder half
+of the problem and the part the boot ledger below has to carry.
 
 ## The transport already exists, and should be reused
 
@@ -262,28 +371,45 @@ worthwhile:
    is unconfirmed. **An A/B scheme whose fallback rests on both would be building
    on unproven ground** — this is the strongest sequencing argument in the
    document.
-4. **Answer the self-flashing question** in
-   [§The unanswered question](#the-unanswered-question).
+4. **Read the OTP fuse on real hardware** to settle whether hardware A/B is
+   available, and **measure a sector-erase stall** against the audio block. Those
+   are the two remaining unknowns in
+   [§Self-flashing is possible](#self-flashing-is-possible), and both need the
+   device rather than more reading.
 
 ## Verdict, provisional
 
-**Do not build OTA yet, and not because it is a bad idea.** The transport is
-largely already there and the rollback substrate is most of the way there, which
-makes this cheaper than it first looks. But:
+**It is feasible, and it is cheaper than it first looks — but do not build it
+yet.** The transport is largely already there, the rollback substrate is most of
+the way there, the flash primitives ship with the core, and HalfKay cannot be
+bricked. That is a much better starting position than the deferral bullet implies.
 
-- The feasibility question that decides the whole shape is unanswered.
-- Half the recovery boundary it would depend on has never run on hardware.
-- The activate verb it needs is broken and unauthenticated.
-- The gate it would authenticate with is computable from a MAC address.
+What still stands in the way, in descending order:
 
-**Fix the four prerequisites above and the picture changes materially** — three of
-them are small, and the third is the milestone the network-hardening plan exists
-to reach anyway. Then answer the self-flashing question and decide with real
-numbers.
+- **The activate verb is broken and unauthenticated.** `POST /api/reboot` never
+  answers and requires no credential. OTA cannot be built on it as it stands.
+- **Half the recovery boundary has never run on hardware.** Recovery-safe mode has
+  never executed and retained-OCRAM survival is unconfirmed. An A/B fallback
+  resting on both would be building on unproven ground.
+- **The gate is computable from a MAC address**, so image signing has to be added
+  rather than assumed.
+- **Two unknowns need the device**: the OTP fuse state, and the erase stall
+  against the audio block.
 
-What would change this verdict fastest: hardware boot-image selection turning out
-to exist. That would move the arbiter below the application and make this look far
-more like the ESP32 story the owner has in mind.
+**Fix the prerequisites and the answer likely becomes yes.** Three of the four are
+small, and the third — running B6 — is the milestone the network-hardening plan
+exists to reach anyway.
+
+The single fact that would most change the shape is **the OTP fuse turning out to
+be blown**, which would give hardware image selection and move most of the risk
+below the application. If it is unblown, A/B costs an irreversible fuse write per
+board, and a staged-image-plus-CDC-flash design becomes the better trade.
+
+**One correction to the original deferral, though, and it stands regardless of
+whether OTA is built.** §Deferred work says "HalfKay plus watchdog recovery-safe
+mode is the recovery boundary" — and recovery-safe mode has never once executed.
+That claim should be read as a design intention rather than a validated property
+until B6 gate 3 runs.
 
 ## Related documents
 
