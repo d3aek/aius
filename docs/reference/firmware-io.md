@@ -245,6 +245,43 @@ selection, and a carrier arriving), all of which reach the same `source` field. 
 derived reconciler covers every one; five call sites would each be a chance to leave
 the clock behind (`src/optical_main.cpp:2899`).
 
+**The transmit clock is 48 kHz, and it is pinned by a build flag.** `config_spdif3()`
+derives the entire transmit clock tree from `AUDIO_SAMPLE_RATE_EXACT`
+(`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:229`), which
+`AudioStream.h` defaults to `44100.0f` behind an `#ifndef`. Left at that default the
+board clocked 48 kHz material out 8.1 % slow — about 1.4 semitones flat — while
+`GET /api/meters`, `GET /api/dsp/config` and the decoded blocks themselves all
+reported 48,000. `teensy41-optical` therefore builds with
+`-DAUDIO_SAMPLE_RATE_EXACT=48000.0f`, and `optical_main.cpp` `static_assert`s it equal
+to `AIUS_OPTICAL_SAMPLE_RATE_HZ` so the flag and `config/optical_dsp.json` cannot
+drift apart again.
+
+48 kHz divides the clock tree exactly, so there is no fractional-divider residue:
+PLL4 is 24 MHz × 28.672 = 688.128 MHz (`NUM`/`DENOM` = 6720/10000, an exact
+fraction), `SPDIF0_CLK_ROOT` is that ÷ 8 = 86.016 MHz, and `TXCLK_DF` = 27 gives
+86.016 MHz ÷ 28 = 3.072 MHz = 64 × 48,000 with zero remainder.
+
+**Nothing in this path resamples.** The receiver DMAs words into audio blocks at the
+incoming carrier's rate and the transmitter clocks them out at
+`AUDIO_SAMPLE_RATE_EXACT`; the retained receive snapshot predates the upstream
+asynchronous rate converter and the framework copy is byte-identical to it. No code
+compares `block->sample_rate_hz` against the engine rate either, so a rate
+disagreement is neither absorbed nor counted — the queue stays level, `overruns`
+stays honestly zero, and the only symptom is pitch. That is why the equality is a
+`static_assert` rather than a runtime check.
+
+**Two block sizes, and every per-block figure names one of them.**
+`AUDIO_BLOCK_SAMPLES` is 128 frames — the Teensy core default, which this build does
+not override — and is the *engine* block: it sizes both DMA buffers, the
+`audio_block_t` pool, `update()`'s word staging and `emit_block()`'s drain, so
+`update()` runs 48000/128 = 375 times a second and moves 512 bytes each time (the
+192,000 B/s the replay ring is sized for). 512 frames is the *decoded* block and is
+what `blocks` counts: a DTS Core access unit reconstructs to 512 samples per channel
+and PCM passthrough stages the same 512 (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`), so
+`enqueue()` runs once per four `update()`s, at 48000/512 = 93.75 blocks per second.
+`enqueue()`'s `AUDIO_BLOCK_SAMPLES * 4` cap is exactly that 512, which couples the
+two constants: changing the engine block changes the decoder block this file accepts.
+
 **Audio-path justification.** The handover itself runs at checkpoint 7 in thread
 context, not in either ISR, and costs two byte stores under one critical section
 (`src/optical_main.cpp:2959`). The critical section exists so that no ISR can observe
@@ -292,11 +329,13 @@ block (`src/optical_main.cpp:629`). When it is true, the accumulate helpers walk
 `block->frames` once over caller-owned storage with no allocation, and the waveform
 decimation writes at most 128 points (`src/optical_main.cpp:690`). The expensive part
 — eight `sqrt` calls and the snapshot copy in `aius_meter_publish()` — runs once per
-20 Hz window rather than per block, which at 48 kHz with 128-frame blocks keeps it
-off 18 blocks in every 19 (`src/optical_main.cpp:318`). The `libm` `log10` inside the
-limiter gain-reduction accessor is likewise sampled once per window, not per block,
-because "a diagnostic field does not buy a `log10` in the block callback"
-(`src/optical_main.cpp:714`).
+20 Hz window rather than per block (`src/optical_main.cpp:318`). The window is counted
+in frames (48000/20 = 2,400) precisely so the decoder's framing cannot move it, which
+means it keeps the cost off four `enqueue()` calls in every five at the 512-frame
+decoded block, and off 18 blocks in every 19 were the block 128 frames. The `libm`
+`log10` inside the limiter gain-reduction accessor is likewise sampled once per
+window, not per block, because "a diagnostic field does not buy a `log10` in the block
+callback" (`src/optical_main.cpp:714`).
 
 **Written into an already-pinned ITCM section, deliberately.** The tap is inline in
 `enqueue` rather than a helper, so it grew a pinned section from 424 to 600 bytes
@@ -731,12 +770,15 @@ Also not in this image: the RawHID capability transport, which is a separate
 Stated plainly rather than estimated, per the plan's acceptance criterion that every
 number comes from a real build or a real device.
 
-- **The per-block DSP cost is not measured.** There is no S/PDIF carrier — the optical
-  input is unsoldered — so `blocks` is 0, the DSP has never run, and the meters
-  endpoint has never published; the figure in Phase 14b is still a static estimate
-  (`docs/plans/aius-network-hardening.md:82`). The DWT counters already wired into
-  `enqueue()` will produce it on the first run that plays a replay
-  (`src/optical_main.cpp:680`). Phase 14e owns that number, not this document.
+- **The per-block DSP cost has been measured, over a replay rather than a carrier.**
+  The DWT counters in `enqueue()` reported 398,591–431,995 cycles per *decoded*
+  (512-frame) block. At 600 MHz that block's period is 512/48,000 = 10,667 µs =
+  6,400,000 cycles, so the DSP occupies **6.2 %–6.8 % of the per-block budget**. The
+  figures were first taken while the engine still ran at 44.1 kHz, where the same
+  cycle counts were 5.7 %–6.2 % of a longer 11,610 µs period; the cycle counts
+  themselves are per-frame work over a fixed 512 frames and do not move with the rate,
+  only the denominator does. There is still no S/PDIF carrier — the optical input is
+  unsoldered — so the live passthrough path remains unmeasured.
 - **The cost of one `fnet_poll` call, and its effect on the block budget, is not
   measured.** Nothing in the repository records it. Until it is, the flat-priority
   interaction described above is a structural fact without a magnitude.

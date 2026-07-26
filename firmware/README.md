@@ -89,6 +89,32 @@ from `lib/aius_runtime/`:
 A service that cannot complete returns false and the epoch ends there, without
 the feed — which is what makes a wedged call a bounded reset rather than a hang.
 
+### The audio clock
+
+**The engine runs at 48 kHz, and `teensy41-optical` pins it with
+`-DAUDIO_SAMPLE_RATE_EXACT=48000.0f`.** `AudioStream.h` defaults that macro to
+`44100.0f` behind an `#ifndef`, and `config_spdif3()` derives the whole S/PDIF
+transmit clock tree from it — so the default silently made the optical output
+44.1 kHz while the DTS decoder, the PCM passthrough tag, the DSP config, the meters
+and the replay seam all said 48,000. The audible result was 48 kHz material playing
+8.1 % slow, about 1.4 semitones flat, with every counter honestly zero because the
+producer and the consumer both ran off the same wrong clock. DTS Core is 48 kHz, so
+48 kHz is the rate this decoder must run at. `optical_main.cpp` `static_assert`s the
+build flag equal to `AIUS_OPTICAL_SAMPLE_RATE_HZ`, which
+`scripts/build_config.py` generates from `config/optical_dsp.json`.
+
+**Nothing in the audio path resamples.** Neither S/PDIF peripheral converts rate, and
+no code compares a decoded block's `sample_rate_hz` against the engine, so a
+disagreement is neither absorbed nor counted — the queue stays level and the only
+symptom is pitch. That is why the equality is enforced at compile time.
+
+**Two block sizes, and the per-block figures name different ones.**
+`AUDIO_BLOCK_SAMPLES` is the core default 128 frames and is the *engine* block, so
+`update()` runs 375 times a second. The *decoded* block is 512 frames — a DTS Core
+access unit, and `AIUS_PIPELINE_PCM_BLOCK_FRAMES` for passthrough — so `enqueue()`,
+which is what `blocks` counts and what the DWT cycle counters bracket, runs 93.75
+times a second with a 10,667 µs budget.
+
 ### Portable engines behind Teensy adapters
 
 Every bounded state machine is portable C compiled by the host suites; the

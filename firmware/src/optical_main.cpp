@@ -65,6 +65,31 @@ extern "C" {
 #define AIUS_BUILD_ID 0u
 #endif
 
+/* THE ONE PLACE THE OUTPUT CLOCK AND THE DSP MODEL ARE FORCED TO AGREE.
+ *
+ * AudioStream.h defaults AUDIO_SAMPLE_RATE_EXACT to 44100.0f behind an #ifndef,
+ * and config_spdif3() (output_spdif3.cpp) derives the whole S/PDIF transmit clock
+ * tree from that macro -- so it, and nothing else, is the rate this board's
+ * optical output actually runs at. Every other rate in the firmware is 48 kHz:
+ * the DTS Core decoder's `output_rate`, AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ, this
+ * file's biquad and limiter coefficients (apply_config), the meter's
+ * `sample_rate_hz` and publish cadence, and the replay seam's 192,000 B/s.
+ *
+ * With the default left in place those two disagreed by 8.1 % and NOTHING
+ * observed it: the graph's producer and its consumer are both driven by the same
+ * clock, so the queue stayed level, the overrun counters stayed honestly zero,
+ * and the only symptom was audio playing ~1.4 semitones flat. There is no
+ * resampler anywhere in this path to absorb the difference -- see the audio
+ * clock note above AiusAudioProcessor -- so the rates must simply be equal.
+ *
+ * A compile-time equality is the whole fix for the class of defect, not just
+ * this instance (root CLAUDE.md §Convention enforcement): the build flag and the
+ * config JSON can now only move together. */
+static_assert((uint32_t)AUDIO_SAMPLE_RATE_EXACT == AIUS_OPTICAL_SAMPLE_RATE_HZ,
+	"the Teensy audio engine clock (AUDIO_SAMPLE_RATE_EXACT, set in "
+	"platformio.ini) must equal the configured DSP sample rate "
+	"(config/optical_dsp.json -> AIUS_OPTICAL_SAMPLE_RATE_HZ)");
+
 /* The device MAC, reported at offset 16 of the UDP status payload. The network
  * adapter configures the identical address on the stack itself
  * (aius_network_teensy.cpp), so the reported and configured values still agree
@@ -602,6 +627,46 @@ static FLASHMEM void record_state(void)
 	record_event(AIUS_EVENT_STATE, state, 0);
 }
 
+/* ------------------------------------------------------------------ */
+/* The audio clock, and the TWO block sizes that are easy to confuse   */
+/*                                                                     */
+/* THERE IS NO RESAMPLER ANYWHERE IN THIS PATH. Neither peripheral      */
+/* converts rate: AudioInputSPDIF3 DMAs receiver words straight into    */
+/* audio blocks at the incoming carrier's rate (the retained snapshot   */
+/* predates the upstream asynchronous converter, and the framework copy */
+/* is byte-identical to it), and AudioOutputSPDIF3 clocks blocks out at */
+/* AUDIO_SAMPLE_RATE_EXACT. Nothing between them compares the two, and  */
+/* nothing compares block->sample_rate_hz against either. A rate        */
+/* disagreement is therefore not absorbed and not counted -- it is      */
+/* simply heard, which is why the static_assert at the top of this file */
+/* exists. The engine rate and the decoded rate must be equal by        */
+/* construction; 48 kHz, because DTS Core is 48 kHz.                    */
+/*                                                                     */
+/* TWO BLOCK SIZES, and every per-block figure names one of them:       */
+/*                                                                     */
+/*   AUDIO_BLOCK_SAMPLES = 128 frames (the Teensy core default; this    */
+/*   build does not override it) is the ENGINE block. It sizes the DMA  */
+/*   buffers, the audio_block_t pool, update()'s word staging and       */
+/*   emit_block()'s drain. update() therefore runs 48000/128 = 375      */
+/*   times a second and moves 256 IEC words = 512 bytes each time --    */
+/*   the 192,000 B/s the replay ring is sized for.                      */
+/*                                                                     */
+/*   512 frames is the DECODED block, and it is what `blocks` counts.   */
+/*   A DTS Core access unit reconstructs to 512 samples per channel and */
+/*   the PCM passthrough stages the same 512                           */
+/*   (AIUS_PIPELINE_PCM_BLOCK_FRAMES), so enqueue() is called once per  */
+/*   four update()s, at 48000/512 = 93.75 blocks per second. The        */
+/*   AUDIO_BLOCK_SAMPLES * 4 cap enqueue() applies is exactly that 512: */
+/*   the two constants are coupled, so changing the engine block would  */
+/*   change the decoder block this file will accept.                    */
+/*                                                                     */
+/* The DWT bracket in enqueue() measures the DECODED block, so its      */
+/* budget is 512 frames / 48 kHz = 10,667 us (6,400,000 cycles at       */
+/* 600 MHz), not 128 frames. The meter's `queue_frames` is neither of   */
+/* these: it is g_count, the stereo ring's occupancy at the publish     */
+/* instant, which sits at 512 because one decode fills the ring by 512  */
+/* and the four following emit_block() passes drain it by 128 each.     */
+/* ------------------------------------------------------------------ */
 class AiusAudioProcessor : public AudioStream
 {
 public:
