@@ -3005,13 +3005,20 @@ static void test_storage_diagnostics(void)
 		CHECK(storage.target.driver_faults == 0u);
 		CHECK(storage.target.protocol_faults == 0u);
 
-		/* And a healthy upload after it: two mounts total, one each. */
+		/* And a healthy upload after it, which REUSES the probe's mount
+		 * rather than re-running SD.begin(). This assertion previously
+		 * required two mounts, which recorded the defect: SD.begin() has
+		 * no idempotence of its own and re-runs the whole card
+		 * identification and volume mount, and roughly one in eleven of
+		 * those blocked for SdFat's full one-second busy timeout and then
+		 * faulted. */
 		CHECK(run_http_upload(&storage, &now_ms) ==
 		      AIUS_HTTP_SD_COMPLETE);
 		CHECK(storage.diag.http_jobs == 1u);
 		CHECK(storage.diag.http_failures == 0u);
 		CHECK(storage.diag.last_failure.sequence == 0u);
-		CHECK(storage.target.mounts == 2u);
+		CHECK(storage.target.mounts == 1u);
+		CHECK(storage.target.mount_reuses == 1u);
 	}
 
 	current_key = "diag.busy-refusal";

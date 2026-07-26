@@ -108,6 +108,14 @@ FLASHMEM AiusSdEvent driver_fault(AiusSdTeensy *adapter, uint64_t action_id)
 {
 	if (adapter->driver_faults != UINT32_MAX)
 		adapter->driver_faults++;
+	/* THE CARD SAID NO, SO THE MOUNT IS NO LONGER TRUSTED. Deliberately
+	 * blunt: this fires for an open against a missing file as readily as for
+	 * a card that stopped answering, and the adapter cannot tell those apart
+	 * from a bool. Over-invalidating costs one extra mount on a path that has
+	 * already failed; under-invalidating leaves a stale volume descriptor in
+	 * front of every later job, which is the failure mode worth avoiding. The
+	 * hot path is unaffected -- a replay refill opens a file that exists. */
+	adapter->mounted = false;
 	adapter->last_fault = AIUS_SD_TEENSY_DRIVER_FAULT;
 	AiusSdEvent event = action_event(AIUS_SD_EVENT_FAULT, action_id);
 	event.fault = AIUS_SD_TEENSY_DRIVER_FAULT;
@@ -145,13 +153,22 @@ FLASHMEM void aius_sd_teensy_init(AiusSdTeensy *adapter)
 	if (adapter == nullptr)
 		return;
 	adapter->file_open = false;
+	adapter->mounted = false;
 	adapter->last_duration_us = 0u;
 	adapter->longest_duration_us = 0u;
 	adapter->protocol_faults = 0u;
 	adapter->last_fault = 0u;
 	adapter->mounts = 0u;
+	adapter->mount_reuses = 0u;
 	adapter->driver_faults = 0u;
 	adapter->last_protocol_action = (uint8_t)AIUS_SD_ACTION_NONE;
+}
+
+FLASHMEM void aius_sd_teensy_invalidate_mount(AiusSdTeensy *adapter)
+{
+	if (adapter == nullptr)
+		return;
+	adapter->mounted = false;
 }
 
 FLASHMEM AiusSdEvent aius_sd_teensy_execute(
@@ -177,12 +194,29 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 		if (!action_id_valid(action) || !empty_payload(action) ||
 		    adapter->file_open)
 			return protocol_fault(adapter, action);
+		/* ALREADY MOUNTED IS AN HONEST OK. The portable machine opens
+		 * every job with a BEGIN, and SDClass::begin() has no
+		 * idempotence of its own -- it re-runs the whole SDIO card
+		 * identification and volume mount every time it is called. The
+		 * work this skips is therefore real work on the card, not a
+		 * formality, and skipping it is what removes both the mount tax
+		 * and the mount's failure mode. The flag is only ever true
+		 * because a mount succeeded and nothing since has suggested the
+		 * card went away; see aius_sd_teensy.h for what clears it. No
+		 * card transaction, so no duration to record. */
+		if (adapter->mounted) {
+			if (adapter->mount_reuses != UINT32_MAX)
+				adapter->mount_reuses++;
+			return action_event(AIUS_SD_EVENT_OK,
+			                    action->action_id);
+		}
 		if (adapter->mounts != UINT32_MAX)
 			adapter->mounts++;
 		const uint32_t started = micros();
 		const bool success = SD.begin(BUILTIN_SDCARD);
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
+		adapter->mounted = success;
 		return success
 			       ? action_event(AIUS_SD_EVENT_OK, action->action_id)
 			       : driver_fault(adapter, action->action_id);
@@ -204,6 +238,14 @@ FLASHMEM AiusSdEvent aius_sd_teensy_execute(
 			present ? SD.sdfs.vol()->fatType() : 0u;
 		const uint32_t ended = micros();
 		record_duration(adapter, started, ended);
+		/* THE REVALIDATION POINT for the cached mount above, and the
+		 * reason caching one is safe at all. This runs on the 1 Hz
+		 * probe and asks the card itself (CMD13 on BUILTIN_SDCARD); a
+		 * card that does not answer drops the cache, so the next job
+		 * mounts for real and the lifecycle sees the absence on exactly
+		 * the cadence it always did. */
+		if (!present)
+			adapter->mounted = false;
 		AiusSdEvent event =
 			action_event(AIUS_SD_EVENT_BOOL, action->action_id);
 		event.value = present;

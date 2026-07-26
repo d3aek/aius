@@ -1466,7 +1466,13 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
  *   longest_primitive_us + longest_action   WHICH card action blocked longest
  *   last_fault{,_phase,_action,_driver}     WHICH primitive failed, and why
  *   last_fault_offset_bytes + _loops        WHERE in the file, and on which lap
- *   mounts                                  refill remounts, apart from probes
+ *   mounts                                  REAL remounts this job caused
+ *   mount_reuses                            BEGINs the adapter answered from
+ *                                           its cached mount (adapter-global)
+ *
+ * The first run of this block is what identified the defect it now measures:
+ * longest_action came back AIUS_SD_ACTION_BEGIN with mounts equal to jobs, which
+ * said the 1.02 s stall was the per-job remount and not a read.
  *
  * `fault_phase` is the load-bearing one: a terminal FAILED has already moved
  * `phase` on to the cleanup arm, so without the latched copy an open failure and
@@ -1476,7 +1482,8 @@ static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 {
 	return http_json_append(output, capacity, length,
 	                        ",\"replay_diag\":{\"jobs\":%lu,\"faults\":%lu,"
-	                        "\"mounts\":%lu,\"consecutive_faults\":%lu,"
+	                        "\"mounts\":%lu,\"mount_reuses\":%lu,"
+	                        "\"consecutive_faults\":%lu,"
 	                        "\"last_primitive_us\":%lu,"
 	                        "\"longest_primitive_us\":%lu,"
 	                        "\"longest_action\":%u,\"last_fault\":%u,"
@@ -1489,6 +1496,12 @@ static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 	                        (unsigned long)g_replay_diag.jobs,
 	                        (unsigned long)g_replay_diag.faults,
 	                        (unsigned long)g_replay_diag.mounts,
+	                        /* Adapter-global, not replay-scoped: every
+	                         * consumer's BEGINs share one cache, and a
+	                         * per-job attribution would claim a precision
+	                         * this counter does not have. */
+	                        (unsigned long)
+					g_runtime.storage.target.mount_reuses,
 	                        (unsigned long)g_replay_service.refill_faults,
 	                        (unsigned long)g_replay_diag.last_primitive_us,
 	                        (unsigned long)g_replay_diag.longest_primitive_us,
@@ -2743,6 +2756,18 @@ static FLASHMEM void sd_step_complete(uint32_t now_ms)
 			g_sd_total_bytes = 0u;
 			g_sd_used_bytes = 0u;
 			g_sd_usage_refresh_pending = false;
+			/* Belt and braces against the adapter's own
+			 * invalidation. The adapter drops its cached mount when
+			 * a media check reports the card gone, which is the
+			 * same event this arm reacts to -- but a probe whose
+			 * JOB failed never reaches that check at all (BEGIN
+			 * faulted, or the step was cancelled), and this arm
+			 * fires for that case too. Saying it explicitly here
+			 * means the card-absent transition invalidates by
+			 * construction rather than by both paths happening to
+			 * agree. Memory only. */
+			aius_sd_teensy_invalidate_mount(
+				&g_runtime.storage.target);
 		} else if (present && g_sd_usage_refresh_pending) {
 			g_sd_step = SD_STEP_USAGE;
 		}
@@ -2926,14 +2951,21 @@ static FLASHMEM void replay_job_route(const AiusSdAction *action)
 	 * action set it. That is how a 1.02 s primitive at a loop boundary stayed
 	 * unattributable: the number was real and named nothing. Two micros() reads
 	 * on a path that already blocks on the card. */
+	const uint32_t mounts_before = g_runtime.storage.target.mounts;
 	const uint32_t started_us = micros();
 	g_replay_job_event =
 		aius_sd_teensy_execute(&g_runtime.storage.target, action);
 	const uint32_t elapsed_us = micros() - started_us;
 	g_replay_job_event_present = true;
 
-	if (action->kind == AIUS_SD_ACTION_BEGIN)
-		g_replay_diag.mounts++;
+	/* REAL mounts, not BEGIN actions. Counting the action was right when
+	 * every BEGIN mounted; now that the adapter answers a BEGIN from a
+	 * cached mount, counting actions would report one per job forever and
+	 * hide the whole point of the change. The adapter's own counter only
+	 * moves when SD.begin() actually ran, so its delta is the honest
+	 * refill-attributed figure. */
+	g_replay_diag.mounts +=
+		g_runtime.storage.target.mounts - mounts_before;
 	g_replay_diag.last_primitive_us = elapsed_us;
 	if (elapsed_us > g_replay_diag.longest_primitive_us) {
 		g_replay_diag.longest_primitive_us = elapsed_us;

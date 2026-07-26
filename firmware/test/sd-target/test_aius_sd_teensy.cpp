@@ -893,6 +893,10 @@ void test_diagnostic_counters()
 	assert(adapter.driver_faults == 0);
 
 	reset_fake();
+	/* The mount above is cached, so a second BEGIN would be answered without
+	 * reaching the card. Invalidate first, or this case would be measuring
+	 * the cache instead of the counter. */
+	aius_sd_teensy_invalidate_mount(&adapter);
 	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
 	event = aius_sd_teensy_execute(&adapter, &begin);
 	assert(event.kind == AIUS_SD_EVENT_FAULT);
@@ -934,6 +938,129 @@ void test_diagnostic_counters()
 	assert(event.fault == AIUS_SD_TEENSY_DRIVER_FAULT);
 	assert(adapter.mounts == UINT32_MAX);
 	assert(adapter.driver_faults == UINT32_MAX);
+}
+
+/* Performs a BEGIN and reports whether it reached the card. */
+bool begin_touched_the_card(AiusSdTeensy *adapter)
+{
+	reset_fake();
+	AiusSdAction begin = make_action(AIUS_SD_ACTION_BEGIN);
+	AiusSdEvent event = aius_sd_teensy_execute(adapter, &begin);
+	assert(event.kind == AIUS_SD_EVENT_OK ||
+	       event.kind == AIUS_SD_EVENT_FAULT);
+	return g_fake.call_count != 0;
+}
+
+/* THE MOUNT CACHE, and every path that must invalidate it.
+ *
+ * The portable machine opens every job with a BEGIN, and SDClass::begin() has no
+ * idempotence of its own: it re-runs the whole SDIO card identification and
+ * volume mount each time. So the adapter mounted once per job -- which the first
+ * live run of a working replay measured as 224 mounts for 224 jobs, 20 of them
+ * blocking a full second before failing. That behaviour was plainly visible in
+ * this file for months and nothing here objected; test_diagnostic_counters even
+ * depended on it. Hence this test.
+ *
+ * The bargain is that the cache is REVALIDATED rather than assumed, so each
+ * invalidation path is asserted individually rather than trusted as a set. */
+void test_mount_is_cached_and_revalidated()
+{
+	reset_fake();
+	AiusSdTeensy adapter;
+	reset_adapter(&adapter);
+	assert(!adapter.mounted);
+	assert(adapter.mount_reuses == 0);
+
+	/* The first mount reaches the card. */
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounted);
+	assert(adapter.mounts == 1);
+	assert(adapter.mount_reuses == 0);
+
+	/* The second does not -- no card transaction at all, which is also why
+	 * this cannot weaken the one-blocking-primitive-per-epoch bound: it
+	 * removes a primitive, it never adds one. */
+	assert(!begin_touched_the_card(&adapter));
+	assert(adapter.mounts == 1);
+	assert(adapter.mount_reuses == 1);
+	assert(adapter.last_duration_us == 0);
+
+	/* Invalidation path 1: the caller says so. */
+	aius_sd_teensy_invalidate_mount(&adapter);
+	assert(!adapter.mounted);
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounts == 2);
+
+	/* Invalidation path 2: the probe finds the card gone. A media check that
+	 * still reports the card present must NOT invalidate, or the cache would
+	 * be dropped every second and buy nothing. */
+	reset_fake();
+	AiusSdAction media = make_action(AIUS_SD_ACTION_MEDIA_PRESENT);
+	AiusSdEvent event = aius_sd_teensy_execute(&adapter, &media);
+	assert(event.kind == AIUS_SD_EVENT_BOOL && event.value);
+	assert(adapter.mounted);
+	assert(!begin_touched_the_card(&adapter));
+	assert(adapter.mounts == 2);
+
+	reset_fake();
+	g_fake.media_present = false;
+	event = aius_sd_teensy_execute(&adapter, &media);
+	assert(event.kind == AIUS_SD_EVENT_BOOL && !event.value);
+	assert(!adapter.mounted);
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounts == 3);
+
+	/* Invalidation path 3: a failed mount is not a mount. */
+	reset_fake();
+	aius_sd_teensy_invalidate_mount(&adapter);
+	g_fake.succeeds[PRIMITIVE_BEGIN] = false;
+	AiusSdAction begin = make_action(AIUS_SD_ACTION_BEGIN);
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(!adapter.mounted);
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounts == 5);
+
+	/* Invalidation path 4: the card refused an unrelated primitive. A driver
+	 * fault anywhere means the volume is no longer trusted. */
+	reset_fake();
+	assert(adapter.mounted);
+	g_fake.succeeds[PRIMITIVE_REMOVE] = false;
+	AiusSdAction remove = make_action(AIUS_SD_ACTION_REMOVE);
+	event = aius_sd_teensy_execute(&adapter, &remove);
+	assert(event.kind == AIUS_SD_EVENT_FAULT);
+	assert(!adapter.mounted);
+	assert(begin_touched_the_card(&adapter));
+
+	/* Invalidation path 5: init. A reused adapter never inherits a mount. */
+	reset_fake();
+	assert(adapter.mounted);
+	aius_sd_teensy_init(&adapter);
+	assert(!adapter.mounted);
+	assert(adapter.mount_reuses == 0);
+	assert(begin_touched_the_card(&adapter));
+	assert(adapter.mounts == 1);
+
+	/* A protocol-refused BEGIN neither mounts nor counts as a reuse: it never
+	 * reached the decision at all. */
+	reset_fake();
+	adapter.file_open = true;
+	const uint32_t reuses = adapter.mount_reuses;
+	event = aius_sd_teensy_execute(&adapter, &begin);
+	assert(event.fault == AIUS_SD_TEENSY_PROTOCOL_FAULT);
+	assert(g_fake.call_count == 0);
+	assert(adapter.mount_reuses == reuses);
+	adapter.file_open = false;
+
+	/* The reuse counter saturates rather than wrapping, like its siblings. */
+	reset_fake();
+	adapter.mount_reuses = UINT32_MAX;
+	assert(adapter.mounted);
+	assert(!begin_touched_the_card(&adapter));
+	assert(adapter.mount_reuses == UINT32_MAX);
+
+	/* Null-safe, like every other adapter entry point. */
+	aius_sd_teensy_invalidate_mount(nullptr);
 }
 
 } // namespace
@@ -1085,5 +1212,6 @@ int main()
 	test_media_present_reports_the_volume_type();
 	test_durations_and_counter_saturation();
 	test_diagnostic_counters();
+	test_mount_is_cached_and_revalidated();
 	return 0;
 }
