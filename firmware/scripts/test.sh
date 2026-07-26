@@ -13,7 +13,8 @@
 #         recovery-runner, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
-#         optical-cutover, runtime-target, memory, itcm-placement, registry.
+#         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
+#         registry.
 #
 # That list is not documentation: the `registry` suite fails when it, the suites
 # table in README.md, and the arms of the `case` below disagree with the
@@ -611,6 +612,16 @@ itcm-placement)
 	fi
 	python3 "$fw_root/test/itcm-placement/verify_target.py" \
 		"$itcm_build" --readelf "$itcm_readelf"
+	;;
+fake-fidelity)
+	# Every host fake's CONSTANTS against the real framework headers. A fake with
+	# a wrong constant does not fail -- it agrees with itself, and with the tests
+	# that assert against the same macros. Only an external reference catches it.
+	# Found all three FILE_* modes off by one in both SD fakes (so their FILE_READ
+	# was the real FILE_WRITE) and SRC_SRSR_WARM_BOOT, a name imxrt.h does not
+	# have, at the bit imxrt.h gives WDOG3. Exits 3 when the framework package is
+	# absent, so the native suite stays runnable off a toolchain host.
+	python3 "$fw_root/test/fake-fidelity/test_fake_fidelity.py"
 	;;
 registry)
 	# The guard on this file. Every other arm is hand-maintained, so a suite

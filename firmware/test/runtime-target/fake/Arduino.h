@@ -13,7 +13,13 @@
 
 class FakeUsbSerial {
 public:
-	explicit operator bool() const;
+	/* Non-const, matching usb_serial_class::operator bool() (usb_serial.h:166).
+	 * A const conversion here would be MORE permissive than the target: code
+	 * testing a const reference would compile on the host and fail to compile on
+	 * the board. `explicit` is retained deliberately -- it is stricter than the
+	 * real implicit conversion, so it can only reject code the target accepts,
+	 * never accept code the target rejects. */
+	explicit operator bool();
 	int read();
 	int availableForWrite();
 	size_t write(const uint8_t *data, size_t length);

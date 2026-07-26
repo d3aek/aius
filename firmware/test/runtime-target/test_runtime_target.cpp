@@ -102,7 +102,7 @@ static SerialFake g_serial;
 
 FakeUsbSerial Serial;
 
-FakeUsbSerial::operator bool() const
+FakeUsbSerial::operator bool()
 {
 	return g_serial.connected;
 }

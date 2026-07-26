@@ -10,10 +10,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Values must equal the real ones -- see the sibling note in
+ * test/sd-target/fake/SD.h. All three FILE_* were off by one here too, and the
+ * duplication is exactly why: two fakes of one header drift independently, and
+ * both were wrong in the same way with nothing comparing either to the source.
+ * test_fake_fidelity.py now checks both against the package headers. */
 #define BUILTIN_SDCARD 254u
-#define FILE_READ 1u
-#define FILE_WRITE 2u
-#define FILE_WRITE_BEGIN 3u
+#define FILE_READ 0u
+#define FILE_WRITE 1u
+#define FILE_WRITE_BEGIN 2u
 
 class File {
 public:

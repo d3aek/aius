@@ -286,6 +286,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
 | `memory` | The per-bank release gate `build.sh` fails the build on, driven over a committed ELF reduction of a real optical image. |
 | `itcm-placement` | The two post-link ITCM guards, re-run over an existing optical build. |
+| `fake-fidelity` | Every host fake's constants against the real framework headers, both directions: a listed constant must exist upstream with the same value, and a fake must not invent one. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 
 The `dts`/`dts-lfe` suites run against committed reference PCM, so `ffmpeg` /

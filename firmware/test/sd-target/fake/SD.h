@@ -4,10 +4,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* VALUES ARE THE CONTRACT, not just the names. These must equal the real ones:
+ * BUILTIN_SDCARD from the SD library, and the FILE_* trio from the core's FS.h
+ * (SD.h undefines any prior FILE_READ/FILE_WRITE and defers to FS.h).
+ *
+ * All three FILE_* were off by one until 2026-07-26 -- 1/2/3 against the real
+ * 0/1/2 -- so **this fake's FILE_READ was the real FILE_WRITE**. The suite could
+ * not catch it, because the tests assert `open_mode == FILE_READ` using these
+ * same macros, so both sides moved together (the same self-referential shape that
+ * hid a 48 dB level defect in the pipeline suite). It stayed latent only because
+ * aius_sd_teensy.cpp passes the constants through by NAME and the target compiles
+ * against the real headers. The trap it left: any hardcoded `1` reads as "open for
+ * read" against this fake and opens for WRITE on hardware. Verified against the
+ * package headers by test_fake_fidelity.py. */
 #define BUILTIN_SDCARD 254u
-#define FILE_READ 1u
-#define FILE_WRITE 2u
-#define FILE_WRITE_BEGIN 3u
+#define FILE_READ 0u
+#define FILE_WRITE 1u
+#define FILE_WRITE_BEGIN 2u
 
 class File {
 public:
