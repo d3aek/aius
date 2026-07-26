@@ -995,7 +995,12 @@ private:
 
 FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 {
-	g_eq_count = cfg.output_eq_count;
+	/* features.output_eq, the other flag that was stored and never read. Zero
+	 * sections IS the bypass -- aius_dsp_process() runs no cascade for an empty
+	 * table -- which is why this stage appeared to work: a config that happened
+	 * to carry no sections bypassed by accident, and one that carried sections
+	 * ran them whatever the flag said. */
+	g_eq_count = cfg.features.output_eq ? cfg.output_eq_count : 0u;
 	for (size_t i = 0; i < g_eq_count && i < 2; i++) {
 		const AiusOpticalEqConfig &section = cfg.output_eq[i];
 		if (section.type == 0)
@@ -1015,9 +1020,33 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz
 	                                               : AIUS_OPTICAL_SAMPLE_RATE_HZ;
 	g_downmix = aius_downmix_config_default();
-	g_downmix.center = cfg.matrix.center_gain_linear;
-	g_downmix.surround = cfg.matrix.surround_gain_linear;
-	g_downmix.lfe = cfg.matrix.lfe_gain_linear;
+	/* features.matrix, which was parsed, stored, round-tripped and then never
+	 * read -- the contract promises all five flags bypass their stage and this
+	 * one had no mechanism at all.
+	 *
+	 * BYPASS HERE MEANS FL->L, FR->R AT UNITY, not "use the default matrix".
+	 * The downmix is structurally unavoidable (six planes have to become two),
+	 * so the question is what a bypassed matrix should sound like, and the
+	 * editor states the purpose: unchecking a stage bypasses it "for latency
+	 * and diagnostic comparisons". The comparison worth hearing is the stereo
+	 * pair with nothing folded into it, which is what zero centre, zero
+	 * surround, zero LFE and unity headroom reduce aius_dsp_process()'s
+	 * accumulate loop to exactly -- no new machinery, no second code path, and
+	 * the existing struct expresses it.
+	 *
+	 * Substituting the DEFAULT matrix instead was the other reading and is
+	 * rejected: it would make the flag mean "ignore my settings" rather than
+	 * "remove this stage", and there would then be no way to hear the input
+	 * without the fold. */
+	if (cfg.features.matrix) {
+		g_downmix.center = cfg.matrix.center_gain_linear;
+		g_downmix.surround = cfg.matrix.surround_gain_linear;
+		g_downmix.lfe = cfg.matrix.lfe_gain_linear;
+	} else {
+		g_downmix.center = 0.0;
+		g_downmix.surround = 0.0;
+		g_downmix.lfe = 0.0;
+	}
 	/* The LFE fold's low-pass. The DTS core does not band-limit its LFE plane to
 	 * the crossover -- it carries LFE decimated by 64 or 128, so up to 375 Hz of
 	 * reconstruction imaging survives -- which is why this is LR4 rather than one
@@ -1027,7 +1056,14 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	g_downmix.lfe_fold = &g_lfe_fold;
 	(void)aius_lfe_fold_init(&g_lfe_fold, (double)rate,
 	                         cfg.matrix.lfe_crossover_hz);
-	if (cfg.matrix.clipfree)
+	if (!cfg.features.matrix)
+		/* Unity, completing the bypass: a headroom scale is part of the matrix
+		 * stage, so a bypassed matrix must not attenuate either. Note
+		 * clipfree_headroom() would return 1.0 here anyway now that the three
+		 * gains are zero, but stating it is what stops a later change to that
+		 * function quietly putting a gain back into the bypass path. */
+		g_downmix.headroom = 1.0;
+	else if (cfg.matrix.clipfree)
 		g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
 	else
 		g_downmix.headroom = cfg.matrix.headroom_linear;
@@ -1054,7 +1090,33 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	memset(g_input_eq_state, 0, sizeof(g_input_eq_state));
 	for (size_t p = 0; p < AIUS_MAX_CHANNELS; p++)
 		g_input_stage.scratch[p] = g_input_scratch[p];
-	g_input_stage_active = cfg.features.input_eq != 0;
+	/* The stage runs only when it would change a sample.
+	 *
+	 * THE DEFAULT CONFIG MADE THIS AN EXACT IDENTITY THAT STILL COST. Every
+	 * channel ships at gain_db 0 and eq [], with features.input_eq true, so all
+	 * six planes were copied to scratch and run through run_cascade(1.0, NULL,
+	 * 0, ...) -- an int-to-double convert and an aius_quantize per sample, 3,072
+	 * quantizes per block, to reproduce the input exactly.
+	 *
+	 * Skipping is behaviourally identical rather than an approximation: the
+	 * downmix reads block->planes when dsp.input is null, and the stage's only
+	 * effect in this state was to hand it a verbatim copy of those same planes.
+	 *
+	 * Unity is tested exactly, and that is safe because it is the value the
+	 * conversion produces rather than a tolerance: aius_db_to_linear(0.0) is
+	 * pow(10, 0) == 1.0 exactly, on the host and on the target. A channel with a
+	 * present-but-bypassed EQ section is deliberately NOT treated as identity --
+	 * eq_sections counts what the cascade will walk, and the config distinguishes
+	 * "no section" from "a bypass section" on purpose. */
+	bool input_stage_changes_audio = false;
+	for (size_t c = 0; c < AIUS_DSP_INPUT_CHANNELS; c++) {
+		const AiusInputChannelConfig &channel = g_input_stage.channels[c];
+		if (channel.gain_linear != 1.0 || channel.eq_sections != 0) {
+			input_stage_changes_audio = true;
+			break;
+		}
+	}
+	g_input_stage_active = cfg.features.input_eq != 0 && input_stage_changes_audio;
 
 	g_limiter.cfg.enabled = cfg.limiter.enabled;
 	g_limiter.cfg.threshold_dbfs = cfg.limiter.threshold_dbfs;

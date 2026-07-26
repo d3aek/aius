@@ -511,18 +511,43 @@ are follow-up work, recorded here so they are not lost.
     Either outcome is worth having: reclaiming it would roughly sextuple the free
     DTCM zone, and restoring it would give the decoder the determinism it was
     designed for.
-15. **`features.matrix` and `features.output_eq` are inert.** Both are parsed,
-    stored, round-tripped through `GET`/`PUT /api/dsp/config` and serialised into
-    status JSON, and `apply_config()` never reads either — it reads only
-    `input_eq`, `limiter` and `meters`. The contract promises all five flags can
-    independently bypass their stage. Output-EQ bypass works by accident when the
-    section array is empty; matrix bypass has no mechanism at all.
-16. **The default config makes the input stage a no-op that still costs.**
-    `features.input_eq: true` with every channel at `gain_db: 0` and `eq: []`
-    leaves `g_input_stage_active` true, so all six planes are copied to scratch and
-    run through `run_cascade(1.0, NULL, 0, …)` — an int-to-double convert and an
-    `aius_quantize` per sample for an exact identity, **3,072 quantizes per block**.
-    There is no per-channel identity skip.
+15. ~~**`features.matrix` and `features.output_eq` are inert.**~~ **FIXED
+    2026-07-26.** `apply_config()` now reads all five flags, guarded by an
+    `optical-cutover` check that reads the **comment-stripped** body — this file
+    explains itself at length and now discusses both flags at length, so a check
+    satisfied by prose would pass against a firmware that only talked about them.
+
+    **The design call, recorded because it had two defensible readings.**
+    `output_eq` is mechanical: zero sections is already the bypass, so the flag
+    selects the count. `matrix` is not, because the downmix is structurally
+    unavoidable — six planes have to become two — so "bypass" had to be defined.
+    Taken: **FL→L, FR→R at unity**, i.e. zero centre, zero surround, zero LFE and
+    unity headroom, which is exactly what `aius_dsp_process()`'s accumulate loop
+    reduces to with those values, needing no second code path. Rejected:
+    substituting the *default* matrix, which would make the flag mean "ignore my
+    settings" rather than "remove this stage" and would leave no way to hear the
+    stereo pair without the fold. The editor's own hint text settles it — a stage
+    is unchecked "for latency and diagnostic comparisons", and the comparison
+    worth hearing is the one with nothing folded in. Unity headroom is set
+    explicitly rather than relying on `clipfree_headroom()` returning 1.0 for
+    zeroed gains, so a later change there cannot put a gain back into the bypass.
+16. ~~**The default config makes the input stage a no-op that still costs.**~~
+    **FIXED 2026-07-26.** `g_input_stage_active` now additionally requires that
+    some channel would change a sample — unity gain with no sections is skipped,
+    reclaiming **3,072 quantizes per block** on the shipped default.
+
+    Skipping is behaviourally identical rather than an approximation: the downmix
+    reads `block->planes` when `dsp.input` is null, and the stage's only effect in
+    that state was to hand it a verbatim copy of those same planes. Unity is
+    tested exactly because it is the value the conversion *produces* rather than a
+    tolerance — `aius_db_to_linear(0.0)` is `pow(10, 0) == 1.0` on host and
+    target. A present-but-bypassed EQ section is deliberately **not** identity:
+    `eq_sections` counts what the cascade walks, and the config distinguishes "no
+    section" from "a bypass section" on purpose.
+
+    **Not yet measured on hardware.** The saving is arithmetic until a carrier
+    exists; `blocks` is 0, so `dsp_cycles_last` cannot show it. Re-measure with
+    the first real signal.
 17. ~~**The retained boot ledger no longer survives a reset, and B6 gate 2 is
     blocked on it.**~~ **FIXED 2026-07-26.** The cause was neither a neighbouring
     symbol stomp nor anything in this firmware: **the i.MX RT1062 boot ROM

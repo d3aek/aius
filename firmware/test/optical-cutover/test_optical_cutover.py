@@ -1274,9 +1274,80 @@ TRANSMIT_MODULE_CHECKS = (
 )
 
 
+APPLY_CONFIG_MARKER = (
+    "void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)"
+)
+
+FEATURE_FLAGS = ("input_eq", "matrix", "output_eq", "limiter", "meters")
+
+
+def assert_apply_config_reads_every_feature_flag(text):
+    """All five bypass flags must be READ, not merely stored.
+
+    `features.matrix` and `features.output_eq` were parsed, stored, round-tripped
+    through GET/PUT and serialised into status JSON, and `apply_config()` read
+    neither -- so two of the five documented bypasses had no mechanism at all.
+    Output-EQ bypass appeared to work only because a config carrying no sections
+    bypasses by accident, which is agreement rather than function.
+
+    Read from the COMMENT-STRIPPED body deliberately. This file explains itself
+    at length and now discusses both flags at some length too; a check satisfied
+    by prose would pass against a firmware that only talked about the flag.
+    """
+    body = without_comments_and_literals(function_body(text, APPLY_CONFIG_MARKER))
+    missing = [flag for flag in FEATURE_FLAGS if f"features.{flag}" not in body]
+    if missing:
+        raise AssertionError(
+            "apply_config() never reads features."
+            + ", features.".join(missing)
+            + " -- a bypass flag the config accepts and the audio path ignores "
+            "is a promise the device does not keep"
+        )
+
+
+def assert_input_stage_skips_an_exact_identity(text):
+    """A unity-gain, no-EQ input stage must not run.
+
+    The shipped default is every channel at gain_db 0 with eq [] and
+    features.input_eq true, which copied six planes to scratch and spent an
+    int-to-double convert plus an aius_quantize per sample -- 3,072 quantizes
+    per block -- reproducing the input exactly.
+
+    Asserted as the conjunction rather than by naming a helper, so the check
+    survives the guard being written any reasonable way but still fails if
+    activation goes back to reading the flag alone.
+    """
+    body = without_comments_and_literals(function_body(text, APPLY_CONFIG_MARKER))
+    assignment = [
+        line for line in body.splitlines()
+        if "g_input_stage_active" in line and "=" in line
+    ]
+    if not assignment:
+        raise AssertionError("apply_config() never assigns g_input_stage_active")
+    joined = " ".join(assignment)
+    if "&&" not in joined:
+        raise AssertionError(
+            "g_input_stage_active is set from features.input_eq alone, so the "
+            "default identity config still pays 3,072 quantizes per block"
+        )
+    if "gain_linear" not in body or "eq_sections" not in body:
+        raise AssertionError(
+            "nothing in apply_config() tests channel gain and section count, so "
+            "the identity it claims to detect is not actually being detected"
+        )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
+    (
+        "apply_config() reads all five feature bypass flags",
+        assert_apply_config_reads_every_feature_flag,
+    ),
+    (
+        "an exact-identity input stage is skipped, not run",
+        assert_input_stage_skips_an_exact_identity,
+    ),
     (
         "a requested reset waits for the drained transaction, bounded",
         assert_requested_reset_waits_for_the_drained_transaction,

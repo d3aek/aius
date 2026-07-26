@@ -289,14 +289,25 @@ Buffers: `g_input_scratch[6][512]` `int32`, **12,288 B in DTCM**
 `AIUS_MAX_CHANNELS` planes. Coefficients and state are `g_input_eq[6][2]` (480 B) and
 `g_input_eq_state[6][2]` (384 B), both *derived* from the struct sizes.
 
-**With the shipped default this stage is a pure cost with no effect, and that is worth
-knowing before the budget section.** `config/optical_dsp.json` sets
-`features.input_eq: true` with every channel at `gain_db: 0` and `eq: []`, so
-`g_input_stage_active` is true (`src/optical_main.cpp:1037`) and every present plane is
-`memcpy`'d to scratch and then run through `run_cascade(1.0, NULL, 0, …)` — an
-int-to-double convert and an `aius_quantize` per sample for an exact identity. At six
-channels that is 3,072 quantizes per 512-frame block. There is no per-channel
-"is this an identity" skip.
+**With the shipped default this stage is skipped, and until 2026-07-26 it was not.**
+`config/optical_dsp.json` sets `features.input_eq: true` with every channel at
+`gain_db: 0` and `eq: []`. That used to leave `g_input_stage_active` true, so every
+present plane was `memcpy`'d to scratch and run through `run_cascade(1.0, NULL, 0, …)`
+— an int-to-double convert and an `aius_quantize` per sample for an exact identity, at
+six channels **3,072 quantizes per 512-frame block** to reproduce the input.
+
+`apply_config()` now also requires that some channel would actually change a sample:
+unity gain with no sections is an identity and the stage does not run. Skipping is
+behaviourally identical rather than an approximation — the downmix reads
+`block->planes` when `dsp.input` is null, and the stage's only effect in that state was
+to hand it a verbatim copy of those same planes. Unity is tested exactly because
+`aius_db_to_linear(0.0)` is `pow(10, 0) == 1.0`, the value the conversion produces
+rather than a tolerance. A present-but-*bypassed* EQ section is deliberately not an
+identity: `eq_sections` counts what the cascade walks, and the config distinguishes "no
+section" from "a bypass section".
+
+**The saving is arithmetic, not measured.** `blocks` is 0 with no carrier, so
+`dsp_cycles_last` cannot show it yet; re-measure with the first real signal.
 
 ### Stage 6 — the downmix matrix
 
@@ -902,12 +913,22 @@ the `build_unflags` line. Either the arena should shrink to what
 is 25,376 B — or the wrap should be restored; the current state pays the DTCM cost and
 gets none of the determinism benefit that justified it.
 
-**Two of the five documented bypass flags do nothing.** `features.matrix` and
-`features.output_eq` are parsed, stored, round-tripped through `GET`/`PUT
-/api/dsp/config` and serialised into the status JSON, but `apply_config()` never reads
-them (`src/optical_main.cpp:1037`, `:1045`, `:1069` are the only three feature reads).
-Output-EQ bypass happens to work by leaving `output_eq[]` empty; matrix bypass has no
-mechanism at all.
+**All five bypass flags now work; two of them did nothing until 2026-07-26.**
+`features.matrix` and `features.output_eq` were parsed, stored, round-tripped through
+`GET`/`PUT /api/dsp/config` and serialised into the status JSON while `apply_config()`
+read neither. Output-EQ bypass appeared to work by leaving `output_eq[]` empty — which
+is agreement rather than function — and matrix bypass had no mechanism at all.
+
+`output_eq` is now the section count's selector, since zero sections is already the
+bypass. **`matrix` needed its meaning decided**, because the downmix is structurally
+unavoidable: six planes have to become two, so a bypassed matrix cannot simply not run.
+It is defined as **FL→L, FR→R at unity** — zero centre, zero surround, zero LFE, unity
+headroom — which is exactly what the accumulate loop in `aius_dsp_process` reduces to
+with those values, so it needs no second code path. Substituting the *default* matrix
+was the alternative and is rejected: it would make the flag mean "ignore my settings"
+rather than "remove this stage", and would leave no way to hear the stereo pair without
+the fold. The flags exist "for latency and diagnostic comparisons", and that is the
+comparison worth having.
 
 **There is still no way to measure output quality on this device.** Everything is proven
 by host known-answer vectors and the meters report peak and RMS, not distortion — so
