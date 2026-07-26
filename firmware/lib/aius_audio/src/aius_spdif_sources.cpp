@@ -19,9 +19,15 @@
 #if defined(__IMXRT1062__)
 
 /* DMAMEM, not DTCM: 16 KiB is the one large buffer in this path and OCRAM is
- * where large buffers live. Uninitialised at reset, which is correct -- both
- * cursors start at zero, so the ring reads as empty and the first interrupts
- * transmit silence until the first decoded block lands.
+ * where large buffers live.
+ *
+ * THE CURSORS ARE NOT ZERO AT RESET, and this comment used to claim they were --
+ * "uninitialised at reset, which is correct, both cursors start at zero". Wrong
+ * twice: `.bss.dma` is NOLOAD so startup clears DTCM and not OCRAM, and the boot
+ * ROM actively writes scratch into three fixed OCRAM runs, one of which contains
+ * the top of this structure. `aius_spdif_tx24_begin()` now resets them
+ * explicitly; see aius_spdif_tx24_reset() for the measured ranges and the
+ * audible consequence.
  *
  * DMAMEM here does NOT imply cache maintenance: no DMA reads this buffer. The
  * producer and the consumer are both CPU accesses through the same write-back
@@ -94,7 +100,13 @@ FLASHMEM void AiusSpdifTx24Hook::install(void)
 	 * interrupt taken mid-swap would run one handler or the other, both of
 	 * which are individually correct, but the pair of stores inside
 	 * attachInterrupt() should not be observed split. */
+	/* Cursors first, and INSIDE the critical section with the handler swap: the
+	 * ring must read as empty before this ISR can run even once, because
+	 * `.bss.dma` is NOLOAD and the boot ROM leaves scratch in this exact range
+	 * (see aius_spdif_tx24_reset). Resetting after the attach would leave a
+	 * window of one interrupt period in which fill() runs against ROM values. */
 	__disable_irq();
+	aius_spdif_tx24_reset(&g_aius_spdif_tx24);
 	dma.attachInterrupt(AiusSpdifTx24Hook::isr);
 	__enable_irq();
 }

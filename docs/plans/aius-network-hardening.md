@@ -560,6 +560,24 @@ are follow-up work, recorded here so they are not lost.
     audible. Not fixed: `lib/aius_audio/**` is outside the boot work's remit and the
     one-line fix — zero the three cursors in `aius_spdif_tx24_begin()` — wants an
     audible check.
+
+    **FIXED 2026-07-26.** `aius_spdif_tx24_reset()` zeroes the three cursors, called
+    from `aius_spdif_tx24_begin()` **inside the same critical section as the handler
+    swap** — resetting after `attachInterrupt()` would leave a one-interrupt-period
+    window in which `fill()` still runs against ROM values. The 16 KiB buffer is
+    deliberately *not* cleared: with both cursors at zero the ring reads as empty and
+    no sample is read before a producer writes it, so clearing it would be wasted
+    stores before the first block.
+
+    **Why no test caught it, which is the transferable part:** every ring test in
+    `test_dsp.c` opens with `memset(&ring, 0, sizeof ring)`, so all of them assert
+    behaviour from the one state the target never comes up in. The new test seeds the
+    cursors with the ROM words actually measured at that address, asserts the
+    pre-condition that the ring looks non-empty, and then asserts the *audible*
+    property — a `fill()` straight after reset emits digital silence and counts the
+    substitution rather than leaking the samples still in the buffer. Negative
+    control observed at exit 134. A `memset`-first test is worth distrusting anywhere
+    the object under test lives in `.bss.dma`.
 18. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.

@@ -1950,6 +1950,56 @@ static void test_out_stage_16bit_arm_matches_the_old_wire_words(void)
 /* The ring's two structural cases, both of which the old int16 ring also had and
  * neither of which anything asserted: a block that WRAPS, and a transmit
  * interrupt that arrives with the ring short. */
+/* The ring must be empty after a reset even though nothing zeroed its memory.
+ *
+ * Every other ring test in this file opens with `memset(&ring, 0, sizeof ring)`,
+ * so not one of them could detect this: they all assert behaviour from the state
+ * the target does NOT come up in. `.bss.dma` is NOLOAD, and the i.MX RT1062 boot
+ * ROM writes scratch into three fixed OCRAM runs, one of which contains this
+ * structure's cursors. So the test seeds the cursors with the ROM bytes actually
+ * observed at that address rather than a chosen pattern -- the point is the
+ * device's real reset state, not a hypothetical one. */
+static void test_tx24_reset_empties_a_ring_that_was_never_zeroed(void)
+{
+    static AiusSpdifTx24Ring ring;
+
+    /* Sample data as well, so "reads as empty" cannot be satisfied by the buffer
+     * happening to hold zeros -- silence below must come from the cursors. */
+    for (uint32_t i = 0; i < AIUS_SPDIF_TX24_RING_FRAMES; i++) {
+        ring.left[i] = 0x7FFF00;
+        ring.right[i] = -0x7FFF00;
+    }
+    /* The words measured at this address after a reset on the board. */
+    ring.written = 0x00000001u;
+    ring.consumed = 0x00001000u;
+    ring.underruns = 0x00060008u;
+
+    /* Pre-condition, and the defect in one line: unsigned wrap makes the ring
+     * look nearly full, so fill() would transmit buffer contents. */
+    assert(aius_spdif_tx24_level(&ring) != 0u);
+
+    aius_spdif_tx24_reset(&ring);
+
+    assert(aius_spdif_tx24_level(&ring) == 0u);
+    assert(aius_spdif_tx24_free(&ring) == AIUS_SPDIF_TX24_RING_FRAMES);
+    assert(ring.underruns == 0u);
+
+    /* THE AUDIBLE ASSERTION. A fill straight after reset must emit digital
+     * silence and count the substitution, not leak the samples still sitting in
+     * the buffer -- that burst is what the defect actually produced at every
+     * boot, bounded and inaudible to the test suite but not to a listener. */
+    enum { N = 64 };
+    static int32_t tx[N * 2];
+    for (int i = 0; i < N * 2; i++) tx[i] = 0x123456; /* must be overwritten */
+    aius_spdif_tx24_fill(&ring, tx, N);
+    for (int i = 0; i < N * 2; i++) {
+        assert(tx[i] == 0);
+    }
+    assert(ring.underruns == (uint32_t)N);
+    printf("ok tx24 reset empties a ring the boot ROM left dirty (silence, %u underruns)\n",
+           ring.underruns);
+}
+
 static void test_tx24_ring_wraps_and_counts_underruns(void)
 {
     static AiusSpdifTx24Ring ring;
@@ -2498,6 +2548,7 @@ int main(void)
     test_out16_dither_deterministic();
     test_tx24_carries_low_bits_the_old_path_discarded();
     test_out_stage_16bit_arm_matches_the_old_wire_words();
+    test_tx24_reset_empties_a_ring_that_was_never_zeroed();
     test_tx24_ring_wraps_and_counts_underruns();
     test_meter_input_peak_rms();
     test_meter_output_and_silence();

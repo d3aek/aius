@@ -111,6 +111,35 @@ typedef struct {
     volatile uint32_t underruns;
 } AiusSpdifTx24Ring;
 
+/* Put the ring in the empty state. MUST be called before the transmit interrupt
+ * is armed; it is not optional and the cursors are not zero at reset.
+ *
+ * WHY THIS EXISTS, because the original code asserted the opposite. This ring
+ * lives in `.bss.dma`, which is `NOLOAD` -- the Teensy startup path clears DTCM
+ * and does not clear OCRAM -- and worse, the i.MX RT1062 **boot ROM overwrites
+ * three fixed runs of OCRAM on every reset** (measured; the ranges and the
+ * method are in aius-network-hardening.md, and they are what displaced the
+ * retained boot ledger). The three cursors sit at the top of this structure,
+ * inside the largest of those runs, so after a reset they held ROM scratch.
+ *
+ * The consequence was audible rather than theoretical: `aius_spdif_tx24_fill()`
+ * computes `written - consumed`, so arbitrary cursors make the ring look
+ * arbitrarily full and the first interrupts transmit whatever the buffer
+ * happens to contain. Bounded -- the index is masked, so there is no
+ * out-of-bounds access and no crash -- which is exactly why it survived: a
+ * silent burst of garbage at every boot, and nothing failing.
+ *
+ * The buffer itself is deliberately NOT cleared. 16 KiB of stores before the
+ * first block would be wasted work: with both cursors at zero the ring reads as
+ * empty, `fill()` substitutes silence, and no sample is ever read before a
+ * producer writes it. Only the cursors carry the invariant. */
+static inline void aius_spdif_tx24_reset(AiusSpdifTx24Ring *ring)
+{
+    ring->written = 0u;
+    ring->consumed = 0u;
+    ring->underruns = 0u;
+}
+
 /* Committed frames not yet transmitted. This is the transmit queue occupancy
  * the meter reports; there is no other queue behind it. */
 static inline uint32_t aius_spdif_tx24_level(const AiusSpdifTx24Ring *ring)
