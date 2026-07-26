@@ -46,6 +46,13 @@ extern "C" {
  * checkpoint callback stalls through in a fault image, the production `Serial`
  * primitive table the runtime's USB service consumes, and the network adapter
  * the UDP callback and the status surface both reach through. */
+/* The 24-bit output path: our own route from the playback ring into the S/PDIF
+ * transmit DMA buffer, alongside the retained AudioOutputSPDIF3 instead of
+ * through its int16 audio_block_t queue. The header sits beside its
+ * implementation in lib/aius_audio/src/ rather than in lib/aius_audio/include/,
+ * which holds the retained snapshot's own headers and is not ours to add to;
+ * the path is relative for the same reason aius_spdif_sources.cpp's is. */
+#include "../lib/aius_audio/src/aius_spdif_tx24.h"
 #include "aius_boot_teensy.h"
 #include "aius_cdc_teensy.h"
 #include "aius_fault_teensy.h"
@@ -634,7 +641,7 @@ static FLASHMEM void record_state(void)
 /* converts rate: AudioInputSPDIF3 DMAs receiver words straight into    */
 /* audio blocks at the incoming carrier's rate (the retained snapshot   */
 /* predates the upstream asynchronous converter, and the framework copy */
-/* is byte-identical to it), and AudioOutputSPDIF3 clocks blocks out at */
+/* is byte-identical to it), and the transmit DMA clocks frames out at  */
 /* AUDIO_SAMPLE_RATE_EXACT. Nothing between them compares the two, and  */
 /* nothing compares block->sample_rate_hz against either. A rate        */
 /* disagreement is therefore not absorbed and not counted -- it is      */
@@ -646,10 +653,10 @@ static FLASHMEM void record_state(void)
 /*                                                                     */
 /*   AUDIO_BLOCK_SAMPLES = 128 frames (the Teensy core default; this    */
 /*   build does not override it) is the ENGINE block. It sizes the DMA  */
-/*   buffers, the audio_block_t pool, update()'s word staging and       */
-/*   emit_block()'s drain. update() therefore runs 48000/128 = 375      */
-/*   times a second and moves 256 IEC words = 512 bytes each time --    */
-/*   the 192,000 B/s the replay ring is sized for.                      */
+/*   buffers, the audio_block_t pool, update()'s word staging and the   */
+/*   transmit ISR's drain of the 24-bit ring. update() therefore runs   */
+/*   48000/128 = 375 times a second and moves 256 IEC words = 512 bytes */
+/*   each time -- the 192,000 B/s the replay ring is sized for.         */
 /*                                                                     */
 /*   512 frames is the DECODED block, and it is what `blocks` counts.   */
 /*   A DTS Core access unit reconstructs to 512 samples per channel and */
@@ -663,9 +670,21 @@ static FLASHMEM void record_state(void)
 /* The DWT bracket in enqueue() measures the DECODED block, so its      */
 /* budget is 512 frames / 48 kHz = 10,667 us (6,400,000 cycles at       */
 /* 600 MHz), not 128 frames. The meter's `queue_frames` is neither of   */
-/* these: it is g_count, the stereo ring's occupancy at the publish     */
-/* instant, which sits at 512 because one decode fills the ring by 512  */
-/* and the four following emit_block() passes drain it by 128 each.     */
+/* these: it is aius_spdif_tx24_level(), the 24-bit ring's occupancy at */
+/* the publish instant, which sits at 512 because one decode fills the  */
+/* ring by 512 and the four following transmit interrupts drain it by   */
+/* 128 each.                                                           */
+/*                                                                     */
+/* THE FINAL HOP IS NO LONGER audio_block_t. The transmit DMA interrupt */
+/* drains the 24-bit ring straight into SPDIF_tx_buffer                */
+/* (lib/aius_audio/src/aius_spdif_tx24.h), so this class has no         */
+/* emit_block(), allocates no pool blocks, and is connected to no       */
+/* output node. The consequence that matters here: the ring's producer  */
+/* (enqueue(), reached from the software ISR that update_all() pends)   */
+/* and its consumer (the transmit DMA ISR) are now at DIFFERENT NVIC    */
+/* priorities, where both used to sit inside update(). That is why the  */
+/* ring is a stage/commit single-producer/single-consumer structure and */
+/* not the plain read/write/count triple the int16 ring could afford.   */
 /* ------------------------------------------------------------------ */
 class AiusAudioProcessor : public AudioStream
 {
@@ -676,6 +695,14 @@ public:
 	{
 		apply_config(AIUS_OPTICAL_CONFIG);
 		aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
+		/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
+		 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
+		 * before it, the vendor ISR transmits block_silent, which is the same
+		 * silence the board idles in. Here rather than in setup() because this
+		 * is the one function that owns bringing the audio path up, and it runs
+		 * after the static AudioOutputSPDIF3 constructor has allocated the DMA
+		 * channel. */
+		aius_spdif_tx24_begin();
 		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 			g_create_status = AIUS_NO_SPACE;
 			return;
@@ -767,28 +794,37 @@ protected:
 			release(left);
 		if (right != nullptr)
 			release(right);
-
-		emit_block();
+		/* No emit_block(): the transmit DMA interrupt drains the 24-bit ring
+		 * itself, so this callback's only job is to push the epoch's input
+		 * words into the pipeline. */
 	}
 
 private:
-	static constexpr uint32_t RING_FRAMES = 2048;
 	static constexpr size_t ARENA_BYTES = 128u * 1024u;
+	/* THE OUTPUT WORD WIDTH, and the one place it is chosen.
+	 *
+	 * 24 bits is the transmit register's width and the DSP's own output width,
+	 * so this selection is lossless end to end and aius_out16_* is bypassed --
+	 * present, tested and reachable through aius_out_stage_run()'s other arm,
+	 * but not on the shipped path. A constexpr rather than a config field
+	 * because nothing on the device has a reason to ask for 16-bit output: the
+	 * sink is a 24-bit S/PDIF register either way, so selecting 16 would only
+	 * throw away 8 bits. Promoting it to AiusOpticalConfig is a config-surface
+	 * change and belongs with whoever next widens that model. */
+	static constexpr int OUTPUT_WIDTH_BITS = AIUS_DSP_OUT_WIDTH_24;
 	audio_block_t *g_input_queue[2] = {nullptr, nullptr};
 	static uint8_t g_arena_memory[ARENA_BYTES] __attribute__((aligned(16)));
 	AiusArena g_arena;
 	AiusPipeline *g_pipeline = nullptr;
 	AiusStatus g_create_status = AIUS_INVALID_ARG;
-	/* The playback ring holds ENGINE samples, so it is int16_t: the 24->16
-	 * conversion happens once, in aius_out16_run() on the way in, rather than as a
-	 * narrowing cast on the way out. Being honest about the type also halves the
-	 * ring from 16 KB to 8 KB of DTCM, which more than pays for the true-peak
-	 * FIR history the limiter state grew. */
-	int16_t g_left[RING_FRAMES];
-	int16_t g_right[RING_FRAMES];
-	uint32_t g_read = 0;
-	uint32_t g_write = 0;
-	uint32_t g_count = 0;
+	/* The playback ring is NOT a member any more: it is g_aius_spdif_tx24, 24-bit
+	 * and in DMAMEM, owned by the transmit path that drains it
+	 * (lib/aius_audio/src/aius_spdif_tx24.h). Moving it out took 8,192 bytes of
+	 * int16 ring off DTCM's free-for-locals zone -- the scarcest bank on this
+	 * board -- and put 16,384 bytes of int32 ring into OCRAM, of which 310 KB was
+	 * free. The int16 ring could afford DTCM; a 24-bit one could not, and the
+	 * transmit ISR's read is strictly sequential so the L1 D-cache amortises the
+	 * OCRAM latency over eight words per line. */
 	uint32_t g_blocks = 0;
 	uint32_t g_overruns = 0;
 	AiusDownmixConfig g_downmix = aius_downmix_config_default();
@@ -808,11 +844,12 @@ private:
 	bool g_input_stage_active = false;
 	AiusLimiter g_limiter = {};
 	bool g_limiter_active = false;
-	/* The 24->16 output stage and its two dither streams. Seeded ONCE in
-	 * begin_pipeline(), deliberately not in apply_config(): re-seeding on every
-	 * staged config change would restart the noise sequence and make the output a
-	 * function of config-change history rather than of the sample index alone (see
-	 * aius_dsp.h §DETERMINISM). */
+	/* The output stage's dither streams, seeded ONCE in begin_pipeline() and
+	 * deliberately not in apply_config(): re-seeding on every staged config change
+	 * would restart the noise sequence and make the output a function of
+	 * config-change history rather than of the sample index alone (see aius_dsp.h
+	 * §DETERMINISM). Seeded even though OUTPUT_WIDTH_BITS bypasses dither, so that
+	 * flipping the width is a one-line change and not also a bring-up change. */
 	AiusOut16Stage g_out16 = {};
 	/* Meter tap state, all resolved by apply_config() so the audio path never
 	 * divides and never reads the config model. g_meters_active is the whole
@@ -845,7 +882,7 @@ private:
 		if (block == nullptr || block->frames > AUDIO_BLOCK_SAMPLES * 4 ||
 		    block->planes[0] == nullptr)
 			return AIUS_INVALID_ARG;
-		if (block->frames > RING_FRAMES - g_count)
+		if (block->frames > aius_spdif_tx24_free(&g_aius_spdif_tx24))
 			return AIUS_NO_SPACE;
 		int32_t processed_left[AUDIO_BLOCK_SAMPLES * 4];
 		int32_t processed_right[AUDIO_BLOCK_SAMPLES * 4];
@@ -886,27 +923,38 @@ private:
 			aius_meter_accumulate_output(&g_meter, processed_left,
 			                             processed_right, block->frames);
 		}
-		/* 24 -> 16 bit for the AudioStream engine. This used to be an arithmetic
-		 * right shift, which rounds toward -infinity (a -0.5 LSB DC offset and an
-		 * asymmetric transfer curve) and dithers not at all (so the quantisation
-		 * error was correlated with the programme -- distortion, audible as grunge
-		 * on fades). aius_out16_run() is TPDF dither, then round to nearest, then
-		 * saturate; the determinism argument for dithering a bit-exact path is in
-		 * aius_dsp.h. Two calls because the destination is a ring the block can
-		 * wrap: enqueue() has already bounded frames to the free space, so there is
-		 * at most one wrap and the dither streams advance in the same order a
-		 * single contiguous call would use. */
-		uint32_t first = block->frames;
-		if (first > RING_FRAMES - g_write)
-			first = RING_FRAMES - g_write;
-		aius_out16_run(&g_out16, processed_left, processed_right,
-		               &g_left[g_write], &g_right[g_write], first);
-		if (first < block->frames)
-			aius_out16_run(&g_out16, processed_left + first,
-			               processed_right + first, &g_left[0], &g_right[0],
-			               block->frames - first);
-		g_write = (g_write + block->frames) % RING_FRAMES;
-		g_count += block->frames;
+		/* Into the transmit ring, at OUTPUT_WIDTH_BITS.
+		 *
+		 * At 24 bits -- the shipped selection -- this is a copy and nothing else:
+		 * the DSP's word IS the S/PDIF transmit word, so there is no dither, no
+		 * rounding and no saturation left to do, and the ~-93 dBFS floor the old
+		 * int16 hop imposed is gone. The stage that used to live here
+		 * (aius_out16_run: TPDF dither, round to nearest, saturate) is not deleted
+		 * -- aius_out_stage_run()'s 16-bit arm still runs it, and the dsp suite
+		 * still pins it -- it is bypassed, which is the correct demotion once the
+		 * path stops narrowing the word.
+		 *
+		 * Two calls because the destination is a ring the block can wrap.
+		 * aius_spdif_tx24_stage() returns the contiguous run available at each
+		 * offset and the free-space check above bounds frames, so there is at most
+		 * one wrap; committing once at the end is what publishes the whole block to
+		 * the transmit interrupt atomically. */
+		int32_t *ring_left = nullptr;
+		int32_t *ring_right = nullptr;
+		uint32_t first = aius_spdif_tx24_stage(&g_aius_spdif_tx24, 0,
+		                                       &ring_left, &ring_right);
+		if (first > block->frames)
+			first = block->frames;
+		aius_out_stage_run(&g_out16, OUTPUT_WIDTH_BITS, processed_left,
+		                   processed_right, ring_left, ring_right, first);
+		if (first < block->frames) {
+			(void)aius_spdif_tx24_stage(&g_aius_spdif_tx24, first,
+			                            &ring_left, &ring_right);
+			aius_out_stage_run(&g_out16, OUTPUT_WIDTH_BITS,
+			                   processed_left + first, processed_right + first,
+			                   ring_left, ring_right, block->frames - first);
+		}
+		aius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);
 		g_blocks++;
 		if (metering) {
 			if (g_meter.out_frames >= g_meter_window_frames) {
@@ -918,10 +966,15 @@ private:
 				aius_meter_set_limiter_gr(&g_meter,
 					aius_dsp_limiter_gain_reduction_db(dsp.limiter));
 				/* No division: microseconds per frame was resolved to Q16.16
-				 * by apply_config(), and g_count <= RING_FRAMES, so this is one
-				 * 32x32 multiply and a shift. */
-				aius_meter_set_telemetry(&g_meter, g_count,
-					(uint32_t)(((uint64_t)g_count *
+				 * by apply_config(), and the level is bounded by
+				 * AIUS_SPDIF_TX24_RING_FRAMES, so this is one 32x32 multiply
+				 * and a shift. The level is the WHOLE transmit queue now --
+				 * there is no vendor two-deep block queue behind it to be
+				 * unaccounted for. */
+				const uint32_t queued =
+					aius_spdif_tx24_level(&g_aius_spdif_tx24);
+				aius_meter_set_telemetry(&g_meter, queued,
+					(uint32_t)(((uint64_t)queued *
 					            g_meter_us_per_frame_q16) >> 16),
 					g_dsp_cycles_last, g_dsp_cycles_max);
 				aius_meter_publish(&g_meter);
@@ -932,33 +985,6 @@ private:
 				g_dsp_cycles_max = cycles;
 		}
 		return AIUS_OK;
-	}
-
-	void emit_block(void)
-	{
-		audio_block_t *left = allocate();
-		audio_block_t *right = allocate();
-		if (left == nullptr || right == nullptr) {
-			if (left != nullptr) release(left);
-			if (right != nullptr) release(right);
-			g_overruns++;
-			return;
-		}
-		for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-			if (g_count != 0) {
-				left->data[i] = g_left[g_read];
-				right->data[i] = g_right[g_read];
-				g_read = (g_read + 1) % RING_FRAMES;
-				g_count--;
-			} else {
-				left->data[i] = 0;
-				right->data[i] = 0;
-			}
-		}
-		transmit(left, 0);
-		transmit(right, 1);
-		release(left);
-		release(right);
 	}
 };
 
@@ -1048,11 +1074,28 @@ uint8_t AiusAudioProcessor::g_arena_memory[AiusAudioProcessor::ARENA_BYTES]
 	__attribute__((aligned(16)));
 
 static AiusAudioProcessor g_audio_processor;
+/* STILL CONSTRUCTED, DELIBERATELY, AND DELIBERATELY NOT CONNECTED.
+ *
+ * Its constructor is what runs begin() -> config_spdif3(): the audio PLL, the
+ * whole transmit clock tree, CORE_PIN14 as SPDIF_OUT, the transmit DMA channel
+ * and the double-buffered SPDIF_tx_buffer. All of that is still exactly what we
+ * want; it is only the ISR's int16 source that the 24-bit path replaces, and
+ * aius_spdif_tx24_begin() replaces it by pointing the same DMA channel's
+ * interrupt somewhere else.
+ *
+ * THE TWO CONNECTIONS INTO IT ARE GONE, and that is load-bearing rather than
+ * tidying. AudioConnection::connect() is the only thing that sets
+ * AudioStream::active, so with no connection AudioOutputSPDIF3::update() is
+ * never called -- which is required, because it would queue audio_block_t into
+ * block_left_1st/2nd that nothing now releases, exhausting the 24-block pool
+ * within a second and turning every subsequent allocate() into an overrun.
+ *
+ * update_setup() still ran inside begin(), so the clock-responsibility contract
+ * is untouched: g_spdif_in is constructed above and claims it first,
+ * g_spdif_out gets false, and replay_clock_service() moves it as before. */
 static AudioOutputSPDIF3 g_spdif_out;
 static AudioConnection g_spdif_left(g_spdif_in, 0, g_audio_processor, 0);
 static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
-static AudioConnection g_audio_left(g_audio_processor, 0, g_spdif_out, 0);
-static AudioConnection g_audio_right(g_audio_processor, 1, g_spdif_out, 1);
 
 static FLASHMEM uint8_t current_state(void)
 {
@@ -3291,9 +3334,13 @@ static FLASHMEM void replay_refill_service(uint32_t now_ms)
 /* whenever its DPLL is unlocked. The tx DMA is triggered by           */
 /* DMAMUX_SOURCE_SPDIF_TX over a 4 * AUDIO_BLOCK_SAMPLES int32 buffer  */
 /* with INTHALF | INTMAJOR, i.e. one interrupt every                   */
-/* AUDIO_BLOCK_SAMPLES frames -- exactly the rx side's rate. So        */
-/* AudioOutputSPDIF3::isr() already runs at the audio block rate with  */
-/* no input present; it simply declines to call update_all().          */
+/* AUDIO_BLOCK_SAMPLES frames -- exactly the rx side's rate. So the    */
+/* transmit DMA ISR (ours since the 24-bit path landed; see            */
+/* lib/aius_audio/src/aius_spdif_tx24.h) already runs at the audio     */
+/* block rate with no input present; it simply declines to call        */
+/* update_all(). Replacing the handler changed nothing here: the same  */
+/* DMA channel, the same trigger, the same rate, the same             */
+/* update_responsibility test at the bottom of the handler.           */
 /*                                                                     */
 /* THE LIVE INPUT ALWAYS OWNS THE AUDIO PATH. Replay is strictly the   */
 /* fallback for a board with no carrier, so production is unchanged:   */
@@ -3308,14 +3355,16 @@ static FLASHMEM void replay_refill_service(uint32_t now_ms)
 /* ON STOP the clock goes back to the input, deliberately. With no     */
 /* carrier that means the graph stops again: `blocks` and `overruns`   */
 /* freeze at their final values, and the transmitter -- whose ISR      */
-/* keeps running and keeps releasing blocks until block_left_1st is    */
-/* null -- falls to AudioOutputSPDIF3::block_silent, so the optical    */
-/* output carries digital silence. That is the same idle state the     */
-/* board boots into with nothing plugged in, and it is the right one:  */
-/* a passthrough device with no source has nothing to pass through.    */
-/* Nothing leaks across the transition -- the output ISR releases the  */
-/* blocks it holds, and AudioInputSPDIF3::update() releases the pair   */
-/* it allocates each pass while block_offset stays 0.                  */
+/* keeps running -- drains the 24-bit ring to empty and then writes    */
+/* zeros, so the optical output carries digital silence. That is the   */
+/* same idle state the board boots into with nothing plugged in, and   */
+/* it is the right one: a passthrough device with no source has        */
+/* nothing to pass through. Nothing leaks across the transition -- the */
+/* ring holds only committed frames and AudioInputSPDIF3::update()     */
+/* releases the pair it allocates each pass while block_offset stays 0.*/
+/* The silence is now COUNTED as well as heard: the substituted frames */
+/* advance g_aius_spdif_tx24.underruns, where the vendor path's        */
+/* block_silent substitution advanced nothing at all.                 */
 /* ------------------------------------------------------------------ */
 
 /* update_responsibility is `protected static` on both peripherals

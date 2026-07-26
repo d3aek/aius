@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, memory, io]
-updated: 2026-07-25
+updated: 2026-07-26
 toc: true
 ---
 
@@ -217,16 +217,123 @@ bytes of stack that `enqueue()`'s 4,096-byte frame is spent from.
 
 The optical transmitter, and the clock master while a replay plays with no carrier.
 
+**The path is 24-bit, and it does not go through `audio_block_t`.** This is the first
+item of the audio-quality roadmap in
+[`aius-dsp-config-api.md` §Audio-quality roadmap](../plans/aius-dsp-config-api.md#audio-quality-roadmap--accepted-2026-07-26).
+`audio_block_t` is `int16_t data[AUDIO_BLOCK_SAMPLES]`
+(`cores/teensy4/AudioStream.h:76`), so the engine capped everything the DSP did at a
+~−93 dBFS floor — and the hardware never did: S/PDIF carries 24 bits, `SPDIF_STL` and
+`SPDIF_STR` are 24-bit registers, and `SPDIF_tx_buffer` is `int32_t`. The retained
+snapshot's ISR proved it in one line, `*dest++ = (*src_left++) << 8`
+(`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:130`), which shifts
+16-bit data back up into the 24-bit slot it was just reduced out of.
+
+The chain is now:
+
+```text
+DSP (24-bit int, AIUS_DSP_SAMPLE_MAX = 2^23-1)
+  -> aius_out_stage_run at AIUS_DSP_OUT_WIDTH_24   <- a copy; no dither, no rounding
+  -> g_aius_spdif_tx24, int32 ring, DMAMEM
+  -> AiusSpdifTx24Hook::isr, the transmit DMA interrupt
+  -> SPDIF_tx_buffer (int32) -> SPDIF_STL / SPDIF_STR
+```
+
+**It is lossless from the DSP to the wire and needs no dither at all**, because the DSP
+already produces 24-bit integers. That demotes dither from a correctness fix to a
+refinement one output selection needs: `aius_out16_*` is not deleted, it is the 16-bit
+arm of `aius_out_stage_run()` (`lib/aius_dsp/src/aius_dsp.c:755`), selected by
+`AiusAudioProcessor::OUTPUT_WIDTH_BITS` (`src/optical_main.cpp:814`) and bypassed by
+the shipped `AIUS_DSP_OUT_WIDTH_24`. The 16-bit arm reproduces the old wire words
+exactly — `aius_out16_sample()` times `AIUS_DSP_OUT16_LSB`, which is the snapshot's
+`<< 8`.
+
+**No vendor patch.** `lib/aius_audio/` is a retained snapshot and stays byte-for-byte
+what upstream shipped. Three properties made a sibling path possible instead:
+`SPDIF_tx_buffer` is a *file static* of `output_spdif3.cpp` and that file is
+`#include`d into `lib/aius_audio/src/aius_spdif_sources.cpp:3`, so the filler is
+addressable from inside that translation unit; `dma`, `update_responsibility` and
+`AudioStream::update_all()` are `protected static`, so a private-inheritance shim
+reaches them exactly as `AiusSpdifOutputClock` already did
+(`src/optical_main.cpp:3390`); and `DMAChannel::attachInterrupt()` only stores a
+vector (`cores/teensy4/DMAChannel.h:513`), so redirecting the transmit interrupt after
+`begin()` has run replaces the vendor ISR without editing it.
+`test/optical-cutover/test_optical_cutover.py` asserts the snapshot still contains
+that `<< 8` line, which is what keeps "unpatched" a fact rather than a claim.
+
 **Buffers.**
 
 - `SPDIF_tx_buffer[AUDIO_BLOCK_SAMPLES * 4]`, 2,048 B, `DMAMEM`, 32-byte aligned —
   double-buffered, one interrupt per `AUDIO_BLOCK_SAMPLES` frames
   (`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:44`).
-- `AudioOutputSPDIF3::block_silent`, one `audio_block_t` (260 B), `DMAMEM` — what the
-  transmitter sends when no block is queued
-  (`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:46`).
-- Two pool blocks per `emit_block()` pass, allocated and released within the pass
-  (`src/optical_main.cpp:740`).
+- `g_aius_spdif_tx24`, an `AiusSpdifTx24Ring`, **16,396 B, `DMAMEM`** — the 24-bit
+  playback ring: 2 × 2,048 `int32` planes plus three cursors
+  (`lib/aius_audio/src/aius_spdif_sources.cpp:30`). 2,048 frames is unchanged from the
+  `int16` ring it replaces, so `AIUS_NO_SPACE` and the meter's `queue_frames` keep
+  their meaning.
+- `AudioOutputSPDIF3::block_silent`, one `audio_block_t` (260 B), `DMAMEM` — now
+  unreachable, because the vendor ISR that substituted it no longer owns the transmit
+  interrupt (`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:46`).
+- **No pool blocks.** `emit_block()` is gone, so the transmit half allocates and
+  releases nothing per engine block, and `AudioOutputSPDIF3::update()` is never called
+  — there is no `AudioConnection` into `g_spdif_out` (`src/optical_main.cpp:1096`).
+
+**Why `DMAMEM` and not DTCM, which is the interesting placement decision here.** The
+`int16` ring was 8,192 B in DTCM and the honest 24-bit one is 16,384 B, so keeping it
+there would have spent the entire free-for-locals zone — which is the whole point of
+§Deciding principle's "memory that is genuinely free is not an argument". Moving it to
+OCRAM instead **returned** 8,224 B of DTCM and cost 16,416 B of a bank with 293 KB
+free. The reason to think twice is that a DMA ISR reads it: OCRAM is slower than DTCM.
+It is still the right call, and the arithmetic is small — the read is strictly
+sequential, 256 words per interrupt, so each 32-byte OCRAM line fill amortises over
+eight words: 32 line fills per interrupt at roughly 20–30 cycles is under 1,000 cycles,
+against a 128-frame interrupt period of 1,600,000 cycles at 600 MHz.
+
+**Packing three bytes per sample was considered and rejected.** It would save 4 KB of
+OCRAM out of 293 KB free and cost three byte loads plus two shifts per sample in the
+transmit ISR. The aligned word is also exactly what `SPDIF_STL` takes, which is what
+makes the fill a straight copy (`lib/aius_audio/src/aius_spdif_tx24.h:101`).
+
+**No cache maintenance on the ring, and that needs saying because `DMAMEM` normally
+implies a flush.** Nothing DMAs the ring: both ends are CPU accesses through the same
+write-back D-cache, so they are coherent by construction. `SPDIF_tx_buffer` is the
+buffer the DMA actually reads, and the handler flushes it once per half — 1,024 bytes,
+32-byte aligned, a multiple of 32 — rather than the snapshot's flush-every-32-bytes-as-
+you-go. Same number of `DCCMVAC` operations, one call instead of 32, and provably early
+enough: the filled half is the one the DMA is *not* reading, so it has a full 2.67 ms
+before the transfer reaches it.
+
+**Single producer, single consumer, no critical section — and the priorities are why
+that had to change.** The producer is `enqueue()`, reached from the software interrupt
+`update_all()` pends, at NVIC priority 208 (`cores/teensy4/AudioStream.cpp:424`); the
+consumer is the transmit DMA interrupt at the startup default of 128
+(`cores/teensy4/startup.c:136`). Lower number wins, so **the consumer can preempt the
+producer mid-block**. The `int16` ring had both ends inside `update()` and could
+therefore afford a plain `read`/`write`/`count` triple; that would be a race here. The
+24-bit ring instead keeps two free-running 32-bit frame counters, each written by
+exactly one side, with the level as their unsigned difference — correct across the
+counters' own wrap, and single-copy atomic on the Cortex-M7. Staged frames become
+visible only at `aius_spdif_tx24_commit()`, so a preempting consumer never observes a
+half-written block (`lib/aius_audio/src/aius_spdif_tx24.h:153`).
+
+**An underflow is now counted rather than merely heard.** The vendor path substituted
+`block_silent` and advanced nothing, so a dry queue was inaudible *and* invisible; the
+24-bit fill writes the same silence and advances `underruns` by the substituted frame
+count. Transmit queue occupancy is likewise the ring's own level, with no vendor
+two-deep block queue behind it to be unaccounted for — which is what
+[`aius-sample-rate-following.md` §Interaction with the 24-bit output path](../plans/aius-sample-rate-following.md#interaction-with-the-24-bit-output-path)
+asked for. Neither counter has a wire field yet; that is observability work for the
+sample-rate item, not for this one.
+
+**Cost.** The path is *cheaper* than the 16-bit one it replaces, which is the expected
+direction: it removed work rather than adding it. Inside the DWT bracket, the 512-frame
+block's output stage went from 1,024 `aius_out16_sample()` calls — a PRNG draw, a
+fixed-point convert, a `vrintm`, two `vcmpe`/`vmrs` pairs and a convert back, about 45–60
+cycles each — to a 6-instruction-per-frame copy loop plus the OCRAM write-allocate line
+fills, so roughly 51,000 cycles became roughly 6,000–7,000. Outside the bracket, the
+transmit interrupt is 228 bytes of ITCM with a 9-instruction inner loop
+(`lib/aius_audio/src/aius_spdif_sources.cpp:57`) against the vendor ISR's per-sample
+shift plus 32 separate `arm_dcache_flush()` calls, and `emit_block()`'s two `allocate()`
+/ `release()` pairs and second full copy are gone outright.
 
 **Why this implementation, and the alternative that was rejected.** The transmitter
 can hold `update_responsibility` because its DMA is clocked by PLL4 through
@@ -273,7 +380,8 @@ stays honestly zero, and the only symptom is pitch. That is why the equality is 
 **Two block sizes, and every per-block figure names one of them.**
 `AUDIO_BLOCK_SAMPLES` is 128 frames — the Teensy core default, which this build does
 not override — and is the *engine* block: it sizes both DMA buffers, the
-`audio_block_t` pool, `update()`'s word staging and `emit_block()`'s drain, so
+`audio_block_t` pool, `update()`'s word staging and the transmit interrupt's drain of
+the 24-bit ring, so
 `update()` runs 48000/128 = 375 times a second and moves 512 bytes each time (the
 192,000 B/s the replay ring is sized for). 512 frames is the *decoded* block and is
 what `blocks` counts: a DTS Core access unit reconstructs to 512 samples per channel
@@ -286,11 +394,17 @@ two constants: changing the engine block changes the decoder block this file acc
 context, not in either ISR, and costs two byte stores under one critical section
 (`src/optical_main.cpp:2959`). The critical section exists so that no ISR can observe
 the both-drive window (a double-processed block) or the neither-drives window (a
-stalled one); it is shorter than the critical sections `block_count()` and
-`AudioOutputSPDIF3::update()` already take (`src/optical_main.cpp:2942`). Keeping the
+stalled one); it is shorter than the critical section `block_count()` already takes
+(`src/optical_main.cpp:2942`). Keeping the
 reconciler in thread context is also what keeps `pllLocked()` out of the audio ISR,
 which is why the ITCM allowlist is still exactly three sections
 (`src/optical_main.cpp:2905`).
+
+The 24-bit path did not add a fourth. `optical_main.cpp`'s pinned audio-block set
+*shrank* from 1,024 to 820 bytes when `emit_block()` left, and the new transmit handler
+lives in `lib/aius_audio/src/aius_spdif_sources.cpp.o` — neither a declared cold object
+nor the pinned hot one — so `test/itcm-placement/verify_target.py` does not police it,
+correctly: it is 228 bytes of code that genuinely runs per audio block.
 
 ## Meter snapshot handover — audio ISR to HTTP
 

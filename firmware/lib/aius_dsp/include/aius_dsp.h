@@ -25,15 +25,24 @@ extern "C" {
  *                                    coefficients supplied by the caller.
  *   3. Limiter   (aius_dsp_limiter_run)  true-peak safety limiter tail.
  *
- * ...and then, at the boundary to a 16-bit playback engine, the separate output
+ * ...and then, at the boundary to the playback engine, the separate output
  * stage:
  *
- *   4. Out16     (aius_out16_run)    24 -> 16 bit with TPDF dither, round to
- *                                    nearest and saturation. NOT part of
- *                                    aius_dsp_process: the 24-bit block is the
- *                                    module's output, and the word-width
- *                                    reduction belongs to whichever engine
+ *   4. Out width (aius_out_stage_run) the transmit word. At
+ *                                    AIUS_DSP_OUT_WIDTH_24 -- the default, and
+ *                                    what the S/PDIF transmit registers take --
+ *                                    it is a lossless copy that needs no
+ *                                    dither. At AIUS_DSP_OUT_WIDTH_16 it is
+ *                                    aius_out16_sample()'s 24 -> 16 bit
+ *                                    reduction (TPDF dither, round to nearest,
+ *                                    saturation) scaled back into transmit
+ *                                    units. NOT part of aius_dsp_process: the
+ *                                    24-bit block is the module's output, and
+ *                                    the word width belongs to whichever engine
  *                                    consumes it.
+ *                (aius_out16_run)    the same reduction into int16 planes, for
+ *                                    a sink whose words really are 16 bits
+ *                                    wide.
  *
  * ARITHMETIC / DETERMINISM. All processing is IEEE-754 double precision. Double
  * was chosen over fixed-point because a biquad's feedback path is precision
@@ -576,6 +585,44 @@ int32_t aius_out16_sample(AiusDitherState *d, int dither, int32_t x24);
 void aius_out16_run(AiusOut16Stage *st,
                     const int32_t *l24, const int32_t *r24,
                     int16_t *l16, int16_t *r16, uint32_t frames);
+
+/* --- output word width: the stage above, made BYPASSABLE ------------------- */
+
+/* The transmit word width, selected at the one boundary that cares.
+ *
+ * WHY THIS EXISTS. Everything above produces 24-bit integers and the S/PDIF
+ * transmit registers take 24 bits, so a 24-bit output path is LOSSLESS FROM THE
+ * DSP TO THE WIRE AND NEEDS NO DITHER AT ALL. That demotes the whole out16
+ * stage from a correctness fix to a refinement one particular output selection
+ * needs -- so it is bypassed rather than deleted, and the selection is named
+ * rather than implied.
+ *
+ * AIUS_DSP_OUT_WIDTH_24 is the native width: a copy, no dither stream touched,
+ * no rounding, no saturation (the input is already in range by contract).
+ *
+ * AIUS_DSP_OUT_WIDTH_16 is the old engine width, expressed in transmit units:
+ * aius_out16_sample() per sample -- TPDF dither, round to nearest, saturate --
+ * scaled back up by AIUS_DSP_OUT16_LSB. That scaling is the `<< 8` the retained
+ * S/PDIF snapshot's ISR performed (output_spdif3.cpp:130), so the 16-bit arm is
+ * bit-identical to what the board shipped before the 24-bit path existed, and
+ * the low 8 bits of every word are zero. It is a real selection, not a
+ * compatibility shim: a 16-bit sink downstream is the case it serves. */
+#define AIUS_DSP_OUT_WIDTH_24 24
+#define AIUS_DSP_OUT_WIDTH_16 16
+
+/* Convert `frames` samples of the 24-bit stereo pair (`l24`, `r24`) into
+ * `width_bits`-wide transmit words in the 24-bit int32 planes (`l_out`,
+ * `r_out`). The width test is hoisted out of the sample loop, so a 24-bit
+ * selection costs one branch per call and then a straight copy -- CHEAPER than
+ * the 16-bit path it replaces, which paid a PRNG draw, a double divide, a floor
+ * and two comparisons per sample.
+ *
+ * Input and output planes may not overlap. st == NULL (when width_bits selects
+ * 16), any NULL plane, or an unrecognised width is a no-op, so an unhandled
+ * width cannot silently emit garbage. */
+void aius_out_stage_run(AiusOut16Stage *st, int width_bits,
+                        const int32_t *l24, const int32_t *r24,
+                        int32_t *l_out, int32_t *r_out, uint32_t frames);
 
 /* --- coherent meter snapshot: diagnostic taps, never configuration --------- */
 

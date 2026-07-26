@@ -975,6 +975,245 @@ def assert_counter_edges_are_epoch_loop_bound(text):
         )
 
 
+# The 24-bit output path.
+#
+# `audio_block_t` is `int16_t data[]`, so every sample that reached the wire
+# through the AudioStream engine had been reduced to 16 bits and then shifted
+# back up into the 24-bit transmit register by the retained snapshot's ISR
+# (`*dest++ = (*src_left++) << 8`, output_spdif3.cpp:130). The 24-bit path
+# replaces that final hop with our own: enqueue() writes the DSP's 24-bit words
+# into a ring in DMAMEM and the transmit DMA interrupt drains it straight into
+# SPDIF_tx_buffer.
+#
+# Nothing else can catch a regression here, and the failure modes are all quiet:
+#
+#   - Reconnecting the processor to g_spdif_out would restore the 16-bit hop AND
+#     leak the pool, because nothing releases what AudioOutputSPDIF3::update()
+#     queues once our ISR is installed. Audibly it is 8 lost bits; on the
+#     counters it is a rising `overruns`.
+#   - Losing the aius_spdif_tx24_begin() call leaves the vendor ISR installed,
+#     which transmits `block_silent` forever: a board that decodes, counts
+#     blocks, reports no overruns and makes no sound.
+#   - Dropping DMAMEM from the ring definition moves 16 KB into DTCM's
+#     free-for-locals zone -- which is 25 KB -- and the only symptom is a stack
+#     that overflows somewhere else entirely.
+#   - Patching the retained snapshot instead of siting a sibling path beside it
+#     would be invisible in every suite, because no suite compiles it twice.
+#
+# No native suite compiles optical_main.cpp or the transmit ISR, so these are
+# text properties. What the text CANNOT reach -- that the words on the wire
+# really carry their low 8 bits -- is proven for real by the dsp suite's
+# negative control (test/dsp/test_dsp.c,
+# test_tx24_carries_low_bits_the_old_path_discarded), which drives one signal
+# through both paths.
+AIUS_ROOT = FIRMWARE_ROOT.parent
+TX_SNAPSHOT = (
+    AIUS_ROOT / "evidence" / "source-snapshots" / "PJRC-SPDIF-TX-SOURCE"
+    / "output_spdif3.cpp"
+)
+TX_MODULE = FIRMWARE_ROOT / "lib" / "aius_audio" / "src" / "aius_spdif_sources.cpp"
+
+ENQUEUE_MARKER = "AiusStatus enqueue(const AiusPcmBlock *block)"
+BEGIN_PIPELINE_MARKER = "void begin_pipeline(void)"
+OUTPUT_WIDTH_CONSTANT = "OUTPUT_WIDTH_BITS"
+TX24_BEGIN = "aius_spdif_tx24_begin"
+# The line that proves the old path put 16-bit data in a 24-bit register, and
+# that the snapshot still says so because we did not touch it.
+SNAPSHOT_SHIFT_LINE = "*dest++ = (*src_left++) << 8;"
+
+
+def assert_enqueue_writes_24_bit_words(text):
+    clean = without_comments_and_literals(text)
+    width = re.search(
+        rf"{OUTPUT_WIDTH_CONSTANT}\s*=\s*(AIUS_DSP_OUT_WIDTH_\d+)", clean
+    )
+    assert width is not None, (
+        f"no {OUTPUT_WIDTH_CONSTANT} selection was found; the output word width "
+        "must be named in one place rather than implied by whichever conversion "
+        "the ring write happens to call"
+    )
+    assert width.group(1) == "AIUS_DSP_OUT_WIDTH_24", (
+        f"{OUTPUT_WIDTH_CONSTANT} is {width.group(1)}, not AIUS_DSP_OUT_WIDTH_24. "
+        "The S/PDIF transmit register is 24 bits wide and the DSP already "
+        "produces 24-bit words, so anything narrower throws bits away for nothing"
+    )
+
+    body = without_comments_and_literals(function_body(text, ENQUEUE_MARKER))
+    # Whitespace-normalised, because the call spans lines in the source.
+    flat = " ".join(body.split())
+    needle = f"aius_out_stage_run(&g_out16, {OUTPUT_WIDTH_CONSTANT},"
+    assert needle in flat, (
+        "enqueue() does not run the output stage at the named width; the ring "
+        f"write must go through `{needle} ...` so the width is a selection and "
+        "not a coincidence of whichever conversion was called"
+    )
+    assert "aius_out16_run(" not in body, (
+        "enqueue() still calls aius_out16_run(), so the 24 -> 16 bit reduction is "
+        "back on the shipped path. It is not deleted -- it is the other arm of "
+        "aius_out_stage_run() -- but a 24-bit output must bypass it"
+    )
+    stages = body.count("aius_spdif_tx24_stage(")
+    assert stages == 2, (
+        f"enqueue() calls aius_spdif_tx24_stage() {stages} times, expected 2: the "
+        "destination is a ring a 512-frame block can wrap, and one call cannot "
+        "cover both sides of the wrap"
+    )
+    commits = body.count("aius_spdif_tx24_commit(")
+    assert commits == 1, (
+        f"enqueue() calls aius_spdif_tx24_commit() {commits} times, expected 1. "
+        "The commit is what publishes the block to the higher-priority transmit "
+        "interrupt; committing per staging call would expose a half-written block"
+    )
+    assert "aius_spdif_tx24_free(" in body, (
+        "enqueue() never checks aius_spdif_tx24_free(), so a block would be "
+        "staged over frames the transmitter has not sent yet -- a wrap that "
+        "sounds like a click and counts as nothing"
+    )
+
+    begin = without_comments_and_literals(
+        function_body(text, BEGIN_PIPELINE_MARKER)
+    )
+    assert TX24_BEGIN + "(" in begin, (
+        f"begin_pipeline() never calls {TX24_BEGIN}(), so the retained snapshot's "
+        "16-bit ISR keeps the transmit DMA interrupt and the board transmits "
+        "block_silent forever -- decoding, counting blocks, reporting no "
+        "overruns, and making no sound"
+    )
+    sites = clean.count(TX24_BEGIN + "(")
+    assert sites == 1, (
+        f"{TX24_BEGIN}() has {sites} call sites; installing the transmit handler "
+        "is bring-up work that happens exactly once"
+    )
+
+
+def assert_no_audio_block_output_hop(text):
+    clean = without_comments_and_literals(text)
+    assert re.search(r"\bAudioOutputSPDIF3\s+g_spdif_out\s*;", clean) is not None, (
+        "g_spdif_out is no longer constructed. Its constructor is what runs "
+        "config_spdif3() -- the audio PLL, the whole transmit clock tree, "
+        "CORE_PIN14 as SPDIF_OUT, the DMA channel and SPDIF_tx_buffer -- so "
+        "removing it silences the board rather than bypassing 16 bits"
+    )
+    connected = re.findall(
+        r"AudioConnection\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^;]*)\)", clean
+    )
+    into_output = [args for args in connected if "g_spdif_out" in args]
+    assert not into_output, (
+        f"the processor is still connected to g_spdif_out: {into_output!r}. "
+        "AudioConnection::connect() is the only thing that sets "
+        "AudioStream::active, so a connection puts AudioOutputSPDIF3::update() "
+        "back in the graph -- which restores the 16-bit audio_block_t hop AND "
+        "leaks the pool, because nothing releases the blocks it queues once the "
+        "24-bit ISR is installed"
+    )
+    audio_body = without_comments_and_literals(
+        function_body(text, AUDIO_CALLBACK_MARKER)
+    )
+    for needle in ("emit_block(", "allocate(", "transmit("):
+        assert needle not in audio_body, (
+            f"the audio callback contains {needle!r}. The final hop is the "
+            "transmit DMA interrupt draining the 24-bit ring, so this callback "
+            "allocates no pool block and transmits nothing"
+        )
+
+
+def assert_no_int16_playback_ring(text):
+    clean = without_comments_and_literals(text)
+    assert re.search(r"\bemit_block\b", clean) is None, (
+        "emit_block() is still present; the 16-bit drain into audio_block_t is "
+        "what the 24-bit path replaces"
+    )
+    ring = re.search(r"\bint16_t\s+g_(?:left|right)\s*\[", clean)
+    assert ring is None, (
+        f"an int16 playback ring is still declared ({ring.group(0)!r} ...). The "
+        "ring is 24-bit and lives in DMAMEM as g_aius_spdif_tx24"
+    )
+    assert re.search(r"\baius_out16_run\s*\(", clean) is None, (
+        "optical_main.cpp still calls aius_out16_run(); the width selection goes "
+        "through aius_out_stage_run() so that 24 bits is a bypass rather than a "
+        "second code path"
+    )
+
+
+# --------------------------------------------------------------------------
+# Output-path group -- properties of the transmit module and the snapshot it
+# sits beside. Own source set, because the whole claim is that the two files
+# relate in one specific way: ours includes theirs and changes nothing in it.
+# --------------------------------------------------------------------------
+
+def assert_snapshot_is_not_patched(text):
+    """`text` here is the retained PJRC transmit snapshot."""
+    assert SNAPSHOT_SHIFT_LINE in text, (
+        f"the retained snapshot no longer contains {SNAPSHOT_SHIFT_LINE!r}. That "
+        "line IS the 16-bit defect, and its presence is what proves the 24-bit "
+        "path was sited beside the snapshot rather than patched into it. The "
+        "snapshot is the upstream implementation boundary; a sibling path is the "
+        "only sanctioned way past it"
+    )
+    ours = re.findall(r"\b(?:[Aa]ius|AIUS)[A-Za-z0-9_]*", text)
+    assert not ours, (
+        f"Aius identifiers have leaked into the retained snapshot: {sorted(set(ours))!r}"
+    )
+
+
+def assert_transmit_isr_drains_the_24_bit_ring(text):
+    """`text` here is lib/aius_audio/src/aius_spdif_sources.cpp."""
+    includes = re.findall(r'^\s*#\s*include\s*"([^"]+)"', text, re.MULTILINE)
+    snapshot_includes = [h for h in includes if "source-snapshots" in h]
+    assert len(snapshot_includes) == 2, (
+        f"expected exactly the two retained snapshot includes, found "
+        f"{snapshot_includes!r}. Compiling the snapshot through this file is the "
+        "seam: SPDIF_tx_buffer is a file static of output_spdif3.cpp, so the "
+        "filler is only addressable from inside this translation unit"
+    )
+    clean = without_comments_and_literals(text)
+    assert re.search(r"\bDMAMEM\s+AiusSpdifTx24Ring\b", clean) is not None, (
+        "the 24-bit ring is not declared DMAMEM. It is 16 KB; DMAMEM puts it in "
+        "OCRAM (293 KB free) and without it the linker puts it in DTCM, whose "
+        "free-for-locals zone -- shared by the main stack and the audio ISR -- is "
+        "25 KB. The symptom would be a stack overflow somewhere unrelated"
+    )
+    for needle, why in (
+        ("aius_spdif_tx24_fill(",
+         "the handler must fill the transmit buffer from the 24-bit ring"),
+        ("dma.clearInterrupt(",
+         "an unacknowledged DMA interrupt re-enters immediately"),
+        ("dma.attachInterrupt(",
+         "nothing redirects the transmit DMA vector, so the vendor 16-bit ISR "
+         "stays installed"),
+        ("arm_dcache_flush(",
+         "SPDIF_tx_buffer is cached OCRAM and the DMA reads it, so the fill must "
+         "be flushed or the transmitter sends stale words"),
+        ("update_responsibility",
+         "the transmitter must still be able to drive update_all(), or a replay "
+         "with no carrier processes zero blocks again"),
+    ):
+        assert needle in clean, f"the transmit handler omits {needle!r}: {why}"
+    assert "<< 8" not in clean, (
+        "the transmit handler shifts by 8, which is the 16-bit reduction it "
+        "exists to remove: the DSP's word goes into the 24-bit register unchanged"
+    )
+    assert "audio_block_t" not in clean, (
+        "the transmit handler still touches audio_block_t; bypassing that type "
+        "for the final hop is the whole point of the path"
+    )
+
+
+OUTPUT_PATH_CHECKS = (
+    (
+        "the retained S/PDIF snapshot is unpatched",
+        assert_snapshot_is_not_patched,
+    ),
+)
+
+TRANSMIT_MODULE_CHECKS = (
+    (
+        "the transmit ISR drains the 24-bit ring into SPDIF_tx_buffer",
+        assert_transmit_isr_drains_the_24_bit_ring,
+    ),
+)
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -1013,6 +1252,14 @@ POSITIVE_CHECKS = (
     (
         "counter edges emit from the epoch loop, one per counter per epoch",
         assert_counter_edges_are_epoch_loop_bound,
+    ),
+    (
+        "enqueue() writes 24-bit words into the transmit ring",
+        assert_enqueue_writes_24_bit_words,
+    ),
+    (
+        "the final hop bypasses audio_block_t entirely",
+        assert_no_audio_block_output_hop,
     ),
 )
 
@@ -1119,6 +1366,7 @@ ABSENCE_CHECKS = (
         "no watchdog feed outside the single per-epoch one",
         assert_no_extra_watchdog_feed,
     ),
+    ("no int16 playback ring or 16-bit drain", assert_no_int16_playback_ring),
 )
 
 
@@ -1996,6 +2244,237 @@ def run_self_test():
         "extra-feed/raw-interval", "WDOG_WCR_WT",
     )
 
+    # the 24-bit output path.
+    good_output = (
+        "class AiusAudioProcessor : public AudioStream\n"
+        "{\n"
+        "\tvoid begin_pipeline(void)\n"
+        "\t{\n"
+        "\t\taius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);\n"
+        "\t\taius_spdif_tx24_begin();\n"
+        "\t}\n"
+        "\tvoid update(void) override\n"
+        "\t{\n"
+        "\t\taius_pipeline_push(g_pipeline, words, count);\n"
+        "\t}\n"
+        "\tstatic constexpr int OUTPUT_WIDTH_BITS = AIUS_DSP_OUT_WIDTH_24;\n"
+        "\tAiusStatus enqueue(const AiusPcmBlock *block)\n"
+        "\t{\n"
+        "\t\tif (block->frames > aius_spdif_tx24_free(&g_aius_spdif_tx24))\n"
+        "\t\t\treturn AIUS_NO_SPACE;\n"
+        "\t\tuint32_t first = aius_spdif_tx24_stage(&g_aius_spdif_tx24, 0,\n"
+        "\t\t                                      &ring_left, &ring_right);\n"
+        "\t\tif (first > block->frames)\n"
+        "\t\t\tfirst = block->frames;\n"
+        "\t\taius_out_stage_run(&g_out16, OUTPUT_WIDTH_BITS, processed_left,\n"
+        "\t\t                   processed_right, ring_left, ring_right, first);\n"
+        "\t\tif (first < block->frames) {\n"
+        "\t\t\t(void)aius_spdif_tx24_stage(&g_aius_spdif_tx24, first,\n"
+        "\t\t\t                            &ring_left, &ring_right);\n"
+        "\t\t\taius_out_stage_run(&g_out16, OUTPUT_WIDTH_BITS,\n"
+        "\t\t\t                   processed_left + first, processed_right + first,\n"
+        "\t\t\t                   ring_left, ring_right, block->frames - first);\n"
+        "\t\t}\n"
+        "\t\taius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);\n"
+        "\t\treturn AIUS_OK;\n"
+        "\t}\n"
+        "};\n"
+        "static AiusAudioProcessor g_audio_processor;\n"
+        "static AudioOutputSPDIF3 g_spdif_out;\n"
+        "static AudioConnection g_spdif_left(g_spdif_in, 0, g_audio_processor, 0);\n"
+        "static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);\n"
+    )
+    _expect_pass(assert_enqueue_writes_24_bit_words, good_output, "out24/good")
+    _expect_pass(assert_no_audio_block_output_hop, good_output, "out24/no-hop")
+    _expect_pass(assert_no_int16_playback_ring, good_output, "out24/no-int16-ring")
+
+    # THE REGRESSION: the width selection quietly narrowed back to 16.
+    narrowed = good_output.replace("AIUS_DSP_OUT_WIDTH_24", "AIUS_DSP_OUT_WIDTH_16", 1)
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, narrowed, "out24/narrowed",
+        "AIUS_DSP_OUT_WIDTH_24",
+    )
+    # The reduction back on the shipped path beside the stage.
+    reduced = good_output.replace(
+        "\t\taius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);\n",
+        "\t\taius_out16_run(&g_out16, processed_left, processed_right,\n"
+        "\t\t               ring_left, ring_right, first);\n"
+        "\t\taius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);\n",
+        1,
+    )
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, reduced, "out24/out16-on-the-path",
+        "aius_out16_run()",
+    )
+    # One staging call cannot cover both sides of the wrap.
+    unwrapped = good_output.replace(
+        "\t\t\t(void)aius_spdif_tx24_stage(&g_aius_spdif_tx24, first,\n"
+        "\t\t\t                            &ring_left, &ring_right);\n",
+        "",
+        1,
+    )
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, unwrapped, "out24/one-stage-call",
+        "expected 2",
+    )
+    # Committing per staging call publishes a half-written block to the ISR.
+    torn = good_output.replace(
+        "\t\tif (first < block->frames) {\n",
+        "\t\taius_spdif_tx24_commit(&g_aius_spdif_tx24, first);\n"
+        "\t\tif (first < block->frames) {\n",
+        1,
+    )
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, torn, "out24/commit-per-stage",
+        "expected 1",
+    )
+    # Staging with no free-space check overwrites untransmitted frames.
+    unchecked = good_output.replace(
+        "\t\tif (block->frames > aius_spdif_tx24_free(&g_aius_spdif_tx24))\n"
+        "\t\t\treturn AIUS_NO_SPACE;\n",
+        "",
+        1,
+    )
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, unchecked, "out24/no-space-check",
+        "aius_spdif_tx24_free()",
+    )
+    # THE SILENT ONE: the handler is never installed, so the vendor ISR keeps the
+    # vector and the board transmits block_silent while counting blocks.
+    uninstalled = good_output.replace("\t\taius_spdif_tx24_begin();\n", "", 1)
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, uninstalled, "out24/not-installed",
+        "block_silent",
+    )
+    reinstalled = good_output.replace(
+        "\t\taius_spdif_tx24_begin();\n",
+        "\t\taius_spdif_tx24_begin();\n\t\taius_spdif_tx24_begin();\n",
+        1,
+    )
+    _expect_fail(
+        assert_enqueue_writes_24_bit_words, reinstalled, "out24/installed-twice",
+        "exactly once",
+    )
+    # THE OTHER SILENT ONE: the 16-bit hop reconnected, which also leaks the pool.
+    reconnected = good_output + (
+        "static AudioConnection g_audio_left(g_audio_processor, 0, g_spdif_out, 0);\n"
+    )
+    _expect_fail(
+        assert_no_audio_block_output_hop, reconnected, "out24/reconnected",
+        "g_spdif_out",
+    )
+    # ...and the opposite mistake: deleting the peripheral along with its
+    # connections, which takes config_spdif3() and the whole clock tree with it.
+    unconstructed = good_output.replace(
+        "static AudioOutputSPDIF3 g_spdif_out;\n", "", 1
+    )
+    _expect_fail(
+        assert_no_audio_block_output_hop, unconstructed, "out24/no-peripheral",
+        "config_spdif3()",
+    )
+    re_emitted = good_output.replace(
+        "\t\taius_pipeline_push(g_pipeline, words, count);\n",
+        "\t\taius_pipeline_push(g_pipeline, words, count);\n\t\temit_block();\n",
+        1,
+    )
+    _expect_fail(
+        assert_no_audio_block_output_hop, re_emitted, "out24/emit-in-callback",
+        "emit_block(",
+    )
+    _expect_fail(
+        assert_no_int16_playback_ring,
+        good_output + "\tint16_t g_left[RING_FRAMES];\n",
+        "out24/int16-ring-back", "int16 playback ring",
+    )
+
+    # the retained snapshot is unpatched.
+    good_snapshot = (
+        "\tdo {\n"
+        "\t\t*dest++ = (*src_left++) << 8;\n"
+        "\t\t*dest++ = (*src_right++) << 8;\n"
+        "\t} while (dest < end);\n"
+    )
+    _expect_pass(assert_snapshot_is_not_patched, good_snapshot, "snapshot/good")
+    _expect_fail(
+        assert_snapshot_is_not_patched,
+        good_snapshot.replace("(*src_left++) << 8", "*src_left24++", 1),
+        "snapshot/patched", "sited beside the snapshot",
+    )
+    _expect_fail(
+        assert_snapshot_is_not_patched,
+        good_snapshot + "\taius_spdif_tx24_fill(&g_aius_spdif_tx24, dest, 128);\n",
+        "snapshot/ours-leaked", "leaked into the retained snapshot",
+    )
+
+    # the transmit ISR drains the 24-bit ring.
+    good_isr = (
+        '#include "../../../../evidence/source-snapshots/'
+        'PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp"\n'
+        '#include "../../../../evidence/source-snapshots/'
+        'PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp"\n'
+        '#include "aius_spdif_tx24.h"\n'
+        "DMAMEM AiusSpdifTx24Ring g_aius_spdif_tx24;\n"
+        "void AiusSpdifTx24Hook::isr(void)\n"
+        "{\n"
+        "\tconst uint32_t saddr = (uint32_t)(dma.TCD->SADDR);\n"
+        "\tdma.clearInterrupt();\n"
+        "\taius_spdif_tx24_fill(&g_aius_spdif_tx24, dest, AUDIO_BLOCK_SAMPLES);\n"
+        "\tarm_dcache_flush(dest, AUDIO_BLOCK_SAMPLES * 2 * sizeof *dest);\n"
+        "\tif (update_responsibility)\n"
+        "\t\tupdate_all();\n"
+        "}\n"
+        "FLASHMEM void AiusSpdifTx24Hook::install(void)\n"
+        "{\n"
+        "\tdma.attachInterrupt(AiusSpdifTx24Hook::isr);\n"
+        "}\n"
+    )
+    _expect_pass(
+        assert_transmit_isr_drains_the_24_bit_ring, good_isr, "tx-isr/good"
+    )
+    # THE MEMORY REGRESSION: 16 KB out of a 25 KB stack budget, symptom elsewhere.
+    _expect_fail(
+        assert_transmit_isr_drains_the_24_bit_ring,
+        good_isr.replace("DMAMEM AiusSpdifTx24Ring", "AiusSpdifTx24Ring", 1),
+        "tx-isr/ring-in-dtcm", "DMAMEM",
+    )
+    for removed, needle in (
+        ("\tdma.clearInterrupt();\n", "dma.clearInterrupt("),
+        ("\tdma.attachInterrupt(AiusSpdifTx24Hook::isr);\n", "dma.attachInterrupt("),
+        ("\tarm_dcache_flush(dest, AUDIO_BLOCK_SAMPLES * 2 * sizeof *dest);\n",
+         "arm_dcache_flush("),
+        ("\tif (update_responsibility)\n\t\tupdate_all();\n",
+         "update_responsibility"),
+    ):
+        _expect_fail(
+            assert_transmit_isr_drains_the_24_bit_ring,
+            good_isr.replace(removed, "", 1),
+            f"tx-isr/missing-{needle}", needle,
+        )
+    # The reduction reintroduced inside our own handler.
+    _expect_fail(
+        assert_transmit_isr_drains_the_24_bit_ring,
+        good_isr.replace(
+            "\taius_spdif_tx24_fill(&g_aius_spdif_tx24, dest, AUDIO_BLOCK_SAMPLES);\n",
+            "\taius_spdif_tx24_fill(&g_aius_spdif_tx24, dest, AUDIO_BLOCK_SAMPLES);\n"
+            "\tfor (unsigned i = 0; i < 256u; i++)\n"
+            "\t\tdest[i] = (int16_t)dest[i] << 8;\n",
+            1,
+        ),
+        "tx-isr/shifts-again", "shifts by 8",
+    )
+    # A third include, or a copy of the snapshot pulled in some other way.
+    _expect_fail(
+        assert_transmit_isr_drains_the_24_bit_ring,
+        good_isr.replace(
+            '#include "aius_spdif_tx24.h"\n',
+            '#include "aius_spdif_tx24.h"\n'
+            '#include "../../../../evidence/source-snapshots/'
+            'PJRC-SPDIF-TX-SOURCE/output_spdif3_patched.cpp"\n',
+            1,
+        ),
+        "tx-isr/extra-snapshot-include", "two retained snapshot includes",
+    )
+
 
 # --------------------------------------------------------------------------
 # Runner.
@@ -2040,6 +2519,11 @@ def main():
         run_checks(
             "cross-source", CROSS_SOURCE_CHECKS, read_replay_sizing_sources()
         )
+        # The 24-bit output path's other two files, each read on its own: the
+        # claim is that ours includes the snapshot and changes nothing in it, so
+        # neither file can be checked through the other.
+        run_checks("snapshot", OUTPUT_PATH_CHECKS, TX_SNAPSHOT.read_text())
+        run_checks("transmit-module", TRANSMIT_MODULE_CHECKS, TX_MODULE.read_text())
     if args.group in ("absence", "all"):
         run_checks("absence", ABSENCE_CHECKS, text)
 

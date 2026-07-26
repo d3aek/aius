@@ -7,6 +7,13 @@
 
 #include "aius_dsp.h"
 
+/* The 24-bit S/PDIF transmit ring, from the output path that consumes this
+ * module's result. Header-only and Arduino-free by construction, so this suite
+ * compiles it with no link-line change; the include is relative because
+ * lib/aius_audio is not on the dsp suite's -I set (and lib/aius_audio/include
+ * holds the retained PJRC snapshot's headers, not ours). */
+#include "../../lib/aius_audio/src/aius_spdif_tx24.h"
+
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -1171,6 +1178,236 @@ static void test_out16_dither_deterministic(void)
     printf("ok out16 dither is deterministic (reset reproduces, L/R independent)\n");
 }
 
+/* --- the 24-bit output path, and the negative control for it -------------- */
+
+/* Distinct values in `v`. O(n^2), and n is 256 here: the point is to say
+ * "how much of the signal survived" in a form an assertion can read. */
+static int distinct_count(const int32_t *v, int n)
+{
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        int seen = 0;
+        for (int j = 0; j < i; j++)
+            if (v[j] == v[i]) { seen = 1; break; }
+        if (!seen) count++;
+    }
+    return count;
+}
+
+/* THE NEGATIVE CONTROL FOR THE 24-BIT PATH.
+ *
+ * A test that asserts the ring is `int32_t` proves nothing -- the old path was
+ * int32 at the transmit register too, which is exactly what made the defect
+ * invisible. So this drives ONE signal through BOTH paths and shows the old one
+ * destroys it while the new one carries it bit for bit.
+ *
+ * The signal is chosen so that ALL of its information lives in the low 8 bits:
+ * every sample is strictly inside one 16-bit LSB (256 in 24-bit units), i.e.
+ * below -90 dBFS. That is not a contrived corner -- it is the tail of every fade
+ * and every reverb, which is where a decoder is judged.
+ *
+ * The old path is modelled exactly, not approximated: aius_out16_run() into
+ * int16 planes, then `(*src++) << 8` into the 24-bit transmit word, which is
+ * output_spdif3.cpp:130 verbatim. */
+static void test_tx24_carries_low_bits_the_old_path_discarded(void)
+{
+    enum { FRAMES = 128 }; /* one engine block: exactly what one transmit interrupt fills */
+    static int32_t l24[FRAMES], r24[FRAMES];
+    for (int i = 0; i < FRAMES; i++) {
+        l24[i] = i + 1;      /*    1 ..  128, all inside one 16-bit LSB */
+        r24[i] = -(i + 1);   /*   -1 .. -128 */
+    }
+
+    /* --- the old path ---------------------------------------------------- */
+    static int16_t o16_l[FRAMES], o16_r[FRAMES];
+    static int32_t old_tx[FRAMES * 2];
+    AiusOut16Stage st16 = aius_out16_stage_default();
+    aius_out16_run(&st16, l24, r24, o16_l, o16_r, FRAMES);
+    for (int i = 0; i < FRAMES; i++) {
+        old_tx[2 * i] = (int32_t)o16_l[i] << 8;
+        old_tx[2 * i + 1] = (int32_t)o16_r[i] << 8;
+    }
+    /* The defect as an assertion: every word the old path put on the wire is a
+     * multiple of 256, so the low 8 bits are ALWAYS zero and this signal is
+     * unrepresentable no matter how good the DSP above it was. */
+    for (int i = 0; i < FRAMES * 2; i++)
+        assert((old_tx[i] & 0xFF) == 0);
+    /* And it is loss of SIGNAL, not just of precision: 128 distinct input values
+     * collapse into the handful of codes the dither can reach around zero. */
+    const int distinct_old = distinct_count(old_tx, FRAMES * 2);
+    assert(distinct_old <= 5);
+
+    /* --- the new path: DSP word -> stage at 24 bits -> ring -> transmit --- */
+    static AiusSpdifTx24Ring ring;
+    memset(&ring, 0, sizeof ring);
+
+    int32_t *stage_l = NULL;
+    int32_t *stage_r = NULL;
+    uint32_t span = aius_spdif_tx24_stage(&ring, 0, &stage_l, &stage_r);
+    assert(span >= (uint32_t)FRAMES);
+    /* st == NULL is deliberate and is itself an assertion: the 24-bit arm cannot
+     * touch a dither stream, because it is handed none. */
+    aius_out_stage_run(NULL, AIUS_DSP_OUT_WIDTH_24, l24, r24,
+                       stage_l, stage_r, FRAMES);
+    /* Nothing is transmittable until the commit -- the property that lets the
+     * higher-priority transmit ISR preempt a mid-block producer safely. */
+    assert(aius_spdif_tx24_level(&ring) == 0);
+    aius_spdif_tx24_commit(&ring, FRAMES);
+    assert(aius_spdif_tx24_level(&ring) == FRAMES);
+    assert(aius_spdif_tx24_free(&ring) ==
+           AIUS_SPDIF_TX24_RING_FRAMES - (uint32_t)FRAMES);
+
+    /* `tx` is laid out exactly as one half of SPDIF_tx_buffer: 2 * FRAMES int32,
+     * left at even indices, right at odd, which is the interleave the transmit
+     * DMA moves to SPDIF_STL / SPDIF_STR. */
+    static int32_t tx[FRAMES * 2];
+    aius_spdif_tx24_fill(&ring, tx, FRAMES);
+    assert(aius_spdif_tx24_level(&ring) == 0);
+    assert(ring.underruns == 0);
+
+    /* THE ASSERTION THE WHOLE ITEM EXISTS FOR: bit for bit, low 8 bits included. */
+    for (int i = 0; i < FRAMES; i++) {
+        assert(tx[2 * i] == l24[i]);
+        assert(tx[2 * i + 1] == r24[i]);
+    }
+    /* Stated the other way round, so a future memcpy-shaped regression that
+     * happened to preserve the first sample cannot pass: every distinct input
+     * value is still distinguishable on the wire. */
+    assert(distinct_count(tx, FRAMES * 2) == 2 * FRAMES);
+    /* If the two paths ever agreed on this signal, this control would be
+     * vacuous. */
+    assert(memcmp(tx, old_tx, sizeof tx) != 0);
+
+    printf("ok 24-bit transmit path is lossless (%d of %d codes survive; the "
+           "16-bit path left %d)\n",
+           distinct_count(tx, FRAMES * 2), 2 * FRAMES, distinct_old);
+}
+
+/* The bypassed stage is still THERE and still right. aius_out16_* was not
+ * deleted when the path stopped narrowing the word -- it is the other arm of
+ * aius_out_stage_run(), and this pins it to the block form the dsp suite
+ * already tests, times the exact power of two the S/PDIF snapshot's ISR used to
+ * apply. So "bypassed" is a selection, not rot. */
+static void test_out_stage_16bit_arm_matches_the_old_wire_words(void)
+{
+    enum { N = 512 };
+    static int32_t x24[N], y24[N];
+    for (int i = 0; i < N; i++) {
+        x24[i] = (int32_t)((i * 7919) % 1000003) - 500000;
+        y24[i] = -x24[i];
+    }
+
+    static int16_t ref_l[N], ref_r[N];
+    AiusOut16Stage ref = aius_out16_stage_default();
+    aius_out16_run(&ref, x24, y24, ref_l, ref_r, N);
+
+    static int32_t got_l[N], got_r[N];
+    AiusOut16Stage sel = aius_out16_stage_default();
+    aius_out_stage_run(&sel, AIUS_DSP_OUT_WIDTH_16, x24, y24, got_l, got_r, N);
+
+    for (int i = 0; i < N; i++) {
+        assert(got_l[i] == (int32_t)ref_l[i] * 256);
+        assert(got_r[i] == (int32_t)ref_r[i] * 256);
+        assert((got_l[i] & 0xFF) == 0); /* a 16-bit selection zeroes the low byte */
+    }
+    /* Both consumed the same number of draws from each stream, so the stage's
+     * determinism contract survives the width parameter. */
+    assert(memcmp(&ref, &sel, sizeof ref) == 0);
+
+    /* The 24-bit arm, on the same input, touches neither stream and changes
+     * nothing -- the definition of a bypass. */
+    AiusOut16Stage untouched = aius_out16_stage_default();
+    const AiusOut16Stage before = untouched;
+    aius_out_stage_run(&untouched, AIUS_DSP_OUT_WIDTH_24, x24, y24,
+                       got_l, got_r, N);
+    assert(memcmp(&before, &untouched, sizeof before) == 0);
+    for (int i = 0; i < N; i++) {
+        assert(got_l[i] == x24[i]);
+        assert(got_r[i] == y24[i]);
+    }
+
+    /* An unrecognised width writes nothing rather than guessing a rule. */
+    for (int i = 0; i < N; i++) got_l[i] = 0x5A5A5A;
+    aius_out_stage_run(&sel, 20, x24, y24, got_l, got_r, N);
+    for (int i = 0; i < N; i++) assert(got_l[i] == 0x5A5A5A);
+
+    printf("ok out16 stays reachable as the 16-bit arm (and 24 bits bypasses it)\n");
+}
+
+/* The ring's two structural cases, both of which the old int16 ring also had and
+ * neither of which anything asserted: a block that WRAPS, and a transmit
+ * interrupt that arrives with the ring short. */
+static void test_tx24_ring_wraps_and_counts_underruns(void)
+{
+    static AiusSpdifTx24Ring ring;
+    memset(&ring, 0, sizeof ring);
+
+    /* Park the cursors 100 frames from the end of the buffer, empty. Setting the
+     * counters directly is the point: they are free-running frame counts, so any
+     * pair with a zero difference is a legal empty ring. */
+    ring.written = AIUS_SPDIF_TX24_RING_FRAMES - 100u;
+    ring.consumed = ring.written;
+
+    enum { N = 300 }; /* wraps: 100 before the end, 200 after */
+    static int32_t l24[N], r24[N];
+    for (int i = 0; i < N; i++) {
+        l24[i] = 0x400000 + i; /* low bits distinct across the whole block */
+        r24[i] = -0x400000 - i;
+    }
+
+    /* Exactly the two-call shape AiusAudioProcessor::enqueue() uses. */
+    int32_t *sl = NULL;
+    int32_t *sr = NULL;
+    uint32_t first = aius_spdif_tx24_stage(&ring, 0, &sl, &sr);
+    if (first > (uint32_t)N) first = (uint32_t)N;
+    assert(first == 100u); /* the wrap is really being exercised */
+    aius_out_stage_run(NULL, AIUS_DSP_OUT_WIDTH_24, l24, r24, sl, sr, first);
+    (void)aius_spdif_tx24_stage(&ring, first, &sl, &sr);
+    aius_out_stage_run(NULL, AIUS_DSP_OUT_WIDTH_24, l24 + first, r24 + first,
+                       sl, sr, (uint32_t)N - first);
+    aius_spdif_tx24_commit(&ring, N);
+    assert(aius_spdif_tx24_level(&ring) == N);
+
+    static int32_t tx[N * 2];
+    aius_spdif_tx24_fill(&ring, tx, N);
+    for (int i = 0; i < N; i++) {
+        assert(tx[2 * i] == l24[i]);
+        assert(tx[2 * i + 1] == r24[i]);
+    }
+    assert(aius_spdif_tx24_level(&ring) == 0);
+    assert(ring.underruns == 0);
+
+    /* Underrun: 50 frames committed, a 128-frame interrupt. The first 50 are the
+     * audio, the remaining 78 are digital silence, and -- unlike the vendor
+     * path's block_silent substitution -- they are COUNTED. */
+    memset(&ring, 0, sizeof ring);
+    first = aius_spdif_tx24_stage(&ring, 0, &sl, &sr);
+    assert(first >= 50u);
+    aius_out_stage_run(NULL, AIUS_DSP_OUT_WIDTH_24, l24, r24, sl, sr, 50u);
+    aius_spdif_tx24_commit(&ring, 50u);
+
+    static int32_t short_tx[128 * 2];
+    for (int i = 0; i < 128 * 2; i++) short_tx[i] = 0x7FFFFF;
+    aius_spdif_tx24_fill(&ring, short_tx, 128u);
+    for (int i = 0; i < 50; i++) {
+        assert(short_tx[2 * i] == l24[i]);
+        assert(short_tx[2 * i + 1] == r24[i]);
+    }
+    for (int i = 50; i < 128; i++) {
+        assert(short_tx[2 * i] == 0);
+        assert(short_tx[2 * i + 1] == 0);
+    }
+    assert(ring.underruns == 78u);
+    assert(aius_spdif_tx24_level(&ring) == 0);
+    /* An empty ring underruns by the whole interrupt and never goes negative --
+     * the free-running-counter difference is what makes that safe. */
+    aius_spdif_tx24_fill(&ring, short_tx, 128u);
+    assert(ring.underruns == 78u + 128u);
+    assert(aius_spdif_tx24_level(&ring) == 0);
+
+    printf("ok 24-bit ring wraps mid-block and counts substituted silence\n");
+}
+
 /* --- coherent meter snapshot ---------------------------------------------- */
 
 /* Per-input peak/RMS on a 6-channel block where each channel carries a distinct
@@ -1635,6 +1872,9 @@ int main(void)
     test_out16_rounds_not_truncates();
     test_out16_dither_carries_sub_lsb();
     test_out16_dither_deterministic();
+    test_tx24_carries_low_bits_the_old_path_discarded();
+    test_out_stage_16bit_arm_matches_the_old_wire_words();
+    test_tx24_ring_wraps_and_counts_underruns();
     test_meter_input_peak_rms();
     test_meter_output_and_silence();
     test_meter_tone_rms();

@@ -752,6 +752,44 @@ void aius_out16_run(AiusOut16Stage *st,
     }
 }
 
+void aius_out_stage_run(AiusOut16Stage *st, int width_bits,
+                        const int32_t *l24, const int32_t *r24,
+                        int32_t *l_out, int32_t *r_out, uint32_t frames)
+{
+    if (l24 == NULL || r24 == NULL || l_out == NULL || r_out == NULL) {
+        return;
+    }
+    if (width_bits == AIUS_DSP_OUT_WIDTH_24) {
+        /* The bypass, and the whole point of the 24-bit path: the DSP's result
+         * IS the transmit word. Not memcpy, because the planes are int32 and a
+         * word loop is what the compiler wants here anyway; the point is that
+         * no arithmetic touches the sample. */
+        for (uint32_t i = 0; i < frames; i++) {
+            l_out[i] = l24[i];
+            r_out[i] = r24[i];
+        }
+        return;
+    }
+    if (width_bits == AIUS_DSP_OUT_WIDTH_16) {
+        if (st == NULL) {
+            return;
+        }
+        const int dither = st->dither;
+        for (uint32_t i = 0; i < frames; i++) {
+            /* aius_out16_sample() then the `<< 8` the S/PDIF snapshot's ISR
+             * used to perform, as a multiply by the same exact power of two.
+             * The low 8 bits are zero by construction, which is what a 16-bit
+             * selection means on a 24-bit wire. */
+            l_out[i] = aius_out16_sample(&st->stream[0], dither, l24[i]) *
+                       (int32_t)AIUS_DSP_OUT16_LSB;
+            r_out[i] = aius_out16_sample(&st->stream[1], dither, r24[i]) *
+                       (int32_t)AIUS_DSP_OUT16_LSB;
+        }
+        return;
+    }
+    /* An unrecognised width emits nothing rather than guessing. */
+}
+
 /* --- coherent meter snapshot ---------------------------------------------- */
 
 /* AIUS_CH_* bit order for the six metered input channels, matching the input
