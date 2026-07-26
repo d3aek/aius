@@ -275,7 +275,19 @@ are follow-up work, recorded here so they are not lost.
     `AGAIN` on nothing-pending; and `getsockopt(SO_SNDNUM)` is hard-wired to 0,
     which is precisely what conceals defect 9. **A fake derived from the caller
     instead of the dependency can only ever confirm the caller's beliefs.**
-11. **Five source comments still quote the pre-fix DTCM free figure** —
+11. **The output clock is 44.1 kHz while everything claims 48 kHz.** Measured on
+    the board: 86.1 blocks/s × 512 frames = 44,083 Hz, matching the Teensy audio
+    engine's default `AUDIO_SAMPLE_RATE_EXACT` of `44100.0f`
+    (`cores/teensy4/AudioStream.h:58`), which `platformio.ini` does not override.
+    The replay content, `GET /api/meters` and `GET /api/dsp/config` all say
+    48,000. **48 kHz material therefore plays ~8.1 % slow, about 1.4 semitones
+    flat.** No counter shows it — producer and consumer share the output clock, so
+    the queue is stable and the overrun counters are honestly zero. Decide
+    deliberately whether the engine moves to 48 kHz or the device resamples, and
+    make some surface report the *ratio* rather than each side's own belief; a
+    device that cannot tell you its clock disagrees with its content will hide
+    this again.
+12. **Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every
@@ -5195,6 +5207,47 @@ ring overflows continuously (`event_overflows` 2,625 against `event_sequence`
 per epoch is not a tight enough bound for a counter that advances every epoch;
 it should edge-detect entry to and exit from a sustained condition rather than
 report every epoch's delta.
+
+#### Fourth flash — continuous clean playback, and a sample-rate defect
+
+`39ba43154318`. **46 seconds, four loop wraps, zero overruns and zero
+underruns.** The previous image logged 3,368 and 9 over the same span.
+
+```
+     t   blocks     d/s  overrun     o/s    offset    kB/s  queue  under
+   1.0       85    83.8        0     0.0    262144   235.0  43520      0
+  22.3     1921    86.4        0     0.0    163840 -1665.0  35072      0
+  45.7     3932    85.8        0     0.0    458752   189.2  44544      0
+```
+
+`queue_words` oscillates 32,768–46,848 and never approaches zero. `blocks`
+advances at a metronomic 85.5–86.9/s across the whole run.
+
+**The mount cache is what did it.** `replay_diag` after the run: `jobs` 255,
+**`mounts` 0**, `mount_reuses` 353, **`faults` 0**, and `longest_primitive_us`
+**5,524** against 1,020,036 before — a 185× reduction, with `longest_action` now
+`OPEN_READ` at 5.5 ms rather than `BEGIN` at a full second.
+
+**But the block rate says the output clock is wrong.** 86.1 blocks/s × 512 frames
+is **44,083 Hz**, not the 48,000 the replay content, `GET /api/meters` and
+`GET /api/dsp/config` all claim. The Teensy audio engine's
+`AUDIO_SAMPLE_RATE_EXACT` defaults to `44100.0f`
+(`cores/teensy4/AudioStream.h:58`) and nothing in `platformio.ini` overrides it,
+so 44,100 is what the output actually runs at and the measurement matches it to
+0.04 %.
+
+**So 48 kHz content plays about 8.1 % slow — roughly 1.4 semitones flat.**
+Nothing in the counters shows it, and that is the point: producer and consumer
+both run off the output clock, so the queue is stable and the overrun counters
+are honestly zero. The pipeline is perfectly self-consistent and the pitch is
+wrong. Only the ratio between the *content's* rate and the *clock's* rate reveals
+it, and no surface on the device reports that ratio.
+
+This is why [§Phase 14e](#phase-14e--signal-path-and-dsp-reference) must state
+the clock authoritatively rather than repeating the config's claim. It also makes
+the earlier per-block budget slightly conservative: the block period is
+`512 / 44,100` = **11,610 µs**, not the 10,667 µs assumed above, so the measured
+398,591–431,995 cycles are **5.7–6.2 %** of budget rather than 6.2–6.8 %.
 
 #### The SD directory index, and what it immediately found
 
