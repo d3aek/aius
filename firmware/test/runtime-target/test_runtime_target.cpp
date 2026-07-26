@@ -467,6 +467,9 @@ struct NetFake {
 	uint8_t tx[4096];
 	size_t tx_length;
 	size_t write_accept;
+	/* one-shot read injections, consumed before the rx buffer */
+	unsigned read_fault_once;
+	unsigned read_closed_once;
 	/* per-primitive counters */
 	unsigned install_calls;
 	unsigned clear_calls;
@@ -600,6 +603,14 @@ static AiusIoEvent net_read_once(uint8_t *buffer, size_t capacity)
 
 	g_net.read_calls++;
 	g_net.io_calls_epoch++;
+	if (g_net.read_fault_once != 0u) {
+		g_net.read_fault_once--;
+		return io_event(AIUS_IO_FAULT, 0u, 77u);
+	}
+	if (g_net.read_closed_once != 0u) {
+		g_net.read_closed_once--;
+		return io_event(AIUS_IO_CLOSED, 0u, 0u);
+	}
 	remaining = g_net.rx_length - g_net.rx_offset;
 	if (remaining == 0u)
 		return io_event(AIUS_IO_WOULD_BLOCK, 0u, 0u);
@@ -2066,6 +2077,124 @@ static void test_http_epoch(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 6b. HTTP status counters at the runtime seam                        */
+/*                                                                     */
+/* The legacy producers died with service_http() at the cutover; the   */
+/* reinstated ones live where the transaction is observable. Each      */
+/* scenario pins one counting mechanism: DISPATCH actions (requests),  */
+/* first-fault transitions (rejections, timeout drops), and the seam's */
+/* own IO observation (transport drops -- FAULT anywhere, CLOSED       */
+/* mid-read). The last scenario pins that a network teardown, which    */
+/* re-inits the transaction, does not zero the counters.               */
+/* ------------------------------------------------------------------ */
+
+static void test_http_counters(void)
+{
+	static const char *const keys[] = {
+		"counters.dispatch",        "counters.rejection",
+		"counters.drop-timeout",    "counters.drop-transport",
+		"counters.drop-peer-close", "counters.survive-restart"
+	};
+	static const char *const kBadMethodRequest =
+		"BOGUS /api/status HTTP/1.1\r\nHost: aius\r\n\r\n";
+	uint32_t now_ms;
+
+	validate_unique_keys("registry.counters", keys, ARRAY_COUNT(keys), 6u);
+
+	current_key = "counters.dispatch";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	CHECK(g_runtime.network_http.http_requests == 0u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+	CHECK(g_runtime.network_http.http_client_drops == 0u);
+	g_net.client_pending = true;
+	g_net.rx = (const uint8_t *)kStatusRequest;
+	g_net.rx_length = strlen(kStatusRequest);
+	g_net.rx_offset = 0u;
+	drive_epochs(&now_ms, 12u);
+	CHECK(g_app.status_calls == 1u);
+	CHECK(g_runtime.network_http.http_requests == 1u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+	CHECK(g_runtime.network_http.http_client_drops == 0u);
+
+	current_key = "counters.rejection";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_net.client_pending = true;
+	g_net.rx = (const uint8_t *)kBadMethodRequest;
+	g_net.rx_length = strlen(kBadMethodRequest);
+	g_net.rx_offset = 0u;
+	drive_epochs(&now_ms, 12u);
+	CHECK(sink_contains("method_not_allowed"));
+	CHECK(g_runtime.network_http.http_requests == 0u);
+	CHECK(g_runtime.network_http.http_rejections == 1u);
+	CHECK(g_runtime.network_http.http_client_drops == 0u);
+
+	current_key = "counters.drop-timeout";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	/* A client that connects and never sends: the request deadline is the
+	 * modern spelling of the legacy 150 ms idle drop. */
+	g_net.client_pending = true;
+	for (unsigned i = 0; i < 10u; ++i) {
+		CHECK(run_epoch(now_ms));
+		now_ms += 40u;
+	}
+	CHECK(sink_contains("request_timeout"));
+	CHECK(g_runtime.network_http.http_requests == 0u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+	CHECK(g_runtime.network_http.http_client_drops == 1u);
+
+	current_key = "counters.drop-transport";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_net.client_pending = true;
+	g_net.read_fault_once = 1u;
+	drive_epochs(&now_ms, 10u);
+	/* Counted once at the seam's IO observation; the TRANSPORT fault the
+	 * transaction records when it consumes the same result must not count
+	 * again. */
+	CHECK(g_runtime.network_http.http_client_drops == 1u);
+	CHECK(g_runtime.network_http.http_requests == 0u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+
+	current_key = "counters.drop-peer-close";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_net.client_pending = true;
+	g_net.read_closed_once = 1u;
+	drive_epochs(&now_ms, 10u);
+	CHECK(g_runtime.network_http.http_client_drops == 1u);
+	CHECK(g_runtime.network_http.http_requests == 0u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+
+	current_key = "counters.survive-restart";
+	reset_world(false);
+	now_ms = 1u;
+	bring_online(&now_ms);
+	g_net.client_pending = true;
+	g_net.rx = (const uint8_t *)kStatusRequest;
+	g_net.rx_length = strlen(kStatusRequest);
+	g_net.rx_offset = 0u;
+	drive_epochs(&now_ms, 12u);
+	CHECK(g_runtime.network_http.http_requests == 1u);
+	/* Link loss tears the generation down and http_init() re-inits the
+	 * transaction; the counters answer "since boot", not "since the last
+	 * generation", so they must survive it. */
+	g_net.link = AIUS_NETWORK_TEENSY_LINK_DOWN;
+	drive_epochs(&now_ms, 8u);
+	CHECK(!g_runtime.network_http.target.online);
+	CHECK(g_runtime.network_http.http_requests == 1u);
+	CHECK(g_runtime.network_http.http_rejections == 0u);
+	CHECK(g_runtime.network_http.http_client_drops == 0u);
+}
+
+/* ------------------------------------------------------------------ */
 /* 7. HTTP -> storage bridge                                          */
 /* ------------------------------------------------------------------ */
 
@@ -3433,6 +3562,7 @@ int main(void)
 	test_usb_tx();
 	test_network_precedence();
 	test_http_epoch();
+	test_http_counters();
 	test_storage_bridge();
 	test_root_storage_job();
 	test_storage_diagnostics();

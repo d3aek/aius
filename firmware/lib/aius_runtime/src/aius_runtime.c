@@ -25,7 +25,12 @@ static const AiusRuntimeBudget runtime_budgets[] = {
 	{AIUS_BOOT_CHECKPOINT_USB_TX, 1u, 0u, 64u, 500u},
 	{AIUS_BOOT_CHECKPOINT_METRICS, 1u, 0u, 0u, 0u},
 	{AIUS_BOOT_CHECKPOINT_NETWORK, 1u, 0u, 0u, 0u},
-	{AIUS_BOOT_CHECKPOINT_HTTP, 1u, 256u, 512u, 0u},
+	/* The HTTP wall-clock allowance is the legacy service_http() overrun
+	 * threshold (2,000 us) carried forward: the composition root times the
+	 * checkpoint against it and counts http_service_overruns. Nothing
+	 * aborts on it -- it is the declared bound a healthy epoch stays
+	 * inside, and the counter is the evidence when one does not. */
+	{AIUS_BOOT_CHECKPOINT_HTTP, 1u, 256u, 512u, 2u},
 	{AIUS_BOOT_CHECKPOINT_UDP, 1u, 532u, 532u, 2u},
 	/* The replay checkpoint moves no transport bytes: its work is a bounded
 	 * SD job, whose size is AIUS_REPLAY_REFILL_MAX_BYTES and whose per-epoch

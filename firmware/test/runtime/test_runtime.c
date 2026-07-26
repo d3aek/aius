@@ -44,7 +44,7 @@ static const BudgetCase budget_cases[] = {
 	{"budget.network", AIUS_BOOT_CHECKPOINT_NETWORK,
 	 1u, 0u, 0u, 0u},
 	{"budget.http", AIUS_BOOT_CHECKPOINT_HTTP,
-	 1u, 256u, 512u, 0u},
+	 1u, 256u, 512u, 2u},
 	{"budget.udp", AIUS_BOOT_CHECKPOINT_UDP,
 	 1u, 532u, 532u, 2u},
 	{"budget.replay", AIUS_BOOT_CHECKPOINT_REPLAY,

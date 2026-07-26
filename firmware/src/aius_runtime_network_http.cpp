@@ -33,10 +33,20 @@ FLASHMEM void http_init(AiusRuntimeNetworkHttp *service, uint32_t now_ms)
 	service->application_response_present = false;
 }
 
-/* Retains one correlated transport result for the next HTTP step. */
+/* Retains one correlated transport result for the next HTTP step. Transport
+ * losses are counted here, where every transport result is visible exactly
+ * once -- the transaction's own last_fault records only a connection's first
+ * fault, which would undercount repeated accept faults on a broken listener.
+ * A CLOSED is a loss only mid-read or mid-write: accept never produces it,
+ * and on CLOSE it means "already closed", a completed shutdown. */
 FLASHMEM void retain_io(AiusRuntimeNetworkHttp *service,
                         const AiusHttpAction *action, AiusIoEvent io)
 {
+	if (io.result == AIUS_IO_FAULT ||
+	    (io.result == AIUS_IO_CLOSED &&
+	     (action->kind == AIUS_HTTP_ACTION_READ ||
+	      action->kind == AIUS_HTTP_ACTION_WRITE)))
+		service->http_client_drops++;
 	memset(&service->pending_http_event, 0,
 	       sizeof(service->pending_http_event));
 	service->pending_http_event.kind = AIUS_HTTP_EVENT_IO_RESULT;
@@ -189,6 +199,7 @@ FLASHMEM bool aius_runtime_http_service(
 {
 	AiusHttpEvent event;
 	AiusHttpAction action;
+	AiusHttpFault fault_before;
 
 	if (service == nullptr || budget == nullptr || storage_action == nullptr)
 		return false;
@@ -217,7 +228,32 @@ FLASHMEM bool aius_runtime_http_service(
 
 	service->http_stepped = true;
 	memset(&action, 0, sizeof(action));
+	fault_before = service->http.last_fault;
 	aius_http_transaction_step(&service->http, now_ms, event, &action);
+
+	/* A changed last_fault is a connection's first fault, recorded inside
+	 * this step (reset_client() clears it per accepted connection, so each
+	 * connection contributes at most one transition). Fixed 4xx refusals
+	 * are rejections; expired deadlines are the modern spelling of the
+	 * legacy idle/stall client drop. TRANSPORT is deliberately absent --
+	 * transport losses are counted per occurrence in retain_io(), and
+	 * counting the transition too would double-count the same loss. */
+	if (service->http.last_fault != fault_before) {
+		switch (service->http.last_fault) {
+		case AIUS_HTTP_FAULT_PROTOCOL:
+		case AIUS_HTTP_FAULT_REQUEST_CAPACITY:
+			service->http_rejections++;
+			break;
+		case AIUS_HTTP_FAULT_REQUEST_TIMEOUT:
+		case AIUS_HTTP_FAULT_RESPONSE_TIMEOUT:
+		case AIUS_HTTP_FAULT_UPLOAD_TIMEOUT:
+		case AIUS_HTTP_FAULT_DOWNLOAD_TIMEOUT:
+			service->http_client_drops++;
+			break;
+		default:
+			break;
+		}
+	}
 
 	switch (action.kind) {
 	case AIUS_HTTP_ACTION_ACCEPT:
@@ -243,6 +279,7 @@ FLASHMEM bool aius_runtime_http_service(
 	case AIUS_HTTP_ACTION_DISPATCH: {
 		const AiusHttpApplicationResponse *response =
 			aius_optical_app_http_dispatch(app, action.request);
+		service->http_requests++;
 		/* A null return means an invalid dispatcher or request, which
 		 * cannot be expressed as an application response. Retaining no
 		 * event makes the next step's NONE a protocol fault, i.e. the

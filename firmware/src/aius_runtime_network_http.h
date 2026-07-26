@@ -70,6 +70,31 @@ typedef struct {
 	 * given. The root clears the storage event only then, so an offline
 	 * epoch cannot silently drop a correlated SD result. */
 	bool http_stepped;
+	/* Status counters, observed at this seam because the legacy producers
+	 * died with service_http() at the cutover. They survive a network
+	 * teardown (http_init() re-inits only the transaction) and reset at
+	 * construct. Semantics:
+	 *
+	 *   http_requests      one per DISPATCH action -- a parsed request
+	 *                      handed to the application, whether it answers
+	 *                      immediately, starts an SD job, or returns null.
+	 *   http_rejections    one per connection first-faulting with
+	 *                      PROTOCOL or REQUEST_CAPACITY -- the fixed 4xx
+	 *                      refusals (bad request line, unknown route, bad
+	 *                      method, oversize, and the null-dispatch 400).
+	 *   http_client_drops  transport losses, counted per occurrence at the
+	 *                      seam's own IO observation (FAULT on any
+	 *                      transport action, CLOSED mid-read/mid-write)
+	 *                      plus one per connection first-faulting with a
+	 *                      request/response/upload/download timeout -- the
+	 *                      modern spelling of the legacy idle/stall drop.
+	 *
+	 * The fourth legacy counter, http_service_overruns, is a wall-clock
+	 * measurement and belongs to the composition root's checkpoint hook,
+	 * not to this portable seam. */
+	uint32_t http_requests;
+	uint32_t http_rejections;
+	uint32_t http_client_drops;
 } AiusRuntimeNetworkHttp;
 
 /* Memory only. Initializes the transaction against the embedded buffers,

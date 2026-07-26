@@ -531,6 +531,15 @@ static uint8_t g_last_state;
 static bool g_test_running;
 static volatile uint32_t g_network_drops;
 static volatile uint32_t g_network_budget_overruns;
+/* The HTTP checkpoint's wall-clock overruns, measured by platform_checkpoint()
+ * between the HTTP stamp and the UDP checkpoint's arrival -- the scheduler
+ * calls the checkpoint hook immediately before each service, so that interval
+ * is one HTTP service call and nothing else. The bound is the checkpoint's
+ * declared service_budget_ms (2 ms), which carries the legacy service_http()
+ * 2,000 us threshold forward. The other three http_* counters live where the
+ * transaction is observable: AiusRuntimeNetworkHttp. */
+static uint32_t g_http_checkpoint_entered_us;
+static volatile uint32_t g_http_service_overruns;
 
 static FLASHMEM uint8_t current_state(void);
 
@@ -1238,7 +1247,12 @@ static FLASHMEM uint8_t network_mode_byte(bool address_usable)
  *   33..36  overrun count               unchanged
  *   37/38   retired mode/mix, reserved  unchanged, still 0
  *   39..54  event + network counters    unchanged
- *   55..70  four HTTP counters          producer retired -> served as 0
+ *   55..70  four HTTP counters          reinstated: the first three are
+ *                                       observed at the runtime seam
+ *                                       (AiusRuntimeNetworkHttp, where the
+ *                                       transaction's actions and faults are
+ *                                       visible), the fourth is the root's
+ *                                       own checkpoint timing
  *
  * Every zero-served field is left to the memset rather than written, so no
  * offset arithmetic changed with the producers. */
@@ -1277,6 +1291,11 @@ static FLASHMEM void put_status(uint8_t *payload, uint16_t *length)
 	aius_net_put_u32(payload + 43, event_overflows);
 	aius_net_put_u32(payload + 47, network_drops);
 	aius_net_put_u32(payload + 51, network_budget_overruns);
+	aius_net_put_u32(payload + 55, g_runtime.network_http.http_requests);
+	aius_net_put_u32(payload + 59, g_runtime.network_http.http_rejections);
+	aius_net_put_u32(payload + 63,
+	                 g_runtime.network_http.http_client_drops);
+	aius_net_put_u32(payload + 67, g_http_service_overruns);
 	*length = 71;
 }
 
@@ -1802,10 +1821,14 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
  *                         a reader wants from the field it reads first, and is
  *                         corroborated by ip, link and dhcp_pending beside it
  *   dhcp_discovers        no producer without a vendor patch -> 0
- *   http_server_rebinds   producer retired -> 0
- *   the four http_* counters   producer retired -> read back as 0 from the
- *                         payload's own bytes 55..70, so JSON and UDP cannot
- *                         disagree about what is being served
+ *   http_server_rebinds   0 for good: the concept it counted -- an Ethernet
+ *                         server object dying and being re-begun mid-run --
+ *                         does not exist post-cutover, where the listener is
+ *                         bound once per network generation. The nearest
+ *                         real fact is network_restarts, already served
+ *   the four http_* counters   reinstated (see put_status()), still read
+ *                         back from the payload's own bytes 55..70, so JSON
+ *                         and UDP cannot disagree about what is being served
  *
  * The eight recovery keys appended after http_service_overruns complete
  * AiusRecoveryStatus on this channel: network_restarts and reset_source were
@@ -3665,9 +3688,22 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
  * would be incapable of failing and that proof would be vacuous. */
 static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)
 {
+	/* Close the HTTP measurement before this checkpoint's own ledger
+	 * commit joins the interval; open it after the HTTP commit for the
+	 * same reason. Recovery-safe epochs run neither checkpoint, and an
+	 * epoch that aborts inside HTTP never reaches UDP, so a stale stamp
+	 * is unreadable by construction. */
+	if (checkpoint == AIUS_BOOT_CHECKPOINT_UDP &&
+	    (uint32_t)(micros() - g_http_checkpoint_entered_us) >
+	            aius_runtime_budget(AIUS_BOOT_CHECKPOINT_HTTP)
+	                            ->service_budget_ms *
+	                    1000u)
+		g_http_service_overruns++;
 	aius_boot_record_checkpoint(&g_boot_ledger, checkpoint);
 	(void)aius_boot_storage_teensy_commit(&g_boot_storage, &g_boot_ledger);
 	aius_fault_checkpoint(checkpoint);
+	if (checkpoint == AIUS_BOOT_CHECKPOINT_HTTP)
+		g_http_checkpoint_entered_us = micros();
 }
 
 /* The one watchdog feed, reached only from the scheduler's EPOCH_COMPLETE, and
@@ -3879,10 +3915,12 @@ FLASHMEM void setup(void)
 /*    epoch, because it reads the S/PDIF peripheral. Events are rare;  */
 /*    epochs are not.                                                  */
 /*                                                                     */
-/* Not included, deliberately: the four http_* counters, whose         */
-/* producer was retired at the cutover and which the status payload    */
-/* therefore serves as constant zero (see put_status()) -- an edge on  */
-/* a constant is a call site that can never fire. And record_state()   */
+/* Not included, deliberately: the four http_* counters. Their         */
+/* producers are reinstated (see put_status()), but every HTTP failure */
+/* they count is already ordered by the request/response exchange the  */
+/* client saw fail, so a poller diffing status learns the same fact an */
+/* edge would carry; adopt them here only if defect 24's investigation */
+/* proves it needs device-side ordering. And record_state()            */
 /* is NOT called from here: a state edge is already an event, and a    */
 /* flapping carrier detected per epoch rather than per poll would fill */
 /* the ring with the one thing it already reported.                    */

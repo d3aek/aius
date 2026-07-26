@@ -811,10 +811,22 @@ are follow-up work, recorded here so they are not lost.
     multi-second outliers, while `network_drops`, `network_budget_overruns`,
     `network_restarts`, `network_last_fault`, `http_server_rebinds` and
     `event_overflows` all stay at 0 across the run. **A failure the device does
-    not count is the same blind spot as defect 16's four `http_*` counters with
-    no producer** — those are exactly the fields that would have named this, and
-    they serve constant zero. Close 16 before investigating this, or the
-    investigation has no instrument.
+    not count is the same blind spot as the four `http_*` counters with no
+    producer** — those are exactly the fields that would have named this, and
+    they served constant zero. (An earlier revision cited them as "defect 16";
+    they were never a numbered defect — defect 16 is the input-stage identity
+    no-op. The counters were the §Accepted wire-behaviour changes zero from
+    slice S2b.)
+
+    **The instrument now exists — reinstated 2026-07-26.** The counters are
+    produced at the seams that can actually see the transaction (semantics in
+    `aius_runtime_network_http.h` and §Accepted wire-behaviour changes'
+    addendum). Re-run the 200-request baseline and read the deltas:
+    `http_requests` short of the client's sent count means the loss is
+    pre-dispatch (connect/accept/read); `http_client_drops` naming it means the
+    transport reported it; everything still zero with client-visible failures
+    means the loss never reached the listener, which is the lost-SYN
+    hypothesis.
 
     Two candidates worth separating first: the second-order accept behaviour
     behind defect 20 (the vendor `fromlen` patch is applied, but the accept path
@@ -5278,6 +5290,44 @@ fixed offsets 55–70 of the 71-byte UDP status payload (`:1175`), so they are
 served as zero from S2b until a later phase gives them a producer; the UDP
 payload keeps its length and field offsets. `network_restarts` and `reset_source`
 survive through `AiusRecoveryStatus` (`aius_net.h:156`, `:153`).
+
+**Addendum 2026-07-26 — the four `http_*` counters have producers again**,
+raised to priority by open defect 24 (a failure the device does not count has
+no instrument). The observation points are the ones that can actually see the
+bounded transaction, not a resurrected `service_http`:
+
+- `http_requests` — one per `AIUS_HTTP_ACTION_DISPATCH` in
+  `aius_runtime_http_service()`: a parsed request handed to the application,
+  the same "parsed and admitted" moment the legacy counter marked.
+- `http_rejections` — a connection's first fault transitioning to `PROTOCOL`
+  or `REQUEST_CAPACITY`: the fixed 4xx refusals (bad request line, unknown
+  route, bad method, oversize, the null-dispatch 400). `reset_client()` clears
+  `last_fault` per accepted connection, which is what makes the transition
+  well-defined and at most one per connection.
+- `http_client_drops` — transport losses counted per occurrence at the seam's
+  own IO observation (`FAULT` on any transport action, `CLOSED` mid-read or
+  mid-write), **not** via the `TRANSPORT` fault transition, which first-fault
+  latching would undercount on a listener that faults repeatedly; plus one per
+  connection first-faulting with a request/response/upload/download timeout —
+  the modern spelling of the legacy 150 ms idle / upload-stall drop.
+- `http_service_overruns` — the composition root times the HTTP checkpoint
+  (`platform_checkpoint()` stamps after the HTTP commit, measures on the UDP
+  checkpoint's arrival; the scheduler calls the hook immediately before each
+  service, so the interval is one HTTP service call) against the checkpoint's
+  now-declared `service_budget_ms` of 2 ms — the legacy 2,000 µs threshold
+  carried into the budget table, where the `runtime` suite pins it.
+
+The counters live in `AiusRuntimeNetworkHttp` (surviving network teardown —
+they answer "since boot", pinned by `counters.survive-restart`) except the
+overrun count, which is the root's own measurement beside
+`g_network_budget_overruns`. `put_status()` writes bytes 55–70 from them and
+the JSON still reads the payload's own bytes back, so the two channels still
+cannot disagree. **`http_server_rebinds` stays zero for good**: the concept it
+counted — an Ethernet server object dying and being re-begun mid-run — does
+not exist post-cutover, and the nearest real fact, `network_restarts`, is
+already served. Native coverage: `runtime-target` `counters.*` (six
+scenarios), each mechanism separately, with an observed negative control on
+the dispatch count.
 
 **R2 rescued two of the three DHCP fields.** `dhcp_pending` and `dhcp_updates`
 are served from the adapter's own generation-scoped state, so they keep their
