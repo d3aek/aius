@@ -691,6 +691,50 @@ are follow-up work, recorded here so they are not lost.
     two `usb_present()` samples. Fixing the basis is a runner change, and the
     deadlines were deliberately left alone pending a decision on the DHCP figure.
 
+    **Superseded 2026-07-26 by the post-fix B6 run.** Every figure in the table
+    above predates the `usb`-basis fix, the DHCP-deadline move and the
+    accept-length fix, and none of them should be quoted now. Re-measured over
+    twenty-nine software reboots of `3576c3e3560f`: `usb` 1.51–1.64 s
+    (mean 1.57), `dhcp`/`udp` 7.09–10.79 s, `http` 7.09–11.04 s. The "unexplained
+    time before the DHCP wait" the entry asks about is now instrumented and
+    accounted for — 2,165–3,624 ms of stack start, `beginNoWait()` and the
+    RX-ready gate — and the remainder is the DHCP window itself, which is
+    quantised at 4,003–4,005 ms or 8,005 ms rather than variable. The deadlines
+    that follow from that are in
+    [§Runtime order and budgets](#runtime-order-and-budgets).
+22. **`GET /api/dsp/config` cannot report a committed config on a board with no
+    carrier, so a client cannot tell "no SD config" from "config committed".**
+    Found by the post-fix B6 gate 5. `source` and `config_generation` are written in
+    exactly one place — `AiusAudioProcessor::enqueue()`'s staged-config arm
+    (`optical_main.cpp:880-886`) — which runs at an *audio block boundary*. A board
+    with `carrier: 0` and `blocks: 0` never reaches it.
+
+    Proved directly rather than inferred: a `PUT` moved `sd_diag.http_jobs` 0 → 1
+    with `http_faults` 0 and `job_state` 15 (`AIUS_SD_DONE`), so **the write commits**,
+    while both reported fields stayed at `0` / `"default"` for ten seconds and across
+    fifteen subsequent reboots.
+
+    Same shape as 17a: a fact that exists is reported only on a code path that
+    happens not to run. The gate now distinguishes the two with an explicit
+    `sd-job` basis used **only** when the board provably cannot apply, and which
+    reports what it did not check — a non-reporting board *with* audio still fails.
+    The firmware fix is a design call (report a committed source separately, or set
+    it at commit time rather than at apply time) and was deliberately not taken
+    under a gate deadline.
+23. **`AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not headroom.** The
+    DHCP window is quantised by `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS`:
+    **4,003–4,005 ms on 27 of 29 boots, 8,005 ms on 2** — one lost `DISCOVER` and its
+    retransmission. So 9,000 ms clears the two-`DISCOVER` case by under a second, and
+    a three-`DISCOVER` boot (≈12,005 ms) lands straight back on the
+    teardown-and-rebind path the 5,000 → 9,000 move existed to remove.
+
+    Recorded rather than changed, deliberately: that constant was just moved and
+    re-measured, and moving it again in the same session without a fresh
+    distribution would repeat the error the first move corrected. Decide it against
+    measured two- and three-`DISCOVER` frequencies, and note the trade — waiting
+    longer is right when the lease is merely delayed, and wrong when the segment
+    will never answer, which is what the backoff-and-retry path is for.
+
 #### Decisions taken, so they are not re-opened
 
 - **A network syslog sender was assessed and declined.** Not on cost — the event
@@ -705,11 +749,29 @@ are follow-up work, recorded here so they are not lost.
 
 #### Next
 
-**14f, the first flash and assumption validation**, remains the gate before 14d
-and 14e — both are required to carry measured figures, and the memory gate above
-must be fixed first or they will document the wrong numbers. Then B6, the live
-recovery smoke, which has never run and is what proves the watchdog and recovery
-contract this whole plan exists to establish.
+~~**14f, the first flash and assumption validation**, remains the gate before 14d
+and 14e … Then B6, the live recovery smoke, which has never run.~~
+
+**All of that is delivered. B6 ran end to end on 2026-07-26 against
+`3576c3e3560f`** — gates 2, 4 and 5 pass, gate 3 passes on all seven checkpoints
+the firmware can recover from, and checkpoints 1 and 2 are UNRESOLVED for a
+structural reason no runner work can change: `aius_fault_checkpoint()` runs
+*before* the checkpoint's service, and recovery-safe mode runs exactly those two,
+so a fault image there hangs with no USB control path. **The watchdog and recovery
+contract this plan exists to establish is now proven on hardware**, including
+recovery-safe mode latching after two early watchdog resets and returning to
+service unaided — a boundary that had never once executed on a real board.
+
+**Next**, in the order they are worth doing:
+
+- **B7 (Phase 15, button-free flash tooling)** and then **B8**, which is the only
+  remaining phase that changes what an operator has to do physically. The
+  134-baud CDC line-coding reboot into HalfKay is the mechanism to build on: it
+  is proven, it works on a *hung* sketch, and it removed nine Program-button
+  presses from a single gate-3 run.
+- **Open defects 22 and 23**, both raised by the passing run rather than by a
+  failure, and both design calls rather than repairs.
+- **B9**, the dashboard retirement, which is independent of all of the above.
 
 ### Why the two strands are coupled
 
@@ -848,7 +910,7 @@ throughout. Track B is serialized because every phase in it touches
 | B5b | **Phase 14f — first flash and assumption validation.** Nothing in Phase 14 has ever executed; this is where the plan's assertions become measurements | the recorded validation log, one verdict per assumption |
 | B5c | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
 | B5d | Phase 14e — the signal path and DSP reference: block diagram, per-stage implementation, memory, and the measured per-block budget | `dsp` suite + figures taken from the device |
-| B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
+| B6 | ~~Phase 16a — live recovery smoke on the deployed board~~ **DONE 2026-07-26** on `3576c3e3560f` | gates 2, 4, 5 PASS; gate 3 PASS on all seven recoverable checkpoints; 1 and 2 UNRESOLVED, structurally |
 | B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
 | B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
 | B9 | Retire the the app dashboard, keeping `swagger.json` and its contract suite | `ui-contract` and Vitest suites green after removal |
@@ -1029,7 +1091,7 @@ deadline wins. Counters saturate at `UINT32_MAX`.
 | `1 USB_RX` | CDC input | 64 bytes/calls | parser state; no wait |
 | `2 USB_TX` | CDC output | 64 bytes; one write | bootloader ack: 500 ms |
 | `3 METRICS` | due hardware metrics sample | one sample | no wait |
-| `4 NETWORK` | supervisor + adapter | one transition/action | DHCP: 5 s; backoff: 1 s |
+| `4 NETWORK` | supervisor + adapter | one transition/action | DHCP: 9 s; backoff: 1 s |
 | `5 HTTP` | one client | one accept; RX 256 B; TX 512 B | HTTP ABI below |
 | `6 UDP` | discovery/control | one frame | 2 ms service budget |
 | `7 REPLAY` | replay refill | 2,048 bytes | one call |
@@ -1040,8 +1102,36 @@ Checkpoints `0..8` are injectable recovery checkpoints. `EPOCH_COMPLETE` is the
 healthy completion marker immediately before feed and is never fault-injected.
 
 After USB enumeration, `AIUS ID` must respond within 2 s. A normal boot must
-obtain its DHCP address within 7 s and serve HTTP within 8 s. An induced stall
-must reset in 8–10 s and return USB status within 2 s of re-enumeration.
+obtain its DHCP address within 12 s and serve HTTP and UDP within 12 s. An
+induced stall must reset in 8–10 s and return USB status within 2 s of
+re-enumeration.
+
+**The 12 s figure is measured, and it replaces a guess.** The original 7 s / 8 s
+pair predates any on-board measurement and sits *below* even the fast case, so a
+healthy board could not meet it. Measured over twenty-nine software reboots of
+`3576c3e3560f`:
+
+- The board's own pre-DHCP work — stack start, `beginNoWait()`, PHY reset and
+  autonegotiation, the RX-ready gate — takes **2,165–3,624 ms**.
+- The DHCP window that follows is **quantised**, not spread:
+  **4,003–4,005 ms on 27 boots** and **8,005 ms on 2**. The step is
+  `FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS` — one lost `DISCOVER` and its
+  retransmission. The segment owns those four seconds; asking more often was
+  tried on the board and did not move them
+  ([`src/aius_network_teensy.h`](../../firmware/src/aius_network_teensy.h)).
+- Host observation adds up to one poll interval plus one probe timeout.
+
+So the observable channel latency is bimodal: **7.09–8.49 s** with one `DISCOVER`
+and **10.79–11.04 s** with two. 12 s is the worst of those plus ~1 s.
+
+**What the margin is deliberately not for: a third `DISCOVER`.** That boot lands
+near 14.8 s and fails this deadline — as it should. At two lost `DISCOVER`s the
+board is already within 1 s of `AIUS_NET_DHCP_DEADLINE_MS` (9,000 ms) and about
+to take the teardown-and-rebind path itself, so a deadline that absorbed the
+third would hide exactly the event it exists to surface.
+
+The 2 s USB budget is untouched: measured 1.51–1.64 s from re-enumeration across
+the same boots, comfortably inside it.
 
 ## Shared portable I/O ABI
 
@@ -5313,8 +5403,8 @@ none has been measured. Record a verdict for every one.
 
 *Network*
 - The link comes up at all — the current board says it does not.
-- DHCP obtains a lease within the 7 s the contract states, and HTTP serves within
-  8 s.
+- DHCP obtains a lease within the 12 s the contract states, and HTTP serves
+  within 12 s.
 - A DHCP deadline drives bounded teardown and backoff rather than a hang.
 - One generation owns every socket; a restart does not leak a listener.
 

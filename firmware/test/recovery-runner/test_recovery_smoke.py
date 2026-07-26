@@ -352,6 +352,50 @@ class DspLink(FakeLink):
                 "body": self.editor_body if self.editor_status == 200 else b""}
 
 
+class StagedOnlyDspLink(DspLink):
+    """A board that writes the model to SD but never applies it.
+
+    The measured shape of the deployed board: `source` and `config_generation`
+    are written only at an audio block boundary, so with no optical carrier the
+    PUT commits and neither field moves. `carrier` is a parameter because the
+    same non-reporting board *with* audio is a genuine failure, and one fake
+    should be able to produce both.
+    """
+
+    def __init__(self, carrier=0, blocks=0, start_job=True, fault_job=False,
+                 job_state=None, **overrides):
+        super().__init__(**overrides)
+        self.carrier = carrier
+        self.blocks = blocks
+        self.start_job = start_job
+        self.fault_job = fault_job
+        self.job_state = SMOKE.SD_JOB_DONE if job_state is None else job_state
+        self.jobs = 0
+        self.faults = 0
+
+    def http_status(self, timeout=None):
+        body = dict(self.status_body)
+        body["carrier"] = self.carrier
+        body["blocks"] = self.blocks
+        body["sd_diag"] = {"http_jobs": self.jobs, "http_faults": self.faults,
+                           "job_state": self.job_state}
+        return body
+
+    def http_json(self, method, path, body=None, auth=False, timeout=None):
+        if method != "PUT" or path != "/api/dsp/config":
+            return super().http_json(method, path, body, auth, timeout)
+        before = dict(self.model)
+        result = super().http_json(method, path, body, auth, timeout)
+        if result["status"] == 200:
+            self.model["source"] = before["source"]
+            self.model["config_generation"] = before["config_generation"]
+            if self.start_job:
+                self.jobs += 1
+            if self.fault_job:
+                self.faults += 1
+        return result
+
+
 def options(**overrides):
     values = {"target": "192.0.2.45", "poll_interval": 0.25, "reboots": 2}
     values.update(overrides)
@@ -407,11 +451,11 @@ class DecodeTests(unittest.TestCase):
         self.assertFalse(SMOKE.dhcp_bound({"ip": "192.0.2.45", "dhcp_pending": 1}))
 
     def test_deadline_failures_name_the_late_and_the_missing_channel(self):
-        failures = SMOKE.deadline_failures({"http": 9.0, "udp": 1.0, "dhcp": None,
+        failures = SMOKE.deadline_failures({"http": 13.0, "udp": 1.0, "dhcp": None,
                                             "usb": 0.5})
         self.assertEqual(len(failures), 2)
         self.assertTrue(any("dhcp never became ready" in line for line in failures))
-        self.assertTrue(any("http ready at 9.00s" in line for line in failures))
+        self.assertTrue(any("http ready at 13.00s" in line for line in failures))
         self.assertEqual(SMOKE.deadline_failures({"http": 1.0}), [])
 
 
@@ -511,7 +555,7 @@ class RebootGateTests(unittest.TestCase):
         self.assertIsNotNone(latencies["usb"])
 
     def test_fail_when_http_and_dhcp_miss_the_normative_deadline(self):
-        link = RebootLink({"dhcp": 9.0, "udp": 9.0, "http": 9.5})
+        link = RebootLink({"dhcp": 12.5, "udp": 12.5, "http": 13.0})
         result = SMOKE.gate_reboots(link, options(allow_mutation=True))
         self.assertEqual(result.outcome, SMOKE.FAIL)
         self.assertTrue(any("http ready at" in line for line in result.observations))
@@ -755,6 +799,40 @@ class DspGateTests(unittest.TestCase):
         result = SMOKE.gate_dsp(FakeLink(), options(allow_mutation=True))
         self.assertEqual(result.outcome, SMOKE.UNRESOLVED)
         self.assertIn("unreachable", result.detail)
+
+    def test_pass_on_a_silent_board_witnessed_by_the_sd_job(self):
+        """No carrier, no block boundary, so the apply provably cannot run."""
+        link = StagedOnlyDspLink()
+        result = SMOKE.gate_dsp(link, options(allow_mutation=True))
+        self.assertEqual(result.outcome, SMOKE.PASS)
+        observations = " ".join(result.observations)
+        self.assertIn("commit basis: sd-job", observations)
+        self.assertIn("not checked on this path", observations)
+
+    def test_fail_when_a_silent_board_starts_no_sd_job(self):
+        link = StagedOnlyDspLink(start_job=False)
+        result = SMOKE.gate_dsp(link, options(allow_mutation=True))
+        self.assertEqual(result.outcome, SMOKE.FAIL)
+        self.assertIn("started no SD job", result.detail)
+
+    def test_fail_when_the_sd_write_faults(self):
+        link = StagedOnlyDspLink(fault_job=True)
+        result = SMOKE.gate_dsp(link, options(allow_mutation=True))
+        self.assertEqual(result.outcome, SMOKE.FAIL)
+        self.assertIn("SD write faulted", result.detail)
+
+    def test_fail_when_the_sd_job_did_not_reach_done(self):
+        link = StagedOnlyDspLink(job_state=16)
+        result = SMOKE.gate_dsp(link, options(allow_mutation=True))
+        self.assertEqual(result.outcome, SMOKE.FAIL)
+        self.assertIn("expected DONE", result.detail)
+
+    def test_fail_when_a_board_with_audio_does_not_report_the_commit(self):
+        """The sd-job basis is not a general excuse: with audio it is a failure."""
+        link = StagedOnlyDspLink(carrier=1, blocks=4096)
+        result = SMOKE.gate_dsp(link, options(allow_mutation=True))
+        self.assertEqual(result.outcome, SMOKE.FAIL)
+        self.assertIn("did not commit to SD", result.detail)
 
 
 class RunAndSummaryTests(unittest.TestCase):

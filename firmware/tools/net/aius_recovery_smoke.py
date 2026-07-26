@@ -81,11 +81,32 @@ http_runner = _load_sibling("aius_http_runner")
 
 # Normative deadlines, §Runtime order and budgets. UDP has no deadline of its
 # own: it shares one network generation with HTTP, so it is held to the same
-# 8 s bound and a later UDP than HTTP is a real finding, not a tolerance.
+# bound as HTTP and a later UDP than HTTP is a real finding, not a tolerance.
+#
+# The 12 s network figure is measured, not chosen, and it is a bound on a
+# bimodal distribution rather than on a spread. Over twenty-nine software reboots
+# of 3576c3e3560f the board's own pre-DHCP work took 2,165-3,624 ms, and the DHCP
+# window that follows it is quantised by FNET_CFG_DHCP_CLN_RESPONSE_TIMEOUT_MS:
+# 4,003-4,005 ms when the first DISCOVER is answered (27 boots) and 8,005 ms when
+# it is not and the retransmission is (2 boots). The segment owns that 4 s step
+# and the board cannot shorten it -- see src/aius_network_teensy.h, where asking
+# more often was tried on the board and did not move it. Host observation adds up
+# to one poll interval plus one probe timeout. So the observed channel latency is
+# ~7.1-8.5 s with one DISCOVER and ~10.8-11.0 s with two, and 12 s is the worst
+# of those plus ~1 s.
+#
+# What the margin is NOT for: a third DISCOVER. That boot would land near 14.8 s
+# and fail this deadline, which is intended -- at two lost DISCOVERs the board is
+# also within 1 s of AIUS_NET_DHCP_DEADLINE_MS (9,000 ms) and about to take the
+# teardown-and-rebind path itself. A gate that absorbed it would hide the event
+# the deadline exists to surface.
+#
+# The previous 7 s / 8 s pair was set before any of this was measured and sat
+# below even the fast mode's floor, so it could not be met on a healthy board.
 USB_ID_DEADLINE_S = 2.0
-DHCP_DEADLINE_S = 7.0
-HTTP_DEADLINE_S = 8.0
-UDP_DEADLINE_S = 8.0
+DHCP_DEADLINE_S = 12.0
+HTTP_DEADLINE_S = 12.0
+UDP_DEADLINE_S = 12.0
 STALL_RESET_MIN_S = 8.0
 STALL_RESET_MAX_S = 10.0
 # How often observe_ready() samples the CDC port while waiting. A presence
@@ -93,6 +114,10 @@ STALL_RESET_MAX_S = 10.0
 # reads it sits between; the value only has to be well under the ~1.5 s the
 # host takes to re-enumerate the port after a reset.
 USB_SAMPLE_INTERVAL_S = 0.05
+# AiusSdState's terminal success value (lib/aius_sd/include/aius_sd.h), as the
+# status serves it. Named here so the SD-job commit basis reads as a state and
+# not as a magic number.
+SD_JOB_DONE = 15
 INJECTABLE_CHECKPOINTS = tuple(range(0, 9))
 CHECKPOINT_NAMES = ("RESET_CAPTURE", "USB_RX", "USB_TX", "METRICS", "NETWORK",
                     "HTTP", "UDP", "REPLAY", "SD", "EPOCH_COMPLETE")
@@ -1038,15 +1063,105 @@ def _check_editor(link, observations):
     return failures
 
 
+def _commit_without_apply(link, generation, committed, before_counters,
+                          observations):
+    """The commit evidence for a board whose block-boundary apply cannot run.
+
+    Only the SD-job path is available here, and it is only accepted when the
+    board actually cannot apply. On a board with audio, an unreported commit is
+    the failure it looks like.
+    """
+    try:
+        status = link.http_status()
+    except LinkError as error:
+        return ["no status to establish the commit basis (%s)" % error]
+    if _apply_is_reachable(status):
+        failures = []
+        if committed.get("source") != "sd":
+            failures.append("config did not commit to SD: source=%s" %
+                            committed.get("source"))
+        if committed.get("config_generation") != generation + 1:
+            failures.append("config_generation %s -> %s, expected +1" %
+                            (generation, committed.get("config_generation")))
+        return failures
+    observations.append(
+        "commit basis: sd-job -- carrier=%s blocks=%s, so no audio block "
+        "boundary occurred and the staged model cannot have applied" %
+        (status.get("carrier"), status.get("blocks")))
+    after_counters = _sd_write_counters(status)
+    if before_counters is None or after_counters is None:
+        return ["no SD job counters to witness the write"]
+    observations.append("sd_diag http_jobs %s -> %s, http_faults %s -> %s, "
+                        "job_state %s" %
+                        (before_counters["jobs"], after_counters["jobs"],
+                         before_counters["faults"], after_counters["faults"],
+                         after_counters["state"]))
+    failures = []
+    if not isinstance(after_counters["jobs"], int) or \
+            not isinstance(before_counters["jobs"], int) or \
+            after_counters["jobs"] <= before_counters["jobs"]:
+        failures.append("the PUT started no SD job: http_jobs %s -> %s" %
+                        (before_counters["jobs"], after_counters["jobs"]))
+    if after_counters["faults"] != before_counters["faults"]:
+        failures.append("the SD write faulted: http_faults %s -> %s" %
+                        (before_counters["faults"], after_counters["faults"]))
+    if after_counters["state"] != SD_JOB_DONE:
+        failures.append("the SD job ended in state %s, expected DONE (%d)" %
+                        (after_counters["state"], SD_JOB_DONE))
+    observations.append("not checked on this path: the block-boundary apply, "
+                        "and therefore source and config_generation")
+    return failures
+
+
+def _sd_write_counters(status):
+    """The SD job counters that witness a durable write, or None."""
+    diag = status.get("sd_diag")
+    if not isinstance(diag, dict):
+        return None
+    return {"jobs": diag.get("http_jobs"), "faults": diag.get("http_faults"),
+            "state": diag.get("job_state")}
+
+
+def _apply_is_reachable(status):
+    """False when no audio block boundary can occur, so no staged model applies.
+
+    `source` and `config_generation` are written in exactly one place --
+    AiusAudioProcessor::enqueue()'s staged-config arm, which runs at an audio
+    block boundary (optical_main.cpp:880-886). A board with no optical carrier
+    produces no block, so neither field can move however well the write went.
+    """
+    return bool(status.get("carrier")) or bool(status.get("blocks"))
+
+
 def _config_round_trip(link, options, model, observations):
     """GET -> PUT (commits to SD) -> verify -> reset to the captured default.
 
     Returns the failure list, or None when the round-trip could not be driven
     at all (no token, no SD) -- an unresolved gate rather than a failed one.
+
+    **The commit has two evidence paths, and this says which one it used**, for
+    the same reason gate_stalls does: the observable one is not always reachable.
+
+    - **applied** -- `GET /api/dsp/config` reports `source: "sd"` and the next
+      config generation. This is the full claim: written to SD *and* active.
+    - **sd-job** -- the board has no carrier and has processed no audio block, so
+      the block-boundary apply provably cannot have run and both fields must
+      still read their boot values. The durable write is then witnessed by the
+      SD job counters instead: one more completed HTTP-owned job, no new fault,
+      terminal state DONE. What that cannot show is the apply, and it is reported
+      as unchecked rather than quietly passed.
+
+    A board that has audio and still does not report the commit is a failure on
+    either path.
     """
     generation = model.get("config_generation")
     if generation is None:
         return None
+    try:
+        before_status = link.http_status()
+    except LinkError:
+        before_status = {}
+    before_counters = _sd_write_counters(before_status)
     body = dict(model)
     body["base_generation"] = generation
     try:
@@ -1069,11 +1184,13 @@ def _config_round_trip(link, options, model, observations):
     committed = after["body"] if isinstance(after.get("body"), dict) else {}
     observations.append("after PUT source=%s config_generation=%s" %
                         (committed.get("source"), committed.get("config_generation")))
-    if committed.get("source") != "sd":
-        failures.append("config did not commit to SD: source=%s" % committed.get("source"))
-    if committed.get("config_generation") != generation + 1:
-        failures.append("config_generation %s -> %s, expected +1" %
-                        (generation, committed.get("config_generation")))
+    applied = (committed.get("source") == "sd" and
+               committed.get("config_generation") == generation + 1)
+    if applied:
+        observations.append("commit basis: applied (source=sd, generation +1)")
+    else:
+        failures.extend(_commit_without_apply(link, generation, committed,
+                                              before_counters, observations))
     reset_body = dict(model)
     reset_body["base_generation"] = committed.get("config_generation", generation + 1)
     try:
