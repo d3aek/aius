@@ -243,7 +243,18 @@ FLASHMEM AiusStatus aius_replay_service_deliver(AiusReplayService *service,
 	service->offset_bytes += (uint32_t)byte_count;
 	if (service->file_bytes != 0u && service->offset_bytes >= service->file_bytes)
 		service->eof = true;
-	if (service->state == AIUS_REPLAY_PREBUFFERING &&
+	/* UNDERRUN re-arms alongside PREBUFFERING, and that is a fix rather than a
+	 * tidy-up.  Only a PLAYING service counts a short pop
+	 * (aius_replay_service_pop_words), and UNDERRUN used to be a one-way door:
+	 * a recovered ring never went back to PLAYING, so the SECOND starvation and
+	 * every one after it was uncountable.  `underruns` then reads as a frozen
+	 * number while the audio is visibly starving -- which is what the first live
+	 * measurement saw, and it made the one counter that should have named this
+	 * defect say nothing at all.  Refilled past the watermark, the service is
+	 * playing again by every other measure; say so, and let the next starvation
+	 * count. */
+	if ((service->state == AIUS_REPLAY_PREBUFFERING ||
+	     service->state == AIUS_REPLAY_UNDERRUN) &&
 	    aius_replay_word_ring_available(&service->ring) >= service->watermark_words) {
 		service->state = AIUS_REPLAY_PLAYING;
 		service->source = AIUS_REPLAY_SOURCE_REPLAY;

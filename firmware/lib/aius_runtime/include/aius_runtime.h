@@ -10,6 +10,25 @@
 extern "C" {
 #endif
 
+/* One checkpoint's per-epoch work allowance.
+ *
+ * UNITS, STATED BECAUSE THEY WERE ONCE ASSUMED. `max_rx_bytes` and
+ * `max_tx_bytes` are BYTES MOVED OVER A TRANSPORT in one visit to the
+ * checkpoint -- what may be received from, or sent to, a socket, a serial
+ * endpoint or a datagram in that call. They are not a general-purpose quota and
+ * they are not words.
+ *
+ * The replay refill once read `max_rx_bytes` as a WORD count, which silently
+ * halved every planned refill against constants the replay seam believed it
+ * owned, and cost a live regression before anyone noticed the two disagreed. It
+ * no longer reads this table at all: a disk refill moves no transport bytes,
+ * its size is bounded by AIUS_REPLAY_REFILL_MAX_BYTES and the ring, and its
+ * per-epoch cost is one SD primitive whatever the plan size. A consumer whose
+ * work is not transport I/O should take its bound from the seam that owns it,
+ * not from here.
+ *
+ * `max_calls` is service calls, `service_budget_ms` a wall-clock allowance in
+ * milliseconds; zero means "not bounded by this field". */
 typedef struct {
 	uint16_t checkpoint;
 	uint16_t max_calls;

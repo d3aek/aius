@@ -1327,6 +1327,80 @@ static void test_replay_control(void)
 	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
 }
 
+/* The two replay routes that reach the card directly are excluded while a job
+ * owns the volume, exactly as GET /sd/<dir>/ already is.
+ *
+ * Both enumerate or stat the card outside the bounded job engine -- the
+ * portable engine has no directory job, and delete is two constant primitives
+ * -- so overlapping a running job means walking a volume someone else is
+ * mid-transaction on. The Phase 14d audit found neither gated. A refused call
+ * answers 503 sd_busy: the same distinguishable token every other SD route
+ * uses, and a refusal rather than a listing read across a foreign transaction
+ * or a 404 that only means "the card was busy".
+ *
+ * The memory-only replay routes are deliberately NOT gated, and that is
+ * asserted here rather than left implicit: start, stop and status touch no
+ * primitive, and start must in particular still be admitted while a refill job
+ * for the previous selection is draining, because cancelling it is exactly what
+ * start does. */
+static void test_replay_card_routes_are_gated(void)
+{
+	Fixture fixture;
+	static const char *const list_calls[] = { "sd_ready", "sd_busy" };
+	static const char *const delete_calls[] = { "auth_matches", "sd_busy" };
+	static const char *const start_calls[] = {
+		"auth_matches", "sd_ready", "replay_start"
+	};
+	static const char *const stop_calls[] = { "auth_matches", "replay_stop" };
+	static const char *const status_calls[] = { "replay_status" };
+
+	fixture_init(&fixture);
+	fixture.fake.sd_busy = true;
+
+	/* The listing never reaches the serializer, so no enumeration happens. */
+	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	expect_log(&fixture, list_calls, ARRAY_LENGTH(list_calls));
+
+	/* Delete never reaches the application, so nothing is stat'd or removed. */
+	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"take1\"}", -1),
+	                 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
+	expect_log(&fixture, delete_calls, ARRAY_LENGTH(delete_calls));
+
+	/* A malformed body is still a 400 whatever the volume is doing: the
+	 * request is wrong regardless, and answering 503 would tell the client to
+	 * retry a request that can never succeed. */
+	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
+	                                  "X-Aius-SD-Auth: token\r\n", "{}", -1),
+	                 400, "{\"ok\":false,\"error\":\"replay_body\"}");
+
+	/* And the memory-only routes are unaffected by a busy volume. */
+	expect_immediate(dispatch_request(&fixture, "POST /api/replays/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"take1\"}", -1),
+	                 200,
+	                 "{\"ok\":true,\"state\":\"prebuffering\",\"id\":\"take1\"}");
+	expect_log(&fixture, start_calls, ARRAY_LENGTH(start_calls));
+	expect_immediate(dispatch_request(&fixture, "POST /api/replays/stop",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
+	                 200, "{\"ok\":true,\"state\":\"stopped\"}");
+	expect_log(&fixture, stop_calls, ARRAY_LENGTH(stop_calls));
+	expect_immediate(dispatch_get(&fixture, "GET /api/replays/status"), 200,
+	                 "{\"body\":\"replay_status\"}");
+	expect_log(&fixture, status_calls, ARRAY_LENGTH(status_calls));
+
+	/* Idle again, and both routes serve. */
+	fixture.fake.sd_busy = false;
+	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 200,
+	                 "{\"body\":\"replay_list\"}");
+	expect_immediate(dispatch_request(&fixture, "DELETE /api/replays",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"take1\"}", -1),
+	                 200, "{\"ok\":true,\"deleted\":\"take1\"}");
+}
+
 /* RFC 8259 §2 makes whitespace insignificant before and after every structural
  * character, so a body is identified by what it means, not by how it is spaced.
  * The compact form the bundled page happens to emit (JSON.stringify) and the
@@ -1777,6 +1851,7 @@ int main(void)
 	RUN_TEST(test_config_public_put);
 	RUN_TEST(test_config_put_body_bounds);
 	RUN_TEST(test_replay_control);
+	RUN_TEST(test_replay_card_routes_are_gated);
 	RUN_TEST(test_replay_body_whitespace);
 	RUN_TEST(test_callback_isolation);
 	RUN_TEST(test_dispatch_counts);

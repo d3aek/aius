@@ -975,6 +975,16 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 		 * body with a 200, it does not fail the request. */
 		if (!app->sd_ready(app->context))
 			return http_error(dispatcher, 200, "sd_unavailable");
+		/* The listing enumerates the card directly -- the portable engine has
+		 * no directory job to move it onto -- so it is exactly as unsafe
+		 * against a running job as the /sd/ index is, and gets the same gate
+		 * for the same reason. Phase 14d found this one missing: the listing
+		 * could walk /aius/replays while a refill, an upload or a probe held
+		 * the volume. A busy volume answers 503 sd_busy, so the caller is told
+		 * to retry rather than handed a listing read across someone else's
+		 * transaction. */
+		if (app->sd_busy(app->context))
+			return http_error(dispatcher, 503, "sd_busy");
 		return http_serialized(dispatcher, kContentJson,
 		                       app->write_replay_list(app->context,
 		                                              dispatcher->body,
@@ -983,6 +993,13 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 	if (request->method == AIUS_HTTP_DELETE) {
 		if (!replay_body_id(dispatcher, request, &loop))
 			return http_error(dispatcher, 400, "replay_body");
+		/* Same gate, same reason: replay_delete stats and removes on the card
+		 * itself. Its cost is a constant two primitives, so the bound was never
+		 * the problem here -- the missing exclusion was. Ordered after the body
+		 * parse so a malformed request keeps answering 400 whatever the volume
+		 * is doing. */
+		if (app->sd_busy(app->context))
+			return http_error(dispatcher, 503, "sd_busy");
 		switch (app->replay_delete(app->context, dispatcher->replay_id)) {
 		case AIUS_OPTICAL_APP_REPLAY_OK:
 			return http_body_text(dispatcher, 200,

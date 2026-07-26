@@ -38,6 +38,21 @@ from pathlib import Path
 FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 OPTICAL_MAIN = FIRMWARE_ROOT / "src" / "optical_main.cpp"
 
+# The replay refill's sizing is spread across three libraries that NOTHING
+# compiles together: the portable SD engine caps a job's transfer slice, the
+# replay seam sizes its ring and refill against that slice, and optical_main.cpp
+# declares the buffer whose extent is the slice. Each builds cleanly on its own
+# while disagreeing with the other two, and the disagreement is only observable
+# on the card -- which is exactly how a replay that produced NOTHING shipped
+# past five green suites and a linking image. These are the files that check
+# reads.
+REPLAY_SIZING_SOURCES = (
+    Path("src") / "optical_main.cpp",
+    Path("lib") / "aius_sd" / "src" / "aius_sd.c",
+    Path("lib") / "aius_replay" / "include" / "aius_replay.h",
+    Path("src") / "aius_runtime_storage.h",
+)
+
 SETUP_MARKER = "void setup(void)"
 LOOP_MARKER = "void loop(void)"
 
@@ -125,6 +140,20 @@ def loop_bodies(text):
                 continue
             bodies.append(text[cursor:end + 1])
     return bodies
+
+
+def loop_headers(text):
+    """Every `for (...)` / `while (...)` CONDITION found in `text`, as the raw
+    parenthesised string. The counterpart of `loop_bodies` above: a bound lives
+    in the header, not in the body, so a check that a loop terminates on a
+    constant has to read the header. Comment/literal stripping is the caller's
+    job, because the caller already scopes the text to one function body."""
+    headers = []
+    for match in re.finditer(r"\b(?:for|while)\s*\(", text):
+        opening = text.find("(", match.start())
+        closing = matching_delimiter(text, opening, "(", ")")
+        headers.append(text[opening + 1: closing])
+    return headers
 
 
 def function_definitions(text):
@@ -387,6 +416,13 @@ REPLAY_FUNCTION_NAME = re.compile(r"replay", re.IGNORECASE)
 # enumerate rather than stream, and the portable SD engine has no directory job
 # to move the listing onto. Naming them keeps the carve-out reviewable -- any
 # OTHER replay function reaching the card still fails.
+#
+# Exempt from the bounded JOB, never from being bounded at all:
+# assert_replay_card_walks_are_bounded() below holds exactly these two to the
+# rule app_read_directory() establishes. Phase 14d found the exemption had been
+# read as a licence -- the listing walked /aius/replays with no cap and no
+# exclusion -- which is why the second check exists beside this set rather than
+# the set being trusted on its own.
 REPLAY_SD_EXEMPT = {
     "app_replay_delete": "DELETE /api/replays stats and removes the file",
     "http_replay_list_json": "GET /api/replays enumerates /aius/replays",
@@ -436,6 +472,214 @@ def assert_replay_path_has_no_direct_sd(text):
         f"no replay function names {REPLAY_REFILL_JOB}, so nothing shows the "
         "refill goes through the bounded SD job rather than some other read"
     )
+
+
+# The two card walks the exemption above allows, and the bound each must keep.
+#
+# `app_read_directory` is the model: it caps its raw reads at
+# AIUS_OPTICAL_APP_INDEX_SCAN_MAX and the dispatcher calls it only when
+# app_sd_busy() is false. The replay listing had neither -- a `for (;;)
+# openNextFile()` that ran to the end of a directory of unknown size inside one
+# epoch, on a card whose library is synchronous and uncancellable. That is an 8 s
+# watchdog reset waiting for a big enough replays directory, and it is the kind
+# of defect nothing else in this repo can catch: no native suite compiles
+# optical_main.cpp, so the bound is only observable as text.
+#
+# Two rules, both asserted:
+#   - every loop over the card terminates on the scan cap, not on the directory;
+#   - a listing that stopped on either bound SAYS SO, because a truncated
+#     listing that reads as a complete one is a wrong answer rather than a
+#     refused one.
+# The exclusion itself (503 sd_busy) is dispatcher behaviour and is proven for
+# real in the optical-app suite, which drives the routes against a fake whose
+# sd_busy it controls; only the bound is a property of this file's text.
+REPLAY_WALK_SCAN_CAP = "AIUS_OPTICAL_APP_INDEX_SCAN_MAX"
+REPLAY_WALK_TRUNCATION_FIELD = r"\"truncated\""
+REPLAY_LIST_FUNCTION = "http_replay_list_json"
+REPLAY_DELETE_FUNCTION = "app_replay_delete"
+
+
+def assert_replay_card_walks_are_bounded(text):
+    definitions = function_definitions(text)
+    missing = [
+        name
+        for name in (REPLAY_LIST_FUNCTION, REPLAY_DELETE_FUNCTION)
+        if name not in definitions
+    ]
+    assert not missing, (
+        f"the exempt card walks {missing!r} were not found, so this check would "
+        "pass without reading either bound"
+    )
+
+    listing = definitions[REPLAY_LIST_FUNCTION]
+    headers = loop_headers(without_comments_and_literals(listing))
+    assert headers, (
+        f"{REPLAY_LIST_FUNCTION} enumerates the card but contains no loop at "
+        "all, so this check has nothing to bound -- the listing has moved "
+        "somewhere this check no longer sees"
+    )
+    unbounded = [
+        header.strip() for header in headers if REPLAY_WALK_SCAN_CAP not in header
+    ]
+    assert not unbounded, (
+        f"{REPLAY_LIST_FUNCTION} loops over the card without "
+        f"{REPLAY_WALK_SCAN_CAP} in the condition: {unbounded!r}. An unbounded "
+        "walk runs to the end of a directory of unknown size inside a single "
+        "epoch, and the SD library cannot be cancelled once it has started"
+    )
+    assert REPLAY_WALK_TRUNCATION_FIELD in without_comments(listing), (
+        f"{REPLAY_LIST_FUNCTION} never emits a {REPLAY_WALK_TRUNCATION_FIELD} "
+        "field, so a listing its own bound cut short is indistinguishable from "
+        "a complete one -- which turns a refusal into a wrong answer"
+    )
+
+    delete_headers = loop_headers(
+        without_comments_and_literals(definitions[REPLAY_DELETE_FUNCTION])
+    )
+    assert not delete_headers, (
+        f"{REPLAY_DELETE_FUNCTION} has grown a loop: {delete_headers!r}. Its "
+        "card cost is bounded by being a constant two primitives, and a loop "
+        "makes it a scan with no cap"
+    )
+
+
+# The replay refill's sizing, checked across the three libraries that own it.
+#
+# WHY THIS CHECK EXISTS. The replay refill was measured on the board running at
+# 65 % of realtime. The fix sized the ring, the watermark, the refill and the
+# job's transfer buffer together and raised the transfer buffer to 8 KB so one
+# refill would be one read primitive. Every native suite stayed green, the image
+# linked, all banks fit -- and the replay produced NOTHING on the board, because
+# aius_sd.c caps a job's transfer capacity at AIUS_SD_MAX_TRANSFER (512) and
+# validate_request() rejects a larger one with AIUS_SD_FAULT_CAPACITY before the
+# job emits its first action. No mount, no open, no read, one decoder error, and
+# a service parked in ERROR that never asks again.
+#
+# Nothing could have caught that. The engine's cap is a #define private to
+# aius_sd.c, so no translation unit sees it beside the replay constants; the
+# replay suite links no SD engine; the runtime-target suite links the engine but
+# not optical_main.cpp's buffer; and the target build only proves the image
+# fits. The invariant is real and cross-library, so it is checked here, as text,
+# because text is the only place all three are visible at once.
+#
+# It is a genuinely weaker check than a compile-time assertion and it is used
+# only where a compile-time one is impossible: the two guards optical_main.cpp
+# CAN express (`slice <= AIUS_REPLAY_DELIVER_MAX_BYTES` and
+# `slice <= AIUS_RUNTIME_STORAGE_TRANSFER`) stay static_asserts there, per
+# §Convention enforcement.
+NUMERIC_DEFINE = re.compile(
+    r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+"
+    r"([0-9]+)[uU]?[ \t]*$",
+    re.MULTILINE,
+)
+REPLAY_TRANSFER_DECL = re.compile(
+    r"\bg_replay_transfer\s*\[\s*([A-Za-z_][A-Za-z0-9_]*|[0-9]+)[uU]?\s*\]"
+)
+SD_TRANSFER_CAP = "AIUS_SD_MAX_TRANSFER"
+REPLAY_SIZING_REQUIRED = (
+    SD_TRANSFER_CAP,
+    "AIUS_REPLAY_WORD_RING_CAPACITY",
+    "AIUS_REPLAY_START_WATERMARK_WORDS",
+    "AIUS_REPLAY_REFILL_MAX_BYTES",
+    "AIUS_REPLAY_DELIVER_MAX_BYTES",
+)
+# The runtime budget field the refill must NOT read. It is documented in bytes,
+# consumed as bytes at the UDP checkpoint, and was consumed as WORDS here --
+# which silently halved every planned refill against constants this seam
+# believed it owned.
+RUNTIME_RX_BUDGET_FIELD = "max_rx_bytes"
+REPLAY_BUDGET_FREE_FUNCTIONS = ("replay_refill_service", "platform_replay")
+
+
+def read_replay_sizing_sources():
+    return "\n".join(
+        (FIRMWARE_ROOT / relative).read_text()
+        for relative in REPLAY_SIZING_SOURCES
+    )
+
+
+def _resolve_extent(token, defines):
+    if token.isdigit():
+        return int(token)
+    assert token in defines, (
+        f"g_replay_transfer is declared with extent {token!r}, which is not a "
+        "plain numeric #define in any source this check reads, so its real size "
+        "cannot be compared against the SD engine's cap"
+    )
+    return defines[token]
+
+
+def assert_replay_sizing_matches_the_sd_engine(text):
+    defines = {
+        name: int(value) for name, value in NUMERIC_DEFINE.findall(text)
+    }
+    missing = [name for name in REPLAY_SIZING_REQUIRED if name not in defines]
+    assert not missing, (
+        f"the replay sizing constants {missing!r} were not found, so this check "
+        "would pass without comparing anything"
+    )
+
+    declaration = REPLAY_TRANSFER_DECL.search(
+        without_comments_and_literals(text)
+    )
+    assert declaration is not None, (
+        "no g_replay_transfer[...] declaration was found, so the replay job's "
+        "transfer slice -- the thing the SD engine validates -- is invisible "
+        "to this check"
+    )
+    slice_bytes = _resolve_extent(declaration.group(1), defines)
+    engine_cap = defines[SD_TRANSFER_CAP]
+
+    # THE ONE THAT WOULD HAVE CAUGHT THE DEAD REPLAY.
+    assert slice_bytes <= engine_cap, (
+        f"the replay job's transfer slice is {slice_bytes} bytes but "
+        f"{SD_TRANSFER_CAP} is {engine_cap}: aius_sd.c's validate_request() "
+        "refuses any job whose capacity exceeds that cap with "
+        "AIUS_SD_FAULT_CAPACITY, before the job emits its first action. Every "
+        "refill would fail without mounting, opening or reading, and the replay "
+        "service would park in ERROR after the first one"
+    )
+    assert slice_bytes <= defines["AIUS_REPLAY_DELIVER_MAX_BYTES"], (
+        f"the transfer slice is {slice_bytes} bytes but a delivery is capped at "
+        f"{defines['AIUS_REPLAY_DELIVER_MAX_BYTES']}: the service would refuse "
+        "every chunk the job read, as a run-time NO_SPACE rather than a build "
+        "failure"
+    )
+
+    ring = defines["AIUS_REPLAY_WORD_RING_CAPACITY"]
+    watermark = defines["AIUS_REPLAY_START_WATERMARK_WORDS"]
+    refill = defines["AIUS_REPLAY_REFILL_MAX_BYTES"]
+    assert (ring - 1 - watermark) * 2 >= refill, (
+        f"the ring holds {ring} words with a {watermark}-word watermark, so a "
+        f"plan made just below the watermark gets {(ring - 1 - watermark) * 2} "
+        f"bytes of space against a {refill}-byte refill. Every plan would be "
+        "silently shrunk, and a shorter plan costs the same per-job overhead "
+        "for fewer bytes"
+    )
+    assert ring & (ring - 1) == 0, (
+        f"the word ring capacity {ring} is not a power of two; next_index() "
+        "reduces modulo it on the audio pop path, so this is a hardware divide "
+        "per sample"
+    )
+
+    # And the coupling that made the sizes disagree invisibly in the first
+    # place: a transport receive quota gating a disk read.
+    definitions = function_definitions(text)
+    for name in REPLAY_BUDGET_FREE_FUNCTIONS:
+        assert name in definitions, (
+            f"{name}() was not found, so this check cannot see whether the "
+            "refill still takes its size from the runtime transport budget"
+        )
+        body = without_comments_and_literals(definitions[name])
+        assert RUNTIME_RX_BUDGET_FIELD not in body, (
+            f"{name}() reads {RUNTIME_RX_BUDGET_FIELD}, the runtime's "
+            "transport receive quota. It is documented and consumed elsewhere "
+            "as BYTES and was consumed here as WORDS, which capped every "
+            "planned refill at half the size this seam's own constants say -- "
+            "invisibly, because the two live in different libraries. A disk "
+            "refill takes its bound from AIUS_REPLAY_REFILL_MAX_BYTES and the "
+            "ring, not from a network budget"
+        )
 
 
 # The replay clock handover.
@@ -755,6 +999,10 @@ POSITIVE_CHECKS = (
         assert_replay_path_has_no_direct_sd,
     ),
     (
+        "the exempt replay card walks are bounded and report truncation",
+        assert_replay_card_walks_are_bounded,
+    ),
+    (
         "the clock handover exists and is bounded to the replay path",
         assert_replay_clock_handover_is_bounded,
     ),
@@ -765,6 +1013,17 @@ POSITIVE_CHECKS = (
     (
         "counter edges emit from the epoch loop, one per counter per epoch",
         assert_counter_edges_are_epoch_loop_bound,
+    ),
+)
+
+
+# Checks whose subject spans more than optical_main.cpp. Run over the
+# concatenated REPLAY_SIZING_SOURCES rather than the one file, because the
+# invariant they assert is precisely that those files agree with each other.
+CROSS_SOURCE_CHECKS = (
+    (
+        "the replay sizing agrees with the SD engine's transfer cap",
+        assert_replay_sizing_matches_the_sd_engine,
     ),
 )
 
@@ -899,6 +1158,11 @@ def run_helper_self_test():
     assert len(bodies) == 2, f"expected 2 loop bodies, found {len(bodies)}"
     assert "x += i;" in bodies[0], "for-loop brace body extraction is broken"
     assert "single_stmt();" in bodies[1], "while single-statement body extraction is broken"
+
+    headers = loop_headers(loop_text)
+    assert headers == ["int i = 0; i < 3; i++", "y"], (
+        f"loop_headers must return the raw conditions, found {headers}"
+    )
 
     commented = without_comments(
         '\tconst char *f = "a // b"; /* gone */ // gone\n\tint x = 1;\n'
@@ -1267,6 +1531,184 @@ def run_self_test():
         assert_replay_path_has_no_direct_sd, exempt_delete, "replay-sd/exempt"
     )
 
+    # the replay sizing agrees with the SD engine's transfer cap.
+    #
+    # The synthetic sources stand in for the four real files, in the shape they
+    # have on disk: the engine's private cap, the replay seam's constants, the
+    # storage slice, the buffer declaration, and the two functions that must not
+    # read the runtime's transport budget.
+    def sizing_sources(engine_cap=512, deliver=512, ring=65536, watermark=32768,
+                       refill=32768, slice_name="AIUS_RUNTIME_STORAGE_TRANSFER",
+                       storage_transfer=512, budget_field=""):
+        return (
+            f"#define {SD_TRANSFER_CAP} {engine_cap}u\n"
+            f"#define AIUS_RUNTIME_STORAGE_TRANSFER {storage_transfer}u\n"
+            f"#define AIUS_REPLAY_WORD_RING_CAPACITY {ring}u\n"
+            f"#define AIUS_REPLAY_START_WATERMARK_WORDS {watermark}u\n"
+            f"#define AIUS_REPLAY_REFILL_MAX_BYTES {refill}u\n"
+            f"#define AIUS_REPLAY_DELIVER_MAX_BYTES {deliver}u\n"
+            f"DMAMEM static uint8_t g_replay_transfer[{slice_name}];\n"
+            "static FLASHMEM void replay_refill_service(uint32_t now_ms)\n"
+            "{\n"
+            f"\tAiusReplayRefill refill;{budget_field}\n"
+            "\tif (!aius_replay_service_plan_refill(&g_replay_service,\n"
+            "\t                                     "
+            "AIUS_REPLAY_REFILL_MAX_BYTES / 2u, &refill))\n"
+            "\t\treturn;\n"
+            "}\n"
+            "static FLASHMEM bool platform_replay(void *ctx, int budget,\n"
+            "                                     uint32_t now_ms)\n"
+            "{\n"
+            "\treplay_refill_service(now_ms);\n"
+            "\treturn true;\n"
+            "}\n"
+        )
+
+    _expect_pass(
+        assert_replay_sizing_matches_the_sd_engine, sizing_sources(),
+        "sizing/good",
+    )
+    # THE FLASHED REGRESSION, in its exact shape: an 8 KB transfer slice against
+    # the engine's 512-byte cap. Every refill job is refused at validation and
+    # the replay produces nothing.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources(slice_name="AIUS_REPLAY_REFILL_MAX_BYTES", refill=8192,
+                       deliver=8192, ring=16384, watermark=8192),
+        "sizing/slice-exceeds-engine-cap", "AIUS_SD_FAULT_CAPACITY",
+    )
+    # A slice the service could not accept: a run-time NO_SPACE per chunk.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources(deliver=256),
+        "sizing/delivery-smaller-than-slice", "refuse every chunk",
+    )
+    # No room above the watermark for a full plan: every refill silently shrinks.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources(watermark=57344),
+        "sizing/plan-cannot-be-full-size", "silently shrunk",
+    )
+    # A modulo per sample on the audio pop path.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources(ring=48000, watermark=16384),
+        "sizing/ring-not-power-of-two", "power of two",
+    )
+    # The unit bug: a transport receive quota gating a disk refill.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources(budget_field="\n\tsize_t words = budget->max_rx_bytes;"),
+        "sizing/refill-reads-transport-budget", RUNTIME_RX_BUDGET_FIELD,
+    )
+    # Vacuous-pass guards: a missing constant and a missing declaration.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources().replace(f"#define {SD_TRANSFER_CAP} 512u\n", "", 1),
+        "sizing/no-engine-cap", SD_TRANSFER_CAP,
+    )
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources().replace(
+            "DMAMEM static uint8_t g_replay_transfer"
+            "[AIUS_RUNTIME_STORAGE_TRANSFER];\n",
+            "",
+            1,
+        ),
+        "sizing/no-transfer-buffer", "g_replay_transfer",
+    )
+    # A comment naming the cap is not the cap.
+    _expect_fail(
+        assert_replay_sizing_matches_the_sd_engine,
+        sizing_sources(
+            budget_field="\n\t/* bounded by max_rx_bytes */\n"
+                         "\tsize_t words = budget->max_rx_bytes;"
+        ),
+        "sizing/budget-read-not-hidden-by-a-comment", RUNTIME_RX_BUDGET_FIELD,
+    )
+
+    # the exempt replay card walks are bounded and report truncation.
+    good_walks = (
+        "static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t cap)\n"
+        "{\n"
+        "\tunsigned scanned = 0u;\n"
+        "\tbool cut = false;\n"
+        "\twhile (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {\n"
+        "\t\tFile entry = directory.openNextFile();\n"
+        "\t\tif (!entry) break;\n"
+        "\t\tscanned++;\n"
+        "\t\tentry.close();\n"
+        "\t}\n"
+        "\tdirectory.close();\n"
+        "\twritten = snprintf((char *)body + length, cap - length,\n"
+        "\t                   \"],\\\"truncated\\\":%s}\", cut ? \"true\" : \"false\");\n"
+        "\treturn length + (size_t)written;\n"
+        "}\n"
+        "static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,\n"
+        "                                                             const char *id)\n"
+        "{\n"
+        "\tif (!SD.exists(path)) return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;\n"
+        "\treturn SD.remove(path) ? AIUS_OPTICAL_APP_REPLAY_OK :\n"
+        "\t                         AIUS_OPTICAL_APP_REPLAY_FAILED;\n"
+        "}\n"
+    )
+    _expect_pass(assert_replay_card_walks_are_bounded, good_walks, "walks/good")
+
+    # THE DEFECT ITSELF: the pre-fix walk, verbatim in shape. This is the
+    # negative control the bound exists for, so it must fail on exactly it.
+    walk_unbounded = good_walks.replace(
+        "\twhile (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {\n",
+        "\tfor (;;) {\n",
+        1,
+    )
+    _expect_fail(
+        assert_replay_card_walks_are_bounded, walk_unbounded,
+        "walks/unbounded", REPLAY_WALK_SCAN_CAP,
+    )
+    # Bounded but silent about it: a short listing that reads as a complete one.
+    walk_no_truncation = good_walks.replace(r"\"truncated\"", r"\"ok\"", 1)
+    _expect_fail(
+        assert_replay_card_walks_are_bounded, walk_no_truncation,
+        "walks/silent-truncation", "truncated",
+    )
+    # A cap named only in a comment is not a cap.
+    walk_comment_cap = good_walks.replace(
+        "\twhile (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {\n",
+        "\t/* capped at AIUS_OPTICAL_APP_INDEX_SCAN_MAX */\n\twhile (true) {\n",
+        1,
+    )
+    _expect_fail(
+        assert_replay_card_walks_are_bounded, walk_comment_cap,
+        "walks/comment-is-not-a-cap", REPLAY_WALK_SCAN_CAP,
+    )
+    # Delete is bounded by being a constant; a loop there is a new scan.
+    walk_delete_loop = good_walks.replace(
+        "\tif (!SD.exists(path)) return AIUS_OPTICAL_APP_REPLAY_NOT_FOUND;\n",
+        "\tfor (;;) { if (!SD.exists(path)) break; }\n",
+        1,
+    )
+    _expect_fail(
+        assert_replay_card_walks_are_bounded, walk_delete_loop,
+        "walks/delete-grew-a-loop", REPLAY_DELETE_FUNCTION,
+    )
+    # Vacuous-pass guards: neither function present, and a listing with no walk.
+    _expect_fail(
+        assert_replay_card_walks_are_bounded,
+        "static void unrelated(void) { return; }\n",
+        "walks/nothing-scanned", REPLAY_LIST_FUNCTION,
+    )
+    walk_no_loop = (
+        "static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t cap)\n"
+        "{\n\treturn 0u;\n}\n"
+        "static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,\n"
+        "                                                             const char *id)\n"
+        "{\n\treturn AIUS_OPTICAL_APP_REPLAY_OK;\n}\n"
+    )
+    _expect_fail(
+        assert_replay_card_walks_are_bounded, walk_no_loop,
+        "walks/no-loop-at-all", "no loop at all",
+    )
+
     # the clock handover exists and is bounded to the replay path.
     good_clock = (
         "FLASHMEM void AiusSpdifInputClock::set_master(bool master)\n"
@@ -1592,6 +2034,12 @@ def main():
 
     if args.group in ("positive", "all"):
         run_checks("positive", POSITIVE_CHECKS, text)
+        # Grouped with the positive checks because it asserts a property the
+        # file must HAVE, but given its own source set: its whole point is that
+        # optical_main.cpp alone cannot state it.
+        run_checks(
+            "cross-source", CROSS_SOURCE_CHECKS, read_replay_sizing_sources()
+        )
     if args.group in ("absence", "all"):
         run_checks("absence", ABSENCE_CHECKS, text)
 

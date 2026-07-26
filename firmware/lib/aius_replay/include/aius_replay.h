@@ -19,23 +19,77 @@ extern "C" {
 #endif
 
 /* The replay seam is deliberately fixed-size.  The producer is the service
- * task and the consumer is the audio callback. */
-#define AIUS_REPLAY_WORD_RING_CAPACITY 4096u
-#define AIUS_REPLAY_START_WATERMARK_WORDS 2048u
+ * task and the consumer is the audio callback.
+ *
+ * SIZED BY LATENCY AND BY EPOCHS, NOT BY TASTE.  The consumer drains
+ * AIUS_REPLAY_WORDS_PER_SECOND * 2 = 96,000 words per second, unconditionally,
+ * because the audio clock does not wait.  The producer delivers in bursts: a
+ * refill becomes a platform job, the job takes a fixed number of epochs to hand
+ * its bytes over, and NOTHING reaches the ring until it does.  So the watermark
+ * is not a comfort margin -- it is the audio the ring must hold to cover one
+ * whole refill round trip, and a watermark shorter than that round trip
+ * guarantees a drained ring on every cycle no matter how fast the card is.  The
+ * 4,096-word ring and 2,048-word watermark this seam shipped with held 21 ms
+ * against a refill that took ~33 ms to land: starvation by construction, and
+ * exactly what the first live measurement found.
+ *
+ * The ring is twice the watermark so a full-size refill always fits the space
+ * above it.  The two `#error`s below are those statements, not hopes: the
+ * second exists because next_index() runs per word on the audio pop path, where
+ * a non-power-of-two capacity would be a hardware divide per sample. */
+#define AIUS_REPLAY_WORD_RING_CAPACITY 65536u
+#define AIUS_REPLAY_START_WATERMARK_WORDS 32768u
 #define AIUS_REPLAY_MAX_ID_LENGTH 48u
 #define AIUS_REPLAY_WORDS_PER_SECOND 48000u
 #define AIUS_REPLAY_BYTES_PER_SECOND 192000u
 
 /* The largest byte range one planned refill may cover, and the largest chunk
- * one delivery may carry.
+ * one delivery may carry.  THEY ARE NOT THE SAME NUMBER, and the difference is
+ * the whole lesson of this seam's second defect.
  *
- * The refill bound caps how long a single bounded SD job holds the card, which
- * is what the platform's other consumers wait on; it is deliberately about one
- * ring's worth so a refill is one job per ~40 ms of audio rather than a dribble
- * of jobs per epoch.  The delivery bound is one transfer slice, matching the
- * portable SD engine's per-primitive read, and is what sizes `scratch_words`. */
-#define AIUS_REPLAY_REFILL_MAX_BYTES 4096u
+ * The delivery bound is ONE SD PRIMITIVE'S WORTH, and the platform's primitive
+ * is capped at 512 bytes by the portable SD engine itself
+ * (AIUS_SD_MAX_TRANSFER in aius_sd.c, enforced in validate_request(): a job
+ * whose transfer capacity exceeds it is rejected with AIUS_SD_FAULT_CAPACITY
+ * before a single action is emitted).  A previous attempt at this defect raised
+ * the replay job's transfer buffer to 8 KB to read a whole refill in one
+ * primitive.  It did not merely fail to help -- every refill job was refused at
+ * validation, so the replay produced nothing at all.  512 is therefore a
+ * CONTRACT, not a tuning knob, and it is not this library's to change.
+ *
+ * The refill bound is a different question, and it is what buys the throughput.
+ * The job costs a fixed per-job overhead (BEGIN, OPEN, SIZE, SEEK, CLOSE,
+ * COMPLETE) plus one epoch per 512-byte read, so a refill of N bytes costs
+ * 6 + N/512 epochs and delivers 512N/(N + 3072) bytes per epoch.  That rises
+ * towards 512 as N grows: 293 bytes/epoch at N = 4 KB, 431 at 16 KB, 468 at
+ * 32 KB.  Realtime is 192,000 B/s, so at the measured ~672 epochs/s the seam
+ * needs 286 bytes/epoch to break even -- N = 4 KB clears it by 2 %, N = 32 KB
+ * by 64 %.  A refill is also one mount, and a mount is the most expensive
+ * primitive the card performs, so a bigger N cuts mounts in the same
+ * proportion: 5.9/s here against the 30.5/s the starved image was spending.
+ *
+ * 32 KB of refill wants a 64 KB ring above a 64 KB watermark, all of which
+ * lives in OCRAM through the DMAMEM placement below.  That is the trade
+ * §Deciding principle asks for: audio reliability first, and spend the
+ * plentiful bank rather than the scarce one. */
+#define AIUS_REPLAY_REFILL_MAX_BYTES 32768u
 #define AIUS_REPLAY_DELIVER_MAX_BYTES 512u
+
+/* A refill is planned only while the ring is BELOW the watermark, so the space
+ * above the watermark is all a plan can ever be given.  If a full-size refill
+ * did not fit there, every plan would silently shrink and the epoch cost per
+ * byte would climb straight back to where this defect started. */
+#if (AIUS_REPLAY_WORD_RING_CAPACITY - 1u - AIUS_REPLAY_START_WATERMARK_WORDS) * \
+	2u < AIUS_REPLAY_REFILL_MAX_BYTES
+#error "the ring space above the watermark must hold one full refill"
+#endif
+
+/* next_index() is on the audio pop path and reduces modulo this capacity.  A
+ * power of two is an AND; anything else is a hardware divide per word, ~1,024
+ * of them per audio block. */
+#if (AIUS_REPLAY_WORD_RING_CAPACITY & (AIUS_REPLAY_WORD_RING_CAPACITY - 1u)) != 0u
+#error "the word ring capacity must be a power of two -- next_index() is hot"
+#endif
 
 typedef struct {
 	uint16_t words[AIUS_REPLAY_WORD_RING_CAPACITY];
@@ -139,7 +193,11 @@ typedef struct {
 typedef struct {
 	AiusReplayWordRing ring;
 	/* One delivery's worth of decoded words, so a delivery converts in one
-	 * batch instead of pushing word by word. */
+	 * batch instead of pushing word by word.  This object is placed in
+	 * DMAMEM/OCRAM by the target integration precisely so the ring and this
+	 * buffer cost the plentiful bank rather than DTCM's free-for-locals zone
+	 * (§Deciding principle: memory that is genuinely free is not an argument
+	 * the other way round). */
 	uint16_t scratch_words[AIUS_REPLAY_DELIVER_MAX_BYTES / 2u];
 	char id[AIUS_REPLAY_MAX_ID_LENGTH + 1u];
 	uint32_t watermark_words;
@@ -202,8 +260,9 @@ bool aius_replay_service_plan_refill(AiusReplayService *service,
 /* Hands one chunk of the planned range to the ring.  `offset_bytes` must be the
  * service's current read position, so a stale or reordered chunk is rejected
  * rather than decoded into the audio stream.  At most
- * AIUS_REPLAY_DELIVER_MAX_BYTES per call, always even.  Promotes PREBUFFERING to
- * PLAYING once the ring reaches the watermark. */
+ * AIUS_REPLAY_DELIVER_MAX_BYTES per call, always even.  Promotes PREBUFFERING --
+ * and UNDERRUN, so a recovered replay can starve again countably -- to PLAYING
+ * once the ring reaches the watermark. */
 AiusStatus aius_replay_service_deliver(AiusReplayService *service,
 	                                   uint32_t offset_bytes,
 	                                   const uint8_t *bytes,

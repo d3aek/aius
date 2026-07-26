@@ -139,13 +139,35 @@ static char g_replay_path[96];
  * are deliberately only serialized, not merged. DMAMEM for the same reason the
  * runtime is there: ~1.2 kB has no business in the 22 kB DTCM locals zone. */
 DMAMEM static AiusSdJob g_replay_job;
+/* 512 BYTES BECAUSE THE ENGINE SAYS SO, and this is the sentence that cost a
+ * flash. aius_sd_job_init() takes this capacity as the job's per-primitive read
+ * length, and aius_sd.c's validate_request() refuses any job whose capacity
+ * exceeds AIUS_SD_MAX_TRANSFER (512) with AIUS_SD_FAULT_CAPACITY -- BEFORE the
+ * first action is emitted, so the job never mounts, never opens and never reads
+ * a byte. An attempt to read a whole refill in one primitive by sizing this
+ * array to 8 KB therefore did not slow the replay down, it killed it outright:
+ * every refill was rejected at validation, the service went to ERROR on the
+ * first one, and plan_refill() never asks again from ERROR.
+ *
+ * AIUS_SD_MAX_TRANSFER is private to aius_sd.c, so the compiler cannot see it
+ * from here. The two guards that remain are the ones it CAN see, plus the
+ * cross-library text check in test/optical-cutover, which reads the engine's
+ * own #define and fails when this array outgrows it. */
 DMAMEM static uint8_t g_replay_transfer[AIUS_RUNTIME_STORAGE_TRANSFER];
 /* The slice is what one AIUS_SD_ACTION_OUTPUT carries, and the replay service
  * decodes a delivery in one batch out of a fixed scratch array. Keep the two
  * bounds in lockstep at compile time rather than discovering a widened transfer
  * slice as a run-time NO_SPACE that faults the refill. */
-static_assert(AIUS_RUNTIME_STORAGE_TRANSFER <= AIUS_REPLAY_DELIVER_MAX_BYTES,
+static_assert(sizeof(g_replay_transfer) <= AIUS_REPLAY_DELIVER_MAX_BYTES,
 	"a refill chunk must fit the replay service's delivery bound");
+/* And the bound the flashed regression walked straight past: the replay job's
+ * transfer slice is the SAME primitive every other consumer spends, so it is
+ * held to the same number rather than to a private one. AIUS_RUNTIME_STORAGE_
+ * TRANSFER is already asserted equal to AIUS_HTTP_SD_CAPACITY_MAX, so this ties
+ * all three to one value. */
+static_assert(sizeof(g_replay_transfer) <= AIUS_RUNTIME_STORAGE_TRANSFER,
+	"the replay job spends the same bounded SD primitive as every other "
+	"consumer; a bigger one is refused by the engine at validation");
 /* The adapter result awaiting delivery to the job, exactly as the storage
  * service retains its own: one primitive per epoch means the event produced by
  * this epoch's action is consumed by the next epoch's step. */
@@ -1642,6 +1664,35 @@ static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
+/* Longest tail this serializer can emit, held back from the row loop so the
+ * truncation verdict can ALWAYS be stated: `],"truncated":false}` plus its NUL
+ * is 21 bytes. A listing that could not say whether it was complete would be
+ * exactly the wrong answer this bound exists to prevent. */
+#define REPLAY_LIST_TAIL_RESERVE 24u
+
+/* GET /api/replays. Raw SD access, like app_read_directory() below and for the
+ * same reason: the portable engine has no directory job kind, so there is
+ * nothing bounded to drive the enumeration onto. It is therefore held to the
+ * two rules app_read_directory() already establishes, and the Phase 14d audit
+ * found it holding neither (open defect 6).
+ *
+ * BOUNDED. At most AIUS_OPTICAL_APP_INDEX_SCAN_MAX raw reads, so one epoch's
+ * enumeration costs a constant rather than however many files the card happens
+ * to hold. What this replaces is a `for (;;) openNextFile()` that ran to the end
+ * of an unknown directory inside a single epoch -- the most plausible
+ * unexplained 8 s watchdog reset in the image, since a large replays directory
+ * makes that walk arbitrarily long and the SD library is uncancellable.
+ *
+ * GATED. The dispatcher calls this only when app_sd_busy() is false
+ * (aius_optical_app.cpp), so it can never touch the volume while a job owns it
+ * -- refill, upload, download or probe. A refused call answers 503 sd_busy: the
+ * distinguishable, already-documented refusal every other SD route uses, and a
+ * refusal rather than a stale or partial answer.
+ *
+ * HONEST WHEN IT STOPS EARLY. Either bound -- the scan cap or the response
+ * buffer -- reports "truncated":true, and the tail is reserved before the first
+ * row so that verdict can always be written. A truncated listing is never
+ * mistakable for a complete one. */
 static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 {
 	if (!g_sd_ready) return (size_t)snprintf((char *)body, capacity,
@@ -1649,16 +1700,26 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 	File directory = SD.open("/aius/replays");
 	if (!directory || !directory.isDirectory()) {
 		if (directory) directory.close();
-		return (size_t)snprintf((char *)body, capacity, "{\"ok\":true,\"files\":[]}");
+		return (size_t)snprintf((char *)body, capacity,
+			"{\"ok\":true,\"files\":[],\"truncated\":false}");
 	}
 	size_t length = 0u;
 	int written = snprintf((char *)body, capacity, "{\"ok\":true,\"files\":[");
-	if (written < 0 || (size_t)written >= capacity) { directory.close(); return 0u; }
+	if (written < 0 ||
+	    (size_t)written + REPLAY_LIST_TAIL_RESERVE >= capacity) {
+		directory.close();
+		return 0u;
+	}
 	length = (size_t)written;
+	/* Everything the rows may spend, with the tail already deducted. */
+	const size_t row_limit = capacity - REPLAY_LIST_TAIL_RESERVE;
 	bool first = true;
-	for (;;) {
+	bool truncated = false;
+	unsigned scanned = 0u;
+	while (scanned < AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {
 		File entry = directory.openNextFile();
 		if (!entry) break;
+		scanned++;
 		if (!entry.isDirectory()) {
 			const char *name = entry.name();
 			const char *base = strrchr(name, '/');
@@ -1675,7 +1736,7 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 					char duration[24];
 					snprintf(duration, sizeof(duration), complete ? "%.3f" : "null",
 					         complete ? (double)entry.size() / 192000.0 : 0.0);
-					written = snprintf((char *)body + length, capacity - length,
+					written = snprintf((char *)body + length, row_limit - length,
 						"%s{\"id\":\"%.*s\",\"bytes\":%lu,\"duration_seconds\":%s,\"upload_next_offset\":%lu,\"complete\":%s,\"active\":%s}",
 						first ? "" : ",", (int)id_length, base,
 						(unsigned long)entry.size(), duration,
@@ -1683,8 +1744,14 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 						(strlen(g_replay_service.id) == id_length &&
 						 memcmp(base, g_replay_service.id, id_length) == 0 && complete) ?
 						"true" : "false");
-					if (written < 0 || (size_t)written >= capacity - length) {
-						entry.close(); directory.close(); return 0u;
+					/* Out of room is a truncation, not a 500: the rows
+					 * already written are correct and the tail says the
+					 * listing stopped early. */
+					if (written < 0 ||
+					    (size_t)written >= row_limit - length) {
+						truncated = true;
+						entry.close();
+						break;
 					}
 					length += (size_t)written;
 					first = false;
@@ -1693,10 +1760,21 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 		}
 		entry.close();
 	}
+	/* Stopped on the scan cap rather than at the end of the directory: one
+	 * further read says whether anything was left behind, exactly as
+	 * app_read_directory() decides its own `more`. */
+	if (!truncated && scanned >= AIUS_OPTICAL_APP_INDEX_SCAN_MAX) {
+		File extra = directory.openNextFile();
+		if (extra) {
+			truncated = true;
+			extra.close();
+		}
+	}
 	directory.close();
-	if (length + 2u >= capacity) return 0u;
-	body[length++] = ']'; body[length++] = '}'; body[length] = 0;
-	return length;
+	written = snprintf((char *)body + length, capacity - length,
+	                   "],\"truncated\":%s}", truncated ? "true" : "false");
+	if (written < 0 || (size_t)written >= capacity - length) return 0u;
+	return length + (size_t)written;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1874,7 +1952,14 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
  * prebuffering an observable state that outlives the start call: a delete
  * admitted during it would remove the file underneath the refill job that is
  * reading it. Before 14c, start returned already playing, so the window did not
- * exist. */
+ * exist.
+ *
+ * Two card primitives, and both are already bounded by being constants -- there
+ * is no walk here to cap. What the Phase 14d audit found missing was the
+ * exclusion: this ran while an SD job could own the volume. The dispatcher now
+ * calls it only when app_sd_busy() is false (aius_optical_app.cpp), the same
+ * gate app_read_directory() has always had, and a refused call answers
+ * 503 sd_busy rather than a wrong 404. */
 static FLASHMEM AiusOpticalAppReplayResult app_replay_delete(void *,
                                                              const char *id)
 {
@@ -2738,53 +2823,105 @@ static FLASHMEM void replay_job_route(const AiusSdAction *action)
 	g_replay_job_event_present = true;
 }
 
-/* One bounded job advance: deliver at most one retained adapter result, take at
- * most one emitted action, spend at most one SD primitive. */
+/* Does routing this action cost the epoch's one SD primitive?
+ *
+ * OUTPUT hands an already-read buffer to the replay service (a memcpy into the
+ * ring); COMPLETE and FAIL are bookkeeping; NONE is nothing. Every other action
+ * this job can emit -- BEGIN, OPEN_READ, FILE_SIZE, SEEK, READ, CLOSE -- goes
+ * through aius_sd_teensy_execute() and blocks on the card. */
+static FLASHMEM bool replay_action_spends_primitive(AiusSdActionKind kind)
+{
+	return kind != AIUS_SD_ACTION_OUTPUT &&
+	       kind != AIUS_SD_ACTION_COMPLETE &&
+	       kind != AIUS_SD_ACTION_FAIL &&
+	       kind != AIUS_SD_ACTION_NONE;
+}
+
+/* The most steps one epoch may take. The machine can only ever put ONE
+ * memory-only action (an OUTPUT) in front of a primitive, so two is the real
+ * maximum and this is slack; it exists so a machine change can never turn this
+ * loop into an unbounded one. Falling out of the loop is harmless -- the next
+ * epoch resumes exactly where this one stopped. */
+#define REPLAY_JOB_STEPS_PER_EPOCH 4u
+
+/* One bounded job advance: SPEND AT MOST ONE SD PRIMITIVE, but do not spend the
+ * epoch on a step that touches no card.
+ *
+ * The bound this keeps is unchanged and is the one that matters: an epoch
+ * blocks on the card at most once, so the worst case the watchdog must absorb
+ * is one primitive, exactly as §Bounded SD job ABI requires. What changed is
+ * what a step that performs NO primitive costs. It used to cost a whole epoch,
+ * because the loop advanced the job once per epoch regardless: a refill of N
+ * bytes cost 6 + 2 * N/512 epochs, of which N/512 were AIUS_SD_ACTION_OUTPUT --
+ * a memcpy into the ring, paid for at the price of a card transaction. That is
+ * why the refill ran at 65 % of realtime with the DSP at 6 % of budget: at 512
+ * bytes per primitive the seam needs ~375 reads per second to sustain 192 kB/s,
+ * and there are only ~672 epochs in a second to spend.
+ *
+ * Stepping until a primitive has actually been spent removes exactly the epochs
+ * that were doing no I/O and changes nothing about blocking time. A refill now
+ * costs 6 + N/512 epochs. Everything else about the seam -- the plan/deliver
+ * contract, the offset checks, the cancellation drain -- is untouched. */
 static FLASHMEM void replay_job_advance(uint32_t now_ms)
 {
-	AiusSdAction action;
-	AiusSdEvent event;
+	for (unsigned step = 0u; step < REPLAY_JOB_STEPS_PER_EPOCH; step++) {
+		AiusSdAction action;
+		AiusSdEvent event;
 
-	if (g_replay_job_event_present) {
-		event = g_replay_job_event;
-		g_replay_job_event_present = false;
-		memset(&g_replay_job_event, 0, sizeof(g_replay_job_event));
-	} else {
-		event = replay_job_make_event(AIUS_SD_EVENT_NONE, 0u, 0u);
+		if (g_replay_job_event_present) {
+			event = g_replay_job_event;
+			g_replay_job_event_present = false;
+			memset(&g_replay_job_event, 0,
+			       sizeof(g_replay_job_event));
+		} else {
+			event = replay_job_make_event(AIUS_SD_EVENT_NONE, 0u,
+			                              0u);
+		}
+
+		memset(&action, 0, sizeof(action));
+		aius_sd_job_step(&g_replay_job, now_ms, event, &action);
+		replay_job_route(&action);
+
+		/* The job's own FILE_SIZE is the only place the service can
+		 * learn how long the file is, now that nothing else stats the
+		 * card. Published once per job; an odd or shrinking size is
+		 * refused by the service, which then falls back to finding the
+		 * end from a short refill. */
+		if (!g_replay_job_size_published && !g_replay_job_cancelling &&
+		    g_replay_job.captured_size != 0u &&
+		    g_replay_job.captured_size <= UINT32_MAX) {
+			(void)aius_replay_service_set_file_bytes(
+				&g_replay_service,
+				(uint32_t)g_replay_job.captured_size);
+			g_replay_job_size_published = true;
+		}
+
+		if (action.kind == AIUS_SD_ACTION_COMPLETE ||
+		    action.kind == AIUS_SD_ACTION_FAIL) {
+			/* Terminal: the handle is closed and the card is free
+			 * again. A cancelled job reports nothing -- its
+			 * selection no longer exists. */
+			if (!g_replay_job_cancelling)
+				aius_replay_service_refill_complete(
+					&g_replay_service,
+					action.kind ==
+						AIUS_SD_ACTION_COMPLETE);
+			g_replay_job_active = false;
+			g_replay_job_cancelling = false;
+			g_replay_job_size_published = false;
+			g_replay_job_event_present = false;
+			memset(&g_replay_job_event, 0,
+			       sizeof(g_replay_job_event));
+			return;
+		}
+		/* NONE means the machine emitted nothing to perform, so routing
+		 * retained no event and another step would emit NONE again. */
+		if (action.kind == AIUS_SD_ACTION_NONE)
+			return;
+		/* The epoch's one card transaction has been spent. */
+		if (replay_action_spends_primitive(action.kind))
+			return;
 	}
-
-	memset(&action, 0, sizeof(action));
-	aius_sd_job_step(&g_replay_job, now_ms, event, &action);
-	replay_job_route(&action);
-
-	/* The job's own FILE_SIZE is the only place the service can learn how
-	 * long the file is, now that nothing else stats the card. Published once
-	 * per job; an odd or shrinking size is refused by the service, which
-	 * then falls back to finding the end from a short refill. */
-	if (!g_replay_job_size_published && !g_replay_job_cancelling &&
-	    g_replay_job.captured_size != 0u &&
-	    g_replay_job.captured_size <= UINT32_MAX) {
-		(void)aius_replay_service_set_file_bytes(
-			&g_replay_service,
-			(uint32_t)g_replay_job.captured_size);
-		g_replay_job_size_published = true;
-	}
-
-	if (action.kind != AIUS_SD_ACTION_COMPLETE &&
-	    action.kind != AIUS_SD_ACTION_FAIL)
-		return;
-
-	/* Terminal: the handle is closed and the card is free again. A cancelled
-	 * job reports nothing -- its selection no longer exists. */
-	if (!g_replay_job_cancelling)
-		aius_replay_service_refill_complete(
-			&g_replay_service,
-			action.kind == AIUS_SD_ACTION_COMPLETE);
-	g_replay_job_active = false;
-	g_replay_job_cancelling = false;
-	g_replay_job_size_published = false;
-	g_replay_job_event_present = false;
-	memset(&g_replay_job_event, 0, sizeof(g_replay_job_event));
 }
 
 /* Memory only: the request is the planned range, against the path
@@ -2816,8 +2953,26 @@ static FLASHMEM void replay_job_start(const AiusReplayRefill *refill,
  * every epoch -- and the plan is turned into a job only if the storage service
  * is completely idle. It is not idle when an HTTP action admitted at checkpoint
  * 5 is waiting for checkpoint 8, which is what keeps a refill from preempting a
- * route, and the abandoned plan costs nothing. */
-static FLASHMEM void replay_refill_service(size_t budget_words, uint32_t now_ms)
+ * route, and the abandoned plan costs nothing.
+ *
+ * IT NO LONGER TAKES THE RUNTIME BUDGET, and that is a fix rather than a
+ * simplification. It used to be called as
+ * `replay_refill_service(budget->max_rx_bytes, ...)` and to pass that straight
+ * into plan_refill()'s `budget_words`, so a field named and documented in BYTES
+ * (and consumed as bytes at the UDP checkpoint, :2412) was read as WORDS here
+ * and nowhere else. The replay row's 2,048 therefore silently capped every plan
+ * at 4,096 bytes, invisibly to this seam's own constants -- which is how a
+ * refill sized for 32 KB and a slice sized for 8 KB could both be "right" and
+ * still disagree with the thing that gated them.
+ *
+ * A network receive quota is the wrong bound for a disk read in any case. The
+ * refill's real bounds are AIUS_REPLAY_REFILL_MAX_BYTES and the ring's own free
+ * space, both of which plan_refill() already applies, and the per-epoch cost is
+ * fixed at one SD primitive whatever the plan size is -- a larger plan spans
+ * more epochs, it does not make any epoch longer. So the quota is taken from
+ * the seam that owns it. See lib/aius_runtime/include/aius_runtime.h for the
+ * unit contract this leaves behind. */
+static FLASHMEM void replay_refill_service(uint32_t now_ms)
 {
 	AiusReplayRefill refill;
 
@@ -2825,7 +2980,8 @@ static FLASHMEM void replay_refill_service(size_t budget_words, uint32_t now_ms)
 		replay_job_advance(now_ms);
 		return;
 	}
-	if (!aius_replay_service_plan_refill(&g_replay_service, budget_words,
+	if (!aius_replay_service_plan_refill(&g_replay_service,
+	                                     AIUS_REPLAY_REFILL_MAX_BYTES / 2u,
 	                                     &refill))
 		return;
 	if (!sd_storage_idle()) {
@@ -3030,7 +3186,7 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_REPLAY)
 		return false;
 	sd_lifecycle_service(now_ms);
-	replay_refill_service(budget->max_rx_bytes, now_ms);
+	replay_refill_service(now_ms);
 	/* Last, so it sees this epoch's source transition rather than the previous
 	 * one's. Memory only -- two byte stores under one critical section -- so it
 	 * spends none of the epoch's single SD primitive. */
