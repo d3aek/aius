@@ -164,6 +164,11 @@ dsp-config)
 		"$fw_root/lib/aius_json/src/aius_json.c" \
 		-lm -o "$dsp_config_out"
 	"$dsp_config_out"
+	# The SD editor builds its PUT body by naming each key explicitly rather than
+	# round-tripping the GET, so a key added to the validator and not to the editor
+	# is a 400 on every save with nothing failing. That shipped once
+	# (matrix.lfe_crossover_hz); this compares the two key sets so it cannot again.
+	python3 "$fw_root/test/dsp-config/test_editor_keys.py" "$fw_root"
 	;;
 arena)
 	compile_and_run arena "$src/aius_arena.c" "$fw_root/test/arena/test_arena.c"

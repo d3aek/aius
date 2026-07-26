@@ -98,6 +98,10 @@
     { path: 'matrix.center_gain_linear', kind: 'number', label: 'Centre gain', min: 0, max: 4, unit: ' linear' },
     { path: 'matrix.surround_gain_linear', kind: 'number', label: 'Surround gain', min: 0, max: 4, unit: ' linear' },
     { path: 'matrix.lfe_gain_linear', kind: 'number', label: 'LFE gain', min: 0, max: 4, unit: ' linear' },
+    /* 20..500 mirrors MATRIX_LFE_CROSSOVER_{MIN,MAX}_HZ in the PUT validator. 0 is
+     * deliberately OUTSIDE that range: "no LFE" is lfe_gain_linear = 0, so a corner
+     * of zero would be a second encoding of one state. */
+    { path: 'matrix.lfe_crossover_hz', kind: 'number', label: 'LFE crossover', min: 20, max: 500, unit: ' Hz' },
     { path: 'matrix.headroom_linear', kind: 'number', label: 'Headroom', min: 0, max: 1, exclusiveMin: true, unit: ' linear' },
     { path: 'matrix.clipfree', kind: 'bool', label: 'Clip-free headroom policy' },
   ];
@@ -378,6 +382,11 @@
         center_gain_linear: numberOf('matrix.center_gain_linear', 0),
         surround_gain_linear: numberOf('matrix.surround_gain_linear', 0),
         lfe_gain_linear: numberOf('matrix.lfe_gain_linear', 0),
+        /* Required, like every other matrix key -- the PUT validator refuses a
+         * partial matrix. This body is built explicitly rather than round-tripped
+         * from the GET, so a key missing HERE is a 400 on every save, which is
+         * exactly what happened between the LFE fold-in landing and this line. */
+        lfe_crossover_hz: numberOf('matrix.lfe_crossover_hz', 120),
         headroom_linear: numberOf('matrix.headroom_linear', 1),
         clipfree: field('matrix.clipfree').checked,
       },
