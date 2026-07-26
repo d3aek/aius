@@ -1039,6 +1039,33 @@ FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
 	return true;
 }
 
+/* The four control routes -- every route that mutates the running system
+ * without touching the card. They were the only mutating routes in the whole
+ * surface that took no credential at all, so any host that could reach port 80
+ * could stop the audio path or reset the board mid-upload. They are now gated on
+ * X-Aius-SD-Auth exactly as the SD, replay and config-mutation routes are.
+ *
+ * The read-only routes -- GET on /, /api/status, /api/events, /api/meters,
+ * /api/dsp/config, /api/replays, /api/replays/status and /sd/ -- stay open
+ * deliberately: they mutate nothing, and the recovery smoke runner polls
+ * /api/status and /api/events to decide whether the board came back. Gating a
+ * route whose whole job is to be readable while the board is unhealthy would
+ * break the tooling and protect nothing.
+ *
+ * What the gate is worth, stated honestly: the token is FNV-1a-64 over the
+ * public OCOTP MAC through a compiled public salt, and aius_auth.h disclaims
+ * cryptographic strength outright. It is a physical-access bootstrap credential.
+ * This stops a casual or accidental POST -- a stale browser tab, a scanner, a
+ * script pointed at the wrong host -- not an attacker who can see a frame from
+ * the board and read this repository. */
+static FLASHMEM bool route_is_control(AiusHttpRoute route)
+{
+	return route == AIUS_HTTP_ROUTE_START ||
+	       route == AIUS_HTTP_ROUTE_STOP ||
+	       route == AIUS_HTTP_ROUTE_CLEAR ||
+	       route == AIUS_HTTP_ROUTE_REBOOT;
+}
+
 FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
@@ -1047,6 +1074,13 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		return NULL;
 	app = &dispatcher->app;
 	dispatcher->http_dispatches++;
+	/* Before the switch rather than inside each of the four arms: the refusal
+	 * must reach the client without the effect having happened, and one gate
+	 * cannot be forgotten by a fifth control route added later. */
+	if (route_is_control(request->route) &&
+	    !app->auth_matches(app->context, request->sd_auth,
+	                       request->sd_auth_length))
+		return http_error(dispatcher, 401, "sd_auth");
 	switch (request->route) {
 	case AIUS_HTTP_ROUTE_HOME:
 		return http_serialized_html(dispatcher,
@@ -1089,8 +1123,17 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		app->clear_counters(app->context);
 		return http_json(dispatcher, 200, "{\"ok\":true}");
 	case AIUS_HTTP_ROUTE_REBOOT:
-		/* The reset itself belongs to the runtime, after the response has been
-		 * written. Dispatch records the request and returns. */
+		/* The reset itself belongs to the runtime. Dispatch records the request
+		 * and returns; it never resets and never delays.
+		 *
+		 * "After the response has been written" is what this comment used to
+		 * claim, and it was wrong. Returning here only retains a pending
+		 * application event: format_response() runs inside accept_application()
+		 * on the NEXT transaction step, so at this point no byte of the 200
+		 * exists yet, let alone reached the socket. The runtime must
+		 * therefore gate the reset on the transaction draining to
+		 * AIUS_HTTP_TX_IDLE, not on the epoch that dispatched finishing --
+		 * optical_main.cpp reboot_drain_complete(). */
 		app->request_reboot(app->context);
 		return http_json(dispatcher, 200, "{\"ok\":true,\"rebooting\":true}");
 	case AIUS_HTTP_ROUTE_UNKNOWN:

@@ -68,8 +68,16 @@ network comes up through the supervisor's retained initial action at checkpoint
 
 **`loop()` runs exactly one epoch, then the two things the epoch itself must not
 do**: mark the boot healthy on the first complete epoch at least 10 s after
-construction, and perform a requested reset — after the epoch, so the HTTP
-response or UDP ack that asked for it has already been written.
+construction, and perform a requested reset.
+
+**The reset waits for the transaction to drain, and "after the epoch" is not
+enough.** This paragraph used to claim the response "has already been written" by
+then, which was wrong and cost a live defect: dispatch only *retains* the response,
+so formatting and the first write happen in the following epoch and the close
+later still — the reset landed an epoch before the first byte. It now waits for
+`AIUS_HTTP_TX_IDLE` with no action outstanding, bounded at 500 ms, after which it
+resets anyway so a wedged or vanished peer cannot hold off a requested reset.
+There is no UDP reboot path; `POST /api/reboot` is the only writer.
 
 An epoch walks the checkpoints in order, each with a fixed call/byte/time budget
 from `lib/aius_runtime/`:
@@ -351,14 +359,24 @@ corpus in one device session; use `/dev/null` as the audit path for a long soak.
 The optical target has completed its runtime cutover and **runs on hardware**,
 serving HTTP at its DHCP address. Confirmed live: boot, one epoch per `loop()`,
 the watchdog not resetting in normal operation, SD probe and both config loads,
-the status surface on all three channels, `POST /api/reboot`, software bootloader
-entry, the SD directory index, and DHCP reaching ONLINE on the first network
-generation. Both routes that were previously unserved now are: `GET /api/meters`
-has its serializer and per-block accumulate tap, and `POST /api/replays/start`
-runs refill on a bounded SD job rather than blocking the dispatcher.
+the status surface on all three channels, software bootloader entry, the SD
+directory index, DHCP reaching ONLINE on the first network generation, and the
+**audio path end to end** — the DSP runs, `GET /api/meters` publishes measured
+per-block cycles, and replay plays continuously across loop wraps at 48 kHz with
+zero overruns and zero underruns.
 
-Not yet confirmed on hardware: the audio path. The optical input is unsoldered,
-so there is no S/PDIF carrier, the DSP has never run, and the per-block cost is
+**`POST /api/reboot` is deliberately not in that list.** It was, and the claim was
+wrong: the board reset but never delivered the response, because the reset fired
+in the epoch that dispatched it rather than after the answer reached the wire. The
+old evidence — watching `boot_generation` increment — is exactly what cannot
+distinguish "performed" from "acknowledged". The reset now waits for the
+transaction to drain, bounded at 500 ms, and the four control routes
+(`/api/reboot`, `/api/start`, `/api/stop`, `/api/clear`) are gated on
+`X-Aius-SD-Auth`. **Confirmation is B6 gate 2**, which has not yet run.
+
+Not yet confirmed on hardware: the S/PDIF input path. The optical input is
+unsoldered, so there is no carrier, passthrough and DTS decode have never run
+against a live stream, and the per-block cost is
 still a static estimate.
 
 Three HTTP interop defects are open, all found by pointing a non-browser client

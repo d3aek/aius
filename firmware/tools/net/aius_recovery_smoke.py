@@ -400,7 +400,12 @@ class DeviceLink:
         raise LinkError("no USB answer for request %d" % request_id)
 
     def reboot(self):
-        result = self.http_json("POST", "/api/reboot")
+        # Authenticated since the four control routes were gated: an absent
+        # X-Aius-SD-Auth is 401, and the resulting LinkError would surface as the
+        # same "the first reboot could not be requested" this gate already
+        # reported for the unacknowledged-reset defect -- an identical message for
+        # an unrelated reason, which is exactly the trap worth not walking into.
+        result = self.http_json("POST", "/api/reboot", auth=True)
         if result["status"] != 200:
             raise LinkError("POST /api/reboot answered %s" % result["status"])
         return result

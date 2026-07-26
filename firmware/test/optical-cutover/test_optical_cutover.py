@@ -281,6 +281,66 @@ def assert_loop_delegates_one_epoch(text):
         )
 
 
+REBOOT_GATE_FUNCTION = "service_reboot_request"
+REBOOT_DRAIN_PREDICATE = "reboot_drain_complete"
+
+
+def assert_requested_reset_waits_for_the_drained_transaction(text):
+    """A requested reset waits for its own acknowledgement to reach the wire.
+
+    The retired shape called `reset_application()` straight from `loop()` under
+    `if (g_reboot_requested)`, i.e. at the end of the epoch that dispatched. That
+    epoch has only retained a pending application response: `format_response()`
+    runs in the next transaction step, so not one byte of the 200 exists yet, and
+    the first <=512-byte socket write is later still. Measured on the board, the
+    board reset and the client always timed out.
+
+    The gate is the transaction reaching `AIUS_HTTP_TX_IDLE`, which is reached
+    only through `restart_idle()` and on the response path only after the last
+    write was accepted and the close completed -- a real drain signal, not a
+    buffered one. It is bounded, because a wedged or vanished peer must not be
+    able to veto a reset that was asked for."""
+    definitions = function_definitions(text)
+    loop_body = without_comments_and_literals(function_body(text, LOOP_MARKER))
+    assert "g_reboot_requested" in loop_body, (
+        "loop() must remain the reader of the requested-reset flag"
+    )
+    assert "reset_application(" not in loop_body, (
+        "loop() calls reset_application() directly, so the reset lands at the "
+        "end of the epoch that dispatched -- before the response has been "
+        "formatted, let alone written -- and POST /api/reboot resets the board "
+        "and never answers it"
+    )
+    assert f"{REBOOT_GATE_FUNCTION}(" in loop_body, (
+        f"loop() must reach the reset through {REBOOT_GATE_FUNCTION}()"
+    )
+    for name in (REBOOT_GATE_FUNCTION, REBOOT_DRAIN_PREDICATE):
+        assert name in definitions, f"missing {name}() definition"
+    gate = without_comments_and_literals(definitions[REBOOT_GATE_FUNCTION])
+    drain = without_comments_and_literals(definitions[REBOOT_DRAIN_PREDICATE])
+    assert f"{REBOOT_DRAIN_PREDICATE}(" in gate, (
+        f"{REBOOT_GATE_FUNCTION}() must gate the reset on "
+        f"{REBOOT_DRAIN_PREDICATE}()"
+    )
+    assert "AIUS_HTTP_TX_IDLE" in drain, (
+        f"{REBOOT_DRAIN_PREDICATE}() must read the transaction's drained "
+        "terminal state, AIUS_HTTP_TX_IDLE -- a fixed epoch delay would be "
+        "fragile against WOULD_BLOCK retries"
+    )
+    assert "AIUS_REBOOT_DRAIN_MS" in gate, (
+        f"{REBOOT_GATE_FUNCTION}() must bound the wait, so a wedged or vanished "
+        "peer cannot prevent a requested reset"
+    )
+    occurrences = call_count(text, "reset_application")
+    assert occurrences == 2, (
+        "expected exactly two reset_application() occurrences -- its definition "
+        f"and the one gated call site -- found {occurrences}"
+    )
+    assert "reset_application(" in gate, (
+        "the single reset_application() call site must be the gated one"
+    )
+
+
 def assert_watchdog_armed_once_fed_once_per_epoch(text):
     clean = without_comments_and_literals(text)
     arm_count = clean.count("aius_boot_teensy_watchdog_arm(")
@@ -1218,6 +1278,10 @@ POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
     (
+        "a requested reset waits for the drained transaction, bounded",
+        assert_requested_reset_waits_for_the_drained_transaction,
+    ),
+    (
         "watchdog armed once at 8 s, fed exactly once per epoch",
         assert_watchdog_armed_once_fed_once_per_epoch,
     ),
@@ -1556,6 +1620,63 @@ def run_self_test():
     )
     _expect_fail(
         assert_loop_delegates_one_epoch, bad_loop_double_epoch, "loop/double-epoch"
+    )
+
+    # A requested reset waits for the drained transaction, bounded. The `bad`
+    # variant below is the shape that shipped: measured on the board, two
+    # attempts advanced boot_generation 21 -> 22 -> 23 and both timed out
+    # client-side, because the reset landed at the end of the epoch that
+    # dispatched -- before format_response() had run.
+    good_reboot = (
+        "static FLASHMEM void reset_application(void)\n{\n"
+        "\tSCB_AIRCR = 0x05FA0004;\n}\n"
+        "static FLASHMEM bool reboot_drain_complete(void)\n{\n"
+        "\treturn http->state == AIUS_HTTP_TX_IDLE &&\n"
+        "\t       http->outstanding_action == AIUS_HTTP_ACTION_NONE;\n}\n"
+        "static FLASHMEM void service_reboot_request(uint32_t now_ms)\n{\n"
+        "\tif (!g_reboot_deadline_armed) {\n"
+        "\t\tg_reboot_deadline_ms = now_ms + AIUS_REBOOT_DRAIN_MS;\n"
+        "\t\tg_reboot_deadline_armed = true;\n"
+        "\t\treturn;\n"
+        "\t}\n"
+        "\tif (reboot_drain_complete() ||\n"
+        "\t    (int32_t)(now_ms - g_reboot_deadline_ms) >= 0)\n"
+        "\t\treset_application();\n}\n"
+        "void loop(void)\n{\n"
+        "\tconst uint32_t now_ms = millis();\n"
+        "\tif (g_reboot_requested)\n"
+        "\t\tservice_reboot_request(now_ms);\n}\n"
+    )
+    _expect_pass(
+        assert_requested_reset_waits_for_the_drained_transaction,
+        good_reboot, "reboot/good",
+    )
+    bad_reboot_immediate = good_reboot.replace(
+        "\tif (g_reboot_requested)\n\t\tservice_reboot_request(now_ms);\n",
+        "\tif (g_reboot_requested)\n\t\treset_application();\n",
+        1,
+    )
+    _expect_fail(
+        assert_requested_reset_waits_for_the_drained_transaction,
+        bad_reboot_immediate, "reboot/reset-in-loop",
+        "never answers it",
+    )
+    bad_reboot_unbounded = good_reboot.replace(
+        "\t\tg_reboot_deadline_ms = now_ms + AIUS_REBOOT_DRAIN_MS;\n", "", 1
+    )
+    _expect_fail(
+        assert_requested_reset_waits_for_the_drained_transaction,
+        bad_reboot_unbounded, "reboot/unbounded", "must bound the wait",
+    )
+    bad_reboot_epoch_delay = good_reboot.replace(
+        "\treturn http->state == AIUS_HTTP_TX_IDLE &&\n"
+        "\t       http->outstanding_action == AIUS_HTTP_ACTION_NONE;\n",
+        "\treturn g_reboot_epochs_waited >= 3u;\n",
+        1,
+    )
+    _expect_fail(
+        assert_requested_reset_waits_for_the_drained_transaction,
+        bad_reboot_epoch_delay, "reboot/fixed-epoch-delay", "AIUS_HTTP_TX_IDLE",
     )
 
     # watchdog arm-once / feed-once-per-epoch.

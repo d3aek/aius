@@ -507,6 +507,74 @@ static void test_dispatch_response_partial_write_close_restart(void)
 	assert(fixture.transaction.last_status == 0);
 }
 
+/* The epoch ordering the runtime's gated reset depends on, and the ordering that
+ * made the ungated one wrong (aius-network-hardening.md open defect 12).
+ *
+ * POST /api/reboot answers with an ordinary AIUS_HTTP_APP_IMMEDIATE body, so
+ * this walks that response one step at a time and asserts, at each step, what a
+ * reset gated on "the epoch that dispatched has finished" would have seen. At the
+ * dispatch step response_length is still 0: format_response() runs inside
+ * accept_application(), which only executes when the NEXT step consumes the
+ * retained application event. So a reset there loses the answer entirely, which
+ * is exactly what the board did -- boot_generation advanced and the client timed
+ * out.
+ *
+ * AIUS_HTTP_TX_IDLE is asserted absent at every earlier step and present only
+ * after the last write was accepted AND the close completed. That is what makes
+ * it a drained terminal state rather than a buffered one, and therefore the right
+ * signal for the reset to wait on. A test that only checked the end state would
+ * pass against the defect; the load-bearing assertions are the ones before the
+ * writes. */
+static void test_immediate_response_reaches_idle_only_after_write_and_close(void)
+{
+	Fixture fixture;
+	static const uint8_t body[] = "{\"ok\":true,\"rebooting\":true}";
+	init_fixture(&fixture);
+	AiusHttpAction action =
+		feed_request(&fixture,
+		             "POST /api/reboot HTTP/1.0\r\nContent-Length: 0\r\n\r\n");
+	assert(action.kind == AIUS_HTTP_ACTION_DISPATCH);
+	assert(action.request->route == AIUS_HTTP_ROUTE_REBOOT);
+	assert(fixture.transaction.state == AIUS_HTTP_TX_DISPATCH);
+	/* The dispatching step. The application has been asked and has answered;
+	 * nothing is formatted, nothing is buffered, nothing is written. */
+	assert(fixture.transaction.state != AIUS_HTTP_TX_IDLE);
+	assert(fixture.transaction.response_length == 0u);
+	assert(fixture.transaction.response_offset == 0u);
+	assert(!fixture.transaction.response_started);
+
+	AiusHttpApplicationResponse response =
+		immediate(200, "application/json", body, sizeof(body) - 1u);
+	action = call_step(&fixture, fixture.now,
+	                   application_result(&action, &response));
+	/* One step later: formatting has happened and a first WRITE now exists.
+	 * response_started is still false, because it is set by the write's RESULT,
+	 * not by its emission -- "buffered" is not "transmitted". */
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(fixture.transaction.state == AIUS_HTTP_TX_SEND);
+	assert(fixture.transaction.state != AIUS_HTTP_TX_IDLE);
+	assert(fixture.transaction.response_length != 0u);
+	assert(!fixture.transaction.response_started);
+
+	action = finish_all_writes(&fixture, action);
+	assert(fixture.transaction.response_started);
+	assert(contains_bytes(fixture.response, fixture.transaction.response_length,
+	                      "{\"ok\":true,\"rebooting\":true}"));
+	/* Every byte is out and the transaction is STILL not drained: the close has
+	 * not completed, so the socket has not been released. */
+	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
+	assert(fixture.transaction.state == AIUS_HTTP_TX_CLOSE);
+	assert(fixture.transaction.state != AIUS_HTTP_TX_IDLE);
+
+	action = call_step(&fixture, fixture.now,
+	                   io_result(&action, AIUS_IO_PROGRESS, 0, 0));
+	assert(action.kind == AIUS_HTTP_ACTION_NONE);
+	assert(fixture.transaction.state == AIUS_HTTP_TX_IDLE);
+	assert(fixture.transaction.outstanding_action == AIUS_HTTP_ACTION_NONE);
+	assert(fixture.dispatches == 1);
+	assert(fixture.closes == 1);
+}
+
 static void test_response_timeout_progress_precedence(void)
 {
 	Fixture fixture;
@@ -4263,6 +4331,8 @@ int main(void)
 		{ "receive.quota-timeout-wrap", test_request_quota_timeout_and_wrap },
 		{ "dispatch.partial-close-restart",
 		  test_dispatch_response_partial_write_close_restart },
+		{ "dispatch.idle-only-after-write-and-close",
+		  test_immediate_response_reaches_idle_only_after_write_and_close },
 		{ "send.timeout-progress-precedence",
 		  test_response_timeout_progress_precedence },
 		{ "event.protocol-payload", test_protocol_payload_validation },
@@ -4318,7 +4388,7 @@ int main(void)
 		{ "receive.large-body-chunk-boundaries",
 		  test_receive_large_body_chunk_boundaries },
 	};
-	assert(ARRAY_LENGTH(registry) == 37);
+	assert(ARRAY_LENGTH(registry) == 38);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

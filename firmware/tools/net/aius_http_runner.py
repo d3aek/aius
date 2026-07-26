@@ -18,6 +18,7 @@ complete buffered body. The buffered-body path is covered instead by the host
 import argparse
 import http.client
 import json
+import os
 import socket
 import time
 from pathlib import Path
@@ -35,12 +36,22 @@ SOAK_REQUESTS = (
 )
 
 
-def request(target, method, path, body=None, timeout=0.5):
+def request(target, method, path, body=None, timeout=0.5, auth_token=None):
+    """One request. Pass `auth_token` for a route that requires it.
+
+    `POST /api/start`, `/api/stop`, `/api/clear` and `/api/reboot` are gated on
+    `X-Aius-SD-Auth`; without it they answer 401 and perform nothing. A soak that
+    drives them unauthenticated still records a result per request and therefore
+    reads as covering them while covering nothing, so the token is threaded
+    through rather than left to the caller to remember.
+    """
     host, port = target
     started = time.monotonic()
     connection = http.client.HTTPConnection(host, port, timeout=timeout)
     encoded = None if body is None else json.dumps(body, separators=(",", ":"))
     headers = {"Connection": "close"}
+    if auth_token:
+        headers["X-Aius-SD-Auth"] = auth_token
     if encoded is not None:
         headers["Content-Type"] = "application/json"
     try:
@@ -94,12 +105,15 @@ def raw_response_record(response):
     return {"method": "MALFORMED", "status": None, "outcome": "connection_closed"}
 
 
-def exercise_once(target, cursor):
+def exercise_once(target, cursor, auth_token=None):
     records = []
     for method, template, body in SOAK_REQUESTS:
         path = template.format(cursor=cursor)
-        result = request(target, method, path, body)
-        records.append({"method": method, "path": path, **result})
+        # The three POSTs in SOAK_REQUESTS are gated; the two GETs are not, and
+        # sending the header to a route that ignores it is harmless.
+        result = request(target, method, path, body, auth_token=auth_token)
+        records.append({"method": method, "path": path,
+                        "authenticated": bool(auth_token), **result})
     for raw in (
         b"GET /api/status HTTP/2.0\r\n\r\n",
         b"PUT /api/status HTTP/1.0\r\n\r\n",
@@ -121,7 +135,7 @@ def exercise_once(target, cursor):
     return records
 
 
-def run_soak(target, duration, interval, evidence):
+def run_soak(target, duration, interval, evidence, auth_token=None):
     deadline = time.monotonic() + duration
     cursor = 0
     index = 0
@@ -133,7 +147,7 @@ def run_soak(target, duration, interval, evidence):
             record = {"kind": "http_iteration", "iteration": index,
                       "started_at": time.time()}
             try:
-                records = exercise_once(target, cursor)
+                records = exercise_once(target, cursor, auth_token)
                 status = request(target, "GET", "/api/status")
                 events = request(target, "GET", f"/api/events?cursor={cursor}")
                 if isinstance(events.get("body"), dict):
@@ -148,8 +162,10 @@ def run_soak(target, duration, interval, evidence):
             time.sleep(max(0.0, interval - (time.monotonic() - started)))
 
 
-def reboot_and_wait(target, timeout):
-    acknowledgement = request(target, "POST", "/api/reboot")
+def reboot_and_wait(target, timeout, auth_token=None):
+    # Gated route: without the token this is a 401 and the board does not reset,
+    # so the wait below would time out against a board that never rebooted.
+    acknowledgement = request(target, "POST", "/api/reboot", auth_token=auth_token)
     deadline = time.monotonic() + timeout
     attempts = 0
     last_error = None
@@ -176,6 +192,11 @@ def main():
     parser.add_argument("--evidence", default="aius-http-soak.jsonl")
     parser.add_argument("--resource", choices=("index.html", "app.js", "style.css", "config.json"))
     parser.add_argument("--file")
+    # The four control routes are gated on X-Aius-SD-Auth. Read the board's token
+    # with `AIUS AUTH <id>` over the CDC port; without it `soak` records 401s for
+    # its three POSTs and `reboot` never reboots.
+    parser.add_argument("--auth-token", default=os.environ.get("AIUS_SD_TOKEN"),
+                        help="X-Aius-SD-Auth for /api/start|stop|clear|reboot")
     args = parser.parse_args()
     if ":" in args.target and args.target.rsplit(":", 1)[1].isdigit():
         host, port_text = args.target.rsplit(":", 1)
@@ -185,7 +206,8 @@ def main():
     if args.command == "status":
         print(json.dumps(request(target, "GET", "/api/status"), sort_keys=True))
     elif args.command == "reboot":
-        print(json.dumps(reboot_and_wait(target, args.timeout), sort_keys=True))
+        print(json.dumps(reboot_and_wait(target, args.timeout, args.auth_token),
+                         sort_keys=True))
     elif args.command == "sd-status":
         print(json.dumps(request(target, "GET", "/api/sd"), sort_keys=True))
     elif args.command == "sd-get":
@@ -208,7 +230,8 @@ def main():
             parser.error("sd-delete requires --resource")
         print(json.dumps(request(target, "DELETE", f"/sd/{args.resource}"), sort_keys=True))
     else:
-        run_soak(target, args.duration, args.interval, args.evidence)
+        run_soak(target, args.duration, args.interval, args.evidence,
+                 args.auth_token)
 
 
 if __name__ == "__main__":

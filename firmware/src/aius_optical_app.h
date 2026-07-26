@@ -183,8 +183,12 @@ typedef struct {
 
 	void (*set_test_running)(void *context, bool running);
 	void (*clear_counters)(void *context);
-	/* Records the reboot request. The runtime performs it after the response
-	 * has been written; the dispatcher itself never resets or delays. */
+	/* Records the reboot request; the dispatcher itself never resets or delays.
+	 * The runtime performs the reset once the HTTP transaction has drained to
+	 * AIUS_HTTP_TX_IDLE -- i.e. the response was written onto the socket and the
+	 * connection closed -- under a bounded ceiling. Recording is NOT "the
+	 * response has been written": at the moment this callback returns the
+	 * response has not even been formatted. */
 	void (*request_reboot)(void *context);
 
 	/* ID/AUTH payload for one USB command, NUL-terminated into `payload`.

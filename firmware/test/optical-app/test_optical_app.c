@@ -570,18 +570,103 @@ static void test_golden_immediate_routes(void)
 	expect_immediate(dispatch_get(&fixture, "GET /api/replays"), 200,
 	                 "{\"body\":\"replay_list\"}");
 
-	expect_immediate(dispatch_request(&fixture, "POST /api/start", NULL, NULL, -1),
+	/* The four control routes carry the token: they mutate the running system,
+	 * so they are authenticated like every other mutating route. Their refusals
+	 * are test_control_routes_are_authenticated below. */
+	expect_immediate(dispatch_request(&fixture, "POST /api/start",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
 	                 200, "{\"ok\":true,\"running\":true}");
 	assert(fixture.fake.test_running);
-	expect_immediate(dispatch_request(&fixture, "POST /api/stop", NULL, NULL, -1),
+	expect_immediate(dispatch_request(&fixture, "POST /api/stop",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
 	                 200, "{\"ok\":true,\"running\":false}");
 	assert(!fixture.fake.test_running);
-	expect_immediate(dispatch_request(&fixture, "POST /api/clear", NULL, NULL, -1),
+	expect_immediate(dispatch_request(&fixture, "POST /api/clear",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
 	                 200, "{\"ok\":true}");
 	assert(fixture.fake.clears == 1u);
-	expect_immediate(dispatch_request(&fixture, "POST /api/reboot", NULL, NULL, -1),
+	expect_immediate(dispatch_request(&fixture, "POST /api/reboot",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
 	                 200, "{\"ok\":true,\"rebooting\":true}");
 	assert(fixture.fake.reboots == 1u);
+}
+
+/* The negative control for the security half of defect 12.
+ *
+ * Before this fix POST /api/start, /api/stop, /api/clear and /api/reboot
+ * performed no auth_matches call and appeared in no auth-gated arm, so any host
+ * that could reach port 80 could stop the audio path or reset the board --
+ * including mid-upload. Every 401 row below answers 200 against that version and
+ * performs the effect, which is what makes this a control rather than a
+ * restatement.
+ *
+ * Absent and wrong are separate rows because they reach the callback
+ * differently: an absent header leaves request->sd_auth NULL, a wrong one leaves
+ * it pointing at bytes that do not match, and only the callback can tell those
+ * apart. Both must be one 401 sd_auth, the same body the SD, replay and config
+ * routes already refuse with.
+ *
+ * The read-only block at the end is the other half of the contract, and just as
+ * load-bearing: GET /, /api/status, /api/events and /api/meters are deliberately
+ * open because the recovery smoke runner polls them to decide whether the board
+ * came back. Gating them would break the tooling and protect nothing. */
+static void test_control_routes_are_authenticated(void)
+{
+	Fixture fixture;
+	static const struct { const char *line; const char *body; } control[] = {
+		{ "POST /api/start", "{\"ok\":true,\"running\":true}" },
+		{ "POST /api/stop", "{\"ok\":true,\"running\":false}" },
+		{ "POST /api/clear", "{\"ok\":true}" },
+		{ "POST /api/reboot", "{\"ok\":true,\"rebooting\":true}" }
+	};
+	static const char *const public_routes[] = {
+		"GET /api/status", "GET /api/events", "GET /api/meters"
+	};
+	static const char *const refused_calls[] = { "auth_matches" };
+	fixture_init(&fixture);
+
+	for (size_t i = 0; i < ARRAY_LENGTH(control); ++i) {
+		expect_immediate(dispatch_request(&fixture, control[i].line, NULL,
+		                                  NULL, -1),
+		                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		expect_log(&fixture, refused_calls, ARRAY_LENGTH(refused_calls));
+		expect_immediate(dispatch_request(&fixture, control[i].line,
+		                                  "X-Aius-SD-Auth: wrong\r\n", NULL,
+		                                  -1),
+		                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		expect_log(&fixture, refused_calls, ARRAY_LENGTH(refused_calls));
+	}
+
+	/* The status code is not the property; the absent effect is. Eight
+	 * refusals, and the test state never started, no counter was cleared and
+	 * no reset was requested. */
+	assert(!fixture.fake.test_running);
+	assert(fixture.fake.clears == 0u);
+	assert(fixture.fake.reboots == 0u);
+
+	/* The correct token still serves all four, so the gate refuses rather than
+	 * breaks the route. */
+	for (size_t i = 0; i < ARRAY_LENGTH(control); ++i)
+		expect_immediate(dispatch_request(&fixture, control[i].line,
+		                                  "X-Aius-SD-Auth: token\r\n", NULL,
+		                                  -1),
+		                 200, control[i].body);
+	assert(fixture.fake.clears == 1u);
+	assert(fixture.fake.reboots == 1u);
+	/* start then stop, so the flag lands back where it began. */
+	assert(!fixture.fake.test_running);
+
+	/* And the open routes stay open: served with no header at all, and no
+	 * auth_matches call to gate them. */
+	expect_response(dispatch_get(&fixture, "GET /"), AIUS_HTTP_APP_IMMEDIATE,
+	                200, "text/html; charset=utf-8", "{\"body\":\"home\"}");
+	assert(fixture.fake.log_count == 1u);
+	assert(strcmp(fixture.fake.log[0], "home") == 0);
+	for (size_t i = 0; i < ARRAY_LENGTH(public_routes); ++i) {
+		(void)dispatch_get(&fixture, public_routes[i]);
+		assert(fixture.fake.log_count == 1u);
+		assert(strcmp(fixture.fake.log[0], "auth_matches") != 0);
+	}
 }
 
 static void test_serializer_exhaustion(void)
@@ -1570,7 +1655,11 @@ static void test_callback_isolation(void)
 {
 	Fixture fixture;
 	static const char *const status_calls[] = { "status" };
-	static const char *const start_calls[] = { "test_running:true" };
+	/* The control routes are gated before the switch, so the credential check
+	 * is the first callback and the effect the second. */
+	static const char *const start_calls[] = {
+		"auth_matches", "test_running:true"
+	};
 	static const char *const download_calls[] = { "sd_ready", "sd_busy" };
 	static const char *const delete_calls[] = {
 		"sd_ready", "auth_matches", "sd_busy"
@@ -1599,7 +1688,8 @@ static void test_callback_isolation(void)
 	(void)dispatch_get(&fixture, "GET /api/status");
 	expect_log(&fixture, status_calls, ARRAY_LENGTH(status_calls));
 
-	(void)dispatch_request(&fixture, "POST /api/start", NULL, NULL, -1);
+	(void)dispatch_request(&fixture, "POST /api/start",
+	                       "X-Aius-SD-Auth: token\r\n", NULL, -1);
 	expect_log(&fixture, start_calls, ARRAY_LENGTH(start_calls));
 
 	(void)dispatch_get(&fixture, "GET /sd/www/index.html");
@@ -1789,10 +1879,10 @@ static void test_route_coverage(void)
 		{ "GET /", NULL, NULL, -1 },
 		{ "GET /api/status", NULL, NULL, -1 },
 		{ "GET /api/events", NULL, NULL, -1 },
-		{ "POST /api/start", NULL, NULL, -1 },
-		{ "POST /api/stop", NULL, NULL, -1 },
-		{ "POST /api/clear", NULL, NULL, -1 },
-		{ "POST /api/reboot", NULL, NULL, -1 },
+		{ "POST /api/start", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
+		{ "POST /api/stop", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
+		{ "POST /api/clear", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
+		{ "POST /api/reboot", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
 		{ "PUT /api/config/public", NULL, "{}", -1 },
 		{ "GET /api/sd", NULL, NULL, -1 },
 		{ "GET /sd/www/index.html", NULL, NULL, -1 },
@@ -1837,6 +1927,7 @@ int main(void)
 {
 	RUN_TEST(test_init_validation);
 	RUN_TEST(test_golden_immediate_routes);
+	RUN_TEST(test_control_routes_are_authenticated);
 	RUN_TEST(test_serializer_exhaustion);
 	RUN_TEST(test_sd_media_and_paths);
 	RUN_TEST(test_sd_index_listing);

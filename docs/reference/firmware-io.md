@@ -852,9 +852,23 @@ exists (`src/optical_main.cpp:393`).
   bracketing the block body, so the device reports its own worst-case block cost
   through the snapshot it already publishes rather than the figure being an
   off-target estimate (`src/optical_main.cpp:680`).
-- **Software reset**, on request only: `SCB_AIRCR` with interrupts disabled, after
-  the epoch so the HTTP response or UDP ack that asked for it has already been
-  written (`src/optical_main.cpp:1525`, `:3143`).
+- **Software reset**, on request only: `SCB_AIRCR` with interrupts disabled, gated
+  on the HTTP transaction having drained to `AIUS_HTTP_TX_IDLE` and bounded at
+  500 ms, after which it resets unacknowledged (`src/optical_main.cpp`
+  `reset_application()`, `reboot_drain_complete()`, `service_reboot_request()`).
+  **The reset is not "after the epoch that dispatched".** That epoch has only
+  retained a pending application response: `format_response()` runs inside
+  `accept_application()`, which executes only when the next step consumes that
+  event, so at the end of the dispatching epoch not one byte of the 200 exists.
+  With N the dispatching epoch, N+1 formats and performs the first ≤512-byte
+  socket write, N+2 consumes its result, and the close plus `restart_idle()` are
+  later still. Resetting at the end of epoch N is what made
+  `POST /api/reboot` reset the board and never answer it. `AIUS_HTTP_TX_IDLE` is
+  reached only through `restart_idle()`, which on the response path is strictly
+  after the last write was accepted and the close completed, so it is a real
+  drain signal rather than a buffered one — the same distinction as the
+  bootloader-entry fix above, with the same 500 ms ceiling and the same "act
+  anyway on expiry" rule.
 
 ## Codec control — what the firmware has and does not have
 

@@ -1850,6 +1850,7 @@ static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 		"<li><code>POST /api/stop {}</code></li>"
 		"<li><code>POST /api/clear {}</code></li>"
 		"<li><code>POST /api/reboot {}</code></li>"
+		"<li>Those four POST routes require <code>X-Aius-SD-Auth</code>.</li>"
 		"<li><a href=\"/api/sd\">GET /api/sd</a></li>"
 		"<li><code>PUT /sd/www/{path}</code> raw body with Content-Length and X-Aius-SD-Auth</li>"
 		"<li><code>DELETE /sd/www/{path}</code> with X-Aius-SD-Auth</li>"
@@ -1862,7 +1863,7 @@ static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 		"<label>SD auth token <input id=t size=16 maxlength=16 autocomplete=off></label> "
 		"<input id=f type=file multiple webkitdirectory directory><button onclick=upload()>Upload selected files</button>"
 		"<pre id=u></pre>"
-		"<h2>Control</h2><p>"
+		"<h2>Control</h2><p>These four send the token from the field above.</p><p>"
 		"<button title=\"Enable test processing state\" onclick=go('/api/start')>Start</button> "
 		"<button title=\"Disable test processing state\" onclick=go('/api/stop')>Stop</button> "
 		"<button title=\"Clear audio and event counters\" onclick=go('/api/clear')>Clear counters</button> "
@@ -1871,7 +1872,7 @@ static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 		"const s=document.getElementById('s'),e=document.getElementById('e'),u=document.getElementById('u'),d=document.getElementById('dsp');"
 		"async function get(){try{s.textContent=JSON.stringify(await (await fetch('/api/status')).json(),null,2);e.textContent=''}catch(a){e.textContent=a}}"
 		"async function getDsp(){try{const r=await fetch('/api/dsp/config');if(!r.ok)throw Error('HTTP '+r.status);d.textContent=JSON.stringify(await r.json(),null,2)}catch(a){d.textContent='DSP model unavailable: '+a}}"
-		"async function go(a,b){try{await fetch(a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});get()}catch(c){e.textContent=c}}"
+		"async function go(a,b){try{await fetch(a,{method:'POST',headers:{'Content-Type':'application/json','X-Aius-SD-Auth':document.getElementById('t').value||'-'},body:JSON.stringify(b||{})});get()}catch(c){e.textContent=c}}"
 		"async function reboot(){e.textContent='Rebooting...';try{await go('/api/reboot');setTimeout(get,2000)}catch(a){}}"
 		"async function upload(){u.textContent='';const token=document.getElementById('t').value;const files=[...(document.getElementById('f').files||[])];for(const file of files){const rel=file.webkitRelativePath||file.name;const path=rel.split('/').slice(1).join('/')||rel;if(path.split('/').pop()==='config.json'){u.textContent+='refused '+path+'\\n';continue}try{const r=await fetch('/sd/www/'+path.split('/').map(encodeURIComponent).join('/'),{method:'PUT',headers:{'X-Aius-SD-Auth':token,'Content-Type':'application/octet-stream'},body:file});u.textContent+=r.status+' '+path+'\\n'}catch(a){u.textContent+='error '+path+' '+a+'\\n'}}}"
 		"get();getDsp();setInterval(get,2000);setInterval(getDsp,2000)</script></html>",
@@ -2035,9 +2036,14 @@ static FLASHMEM size_t http_replay_list_json(uint8_t *body, size_t capacity)
 /* so a prototype-only FLASHMEM would silently leave the code in ITCM. */
 /* ------------------------------------------------------------------ */
 
-/* Records the reboot request; the runtime performs the reset after the
- * response has been written, so nothing resets inline here. volatile because
- * the store is the whole point of the callback and its reader is loop(). */
+/* Records the reboot request; the reset itself happens in loop(), gated on the
+ * HTTP transaction draining (see reboot_drain_complete()). volatile because the
+ * store is the whole point of the callback and its reader is loop().
+ *
+ * This deliberately records nothing else -- no timestamp, no transaction
+ * snapshot. The dispatcher's contract is that it never delays and reads no
+ * clock, and this adapter runs inside it; loop() already has the epoch's now_ms
+ * and arms the ceiling from there. */
 static volatile bool g_reboot_requested;
 
 static FLASHMEM bool app_sd_ready(void *)
@@ -3786,6 +3792,82 @@ static FLASHMEM void service_event_edges(void)
 		             delta);
 }
 
+/* ------------------------------------------------------------------ */
+/* Requested reset -- POST /api/reboot                                 */
+/*                                                                     */
+/* Ceiling on how long a requested reset waits for its own             */
+/* acknowledgement to drain. 500 ms, the same figure and the same      */
+/* reasoning as AIUS_USB_BOOTLOADER_DELAY_MS: a terminal action may    */
+/* wait on a genuine retirement signal, but it may never be prevented  */
+/* by a peer, and the 8 s watchdog window comfortably covers it.       */
+/*                                                                     */
+/* It is five times the transaction's own RESPONSE_TIMEOUT_MS (100 ms, */
+/* aius_http_transaction.c:25), so a peer that stops reading is        */
+/* drained by the transaction's own fault path -- record the timeout,  */
+/* close, restart_idle -- long before this expires. The ceiling is the */
+/* backstop for the case the transaction cannot resolve at all: the    */
+/* HTTP checkpoint does not run while the network generation is        */
+/* offline (aius_runtime_network_http.cpp:205), so a link or DHCP      */
+/* failure between the dispatch and the drain would otherwise leave    */
+/* the transaction parked forever with a reset outstanding.            */
+/* ------------------------------------------------------------------ */
+
+static constexpr uint32_t AIUS_REBOOT_DRAIN_MS = 500u;
+static uint32_t g_reboot_deadline_ms;
+static bool g_reboot_deadline_armed;
+
+/* True once the HTTP transaction is back at its drained terminal state.
+ *
+ * AIUS_HTTP_TX_IDLE is reached only through restart_idle()
+ * (aius_http_transaction.c:1536), and on the response path that is strictly
+ * after the last WRITE was accepted by the socket and the CLOSE completed, so
+ * observing it means the acknowledgement is on the wire rather than merely
+ * buffered. That is the whole difference from the retired behaviour: the
+ * dispatching epoch retains a pending application event, and format_response()
+ * has not yet run, so at the end of that epoch not one byte of the 200 exists.
+ *
+ * outstanding_action is required NONE as well so no transport primitive is in
+ * flight when the core resets. In IDLE the only one that can be outstanding is
+ * an ACCEPT, and the transaction alternates ACCEPT / NONE every other epoch, so
+ * this costs at most one further epoch and cannot deadlock.
+ *
+ * A teardown that discards the transaction (http_init() on
+ * AIUS_NET_ACTION_TEARDOWN) also lands here, which is correct: the response can
+ * no longer be delivered, so there is nothing left to wait for.
+ *
+ * Reading the state is not a step: this is a plain load of two fields outside
+ * the epoch, so it cannot consume an event, emit an action, stall a service or
+ * make one return false. */
+static FLASHMEM bool reboot_drain_complete(void)
+{
+	const AiusHttpTransaction *http = &g_runtime.network_http.http;
+
+	return http->state == AIUS_HTTP_TX_IDLE &&
+	       http->outstanding_action == AIUS_HTTP_ACTION_NONE;
+}
+
+/* One epoch's decision about a reset that has been asked for and not yet
+ * performed. Arms the ceiling on the first epoch that sees the request -- which
+ * is the epoch the dispatch happened in, where the transaction is still in
+ * AIUS_HTTP_TX_DISPATCH -- then resets on the first epoch where the transaction
+ * has drained, or once the ceiling expires, whichever comes first.
+ *
+ * On expiry the reset happens regardless. A requested reset is honoured; only
+ * its acknowledgement is best-effort. The alternative -- waiting indefinitely --
+ * would let a wedged or vanished peer veto the one operation that recovers the
+ * board. */
+static FLASHMEM void service_reboot_request(uint32_t now_ms)
+{
+	if (!g_reboot_deadline_armed) {
+		g_reboot_deadline_ms = now_ms + AIUS_REBOOT_DRAIN_MS;
+		g_reboot_deadline_armed = true;
+		return;
+	}
+	if (reboot_drain_complete() ||
+	    (int32_t)(now_ms - g_reboot_deadline_ms) >= 0)
+		reset_application();
+}
+
 /* Exactly one runtime epoch, then the three things the epoch itself must not do.
  *
  * The epoch runs checkpoints 0..8 in order, records EPOCH_COMPLETE and feeds
@@ -3793,8 +3875,16 @@ static FLASHMEM void service_event_edges(void)
  * is what makes a wedged service a bounded reset rather than a hang.
  *
  * request_reboot() only records (aius_optical_app.cpp), because the dispatcher
- * never resets or delays, so the reset happens here -- after the epoch, so the
- * HTTP response or UDP ack that asked for it has already been written.
+ * never resets or delays, so the reset happens here -- but NOT at the end of the
+ * epoch that dispatched. That epoch has only retained a pending application
+ * response: format_response() runs inside accept_application(), which executes
+ * only when the NEXT step consumes that event, so at the end of the dispatching
+ * epoch not one byte of the 200 exists. Counted in epochs, with N the dispatch:
+ * N+1 formats and performs the first <=512-byte socket write, N+2 consumes its
+ * result, and the close plus restart_idle() are later still. Resetting here
+ * unconditionally is exactly the defect the B6 reboots gate hit: boot_generation
+ * advanced and the client timed out. service_reboot_request() gates it on the
+ * transaction reaching AIUS_HTTP_TX_IDLE, bounded at AIUS_REBOOT_DRAIN_MS.
  *
  * service_event_edges() is the epoch's one observability step and the sole call
  * site of the counter edges above; it belongs here rather than at a checkpoint
@@ -3818,5 +3908,5 @@ FLASHMEM void loop(void)
 		g_boot_marked_healthy = true;
 	}
 	if (g_reboot_requested)
-		reset_application();
+		service_reboot_request(now_ms);
 }
