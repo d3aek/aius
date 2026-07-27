@@ -304,7 +304,9 @@ are follow-up work, recorded here so they are not lost.
    `aius_dsp_config` instead was considered and rejected — its only public entry
    is a DSP-model parse, so it would need a new generic API on a schema-specific
    library and the same link edit anyway.
-9. **`write_once()` has the receive path's defect and cannot be fixed in place.**
+9. ~~**`write_once()` has the receive path's defect and cannot be fixed in
+   place.**~~ **FIXED 2026-07-26 — see the correction block below; "cannot be
+   fixed in place" was wrong.**
    `read_once()`'s FNET misclassification is fixed; the send path has the same
    asymmetry one layer down. `EthernetClass::socketSend`
    (`vendor/NativeEthernet/src/Nativesocket.cpp:327-334`) returns `0` for **both**
@@ -348,8 +350,6 @@ are follow-up work, recorded here so they are not lost.
    truncated a response already promised to a client. The `CLOSED`-as-`FAULT` half
    was latent, because for a `WRITE` both arms produce identical control flow and
    the only difference, `last_transport_fault`, has no production reader.
-10. **The network-transport fake models FNET wrongly in five further places**,
-    which matters more than any single one of them: a committed test asserted the
 10. **The network-transport fake models FNET wrongly in five further places**,
     which matters more than any single one of them: a committed test asserted the
     `read_once()` defect *as correct behaviour* for months. The cause was a
@@ -406,18 +406,23 @@ are follow-up work, recorded here so they are not lost.
     "is truncated by the receive and then fails decode, so it still lands in
     `g_network_drops`". FNET answers `FNET_ERR` rather than a short length, so no
     decode ever ran and nothing was counted — it was never true.
-11. **The output clock is 44.1 kHz while everything claims 48 kHz.** Measured on
-    the board: 86.1 blocks/s × 512 frames = 44,083 Hz, matching the Teensy audio
-    engine's default `AUDIO_SAMPLE_RATE_EXACT` of `44100.0f`
-    (`cores/teensy4/AudioStream.h:58`), which `platformio.ini` does not override.
-    The replay content, `GET /api/meters` and `GET /api/dsp/config` all say
-    48,000. **48 kHz material therefore plays ~8.1 % slow, about 1.4 semitones
-    flat.** No counter shows it — producer and consumer share the output clock, so
-    the queue is stable and the overrun counters are honestly zero. Decide
-    deliberately whether the engine moves to 48 kHz or the device resamples, and
-    make some surface report the *ratio* rather than each side's own belief; a
-    device that cannot tell you its clock disagrees with its content will hide
-    this again.
+11. ~~**The output clock is 44.1 kHz while everything claims 48 kHz.**~~
+    **FIXED 2026-07-26 (`fd68229a0`, plus the `24ff70f7b` clock handover):**
+    the engine is pinned to 48 kHz with exact PLL4 arithmetic confirmed in the
+    linked image, and the roadmap's post-fix on-board measurements run at
+    93.3–94.5 blocks/s (48 kHz), not 86.1 (44.1 kHz). The fix also uncovered
+    the worse live-carrier consequence — ~30 blocks/s silently discarded
+    inside the vendor output unit when the graph ran at the carrier's rate
+    against a 44.1 kHz transmit DMA. The original entry:
+
+    Measured on the board: 86.1 blocks/s × 512 frames = 44,083 Hz, matching
+    the Teensy audio engine's default `AUDIO_SAMPLE_RATE_EXACT` of `44100.0f`
+    (`cores/teensy4/AudioStream.h:58`), which `platformio.ini` did not
+    override. 48 kHz material therefore played ~8.1 % slow, about 1.4
+    semitones flat, with every counter honestly zero. The entry's standing
+    ask — some surface should report the clock/content *ratio* rather than
+    each side's own belief — is not yet delivered and is exactly what the
+    item 3 measurement loopback makes checkable.
 12. ~~**`POST /api/reboot` resets the board but never answers**~~ **FIXED
     2026-07-26 (`ee3470f13`), both halves, and wire-confirmed by the B6 run that
     evening — gate 2 passed against `3576c3e3560f`, which is the client actually
@@ -486,8 +491,9 @@ are follow-up work, recorded here so they are not lost.
     subnet could reset the board at will, including mid-upload; `/api/start`,
     `/api/stop` and `/api/clear` were equally open. Fixed with the
     acknowledgement half as recorded above.
-13. **PCM passthrough sits 48.16 dB below the DTS path, and the limiter can never
-    engage on it.** Found writing [§Phase 14e](#phase-14e--signal-path-and-dsp-reference).
+13. ~~**PCM passthrough sits 48.16 dB below the DTS path, and the limiter can
+    never engage on it.**~~ **FIXED 2026-07-26 (`fc58ac343`) — see the
+    correction block below.** Found writing [§Phase 14e](#phase-14e--signal-path-and-dsp-reference).
     `pcm_feed` does `int32_t sample = (int32_t)(int16_t)w[i]` with **no left shift**
     (`lib/aius_pipeline/src/aius_pipeline.c:96`), while the DTS decoder emits
     24-bit-range samples. So a full-scale 16-bit PCM carrier reaches the wire around
