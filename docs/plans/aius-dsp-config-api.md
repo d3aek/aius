@@ -563,8 +563,19 @@ must account for it before being finalised.
 
 ### Item 3 design — the measurement loopback, software tap first
 
-Drafted 2026-07-26 as the phase contract for the item 3 build; the adversarial
-prebuild gate reviews this section before the first slice.
+Drafted 2026-07-26 as the phase contract for the item 3 build. **The
+adversarial prebuild gate ran the same night and rejected two load-bearing
+choices** — the DTS stimulus and the "leakage bin" THD+N method — with the
+quantified reasons folded in below. The same reviewer's findings-exhausted
+pass confirmed the amendments and surfaced three note-severity residuals
+(the `analysing` state missing from the machine, the dual-writer cancel
+terminal contradicting the one-writer invariant, and the two generator
+obligations), all landed in this revision. **The clean-room confirmation
+(fresh reviewer, blind to the iteration) then verified internal coherence
+and every load-bearing citation against the code and answered CONFIRMED —
+build may start**; its one note, the unlisted ISR-owned `capturing → failed`
+latch edge, is folded into the machine below. This is the contract the
+slices build against.
 
 **The physical TX→RX loop is not buildable today and is not what the roadmap
 needs first.** The optical input is unsoldered, so no cable can close the loop.
@@ -572,62 +583,145 @@ What item 3 exists for — making the claims of items 1, 2 and 4 *measured*
 rather than believed — is observable one step earlier: the transmit ISR's
 `aius_spdif_tx24_fill()` is a verbatim copy of the ring's 24-bit words into
 `SPDIF_STL`/`SPDIF_STR`, so the words the producer commits **are** the words
-on the wire. A software tap at the producer measures everything from the
-decoder through the DSP to the last mutating stage. The physical loop stays as
-the *transport* validation (bit transparency, clock domains) when the input is
-soldered, and the tap seam is written so the physical capture can replace it
-without touching the analysis. An SPDIF-peripheral internal loopback (if the
-RT1062 even has one — unverified) is rejected for the same reason: it would
-re-measure the same words through an unproven peripheral mode.
+on the wire, and the tap sits after `aius_out_stage_run`, the last mutating
+stage. The physical loop stays as the *transport* validation (bit
+transparency, clock domains) when the input is soldered, and the tap seam is
+written so the physical capture can replace it without touching the analysis.
+An SPDIF-peripheral internal loopback (if the RT1062 even has one —
+unverified) is rejected for the same reason: it would re-measure the same
+words through an unproven peripheral mode. One property comes free and is
+worth stating: stimulus and capture share the sample grid, so the analysis is
+immune to physical clock error by construction — which also means it cannot
+see defect 11's class; the clock/content *ratio* surface remains the physical
+loop's job.
+
+**Stimulus — raw PCM replay, not the DTS vectors. The gate measured the DTS
+corpus and it cannot support the figures.** From the committed decode
+reference (`stereo_tones.ref.s32`, which the differential test proves the
+device reproduces): the FFmpeg `dca` encode has a **−78.7 dB THD+N floor of
+its own**, decodes at −22.5 dBFS (`volume=0.6` through the decoder's 1/8), and
+at 5,120 frames it **loops with a phase seam inside every 8,192-sample
+window** (440 Hz = 46.93 cycles per loop; the 0.93-cycle jump costs roughly
+−20 dB relative to the tone under Hann). Shipping against it would report
+≈−50 dB THD+N on a path whose claims run −93 to −140 dB. Instead: **the
+replay ring carries bare 16-bit IEC words, and a file with no IEC 61937
+preamble in its first 512 words classifies `AIUS_PIPELINE_PCM` and passes
+through bit-exactly at 24-bit scale** (`aius_pipeline.h:26-38`). PCM
+measurement vectors are therefore new `.iec` replay-corpus entries (note:
+replay plays `.iec` streams, not the `.dts` host-test files — the first draft
+conflated the two corpora), generated loop- and window-coherent at any level
+up to full scale. Two generator obligations, asserted at generation time
+rather than assumed of tone data: the first 512 words must be **verified**
+free of the IEC 61937 Pa/Pb preamble pair in either byte order (a tone
+sample stream can produce it by coincidence), and coherence is per *vector*,
+not per tone — 440 Hz alone is integer-periodic over multiples of 1,200
+samples, but an L 440 / R 660 two-tone vector is loop-coherent only at
+multiples of 2,400 (the lcm of 1,200 and 800). Resolvable floors, stated per figure: THD+N and SNR bottom out at the
+16-bit stimulus floor (≈−93…−96 dB); harmonics-only THD via Goertzel stays
+usable to ≈−95 dBc even on the DTS vectors once a seam-free vector exists
+(their codec residual is spectrally flat, harmonic content −99…−133 dBc);
+**the −140 dB inter-stage floor is not verifiable on-device by any 16-bit
+transport and stays host-proven.** The DTS vectors remain as a secondary
+whole-chain-as-played measurement, labelled as measuring the codec too.
+Limiter distortion needs its own hot vector *plus a config that opens the
+limiter* — at −22.5 dBFS it never engages; capture length and vector length
+are sized together against LR4 + limiter-release settle (the 16,384-frame
+capture leaves 171 ms of settle prefix before an 8,192 window, which is
+thin).
 
 **Tap.** Producer-side, in `AiusAudioProcessor::enqueue()` beside the tx24
 staging: while a capture is armed, the same stereo 24-bit frames committed to
-the ring are also copied into a `DMAMEM` capture buffer. Proposed 16,384
-frames × 2 ch × `int32` = **128 KiB of OCRAM** (~293 KiB free), 341 ms at
-48 kHz — room for an 8,192-sample analysis window after discarding a settle
-prefix. Concurrency copies the ring's own discipline: one writer (the audio
-software ISR), a free-running write cursor, an `armed` flag the epoch side
-sets and the ISR side retires at completion; the analysis reads only a
-completed, frozen buffer. Estimated ISR cost is a 4 KiB sequential copy per
-512-frame block (<0.1 % of the block budget) — measure it with the DWT
-bracket before accepting, and reject the design if it shows in `dsp_cycles_*`.
+the ring are also copied into a `DMAMEM` capture buffer: 16,384 frames × 2 ch
+× `int32` = **128 KiB of OCRAM** (~293 KiB free), 341 ms at 48 kHz, exactly
+32 blocks so a capture always retires on a block boundary. Known consequence,
+carried from item 1's delivery note rather than rediscovered at flash time:
+a new 128 KiB `DMAMEM` object **moves `g_aius_boot_slots` again**, so the
+retained ledger restarts `boot_generation` on the first flash — expected, not
+a regression. Control state (armed flag, cursor, latches) lives in **DTCM,
+not DMAMEM** — `.bss.dma` is NOLOAD and the boot ROM scribbles OCRAM at
+reset, which is precisely the ring's own documented hazard; the 128 KiB
+sample buffer itself needs no init for the ring's same reason. The capture
+**latches the config generation and the overrun counter at arm and retires to
+`failed` if either moved** — `enqueue()` applies a staged DSP model at any
+block boundary and an overrun drops 512 frames outright, and either splice
+inside a window is exactly the seam artifact the stimulus work just paid to
+remove. Estimated ISR cost: 4 KiB of stores through the write-back D-cache
+into OCRAM ≈ 4–8 k cycles, **0.06–0.13 %** of the block. Acceptance is a
+distribution comparison with meters ON (the DWT bracket only runs when
+`g_meters_active`), captures armed vs not, and the bound is that the armed
+`dsp_cycles_max` stays within the existing ~30 k block-to-block spread —
+a numeric gate, not "does it show".
 
-**Stimulus.** The replay path, looping a committed vector — it is already the
-signal generator, and a DTS-encoded stimulus deliberately measures the chain
-that actually plays (decoder included). `stereo_tones` (L 440 Hz / R 660 Hz)
-is the first vector; neither is bin-coherent over a power-of-two window, so
-the analysis is windowed by design rather than relying on coherent sampling.
-Dedicated measurement vectors (a per-channel single tone, a multitone for
-frequency-response points, a stepped sweep) are additions to the existing
-`dts_vectors` generator corpus, not a new mechanism.
+**Capture state machine — one writer per transition, specified before build.**
+The first draft's "epoch arms, ISR retires" hides a race: with no replay
+running `enqueue()` never executes, so only the epoch side can time out an
+armed capture, and an epoch-side cancel can collide with an ISR mid-block
+retire. Contract: `idle → armed` (epoch, with all parameters stored before
+the arm store, the ring's stage/commit rule); `armed → capturing → captured`
+(ISR only — `captured` is buffer-complete, not figures-published);
+`captured → analysing → done` (epoch, the sliced pass; `done` means the
+figures are published); `armed/capturing → cancelling` (epoch sets a cancel
+token only); `capturing → failed` (ISR, when the arm-time generation/overrun
+latch check fails at a block boundary — the retire the tap paragraph
+specifies); `cancelling → failed` (ISR acknowledges the token at its next
+block, or the epoch reclaims after a bounded number of epochs with `blocks`
+unchanged — the one case where the ISR is provably not running); `done/failed
+→ idle` (epoch). Analysis reads only `captured` buffers. One writer per
+transition **except the dual-terminal cancel edge**, which is benign by
+construction — both writers store the same terminal value, and the ISR
+cannot act again once the epoch moves `failed → idle` — and the native suite
+drives exactly that interleaving (ISR ack preempting between the epoch's
+check and its store) along with every other edge.
+
+**Pipeline reset at replay start — a prerequisite fix this phase absorbs.**
+The pipeline classifies once per boot and nothing on the target ever calls
+`aius_pipeline_reset()`: a DTS-first boot followed by a PCM replay hunts for
+an IEC preamble that never comes (zero blocks, a capture armed forever), and
+PCM-first followed by DTS plays framed bursts as noise. Replay start gets a
+defined reset point, executed in audio context, before any mixed-corpus
+measurement runs.
 
 **Analysis.** Runs only over the frozen buffer, sliced in epoch context — a
-bounded number of samples per epoch through one Goertzel bank, the same
-"bounded unit per epoch" shape the SD jobs use; no epoch computes more than
-its budget and the result publishes when the pass completes. Hann window;
-Goertzel at the fundamental and harmonics 2–10 → THD; windowed total power
-minus the fundamental's leakage bins → THD+N and SNR; per-tone amplitudes
-across the multitone vector → frequency-response points. Double precision
-throughout, host-to-target agreement proven the way the DSP already proves
-it. Native known-answer tests synthesize signals with known THD/SNR (a pure
-sine, a sine plus a −60 dB third harmonic, a sine in −80 dB noise) and assert
-the measured figures inside tolerance, with a negative control observed.
+declared **256 samples per epoch** through the accumulator set (~100–170 µs;
+a full 8,192 pass completes in ~32 epochs ≈ 50 ms at the measured epoch
+rate), hosted at the METRICS checkpoint, whose budget row gains
+`service_budget_ms = 1` (the field's granularity makes 1 ms the smallest
+expressible bound) and an overrun counter on the HTTP pattern — "no epoch
+computes more than its budget" must bind to a declared number, and today both
+candidate rows say 0. Methods, corrected by the gate: **THD+N and SNR come
+from an IEEE 1057-shape 3-parameter sine fit** at the known f0 — sin/cos/DC
+products accumulated across slices, fitted fundamental subtracted, residual
+power = noise+distortion — because "total power minus the fundamental's
+leakage bins" is FFT-grid vocabulary that Goertzel does not define, and Hann
+leakage outside any usable notch is ≈−40 dB: the first draft would have
+printed window leakage as THD+N. **SNR additionally excludes harmonics 2–10;
+THD+N does not — the two are different numbers by definition.** Goertzel
+keeps the jobs it is right for: harmonic amplitudes (THD) and multitone
+frequency-response points, where ≥75-bin separations put Hann leakage below
+−120 dB (440 Hz at N = 8,192 is 75.09 bins from DC, and the negative-
+frequency image is below −130 dB). Any per-bin noise normalization states
+Hann's ENBW (1.5 bins). Double precision throughout, host-to-target
+agreement proven the way the DSP already proves it. Native known-answer
+tests synthesize signals with known figures (a pure sine, a sine plus a
+−60 dB third harmonic, a sine in −80 dB noise) and assert inside tolerance,
+with a negative control observed — and the pure-sine case is the canary that
+would have caught the leakage error, so its tolerance is never widened to
+pass.
 
 **Surface.** `POST /api/measure/start` (auth-gated — it arms a capture and is
-mutating) and `GET /api/measure` (public read: `idle | armed | capturing |
-analysing | done | failed`, plus the figures and the vector id they were
-measured against). Swagger and the contract suite move in the same commit, per
-the roadmap preamble. [`signal-path.md`](../reference/signal-path.md) gains
-the measured figures in the commit that ships the measurement — that document
-is the reason this item exists.
+mutating; joins `route_is_control()` or carries an in-arm gate like
+`dispatch_replays`) and `GET /api/measure` (public read: the state machine
+above plus the figures, each with its resolvable floor, and the vector id
+they were measured against). Swagger and the contract suite move in the same
+commit, per the roadmap preamble. [`signal-path.md`](../reference/signal-path.md)
+gains the measured figures in the commit that ships the measurement — that
+document is the reason this item exists.
 
-**Open for the prebuild gate:** whether the analysis lives in `lib/aius_dsp`
-or a new `lib/aius_measure` (deletion test says a separate lib is only
-justified if the capture/analysis pair is reused — the sample-rate-following
-plan's monitor is the plausible second consumer); which checkpoint hosts the
-sliced analysis (REPLAY beside `replay_clock_service()`, or METRICS); and the
-capture length against the settle time the LR4 crossover and limiter release
-actually need.
+**Settled by the gate:** the analysis lives beside `lib/aius_dsp` (seam
+arity: one consumer today; the sample-rate-following monitor is hypothetical
+until it exists); METRICS hosts the slicing; tap placement, sample-domain
+clock immunity, 440 Hz resolution at N = 8,192, and the surface's auth
+pattern all hold as drafted.
 
 ### Noted for later, deliberately not scheduled
 
