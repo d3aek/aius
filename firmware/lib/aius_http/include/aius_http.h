@@ -97,12 +97,16 @@ AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	                               AiusHttpRequest *request);
 
 const char *aius_http_reason(unsigned status);
+/* cache_max_age_s nonzero appends "Cache-Control: max-age=<n>"; zero emits
+ * no caching header at all (the pre-existing header set, byte-identical). */
 size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 	                           unsigned status, const char *content_type,
-	                           uint64_t content_length);
+	                           uint64_t content_length,
+	                           uint32_t cache_max_age_s);
 size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              unsigned status, const char *content_type,
-	                              const uint8_t *body, size_t body_length);
+	                              const uint8_t *body, size_t body_length,
+	                              uint32_t cache_max_age_s);
 
 #ifdef __cplusplus
 }

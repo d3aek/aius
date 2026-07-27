@@ -479,21 +479,51 @@ static void test_framing(void)
 
 static void test_response_headers(void)
 {
-	uint8_t headers[192];
+	uint8_t headers[224];
 	size_t length = aius_http_write_headers(headers, sizeof(headers), 416,
 	                                        "application/octet-stream",
-	                                        UINT64_MAX);
+	                                        UINT64_MAX, 0u);
 	assert(length != 0);
 	headers[length] = 0;
+	/* Zero max-age is BYTE-IDENTICAL to the pre-cache header set: no
+	 * Cache-Control line at all, not max-age=0. */
 	assert(strcmp((const char *)headers,
 	              "HTTP/1.0 416 Range Not Satisfiable\r\n"
 	              "Content-Type: application/octet-stream\r\n"
 	              "Content-Length: 18446744073709551615\r\n"
 	              "Connection: close\r\n\r\n") == 0);
-	assert(aius_http_write_headers(NULL, sizeof(headers), 200, "text/plain", 0) == 0);
-	assert(aius_http_write_headers(headers, sizeof(headers), 418, "text/plain", 0) == 0);
-	assert(aius_http_write_headers(headers, sizeof(headers), 200, "", 0) == 0);
-	assert(aius_http_write_headers(headers, 1, 200, "text/plain", 0) == 0);
+	assert(aius_http_write_headers(NULL, sizeof(headers), 200, "text/plain", 0, 0u) == 0);
+	assert(aius_http_write_headers(headers, sizeof(headers), 418, "text/plain", 0, 0u) == 0);
+	assert(aius_http_write_headers(headers, sizeof(headers), 200, "", 0, 0u) == 0);
+	assert(aius_http_write_headers(headers, 1, 200, "text/plain", 0, 0u) == 0);
+}
+
+static void test_response_headers_cache(void)
+{
+	uint8_t headers[224];
+	/* The one value the dispatcher ships. */
+	size_t length = aius_http_write_headers(headers, sizeof(headers), 200,
+	                                        "text/css", 1234, 86400u);
+	assert(length != 0);
+	headers[length] = 0;
+	assert(strcmp((const char *)headers,
+	              "HTTP/1.0 200 OK\r\n"
+	              "Content-Type: text/css\r\n"
+	              "Content-Length: 1234\r\n"
+	              "Cache-Control: max-age=86400\r\n"
+	              "Connection: close\r\n\r\n") == 0);
+	/* The joint worst case still fits: UINT64_MAX length, UINT32_MAX
+	 * max-age, longest reason line the writer serves for octet-stream. */
+	length = aius_http_write_headers(headers, sizeof(headers), 416,
+	                                 "application/octet-stream",
+	                                 UINT64_MAX, UINT32_MAX);
+	assert(length != 0);
+	headers[length] = 0;
+	assert(strstr((const char *)headers,
+	              "Cache-Control: max-age=4294967295\r\n") != NULL);
+	assert(strstr((const char *)headers, "Connection: close\r\n\r\n") != NULL);
+	/* And the capacity refusal still refuses. */
+	assert(aius_http_write_headers(headers, 1, 200, "text/css", 0, 86400u) == 0);
 }
 
 static void test_parser_result_registry(void)
@@ -556,6 +586,7 @@ int main(void)
 	test_replay_routes();
 	test_framing();
 	test_response_headers();
+	test_response_headers_cache();
 	test_parser_result_registry();
 	parse_ok("GET / HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_HOME);
 	parse_ok("GET /api/sd HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_SD_STATUS);
@@ -601,11 +632,12 @@ int main(void)
 	uint8_t response[128];
 	static const uint8_t body[] = "{}";
 	size_t response_length = aius_http_write_response(response, sizeof(response), 200,
-	                                                 "application/json", body, 2);
+	                                                 "application/json", body, 2, 0u);
 	assert(response_length != 0);
 	response[response_length] = 0;
 	assert(strstr((const char *)response, "Connection: close") != NULL);
-	assert(aius_http_write_response(response, 10, 200, "application/json", body, 2) == 0);
+	assert(strstr((const char *)response, "Cache-Control") == NULL);
+	assert(aius_http_write_response(response, 10, 200, "application/json", body, 2, 0u) == 0);
 	puts("ok http parser");
 	return 0;
 }

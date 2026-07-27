@@ -56,6 +56,11 @@ typedef struct {
 	const uint8_t *body;
 	size_t body_length;
 	AiusSdJobRequest sd_job;
+	/* Nonzero emits "Cache-Control: max-age=<n>" on the SUCCESS response
+	 * (immediate, streamed, or download headers). Error substitutions the
+	 * transaction formats itself never carry it. The value is dispatcher-
+	 * authored, never wire input. */
+	uint32_t cache_max_age_s;
 } AiusHttpApplicationResponse;
 
 typedef enum {
@@ -169,6 +174,9 @@ typedef struct {
 	uint64_t download_sent;
 	size_t download_length;
 	size_t download_offset;
+	/* Latched from the accepted application response; consumed by the
+	 * deferred download header write. Reset per request. */
+	uint32_t cache_max_age_s;
 	uint32_t deadline_ms;
 	uint64_t next_action_id;
 	uint64_t outstanding_action_id;

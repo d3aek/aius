@@ -739,13 +739,21 @@ static void test_sd_media_and_paths(void)
 		"GET /sd/www/%2e%2e/x",
 		"GET /sd/www/sub/../../x"
 	};
-	static const struct { const char *line; const char *type; } accepted[] = {
-		{ "GET /sd/www/index.html", "text/html; charset=utf-8" },
-		{ "GET /sd/www/app.js", "application/javascript" },
-		{ "GET /sd/www/app.css", "text/css" },
-		{ "GET /sd/www/model.json", "application/json" },
-		{ "GET /sd/www/logo.png", "application/octet-stream" },
-		{ "GET /sd/www/a/b/c/d.bin", "application/octet-stream" }
+	/* max_age pins the dispatcher's caching policy per suffix: day-long for
+	 * the two stable asset kinds (.js/.css), zero for everything else --
+	 * html so a card sync propagates, json because it is live data, binary
+	 * because it covers presets and replay vectors. */
+	static const struct {
+		const char *line;
+		const char *type;
+		uint32_t max_age;
+	} accepted[] = {
+		{ "GET /sd/www/index.html", "text/html; charset=utf-8", 0u },
+		{ "GET /sd/www/app.js", "application/javascript", 86400u },
+		{ "GET /sd/www/app.css", "text/css", 86400u },
+		{ "GET /sd/www/model.json", "application/json", 0u },
+		{ "GET /sd/www/logo.png", "application/octet-stream", 0u },
+		{ "GET /sd/www/a/b/c/d.bin", "application/octet-stream", 0u }
 	};
 	fixture_init(&fixture);
 
@@ -772,6 +780,7 @@ static void test_sd_media_and_paths(void)
 		assert(response->sd_job.backup_path == NULL);
 		assert(!response->sd_job.publish);
 		assert(!response->sd_job.require_existing);
+		assert(response->cache_max_age_s == accepted[i].max_age);
 	}
 
 	{
@@ -787,6 +796,8 @@ static void test_sd_media_and_paths(void)
 		assert(response->sd_job.kind == AIUS_SD_JOB_DOWNLOAD);
 		assert(strcmp(response->sd_job.target_path,
 		              "/aius/replays/take1.iec") == 0);
+		/* Replay vectors are re-listed and re-fetched by id; never cached. */
+		assert(response->cache_max_age_s == 0u);
 	}
 
 	/* The /aius/<name> builder the config routes now share, at its limit: the

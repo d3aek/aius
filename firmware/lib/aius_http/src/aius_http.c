@@ -468,16 +468,34 @@ static FLASHMEM int valid_content_type(const char *content_type)
 
 FLASHMEM size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 	                           unsigned status, const char *content_type,
-	                           uint64_t content_length)
+	                           uint64_t content_length,
+	                           uint32_t cache_max_age_s)
 {
-	char header[192];
+	/* 224: the 192 the pre-cache header set fit with margin, plus the 32-byte
+	 * worst case of "Cache-Control: max-age=4294967295\r\n". */
+	char header[224];
+	char cache[40];
 	const char *reason = aius_http_reason(status);
 	int header_length;
 	if (output == NULL || reason == NULL || !valid_content_type(content_type))
 		return 0;
+	/* Zero means BYTE-IDENTICAL headers to the pre-cache firmware, not
+	 * "max-age=0": an explicit no-cache directive would change every API
+	 * response on the wire, and absence already means uncacheable here (no
+	 * validator, no freshness info anywhere else in the set). */
+	if (cache_max_age_s != 0u) {
+		int cache_length = snprintf(cache, sizeof(cache),
+			"Cache-Control: max-age=%lu\r\n",
+			(unsigned long)cache_max_age_s);
+		if (cache_length < 0 || (size_t)cache_length >= sizeof(cache))
+			return 0;
+	} else {
+		cache[0] = '\0';
+	}
 	header_length = snprintf(header, sizeof(header),
-		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nConnection: close\r\n\r\n",
-		status, reason, content_type, (unsigned long long)content_length);
+		"HTTP/1.0 %u %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\n%sConnection: close\r\n\r\n",
+		status, reason, content_type, (unsigned long long)content_length,
+		cache);
 	if (header_length < 0 || (size_t)header_length >= sizeof(header) ||
 	    (size_t)header_length > capacity)
 		return 0;
@@ -487,15 +505,17 @@ FLASHMEM size_t aius_http_write_headers(uint8_t *output, size_t capacity,
 
 FLASHMEM size_t aius_http_write_response(uint8_t *output, size_t capacity,
 	                              unsigned status, const char *content_type,
-	                              const uint8_t *body, size_t body_length)
+	                              const uint8_t *body, size_t body_length,
+	                              uint32_t cache_max_age_s)
 {
-	uint8_t header[192];
+	uint8_t header[224];
 	size_t header_length;
 	if (output == NULL || (body_length != 0u && body == NULL) ||
 	    body_length > AIUS_HTTP_MAX_RESPONSE)
 		return 0;
 	header_length = aius_http_write_headers(header, sizeof(header), status,
-	                                        content_type, (uint64_t)body_length);
+	                                        content_type, (uint64_t)body_length,
+	                                        cache_max_age_s);
 	if (header_length == 0u || body_length > capacity ||
 	    header_length > capacity - body_length)
 		return 0;

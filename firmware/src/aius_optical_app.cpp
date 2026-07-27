@@ -176,6 +176,22 @@ static FLASHMEM const char *resource_content_type(const AiusHttpRequest *request
 	return kContentBinary;
 }
 
+/* Day-long browser caching for the two stable static-asset suffixes, and ONLY
+ * those. HTML stays uncached so a card sync propagates page changes on the
+ * next load; .json is live data (config.json above all); binary covers the
+ * presets and replay vectors, which the pages re-list after every save --
+ * caching any of those trades correctness for nothing. The operator pays one
+ * hard refresh after an asset deploy, accepted 2026-07-27. */
+#define AIUS_OPTICAL_APP_ASSET_MAX_AGE_S 86400u
+
+static FLASHMEM uint32_t resource_cache_max_age(const AiusHttpRequest *request)
+{
+	if (resource_suffix_is(request, ".js") ||
+	    resource_suffix_is(request, ".css"))
+		return AIUS_OPTICAL_APP_ASSET_MAX_AGE_S;
+	return 0u;
+}
+
 /* Rejects traversal, percent-encoding, backslashes, empty or over-long path
  * components, and anything outside the /aius/www/ subtree -- the same rules the
  * pre-cutover http_sd_path() enforces. Takes the resource slice rather than the
@@ -593,13 +609,15 @@ static FLASHMEM AiusHttpApplicationResponse *sd_job_response(
 }
 
 static FLASHMEM const AiusHttpApplicationResponse *sd_download(
-	AiusOpticalAppDispatcher *dispatcher, const char *content_type)
+	AiusOpticalAppDispatcher *dispatcher, const char *content_type,
+	uint32_t cache_max_age_s)
 {
 	AiusHttpApplicationResponse *response =
 		sd_job_response(dispatcher, 200, content_type, NULL, 0u);
 	response->sd_job.kind = AIUS_SD_JOB_DOWNLOAD;
 	response->sd_job.target_path = dispatcher->target_path;
 	response->sd_job.content_type = content_type;
+	response->cache_max_age_s = cache_max_age_s;
 	return response;
 }
 
@@ -894,6 +912,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 {
 	const AiusOpticalApp *app = &dispatcher->app;
 	const char *content_type;
+	uint32_t cache_max_age_s = 0u;
 	/* A resource naming a directory is a listing on GET and nothing else on any
 	 * other method -- it is not an upload target and not a delete target. */
 	if (request->route == AIUS_HTTP_ROUTE_SD_FILE &&
@@ -922,6 +941,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 		                     request->resource_length))
 			return http_error(dispatcher, 404, "sd_path");
 		content_type = resource_content_type(request);
+		cache_max_age_s = resource_cache_max_age(request);
 	}
 	if (request->method != AIUS_HTTP_GET && resource_is_config(request))
 		return http_error(dispatcher, 403, "config_public_only");
@@ -932,7 +952,7 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 	if (app->sd_busy(app->context))
 		return http_error(dispatcher, 503, "sd_busy");
 	if (request->method == AIUS_HTTP_GET)
-		return sd_download(dispatcher, content_type);
+		return sd_download(dispatcher, content_type, cache_max_age_s);
 	if (request->method == AIUS_HTTP_DELETE)
 		return sd_delete(dispatcher);
 	return http_error(dispatcher, 405, "sd_method");

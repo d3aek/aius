@@ -1556,7 +1556,7 @@ static void test_immediate_stream_body(void)
 		assert(header_length ==
 		       aius_http_write_headers(sizing, sizeof(sizing), 200,
 		                               "application/json",
-		                               sizeof(model)));
+		                               sizeof(model), 0u));
 		assert(header_length < AIUS_HTTP_TX_QUOTA);
 		assert(action.data == fixture.response);
 		assert(action.length == header_length);
@@ -1613,7 +1613,7 @@ static void test_immediate_stream_body(void)
 	while (boundary < sizeof(model) &&
 	       aius_http_write_response(sizing, sizeof(sizing), 200,
 	                                "application/json", model,
-	                                boundary + 1u) != 0u)
+	                                boundary + 1u, 0u) != 0u)
 		boundary++;
 	assert(boundary != 0);
 	assert(boundary + 1u < AIUS_HTTP_MAX_RESPONSE);
@@ -1626,10 +1626,10 @@ static void test_immediate_stream_body(void)
 		bool copy_fits = aius_http_write_response(
 					 sizing, sizeof(sizing), 200,
 					 "application/json", model,
-					 lengths[i]) != 0u;
+					 lengths[i], 0u) != 0u;
 		size_t header_length = aius_http_write_headers(
 			sizing, sizeof(sizing), 200, "application/json",
-			lengths[i]);
+			lengths[i], 0u);
 		assert(header_length != 0);
 		Fixture fixture;
 		init_fixture(&fixture);
@@ -1768,6 +1768,104 @@ static void test_zero_download(void)
 	finish_close(&fixture, action);
 }
 
+static void test_download_cache_control(void)
+{
+	/* An accepted download response carrying cache_max_age_s emits the
+	 * Cache-Control line in BOTH deferred header writes (data-led and the
+	 * zero-length COMPLETE), an immediate response carries it inline, and
+	 * an SD-failure substitution on the same transaction never does --
+	 * error responses are uncacheable whatever the route asked for. */
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/www/app.css HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			sd_job(AIUS_SD_JOB_DOWNLOAD, 200, "text/css", NULL, 0, 0);
+		response.cache_max_age_s = 86400u;
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_SD_START);
+		assert(fixture.transaction.cache_max_age_s == 86400u);
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		assert(action.kind == AIUS_HTTP_ACTION_SD_STEP);
+		static const uint8_t chunk[] = "body{}";
+		AiusHttpEvent data =
+			sd_result(&action, AIUS_HTTP_SD_DOWNLOAD_DATA);
+		data.sd_data = chunk;
+		data.sd_length = sizeof(chunk) - 1u;
+		data.sd_size = sizeof(chunk) - 1u;
+		action = call_step(&fixture, 0, data);
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(contains_bytes(action.data, action.length,
+		                      "Cache-Control: max-age=86400"));
+		assert(contains_bytes(action.data, action.length,
+		                      "Connection: close"));
+	}
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/www/app.css HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			sd_job(AIUS_SD_JOB_DOWNLOAD, 200, "text/css", NULL, 0, 0);
+		response.cache_max_age_s = 86400u;
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		AiusHttpEvent complete =
+			sd_result(&action, AIUS_HTTP_SD_COMPLETE);
+		complete.sd_size = 0;
+		action = call_step(&fixture, 0, complete);
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(contains_bytes(action.data, action.length,
+		                      "Content-Length: 0"));
+		assert(contains_bytes(action.data, action.length,
+		                      "Cache-Control: max-age=86400"));
+	}
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /sd/www/app.css HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			sd_job(AIUS_SD_JOB_DOWNLOAD, 200, "text/css", NULL, 0, 0);
+		response.cache_max_age_s = 86400u;
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		AiusHttpEvent started = sd_result(&action, AIUS_HTTP_SD_STARTED);
+		started.sd_capacity = 8;
+		action = call_step(&fixture, 0, started);
+		AiusHttpEvent failed = sd_result(&action, AIUS_HTTP_SD_FAILED);
+		failed.sd_fault = AIUS_SD_FAULT_NOT_FOUND;
+		action = call_step(&fixture, 0, failed);
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(contains_bytes(action.data, action.length, "404"));
+		assert(!contains_bytes(action.data, action.length,
+		                       "Cache-Control"));
+	}
+	{
+		Fixture fixture;
+		init_fixture(&fixture);
+		static const uint8_t body[] = "{}";
+		AiusHttpAction action = feed_request(
+			&fixture, "GET /api/dsp/config HTTP/1.0\r\n\r\n");
+		AiusHttpApplicationResponse response =
+			immediate(200, "application/json", body,
+			          sizeof(body) - 1u);
+		response.cache_max_age_s = 5u;
+		action = call_step(&fixture, 0,
+		                   application_result(&action, &response));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(contains_bytes(action.data, action.length,
+		                      "Cache-Control: max-age=5"));
+	}
+}
+
 static void test_download_peer_fault_release_close_cancel_drain(void)
 {
 	Fixture fixture;
@@ -1865,7 +1963,7 @@ static void test_sd_failure_mapping(void)
 			size_t expected_length = aius_http_write_response(
 				expected, sizeof(expected), 404,
 				"application/json", not_found_body,
-				sizeof(not_found_body) - 1u);
+				sizeof(not_found_body) - 1u, 0u);
 			assert(expected_length > 0);
 			assert(fixture.transaction.response_length ==
 			       expected_length);
@@ -2375,15 +2473,15 @@ static void test_all_application_statuses_and_field_edges(void)
 	size_t fallback_length =
 		aius_http_write_response(sizing, sizeof(sizing), 500,
 		                         "application/json", fallback_body,
-		                         sizeof(fallback_body) - 1u);
+		                         sizeof(fallback_body) - 1u, 0u);
 	size_t primary_length =
 		aius_http_write_response(sizing, sizeof(sizing), 200,
 		                         "application/octet-stream", large,
-		                         sizeof(large));
+		                         sizeof(large), 0u);
 	size_t header_length =
 		aius_http_write_headers(sizing, sizeof(sizing), 200,
 		                        "application/octet-stream",
-		                        sizeof(large));
+		                        sizeof(large), 0u);
 	assert(fallback_length > 1);
 	assert(primary_length > fallback_length + 1u);
 	assert(header_length > 1);
@@ -2995,7 +3093,7 @@ static void test_fixed_response_capacity_registry(void)
 		size_t fit = aius_http_write_response(
 			expected, sizeof(expected), test_case->status,
 			"application/json",
-			(const uint8_t *)test_case->body, body_length);
+			(const uint8_t *)test_case->body, body_length, 0u);
 		assert(fit > 1);
 		assert(fit < sizeof(expected));
 		for (size_t variant = 0;
@@ -4360,6 +4458,7 @@ int main(void)
 		{ "download.chunk-stability-ack",
 		  test_download_stable_chunks_and_ack },
 		{ "download.zero", test_zero_download },
+		{ "download.cache-control", test_download_cache_control },
 		{ "download.peer-fail-release-drain",
 		  test_download_peer_fault_release_close_cancel_drain },
 		{ "sd.failure-map", test_sd_failure_mapping },
@@ -4388,7 +4487,7 @@ int main(void)
 		{ "receive.large-body-chunk-boundaries",
 		  test_receive_large_body_chunk_boundaries },
 	};
-	assert(ARRAY_LENGTH(registry) == 38);
+	assert(ARRAY_LENGTH(registry) == 39);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)
