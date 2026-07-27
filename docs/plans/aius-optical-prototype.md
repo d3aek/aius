@@ -383,10 +383,22 @@ clients share one contract artifact.
   centre-tap capacitor.
 - USB connection retained as a bring-up/programming fallback, but not required
   during source/sink validation.
-- The optional 8 MB Teensy PSRAM is deliberately not used for the real-time
-  optical path. Internal RAM is sufficient for audio blocks, decoder state,
-  Ethernet buffers, and bounded telemetry; PSRAM is reserved for a later
-  diagnostic capture feature if required.
+- The optional Teensy PSRAM (16 MB as two chips, not yet soldered) is
+  deliberately not used for the real-time optical path. Internal RAM is
+  sufficient for audio blocks, decoder state, Ethernet buffers, and bounded
+  telemetry; PSRAM is reserved for a later diagnostic capture feature if
+  required.
+  **Considered and declined (2026-07-27): PSRAM as the home for www assets
+  and DSP presets.** PSRAM is volatile, so the SD card stays the system of
+  record for both regardless; the only defensible variant is a boot-built
+  read cache for `/sd/www/` assets, which buys page loads immune to
+  `503 sd_busy` during replay refill at the cost of a coherence layer
+  (upload invalidation) and a second "which tree is truth" question the
+  storage design deliberately avoids. Reopen only if `sd_busy` page
+  unavailability during replay proves to be a real operator pain on the
+  bench. The strong PSRAM use case remains long diagnostic capture: the
+  item 3 window is 16,384 frames because it lives in 128 KiB of `DMAMEM`;
+  16 MB holds ~40 s of 24-bit stereo and needs no persistence.
 
 ### Deliberately excluded
 
