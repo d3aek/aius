@@ -11,7 +11,7 @@
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, tx-gate, boot, boot-target, fault-target,
+#         usb-control, replay, tx-gate, recorder, boot, boot-target, fault-target,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry.
@@ -398,6 +398,19 @@ tx-gate)
 		"$fw_root/test/tx-gate/test_tx_gate.c" \
 		-o "$tx_gate_out"
 	"$tx_gate_out"
+	;;
+recorder)
+	# The flight recorder's portable core (state machine, triggers, staging
+	# drain, chunk arithmetic; -lm for the one cold powf in set_config), plus
+	# the contract's firmware-wide extmem-heap ban as a source guard.
+	recorder_out="$build_dir/recorder"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_recorder/include" \
+		"-I$fw_root/lib/aius_codec_api/include" \
+		"$fw_root/test/recorder/test_recorder.c" \
+		"$fw_root/lib/aius_recorder/src/aius_recorder.c" \
+		-lm -o "$recorder_out"
+	"$recorder_out"
+	python3 "$fw_root/test/recorder/test_no_extmem_heap.py" "$fw_root"
 	;;
 boot)
 	boot_out="$build_dir/boot"
