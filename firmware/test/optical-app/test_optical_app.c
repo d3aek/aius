@@ -75,6 +75,20 @@ typedef struct {
 	uint32_t last_measure_f0_r;
 	uint32_t last_measure_probes[AIUS_OPTICAL_APP_MEASURE_PROBES_MAX];
 	size_t last_measure_probe_count;
+
+	/* Recorder: whether the state machine accepts, what config arrived,
+	 * what read window was asked for, and the bytes a read serves. */
+	bool recorder_accept;
+	AiusOpticalAppRecorderReadResult recorder_read_result;
+	uint32_t last_recorder_mask;
+	float last_recorder_gr_db;
+	uint32_t last_recorder_hold;
+	uint32_t last_recorder_postroll;
+	uint32_t last_recorder_offset;
+	uint32_t last_recorder_length;
+	uint32_t last_recorder_generation;
+	uint8_t recorder_data[16];
+	uint32_t recorder_data_length;
 } Fake;
 
 typedef struct {
@@ -318,6 +332,54 @@ static bool fake_measure_start(void *context, const char *vector_id,
 	return fake->measure_start_result;
 }
 
+static size_t fake_write_recorder(void *context, uint8_t *body, size_t capacity)
+{
+	return fake_serialize((Fake *)context, "recorder", body, capacity);
+}
+
+static bool fake_recorder_freeze(void *context)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "recorder_freeze");
+	return fake->recorder_accept;
+}
+
+static bool fake_recorder_thaw(void *context)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "recorder_thaw");
+	return fake->recorder_accept;
+}
+
+static bool fake_recorder_config(void *context, uint32_t mask,
+                                 float gr_threshold_db, uint32_t gr_hold_blocks,
+                                 uint32_t postroll_blocks)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "recorder_config");
+	fake->last_recorder_mask = mask;
+	fake->last_recorder_gr_db = gr_threshold_db;
+	fake->last_recorder_hold = gr_hold_blocks;
+	fake->last_recorder_postroll = postroll_blocks;
+	return fake->recorder_accept;
+}
+
+static AiusOpticalAppRecorderReadResult fake_recorder_read(
+	void *context, uint32_t offset_bytes, uint32_t length_bytes,
+	uint32_t generation, const uint8_t **data, uint32_t *length)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "recorder_read");
+	fake->last_recorder_offset = offset_bytes;
+	fake->last_recorder_length = length_bytes;
+	fake->last_recorder_generation = generation;
+	if (fake->recorder_read_result == AIUS_OPTICAL_APP_RECORDER_READ_OK) {
+		*data = fake->recorder_data;
+		*length = fake->recorder_data_length;
+	}
+	return fake->recorder_read_result;
+}
+
 static AiusOpticalApp fake_app(Fake *fake)
 {
 	AiusOpticalApp app;
@@ -346,6 +408,11 @@ static AiusOpticalApp fake_app(Fake *fake)
 	app.upload_id = fake_upload_id;
 	app.write_measure = fake_write_measure;
 	app.measure_start = fake_measure_start;
+	app.write_recorder = fake_write_recorder;
+	app.recorder_freeze = fake_recorder_freeze;
+	app.recorder_thaw = fake_recorder_thaw;
+	app.recorder_config = fake_recorder_config;
+	app.recorder_read = fake_recorder_read;
 	return app;
 }
 
@@ -367,6 +434,10 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.measure_start_result = true;
+	fixture->fake.recorder_accept = true;
+	fixture->fake.recorder_read_result = AIUS_OPTICAL_APP_RECORDER_READ_OK;
+	memcpy(fixture->fake.recorder_data, "0123456789abcdef", 16u);
+	fixture->fake.recorder_data_length = 16u;
 	fixture->fake.dir_result = AIUS_OPTICAL_APP_DIR_OK;
 	fixture->fake.upload_id = 0x1234abcdu;
 	snprintf(fixture->fake.usb_payload, sizeof(fixture->fake.usb_payload),
@@ -544,7 +615,7 @@ static void test_init_validation(void)
 
 	/* Every callback is required; a hole must be refused at init, never
 	 * discovered as a null call during dispatch. */
-	for (size_t i = 0; i < 22u; ++i) {
+	for (size_t i = 0; i < 27u; ++i) {
 		AiusOpticalApp holed = fake_app(&fake);
 		void **slots[] = {
 			(void **)&holed.sd_ready, (void **)&holed.sd_busy,
@@ -559,9 +630,11 @@ static void test_init_validation(void)
 			(void **)&holed.set_test_running, (void **)&holed.clear_counters,
 			(void **)&holed.request_reboot, (void **)&holed.write_usb_payload,
 			(void **)&holed.upload_id, (void **)&holed.write_measure,
-			(void **)&holed.measure_start
+			(void **)&holed.measure_start, (void **)&holed.write_recorder,
+			(void **)&holed.recorder_freeze, (void **)&holed.recorder_thaw,
+			(void **)&holed.recorder_config, (void **)&holed.recorder_read
 		};
-		assert(ARRAY_LENGTH(slots) == 22u);
+		assert(ARRAY_LENGTH(slots) == 27u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_init(&dispatcher, &holed, body, sizeof(body)));
 		assert(aius_optical_app_http_dispatch(&dispatcher, &request) == NULL);
@@ -2012,6 +2085,146 @@ static void test_unreachable_method_defaults(void)
 
 /* Every route the parser can produce reaches a dispatch decision -- no route
  * falls through without a status. */
+/* The recorder surface: the all-routes token gate (GETs included -- the data
+ * read carries recorded audio and the header reveals trigger state), the
+ * status serializer, the 200/409 state mappings, the config body's
+ * all-keys-required strictness, and the data read's three-way result. */
+static void test_recorder_routes(void)
+{
+	Fixture fixture;
+	static const char *const auth = "X-Aius-SD-Auth: token\r\n";
+	static const char *const good_config =
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"gr_threshold_db\":-6.5,"
+		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}";
+	static const struct { const char *line; const char *body; } gated[] = {
+		{ "GET /api/recorder", NULL },
+		{ "POST /api/recorder/freeze", NULL },
+		{ "POST /api/recorder/thaw", NULL },
+		{ "GET /api/recorder/data?offset=0&length=8&generation=0", NULL },
+		{ "PUT /api/recorder/config",
+		  "{\"overrun\":true,\"underrun\":true,\"carrier_loss\":true,"
+		  "\"limiter_gr\":false,\"gr_threshold_db\":0,"
+		  "\"gr_hold_blocks\":1,\"postroll_blocks\":188}" }
+	};
+	/* Refused shapes: a missing key, a duplicate, an unknown key, a
+	 * positive threshold, an exponent-carrying number, and trailing
+	 * bytes. */
+	static const char *const bad_bodies[] = {
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"gr_threshold_db\":-6.5,"
+		"\"gr_hold_blocks\":3}",
+		"{\"overrun\":true,\"overrun\":true,\"underrun\":false,"
+		"\"carrier_loss\":true,\"limiter_gr\":true,"
+		"\"gr_threshold_db\":-6.5,\"gr_hold_blocks\":3,"
+		"\"postroll_blocks\":0}",
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"gr_threshold_db\":-6.5,"
+		"\"gr_hold_blocks\":3,\"postroll_blocks\":0,\"extra\":1}",
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"gr_threshold_db\":6.5,"
+		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}",
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"gr_threshold_db\":-1e2,"
+		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}",
+		"{\"overrun\":true,\"underrun\":false,\"carrier_loss\":true,"
+		"\"limiter_gr\":true,\"gr_threshold_db\":-6.5,"
+		"\"gr_hold_blocks\":3,\"postroll_blocks\":0}x"
+	};
+	fixture_init(&fixture);
+
+	for (size_t i = 0; i < ARRAY_LENGTH(gated); ++i) {
+		expect_immediate(dispatch_request(&fixture, gated[i].line, NULL,
+		                                  gated[i].body, -1),
+		                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+		expect_immediate(dispatch_request(&fixture, gated[i].line,
+		                                  "X-Aius-SD-Auth: wrong\r\n",
+		                                  gated[i].body, -1),
+		                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+	}
+	/* No refusal reached a callback. */
+	assert(fixture.fake.last_recorder_mask == 0u);
+
+	expect_immediate(dispatch_request(&fixture, "GET /api/recorder", auth,
+	                                  NULL, -1),
+	                 200, "{\"body\":\"recorder\"}");
+	expect_immediate(dispatch_request(&fixture, "POST /api/recorder/freeze",
+	                                  auth, NULL, -1),
+	                 200, "{\"ok\":true,\"state\":\"freezing\"}");
+	expect_immediate(dispatch_request(&fixture, "POST /api/recorder/thaw",
+	                                  auth, NULL, -1),
+	                 200, "{\"ok\":true,\"state\":\"recording\"}");
+	fixture.fake.recorder_accept = false;
+	expect_immediate(dispatch_request(&fixture, "POST /api/recorder/freeze",
+	                                  auth, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"recorder_state\"}");
+	expect_immediate(dispatch_request(&fixture, "POST /api/recorder/thaw",
+	                                  auth, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"recorder_state\"}");
+	expect_immediate(dispatch_request(&fixture, "PUT /api/recorder/config",
+	                                  auth, good_config, -1),
+	                 409, "{\"ok\":false,\"error\":\"recorder_state\"}");
+	fixture.fake.recorder_accept = true;
+
+	/* A good config passes every parsed value through: mask bits from the
+	 * four booleans, the dB as scanned, hold and post-roll verbatim
+	 * (post-roll 0 is legal: freeze at the trigger boundary). */
+	expect_immediate(dispatch_request(&fixture, "PUT /api/recorder/config",
+	                                  auth, good_config, -1),
+	                 200, "{\"ok\":true}");
+	assert(fixture.fake.last_recorder_mask ==
+	       (AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN |
+	        AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS |
+	        AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR));
+	assert(fixture.fake.last_recorder_gr_db == -6.5f);
+	assert(fixture.fake.last_recorder_hold == 3u);
+	assert(fixture.fake.last_recorder_postroll == 0u);
+
+	for (size_t i = 0; i < ARRAY_LENGTH(bad_bodies); ++i) {
+		fixture.fake.last_recorder_mask = 0xffffffffu;
+		expect_immediate(dispatch_request(&fixture,
+		                                  "PUT /api/recorder/config", auth,
+		                                  bad_bodies[i], -1),
+		                 400, "{\"ok\":false,\"error\":\"recorder_body\"}");
+		/* The parse refused before the callback ran. */
+		assert(fixture.fake.last_recorder_mask == 0xffffffffu);
+	}
+
+	/* The data read: params pass through untouched, the 200 borrows the
+	 * application's storage directly (on target: the PSRAM ring), and the
+	 * INVALID/REFUSED results map to 400/409. */
+	{
+		const AiusHttpApplicationResponse *response = dispatch_request(
+			&fixture,
+			"GET /api/recorder/data?offset=4096&length=512&generation=7",
+			auth, NULL, -1);
+		assert(response != NULL);
+		assert(response->kind == AIUS_HTTP_APP_IMMEDIATE);
+		assert(response->status == 200u);
+		assert(strcmp(response->content_type,
+		              "application/octet-stream") == 0);
+		/* The 200 borrows the application's storage directly (on target:
+		 * the PSRAM ring) -- pointer identity, not a copy. */
+		assert(response->body == fixture.fake.recorder_data);
+		assert(response->body_length == fixture.fake.recorder_data_length);
+		assert(fixture.fake.last_recorder_offset == 4096u);
+		assert(fixture.fake.last_recorder_length == 512u);
+		assert(fixture.fake.last_recorder_generation == 7u);
+	}
+	fixture.fake.recorder_read_result =
+		AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
+	expect_immediate(dispatch_request(&fixture,
+	                                  "GET /api/recorder/data?offset=4&length=8&generation=0",
+	                                  auth, NULL, -1),
+	                 400, "{\"ok\":false,\"error\":\"recorder_read\"}");
+	fixture.fake.recorder_read_result =
+		AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	expect_immediate(dispatch_request(&fixture,
+	                                  "GET /api/recorder/data?offset=0&length=8&generation=1",
+	                                  auth, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"recorder_state\"}");
+}
+
 static void test_route_coverage(void)
 {
 	Fixture fixture;
@@ -2040,9 +2253,20 @@ static void test_route_coverage(void)
 		{ "GET /sd/replays/take1", NULL, NULL, -1 },
 		{ "GET /api/measure", NULL, NULL, -1 },
 		{ "POST /api/measure/start", "X-Aius-SD-Auth: token\r\n",
-		  "{\"id\":\"pcm440_m6\"}", -1 }
+		  "{\"id\":\"pcm440_m6\"}", -1 },
+		{ "GET /api/recorder", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
+		{ "POST /api/recorder/freeze", "X-Aius-SD-Auth: token\r\n", NULL,
+		  -1 },
+		{ "POST /api/recorder/thaw", "X-Aius-SD-Auth: token\r\n", NULL,
+		  -1 },
+		{ "PUT /api/recorder/config", "X-Aius-SD-Auth: token\r\n",
+		  "{\"overrun\":true,\"underrun\":true,\"carrier_loss\":true,"
+		  "\"limiter_gr\":false,\"gr_threshold_db\":0,"
+		  "\"gr_hold_blocks\":1,\"postroll_blocks\":188}", -1 },
+		{ "GET /api/recorder/data?offset=0&length=8&generation=0",
+		  "X-Aius-SD-Auth: token\r\n", NULL, -1 }
 	};
-	bool seen[AIUS_HTTP_ROUTE_MEASURE_START + 1u];
+	bool seen[AIUS_HTTP_ROUTE_RECORDER_DATA + 1u];
 	memset(seen, 0, sizeof(seen));
 	fixture_init(&fixture);
 
@@ -2054,13 +2278,13 @@ static void test_route_coverage(void)
 		assert(response->status >= 200u && response->status < 600u);
 		assert(response->content_type != NULL);
 		assert(response->body_length == 0u || response->body != NULL);
-		assert(fixture.request.route <= AIUS_HTTP_ROUTE_MEASURE_START);
+		assert(fixture.request.route <= AIUS_HTTP_ROUTE_RECORDER_DATA);
 		seen[fixture.request.route] = true;
 	}
 	/* AIUS_HTTP_ROUTE_UNKNOWN never survives the parser, so the inventory is
 	 * every other enumerator. */
 	for (unsigned route = AIUS_HTTP_ROUTE_HOME;
-	     route <= AIUS_HTTP_ROUTE_MEASURE_START; ++route) {
+	     route <= AIUS_HTTP_ROUTE_RECORDER_DATA; ++route) {
 		if (!seen[route])
 			fprintf(stderr, "route %u has no dispatch coverage\n", route);
 		assert(seen[route]);
@@ -2093,6 +2317,7 @@ int main(void)
 	RUN_TEST(test_dispatch_counts);
 	RUN_TEST(test_usb_commands);
 	RUN_TEST(test_unreachable_method_defaults);
+	RUN_TEST(test_recorder_routes);
 	RUN_TEST(test_route_coverage);
 	fprintf(stderr, "optical-app oracle: all tests passed\n");
 	return 0;

@@ -148,6 +148,43 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_MEASURE;
 	if (token_equals(path, length, "/api/measure/start"))
 		return AIUS_HTTP_ROUTE_MEASURE_START;
+	if (token_equals(path, length, "/api/recorder"))
+		return AIUS_HTTP_ROUTE_RECORDER;
+	if (token_equals(path, length, "/api/recorder/freeze"))
+		return AIUS_HTTP_ROUTE_RECORDER_FREEZE;
+	if (token_equals(path, length, "/api/recorder/thaw"))
+		return AIUS_HTTP_ROUTE_RECORDER_THAW;
+	if (token_equals(path, length, "/api/recorder/config"))
+		return AIUS_HTTP_ROUTE_RECORDER_CONFIG;
+	if (has_prefix(path, length, "/api/recorder/data?offset=")) {
+		/* Fixed parameter order, all three required -- the events
+		 * cursor's rigidity: a bounded parser, not a query engine. */
+		const uint8_t *value = path + strlen("/api/recorder/data?offset=");
+		size_t remaining = length - strlen("/api/recorder/data?offset=");
+		const uint8_t *amp = memchr(value, '&', remaining);
+		if (amp == NULL ||
+		    !decimal_u32(value, (size_t)(amp - value),
+		                 &request->recorder_offset))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		remaining -= (size_t)(amp - value);
+		if (!has_prefix(amp, remaining, "&length="))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		value = amp + strlen("&length=");
+		remaining -= strlen("&length=");
+		amp = memchr(value, '&', remaining);
+		if (amp == NULL ||
+		    !decimal_u32(value, (size_t)(amp - value),
+		                 &request->recorder_length))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		remaining -= (size_t)(amp - value);
+		if (!has_prefix(amp, remaining, "&generation="))
+			return AIUS_HTTP_ROUTE_UNKNOWN;
+		value = amp + strlen("&generation=");
+		remaining -= strlen("&generation=");
+		return decimal_u32(value, remaining,
+		                   &request->recorder_generation) ?
+			AIUS_HTTP_ROUTE_RECORDER_DATA : AIUS_HTTP_ROUTE_UNKNOWN;
+	}
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;
 	if (has_prefix(path, length, "/sd/replays/") &&
@@ -370,7 +407,8 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	    request->route != AIUS_HTTP_ROUTE_SD_REPLAY &&
 	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->route != AIUS_HTTP_ROUTE_REPLAYS &&
-	    request->route != AIUS_HTTP_ROUTE_DSP_CONFIG)
+	    request->route != AIUS_HTTP_ROUTE_DSP_CONFIG &&
+	    request->route != AIUS_HTTP_ROUTE_RECORDER_CONFIG)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->method != AIUS_HTTP_PUT)
@@ -390,6 +428,17 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	if (request->route == AIUS_HTTP_ROUTE_MEASURE && request->method != AIUS_HTTP_GET)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_MEASURE_START && request->method != AIUS_HTTP_POST)
+		return AIUS_HTTP_ERR_METHOD;
+	if ((request->route == AIUS_HTTP_ROUTE_RECORDER ||
+	     request->route == AIUS_HTTP_ROUTE_RECORDER_DATA) &&
+	    request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if ((request->route == AIUS_HTTP_ROUTE_RECORDER_FREEZE ||
+	     request->route == AIUS_HTTP_ROUTE_RECORDER_THAW) &&
+	    request->method != AIUS_HTTP_POST)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_RECORDER_CONFIG &&
+	    request->method != AIUS_HTTP_PUT)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS &&
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_DELETE)

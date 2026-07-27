@@ -131,6 +131,19 @@ SECTIONS
 		. = ALIGN(32);
 	} > RAM
 
+	/* AIUS ADDITION — flight-recorder staging, deliberately AFTER every
+	 * .bss.dma input so adding or resizing it can never move a pre-existing
+	 * DMAMEM object. 2026-07-27: declaring the 64 KiB staging ring DMAMEM
+	 * displaced every later .bss.dma object and made the image unbootable
+	 * (aius-network-hardening.md defect 26); this section is the placement
+	 * fix, and the heap start moves past it in the footer below. */
+	.bss.aius_staging (NOLOAD) : {
+		__aius_staging_start = .;
+		KEEP(*(.aius_recorder_staging))
+		. = ALIGN(32);
+		__aius_staging_end = .;
+	} > RAM
+
 	.bss.extram (NOLOAD) : {
 		*(SORT_BY_ALIGNMENT(SORT_BY_NAME(.externalram)))
 		. = ALIGN(32);
@@ -186,3 +199,21 @@ ASSERT(SIZEOF(.bss.aius_retained) <= 0xC60,
 	"aius: the retained region would extend into the boot ROM's OCRAM scratch at ORIGIN(RAM)+0xC60")
 ASSERT(ADDR(.bss.dma) == ADDR(.bss.aius_retained) + SIZEOF(.bss.aius_retained),
 	"aius: .bss.dma must follow the retained region inside RAM, not overlap it")
+/* The staging carve-out: the heap begins after it, overriding the vendor line
+ * (a later top-level assignment wins), and the section itself must sit at the
+ * end of .bss.dma so no pre-existing DMAMEM address is a function of its
+ * size. */
+_heap_start = ADDR(.bss.aius_staging) + SIZEOF(.bss.aius_staging);
+ASSERT(ADDR(.bss.aius_staging) >= ADDR(.bss.dma) + SIZEOF(.bss.dma),
+	"aius: the staging section must follow .bss.dma, never sit inside it")
+ASSERT(_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma),
+	"aius: the heap must start after both .bss.dma and the staging carve-out")
+/* The defect 26 gate. NativeEthernet mallocs ~96 KiB from this heap at
+ * network bring-up (64 KiB FNET stack heap + 8 x 4 KiB socket buffers); a
+ * heap squeezed below that makes the malloc fail, the network service abort
+ * every epoch unfed, and the board watchdog into recovery-safe on every
+ * boot. 128 KiB = the measured demand plus a third of headroom; a static
+ * growth that trips this fails the BUILD, which is where this class of
+ * defect belongs. */
+ASSERT(_heap_end - _heap_start >= 0x20000,
+	"aius: OCRAM heap below the 128 KiB floor NativeEthernet's boot-time mallocs need (defect 26)")

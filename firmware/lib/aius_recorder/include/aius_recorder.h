@@ -20,7 +20,7 @@ extern "C" {
  * machine's split:
  *
  *   1. The ISR side (aius_recorder_isr_block): copies the committed planes
- *      into a caller-owned DMAMEM staging ring in the same interrupt that owns
+ *      into a caller-owned OCRAM staging ring in the same interrupt that owns
  *      them, evaluates the block-evaluable triggers (overrun edge, underrun
  *      edge, limiter-GR hold), acknowledges epoch freeze tokens, and counts
  *      the post-roll. EXTMEM is NEVER touched from this context.
@@ -145,9 +145,10 @@ typedef struct {
 	AiusRecorderTriggerInfo trigger; /* valid in POSTROLL/DRAINING/FROZEN */
 } AiusRecorderSnapshot;
 
-/* Caller-owned state. On target this struct lives in DTCM (never DMAMEM: the
- * boot ROM scribbles OCRAM at reset); the staging planes it points at live in
- * DMAMEM and the ring in EXTMEM. Fields crossing the ISR/epoch boundary are
+/* Caller-owned state. On target this struct lives in DTCM (never OCRAM: the
+ * boot ROM scribbles it at reset); the staging planes it points at live in
+ * OCRAM (the heap-carved .aius_recorder_staging section -- see defect 26 for
+ * why not DMAMEM) and the ring in EXTMEM. Fields crossing the boundary are
  * volatile; 32-bit aligned loads and stores are single-copy atomic on the
  * Cortex-M7, which is why the GR threshold is stored as a 32-bit float and
  * every counter is u32. */

@@ -27,6 +27,7 @@ extern "C" {
 #include "aius_net.h"
 	#include "aius_dsp.h"
 	#include "aius_measure.h"
+	#include "aius_recorder.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
 	#include "aius_usb_control.h"
@@ -453,6 +454,66 @@ DMAMEM static int32_t g_measure_capture_l[AIUS_MEASURE_CAPTURE_FRAMES];
 DMAMEM static int32_t g_measure_capture_r[AIUS_MEASURE_CAPTURE_FRAMES];
 static AiusMeasureCapture g_measure_capture;
 
+/* ------------------------------------------------------------------ */
+/* PSRAM flight recorder (aius-optical-prototype.md §PSRAM flight      */
+/* recorder, prebuild-gated 2026-07-27)                                */
+/*                                                                     */
+/* Staging is a heap-carved OCRAM section (4 planar 512-frame slots,   */
+/* 16 KiB -- the amended contract's depth after defect 26); control    */
+/* state is DTCM for the boot-ROM-scribbles-OCRAM reason above. The    */
+/* RING is                                                             */
+/* neither: raw PSRAM at 0x70000000 sized by the boot probe, bound at  */
+/* begin_pipeline() and touched ONLY by the epoch drain. No EXTMEM     */
+/* static exists anywhere in this firmware and the extmem heap is      */
+/* banned outright (test/recorder/test_no_extmem_heap.py) -- an        */
+/* EXTMEM array links silently wrong on an 8 MB board and the smalloc  */
+/* pool spans the same storage the ring claims.                        */
+/*                                                                     */
+/* g_recorder_present is the whole per-block cost on a bare board:     */
+/* one bool test in enqueue() (the g_meters_active pattern), and the   */
+/* epoch service returns on the same latch.                            */
+/* ------------------------------------------------------------------ */
+/* 4 slots = 16 KiB ~= 42.7 ms of staging: 4x the measured stacked epoch
+ * worst case (5.5 ms SD primitive + 2 + 2 + 1 ms budgets). NOT 16 slots:
+ * OCRAM's heap must keep >= ~96 KiB for NativeEthernet's boot-time mallocs
+ * (64 KiB FNET stack heap + 8 x 4 KiB socket buffers) or network bring-up
+ * fails and the boot dies -- defect 26. The linker now ASSERTs a 128 KiB
+ * heap floor, so an over-grown staging ring fails the BUILD, not the
+ * board. */
+#define RECORDER_STAGING_SLOTS 4u
+#define RECORDER_SLOT_FRAMES (AUDIO_BLOCK_SAMPLES * 4u)
+#define RECORDER_DRAIN_BYTES_PER_EPOCH 8192u
+/* In their own linker section rather than DMAMEM: the dedicated
+ * .bss.aius_staging section (placed after every .bss.dma input, carved out
+ * of the heap by link/aius_teensy41.ld) makes the recorder's OCRAM cost
+ * visible to the linker's heap-floor ASSERT -- the defect 26 gate -- and
+ * keeps a resize from ever moving a pre-existing DMAMEM address. Same OCRAM
+ * bank, same cache behaviour; only packing and accountability differ. */
+__attribute__((section(".aius_recorder_staging"), used, aligned(32)))
+static int32_t
+	g_recorder_staging[RECORDER_STAGING_SLOTS * RECORDER_SLOT_FRAMES * 2u];
+__attribute__((section(".aius_recorder_staging"), used, aligned(32)))
+static uint32_t g_recorder_staging_frames[RECORDER_STAGING_SLOTS];
+static AiusRecorder g_recorder;
+static bool g_recorder_present = false;
+/* The boot probe's result (startup.c configure_external_ram), in MB. */
+extern "C" uint8_t external_psram_size;
+/* The previous boot's final persisted checkpoint (0xffff when the retained
+ * ledger was invalid), captured by capture_boot_state() before aius_boot_init
+ * folds it away. `pv=` on the USB ID line: the only after-the-fact evidence of
+ * WHICH checkpoint a watchdog-killed boot died in. */
+static uint16_t g_prev_boot_checkpoint = 0xffffu;
+/* The dispatcher's mask mirror must equal the recorder's own bits -- the
+ * measure probe-cap rule, applied to four constants. */
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN ==
+              AIUS_RECORDER_MASK_OVERRUN, "recorder mask mirror drifted");
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN ==
+              AIUS_RECORDER_MASK_UNDERRUN, "recorder mask mirror drifted");
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS ==
+              AIUS_RECORDER_MASK_CARRIER_LOSS, "recorder mask mirror drifted");
+static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR ==
+              AIUS_RECORDER_MASK_LIMITER_GR, "recorder mask mirror drifted");
+
 /* The pipeline classifies once and nothing on target ever called
  * aius_pipeline_reset(): a DTS-first boot followed by a PCM replay hunts for
  * an IEC preamble that never comes (zero blocks, a capture armed forever),
@@ -748,6 +809,23 @@ public:
 		                                g_measure_capture_l,
 		                                g_measure_capture_r,
 		                                AIUS_MEASURE_CAPTURE_FRAMES);
+		/* Bind the flight recorder before the transmit interrupt arms
+		 * (its rule, same as the tx24 cursors). The probe ran in
+		 * ResetHandler, so external_psram_size is settled; 0 MB arms
+		 * nothing and the recorder reports absent -- a bare board must
+		 * never fault, and the MPU maps the absent region RW so only
+		 * this latch protects it. */
+		g_recorder_present = external_psram_size != 0u &&
+			aius_recorder_init(&g_recorder,
+			                   reinterpret_cast<uint8_t *>(0x70000000u),
+			                   (uint32_t)external_psram_size * 1048576u,
+			                   external_psram_size, g_recorder_staging,
+			                   g_recorder_staging_frames,
+			                   RECORDER_STAGING_SLOTS,
+			                   RECORDER_SLOT_FRAMES) == AIUS_OK;
+		if (!g_recorder_present)
+			(void)aius_recorder_init(&g_recorder, nullptr, 0u, 0u,
+			                         nullptr, nullptr, 0u, 0u);
 		/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
 		 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
 		 * before it, the vendor ISR transmits block_silent, which is the same
@@ -1030,6 +1108,22 @@ private:
 		aius_measure_isr_block(&g_measure_capture, processed_left,
 		                       processed_right, block->frames,
 		                       g_config_generation, g_overruns);
+		/* Flight-recorder tap: the same committed planes, into OCRAM
+		 * staging (never EXTMEM from this context). Sits beside the
+		 * measure tap so both cover exactly the committed frames. The
+		 * limiter gain is read in the interrupt that just advanced it;
+		 * the underrun counter is the tx24 ring's own volatile u32.
+		 * Cost when no PSRAM is fitted: this one bool test. */
+		if (g_recorder_present)
+			aius_recorder_isr_block(&g_recorder, processed_left,
+			                        processed_right, block->frames,
+			                        g_overruns,
+			                        g_aius_spdif_tx24.underruns,
+			                        dsp.limiter != nullptr,
+			                        dsp.limiter != nullptr
+			                            ? (float)dsp.limiter->state.gain
+			                            : 1.0f,
+			                        millis());
 		g_blocks++;
 		if (metering) {
 			if (g_meter.out_frames >= g_meter_window_frames) {
@@ -2541,7 +2635,9 @@ static constexpr size_t AIUS_ID_MAX_PAYLOAD =
 	(sizeof(" bgen=") - 1u) + AIUS_ID_U32_DIGITS +
 	(sizeof(" rsrc=") - 1u) + AIUS_ID_U32_DIGITS +
 	(sizeof(" epoch=") - 1u) + AIUS_ID_U32_DIGITS +
-	(sizeof(" nrst=") - 1u) + AIUS_ID_U32_DIGITS;
+	(sizeof(" nrst=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" ps=") - 1u) + 3u +
+	(sizeof(" pv=") - 1u) + 5u;
 static_assert(AIUS_ID_MAX_PAYLOAD <= AIUS_OPTICAL_APP_USB_PAYLOAD_MAX,
 	"the ID payload must fit the dispatcher's bound, or every ID answer is "
 	"a truncation-driven INTERNAL error");
@@ -2596,8 +2692,11 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 	AiusRecoveryStatus recovery;
 	(void)aius_network_teensy_address(network, address);
 	aius_runtime_teensy_status(&g_runtime, &recovery);
+	/* `ps` is the fitted PSRAM in MB, `pv` the PREVIOUS boot's final
+	 * persisted checkpoint (65535 = retained ledger invalid) -- the two
+	 * fields a recovery-safe board most needs to explain itself. */
 	int written = snprintf(payload, capacity,
-		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu",
+		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu ps=%u pv=%u",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		address[0], address[1], address[2], address[3],
 		recovery.recovery_safe ? 1u : 0u,
@@ -2609,7 +2708,9 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 		(unsigned long)recovery.boot_generation,
 		(unsigned long)recovery.reset_source,
 		(unsigned long)recovery.loop_epoch,
-		(unsigned long)recovery.network_restarts);
+		(unsigned long)recovery.network_restarts,
+		(unsigned)external_psram_size,
+		(unsigned)g_prev_boot_checkpoint);
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
 }
 
@@ -2689,6 +2790,15 @@ static size_t app_write_measure(void *, uint8_t *body, size_t capacity);
 static bool app_measure_start(void *, const char *vector_id, uint32_t f0_l_hz,
                               uint32_t f0_r_hz, const uint32_t *probes_hz,
                               size_t probe_count);
+static size_t app_write_recorder(void *, uint8_t *body, size_t capacity);
+static bool app_recorder_freeze(void *);
+static bool app_recorder_thaw(void *);
+static bool app_recorder_config(void *, uint32_t mask, float gr_threshold_db,
+                                uint32_t gr_hold_blocks,
+                                uint32_t postroll_blocks);
+static AiusOpticalAppRecorderReadResult app_recorder_read(
+	void *, uint32_t offset_bytes, uint32_t length_bytes,
+	uint32_t generation, const uint8_t **data, uint32_t *length);
 
 /* Handed to aius_optical_app_init() by slice S2a. Deliberately external
  * linkage: an internal-linkage table nothing references yet is exactly the
@@ -2721,7 +2831,12 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_upload_id,
 	app_read_directory,
 	app_write_measure,
-	app_measure_start
+	app_measure_start,
+	app_write_recorder,
+	app_recorder_freeze,
+	app_recorder_thaw,
+	app_recorder_config,
+	app_recorder_read
 };
 
 /* ------------------------------------------------------------------ */
@@ -3207,6 +3322,129 @@ static FLASHMEM bool app_measure_start(void *, const char *vector_id,
 		probes[p] = (double)probes_hz[p];
 	return measure_start(vector_id, (double)f0_l_hz, (double)f0_r_hz, probes,
 	                     (uint32_t)probe_count);
+}
+
+/* ------------------------------------------------------------------ */
+/* Flight-recorder application callbacks (dispatch context, epoch)     */
+/* ------------------------------------------------------------------ */
+
+static FLASHMEM const char *recorder_state_name(uint32_t state)
+{
+	switch (state) {
+	case AIUS_RECORDER_RECORDING: return "recording";
+	case AIUS_RECORDER_POSTROLL: return "postroll";
+	case AIUS_RECORDER_DRAINING: return "draining";
+	case AIUS_RECORDER_FROZEN: return "frozen";
+	case AIUS_RECORDER_ABSENT:
+	default: return "absent";
+	}
+}
+
+static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
+{
+	switch (trigger) {
+	case AIUS_RECORDER_TRIGGER_OVERRUN: return "overrun";
+	case AIUS_RECORDER_TRIGGER_UNDERRUN: return "underrun";
+	case AIUS_RECORDER_TRIGGER_CARRIER_LOSS: return "carrier_loss";
+	case AIUS_RECORDER_TRIGGER_LIMITER_GR: return "limiter_gr";
+	case AIUS_RECORDER_TRIGGER_OPERATOR: return "operator";
+	case AIUS_RECORDER_TRIGGER_NONE:
+	default: return "none";
+	}
+}
+
+/* GET /api/recorder: status + the frozen header in one document -- the
+ * contract's WAV-sufficient field list (encoding, geometry, valid extent and
+ * oldest position, trigger metadata, gaps, generations, the armed config and
+ * the chunk cap). Served from a coherent epoch-context snapshot, never
+ * re-derived mid-serialize. */
+static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
+                                          size_t capacity)
+{
+	AiusRecorderSnapshot s;
+	aius_recorder_snapshot(&g_recorder, &s);
+	int length = snprintf((char *)body, capacity,
+		"{\"state\":\"%s\",\"fitted_mb\":%lu,"
+		"\"sample_rate_hz\":%lu,"
+		"\"encoding\":\"s32le\",\"significant_bits\":24,"
+		"\"interleave\":\"lr\",\"frame_bytes\":%u,"
+		"\"ring_frames\":%lu,\"valid_frames\":%lu,"
+		"\"oldest_frame\":%lu,\"freeze_generation\":%lu,"
+		"\"boot_generation\":%lu,"
+		"\"gap_count\":%lu,\"last_gap_frame\":%lu,"
+		"\"suppressed_triggers\":%lu,"
+		"\"postroll_captured\":%lu,"
+		"\"chunk_max_bytes\":%lu,"
+		"\"trigger\":{\"which\":\"%s\",\"at_frame\":%lu,"
+		"\"at_block\":%lu,\"at_ms\":%lu},"
+		"\"config\":{\"overrun\":%s,\"underrun\":%s,"
+		"\"carrier_loss\":%s,\"limiter_gr\":%s,"
+		"\"gr_threshold_db\":%.1f,\"gr_hold_blocks\":%lu,"
+		"\"postroll_blocks\":%lu}}",
+		recorder_state_name(s.state), (unsigned long)s.fitted_mb,
+		(unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ,
+		(unsigned)AIUS_RECORDER_FRAME_BYTES,
+		(unsigned long)s.ring_frames, (unsigned long)s.valid_frames,
+		(unsigned long)s.oldest_frame,
+		(unsigned long)s.freeze_generation,
+		(unsigned long)g_boot_ledger.boot_generation,
+		(unsigned long)s.gap_count, (unsigned long)s.last_gap_frame,
+		(unsigned long)s.suppressed_triggers,
+		(unsigned long)s.postroll_captured,
+		(unsigned long)AIUS_RECORDER_READ_MAX_BYTES,
+		recorder_trigger_name(s.trigger.trigger),
+		(unsigned long)s.trigger.at_frame,
+		(unsigned long)s.trigger.at_block,
+		(unsigned long)s.trigger.at_ms,
+		(s.trigger_mask & AIUS_RECORDER_MASK_OVERRUN) ? "true" : "false",
+		(s.trigger_mask & AIUS_RECORDER_MASK_UNDERRUN) ? "true" : "false",
+		(s.trigger_mask & AIUS_RECORDER_MASK_CARRIER_LOSS) ? "true"
+		                                                   : "false",
+		(s.trigger_mask & AIUS_RECORDER_MASK_LIMITER_GR) ? "true"
+		                                                 : "false",
+		(double)s.gr_threshold_db, (unsigned long)s.gr_hold_blocks,
+		(unsigned long)s.postroll_blocks);
+	return length > 0 && (size_t)length < capacity ? (size_t)length : 0u;
+}
+
+static FLASHMEM bool app_recorder_freeze(void *)
+{
+	return g_recorder_present && aius_recorder_freeze(&g_recorder) == AIUS_OK;
+}
+
+static FLASHMEM bool app_recorder_thaw(void *)
+{
+	return g_recorder_present && aius_recorder_thaw(&g_recorder) == AIUS_OK;
+}
+
+static FLASHMEM bool app_recorder_config(void *, uint32_t mask,
+                                         float gr_threshold_db,
+                                         uint32_t gr_hold_blocks,
+                                         uint32_t postroll_blocks)
+{
+	/* The contract's absent rule: every route but the status read refuses
+	 * cleanly on a bare board, config included. */
+	return g_recorder_present &&
+	       aius_recorder_set_config(&g_recorder, mask, gr_threshold_db,
+	                                gr_hold_blocks,
+	                                postroll_blocks) == AIUS_OK;
+}
+
+static FLASHMEM AiusOpticalAppRecorderReadResult app_recorder_read(
+	void *, uint32_t offset_bytes, uint32_t length_bytes,
+	uint32_t generation, const uint8_t **data, uint32_t *length)
+{
+	/* The 400/409 split the dispatcher serves: state and generation are
+	 * REFUSED (retry after freeze / re-read the header), argument shape is
+	 * INVALID (fix the request). The lib folds both into INVALID_ARG, so
+	 * the split lives here where both facts are readable. */
+	if (!g_recorder_present || g_recorder.state != AIUS_RECORDER_FROZEN ||
+	    generation != g_recorder.freeze_generation)
+		return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+	return aius_recorder_read(&g_recorder, offset_bytes, length_bytes,
+	                          generation, data, length) == AIUS_OK
+		? AIUS_OPTICAL_APP_RECORDER_READ_OK
+		: AIUS_OPTICAL_APP_RECORDER_READ_INVALID;
 }
 
 /* Checkpoint 3. service_hw_metrics() is already its own one-sample-per-second
@@ -4125,6 +4363,21 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * must judge this epoch's settled source and carrier, not the previous
 	 * one's. A boolean and at most three register stores; no budget row. */
 	tx_gate_service();
+	/* Flight recorder, after tx_gate_service() by contract: the epoch
+	 * trigger evaluation consumes this epoch's LATCHED gate and carrier
+	 * (underrun qualification at both ends of the delta; carrier falling
+	 * edge), and the drain quota rides this REPLAY budget row -- 8 KiB x
+	 * ~115 epoch/s is 2x the 384 KiB/s fill rate, so a post-stall backlog
+	 * clears. The drain is a pure copy/interleave into write-back-cached
+	 * EXTMEM: nothing DMAs the PSRAM, so there is deliberately NO cache
+	 * maintenance here. */
+	if (g_recorder_present) {
+		aius_recorder_epoch(&g_recorder, g_tx_gate_carrier,
+		                    g_tx_gate_open,
+		                    g_aius_spdif_tx24.underruns, now_ms);
+		(void)aius_recorder_drain(&g_recorder,
+		                          RECORDER_DRAIN_BYTES_PER_EPOCH);
+	}
 	return true;
 }
 
@@ -4215,6 +4468,14 @@ static FLASHMEM void capture_retained_boot_state(void)
 	input.build_id = (uint32_t)AIUS_BUILD_ID;
 	input.raw_reset_source = raw_reset_source;
 	input.reset_kind = aius_boot_teensy_reset_kind(raw_reset_source);
+	/* The previous boot's final persisted checkpoint, captured HERE because
+	 * nothing else keeps it: aius_boot_init() folds the retained ledger into
+	 * this boot's and the stalled checkpoint of a watchdog-killed boot is
+	 * otherwise unrecoverable (the recovery smoke documents exactly that
+	 * gap). Surfaced as `pv=` on the USB ID line, which recovery-safe
+	 * still serves. */
+	g_prev_boot_checkpoint = aius_boot_is_valid(&retained)
+		? retained.last_checkpoint : 0xffffu;
 	/* A zeroed or corrupt retained ledger fails validation inside
 	 * aius_boot_init(), which then starts a normal generation-1 boot. */
 	aius_boot_init(&g_boot_ledger, &retained, input);

@@ -560,6 +560,204 @@ static FLASHMEM bool measure_body(const AiusHttpRequest *request,
 	return true;
 }
 
+/* Strict signed decibel value for the recorder config: "0", or "-" followed
+ * by up to three digits and an optional single fraction digit ("-6", "-6.5").
+ * A GR threshold has no business carrying exponents, plus signs or deeper
+ * precision, and the bounded grammar keeps this a scanner, not strtod. */
+static FLASHMEM bool body_take_db(AiusJsonCursor *cursor, float *value)
+{
+	aius_json_skip_whitespace(cursor);
+	bool negative = false;
+	uint32_t whole = 0;
+	uint32_t frac = 0;
+	size_t digits = 0;
+	if (cursor->pos < cursor->len && cursor->data[cursor->pos] == '-') {
+		negative = true;
+		cursor->pos++;
+	}
+	while (cursor->pos < cursor->len) {
+		uint8_t ch = cursor->data[cursor->pos];
+		if (ch < '0' || ch > '9')
+			break;
+		if (++digits > 3u)
+			return false;
+		whole = whole * 10u + (uint32_t)(ch - '0');
+		cursor->pos++;
+	}
+	if (digits == 0)
+		return false;
+	if (cursor->pos < cursor->len && cursor->data[cursor->pos] == '.') {
+		cursor->pos++;
+		if (cursor->pos >= cursor->len)
+			return false;
+		uint8_t ch = cursor->data[cursor->pos];
+		if (ch < '0' || ch > '9')
+			return false;
+		frac = (uint32_t)(ch - '0');
+		cursor->pos++;
+	}
+	float parsed = (float)whole + (float)frac / 10.0f;
+	*value = negative ? -parsed : parsed;
+	return true;
+}
+
+/* PUT /api/recorder/config body, with the measure parser's strictness turned
+ * all the way up: every key REQUIRED exactly once, any order, nothing else --
+ * {"overrun":bool,"underrun":bool,"carrier_loss":bool,"limiter_gr":bool,
+ *  "gr_threshold_db":<0|-n[.n]>,"gr_hold_blocks":<uint>,
+ *  "postroll_blocks":<uint>}. Requiring the full set is the same
+ * anti-drift stance as the DSP PUT's all-eight-keys rule: a partial config
+ * that silently keeps unstated fields is how two clients disagree about what
+ * is armed. */
+static FLASHMEM bool recorder_config_body(const AiusHttpRequest *request,
+                                          uint32_t *mask,
+                                          float *gr_threshold_db,
+                                          uint32_t *gr_hold_blocks,
+                                          uint32_t *postroll_blocks)
+{
+	AiusJsonCursor cursor = { request->body, request->body_length, 0u };
+	static const struct {
+		const char *key;
+		uint32_t bit;
+	} flags[] = {
+		{ "overrun", AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN },
+		{ "underrun", AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN },
+		{ "carrier_loss", AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS },
+		{ "limiter_gr", AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR },
+	};
+	bool seen[7] = { false, false, false, false, false, false, false };
+
+	*mask = 0u;
+	*gr_threshold_db = 0.0f;
+	*gr_hold_blocks = 0u;
+	*postroll_blocks = 0u;
+	if (request->body == NULL || !body_consume(&cursor, '{'))
+		return false;
+	for (;;) {
+		const uint8_t *key;
+		size_t key_length;
+		size_t matched = sizeof(seen) / sizeof(seen[0]);
+		if (!body_take_string(&cursor, &key, &key_length) ||
+		    !body_consume(&cursor, ':'))
+			return false;
+		for (size_t flag = 0; flag < 4u; flag++) {
+			if (!body_key_is(key, key_length, flags[flag].key))
+				continue;
+			matched = flag;
+			if (body_take_literal(&cursor, "true"))
+				*mask |= flags[flag].bit;
+			else if (!body_take_literal(&cursor, "false"))
+				return false;
+			break;
+		}
+		if (matched > 4u && body_key_is(key, key_length, "gr_threshold_db")) {
+			matched = 4;
+			if (!body_take_db(&cursor, gr_threshold_db))
+				return false;
+		} else if (matched > 4u &&
+		           body_key_is(key, key_length, "gr_hold_blocks")) {
+			matched = 5;
+			if (!body_take_uint(&cursor, gr_hold_blocks))
+				return false;
+		} else if (matched > 4u &&
+		           body_key_is(key, key_length, "postroll_blocks")) {
+			matched = 6;
+			/* body_take_uint refuses 0, but a zero post-roll is a
+			 * legal "freeze at the trigger boundary": take the
+			 * literal 0 explicitly first. */
+			if (body_take_literal(&cursor, "0"))
+				*postroll_blocks = 0u;
+			else if (!body_take_uint(&cursor, postroll_blocks))
+				return false;
+		}
+		if (matched >= sizeof(seen) / sizeof(seen[0]) || seen[matched])
+			return false;
+		seen[matched] = true;
+		if (!body_consume(&cursor, ','))
+			break;
+	}
+	if (!body_consume(&cursor, '}'))
+		return false;
+	aius_json_skip_whitespace(&cursor);
+	if (!aius_json_at_end(&cursor))
+		return false;
+	for (size_t i = 0; i < sizeof(seen) / sizeof(seen[0]); i++)
+		if (!seen[i])
+			return false;
+	/* A positive threshold is a malformed VALUE, not a state refusal: the
+	 * scanner accepts bare digits, so the sign rule lands here (400), and
+	 * the recorder lib's own check never has to answer for the wire. */
+	if (*gr_threshold_db > 0.0f)
+		return false;
+	return true;
+}
+
+static FLASHMEM const AiusHttpApplicationResponse *dispatch_recorder(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
+{
+	const AiusOpticalApp *app = &dispatcher->app;
+	/* EVERY recorder route is token-gated, the GETs included -- the data
+	 * read carries recorded audio and the header reveals trigger state
+	 * (contract §HTTP surface; aius_auth.h's weak-boundary disclaimer
+	 * applies as everywhere else). */
+	if (!app->auth_matches(app->context, request->sd_auth,
+	                       request->sd_auth_length))
+		return http_error(dispatcher, 401, "sd_auth");
+	switch (request->route) {
+	case AIUS_HTTP_ROUTE_RECORDER:
+		return http_serialized(dispatcher, kContentJson,
+		                       app->write_recorder(app->context,
+		                                           dispatcher->body,
+		                                           dispatcher->body_capacity));
+	case AIUS_HTTP_ROUTE_RECORDER_FREEZE:
+		return app->recorder_freeze(app->context)
+			? http_json(dispatcher, 200,
+			            "{\"ok\":true,\"state\":\"freezing\"}")
+			: http_error(dispatcher, 409, "recorder_state");
+	case AIUS_HTTP_ROUTE_RECORDER_THAW:
+		return app->recorder_thaw(app->context)
+			? http_json(dispatcher, 200,
+			            "{\"ok\":true,\"state\":\"recording\"}")
+			: http_error(dispatcher, 409, "recorder_state");
+	case AIUS_HTTP_ROUTE_RECORDER_CONFIG: {
+		uint32_t mask, hold, postroll;
+		float gr_db;
+		if (!recorder_config_body(request, &mask, &gr_db, &hold,
+		                          &postroll))
+			return http_error(dispatcher, 400, "recorder_body");
+		return app->recorder_config(app->context, mask, gr_db, hold,
+		                            postroll)
+			? http_json(dispatcher, 200, "{\"ok\":true}")
+			: http_error(dispatcher, 409, "recorder_state");
+	}
+	case AIUS_HTTP_ROUTE_RECORDER_DATA: {
+		const uint8_t *data = NULL;
+		uint32_t length = 0u;
+		/* The 200 borrows PSRAM directly: stable because data resolves
+		 * only in FROZEN and a thaw is necessarily a later transaction
+		 * (single-transaction model) -- no copy, no SD job, and
+		 * deliberately NO app_sd_busy test (the refill owns ~61 % of
+		 * epochs during replay; an sd_busy gate would make the
+		 * recorder unusable exactly when it matters). */
+		switch (app->recorder_read(app->context, request->recorder_offset,
+		                           request->recorder_length,
+		                           request->recorder_generation, &data,
+		                           &length)) {
+		case AIUS_OPTICAL_APP_RECORDER_READ_OK:
+			return http_immediate(dispatcher, 200, kContentBinary,
+			                      data, length);
+		case AIUS_OPTICAL_APP_RECORDER_READ_INVALID:
+			return http_error(dispatcher, 400, "recorder_read");
+		case AIUS_OPTICAL_APP_RECORDER_READ_REFUSED:
+		default:
+			return http_error(dispatcher, 409, "recorder_state");
+		}
+	}
+	default:
+		return http_error(dispatcher, 405, "recorder_method");
+	}
+}
+
 static FLASHMEM const AiusHttpApplicationResponse *dispatch_measure(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
@@ -1165,7 +1363,10 @@ static FLASHMEM bool app_complete(const AiusOpticalApp *app)
 	       app->replay_stop != NULL && app->set_test_running != NULL &&
 	       app->clear_counters != NULL && app->request_reboot != NULL &&
 	       app->write_usb_payload != NULL && app->upload_id != NULL &&
-	       app->write_measure != NULL && app->measure_start != NULL;
+	       app->write_measure != NULL && app->measure_start != NULL &&
+	       app->write_recorder != NULL && app->recorder_freeze != NULL &&
+	       app->recorder_thaw != NULL && app->recorder_config != NULL &&
+	       app->recorder_read != NULL;
 }
 
 FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
@@ -1265,6 +1466,12 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 	case AIUS_HTTP_ROUTE_MEASURE:
 	case AIUS_HTTP_ROUTE_MEASURE_START:
 		return dispatch_measure(dispatcher, request);
+	case AIUS_HTTP_ROUTE_RECORDER:
+	case AIUS_HTTP_ROUTE_RECORDER_FREEZE:
+	case AIUS_HTTP_ROUTE_RECORDER_THAW:
+	case AIUS_HTTP_ROUTE_RECORDER_CONFIG:
+	case AIUS_HTTP_ROUTE_RECORDER_DATA:
+		return dispatch_recorder(dispatcher, request);
 	case AIUS_HTTP_ROUTE_START:
 		app->set_test_running(app->context, true);
 		return http_json(dispatcher, 200, "{\"ok\":true,\"running\":true}");

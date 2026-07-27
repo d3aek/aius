@@ -40,6 +40,25 @@ extern "C" {
  * optical_main.cpp static_asserts this equals AIUS_MEASURE_PROBES_MAX. */
 #define AIUS_OPTICAL_APP_MEASURE_PROBES_MAX 8u
 
+/* Recorder trigger-mask bits for PUT /api/recorder/config. The dispatcher
+ * deliberately does not include aius_recorder.h (same rule as the measure
+ * mirror above); optical_main.cpp static_asserts these equal the
+ * AIUS_RECORDER_MASK_* values. */
+#define AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN (1u << 0)
+#define AIUS_OPTICAL_APP_RECORDER_MASK_UNDERRUN (1u << 1)
+#define AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS (1u << 2)
+#define AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR (1u << 3)
+
+/* Three-way result for the recorder data read: the dispatcher must be able to
+ * tell "your request is malformed" (400: misaligned or out-of-extent offset,
+ * zero length) from "the ring is not readable" (409: not frozen, or a stale
+ * freeze_generation after a thaw). */
+typedef enum {
+	AIUS_OPTICAL_APP_RECORDER_READ_OK,
+	AIUS_OPTICAL_APP_RECORDER_READ_INVALID,
+	AIUS_OPTICAL_APP_RECORDER_READ_REFUSED
+} AiusOpticalAppRecorderReadResult;
+
 /* Directory index -- GET /sd/<dir>/ ---------------------------------------
  *
  * Longest entry name the index lists. The /sd/ download route accepts a path
@@ -243,6 +262,27 @@ typedef struct {
 	bool (*measure_start)(void *context, const char *vector_id,
 	                      uint32_t f0_l_hz, uint32_t f0_r_hz,
 	                      const uint32_t *probes_hz, size_t probe_count);
+
+	/* The PSRAM flight recorder, appended per the append-only rule; all
+	 * five are REQUIRED (app_complete refuses a table without them).
+	 * write_recorder serializes status + the frozen header.
+	 * recorder_freeze / recorder_thaw / recorder_config return false when
+	 * the state machine refuses (absent board, wrong state, capture in
+	 * flight) -- the dispatcher answers 409; body-parse failures never
+	 * reach recorder_config. recorder_read resolves one bounded frozen
+	 * chunk into a pointer whose storage (the PSRAM ring) outlives the
+	 * response borrow: the ring is only readable FROZEN, and a thaw is
+	 * necessarily a later transaction under the single-transaction HTTP
+	 * model. */
+	size_t (*write_recorder)(void *context, uint8_t *body, size_t capacity);
+	bool (*recorder_freeze)(void *context);
+	bool (*recorder_thaw)(void *context);
+	bool (*recorder_config)(void *context, uint32_t mask,
+	                        float gr_threshold_db, uint32_t gr_hold_blocks,
+	                        uint32_t postroll_blocks);
+	AiusOpticalAppRecorderReadResult (*recorder_read)(
+		void *context, uint32_t offset_bytes, uint32_t length_bytes,
+		uint32_t generation, const uint8_t **data, uint32_t *length);
 } AiusOpticalApp;
 
 /* Caller-owned dispatcher state.

@@ -597,6 +597,59 @@ int main(void)
 	         AIUS_HTTP_ROUTE_SD_FILE);
 	parse_ok("GET /api/status HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_STATUS);
 	parse_ok("GET /api/events?cursor=42 HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_EVENTS);
+	/* The recorder surface: status/data are GET, freeze/thaw POST, config
+	 * PUT; the data route's three params are fixed-order and all
+	 * required. */
+	parse_ok("GET /api/recorder HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_RECORDER);
+	parse_ok("POST /api/recorder/freeze HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_RECORDER_FREEZE);
+	parse_ok("POST /api/recorder/thaw HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_RECORDER_THAW);
+	parse_ok("PUT /api/recorder/config HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
+	         AIUS_HTTP_ROUTE_RECORDER_CONFIG);
+	{
+		const char *data_line =
+			"GET /api/recorder/data?offset=65536&length=4096&generation=3"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)data_line,
+		                       strlen(data_line), &request) == AIUS_HTTP_OK);
+		assert(request.route == AIUS_HTTP_ROUTE_RECORDER_DATA);
+		assert(request.recorder_offset == 65536u);
+		assert(request.recorder_length == 4096u);
+		assert(request.recorder_generation == 3u);
+	}
+	{
+		/* Missing generation, reordered params, bare data path, non-GET
+		 * on data, GET on freeze, POST on config: all refused. */
+		const char *missing =
+			"GET /api/recorder/data?offset=0&length=8 HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)missing, strlen(missing),
+		                       &request) == AIUS_HTTP_ERR_ROUTE);
+		const char *reordered =
+			"GET /api/recorder/data?length=8&offset=0&generation=0"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)reordered,
+		                       strlen(reordered), &request) ==
+		       AIUS_HTTP_ERR_ROUTE);
+		const char *bare = "GET /api/recorder/data HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)bare, strlen(bare),
+		                       &request) == AIUS_HTTP_ERR_ROUTE);
+		const char *post_data =
+			"POST /api/recorder/data?offset=0&length=8&generation=0"
+			" HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)post_data,
+		                       strlen(post_data), &request) ==
+		       AIUS_HTTP_ERR_METHOD);
+		const char *get_freeze = "GET /api/recorder/freeze HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)get_freeze,
+		                       strlen(get_freeze), &request) ==
+		       AIUS_HTTP_ERR_METHOD);
+		const char *post_config =
+			"POST /api/recorder/config HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}";
+		assert(aius_http_parse((const uint8_t *)post_config,
+		                       strlen(post_config), &request) ==
+		       AIUS_HTTP_ERR_METHOD);
+	}
 	parse_ok("GET /api/events HTTP/1.1\r\nHost: device\r\n\r\n", AIUS_HTTP_ROUTE_EVENTS);
 	/* /api/mode and /api/mix are retired: the route table no longer knows them,
 	 * so a well-formed request for either is an unknown route. */

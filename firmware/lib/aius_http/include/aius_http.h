@@ -53,7 +53,17 @@ typedef enum {
 	/* The measurement loopback (item 3): GET /api/measure is the public read
 	 * (state machine + figures), POST /api/measure/start the auth-gated arm. */
 	AIUS_HTTP_ROUTE_MEASURE,
-	AIUS_HTTP_ROUTE_MEASURE_START
+	AIUS_HTTP_ROUTE_MEASURE_START,
+	/* The PSRAM flight recorder. GET /api/recorder reads status + the
+	 * frozen header; POST freeze/thaw move the state machine; PUT config
+	 * installs the RAM-only trigger config; GET /api/recorder/data pulls
+	 * one bounded frozen chunk (offset/length/generation, fixed order, all
+	 * required). Every recorder route is token-gated at dispatch. */
+	AIUS_HTTP_ROUTE_RECORDER,
+	AIUS_HTTP_ROUTE_RECORDER_FREEZE,
+	AIUS_HTTP_ROUTE_RECORDER_THAW,
+	AIUS_HTTP_ROUTE_RECORDER_CONFIG,
+	AIUS_HTTP_ROUTE_RECORDER_DATA
 } AiusHttpRoute;
 
 typedef enum {
@@ -91,6 +101,10 @@ typedef struct {
 	uint32_t content_range_start;
 	uint32_t content_range_end;
 	uint32_t content_range_total;
+	/* GET /api/recorder/data query values, valid for that route only. */
+	uint32_t recorder_offset;
+	uint32_t recorder_length;
+	uint32_t recorder_generation;
 } AiusHttpRequest;
 
 AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,

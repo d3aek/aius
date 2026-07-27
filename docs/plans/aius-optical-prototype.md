@@ -200,11 +200,20 @@ Decisions from the interview, as adjusted:
 - **PSRAM is never zeroed** (explicit core TODO): the frozen header's
   valid extent (frames recorded since arm) bounds what the host may
   reassemble, so an unwrapped ring never serves power-up garbage.
-- **Staging: 64 KiB DMAMEM ring (16 × 4 KiB committed blocks ≈ 170 ms at
-  384 KiB/s)**, sized for the measured normal worst case (post-cache SD
-  primitive 5.5 ms; playback epochs ~115/s). Cursors and control state
-  in DTCM, never DMAMEM (the boot ROM scribbles OCRAM at reset), init
-  before the transmit interrupt arms — the tx24 ring's discipline.
+- **Staging: 16 KiB OCRAM ring (4 × 4 KiB committed blocks ≈ 42.7 ms at
+  384 KiB/s)** — amended at build from the gate-reviewed 64 KiB, because
+  the real constraint surfaced on hardware (defect 26): OCRAM's heap
+  must keep ≥ ~96 KiB free for NativeEthernet's boot-time mallocs, and
+  64 KiB of staging squeezed it under that and made the image
+  unbootable. 42.7 ms is 4× the measured stacked epoch worst case
+  (5.5 ms post-cache SD primitive + the 2 + 2 + 1 ms budget rows);
+  mount-class stalls were always gaps under either size. The arrays
+  live in their own heap-carved `.bss.aius_staging` section (never
+  `DMAMEM`) so their OCRAM cost is visible to the linker's new 128 KiB
+  heap-floor ASSERT — an over-grown ring now fails the build, not the
+  boot. Cursors and control state in DTCM, never OCRAM (the boot ROM
+  scribbles it at reset), init before the transmit interrupt arms — the
+  tx24 ring's discipline.
 - **EXTMEM is never touched from audio context** (standing hot-path
   tie-breaker): the ISR writes staging only; the epoch drains staging
   into PSRAM from thread context, where a FlexSPI2 stall costs nothing

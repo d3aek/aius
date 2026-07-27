@@ -931,6 +931,90 @@ are follow-up work, recorded here so they are not lost.
     one request in twenty-five looks like a device fault, and during bring-up it
     would be attributed to whatever was just wired in.
 
+25. **A flash-driven (warm) reboot crashes the boot twice and latches
+    recovery-safe; a cold power cycle boots the same image clean.** Found
+    2026-07-27: four consecutive flashes each produced `early=2`,
+    `rsafe=1`, no network, USB alive — and the pattern REPRODUCES WITH
+    BYTE-IDENTICAL SOURCES to an image that had booted normally that
+    morning, so no code in that day's delta is the cause (double bisection:
+    full tree, committed tree, and the last-flashed commit's tree all
+    crash identically on warm reboot; the last of these then booted CLEAN
+    on the next cold power cycle).
+
+    Evidence, and the instrument it produced:
+
+    - The USB ID line now carries `ps=` (probed PSRAM MB) and `pv=` (the
+      RETAINED ledger's `last_checkpoint` captured at boot init, before
+      `aius_boot_init()` folds it away — the previously unrecoverable
+      "which checkpoint died" datum the B6 postmortem called out).
+    - `pv=2` (USB_TX) after one crash pair, `pv=5` (HTTP) after another —
+      the abort checkpoint VARIES. Since the ledger persists the
+      checkpoint BEFORE each service, and `aius_runtime_epoch()` returns
+      false WITHOUT feeding the watchdog when any service returns false,
+      the shape that fits is: for the whole 8 s window epochs keep
+      aborting (at varying checkpoints) so the feed never runs, and the
+      watchdog kills a boot that is otherwise executing — not one
+      blocking call. Recovery-safe mode runs its two USB checkpoints for
+      millions of epochs without dying, so whatever aborts needs state
+      only a normal boot reaches.
+    - The crash window opens on flash-driven reboots specifically; whether
+      a plain `POST /api/reboot` software reset shows it is untested. The
+      flash loader's CDC session (HalfKay entry + post-flash verify
+      exchange) is the one USB-side actor unique to that path and is the
+      first suspect for the USB_TX-adjacent state.
+    - Open corroboration: whether the DHCP server saw any DISCOVER from
+      the board's MAC during the crash windows (18:17-18:50 local
+      2026-07-27). None expected if the abort precedes NETWORK bring-up.
+
+    **Operational impact: unattended reflash is broken** — every flash now
+    needs a physical power cycle to leave recovery-safe. That inverts the
+    B6-proven story ("recovery-safe returns to service unaided") for the
+    flash path specifically, and it will bite every future firmware
+    delivery until chased. Next instrument: `pv=` is already live; add a
+    one-shot capture of WHICH service returned false (a u8 beside the
+    retained ledger) and re-run the flash cycle. (Untangled from defect
+    26 the same day — 26 was fixed by placement; this warm-reboot crash
+    reproduced on images with NO layout change and remains open.)
+
+26. ~~**A 64 KiB static OCRAM addition makes the image unbootable —
+    deterministically, cold and warm, traffic or none.**~~ **ROOT-CAUSED
+    AND GATED 2026-07-27: OCRAM heap exhaustion under NativeEthernet's
+    boot-time mallocs, now a link-time ASSERT.** No mystery object; the
+    displacement theory this entry briefly carried was DISPROVED by its
+    own fix-attempt.
+
+    Found delivering the flight recorder: its 64 KiB DMAMEM staging ring
+    made the image fail every boot with the defect-25 signature (two
+    watchdog resets, recovery-safe latch) — including cold, quiet boots
+    where none of the delivered code executes (`ps=0`: no PSRAM, every
+    recorder path latched off; no traffic: parser/dispatcher never run).
+    The chain of eliminations, each one flash: same sources minus the
+    staging boot fine; staging at 8 KiB boots; staging at 64 KiB in a
+    dedicated END-placed section that provably displaces nothing (nm:
+    every prior symbol at its old address) STILL fails — displacement
+    dead. What all failing builds share is the HEAP: ~93–96 KiB left,
+    versus 152–160 KiB in every booting build. `Ethernet.begin()` news
+    up ~96 KiB from that heap (`FNET_STACK_HEAP_DEFAULT_SIZE` 64 KiB +
+    `MAX_SOCK_NUM` 8 × 2 × 2 KiB socket buffers, NativeEthernet.h:39-42,
+    .cpp:95-96); a heap at or under the demand fails the allocation,
+    network bring-up aborts its service, every epoch returns unfed, and
+    the 8 s watchdog fires — `pv=5` (the HTTP/network checkpoint) on
+    every quiet crash, which is what the instrument was built to say.
+
+    **The gate:** `link/aius_teensy41.ld` now ASSERTs
+    `_heap_end - _heap_start >= 0x20000` (128 KiB = measured demand +
+    a third headroom), so any static growth that would squeeze the heap
+    below NativeEthernet's boot demand fails the BUILD — the
+    convention-enforcement ladder's top rung for this class. The
+    recorder's staging lives in its own heap-carved `.bss.aius_staging`
+    section at 16 KiB (4 slots ≈ 42.7 ms, 4× the measured stacked epoch
+    worst case), and the drift guard pins section, heap re-base and
+    ASSERT alike. Residue worth naming: the boot's malloc-failure path
+    converts a resource error into an unfed-watchdog crash loop — a
+    kinder failure (log + recovery with the network absent) would make
+    the NEXT resource squeeze diagnosable from the status surface
+    instead of from a bisection afternoon.
+
 #### Decisions taken, so they are not re-opened
 
 - **A network syslog sender was assessed and declined.** Not on cost — the event

@@ -30,13 +30,14 @@ specified here. Strike items here in the commit that closes them.
 
 ## Contracted, not started
 
-- **PSRAM flight recorder** — full contract in
-  [`aius-optical-prototype.md` §PSRAM flight recorder](aius-optical-prototype.md#psram-flight-recorder--contracted-2026-07-27).
-  First build step is its adversarial prebuild gate (attack list named in
-  the contract). Buildable before the chips are soldered: absence is a
-  first-class state.
-- **Input-side capture tap** — explicit follow-up slice inside that
-  contract; not v1.
+- ~~**PSRAM flight recorder**~~ **SHIPPED 2026-07-27** (gate protocol
+  complete: adversarial prebuild + clean-room GO, portable core
+  suite-first, Teensy wiring + HTTP surface + swagger + host WAV script,
+  absent-path verified on the device — the chips are still not fitted,
+  and absence is first-class as contracted). Delivery surfaced defects
+  25 (open) and 26 (closed, link-gated); see the defect gists below.
+- **Input-side capture tap** — explicit follow-up slice inside the
+  recorder contract; not v1.
 
 ## Waiting on the operator
 
@@ -105,6 +106,17 @@ specified here. Strike items here in the commit that closes them.
     card-absent board (design call).
   - **23**: `AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not
     headroom (design call).
+  - **25**: a flash-driven warm reboot crashes boot twice and latches
+    recovery-safe; cold power cycle boots clean. Reproduced with
+    byte-identical sources to a working image, so environmental to the
+    reboot path, not code. UNATTENDED REFLASH IS BROKEN until chased;
+    `ps=`/`pv=` USB ID diagnostics landed for it. (2026-07-27.)
+  - **26** (CLOSED same day, kept for the residue): OCRAM heap
+    exhaustion under NativeEthernet's ~96 KiB boot mallocs bricked every
+    boot when recorder staging took 64 KiB; root-caused by bisection,
+    gated by a 128 KiB link-time heap-floor ASSERT, staging resized to
+    16 KiB. Open residue: boot converts malloc failure into an unfed-
+    watchdog crash loop instead of a diagnosable degraded state.
 - **H2 footprint gate** — validate the Gerber against the RS PRO PCB
   layout drawings before any board order; evidence filed (datasheets +
   AP214 STEP models), gate recorded in

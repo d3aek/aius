@@ -43,12 +43,37 @@ SECTION_BLOCK = """\t/* AIUS ADDITION — retained across reset, pinned to ORIGI
 
 """
 
+STAGING_BLOCK = """\t/* AIUS ADDITION — flight-recorder staging, deliberately AFTER every
+\t * .bss.dma input so adding or resizing it can never move a pre-existing
+\t * DMAMEM object. 2026-07-27: declaring the 64 KiB staging ring DMAMEM
+\t * displaced every later .bss.dma object and made the image unbootable
+\t * (aius-network-hardening.md defect 26); this section is the placement
+\t * fix, and the heap start moves past it in the footer below. */
+\t.bss.aius_staging (NOLOAD) : {
+\t\t__aius_staging_start = .;
+\t\tKEEP(*(.aius_recorder_staging))
+\t\t. = ALIGN(32);
+\t\t__aius_staging_end = .;
+\t} > RAM
+
+"""
+
 FOOTER_START = "\n/* AIUS ADDITION — the enforcement."
 
 REQUIRED_ASSERTS = (
     "ADDR(.bss.aius_retained) == ORIGIN(RAM)",
     "SIZEOF(.bss.aius_retained) <= 0xC60",
     "ADDR(.bss.dma) == ADDR(.bss.aius_retained) + SIZEOF(.bss.aius_retained)",
+    "ADDR(.bss.aius_staging) >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
+    "_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
+    "_heap_end - _heap_start >= 0x20000",
+)
+
+# The heap must be re-based past the staging carve-out, or malloc grows into
+# the recorder's ring the moment the vendor-derived _heap_start is the one
+# that sticks.
+REQUIRED_FOOTER_LINES = (
+    "_heap_start = ADDR(.bss.aius_staging) + SIZEOF(.bss.aius_staging);",
 )
 
 
@@ -76,6 +101,19 @@ def strip_additions(text: str) -> str:
         )
     body = body.replace(SECTION_BLOCK, "", 1)
 
+    if body.count(STAGING_BLOCK) != 1:
+        raise DriftError(
+            "the .bss.aius_staging output section block is missing or edited"
+        )
+    # It must be immediately before .bss.extram, i.e. after every .bss.dma
+    # input: a reordering before .bss.dma would re-create the displacement
+    # incident this section exists to prevent, and would link cleanly.
+    if STAGING_BLOCK + "\t.bss.extram (NOLOAD) : {\n" not in body:
+        raise DriftError(
+            "the staging section must sit between .bss.dma and .bss.extram"
+        )
+    body = body.replace(STAGING_BLOCK, "", 1)
+
     footer_at = body.find(FOOTER_START)
     if footer_at < 0:
         raise DriftError("the Aius ASSERT block is missing")
@@ -83,6 +121,9 @@ def strip_additions(text: str) -> str:
     for expression in REQUIRED_ASSERTS:
         if expression not in footer:
             raise DriftError(f"missing link-time ASSERT on: {expression}")
+    for line in REQUIRED_FOOTER_LINES:
+        if line not in footer:
+            raise DriftError(f"missing footer line: {line}")
     return body[:footer_at]
 
 
@@ -115,6 +156,20 @@ def self_test(ours: Path) -> None:
             SECTION_BLOCK, "", 1
         ).replace(
             "\t.bss.extram (NOLOAD) : {\n", SECTION_BLOCK + "\t.bss.extram (NOLOAD) : {\n", 1
+        ),
+        "drop the staging section": text.replace(STAGING_BLOCK, "", 1),
+        "move the staging section before .bss.dma": text.replace(
+            STAGING_BLOCK, "", 1
+        ).replace(
+            "\t.bss.dma (NOLOAD) : {\n",
+            STAGING_BLOCK + "\t.bss.dma (NOLOAD) : {\n",
+            1,
+        ),
+        "drop the heap re-base": text.replace(
+            "_heap_start = ADDR(.bss.aius_staging) + "
+            "SIZEOF(.bss.aius_staging);\n",
+            "",
+            1,
         ),
         "weaken the origin ASSERT": text.replace(
             "ADDR(.bss.aius_retained) == ORIGIN(RAM)",
