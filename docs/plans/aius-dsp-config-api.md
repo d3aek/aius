@@ -1437,15 +1437,22 @@ Slices, each a commit boundary with its vitest coverage in the same commit:
    example↔fixture deep-equality pin on the `current` GET example. One
    behaviour worth keeping: mutation confirmations are set AFTER the
    list refresh, or the refresh's count message eats them.
-3. **Visual surface** — EQ magnitude curves (RBJ math mirrored in JS for
-   display only, never authoritative), drag/wheel editing, signal-flow
-   layout row, the DSP load/headroom numbers, and the limiter
-   gain-reduction bar + history strip. Geometry and curve math live in
-   pure functions (rect + client coords in, model values out): happy-dom
-   has no layout engine and returns all-zero `getBoundingClientRect`, so
-   unit tests drive the pure functions directly and wiring tests stub the
-   rect; the real-pointer proof of the drag surface belongs to slice 4's
-   browser pass, never synthetic dispatch.
+3. **Visual surface — DELIVERED 2026-07-27.** The signal-flow strip under
+   the status card: input level bars → interactive input EQ curve (channel
+   select) → output EQ curve → limiter GR bar + 128-sample history →
+   output level bars, plus DSP load/peak-load/headroom % beside the raw
+   cycle counts (budget = 600 MHz × 512 / rate, provenance cited at the
+   constants). Pure-function math half (RBJ curves, every rect mapping,
+   exported as `window.aiusDspEditorMath` solely as the unit-test seam —
+   the classic-script IIFE has no other test surface) + wiring half where
+   every gesture lands in `writeField()` → the same form input + `input`
+   event, so there is no second model and `collectModel()` is untouched.
+   Suite 62 → 92; headless full-page render clean. **Finding to fold into
+   slice 4 or a follow-up: `onFieldInput()` promotes to `edited` only from
+   `applied`/`error`, so any edit right after a fresh read leaves the pill
+   at `loaded` while the form differs from the device (typed edits
+   included; `loadPreset()` already treats `loaded` as promotable). One
+   word to fix, touches existing pill expectations.**
 4. **Deploy + on-device smoke** — upload the changed www assets to the
    card, load the page against the board (real browser), exercise one
    preset save/load, one drag edit → Apply round trip, and the

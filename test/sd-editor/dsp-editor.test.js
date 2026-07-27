@@ -72,24 +72,42 @@ const PRESET_INDEX_DEFAULT = presetsIndexHtml(
 );
 
 let device;
-let canvasOps;
+let canvasOpsById;
 const rejections = [];
 const trackRejection = (reason) => rejections.push(reason);
 
+/* Ops recorded per canvas id. The page draws four surfaces through this one
+ * prototype stub -- the waveform envelope, the two EQ cascades and the limiter
+ * history -- so a single flat log could no longer say which canvas an op
+ * belonged to. */
+const opsOf = (id) => canvasOpsById.get(id) || [];
+
 function installCanvas() {
-  canvasOps = [];
-  const context = {
-    clearRect: (...args) => canvasOps.push(['clearRect', ...args]),
-    beginPath: () => canvasOps.push(['beginPath']),
-    closePath: () => canvasOps.push(['closePath']),
-    moveTo: (x, y) => canvasOps.push(['moveTo', x, y]),
-    lineTo: (x, y) => canvasOps.push(['lineTo', x, y]),
-    stroke: () => canvasOps.push(['stroke']),
-    fill: () => canvasOps.push(['fill']),
-    strokeStyle: '',
-    fillStyle: '',
+  canvasOpsById = new Map();
+  window.HTMLCanvasElement.prototype.getContext = function getContext() {
+    const id = this.id || 'anonymous';
+    if (!canvasOpsById.has(id)) canvasOpsById.set(id, []);
+    const ops = canvasOpsById.get(id);
+    const record =
+      (name) =>
+      (...args) =>
+        ops.push([name, ...args]);
+    return {
+      clearRect: record('clearRect'),
+      beginPath: record('beginPath'),
+      closePath: record('closePath'),
+      moveTo: record('moveTo'),
+      lineTo: record('lineTo'),
+      arc: record('arc'),
+      fillText: record('fillText'),
+      stroke: record('stroke'),
+      fill: record('fill'),
+      strokeStyle: '',
+      fillStyle: '',
+      lineWidth: 1,
+      font: '',
+    };
   };
-  window.HTMLCanvasElement.prototype.getContext = () => context;
 }
 
 function createDevice(options = {}) {
@@ -171,6 +189,45 @@ async function click(id) {
 }
 
 const putCalls = () => device.calls.filter((call) => call.method === 'PUT');
+
+/* Ops accumulate across redraws, so an assertion about "what is on screen" reads
+ * the last frame -- everything the canvas recorded after its final clearRect --
+ * and groups it into paths the way the page strokes them. */
+const lastFrame = (id) => {
+  const ops = opsOf(id);
+  const start = ops.map((op) => op[0]).lastIndexOf('clearRect');
+  return start === -1 ? ops : ops.slice(start);
+};
+const pathsOf = (id) =>
+  lastFrame(id).reduce((groups, op) => {
+    if (op[0] === 'beginPath') groups.push([]);
+    else if (groups.length > 0) groups[groups.length - 1].push(op);
+    return groups;
+  }, []);
+const handlesOf = (id) => lastFrame(id).filter((op) => op[0] === 'arc');
+const vertices = (ops) => ops.filter((op) => op[0] === 'moveTo' || op[0] === 'lineTo');
+
+/* happy-dom has no layout engine -- every getBoundingClientRect is all zeroes --
+ * so a canvas that has to answer pointer questions is given one explicitly. It
+ * deliberately matches the canvas's own 960x240 backing store, which makes the
+ * client coordinates in these tests and the drawn coordinates the same numbers. */
+const CURVE_RECT = { left: 0, top: 0, width: 960, height: 240, right: 960, bottom: 240, x: 0, y: 0 };
+const stubRect = (id) => {
+  el(id).getBoundingClientRect = () => CURVE_RECT;
+};
+const maths = () => window.aiusDspEditorMath;
+const pointer = (id, type, clientX, clientY) =>
+  el(id).dispatchEvent(
+    new window.PointerEvent(type, { clientX, clientY, pointerId: 1, bubbles: true, cancelable: true }),
+  );
+/* happy-dom's WheelEvent extends UIEvent rather than MouseEvent, so it carries
+ * no client coordinates at all -- the one place this harness diverges from the
+ * browser. The page reads event.clientX/clientY as the spec defines them, so the
+ * test supplies them here rather than bending the page around the stub. */
+const wheel = (id, clientX, clientY, deltaY) => {
+  const event = new window.WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true });
+  return el(id).dispatchEvent(Object.assign(event, { clientX, clientY }));
+};
 
 beforeEach(() => {
   rejections.length = 0;
@@ -528,7 +585,7 @@ describe('Aius SD DSP editor — meters', () => {
     await boot();
     await vi.advanceTimersByTimeAsync(100);
 
-    const paths = canvasOps.reduce((groups, op) => {
+    const paths = opsOf('waveform').reduce((groups, op) => {
       if (op[0] === 'beginPath') groups.push([]);
       else if (groups.length > 0) groups[groups.length - 1].push(op);
       return groups;
@@ -555,7 +612,7 @@ describe('Aius SD DSP editor — meters', () => {
     await boot({ meters: oversized });
     await vi.advanceTimersByTimeAsync(100);
 
-    const points = canvasOps.filter((op) => op[0] === 'lineTo' || op[0] === 'moveTo');
+    const points = opsOf('waveform').filter((op) => op[0] === 'lineTo' || op[0] === 'moveTo');
     // Centre line (moveTo + lineTo) plus the mirrored envelope of 128 points.
     expect(points).toHaveLength(2 + 128 * 2);
   });
@@ -882,5 +939,397 @@ describe('Aius SD DSP editor — presets', () => {
       'matrix',
       'output_eq',
     ]);
+  });
+});
+
+/* The pure half of the visual surface. These call the page's exported maths
+ * directly with literal rects: happy-dom lays nothing out, so this -- not a
+ * synthesised gesture -- is where the drag arithmetic and the RBJ curve maths
+ * are actually proven. The real-pointer proof belongs to the on-device browser
+ * pass (task #7 slice 4). */
+describe('Aius SD DSP editor — curve and geometry maths', () => {
+  const rect = { left: 0, top: 0, width: 960, height: 240 };
+
+  beforeEach(async () => {
+    await boot();
+  });
+
+  it('gives a peaking section exactly its gain at the centre frequency', () => {
+    for (const gain of [-12, -4.5, 3, 12]) {
+      const section = { type: 'peaking', frequency_hz: 1000, q: 1.2, gain_db: gain };
+      expect(maths().sectionMagnitudeDb(section, 1000, 48000)).toBeCloseTo(gain, 9);
+    }
+  });
+
+  it('leaves a peaking section flat far from its centre frequency', () => {
+    const section = { type: 'peaking', frequency_hz: 1000, q: 2, gain_db: 12 };
+    expect(maths().sectionMagnitudeDb(section, 40, 48000)).toBeCloseTo(0, 1);
+    expect(maths().sectionMagnitudeDb(section, 16000, 48000)).toBeCloseTo(0, 1);
+  });
+
+  it('rolls a highpass off below its corner and passes it above', () => {
+    const section = { type: 'highpass', frequency_hz: 100, q: 0.707, gain_db: 0 };
+    // A Butterworth corner is -3 dB by definition, then ~12 dB per octave down.
+    expect(maths().sectionMagnitudeDb(section, 100, 48000)).toBeCloseTo(-3.01, 2);
+    expect(maths().sectionMagnitudeDb(section, 50, 48000)).toBeLessThan(-12);
+    expect(maths().sectionMagnitudeDb(section, 20, 48000)).toBeLessThan(-27);
+    expect(maths().sectionMagnitudeDb(section, 1000, 48000)).toBeCloseTo(0, 2);
+  });
+
+  it('contributes nothing for bypass, none, or a half-typed section', () => {
+    for (const type of ['bypass', 'none']) {
+      expect(maths().sectionMagnitudeDb({ type, frequency_hz: 1000, q: 1, gain_db: 6 }, 1000, 48000)).toBe(0);
+    }
+    const halfTyped = { type: 'peaking', frequency_hz: NaN, q: 1, gain_db: 6 };
+    expect(maths().sectionMagnitudeDb(halfTyped, 1000, 48000)).toBe(0);
+    expect(maths().sectionMagnitudeDb({ type: 'peaking', frequency_hz: 1000, q: 0, gain_db: 6 }, 1000, 48000)).toBe(0);
+  });
+
+  it('sums a cascade in dB', () => {
+    const lift = { type: 'peaking', frequency_hz: 1000, q: 1, gain_db: 6 };
+    const cut = { type: 'peaking', frequency_hz: 1000, q: 1, gain_db: -2 };
+    expect(maths().cascadeMagnitudeDb([lift, cut], 1000, 48000)).toBeCloseTo(4, 9);
+    expect(maths().cascadeMagnitudeDb([], 1000, 48000)).toBe(0);
+  });
+
+  it('draws an empty cascade as a flat line on the 0 dB axis', () => {
+    const points = maths().curvePoints([], rect, 48000);
+    expect(points.length).toBeGreaterThan(64);
+    expect(points.every((point) => point.y === 120)).toBe(true);
+    expect(points[0].x).toBe(0);
+    expect(points[points.length - 1].x).toBe(960);
+  });
+
+  it('round-trips a drag point through the log-frequency and dB axes', () => {
+    for (const [hz, db] of [
+      [20, 24],
+      [120, -4.5],
+      [1000, 0],
+      [12000, 12],
+    ]) {
+      const point = maths().pointToEq(rect, maths().hzToX(hz, rect), maths().dbToY(db, rect));
+      expect(point.frequency_hz).toBeCloseTo(hz, 6);
+      expect(point.gain_db).toBeCloseTo(db, 6);
+    }
+  });
+
+  it('maps against the rect it is given, not the viewport origin', () => {
+    // A client rect is offset by the page scroll and the card's own position.
+    const offset = { left: 40, top: 100, width: 960, height: 240 };
+    expect(maths().xToHz(40, offset)).toBeCloseTo(20, 9);
+    expect(maths().yToDb(100, offset)).toBeCloseTo(24, 9);
+    const point = maths().pointToEq(offset, maths().hzToX(1000, offset), maths().dbToY(-6, offset));
+    expect(point.frequency_hz).toBeCloseTo(1000, 6);
+    expect(point.gain_db).toBeCloseTo(-6, 6);
+  });
+
+  it('clamps a drag to the axis bounds, so no reachable pixel is out of range', () => {
+    expect(maths().pointToEq(rect, -500, -500)).toEqual({ frequency_hz: 20, gain_db: 24 });
+    expect(maths().pointToEq(rect, 5000, 5000)).toEqual({ frequency_hz: 20000, gain_db: -24 });
+  });
+
+  it('steps Q multiplicatively and clamps it to the field bounds', () => {
+    expect(maths().stepQ(1.2, -100)).toBeCloseTo(1.344, 6);
+    expect(maths().stepQ(1, 100)).toBeCloseTo(0.893, 6);
+    let q = 1;
+    for (let notch = 0; notch < 40; notch++) q = maths().stepQ(q, 100);
+    expect(q).toBe(0.1);
+    for (let notch = 0; notch < 60; notch++) q = maths().stepQ(q, -100);
+    expect(q).toBe(20);
+    // An unset Q starts from the section seed rather than from nothing.
+    expect(maths().stepQ(NaN, -100)).toBeCloseTo(0.792, 6);
+  });
+
+  it('places one handle per active section, with a highpass on the 0 dB line', () => {
+    const points = maths().handlePoints(
+      [
+        { slot: 0, type: 'peaking', frequency_hz: 1000, q: 1, gain_db: 6 },
+        { slot: 1, type: 'bypass', frequency_hz: 500, q: 1, gain_db: 0 },
+      ],
+      rect,
+    );
+    expect(points).toHaveLength(1);
+    expect(points[0].slot).toBe(0);
+    expect(points[0].x).toBeCloseTo(maths().hzToX(1000, rect), 9);
+    expect(points[0].y).toBeCloseTo(maths().dbToY(6, rect), 9);
+
+    // A highpass has no gain, whatever a stale gain field still holds.
+    const stale = { slot: 0, type: 'highpass', frequency_hz: 100, q: 0.707, gain_db: 9 };
+    const highpass = maths().handlePoints([stale], rect);
+    expect(highpass[0].y).toBeCloseTo(maths().dbToY(0, rect), 9);
+  });
+
+  it('picks the nearest handle, and only within the grab radius', () => {
+    const points = [
+      { slot: 0, x: 100, y: 100 },
+      { slot: 1, x: 130, y: 100 },
+    ];
+    expect(maths().pickHandle(points, 104, 100, 14).slot).toBe(0);
+    expect(maths().pickHandle(points, 126, 100, 14).slot).toBe(1);
+    expect(maths().pickHandle(points, 115, 100, 14)).toBe(null);
+    expect(maths().pickHandle([], 100, 100, 14)).toBe(null);
+  });
+
+  it('derives the DSP block budget and load from the firmware constants', () => {
+    // 600 MHz * 512 frames / 48 kHz, the same 6,400,000 the firmware comments cite.
+    expect(maths().dspBudgetCycles(48000)).toBe(6400000);
+    expect(maths().dspBudgetCycles(96000)).toBe(3200000);
+    expect(maths().dspLoadPercent(41230, 48000)).toBeCloseTo(0.6442, 4);
+    expect(maths().dspLoadPercent(6400000, 48000)).toBe(100);
+    // An unpublished snapshot reports 0 Hz: no budget, so no number rather than 0 %.
+    expect(maths().dspLoadPercent(0, 0)).toBe(null);
+    expect(maths().dspLoadPercent(undefined, 48000)).toBe(null);
+  });
+
+  it('maps a level to a bar fraction over the strip floor', () => {
+    expect(maths().levelFraction(0)).toBe(1);
+    expect(maths().levelFraction(-30)).toBeCloseTo(0.5, 9);
+    expect(maths().levelFraction(-120)).toBe(0);
+    expect(maths().levelFraction(null)).toBe(0);
+  });
+});
+
+describe('Aius SD DSP editor — EQ curves and drag editing', () => {
+  it('draws each cascade with a handle per active section', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+
+    // fl carries one peaking section at 120 Hz / -4.5 dB; sl's is a bypass.
+    const input = handlesOf('curve-input');
+    expect(input).toHaveLength(1);
+    expect(input[0][1]).toBeCloseTo(maths().hzToX(120, CURVE_RECT), 6);
+    expect(input[0][2]).toBeCloseTo(maths().dbToY(-4.5, CURVE_RECT), 6);
+
+    const output = handlesOf('curve-output');
+    expect(output).toHaveLength(1);
+    expect(output[0][1]).toBeCloseTo(maths().hzToX(4000, CURVE_RECT), 6);
+  });
+
+  it('strokes the cascade itself, peaking where the section sits', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+
+    // Paths per frame: the grid, the 0 dB reference, then the cascade.
+    const curve = vertices(pathsOf('curve-output')[2]);
+    expect(curve.length).toBeGreaterThan(64);
+    const top = curve.reduce((best, op) => (op[2] < best[2] ? op : best));
+    expect(Math.abs(top[1] - maths().hzToX(4000, CURVE_RECT))).toBeLessThan(6);
+    expect(maths().yToDb(top[2], CURVE_RECT)).toBeCloseTo(2, 2);
+  });
+
+  it('follows the channel selector onto that channel cascade', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    expect([...el('curve-channel').options].map((option) => option.value)).toEqual(CHANNELS);
+
+    el('curve-channel').value = 'fr';
+    el('curve-channel').dispatchEvent(new Event('change'));
+    await settle();
+
+    // fr carries both a peaking at 120 Hz and a highpass at 45 Hz.
+    const drawn = handlesOf('curve-input');
+    expect(drawn).toHaveLength(2);
+    expect(drawn[1][1]).toBeCloseTo(maths().hzToX(45, CURVE_RECT), 6);
+    expect(drawn[1][2]).toBeCloseTo(maths().dbToY(0, CURVE_RECT), 6);
+  });
+
+  it('redraws from the form, so a typed edit and a removed section both show', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+
+    await setNumber('input_channels.fl.eq.0.frequency_hz', '4000');
+    expect(handlesOf('curve-input')[0][1]).toBeCloseTo(maths().hzToX(4000, CURVE_RECT), 6);
+
+    await setChoice('input_channels.fl.eq.0.type', 'none');
+    expect(handlesOf('curve-input')).toHaveLength(0);
+  });
+
+  it('writes a dragged handle into the same fields text mode edits', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubRect('curve-input');
+    el('token').value = '0123456789abcdef';
+
+    pointer('curve-input', 'pointerdown', maths().hzToX(120, CURVE_RECT), maths().dbToY(-4.5, CURVE_RECT));
+    pointer('curve-input', 'pointermove', maths().hzToX(300, CURVE_RECT), maths().dbToY(6, CURVE_RECT));
+    pointer('curve-input', 'pointerup', maths().hzToX(300, CURVE_RECT), maths().dbToY(6, CURVE_RECT));
+    await settle();
+
+    expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('300');
+    expect(valueOf('input_channels.fl.eq.0.gain_db')).toBe('6');
+    // A drag runs the same validation pass a typed edit does.
+    expect(errorOf('input_channels.fl.eq.0.frequency_hz')).toBe('');
+    expect(fieldOf('input_channels.fl.eq.0.frequency_hz').getAttribute('aria-invalid')).toBe('false');
+
+    await click('apply');
+    expect(JSON.parse(putCalls()[0].body).input_channels.fl.eq).toEqual([
+      { type: 'peaking', frequency_hz: 300, q: 1.2, gain_db: 6 },
+    ]);
+  });
+
+  it('moves a highpass handle in frequency only -- it has no gain to drag', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubRect('curve-input');
+    el('curve-channel').value = 'fc';
+    el('curve-channel').dispatchEvent(new Event('change'));
+    await settle();
+
+    // fc slot 0 is a highpass at 80 Hz, so its handle rides the 0 dB line.
+    pointer('curve-input', 'pointerdown', maths().hzToX(80, CURVE_RECT), maths().dbToY(0, CURVE_RECT));
+    pointer('curve-input', 'pointermove', maths().hzToX(200, CURVE_RECT), maths().dbToY(12, CURVE_RECT));
+    await settle();
+
+    expect(valueOf('input_channels.fc.eq.0.frequency_hz')).toBe('200');
+    expect(valueOf('input_channels.fc.eq.0.gain_db')).toBe('0');
+    expect(fieldOf('input_channels.fc.eq.0.gain_db').disabled).toBe(true);
+  });
+
+  it('ignores a press away from a handle, and a move after the pointer is up', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubRect('curve-input');
+
+    pointer('curve-input', 'pointerdown', maths().hzToX(8000, CURVE_RECT), maths().dbToY(20, CURVE_RECT));
+    pointer('curve-input', 'pointermove', maths().hzToX(300, CURVE_RECT), maths().dbToY(6, CURVE_RECT));
+    await settle();
+    expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('120');
+    expect(el('apply-state').textContent).toBe('loaded');
+
+    // A press that never moves must not nudge the section it grabbed either.
+    pointer('curve-input', 'pointerdown', maths().hzToX(120, CURVE_RECT), maths().dbToY(-4.5, CURVE_RECT));
+    pointer('curve-input', 'pointerup', maths().hzToX(120, CURVE_RECT), maths().dbToY(-4.5, CURVE_RECT));
+    pointer('curve-input', 'pointermove', maths().hzToX(9000, CURVE_RECT), maths().dbToY(6, CURVE_RECT));
+    await settle();
+    expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('120');
+    expect(valueOf('input_channels.fl.eq.0.gain_db')).toBe('-4.5');
+  });
+
+  it('sets Q with the wheel over a handle, clamped to the field bounds', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubRect('curve-input');
+    const x = maths().hzToX(120, CURVE_RECT);
+    const y = maths().dbToY(-4.5, CURVE_RECT);
+
+    wheel('curve-input', x, y, -100);
+    await settle();
+    expect(valueOf('input_channels.fl.eq.0.q')).toBe('1.344');
+
+    for (let notch = 0; notch < 40; notch++) wheel('curve-input', x, y, 100);
+    await settle();
+    expect(valueOf('input_channels.fl.eq.0.q')).toBe('0.1');
+    expect(errorOf('input_channels.fl.eq.0.q')).toBe('');
+
+    for (let notch = 0; notch < 60; notch++) wheel('curve-input', x, y, -100);
+    await settle();
+    expect(valueOf('input_channels.fl.eq.0.q')).toBe('20');
+
+    // Away from every handle the wheel is the page's to scroll with.
+    wheel('curve-input', maths().hzToX(9000, CURVE_RECT), 10, -100);
+    await settle();
+    expect(valueOf('input_channels.fl.eq.0.q')).toBe('20');
+  });
+
+  it('does not drag when the DOM has no layout to map against', async () => {
+    // The unstubbed happy-dom rect is all zeroes; a real browser is proven by
+    // slice 4's on-device pass, never by synthetic dispatch.
+    await boot({ config: fixture('dsp-config-sd.json') });
+
+    pointer('curve-input', 'pointerdown', 249, 142);
+    pointer('curve-input', 'pointermove', 400, 60);
+    await settle();
+
+    expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('120');
+  });
+});
+
+describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', () => {
+  /* The last frame's first path is the 0 dB rail; the history is the second. */
+  const historyPoints = () => {
+    const paths = pathsOf('gr-history');
+    return paths.length < 2 ? [] : vertices(paths[1]);
+  };
+
+  it('renders load and headroom against the per-block cycle budget', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(100);
+
+    // 41230 / 6,400,000 cycles per 512-frame block at 48 kHz.
+    expect(el('meter-load').textContent).toBe('0.6 % load / 99.4 % headroom');
+    expect(el('meter-load-peak').textContent).toBe('0.9 % of the block budget');
+    // The raw counters stay exactly as they were.
+    expect(el('meter-cycles').textContent).toBe('41230 / 58800');
+  });
+
+  it('renders a heavy block as a load approaching the budget', async () => {
+    const busy = { ...fixture('meters-snapshot.json'), dsp_cycles_last: 5600000, dsp_cycles_max: 6400000 };
+    await boot({ meters: busy });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(el('meter-load').textContent).toBe('87.5 % load / 12.5 % headroom');
+    expect(el('meter-load-peak').textContent).toBe('100.0 % of the block budget');
+  });
+
+  it('fills the level bars from the same snapshot as the table', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(el('bar-in-fl-value').textContent).toBe('-6.2');
+    expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
+    expect(el('bar-in-lfe-value').textContent).toBe('-30.0');
+    expect(el('bar-in-lfe-fill').style.width).toBe('50.0%');
+    expect(el('bar-out-l-value').textContent).toBe('-3.1');
+    expect(el('bar-out-r-value').textContent).toBe('-3.4');
+    expect(el('visual-state').textContent).toBe('live');
+  });
+
+  it('accumulates the limiter history across polls and caps the ring', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(el('gr-value').textContent).toBe('-1.8 dB');
+    expect(el('gr-fill').style.width).toBe('7.5%');
+    expect(historyPoints()).toHaveLength(3);
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(historyPoints()).toHaveLength(5);
+
+    // 130 polls in, the strip still shows the last 128 published instants.
+    await vi.advanceTimersByTimeAsync(12500);
+    expect(historyPoints()).toHaveLength(128);
+  });
+
+  it('renders a fully closed limiter at the bar rail, not off the scale', async () => {
+    await boot({ meters: fixture('meters-silent.json') });
+    await vi.advanceTimersByTimeAsync(100);
+
+    // The defensive fully-closed value is below the -120 dBFS floor.
+    expect(el('gr-value').textContent).toBe('-inf dB');
+    expect(el('gr-fill').style.width).toBe('100.0%');
+    expect(historyPoints()).toHaveLength(1);
+  });
+
+  it('clears the strip for a never-published snapshot', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(historyPoints()).toHaveLength(3);
+
+    device.meters = fixture('meters-idle.json');
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(el('visual-state').textContent).toBe('no data');
+    expect(el('meter-load').textContent).toBe('--');
+    expect(el('meter-load-peak').textContent).toBe('--');
+    expect(el('gr-value').textContent).toBe('--');
+    expect(el('gr-fill').style.width).toBe('0.0%');
+    expect(el('bar-in-fl-value').textContent).toBe('--');
+    expect(el('bar-in-fl-fill').style.width).toBe('0.0%');
+    expect(historyPoints()).toHaveLength(0);
+  });
+
+  it('clears the strip when /api/meters is absent', async () => {
+    await boot({ meters: null });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(el('visual-state').textContent).toBe('unavailable');
+    expect(el('meter-load').textContent).toBe('--');
+    expect(el('bar-out-l-value').textContent).toBe('--');
+    expect(historyPoints()).toHaveLength(0);
+    // The rest of the page is unaffected: the curves still show the model.
+    expect(handlesOf('curve-input')).toHaveLength(0);
+    expect(el('apply-state').textContent).toBe('loaded');
   });
 });

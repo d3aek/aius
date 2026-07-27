@@ -41,6 +41,42 @@
       <p id="errors" class="error-summary" role="alert" hidden></p>
     </section>
 
+    <section class="card visual">
+      <div class="section-title"><h2>Signal flow</h2><span id="visual-state" class="pill">waiting</span></div>
+      <p class="hint">The live path at a glance, in order. The EQ curves are this page's own render of the sections in the form (RBJ audio-EQ cookbook, at the device sample rate) -- a preview, never the authority: the device designs the real biquads when a config is applied. Drag a handle to set frequency, and a peaking section's gain; the wheel over a handle sets Q. Levels and gain reduction come from the same 10 Hz <a href="/api/meters">meter snapshot</a> as the table at the foot of the page.</p>
+
+      <div class="visual-block">
+        <div class="visual-block__head"><h3 class="visual-block__title">1. Input levels</h3><span class="visual-block__note">peak dBFS, bar floor -60</span></div>
+        <div id="bars-input" class="bars"></div>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head"><h3 class="visual-block__title">2. Input EQ</h3><label class="visual-block__pick">Channel <select id="curve-channel"></select></label></div>
+        <canvas id="curve-input" class="curve" width="960" height="240"></canvas>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head"><h3 class="visual-block__title">3. Output EQ</h3><span class="visual-block__note">post-downmix, run on both channels</span></div>
+        <canvas id="curve-output" class="curve" width="960" height="240"></canvas>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head"><h3 class="visual-block__title">4. Limiter gain reduction</h3><span class="visual-block__note">instantaneous at each snapshot publish, not an average</span></div>
+        <div class="gr">
+          <span class="gr__scale">-24</span>
+          <div class="gr__track"><div id="gr-fill" class="gr__fill"></div></div>
+          <span class="gr__scale">0 dB</span>
+          <strong id="gr-value" class="gr__value">--</strong>
+        </div>
+        <canvas id="gr-history" class="gr__history" width="960" height="64" title="The last 128 polled gain-reduction values, oldest left, newest right. Each is the instantaneous reduction at that snapshot's publish, not a windowed average."></canvas>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head"><h3 class="visual-block__title">5. Output levels</h3><span class="visual-block__note">the waveform envelope is at the foot of the page</span></div>
+        <div id="bars-output" class="bars"></div>
+      </div>
+    </section>
+
     <section class="card">
       <div class="section-title"><h2>Presets</h2><span id="preset-state" class="pill">idle</span></div>
       <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply to device</em> sends it. Save, upload and delete need the SD auth token above.</p>
@@ -94,6 +130,8 @@
         <div><span>Queue</span><strong id="meter-queue">--</strong></div>
         <div><span>Estimated latency</span><strong id="meter-latency">--</strong></div>
         <div><span>DSP cycles last / max</span><strong id="meter-cycles">--</strong></div>
+        <div><span>DSP load</span><strong id="meter-load">--</strong></div>
+        <div><span>Peak DSP load</span><strong id="meter-load-peak">--</strong></div>
       </div>
       <table class="meter-table">
         <thead><tr><th scope="col">Channel</th><th scope="col">Peak dBFS</th><th scope="col">RMS dBFS</th></tr></thead>

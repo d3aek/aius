@@ -3,7 +3,9 @@
  * OWNS: the whole /sd/www/index.html page -- building the config form from the
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
- * optimistic-concurrency token, and polling GET /api/meters at 10 Hz.
+ * optimistic-concurrency token, polling GET /api/meters at 10 Hz, and drawing
+ * the signal-flow strip (EQ magnitude curves, level bars, DSP load, limiter
+ * gain reduction) from that same model and snapshot.
  *
  * DOES NOT OWN: the replay manager page (replays.js) and anything the firmware
  * decides -- the device is the authority on what a valid config is. The bounds
@@ -29,6 +31,37 @@
   const METER_FLOOR_DBFS = -120; /* every emitted level is finite, floored here */
   const MODEL_MAX_BYTES = 12288; /* AIUS_DSP_MODEL_MAX_JSON_BYTES */
   const EQ_SLOTS = 2; /* AIUS_DSP_MODEL_EQ_MAX */
+
+  /* Signal-flow strip. The curve axes are the page's own display choice; the
+   * gain axis deliberately equals the gain_db field bound so a drag handle can
+   * reach either rail and no reachable pixel is an invalid value. */
+  const CURVE_MIN_HZ = 20;
+  const CURVE_MAX_HZ = 20000;
+  const CURVE_SPAN_DB = 24; /* the +-24 dB gain_db bound in eqFields() */
+  const CURVE_FLOOR_DB = -120; /* a highpass is -inf at DC; floor it so the polyline stays finite */
+  const CURVE_STEPS = 192; /* polyline segments across the log-frequency axis */
+  const CURVE_GRID_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+  const CURVE_GRID_DB = [-24, -12, 0, 12, 24];
+  const CURVE_DEFAULT_RATE_HZ = 48000; /* until GET /api/dsp/config reports the device rate */
+  const HANDLE_RADIUS_PX = 6;
+  const HANDLE_GRAB_PX = 14; /* pointer slop around a handle, in client pixels */
+  const Q_WHEEL_STEP = 1.12; /* one wheel notch, multiplicative */
+  const Q_MIN = 0.1; /* both mirror the Q field bound in eqFields() */
+  const Q_MAX = 20;
+  const BAR_FLOOR_DBFS = -60; /* the bar strip's own floor: at -120 every bar is a sliver */
+  const LIMITER_SPAN_DB = 24; /* gain-reduction bar + history full scale */
+  const LIMITER_HISTORY_MAX = 128; /* ~12.8 s of history at the 10 Hz poll */
+
+  /* Firmware facts mirrored here the way MODEL_MAX_BYTES mirrors
+   * AIUS_DSP_MODEL_MAX_JSON_BYTES: the snapshot carries raw DWT cycle counts
+   * and nothing on the wire says what one block may spend.
+   *   600 MHz -- board_build.f_cpu in firmware/platformio.ini
+   *   512     -- AIUS_PIPELINE_PCM_BLOCK_FRAMES, the DECODED block the DWT
+   *              bracket in enqueue() measures (optical_main.cpp: "512 frames /
+   *              48 kHz = 10,667 us (6,400,000 cycles at 600 MHz)")
+   * so the per-block budget is cpu_hz * block_frames / sample_rate_hz. */
+  const DSP_CPU_HZ = 600e6;
+  const DSP_BLOCK_FRAMES = 512;
 
   const CHANNELS = [
     ['fl', 'Front left'],
@@ -98,6 +131,13 @@
     meterRetryAt: 0,
     /* Names as stored on the card (with case), .json stripped. */
     presets: [],
+    /* Which input channel's cascade the input curve is showing. */
+    curveChannel: CHANNELS[0][0],
+    /* Page-side ring of polled limiter_gain_reduction_db values; the device
+     * publishes an instant, never a history. */
+    limiterHistory: [],
+    /* The handle currently under a captured pointer, or null. */
+    drag: null,
   };
 
   /* Preset name grammar, page-enforced BEFORE any PUT. The 27-char cap is the
@@ -307,6 +347,8 @@
       input.addEventListener('input', () => onFieldInput(input));
       input.addEventListener('change', () => onFieldInput(input));
     }
+
+    buildVisualStrip();
   }
 
   function meterRow(id, label) {
@@ -414,6 +456,10 @@
     const bytes = JSON.stringify(collectModel()).length;
     $('model-bytes').textContent = `${bytes} / ${MODEL_MAX_BYTES}`;
     syncResetButtons();
+    /* The curves are a view of the fields, so every edit -- typed, reset,
+     * preset-loaded or dragged -- redraws them from here. collectModel() is
+     * untouched: the curves read the inputs directly. */
+    drawCurves();
   }
 
   function numberOf(path, fallback) {
@@ -1014,10 +1060,18 @@
     setMeterRow('meter-out-l', null, null);
     setMeterRow('meter-out-r', null, null);
     drawWaveform([]);
+    blankStrip();
+  }
+
+  /* One pill per card, one state: the strip and the meter table read the same
+   * snapshot, so they can never disagree about whether it exists. */
+  function setMeterState(text) {
+    $('meter-state').textContent = text;
+    $('visual-state').textContent = text;
   }
 
   function renderMetersAbsent(result) {
-    $('meter-state').textContent = 'unavailable';
+    setMeterState('unavailable');
     blankMeterRows();
     $('meter-summary').textContent = `Meters unavailable -- ${describe(result)}. Retrying every ${METER_RETRY_MS / 1000} s.`;
   }
@@ -1025,7 +1079,7 @@
   /* sequence 0 is the snapshot's own documented "never published" sentinel, so
    * it renders as no data rather than as a genuine zero-level signal. */
   function renderMetersIdle() {
-    $('meter-state').textContent = 'no data';
+    setMeterState('no data');
     blankMeterRows();
     $('meter-sequence').textContent = '0';
     $('meter-queue').textContent = '--';
@@ -1054,7 +1108,7 @@
   }
 
   function renderMeters(meters) {
-    $('meter-state').textContent = 'live';
+    setMeterState('live');
     /* Six positional entries in AIUS_CH_* order; position is the identity. */
     const inputs = Array.isArray(meters.input) ? meters.input : [];
     CHANNELS.forEach(([key], index) => {
@@ -1081,6 +1135,9 @@
       Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : '--'
     } Hz.`;
     drawWaveform(meters.waveform);
+    renderDspLoad(meters);
+    renderStripLevels(meters);
+    pushLimiter(meters.limiter_gain_reduction_db);
   }
 
   /* The waveform is a bounded per-bucket peak-magnitude envelope carried as
@@ -1125,6 +1182,483 @@
     }
     context.closePath();
     context.fill();
+    context.stroke();
+  }
+
+  /* ---- visual surface: EQ curves, level bars, limiter --------------------
+   * The strip under the status card mirrors the SAME model the form edits, in
+   * signal order. It has two halves:
+   *
+   *   - Pure math -- magnitude curves plus every rect/coordinate mapping.
+   *     Dependency-free on purpose: happy-dom has no layout engine (its
+   *     getBoundingClientRect returns an all-zero rect), so the vitest suite
+   *     proves this arithmetic by calling it with literal rects rather than by
+   *     synthesising a gesture. A "rect" is any {left, top, width, height} --
+   *     the canvas's CLIENT rect for pointer work, {0, 0, canvas.width,
+   *     canvas.height} for drawing, which differ because CSS scales the canvas
+   *     to the card width.
+   *   - Wiring -- listeners that turn a gesture into a field write. A drag sets
+   *     the same input text mode sets and dispatches 'input', so validation,
+   *     the derived headroom, the byte count and the redraw all run exactly as
+   *     they do for a typed edit. There is no second model.
+   *
+   * The curves are DISPLAY ONLY: the RBJ audio-EQ cookbook mirrored in JS so
+   * the page can show what a section is about to do. The device designs the
+   * real biquads from the applied config and stays the authority, exactly as
+   * the bounds table mirrors rather than replaces its validation. */
+
+  const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
+  /* Only a highpass or a peaking section bends the response, and only with a
+   * usable frequency and Q -- "none" and "bypass" contribute nothing, and so
+   * does a half-typed section. */
+  const isActiveSection = (section) =>
+    Boolean(section) &&
+    (section.type === 'highpass' || section.type === 'peaking') &&
+    Number.isFinite(section.frequency_hz) &&
+    section.frequency_hz > 0 &&
+    Number.isFinite(section.q) &&
+    section.q > 0;
+
+  /* RBJ audio-EQ cookbook, in the same two flavours the firmware designs. */
+  function sectionCoefficients(section, sampleRateHz) {
+    const w0 = (2 * Math.PI * section.frequency_hz) / sampleRateHz;
+    const cos0 = Math.cos(w0);
+    const alpha = Math.sin(w0) / (2 * section.q);
+    if (section.type === 'peaking') {
+      const a = Math.pow(10, (Number.isFinite(section.gain_db) ? section.gain_db : 0) / 40);
+      return {
+        b0: 1 + alpha * a,
+        b1: -2 * cos0,
+        b2: 1 - alpha * a,
+        a0: 1 + alpha / a,
+        a1: -2 * cos0,
+        a2: 1 - alpha / a,
+      };
+    }
+    return {
+      b0: (1 + cos0) / 2,
+      b1: -(1 + cos0),
+      b2: (1 + cos0) / 2,
+      a0: 1 + alpha,
+      a1: -2 * cos0,
+      a2: 1 - alpha,
+    };
+  }
+
+  /* |H(f)| in dB, evaluating H(z) on the unit circle at z = e^{jw}: the ratio of
+   * |b0 + b1 z^-1 + b2 z^-2| to |a0 + a1 z^-1 + a2 z^-2| (the imaginary parts
+   * carry a leading minus that a magnitude discards). The angle is capped at pi
+   * -- Nyquist -- because above it the response mirrors, which would draw a
+   * phantom rise at the right of the plot on a sub-40 kHz rate. */
+  function sectionMagnitudeDb(section, frequencyHz, sampleRateHz) {
+    if (!isActiveSection(section) || !(sampleRateHz > 0) || !(frequencyHz > 0)) return 0;
+    const coefficients = sectionCoefficients(section, sampleRateHz);
+    const w = Math.min(Math.PI, (2 * Math.PI * frequencyHz) / sampleRateHz);
+    const cos1 = Math.cos(w);
+    const sin1 = Math.sin(w);
+    const cos2 = Math.cos(2 * w);
+    const sin2 = Math.sin(2 * w);
+    const numerator = Math.hypot(
+      coefficients.b0 + coefficients.b1 * cos1 + coefficients.b2 * cos2,
+      coefficients.b1 * sin1 + coefficients.b2 * sin2,
+    );
+    const denominator = Math.hypot(
+      coefficients.a0 + coefficients.a1 * cos1 + coefficients.a2 * cos2,
+      coefficients.a1 * sin1 + coefficients.a2 * sin2,
+    );
+    if (!(denominator > 0) || !(numerator > 0)) return CURVE_FLOOR_DB;
+    return Math.max(CURVE_FLOOR_DB, 20 * Math.log10(numerator / denominator));
+  }
+
+  /* Sections in a cascade multiply, so their dB add. */
+  const cascadeMagnitudeDb = (sections, frequencyHz, sampleRateHz) =>
+    (Array.isArray(sections) ? sections : []).reduce(
+      (total, section) => total + sectionMagnitudeDb(section, frequencyHz, sampleRateHz),
+      0,
+    );
+
+  const hzToX = (hz, rect) =>
+    rect.left +
+    (rect.width * Math.log(clamp(hz, CURVE_MIN_HZ, CURVE_MAX_HZ) / CURVE_MIN_HZ)) /
+      Math.log(CURVE_MAX_HZ / CURVE_MIN_HZ);
+
+  const xToHz = (x, rect) =>
+    CURVE_MIN_HZ * Math.pow(CURVE_MAX_HZ / CURVE_MIN_HZ, clamp((x - rect.left) / rect.width, 0, 1));
+
+  const dbToY = (db, rect) => rect.top + rect.height / 2 - (db / CURVE_SPAN_DB) * (rect.height / 2);
+
+  const yToDb = (y, rect) =>
+    clamp(((rect.top + rect.height / 2 - y) / (rect.height / 2)) * CURVE_SPAN_DB, -CURVE_SPAN_DB, CURVE_SPAN_DB);
+
+  /* Field-sized precision, so a dragged value is one a human could have typed
+   * and the byte count stays sane. */
+  const roundHz = (hz) => (hz >= 1000 ? Math.round(hz) : Math.round(hz * 10) / 10);
+  const roundDb = (db) => Math.round(db * 10) / 10;
+  const roundQ = (q) => Math.round(q * 1000) / 1000;
+
+  /* (rect, client coords) -> the two model values a drag can carry. */
+  const pointToEq = (rect, clientX, clientY) => ({
+    frequency_hz: roundHz(xToHz(clientX, rect)),
+    gain_db: roundDb(yToDb(clientY, rect)),
+  });
+
+  /* (sections, rect, rate) -> the polyline the canvas strokes for the whole
+   * cascade. An empty or all-bypassed cascade is a flat line at 0 dB. */
+  function curvePoints(sections, rect, sampleRateHz) {
+    const points = [];
+    for (let step = 0; step <= CURVE_STEPS; step++) {
+      const x = rect.left + (rect.width * step) / CURVE_STEPS;
+      points.push({ x, y: dbToY(cascadeMagnitudeDb(sections, xToHz(x, rect), sampleRateHz), rect) });
+    }
+    return points;
+  }
+
+  /* One draggable point per active section, carrying the slot so a gesture
+   * knows which fields it is editing. A highpass has no gain, so its handle
+   * rides the 0 dB line. */
+  const handlePoints = (sections, rect) =>
+    (Array.isArray(sections) ? sections : []).filter(isActiveSection).map((section) => ({
+      slot: section.slot,
+      type: section.type,
+      x: hzToX(section.frequency_hz, rect),
+      y: dbToY(section.type === 'peaking' && Number.isFinite(section.gain_db) ? section.gain_db : 0, rect),
+    }));
+
+  /* Nearest handle within the grab radius, or null. */
+  function pickHandle(points, clientX, clientY, grabPx) {
+    let best = null;
+    let bestDistance = grabPx;
+    for (const point of points) {
+      const distance = Math.hypot(point.x - clientX, point.y - clientY);
+      if (distance <= bestDistance) {
+        best = point;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  /* One wheel notch, multiplicative, clamped to the Q field's own bounds. An
+   * unset Q starts from the seed rather than from nothing. */
+  const stepQ = (q, deltaY) => {
+    const base = Number.isFinite(q) && q > 0 ? q : EQ_SEED.q;
+    return roundQ(clamp(deltaY < 0 ? base * Q_WHEEL_STEP : base / Q_WHEEL_STEP, Q_MIN, Q_MAX));
+  };
+
+  /* Cycles one decoded block may spend; 0 when the snapshot has no usable rate
+   * (an unpublished snapshot reports 0 Hz). */
+  const dspBudgetCycles = (sampleRateHz) =>
+    Number.isFinite(sampleRateHz) && sampleRateHz > 0 ? (DSP_CPU_HZ * DSP_BLOCK_FRAMES) / sampleRateHz : 0;
+
+  /* null, not 0, when the snapshot cannot answer -- the page renders that as
+   * '--' rather than as a genuine "no load" reading. */
+  function dspLoadPercent(cycles, sampleRateHz) {
+    const budget = dspBudgetCycles(sampleRateHz);
+    if (!(budget > 0) || !Number.isFinite(cycles) || cycles < 0) return null;
+    return (cycles / budget) * 100;
+  }
+
+  /* Bar fill 0..1 over BAR_FLOOR_DBFS..0 dBFS. */
+  const levelFraction = (dbfs) =>
+    Number.isFinite(dbfs) ? clamp((dbfs - BAR_FLOOR_DBFS) / -BAR_FLOOR_DBFS, 0, 1) : 0;
+
+  /* ---- visual surface: DOM ----------------------------------------------- */
+
+  /* The two cascades the page draws, in signal order. `base` is a function
+   * because the input curve follows the channel selector. */
+  const CURVE_SURFACES = [
+    { canvasId: 'curve-input', base: () => `input_channels.${state.curveChannel}` },
+    { canvasId: 'curve-output', base: () => 'output' },
+  ];
+
+  function buildVisualStrip() {
+    const select = $('curve-channel');
+    for (const [key, label] of CHANNELS) {
+      const option = document.createElement('option');
+      option.value = key;
+      option.textContent = `${label} (${key})`;
+      select.append(option);
+    }
+    select.value = state.curveChannel;
+    select.addEventListener('change', () => {
+      state.curveChannel = select.value;
+      drawCurves();
+    });
+
+    for (const [key, label] of CHANNELS) buildBar('bars-input', `bar-in-${key}`, `${label} (${key})`);
+    buildBar('bars-output', 'bar-out-l', 'Output left');
+    buildBar('bars-output', 'bar-out-r', 'Output right');
+
+    for (const surface of CURVE_SURFACES) attachCurvePointer(surface);
+    /* A pointer released off the canvas still ends the drag; without capture
+     * (or with it, since the event bubbles) window is the one listener that
+     * always sees it. */
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+
+    drawCurves();
+    drawLimiterHistory();
+  }
+
+  function buildBar(mountId, id, label) {
+    const row = document.createElement('div');
+    row.className = 'bar';
+    const name = document.createElement('span');
+    name.className = 'bar__label';
+    name.textContent = label;
+    const track = document.createElement('div');
+    track.className = 'bar__track';
+    const fill = document.createElement('div');
+    fill.className = 'bar__fill';
+    fill.id = `${id}-fill`;
+    track.append(fill);
+    const value = document.createElement('span');
+    value.className = 'bar__value';
+    value.id = `${id}-value`;
+    value.textContent = '--';
+    row.append(name, track, value);
+    $(mountId).append(row);
+  }
+
+  function setBar(id, dbfs) {
+    $(`${id}-fill`).style.width = `${(levelFraction(dbfs) * 100).toFixed(1)}%`;
+    $(`${id}-value`).textContent = formatDb(dbfs);
+  }
+
+  /* Slot-preserving view of one cascade, read straight from the inputs: the
+   * index IS the slot, so a dragged handle knows which fields to write. An
+   * empty or unparsable number reads as absent, which makes the section
+   * inactive rather than a curve at 0 Hz. */
+  function curveSections(base) {
+    return [...Array(EQ_SLOTS).keys()].map((slot) => {
+      const path = `${base}.eq.${slot}`;
+      return {
+        slot,
+        type: field(`${path}.type`).value,
+        frequency_hz: numberOf(`${path}.frequency_hz`, NaN),
+        q: numberOf(`${path}.q`, NaN),
+        gain_db: numberOf(`${path}.gain_db`, 0),
+      };
+    });
+  }
+
+  const curveSampleRate = () =>
+    state.model && Number.isFinite(state.model.sample_rate_hz) && state.model.sample_rate_hz > 0
+      ? state.model.sample_rate_hz
+      : CURVE_DEFAULT_RATE_HZ;
+
+  const labelHz = (hz) => (hz >= 1000 ? `${hz / 1000}k` : String(hz));
+
+  function drawCurves() {
+    for (const surface of CURVE_SURFACES) drawCurve(surface.canvasId, curveSections(surface.base()));
+  }
+
+  function drawCurve(canvasId, sections) {
+    const canvas = $(canvasId);
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const rect = { left: 0, top: 0, width: canvas.width, height: canvas.height };
+    context.clearRect(0, 0, rect.width, rect.height);
+
+    context.strokeStyle = '#232b35';
+    context.beginPath();
+    for (const hz of CURVE_GRID_HZ) {
+      context.moveTo(hzToX(hz, rect), 0);
+      context.lineTo(hzToX(hz, rect), rect.height);
+    }
+    for (const db of CURVE_GRID_DB) {
+      context.moveTo(0, dbToY(db, rect));
+      context.lineTo(rect.width, dbToY(db, rect));
+    }
+    context.stroke();
+
+    /* 0 dB is the reference the whole plot is read against, so it gets its own
+     * brighter line on top of the grid. */
+    context.strokeStyle = '#2a3542';
+    context.beginPath();
+    context.moveTo(0, dbToY(0, rect));
+    context.lineTo(rect.width, dbToY(0, rect));
+    context.stroke();
+
+    context.fillStyle = '#5d6b78';
+    context.font = '11px ui-monospace,monospace';
+    for (const hz of CURVE_GRID_HZ) context.fillText(labelHz(hz), hzToX(hz, rect) + 3, rect.height - 5);
+    for (const db of CURVE_GRID_DB) {
+      if (db !== 0) context.fillText(`${db > 0 ? '+' : ''}${db}`, 3, dbToY(db, rect) - 4);
+    }
+
+    context.strokeStyle = '#74d7ff';
+    context.lineWidth = 2;
+    context.beginPath();
+    curvePoints(sections, rect, curveSampleRate()).forEach((point, index) => {
+      if (index === 0) context.moveTo(point.x, point.y);
+      else context.lineTo(point.x, point.y);
+    });
+    context.stroke();
+    context.lineWidth = 1;
+
+    for (const handle of handlePoints(sections, rect)) {
+      context.fillStyle = handle.type === 'peaking' ? '#73e6a0' : '#e8c46a';
+      context.strokeStyle = '#101318';
+      context.beginPath();
+      context.arc(handle.x, handle.y, HANDLE_RADIUS_PX, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+  }
+
+  /* The canvas edits the model through the form, never around it: writeField()
+   * is the single write path, and dispatching 'input' is what makes a drag
+   * indistinguishable from typing downstream. A disabled input (a highpass's
+   * gain, a bypassed section) is left alone, exactly as the device ignores it. */
+  function writeField(path, value) {
+    const input = field(path);
+    if (input.disabled) return;
+    input.value = String(value);
+    input.dispatchEvent(new Event('input'));
+  }
+
+  /* Pointer work needs the CLIENT rect, not the backing store: CSS scales the
+   * canvas to the card width, so a client coordinate only means something
+   * against the rect the browser actually laid out. A zero-sized rect (no
+   * layout yet, or a headless DOM) simply yields no handle. */
+  function handleUnder(surface, event) {
+    const rect = $(surface.canvasId).getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    const points = handlePoints(curveSections(surface.base()), rect);
+    return pickHandle(points, event.clientX, event.clientY, HANDLE_GRAB_PX);
+  }
+
+  function attachCurvePointer(surface) {
+    const canvas = $(surface.canvasId);
+    canvas.addEventListener('pointerdown', (event) => {
+      const handle = handleUnder(surface, event);
+      if (!handle) return;
+      /* No write on the press itself: a click that does not move must not nudge
+       * the section it grabbed. */
+      event.preventDefault();
+      state.drag = { surface, slot: handle.slot, type: handle.type, pointerId: event.pointerId };
+      if (typeof canvas.setPointerCapture === 'function') canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (state.drag && state.drag.surface === surface) dragTo(event);
+    });
+    /* passive: false, because the page must keep the wheel from scrolling while
+     * it is being used to set Q. */
+    canvas.addEventListener(
+      'wheel',
+      (event) => {
+        const handle = handleUnder(surface, event);
+        if (!handle) return;
+        event.preventDefault();
+        const path = `${surface.base()}.eq.${handle.slot}`;
+        writeField(`${path}.q`, stepQ(numberOf(`${path}.q`, NaN), event.deltaY));
+      },
+      { passive: false },
+    );
+  }
+
+  function dragTo(event) {
+    const drag = state.drag;
+    const canvas = $(drag.surface.canvasId);
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return;
+    const path = `${drag.surface.base()}.eq.${drag.slot}`;
+    const point = pointToEq(rect, event.clientX, event.clientY);
+    writeField(`${path}.frequency_hz`, point.frequency_hz);
+    /* Only a peaking section carries gain -- the rule collectEqSection()
+     * applies -- so a highpass handle moves horizontally only. */
+    if (drag.type === 'peaking') writeField(`${path}.gain_db`, point.gain_db);
+  }
+
+  function endDrag() {
+    if (state.drag === null) return;
+    const { surface, pointerId } = state.drag;
+    state.drag = null;
+    const canvas = $(surface.canvasId);
+    if (typeof canvas.releasePointerCapture !== 'function' || !Number.isFinite(pointerId)) return;
+    try {
+      canvas.releasePointerCapture(pointerId);
+    } catch (captureError) {
+      /* the pointer was already released (or never captured) */
+    }
+  }
+
+  /* ---- visual surface: meters -------------------------------------------- */
+
+  function renderStripLevels(meters) {
+    const inputs = Array.isArray(meters.input) ? meters.input : [];
+    CHANNELS.forEach(([key], index) => setBar(`bar-in-${key}`, dbfsOf(inputs[index], 'peak_dbfs')));
+    const output = meters.output && typeof meters.output === 'object' ? meters.output : {};
+    setBar('bar-out-l', channelDbfs(output.peak_dbfs, 0));
+    setBar('bar-out-r', channelDbfs(output.peak_dbfs, 1));
+  }
+
+  /* Load is against the per-block cycle budget, not wall clock: the snapshot's
+   * counters are DWT cycles for one decoded block. */
+  function renderDspLoad(meters) {
+    const rate = Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : 0;
+    const load = dspLoadPercent(meters.dsp_cycles_last, rate);
+    const peak = dspLoadPercent(meters.dsp_cycles_max, rate);
+    $('meter-load').textContent =
+      load === null ? '--' : `${load.toFixed(1)} % load / ${(100 - load).toFixed(1)} % headroom`;
+    $('meter-load-peak').textContent = peak === null ? '--' : `${peak.toFixed(1)} % of the block budget`;
+  }
+
+  function setLimiterBar(db) {
+    const reduction = Number.isFinite(db) ? clamp(-db, 0, LIMITER_SPAN_DB) : 0;
+    $('gr-fill').style.width = `${((reduction / LIMITER_SPAN_DB) * 100).toFixed(1)}%`;
+    $('gr-value').textContent = Number.isFinite(db) ? `${formatDb(db)} dB` : '--';
+  }
+
+  /* Each snapshot's gain reduction is the value at the publish instant, not a
+   * windowed average, so the strip is a record of instants at the poll rate --
+   * said as much in the canvas title. */
+  function pushLimiter(db) {
+    state.limiterHistory.push(Number.isFinite(db) ? clamp(db, -LIMITER_SPAN_DB, 0) : 0);
+    if (state.limiterHistory.length > LIMITER_HISTORY_MAX) state.limiterHistory.shift();
+    setLimiterBar(db);
+    drawLimiterHistory();
+  }
+
+  function blankStrip() {
+    for (const [key] of CHANNELS) setBar(`bar-in-${key}`, null);
+    setBar('bar-out-l', null);
+    setBar('bar-out-r', null);
+    $('meter-load').textContent = '--';
+    $('meter-load-peak').textContent = '--';
+    setLimiterBar(null);
+    state.limiterHistory = [];
+    drawLimiterHistory();
+  }
+
+  function drawLimiterHistory() {
+    const canvas = $('gr-history');
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const { width, height } = canvas;
+    context.clearRect(0, 0, width, height);
+    /* 0 dB is the top rail: gain reduction only ever goes down from it. */
+    context.strokeStyle = '#2a3542';
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(width, 0);
+    context.stroke();
+
+    const values = state.limiterHistory;
+    if (values.length === 0) return;
+    /* Newest at the right at a FIXED step, so a filling buffer grows into the
+     * strip instead of stretching to fit. */
+    const step = width / (LIMITER_HISTORY_MAX - 1);
+    context.strokeStyle = '#e8c46a';
+    context.beginPath();
+    values.forEach((value, index) => {
+      const x = width - (values.length - 1 - index) * step;
+      const y = (Math.min(0, value) / -LIMITER_SPAN_DB) * height;
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
     context.stroke();
   }
 
@@ -1174,6 +1708,27 @@
       /* nothing to do: the field still holds the value for this session */
     }
   }
+
+  /* The pure half of the visual surface is also its unit-test surface: with no
+   * layout engine under happy-dom, the only way to prove the drag arithmetic
+   * and the curve maths is to call them with literal rects. Nothing on the page
+   * reads this back -- it is an export, not a channel. */
+  window.aiusDspEditorMath = Object.freeze({
+    cascadeMagnitudeDb,
+    curvePoints,
+    dbToY,
+    dspBudgetCycles,
+    dspLoadPercent,
+    handlePoints,
+    hzToX,
+    levelFraction,
+    pickHandle,
+    pointToEq,
+    sectionMagnitudeDb,
+    stepQ,
+    xToHz,
+    yToDb,
+  });
 
   buildForm();
   $('apply').onclick = () => void guard(applyConfig);

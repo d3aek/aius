@@ -45,9 +45,40 @@ code{color:#74d7ff}
 .pill[data-state="pending"],.pill[data-state="sending"]{border-color:#74d7ff;color:#74d7ff}
 .pill[data-state="stale"],.pill[data-state="invalid"],.pill[data-state="error"]{border-color:#d16a6a;color:#f2a0a0}
 
+/* Signal-flow strip: the at-a-glance view of the same model the form edits and
+   the same snapshot the meter table shows, in signal order. Canvas sizing
+   mirrors replays.css's `.meters canvas` so both cards scale identically. */
+/* Sibling rule, not :first-of-type: the first .visual-block is the card's THIRD
+   child (after the title row and the hint), so a first-of-type reset would
+   silently match nothing. */
+.visual-block{margin-top:14px}
+.visual-block+.visual-block{border-top:1px solid #232b35;padding-top:12px}
+.visual-block__head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px}
+.visual-block__title{margin:0;font-size:.8rem;color:#73e6a0;letter-spacing:.06em}
+.visual-block__note{color:#9aa8b5;font-size:.72rem}
+.visual-block__pick{display:flex;gap:8px;align-items:center;color:#9aa8b5;font-size:.72rem}
+.visual-block__pick select{padding:4px 6px;font-size:.72rem}
+.visual canvas{display:block;width:100%;height:auto;background:#0d1116;border-radius:5px}
+/* touch-action, or a drag on a handle also pans the page on a touch pointer. */
+.curve{touch-action:none;cursor:crosshair}
+
+.bars{display:grid;gap:5px}
+.bar{display:grid;grid-template-columns:minmax(96px,auto) 1fr minmax(46px,auto);gap:10px;align-items:center;color:#9aa8b5;font-size:.72rem}
+.bar__track{position:relative;height:10px;background:#0d1116;border-radius:3px;overflow:hidden}
+.bar__fill{position:absolute;left:0;top:0;bottom:0;width:0;background:#73e6a0}
+.bar__value{text-align:right;color:#aab4c0;font-variant-numeric:tabular-nums}
+
+.gr{display:grid;grid-template-columns:auto 1fr auto minmax(62px,auto);gap:10px;align-items:center;color:#9aa8b5;font-size:.72rem}
+.gr__track{position:relative;height:12px;background:#0d1116;border-radius:3px;overflow:hidden}
+/* Gain reduction only goes down from 0 dB, so the bar hangs off the right edge
+   and grows leftwards as the limiter closes. */
+.gr__fill{position:absolute;right:0;top:0;bottom:0;width:0;background:#e8c46a}
+.gr__value{text-align:right;color:#e8dcc0;font-variant-numeric:tabular-nums}
+.gr__history{margin-top:8px}
+
 .meter-table{width:100%;border-collapse:collapse;margin-top:14px;font-size:.78rem;font-variant-numeric:tabular-nums}
 .meter-table th,.meter-table td{text-align:right;padding:6px 8px;border-bottom:1px solid #232b35}
 .meter-table th[scope="row"],.meter-table thead th:first-child{text-align:left;color:#9aa8b5;font-weight:400}
 .meter-table thead th{color:#9aa8b5;font-weight:400}
 
-@media(max-width:650px){.eq-row{grid-template-columns:1fr}.eq-row__title{padding-top:0}}
+@media(max-width:650px){.eq-row{grid-template-columns:1fr}.eq-row__title{padding-top:0}.bar,.gr{grid-template-columns:minmax(70px,auto) 1fr auto}.gr__value{grid-column:2/4}}
