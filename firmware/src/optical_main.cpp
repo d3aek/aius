@@ -498,6 +498,84 @@ static AiusRecorder g_recorder;
 static bool g_recorder_present = false;
 /* The boot probe's result (startup.c configure_external_ram), in MB. */
 extern "C" uint8_t external_psram_size;
+/* Best-known PSRAM on the SECOND pad (FlexSPI2 chip-select A2, silkscreened
+ * FLASH), in MB. The core's probe never interrogates pad 2 while pad 1 is
+ * silent, so a lone chip soldered there is invisible to `external_psram_size`
+ * -- exactly the 2026-07-27 bench state. probe_second_pad_psram() closes that
+ * gap; `psram_pad2_mb` on GET /api/status is its reader. */
+static uint8_t g_psram_pad2_mb = 0u;
+
+/* The IP-command primitives below are the startup probe's own
+ * (cores/teensy4/startup.c flexspi2_command / flexspi2_psram_id), replicated
+ * because they are static there. The LUT indices are the ones startup
+ * programmed and left behind: 0 exit-QPI, 1 reset-enable, 2 reset, 3 read-ID. */
+static FLASHMEM void flexspi2_ip_command(uint32_t index, uint32_t address)
+{
+	FLEXSPI2_IPCR0 = address;
+	FLEXSPI2_IPCR1 = FLEXSPI_IPCR1_ISEQID(index);
+	FLEXSPI2_IPCMD = FLEXSPI_IPCMD_TRG;
+	while (!(FLEXSPI2_INTR & FLEXSPI_INTR_IPCMDDONE))
+		;
+	FLEXSPI2_INTR = FLEXSPI_INTR_IPCMDDONE;
+}
+
+static FLASHMEM uint32_t flexspi2_ip_read_id(uint32_t address)
+{
+	FLEXSPI2_IPCR0 = address;
+	FLEXSPI2_IPCR1 = FLEXSPI_IPCR1_ISEQID(3) | FLEXSPI_IPCR1_IDATSZ(4);
+	FLEXSPI2_IPCMD = FLEXSPI_IPCMD_TRG;
+	while (!(FLEXSPI2_INTR & FLEXSPI_INTR_IPCMDDONE))
+		;
+	const uint32_t id = FLEXSPI2_RFDR0;
+	FLEXSPI2_INTR = FLEXSPI_INTR_IPCMDDONE | FLEXSPI_INTR_IPRXWA;
+	return id;
+}
+
+/* Pad 2's IP-command window base when NO pad-1 chip was found: startup never
+ * writes FLSHA1CR0 on that path, so it holds its reset default of 64 MB
+ * (0x10000 KB) and chip-select A2's window begins at 64 MB. (On the found
+ * path startup re-bases A1 to its real size, which is why ITS pad-2 probe
+ * uses `size1 << 20` instead.) */
+static constexpr uint32_t AIUS_PSRAM_PAD2_PROBE_BASE = 0x04000000u;
+
+/* Runs once from setup(), construction-cheap (four bounded IP commands on an
+ * otherwise idle FlexSPI2). Gated to the no-pad-1 case: on a 16 MB board the
+ * pad-2 chip is LIVE mapped memory that a reset command would corrupt, and on
+ * an 8 MB board startup's own second probe already asked pad 2 and heard
+ * nothing -- both answers derive from `external_psram_size`. */
+static FLASHMEM void probe_second_pad_psram(void)
+{
+	if (external_psram_size != 0u) {
+		g_psram_pad2_mb = external_psram_size > 8u ? 8u : 0u;
+		return;
+	}
+
+	flexspi2_ip_command(0u, AIUS_PSRAM_PAD2_PROBE_BASE); /* exit QPI */
+	flexspi2_ip_command(1u, AIUS_PSRAM_PAD2_PROBE_BASE); /* reset enable */
+	flexspi2_ip_command(2u, AIUS_PSRAM_PAD2_PROBE_BASE); /* reset */
+	const uint32_t id = flexspi2_ip_read_id(AIUS_PSRAM_PAD2_PROBE_BASE);
+	switch (id & 0xFFFFu) {
+	case 0x5D0Du: /* AP / Ipus / ESP / Lyontek KGD */
+		g_psram_pad2_mb = 8u;
+		break;
+	case 0x5D9Du: /* ISSI: size in ID bits 23:21 */
+		switch ((id >> 21) & 0x7u) {
+		case 0x3u:
+			g_psram_pad2_mb = 8u;
+			break;
+		case 0x4u:
+			g_psram_pad2_mb = 16u;
+			break;
+		default:
+			g_psram_pad2_mb = 0u;
+			break;
+		}
+		break;
+	default:
+		g_psram_pad2_mb = 0u;
+		break;
+	}
+}
 /* The previous boot's final persisted checkpoint (0xffff when the retained
  * ledger was invalid), captured by capture_boot_state() before aius_boot_init
  * folds it away. `pv=` on the USB ID line: the only after-the-fact evidence of
@@ -2054,7 +2132,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
 	const char *network_mode = status[1] == 1u ? "dhcp" : "offline";
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -2098,6 +2176,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)recovery.boot_generation,
 		(unsigned)recovery.watchdog_early_resets,
 		(unsigned long)recovery.loop_epoch,
+		(unsigned)external_psram_size,
+		(unsigned)g_psram_pad2_mb,
 		/* The LATCHED checkpoint-7 decision and inputs, never re-derived
 		 * here: re-reading pllLocked() at request time could disagree with
 		 * the pad within one poll. */
@@ -4539,6 +4619,7 @@ FLASHMEM void setup(void)
 
 	capture_retained_boot_state();
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);
+	probe_second_pad_psram();
 
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();

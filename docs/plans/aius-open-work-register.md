@@ -41,16 +41,16 @@ specified here. Strike items here in the commit that closes them.
 
 ## Waiting on the operator
 
-- **First PSRAM chip not detected after soldering (2026-07-27 evening).**
-  Post-solder cold boot AND a software-reset warm boot both probe `ps=0`;
-  `/api/recorder` agrees (`state:"absent"`, `fitted_mb:0`). The core's
-  probe is a 1-bit SPI ID read (`0x9F`, expecting KGD `0x5D`) on the
-  FIRST pad only — CLK, CS, SIO0, SIO1, 3V3, GND are the joints in play
-  (SIO2/SIO3 don't participate in detection), and a lone chip on the
-  FLASH-labelled pad is invisible because the probe never interrogates
-  the second pad while the first is silent. At the next powered-off bench
-  session: confirm the chip sits on the pad marked PSRAM, then reflow /
-  inspect those six joints before (or while) fitting the second chip.
+- **First PSRAM chip: on the FLASH pad, and VERIFIED WORKING there
+  (2026-07-27, late).** The post-solder `ps=0` was placement, not joints:
+  the operator soldered chip 1 on the FLASH-silkscreened pad
+  (chip-select A2), which the core probe never interrogates while the
+  PSRAM pad is silent. The firmware's pad-2 ID probe (`psram_pad2_mb` on
+  `GET /api/status`) reads **8 MB — the chip answers**, so CLK, CS,
+  SIO0, SIO1, 3V3 and GND are all good; only SIO2/SIO3 stay unexercised
+  until the chip is QPI-mapped. Next bench session: solder chip 2 on the
+  pad marked PSRAM — **no rework of chip 1** — after which the stock
+  probe sizes both (`ps=16`) and the recorder arms at 16 MB.
 - **Bench first-signal test** — everything is staged:
   [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md)
   (22 pF fitted value recorded), RS PRO jacks + datasheets + AP214 STEP

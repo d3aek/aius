@@ -149,6 +149,12 @@ question is what the PREVIOUS boot did.
   refusal started the starvation. `0`–`9` a checkpoint, `253` out-of-domain
   capture, `254` no abort, `255` the latch was invalid at boot.
 
+When the network is up, `GET /api/status` additionally serves `psram_mb`
+(same value as `ps`) and `psram_pad2_mb` — the best-known PSRAM on the second
+(FLASH-silkscreened) pad, which the core probe cannot see while the first pad
+is empty; the firmware's own boot-time ID probe of chip-select A2 supplies it
+in that case.
+
 ### Fields this line does not carry
 
 **`link`, `dhcp_pending`, `dhcp_discovers`, and `dhcp_updates` are not on the
