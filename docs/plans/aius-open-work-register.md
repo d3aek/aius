@@ -20,16 +20,13 @@ specified here. Strike items here in the commit that closes them.
 
 ## In flight at handoff
 
-- **Downmix-matrix visual surface** — an implementer build was running at
-  session handoff, its edits landing in `firmware/sd/www/dsp-editor.{js,css}`
-  + `index.html` (a routing-diagram canvas block in the signal-flow strip:
-  six sources → L/R, draggable centre/surround/LFE/headroom handles through
-  the form's own fields, clip-free chip, click-to-edit crossover label).
-  Next session: run `scripts/test.sh --vitest-only dsp-editor` (must be
-  ≥141 green plus new coverage) and the firmware `dsp-config` suite, review
-  the diff, commit, sync the card, verify a real drag on-device. The
-  dispatch brief's full text is in the task #7 slice 5 record's spirit;
-  owned paths above plus `test/sd-editor/dsp-editor.test.js`.
+- ~~**Downmix-matrix visual surface**~~ **LANDED before the handoff closed**
+  (`77f64a8be`): the routing diagram is in the strip, 168 dsp-editor tests
+  (221 across the aius scope), deployed to the card, and drag-verified
+  on-device with trusted input (centre gain moved by a native drag at the
+  measured handle, then restored). Probe lesson recorded in the resume:
+  `matrixHandlePoints(values, rect)` takes HANDLE-keyed values
+  (`center`/`surround`/`lfe`/`headroom`), not field names.
 
 ## Contracted, not started
 
