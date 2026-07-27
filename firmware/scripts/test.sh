@@ -11,8 +11,8 @@
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, boot, boot-target, fault-target, build-metadata,
-#         runtime, network-transport, sd, sd-target, optical-app,
+#         usb-control, replay, tx-gate, boot, boot-target, fault-target,
+#         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry.
 #
@@ -385,6 +385,19 @@ replay)
 		"$fw_root/lib/aius_replay/src/aius_replay.c" \
 		-o "$replay_out"
 	"$replay_out"
+	;;
+tx-gate)
+	# Header-only predicate: the test compiles against the replay lib's
+	# include set (aius_replay.h pulls codec + pipeline types) but links no
+	# implementation -- the whole policy is the inline in aius_tx_gate.h.
+	tx_gate_out="$build_dir/tx-gate"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_pipeline/include" \
+		"-I$fw_root/lib/aius_dts/include" \
+		"-I$fw_root/lib/aius_iec61937/include" \
+		"-I$fw_root/lib/aius_replay/include" \
+		"$fw_root/test/tx-gate/test_tx_gate.c" \
+		-o "$tx_gate_out"
+	"$tx_gate_out"
 	;;
 boot)
 	boot_out="$build_dir/boot"

@@ -82,9 +82,16 @@ transmitter sits behind a reset-safe gate (`SN74LVC1G126`) so a booting or
 crashed Teensy can never emit data ([optical sheet](../../electronics/connectivity/optical-spdif.json)
 §design_notes). The bench wires both jacks **directly**, so:
 
-- the TX may emit an optical carrier from the moment the S/PDIF peripheral
-  starts, including during boot — harmless into a bench sink, but it is a
-  difference from the carrier's contract, not a bug to "fix" later;
+- **the firmware transmit gate substitutes for the electronic one** (the
+  carrier-management phase in the prototype plan): the output stays dark
+  unless the input carrier is locked or a replay is running, actuated at
+  pad 14's mux, observable as `tx_gate` on `GET /api/status`. What firmware
+  cannot close: an unavoidable **~0.1–2 ms silence-carrier blip** at static
+  construction (~300 ms after every reset, before `setup()` runs), with the
+  pad undriven before that. Harmless into a bench sink; the carrier board's
+  electronic default closes even that window;
+- a crashed-mid-open firmware leaves the pad routed until the watchdog
+  resets it (bounded 8 s) — again a bench-only difference;
 - there is no raw-bypass path; the raw/processed mux tests in the prototype
   plan's test matrix are carrier-only.
 

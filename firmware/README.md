@@ -279,6 +279,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `http` | Request parser + the bounded server transaction. |
 | `usb-control` | USB control command parser + runtime transaction. |
 | `replay` | Replay service over a fake reader. |
+| `tx-gate` | The transmit-gate predicate's whole truth table (no carrier and no replay → no output carrier). |
 | `boot`, `boot-target` | Retained ledger and recovery-mode rules; the Teensy boot adapter + its post-link verifier. |
 | `sd`, `sd-target` | Portable SD job machine; the one-shot Teensy SD adapter. |
 | `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |

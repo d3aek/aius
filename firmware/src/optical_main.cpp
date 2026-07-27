@@ -33,6 +33,7 @@ extern "C" {
 	#include "aius_dsp_config.h"
 }
 #include "aius_replay.h"
+#include "aius_tx_gate.h"
 #include "aius_optical_config.h"
 #include "aius_auth.h"
 #include "aius_config.h"
@@ -1246,6 +1247,46 @@ static AudioOutputSPDIF3 g_spdif_out;
 static AudioConnection g_spdif_left(g_spdif_in, 0, g_audio_processor, 0);
 static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
 
+/* ---- optical transmit gate (bench actuator) --------------------------------
+ *
+ * The final product holds the transmitter dark electronically (TX_ENABLE into
+ * the 1G126's OE); the bench build, wired jack-direct, enforces the same
+ * policy -- no input carrier and no replay, no output carrier -- by routing
+ * pad 14 away from SPDIF_OUT. The predicate lives in aius_tx_gate.h so the
+ * carrier firmware later drives pad 39 from the identical boolean.
+ *
+ * THE ACTUATOR IS THE PAD MUX, NOT THE PERIPHERAL. SPDIF3, its PLL, the
+ * transmit DMA and the tx24 ring all keep running into a dark pad (the same
+ * drain the on-stop analysis at replay stop describes), so opening the gate
+ * is one register store with no peripheral state to rebuild. Dark is GPIO
+ * driven-low via direct register writes -- data first, then direction, then
+ * mux -- because the OTJ-5's Vin low is "LED off". Bare pinMode() is
+ * DELIBERATELY not used: digital.c's pinMode rewrites the pad's PADCONFIG
+ * (DSE(7) + SION) that S/PDIF has run on at reset-default since the item 3
+ * measurements; these three stores touch mux, direction and data only. The
+ * SPDIF_OUT routing value 3 is what AudioOutputSPDIF3::begin() wrote above
+ * (output_spdif3.cpp:94, "3:SPDIF_OUT"); the gate is the pad's only writer
+ * after boot.
+ *
+ * A ~0.1-2 ms silence-carrier blip at static construction (~300 ms after
+ * every reset, begin() starting DMA before setup() can run) is unavoidable
+ * and recorded in the plan; setup()'s first act is the dark-set that ends
+ * it. Evaluation lives in tx_gate_service() at checkpoint 7. */
+static bool g_tx_gate_open;    /* latched per-epoch decision, .bss = closed */
+static bool g_tx_gate_carrier; /* latched inputs, served on /api/status -- */
+static bool g_tx_gate_replay;  /* never re-derived at request time */
+
+static FLASHMEM void tx_gate_actuate(bool open)
+{
+	if (open) {
+		CORE_PIN14_CONFIG = 3; /* SPDIF_OUT, as begin() routed it */
+		return;
+	}
+	CORE_PIN14_PORTCLEAR = CORE_PIN14_BITMASK;
+	CORE_PIN14_DDRREG |= CORE_PIN14_BITMASK;
+	CORE_PIN14_CONFIG = 5; /* ALT5 GPIO, now driving low */
+}
+
 static FLASHMEM uint8_t current_state(void)
 {
 	AiusPipelineClass klass = g_audio_processor.classification();
@@ -1914,7 +1955,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
 	const char *network_mode = status[1] == 1u ? "dhcp" : "offline";
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
@@ -1957,7 +1998,12 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		(unsigned long)recovery.network_generation,
 		(unsigned long)recovery.boot_generation,
 		(unsigned)recovery.watchdog_early_resets,
-		(unsigned long)recovery.loop_epoch);
+		(unsigned long)recovery.loop_epoch,
+		/* The LATCHED checkpoint-7 decision and inputs, never re-derived
+		 * here: re-reading pllLocked() at request time could disagree with
+		 * the pad within one poll. */
+		g_tx_gate_open ? 1u : 0u, g_tx_gate_carrier ? 1u : 0u,
+		g_tx_gate_replay ? 1u : 0u);
 	if (written <= 0 || (size_t)written >= capacity)
 		return 0;
 	/* The diagnostic object joins the same body rather than a second route:
@@ -4028,6 +4074,23 @@ static FLASHMEM void replay_clock_service(void)
 	interrupts();
 }
 
+/* Checkpoint 7, after replay_clock_service(): both inputs are this epoch's
+ * settled values -- the reconciler's source transition and any carrier
+ * displacement have already landed. In recovery-safe the scheduler never
+ * reaches this checkpoint, so the gate stays frozen dark from setup(), which
+ * also mutes live passthrough there -- intended, and recorded in the plan. */
+static FLASHMEM void tx_gate_service(void)
+{
+	const bool carrier = AudioInputSPDIF3::pllLocked();
+	const AiusReplaySource source = g_replay_service.source;
+	const bool open = aius_tx_gate_permitted(carrier, source);
+	if (open != g_tx_gate_open)
+		tx_gate_actuate(open);
+	g_tx_gate_open = open;
+	g_tx_gate_carrier = carrier;
+	g_tx_gate_replay = aius_tx_gate_permitted(false, source);
+}
+
 /* Checkpoint 7: the SD lifecycle and the replay refill, in that order, with the
  * refill quota taken from the budget rather than the legacy loop's literal
  * 2,048.
@@ -4057,6 +4120,10 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * one's. Memory only -- two byte stores under one critical section -- so it
 	 * spends none of the epoch's single SD primitive. */
 	replay_clock_service();
+	/* After the clock reconciler for the same reason it runs last: the gate
+	 * must judge this epoch's settled source and carrier, not the previous
+	 * one's. A boolean and at most three register stores; no budget row. */
+	tx_gate_service();
 	return true;
 }
 
@@ -4187,6 +4254,15 @@ static FLASHMEM void derive_auth_token(void)
  * file. */
 FLASHMEM void setup(void)
 {
+	/* FIRST: end the static-construction carrier blip. g_spdif_out's
+	 * constructor ran begin() ~300 ms after reset with DMA already streaming
+	 * zeroed buffers; this dark-set is the earliest firmware-controlled
+	 * instant that can close the gate (no startup hook precedes constructors,
+	 * and begin() would overwrite a hook's mux anyway). g_tx_gate_open is
+	 * .bss false, so the latched state and the pad agree from here until
+	 * checkpoint 7 first evaluates the policy. */
+	tx_gate_actuate(false);
+
 	capture_retained_boot_state();
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);
 
@@ -4457,8 +4533,13 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
 		return;
 	}
 	if (reboot_drain_complete() ||
-	    (int32_t)(now_ms - g_reboot_deadline_ms) >= 0)
+	    (int32_t)(now_ms - g_reboot_deadline_ms) >= 0) {
+		/* "Reboot with TX disabled first": a clean driven LOW until the ROM
+		 * takes the pad back to its undriven reset default, rather than a
+		 * carrier that dies mid-frame at reset. */
+		tx_gate_actuate(false);
 		reset_application();
+	}
 }
 
 /* Exactly one runtime epoch, then the three things the epoch itself must not do.

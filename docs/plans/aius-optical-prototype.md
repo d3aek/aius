@@ -5,7 +5,7 @@ scope: aius
 subtype: experiment
 status: proposed
 tags: [aius, optical-spdif, prototype, ethernet, validation]
-updated: 2026-07-22
+updated: 2026-07-27
 toc: true
 ---
 
@@ -49,6 +49,97 @@ geometry, page 4 of each datasheet) before any board order — the
 from the Cliff drawings and must be re-checked against the RS PRO ones. The
 cost-model rows still carry the old Cliff quotes; bench wiring for the first
 real signal test: [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md).
+
+## Firmware carrier management — the bench TX gate
+
+Contracted 2026-07-27 (user-confirmed). **The bench build must hold the
+optical output dark until there is something to transmit, preserving the
+carrier board's electronically-enforced policy in firmware: no input carrier
+and no replay → no output carrier.**
+
+Prebuild-gated 2026-07-27; the contract below carries the gate's forced
+adjustments.
+
+- **Policy (portable, one predicate):** TX is permitted iff the S/PDIF input
+  carrier is locked (`SPDIF_SRPC` LOCK bit — the same single volatile read
+  that feeds the status surface) OR the replay source is
+  `SWITCHING_TO_REPLAY` or `REPLAY` (prebuffering counts, so the sink gets
+  lock lead time before audio; `ERROR` does not count). Evaluated per epoch
+  in thread context; no hysteresis in v1 (the electronic gate sees the same
+  flapping). **Accepted residue, stated:** nothing auto-stops an EOF'd
+  replay — its source stays `REPLAY` until an operator stop or carrier
+  displacement — so a drained replay keeps a silence carrier up. That is the
+  source-predicate's honest behaviour; the state-based alternative would cut
+  the final ~43 ms still draining the 2048-frame tx24 ring. The carrier
+  board's electronic gate will face the identical policy question.
+- **Actuator now (bench):** pad 14's IOMUXC mux. The SPDIF_OUT routing is
+  `CORE_PIN14_CONFIG = 3`, written by `AudioOutputSPDIF3::begin()` (NOT by
+  `config_spdif3()`, which touches clocks only). Dark = GPIO low via direct
+  register writes — `CORE_PIN14_PORTCLEAR`, `CORE_PIN14_DDRREG` set, then
+  `CORE_PIN14_CONFIG = 5` — and lit = one store of `3`. **Bare
+  `pinMode(14, OUTPUT)` is forbidden:** it rewrites the pad's PADCONFIG
+  (DSE(7) + SION) that S/PDIF has run on at reset-default since item 3's
+  measurements. The S/PDIF peripheral, PLL, transmit DMA and the replay
+  clock-responsibility handover keep running untouched; the tx24 ring keeps
+  draining into a dark pad exactly as the on-stop analysis already
+  describes. The gate module is the pad's sole owner after boot (verified:
+  no other CORE_PIN14/pinMode/digitalWrite site in the firmware).
+- **Actuator later (carrier):** the same predicate drives `TX_ENABLE`
+  (pad 39, currently untouched anywhere in firmware) into the 1G126's OE.
+  One boolean, two actuators; the bench path is not throwaway.
+- **Boot window, honestly stated:** the gate is closed **from `setup()`
+  onward** (an early dark-set precedes everything else there, and the
+  reboot drain closes it before reset). It cannot be closed earlier: the
+  static `AudioOutputSPDIF3` constructor runs `begin()` at ~300 ms after
+  every reset with DMA already streaming zeroed buffers, so an unavoidable
+  ~0.1–2 ms silence-carrier blip exists at static-construction on every
+  boot and reboot, with the pad undriven (reset-default keeper) before
+  that. No startup hook can precede the constructor, and patching the
+  vendored snapshot is forbidden. The HTTP proof channel polls after the
+  blip and structurally cannot observe it — recorded so the carrier-board
+  release review reads the truth. The bench guide's boot caveat is
+  NARROWED to this blip, never deleted.
+- **Degraded modes:** in recovery-safe the scheduler never reaches the
+  evaluation checkpoint, so the gate stays frozen dark from setup() —
+  intended: recovery-safe also mutes live carrier passthrough. An epoch
+  aborting before the evaluation leaves the gate stale for that epoch,
+  bounded by the 8 s watchdog.
+- **Evaluation site:** checkpoint 7 (`REPLAY`), in `platform_replay()`
+  after `replay_clock_service()` — both policy inputs are already read
+  there and the reconciler's same-epoch transitions are visible. No new
+  budget row (a boolean and at most three register stores). The status
+  JSON serves the **latched** per-epoch decision and latched inputs, never
+  re-deriving lock at request time, so JSON and pad cannot disagree within
+  a poll.
+- **Observability + the move-together set:** a `tx_gate` object (latched
+  `open`, `carrier_locked`, `replay_running`) joins the HTTP status JSON.
+  Moving together in the same commit: the `http_status_json()` literal,
+  `swagger.json`'s `Status` schema, `swagger.test.js` assertions, and the
+  new native policy suite registered in `firmware/scripts/test.sh` AND its
+  self-checking `registry` suite. v1 is deliberately event-free (the
+  cutover suite auto-classifies new event types as counter-edges with
+  structural requirements this phase does not need). The 99-byte UDP
+  payload is NOT touched. Known adjacent drift, surfaced by the gate and
+  NOT this phase's to fix: `sd_diag` and `replay_diag` are served by
+  `/api/status` but absent from swagger's `Status` schema.
+- **Proof:** native truth-table suite for the predicate; `registry`,
+  `optical-cutover` and the other affected native suites stay green; flash
+  + on-device check that the gate reads closed from setup() onward, a
+  replay start opens it (during prebuffer), stop closes it — all over
+  HTTP, no jacks needed.
+- **Bench-guide consequence:** the §What the bench omits caveat narrows to
+  the static-construction blip once this lands.
+
+## PSRAM diagnostics — queued behind the editor plan
+
+Queued 2026-07-27 (user-directed): after the DSP-editor enhancement plan
+completes, design the long-capture diagnostic feature on the 16 MB PSRAM
+(see the declined-store note under §Hardware prototype scope). Hard
+requirement from the ask: **the firmware must auto-detect the PSRAM's
+presence** (the Teensy core's boot-time FlexSPI2 probe exposes the fitted
+size) **or at minimum sit behind a build flag** — not every board will have
+the chips soldered, and a build that assumes them must not fault a bare
+board.
 
 ## Control boundary
 
