@@ -107,6 +107,10 @@ function installCanvas() {
       font: '',
       textAlign: 'left',
     };
+    /* Dashing is drawing STATE, like the stroke style: the routing diagram says
+     * "muted" with it, so a stroke records the dash pattern it was issued
+     * under. */
+    let lineDash = [];
     const record =
       (name) =>
       (...args) =>
@@ -116,9 +120,14 @@ function installCanvas() {
     context.closePath = record('closePath');
     context.moveTo = record('moveTo');
     context.lineTo = record('lineTo');
+    context.fillRect = record('fillRect');
+    context.setLineDash = (segments) => {
+      lineDash = segments;
+      ops.push(['setLineDash', segments]);
+    };
     context.arc = (...args) => ops.push(['arc', ...args, context.fillStyle, context.lineWidth]);
     context.fillText = (text, x, y) => ops.push(['fillText', text, x, y, context.textAlign]);
-    context.stroke = () => ops.push(['stroke', context.strokeStyle, context.lineWidth, context.globalAlpha]);
+    context.stroke = () => ops.push(['stroke', context.strokeStyle, context.lineWidth, context.globalAlpha, lineDash]);
     context.fill = () => ops.push(['fill', context.fillStyle]);
     return context;
   };
@@ -286,6 +295,44 @@ const wheel = (clientX, clientY, deltaY) => {
   return el('curve').dispatchEvent(Object.assign(event, { clientX, clientY }));
 };
 const chip = (entity) => el(`chip:${entity}`);
+
+/* The routing diagram gets the same treatment as the plot: its own explicit
+ * client rect (matching its 960x300 backing store, so drawn and client
+ * coordinates are the same numbers) and its own event helpers. */
+const MATRIX_RECT = { left: 0, top: 0, width: 960, height: 300, right: 960, bottom: 300, x: 0, y: 0 };
+const stubMatrixRect = () => {
+  el('matrix-diagram').getBoundingClientRect = () => MATRIX_RECT;
+};
+/* The factory model's matrix, as the page reads it back out of the form. */
+const matrixValues = (over = {}) => ({
+  center: 0.7071067811865475,
+  surround: 0.7071067811865475,
+  lfe: 0.31622776601683794,
+  headroom: 0.5,
+  clipfree: false,
+  crossoverHz: 120,
+  ...over,
+});
+const matrixHandle = (key, values = matrixValues()) =>
+  maths()
+    .matrixHandlePoints(values, MATRIX_RECT)
+    .find((handle) => handle.key === key);
+const atGain = (key, value) => maths().matrixValueToY(value, MATRIX_RECT, matrixHandle(key).bound);
+const matrixPointer = (type, clientX, clientY, extra = {}) =>
+  el('matrix-diagram').dispatchEvent(
+    new window.PointerEvent(type, { clientX, clientY, pointerId: 2, bubbles: true, cancelable: true, ...extra }),
+  );
+const matrixWheel = (clientX, clientY, deltaY) => {
+  const event = new window.WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true });
+  return el('matrix-diagram').dispatchEvent(Object.assign(event, { clientX, clientY }));
+};
+const matrixKey = (name) =>
+  el('matrix-diagram').dispatchEvent(new window.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+/* The eight downmix paths in the last frame: the column tracks are one path of
+ * eight vertices and a handle is an arc, so an edge is a group of two (a unity
+ * reference) or three (a path bent through its gain handle). */
+const matrixEdgePaths = () =>
+  pathsOf('matrix-diagram').filter((path) => vertices(path).length === 2 || vertices(path).length === 3);
 
 beforeEach(() => {
   rejections.length = 0;
@@ -2084,6 +2131,469 @@ describe('Aius SD DSP editor — canvas honesty', () => {
     const ceiling = dbLabels.find((op) => op[1] === '+24');
     expect(ceiling[3]).toBeGreaterThan(0);
     expect(rail[3]).toBeLessThan(240);
+  });
+});
+
+/* The routing diagram's pure half, driven with literal rects exactly as the
+ * curve maths above -- happy-dom has no layout engine to synthesise geometry
+ * from. `values` is the plain object the DOM half reads out of the form. */
+describe('Aius SD DSP editor — downmix matrix geometry', () => {
+  const rect = { left: 0, top: 0, width: 960, height: 300 };
+  const gain = { min: 0, max: 4 };
+  const headroom = { min: 0.01, max: 1 };
+
+  beforeEach(async () => {
+    await boot();
+  });
+
+  it('round-trips a gain through its 0..4 track and clamps beyond both rails', () => {
+    for (const value of [0, 0.31623, 0.70711, 1, 2.5, 4]) {
+      expect(maths().matrixYToValue(maths().matrixValueToY(value, rect, gain), rect, gain)).toBeCloseTo(value, 3);
+    }
+    // The rails ARE the field bounds, so no reachable pixel is out of range.
+    expect(maths().matrixYToValue(-500, rect, gain)).toBe(4);
+    expect(maths().matrixYToValue(5000, rect, gain)).toBe(0);
+    // Maximum at the top, minimum at the bottom.
+    expect(maths().matrixValueToY(4, rect, gain)).toBeLessThan(maths().matrixValueToY(0, rect, gain));
+  });
+
+  it('keeps the headroom track off the exclusive zero its field refuses', () => {
+    expect(maths().matrixYToValue(5000, rect, headroom)).toBe(0.01);
+    expect(maths().matrixYToValue(-5000, rect, headroom)).toBe(1);
+    expect(maths().matrixYToValue(maths().matrixValueToY(0.37, rect, headroom), rect, headroom)).toBeCloseTo(0.37, 3);
+    // The bounds come from the form's own descriptor table, so the exclusive
+    // minimum's floor is that field's native step and not a second opinion.
+    expect(matrixHandle('headroom').bound).toEqual({ min: 0.01, max: 1 });
+    expect(matrixHandle('center').bound).toEqual({ min: 0, max: 4 });
+  });
+
+  it('stacks the six decoded sources left and the stereo pair right', () => {
+    const layout = maths().matrixLayout(rect);
+    expect(layout.sources.map((node) => node.label)).toEqual(['FL', 'FR', 'FC', 'LFE', 'SL', 'SR']);
+    expect(layout.outputs.map((node) => node.label)).toEqual(['L', 'R']);
+    // One column each, in signal order: sources, then the gains, then the pair.
+    expect(new Set(layout.sources.map((node) => node.x)).size).toBe(1);
+    expect(layout.sources[0].x).toBeLessThan(matrixHandle('center').x);
+    expect(matrixHandle('surround').x).toBeLessThan(layout.outputs[0].x);
+    // Evenly stacked top to bottom, and inside the rect at both ends.
+    const ys = layout.sources.map((node) => node.y);
+    expect([...ys].sort((a, b) => a - b)).toEqual(ys);
+    expect(ys[0]).toBeGreaterThan(rect.top);
+    expect(ys[5]).toBeLessThan(rect.top + rect.height);
+  });
+
+  /* The picture is the firmware's downmix sum and nothing else: FL and FR cross
+   * at unity, FC and the LFE fold-in feed both sides, SL and SR keep their own. */
+  it('routes the eight terms of the downmix, one shared handle per gain', () => {
+    const edges = maths().matrixEdges(matrixValues(), rect);
+    expect(edges.map((edge) => `${edge.source}>${edge.output}`)).toEqual([
+      'fl>l',
+      'fr>r',
+      'fc>l',
+      'fc>r',
+      'lfe>l',
+      'lfe>r',
+      'sl>l',
+      'sr>r',
+    ]);
+
+    // The unity references are fixed: no handle, gain 1, straight across.
+    const unity = edges.filter((edge) => edge.fixed);
+    expect(unity.map((edge) => edge.gain)).toEqual([1, 1]);
+    expect(unity.every((edge) => edge.handle === null && edge.points.length === 2)).toBe(true);
+
+    // Both centre paths bend through the SAME point: one field, two uses.
+    const centre = edges.filter((edge) => edge.handle === 'center');
+    expect(centre).toHaveLength(2);
+    expect(centre[0].points[1]).toEqual(centre[1].points[1]);
+    expect(centre[0].points[1].y).toBeCloseTo(matrixHandle('center').y, 9);
+    // As do the two LFE paths, and the two surround ones.
+    const lfe = edges.filter((edge) => edge.handle === 'lfe');
+    expect(lfe[0].points[1]).toEqual(lfe[1].points[1]);
+    const surround = edges.filter((edge) => edge.handle === 'surround');
+    expect(surround[0].points[1]).toEqual(surround[1].points[1]);
+    expect(surround[0].gain).toBeCloseTo(0.7071067811865475, 9);
+  });
+
+  it('scales a path with its gain, and draws a silent one muted', () => {
+    const loud = maths().matrixPathStyle(4);
+    const quiet = maths().matrixPathStyle(0.3);
+    const muted = maths().matrixPathStyle(0);
+    expect(loud.width).toBeGreaterThan(quiet.width);
+    expect(loud.alpha).toBe(1);
+    expect(quiet.alpha).toBeLessThan(loud.alpha);
+    expect(quiet.muted).toBe(false);
+    expect(muted.muted).toBe(true);
+    expect(muted.width).toBeLessThan(quiet.width);
+    // A gain above the field bound cannot draw wider than the rail.
+    expect(maths().matrixPathStyle(40).width).toBe(loud.width);
+    // A half-typed gain is not a signal.
+    expect(maths().matrixPathStyle(NaN).muted).toBe(true);
+  });
+
+  it('picks a handle only within the grab radius, and never two at once', () => {
+    const points = maths().matrixHandlePoints(matrixValues(), rect);
+    const centre = points.find((point) => point.key === 'center');
+    const surround = points.find((point) => point.key === 'surround');
+    expect(maths().pickHandle(points, centre.x + 4, centre.y - 4, 16).key).toBe('center');
+    expect(maths().pickHandle(points, centre.x + 60, centre.y, 16)).toBe(null);
+    // Centre and surround carry the SAME factory gain, so only the separate
+    // columns keep both of them reachable.
+    expect(surround.y).toBe(centre.y);
+    expect(maths().pickHandle(points, surround.x, surround.y, 16).key).toBe('surround');
+  });
+
+  it('labels a gain in linear AND decibels, and calls zero muted', () => {
+    expect(maths().matrixGainLabel(1)).toBe('1 linear, 0.0 dB');
+    expect(maths().matrixGainLabel(0.7071067811865475)).toBe('0.70711 linear, -3.0 dB');
+    expect(maths().matrixGainLabel(2)).toBe('2 linear, 6.0 dB');
+    // Silence is not a level, so it does not read as one.
+    expect(maths().matrixGainLabel(0)).toBe('0 linear, muted');
+    expect(maths().matrixGainLabel(NaN)).toBe('--');
+    expect(maths().matrixCrossoverLabel(120)).toBe('LR4 @ 120 Hz');
+    expect(maths().matrixCrossoverLabel(NaN)).toBe('LR4 @ -- Hz');
+  });
+
+  it('puts the crossover label on the LFE path, clear of the gain handle', () => {
+    const box = maths().matrixCrossoverBox(rect);
+    const node = maths().matrixLayout(rect).sources.find((source) => source.key === 'lfe');
+    expect(maths().matrixHitsBox(box, box.left + box.width / 2, box.top + box.height / 2)).toBe(true);
+    expect(maths().matrixHitsBox(box, box.left - 5, box.top + 2)).toBe(false);
+    expect(maths().matrixHitsBox(box, box.left + 2, box.top + box.height + 5)).toBe(false);
+    // It rides the LFE source's own row, so it holds still while the gain moves.
+    expect(box.top + box.height).toBeLessThanOrEqual(node.y);
+    // The backing store is DPR-scaled; the box scales with it.
+    expect(maths().matrixCrossoverBox(rect, 2).width).toBe(box.width * 2);
+  });
+
+  it('steps a gain multiplicatively and leaves a muted path muted', () => {
+    expect(maths().stepMatrixValue(0.5, -100, gain)).toBeCloseTo(0.56, 6);
+    expect(maths().stepMatrixValue(0.5, 100, gain)).toBeCloseTo(0.446, 6);
+    let value = 1;
+    for (let notch = 0; notch < 20; notch++) value = maths().stepMatrixValue(value, -100, gain);
+    expect(value).toBe(4);
+    // A ratio cannot lift silence: a notch up seeds it, a notch down leaves it.
+    expect(maths().stepMatrixValue(0, 100, gain)).toBe(0);
+    expect(maths().stepMatrixValue(0, -100, gain)).toBeCloseTo(0.056, 6);
+    // Headroom's exclusive floor holds under the wheel too.
+    expect(maths().stepMatrixValue(0.011, 100, headroom)).toBe(0.01);
+    expect(maths().stepMatrixValue(1, -100, headroom)).toBe(1);
+  });
+
+  it('nudges by the fields own step and stops at both rails', () => {
+    expect(maths().nudgeMatrixValue(0.7071067811865475, 1, gain)).toBe(0.717);
+    expect(maths().nudgeMatrixValue(0.7071067811865475, -1, gain)).toBe(0.697);
+    expect(maths().nudgeMatrixValue(4, 1, gain)).toBe(4);
+    expect(maths().nudgeMatrixValue(0, -1, gain)).toBe(0);
+    expect(maths().nudgeMatrixValue(0.01, -1, headroom)).toBe(0.01);
+    expect(maths().nudgeMatrixValue(1, 1, headroom)).toBe(1);
+    // An empty field starts from the bound rather than from nothing.
+    expect(maths().nudgeMatrixValue(NaN, 1, gain)).toBe(0.01);
+  });
+});
+
+describe('Aius SD DSP editor — the downmix matrix diagram', () => {
+  it('sits in the strip between the EQ plot and the limiter', async () => {
+    await boot();
+    expect([...document.querySelectorAll('.visual .visual-block__title')].map((node) => node.textContent)).toEqual([
+      'Input levels',
+      'EQ cascades',
+      'Downmix matrix',
+      'Limiter gain reduction',
+      'Output levels',
+    ]);
+  });
+
+  it('draws every term of the downmix, the unity references included', async () => {
+    await boot();
+    const edges = matrixEdgePaths();
+    expect(edges).toHaveLength(8);
+    // Two straight unity references, six paths bent through a gain handle.
+    expect(edges.filter((path) => vertices(path).length === 2)).toHaveLength(2);
+    expect(edges.filter((path) => vertices(path).length === 3)).toHaveLength(6);
+    expect(handlesOf('matrix-diagram')).toHaveLength(4);
+    // Both unity labels are drawn, and the crossover with its filter shape.
+    const labels = labelsOf('matrix-diagram').map((op) => op[1]);
+    expect(labels.filter((text) => text === '1.0')).toHaveLength(2);
+    expect(labels).toContain('LR4 @ 120 Hz');
+    expect(labels).toContain('LFE');
+    expect(el('matrix-caption').textContent).toBe('Centre selected: 0.70711 linear, -3.0 dB.');
+  });
+
+  it('thins and dashes a path as its gain goes to silence', async () => {
+    await boot();
+    const before = strokeOf(matrixEdgePaths().find((path) => vertices(path).length === 3));
+
+    await setNumber('matrix.center_gain_linear', '0');
+
+    const dashed = matrixEdgePaths().filter((path) => strokeOf(path)[4].length > 0);
+    // Both centre paths went muted; the LFE, surround and unity ones did not.
+    expect(dashed).toHaveLength(2);
+    expect(strokeOf(dashed[0])[2]).toBeLessThan(before[2]);
+    expect(strokeOf(dashed[0])[3]).toBeLessThan(before[3]);
+  });
+
+  it('redraws from the form, so a typed gain moves its handle', async () => {
+    await boot();
+    const first = handlesOf('matrix-diagram').map((op) => op[2]);
+
+    await setNumber('matrix.surround_gain_linear', '2');
+
+    const moved = handlesOf('matrix-diagram').map((op) => op[2]);
+    expect(moved[1]).toBeCloseTo(atGain('surround', 2), 6);
+    // A bigger gain sits higher up, and only its own handle moved.
+    expect(moved[1]).toBeLessThan(first[1]);
+    expect(moved[0]).toBe(first[0]);
+  });
+
+  it('writes a dragged centre gain into the same field text mode edits', async () => {
+    await boot();
+    stubMatrixRect();
+    el('token').value = '0123456789abcdef';
+    const handle = matrixHandle('center');
+
+    // Grabbed near the handle rather than exactly on it, as a hand would.
+    matrixPointer('pointerdown', handle.x + 6, handle.y - 5);
+    matrixPointer('pointermove', handle.x + 9, atGain('center', 1.5));
+    matrixPointer('pointerup', handle.x + 9, atGain('center', 1.5));
+    await settle();
+
+    expect(valueOf('matrix.center_gain_linear')).toBe('1.5');
+    // A drag runs the same validation and the same dB note a typed edit does.
+    expect(errorOf('matrix.center_gain_linear')).toBe('');
+    expect(el('n:matrix.center_gain_linear').textContent).toBe('= 3.5 dB');
+    expect(el('apply-state').textContent).toBe('edited');
+
+    await click('apply');
+    expect(JSON.parse(putCalls()[0].body).matrix.center_gain_linear).toBe(1.5);
+  });
+
+  it('clamps a drag to the field bounds at both rails', async () => {
+    await boot();
+    stubMatrixRect();
+    const handle = matrixHandle('lfe');
+
+    matrixPointer('pointerdown', handle.x - 7, handle.y + 6);
+    matrixPointer('pointermove', handle.x, -400);
+    await settle();
+    expect(valueOf('matrix.lfe_gain_linear')).toBe('4');
+
+    matrixPointer('pointermove', handle.x, 900);
+    await settle();
+    expect(valueOf('matrix.lfe_gain_linear')).toBe('0');
+    expect(errorOf('matrix.lfe_gain_linear')).toBe('');
+    expect(el('matrix-readout').textContent).toBe('LFE 0 linear, muted');
+  });
+
+  it('drags the headroom handle over its own exclusive-min bound', async () => {
+    await boot();
+    stubMatrixRect();
+    const handle = matrixHandle('headroom');
+
+    matrixPointer('pointerdown', handle.x + 5, handle.y + 5);
+    matrixPointer('pointermove', handle.x, atGain('headroom', 0.8));
+    matrixPointer('pointermove', handle.x, 5000);
+    matrixPointer('pointerup', handle.x, 5000);
+    await settle();
+
+    // The bottom rail is the field's step, never the zero it refuses.
+    expect(valueOf('matrix.headroom_linear')).toBe('0.01');
+    expect(errorOf('matrix.headroom_linear')).toBe('');
+  });
+
+  it('takes the wheel over a handle as a fine, multiplicative adjustment', async () => {
+    await boot();
+    stubMatrixRect();
+    const handle = matrixHandle('center');
+
+    // Not grabbed, not focused: the wheel belongs to the page.
+    expect(matrixWheel(handle.x, handle.y, -100)).toBe(true);
+    await settle();
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.70711');
+
+    el('matrix-diagram').focus();
+    expect(matrixWheel(handle.x + 6, handle.y + 6, -100)).toBe(false);
+    await settle();
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.792');
+
+    matrixWheel(handle.x, handle.y, 100);
+    await settle();
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.707');
+    expect(valueOf('matrix.surround_gain_linear')).toBe('0.70711');
+  });
+
+  it('leaves the fixed unity references inert: they have no field to write', async () => {
+    await boot();
+    stubMatrixRect();
+    const unity = maths()
+      .matrixEdges(matrixValues(), MATRIX_RECT)
+      .find((edge) => edge.fixed);
+    const middle = {
+      x: (unity.points[0].x + unity.points[1].x) / 2,
+      y: (unity.points[0].y + unity.points[1].y) / 2,
+    };
+
+    matrixPointer('pointerdown', middle.x, middle.y);
+    matrixPointer('pointermove', middle.x, 40);
+    matrixPointer('pointerup', middle.x, 40);
+    await settle();
+
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.70711');
+    expect(el('apply-state').textContent).toBe('loaded');
+    // There is nothing to write: the model has no FL or FR matrix gain.
+    expect(el('f:matrix.fl_gain_linear')).toBe(null);
+    expect(unity.gain).toBe(1);
+  });
+
+  it('locks the headroom handle while the clip-free policy owns it', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubMatrixRect();
+    const handle = matrixHandle('headroom', matrixValues({ headroom: 0.37037, clipfree: true }));
+    expect(handle.locked).toBe(true);
+
+    matrixPointer('pointerdown', handle.x, handle.y);
+    matrixPointer('pointermove', handle.x, atGain('headroom', 0.9));
+    matrixPointer('pointerup', handle.x, atGain('headroom', 0.9));
+    await settle();
+
+    // Unmoved, and the refusal names the policy that owns the value.
+    expect(valueOf('matrix.headroom_linear')).toBe('0.37037');
+    expect(el('matrix-status').textContent).toContain('resolved by the clip-free policy');
+    expect(el('matrix-status').textContent).toContain('Turn the clip-free chip off');
+    // Drawn as the dim, locked thing it is.
+    expect(handlesOf('matrix-diagram')[3][6]).toBe('#5d6b78');
+  });
+
+  it('toggles the clip-free policy from the chip on the diagram', async () => {
+    await boot();
+    expect(el('matrix-clipfree').getAttribute('aria-pressed')).toBe('false');
+    expect(fieldOf('matrix.headroom_linear').disabled).toBe(false);
+
+    await click('matrix-clipfree');
+
+    expect(fieldOf('matrix.clipfree').checked).toBe(true);
+    expect(el('matrix-clipfree').getAttribute('aria-pressed')).toBe('true');
+    // The form's own resolution follows from the same one write.
+    expect(fieldOf('matrix.headroom_linear').disabled).toBe(true);
+    expect(Number(valueOf('matrix.headroom_linear'))).toBeCloseTo(
+      1 / (1 + 0.7071067811865475 + 0.7071067811865475 + 0.31622776601683794),
+      5,
+    );
+    expect(el('matrix-status').textContent).toContain('Clip-free headroom on');
+
+    await click('matrix-clipfree');
+    expect(fieldOf('matrix.clipfree').checked).toBe(false);
+    expect(el('matrix-clipfree').getAttribute('aria-pressed')).toBe('false');
+    expect(fieldOf('matrix.headroom_linear').disabled).toBe(false);
+  });
+
+  it('renders the clip-free resolved headroom live as the gains move', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    const first = handlesOf('matrix-diagram')[3][2];
+
+    await setNumber('matrix.center_gain_linear', '3');
+
+    const moved = handlesOf('matrix-diagram')[3][2];
+    // More centre in the mix means less headroom, so the handle drops.
+    expect(moved).toBeGreaterThan(first);
+    expect(moved).toBeCloseTo(atGain('headroom', Number(valueOf('matrix.headroom_linear'))), 1);
+  });
+
+  it('sends the crossover label to the form field rather than editing in canvas', async () => {
+    await boot();
+    stubMatrixRect();
+    const box = maths().matrixCrossoverBox(MATRIX_RECT);
+
+    matrixPointer('pointerdown', box.left + box.width / 2, box.top + box.height / 2);
+    await settle();
+
+    expect(document.activeElement).toBe(fieldOf('matrix.lfe_crossover_hz'));
+    expect(el('matrix-status').textContent).toContain('LFE crossover');
+    // A way in, not a control: nothing was written on the way.
+    expect(valueOf('matrix.lfe_crossover_hz')).toBe('120');
+    expect(el('apply-state').textContent).toBe('loaded');
+  });
+
+  it('nudges the selected handle from the keyboard and cycles between them', async () => {
+    await boot();
+    expect(el('matrix-caption').textContent).toContain('Centre selected');
+
+    matrixKey('ArrowUp');
+    await settle();
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.717');
+    matrixKey('ArrowDown');
+    matrixKey('ArrowDown');
+    await settle();
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.697');
+
+    matrixKey('PageDown');
+    await settle();
+    expect(el('matrix-caption').textContent).toContain('Surround selected');
+    matrixKey('ArrowUp');
+    await settle();
+    expect(valueOf('matrix.surround_gain_linear')).toBe('0.717');
+    // Only the selected handle moves.
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.697');
+
+    for (const label of ['LFE selected', 'Headroom selected', 'Centre selected']) {
+      matrixKey('PageDown');
+      await settle();
+      expect(el('matrix-caption').textContent).toContain(label);
+    }
+    matrixKey('PageUp');
+    await settle();
+    expect(el('matrix-caption').textContent).toContain('Headroom selected');
+  });
+
+  it('refuses a keyboard nudge on a locked headroom, and opens the crossover on Enter', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    matrixKey('PageUp');
+    await settle();
+    expect(el('matrix-caption').textContent).toContain('Headroom selected');
+    expect(el('matrix-caption').textContent).toContain('resolved by the clip-free policy');
+
+    const before = valueOf('matrix.headroom_linear');
+    matrixKey('ArrowUp');
+    await settle();
+    expect(valueOf('matrix.headroom_linear')).toBe(before);
+    expect(el('matrix-status').textContent).toContain('cannot be dragged');
+
+    matrixKey('Enter');
+    await settle();
+    expect(document.activeElement).toBe(fieldOf('matrix.lfe_crossover_hz'));
+  });
+
+  it('suppresses panning only while a handle is held, and discloses its targets', async () => {
+    await boot();
+    stubMatrixRect();
+    const handle = matrixHandle('center');
+    const box = maths().matrixCrossoverBox(MATRIX_RECT);
+    expect(el('matrix-diagram').style.touchAction).toBe('');
+
+    matrixPointer('pointermove', handle.x + 8, handle.y + 8);
+    expect(el('matrix-diagram').style.cursor).toBe('pointer');
+    matrixPointer('pointermove', handle.x, 20);
+    expect(el('matrix-diagram').style.cursor).toBe('');
+    // The click-to-edit label is a target too, and says so.
+    matrixPointer('pointermove', box.left + 4, box.top + 4);
+    expect(el('matrix-diagram').style.cursor).toBe('pointer');
+
+    matrixPointer('pointerdown', handle.x, handle.y);
+    expect(el('matrix-diagram').style.touchAction).toBe('none');
+    expect(el('matrix-readout').hidden).toBe(false);
+    matrixPointer('pointerup', handle.x, handle.y);
+    expect(el('matrix-diagram').style.touchAction).toBe('');
+    expect(el('matrix-readout').hidden).toBe(true);
+  });
+
+  it('does not drag the diagram when the DOM has no layout to map against', async () => {
+    await boot();
+
+    matrixPointer('pointerdown', 400, 100);
+    matrixPointer('pointermove', 400, 40);
+    await settle();
+
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.70711');
   });
 });
 

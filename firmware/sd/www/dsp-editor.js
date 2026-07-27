@@ -5,8 +5,9 @@
  * against the firmware parser's bounds, PUTting the model back with an
  * optimistic-concurrency token, polling GET /api/meters at 10 Hz and
  * GET /api/status at 1 Hz, and drawing the signal-flow strip: ONE stacked EQ
- * plot carrying every cascade, the level bars, the DSP load and the limiter's
- * gain reduction, all from that same model and those same snapshots.
+ * plot carrying every cascade, the downmix routing diagram, the level bars, the
+ * DSP load and the limiter's gain reduction, all from that same model and those
+ * same snapshots.
  *
  * DOES NOT OWN: the replay manager (replays.js), the device status page
  * (status.js), the shared chrome behaviours (sd-shared.js -- pills, fetch
@@ -62,6 +63,32 @@
   const NUDGE_HZ_RATIO = 1.05; /* proportional, because the axis is logarithmic */
   const DOUBLE_TAP_MS = 400; /* touch has no dblclick of its own to rely on */
   const DOUBLE_TAP_PX = 30;
+  /* Downmix routing diagram. The picture IS the firmware's downmix sum
+   * (aius_dsp.c: FL into L and FR into R at unity, FC into both at `center`, the
+   * LR4-low-passed LFE into both at `lfe`, SL into L and SR into R at
+   * `surround`, the pair then scaled by `headroom`), so every path on it is one
+   * term of that sum and there are no others. Columns and the value track are
+   * FRACTIONS of the canvas rect, so one set of maths serves the DPR-scaled
+   * backing store and the CSS-sized client rect alike. */
+  const MATRIX_SOURCE_X = 0.09; /* the six decoded channels, stacked */
+  const MATRIX_OUTPUT_X = 0.79; /* L and R, after the mix */
+  const MATRIX_TRACK_TOP = 0.11; /* a handle's own rail: its field maximum ... */
+  const MATRIX_TRACK_BOTTOM = 0.89; /* ... and its field minimum */
+  const MATRIX_OUTPUT_Y = [0.34, 0.66]; /* L and R, as fractions of that track */
+  const MATRIX_NODE_PX = 9;
+  const MATRIX_HANDLE_RADIUS_PX = 7;
+  const MATRIX_GRAB_PX = 16; /* pointer slop around a handle, in client pixels */
+  const MATRIX_PATH_MIN_PX = 0.8; /* a silent path is still a path, just barely */
+  const MATRIX_PATH_MAX_PX = 5;
+  const MATRIX_PATH_MIN_ALPHA = 0.35;
+  const MATRIX_MUTED_ALPHA = 0.28;
+  const MATRIX_WHEEL_STEP = 1.12; /* one wheel notch, multiplicative, like Q */
+  const MATRIX_WHEEL_SEED = 0.05; /* a muted path has no ratio to scale */
+  const MATRIX_NUDGE = 0.01; /* one arrow press, matching the fields' own step */
+  /* The crossover label's hit box is AUTHORED, not measured: measureText is a
+   * rendering-context fact, and this geometry has to be provable without one. */
+  const MATRIX_LABEL_W_PX = 104;
+  const MATRIX_LABEL_H_PX = 18;
   const BAR_FLOOR_DBFS = -60; /* the bar strip's own floor: at -120 every bar is a sliver */
   const BAR_WARN_DBFS = -6; /* above this a level is close enough to clipping to say so */
   const BAR_DANGER_DBFS = -1;
@@ -123,6 +150,11 @@
     { key: 'output', label: 'Output', bases: ['output'], colour: '#ff9f6b' },
   ];
 
+  /* The strip has ONE colour key: the downmix diagram names its paths with the
+   * same colour the legend gives that channel group, so a reader learns it
+   * once. */
+  const entityColour = (key) => CURVE_ENTITIES.find((entity) => entity.key === key).colour;
+
   /* The factory model's five editable groups, mirroring
    * firmware/config/optical_dsp.json (compiled into AIUS_OPTICAL_CONFIG by
    * scripts/build_config.py). Per-parameter reset reads this table. The chain
@@ -175,6 +207,8 @@
      * keyboard and the wheel act on. */
     curveEntity: CURVE_ENTITIES[0].key,
     activeSlot: 0,
+    /* Which downmix handle the keyboard and the wheel act on. */
+    matrixHandle: 'center',
     /* Field paths that currently fail validation, for the card markers. */
     problems: new Map(),
     /* Page-side ring of polled limiter_gain_reduction_db values; the device
@@ -182,8 +216,10 @@
     limiterHistory: [],
     /* Last rendered waveform, so a resize can redraw without a fresh poll. */
     waveform: [],
-    /* The handle currently under a captured pointer, or null. */
+    /* The handle currently under a captured pointer, or null -- one per canvas,
+     * because the plot and the diagram are two independent instruments. */
     drag: null,
+    matrixDrag: null,
     lastTap: null,
   };
 
@@ -289,6 +325,57 @@
       unit: ' linear',
     },
     { path: 'matrix.clipfree', kind: 'bool', label: 'Clip-free headroom policy' },
+  ];
+
+  /* The diagram's bounds are the FORM's bounds, read back out of the descriptor
+   * table rather than restated: no reachable pixel may be a value the field
+   * would then mark out of range. An exclusive minimum has no legal value AT
+   * its rail, so the field's own step is the lowest thing a gesture may write --
+   * the smallest value its native stepping could have produced. */
+  function matrixBound(path) {
+    const descriptor = MATRIX_FIELDS.find((entry) => entry.path === path);
+    return { min: descriptor.exclusiveMin ? descriptor.step : descriptor.min, max: descriptor.max };
+  }
+
+  /* One draggable per editable term of the downmix. A term used on BOTH sides
+   * (centre, the LFE fold-in) or by both surround channels is ONE handle,
+   * because the model has one field for it -- the same "a pair is one thing on
+   * this surface" contract the stacked plot follows. Array order is the
+   * keyboard's cycle order; `column` is where the handle rides, so two equal
+   * gains never land on the same point. */
+  const MATRIX_HANDLES = [
+    { key: 'center', path: 'matrix.center_gain_linear', label: 'Centre', column: 0.42, colour: entityColour('centre') },
+    {
+      key: 'surround',
+      path: 'matrix.surround_gain_linear',
+      label: 'Surround',
+      column: 0.62,
+      colour: entityColour('surround'),
+    },
+    { key: 'lfe', path: 'matrix.lfe_gain_linear', label: 'LFE', column: 0.52, colour: entityColour('lfe') },
+    { key: 'headroom', path: 'matrix.headroom_linear', label: 'Headroom', column: 0.93, colour: entityColour('output') },
+  ].map((handle) => ({ ...handle, bound: matrixBound(handle.path) }));
+
+  const matrixHandleOf = (key) => MATRIX_HANDLES.find((handle) => handle.key === key);
+
+  const MATRIX_GAIN_BOUND = matrixBound('matrix.center_gain_linear');
+  const MATRIX_OUTPUTS = [
+    ['l', 'L'],
+    ['r', 'R'],
+  ];
+
+  /* Every term of the downmix sum, in the order the firmware adds them. A route
+   * with no handle is a FIXED unity reference: the matrix has no field for it,
+   * so the diagram draws it and refuses to edit it. */
+  const MATRIX_ROUTES = [
+    { source: 'fl', output: 'l', handle: null },
+    { source: 'fr', output: 'r', handle: null },
+    { source: 'fc', output: 'l', handle: 'center' },
+    { source: 'fc', output: 'r', handle: 'center' },
+    { source: 'lfe', output: 'l', handle: 'lfe' },
+    { source: 'lfe', output: 'r', handle: 'lfe' },
+    { source: 'sl', output: 'l', handle: 'surround' },
+    { source: 'sr', output: 'r', handle: 'surround' },
   ];
 
   const LIMITER_FIELDS = [
@@ -652,10 +739,12 @@
     const bytes = JSON.stringify(collectModel()).length;
     $('model-bytes').textContent = `request body ${bytes} of ${MODEL_MAX_BYTES} bytes`;
     syncResetButtons();
-    /* The curves are a view of the fields, so every edit -- typed, reset,
-     * preset-loaded or dragged -- redraws them from here. collectModel() is
-     * untouched: the curves read the inputs directly. */
+    /* The curves and the routing diagram are views of the fields, so every
+     * edit -- typed, reset, preset-loaded or dragged -- redraws them from here,
+     * the resolved clip-free headroom above included. collectModel() is
+     * untouched: both read the inputs directly. */
     drawCurveSurface();
+    drawMatrixSurface();
   }
 
   /* The exact value the field was RENDERED from wins while the visible text is
@@ -1580,6 +1669,7 @@
   const roundHz = (hz) => Math.round(hz);
   const roundDb = (db) => Math.round(db * 10) / 10;
   const roundQ = (q) => Math.round(q * 1000) / 1000;
+  const roundLinear = (value) => Math.round(value * 1000) / 1000;
 
   /* (rect, client coords) -> the two model values a drag can carry. */
   const pointToEq = (rect, clientX, clientY) => ({
@@ -1637,6 +1727,166 @@
     const base = Number.isFinite(q) && q > 0 ? q : EQ_SEED.q;
     return roundQ(clamp(deltaY < 0 ? base * Q_WHEEL_STEP : base / Q_WHEEL_STEP, Q_MIN, Q_MAX));
   };
+
+  /* ---- the downmix matrix's geometry -------------------------------------
+   * Same seam as the curve maths above and for the same reason: no layout
+   * engine under happy-dom, so every mapping takes an explicit rect. `values`
+   * is one plain object -- {center, surround, lfe, headroom, clipfree,
+   * crossoverHz} -- read from the form by the DOM half and passed in literally
+   * by the tests. */
+
+  const matrixTrack = (rect) => ({
+    top: rect.top + rect.height * MATRIX_TRACK_TOP,
+    bottom: rect.top + rect.height * MATRIX_TRACK_BOTTOM,
+  });
+
+  /* value <-> y over ONE handle's own bound: the top of the track is that
+   * field's maximum, the bottom its minimum. */
+  function matrixValueToY(value, rect, bound) {
+    const { top, bottom } = matrixTrack(rect);
+    const span = bound.max - bound.min;
+    const current = Number.isFinite(value) ? value : bound.min;
+    const level = span > 0 ? (clamp(current, bound.min, bound.max) - bound.min) / span : 0;
+    return bottom - level * (bottom - top);
+  }
+
+  function matrixYToValue(y, rect, bound) {
+    const { top, bottom } = matrixTrack(rect);
+    const level = bottom > top ? clamp((bottom - y) / (bottom - top), 0, 1) : 0;
+    return roundLinear(clamp(bound.min + level * (bound.max - bound.min), bound.min, bound.max));
+  }
+
+  /* Six decoded sources stacked left, the stereo pair right, and the columns the
+   * gain handles ride between them. */
+  function matrixLayout(rect) {
+    const { top, bottom } = matrixTrack(rect);
+    const columnX = (fraction) => rect.left + rect.width * fraction;
+    return {
+      top,
+      bottom,
+      sources: CHANNELS.map(([key], index) => ({
+        key,
+        label: key.toUpperCase(),
+        x: columnX(MATRIX_SOURCE_X),
+        y: top + ((bottom - top) * index) / (CHANNELS.length - 1),
+      })),
+      outputs: MATRIX_OUTPUTS.map(([key, label], index) => ({
+        key,
+        label,
+        x: columnX(MATRIX_OUTPUT_X),
+        y: top + (bottom - top) * MATRIX_OUTPUT_Y[index],
+      })),
+    };
+  }
+
+  /* One draggable per editable term, at its own column and at the y its value
+   * maps to. The headroom handle is LOCKED while the clip-free policy owns the
+   * value -- the diagram's copy of the form field going read-only. */
+  const matrixHandlePoints = (values, rect) => {
+    const columnX = (fraction) => rect.left + rect.width * fraction;
+    const read = (key) => (values && Number.isFinite(values[key]) ? values[key] : NaN);
+    return MATRIX_HANDLES.map((handle) => ({
+      key: handle.key,
+      label: handle.label,
+      path: handle.path,
+      colour: handle.colour,
+      bound: handle.bound,
+      value: read(handle.key),
+      locked: handle.key === 'headroom' && Boolean(values && values.clipfree),
+      x: columnX(handle.column),
+      y: matrixValueToY(read(handle.key), rect, handle.bound),
+    }));
+  };
+
+  /* Width and opacity carry the gain, so the picture reads at a glance; a zero
+   * gain is DASHED, because "a hairline" and "silent" are not the same
+   * statement. Scaled against the shared 0..4 gain bound, so unity sits a
+   * quarter of the way up and the eye can find it. */
+  const matrixPathStyle = (gain) => {
+    const level = Number.isFinite(gain) ? clamp(gain / MATRIX_GAIN_BOUND.max, 0, 1) : 0;
+    return {
+      width: MATRIX_PATH_MIN_PX + level * (MATRIX_PATH_MAX_PX - MATRIX_PATH_MIN_PX),
+      alpha: gain > 0 ? MATRIX_PATH_MIN_ALPHA + level * (1 - MATRIX_PATH_MIN_ALPHA) : MATRIX_MUTED_ALPHA,
+      muted: !(gain > 0),
+    };
+  };
+
+  /* The eight terms of the downmix sum as polylines: a gained path BENDS through
+   * its handle, a unity reference goes straight across. Sharing is drawn rather
+   * than asserted -- FC into L and FC into R are two edges through the same
+   * point, because they are two uses of one field. */
+  function matrixEdges(values, rect) {
+    const layout = matrixLayout(rect);
+    const handles = new Map(matrixHandlePoints(values, rect).map((handle) => [handle.key, handle]));
+    return MATRIX_ROUTES.map((route) => {
+      const source = layout.sources.find((node) => node.key === route.source);
+      const output = layout.outputs.find((node) => node.key === route.output);
+      const handle = route.handle === null ? null : handles.get(route.handle);
+      const gain = handle === null ? 1 : handle.value;
+      return {
+        source: route.source,
+        output: route.output,
+        handle: route.handle,
+        fixed: route.handle === null,
+        gain,
+        colour: handle === null ? entityColour('front') : handle.colour,
+        points:
+          handle === null
+            ? [
+                { x: source.x, y: source.y },
+                { x: output.x, y: output.y },
+              ]
+            : [
+                { x: source.x, y: source.y },
+                { x: handle.x, y: handle.y },
+                { x: output.x, y: output.y },
+              ],
+        style: matrixPathStyle(gain),
+      };
+    });
+  }
+
+  /* What a linear multiplier means, in both languages the form prints (UX
+   * finding E7's rule, on the diagram): the number the field holds and the
+   * decibels it is. A zero gain is MUTED -- "-inf dB" reads like a level. */
+  function matrixGainLabel(value) {
+    if (!Number.isFinite(value)) return '--';
+    const db = linearToDb(value);
+    return db === null ? `${displayNumber(value)} linear, muted` : `${displayNumber(value)} linear, ${formatDb(db)} dB`;
+  }
+
+  const matrixCrossoverLabel = (hz) => (Number.isFinite(hz) ? `LR4 @ ${roundHz(hz)} Hz` : 'LR4 @ -- Hz');
+
+  /* The crossover label sits on the LFE path's first leg -- at the source node's
+   * own height, so it holds still while the gain handle moves. `scale` is the
+   * device-pixel ratio when drawing and 1 when hit-testing a client rect, which
+   * is the only difference between the two uses. */
+  function matrixCrossoverBox(rect, scale) {
+    const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const layout = matrixLayout(rect);
+    const node = layout.sources.find((source) => source.key === 'lfe');
+    const width = MATRIX_LABEL_W_PX * factor;
+    const height = MATRIX_LABEL_H_PX * factor;
+    const middle = (node.x + rect.left + rect.width * matrixHandleOf('lfe').column) / 2;
+    return { left: middle - width / 2, top: node.y - height - 4 * factor, width, height };
+  }
+
+  const matrixHitsBox = (box, clientX, clientY) =>
+    clientX >= box.left && clientX <= box.left + box.width && clientY >= box.top && clientY <= box.top + box.height;
+
+  /* One wheel notch over a handle: multiplicative, like the plot's Q, because a
+   * gain is a ratio. A muted path has no ratio to scale, so a notch UP starts
+   * from a seed and a notch DOWN leaves it exactly where it is. */
+  const stepMatrixValue = (value, deltaY, bound) => {
+    const current = Number.isFinite(value) ? clamp(value, bound.min, bound.max) : bound.min;
+    if (current <= bound.min && deltaY > 0) return bound.min;
+    const base = current > 0 ? current : MATRIX_WHEEL_SEED;
+    return roundLinear(clamp(deltaY < 0 ? base * MATRIX_WHEEL_STEP : base / MATRIX_WHEEL_STEP, bound.min, bound.max));
+  };
+
+  /* One arrow press, matching the matrix fields' own native step. */
+  const nudgeMatrixValue = (value, direction, bound) =>
+    roundLinear(clamp((Number.isFinite(value) ? value : bound.min) + direction * MATRIX_NUDGE, bound.min, bound.max));
 
   /* Cycles one decoded block may spend; 0 when the snapshot has no usable rate
    * (an unpublished snapshot reports 0 Hz). */
@@ -1734,20 +1984,27 @@
     $('curve-add').addEventListener('click', () => addSection(selectedEntity(), EQ_SEED.frequency_hz));
     $('curve-remove').addEventListener('click', () => removeSection(selectedEntity(), state.activeSlot));
 
+    attachMatrixSurface();
+    $('matrix-clipfree').addEventListener('click', toggleClipfree);
+
     /* A pointer released off the canvas still ends the drag; without capture
      * (or with it, since the event bubbles) window is the one listener that
      * always sees it. */
     window.addEventListener('pointerup', endDrag);
     window.addEventListener('pointercancel', endDrag);
+    window.addEventListener('pointerup', endMatrixDrag);
+    window.addEventListener('pointercancel', endMatrixDrag);
     window.addEventListener('resize', () => {
       fitCanvases();
       drawCurveSurface();
+      drawMatrixSurface();
       drawLimiterHistory();
       shared.drawWaveform($('waveform'), state.waveform);
     });
 
     fitCanvases();
     drawCurveSurface();
+    drawMatrixSurface();
     drawLimiterHistory();
   }
 
@@ -1786,7 +2043,7 @@
    * maths keeps working against the CLIENT rect. A zero clientWidth (no layout
    * engine, or a hidden card) keeps the authored attributes. */
 
-  const CANVAS_IDS = ['curve', 'gr-history', 'waveform'];
+  const CANVAS_IDS = ['curve', 'matrix-diagram', 'gr-history', 'waveform'];
   const dprOf = (canvas) => Number(canvas.dataset.dpr) || 1;
 
   function fitCanvas(canvas) {
@@ -1926,6 +2183,13 @@
   function writeChoice(path, value) {
     const input = field(path);
     input.value = value;
+    input.dispatchEvent(new Event('input'));
+  }
+
+  function writeCheck(path, checked) {
+    const input = field(path);
+    if (input.disabled) return;
+    input.checked = checked;
     input.dispatchEvent(new Event('input'));
   }
 
@@ -2209,6 +2473,332 @@
     $('curve-status').textContent = text;
   };
 
+  /* ---- visual surface: the downmix matrix --------------------------------
+   * The routing diagram is a view of the SAME six matrix fields the form below
+   * edits: it reads them through numberOf() and writes them through
+   * writeField()/writeCheck(), so a dragged gain is indistinguishable from a
+   * typed one downstream -- validation, the dirty pill, the resolved headroom
+   * and the request-body count all ride along. There is no second model here,
+   * and nothing on the diagram is editable that the model has no field for. */
+
+  const matrixCanvas = () => $('matrix-diagram');
+
+  const CLIPFREE_POLICY_MESSAGE =
+    'Headroom is resolved by the clip-free policy (1 / (1 + centre + surround + |LFE|)), so it cannot be dragged. Turn the clip-free chip off to set it by hand.';
+
+  function readMatrixValues() {
+    const values = {
+      clipfree: field('matrix.clipfree').checked,
+      crossoverHz: numberOf('matrix.lfe_crossover_hz', NaN),
+    };
+    for (const handle of MATRIX_HANDLES) values[handle.key] = numberOf(handle.path, NaN);
+    return values;
+  }
+
+  const activeMatrixHandle = () => matrixHandleOf(state.matrixHandle) || MATRIX_HANDLES[0];
+
+  const matrixLocked = (handle) => handle.key === 'headroom' && field('matrix.clipfree').checked;
+
+  function drawMatrixSurface() {
+    const canvas = matrixCanvas();
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const scale = dprOf(canvas);
+    const rect = { left: 0, top: 0, width: canvas.width, height: canvas.height };
+    const values = readMatrixValues();
+    const layout = matrixLayout(rect);
+    context.clearRect(0, 0, rect.width, rect.height);
+    drawMatrixTracks(context, layout, rect, scale);
+    drawMatrixEdges(context, values, rect, scale);
+    drawMatrixNodes(context, layout, scale);
+    drawMatrixHandles(context, values, rect, scale);
+    drawMatrixLabels(context, values, rect, scale);
+
+    const chip = $('matrix-clipfree');
+    chip.setAttribute('aria-pressed', values.clipfree ? 'true' : 'false');
+    chip.classList.toggle('chip--on', values.clipfree);
+
+    const active = activeMatrixHandle();
+    $('matrix-caption').textContent = `${active.label} selected: ${matrixGainLabel(values[active.key])}${
+      matrixLocked(active) ? ', resolved by the clip-free policy' : ''
+    }.`;
+  }
+
+  /* The axis each handle rides, drawn so the drag surface discloses itself
+   * rather than hiding until a pointer happens to find it (UX finding E10). */
+  function drawMatrixTracks(context, layout, rect, scale) {
+    context.strokeStyle = '#232b35';
+    context.lineWidth = scale;
+    context.beginPath();
+    for (const handle of MATRIX_HANDLES) {
+      const x = rect.left + rect.width * handle.column;
+      context.moveTo(x, layout.top);
+      context.lineTo(x, layout.bottom);
+    }
+    context.stroke();
+  }
+
+  function drawMatrixEdges(context, values, rect, scale) {
+    for (const edge of matrixEdges(values, rect)) {
+      context.strokeStyle = edge.colour;
+      context.lineWidth = edge.style.width * scale;
+      context.globalAlpha = edge.style.alpha;
+      context.setLineDash(edge.style.muted ? [4 * scale, 4 * scale] : []);
+      context.beginPath();
+      edge.points.forEach((point, index) => {
+        if (index === 0) context.moveTo(point.x, point.y);
+        else context.lineTo(point.x, point.y);
+      });
+      context.stroke();
+    }
+    context.setLineDash([]);
+    context.globalAlpha = 1;
+    context.lineWidth = scale;
+  }
+
+  /* Nodes are squares and handles are circles, so the picture says which of the
+   * two a shape is before anything is read. */
+  function drawMatrixNodes(context, layout, scale) {
+    const size = MATRIX_NODE_PX * scale;
+    context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
+    for (const node of [...layout.sources, ...layout.outputs]) {
+      context.fillStyle = '#5d6b78';
+      context.fillRect(node.x - size / 2, node.y - size / 2, size, size);
+      context.fillStyle = '#9aa8b5';
+      context.textAlign = layout.outputs.includes(node) ? 'left' : 'right';
+      const offset = layout.outputs.includes(node) ? size : -size;
+      context.fillText(node.label, node.x + offset, node.y + 4 * scale);
+    }
+    context.textAlign = 'left';
+  }
+
+  function drawMatrixHandles(context, values, rect, scale) {
+    for (const handle of matrixHandlePoints(values, rect)) {
+      const chosen = handle.key === state.matrixHandle;
+      /* A locked handle is drawn as the dim thing it is, exactly as the form
+       * greys the field the clip-free policy owns. */
+      context.fillStyle = handle.locked ? '#5d6b78' : handle.colour;
+      context.strokeStyle = chosen ? '#e8edf2' : '#101318';
+      context.lineWidth = (chosen ? 2 : 1) * scale;
+      context.beginPath();
+      context.arc(handle.x, handle.y, MATRIX_HANDLE_RADIUS_PX * scale, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+    context.lineWidth = scale;
+  }
+
+  function drawMatrixLabels(context, values, rect, scale) {
+    context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
+    context.textAlign = 'center';
+
+    /* The unity references say what they are: the matrix scales everything else
+     * and leaves these two alone. */
+    const edges = matrixEdges(values, rect);
+    for (const edge of edges.filter((entry) => entry.fixed)) {
+      const from = edge.points[0];
+      const to = edge.points[edge.points.length - 1];
+      context.fillStyle = '#5d6b78';
+      context.fillText('1.0', (from.x + to.x) / 2, (from.y + to.y) / 2 - 5 * scale);
+    }
+
+    /* The crossover, on the LFE path and click-to-edit. */
+    const box = matrixCrossoverBox(rect, scale);
+    context.fillStyle = '#74d7ff';
+    context.fillText(matrixCrossoverLabel(values.crossoverHz), box.left + box.width / 2, box.top + box.height * 0.75);
+
+    /* Each handle's own number under it: the dB reading is the readout chip's
+     * and the caption's job, so the diagram stays legible at phone width. */
+    context.fillStyle = '#aab4c0';
+    for (const handle of matrixHandlePoints(values, rect)) {
+      context.fillText(displayNumber(handle.value) || '--', handle.x, handle.y + 19 * scale);
+    }
+    context.textAlign = 'left';
+  }
+
+  /* ---- visual surface: the downmix matrix's gestures ---------------------- */
+
+  function matrixClientRect() {
+    const rect = matrixCanvas().getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? rect : null;
+  }
+
+  function matrixHandleUnder(event) {
+    const rect = matrixClientRect();
+    if (!rect) return null;
+    return pickHandle(matrixHandlePoints(readMatrixValues(), rect), event.clientX, event.clientY, MATRIX_GRAB_PX);
+  }
+
+  function matrixLabelUnder(event) {
+    const rect = matrixClientRect();
+    return rect !== null && matrixHitsBox(matrixCrossoverBox(rect), event.clientX, event.clientY);
+  }
+
+  /* The crossover is a number with units and a 20..500 bound; an in-canvas
+   * editor for it would be a second, worse copy of a field that already exists,
+   * so the label takes the reader to the real one (the E6 reveal pattern). */
+  function revealCrossover() {
+    revealField('matrix.lfe_crossover_hz');
+    setMatrixStatus('LFE crossover: the field in the Downmix matrix card below is focused -- type the corner there.');
+  }
+
+  function refuseLockedHeadroom() {
+    setMatrixStatus(CLIPFREE_POLICY_MESSAGE);
+  }
+
+  function attachMatrixSurface() {
+    const canvas = matrixCanvas();
+    canvas.addEventListener('pointerdown', (event) => {
+      const handle = matrixHandleUnder(event);
+      if (!handle) {
+        if (matrixLabelUnder(event)) revealCrossover();
+        return;
+      }
+      /* No write on the press itself, exactly as on the plot: a click that does
+       * not move must not nudge the gain it grabbed. Pressing it DOES select
+       * it, so the keyboard and the wheel follow the pointer. */
+      event.preventDefault();
+      state.matrixHandle = handle.key;
+      if (handle.locked) {
+        refuseLockedHeadroom();
+        drawMatrixSurface();
+        return;
+      }
+      state.matrixDrag = { key: handle.key, pointerId: event.pointerId };
+      canvas.style.touchAction = 'none';
+      showMatrixReadout(handle.key);
+      drawMatrixSurface();
+      if (typeof canvas.setPointerCapture === 'function') canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (state.matrixDrag) {
+        matrixDragTo(event);
+        return;
+      }
+      canvas.style.cursor = matrixHandleUnder(event) || matrixLabelUnder(event) ? 'pointer' : '';
+    });
+    /* passive: false for the same reason the plot needs it -- the wheel is the
+     * fine adjustment only while a handle is held or the diagram has focus. */
+    canvas.addEventListener(
+      'wheel',
+      (event) => {
+        const grabbed = state.matrixDrag !== null;
+        if (!grabbed && document.activeElement !== canvas) return;
+        /* The handle under the pointer when there is one, so a notch lands
+         * where the reader is looking; the selected one otherwise. */
+        const under = grabbed ? state.matrixDrag : matrixHandleUnder(event);
+        const handle = under ? matrixHandleOf(under.key) : activeMatrixHandle();
+        event.preventDefault();
+        state.matrixHandle = handle.key;
+        if (matrixLocked(handle)) {
+          refuseLockedHeadroom();
+          drawMatrixSurface();
+          return;
+        }
+        writeField(handle.path, stepMatrixValue(numberOf(handle.path, NaN), event.deltaY, handle.bound));
+        showMatrixReadout(handle.key);
+      },
+      { passive: false },
+    );
+    canvas.addEventListener('keydown', onMatrixKey);
+    canvas.addEventListener('blur', hideMatrixReadout);
+  }
+
+  /* The keyboard path to the same four values, so the diagram is not a
+   * mouse-only instrument (UX finding E11). */
+  function onMatrixKey(event) {
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault();
+      const index = MATRIX_HANDLES.indexOf(activeMatrixHandle());
+      const step = event.key === 'PageDown' ? 1 : MATRIX_HANDLES.length - 1;
+      state.matrixHandle = MATRIX_HANDLES[(index + step) % MATRIX_HANDLES.length].key;
+      showMatrixReadout(state.matrixHandle);
+      drawMatrixSurface();
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      revealCrossover();
+      return;
+    }
+    const direction =
+      event.key === 'ArrowUp' || event.key === 'ArrowRight'
+        ? 1
+        : event.key === 'ArrowDown' || event.key === 'ArrowLeft'
+          ? -1
+          : 0;
+    if (direction === 0) return;
+    event.preventDefault();
+    const handle = activeMatrixHandle();
+    if (matrixLocked(handle)) {
+      refuseLockedHeadroom();
+      return;
+    }
+    writeField(handle.path, nudgeMatrixValue(numberOf(handle.path, NaN), direction, handle.bound));
+    showMatrixReadout(handle.key);
+  }
+
+  /* Vertical only: a gain has one axis, and the column a handle rides is part of
+   * the routing picture rather than a value. */
+  function matrixDragTo(event) {
+    const rect = matrixClientRect();
+    if (!rect) return;
+    const handle = matrixHandleOf(state.matrixDrag.key);
+    writeField(handle.path, matrixYToValue(event.clientY, rect, handle.bound));
+    showMatrixReadout(handle.key);
+  }
+
+  function endMatrixDrag() {
+    if (state.matrixDrag === null) return;
+    const { pointerId } = state.matrixDrag;
+    state.matrixDrag = null;
+    const canvas = matrixCanvas();
+    canvas.style.touchAction = '';
+    hideMatrixReadout();
+    if (typeof canvas.releasePointerCapture !== 'function' || !Number.isFinite(pointerId)) return;
+    try {
+      canvas.releasePointerCapture(pointerId);
+    } catch (captureError) {
+      /* the pointer was already released (or never captured) */
+    }
+  }
+
+  /* The policy chip IS the form checkbox: one write path, so the resolved
+   * headroom, the read-only field and the locked handle all follow from it. */
+  function toggleClipfree() {
+    const next = !field('matrix.clipfree').checked;
+    writeCheck('matrix.clipfree', next);
+    setMatrixStatus(
+      next
+        ? 'Clip-free headroom on: the device resolves headroom as 1 / (1 + centre + surround + |LFE|), so its handle is locked.'
+        : 'Clip-free headroom off: drag the headroom handle to set it by hand.',
+    );
+  }
+
+  /* The number a gesture is writing, beside the handle writing it -- positioned
+   * against a unit rect, so it needs no layout of its own. */
+  function showMatrixReadout(key) {
+    const values = readMatrixValues();
+    const point = matrixHandlePoints(values, { left: 0, top: 0, width: 1, height: 1 }).find(
+      (handle) => handle.key === key,
+    );
+    const readout = $('matrix-readout');
+    readout.textContent = `${point.label} ${matrixGainLabel(values[key])}`;
+    readout.hidden = false;
+    readout.style.left = `${(clamp(point.x, 0, 1) * 100).toFixed(1)}%`;
+    readout.style.top = `${(clamp(point.y, 0, 1) * 100).toFixed(1)}%`;
+  }
+
+  function hideMatrixReadout() {
+    const readout = $('matrix-readout');
+    readout.hidden = true;
+    readout.textContent = '';
+  }
+
+  const setMatrixStatus = (text) => {
+    $('matrix-status').textContent = text;
+  };
+
   /* ---- visual surface: meters -------------------------------------------- */
 
   function renderStripLevels(meters) {
@@ -2371,11 +2961,23 @@
     levelFraction,
     levelZone,
     loadZone,
+    matrixCrossoverBox,
+    matrixCrossoverLabel,
+    matrixEdges,
+    matrixGainLabel,
+    matrixHandlePoints,
+    matrixHitsBox,
+    matrixLayout,
+    matrixPathStyle,
+    matrixValueToY,
+    matrixYToValue,
     nudgeHz,
+    nudgeMatrixValue,
     pickHandle,
     pointToEq,
     resolveCascade,
     sectionMagnitudeDb,
+    stepMatrixValue,
     stepQ,
     xToHz,
     yToDb,

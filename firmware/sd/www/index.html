@@ -77,6 +77,21 @@
 
       <div class="visual-block">
         <div class="visual-block__head">
+          <h3 class="visual-block__title">Downmix matrix</h3>
+          <button id="matrix-clipfree" type="button" class="chip chip--clipfree" aria-pressed="false"><span class="chip__key"></span><span>clip-free headroom</span></button>
+          <span class="visual-block__note">FL and FR cross at a fixed 1.0: the matrix has no field for them</span>
+        </div>
+        <div class="curve-wrap">
+          <canvas id="matrix-diagram" class="matrix-diagram" width="960" height="300" tabindex="0" role="application"
+            aria-label="Downmix routing diagram. The arrow keys move the selected gain, page up and page down select the centre, surround, LFE and headroom handles, the wheel makes a fine adjustment, and enter opens the LFE crossover field in the form below."></canvas>
+          <span id="matrix-readout" class="curve-readout" hidden></span>
+        </div>
+        <p id="matrix-caption" class="visual-block__note"></p>
+        <p id="matrix-status" class="hint" role="status">Drag a handle up or down to set its gain: centre and the LFE fold-in feed both sides, surround keeps its own, and headroom scales the pair. Click the crossover label to edit it in the form below.</p>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head">
           <h3 class="visual-block__title">Limiter gain reduction</h3>
           <span id="strip-limiter-state" class="pill">waiting</span>
         </div>

@@ -76,6 +76,13 @@ code{color:#74d7ff}
 .curve-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
 .curve-controls button{padding:5px 9px;font-size:.75rem}
 
+/* The downmix routing diagram. Same canvas treatment and the same disclosure as
+   the plot: the script sets a pointer cursor over a handle (or over the
+   click-to-edit crossover label) and suppresses panning only while a handle is
+   held, so the diagram is not a scroll trap either. */
+.matrix-diagram{cursor:default}
+.matrix-diagram:focus-visible{outline:3px solid #74d7ff;outline-offset:2px}
+
 /* The legend IS the colour key and the selector: one chip per cascade. */
 .legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 .chip{display:flex;gap:6px;align-items:center;padding:4px 9px;font-size:.72rem;color:#9aa8b5;background:#11151b;border:1px solid #303945;border-radius:999px;cursor:pointer}
@@ -83,6 +90,9 @@ code{color:#74d7ff}
 .chip--on{color:#e8edf2;border-color:var(--chip-colour,#5d6b78)}
 .chip__unlinked{color:#e8c46a}
 .chip__unlinked[hidden]{display:none}
+/* The clip-free policy toggle rides the matrix block's head, in the same chip
+   vocabulary as the curve legend: its key square is the state light. */
+.chip--clipfree{--chip-colour:#ff9f6b}
 
 /* The two ends of the strip: what the device is hearing, and whether the
    transmit gate is passing it. Neither is a status pill -- they are facts
