@@ -1494,8 +1494,28 @@ all low severity, owned by slice 5's touch of the same code:
   `adoptModel()` on generation change clobbers anything typed during the
   ≤20 s pending window.
 
-5. **UX iteration — user-directed 2026-07-27, after reviewing the shipped
-   surface.** Requirements verbatim from the review:
+5. **UX iteration — user-directed 2026-07-27; BUILT the same day, on-device
+   pass pending.** Landed as four commits: unit A (`db0f47578`, the shared
+   foundation: `sd-shared.js` + the shared layer in `replays.css`), unit B
+   (`0a407752e`, replay manager rework + the new `status.html`/`status.js`),
+   B's follow-ups (`4eb3744ce`, wire-honest Status schema types now
+   contract-pinned, GiB tier, root-page status link), and unit C (this
+   commit: the editor redesign). Full aius vitest scope 191/191
+   (dsp-editor 138, replays 31, status 17, swagger 5); firmware editor-keys
+   guard green. Every requirement below and every UX MUST-FIX (E1–E12,
+   P1–P7) plus the four audit record items is implemented; unit reports
+   carry the details. Unit C decisions worth keeping: the ≤5-sig-fig
+   matrix display is LOSSLESS (the exact value parks on `data-exact` and
+   collect reads it back, so the factory pin stays exact); pairs fan every
+   surface write to both members with the adopt-left announcement;
+   keyboard section-cycling is PageUp/PageDown (arrows nudge); the flow
+   ends (`input: optical carrier/replay/none`, `output: gate open/dark`)
+   are `.flow-end` elements, not pills, to leave the shared vocabulary
+   alone. Known cosmetic residue: the shared waveform renderer strokes one
+   device pixel on hiDPI while the plot is DPR-scaled (a future
+   `sd-shared.js` touch). Remaining for the slice: card deploy, the
+   root-page reflash, and the on-device browser pass at desktop and phone
+   widths. Requirements verbatim from the review:
    - **All EQ curves stacked on ONE plot**, each selectable; the selected
      curve is the editable one. Replaces the one-channel-at-a-time select.
    - **Sections addable and editable from the surface** (within the

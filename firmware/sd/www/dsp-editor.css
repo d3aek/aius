@@ -1,7 +1,7 @@
 /* DSP editor additions. The shared chrome (page frame, cards, status grid,
-   controls, pills, canvas) comes from replays.css, which index.html links
-   first -- keep both pages looking like one product and only add what the
-   editor's dense form and meter table need. */
+   controls, buttons, PILLS and the error-summary line) comes from replays.css,
+   which index.html links first -- keep every SD page looking like one product
+   and only add what the editor's dense form and signal-flow strip need. */
 
 code{color:#74d7ff}
 /* auto-fill (not auto-fit) so a one-field row keeps a column's width instead of
@@ -20,11 +20,22 @@ code{color:#74d7ff}
 .field input,.field select{width:100%}
 /* Reserved so a validation message never reflows the form. */
 .field__error{color:#f2a0a0;font-size:.72rem;min-height:1.1em}
+/* What a linear multiplier means in decibels, printed rather than implied. */
+.field__note{color:#9aa8b5;font-size:.72rem;font-variant-numeric:tabular-nums}
 .field--invalid input,.field--invalid select{border-color:#d16a6a}
 .field--check{grid-template-columns:auto 1fr;align-items:center}
 .field--check input{width:auto;justify-self:start;grid-row:1}
 .field--check .field__error{grid-column:1/3}
 .field input:disabled,.field select:disabled{color:#7f8b98;background:#0c1015}
+
+/* A card whose fields are out of range says so at its own title, because the
+   error summary sits thousands of pixels up the page. */
+.card-marker{color:#f2a0a0;font-size:.72rem;white-space:nowrap}
+.card-marker[hidden]{display:none}
+.card--invalid{border-color:#d16a6a}
+/* A fact about the FORM, beside the button that would send it. */
+.form-fact{color:#9aa8b5;font-size:.72rem;font-variant-numeric:tabular-nums;align-self:center}
+.hint--warn{color:#e8dcc0}
 
 .preset-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px}
 .preset-list li{display:flex;gap:10px;align-items:center;padding:6px 10px;background:#11151b;border-radius:6px}
@@ -39,11 +50,6 @@ code{color:#74d7ff}
 
 .notice{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:14px 0;padding:12px;border:1px solid #e8c46a;border-radius:6px;background:#211d13;color:#e8dcc0;font-size:.8rem}
 .notice[hidden]{display:none}
-.error-summary{color:#f2a0a0;font-size:.78rem;margin-top:10px}
-.error-summary[hidden]{display:none}
-.pill[data-state="applied"]{border-color:#53b57e;color:#73e6a0}
-.pill[data-state="pending"],.pill[data-state="sending"]{border-color:#74d7ff;color:#74d7ff}
-.pill[data-state="stale"],.pill[data-state="invalid"],.pill[data-state="error"]{border-color:#d16a6a;color:#f2a0a0}
 
 /* Signal-flow strip: the at-a-glance view of the same model the form edits and
    the same snapshot the meter table shows, in signal order. Canvas sizing
@@ -54,19 +60,49 @@ code{color:#74d7ff}
 .visual-block{margin-top:14px}
 .visual-block+.visual-block{border-top:1px solid #232b35;padding-top:12px}
 .visual-block__head{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px}
-.visual-block__title{margin:0;font-size:.8rem;color:#73e6a0;letter-spacing:.06em}
+.visual-block__title{margin:0;font-size:.8rem;color:#73e6a0;letter-spacing:.06em;flex:1}
 .visual-block__note{color:#9aa8b5;font-size:.72rem}
-.visual-block__pick{display:flex;gap:8px;align-items:center;color:#9aa8b5;font-size:.72rem}
-.visual-block__pick select{padding:4px 6px;font-size:.72rem}
 .visual canvas{display:block;width:100%;height:auto;background:#0d1116;border-radius:5px}
-/* touch-action, or a drag on a handle also pans the page on a touch pointer. */
-.curve{touch-action:none;cursor:crosshair}
+/* NO unconditional touch-action:none -- that made the plot a scroll trap on
+   touch. The script sets it only for the duration of a grabbed drag. */
+.curve{cursor:crosshair}
+.curve:focus-visible{outline:3px solid #74d7ff;outline-offset:2px}
+.curve-wrap{position:relative}
+/* The values a gesture is writing, beside the handle writing them. Positioned
+   by percentage of the plot, and nudged up/left so it never sits under the
+   pointer itself. */
+.curve-readout{position:absolute;transform:translate(-50%,-160%);padding:2px 6px;border:1px solid #4a5665;border-radius:4px;background:#0d1116;color:#e8edf2;font-size:.7rem;white-space:nowrap;pointer-events:none;font-variant-numeric:tabular-nums}
+.curve-readout[hidden]{display:none}
+.curve-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.curve-controls button{padding:5px 9px;font-size:.75rem}
+
+/* The legend IS the colour key and the selector: one chip per cascade. */
+.legend{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.chip{display:flex;gap:6px;align-items:center;padding:4px 9px;font-size:.72rem;color:#9aa8b5;background:#11151b;border:1px solid #303945;border-radius:999px;cursor:pointer}
+.chip__key{width:10px;height:10px;border-radius:2px;background:var(--chip-colour,#5d6b78)}
+.chip--on{color:#e8edf2;border-color:var(--chip-colour,#5d6b78)}
+.chip__unlinked{color:#e8c46a}
+.chip__unlinked[hidden]{display:none}
+
+/* The two ends of the strip: what the device is hearing, and whether the
+   transmit gate is passing it. Neither is a status pill -- they are facts
+   about the signal path, with their own vocabulary. */
+.flow-end{padding:3px 9px;border:1px solid #303945;border-radius:999px;font-size:.72rem;color:#9aa8b5}
+.flow-end[data-state="carrier"],.flow-end[data-state="open"]{border-color:#53b57e;color:#73e6a0}
+.flow-end[data-state="replay"]{border-color:#74d7ff;color:#74d7ff}
+.flow-end[data-state="dark"],.flow-end[data-state="none"]{border-color:#5d6b78;color:#9aa8b5}
+.flow-end[data-state="unreachable"]{border-color:#d16a6a;color:#f2a0a0}
 
 .bars{display:grid;gap:5px}
 .bar{display:grid;grid-template-columns:minmax(96px,auto) 1fr minmax(46px,auto);gap:10px;align-items:center;color:#9aa8b5;font-size:.72rem}
 .bar__track{position:relative;height:10px;background:#0d1116;border-radius:3px;overflow:hidden}
 .bar__fill{position:absolute;left:0;top:0;bottom:0;width:0;background:#73e6a0}
+/* A level near full scale is not healthy green. */
+.bar__fill[data-zone="warn"]{background:#e8c46a}
+.bar__fill[data-zone="danger"]{background:#d16a6a}
 .bar__value{text-align:right;color:#aab4c0;font-variant-numeric:tabular-nums}
+.status-grid strong[data-zone="warn"]{color:#e8dcc0}
+.status-grid strong[data-zone="danger"]{color:#f2a0a0}
 
 .gr{display:grid;grid-template-columns:auto 1fr auto minmax(62px,auto);gap:10px;align-items:center;color:#9aa8b5;font-size:.72rem}
 .gr__track{position:relative;height:12px;background:#0d1116;border-radius:3px;overflow:hidden}

@@ -3,34 +3,42 @@
  * OWNS: the whole /sd/www/index.html page -- building the config form from the
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
- * optimistic-concurrency token, polling GET /api/meters at 10 Hz, and drawing
- * the signal-flow strip (EQ magnitude curves, level bars, DSP load, limiter
- * gain reduction) from that same model and snapshot.
+ * optimistic-concurrency token, polling GET /api/meters at 10 Hz and
+ * GET /api/status at 1 Hz, and drawing the signal-flow strip: ONE stacked EQ
+ * plot carrying every cascade, the level bars, the DSP load and the limiter's
+ * gain reduction, all from that same model and those same snapshots.
  *
- * DOES NOT OWN: the replay manager page (replays.js) and anything the firmware
- * decides -- the device is the authority on what a valid config is. The bounds
- * here mirror lib/aius_dsp_config (and scripts/build_config.py) so a mistake is
- * caught before the round trip, never to replace the device-side validation.
+ * DOES NOT OWN: the replay manager (replays.js), the device status page
+ * (status.js), the shared chrome behaviours (sd-shared.js -- pills, fetch
+ * discipline, formatters, token storage, waveform renderer; consumed here,
+ * never mutated), and anything the firmware decides -- the device is the
+ * authority on what a valid config is. The bounds here mirror
+ * lib/aius_dsp_config (and scripts/build_config.py) so a mistake is caught
+ * before the round trip, never to replace the device-side validation.
  *
  * This file is served off the Teensy's SD card. It is deliberately a plain
  * classic script with no imports, no build step, and no shared UI kit -- the
  * device cannot reach a host application's module mounts. Same constraint as
- * replays.js; keep the two pages looking like one product.
+ * replays.js; keep the SD pages looking like one product.
  */
 (() => {
   'use strict';
 
   const $ = (id) => document.getElementById(id);
 
+  /* index.html loads sd-shared.js first; this is the whole of the page's
+   * dependency on it. */
+  const shared = window.aiusSdShared;
+
   const METER_POLL_MS = 100; /* 10 Hz, per the API contract */
   const METER_RETRY_MS = 5000; /* back-off while /api/meters is absent */
+  const STATUS_POLL_MS = 1000; /* the signal-flow ends only need 1 Hz */
   const PENDING_POLL_MS = 500; /* the apply lands at an audio block boundary */
   const PENDING_POLL_MAX = 40; /* ~20 s before the page stops waiting */
-  const WAVEFORM_MAX_POINTS = 128; /* AIUS_METER_WAVEFORM_MAX */
-  const WAVEFORM_FULL_SCALE = 1000; /* waveform points are per-mille of full scale */
-  const METER_FLOOR_DBFS = -120; /* every emitted level is finite, floored here */
   const MODEL_MAX_BYTES = 12288; /* AIUS_DSP_MODEL_MAX_JSON_BYTES */
   const EQ_SLOTS = 2; /* AIUS_DSP_MODEL_EQ_MAX */
+  const DISPLAY_SIG_FIGS = 5; /* what a rendered number shows, never what it sends */
+  const ERROR_LINK_MAX = 4; /* linked problems in the summary before "+N more" */
 
   /* Signal-flow strip. The curve axes are the page's own display choice; the
    * gain axis deliberately equals the gain_db field bound so a drag handle can
@@ -43,12 +51,22 @@
   const CURVE_GRID_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
   const CURVE_GRID_DB = [-24, -12, 0, 12, 24];
   const CURVE_DEFAULT_RATE_HZ = 48000; /* until GET /api/dsp/config reports the device rate */
+  const CURVE_DIM_ALPHA = 0.3; /* an unselected cascade is context, not a target */
+  const HZ_LABEL_INSET_PX = 34; /* the 20 Hz label clears the -24 dB rail label */
   const HANDLE_RADIUS_PX = 6;
   const HANDLE_GRAB_PX = 14; /* pointer slop around a handle, in client pixels */
   const Q_WHEEL_STEP = 1.12; /* one wheel notch, multiplicative */
   const Q_MIN = 0.1; /* both mirror the Q field bound in eqFields() */
   const Q_MAX = 20;
+  const NUDGE_DB = 0.5; /* one arrow press, matching the dB field's step */
+  const NUDGE_HZ_RATIO = 1.05; /* proportional, because the axis is logarithmic */
+  const DOUBLE_TAP_MS = 400; /* touch has no dblclick of its own to rely on */
+  const DOUBLE_TAP_PX = 30;
   const BAR_FLOOR_DBFS = -60; /* the bar strip's own floor: at -120 every bar is a sliver */
+  const BAR_WARN_DBFS = -6; /* above this a level is close enough to clipping to say so */
+  const BAR_DANGER_DBFS = -1;
+  const LOAD_WARN_PERCENT = 70;
+  const LOAD_DANGER_PERCENT = 90;
   const LIMITER_SPAN_DB = 24; /* gain-reduction bar + history full scale */
   const LIMITER_HISTORY_MAX = 128; /* ~12.8 s of history at the 10 Hz poll */
 
@@ -88,9 +106,22 @@
     ['peaking', 'peaking'],
   ];
   const EQ_SEED = { frequency_hz: 1000, q: 0.707, gain_db: 0 };
-  /* Accepted trade (task #7 interview): a stored token is readable by any
-   * script served from the device origin for as long as it is stored. */
-  const TOKEN_STORAGE_KEY = 'aius-sd-auth';
+
+  /* The five entities of the stacked plot. A STEREO PAIR IS ONE ENTITY here
+   * (task #7 slice 5, user requirement): fl/fr and sl/sr are never separately
+   * controlled on this surface, so every edit through it writes both members'
+   * fields and the per-channel form below stays the escape hatch. The first
+   * base is the LEFT member and is the display authority: a pair whose members
+   * differ in the model (a hand-edited config) renders the left member's
+   * cascade, shows an "unlinked" chip marker, and the first surface edit adopts
+   * the left cascade into both -- announced before it applies. */
+  const CURVE_ENTITIES = [
+    { key: 'front', label: 'Front (fl+fr)', bases: ['input_channels.fl', 'input_channels.fr'], colour: '#74d7ff' },
+    { key: 'centre', label: 'Centre (fc)', bases: ['input_channels.fc'], colour: '#73e6a0' },
+    { key: 'lfe', label: 'LFE', bases: ['input_channels.lfe'], colour: '#e8c46a' },
+    { key: 'surround', label: 'Surround (sl+sr)', bases: ['input_channels.sl', 'input_channels.sr'], colour: '#c79bf0' },
+    { key: 'output', label: 'Output', bases: ['output'], colour: '#ff9f6b' },
+  ];
 
   /* The factory model's five editable groups, mirroring
    * firmware/config/optical_dsp.json (compiled into AIUS_OPTICAL_CONFIG by
@@ -129,15 +160,31 @@
     pendingAttempts: 0,
     meterInFlight: false,
     meterRetryAt: 0,
+    statusInFlight: false,
+    /* Serialised editable groups as last read from the device; null until the
+     * first successful read. isDirty() is this string against a fresh collect. */
+    clean: null,
+    /* One request at a time from the page's own buttons (UX finding E4). */
+    busy: false,
     /* Names as stored on the card (with case), .json stripped. */
     presets: [],
-    /* Which input channel's cascade the input curve is showing. */
-    curveChannel: CHANNELS[0][0],
+    /* True when the last listing FAILED: state.presets is then unknown rather
+     * than empty, and a case-insensitive duplicate check cannot be trusted. */
+    presetsFaulted: false,
+    /* Which cascade the stacked plot is editing, and which of its sections the
+     * keyboard and the wheel act on. */
+    curveEntity: CURVE_ENTITIES[0].key,
+    activeSlot: 0,
+    /* Field paths that currently fail validation, for the card markers. */
+    problems: new Map(),
     /* Page-side ring of polled limiter_gain_reduction_db values; the device
      * publishes an instant, never a history. */
     limiterHistory: [],
+    /* Last rendered waveform, so a resize can redraw without a fresh poll. */
+    waveform: [],
     /* The handle currently under a captured pointer, or null. */
     drag: null,
+    lastTap: null,
   };
 
   /* Preset name grammar, page-enforced BEFORE any PUT. The 27-char cap is the
@@ -153,7 +200,10 @@
   /* ---- field table -------------------------------------------------------
    * Every editable value is one descriptor whose `path` is its JSON path in the
    * model. Render and collect both walk this table, so a field can never be
-   * shown without being sent (or vice versa). */
+   * shown without being sent (or vice versa). `step` is the NATIVE stepping
+   * granularity (UX finding E8: step="any" made ArrowUp take Q from 0.707 to
+   * 1.707); min/max are emitted natively too, and JS validation stays the
+   * authority -- the device's bounds are what a message must describe. */
 
   const eqFields = (base, label) => [
     { path: `${base}.type`, kind: 'eq-type', label: `${label} type`, caption: 'Type' },
@@ -164,9 +214,10 @@
       caption: 'Frequency (Hz)',
       min: 10,
       max: 24000,
+      step: 1,
       unit: ' Hz',
     },
-    { path: `${base}.q`, kind: 'number', label: `${label} Q`, caption: 'Q', min: 0.1, max: 20 },
+    { path: `${base}.q`, kind: 'number', label: `${label} Q`, caption: 'Q', min: 0.1, max: 20, step: 0.05 },
     {
       path: `${base}.gain_db`,
       kind: 'number',
@@ -174,41 +225,125 @@
       caption: 'Gain (dB)',
       min: -24,
       max: 24,
+      step: 0.5,
       unit: ' dB',
     },
   ];
 
   const MATRIX_FIELDS = [
-    { path: 'matrix.center_gain_linear', kind: 'number', label: 'Centre gain', min: 0, max: 4, unit: ' linear' },
-    { path: 'matrix.surround_gain_linear', kind: 'number', label: 'Surround gain', min: 0, max: 4, unit: ' linear' },
-    { path: 'matrix.lfe_gain_linear', kind: 'number', label: 'LFE gain', min: 0, max: 4, unit: ' linear' },
+    {
+      path: 'matrix.center_gain_linear',
+      kind: 'number',
+      label: 'Centre gain',
+      caption: 'Centre gain (linear)',
+      min: 0,
+      max: 4,
+      step: 0.01,
+      unit: ' linear',
+      note: 'db',
+    },
+    {
+      path: 'matrix.surround_gain_linear',
+      kind: 'number',
+      label: 'Surround gain',
+      caption: 'Surround gain (linear)',
+      min: 0,
+      max: 4,
+      step: 0.01,
+      unit: ' linear',
+      note: 'db',
+    },
+    {
+      path: 'matrix.lfe_gain_linear',
+      kind: 'number',
+      label: 'LFE gain',
+      caption: 'LFE gain (linear)',
+      min: 0,
+      max: 4,
+      step: 0.01,
+      unit: ' linear',
+      note: 'db',
+    },
     /* 20..500 mirrors MATRIX_LFE_CROSSOVER_{MIN,MAX}_HZ in the PUT validator. 0 is
      * deliberately OUTSIDE that range: "no LFE" is lfe_gain_linear = 0, so a corner
      * of zero would be a second encoding of one state. */
-    { path: 'matrix.lfe_crossover_hz', kind: 'number', label: 'LFE crossover', min: 20, max: 500, unit: ' Hz' },
-    { path: 'matrix.headroom_linear', kind: 'number', label: 'Headroom', min: 0, max: 1, exclusiveMin: true, unit: ' linear' },
+    {
+      path: 'matrix.lfe_crossover_hz',
+      kind: 'number',
+      label: 'LFE crossover',
+      caption: 'LFE crossover (Hz)',
+      min: 20,
+      max: 500,
+      step: 1,
+      unit: ' Hz',
+    },
+    {
+      path: 'matrix.headroom_linear',
+      kind: 'number',
+      label: 'Headroom',
+      caption: 'Headroom (linear)',
+      min: 0,
+      max: 1,
+      step: 0.01,
+      exclusiveMin: true,
+      unit: ' linear',
+    },
     { path: 'matrix.clipfree', kind: 'bool', label: 'Clip-free headroom policy' },
   ];
 
   const LIMITER_FIELDS = [
-    { path: 'limiter.enabled', kind: 'bool', label: 'Limiter enabled' },
-    { path: 'limiter.threshold_dbfs', kind: 'number', label: 'Threshold', min: -24, max: 0, unit: ' dBFS' },
-    { path: 'limiter.attack_ms', kind: 'number', label: 'Attack', min: 0.1, max: 100, unit: ' ms' },
-    { path: 'limiter.release_ms', kind: 'number', label: 'Release', min: 1, max: 1000, unit: ' ms' },
-    { path: 'limiter.lookahead_ms', kind: 'number', label: 'Lookahead', min: 0, max: 5, unit: ' ms' },
+    { path: 'limiter.enabled', kind: 'bool', label: 'Limiter enabled', caption: 'Limiter enabled' },
+    {
+      path: 'limiter.threshold_dbfs',
+      kind: 'number',
+      label: 'Threshold',
+      caption: 'Threshold (dBFS)',
+      min: -24,
+      max: 0,
+      step: 0.5,
+      unit: ' dBFS',
+    },
+    { path: 'limiter.attack_ms', kind: 'number', label: 'Attack', caption: 'Attack (ms)', min: 0.1, max: 100, step: 0.1, unit: ' ms' },
+    { path: 'limiter.release_ms', kind: 'number', label: 'Release', caption: 'Release (ms)', min: 1, max: 1000, step: 1, unit: ' ms' },
+    {
+      path: 'limiter.lookahead_ms',
+      kind: 'number',
+      label: 'Lookahead',
+      caption: 'Lookahead (ms)',
+      min: 0,
+      max: 5,
+      step: 0.1,
+      unit: ' ms',
+    },
   ];
+
+  /* Which card owns a field, so a validation message can put a marker on the
+   * title the reader has to scroll to (UX finding E6). */
+  const CARD_OF_PREFIX = [
+    ['features.', 'card-features'],
+    ['input_channels.', 'card-input-channels'],
+    ['output.', 'card-output-eq'],
+    ['matrix.', 'card-matrix'],
+    ['limiter.', 'card-limiter'],
+  ];
+  const CARD_IDS = CARD_OF_PREFIX.map(([, id]) => id);
+  const cardIdOf = (path) => (CARD_OF_PREFIX.find(([prefix]) => path.startsWith(prefix)) || [null, null])[1];
 
   const field = (path) => $(`f:${path}`);
 
   /* ---- DOM construction -------------------------------------------------- */
 
   function buildField(descriptor) {
-    const holder = document.createElement('label');
+    /* A DIV, not a LABEL: a wrapping label folds caption, error text and the
+     * reset button into one accessible name (UX finding E11). The caption is a
+     * real <label for>, and the error is wired with aria-describedby. */
+    const holder = document.createElement('div');
     holder.className = 'field';
     /* The caption is the compact form; `label` is the full subject a validation
      * message names ("Front left section 1 frequency must be ..."). */
-    const caption = document.createElement('span');
+    const caption = document.createElement('label');
     caption.className = 'field__label';
+    caption.htmlFor = `f:${descriptor.path}`;
     caption.textContent = descriptor.caption || descriptor.label;
     holder.append(caption);
 
@@ -228,7 +363,12 @@
     } else {
       input = document.createElement('input');
       input.type = 'number';
-      input.step = 'any';
+      /* Native bounds and stepping, from the same descriptor the JS validator
+       * reads -- so ArrowUp lands on a legal value and the browser's own UI
+       * agrees with the message the page would show. */
+      input.min = String(descriptor.min);
+      input.max = String(descriptor.max);
+      input.step = String(descriptor.step);
       input.dataset.min = String(descriptor.min);
       input.dataset.max = String(descriptor.max);
       if (descriptor.exclusiveMin) input.dataset.exclusiveMin = 'true';
@@ -238,6 +378,7 @@
     input.dataset.field = descriptor.path;
     input.dataset.label = descriptor.label;
     input.dataset.kind = descriptor.kind;
+    input.setAttribute('aria-describedby', `e:${descriptor.path}`);
     holder.append(input);
 
     const error = document.createElement('span');
@@ -245,19 +386,26 @@
     error.id = `e:${descriptor.path}`;
     holder.append(error);
 
-    /* Per-parameter reset to the factory value. preventDefault matters: the
-     * holder is a <label>, and without it a click on the button would ALSO
-     * activate the labelled control -- toggling a checkbox right back. */
+    /* A linear gain says nothing about level to a human, so the dB it means is
+     * printed under it (UX finding E7). */
+    if (descriptor.note === 'db') {
+      const note = document.createElement('span');
+      note.className = 'field__note';
+      note.id = `n:${descriptor.path}`;
+      holder.append(note);
+    }
+
+    /* Per-parameter reset to the factory value. tabindex -1 keeps 78 of them
+     * out of the tab order; the aria-label still names the target for AT that
+     * reaches it another way. */
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.className = 'field__reset';
     reset.id = `r:${descriptor.path}`;
+    reset.tabIndex = -1;
     reset.textContent = 'reset';
     reset.setAttribute('aria-label', `Reset ${descriptor.label} to factory default`);
-    reset.addEventListener('click', (event) => {
-      event.preventDefault();
-      resetField(descriptor.path);
-    });
+    reset.addEventListener('click', () => resetField(descriptor.path));
     holder.append(reset);
     return holder;
   }
@@ -268,10 +416,10 @@
   function resetField(path) {
     const input = field(path);
     if (input.disabled) return;
-    const value = readPath(FACTORY_DEFAULTS, path);
+    const value = factoryValueOf(FACTORY_DEFAULTS, path);
     if (input.dataset.kind === 'bool') input.checked = Boolean(value);
     else if (input.dataset.kind === 'eq-type') input.value = typeof value === 'string' ? value : 'none';
-    else input.value = showNumber(value);
+    else setNumberValue(input, Number.isFinite(value) ? value : NaN);
     input.dispatchEvent(new Event('input'));
   }
 
@@ -307,7 +455,9 @@
   function buildForm() {
     const features = $('features');
     features.append(
-      buildFieldGrid(FEATURES.map(([key, label]) => ({ path: `features.${key}`, kind: 'bool', label }))),
+      buildFieldGrid(
+        FEATURES.map(([key, label]) => ({ path: `features.${key}`, kind: 'bool', label, caption: `${label} enabled` })),
+      ),
     );
 
     const channels = $('input-channels');
@@ -327,6 +477,7 @@
             caption: 'Trim (dB)',
             min: -60,
             max: 12,
+            step: 0.5,
             unit: ' dB',
           },
         ]),
@@ -338,6 +489,14 @@
     $('output-eq').append(buildEqSlots('output', 'Output'));
     $('matrix').append(buildFieldGrid(MATRIX_FIELDS));
     $('limiter').append(buildFieldGrid(LIMITER_FIELDS));
+
+    for (const id of CARD_IDS) {
+      const marker = document.createElement('span');
+      marker.className = 'card-marker';
+      marker.id = `m:${id}`;
+      marker.hidden = true;
+      $(id).querySelector('.section-title').append(marker);
+    }
 
     for (const [key, label] of CHANNELS) meterRow(`meter-in-${key}`, `${label} (${key})`);
     meterRow('meter-out-l', 'Output left');
@@ -371,13 +530,43 @@
   const readPath = (root, path) =>
     path.split('.').reduce((node, key) => (node === null || node === undefined ? undefined : node[key]), root);
 
-  const showNumber = (value) => (Number.isFinite(value) ? String(value) : '');
+  /* The form's output EQ paths are `output.eq.N.<key>` (they mirror the input
+   * channels' shape), while the model -- and FACTORY_DEFAULTS with it -- keys
+   * the same sections `output_eq[N]`. Without this alias a reset of an output
+   * section silently read undefined; correct only while the factory ships no
+   * output sections, which is exactly the kind of latent break the delivery
+   * audit flagged. Pure, and exported, so a synthetic factory table with a real
+   * output section can prove the path. */
+  function factoryValueOf(defaults, path) {
+    const match = /^output\.eq\.(\d+)\.([a-z_]+)$/.exec(path);
+    if (!match) return readPath(defaults, path);
+    const sections = defaults && Array.isArray(defaults.output_eq) ? defaults.output_eq : [];
+    const section = sections[Number(match[1])];
+    return section ? section[match[2]] : undefined;
+  }
+
+  /* What a number LOOKS like in a field: 5 significant figures, so a downmix
+   * gain reads 0.70711 instead of 0.7071067811865475 (UX finding E7). The
+   * device still receives full precision -- setNumberValue parks the exact
+   * value on the input and numberOf() takes it back while the visible text is
+   * still that value's own rendering, so only a human's edit loses digits. */
+  const displayNumber = (value) => {
+    if (!Number.isFinite(value)) return '';
+    return String(Number(value.toPrecision(DISPLAY_SIG_FIGS)));
+  };
+
+  function setNumberValue(input, value) {
+    input.value = displayNumber(value);
+    input.dataset.exact = Number.isFinite(value) ? String(value) : '';
+  }
+
+  const setNumberField = (path, value) => setNumberValue(field(path), value);
 
   function render(model) {
     for (const [key] of FEATURES) field(`features.${key}`).checked = Boolean(readPath(model, `features.${key}`));
 
     for (const [key] of CHANNELS) {
-      field(`input_channels.${key}.gain_db`).value = showNumber(readPath(model, `input_channels.${key}.gain_db`));
+      setNumberField(`input_channels.${key}.gain_db`, readPath(model, `input_channels.${key}.gain_db`));
       renderEqSlots(`input_channels.${key}`, readPath(model, `input_channels.${key}.eq`));
     }
     renderEqSlots('output', model.output_eq);
@@ -386,7 +575,7 @@
       const input = field(descriptor.path);
       const value = readPath(model, descriptor.path);
       if (descriptor.kind === 'bool') input.checked = Boolean(value);
-      else input.value = showNumber(value);
+      else setNumberValue(input, value);
     }
     refreshDerived();
     validateAll();
@@ -398,9 +587,9 @@
       const section = list[slot];
       const path = `${base}.eq.${slot}`;
       field(`${path}.type`).value = section && typeof section.type === 'string' ? section.type : 'none';
-      field(`${path}.frequency_hz`).value = showNumber(section ? section.frequency_hz : undefined);
-      field(`${path}.q`).value = showNumber(section ? section.q : undefined);
-      field(`${path}.gain_db`).value = showNumber(section ? section.gain_db : undefined);
+      setNumberField(`${path}.frequency_hz`, section ? section.frequency_hz : NaN);
+      setNumberField(`${path}.q`, section ? section.q : NaN);
+      setNumberField(`${path}.gain_db`, section ? section.gain_db : NaN);
     }
   }
 
@@ -431,12 +620,14 @@
     const type = field(`${path}.type`).value;
     if (type === 'none' || type === 'bypass') return;
     if (field(`${path}.frequency_hz`).value.trim() === '') {
-      field(`${path}.frequency_hz`).value = String(EQ_SEED.frequency_hz);
+      setNumberField(`${path}.frequency_hz`, EQ_SEED.frequency_hz);
     }
-    if (field(`${path}.q`).value.trim() === '') field(`${path}.q`).value = String(EQ_SEED.q);
-    if (type === 'highpass') field(`${path}.gain_db`).value = String(EQ_SEED.gain_db);
-    else if (field(`${path}.gain_db`).value.trim() === '') field(`${path}.gain_db`).value = String(EQ_SEED.gain_db);
+    if (field(`${path}.q`).value.trim() === '') setNumberField(`${path}.q`, EQ_SEED.q);
+    if (type === 'highpass') setNumberField(`${path}.gain_db`, EQ_SEED.gain_db);
+    else if (field(`${path}.gain_db`).value.trim() === '') setNumberField(`${path}.gain_db`, EQ_SEED.gain_db);
   }
+
+  const linearToDb = (value) => (Number.isFinite(value) && value > 0 ? 20 * Math.log10(value) : null);
 
   /* Clip-free headroom is resolved by the DSP, not typed: with the policy on,
    * the field shows 1 / (1 + centre + surround + |lfe|) and goes read-only. */
@@ -451,21 +642,33 @@
         numberOf('matrix.center_gain_linear', 0) +
         numberOf('matrix.surround_gain_linear', 0) +
         Math.abs(numberOf('matrix.lfe_gain_linear', 0));
-      headroom.value = String(denominator <= 1 ? 1 : 1 / denominator);
+      setNumberValue(headroom, denominator <= 1 ? 1 : 1 / denominator);
+    }
+    for (const descriptor of MATRIX_FIELDS) {
+      if (descriptor.note !== 'db') continue;
+      const db = linearToDb(numberOf(descriptor.path, NaN));
+      $(`n:${descriptor.path}`).textContent = db === null ? '= -inf dB' : `= ${db.toFixed(1)} dB`;
     }
     const bytes = JSON.stringify(collectModel()).length;
-    $('model-bytes').textContent = `${bytes} / ${MODEL_MAX_BYTES}`;
+    $('model-bytes').textContent = `request body ${bytes} of ${MODEL_MAX_BYTES} bytes`;
     syncResetButtons();
     /* The curves are a view of the fields, so every edit -- typed, reset,
      * preset-loaded or dragged -- redraws them from here. collectModel() is
      * untouched: the curves read the inputs directly. */
-    drawCurves();
+    drawCurveSurface();
   }
 
+  /* The exact value the field was RENDERED from wins while the visible text is
+   * still that value's own 5-significant-figure rendering; the moment a human
+   * types something else, what they typed is what the device gets. */
   function numberOf(path, fallback) {
-    const raw = field(path).value.trim();
+    const input = field(path);
+    const raw = input.value.trim();
+    if (raw === '') return fallback;
+    const exact = input.dataset.exact;
+    if (exact !== undefined && exact !== '' && displayNumber(Number(exact)) === raw) return Number(exact);
     const value = Number(raw);
-    return raw === '' || !Number.isFinite(value) ? fallback : value;
+    return Number.isFinite(value) ? value : fallback;
   }
 
   function collectEqSection(base, slot) {
@@ -527,6 +730,21 @@
     };
   }
 
+  /* ---- dirty tracking ----------------------------------------------------
+   * "Dirty" is the five editable groups differing from what the device last
+   * told us -- one JSON.stringify against a snapshot taken when the model was
+   * adopted, cheap enough to run on demand and never per keystroke. Every
+   * work-destroying path consults it (UX finding E2). */
+
+  const markClean = () => {
+    state.clean = JSON.stringify(collectPresetGroups());
+  };
+
+  const isDirty = () => state.clean !== null && state.clean !== JSON.stringify(collectPresetGroups());
+
+  const DISCARD_QUESTION = 'This page has edits that have not been applied to the device. Discard them?';
+  const confirmDiscard = () => !isDirty() || window.confirm(DISCARD_QUESTION);
+
   /* ---- validation -------------------------------------------------------- */
 
   function fieldProblem(input) {
@@ -554,14 +772,35 @@
     if (error) error.textContent = message;
     holder.classList.toggle('field--invalid', message !== '');
     input.setAttribute('aria-invalid', message === '' ? 'false' : 'true');
+    if (message === '') state.problems.delete(input.dataset.field);
+    else state.problems.set(input.dataset.field, message);
+    markCards();
     return message;
   }
 
+  /* A message at the top of a 4000 px page has to say WHERE, so each card
+   * carries the count of its own out-of-range fields (UX finding E6). */
+  function markCards() {
+    const counts = new Map();
+    for (const path of state.problems.keys()) {
+      const card = cardIdOf(path);
+      if (card) counts.set(card, (counts.get(card) || 0) + 1);
+    }
+    for (const id of CARD_IDS) {
+      const count = counts.get(id) || 0;
+      const marker = $(`m:${id}`);
+      marker.textContent = count === 0 ? '' : `${count} out of range`;
+      marker.hidden = count === 0;
+      $(id).classList.toggle('card--invalid', count > 0);
+    }
+  }
+
+  /* In DOM order, so "the first problem" is the first one down the page. */
   function validateAll() {
     const problems = [];
     for (const input of document.querySelectorAll('[data-field]')) {
       const message = validateField(input);
-      if (message !== '') problems.push(message);
+      if (message !== '') problems.push({ path: input.dataset.field, message });
     }
     return problems;
   }
@@ -579,43 +818,46 @@
      * a message left on a field the new type ignores would be a lie. */
     if (isEqType) validateAll();
     else validateField(input);
-    if (state.applyState === 'applied' || state.applyState === 'error') setApplyState('edited');
+    /* `loaded` is promotable too: without it the first edit after a fresh read
+     * left the pill claiming the form matched the device (delivery audit,
+     * slice 3 finding). */
+    if (state.applyState === 'applied' || state.applyState === 'error' || state.applyState === 'loaded') {
+      setApplyState('edited');
+    }
   }
 
   /* ---- device I/O --------------------------------------------------------
-   * request() never throws. Every caller below is fire-and-forget (a click
-   * handler or the meter ticker) with nowhere to route a rejection, so a
-   * failure comes back as data and the caller's own cleanup/render always
-   * runs. guard() is the second belt: a defect anywhere in a handler surfaces
-   * in the UI instead of becoming a silent unhandled rejection. */
+   * shared.request() never throws. Every caller below is fire-and-forget (a
+   * click handler or a ticker) with nowhere to route a rejection, so a failure
+   * comes back as data and the caller's own cleanup/render always runs.
+   * guard() is the second belt: a defect anywhere in a handler surfaces in the
+   * UI instead of becoming a silent unhandled rejection. */
 
-  async function request(url, options) {
-    try {
-      const response = await fetch(url, options);
-      let body = null;
-      try {
-        body = await response.json();
-      } catch (parseError) {
-        body = null;
-      }
-      return { ok: response.ok, status: response.status, body };
-    } catch (error) {
-      return { ok: false, status: 0, body: null, transport: error && error.message ? error.message : String(error) };
-    }
+  const request = shared.request;
+  const requestRaw = shared.requestRaw;
+  const describe = shared.describe;
+  const guard = (run) => shared.guard(run, showError);
+
+  /* One in-flight request at a time from the page's own buttons: a second
+   * click on Apply during a >7 s first save used to land a stale PUT and paint
+   * a false 409 (UX finding E4). */
+  const BUSY_BUTTONS = ['apply', 'reload', 'stale-reload', 'preset-save', 'preset-upload', 'preset-refresh'];
+
+  function setBusy(busy) {
+    state.busy = busy;
+    for (const id of BUSY_BUTTONS) $(id).disabled = busy;
+    for (const button of document.querySelectorAll('#preset-list button')) button.disabled = busy;
   }
 
-  async function guard(run) {
+  async function act(run) {
+    if (state.busy) return;
+    setBusy(true);
     try {
-      await run();
-    } catch (error) {
-      showError(`Editor error: ${error && error.message ? error.message : String(error)}`);
+      await guard(run);
+    } finally {
+      setBusy(false);
     }
   }
-
-  const describe = (result) =>
-    result.transport
-      ? `network error: ${result.transport}`
-      : `HTTP ${result.status}${result.body && result.body.error ? ` (${result.body.error})` : ''}`;
 
   async function loadConfig() {
     setStatus('Reading device configuration...');
@@ -633,13 +875,21 @@
     setStatus(`Loaded generation ${state.baseGeneration} from ${result.body.source}.`);
   }
 
-  function adoptModel(model) {
+  /* keepForm leaves the form exactly as the operator left it and adopts only
+   * the device facts: the pending-window poll must not overwrite what was
+   * typed while the previous apply was landing (delivery audit finding). */
+  function adoptModel(model, keepForm) {
     state.model = model;
     state.baseGeneration = Number.isFinite(model.config_generation) ? model.config_generation : 0;
     $('source').textContent = model.source || 'unknown';
     $('generation').textContent = String(state.baseGeneration);
     $('sample-rate').textContent = Number.isFinite(model.sample_rate_hz) ? `${model.sample_rate_hz} Hz` : '--';
+    if (keepForm) {
+      refreshDerived();
+      return;
+    }
     render(model);
+    markClean();
   }
 
   async function applyConfig() {
@@ -656,7 +906,7 @@
     const problems = validateAll();
     if (problems.length > 0) {
       setApplyState('invalid');
-      showError(`${problems.length} field${problems.length === 1 ? '' : 's'} out of range: ${problems[0]}`);
+      showFieldProblems(problems);
       return;
     }
     const payload = JSON.stringify(collectModel());
@@ -708,7 +958,15 @@
     const result = await request('/api/dsp/config', { headers: { Accept: 'application/json' } });
     if (result.ok && result.body && result.body.config_generation !== state.baseGeneration) {
       stopPendingPoll();
-      adoptModel(result.body);
+      const dirty = isDirty();
+      adoptModel(result.body, dirty);
+      if (dirty) {
+        setApplyState('edited');
+        setStatus(
+          `Applied at generation ${state.baseGeneration} (source ${result.body.source}). The device moved while this form was being edited, so the edits were kept -- re-read to see the device's values.`,
+        );
+        return;
+      }
       setApplyState('applied');
       setStatus(`Applied at generation ${state.baseGeneration} (source ${result.body.source}).`);
       return;
@@ -727,32 +985,6 @@
    * normal Apply flow writes to the device. A preset carries ONLY the five
    * editable groups: sample_rate_hz is a live biquad design rate nothing
    * cross-checks, so a preset must never smuggle one in. */
-
-  /* Like request(), but body-agnostic: the directory index is HTML while every
-   * refusal is the JSON error shape, so callers get the raw text plus the
-   * error token when one parses out. Never throws. */
-  async function requestRaw(url, options) {
-    try {
-      const response = await fetch(url, options);
-      const text = await response.text();
-      let token = '';
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed.error === 'string') token = parsed.error;
-      } catch (parseError) {
-        /* HTML or other non-JSON body: no token. */
-      }
-      return { ok: response.ok, status: response.status, text, token };
-    } catch (error) {
-      return {
-        ok: false,
-        status: 0,
-        text: '',
-        token: '',
-        transport: error && error.message ? error.message : String(error),
-      };
-    }
-  }
 
   function presetNameProblem(name) {
     if (name === '') return 'Preset name is required.';
@@ -817,12 +1049,12 @@
       const load = document.createElement('button');
       load.type = 'button';
       load.textContent = 'Load';
-      load.addEventListener('click', () => void guard(() => loadPreset(name)));
+      load.addEventListener('click', () => void act(() => loadPreset(name)));
       const remove = document.createElement('button');
       remove.type = 'button';
-      remove.className = 'secondary';
+      remove.className = 'danger';
       remove.textContent = 'Delete';
-      remove.addEventListener('click', () => void guard(() => deletePreset(name)));
+      remove.addEventListener('click', () => void act(() => deletePreset(name)));
       row.append(title, load, remove);
       list.append(row);
     }
@@ -836,14 +1068,16 @@
      * presets is squatting on the directory name -- a real fault. */
     if (result.status === 404 && result.token === 'sd_not_found') {
       state.presets = [];
+      state.presetsFaulted = false;
       renderPresetList();
       setPresetState('idle');
       setPresetStatus('No presets on the card yet.');
       return;
     }
     if (!result.ok) {
+      state.presetsFaulted = true;
       setPresetState('error');
-      showPresetError(`Could not list ${PRESET_DIR_URL} -- ${describeRaw(result)}.`);
+      showPresetError(`Could not list ${PRESET_DIR_URL} -- ${describe(result)}.`);
       return;
     }
     const parsed = new DOMParser().parseFromString(result.text, 'text/html');
@@ -857,10 +1091,13 @@
     }
     names.sort((a, b) => a.localeCompare(b));
     state.presets = names;
+    state.presetsFaulted = false;
     renderPresetList();
     setPresetState('idle');
     const footer = result.text.match(/truncated: (yes|no)\./);
     if (footer && footer[1] === 'yes') {
+      /* A partial list cannot rule out a case-variant collision either. */
+      state.presetsFaulted = true;
       setPresetState('truncated');
       showPresetError(
         'The card holds more entries than one 64-entry listing; this list is INCOMPLETE. Prune presets to see them all.',
@@ -878,18 +1115,22 @@
     if (result.token === 'sd_capacity') return 'the card is full';
     if (result.token === 'sd_auth') return 'the SD auth token was rejected';
     if (result.token === 'sd_unavailable') return 'no SD card is mounted';
-    return describeRaw(result);
+    return describe(result);
   }
-
-  const describeRaw = (result) =>
-    result.transport
-      ? `network error: ${result.transport}`
-      : `HTTP ${result.status}${result.token ? ` (${result.token})` : ''}`;
 
   async function savePreset(name, groups) {
     const token = $('token').value.trim();
     if (token === '') {
       showPresetError('SD auth token required to save a preset.');
+      return;
+    }
+    /* An empty-because-it-faulted listing cannot answer "does Bass.json already
+     * exist?", and FAT would silently case-overwrite it (delivery audit). */
+    if (state.presetsFaulted) {
+      setPresetState('error');
+      showPresetError(
+        'The preset list could not be read, so a case-insensitive overwrite cannot be ruled out. Refresh the list, then save.',
+      );
       return;
     }
     const problem = presetNameProblem(name);
@@ -916,10 +1157,14 @@
 
   async function loadPreset(name) {
     clearPresetError();
+    if (!confirmDiscard()) {
+      setPresetStatus(`Kept the edits on this page; ${name} was not loaded.`);
+      return;
+    }
     const result = await requestRaw(presetUrl(name), { headers: { Accept: 'application/json' } });
     if (!result.ok) {
       setPresetState('error');
-      showPresetError(`Could not read ${name}.json -- ${describeRaw(result)}.`);
+      showPresetError(`Could not read ${name}.json -- ${describe(result)}.`);
       return;
     }
     let parsed;
@@ -961,6 +1206,10 @@
       return;
     }
     clearPresetError();
+    if (!window.confirm(`Delete ${name}.json from the card? This cannot be undone.`)) {
+      setPresetStatus(`${name}.json was kept.`);
+      return;
+    }
     const result = await requestRaw(presetUrl(name), {
       method: 'DELETE',
       headers: { 'X-Aius-SD-Auth': token },
@@ -972,7 +1221,7 @@
     }
     if (!result.ok) {
       setPresetState('error');
-      showPresetError(`Could not delete ${name}.json -- ${describeRaw(result)}.`);
+      showPresetError(`Could not delete ${name}.json -- ${describe(result)}.`);
       return;
     }
     await refreshPresets();
@@ -1000,6 +1249,8 @@
       showPresetError(`${file.name}: ${problem}`);
       return;
     }
+    /* Precedence, said out loud in the hint under the field: a filled Preset
+     * name renames the upload, an empty one keeps the file's own name. */
     const name = $('preset-name').value.trim() || file.name.replace(/\.json$/i, '');
     /* Re-serialise the five groups only, so a hand-edited file's extra keys
      * (source, generations, sample_rate_hz) never reach the card. */
@@ -1012,9 +1263,22 @@
     });
   }
 
+  /* Grammar as it is typed, not only when the save is refused (UX finding N8:
+   * maxlength silently swallowed the 28th keystroke). */
+  function refreshPresetNameHint() {
+    const name = $('preset-name').value.trim();
+    const problem = name === '' ? '' : presetNameProblem(name);
+    const hint = $('preset-name-hint');
+    hint.textContent =
+      `${name.length} / ${PRESET_NAME_MAX} characters. ` +
+      (problem === ''
+        ? "An upload uses this name when it is filled, and the file's own name when it is empty."
+        : problem);
+    hint.classList.toggle('hint--warn', problem !== '');
+  }
+
   function setPresetState(next) {
-    $('preset-state').textContent = next;
-    $('preset-state').dataset.state = next === 'truncated' ? 'error' : next;
+    shared.setPill($('preset-state'), next);
   }
 
   const setPresetStatus = (text) => {
@@ -1059,19 +1323,22 @@
     for (const [key] of CHANNELS) setMeterRow(`meter-in-${key}`, null, null);
     setMeterRow('meter-out-l', null, null);
     setMeterRow('meter-out-r', null, null);
-    drawWaveform([]);
+    state.waveform = [];
+    shared.drawWaveform($('waveform'), []);
     blankStrip();
   }
 
-  /* One pill per card, one state: the strip and the meter table read the same
-   * snapshot, so they can never disagree about whether it exists. */
+  /* Scoped to the blocks that actually read a snapshot: the EQ plot is a view
+   * of the FORM and stays live when the meters go away, so it never wears a
+   * "no data" pill (UX finding E5). */
   function setMeterState(text) {
-    $('meter-state').textContent = text;
-    $('visual-state').textContent = text;
+    for (const id of ['meter-state', 'strip-input-state', 'strip-limiter-state', 'strip-output-state']) {
+      shared.setPill($(id), text);
+    }
   }
 
   function renderMetersAbsent(result) {
-    setMeterState('unavailable');
+    setMeterState('unreachable');
     blankMeterRows();
     $('meter-summary').textContent = `Meters unavailable -- ${describe(result)}. Retrying every ${METER_RETRY_MS / 1000} s.`;
   }
@@ -1096,11 +1363,16 @@
   const channelDbfs = (values, index) =>
     Array.isArray(values) && Number.isFinite(values[index]) ? values[index] : null;
 
-  const formatDb = (value) => {
-    if (value === null || value === undefined || Number.isNaN(value)) return '--';
-    if (!Number.isFinite(value) || value <= METER_FLOOR_DBFS) return '-inf';
-    return value.toFixed(1);
-  };
+  const formatDb = shared.formatDb;
+
+  /* Raw DWT counts are unreadable at six digits and say nothing without their
+   * budget, so both are scaled the same way (UX finding E12). */
+  function formatCycles(cycles) {
+    if (!Number.isFinite(cycles)) return '--';
+    if (cycles < 10000) return String(Math.round(cycles));
+    if (cycles < 1e6) return `${Math.round(cycles / 1000)}k`;
+    return `${(cycles / 1e6).toFixed(2)}M`;
+  }
 
   function setMeterRow(id, peak, rms) {
     $(`${id}-peak`).textContent = formatDb(peak);
@@ -1125,82 +1397,65 @@
     $('meter-sequence').textContent = Number.isFinite(meters.sequence) ? String(meters.sequence) : '--';
     $('meter-queue').textContent = Number.isFinite(meters.queue_frames) ? `${meters.queue_frames} frames` : '--';
     $('meter-latency').textContent = Number.isFinite(meters.estimated_latency_us)
-      ? `${meters.estimated_latency_us} us`
+      ? shared.formatUs(meters.estimated_latency_us)
       : '--';
+    const budget = dspBudgetCycles(Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : 0);
     $('meter-cycles').textContent =
       Number.isFinite(meters.dsp_cycles_last) || Number.isFinite(meters.dsp_cycles_max)
-        ? `${meters.dsp_cycles_last ?? '--'} / ${meters.dsp_cycles_max ?? '--'}`
+        ? `${formatCycles(meters.dsp_cycles_last)} / ${formatCycles(meters.dsp_cycles_max)}${
+            budget > 0 ? ` of ${formatCycles(budget)} budget` : ''
+          }`
         : '--';
     $('meter-summary').textContent = `Limiter gain reduction ${formatDb(meters.limiter_gain_reduction_db)} dB at ${
       Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : '--'
     } Hz.`;
-    drawWaveform(meters.waveform);
+    state.waveform = Array.isArray(meters.waveform) ? meters.waveform : [];
+    shared.drawWaveform($('waveform'), state.waveform);
     renderDspLoad(meters);
     renderStripLevels(meters);
     pushLimiter(meters.limiter_gain_reduction_db);
   }
 
-  /* The waveform is a bounded per-bucket peak-magnitude envelope carried as
-   * per-mille integers 0..1000 of full scale, so it renders mirrored about the
-   * centre line. The array's own length is the count; never more than the
-   * contract's 128 points. */
-  function normaliseWaveform(points) {
-    if (!Array.isArray(points)) return [];
-    return points
-      .slice(0, WAVEFORM_MAX_POINTS)
-      .map(Number)
-      .filter(Number.isFinite)
-      .map((value) => Math.max(0, Math.min(1, value / WAVEFORM_FULL_SCALE)));
+  /* ---- signal-flow ends: what the device is hearing, and transmitting -----
+   * GET /api/status at 1 Hz. `carrier` and the latched tx_gate terms are the
+   * only facts the page needs, and they are the two ends of the strip. */
+
+  async function pollStatus() {
+    if (state.statusInFlight) return;
+    state.statusInFlight = true;
+    const result = await request('/api/status', { headers: { Accept: 'application/json' } });
+    state.statusInFlight = false;
+    renderFlowEnds(result.ok && result.body ? result.body : null);
   }
 
-  function drawWaveform(points) {
-    const canvas = $('waveform');
-    const context = canvas.getContext('2d');
-    if (!context) return;
-    const { width, height } = canvas;
-    const middle = height / 2;
-    context.clearRect(0, 0, width, height);
-    context.strokeStyle = '#2a3542';
-    context.beginPath();
-    context.moveTo(0, middle);
-    context.lineTo(width, middle);
-    context.stroke();
+  function setFlowEnd(id, dataState, text) {
+    const element = $(id);
+    element.dataset.state = dataState;
+    element.textContent = text;
+  }
 
-    const values = normaliseWaveform(points);
-    if (values.length === 0) return;
-    const xOf = (index) => (values.length < 2 ? 0 : (index * width) / (values.length - 1));
-    context.strokeStyle = '#74d7ff';
-    context.fillStyle = 'rgba(116,215,255,0.22)';
-    context.beginPath();
-    values.forEach((value, index) => {
-      const y = middle - value * middle;
-      if (index === 0) context.moveTo(xOf(index), y);
-      else context.lineTo(xOf(index), y);
-    });
-    for (let index = values.length - 1; index >= 0; index--) {
-      context.lineTo(xOf(index), middle + values[index] * middle);
+  function renderFlowEnds(status) {
+    if (!status) {
+      setFlowEnd('input-source', 'unreachable', 'input: device unreachable');
+      setFlowEnd('tx-gate', 'unreachable', 'output: device unreachable');
+      return;
     }
-    context.closePath();
-    context.fill();
-    context.stroke();
+    const gate = status.tx_gate && typeof status.tx_gate === 'object' ? status.tx_gate : {};
+    if (status.carrier) setFlowEnd('input-source', 'carrier', 'input: optical carrier');
+    else if (gate.replay_running) setFlowEnd('input-source', 'replay', 'input: replay');
+    else setFlowEnd('input-source', 'none', 'input: none');
+    if (gate.open) setFlowEnd('tx-gate', 'open', 'output: gate open');
+    else setFlowEnd('tx-gate', 'dark', 'output: gate dark');
   }
 
-  /* ---- visual surface: EQ curves, level bars, limiter --------------------
-   * The strip under the status card mirrors the SAME model the form edits, in
-   * signal order. It has two halves:
-   *
-   *   - Pure math -- magnitude curves plus every rect/coordinate mapping.
-   *     Dependency-free on purpose: happy-dom has no layout engine (its
-   *     getBoundingClientRect returns an all-zero rect), so the vitest suite
-   *     proves this arithmetic by calling it with literal rects rather than by
-   *     synthesising a gesture. A "rect" is any {left, top, width, height} --
-   *     the canvas's CLIENT rect for pointer work, {0, 0, canvas.width,
-   *     canvas.height} for drawing, which differ because CSS scales the canvas
-   *     to the card width.
-   *   - Wiring -- listeners that turn a gesture into a field write. A drag sets
-   *     the same input text mode sets and dispatches 'input', so validation,
-   *     the derived headroom, the byte count and the redraw all run exactly as
-   *     they do for a typed edit. There is no second model.
+  /* ---- visual surface: pure maths ----------------------------------------
+   * Dependency-free on purpose: happy-dom has no layout engine (its
+   * getBoundingClientRect returns an all-zero rect), so the vitest suite proves
+   * this arithmetic by calling it with literal rects rather than by
+   * synthesising a gesture. A "rect" is any {left, top, width, height} -- the
+   * canvas's CLIENT rect for pointer work, {0, 0, canvas.width, canvas.height}
+   * for drawing, which differ because CSS scales the canvas to the card width
+   * and the backing store is sized in device pixels.
    *
    * The curves are DISPLAY ONLY: the RBJ audio-EQ cookbook mirrored in JS so
    * the page can show what a section is about to do. The device designs the
@@ -1278,6 +1533,35 @@
       0,
     );
 
+  /* Identity of one cascade for comparison purposes, using exactly the rules
+   * collectEqSection() applies on the wire: an absent section is "none"
+   * whatever numbers are stranded in its fields, a bypass carries none of
+   * them, and a highpass has no gain. Two members of a stereo pair are the
+   * same cascade iff their signatures match. */
+  const cascadeSignature = (sections) =>
+    (Array.isArray(sections) ? sections : [])
+      .map((section) => {
+        if (!section || section.type === 'none' || section.type === undefined) return 'none';
+        if (section.type === 'bypass') return 'bypass';
+        const gain = section.type === 'peaking' && Number.isFinite(section.gain_db) ? section.gain_db : 0;
+        return `${section.type}|${section.frequency_hz}|${section.q}|${gain}`;
+      })
+      .join(',');
+
+  /* A stereo pair is ONE entity on the plot: the FIRST (left) member is the
+   * display and edit authority, and `unlinked` is true when any other member
+   * disagrees with it -- which is only reachable through a hand-edited config
+   * or the per-channel form below. */
+  function resolveCascade(cascades) {
+    const list = Array.isArray(cascades) ? cascades : [];
+    const sections = list.length > 0 ? list[0] : [];
+    const signature = cascadeSignature(sections);
+    return {
+      sections,
+      unlinked: list.slice(1).some((other) => cascadeSignature(other) !== signature),
+    };
+  }
+
   const hzToX = (hz, rect) =>
     rect.left +
     (rect.width * Math.log(clamp(hz, CURVE_MIN_HZ, CURVE_MAX_HZ) / CURVE_MIN_HZ)) /
@@ -1291,9 +1575,9 @@
   const yToDb = (y, rect) =>
     clamp(((rect.top + rect.height / 2 - y) / (rect.height / 2)) * CURVE_SPAN_DB, -CURVE_SPAN_DB, CURVE_SPAN_DB);
 
-  /* Field-sized precision, so a dragged value is one a human could have typed
-   * and the byte count stays sane. */
-  const roundHz = (hz) => (hz >= 1000 ? Math.round(hz) : Math.round(hz * 10) / 10);
+  /* Field-sized precision, so a dragged value is one a human could have typed,
+   * lands on the field's own native step, and keeps the byte count sane. */
+  const roundHz = (hz) => Math.round(hz);
   const roundDb = (db) => Math.round(db * 10) / 10;
   const roundQ = (q) => Math.round(q * 1000) / 1000;
 
@@ -1302,6 +1586,14 @@
     frequency_hz: roundHz(xToHz(clientX, rect)),
     gain_db: roundDb(yToDb(clientY, rect)),
   });
+
+  /* One arrow press. Proportional, because a fixed 10 Hz is a semitone at the
+   * bottom of the axis and nothing at the top; clamped to the plot's own span
+   * so the handle can never leave the surface it is being driven on. */
+  const nudgeHz = (hz, direction) => {
+    const base = Number.isFinite(hz) && hz > 0 ? hz : EQ_SEED.frequency_hz;
+    return roundHz(clamp(direction > 0 ? base * NUDGE_HZ_RATIO : base / NUDGE_HZ_RATIO, CURVE_MIN_HZ, CURVE_MAX_HZ));
+  };
 
   /* (sections, rect, rate) -> the polyline the canvas strokes for the whole
    * cascade. An empty or all-bypassed cascade is a flat line at 0 dB. */
@@ -1363,41 +1655,98 @@
   const levelFraction = (dbfs) =>
     Number.isFinite(dbfs) ? clamp((dbfs - BAR_FLOOR_DBFS) / -BAR_FLOOR_DBFS, 0, 1) : 0;
 
+  /* 0 dBFS is not a healthy green (UX finding N6). */
+  const levelZone = (dbfs) => {
+    if (!Number.isFinite(dbfs)) return 'idle';
+    if (dbfs >= BAR_DANGER_DBFS) return 'danger';
+    if (dbfs > BAR_WARN_DBFS) return 'warn';
+    return 'ok';
+  };
+
+  const loadZone = (percent) => {
+    if (percent === null) return 'idle';
+    if (percent > LOAD_DANGER_PERCENT) return 'danger';
+    if (percent > LOAD_WARN_PERCENT) return 'warn';
+    return 'ok';
+  };
+
   /* ---- visual surface: DOM ----------------------------------------------- */
 
-  /* The two cascades the page draws, in signal order. `base` is a function
-   * because the input curve follows the channel selector. */
-  const CURVE_SURFACES = [
-    { canvasId: 'curve-input', base: () => `input_channels.${state.curveChannel}` },
-    { canvasId: 'curve-output', base: () => 'output' },
-  ];
+  const selectedEntity = () =>
+    CURVE_ENTITIES.find((entity) => entity.key === state.curveEntity) || CURVE_ENTITIES[0];
+
+  /* Slot-preserving view of one cascade, read straight from the inputs: the
+   * index IS the slot, so a dragged handle knows which fields to write. An
+   * empty or unparsable number reads as absent, which makes the section
+   * inactive rather than a curve at 0 Hz. */
+  function curveSections(base) {
+    return [...Array(EQ_SLOTS).keys()].map((slot) => {
+      const path = `${base}.eq.${slot}`;
+      return {
+        slot,
+        type: field(`${path}.type`).value,
+        frequency_hz: numberOf(`${path}.frequency_hz`, NaN),
+        q: numberOf(`${path}.q`, NaN),
+        gain_db: numberOf(`${path}.gain_db`, 0),
+      };
+    });
+  }
+
+  const entityCascade = (entity) => resolveCascade(entity.bases.map((base) => curveSections(base)));
+
+  const curveSampleRate = () =>
+    state.model && Number.isFinite(state.model.sample_rate_hz) && state.model.sample_rate_hz > 0
+      ? state.model.sample_rate_hz
+      : CURVE_DEFAULT_RATE_HZ;
+
+  const labelHz = (hz) => (hz >= 1000 ? `${hz / 1000}k` : String(hz));
+
+  const shortName = (base) => (base.startsWith('input_channels.') ? base.slice('input_channels.'.length) : base);
 
   function buildVisualStrip() {
-    const select = $('curve-channel');
-    for (const [key, label] of CHANNELS) {
-      const option = document.createElement('option');
-      option.value = key;
-      option.textContent = `${label} (${key})`;
-      select.append(option);
+    const legend = $('curve-legend');
+    for (const entity of CURVE_ENTITIES) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.id = `chip:${entity.key}`;
+      chip.dataset.entity = entity.key;
+      chip.style.setProperty('--chip-colour', entity.colour);
+      const key = document.createElement('span');
+      key.className = 'chip__key';
+      const label = document.createElement('span');
+      label.textContent = entity.label;
+      const unlinked = document.createElement('span');
+      unlinked.className = 'chip__unlinked';
+      unlinked.id = `unlinked:${entity.key}`;
+      unlinked.textContent = 'unlinked';
+      unlinked.hidden = true;
+      chip.append(key, label, unlinked);
+      chip.addEventListener('click', () => selectEntity(entity.key));
+      legend.append(chip);
     }
-    select.value = state.curveChannel;
-    select.addEventListener('change', () => {
-      state.curveChannel = select.value;
-      drawCurves();
-    });
 
     for (const [key, label] of CHANNELS) buildBar('bars-input', `bar-in-${key}`, `${label} (${key})`);
     buildBar('bars-output', 'bar-out-l', 'Output left');
     buildBar('bars-output', 'bar-out-r', 'Output right');
 
-    for (const surface of CURVE_SURFACES) attachCurvePointer(surface);
+    attachCurveSurface();
+    $('curve-add').addEventListener('click', () => addSection(selectedEntity(), EQ_SEED.frequency_hz));
+
     /* A pointer released off the canvas still ends the drag; without capture
      * (or with it, since the event bubbles) window is the one listener that
      * always sees it. */
     window.addEventListener('pointerup', endDrag);
     window.addEventListener('pointercancel', endDrag);
+    window.addEventListener('resize', () => {
+      fitCanvases();
+      drawCurveSurface();
+      drawLimiterHistory();
+      shared.drawWaveform($('waveform'), state.waveform);
+    });
 
-    drawCurves();
+    fitCanvases();
+    drawCurveSurface();
     drawLimiterHistory();
   }
 
@@ -1422,46 +1771,99 @@
   }
 
   function setBar(id, dbfs) {
-    $(`${id}-fill`).style.width = `${(levelFraction(dbfs) * 100).toFixed(1)}%`;
+    const fill = $(`${id}-fill`);
+    fill.style.width = `${(levelFraction(dbfs) * 100).toFixed(1)}%`;
+    fill.dataset.zone = levelZone(dbfs);
     $(`${id}-value`).textContent = formatDb(dbfs);
   }
 
-  /* Slot-preserving view of one cascade, read straight from the inputs: the
-   * index IS the slot, so a dragged handle knows which fields to write. An
-   * empty or unparsable number reads as absent, which makes the section
-   * inactive rather than a curve at 0 Hz. */
-  function curveSections(base) {
-    return [...Array(EQ_SLOTS).keys()].map((slot) => {
-      const path = `${base}.eq.${slot}`;
-      return {
-        slot,
-        type: field(`${path}.type`).value,
-        frequency_hz: numberOf(`${path}.frequency_hz`, NaN),
-        q: numberOf(`${path}.q`, NaN),
-        gain_db: numberOf(`${path}.gain_db`, 0),
-      };
-    });
+  /* ---- visual surface: canvas backing store ------------------------------
+   * A fixed 960-px backing store was blurry on every hiDPI screen and drew
+   * 3.6-px axis text at phone width (UX finding E9). The backing store follows
+   * the laid-out width times the device pixel ratio, and everything drawn is
+   * scaled by that ratio -- so no context transform is needed and the pointer
+   * maths keeps working against the CLIENT rect. A zero clientWidth (no layout
+   * engine, or a hidden card) keeps the authored attributes. */
+
+  const CANVAS_IDS = ['curve', 'gr-history', 'waveform'];
+  const dprOf = (canvas) => Number(canvas.dataset.dpr) || 1;
+
+  function fitCanvas(canvas) {
+    if (!canvas.dataset.aspect) canvas.dataset.aspect = String(canvas.height / canvas.width);
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 3);
+    const cssWidth = canvas.clientWidth;
+    if (!(cssWidth > 0)) return false;
+    const width = Math.round(cssWidth * dpr);
+    const height = Math.round(cssWidth * Number(canvas.dataset.aspect) * dpr);
+    if (canvas.width === width && canvas.height === height) return false;
+    canvas.width = width;
+    canvas.height = height;
+    canvas.dataset.dpr = String(dpr);
+    return true;
   }
 
-  const curveSampleRate = () =>
-    state.model && Number.isFinite(state.model.sample_rate_hz) && state.model.sample_rate_hz > 0
-      ? state.model.sample_rate_hz
-      : CURVE_DEFAULT_RATE_HZ;
+  const fitCanvases = () => CANVAS_IDS.forEach((id) => fitCanvas($(id)));
 
-  const labelHz = (hz) => (hz >= 1000 ? `${hz / 1000}k` : String(hz));
+  /* ---- visual surface: the stacked plot ---------------------------------- */
 
-  function drawCurves() {
-    for (const surface of CURVE_SURFACES) drawCurve(surface.canvasId, curveSections(surface.base()));
-  }
-
-  function drawCurve(canvasId, sections) {
-    const canvas = $(canvasId);
+  function drawCurveSurface() {
+    const canvas = $('curve');
     const context = canvas.getContext('2d');
     if (!context) return;
+    const scale = dprOf(canvas);
     const rect = { left: 0, top: 0, width: canvas.width, height: canvas.height };
     context.clearRect(0, 0, rect.width, rect.height);
+    drawCurveGrid(context, rect, scale);
 
+    const rate = curveSampleRate();
+    const selected = selectedEntity();
+    const resolved = new Map(CURVE_ENTITIES.map((entity) => [entity.key, entityCascade(entity)]));
+
+    /* Unselected first: the editable curve is drawn last so it is never buried
+     * under a neighbour, and only it carries handles. */
+    const order = [...CURVE_ENTITIES.filter((entity) => entity !== selected), selected];
+    for (const entity of order) {
+      const chosen = entity === selected;
+      context.globalAlpha = chosen ? 1 : CURVE_DIM_ALPHA;
+      context.strokeStyle = entity.colour;
+      context.lineWidth = (chosen ? 2 : 1) * scale;
+      context.beginPath();
+      curvePoints(resolved.get(entity.key).sections, rect, rate).forEach((point, index) => {
+        if (index === 0) context.moveTo(point.x, point.y);
+        else context.lineTo(point.x, point.y);
+      });
+      context.stroke();
+      context.globalAlpha = 1;
+    }
+
+    const handles = handlePoints(resolved.get(selected.key).sections, rect);
+    for (const handle of handles) {
+      context.fillStyle = selected.colour;
+      context.strokeStyle = handle.slot === state.activeSlot ? '#e8edf2' : '#101318';
+      context.lineWidth = (handle.slot === state.activeSlot ? 2 : 1) * scale;
+      context.beginPath();
+      context.arc(handle.x, handle.y, HANDLE_RADIUS_PX * scale, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+    context.lineWidth = scale;
+
+    for (const entity of CURVE_ENTITIES) {
+      const chip = $(`chip:${entity.key}`);
+      const chosen = entity === selected;
+      chip.setAttribute('aria-pressed', chosen ? 'true' : 'false');
+      chip.classList.toggle('chip--on', chosen);
+      $(`unlinked:${entity.key}`).hidden = !resolved.get(entity.key).unlinked;
+    }
+    $('curve-caption').textContent =
+      handles.length === 0
+        ? `${selected.label}: no sections -- double-click the plot (or press Add section) to add one.`
+        : `${selected.label}: section ${state.activeSlot + 1} of ${EQ_SLOTS} selected, ${handles.length} in use.`;
+  }
+
+  function drawCurveGrid(context, rect, scale) {
     context.strokeStyle = '#232b35';
+    context.lineWidth = scale;
     context.beginPath();
     for (const hz of CURVE_GRID_HZ) {
       context.moveTo(hzToX(hz, rect), 0);
@@ -1482,101 +1884,259 @@
     context.stroke();
 
     context.fillStyle = '#5d6b78';
-    context.font = '11px ui-monospace,monospace';
-    for (const hz of CURVE_GRID_HZ) context.fillText(labelHz(hz), hzToX(hz, rect) + 3, rect.height - 5);
-    for (const db of CURVE_GRID_DB) {
-      if (db !== 0) context.fillText(`${db > 0 ? '+' : ''}${db}`, 3, dbToY(db, rect) - 4);
-    }
-
-    context.strokeStyle = '#74d7ff';
-    context.lineWidth = 2;
-    context.beginPath();
-    curvePoints(sections, rect, curveSampleRate()).forEach((point, index) => {
-      if (index === 0) context.moveTo(point.x, point.y);
-      else context.lineTo(point.x, point.y);
+    context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
+    CURVE_GRID_HZ.forEach((hz, index) => {
+      /* The last label is right-aligned INSIDE the plot ("20k" used to be
+       * clipped off the right edge) and the first is inset clear of the -24 dB
+       * rail label it used to collide with. */
+      const last = index === CURVE_GRID_HZ.length - 1;
+      context.textAlign = last ? 'right' : 'left';
+      const x = last
+        ? rect.width - 3 * scale
+        : index === 0
+          ? HZ_LABEL_INSET_PX * scale
+          : hzToX(hz, rect) + 3 * scale;
+      context.fillText(labelHz(hz), x, rect.height - 5 * scale);
     });
-    context.stroke();
-    context.lineWidth = 1;
-
-    for (const handle of handlePoints(sections, rect)) {
-      context.fillStyle = handle.type === 'peaking' ? '#73e6a0' : '#e8c46a';
-      context.strokeStyle = '#101318';
-      context.beginPath();
-      context.arc(handle.x, handle.y, HANDLE_RADIUS_PX, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
+    context.textAlign = 'left';
+    for (const db of CURVE_GRID_DB) {
+      if (db === 0) continue;
+      /* The rails are inset INTO the plot: +24 sat above the top edge and -24
+       * below the bottom one, so neither was readable. */
+      const inset = db === CURVE_SPAN_DB ? 12 : db === -CURVE_SPAN_DB ? -6 : -4;
+      context.fillText(`${db > 0 ? '+' : ''}${db}`, 3 * scale, dbToY(db, rect) + inset * scale);
     }
   }
 
-  /* The canvas edits the model through the form, never around it: writeField()
-   * is the single write path, and dispatching 'input' is what makes a drag
+  /* ---- visual surface: gestures ------------------------------------------
+   * The canvas edits the model through the form, never around it: writeField()
+   * is the single write path, and dispatching 'input' is what makes a gesture
    * indistinguishable from typing downstream. A disabled input (a highpass's
    * gain, a bypassed section) is left alone, exactly as the device ignores it. */
+
   function writeField(path, value) {
     const input = field(path);
     if (input.disabled) return;
     input.value = String(value);
+    input.dataset.exact = '';
     input.dispatchEvent(new Event('input'));
+  }
+
+  function writeChoice(path, value) {
+    const input = field(path);
+    input.value = value;
+    input.dispatchEvent(new Event('input'));
+  }
+
+  /* Every write through the surface fans out to BOTH members of a stereo pair:
+   * the pair is one entity here by contract. */
+  function surfaceWrite(entity, slot, key, value) {
+    for (const base of entity.bases) writeField(`${base}.eq.${slot}.${key}`, value);
+  }
+
+  /* The pair-divergence policy, announced before it applies: a pair whose
+   * members differ can only be edited as one thing once they ARE one thing, so
+   * the left member's cascade is adopted into the others. */
+  function beginSurfaceEdit(entity) {
+    if (entity.bases.length < 2 || !entityCascade(entity).unlinked) return false;
+    const bases = entity.bases;
+    setCurveStatus(
+      `${entity.label} members differ; adopting ${shortName(bases[0])}'s cascade into ${bases
+        .slice(1)
+        .map(shortName)
+        .join(' and ')} so the pair can be edited as one.`,
+    );
+    const left = curveSections(bases[0]);
+    for (const base of bases.slice(1)) {
+      left.forEach((section, slot) => {
+        const path = `${base}.eq.${slot}`;
+        writeChoice(`${path}.type`, section.type);
+        if (Number.isFinite(section.frequency_hz)) writeField(`${path}.frequency_hz`, section.frequency_hz);
+        if (Number.isFinite(section.q)) writeField(`${path}.q`, section.q);
+        writeField(`${path}.gain_db`, Number.isFinite(section.gain_db) ? section.gain_db : 0);
+      });
+    }
+    return true;
+  }
+
+  /* Adds a section at the frequency the gesture names, seeded exactly as the
+   * form seeds a slot switched to peaking. The 2-per-channel cap is the wire
+   * model's (AIUS_DSP_MODEL_EQ_MAX), so at the cap it says so rather than
+   * silently doing nothing. */
+  function addSection(entity, frequencyHz) {
+    beginSurfaceEdit(entity);
+    const sections = entityCascade(entity).sections;
+    const slot = sections.findIndex((section) => section.type === 'none');
+    if (slot === -1) {
+      setCurveStatus(
+        `${entity.label} already uses both of its ${EQ_SLOTS} sections -- change or remove one before adding another.`,
+      );
+      return false;
+    }
+    for (const base of entity.bases) {
+      const path = `${base}.eq.${slot}`;
+      writeChoice(`${path}.type`, 'peaking');
+      writeField(`${path}.frequency_hz`, roundHz(frequencyHz));
+      writeField(`${path}.q`, EQ_SEED.q);
+      writeField(`${path}.gain_db`, EQ_SEED.gain_db);
+    }
+    state.activeSlot = slot;
+    setCurveStatus(`Added a peaking section at ${roundHz(frequencyHz)} Hz on ${entity.label}.`);
+    drawCurveSurface();
+    return true;
+  }
+
+  function selectEntity(key) {
+    state.curveEntity = key;
+    const sections = entityCascade(selectedEntity()).sections.filter(isActiveSection);
+    state.activeSlot = sections.length > 0 ? sections[0].slot : 0;
+    hideReadout();
+    drawCurveSurface();
   }
 
   /* Pointer work needs the CLIENT rect, not the backing store: CSS scales the
    * canvas to the card width, so a client coordinate only means something
    * against the rect the browser actually laid out. A zero-sized rect (no
    * layout yet, or a headless DOM) simply yields no handle. */
-  function handleUnder(surface, event) {
-    const rect = $(surface.canvasId).getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return null;
-    const points = handlePoints(curveSections(surface.base()), rect);
+  function clientRect() {
+    const rect = $('curve').getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? rect : null;
+  }
+
+  function handleUnder(event) {
+    const rect = clientRect();
+    if (!rect) return null;
+    const points = handlePoints(entityCascade(selectedEntity()).sections, rect);
     return pickHandle(points, event.clientX, event.clientY, HANDLE_GRAB_PX);
   }
 
-  function attachCurvePointer(surface) {
-    const canvas = $(surface.canvasId);
+  function attachCurveSurface() {
+    const canvas = $('curve');
     canvas.addEventListener('pointerdown', (event) => {
-      const handle = handleUnder(surface, event);
+      const handle = handleUnder(event);
       if (!handle) return;
       /* No write on the press itself: a click that does not move must not nudge
-       * the section it grabbed. */
+       * the section it grabbed. Clicking a handle DOES select it. */
       event.preventDefault();
-      state.drag = { surface, slot: handle.slot, type: handle.type, pointerId: event.pointerId };
+      state.activeSlot = handle.slot;
+      beginSurfaceEdit(selectedEntity());
+      state.drag = { entity: selectedEntity(), slot: handle.slot, type: handle.type, pointerId: event.pointerId };
+      /* Suppress panning for the duration of the drag ONLY: an unconditional
+       * touch-action:none made the whole plot a scroll trap (UX finding E1). */
+      canvas.style.touchAction = 'none';
+      showReadout(handle.slot);
+      drawCurveSurface();
       if (typeof canvas.setPointerCapture === 'function') canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener('pointermove', (event) => {
-      if (state.drag && state.drag.surface === surface) dragTo(event);
+      if (state.drag) {
+        dragTo(event);
+        return;
+      }
+      /* Disclose the target: a crosshair everywhere said nothing about where
+       * the draggable points are (UX finding E10). */
+      canvas.style.cursor = handleUnder(event) ? 'pointer' : '';
     });
+    canvas.addEventListener('pointerup', (event) => {
+      if (event.pointerType !== 'touch') return;
+      const tap = { time: Date.now(), x: event.clientX, y: event.clientY };
+      const previous = state.lastTap;
+      state.lastTap = tap;
+      if (
+        previous &&
+        tap.time - previous.time <= DOUBLE_TAP_MS &&
+        Math.hypot(tap.x - previous.x, tap.y - previous.y) <= DOUBLE_TAP_PX
+      ) {
+        state.lastTap = null;
+        addAt(event);
+      }
+    });
+    canvas.addEventListener('dblclick', (event) => addAt(event));
     /* passive: false, because the page must keep the wheel from scrolling while
-     * it is being used to set Q. */
+     * it IS the Q control -- which it only is while a handle is held or the
+     * plot has focus. Anywhere else the wheel belongs to the page (E3). */
     canvas.addEventListener(
       'wheel',
       (event) => {
-        const handle = handleUnder(surface, event);
-        if (!handle) return;
+        const grabbed = state.drag !== null;
+        if (!grabbed && document.activeElement !== canvas) return;
+        const entity = grabbed ? state.drag.entity : selectedEntity();
+        const slot = grabbed ? state.drag.slot : state.activeSlot;
+        const section = entityCascade(entity).sections[slot];
+        if (!isActiveSection(section)) return;
         event.preventDefault();
-        const path = `${surface.base()}.eq.${handle.slot}`;
-        writeField(`${path}.q`, stepQ(numberOf(`${path}.q`, NaN), event.deltaY));
+        beginSurfaceEdit(entity);
+        surfaceWrite(entity, slot, 'q', stepQ(numberOf(`${entity.bases[0]}.eq.${slot}.q`, NaN), event.deltaY));
+        showReadout(slot);
       },
       { passive: false },
     );
+    canvas.addEventListener('keydown', onCurveKey);
+    canvas.addEventListener('blur', hideReadout);
+  }
+
+  function addAt(event) {
+    const rect = clientRect();
+    if (!rect) return;
+    /* A double-click that lands on a handle is handle fiddling, not an add. */
+    if (handleUnder(event)) return;
+    addSection(selectedEntity(), xToHz(event.clientX, rect));
+  }
+
+  /* The keyboard path to the same three parameters, so the plot is not a
+   * mouse-only instrument (UX finding E11). */
+  function onCurveKey(event) {
+    const entity = selectedEntity();
+    const sections = entityCascade(entity).sections;
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault();
+      const step = event.key === 'PageDown' ? 1 : EQ_SLOTS - 1;
+      state.activeSlot = (state.activeSlot + step) % EQ_SLOTS;
+      showReadout(state.activeSlot);
+      drawCurveSurface();
+      return;
+    }
+    const slot = state.activeSlot;
+    const section = sections[slot];
+    if (!isActiveSection(section)) return;
+    const path = `${entity.bases[0]}.eq.${slot}`;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      beginSurfaceEdit(entity);
+      surfaceWrite(entity, slot, 'frequency_hz', nudgeHz(numberOf(`${path}.frequency_hz`, NaN), event.key === 'ArrowRight' ? 1 : -1));
+      showReadout(slot);
+      return;
+    }
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      if (section.type !== 'peaking') return; /* a highpass has no gain to nudge */
+      event.preventDefault();
+      beginSurfaceEdit(entity);
+      const gain = numberOf(`${path}.gain_db`, 0);
+      const next = roundDb(clamp(gain + (event.key === 'ArrowUp' ? NUDGE_DB : -NUDGE_DB), -CURVE_SPAN_DB, CURVE_SPAN_DB));
+      surfaceWrite(entity, slot, 'gain_db', next);
+      showReadout(slot);
+    }
   }
 
   function dragTo(event) {
     const drag = state.drag;
-    const canvas = $(drag.surface.canvasId);
-    const rect = canvas.getBoundingClientRect();
-    if (!(rect.width > 0) || !(rect.height > 0)) return;
-    const path = `${drag.surface.base()}.eq.${drag.slot}`;
+    const rect = clientRect();
+    if (!rect) return;
     const point = pointToEq(rect, event.clientX, event.clientY);
-    writeField(`${path}.frequency_hz`, point.frequency_hz);
+    surfaceWrite(drag.entity, drag.slot, 'frequency_hz', point.frequency_hz);
     /* Only a peaking section carries gain -- the rule collectEqSection()
      * applies -- so a highpass handle moves horizontally only. */
-    if (drag.type === 'peaking') writeField(`${path}.gain_db`, point.gain_db);
+    if (drag.type === 'peaking') surfaceWrite(drag.entity, drag.slot, 'gain_db', point.gain_db);
+    showReadout(drag.slot);
   }
 
   function endDrag() {
     if (state.drag === null) return;
-    const { surface, pointerId } = state.drag;
+    const { pointerId } = state.drag;
     state.drag = null;
-    const canvas = $(surface.canvasId);
+    const canvas = $('curve');
+    canvas.style.touchAction = '';
+    hideReadout();
     if (typeof canvas.releasePointerCapture !== 'function' || !Number.isFinite(pointerId)) return;
     try {
       canvas.releasePointerCapture(pointerId);
@@ -1584,6 +2144,38 @@
       /* the pointer was already released (or never captured) */
     }
   }
+
+  /* The numbers a gesture is writing, beside the handle writing them: a drag
+   * used to change three fields 4000 px down the page with nothing on screen
+   * to read (UX finding E10). Positioned against a unit rect, so it needs no
+   * layout of its own. */
+  function showReadout(slot) {
+    const entity = selectedEntity();
+    const path = `${entity.bases[0]}.eq.${slot}`;
+    const type = field(`${path}.type`).value;
+    const hz = numberOf(`${path}.frequency_hz`, NaN);
+    const q = numberOf(`${path}.q`, NaN);
+    const gain = numberOf(`${path}.gain_db`, 0);
+    const parts = [Number.isFinite(hz) ? `${roundHz(hz)} Hz` : '-- Hz'];
+    if (type === 'peaking') parts.push(`${gain >= 0 ? '+' : ''}${gain.toFixed(1)} dB`);
+    parts.push(`Q ${Number.isFinite(q) ? q.toFixed(2) : '--'}`);
+    const readout = $('curve-readout');
+    readout.textContent = parts.join(' ');
+    readout.hidden = false;
+    const unit = { left: 0, top: 0, width: 1, height: 1 };
+    readout.style.left = `${(clamp(hzToX(Number.isFinite(hz) ? hz : CURVE_MIN_HZ, unit), 0, 1) * 100).toFixed(1)}%`;
+    readout.style.top = `${(clamp(dbToY(type === 'peaking' ? gain : 0, unit), 0, 1) * 100).toFixed(1)}%`;
+  }
+
+  function hideReadout() {
+    const readout = $('curve-readout');
+    readout.hidden = true;
+    readout.textContent = '';
+  }
+
+  const setCurveStatus = (text) => {
+    $('curve-status').textContent = text;
+  };
 
   /* ---- visual surface: meters -------------------------------------------- */
 
@@ -1596,14 +2188,18 @@
   }
 
   /* Load is against the per-block cycle budget, not wall clock: the snapshot's
-   * counters are DWT cycles for one decoded block. */
+   * counters are DWT cycles for one decoded block. One phrasing for both
+   * cells, because two ways of saying "percent of the budget" read as two
+   * different quantities (UX finding E12). */
   function renderDspLoad(meters) {
     const rate = Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : 0;
     const load = dspLoadPercent(meters.dsp_cycles_last, rate);
     const peak = dspLoadPercent(meters.dsp_cycles_max, rate);
     $('meter-load').textContent =
-      load === null ? '--' : `${load.toFixed(1)} % load / ${(100 - load).toFixed(1)} % headroom`;
-    $('meter-load-peak').textContent = peak === null ? '--' : `${peak.toFixed(1)} % of the block budget`;
+      load === null ? '--' : `${load.toFixed(1)} % of budget, ${(100 - load).toFixed(1)} % headroom`;
+    $('meter-load').dataset.zone = loadZone(load);
+    $('meter-load-peak').textContent = peak === null ? '--' : `${peak.toFixed(1)} % of budget`;
+    $('meter-load-peak').dataset.zone = loadZone(peak);
   }
 
   function setLimiterBar(db) {
@@ -1614,7 +2210,7 @@
 
   /* Each snapshot's gain reduction is the value at the publish instant, not a
    * windowed average, so the strip is a record of instants at the poll rate --
-   * said as much in the canvas title. */
+   * said as much in the note under the canvas. */
   function pushLimiter(db) {
     state.limiterHistory.push(Number.isFinite(db) ? clamp(db, -LIMITER_SPAN_DB, 0) : 0);
     if (state.limiterHistory.length > LIMITER_HISTORY_MAX) state.limiterHistory.shift();
@@ -1627,7 +2223,9 @@
     setBar('bar-out-l', null);
     setBar('bar-out-r', null);
     $('meter-load').textContent = '--';
+    $('meter-load').dataset.zone = 'idle';
     $('meter-load-peak').textContent = '--';
+    $('meter-load-peak').dataset.zone = 'idle';
     setLimiterBar(null);
     state.limiterHistory = [];
     drawLimiterHistory();
@@ -1637,10 +2235,12 @@
     const canvas = $('gr-history');
     const context = canvas.getContext('2d');
     if (!context) return;
+    const scale = dprOf(canvas);
     const { width, height } = canvas;
     context.clearRect(0, 0, width, height);
     /* 0 dB is the top rail: gain reduction only ever goes down from it. */
     context.strokeStyle = '#2a3542';
+    context.lineWidth = scale;
     context.beginPath();
     context.moveTo(0, 0);
     context.lineTo(width, 0);
@@ -1666,8 +2266,7 @@
 
   function setApplyState(next) {
     state.applyState = next;
-    $('apply-state').textContent = next;
-    $('apply-state').dataset.state = next;
+    shared.setPill($('apply-state'), next);
   }
 
   const setStatus = (text) => {
@@ -1677,6 +2276,39 @@
   function showError(text) {
     $('errors').textContent = text;
     $('errors').hidden = false;
+  }
+
+  /* A count with the first message and the field 4000 px away was unusable:
+   * each problem is a link that scrolls to and focuses its own input, and the
+   * owning card wears a marker (UX finding E6). */
+  function showFieldProblems(problems) {
+    const summary = $('errors');
+    summary.textContent = '';
+    summary.append(
+      document.createTextNode(`${problems.length} field${problems.length === 1 ? '' : 's'} out of range: `),
+    );
+    problems.slice(0, ERROR_LINK_MAX).forEach((problem, index) => {
+      if (index > 0) summary.append(document.createTextNode(' '));
+      const link = document.createElement('a');
+      link.href = `#f:${problem.path}`;
+      link.textContent = problem.message;
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        revealField(problem.path);
+      });
+      summary.append(link);
+    });
+    if (problems.length > ERROR_LINK_MAX) {
+      summary.append(document.createTextNode(` (+${problems.length - ERROR_LINK_MAX} more)`));
+    }
+    summary.hidden = false;
+  }
+
+  function revealField(path) {
+    const input = field(path);
+    if (!input) return;
+    if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'center' });
+    if (typeof input.focus === 'function') input.focus();
   }
 
   function clearError() {
@@ -1690,40 +2322,27 @@
 
   /* ---- boot -------------------------------------------------------------- */
 
-  /* localStorage can throw (storage disabled, private mode); the token box
-   * degrades to per-session entry rather than taking the page down. */
-  function readStoredToken() {
-    try {
-      return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
-    } catch (storageError) {
-      return '';
-    }
-  }
-
-  function storeToken(value) {
-    try {
-      if (value === '') localStorage.removeItem(TOKEN_STORAGE_KEY);
-      else localStorage.setItem(TOKEN_STORAGE_KEY, value);
-    } catch (storageError) {
-      /* nothing to do: the field still holds the value for this session */
-    }
-  }
-
   /* The pure half of the visual surface is also its unit-test surface: with no
    * layout engine under happy-dom, the only way to prove the drag arithmetic
    * and the curve maths is to call them with literal rects. Nothing on the page
    * reads this back -- it is an export, not a channel. */
   window.aiusDspEditorMath = Object.freeze({
     cascadeMagnitudeDb,
+    cascadeSignature,
     curvePoints,
     dbToY,
     dspBudgetCycles,
     dspLoadPercent,
+    factoryValueOf,
     handlePoints,
     hzToX,
     levelFraction,
+    levelZone,
+    loadZone,
+    nudgeHz,
     pickHandle,
     pointToEq,
+    resolveCascade,
     sectionMagnitudeDb,
     stepQ,
     xToHz,
@@ -1731,27 +2350,54 @@
   });
 
   buildForm();
-  $('apply').onclick = () => void guard(applyConfig);
-  $('reload').onclick = () => void guard(loadConfig);
-  $('stale-reload').onclick = () => void guard(loadConfig);
-  $('token').value = readStoredToken();
-  $('token').addEventListener('input', () => storeToken($('token').value.trim()));
+  $('apply').onclick = () => void act(applyConfig);
+  $('reload').onclick = () =>
+    void act(async () => {
+      if (!confirmDiscard()) {
+        setStatus('Kept the edits on this page; the device was not re-read.');
+        return;
+      }
+      await loadConfig();
+    });
+  $('stale-reload').onclick = () =>
+    void act(async () => {
+      if (!confirmDiscard()) {
+        setStatus('Kept the edits on this page; the device was not re-read.');
+        return;
+      }
+      await loadConfig();
+    });
+  $('token').value = shared.readStoredToken();
+  $('token').addEventListener('input', () => shared.storeToken($('token').value.trim()));
+  $('preset-name').addEventListener('input', refreshPresetNameHint);
   $('preset-save').onclick = () =>
-    void guard(async () => {
+    void act(async () => {
       clearPresetError();
       /* A preset is a model snapshot; never snapshot a form that Apply itself
        * would refuse. */
       const problems = validateAll();
       if (problems.length > 0) {
-        showPresetError(`Fix the form first -- ${problems.length} field${problems.length === 1 ? '' : 's'} out of range: ${problems[0]}`);
+        showPresetError(
+          `Fix the form first -- ${problems.length} field${problems.length === 1 ? '' : 's'} out of range: ${problems[0].message}`,
+        );
         return;
       }
       await savePreset($('preset-name').value.trim(), collectPresetGroups());
     });
-  $('preset-upload').onclick = () => void guard(uploadPreset);
-  $('preset-refresh').onclick = () => void guard(refreshPresets);
+  $('preset-upload').onclick = () => void act(uploadPreset);
+  $('preset-refresh').onclick = () => void act(refreshPresets);
+  /* The last guard on the way out: an unapplied edit is work, and the browser
+   * is the only thing that can ask before the tab goes (UX finding E2). */
+  window.addEventListener('beforeunload', (event) => {
+    if (!isDirty()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
   setApplyState('loading');
+  refreshPresetNameHint();
   void guard(loadConfig);
   void guard(refreshPresets);
+  void guard(pollStatus);
   setInterval(() => void guard(pollMeters), METER_POLL_MS);
+  setInterval(() => void guard(pollStatus), STATUS_POLL_MS);
 })();

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Aius DSP editor</title>
-  <!-- replays.css carries the shared chrome for both SD pages; dsp-editor.css
-       adds only what the editor needs on top. -->
+  <!-- replays.css carries the shared chrome for every SD page; dsp-editor.css
+       adds only what the editor's dense form and signal-flow strip need. -->
   <link rel="stylesheet" href="replays.css">
   <link rel="stylesheet" href="dsp-editor.css">
 </head>
@@ -17,7 +17,7 @@
         <h1>DSP editor</h1>
         <p class="lede">Edit the single effective DSP configuration: input trim and EQ, downmix matrix, output EQ, true-peak limiter, and the per-stage bypass flags. Writes go to <code>/aius/dsp.json</code> and apply at the next audio block boundary.</p>
       </div>
-      <nav><a href="replays.html">Replay manager</a><a href="/">Device status</a></nav>
+      <nav><a href="replays.html">Replay manager</a><a href="status.html">Device status</a></nav>
     </header>
 
     <section class="card status-card">
@@ -26,7 +26,6 @@
         <div><span>Source</span><strong id="source">unknown</strong></div>
         <div><span>Generation</span><strong id="generation">--</strong></div>
         <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
-        <div><span>Model bytes</span><strong id="model-bytes">--</strong></div>
       </div>
       <div id="stale" class="notice" hidden>
         <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Re-reading discards the edits on this page.</span>
@@ -36,94 +35,73 @@
         <label>SD auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
         <button id="apply">Apply to device</button>
         <button id="reload" class="secondary">Re-read</button>
+        <!-- A fact about the form, not about the device: it moves with every
+             keystroke, so it sits beside the button that would send it. -->
+        <span id="model-bytes" class="form-fact">--</span>
       </div>
       <p id="status" class="hint" role="status">Loading configuration...</p>
       <p id="errors" class="error-summary" role="alert" hidden></p>
     </section>
 
     <section class="card visual">
-      <div class="section-title"><h2>Signal flow</h2><span id="visual-state" class="pill">waiting</span></div>
-      <p class="hint">The live path at a glance, in order. The EQ curves are this page's own render of the sections in the form (RBJ audio-EQ cookbook, at the device sample rate) -- a preview, never the authority: the device designs the real biquads when a config is applied. Drag a handle to set frequency, and a peaking section's gain; the wheel over a handle sets Q. Levels and gain reduction come from the same 10 Hz <a href="/api/meters">meter snapshot</a> as the table at the foot of the page.</p>
+      <div class="section-title"><h2>Signal flow</h2></div>
+      <p class="hint">The live path in order, from the input the device is actually hearing to the transmit gate.</p>
 
       <div class="visual-block">
-        <div class="visual-block__head"><h3 class="visual-block__title">1. Input levels</h3><span class="visual-block__note">peak dBFS, bar floor -60</span></div>
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Input levels</h3>
+          <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
+          <span id="strip-input-state" class="pill">waiting</span>
+        </div>
         <div id="bars-input" class="bars"></div>
       </div>
 
       <div class="visual-block">
-        <div class="visual-block__head"><h3 class="visual-block__title">2. Input EQ</h3><label class="visual-block__pick">Channel <select id="curve-channel"></select></label></div>
-        <canvas id="curve-input" class="curve" width="960" height="240"></canvas>
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">EQ cascades</h3>
+          <span class="visual-block__note">preview only: the device designs the real biquads when a config is applied</span>
+        </div>
+        <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
+        <div class="curve-wrap">
+          <canvas id="curve" class="curve" width="960" height="240" tabindex="0" role="application"
+            aria-label="Stacked EQ magnitude plot. Arrow left and right move the selected section's frequency, arrow up and down its gain, page up and page down select the next section of the selected curve, and the wheel sets Q while the plot is focused."></canvas>
+          <span id="curve-readout" class="curve-readout" hidden></span>
+        </div>
+        <div class="curve-controls">
+          <button id="curve-add" type="button" class="secondary">Add section</button>
+          <span id="curve-caption" class="visual-block__note"></span>
+        </div>
+        <p id="curve-status" class="hint" role="status">Pick a curve to edit it: drag a handle for frequency and gain, double-click the curve to add a section, and use the wheel for Q while a handle is held or the plot has focus.</p>
       </div>
 
       <div class="visual-block">
-        <div class="visual-block__head"><h3 class="visual-block__title">3. Output EQ</h3><span class="visual-block__note">post-downmix, run on both channels</span></div>
-        <canvas id="curve-output" class="curve" width="960" height="240"></canvas>
-      </div>
-
-      <div class="visual-block">
-        <div class="visual-block__head"><h3 class="visual-block__title">4. Limiter gain reduction</h3><span class="visual-block__note">instantaneous at each snapshot publish, not an average</span></div>
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Limiter gain reduction</h3>
+          <span id="strip-limiter-state" class="pill">waiting</span>
+        </div>
         <div class="gr">
           <span class="gr__scale">-24</span>
           <div class="gr__track"><div id="gr-fill" class="gr__fill"></div></div>
           <span class="gr__scale">0 dB</span>
           <strong id="gr-value" class="gr__value">--</strong>
         </div>
-        <canvas id="gr-history" class="gr__history" width="960" height="64" title="The last 128 polled gain-reduction values, oldest left, newest right. Each is the instantaneous reduction at that snapshot's publish, not a windowed average."></canvas>
+        <canvas id="gr-history" class="gr__history" width="960" height="64"></canvas>
+        <p class="visual-block__note">The last 128 polled values, oldest left. Each is the instantaneous reduction at that snapshot's publish, not a windowed average.</p>
       </div>
 
       <div class="visual-block">
-        <div class="visual-block__head"><h3 class="visual-block__title">5. Output levels</h3><span class="visual-block__note">the waveform envelope is at the foot of the page</span></div>
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Output levels</h3>
+          <span id="tx-gate" class="flow-end" data-state="unknown">output: unknown</span>
+          <span id="strip-output-state" class="pill">waiting</span>
+        </div>
         <div id="bars-output" class="bars"></div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="section-title"><h2>Presets</h2><span id="preset-state" class="pill">idle</span></div>
-      <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply to device</em> sends it. Save, upload and delete need the SD auth token above.</p>
-      <div class="controls">
-        <label>Preset name <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
-        <button id="preset-save">Save current as preset</button>
-        <input id="preset-file" type="file" accept=".json,application/json">
-        <button id="preset-upload" class="secondary">Upload file as preset</button>
-        <button id="preset-refresh" class="secondary">Refresh list</button>
-      </div>
-      <ul id="preset-list" class="preset-list"></ul>
-      <p id="preset-status" class="hint" role="status">Reading presets...</p>
-      <p id="preset-errors" class="error-summary" role="alert" hidden></p>
-    </section>
-
-    <section class="card">
-      <div class="section-title"><h2>Feature bypass</h2><a href="/api/dsp/config">machine config</a></div>
-      <p class="hint">Unchecking a stage bypasses it for latency and diagnostic comparisons. DTS framing and decoding cannot be bypassed.</p>
-      <div id="features" class="form-mount"></div>
-    </section>
-
-    <section class="card">
-      <div class="section-title"><h2>Input channels</h2></div>
-      <p class="hint">Per-channel trim runs before the downmix. Each channel takes up to two EQ sections; <em>none</em> removes the section from the config, <em>bypass</em> keeps a present but inactive one.</p>
-      <div id="input-channels" class="form-mount"></div>
-    </section>
-
-    <section class="card">
-      <div class="section-title"><h2>Output EQ</h2></div>
-      <p class="hint">Stereo post-mix sections, run on both channels.</p>
-      <div id="output-eq" class="form-mount"></div>
-    </section>
-
-    <section class="card">
-      <div class="section-title"><h2>Downmix matrix</h2></div>
-      <p class="hint">Centre and surround gains are shared by both stereo sides by design. With the clip-free policy selected the device resolves headroom itself.</p>
-      <div id="matrix" class="form-mount"></div>
-    </section>
-
-    <section class="card">
-      <div class="section-title"><h2>Limiter</h2></div>
-      <p class="hint">True-peak safety limiter on the output tail.</p>
-      <div id="limiter" class="form-mount"></div>
-    </section>
-
     <section class="card meters">
       <div class="section-title"><h2>Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
+      <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the strip above reads, with the output waveform envelope and the per-block DSP cost.</p>
       <canvas id="waveform" width="960" height="180"></canvas>
       <div class="status-grid">
         <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
@@ -139,7 +117,55 @@
       </table>
       <p id="meter-summary" class="hint">Meter data unavailable.</p>
     </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Presets</h2><span id="preset-state" class="pill">idle</span></div>
+      <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply to device</em> sends it. Save, upload and delete need the SD auth token above.</p>
+      <div class="controls">
+        <label>Preset name <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
+        <button id="preset-save">Save current as preset</button>
+        <input id="preset-file" type="file" accept=".json,application/json">
+        <button id="preset-upload" class="secondary">Upload file as preset</button>
+        <button id="preset-refresh" class="secondary">Refresh list</button>
+      </div>
+      <p id="preset-name-hint" class="hint">0 / 27 characters. Letters, digits, dot, underscore and hyphen. An upload uses this name when it is filled, and the file's own name when it is empty.</p>
+      <ul id="preset-list" class="preset-list"></ul>
+      <p id="preset-status" class="hint" role="status">Reading presets...</p>
+      <p id="preset-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section id="card-features" class="card">
+      <div class="section-title"><h2>Processing stages</h2></div>
+      <p class="hint">A checked stage runs; unchecking it bypasses that stage for latency and diagnostic comparisons. DTS framing and decoding cannot be bypassed. <a href="/api/dsp/config">machine config</a></p>
+      <div id="features" class="form-mount"></div>
+    </section>
+
+    <section id="card-input-channels" class="card">
+      <div class="section-title"><h2>Input channels</h2></div>
+      <p class="hint">Per-channel trim runs before the downmix. Each channel takes up to two EQ sections; <em>none</em> removes the section from the config, <em>bypass</em> keeps a present but inactive one.</p>
+      <div id="input-channels" class="form-mount"></div>
+    </section>
+
+    <section id="card-output-eq" class="card">
+      <div class="section-title"><h2>Output EQ</h2></div>
+      <p class="hint">Stereo post-mix sections, run on both channels.</p>
+      <div id="output-eq" class="form-mount"></div>
+    </section>
+
+    <section id="card-matrix" class="card">
+      <div class="section-title"><h2>Downmix matrix</h2></div>
+      <p class="hint">Centre and surround gains are shared by both stereo sides by design, and are linear multipliers rather than decibels. With the clip-free policy selected the device resolves headroom itself.</p>
+      <div id="matrix" class="form-mount"></div>
+    </section>
+
+    <section id="card-limiter" class="card">
+      <div class="section-title"><h2>Limiter</h2></div>
+      <p class="hint">True-peak safety limiter on the output tail.</p>
+      <div id="limiter" class="form-mount"></div>
+    </section>
   </main>
+  <!-- sd-shared.js FIRST: the page consumes window.aiusSdShared as it boots. -->
+  <script src="sd-shared.js"></script>
   <script src="dsp-editor.js"></script>
 </body>
 </html>
