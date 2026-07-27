@@ -46,7 +46,30 @@ const jsonResponse = (status, body) => ({
   ok: status >= 200 && status < 300,
   status,
   json: async () => body,
+  text: async () => JSON.stringify(body),
 });
+
+const htmlResponse = (status, html) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  json: async () => {
+    throw new SyntaxError('not JSON');
+  },
+  text: async () => html,
+});
+
+/* The firmware's exact index framing (index_write), including the ../ row every
+ * listing below the www/ root carries. Deliberately unsorted (FAT order) with a
+ * directory and a non-json file mixed in. */
+const presetsIndexHtml = (rows, footer) =>
+  '<!DOCTYPE html><html><head><meta charset="utf-8"><title>/sd/www/presets/</title></head><body>' +
+  `<h1>/sd/www/presets/</h1><ul>${rows}</ul><p>${footer} Sizes in bytes; at most 64 entries per listing.</p></body></html>`;
+const PRESET_INDEX_DEFAULT = presetsIndexHtml(
+  '<li><a href="../">../</a> dir</li><li><a href="movie.json">movie.json</a> 512</li>' +
+    '<li><a href="Bass.json">Bass.json</a> 300</li><li><a href="notes.txt">notes.txt</a> 10</li>' +
+    '<li><a href="sub/">sub/</a> dir</li>',
+  '4 shown, 0 hidden, truncated: no.',
+);
 
 let device;
 let canvasOps;
@@ -75,6 +98,15 @@ function createDevice(options = {}) {
     meters: 'meters' in options ? options.meters : fixture('meters-snapshot.json'),
     transportFailure: false,
     put: options.put || (() => jsonResponse(200, { ok: true })),
+    /* null = no presets directory on the card yet (404 sd_not_found). */
+    presetsIndex: 'presetsIndex' in options ? options.presetsIndex : null,
+    presetFiles: options.presetFiles || {},
+    presetPut:
+      options.presetPut ||
+      ((name, body, device) => {
+        device.presetFiles[name] = JSON.parse(body);
+        return jsonResponse(200, { ok: true });
+      }),
     calls: [],
   };
   globalThis.fetch = vi.fn(async (url, init = {}) => {
@@ -87,6 +119,23 @@ function createDevice(options = {}) {
     }
     if (url === '/api/meters') {
       return stub.meters ? jsonResponse(200, stub.meters) : jsonResponse(404, { ok: false, error: 'not_found' });
+    }
+    if (url === '/sd/www/presets/') {
+      return stub.presetsIndex
+        ? htmlResponse(200, stub.presetsIndex)
+        : jsonResponse(404, { ok: false, error: 'sd_not_found' });
+    }
+    if (url.startsWith('/sd/www/presets/')) {
+      const name = decodeURIComponent(url.slice('/sd/www/presets/'.length)).replace(/\.json$/, '');
+      if (method === 'PUT') return stub.presetPut(name, init.body, stub);
+      if (method === 'DELETE') {
+        if (!(name in stub.presetFiles)) return jsonResponse(404, { ok: false, error: 'sd_not_found' });
+        delete stub.presetFiles[name];
+        return jsonResponse(200, { ok: true });
+      }
+      return name in stub.presetFiles
+        ? jsonResponse(200, stub.presetFiles[name])
+        : jsonResponse(404, { ok: false, error: 'sd_not_found' });
     }
     return jsonResponse(404, { ok: false, error: 'not_found' });
   });
@@ -633,5 +682,205 @@ describe('Aius SD DSP editor — ergonomics', () => {
     expect(body.output_eq).toEqual(factory.output_eq);
     expect(body.matrix).toEqual(factory.matrix);
     expect(body.limiter).toEqual(factory.limiter);
+  });
+});
+
+describe('Aius SD DSP editor — presets', () => {
+  const fiveGroups = (name) => {
+    const { features, input_channels, output_eq, matrix, limiter } = fixture(name);
+    return { features, input_channels, output_eq, matrix, limiter };
+  };
+  const presetNames = () => [...document.querySelectorAll('.preset-list__name')].map((node) => node.textContent);
+  const presetRowButton = (name, label) => {
+    const row = [...document.querySelectorAll('#preset-list li')].find(
+      (li) => li.querySelector('.preset-list__name').textContent === name,
+    );
+    return [...row.querySelectorAll('button')].find((button) => button.textContent === label);
+  };
+
+  it('lists .json presets from the directory index: sorted, dirs and ../ and foreign files skipped', async () => {
+    await boot({ presetsIndex: PRESET_INDEX_DEFAULT });
+    expect(presetNames()).toEqual(['Bass', 'movie']);
+    expect(el('preset-status').textContent).toBe('2 presets on the card.');
+    expect(el('preset-errors').hidden).toBe(true);
+  });
+
+  it('reads a missing presets directory as an empty list, not an error', async () => {
+    await boot();
+    expect(presetNames()).toEqual([]);
+    expect(el('preset-status').textContent).toBe('No presets on the card yet.');
+    expect(el('preset-errors').hidden).toBe(true);
+  });
+
+  it('treats sd_not_directory as a fault, not emptiness', async () => {
+    await boot({ presetsIndex: null });
+    device.presetsIndex = undefined;
+    globalThis.fetch.mockImplementationOnce(async () => jsonResponse(404, { ok: false, error: 'sd_not_directory' }));
+    await click('preset-refresh');
+    expect(el('preset-errors').hidden).toBe(false);
+    expect(el('preset-errors').textContent).toContain('sd_not_directory');
+  });
+
+  it('surfaces a truncated listing instead of passing it off as complete', async () => {
+    await boot({
+      presetsIndex: presetsIndexHtml(
+        '<li><a href="../">../</a> dir</li><li><a href="a.json">a.json</a> 10</li>',
+        '64 shown, 3 hidden, truncated: yes.',
+      ),
+    });
+    expect(el('preset-errors').hidden).toBe(false);
+    expect(el('preset-errors').textContent).toContain('INCOMPLETE');
+  });
+
+  const nameCases = [
+    ['', 'Preset name is required.'],
+    ['a'.repeat(28), 'at most 27 characters'],
+    ['bad name', 'letters, digits, dot, underscore and hyphen'],
+    ['myconfig', 'may not end in "config"'],
+    ['MyConfig', 'may not end in "config"'],
+  ];
+  for (const [name, message] of nameCases) {
+    it(`refuses the preset name ${JSON.stringify(name)}`, async () => {
+      await boot();
+      el('token').value = '0123456789abcdef';
+      el('preset-name').value = name;
+      await click('preset-save');
+      expect(device.calls.filter((call) => call.method === 'PUT')).toHaveLength(0);
+      expect(el('preset-errors').textContent).toContain(message);
+    });
+  }
+
+  it('refuses a case-variant of an existing preset name, naming the collision', async () => {
+    await boot({ presetsIndex: PRESET_INDEX_DEFAULT });
+    el('token').value = '0123456789abcdef';
+    el('preset-name').value = 'bass';
+    await click('preset-save');
+    expect(device.calls.filter((call) => call.method === 'PUT')).toHaveLength(0);
+    expect(el('preset-errors').textContent).toContain('"Bass"');
+    expect(el('preset-errors').textContent).toContain('case-insensitive');
+  });
+
+  it('saves the five editable groups with the auth header, then refreshes the list', async () => {
+    await boot({ config: fixture('dsp-config-sd.json'), presetsIndex: PRESET_INDEX_DEFAULT });
+    el('token').value = '0123456789abcdef';
+    el('preset-name').value = 'evening';
+    await click('preset-save');
+
+    const put = device.calls.find((call) => call.method === 'PUT');
+    expect(put.url).toBe('/sd/www/presets/evening.json');
+    expect(put.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
+    const body = JSON.parse(put.body);
+    expect(Object.keys(body).sort()).toEqual(['features', 'input_channels', 'limiter', 'matrix', 'output_eq']);
+    expect(body).toEqual(fiveGroups('dsp-config-sd.json'));
+    expect(el('preset-status').textContent).toBe('Saved evening.json.');
+  });
+
+  it('refuses to save without a token, and with an invalid form', async () => {
+    await boot();
+    el('preset-name').value = 'quiet';
+    await click('preset-save');
+    expect(device.calls.filter((call) => call.method === 'PUT')).toHaveLength(0);
+    expect(el('preset-errors').textContent).toContain('SD auth token required');
+
+    el('token').value = '0123456789abcdef';
+    await setNumber('limiter.release_ms', '1200');
+    await click('preset-save');
+    expect(device.calls.filter((call) => call.method === 'PUT')).toHaveLength(0);
+    expect(el('preset-errors').textContent).toContain('Fix the form first');
+  });
+
+  it('loads a preset into the form only: device facts and concurrency token untouched', async () => {
+    const preset = {
+      ...fiveGroups('dsp-config-default.json'),
+      /* A hand-edited file smuggling device facts: all three must be ignored. */
+      source: 'default',
+      config_generation: 99,
+      sample_rate_hz: 96000,
+    };
+    await boot({
+      config: fixture('dsp-config-sd.json'),
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetFiles: { movie: preset },
+    });
+    el('token').value = '0123456789abcdef';
+    presetRowButton('movie', 'Load').click();
+    await settle();
+
+    expect(valueOf('matrix.headroom_linear')).toBe('0.5');
+    expect(fieldOf('limiter.enabled').checked).toBe(true);
+    expect(el('generation').textContent).toBe('4');
+    expect(el('sample-rate').textContent).toBe('48000 Hz');
+    expect(el('apply-state').textContent).toBe('edited');
+    expect(el('preset-status').textContent).toContain('Apply to send');
+
+    await click('apply');
+    const body = JSON.parse(putCalls()[0].body);
+    expect(body.base_generation).toBe(4);
+    expect(body.sample_rate_hz).toBe(48000);
+    expect(body.matrix).toEqual(fixture('dsp-config-default.json').matrix);
+  });
+
+  it('refuses a preset whose EQ exceeds the two-section wire bound', async () => {
+    const overfull = fiveGroups('dsp-config-default.json');
+    overfull.output_eq = [
+      { type: 'bypass', frequency_hz: 0, q: 0, gain_db: 0 },
+      { type: 'bypass', frequency_hz: 0, q: 0, gain_db: 0 },
+      { type: 'bypass', frequency_hz: 0, q: 0, gain_db: 0 },
+    ];
+    await boot({ presetsIndex: PRESET_INDEX_DEFAULT, presetFiles: { movie: overfull } });
+    presetRowButton('movie', 'Load').click();
+    await settle();
+    expect(el('preset-errors').textContent).toContain('output_eq must be an array of at most 2');
+    expect(el('apply-state').textContent).toBe('loaded');
+  });
+
+  it('deletes a preset with the auth header and refreshes', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetFiles: { movie: fiveGroups('dsp-config-default.json') },
+    });
+    el('token').value = '0123456789abcdef';
+    presetRowButton('movie', 'Delete').click();
+    await settle();
+
+    const del = device.calls.find((call) => call.method === 'DELETE');
+    expect(del.url).toBe('/sd/www/presets/movie.json');
+    expect(del.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
+    expect(el('preset-status').textContent).toContain('Deleted');
+  });
+
+  it('renders 507 sd_upload as busy-or-refused, never as card full', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetPut: () => jsonResponse(507, { ok: false, error: 'sd_upload' }),
+    });
+    el('token').value = '0123456789abcdef';
+    el('preset-name').value = 'evening';
+    await click('preset-save');
+    expect(el('preset-errors').textContent).toContain('busy');
+    expect(el('preset-errors').textContent).not.toContain('full');
+  });
+
+  it('uploads a local file as a preset, dropping device facts on the way in', async () => {
+    await boot({ presetsIndex: PRESET_INDEX_DEFAULT });
+    el('token').value = '0123456789abcdef';
+    const smuggling = {
+      ...fiveGroups('dsp-config-default.json'),
+      sample_rate_hz: 96000,
+      config_generation: 12,
+    };
+    const file = new File([JSON.stringify(smuggling)], 'party.json', { type: 'application/json' });
+    Object.defineProperty(el('preset-file'), 'files', { value: [file], configurable: true });
+    await click('preset-upload');
+
+    const put = device.calls.find((call) => call.method === 'PUT');
+    expect(put.url).toBe('/sd/www/presets/party.json');
+    expect(Object.keys(JSON.parse(put.body)).sort()).toEqual([
+      'features',
+      'input_channels',
+      'limiter',
+      'matrix',
+      'output_eq',
+    ]);
   });
 });

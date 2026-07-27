@@ -96,7 +96,19 @@
     pendingAttempts: 0,
     meterInFlight: false,
     meterRetryAt: 0,
+    /* Names as stored on the card (with case), .json stripped. */
+    presets: [],
   };
+
+  /* Preset name grammar, page-enforced BEFORE any PUT. The 27-char cap is the
+   * SD path grammar's 32-byte segment minus ".json". The `config` suffix
+   * exclusion exists because the firmware's resource_is_config() is a bare
+   * suffix match on "config.json": a preset named myconfig would 403 on PUT
+   * and DELETE while GET still serves it -- a file you can see but never
+   * change. Case-insensitive, because FAT lookup is case-insensitive too. */
+  const PRESET_NAME_MAX = 27;
+  const PRESET_DIR_URL = '/sd/www/presets/';
+  const PRESET_GROUPS = ['features', 'input_channels', 'output_eq', 'matrix', 'limiter'];
 
   /* ---- field table -------------------------------------------------------
    * Every editable value is one descriptor whose `path` is its JSON path in the
@@ -662,6 +674,317 @@
     }
   }
 
+  /* ---- presets -----------------------------------------------------------
+   * Presets ride the existing SD file surface -- zero firmware routes. The
+   * list is the firmware's HTML directory index parsed with DOMParser; save
+   * and delete are the auth-gated file PUT/DELETE; load fills the form and the
+   * normal Apply flow writes to the device. A preset carries ONLY the five
+   * editable groups: sample_rate_hz is a live biquad design rate nothing
+   * cross-checks, so a preset must never smuggle one in. */
+
+  /* Like request(), but body-agnostic: the directory index is HTML while every
+   * refusal is the JSON error shape, so callers get the raw text plus the
+   * error token when one parses out. Never throws. */
+  async function requestRaw(url, options) {
+    try {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      let token = '';
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed.error === 'string') token = parsed.error;
+      } catch (parseError) {
+        /* HTML or other non-JSON body: no token. */
+      }
+      return { ok: response.ok, status: response.status, text, token };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        text: '',
+        token: '',
+        transport: error && error.message ? error.message : String(error),
+      };
+    }
+  }
+
+  function presetNameProblem(name) {
+    if (name === '') return 'Preset name is required.';
+    if (name.length > PRESET_NAME_MAX) return `Preset name is at most ${PRESET_NAME_MAX} characters.`;
+    if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+      return 'Preset name may use letters, digits, dot, underscore and hyphen only.';
+    }
+    if (/config$/i.test(name)) {
+      return 'Preset name may not end in "config": the device protects *config.json paths from writes.';
+    }
+    const collision = state.presets.find(
+      (existing) => existing.toLowerCase() === name.toLowerCase() && existing !== name,
+    );
+    if (collision) {
+      return `The card already has "${collision}", and SD names are case-insensitive -- saving "${name}" would overwrite it. Use that exact name to overwrite deliberately.`;
+    }
+    return '';
+  }
+
+  /* Sections the wire model bounds at EQ_SLOTS; anything deeper cannot round
+   * back out of the form and would silently truncate on Apply. */
+  function presetShapeProblem(parsed) {
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return 'Not a preset: the file is not a JSON object.';
+    }
+    for (const group of PRESET_GROUPS) {
+      if (!(group in parsed)) return `Not a preset: missing "${group}".`;
+    }
+    if (!Array.isArray(parsed.output_eq) || parsed.output_eq.length > EQ_SLOTS) {
+      return `Not a preset: output_eq must be an array of at most ${EQ_SLOTS} sections.`;
+    }
+    for (const [key] of CHANNELS) {
+      const channel = parsed.input_channels ? parsed.input_channels[key] : undefined;
+      if (!channel || !Array.isArray(channel.eq) || channel.eq.length > EQ_SLOTS) {
+        return `Not a preset: input_channels.${key}.eq must be an array of at most ${EQ_SLOTS} sections.`;
+      }
+    }
+    return '';
+  }
+
+  const collectPresetGroups = () => {
+    const model = collectModel();
+    return {
+      features: model.features,
+      input_channels: model.input_channels,
+      output_eq: model.output_eq,
+      matrix: model.matrix,
+      limiter: model.limiter,
+    };
+  };
+
+  const presetUrl = (name) => `${PRESET_DIR_URL}${encodeURIComponent(name)}.json`;
+
+  function renderPresetList() {
+    const list = $('preset-list');
+    list.textContent = '';
+    for (const name of state.presets) {
+      const row = document.createElement('li');
+      const title = document.createElement('span');
+      title.className = 'preset-list__name';
+      title.textContent = name;
+      const load = document.createElement('button');
+      load.type = 'button';
+      load.textContent = 'Load';
+      load.addEventListener('click', () => void guard(() => loadPreset(name)));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'secondary';
+      remove.textContent = 'Delete';
+      remove.addEventListener('click', () => void guard(() => deletePreset(name)));
+      row.append(title, load, remove);
+      list.append(row);
+    }
+  }
+
+  async function refreshPresets() {
+    clearPresetError();
+    const result = await requestRaw(PRESET_DIR_URL, { headers: { Accept: 'text/html' } });
+    /* Keyed on the TOKEN, not the status: 404 sd_not_found is simply "no
+     * presets saved yet", while 404 sd_not_directory means a FILE named
+     * presets is squatting on the directory name -- a real fault. */
+    if (result.status === 404 && result.token === 'sd_not_found') {
+      state.presets = [];
+      renderPresetList();
+      setPresetState('idle');
+      setPresetStatus('No presets on the card yet.');
+      return;
+    }
+    if (!result.ok) {
+      setPresetState('error');
+      showPresetError(`Could not list ${PRESET_DIR_URL} -- ${describeRaw(result)}.`);
+      return;
+    }
+    const parsed = new DOMParser().parseFromString(result.text, 'text/html');
+    const names = [];
+    for (const anchor of parsed.querySelectorAll('li > a')) {
+      const href = anchor.getAttribute('href') || '';
+      /* Directories (including the ../ row every listing below www/ carries)
+       * end in a slash; presets are the .json files only. */
+      if (href.endsWith('/') || !href.endsWith('.json')) continue;
+      names.push(href.slice(0, -'.json'.length));
+    }
+    names.sort((a, b) => a.localeCompare(b));
+    state.presets = names;
+    renderPresetList();
+    setPresetState('idle');
+    const footer = result.text.match(/truncated: (yes|no)\./);
+    if (footer && footer[1] === 'yes') {
+      setPresetState('truncated');
+      showPresetError(
+        'The card holds more entries than one 64-entry listing; this list is INCOMPLETE. Prune presets to see them all.',
+      );
+    }
+    setPresetStatus(`${names.length} preset${names.length === 1 ? '' : 's'} on the card.`);
+  }
+
+  /* The 507 sd_upload token covers BOTH an invalid path and a busy volume --
+   * never present it as "card full", which is sd_capacity's meaning. */
+  function describePresetWriteFailure(result) {
+    if (result.token === 'sd_upload') {
+      return 'the SD volume is busy (replay or upload in flight) or refused the path; retry when the card is idle';
+    }
+    if (result.token === 'sd_capacity') return 'the card is full';
+    if (result.token === 'sd_auth') return 'the SD auth token was rejected';
+    if (result.token === 'sd_unavailable') return 'no SD card is mounted';
+    return describeRaw(result);
+  }
+
+  const describeRaw = (result) =>
+    result.transport
+      ? `network error: ${result.transport}`
+      : `HTTP ${result.status}${result.token ? ` (${result.token})` : ''}`;
+
+  async function savePreset(name, groups) {
+    const token = $('token').value.trim();
+    if (token === '') {
+      showPresetError('SD auth token required to save a preset.');
+      return;
+    }
+    const problem = presetNameProblem(name);
+    if (problem !== '') {
+      showPresetError(problem);
+      return;
+    }
+    setPresetState('saving');
+    setPresetStatus(`Writing ${name}.json to the card...`);
+    const result = await requestRaw(presetUrl(name), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'X-Aius-SD-Auth': token },
+      body: JSON.stringify(groups),
+    });
+    if (!result.ok) {
+      setPresetState('error');
+      showPresetError(`Preset not saved: ${describePresetWriteFailure(result)}.`);
+      return;
+    }
+    /* Refresh first so the confirmation is the message left standing. */
+    await refreshPresets();
+    setPresetStatus(`Saved ${name}.json.`);
+  }
+
+  async function loadPreset(name) {
+    clearPresetError();
+    const result = await requestRaw(presetUrl(name), { headers: { Accept: 'application/json' } });
+    if (!result.ok) {
+      setPresetState('error');
+      showPresetError(`Could not read ${name}.json -- ${describeRaw(result)}.`);
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(result.text);
+    } catch (parseError) {
+      setPresetState('error');
+      showPresetError(`${name}.json is not valid JSON.`);
+      return;
+    }
+    const problem = presetShapeProblem(parsed);
+    if (problem !== '') {
+      setPresetState('error');
+      showPresetError(`${name}.json: ${problem}`);
+      return;
+    }
+    /* Merge ONLY the five groups into the form. Never adoptModel(): that would
+     * clobber baseGeneration and the displayed device facts, and a preset's
+     * sample_rate_hz (if a hand-edited file carries one) must never reach the
+     * device -- collectModel() takes the rate from state.model. */
+    render({
+      features: parsed.features,
+      input_channels: parsed.input_channels,
+      output_eq: parsed.output_eq,
+      matrix: parsed.matrix,
+      limiter: parsed.limiter,
+    });
+    if (state.applyState === 'applied' || state.applyState === 'loaded' || state.applyState === 'error') {
+      setApplyState('edited');
+    }
+    setPresetState('idle');
+    setPresetStatus(`Loaded ${name} into the form. Apply to send it to the device.`);
+  }
+
+  async function deletePreset(name) {
+    const token = $('token').value.trim();
+    if (token === '') {
+      showPresetError('SD auth token required to delete a preset.');
+      return;
+    }
+    clearPresetError();
+    const result = await requestRaw(presetUrl(name), {
+      method: 'DELETE',
+      headers: { 'X-Aius-SD-Auth': token },
+    });
+    if (result.status === 404 && result.token === 'sd_not_found') {
+      await refreshPresets();
+      setPresetStatus(`${name}.json was already gone.`);
+      return;
+    }
+    if (!result.ok) {
+      setPresetState('error');
+      showPresetError(`Could not delete ${name}.json -- ${describeRaw(result)}.`);
+      return;
+    }
+    await refreshPresets();
+    setPresetStatus(`Deleted ${name}.json.`);
+  }
+
+  async function uploadPreset() {
+    clearPresetError();
+    const file = $('preset-file').files && $('preset-file').files[0];
+    if (!file) {
+      showPresetError('Choose a .json preset file first.');
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (readError) {
+      setPresetState('error');
+      showPresetError(`${file.name} is not valid JSON.`);
+      return;
+    }
+    const problem = presetShapeProblem(parsed);
+    if (problem !== '') {
+      setPresetState('error');
+      showPresetError(`${file.name}: ${problem}`);
+      return;
+    }
+    const name = $('preset-name').value.trim() || file.name.replace(/\.json$/i, '');
+    /* Re-serialise the five groups only, so a hand-edited file's extra keys
+     * (source, generations, sample_rate_hz) never reach the card. */
+    await savePreset(name, {
+      features: parsed.features,
+      input_channels: parsed.input_channels,
+      output_eq: parsed.output_eq,
+      matrix: parsed.matrix,
+      limiter: parsed.limiter,
+    });
+  }
+
+  function setPresetState(next) {
+    $('preset-state').textContent = next;
+    $('preset-state').dataset.state = next === 'truncated' ? 'error' : next;
+  }
+
+  const setPresetStatus = (text) => {
+    $('preset-status').textContent = text;
+  };
+
+  function showPresetError(text) {
+    $('preset-errors').textContent = text;
+    $('preset-errors').hidden = false;
+  }
+
+  function clearPresetError() {
+    $('preset-errors').textContent = '';
+    $('preset-errors').hidden = true;
+  }
+
   /* ---- meters ------------------------------------------------------------ */
 
   /* Three outcomes, not two. A non-2xx or a dead transport means the endpoint
@@ -858,7 +1181,22 @@
   $('stale-reload').onclick = () => void guard(loadConfig);
   $('token').value = readStoredToken();
   $('token').addEventListener('input', () => storeToken($('token').value.trim()));
+  $('preset-save').onclick = () =>
+    void guard(async () => {
+      clearPresetError();
+      /* A preset is a model snapshot; never snapshot a form that Apply itself
+       * would refuse. */
+      const problems = validateAll();
+      if (problems.length > 0) {
+        showPresetError(`Fix the form first -- ${problems.length} field${problems.length === 1 ? '' : 's'} out of range: ${problems[0]}`);
+        return;
+      }
+      await savePreset($('preset-name').value.trim(), collectPresetGroups());
+    });
+  $('preset-upload').onclick = () => void guard(uploadPreset);
+  $('preset-refresh').onclick = () => void guard(refreshPresets);
   setApplyState('loading');
   void guard(loadConfig);
+  void guard(refreshPresets);
   setInterval(() => void guard(pollMeters), METER_POLL_MS);
 })();

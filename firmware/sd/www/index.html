@@ -42,6 +42,21 @@
     </section>
 
     <section class="card">
+      <div class="section-title"><h2>Presets</h2><span id="preset-state" class="pill">idle</span></div>
+      <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply to device</em> sends it. Save, upload and delete need the SD auth token above.</p>
+      <div class="controls">
+        <label>Preset name <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
+        <button id="preset-save">Save current as preset</button>
+        <input id="preset-file" type="file" accept=".json,application/json">
+        <button id="preset-upload" class="secondary">Upload file as preset</button>
+        <button id="preset-refresh" class="secondary">Refresh list</button>
+      </div>
+      <ul id="preset-list" class="preset-list"></ul>
+      <p id="preset-status" class="hint" role="status">Reading presets...</p>
+      <p id="preset-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card">
       <div class="section-title"><h2>Feature bypass</h2><a href="/api/dsp/config">machine config</a></div>
       <p class="hint">Unchecking a stage bypasses it for latency and diagnostic comparisons. DTS framing and decoding cannot be bypassed.</p>
       <div id="features" class="form-mount"></div>

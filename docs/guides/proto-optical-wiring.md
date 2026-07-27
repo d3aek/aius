@@ -23,7 +23,7 @@ omits (see [§What the bench omits](#what-the-bench-omits)).
 | RS PRO ORJ-5 (RS `805-1671`) | TOSLINK receiver → Teensy S/PDIF in | `https://uk.rs-online.com/web/p/fibre-optic-connectors/8051671` |
 | RS PRO OTJ-5 (RS `805-1680`) | Teensy S/PDIF out → TOSLINK transmitter | `https://uk.rs-online.com/web/p/fibre-optic-connectors/8051680` |
 | 2 × 100 nF ceramic | Vcc bypass, one per jack, **within 7 mm of the jack pins** (datasheet precaution 1) | |
-| 1 × 30 pF ceramic | GND-to-Vout on the receiver, "avoid loading effect" (receiver precaution 2) | |
+| 1 × 30 pF ceramic | GND-to-Vout on the receiver, "avoid loading effect" (receiver precaution 2). **Value uncritical: 15–100 pF all work** (33 pF is the nearest standard value; 22/47 pF equally fine — **the bench build fits 22 pF**). **Omittable on the bench** with short leads — the test's own signals (lock, `blocks` climbing, zero error counters) reveal ringing if it bites. Never substitute ≥ 1 nF: that smears the ≤25 ns edges into the ~81 ns half-cell and breaks lock. The carrier board keeps the designed 30 pF (C21) regardless. | |
 | TOSLINK cables + a real S/PDIF source (TV, DAC, console) | | |
 
 Both jacks run from the Teensy's 3.3 V rail: Vcc range is 2.7–5.5 V, dissipation

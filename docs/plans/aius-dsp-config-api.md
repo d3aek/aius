@@ -1423,13 +1423,20 @@ Slices, each a commit boundary with its vitest coverage in the same commit:
    the PUT body → the fixture↔`optical_dsp.json` equality assert.
    `collectModel()` was not restructured, so the firmware-side key guard
    needed no update.
-2. **Presets** — preset bar (name, save, load-from-list, delete, upload),
-   HTML-index parsing, page-side validation before any PUT, the
-   firmware-enumerated refusal surfacing, and the swagger
-   `/sd/{resource}` PUT/DELETE response-set catch-up with its contract
-   assertions — including an example↔fixture deep-equality assert on the
-   `current` GET example (the confirmation round's one residual: the
-   example's values are corrected but nothing pins them yet).
+2. **Presets — DELIVERED 2026-07-27.** Preset card (name, save-current,
+   load/delete per row, upload, refresh), DOMParser over the index HTML
+   (dirs and `../` skipped, `.json` only, page-side sort, `truncated:
+   yes` surfaced as an incomplete-list warning), the full name grammar
+   with the case-insensitive `config`-suffix and duplicate refusals,
+   save gated on a valid form, load merging exactly the five groups
+   (device facts in a hand-edited file proven ignored: the following
+   Apply still carries the device's generation and rate), 507
+   `sd_upload` rendered as busy-or-refused never card-full, and the
+   swagger `/sd/{resource}` PUT/DELETE response sets documented from the
+   firmware dispatch with contract assertions — including the
+   example↔fixture deep-equality pin on the `current` GET example. One
+   behaviour worth keeping: mutation confirmations are set AFTER the
+   list refresh, or the refresh's count message eats them.
 3. **Visual surface** — EQ magnitude curves (RBJ math mirrored in JS for
    display only, never authoritative), drag/wheel editing, signal-flow
    layout row, the DSP load/headroom numbers, and the limiter
