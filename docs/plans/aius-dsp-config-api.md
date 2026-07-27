@@ -1494,8 +1494,18 @@ all low severity, owned by slice 5's touch of the same code:
   `adoptModel()` on generation change clobbers anything typed during the
   ≤20 s pending window.
 
-5. **UX iteration — user-directed 2026-07-27; BUILT the same day, on-device
-   pass pending.** Landed as four commits: unit A (`db0f47578`, the shared
+5. **UX iteration — user-directed 2026-07-27; DELIVERED the same day,
+   on-device pass complete.** Boundary evidence: the full www tree synced
+   to the card, the board reflashed to `2af2f2ad0440` (root-page status
+   link live), and all three pages driven on-device in a real browser at
+   1280w and 390w (`pass-*-out.txt` / `pass-*.png` in the session
+   scratch): the editor boots with five entity chips, live flow ends
+   ("input: none" / "output: gate dark" straight from the device), and
+   surface section-add writing the form; the replay manager's 12 rows show
+   BOTH buttons side by side at phone width (P1 dead) and the selection
+   survives the 5 s refresh; the status page reads `live` with the
+   input-source and gate flow line and the flashed build revision. With
+   this, task #7 is COMPLETE through slice 5. Landed as four commits: unit A (`db0f47578`, the shared
    foundation: `sd-shared.js` + the shared layer in `replays.css`), unit B
    (`0a407752e`, replay manager rework + the new `status.html`/`status.js`),
    B's follow-ups (`4eb3744ce`, wire-honest Status schema types now
