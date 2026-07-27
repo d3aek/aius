@@ -1001,12 +1001,16 @@ rather than "remove this stage", and would leave no way to hear the stereo pair 
 the fold. The flags exist "for latency and diagnostic comparisons", and that is the
 comparison worth having.
 
-**There is still no way to measure output quality on this device.** Everything is proven
-by host known-answer vectors and the meters report peak and RMS, not distortion — so
-every roadmap item is currently *believed* rather than verified. A measurement loopback
-feeding the S/PDIF output back into the input is item 3 of the accepted order; the
-1.4-semitone pitch error that survived on a board reporting every counter clean is the
-argument for it.
+**~~There is still no way to measure output quality on this device.~~ Closed
+2026-07-27** by item 3's software-tap loopback — see
+[§Measured output quality](#measured-output-quality--the-loopback-figures). What
+remains open is the narrower residue: the tap shares the transmit register's sample
+grid, so it is immune to physical clock error by construction, and the clock/content
+*ratio* surface — the class the 1.4-semitone pitch error lived in — still needs a
+physical loop feeding the S/PDIF output back into the input. That loop is now owned by
+the optical bench bring-up:
+[`proto-optical-wiring.md`](../guides/proto-optical-wiring.md) step 5 patches the
+OTJ-5 to the ORJ-5 across real glass and re-runs the item 3 measurement flow.
 
 **Also absent, and recorded so nobody assumes otherwise:** no DC blocker; no bass
 management or crossover; no DTS dialnorm/DRC handling (`core_decoder.h:61` parses
@@ -1078,10 +1082,10 @@ source, verified against the source.
    bytes**", both superseded by the two measurement tables 80 lines above it (534,411 /
    565,024 and 25,376). A reader planning the next item against that paragraph would
    under-count the budget already spent and under-count the DTCM available.
-6. **The feature-flag contract is broader than the implementation.**
-   `aius-dsp-config-api.md` promises "Feature flags can independently bypass input EQ,
-   output EQ, matrix shaping, limiter, and meters"; `apply_config()` reads only
-   `input_eq`, `limiter` and `meters`.
+6. **~~The feature-flag contract is broader than the implementation.~~ Closed
+   2026-07-26** by `e88112d82`: all five flags are live in `apply_config()`
+   (`src/optical_main.cpp:1067`, `:1072`, `:1092`) — the commit that made the two
+   dead bypass flags work updated §Open but left this item standing.
 7. **"No heap on the process path" holds; "the decode/DSP arena is in DTCM" does not.**
    The DSP module genuinely allocates nothing per block. But
    `aius-dsp-config-api.md` §Target memory strategy argues "The single-cycle,

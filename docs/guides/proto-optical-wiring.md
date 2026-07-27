@@ -38,9 +38,11 @@ Handle by the body, touch ground first, wire everything with the power off.
 
 Pin functions from the RS PRO datasheets (page 4 of each), which match the
 schematic symbols in `electronics/connectivity/optical-spdif.json` exactly.
-Pin 1 is the pin nearest the mounting-peg side; the rear-view drawing labels
-them 3-2-1. Verify against the drawing before powering — miswiring Vcc onto
-the receiver's Vout is the one mistake this table exists to prevent.
+The datasheets number the three signal pins 3-2-1 left-to-right on the
+rear-view drawing (the view with the Ø2.50 peg hole top-right); they carry no
+front-view numbering, so **identify pin 1 from that drawing with the jack in
+hand before powering** — miswiring Vcc onto the receiver's Vout is the one
+mistake this table exists to prevent.
 
 | Pin | ORJ-5 receiver (805-1671) | OTJ-5 transmitter (805-1680) |
 |---|---|---|
