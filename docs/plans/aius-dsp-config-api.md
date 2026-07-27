@@ -663,9 +663,12 @@ the arm store, the ring's stage/commit rule); `armed → capturing → captured`
 (ISR only — `captured` is buffer-complete, not figures-published);
 `captured → analysing → done` (epoch, the sliced pass; `done` means the
 figures are published); `armed/capturing → cancelling` (epoch sets a cancel
-token only); `capturing → failed` (ISR, when the arm-time generation/overrun
-latch check fails at a block boundary — the retire the tap paragraph
-specifies); `cancelling → failed` (ISR acknowledges the token at its next
+token only); `armed/capturing → failed` (ISR, when the arm-time
+generation/overrun latch check fails at a block boundary — the retire the
+tap paragraph specifies; from `armed` directly when the very first block
+fails the check, which is exactly how a cold-boot arm retires when the
+boot-time SD model applies at the first block — observed live at delivery);
+`cancelling → failed` (ISR acknowledges the token at its next
 block, or the epoch reclaims after a bounded number of epochs with `blocks`
 unchanged — the one case where the ISR is provably not running); `done/failed
 → idle` (epoch). Analysis reads only `captured` buffers. One writer per
@@ -673,7 +676,16 @@ transition **except the dual-terminal cancel edge**, which is benign by
 construction — both writers store the same terminal value, and the ISR
 cannot act again once the epoch moves `failed → idle` — and the native suite
 drives exactly that interleaving (ISR ack preempting between the epoch's
-check and its store) along with every other edge.
+check and its store) along with every other edge. The delivery audit added
+one more interleaving to this edge's ledger: the epoch's *cancel* is also a
+check-then-store, so an ISR terminal (`captured`/`failed`) retiring between
+the check and the store is clobbered by `cancelling` and that capture is
+lost to a later reclaim. Bounded and accepted rather than mechanized: the
+only cancel caller is the stall watch, which fires after 2 s of `blocks`
+unchanged, so the window requires the replay to resume within microseconds
+of the timeout and complete the buffer on that exact block; the outcome is a
+lost capture the operator re-arms, never corruption, and closing it would
+cost the machine its portable no-atomics simplicity.
 
 **Pipeline reset at replay start — a prerequisite fix this phase absorbs.**
 The pipeline classifies once per boot and nothing on the target ever calls

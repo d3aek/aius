@@ -465,8 +465,8 @@ static FLASHMEM bool body_take_uint(AiusJsonCursor *cursor, uint32_t *value)
 		parsed = parsed * 10u + (uint32_t)(ch - '0');
 		cursor->pos++;
 	}
-	if (digits == 0)
-		return false;
+	if (digits == 0 || parsed == 0)
+		return false; /* 0 Hz is schema-invalid: refuse at parse (400), not 409 */
 	*value = parsed;
 	return true;
 }

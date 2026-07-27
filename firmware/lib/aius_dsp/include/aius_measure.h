@@ -187,7 +187,16 @@ void aius_measure_isr_block(AiusMeasureCapture *c,
                             uint32_t overruns);
 
 /* Epoch: armed/capturing -> cancelling. Sets the token only; the ISR
- * acknowledges it at its next block. Any other state: AIUS_INVALID_ARG. */
+ * acknowledges it at its next block. Any other state: AIUS_INVALID_ARG.
+ *
+ * KNOWN, ACCEPTED interleaving (delivery audit): this is a check-then-store,
+ * so an ISR terminal (captured/failed) retiring between the check and the
+ * store is clobbered by cancelling and that capture is lost to the reclaim.
+ * The only caller is the epoch stall watch, which cancels after seconds of
+ * the block counter unchanged -- the window requires the stream to resume
+ * within microseconds of that timeout AND retire on that exact block. The
+ * outcome is a lost capture (re-arm), never corruption; closing it would
+ * cost the machine its portable no-atomics simplicity. */
 AiusStatus aius_measure_cancel(AiusMeasureCapture *c);
 
 /* Epoch: cancelling -> failed (reclaimed), for the one case where the ISR is

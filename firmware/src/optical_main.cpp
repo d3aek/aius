@@ -2457,6 +2457,13 @@ static FLASHMEM void app_set_test_running(void *, bool running)
 static FLASHMEM void app_clear_counters(void *)
 {
 	g_audio_processor.clear_counters();
+	/* Clearing zeroes g_overruns, the baseline the capture's arm-time latch
+	 * compares against by EQUALITY -- a clear during a live capture could
+	 * therefore mask a real overrun's 512-frame seam (latched 0, one overrun,
+	 * then the clear restores 0). Retire the capture instead: the epoch stall
+	 * watch or the ISR's next block completes the cancel, and GET /api/measure
+	 * says why. A no-op in every non-live state. */
+	(void)aius_measure_cancel(&g_measure_capture);
 }
 
 static FLASHMEM void app_request_reboot(void *)

@@ -1761,6 +1761,8 @@ static void test_measure_control(void)
 		"{\"id\":\"a\",\"volume\":1}",
 		"{\"id\":\"a\",\"probes\":[1,2,3,4,5,6,7,8,9]}",
 		"{\"id\":\"a\",\"f0_l\":440.5}",
+		"{\"id\":\"a\",\"f0_l\":0}",
+		"{\"id\":\"a\",\"probes\":[0]}",
 		"{\"id\":\"a\"} x"
 	};
 	for (size_t i = 0; i < ARRAY_LENGTH(bad_bodies); ++i)
