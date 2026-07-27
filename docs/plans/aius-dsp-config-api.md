@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, dsp, audio, http-api, sd]
-updated: 2026-07-25
+updated: 2026-07-27
 toc: true
 ---
 
@@ -722,6 +722,29 @@ arity: one consumer today; the sample-rate-following monitor is hypothetical
 until it exists); METRICS hosts the slicing; tap placement, sample-domain
 clock immunity, 440 Hz resolution at N = 8,192, and the surface's auth
 pattern all hold as drafted.
+
+**Slice 1 delivered (2026-07-27).** The portable core is
+`lib/aius_dsp/src/aius_measure.c` behind `aius_measure.h` in the same library
+(the gate's seam-arity call: beside the DSP, not a new lib), proven by the new
+`measure` suite: every capture state-machine edge including both dual-terminal
+cancel interleavings, the pure-sine canary (−138.6 dB THD+N against the ~−40 dB
+a leakage-bin estimator reads), the −60 dB third-harmonic THD+N/SNR split,
+−80 dB SNR recovery, multitone probes, the Nyquist harmonic drop, and
+bit-identical slicing invariance. Two findings the build added to the contract:
+
+- **The residual identity needs compensated summation.** `rss = Σx² − coef·rhs`
+  subtracts ~2^56 sums to expose a residual fourteen orders down; naively
+  accumulated rounding lands at the 24-bit floor and the canary read it as
+  signal. The data sums carry Neumaier compensation, and the Goertzel
+  finalization is the Re/Im form (the phase-free magnitude formula squares
+  away an empty bin before it cancels). Both are pinned by the canary's
+  never-widened −130 dB bound.
+- **SNR's harmonic exclusion is only as deep as the harmonic estimate.** The
+  subtraction inherits the Hann-Goertzel estimate's leakage-limited accuracy
+  (roughly −90 dB of the subtracted harmonic), so SNR beside a −60 dBc
+  harmonic tops out near 100 dB rather than at the stimulus floor. Immaterial
+  on device — the 16-bit stimulus floors bind first — but the surface's
+  per-figure floor statement (slice on the HTTP surface) should say it.
 
 ### Noted for later, deliberately not scheduled
 

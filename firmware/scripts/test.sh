@@ -9,7 +9,7 @@
 #
 # Suites: arena, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
-#         capability, pipeline, dsp, dsp-vectors, net, net-runner,
+#         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
 #         usb-control, replay, boot, boot-target, fault-target, build-metadata,
 #         runtime, network-transport, sd, sd-target, optical-app,
@@ -292,6 +292,19 @@ dsp-vectors)
 		"$fw_root/test/dsp/test_dsp_vectors.c" \
 		"$fw_root/lib/aius_dsp/src/aius_dsp.c"
 	"$out" "$fw_root/tools/dts_vectors/vectors" "$fw_root/tools/dts_vectors/golden"
+	;;
+measure)
+	# The measurement loopback's portable core (lib/aius_dsp/src/aius_measure.c):
+	# capture state machine + sliced sine-fit/Goertzel analysis known answers.
+	# -ffp-contract=off for the same host/target bit-identity the dsp suites pin;
+	# aius_dsp.c is not linked -- the module uses aius_dsp.h for the sample scale.
+	measure_out="$build_dir/measure"
+	"$cc" "${cflags[@]}" -D_GNU_SOURCE -ffp-contract=off \
+		"-I$fw_root/lib/aius_dsp/include" \
+		"$fw_root/test/measure/test_measure.c" \
+		"$fw_root/lib/aius_dsp/src/aius_measure.c" \
+		-lm -o "$measure_out"
+	"$measure_out"
 	;;
 net)
 	# UDP codec plus the pure generation/deadline network supervisor oracle.

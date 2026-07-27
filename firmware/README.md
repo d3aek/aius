@@ -268,6 +268,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, and the same through the public DSP interface over the DTS corpus. |
+| `measure` | The measurement loopback's portable core: every capture state-machine edge (both dual-terminal cancel interleavings included) and the sliced sine-fit + Goertzel analysis known answers, with the pure-sine leakage canary whose tolerance is never widened. |
 | `auth` | The SD maintenance token's derivation, firmware side and the host generator together. |
 | `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |
 | `json` | The one JSON read cursor those two parsers and the replay body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
