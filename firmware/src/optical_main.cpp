@@ -2097,6 +2097,7 @@ static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 		"<ul><li><a href=\"/sd/www/index.html\">DSP editor</a> - input trim and "
 		"EQ, downmix, output EQ, limiter, live meters</li>"
 		"<li><a href=\"/sd/www/replays.html\">Replay manager</a></li>"
+		"<li><a href=\"/sd/www/status.html\">Device status</a></li>"
 		"<li><a href=\"/sd/www/\">Browse /sd/www/</a> - the served SD web tree</li></ul>"
 		"<p id=sd></p>"
 		"<h2>API</h2><ul><li><a href=\"/api/status\">GET /api/status</a></li>"

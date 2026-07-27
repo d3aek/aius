@@ -279,10 +279,10 @@ describe('Aius SD device status — configuration, network, storage, board', () 
 
     expect(text('sd-present')).toBe('mounted');
     expect(text('sd-filesystem')).toBe('fat32');
-    /* The shared formatter tops out at MiB, so a 32 GB card reads in
-     * thousands of them; that is sd-shared.js's call, not this page's. */
-    expect(text('sd-free')).toBe('29412.5 MiB');
-    expect(text('sd-used')).toBe('1024.0 MiB of 30436.5 MiB');
+    /* The shared formatter's GiB tier (added right after this suite first
+     * flagged 30436.5 MiB): whole cards read in GiB, files stay KiB/MiB. */
+    expect(text('sd-free')).toBe('28.7 GiB');
+    expect(text('sd-used')).toBe('1.0 GiB of 29.7 GiB');
   });
 
   it('says an absent card is absent instead of showing zero bytes free', async () => {

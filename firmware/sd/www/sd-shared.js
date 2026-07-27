@@ -98,11 +98,13 @@
     return value.toFixed(1);
   };
 
-  /* KiB below 1 MiB so a 4 KB file never reads "0.00 MiB". */
+  /* KiB below 1 MiB so a 4 KB file never reads "0.00 MiB"; GiB from 1 GiB so
+   * a 32 GB card never reads "30436.5 MiB". */
   const formatBytes = (bytes) => {
     if (!Number.isFinite(bytes) || bytes < 0) return '--';
     if (bytes < 1048576) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KiB`;
-    return `${(bytes / 1048576).toFixed(bytes < 10485760 ? 2 : 1)} MiB`;
+    if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(bytes < 10485760 ? 2 : 1)} MiB`;
+    return `${(bytes / 1073741824).toFixed(1)} GiB`;
   };
 
   /* Microseconds until they stop being legible, then milliseconds. */
