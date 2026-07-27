@@ -16,6 +16,11 @@ SLOT_SYMBOL = "g_aius_boot_slots"
 SLOT_SECTION = ".bss.aius_retained"
 SLOT_SIZE = 128
 SLOT_ALIGNMENT = 32
+# The defect-25 abort latch packs directly after the slots (definition order in
+# aius_boot_teensy.cpp); pinning its address here is what makes that ordering a
+# build contract rather than a toolchain habit.
+LATCH_SYMBOL = "g_aius_abort_latch"
+LATCH_SIZE = 8
 CRASH_REPORT_START = 0x2027FF80
 
 # ORIGIN(RAM) in the framework's imxrt1062_t41.ld: the start of OCRAM, and the
@@ -70,15 +75,16 @@ def parse_sections(output: str) -> dict[int, str]:
 
 
 def parse_symbols(output: str) -> list[LinkedSymbol]:
+    watched = (SLOT_SYMBOL, LATCH_SYMBOL)
     symbols: list[LinkedSymbol] = []
     for line in output.splitlines():
         match = SYMBOL_LINE.match(line)
-        if not match or match.group(7) != SLOT_SYMBOL:
+        if not match or match.group(7) not in watched:
             continue
         section = match.group(6)
         if not section.isdecimal():
             raise VerificationError(
-                f"{SLOT_SYMBOL} is not defined in a numbered section: "
+                f"{match.group(7)} is not defined in a numbered section: "
                 f"{section}"
             )
         symbols.append(
@@ -93,52 +99,75 @@ def parse_symbols(output: str) -> list[LinkedSymbol]:
     return symbols
 
 
-def verify_linked_contract(
+def verify_one_symbol(
     sections: Mapping[int, str],
     symbols: list[LinkedSymbol],
+    name: str,
+    expected_address: int,
+    expected_size: int,
 ) -> LinkedSymbol:
-    if len(symbols) != 1:
+    found = [symbol for symbol in symbols if symbol.name == name]
+    if len(found) != 1:
         raise VerificationError(
-            f"expected exactly one defined {SLOT_SYMBOL}, found {len(symbols)}"
+            f"expected exactly one defined {name}, found {len(found)}"
         )
-    symbol = symbols[0]
+    symbol = found[0]
     if symbol.symbol_type != "OBJECT":
         raise VerificationError(
-            f"{SLOT_SYMBOL} type is {symbol.symbol_type}, expected OBJECT"
+            f"{name} type is {symbol.symbol_type}, expected OBJECT"
         )
-    if symbol.size != SLOT_SIZE:
+    if symbol.size != expected_size:
         raise VerificationError(
-            f"{SLOT_SYMBOL} size is {symbol.size}, expected {SLOT_SIZE}"
+            f"{name} size is {symbol.size}, expected {expected_size}"
         )
     if symbol.address % SLOT_ALIGNMENT != 0:
         raise VerificationError(
-            f"{SLOT_SYMBOL} address 0x{symbol.address:08x} is not "
+            f"{name} address 0x{symbol.address:08x} is not "
             f"{SLOT_ALIGNMENT}-byte aligned"
         )
     section = sections.get(symbol.section_index)
     if section != SLOT_SECTION:
         raise VerificationError(
-            f"{SLOT_SYMBOL} section is {section!r}, expected {SLOT_SECTION}"
+            f"{name} section is {section!r}, expected {SLOT_SECTION}"
         )
-    end = symbol.address + SLOT_SIZE
+    end = symbol.address + expected_size
     if end > CRASH_REPORT_START:
         raise VerificationError(
-            f"{SLOT_SYMBOL} ends at 0x{end:08x}, beyond CrashReport boundary "
+            f"{name} ends at 0x{end:08x}, beyond CrashReport boundary "
             f"0x{CRASH_REPORT_START:08x}"
         )
-    if symbol.address != RETAINED_ORIGIN:
+    if symbol.address != expected_address:
         raise VerificationError(
-            f"{SLOT_SYMBOL} is at 0x{symbol.address:08x}, expected the pinned "
-            f"retained origin 0x{RETAINED_ORIGIN:08x}; a floating address is "
-            "what broke retention once already"
+            f"{name} is at 0x{symbol.address:08x}, expected the pinned "
+            f"retained address 0x{expected_address:08x}; a floating address "
+            "is what broke retention once already"
         )
     for start, stop in BOOT_ROM_CLOBBERED:
         if symbol.address < stop and start < end:
             raise VerificationError(
-                f"{SLOT_SYMBOL} 0x{symbol.address:08x}..0x{end:08x} intersects "
+                f"{name} 0x{symbol.address:08x}..0x{end:08x} intersects "
                 f"the boot ROM's OCRAM scratch 0x{start:08x}..0x{stop:08x}, so "
                 "it cannot survive a reset"
             )
+    return symbol
+
+
+def verify_linked_contract(
+    sections: Mapping[int, str],
+    symbols: list[LinkedSymbol],
+) -> LinkedSymbol:
+    # Slots first, so a whole-section drift is reported as the slots leaving
+    # their origin rather than as latch collateral. The latch is expected
+    # DIRECTLY after the slots: `.aius_retained_latch` is placed after
+    # `.aius_retained` by the ldscript, and the slot array's 128 bytes (a
+    # multiple of the 32-byte alignment) leave no pad between them.
+    symbol = verify_one_symbol(
+        sections, symbols, SLOT_SYMBOL, RETAINED_ORIGIN, SLOT_SIZE,
+    )
+    verify_one_symbol(
+        sections, symbols, LATCH_SYMBOL,
+        RETAINED_ORIGIN + SLOT_SIZE, LATCH_SIZE,
+    )
     return symbol
 
 
@@ -173,10 +202,10 @@ def verify_retained_slots(source, target, env) -> None:
     elf = Path(str(target[0])).resolve()
     symbol = inspect_elf(elf, _resolve_readelf(env))
     print(
-        "retained boot slots: PASS "
+        "retained boot slots + abort latch: PASS "
         f"(0x{symbol.address:08x}.."
-        f"0x{symbol.address + symbol.size:08x}, {SLOT_SECTION}, clear of the "
-        f"{len(BOOT_ROM_CLOBBERED)} measured boot-ROM OCRAM runs)"
+        f"0x{symbol.address + symbol.size + LATCH_SIZE:08x}, {SLOT_SECTION}, "
+        f"clear of the {len(BOOT_ROM_CLOBBERED)} measured boot-ROM OCRAM runs)"
     )
 
 

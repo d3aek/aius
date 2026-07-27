@@ -41,6 +41,16 @@ specified here. Strike items here in the commit that closes them.
 
 ## Waiting on the operator
 
+- **First PSRAM chip not detected after soldering (2026-07-27 evening).**
+  Post-solder cold boot AND a software-reset warm boot both probe `ps=0`;
+  `/api/recorder` agrees (`state:"absent"`, `fitted_mb:0`). The core's
+  probe is a 1-bit SPI ID read (`0x9F`, expecting KGD `0x5D`) on the
+  FIRST pad only — CLK, CS, SIO0, SIO1, 3V3, GND are the joints in play
+  (SIO2/SIO3 don't participate in detection), and a lone chip on the
+  FLASH-labelled pad is invisible because the probe never interrogates
+  the second pad while the first is silent. At the next powered-off bench
+  session: confirm the chip sits on the pad marked PSRAM, then reflow /
+  inspect those six joints before (or while) fitting the second chip.
 - **Bench first-signal test** — everything is staged:
   [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md)
   (22 pF fitted value recorded), RS PRO jacks + datasheets + AP214 STEP
@@ -110,7 +120,13 @@ specified here. Strike items here in the commit that closes them.
     recovery-safe; cold power cycle boots clean. Reproduced with
     byte-identical sources to a working image, so environmental to the
     reboot path, not code. UNATTENDED REFLASH IS BROKEN until chased;
-    `ps=`/`pv=` USB ID diagnostics landed for it. (2026-07-27.)
+    `ps=`/`pv=` USB ID diagnostics landed for it. (2026-07-27.) Late
+    same day: `POST /api/reboot` boots CLEAN (warm resets as a class
+    exonerated; loader CDC session stays the prime suspect), the `fa=`
+    first-abort retained latch is live and board-validated, and two
+    instrumented flashes booted CLEAN — 0/2 against the prior 4/4, so
+    the defect is CONDITIONAL and the instrument simply rides every
+    future flash until it fires.
   - **26** (CLOSED same day, kept for the residue): OCRAM heap
     exhaustion under NativeEthernet's ~96 KiB boot mallocs bricked every
     boot when recorder staging took 64 KiB; root-caused by bisection,

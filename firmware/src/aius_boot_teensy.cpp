@@ -223,6 +223,33 @@ FLASHMEM void hardware_write_watchdog_wsr(void *, uint16_t value)
 __attribute__((section(".aius_retained"), used, aligned(32)))
 AiusBootSlot g_aius_boot_slots[2];
 
+/* The defect-25 abort latch, beside the slots in the same output section but
+ * in its OWN input section: the ldscript places `.aius_retained_latch` after
+ * `.aius_retained`, which is the only ordering that is a contract rather than
+ * a toolchain habit -- GCC emitted these two reversed when they shared one
+ * input section, and only verify_target.py's address pin caught it.
+ * aligned(32): its own cache line, so latch flushes and slot flushes never
+ * touch each other's data. */
+__attribute__((section(".aius_retained_latch"), used, aligned(32)))
+AiusAbortLatch g_aius_abort_latch;
+
+extern "C" FLASHMEM uint8_t aius_boot_teensy_abort_capture(void)
+{
+	arm_dcache_delete(&g_aius_abort_latch, sizeof(g_aius_abort_latch));
+	const uint8_t previous = aius_boot_abort_capture(&g_aius_abort_latch);
+	arm_dcache_flush(&g_aius_abort_latch, sizeof(g_aius_abort_latch));
+	hardware_barrier(nullptr);
+	return previous;
+}
+
+extern "C" FLASHMEM void aius_boot_teensy_abort_note(uint16_t checkpoint)
+{
+	if (!aius_boot_abort_note(&g_aius_abort_latch, checkpoint))
+		return;
+	arm_dcache_flush(&g_aius_abort_latch, sizeof(g_aius_abort_latch));
+	hardware_barrier(nullptr);
+}
+
 extern "C" FLASHMEM void aius_boot_storage_teensy_init(
 	AiusBootStorageTeensy *storage,
 	const AiusBootTeensyPrimitives *primitives)

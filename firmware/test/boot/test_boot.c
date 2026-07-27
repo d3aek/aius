@@ -427,6 +427,65 @@ static void test_recovery_mode_persists_for_same_build(void)
 	}
 }
 
+static void test_abort_latch_capture_arms_and_reports_invalid(void)
+{
+	AiusAbortLatch latch;
+
+	/* A zeroed latch is what a cold power-up or a first boot of this
+	 * layout presents: no magic, so the previous value is INVALID. */
+	memset(&latch, 0, sizeof(latch));
+	CHECK(aius_boot_abort_capture(&latch) == AIUS_ABORT_INVALID);
+	CHECK(latch.magic == AIUS_ABORT_LATCH_MAGIC);
+	CHECK(latch.first_abort == AIUS_ABORT_NONE);
+
+	/* Garbage magic reads the same as absent. */
+	latch.magic = 0xdeadbeefu;
+	latch.first_abort = AIUS_BOOT_CHECKPOINT_HTTP;
+	CHECK(aius_boot_abort_capture(&latch) == AIUS_ABORT_INVALID);
+	CHECK(latch.first_abort == AIUS_ABORT_NONE);
+
+	CHECK(aius_boot_abort_capture(NULL) == AIUS_ABORT_INVALID);
+}
+
+static void test_abort_latch_is_one_shot(void)
+{
+	AiusAbortLatch latch;
+
+	memset(&latch, 0, sizeof(latch));
+	(void)aius_boot_abort_capture(&latch);
+
+	CHECK(aius_boot_abort_note(&latch, AIUS_BOOT_CHECKPOINT_HTTP));
+	CHECK(latch.first_abort == AIUS_BOOT_CHECKPOINT_HTTP);
+
+	/* Later aborts at other checkpoints must not overwrite the first. */
+	CHECK(!aius_boot_abort_note(&latch, AIUS_BOOT_CHECKPOINT_USB_TX));
+	CHECK(latch.first_abort == AIUS_BOOT_CHECKPOINT_HTTP);
+
+	/* The next boot's capture reads it and re-arms. */
+	CHECK(aius_boot_abort_capture(&latch) == AIUS_BOOT_CHECKPOINT_HTTP);
+	CHECK(latch.first_abort == AIUS_ABORT_NONE);
+	CHECK(aius_boot_abort_note(&latch, AIUS_BOOT_CHECKPOINT_RESET_CAPTURE));
+	CHECK(latch.first_abort == AIUS_BOOT_CHECKPOINT_RESET_CAPTURE);
+}
+
+static void test_abort_latch_rejects_unarmed_and_clamps_domain(void)
+{
+	AiusAbortLatch latch;
+
+	/* Un-armed (no magic): note must refuse rather than fabricate. */
+	memset(&latch, 0, sizeof(latch));
+	CHECK(!aius_boot_abort_note(&latch, AIUS_BOOT_CHECKPOINT_HTTP));
+	CHECK(latch.first_abort == 0u);
+	CHECK(!aius_boot_abort_note(NULL, AIUS_BOOT_CHECKPOINT_HTTP));
+
+	/* Out-of-domain checkpoints record the sentinel, not a lie. */
+	(void)aius_boot_abort_capture(&latch);
+	CHECK(aius_boot_abort_note(
+		&latch, AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE + 1u));
+	CHECK(latch.first_abort == AIUS_ABORT_OUT_OF_DOMAIN);
+	CHECK(aius_boot_abort_capture(&latch) == AIUS_ABORT_OUT_OF_DOMAIN);
+}
+
 int main(void)
 {
 	test_fixed_ledger_crc_vector();
@@ -437,6 +496,9 @@ int main(void)
 	test_healthy_clear_cannot_exit_recovery();
 	test_checkpoint_persistence();
 	test_recovery_mode_persists_for_same_build();
+	test_abort_latch_capture_arms_and_reports_invalid();
+	test_abort_latch_is_one_shot();
+	test_abort_latch_rejects_unarmed_and_clamps_domain();
 	puts("boot ledger tests passed");
 	return 0;
 }

@@ -58,6 +58,13 @@ typedef struct {
 } AiusBootStorageTeensy;
 
 extern AiusBootSlot g_aius_boot_slots[2];
+extern AiusAbortLatch g_aius_abort_latch;
+
+/* Retained-RAM wrappers over the portable abort latch: dcache delete before
+ * the boot-time read, flush + barrier after every write, so the value survives
+ * the watchdog reset it exists to explain. */
+uint8_t aius_boot_teensy_abort_capture(void);
+void aius_boot_teensy_abort_note(uint16_t checkpoint);
 
 void aius_boot_storage_teensy_init(
 	AiusBootStorageTeensy *storage,

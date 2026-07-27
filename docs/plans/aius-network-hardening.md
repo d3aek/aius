@@ -976,6 +976,43 @@ are follow-up work, recorded here so they are not lost.
     26 the same day — 26 was fixed by placement; this warm-reboot crash
     reproduced on images with NO layout change and remains open.)
 
+    **2026-07-27 late session — the software-reset corroboration ran, and
+    it EXONERATES the warm-reset path in general:** `POST /api/reboot`
+    against the running recorder image booted CLEAN — `rsafe=0`, network
+    online within the poll window, `pv=9` (the killed boot was completing
+    epochs, as a healthy deliberate reset should read). The crash window
+    is therefore specific to FLASH-DRIVEN reboots, not warm resets as a
+    class, which strengthens the one USB-side actor unique to that path:
+    the flash loader's CDC session (HalfKay entry + post-flash verify).
+
+    **The one-shot instrument is now live:** `fa=` on the USB ID line — a
+    retained `AiusAbortLatch` beside the ledger slots (own
+    `.aius_retained_latch` input section; GCC emitted latch-then-slots
+    when both shared one input section and only the verify pin caught the
+    swap, so the ordering is now the ldscript's, with both addresses
+    pinned post-link). `aius_boot_abort_note()` latches the checkpoint
+    persisted before the FIRST service that returns false;
+    `aius_boot_abort_capture()` reads and re-arms it at the next boot's
+    retained-state capture. `pv=` samples wherever the final epoch walked;
+    `fa=` names the head of the causal chain — the datum this entry's
+    "varying checkpoints" shape analysis had to infer. Validated on the
+    board across both sentinel paths: first boot of the layout read
+    `fa=255` (invalid, as an unarmed latch must), and a flash-driven warm
+    reset later read `fa=254` (armed, no abort) — the latch retains
+    across exactly the reset kind the defect occupies.
+
+    **AND THE DEFECT IS CONDITIONAL, not per-flash: two instrumented
+    flashes on 2026-07-27 (~20:12 and ~20:13, one image change and one
+    byte-identical reflash) both booted CLEAN** — against 4/4
+    recovery-safe latches in the 18:17–18:50 window the evening before.
+    Known differences in today's clean runs: a cold power cycle and one
+    clean software reset preceded them, the board had been up ~100 min,
+    and the SD card now carries the reformatted 3.96 GB volume. Which of
+    those (if any) is the lever is unknown; the instrument now rides
+    every future flash, so the next latch-up answers `fa=` with zero
+    additional setup. Until then the replug budget stands, but treat it
+    as insurance rather than certainty.
+
 26. ~~**A 64 KiB static OCRAM addition makes the image unbootable —
     deterministically, cold and warm, traffic or none.**~~ **ROOT-CAUSED
     AND GATED 2026-07-27: OCRAM heap exhaustion under NativeEthernet's

@@ -43,7 +43,7 @@ Successful responses:
 
 ```text
 AIUS/1 OK 0 PROTOCOL 1
-AIUS/1 OK 7 ID protocol=1 revision=abc123 build=2026-07-22T12:00:00Z mode=optical ip=192.168.1.42 rsafe=0 nstate=2 nfault=0 ckpt=9 early=0 ngen=1 bgen=3 rsrc=64 epoch=48211 nrst=0
+AIUS/1 OK 7 ID protocol=1 revision=abc123 build=2026-07-22T12:00:00Z mode=optical ip=192.168.1.42 rsafe=0 nstate=2 nfault=0 ckpt=9 early=0 ngen=1 bgen=3 rsrc=64 epoch=48211 nrst=0 ps=16 pv=9 fa=254
 AIUS/1 OK 8 AUTH 0123456789abcdef
 AIUS/1 OK 9 BOOTLOADER entering
 ```
@@ -126,6 +126,28 @@ capture, `1` USB RX,
 `2` USB TX, `3` metrics, `4` network, `5` HTTP, `6` UDP, `7` replay, `8` SD,
 `9` epoch complete. Only `9` marks a completed epoch; any other value on a
 watchdog reset is an early reset.
+
+### Boot forensics fields
+
+**`ps`, `pv`, and `fa` are not part of the recovery snapshot: they are captured
+once, at boot, and never change while the boot runs.** They exist for the boards
+this line alone can explain — a recovery-safe latch with no network, where the
+question is what the PREVIOUS boot did.
+
+- **`ps`** — probed PSRAM in MB (`external_psram_size`, the core startup's
+  FlexSPI2 probe result): `0`, `8`, or `16`. `0` with chips fitted means the
+  first chip did not answer its ID read; the probe never reaches the second
+  pad when the first is silent.
+- **`pv`** — the previous boot's final persisted checkpoint, read from the
+  retained ledger before `aius_boot_init()` folds it away. Same `0`–`9` domain
+  as `ckpt`; `65535` when the retained ledger was invalid (first boot after
+  power loss, layout change, or corruption).
+- **`fa`** — the previous boot's FIRST aborting checkpoint (defect 25's
+  instrument): the checkpoint persisted before the first service that returned
+  `false`, latched one-shot in retained RAM. `pv` names wherever the final
+  epoch had walked to when the watchdog fired; `fa` names the service whose
+  refusal started the starvation. `0`–`9` a checkpoint, `253` out-of-domain
+  capture, `254` no abort, `255` the latch was invalid at boot.
 
 ### Fields this line does not carry
 

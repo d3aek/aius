@@ -54,10 +54,29 @@ typedef struct {
 	AiusResetKind reset_kind;
 } AiusBootInput;
 
+/* One-shot abort latch -- defect 25's instrument (aius-network-hardening.md).
+ * The ledger's `last_checkpoint` is overwritten by every later checkpoint
+ * persist, so after a watchdog-killed boot it names wherever the FINAL epoch
+ * had walked to, not the service whose `false` return started the starvation.
+ * This latch records the first aborting checkpoint of a boot and nothing
+ * after it. ASCII "AIUA", beside the ledger's "AIUB". */
+#define AIUS_ABORT_LATCH_MAGIC 0x41495541u
+#define AIUS_ABORT_NONE 254u
+#define AIUS_ABORT_INVALID 255u
+#define AIUS_ABORT_OUT_OF_DOMAIN 253u
+
+typedef struct {
+	uint32_t magic;
+	uint8_t first_abort;
+	uint8_t reserved[3];
+} AiusAbortLatch;
+
 #ifdef __cplusplus
 static_assert(sizeof(AiusBootLedger) == 28, "portable boot ledger size");
+static_assert(sizeof(AiusAbortLatch) == 8, "portable abort latch size");
 #else
 _Static_assert(sizeof(AiusBootLedger) == 28, "portable boot ledger size");
+_Static_assert(sizeof(AiusAbortLatch) == 8, "portable abort latch size");
 #endif
 
 void aius_boot_init(AiusBootLedger *ledger,
@@ -70,6 +89,16 @@ void aius_boot_record_checkpoint(AiusBootLedger *ledger,
 void aius_boot_mark_healthy(AiusBootLedger *ledger);
 
 bool aius_boot_is_valid(const AiusBootLedger *ledger);
+
+/* Returns the previous boot's first-abort checkpoint (AIUS_ABORT_INVALID when
+ * the latch was never armed by this layout), then re-arms the latch for this
+ * boot. Call exactly once, at retained-state capture. */
+uint8_t aius_boot_abort_capture(AiusAbortLatch *latch);
+
+/* Records `checkpoint` as this boot's first abort; every later call is a
+ * no-op. Returns true when the latch changed, so the caller knows to flush
+ * it to retained storage. */
+bool aius_boot_abort_note(AiusAbortLatch *latch, uint16_t checkpoint);
 
 #ifdef __cplusplus
 }

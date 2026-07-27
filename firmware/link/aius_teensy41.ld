@@ -121,6 +121,7 @@ SECTIONS
 	.bss.aius_retained (NOLOAD) : {
 		__aius_retained_start = .;
 		KEEP(*(.aius_retained))
+		KEEP(*(.aius_retained_latch))
 		. = ALIGN(32);
 		__aius_retained_end = .;
 	} > RAM

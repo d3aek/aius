@@ -503,6 +503,11 @@ extern "C" uint8_t external_psram_size;
  * folds it away. `pv=` on the USB ID line: the only after-the-fact evidence of
  * WHICH checkpoint a watchdog-killed boot died in. */
 static uint16_t g_prev_boot_checkpoint = 0xffffu;
+/* The previous boot's FIRST aborting checkpoint (one-shot retained latch,
+ * defect 25's instrument). `pv=` names wherever the final epoch had walked to;
+ * this names the service whose `false` return started the starvation. `fa=`
+ * on the USB ID line: 0-9 a checkpoint, 254 no abort, 255 latch invalid. */
+static uint8_t g_prev_first_abort = AIUS_ABORT_INVALID;
 /* The dispatcher's mask mirror must equal the recorder's own bits -- the
  * measure probe-cap rule, applied to four constants. */
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_OVERRUN ==
@@ -2637,7 +2642,8 @@ static constexpr size_t AIUS_ID_MAX_PAYLOAD =
 	(sizeof(" epoch=") - 1u) + AIUS_ID_U32_DIGITS +
 	(sizeof(" nrst=") - 1u) + AIUS_ID_U32_DIGITS +
 	(sizeof(" ps=") - 1u) + 3u +
-	(sizeof(" pv=") - 1u) + 5u;
+	(sizeof(" pv=") - 1u) + 5u +
+	(sizeof(" fa=") - 1u) + 3u;
 static_assert(AIUS_ID_MAX_PAYLOAD <= AIUS_OPTICAL_APP_USB_PAYLOAD_MAX,
 	"the ID payload must fit the dispatcher's bound, or every ID answer is "
 	"a truncation-driven INTERNAL error");
@@ -2693,10 +2699,12 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 	(void)aius_network_teensy_address(network, address);
 	aius_runtime_teensy_status(&g_runtime, &recovery);
 	/* `ps` is the fitted PSRAM in MB, `pv` the PREVIOUS boot's final
-	 * persisted checkpoint (65535 = retained ledger invalid) -- the two
-	 * fields a recovery-safe board most needs to explain itself. */
+	 * persisted checkpoint (65535 = retained ledger invalid), `fa` the
+	 * PREVIOUS boot's FIRST aborting checkpoint (254 = none, 255 = latch
+	 * invalid) -- the fields a recovery-safe board most needs to explain
+	 * itself. */
 	int written = snprintf(payload, capacity,
-		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu ps=%u pv=%u",
+		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu ps=%u pv=%u fa=%u",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		address[0], address[1], address[2], address[3],
 		recovery.recovery_safe ? 1u : 0u,
@@ -2710,7 +2718,8 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 		(unsigned long)recovery.loop_epoch,
 		(unsigned long)recovery.network_restarts,
 		(unsigned)external_psram_size,
-		(unsigned)g_prev_boot_checkpoint);
+		(unsigned)g_prev_boot_checkpoint,
+		(unsigned)g_prev_first_abort);
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
 }
 
@@ -4476,6 +4485,9 @@ static FLASHMEM void capture_retained_boot_state(void)
 	 * still serves. */
 	g_prev_boot_checkpoint = aius_boot_is_valid(&retained)
 		? retained.last_checkpoint : 0xffffu;
+	/* Same capture-or-never window as `pv=`, same reader (`fa=`). Also
+	 * re-arms the latch for this boot, before the watchdog exists. */
+	g_prev_first_abort = aius_boot_teensy_abort_capture();
 	/* A zeroed or corrupt retained ledger fails validation inside
 	 * aius_boot_init(), which then starts a normal generation-1 boot. */
 	aius_boot_init(&g_boot_ledger, &retained, input);
@@ -4837,6 +4849,11 @@ FLASHMEM void loop(void)
 	/* After the epoch, and unconditionally: an epoch that aborted before
 	 * EPOCH_COMPLETE is exactly the case whose counters explain the abort. */
 	service_event_edges();
+	if (!completed)
+		/* One-shot into retained RAM: the checkpoint persisted before the
+		 * service that just returned false -- the defect-25 datum `pv=`
+		 * structurally cannot carry. */
+		aius_boot_teensy_abort_note(g_runtime.last_checkpoint);
 	if (completed && !g_boot_marked_healthy &&
 	    (int32_t)(now_ms - g_boot_healthy_at_ms) >= 0) {
 		/* Persisted by the next checkpoint, which commits the ledger. */

@@ -37,6 +37,7 @@ SECTION_BLOCK = """\t/* AIUS ADDITION — retained across reset, pinned to ORIGI
 \t.bss.aius_retained (NOLOAD) : {
 \t\t__aius_retained_start = .;
 \t\tKEEP(*(.aius_retained))
+\t\tKEEP(*(.aius_retained_latch))
 \t\t. = ALIGN(32);
 \t\t__aius_retained_end = .;
 \t} > RAM

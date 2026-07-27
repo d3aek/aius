@@ -159,3 +159,31 @@ FLASHMEM void aius_boot_mark_healthy(AiusBootLedger *ledger)
 		ledger->early_watchdog_resets = 0u;
 	update_crc(ledger);
 }
+
+FLASHMEM uint8_t aius_boot_abort_capture(AiusAbortLatch *latch)
+{
+	uint8_t previous;
+
+	if (latch == NULL)
+		return AIUS_ABORT_INVALID;
+
+	previous = latch->magic == AIUS_ABORT_LATCH_MAGIC
+		? latch->first_abort : AIUS_ABORT_INVALID;
+	latch->magic = AIUS_ABORT_LATCH_MAGIC;
+	latch->first_abort = AIUS_ABORT_NONE;
+	memset(latch->reserved, 0, sizeof(latch->reserved));
+	return previous;
+}
+
+FLASHMEM bool aius_boot_abort_note(AiusAbortLatch *latch, uint16_t checkpoint)
+{
+	if (latch == NULL || latch->magic != AIUS_ABORT_LATCH_MAGIC)
+		return false;
+	if (latch->first_abort != AIUS_ABORT_NONE)
+		return false;
+	latch->first_abort =
+		checkpoint <= AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE
+			? (uint8_t)checkpoint
+			: (uint8_t)AIUS_ABORT_OUT_OF_DOMAIN;
+	return true;
+}
