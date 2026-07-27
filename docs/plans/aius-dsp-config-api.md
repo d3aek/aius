@@ -1413,15 +1413,23 @@ Decisions taken (interview, 2026-07-27):
 
 Slices, each a commit boundary with its vitest coverage in the same commit:
 
-1. **Ergonomics** — token in `localStorage` (harness adds
-   `localStorage.clear()` per test; accepted: a stored token is readable
-   by any script on the device origin), per-parameter reset, the
-   defaults-table pin.
+1. **Ergonomics — DELIVERED 2026-07-27.** Token in `localStorage`
+   (harness clears per test; accepted: a stored token is readable by any
+   script on the device origin), per-parameter reset on every field
+   (button disabled alongside its input; a click inside the checkbox
+   `<label>` needs `preventDefault` or it toggles the box back), and the
+   defaults pin closed end to end: the page's `FACTORY_DEFAULTS` table →
+   the reset-all test reproducing the default fixture's five groups in
+   the PUT body → the fixture↔`optical_dsp.json` equality assert.
+   `collectModel()` was not restructured, so the firmware-side key guard
+   needed no update.
 2. **Presets** — preset bar (name, save, load-from-list, delete, upload),
    HTML-index parsing, page-side validation before any PUT, the
    firmware-enumerated refusal surfacing, and the swagger
    `/sd/{resource}` PUT/DELETE response-set catch-up with its contract
-   assertions.
+   assertions — including an example↔fixture deep-equality assert on the
+   `current` GET example (the confirmation round's one residual: the
+   example's values are corrected but nothing pins them yet).
 3. **Visual surface** — EQ magnitude curves (RBJ math mirrored in JS for
    display only, never authoritative), drag/wheel editing, signal-flow
    layout row, the DSP load/headroom numbers, and the limiter

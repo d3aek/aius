@@ -127,6 +127,9 @@ beforeEach(() => {
   rejections.length = 0;
   process.on('unhandledRejection', trackRejection);
   vi.useFakeTimers();
+  /* happy-dom's localStorage persists across tests in a suite; without this a
+   * token stored by one test would leak into every later boot. */
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -553,5 +556,82 @@ describe('Aius SD DSP editor — transport failures', () => {
     expect(el('apply-state').textContent).toBe('error');
     expect(el('errors').textContent).toContain('network error');
     expect(el('status').textContent).toBe('Configuration unchanged.');
+  });
+});
+
+describe('Aius SD DSP editor — ergonomics', () => {
+  it('restores the SD auth token from localStorage on boot', async () => {
+    localStorage.setItem('aius-sd-auth', '0123456789abcdef');
+    await boot();
+    expect(el('token').value).toBe('0123456789abcdef');
+  });
+
+  it('stores the token as it is typed, and removes it when cleared', async () => {
+    await boot();
+    el('token').value = 'fedcba9876543210';
+    el('token').dispatchEvent(new Event('input'));
+    expect(localStorage.getItem('aius-sd-auth')).toBe('fedcba9876543210');
+
+    el('token').value = '';
+    el('token').dispatchEvent(new Event('input'));
+    expect(localStorage.getItem('aius-sd-auth')).toBe(null);
+  });
+
+  it('resets a single field to the factory value', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+
+    expect(valueOf('matrix.lfe_gain_linear')).toBe('0.25');
+    el('r:matrix.lfe_gain_linear').click();
+    await settle();
+    expect(valueOf('matrix.lfe_gain_linear')).toBe('0.31622776601683794');
+  });
+
+  it('reset on an EQ type returns the slot to none and drops it from the PUT', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    el('token').value = '0123456789abcdef';
+
+    el('r:output.eq.0.type').click();
+    await settle();
+    expect(valueOf('output.eq.0.type')).toBe('none');
+
+    await click('apply');
+    expect(JSON.parse(putCalls()[0].body).output_eq).toEqual([]);
+  });
+
+  it('disables reset alongside its field', async () => {
+    // SD fixture has clipfree on, so headroom is device-resolved and read-only.
+    await boot({ config: fixture('dsp-config-sd.json') });
+    expect(fieldOf('matrix.headroom_linear').disabled).toBe(true);
+    expect(el('r:matrix.headroom_linear').disabled).toBe(true);
+    expect(el('r:matrix.center_gain_linear').disabled).toBe(false);
+  });
+
+  /* THE defaults pin. Resetting every control and collecting the model must
+   * reproduce the factory fixture's five editable groups exactly -- and the
+   * fixture itself is asserted equal to firmware/config/optical_dsp.json
+   * above, so the page's FACTORY_DEFAULTS table cannot drift from the real
+   * factory model without failing here. */
+  it('resetting every field reproduces the factory model in the PUT body', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    el('token').value = '0123456789abcdef';
+
+    /* Two passes: resetting clipfree re-enables the headroom field, whose own
+     * reset was disabled (skipped) when the first pass walked past it. */
+    for (let pass = 0; pass < 2; pass++) {
+      for (const reset of document.querySelectorAll('.field__reset')) {
+        if (!reset.disabled) reset.click();
+      }
+      await settle();
+    }
+
+    await click('apply');
+    expect(putCalls()).toHaveLength(1);
+    const body = JSON.parse(putCalls()[0].body);
+    const factory = fixture('dsp-config-default.json');
+    expect(body.features).toEqual(factory.features);
+    expect(body.input_channels).toEqual(factory.input_channels);
+    expect(body.output_eq).toEqual(factory.output_eq);
+    expect(body.matrix).toEqual(factory.matrix);
+    expect(body.limiter).toEqual(factory.limiter);
   });
 });

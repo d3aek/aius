@@ -55,6 +55,38 @@
     ['peaking', 'peaking'],
   ];
   const EQ_SEED = { frequency_hz: 1000, q: 0.707, gain_db: 0 };
+  /* Accepted trade (task #7 interview): a stored token is readable by any
+   * script served from the device origin for as long as it is stored. */
+  const TOKEN_STORAGE_KEY = 'aius-sd-auth';
+
+  /* The factory model's five editable groups, mirroring
+   * firmware/config/optical_dsp.json (compiled into AIUS_OPTICAL_CONFIG by
+   * scripts/build_config.py). Per-parameter reset reads this table. The chain
+   * that keeps it honest: the reset-all test asserts the collected model equals
+   * the dsp-config-default.json fixture, and the fixture is asserted equal to
+   * optical_dsp.json itself -- so a factory change this table misses fails the
+   * suite instead of shipping wrong "defaults". */
+  const FACTORY_DEFAULTS = {
+    features: { input_eq: true, matrix: true, output_eq: true, limiter: true, meters: true },
+    input_channels: {
+      fl: { gain_db: 0, eq: [] },
+      fr: { gain_db: 0, eq: [] },
+      fc: { gain_db: 0, eq: [] },
+      lfe: { gain_db: 0, eq: [] },
+      sl: { gain_db: 0, eq: [] },
+      sr: { gain_db: 0, eq: [] },
+    },
+    output_eq: [],
+    matrix: {
+      center_gain_linear: 0.7071067811865475,
+      surround_gain_linear: 0.7071067811865475,
+      lfe_gain_linear: 0.31622776601683794,
+      lfe_crossover_hz: 120,
+      headroom_linear: 0.5,
+      clipfree: false,
+    },
+    limiter: { enabled: true, threshold_dbfs: -1, attack_ms: 0.5, release_ms: 100, lookahead_ms: 2 },
+  };
 
   const state = {
     model: null,
@@ -160,7 +192,42 @@
     error.className = 'field__error';
     error.id = `e:${descriptor.path}`;
     holder.append(error);
+
+    /* Per-parameter reset to the factory value. preventDefault matters: the
+     * holder is a <label>, and without it a click on the button would ALSO
+     * activate the labelled control -- toggling a checkbox right back. */
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'field__reset';
+    reset.id = `r:${descriptor.path}`;
+    reset.textContent = 'reset';
+    reset.setAttribute('aria-label', `Reset ${descriptor.label} to factory default`);
+    reset.addEventListener('click', (event) => {
+      event.preventDefault();
+      resetField(descriptor.path);
+    });
+    holder.append(reset);
     return holder;
+  }
+
+  /* An absent value (an EQ path the factory model has no section for) resets a
+   * number to empty and a type select to the page-level "none", exactly what
+   * render() shows for the same absent value. */
+  function resetField(path) {
+    const input = field(path);
+    if (input.disabled) return;
+    const value = readPath(FACTORY_DEFAULTS, path);
+    if (input.dataset.kind === 'bool') input.checked = Boolean(value);
+    else if (input.dataset.kind === 'eq-type') input.value = typeof value === 'string' ? value : 'none';
+    else input.value = showNumber(value);
+    input.dispatchEvent(new Event('input'));
+  }
+
+  function syncResetButtons() {
+    for (const input of document.querySelectorAll('[data-field]')) {
+      const reset = $(`r:${input.dataset.field}`);
+      if (reset) reset.disabled = input.disabled;
+    }
   }
 
   function buildFieldGrid(descriptors) {
@@ -334,6 +401,7 @@
     }
     const bytes = JSON.stringify(collectModel()).length;
     $('model-bytes').textContent = `${bytes} / ${MODEL_MAX_BYTES}`;
+    syncResetButtons();
   }
 
   function numberOf(path, fallback) {
@@ -765,10 +833,31 @@
 
   /* ---- boot -------------------------------------------------------------- */
 
+  /* localStorage can throw (storage disabled, private mode); the token box
+   * degrades to per-session entry rather than taking the page down. */
+  function readStoredToken() {
+    try {
+      return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+    } catch (storageError) {
+      return '';
+    }
+  }
+
+  function storeToken(value) {
+    try {
+      if (value === '') localStorage.removeItem(TOKEN_STORAGE_KEY);
+      else localStorage.setItem(TOKEN_STORAGE_KEY, value);
+    } catch (storageError) {
+      /* nothing to do: the field still holds the value for this session */
+    }
+  }
+
   buildForm();
   $('apply').onclick = () => void guard(applyConfig);
   $('reload').onclick = () => void guard(loadConfig);
   $('stale-reload').onclick = () => void guard(loadConfig);
+  $('token').value = readStoredToken();
+  $('token').addEventListener('input', () => storeToken($('token').value.trim()));
   setApplyState('loading');
   void guard(loadConfig);
   setInterval(() => void guard(pollMeters), METER_POLL_MS);

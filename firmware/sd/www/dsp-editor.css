@@ -8,8 +8,15 @@ code{color:#74d7ff}
    stretching a lone input across the card. */
 .form-mount{margin-top:14px}
 .field-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
-.field{display:grid;gap:5px;color:#aab4c0;font-size:.78rem;background:#11151b;border-radius:6px;padding:10px}
-.field__label{color:#9aa8b5}
+.field{position:relative;display:grid;gap:5px;color:#aab4c0;font-size:.78rem;background:#11151b;border-radius:6px;padding:10px}
+/* padding-right reserves the reset button's corner so a long caption
+   ("Clip-free headroom policy") never runs under it. */
+.field__label{color:#9aa8b5;padding-right:40px}
+/* Per-parameter factory reset. Absolutely positioned so neither field variant
+   (stacked number/select, or the auto/1fr checkbox grid) reflows around it. */
+.field__reset{position:absolute;top:6px;right:8px;font-size:.62rem;color:#7f8b98;background:none;border:1px solid #303945;border-radius:4px;padding:1px 5px;cursor:pointer}
+.field__reset:hover{color:#aab4c0;border-color:#4a5665}
+.field__reset:disabled{opacity:.35;cursor:default}
 .field input,.field select{width:100%}
 /* Reserved so a validation message never reflows the form. */
 .field__error{color:#f2a0a0;font-size:.72rem;min-height:1.1em}
