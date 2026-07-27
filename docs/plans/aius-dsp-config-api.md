@@ -1474,6 +1474,80 @@ Slices, each a commit boundary with its vitest coverage in the same commit:
    [`aius-optical-prototype.md`](aius-optical-prototype.md). Playwright
    contexts are per-run, so cross-restart token persistence rests on the
    vitest coverage; within-session restore was shown.
+**Delivery audit (2026-07-27): slices 1–4 complete as-is.** Every contract
+bullet and gate adjustment verified implemented and tested; both proof
+gates re-ran green under the audit; no required fixes. Four record items,
+all low severity, owned by slice 5's touch of the same code:
+
+- The decision bullet's strip layout was narrowed in delivery (no matrix
+  stage, waveform left in the foot card) without amending the bullet — the
+  slice 5 redesign supersedes both.
+- `resetField()` cannot restore a non-empty factory output EQ: form paths
+  say `output.eq.N` but `FACTORY_DEFAULTS` keys `output_eq`, correct today
+  only because the factory ships no output sections; the reset-all pin
+  would fail loudly the day it does. Fix the alias in slice 5.
+- The case-insensitive duplicate check consults `state.presets`, which can
+  be stale-empty if the last listing faulted (`503 sd_busy` window) — a
+  save in that window can case-overwrite on FAT. Narrow; tighten in
+  slice 5 (refresh-before-save or refuse while the listing is faulted).
+- Pre-existing, same family as the `loaded`-pill gap: `pollPending`'s
+  `adoptModel()` on generation change clobbers anything typed during the
+  ≤20 s pending window.
+
+5. **UX iteration — user-directed 2026-07-27, after reviewing the shipped
+   surface.** Requirements verbatim from the review:
+   - **All EQ curves stacked on ONE plot**, each selectable; the selected
+     curve is the editable one. Replaces the one-channel-at-a-time select.
+   - **Sections addable and editable from the surface** (within the
+     2-section wire cap), not only draggable-once-created-in-the-form.
+   - **Stereo pairs are ONE entity on the visual surface** — fl/fr and
+     sl/sr are never separately controlled there (the per-channel form
+     remains the escape hatch). Policy for a pair whose members differ in
+     the model (possible via hand-edited config): the surface shows the
+     pair as unlinked and the first visual edit adopts the LEFT member's
+     cascade into both, visibly announced — to be confirmed in review.
+   - **Effective-configuration panel: buttons and auth field must align.**
+   - **The Live processing panel moves up beside the other metering**, not
+     at the page foot.
+   - **The input source must be obvious from the DSP control** (added
+     mid-review): the page never says whether the audio is a live optical
+     carrier, a replay (and which id), or nothing. The facts are on
+     `GET /api/status` (`state`, `carrier`, `tx_gate`) and the replay
+     status surface; the editor gains a low-rate status poll and a
+     signal-flow-strip indicator at the INPUT end (with the TX gate's
+     state at the output end being the natural companion).
+   - **An adversarial UX review pass over the whole interface**, its
+     findings folded into this slice alongside the delivery audit's.
+     Completed 2026-07-27: 12 editor MUST-FIX (worst: touch scroll-trap
+     canvases; zero-guard destructive actions; wheel hijack; no in-flight
+     lockout; illegible pills; unanchored errors; 17-digit unitless matrix
+     floats; broken native stepping; fixed-960px blurry/colliding canvas
+     backing; non-disclosing drag surface; broken keyboard/AT; misleading
+     model-bytes/cycles numbers), 7 replay MUST-FIX (worst: at phone width
+     Delete paints OVER Play in one grid cell — the only tappable row
+     button deletes a capture, unconfirmed; the 5 s refresh wipes the
+     selection; errors land in the wrong card; text-only upload progress),
+     a 12-row consolidation catalogue (vehicle: grow `replays.css` as the
+     shared sheet + a new shared classic script `sd-shared.js` for pills,
+     fetch discipline, formatters, token and waveform), and NICE lists.
+     Full findings: session scratch `ux/ux-review-report.md` (+
+     screenshots/probes in the same directory); the build treats that file
+     as the checklist and the canvas-honesty items (E1/E3/E9/E10/E11) as
+     PREREQUISITE to the stacked-plot rework, which would inherit them.
+   - **The replay manager is in scope too** (added mid-review): the same
+     UX pass covers `replays.html`, and the two SD pages' appearance is
+     CONSOLIDATED — one product across pills, buttons, status/error
+     patterns, chrome and canvas treatments, with the genuinely shared
+     rules living in `replays.css` and page-specific additions in each
+     page's own sheet.
+   - **A third SD-served page: device status** (added mid-review), in the
+     consolidated style — rendering `GET /api/status` (audio state,
+     carrier, `tx_gate`, network, SD, config validity, boot/watchdog,
+     temperatures) with the same poll discipline as the other pages. **The
+     SD pages' nav stops linking to the self-hosted web root**: the
+     `href="/"` "Device status" links on both existing pages point at the
+     new `status.html` instead, so the SD tree is self-contained and the
+     flash-served root page is no longer part of the operator's loop.
 
 ### OpenAPI catch-up
 
