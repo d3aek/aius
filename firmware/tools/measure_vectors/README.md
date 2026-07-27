@@ -26,3 +26,11 @@ Upload to the board as `PUT /sd/replays/<name>` (they land at
 `/aius/replays/<name>.iec`) and start with `POST /api/replays/start`. The
 `pcm440_full` vector needs a config that opens the limiter — at the shipped
 0.5 headroom the tap sees −6 dBFS against the −1 dBFS threshold.
+
+`measure_run.py` is the committed driver for all of it against a live board
+(`AIUS_DEVICE`, `AIUS_SD_AUTH`): `upload` chunks the corpus through
+`PUT /sd/replays/<id>`, `measure <id> [f0_l f0_r [probes…]]` runs a session
+end to end and prints `GET /api/measure`, and `isr-cost` runs the tap's
+armed-vs-not `dsp_cycles_max` acceptance with its ±30 k gate. The measured
+figures live in
+[`signal-path.md` §Measured output quality](../../../docs/reference/signal-path.md).

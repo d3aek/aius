@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, dsp, signal-path, dither, limiter]
-updated: 2026-07-26
+updated: 2026-07-27
 toc: true
 ---
 
@@ -38,7 +38,10 @@ cited symbol name is the durable handle.
   `a847df560c08`) with `tools/memory/mem_report.py --elf` and `arm-none-eabi-nm -S`.
   Function and object sizes in this document are that, not estimates.
 - **From the device** — the DWT cycle counters the audio path publishes through
-  `GET /api/meters`, recorded in the roadmap against build revision `f76baa87c67d`.
+  `GET /api/meters`, recorded in the roadmap against build revision `f76baa87c67d`,
+  and the loopback quality figures in
+  [§Measured output quality](#measured-output-quality--the-loopback-figures), read from
+  `GET /api/measure` against build revision `b5f9a1351adf`.
 - **Derived from source** — a struct size or a period computed from constants that are
   cited. Marked *derived* where it matters.
 
@@ -479,6 +482,74 @@ OCRAM** (measured). Two design points worth carrying:
 - **`estimated_latency_us` costs no division.** Microseconds per frame is resolved to
   Q16.16 by `apply_config()`, so the field is one 32×32 multiply and a shift
   (`src/optical_main.cpp:968`).
+
+## Measured output quality — the loopback figures
+
+**These are the first quality figures ever measured on the device itself**, from the
+audio-quality roadmap's item 3 (design contract:
+[`aius-dsp-config-api.md` §Item 3 design](../plans/aius-dsp-config-api.md#item-3-design--the-measurement-loopback-software-tap-first)).
+The instrument is a software tap in `enqueue()` after the tx24 commit — at the shipped
+24-bit width the committed words ARE the wire's, so the capture measures everything from
+the replay ring through the whole DSP chain to the transmit register, sharing one sample
+grid with the stimulus (immune to physical clock error by construction; the clock/content
+*ratio* surface stays with the future physical loop). Analysis: an IEEE 1057 3-parameter
+sine fit at the declared f0 (THD+N; SNR additionally excludes harmonics 2–10) plus
+Hann-windowed Goertzel (harmonic amplitudes, FR probes) over the last 8,192 frames of a
+16,384-frame capture (`lib/aius_dsp/include/aius_measure.h`), served by
+`GET /api/measure`.
+
+**Measured 2026-07-27 from the device, build `b5f9a1351adf`, boot generation 250–252**,
+against the loop-coherent 16-bit PCM stimulus corpus (`tools/measure_vectors/`), shipped
+SD config (headroom 0.5, limiter on at −1 dBFS, bypass EQ) except where stated. The
+stimulus floors bind everything below: a 16-bit vector bottoms THD+N/SNR near the
+quantization floor at the tone's own level, so a figure at its floor reads "at least
+this good".
+
+| Vector, channel | Fundamental | THD+N | SNR | THD (2nd–10th) | Stimulus floor at this level |
+|---|---|---|---|---|---|
+| `pcm440_m6`, L | −12.04 dBFS @ 440 Hz | **−91.7 dB** | 91.8 dB | −107.9 dBc | ≈ −92.1 dB |
+| `pcm440_m6`, R | −12.04 dBFS @ 440 Hz | **−91.7 dB** | 91.8 dB | −107.9 dBc | ≈ −92.1 dB |
+| `pcm440_660_split`, L | −12.04 dBFS @ 440 Hz | −91.7 dB | 91.8 dB | −108.0 dBc | ≈ −92.1 dB |
+| `pcm440_660_split`, R | −18.06 dBFS @ 660 Hz | −86.0 dB | 86.1 dB | −103.8 dBc | ≈ −86.1 dB |
+| `pcm440_full` + headroom 1.0, L/R | −1.01 dBFS @ 440 Hz (limited) | −95.6 dB | 95.7 dB | −109.2 dBc | ≈ −98.1 dB |
+| `pcm_fr_multitone`, 40 Hz–16 kHz | seven probes, both channels | — | — | — | — |
+
+What the numbers say, in order of what they prove:
+
+- **The path is transparent to the stimulus floor.** THD+N lands within 0.4 dB of the
+  16-bit stimulus's own quantization floor at every level tried (−91.7 vs ≈ −92.1 at
+  −6 dBFS stimulus; −86.0 vs ≈ −86.1 at −12 dBFS). Whatever the chain adds sits below a
+  16-bit transport's ability to resolve — the −140 dB inter-stage claims stay
+  host-proven, as the design says they must.
+- **Levels are arithmetic-exact.** Every fundamental reads stimulus level + 6.02 dB of
+  shipped headroom to the hundredth of a dB, and L/R figures on identical stimulus are
+  identical to the last printed digit (bit-identical DSP on bit-identical input).
+- **Frequency response is flat to 0.01 dB, 40 Hz to 16 kHz** (all seven multitone
+  probes at −24.08 dBFS on both channels, bypass EQ).
+- **The limiter's steady-state gain reduction is distortion-free at this floor.** With
+  headroom raised to 1.0 so the full-scale vector engages it, the limiter holds the tone
+  at −1.01 dBFS (threshold plus its documented e⁻⁴ smoothing residual,
+  [stage 8](#stage-8--the-true-peak-safety-limiter)) and THD+N still reads −95.6 dB. A
+  *transient* limiter-distortion figure needs a modulated hot vector; deliberately not
+  scheduled.
+- **The arm-time latches work live.** The very first run retired `failed (generation)`
+  because arming preceded the board's first-ever audio block, whose block-boundary
+  config apply bumped the generation — exactly the splice the latch exists to refuse.
+- **The tap's ISR cost is invisible inside the block-to-block spread** — the
+  acceptance the design demanded, as a distribution comparison with meters ON:
+  `dsp_cycles_max` over 10 s windows read 322,215 unarmed vs 309,236 with captures
+  armed back-to-back (delta −13.0 k against the ±30 k gate; `dsp_cycles_last` p50
+  280,696 vs 280,657). Those p50s are also **the first measured per-block DSP cost
+  with audio flowing** — ≈ 281 k cycles ≈ 4.4 % of the block budget on the PCM
+  passthrough path, replay looping, meters on, zero overruns across the whole
+  20,492-block session.
+
+One `DMAMEM` note for the maintainer contract below: the 128 KiB capture planes are the
+first large `DMAMEM` addition since the retained region was carved out ahead of
+`.bss.dma`, and the retained-slot guard passed — `boot_generation` survived both flashes
+(247 → 250 across three flashes and a reboot), so the item-1-era "every large `DMAMEM`
+object restarts the ledger" hazard is closed by the linker carve-out, not merely
+tolerated.
 
 ## Channel layout and downmix rules
 
@@ -968,6 +1039,10 @@ Every number in this document that is not read from the linked image or the devi
 - **Priming window 229 µs, lookahead 96 samples, ring capacity 42.67 ms** — *derived*
   from tap counts, milliseconds and frame counts at 48 kHz.
 - **The 48.16 dB PCM-vs-DTS level step** — *derived* as `20*log10(2^23 / 2^15)`.
+- **The −140 dB inter-stage requantisation floor** — host-proven only
+  (`scripts/test.sh --suite measure`'s pure-sine canary reads the analysis floor near
+  −140 dB on 24-bit synthesis); no 16-bit stimulus can verify it on-device, so the
+  loopback figures above bottom out at the stimulus floor instead, by design.
 
 Everything else — every bank figure, every object size, every ITCM function size, and
 both DWT cycle counts — comes from the ELF or the board.

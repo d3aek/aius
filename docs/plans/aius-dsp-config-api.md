@@ -516,8 +516,10 @@ Accepted 2026-07-26 in this order, with the reasoning that chose it.
    Fold LFE into L/R through a low-pass around 120 Hz with level compensation.
    Related and wholly absent: there is no crossover or bass management — the
    generic biquad EQ is not a Linkwitz-Riley crossover.
-3. **A measurement loopback.** There is currently **no way to measure output
-   quality on this device**: everything is proven by host known-answer vectors,
+3. **A measurement loopback. — DELIVERED 2026-07-27**, all six slices; measured
+   figures in [`signal-path.md` §Measured output quality](../reference/signal-path.md).
+   The original rationale, kept: there was **no way to measure output
+   quality on this device**: everything was proven by host known-answer vectors,
    and the meters report peak and RMS, not distortion. So every item here would
    be believed rather than verified. The replay path is already a signal
    generator; feeding the S/PDIF output back into the input would let the board
@@ -745,6 +747,36 @@ bit-identical slicing invariance. Two findings the build added to the contract:
   harmonic tops out near 100 dB rather than at the stimulus floor. Immaterial
   on device — the 16-bit stimulus floors bind first — but the surface's
   per-figure floor statement (slice on the HTTP surface) should say it.
+
+**Slices 5 and 6 delivered (2026-07-27) — item 3 is complete.** Flash
+`b5f9a1351adf` runner-verified, the four-vector corpus uploaded, and the
+first-ever on-device quality figures recorded in
+[`signal-path.md` §Measured output quality](../reference/signal-path.md):
+THD+N at the 16-bit stimulus floor within 0.4 dB at every level tried, FR
+flat to 0.01 dB from 40 Hz to 16 kHz, the limiter's steady-state gain
+reduction distortion-free at −1.01 dBFS, the ISR-cost acceptance PASSED
+(−13.0 k against the ±30 k gate, `dsp_cycles_last` p50 delta 39 cycles), and
+zero overruns across the 20,492-block session. The committed driver is
+`firmware/tools/measure_vectors/measure_run.py` (upload / measure /
+isr-cost). What the leg found beyond the figures:
+
+- **A fresh replay upload had never worked since the storage cutover** —
+  every first chunk 500'd because the engine faulted the absent `.part`'s
+  resume probe instead of reading it as "nothing to resume". Fixed
+  (`b5f9a1351`) with the sd-suite regression, and hardware-verified in the
+  same session; the web-tree REPLACE path's health is what localized it.
+- **The generation latch fired live on the very first run**: arming before
+  the board's first-ever audio block latches generation 0, and the first
+  block's boot-time SD model apply bumps it — retire `failed (generation)`,
+  exactly as specified. Operator flow: arm after audio has run once, or
+  re-arm once after a cold boot.
+- **`boot_generation` SURVIVED the 128 KiB `DMAMEM` addition** (247 → 250
+  across three flashes and a reboot): the linker's retained-region carve-out
+  closed the item-1-era ledger hazard, so the design's predicted restart did
+  not happen. Recorded in signal-path.md's maintainer notes.
+- The session also yielded the long-owed **first measured per-block DSP cost
+  with audio flowing**: `dsp_cycles_last` p50 ≈ 281 k ≈ 4.4 % of the block
+  budget on the PCM passthrough path with meters on.
 
 **Slice 4 delivered (2026-07-27).** The surface: `GET /api/measure` (public
 read — state machine, figures once published, the stimulus floors beside
