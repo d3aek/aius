@@ -133,65 +133,206 @@ adjustments.
 ## PSRAM flight recorder — contracted 2026-07-27
 
 Designed in interview 2026-07-27. **A continuous audio flight recorder in
-the 16 MB PSRAM: the ring records always (when the chips are fitted), and
+the 16 MB PSRAM: the ring records whenever the chips are fitted, and
 FREEZES itself on detection of the faults it exists to explain** —
 preserving pre-trigger history, which is the whole diagnostic value: this
 board once shipped a 1.4-semitone pitch error with every counter clean,
 and an armed-after-the-fact capture records aftermath, not cause. Wear was
 examined and dismissed: PSRAM is DRAM behind QSPI, no endurance limit.
 
-Decisions from the interview:
+Prebuild-gated 2026-07-27 (GO-WITH-ADJUSTMENTS); the contract below
+carries the gate's forced adjustments, the two load-bearing ones being
+**gap-honest rather than gapless** (a mount-class epoch stall exceeds any
+affordable staging depth) and the **named PSRAM placement mechanism** (an
+`EXTMEM` static array is silently wrong on 8 MB boards).
+
+Decisions from the interview, as adjusted:
 
 - **Model: flight recorder.** Continuous circular ring; freeze on trigger
-  or operator command, hold a short post-roll, then stay frozen until an
+  or operator command, hold a post-roll, then stay frozen until an
   operator thaw/rearm. One-shot windows fall out for free (operator
   freeze).
-- **Triggers (all v1): block overrun, transmit underrun, carrier loss,
-  and limiter gain reduction past a configured dB for a configured hold**
-  — plus the operator. Trigger metadata (which, when, ring position) is
-  part of the frozen state.
+- **Recording is gap-honest, not gapless.** Staging is sized for the
+  measured *normal* worst case; mount-class (~1 s first SD `BEGIN`) and
+  watchdog-class (8 s) epoch stalls are NOT ridden out. When staging is
+  full the ISR drops the block and counts a ring-position-stamped GAP —
+  it never blocks and never overwrites unconsumed staging. Gap count and
+  last-gap position are status-surface and frozen-header fields.
+- **Triggers (all v1, each independently maskable): block overrun,
+  transmit underrun, carrier loss, and limiter gain reduction past a
+  configured dB for a configured hold** — plus the operator. Trigger
+  metadata (which, when, ring position) is part of the frozen state.
+  Precise, testable definitions below.
 - **Tap: the output wire words** (the committed planes item 3's tap
   proved ARE the wire at 24-bit) — full ~43 s window. An input-side tap
   is an explicitly contracted FOLLOW-UP slice, not v1.
-- **Egress: raw pull.** Auth-gated freeze/thaw plus a bounded chunked
-  read of the frozen ring over the existing HTTP transport, with a JSON
-  header (rate, width, trigger, positions, boot session); a committed
-  host script reassembles a WAV. Rationale recorded: you can LISTEN to a
-  capture, offline analysis is unbounded, the firmware surface stays
-  minimal, and volatile PSRAM means the data must leave the device
-  anyway. On-device summaries deliberately deferred.
+- **Egress: raw pull.** Token-gated freeze/thaw plus a bounded
+  offset-addressed read of the frozen ring over the existing HTTP
+  transport, with a JSON header route; a committed host script
+  reassembles a WAV. Rationale recorded: you can LISTEN to a capture,
+  offline analysis is unbounded, the firmware surface stays minimal, and
+  volatile PSRAM means the data must leave the device anyway. On-device
+  summaries deliberately deferred.
 - **Presence: auto-detected, never assumed.** The Teensy core's boot
-  probe exposes the fitted size (`external_psram_size`); absent chips →
-  the feature reports `absent` on its status surface and every mutating
-  route refuses cleanly — a bare board must never fault. Auto-detect
-  satisfies the build-flag requirement outright; 8 MB single-chip boards
-  get a proportionally shorter ring, reported not assumed.
+  probe exposes the fitted size (`external_psram_size`, valid before
+  `setup()`); absent chips → the feature reports `absent` on its status
+  surface and every other recorder route refuses cleanly — a bare board
+  must never fault (the MPU maps absent PSRAM RW, so a stray access
+  returns garbage silently; only the presence latch protects it). One
+  presence bool gates the tap and the drain (the `g_meters_active`
+  pattern).
 
-Architecture constraints (binding for the build, per the standing
-hot-path tie-breaker):
+### Memory and placement
 
-- **EXTMEM is never touched from audio context.** The ISR extends the
-  item 3 staging pattern: committed planes copy into a small `DMAMEM`
-  staging ring in the same interrupt that owns them; the EPOCH drains
-  staging into PSRAM in bounded slices from thread context, where a
-  FlexSPI2 stall costs nothing audible. Sustained rate is ~384 KB/s —
-  trivial bandwidth; the design cost is the staging ring's DMAMEM
-  footprint and a drain budget at an existing checkpoint.
-- **One writer per state transition**, the measure machine's discipline;
-  trigger inputs are the counters/latches the ISR already advances.
+- **Ring: raw base `0x70000000`, length `external_psram_size` MiB, read
+  once at init.** NO `EXTMEM` static array — ERAM is declared 32 MB and
+  `.bss.extram` is NOLOAD, so a 16 MB array links without error on an
+  8 MB board and corrupts the core's smalloc pool arithmetic. With no
+  EXTMEM data the core's extmem heap pool spans the whole chip, so the
+  companion rule is part of this contract: **this firmware never calls
+  `extmem_malloc`/`extmem_calloc`/`extmem_realloc`**, policed by a text
+  check in the recorder's native suite.
+- **Format: interleaved stereo `s32le` frames (L,R), 24-bit LSB-aligned**
+  — 8 bytes/frame, so `ring_frames = psram_bytes / 8`: 16 MB →
+  2,097,152 frames ≈ 43.7 s at 48 kHz; 8 MB → half. The ISR copies
+  planes into staging; the DRAIN interleaves (epoch context, where the
+  loop is free).
+- **PSRAM is never zeroed** (explicit core TODO): the frozen header's
+  valid extent (frames recorded since arm) bounds what the host may
+  reassemble, so an unwrapped ring never serves power-up garbage.
+- **Staging: 64 KiB DMAMEM ring (16 × 4 KiB committed blocks ≈ 170 ms at
+  384 KiB/s)**, sized for the measured normal worst case (post-cache SD
+  primitive 5.5 ms; playback epochs ~115/s). Cursors and control state
+  in DTCM, never DMAMEM (the boot ROM scribbles OCRAM at reset), init
+  before the transmit interrupt arms — the tx24 ring's discipline.
+- **EXTMEM is never touched from audio context** (standing hot-path
+  tie-breaker): the ISR writes staging only; the epoch drains staging
+  into PSRAM from thread context, where a FlexSPI2 stall costs nothing
+  audible.
+
+### Drain
+
+- Hosted at the **REPLAY checkpoint (7), after `tx_gate_service()`**,
+  as a drain byte quota carried on the REPLAY budget row (the budget
+  table is one row per checkpoint). **Cap 8 KiB per epoch**: 8 KiB ×
+  ~115 epoch/s ≈ 920 KiB/s ≥ 2 × the 384 KiB/s fill rate, so a
+  post-stall backlog clears rather than merely holding level.
+- A drain slice is a pure copy/interleave into write-back-cached EXTMEM
+  with **no cache maintenance** — nothing DMAs the PSRAM; both sides are
+  CPU accesses through the same D-cache (MPU maps the region WBWA).
+
+### Freeze state machine
+
+One writer per transition, the measure machine's discipline; states
+`ABSENT` / `RECORDING` / `POSTROLL` / `DRAINING` / `FROZEN`:
+
+- `RECORDING → POSTROLL` — **ISR**, at a block boundary, for the
+  block-evaluable triggers (overrun edge, underrun edge, GR hold) and
+  for token acknowledgement (below). Trigger metadata — which, when,
+  ring position — is stored before the state store (stage/commit).
+- **Epoch-detected triggers set a freeze token, never the state**:
+  carrier loss (an epoch-sampled level), the operator, and the
+  **underrun fallback** — immediately after `tx_gate_service()` the
+  epoch edge-detects the tx24 underrun counter under that same epoch's
+  latched gate (which also suppresses replay-stop transients: the stop
+  closes the gate in the same evaluation) and sets the freeze token,
+  because a producer stall is the flagship underrun case and advances
+  the counter at up to 48 k/s while `enqueue()` never runs again. The
+  ISR underrun edge is first-wins on metadata (it carries the precise
+  ring position). The ISR acknowledges a token at its next block; after
+  a bounded number of epochs with the block counter unchanged the epoch
+  reclaims and performs the transition itself — the measure machine's
+  cancel/reclaim shape, needed because the underrun and carrier-loss
+  triggers fire precisely when blocks may stop arriving.
+- `POSTROLL → DRAINING` — ISR (post-roll block count reached; end
+  position latched), or epoch reclaim under the same
+  block-counter-unchanged bound.
+- `DRAINING → FROZEN` — epoch, once the drain has flushed the staging
+  remnant to PSRAM. **The capture is not readable until FROZEN.**
+- `FROZEN → RECORDING` — epoch (thaw/rearm), incrementing
+  `freeze_generation`.
+- A second trigger during `POSTROLL` is first-wins and counted.
+
+### Trigger definitions
+
+- **Carrier loss: the FALLING EDGE of the per-epoch lock sample**,
+  qualified by the tx-gate predicate's inputs (armed only while the
+  device should be carrying); ring-position precision is one epoch. A
+  level trigger would freeze instantly on the bench norm (no source
+  connected) and always during replay.
+- **Block overrun / TX underrun: edge-detected against baselines that
+  RESYNC ON DECREASE** (`POST /api/counters` clears `g_overruns`; a
+  clear costs one missed edge, never a spurious freeze). The underrun
+  counter advances in the transmit DMA ISR at higher NVIC priority and
+  free-runs as silence substitution while the gate is closed, so the
+  underrun trigger is **qualified by the tx-gate predicate** too. Both
+  are read as counters, never as shared state.
+- **Limiter GR: `state.gain < 10^(−dB/20)`**, the linear threshold
+  precomputed cold at config apply; hold is an integer count of
+  512-frame blocks. (`aius_dsp_limiter_gain_reduction_db()` takes a
+  libm log10 and may not be called per block — the meter's own rule.)
+- Trigger config is **RAM-only** (defaults at boot: overrun, underrun
+  and carrier enabled; GR disabled until configured), echoed on the
+  status surface and in the frozen header — no SD schema, no fifth key
+  list to drift.
+
+### HTTP surface
+
+- Routes, ALL token-gated (`X-Aius-Sd-Auth`, 401 without — the read
+  carries audio and the header reveals trigger state; `aius_auth.h`'s
+  weak-boundary disclaimer applies): `GET /api/recorder` (status +
+  frozen-header JSON), `POST /api/recorder/freeze`,
+  `POST /api/recorder/thaw`, `PUT /api/recorder/config` (PUT, matching
+  the DSP-config precedent),
+  `GET /api/recorder/data?offset=<bytes>&length=<bytes>&generation=<n>`
+  — both in BYTES, `offset` frame-aligned (a multiple of 8, else 400).
+- **Data chunks are offset+length addressed and idempotent** (the client
+  retries after the 100 ms response-deadline drop a mount-class stall
+  causes), length capped at **64 KiB** (~512 connections per full pull,
+  clear of the measured FNET TIME_WAIT cliff), served as
+  `AIUS_HTTP_APP_IMMEDIATE` bodies streamed straight from the frozen
+  PSRAM ring — exact Content-Length, no SD job, and **no `app_sd_busy`
+  test** (an sd_busy gate would make the recorder unusable during
+  replay, when refill owns ~61 % of epochs). Data reads dispatch only in
+  `FROZEN` (409 otherwise).
+- **`freeze_generation` increments on every freeze AND thaw**; data
+  chunks require it and a mismatch answers 409, so a thaw/rearm between
+  chunks can never splice two captures into one WAV.
+- Header fields (the metadata route, never prepended to binary): sample
+  rate, encoding (`s32le`, 24-bit LSB-aligned, interleaved LR), fitted
+  MB + ring capacity in frames, valid extent, oldest-frame position,
+  trigger {which, when, ring position}, post-roll frames captured, gap
+  count + last-gap position, `freeze_generation`, `boot_generation`,
+  and the armed trigger config. The committed host script reassembles a
+  WAV (`s24le`) and must complete within one boot session.
+- **A reboot destroys a frozen capture** — recorder state is internal
+  RAM and the boot probe resets the chips; thaw-by-reboot is
+  destructive by design. Volatility is the contract; the data must
+  leave the device.
+- **Post-roll: `postroll_blocks` config field, default 188 blocks
+  (≈ 2 s), bounds 0–938 (≈ 10 s)**, counted in ISR blocks.
+
+### Move-together set + proof
+
 - **The move-together set** for the HTTP surface: routes + swagger +
-  contract suite + a native suite registered in `firmware/scripts/test.sh`
-  and the registry, exactly as tx-gate did.
-- **First build step is the adversarial prebuild gate** over this
-  contract (staging sizing, drain budget vs the epoch table, freeze
-  race with the triggers' ISR-side latches, chunked-read interaction
-  with `sd_busy`-class refusals, and the probe's behaviour on 0/8/16 MB
-  boards).
+  contract suite + a native suite registered in
+  `firmware/scripts/test.sh` and the registry, exactly as tx-gate did —
+  plus the `extmem_malloc` text check above.
+- **Proof:** native suite drives the state machine's transition table
+  (including token acknowledge vs reclaim interleavings), the trigger
+  edge/resync/qualification cases, the ring/chunk arithmetic at 0, 8 and
+  16 MB, and gap accounting; all affected native suites stay green;
+  `teensy41-optical` builds; flash + on-device ABSENT-path check (the
+  chips are not yet soldered): status reports `absent`, every other
+  recorder route refuses cleanly, audio path unaffected.
 
 ## Control boundary
 
 Ethernet carries only framed control requests, state, counters, and test results.
-It must not carry or replay the audio stream. The first implementation should
+It must not carry or replay the audio stream. That clause forbids LIVE audio
+transport; bounded pulls of recorded data — replay vector upload/download, the
+flight recorder's frozen capture — are explicitly permitted, as the shipped
+replay file surface already reads it. The first implementation should
 use a small request/response protocol over UDP, with a monotonically increasing
 request ID and an explicitly versioned response schema. UDP is acceptable for the
 fixture only when the board is on a directly connected or isolated test network;
