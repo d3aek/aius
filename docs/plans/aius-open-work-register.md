@@ -103,6 +103,10 @@ specified here. Strike items here in the commit that closes them.
     recorded one-line fix is deliberately unapplied until convicted.
   - **4**: `record_event` has two call sites; everything else is a
     counter — prerequisite to any push observability.
+  - **10**: the network-transport fake still diverges from real FNET in
+    five characterized places (void `close`, `MSG_PEEK` ignored, `int8`
+    error type, no `AGAIN` on empty accept, `SO_SNDNUM` hard-wired 0);
+    the two UDP mappings are fixed, the rest stands.
   - **14**: the 128 KB DTCM DTS arena is reserved and never used
     (`--wrap` unflagged in the optical env) — resolving it either way
     changes the memory story every later item reads.
@@ -112,6 +116,10 @@ specified here. Strike items here in the commit that closes them.
     path had.
   - **20**: the network fake gets `_fnet_socket_addr_check_len(addr, 0)`
     backwards and the suite passes anyway.
+  - **21**: the boot-to-online timing gap is real and board-side: USB
+    ready ~4 s against a 2 s deadline, DHCP/UDP/HTTP ~9–10.6 s against
+    7–8 s, bimodal at exactly 8.90/10.56 s (one discrete retry's step);
+    root-caused as NOT the ledger, NOT DHCP negotiation.
   - **22**: `GET /api/dsp/config` cannot report a committed config on a
     card-absent board (design call).
   - **23**: `AIUS_NET_DHCP_DEADLINE_MS` at 9,000 ms bought one mode, not
