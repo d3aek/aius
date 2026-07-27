@@ -366,7 +366,11 @@
 
   /* Every term of the downmix sum, in the order the firmware adds them. A route
    * with no handle is a FIXED unity reference: the matrix has no field for it,
-   * so the diagram draws it and refuses to edit it. */
+   * so the diagram draws it and refuses to edit it. SL and SR share one gain
+   * field (one handle, both paths through one point) but carry their own path
+   * colours (2026-07-27 feedback, item 8): the split says "two channels" while
+   * the shared point keeps saying "one bonded value". */
+  const SR_PATH_COLOUR = '#e88fd2';
   const MATRIX_ROUTES = [
     { source: 'fl', output: 'l', handle: null },
     { source: 'fr', output: 'r', handle: null },
@@ -375,7 +379,7 @@
     { source: 'lfe', output: 'l', handle: 'lfe' },
     { source: 'lfe', output: 'r', handle: 'lfe' },
     { source: 'sl', output: 'l', handle: 'surround' },
-    { source: 'sr', output: 'r', handle: 'surround' },
+    { source: 'sr', output: 'r', handle: 'surround', colour: SR_PATH_COLOUR },
   ];
 
   const LIMITER_FIELDS = [
@@ -420,20 +424,7 @@
 
   /* ---- DOM construction -------------------------------------------------- */
 
-  function buildField(descriptor) {
-    /* A DIV, not a LABEL: a wrapping label folds caption, error text and the
-     * reset button into one accessible name (UX finding E11). The caption is a
-     * real <label for>, and the error is wired with aria-describedby. */
-    const holder = document.createElement('div');
-    holder.className = 'field';
-    /* The caption is the compact form; `label` is the full subject a validation
-     * message names ("Front left section 1 frequency must be ..."). */
-    const caption = document.createElement('label');
-    caption.className = 'field__label';
-    caption.htmlFor = `f:${descriptor.path}`;
-    caption.textContent = descriptor.caption || descriptor.label;
-    holder.append(caption);
-
+  function buildInput(descriptor) {
     let input;
     if (descriptor.kind === 'eq-type') {
       input = document.createElement('select');
@@ -446,7 +437,6 @@
     } else if (descriptor.kind === 'bool') {
       input = document.createElement('input');
       input.type = 'checkbox';
-      holder.classList.add('field--check');
     } else {
       input = document.createElement('input');
       input.type = 'number';
@@ -466,12 +456,47 @@
     input.dataset.label = descriptor.label;
     input.dataset.kind = descriptor.kind;
     input.setAttribute('aria-describedby', `e:${descriptor.path}`);
-    holder.append(input);
+    return input;
+  }
 
+  function buildError(path) {
     const error = document.createElement('span');
     error.className = 'field__error';
-    error.id = `e:${descriptor.path}`;
-    holder.append(error);
+    error.id = `e:${path}`;
+    return error;
+  }
+
+  /* Per-parameter reset to the factory value. tabindex -1 keeps the crowd of
+   * them out of the tab order; the aria-label still names the target for AT
+   * that reaches it another way. */
+  function buildReset(descriptor) {
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'field__reset';
+    reset.id = `r:${descriptor.path}`;
+    reset.tabIndex = -1;
+    reset.textContent = 'reset';
+    reset.setAttribute('aria-label', `Reset ${descriptor.label} to factory default`);
+    reset.addEventListener('click', () => resetField(descriptor.path));
+    return reset;
+  }
+
+  function buildField(descriptor) {
+    /* A DIV, not a LABEL: a wrapping label folds caption, error text and the
+     * reset button into one accessible name (UX finding E11). The caption is a
+     * real <label for>, and the error is wired with aria-describedby. */
+    const holder = document.createElement('div');
+    holder.className = 'field';
+    /* The caption is the compact form; `label` is the full subject a validation
+     * message names ("Front left section 1 frequency must be ..."). */
+    const caption = document.createElement('label');
+    caption.className = 'field__label';
+    caption.htmlFor = `f:${descriptor.path}`;
+    caption.textContent = descriptor.caption || descriptor.label;
+    holder.append(caption);
+
+    if (descriptor.kind === 'bool') holder.classList.add('field--check');
+    holder.append(buildInput(descriptor), buildError(descriptor.path));
 
     /* A linear gain says nothing about level to a human, so the dB it means is
      * printed under it (UX finding E7). */
@@ -482,18 +507,7 @@
       holder.append(note);
     }
 
-    /* Per-parameter reset to the factory value. tabindex -1 keeps 78 of them
-     * out of the tab order; the aria-label still names the target for AT that
-     * reaches it another way. */
-    const reset = document.createElement('button');
-    reset.type = 'button';
-    reset.className = 'field__reset';
-    reset.id = `r:${descriptor.path}`;
-    reset.tabIndex = -1;
-    reset.textContent = 'reset';
-    reset.setAttribute('aria-label', `Reset ${descriptor.label} to factory default`);
-    reset.addEventListener('click', () => resetField(descriptor.path));
-    holder.append(reset);
+    holder.append(buildReset(descriptor));
     return holder;
   }
 
@@ -524,18 +538,101 @@
     return grid;
   }
 
-  function buildEqSlots(base, label) {
-    const wrap = document.createElement('div');
-    wrap.className = 'eq-slots';
-    for (let slot = 0; slot < EQ_SLOTS; slot++) {
-      const row = document.createElement('div');
-      row.className = 'eq-row';
-      const title = document.createElement('span');
-      title.className = 'eq-row__title';
-      title.textContent = `Section ${slot + 1}`;
-      row.append(title, buildFieldGrid(eqFields(`${base}.eq.${slot}`, `${label} section ${slot + 1}`)));
-      wrap.append(row);
+  /* ---- the dense EQ table (2026-07-27 feedback, item 1) -------------------
+   * One grid for all six input channels (rows = channel x section) and a
+   * two-row sibling for the output EQ. The cells carry the SAME inputs -- ids,
+   * data-field wiring, validation -- the stacked field cards used to; only the
+   * chrome is denser. Captions live once in the header row, so each input
+   * carries the full aria-label instead of a <label for>, and the error line
+   * surfaces on demand instead of reserving a row of its own. */
+
+  /* Short forms: the full words overlap their neighbours at tablet width, and
+   * the aria-labels carry the full subject anyway. */
+  const EQ_COLUMN_HEADS = ['Type', 'Freq (Hz)', 'Q', 'Gain (dB)'];
+
+  function tableHead(text) {
+    const head = document.createElement('span');
+    head.className = 'eq-table__h';
+    head.textContent = text;
+    return head;
+  }
+
+  function buildTableCell(descriptor) {
+    const holder = document.createElement('div');
+    holder.className = 'field field--cell';
+    const input = buildInput(descriptor);
+    input.setAttribute('aria-label', descriptor.label);
+    holder.append(input, buildError(descriptor.path));
+    return holder;
+  }
+
+  /* Factory reset for one whole section row (feedback item 2): the type
+   * resets first, so the factory type decides which value fields are enabled
+   * before they reset in turn -- the same order a hand reset would use. */
+  function resetEqSection(base, slot) {
+    for (const key of ['type', 'frequency_hz', 'q', 'gain_db']) resetField(`${base}.eq.${slot}.${key}`);
+  }
+
+  function buildSectionReset(base, slot, label) {
+    const reset = document.createElement('button');
+    reset.type = 'button';
+    reset.className = 'field__reset eq-table__reset';
+    reset.id = `sr:${base}.eq.${slot}`;
+    reset.tabIndex = -1;
+    reset.textContent = 'reset';
+    reset.setAttribute('aria-label', `Reset ${label} section ${slot + 1} to factory default`);
+    reset.addEventListener('click', () => resetEqSection(base, slot));
+    return reset;
+  }
+
+  function appendSectionRow(grid, base, label, slot) {
+    const section = document.createElement('span');
+    section.className = 'eq-table__sec';
+    section.textContent = String(slot + 1);
+    grid.append(section);
+    for (const descriptor of eqFields(`${base}.eq.${slot}`, `${label} section ${slot + 1}`)) {
+      grid.append(buildTableCell(descriptor));
     }
+    grid.append(buildSectionReset(base, slot, label));
+  }
+
+  function buildInputChannelTable() {
+    const wrap = document.createElement('div');
+    wrap.className = 'eq-table-wrap';
+    const grid = document.createElement('div');
+    grid.className = 'eq-table eq-table--channels';
+    for (const text of ['Channel', 'Trim (dB)', 'Sec', ...EQ_COLUMN_HEADS, '']) grid.append(tableHead(text));
+    for (const [key, label] of CHANNELS) {
+      const name = document.createElement('span');
+      name.className = 'eq-table__channel';
+      name.textContent = `${label} (${key})`;
+      grid.append(name);
+      const trim = buildTableCell({
+        path: `input_channels.${key}.gain_db`,
+        kind: 'number',
+        label: `${label} trim`,
+        min: -60,
+        max: 12,
+        step: 0.5,
+        unit: ' dB',
+      });
+      trim.classList.add('field--trim');
+      trim.append(buildReset({ path: `input_channels.${key}.gain_db`, label: `${label} trim` }));
+      grid.append(trim);
+      for (let slot = 0; slot < EQ_SLOTS; slot++) appendSectionRow(grid, `input_channels.${key}`, label, slot);
+    }
+    wrap.append(grid);
+    return wrap;
+  }
+
+  function buildOutputEqTable() {
+    const wrap = document.createElement('div');
+    wrap.className = 'eq-table-wrap';
+    const grid = document.createElement('div');
+    grid.className = 'eq-table eq-table--output';
+    for (const text of ['Sec', ...EQ_COLUMN_HEADS, '']) grid.append(tableHead(text));
+    for (let slot = 0; slot < EQ_SLOTS; slot++) appendSectionRow(grid, 'output', 'Output', slot);
+    wrap.append(grid);
     return wrap;
   }
 
@@ -547,33 +644,8 @@
       ),
     );
 
-    const channels = $('input-channels');
-    for (const [key, label] of CHANNELS) {
-      const block = document.createElement('section');
-      block.className = 'channel';
-      const heading = document.createElement('h3');
-      heading.className = 'channel__title';
-      heading.textContent = `${label} (${key})`;
-      block.append(
-        heading,
-        buildFieldGrid([
-          {
-            path: `input_channels.${key}.gain_db`,
-            kind: 'number',
-            label: `${label} trim`,
-            caption: 'Trim (dB)',
-            min: -60,
-            max: 12,
-            step: 0.5,
-            unit: ' dB',
-          },
-        ]),
-        buildEqSlots(`input_channels.${key}`, label),
-      );
-      channels.append(block);
-    }
-
-    $('output-eq').append(buildEqSlots('output', 'Output'));
+    $('input-channels').append(buildInputChannelTable());
+    $('output-eq').append(buildOutputEqTable());
     $('matrix').append(buildFieldGrid(MATRIX_FIELDS));
     $('limiter').append(buildFieldGrid(LIMITER_FIELDS));
 
@@ -585,9 +657,7 @@
       $(id).querySelector('.section-title').append(marker);
     }
 
-    for (const [key, label] of CHANNELS) meterRow(`meter-in-${key}`, `${label} (${key})`);
-    meterRow('meter-out-l', 'Output left');
-    meterRow('meter-out-r', 'Output right');
+    buildMeterGroups();
 
     for (const input of document.querySelectorAll('[data-field]')) {
       input.addEventListener('input', () => onFieldInput(input));
@@ -597,19 +667,75 @@
     buildVisualStrip();
   }
 
-  function meterRow(id, label) {
-    const row = document.createElement('tr');
-    const name = document.createElement('th');
-    name.scope = 'row';
+  /* Live peak/RMS as grouped cards instead of an 8-row table (feedback item
+   * 9): FRONT carries the four front-of-house decodes (LFE rides with the
+   * fronts -- the three named groups leave it nowhere else), SURROUND the
+   * pair, OUTPUT the post-mix stereo. Same cell ids the table used. */
+  const METER_GROUPS = [
+    [
+      'Front',
+      [
+        ['meter-in-fl', 'FL', 'Front left'],
+        ['meter-in-fr', 'FR', 'Front right'],
+        ['meter-in-fc', 'FC', 'Front centre'],
+        ['meter-in-lfe', 'LFE', 'LFE'],
+      ],
+    ],
+    [
+      'Surround',
+      [
+        ['meter-in-sl', 'SL', 'Surround left'],
+        ['meter-in-sr', 'SR', 'Surround right'],
+      ],
+    ],
+    [
+      'Output',
+      [
+        ['meter-out-l', 'L', 'Output left'],
+        ['meter-out-r', 'R', 'Output right'],
+      ],
+    ],
+  ];
+
+  function buildMeterCell(id, label, title) {
+    const cell = document.createElement('div');
+    cell.className = 'meter-cell';
+    cell.title = title;
+    const name = document.createElement('span');
+    name.className = 'meter-cell__name';
     name.textContent = label;
-    const peak = document.createElement('td');
+    const peak = document.createElement('strong');
+    peak.className = 'meter-cell__peak';
     peak.id = `${id}-peak`;
     peak.textContent = '--';
-    const rms = document.createElement('td');
+    const rms = document.createElement('span');
+    rms.className = 'meter-cell__rms';
     rms.id = `${id}-rms`;
     rms.textContent = '--';
-    row.append(name, peak, rms);
-    $('meter-rows').append(row);
+    cell.append(name, peak, rms);
+    return cell;
+  }
+
+  function buildMeterGroups() {
+    const mount = $('meter-groups');
+    for (const [title, cells] of METER_GROUPS) {
+      const group = document.createElement('section');
+      group.className = 'meter-group';
+      const head = document.createElement('div');
+      head.className = 'meter-group__head';
+      const name = document.createElement('h4');
+      name.className = 'meter-group__title';
+      name.textContent = title;
+      const note = document.createElement('span');
+      note.className = 'meter-group__note';
+      note.textContent = 'peak / RMS dBFS';
+      head.append(name, note);
+      const row = document.createElement('div');
+      row.className = 'meter-group__cells';
+      for (const [id, label, full] of cells) row.append(buildMeterCell(id, label, full));
+      group.append(head, row);
+      mount.append(group);
+    }
   }
 
   /* ---- model <-> DOM ----------------------------------------------------- */
@@ -1829,7 +1955,7 @@
         handle: route.handle,
         fixed: route.handle === null,
         gain,
-        colour: handle === null ? entityColour('front') : handle.colour,
+        colour: handle === null ? entityColour('front') : route.colour || handle.colour,
         points:
           handle === null
             ? [
@@ -1983,6 +2109,7 @@
     attachCurveSurface();
     $('curve-add').addEventListener('click', () => addSection(selectedEntity(), EQ_SEED.frequency_hz));
     $('curve-remove').addEventListener('click', () => removeSection(selectedEntity(), state.activeSlot));
+    $('curve-q').addEventListener('input', onCurveQInput);
 
     attachMatrixSurface();
     $('matrix-clipfree').addEventListener('click', toggleClipfree);
@@ -2117,6 +2244,31 @@
       handles.length === 0
         ? `${selected.label}: no sections -- double-click the plot (or press Add section) to add one.`
         : `${selected.label}: section ${state.activeSlot + 1} of ${EQ_SLOTS} selected, ${handles.length} in use.`;
+    syncCurveQ();
+  }
+
+  /* The visible Q affordance (2026-07-27 feedback, item 2): a spinner beside
+   * Add/Remove bound to the SELECTED section, because the wheel was the only
+   * way to Q from the plot and a wheel is invisible (and absent on touch).
+   * Sync follows every redraw; the one exception is while the spinner itself
+   * has focus, so a keystroke is not rewritten under the typing hand. */
+  function syncCurveQ() {
+    const input = $('curve-q');
+    const section = entityCascade(selectedEntity()).sections[state.activeSlot];
+    const active = isActiveSection(section);
+    input.disabled = !active;
+    if (document.activeElement === input) return;
+    input.value = active ? displayNumber(section.q) : '';
+  }
+
+  function onCurveQInput() {
+    const entity = selectedEntity();
+    const slot = state.activeSlot;
+    if (!isActiveSection(entityCascade(entity).sections[slot])) return;
+    const value = Number($('curve-q').value);
+    if (!Number.isFinite(value)) return;
+    beginSurfaceEdit(entity);
+    surfaceWrite(entity, slot, 'q', value);
   }
 
   function drawCurveGrid(context, rect, scale) {
@@ -2677,6 +2829,24 @@
       }
       canvas.style.cursor = matrixHandleUnder(event) || matrixLabelUnder(event) ? 'pointer' : '';
     });
+    /* Double-click on a handle resets that channel to the factory default
+     * (2026-07-27 feedback, item 3) -- through resetField(), so it is the same
+     * write the form's own reset buttons make. Mouse-only, like dblclick
+     * itself; the per-field reset in the form below stays the touch path. */
+    canvas.addEventListener('dblclick', (event) => {
+      const handle = matrixHandleUnder(event);
+      if (!handle) return;
+      state.matrixHandle = handle.key;
+      if (handle.locked) {
+        refuseLockedHeadroom();
+        drawMatrixSurface();
+        return;
+      }
+      resetField(handle.path);
+      setMatrixStatus(
+        `${handle.label} reset to the factory default: ${matrixGainLabel(numberOf(handle.path, NaN))}.`,
+      );
+    });
     /* passive: false for the same reason the plot needs it -- the wheel is the
      * fine adjustment only while a handle is held or the diagram has focus. */
     canvas.addEventListener(
@@ -3001,8 +3171,28 @@
       }
       await loadConfig();
     });
+  /* Explicit save/edit pair over the old silent per-keystroke store
+   * (2026-07-27 feedback, item 7), on the SAME sd-shared localStorage slot.
+   * A saved token locks the field so a stray keystroke cannot diverge the
+   * field from the store; Edit unlocks it. An empty save clears the store and
+   * leaves the field editable -- there is nothing to lock. */
+  function setTokenLocked(locked) {
+    $('token').readOnly = locked;
+    $('token-save').disabled = locked;
+    $('token-edit').disabled = !locked;
+  }
+  $('token-save').addEventListener('click', () => {
+    const value = $('token').value.trim();
+    shared.storeToken(value);
+    setTokenLocked(value !== '');
+    setStatus(value === '' ? 'SD auth token cleared from this browser.' : 'SD auth token saved in this browser.');
+  });
+  $('token-edit').addEventListener('click', () => {
+    setTokenLocked(false);
+    $('token').focus();
+  });
   $('token').value = shared.readStoredToken();
-  $('token').addEventListener('input', () => shared.storeToken($('token').value.trim()));
+  setTokenLocked($('token').value !== '');
   $('preset-name').addEventListener('input', refreshPresetNameHint);
   $('preset-save').onclick = () =>
     void act(async () => {

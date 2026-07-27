@@ -33,6 +33,11 @@
       </div>
       <div class="controls">
         <label>SD auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
+        <!-- Explicit save/edit pair over silent per-keystroke storage: Save
+             writes the token to this browser's localStorage and locks the
+             field; Edit unlocks it. -->
+        <button id="token-save" type="button" class="secondary">Save token</button>
+        <button id="token-edit" type="button" class="secondary">Edit token</button>
         <button id="apply">Apply to device</button>
         <button id="reload" class="secondary">Re-read</button>
         <!-- A fact about the form, not about the device: it moves with every
@@ -41,97 +46,6 @@
       </div>
       <p id="status" class="hint" role="status">Loading configuration...</p>
       <p id="errors" class="error-summary" role="alert" hidden></p>
-    </section>
-
-    <section class="card visual">
-      <div class="section-title"><h2>Signal flow</h2></div>
-      <p class="hint">The live path in order, from the input the device is actually hearing to the transmit gate.</p>
-
-      <div class="visual-block">
-        <div class="visual-block__head">
-          <h3 class="visual-block__title">Input levels</h3>
-          <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
-          <span id="strip-input-state" class="pill">waiting</span>
-        </div>
-        <div id="bars-input" class="bars"></div>
-      </div>
-
-      <div class="visual-block">
-        <div class="visual-block__head">
-          <h3 class="visual-block__title">EQ cascades</h3>
-          <span class="visual-block__note">preview only: the device designs the real biquads when a config is applied</span>
-        </div>
-        <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
-        <div class="curve-wrap">
-          <canvas id="curve" class="curve" width="960" height="240" tabindex="0" role="application"
-            aria-label="Stacked EQ magnitude plot. Arrow left and right move the selected section's frequency, arrow up and down its gain, page up and page down select the next section of the selected curve, delete removes it, and the wheel sets Q while the plot is focused."></canvas>
-          <span id="curve-readout" class="curve-readout" hidden></span>
-        </div>
-        <div class="curve-controls">
-          <button id="curve-add" type="button" class="secondary">Add section</button>
-          <button id="curve-remove" type="button" class="secondary">Remove section</button>
-          <span id="curve-caption" class="visual-block__note"></span>
-        </div>
-        <p id="curve-status" class="hint" role="status">Pick a curve to edit it: drag a handle for frequency and gain, double-click the curve to add a section, and use the wheel for Q while a handle is held or the plot has focus.</p>
-      </div>
-
-      <div class="visual-block">
-        <div class="visual-block__head">
-          <h3 class="visual-block__title">Downmix matrix</h3>
-          <button id="matrix-clipfree" type="button" class="chip chip--clipfree" aria-pressed="false"><span class="chip__key"></span><span>clip-free headroom</span></button>
-          <span class="visual-block__note">FL and FR cross at a fixed 1.0: the matrix has no field for them</span>
-        </div>
-        <div class="curve-wrap">
-          <canvas id="matrix-diagram" class="matrix-diagram" width="960" height="300" tabindex="0" role="application"
-            aria-label="Downmix routing diagram. The arrow keys move the selected gain, page up and page down select the centre, surround, LFE and headroom handles, the wheel makes a fine adjustment, and enter opens the LFE crossover field in the form below."></canvas>
-          <span id="matrix-readout" class="curve-readout" hidden></span>
-        </div>
-        <p id="matrix-caption" class="visual-block__note"></p>
-        <p id="matrix-status" class="hint" role="status">Drag a handle up or down to set its gain: centre and the LFE fold-in feed both sides, surround keeps its own, and headroom scales the pair. Click the crossover label to edit it in the form below.</p>
-      </div>
-
-      <div class="visual-block">
-        <div class="visual-block__head">
-          <h3 class="visual-block__title">Limiter gain reduction</h3>
-          <span id="strip-limiter-state" class="pill">waiting</span>
-        </div>
-        <div class="gr">
-          <span class="gr__scale">-24</span>
-          <div class="gr__track"><div id="gr-fill" class="gr__fill"></div></div>
-          <span class="gr__scale">0 dB</span>
-          <strong id="gr-value" class="gr__value">--</strong>
-        </div>
-        <canvas id="gr-history" class="gr__history" width="960" height="64"></canvas>
-        <p class="visual-block__note">The last 128 polled values, oldest left. Each is the instantaneous reduction at that snapshot's publish, not a windowed average.</p>
-      </div>
-
-      <div class="visual-block">
-        <div class="visual-block__head">
-          <h3 class="visual-block__title">Output levels</h3>
-          <span id="tx-gate" class="flow-end" data-state="unknown">output: unknown</span>
-          <span id="strip-output-state" class="pill">waiting</span>
-        </div>
-        <div id="bars-output" class="bars"></div>
-      </div>
-    </section>
-
-    <section class="card meters">
-      <div class="section-title"><h2>Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
-      <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the strip above reads, with the output waveform envelope and the per-block DSP cost.</p>
-      <canvas id="waveform" width="960" height="180"></canvas>
-      <div class="status-grid">
-        <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
-        <div><span>Queue</span><strong id="meter-queue">--</strong></div>
-        <div><span>Estimated latency</span><strong id="meter-latency">--</strong></div>
-        <div><span>DSP cycles last / max</span><strong id="meter-cycles">--</strong></div>
-        <div><span>DSP load</span><strong id="meter-load">--</strong></div>
-        <div><span>Peak DSP load</span><strong id="meter-load-peak">--</strong></div>
-      </div>
-      <table class="meter-table">
-        <thead><tr><th scope="col">Channel</th><th scope="col">Peak dBFS</th><th scope="col">RMS dBFS</th></tr></thead>
-        <tbody id="meter-rows"></tbody>
-      </table>
-      <p id="meter-summary" class="hint">Meter data unavailable.</p>
     </section>
 
     <section class="card">
@@ -156,28 +70,113 @@
       <div id="features" class="form-mount"></div>
     </section>
 
-    <section id="card-input-channels" class="card">
-      <div class="section-title"><h2>Input channels</h2></div>
-      <p class="hint">Per-channel trim runs before the downmix. Each channel takes up to two EQ sections; <em>none</em> removes the section from the config, <em>bypass</em> keeps a present but inactive one.</p>
-      <div id="input-channels" class="form-mount"></div>
+    <section class="card visual">
+      <div class="section-title"><h2>Signal flow</h2></div>
+      <p class="hint">The live path in order, from the input the device is actually hearing to the transmit gate. Each stage's own text entry sits under its picture.</p>
+
+      <div class="visual-block">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Input levels</h3>
+          <span id="input-source" class="flow-end" data-state="unknown">input: unknown</span>
+          <span id="strip-input-state" class="pill">waiting</span>
+        </div>
+        <div id="bars-input" class="bars"></div>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">EQ cascades</h3>
+          <span class="visual-block__note">preview only: the device designs the real biquads when a config is applied</span>
+        </div>
+        <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
+        <div class="curve-wrap">
+          <canvas id="curve" class="curve" width="960" height="240" tabindex="0" role="application"
+            aria-label="Stacked EQ magnitude plot. Arrow left and right move the selected section's frequency, arrow up and down its gain, page up and page down select the next section of the selected curve, delete removes it, and the wheel or the Section Q box below sets Q."></canvas>
+          <span id="curve-readout" class="curve-readout" hidden></span>
+        </div>
+        <div class="curve-controls">
+          <button id="curve-add" type="button" class="secondary">Add section</button>
+          <button id="curve-remove" type="button" class="secondary">Remove section</button>
+          <label class="curve-q">Section Q <input id="curve-q" type="number" min="0.1" max="20" step="0.05" aria-label="Selected section Q"></label>
+          <span id="curve-caption" class="visual-block__note"></span>
+        </div>
+        <p id="curve-status" class="hint" role="status">Pick a curve to edit it: drag a handle for frequency and gain, double-click the curve to add a section, and use the wheel or the Section Q box for Q.</p>
+        <section id="card-input-channels" class="embedded-form">
+          <div class="section-title"><h3>Input channels</h3></div>
+          <p class="hint">Per-channel trim runs before the downmix. Up to two EQ sections per channel; <em>none</em> removes the section from the config, <em>bypass</em> keeps a present but inactive one. A row's reset returns that section to the factory default.</p>
+          <div id="input-channels" class="form-mount"></div>
+        </section>
+        <section id="card-output-eq" class="embedded-form">
+          <div class="section-title"><h3>Output EQ</h3></div>
+          <p class="hint">Stereo post-mix sections, run on both channels.</p>
+          <div id="output-eq" class="form-mount"></div>
+        </section>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Downmix matrix</h3>
+          <button id="matrix-clipfree" type="button" class="chip chip--clipfree" aria-pressed="false"><span class="chip__key"></span><span>clip-free headroom</span></button>
+          <span class="visual-block__note">FL and FR cross at a fixed 1.0: the matrix has no field for them</span>
+        </div>
+        <div class="curve-wrap">
+          <canvas id="matrix-diagram" class="matrix-diagram" width="960" height="300" tabindex="0" role="application"
+            aria-label="Downmix routing diagram. The arrow keys move the selected gain, page up and page down select the centre, surround, LFE and headroom handles, the wheel makes a fine adjustment, double-click resets a handle to the factory default, and enter opens the LFE crossover field below."></canvas>
+          <span id="matrix-readout" class="curve-readout" hidden></span>
+        </div>
+        <p id="matrix-caption" class="visual-block__note"></p>
+        <p id="matrix-status" class="hint" role="status">Drag a handle up or down to set its gain: centre and the LFE fold-in feed both sides, surround keeps its own, and headroom scales the pair. Double-click a handle to reset it to the factory default; click the crossover label to edit it below.</p>
+        <section id="card-matrix" class="embedded-form">
+          <div class="section-title"><h3>Matrix values</h3></div>
+          <p class="hint">Centre and surround gains are shared by both stereo sides by design, and are linear multipliers rather than decibels. With the clip-free policy selected the device resolves headroom itself.</p>
+          <div id="matrix" class="form-mount"></div>
+        </section>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Limiter gain reduction</h3>
+          <span id="strip-limiter-state" class="pill">waiting</span>
+        </div>
+        <div class="gr">
+          <span class="gr__scale">-24</span>
+          <div class="gr__track"><div id="gr-fill" class="gr__fill"></div></div>
+          <span class="gr__scale">0 dB</span>
+          <strong id="gr-value" class="gr__value">--</strong>
+        </div>
+        <canvas id="gr-history" class="gr__history" width="960" height="64"></canvas>
+        <p class="visual-block__note">The last 128 polled values, oldest left. Each is the instantaneous reduction at that snapshot's publish, not a windowed average.</p>
+        <section id="card-limiter" class="embedded-form">
+          <div class="section-title"><h3>Limiter controls</h3></div>
+          <p class="hint">True-peak safety limiter on the output tail.</p>
+          <div id="limiter" class="form-mount"></div>
+        </section>
+      </div>
+
+      <div class="visual-block">
+        <div class="visual-block__head">
+          <h3 class="visual-block__title">Output levels</h3>
+          <span id="tx-gate" class="flow-end" data-state="unknown">output: unknown</span>
+          <span id="strip-output-state" class="pill">waiting</span>
+        </div>
+        <div id="bars-output" class="bars"></div>
+      </div>
     </section>
 
-    <section id="card-output-eq" class="card">
-      <div class="section-title"><h2>Output EQ</h2></div>
-      <p class="hint">Stereo post-mix sections, run on both channels.</p>
-      <div id="output-eq" class="form-mount"></div>
-    </section>
-
-    <section id="card-matrix" class="card">
-      <div class="section-title"><h2>Downmix matrix</h2></div>
-      <p class="hint">Centre and surround gains are shared by both stereo sides by design, and are linear multipliers rather than decibels. With the clip-free policy selected the device resolves headroom itself.</p>
-      <div id="matrix" class="form-mount"></div>
-    </section>
-
-    <section id="card-limiter" class="card">
-      <div class="section-title"><h2>Limiter</h2></div>
-      <p class="hint">True-peak safety limiter on the output tail.</p>
-      <div id="limiter" class="form-mount"></div>
+    <section class="card meters">
+      <div class="section-title"><h2>Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
+      <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the strip above reads, with the output waveform envelope and the per-block DSP cost.</p>
+      <canvas id="waveform" width="960" height="180"></canvas>
+      <div class="status-grid">
+        <div><span>Snapshot</span><strong id="meter-sequence">--</strong></div>
+        <div><span>Queue</span><strong id="meter-queue">--</strong></div>
+        <div><span>Estimated latency</span><strong id="meter-latency">--</strong></div>
+        <div><span>DSP cycles last / max</span><strong id="meter-cycles">--</strong></div>
+        <div><span>DSP load</span><strong id="meter-load">--</strong></div>
+        <div><span>Peak DSP load</span><strong id="meter-load-peak">--</strong></div>
+      </div>
+      <div id="meter-groups" class="meter-cards"></div>
+      <p id="meter-summary" class="hint">Meter data unavailable.</p>
     </section>
   </main>
   <!-- sd-shared.js FIRST: the page consumes window.aiusSdShared as it boots. -->

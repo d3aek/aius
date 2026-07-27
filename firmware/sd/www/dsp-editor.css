@@ -4,6 +4,14 @@
    and only add what the editor's dense form and signal-flow strip need. */
 
 code{color:#74d7ff}
+/* Shared control rhythm (2026-07-27 feedback, items 6 + 11): every control in
+   a .controls row -- buttons, text/number/password inputs, the preset file
+   browser -- shares one height, so a row reads as one baseline and the
+   stacked-label token field bottom-aligns with its buttons (replays.css
+   already flex-ends the row). */
+.controls button,.controls input,.controls select{height:36px}
+.controls input[type="file"]{padding:6px 8px;font-size:.78rem}
+
 /* auto-fill (not auto-fit) so a one-field row keeps a column's width instead of
    stretching a lone input across the card. */
 .form-mount{margin-top:14px}
@@ -28,6 +36,26 @@ code{color:#74d7ff}
 .field--check .field__error{grid-column:1/3}
 .field input:disabled,.field select:disabled{color:#7f8b98;background:#0c1015}
 
+/* Dense tabular EQ form (2026-07-27 feedback, item 1). Captions live once in
+   the header row; a cell is a bare input, and its error line surfaces only
+   when invalid instead of reserving a row -- the card marker and the error
+   summary still say where. The channel name and its trim span both section
+   rows, so a channel reads as one row group. */
+.eq-table-wrap{overflow-x:auto}
+.eq-table{display:grid;gap:4px 8px;align-items:center;font-size:.75rem}
+.eq-table--channels{grid-template-columns:minmax(96px,auto) minmax(96px,130px) auto minmax(104px,1.2fr) minmax(68px,1fr) minmax(56px,.8fr) minmax(68px,1fr) auto}
+.eq-table--output{grid-template-columns:auto minmax(104px,1.2fr) minmax(68px,1fr) minmax(56px,.8fr) minmax(68px,1fr) auto}
+.eq-table__h{color:#9aa8b5;font-size:.7rem;letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.eq-table__channel{grid-row:span 2;color:#73e6a0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:6px}
+.eq-table__sec{color:#9aa8b5;text-align:center}
+.eq-table .field{display:block;background:none;border-radius:0;padding:0}
+.eq-table .field input,.eq-table .field select{width:100%;padding:5px 6px;font-size:.75rem}
+.eq-table .field--trim{grid-row:span 2;display:flex;gap:5px;align-items:center}
+.eq-table .field--trim input{min-width:0;flex:1}
+.eq-table .field__error{display:none}
+.eq-table .field--invalid .field__error{display:block;min-height:0;font-size:.68rem}
+.eq-table .field__reset{position:static;flex:none;white-space:nowrap}
+
 /* A card whose fields are out of range says so at its own title, because the
    error summary sits thousands of pixels up the page. */
 .card-marker{color:#f2a0a0;font-size:.72rem;white-space:nowrap}
@@ -40,13 +68,6 @@ code{color:#74d7ff}
 .preset-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px}
 .preset-list li{display:flex;gap:10px;align-items:center;padding:6px 10px;background:#11151b;border-radius:6px}
 .preset-list__name{flex:1;color:#aab4c0;font-size:.82rem;overflow-wrap:anywhere}
-
-.channel{border-top:1px solid #303945;padding-top:14px;margin-top:14px}
-.channel:first-child{border-top:0;padding-top:0;margin-top:0}
-.channel__title{margin:0 0 10px;font-size:.85rem;color:#73e6a0;letter-spacing:.06em}
-.eq-slots{display:grid;gap:10px;margin-top:10px}
-.eq-row{display:grid;grid-template-columns:minmax(80px,auto) 1fr;gap:12px;align-items:start}
-.eq-row__title{color:#9aa8b5;font-size:.75rem;padding-top:12px}
 
 .notice{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:14px 0;padding:12px;border:1px solid #e8c46a;border-radius:6px;background:#211d13;color:#e8dcc0;font-size:.8rem}
 .notice[hidden]{display:none}
@@ -63,6 +84,16 @@ code{color:#74d7ff}
 .visual-block__title{margin:0;font-size:.8rem;color:#73e6a0;letter-spacing:.06em;flex:1}
 .visual-block__note{color:#9aa8b5;font-size:.72rem}
 .visual canvas{display:block;width:100%;height:auto;background:#0d1116;border-radius:5px}
+
+/* Each stage's text entry lives under its own picture (2026-07-27 feedback,
+   items 12 + 13). The embedded section keeps the card id/marker contract --
+   validation markers and card--invalid still land on it -- and the transparent
+   border reserves the invalid outline's space so turning red never reflows. */
+.embedded-form{margin-top:12px;padding:10px;border:1px solid transparent;border-radius:6px}
+.embedded-form .section-title{margin-bottom:8px}
+.embedded-form h3{margin:0;font-size:.8rem;color:#73e6a0;letter-spacing:.06em}
+.embedded-form .form-mount{margin-top:10px}
+
 /* NO unconditional touch-action:none -- that made the plot a scroll trap on
    touch. The script sets it only for the duration of a grabbed drag. */
 .curve{cursor:crosshair}
@@ -75,6 +106,11 @@ code{color:#74d7ff}
 .curve-readout[hidden]{display:none}
 .curve-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:8px}
 .curve-controls button{padding:5px 9px;font-size:.75rem}
+/* The visible Q affordance for the selected section (2026-07-27 feedback,
+   item 2) -- the wheel still works, but a wheel is invisible and touch has
+   none. Compact tier, like the Add/Remove buttons beside it. */
+.curve-q{display:flex;gap:6px;align-items:center;color:#9aa8b5;font-size:.75rem}
+.curve-q input{width:76px;padding:5px 6px;font-size:.75rem}
 
 /* The downmix routing diagram. Same canvas treatment and the same disclosure as
    the plot: the script sets a pointer cursor over a handle (or over the
@@ -104,7 +140,11 @@ code{color:#74d7ff}
 .flow-end[data-state="unreachable"]{border-color:#d16a6a;color:#f2a0a0}
 
 .bars{display:grid;gap:5px}
-.bar{display:grid;grid-template-columns:minmax(96px,auto) 1fr minmax(46px,auto);gap:10px;align-items:center;color:#9aa8b5;font-size:.72rem}
+/* One left edge for every bar (2026-07-27 feedback, item 5): the label column
+   is FIXED, not content-sized, so the tracks start at the same x across the
+   input AND output rows and bar lengths compare by eye. */
+.bar{display:grid;grid-template-columns:150px 1fr 56px;gap:10px;align-items:center;color:#9aa8b5;font-size:.72rem}
+.bar__label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bar__track{position:relative;height:10px;background:#0d1116;border-radius:3px;overflow:hidden}
 .bar__fill{position:absolute;left:0;top:0;bottom:0;width:0;background:#73e6a0}
 /* A level near full scale is not healthy green. */
@@ -122,9 +162,19 @@ code{color:#74d7ff}
 .gr__value{text-align:right;color:#e8dcc0;font-variant-numeric:tabular-nums}
 .gr__history{margin-top:8px}
 
-.meter-table{width:100%;border-collapse:collapse;margin-top:14px;font-size:.78rem;font-variant-numeric:tabular-nums}
-.meter-table th,.meter-table td{text-align:right;padding:6px 8px;border-bottom:1px solid #232b35}
-.meter-table th[scope="row"],.meter-table thead th:first-child{text-align:left;color:#9aa8b5;font-weight:400}
-.meter-table thead th{color:#9aa8b5;font-weight:400}
+/* Live peak/RMS as grouped cards instead of an 8-row table (2026-07-27
+   feedback, item 9): three groups -- FRONT, SURROUND, OUTPUT -- side by side,
+   each channel a compact peak-over-RMS cell. */
+.meter-cards{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+.meter-group{flex:1 1 130px;background:#11151b;border-radius:6px;padding:8px 10px}
+.meter-group:first-child{flex:2 1 260px}
+.meter-group__head{display:flex;align-items:baseline;gap:8px}
+.meter-group__title{margin:0;color:#73e6a0;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
+.meter-group__note{color:#5d6b78;font-size:.65rem}
+.meter-group__cells{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:8px;margin-top:6px}
+.meter-cell{display:grid;gap:2px}
+.meter-cell__name{color:#9aa8b5;font-size:.68rem}
+.meter-cell__peak{color:#e8edf2;font-size:.85rem;font-variant-numeric:tabular-nums}
+.meter-cell__rms{color:#9aa8b5;font-size:.72rem;font-variant-numeric:tabular-nums}
 
-@media(max-width:650px){.eq-row{grid-template-columns:1fr}.eq-row__title{padding-top:0}.bar,.gr{grid-template-columns:minmax(70px,auto) 1fr auto}.gr__value{grid-column:2/4}}
+@media(max-width:650px){.bar{grid-template-columns:88px 1fr 48px}.gr{grid-template-columns:minmax(70px,auto) 1fr auto}.gr__value{grid-column:2/4}.eq-table--channels{grid-template-columns:minmax(72px,auto) 84px auto minmax(96px,1.2fr) minmax(60px,1fr) minmax(52px,.8fr) minmax(60px,1fr) auto}}

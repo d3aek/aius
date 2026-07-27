@@ -328,6 +328,10 @@ const matrixWheel = (clientX, clientY, deltaY) => {
 };
 const matrixKey = (name) =>
   el('matrix-diagram').dispatchEvent(new window.KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }));
+const matrixDblclick = (clientX, clientY) =>
+  el('matrix-diagram').dispatchEvent(
+    new window.MouseEvent('dblclick', { clientX, clientY, bubbles: true, cancelable: true }),
+  );
 /* The eight downmix paths in the last frame: the column tracks are one path of
  * eight vertices and a handle is an arc, so an edge is a group of two (a unity
  * reference) or three (a path bent through its gain handle). */
@@ -468,7 +472,7 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(numbers.every((input) => input.step !== 'any' && input.min !== '' && input.max !== '')).toBe(true);
   });
 
-  it('associates every caption and error with its own control, and keeps 78 resets out of the tab order', async () => {
+  it('associates every caption and error with its own control, and keeps every reset out of the tab order', async () => {
     await boot();
 
     const caption = [...document.querySelectorAll('.field__label')].find(
@@ -479,9 +483,23 @@ describe('Aius SD DSP editor — model to DOM', () => {
     // A wrapping <label> folded caption + error + button into one accessible name.
     expect(fieldOf('limiter.attack_ms').closest('label')).toBe(null);
 
+    // Tabular cells carry no <label for> -- the header row is the visual
+    // caption -- so each input names itself in full for AT.
+    expect(fieldOf('input_channels.fl.eq.0.frequency_hz').getAttribute('aria-label')).toBe(
+      'Front left section 1 frequency',
+    );
+    expect(fieldOf('input_channels.sr.gain_db').getAttribute('aria-label')).toBe('Surround right trim');
+    expect(fieldOf('input_channels.fl.eq.0.frequency_hz').getAttribute('aria-describedby')).toBe(
+      'e:input_channels.fl.eq.0.frequency_hz',
+    );
+
+    // 22 per-field resets (features, trims, matrix, limiter) + 14 per-section
+    // ones (6 channels x 2 + output x 2), all reachable by AT but out of the
+    // tab order.
     const resets = [...document.querySelectorAll('.field__reset')];
-    expect(resets.length).toBeGreaterThan(50);
+    expect(resets.length).toBe(36);
     expect(resets.every((button) => button.tabIndex === -1)).toBe(true);
+    expect(document.querySelectorAll('.eq-table__reset').length).toBe(14);
   });
 
   it('captions the matrix gains as linear and prints the decibels they mean', async () => {
@@ -932,6 +950,28 @@ describe('Aius SD DSP editor — meters', () => {
     expect(points).toHaveLength(2 + 128 * 2);
   });
 
+  /* The per-channel table became grouped cards (2026-07-27 feedback, item 9):
+   * FRONT (fl, fr, fc and the LFE that rides with them), SURROUND, OUTPUT. */
+  it('groups the per-channel meters into Front, Surround and Output cards', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(100);
+
+    const groups = [...document.querySelectorAll('.meter-group')];
+    expect(groups.map((group) => group.querySelector('.meter-group__title').textContent)).toEqual([
+      'Front',
+      'Surround',
+      'Output',
+    ]);
+    expect(groups[0].contains(el('meter-in-lfe-peak'))).toBe(true);
+    expect(groups[1].contains(el('meter-in-sl-rms'))).toBe(true);
+    expect(groups[2].contains(el('meter-out-r-peak'))).toBe(true);
+    // Same ids, same data: the cells read exactly what the table rows did.
+    expect(el('meter-in-fl-peak').textContent).toBe('-6.2');
+    expect(el('meter-out-r-rms').textContent).toBe('-14.9');
+    // No stale table left behind.
+    expect(document.querySelector('.meter-table')).toBe(null);
+  });
+
   it('degrades gracefully and backs off when /api/meters is absent', async () => {
     await boot({ meters: null });
     await vi.advanceTimersByTimeAsync(100);
@@ -1022,21 +1062,50 @@ describe('Aius SD DSP editor — transport failures', () => {
 });
 
 describe('Aius SD DSP editor — ergonomics', () => {
-  it('restores the SD auth token from localStorage on boot', async () => {
+  it('restores the SD auth token from localStorage on boot, locked against stray edits', async () => {
     localStorage.setItem('aius-sd-auth', '0123456789abcdef');
     await boot();
     expect(el('token').value).toBe('0123456789abcdef');
+    expect(el('token').readOnly).toBe(true);
+    expect(el('token-save').disabled).toBe(true);
+    expect(el('token-edit').disabled).toBe(false);
   });
 
-  it('stores the token as it is typed, and removes it when cleared', async () => {
+  /* The save/edit pair (2026-07-27 feedback, item 7) replaced the silent
+   * per-keystroke store: nothing persists until Save is pressed. */
+  it('stores the token on Save -- not per keystroke -- and locks the field', async () => {
     await boot();
+    expect(el('token').readOnly).toBe(false);
+    expect(el('token-edit').disabled).toBe(true);
+
     el('token').value = 'fedcba9876543210';
     el('token').dispatchEvent(new Event('input'));
+    expect(localStorage.getItem('aius-sd-auth')).toBe(null);
+
+    await click('token-save');
     expect(localStorage.getItem('aius-sd-auth')).toBe('fedcba9876543210');
+    expect(el('token').readOnly).toBe(true);
+    expect(el('token-save').disabled).toBe(true);
+    expect(el('token-edit').disabled).toBe(false);
+    expect(el('status').textContent).toContain('token saved');
+  });
+
+  it('unlocks on Edit, and an empty Save clears the stored token', async () => {
+    localStorage.setItem('aius-sd-auth', 'fedcba9876543210');
+    await boot();
+    expect(el('token').readOnly).toBe(true);
+
+    await click('token-edit');
+    expect(el('token').readOnly).toBe(false);
+    expect(el('token-save').disabled).toBe(false);
+    expect(document.activeElement).toBe(el('token'));
 
     el('token').value = '';
-    el('token').dispatchEvent(new Event('input'));
+    await click('token-save');
     expect(localStorage.getItem('aius-sd-auth')).toBe(null);
+    // Nothing stored, so nothing to lock: the field stays editable.
+    expect(el('token').readOnly).toBe(false);
+    expect(el('status').textContent).toContain('token cleared');
   });
 
   it('resets a single field to the factory value', async () => {
@@ -1049,16 +1118,36 @@ describe('Aius SD DSP editor — ergonomics', () => {
     expect(el('n:matrix.lfe_gain_linear').textContent).toBe('= -10.0 dB');
   });
 
-  it('reset on an EQ type returns the slot to none and drops it from the PUT', async () => {
+  /* The per-section reset (2026-07-27 feedback, item 2): one button per table
+   * row, resetting the whole section through the same per-field path. */
+  it('section reset returns an output slot to the factory none and drops it from the PUT', async () => {
     await boot({ config: fixture('dsp-config-sd.json') });
     el('token').value = '0123456789abcdef';
 
-    el('r:output.eq.0.type').click();
+    el('sr:output.eq.0').click();
     await settle();
     expect(valueOf('output.eq.0.type')).toBe('none');
 
     await click('apply');
     expect(JSON.parse(putCalls()[0].body).output_eq).toEqual([]);
+  });
+
+  it('section reset clears one input-channel row and leaves its neighbours alone', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    el('token').value = '0123456789abcdef';
+
+    // fr carries two sections; reset only the second (the 45 Hz highpass).
+    el('sr:input_channels.fr.eq.1').click();
+    await settle();
+
+    expect(valueOf('input_channels.fr.eq.1.type')).toBe('none');
+    expect(valueOf('input_channels.fr.eq.0.frequency_hz')).toBe('120');
+    expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('120');
+
+    await click('apply');
+    expect(JSON.parse(putCalls()[0].body).input_channels.fr.eq).toEqual([
+      { type: 'peaking', frequency_hz: 120, q: 1.2, gain_db: -4.5 },
+    ]);
   });
 
   /* The form's output paths are `output.eq.N.*` while the model keys the same
@@ -1965,6 +2054,43 @@ describe('Aius SD DSP editor — editing through the plot', () => {
 
     expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('120');
   });
+
+  /* The visible Q affordance (2026-07-27 feedback, item 2): the wheel still
+   * works, but a wheel is invisible and touch has none. */
+  it('edits the selected section Q from the visible box, into both pair members', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    el('token').value = '0123456789abcdef';
+    expect(el('curve-q').disabled).toBe(false);
+    expect(el('curve-q').value).toBe('1.2');
+
+    el('curve-q').value = '2.5';
+    el('curve-q').dispatchEvent(new Event('input'));
+    await settle();
+
+    // The unlinked front pair is adopted first, exactly as a wheel edit does.
+    expect(valueOf('input_channels.fl.eq.0.q')).toBe('2.5');
+    expect(valueOf('input_channels.fr.eq.0.q')).toBe('2.5');
+    expect(el('unlinked:front').hidden).toBe(true);
+
+    await click('apply');
+    expect(JSON.parse(putCalls()[0].body).input_channels.fl.eq[0].q).toBe(2.5);
+  });
+
+  it('follows the selection with the Q box, and disables it with no active section', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    expect(el('curve-q').value).toBe('1.2');
+
+    // The output cascade's section carries Q 0.9.
+    chip('output').click();
+    await settle();
+    expect(el('curve-q').value).toBe('0.9');
+
+    // Surround's slot 0 is a bypass: nothing active to edit.
+    chip('surround').click();
+    await settle();
+    expect(el('curve-q').disabled).toBe(true);
+    expect(el('curve-q').value).toBe('');
+  });
 });
 
 describe('Aius SD DSP editor — adding sections from the plot', () => {
@@ -2278,6 +2404,21 @@ describe('Aius SD DSP editor — downmix matrix geometry', () => {
     // Headroom's exclusive floor holds under the wheel too.
     expect(maths().stepMatrixValue(0.011, 100, headroom)).toBe(0.01);
     expect(maths().stepMatrixValue(1, -100, headroom)).toBe(1);
+  });
+
+  /* The SL/SR colour split (2026-07-27 feedback, item 8): two path colours
+   * make the two channels legible, while the shared handle point keeps saying
+   * the value is one bonded field. */
+  it('colours the bonded SL and SR paths separately, through one shared point', () => {
+    const edges = maths().matrixEdges(matrixValues(), rect);
+    const sl = edges.find((edge) => edge.source === 'sl');
+    const sr = edges.find((edge) => edge.source === 'sr');
+    expect(sl.colour).not.toBe(sr.colour);
+    // Still one gain: both paths bend through the same handle point.
+    expect(sl.points[1]).toEqual(sr.points[1]);
+    expect(sl.gain).toBe(sr.gain);
+    expect(sl.handle).toBe('surround');
+    expect(sr.handle).toBe('surround');
   });
 
   it('nudges by the fields own step and stops at both rails', () => {
@@ -2595,6 +2736,41 @@ describe('Aius SD DSP editor — the downmix matrix diagram', () => {
 
     expect(valueOf('matrix.center_gain_linear')).toBe('0.70711');
   });
+
+  /* Per-channel reset on the diagram itself (2026-07-27 feedback, item 3):
+   * double-click a handle, through the same resetField() write the form's own
+   * reset buttons make. */
+  it('resets a channel to the factory default on a handle double-click', async () => {
+    await boot();
+    stubMatrixRect();
+    await setNumber('matrix.center_gain_linear', '2');
+    const handle = matrixHandle('center', matrixValues({ center: 2 }));
+
+    matrixDblclick(handle.x, handle.y);
+    await settle();
+
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.70711');
+    expect(el('matrix-status').textContent).toContain('Centre reset to the factory default');
+    expect(el('matrix-status').textContent).toContain('-3.0 dB');
+
+    // Away from every handle, a double-click is not a reset.
+    await setNumber('matrix.surround_gain_linear', '2');
+    matrixDblclick(30, 10);
+    await settle();
+    expect(valueOf('matrix.surround_gain_linear')).toBe('2');
+  });
+
+  it('refuses the double-click reset while the clip-free policy owns the headroom', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubMatrixRect();
+    const handle = matrixHandle('headroom', matrixValues({ headroom: 0.37037, clipfree: true }));
+
+    matrixDblclick(handle.x, handle.y);
+    await settle();
+
+    expect(valueOf('matrix.headroom_linear')).toBe('0.37037');
+    expect(el('matrix-status').textContent).toContain('clip-free');
+  });
 });
 
 describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', () => {
@@ -2707,5 +2883,60 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
     // The curves are unaffected: they never read a snapshot.
     expect(handlesOf('curve')).toHaveLength(1);
     expect(el('apply-state').textContent).toBe('loaded');
+  });
+});
+
+/* The 2026-07-27 panel moves: presets directly below the effective
+ * configuration (item 10), the processing stages between it and the strip
+ * (item 4), and each stage's text entry inside its own visual block
+ * (items 12 + 13) -- the limiter's controls sharing the panel with its
+ * metering being the named case. */
+describe('Aius SD DSP editor — page structure', () => {
+  it('orders the cards: config, presets, stages, signal flow, live processing', async () => {
+    await boot();
+    const titles = [...document.querySelectorAll('main > section')].map(
+      (section) => section.querySelector('h2').textContent,
+    );
+    expect(titles).toEqual([
+      'Effective configuration',
+      'Presets',
+      'Processing stages',
+      'Signal flow',
+      'Live processing',
+    ]);
+  });
+
+  it('embeds each stage form inside its own visual block, after the picture', async () => {
+    await boot();
+    expect(el('card-input-channels').closest('.visual-block').contains(el('curve'))).toBe(true);
+    expect(el('card-output-eq').closest('.visual-block').contains(el('curve'))).toBe(true);
+    expect(el('card-matrix').closest('.visual-block').contains(el('matrix-diagram'))).toBe(true);
+    // The limiter's controls share the panel with its metering (item 12).
+    expect(el('card-limiter').closest('.visual-block').contains(el('gr-fill'))).toBe(true);
+    expect(el('card-limiter').contains(fieldOf('limiter.threshold_dbfs'))).toBe(true);
+
+    // The picture precedes its text entry in every block.
+    const matrixBlock = [...el('card-matrix').closest('.visual-block').children];
+    expect(matrixBlock.indexOf(el('card-matrix'))).toBeGreaterThan(
+      matrixBlock.indexOf(el('matrix-diagram').parentElement),
+    );
+    const limiterBlock = [...el('card-limiter').closest('.visual-block').children];
+    expect(limiterBlock.indexOf(el('card-limiter'))).toBeGreaterThan(limiterBlock.indexOf(el('gr-history')));
+
+    // The card contract survives the move: markers still mount on each title.
+    expect(el('m:card-input-channels').hidden).toBe(true);
+    expect(el('m:card-limiter').hidden).toBe(true);
+  });
+
+  it('keeps the input-channel table as the dense per-channel escape hatch', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    const grid = document.querySelector('.eq-table--channels');
+    // 8 header cells + 6 channels x (name + trim cell + 2 x (sec + 4 fields + reset)).
+    expect(grid.children.length).toBe(8 + 6 * (2 + 2 * 6));
+    // fl and fr stay separate rows: the table is where a pair diverges.
+    expect(grid.contains(fieldOf('input_channels.fl.eq.0.q'))).toBe(true);
+    expect(grid.contains(fieldOf('input_channels.fr.eq.1.type'))).toBe(true);
+    // Output EQ gets the same treatment in its own two-row table.
+    expect(document.querySelector('.eq-table--output').contains(fieldOf('output.eq.1.gain_db'))).toBe(true);
   });
 });
