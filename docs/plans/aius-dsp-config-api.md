@@ -803,9 +803,22 @@ analysis-rejected parameters answer `409 measure_start`. Swagger and the
 contract suite moved in the same commit (`Measure`/`MeasureFigures`/
 `MeasureStartRequest` schemas pin the state vocabulary, both geometries,
 the floors and the arm-then-start operator order). Known adjacent debt,
-NOT this slice's: the pre-existing sd-editor vitest failures (15 in
-`dsp-editor.test.js`, apply/PUT flow) and the still-undocumented replay
-schemas in swagger.
+NOT this slice's: the still-undocumented replay schemas in swagger.
+
+**The 15 sd-editor vitest failures are fixed (2026-07-27).** They were
+fixture drift from the LFE fold-in: `72bb041a5` added
+`matrix.lfe_crossover_hz` to the model and `b5b1c826e` taught the editor
+page to require it, but neither reached the vitest fixtures
+(`dsp-config-*.json`) or the swagger `DspMatrix` schema — so every loaded
+model was invalid, Apply refused to send, and all apply/PUT-flow tests
+failed while the page itself was correct. The fix adds the key to both
+fixtures (120 default / 80 SD), the field's mapping and bounds coverage to
+`dsp-editor.test.js`, and `lfe_crossover_hz` to `DspMatrix` (schema,
+required set, both examples) with the contract suite pinning its 20–500
+bound. Note the shape of the miss: the firmware-side key-set guard from
+`b5b1c826e` covers validator↔editor, but nothing guards
+editor↔fixtures↔swagger — a third copy of the key list still drifts
+silently.
 
 **Slice 3 delivered (2026-07-27).** The runtime wiring, exactly as contracted
 above: the tap sits after the tx24 commit in `enqueue()` (at 24-bit width the

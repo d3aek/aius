@@ -156,6 +156,7 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(valueOf('matrix.center_gain_linear')).toBe('0.7071067811865475');
     expect(valueOf('matrix.surround_gain_linear')).toBe('0.7071067811865475');
     expect(valueOf('matrix.lfe_gain_linear')).toBe('0');
+    expect(valueOf('matrix.lfe_crossover_hz')).toBe('120');
     expect(valueOf('matrix.headroom_linear')).toBe('1');
     expect(fieldOf('matrix.clipfree').checked).toBe(false);
     expect(fieldOf('matrix.headroom_linear').disabled).toBe(false);
@@ -193,6 +194,7 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(valueOf('output.eq.0.frequency_hz')).toBe('4000');
     expect(valueOf('output.eq.0.gain_db')).toBe('2');
 
+    expect(valueOf('matrix.lfe_crossover_hz')).toBe('80');
     expect(fieldOf('matrix.clipfree').checked).toBe(true);
     expect(fieldOf('matrix.headroom_linear').disabled).toBe(true);
     // 1 / (1 + 0.85 + 0.6 + |0.25|), resolved client-side exactly as the DSP does.
@@ -275,6 +277,7 @@ describe('Aius SD DSP editor — bounds validation', () => {
     ['matrix.center_gain_linear', '4.5', 'Centre gain must be between 0 and 4 linear.'],
     ['matrix.surround_gain_linear', '-0.1', 'Surround gain must be between 0 and 4 linear.'],
     ['matrix.lfe_gain_linear', '9', 'LFE gain must be between 0 and 4 linear.'],
+    ['matrix.lfe_crossover_hz', '10', 'LFE crossover must be between 20 and 500 Hz.'],
     ['matrix.headroom_linear', '0', 'Headroom must be greater than 0 and at most 1 linear.'],
     ['matrix.headroom_linear', '1.2', 'Headroom must be greater than 0 and at most 1 linear.'],
     ['limiter.threshold_dbfs', '0.5', 'Threshold must be between -24 and 0 dBFS.'],

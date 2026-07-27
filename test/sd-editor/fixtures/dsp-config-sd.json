@@ -22,6 +22,7 @@
     "center_gain_linear": 0.85,
     "surround_gain_linear": 0.6,
     "lfe_gain_linear": 0.25,
+    "lfe_crossover_hz": 80,
     "headroom_linear": 0.37037037037037035,
     "clipfree": true
   },
