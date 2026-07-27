@@ -1505,7 +1505,12 @@ all low severity, owned by slice 5's touch of the same code:
    BOTH buttons side by side at phone width (P1 dead) and the selection
    survives the 5 s refresh; the status page reads `live` with the
    input-source and gate flow line and the flashed build revision. With
-   this, task #7 is COMPLETE through slice 5. Landed as four commits: unit A (`db0f47578`, the shared
+   this, task #7 is COMPLETE through slice 5. **Post-close addition
+   (user-directed, same day): sections are REMOVABLE from the surface** —
+   a Remove section button and the Delete/Backspace key retire the active
+   section from every member of the selected entity via the form's own
+   `none` vocabulary, announced with what was removed, freeing the slot
+   for a new add. Landed as four commits: unit A (`db0f47578`, the shared
    foundation: `sd-shared.js` + the shared layer in `replays.css`), unit B
    (`0a407752e`, replay manager rework + the new `status.html`/`status.js`),
    B's follow-ups (`4eb3744ce`, wire-honest Status schema types now

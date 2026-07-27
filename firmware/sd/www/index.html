@@ -64,11 +64,12 @@
         <div id="curve-legend" class="legend" role="group" aria-label="EQ curve selection"></div>
         <div class="curve-wrap">
           <canvas id="curve" class="curve" width="960" height="240" tabindex="0" role="application"
-            aria-label="Stacked EQ magnitude plot. Arrow left and right move the selected section's frequency, arrow up and down its gain, page up and page down select the next section of the selected curve, and the wheel sets Q while the plot is focused."></canvas>
+            aria-label="Stacked EQ magnitude plot. Arrow left and right move the selected section's frequency, arrow up and down its gain, page up and page down select the next section of the selected curve, delete removes it, and the wheel sets Q while the plot is focused."></canvas>
           <span id="curve-readout" class="curve-readout" hidden></span>
         </div>
         <div class="curve-controls">
           <button id="curve-add" type="button" class="secondary">Add section</button>
+          <button id="curve-remove" type="button" class="secondary">Remove section</button>
           <span id="curve-caption" class="visual-block__note"></span>
         </div>
         <p id="curve-status" class="hint" role="status">Pick a curve to edit it: drag a handle for frequency and gain, double-click the curve to add a section, and use the wheel for Q while a handle is held or the plot has focus.</p>

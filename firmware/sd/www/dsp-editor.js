@@ -1732,6 +1732,7 @@
 
     attachCurveSurface();
     $('curve-add').addEventListener('click', () => addSection(selectedEntity(), EQ_SEED.frequency_hz));
+    $('curve-remove').addEventListener('click', () => removeSection(selectedEntity(), state.activeSlot));
 
     /* A pointer released off the canvas still ends the drag; without capture
      * (or with it, since the event bubbles) window is the one listener that
@@ -1986,6 +1987,32 @@
     return true;
   }
 
+  /* Removes the ACTIVE section from every member of the entity. The form's
+   * page-level "none" IS removal on the wire -- the slot drops out of eq[] at
+   * collect -- so the surface speaks exactly the form's vocabulary and a
+   * removal round-trips identically whichever surface performed it. */
+  function removeSection(entity, slot) {
+    const section = entityCascade(entity).sections[slot];
+    if (!section || section.type === 'none') {
+      setCurveStatus(`${entity.label} has no section ${slot + 1} to remove.`);
+      return false;
+    }
+    beginSurfaceEdit(entity);
+    /* A bypass section has no meaningful frequency; name only what is real. */
+    const summary = isActiveSection(section)
+      ? `${section.type} at ${roundHz(section.frequency_hz)} Hz`
+      : section.type;
+    for (const base of entity.bases) {
+      writeChoice(`${base}.eq.${slot}.type`, 'none');
+    }
+    const remaining = entityCascade(entity).sections.filter(isActiveSection);
+    state.activeSlot = remaining.length > 0 ? remaining[0].slot : 0;
+    hideReadout();
+    setCurveStatus(`Removed ${entity.label}'s section ${slot + 1} (${summary}); the slot is free again.`);
+    drawCurveSurface();
+    return true;
+  }
+
   function selectEntity(key) {
     state.curveEntity = key;
     const sections = entityCascade(selectedEntity()).sections.filter(isActiveSection);
@@ -2094,6 +2121,11 @@
       state.activeSlot = (state.activeSlot + step) % EQ_SLOTS;
       showReadout(state.activeSlot);
       drawCurveSurface();
+      return;
+    }
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      event.preventDefault();
+      removeSection(entity, state.activeSlot);
       return;
     }
     const slot = state.activeSlot;

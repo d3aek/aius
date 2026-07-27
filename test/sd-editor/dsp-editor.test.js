@@ -1994,6 +1994,54 @@ describe('Aius SD DSP editor — adding sections from the plot', () => {
     expect(valueOf('input_channels.fr.eq.1.frequency_hz')).toBe('6000');
     expect(el('unlinked:front').hidden).toBe(true);
   });
+
+  it('removes the active section from BOTH pair members via the visible button', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    el('token').value = '0123456789abcdef';
+    stubRect();
+
+    // fl.eq.0 is the SD fixture's 120 Hz peaking; it is the active section.
+    await click('curve-remove');
+
+    expect(valueOf('input_channels.fl.eq.0.type')).toBe('none');
+    expect(valueOf('input_channels.fr.eq.0.type')).toBe('none');
+    expect(el('curve-status').textContent).toContain("Removed Front (fl+fr)'s section 1 (peaking at 120 Hz)");
+    expect(el('curve-status').textContent).toContain('free again');
+
+    // Removal IS the wire's removal: the slot is gone from the PUT body.
+    await click('apply');
+    const body = JSON.parse(putCalls()[0].body);
+    expect(body.input_channels.fl.eq).toEqual([]);
+    expect(body.input_channels.fr.eq).toEqual([]);
+  });
+
+  it('removes via the Delete key on the focused plot, freeing the slot for a new add', async () => {
+    await boot();
+    stubRect();
+
+    dblclick(atHz(500), atDb(0));
+    await settle();
+    dblclick(atHz(5000), atDb(0));
+    await settle();
+    expect(handlesOf('curve')).toHaveLength(2);
+
+    key('Delete');
+    await settle();
+
+    expect(handlesOf('curve')).toHaveLength(1);
+    dblclick(atHz(9000), atDb(0));
+    await settle();
+    expect(handlesOf('curve')).toHaveLength(2);
+    expect(el('curve-status').textContent).toContain('Added a peaking section at 9000 Hz');
+  });
+
+  it('says so when there is no section to remove', async () => {
+    await boot();
+    await click('curve-remove');
+
+    expect(el('curve-status').textContent).toContain('has no section 1 to remove');
+    expect(valueOf('input_channels.fl.eq.0.type')).toBe('none');
+  });
 });
 
 describe('Aius SD DSP editor — canvas honesty', () => {
