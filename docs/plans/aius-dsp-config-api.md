@@ -746,6 +746,24 @@ bit-identical slicing invariance. Two findings the build added to the contract:
   on device — the 16-bit stimulus floors bind first — but the surface's
   per-figure floor statement (slice on the HTTP surface) should say it.
 
+**Slice 3 delivered (2026-07-27).** The runtime wiring, exactly as contracted
+above: the tap sits after the tx24 commit in `enqueue()` (at 24-bit width the
+committed words ARE the processed planes, so tapping the planes taps the
+wire), with the generation/overrun latches read in the same interrupt that
+advances them; the 128 KiB capture planes are `DMAMEM` (boot_generation
+restarts at the first flash — expected) and the control state is DTCM
+`.bss`; the epoch side lives at the METRICS checkpoint — a wall-clock stall
+watch (armed 10 s, capturing 2 s, reclaim 1 s of `blocks` unchanged; the
+armed bound covers the natural arm-then-start-replay operator gap), one
+256-sample slice per epoch into BOTH channel accumulators (32 epochs per
+window), and the budget row's declared 1 ms with
+`g_metrics_service_overruns` on the HTTP checkpoint's pattern (the `runtime`
+suite's budget pin moved in the same commit). The pipeline-reset prerequisite
+is absorbed: `POST /api/replays/start` arms `g_pipeline_reset_pending` and
+`update()` consumes it in audio context before any words are pushed.
+`measure_start()` is defined and waits for slice 4's dispatcher; nothing can
+arm a capture until that route lands.
+
 **Slice 2 delivered (2026-07-27).** The stimulus corpus is
 `firmware/tools/measure_vectors/`: four committed loop-coherent PCM vectors
 (the −6 dBFS 440 baseline, the full-scale limiter-hot 440, the L 440 / R 660

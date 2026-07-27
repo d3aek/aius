@@ -26,6 +26,7 @@
 extern "C" {
 #include "aius_net.h"
 	#include "aius_dsp.h"
+	#include "aius_measure.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
 	#include "aius_usb_control.h"
@@ -426,6 +427,41 @@ DMAMEM static AiusMeter g_meter;
  * every 19 at 48 kHz with 128-frame blocks. */
 static constexpr uint32_t AIUS_METER_PUBLISH_HZ = 20u;
 
+/* ------------------------------------------------------------------ */
+/* Measurement loopback capture -- item 3 slice 3                      */
+/* (aius-dsp-config-api.md §Item 3 design; the portable machine and    */
+/* the analysis live in lib/aius_dsp/aius_measure.*)                   */
+/*                                                                     */
+/* The 128 KiB sample buffer is DMAMEM (OCRAM, ~293 kB free): like the */
+/* transmit ring it needs no init -- every frame is written before the */
+/* buffer is ever read, because analysis reads only `captured` buffers */
+/* and captured means all 16,384 frames were copied. KNOWN CONSEQUENCE */
+/* carried from item 1's delivery note: a new 128 KiB DMAMEM object    */
+/* moves g_aius_boot_slots, so the retained ledger restarts            */
+/* boot_generation at the first flash of this build. Expected, not a   */
+/* regression.                                                         */
+/*                                                                     */
+/* The CONTROL state is DTCM, never DMAMEM: .bss.dma is NOLOAD and the */
+/* boot ROM scribbles OCRAM at reset -- the ring's own documented      */
+/* hazard -- and this struct must read as idle before the first arm.   */
+/* The ISR/epoch pair needs no barrier beyond the ones the nested-     */
+/* interrupt argument above g_meter already makes: the audio interrupt */
+/* preempts the epoch, runs its transition to completion and returns.  */
+/* ------------------------------------------------------------------ */
+DMAMEM static int32_t g_measure_capture_l[AIUS_MEASURE_CAPTURE_FRAMES];
+DMAMEM static int32_t g_measure_capture_r[AIUS_MEASURE_CAPTURE_FRAMES];
+static AiusMeasureCapture g_measure_capture;
+
+/* The pipeline classifies once and nothing on target ever called
+ * aius_pipeline_reset(): a DTS-first boot followed by a PCM replay hunts for
+ * an IEC preamble that never comes (zero blocks, a capture armed forever),
+ * and PCM-first followed by DTS plays framed bursts as noise. Replay start
+ * arms this flag and update() -- audio context, before any words are pushed
+ * -- performs the reset, so every replay classifies its own stream. A start
+ * against a live carrier is refused upstream, so the reset cannot land mid
+ * live-input stream. */
+static volatile bool g_pipeline_reset_pending;
+
 static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, AiusOpticalConfig &out)
 {
 	out.sample_rate_hz = model.sample_rate_hz;
@@ -705,6 +741,12 @@ public:
 	{
 		apply_config(AIUS_OPTICAL_CONFIG);
 		aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
+		/* Bind the capture planes; memory only. The machine starts idle, and
+		 * an idle capture costs the tap one volatile load per block. */
+		(void)aius_measure_capture_init(&g_measure_capture,
+		                                g_measure_capture_l,
+		                                g_measure_capture_r,
+		                                AIUS_MEASURE_CAPTURE_FRAMES);
 		/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
 		 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
 		 * before it, the vendor ISR transmits block_silent, which is the same
@@ -776,6 +818,13 @@ public:
 protected:
 	void update(void) override
 	{
+		/* The replay-start pipeline reset, in audio context and before any
+		 * words are pushed: the next words classify as their own stream. See
+		 * g_pipeline_reset_pending's block comment. */
+		if (g_pipeline_reset_pending && g_pipeline != nullptr) {
+			aius_pipeline_reset(g_pipeline);
+			g_pipeline_reset_pending = false;
+		}
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
 		if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
@@ -969,6 +1018,17 @@ private:
 			                   ring_left, ring_right, block->frames - first);
 		}
 		aius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);
+		/* Item 3 capture tap. At OUTPUT_WIDTH_BITS = 24 the words just
+		 * committed ARE processed_left/right verbatim (the out stage is a
+		 * copy), so tapping the planes taps the wire. After the commit and
+		 * before anything else so the capture covers exactly the committed
+		 * frames; the latches are this block's config generation and overrun
+		 * count, read in the same interrupt that would have advanced them.
+		 * Cost when no capture is in flight: one volatile load and compare
+		 * inside the callee. */
+		aius_measure_isr_block(&g_measure_capture, processed_left,
+		                       processed_right, block->frames,
+		                       g_config_generation, g_overruns);
 		g_blocks++;
 		if (metering) {
 			if (g_meter.out_frames >= g_meter_window_frames) {
@@ -2343,6 +2403,9 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
 	replay_job_cancel();
 	if (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)
 		return AIUS_OPTICAL_APP_REPLAY_FAILED;
+	/* The item 3 prerequisite fix: every replay classifies its own stream.
+	 * Consumed by update() in audio context before the first words land. */
+	g_pipeline_reset_pending = true;
 	g_replay_stop_reason = REPLAY_STOP_NONE;
 	return AIUS_OPTICAL_APP_REPLAY_OK;
 }
@@ -2780,16 +2843,189 @@ static FLASHMEM bool platform_reset_capture(void *,
 	return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* Measurement session -- the epoch side of the item 3 capture         */
+/*                                                                     */
+/* The portable machine owns every transition (aius_measure.h); this   */
+/* glue owns WHEN the epoch-side ones fire: the stall watch that       */
+/* cancels a capture the ISR provably is not feeding, the sliced       */
+/* analysis pass over a captured buffer, and the parameters a start    */
+/* request supplies. All of it runs at the METRICS checkpoint inside   */
+/* its declared 1 ms budget; the overrun counter beside it is the      */
+/* evidence when an epoch does not (the HTTP checkpoint's pattern).    */
+/* ------------------------------------------------------------------ */
+
+/* The analysis accumulators are epoch-only and re-initialised by
+ * aius_measure_analysis_init() before every use, so DMAMEM's no-init hazard
+ * cannot reach them; ~600 B each stays off DTCM. */
+DMAMEM static AiusMeasureAnalysis g_measure_analysis_l;
+DMAMEM static AiusMeasureAnalysis g_measure_analysis_r;
+
+/* Session parameters and results. DTCM .bss deliberately: GET /api/measure
+ * reads this before any session ever starts, so it must read as "none" on a
+ * cold boot, and .bss zeroing is what guarantees that. ~600 B. */
+typedef struct {
+	bool started;              /* a session exists (live or retired) */
+	char vector_id[AIUS_REPLAY_MAX_ID_LENGTH + 1u];
+	double f0_l_hz;
+	double f0_r_hz;
+	double probes_hz[AIUS_MEASURE_PROBES_MAX];
+	uint32_t probe_count;
+	uint32_t analysis_offset;  /* frames fed so far, 0..WINDOW */
+	uint32_t watch_blocks;     /* stall watch: last block count seen */
+	uint32_t watch_since_ms;   /* ...and when it last moved */
+	bool figures_valid;        /* both channels' figures are published */
+	AiusMeasureFigures figures_l;
+	AiusMeasureFigures figures_r;
+} MeasureSession;
+static MeasureSession g_measure_session;
+
+/* The stall watch's bounds, wall-clock rather than epoch-count so they do not
+ * drift with epoch rate. ARMED tolerates the operator gap between POST
+ * /api/measure/start and POST /api/replays/start (arm-then-start is the
+ * natural order; replay start includes an SD prebuffer); CAPTURING only ever
+ * stalls when the replay stopped underneath the capture; CANCELLING is the
+ * reclaim bound -- blocks unchanged this long after the token means the ISR
+ * is provably not running (the one case the epoch may reclaim). */
+static constexpr uint32_t MEASURE_ARM_STALL_MS = 10000u;
+static constexpr uint32_t MEASURE_CAPTURE_STALL_MS = 2000u;
+static constexpr uint32_t MEASURE_RECLAIM_MS = 1000u;
+
+/* METRICS-checkpoint wall-clock overruns, on g_http_service_overruns's
+ * pattern: nothing aborts on one -- the counter is the evidence that the
+ * declared 1 ms budget was exceeded. */
+static volatile uint32_t g_metrics_service_overruns;
+
+/* Arm a measurement session (epoch/HTTP context; the dispatcher calls this).
+ * Analysis parameters are validated BEFORE the machine moves, so a bad f0 or
+ * probe list refuses without disturbing a retired session's figures... the
+ * capture is armed last, latching the config generation and overrun counter
+ * as of this instant. A retired session (done/failed) is released and
+ * replaced; a live one refuses. */
+static FLASHMEM bool measure_start(const char *vector_id, double f0_l_hz,
+                                   double f0_r_hz, const double *probes_hz,
+                                   uint32_t probe_count)
+{
+	if (vector_id == nullptr || probe_count > AIUS_MEASURE_PROBES_MAX)
+		return false;
+	/* Refuse a live capture FIRST: mid-analysis the accumulators below are in
+	 * use, and an init would corrupt the in-flight pass before the refusal.
+	 * The remaining states cannot move under this function -- the ISR acts
+	 * only in armed/capturing/cancelling, and this runs on the epoch side. */
+	const uint32_t state = g_measure_capture.state;
+	if (state != AIUS_MEASURE_IDLE && state != AIUS_MEASURE_DONE &&
+	    state != AIUS_MEASURE_FAILED)
+		return false;
+	/* Validate the analysis parameters before the machine moves, so a bad f0
+	 * or probe list leaves a retired session fully intact. */
+	if (aius_measure_analysis_init(&g_measure_analysis_l,
+	                               (double)AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ,
+	                               f0_l_hz, AIUS_MEASURE_WINDOW_FRAMES,
+	                               probes_hz, probe_count) != AIUS_OK)
+		return false;
+	if (aius_measure_analysis_init(&g_measure_analysis_r,
+	                               (double)AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ,
+	                               f0_r_hz, AIUS_MEASURE_WINDOW_FRAMES,
+	                               probes_hz, probe_count) != AIUS_OK)
+		return false;
+	if (state != AIUS_MEASURE_IDLE &&
+	    aius_measure_release(&g_measure_capture) != AIUS_OK)
+		return false;
+
+	MeasureSession &s = g_measure_session;
+	memset(&s, 0, sizeof(s));
+	s.started = true;
+	strncpy(s.vector_id, vector_id, sizeof(s.vector_id) - 1u);
+	s.f0_l_hz = f0_l_hz;
+	s.f0_r_hz = f0_r_hz;
+	if (probe_count > 0)
+		memcpy(s.probes_hz, probes_hz, probe_count * sizeof(double));
+	s.probe_count = probe_count;
+	s.watch_blocks = g_audio_processor.block_count();
+	s.watch_since_ms = millis();
+	return aius_measure_arm(&g_measure_capture, g_config_generation,
+	                        g_audio_processor.overrun_count()) == AIUS_OK;
+}
+
+/* One epoch of measurement work, at the METRICS checkpoint. Idle cost: one
+ * DTCM load and a switch. The analysis feeds one declared slice per epoch
+ * into BOTH channel accumulators (~2 x 170 us worst case against the 1 ms
+ * budget), so a full window completes in WINDOW/SLICE = 32 epochs. */
+static FLASHMEM void measure_epoch_service(uint32_t now_ms)
+{
+	AiusMeasureCapture &cap = g_measure_capture;
+	MeasureSession &s = g_measure_session;
+	switch (cap.state) {
+	case AIUS_MEASURE_ARMED:
+	case AIUS_MEASURE_CAPTURING:
+	case AIUS_MEASURE_CANCELLING: {
+		/* The stall watch. Only the epoch side can time out a capture the
+		 * ISR is not feeding -- with no replay running enqueue() never
+		 * executes (the race the one-writer machine exists to close). */
+		const uint32_t blocks = g_audio_processor.block_count();
+		if (blocks != s.watch_blocks) {
+			s.watch_blocks = blocks;
+			s.watch_since_ms = now_ms;
+			break;
+		}
+		const uint32_t stalled_ms = now_ms - s.watch_since_ms;
+		if (cap.state == AIUS_MEASURE_CANCELLING) {
+			if (stalled_ms > MEASURE_RECLAIM_MS)
+				(void)aius_measure_reclaim(&cap);
+		} else if (stalled_ms > (cap.state == AIUS_MEASURE_ARMED ?
+		                                 MEASURE_ARM_STALL_MS :
+		                                 MEASURE_CAPTURE_STALL_MS)) {
+			(void)aius_measure_cancel(&cap);
+			s.watch_since_ms = now_ms; /* restart the clock for the reclaim */
+		}
+		break;
+	}
+	case AIUS_MEASURE_CAPTURED:
+		if (aius_measure_begin_analysis(&cap) == AIUS_OK)
+			s.analysis_offset = 0;
+		break;
+	case AIUS_MEASURE_ANALYSING: {
+		const uint32_t start =
+			AIUS_MEASURE_CAPTURE_FRAMES - AIUS_MEASURE_WINDOW_FRAMES;
+		uint32_t n = AIUS_MEASURE_WINDOW_FRAMES - s.analysis_offset;
+		if (n > AIUS_MEASURE_SLICE_FRAMES)
+			n = AIUS_MEASURE_SLICE_FRAMES;
+		const uint32_t at = start + s.analysis_offset;
+		(void)aius_measure_analysis_slice(&g_measure_analysis_l,
+		                                  g_measure_capture_l + at, n);
+		(void)aius_measure_analysis_slice(&g_measure_analysis_r,
+		                                  g_measure_capture_r + at, n);
+		s.analysis_offset += n;
+		if (s.analysis_offset >= AIUS_MEASURE_WINDOW_FRAMES) {
+			const bool ok_l = aius_measure_analysis_finish(
+				&g_measure_analysis_l, &s.figures_l) == AIUS_OK;
+			const bool ok_r = aius_measure_analysis_finish(
+				&g_measure_analysis_r, &s.figures_r) == AIUS_OK;
+			s.figures_valid = ok_l && ok_r;
+			(void)aius_measure_finish_analysis(&cap);
+		}
+		break;
+	}
+	default:
+		break; /* idle, done, failed: nothing owed this epoch */
+	}
+}
+
 /* Checkpoint 3. service_hw_metrics() is already its own one-sample-per-second
- * rate limiter, so the budget's "one sample" is what it does. */
+ * rate limiter, so the budget's "one sample" is what it does; the measurement
+ * session's epoch work shares the checkpoint and its declared 1 ms budget,
+ * with the overrun counter as the evidence when an epoch exceeds it. */
 static FLASHMEM bool platform_metrics(void *, const AiusRuntimeBudget *budget,
                                       uint32_t now_ms)
 {
-	(void)now_ms;
 	if (budget == nullptr ||
 	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_METRICS)
 		return false;
+	const uint32_t started = micros();
 	service_hw_metrics();
+	measure_epoch_service(now_ms);
+	if ((uint32_t)(micros() - started) > budget->service_budget_ms * 1000u)
+		g_metrics_service_overruns++;
 	return true;
 }
 

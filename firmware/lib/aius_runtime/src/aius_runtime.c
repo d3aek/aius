@@ -23,7 +23,14 @@ static const AiusRuntimeBudget runtime_budgets[] = {
 	{AIUS_BOOT_CHECKPOINT_RESET_CAPTURE, 2u, 0u, 0u, 250u},
 	{AIUS_BOOT_CHECKPOINT_USB_RX, 64u, 64u, 0u, 0u},
 	{AIUS_BOOT_CHECKPOINT_USB_TX, 1u, 0u, 64u, 500u},
-	{AIUS_BOOT_CHECKPOINT_METRICS, 1u, 0u, 0u, 0u},
+	/* METRICS hosts the measurement loopback's sliced analysis (256 samples
+	 * per epoch through both channel accumulators, ~2 x 170 us worst case)
+	 * beside the 1 Hz hardware sampler, so its wall-clock allowance is now a
+	 * declared number rather than 0: "no epoch computes more than its budget"
+	 * must bind to something, and 1 ms is the field's smallest expressible
+	 * bound. The composition root times the checkpoint against it and counts
+	 * overruns on the HTTP checkpoint's pattern; nothing aborts on one. */
+	{AIUS_BOOT_CHECKPOINT_METRICS, 1u, 0u, 0u, 1u},
 	{AIUS_BOOT_CHECKPOINT_NETWORK, 1u, 0u, 0u, 0u},
 	/* The HTTP wall-clock allowance is the legacy service_http() overrun
 	 * threshold (2,000 us) carried forward: the composition root times the

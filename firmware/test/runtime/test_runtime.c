@@ -39,8 +39,11 @@ static const BudgetCase budget_cases[] = {
 	 64u, 64u, 0u, 0u},
 	{"budget.usb-tx", AIUS_BOOT_CHECKPOINT_USB_TX,
 	 1u, 0u, 64u, 500u},
+	/* 1 ms: the measurement loopback's sliced analysis is hosted here and
+	 * "no epoch computes more than its budget" must bind to a declared
+	 * number (aius_runtime.c's row comment). */
 	{"budget.metrics", AIUS_BOOT_CHECKPOINT_METRICS,
-	 1u, 0u, 0u, 0u},
+	 1u, 0u, 0u, 1u},
 	{"budget.network", AIUS_BOOT_CHECKPOINT_NETWORK,
 	 1u, 0u, 0u, 0u},
 	{"budget.http", AIUS_BOOT_CHECKPOINT_HTTP,
