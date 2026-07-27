@@ -155,16 +155,29 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(valueOf('output.eq.0.type')).toBe('none');
     expect(valueOf('matrix.center_gain_linear')).toBe('0.7071067811865475');
     expect(valueOf('matrix.surround_gain_linear')).toBe('0.7071067811865475');
-    expect(valueOf('matrix.lfe_gain_linear')).toBe('0');
+    expect(valueOf('matrix.lfe_gain_linear')).toBe('0.31622776601683794');
     expect(valueOf('matrix.lfe_crossover_hz')).toBe('120');
-    expect(valueOf('matrix.headroom_linear')).toBe('1');
+    expect(valueOf('matrix.headroom_linear')).toBe('0.5');
     expect(fieldOf('matrix.clipfree').checked).toBe(false);
     expect(fieldOf('matrix.headroom_linear').disabled).toBe(false);
-    expect(fieldOf('limiter.enabled').checked).toBe(false);
-    expect(valueOf('limiter.threshold_dbfs')).toBe('0');
-    expect(valueOf('limiter.attack_ms')).toBe('1');
+    expect(fieldOf('limiter.enabled').checked).toBe(true);
+    expect(valueOf('limiter.threshold_dbfs')).toBe('-1');
+    expect(valueOf('limiter.attack_ms')).toBe('0.5');
     expect(valueOf('limiter.release_ms')).toBe('100');
-    expect(valueOf('limiter.lookahead_ms')).toBe('0');
+    expect(valueOf('limiter.lookahead_ms')).toBe('2');
+  });
+
+  /* The factory-default fixture IS the checked-in factory model: build_config.py
+   * generates AIUS_OPTICAL_CONFIG from firmware/config/optical_dsp.json, and a
+   * factory-fresh GET /api/dsp/config serves exactly that model (source
+   * "default", generation 0). This pin is what keeps the fixture honest -- it
+   * shipped for weeks with pre-limiter-fix values (limiter off, LFE silenced,
+   * doubled headroom) that no test could see, because nothing anchored it to
+   * the firmware's input file. The page's reset-to-default table chains onto
+   * the same anchor: page table -> this fixture -> optical_dsp.json. */
+  it('keeps the default fixture identical to the generated factory model', () => {
+    const factory = JSON.parse(readFileSync(resolve(here, '../../firmware/config/optical_dsp.json'), 'utf8'));
+    expect(fixture('dsp-config-default.json')).toEqual(factory);
   });
 
   it('renders an SD-sourced config including every EQ type and the clip-free policy', async () => {
@@ -504,7 +517,7 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-in-fl-peak').textContent).toBe('--');
     // The rest of the page is unaffected.
     expect(el('apply-state').textContent).toBe('loaded');
-    expect(valueOf('matrix.headroom_linear')).toBe('1');
+    expect(valueOf('matrix.headroom_linear')).toBe('0.5');
 
     const afterFirst = device.calls.filter((call) => call.url === '/api/meters').length;
     await vi.advanceTimersByTimeAsync(1000);

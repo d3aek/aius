@@ -1310,6 +1310,133 @@ fixtures rather than captured device responses, because `GET /api/meters` does
 not exist yet; recheck it against the real endpoint once 14b lands and the wire
 shape above is settled.
 
+#### Editor enhancement — visual surface, presets, ergonomics (task #7)
+
+Contracted 2026-07-27 after the design interview; prebuild-gated the same
+day. **One requirement from the mid-session capture was wrong and is
+dropped: there is NO per-channel L/R output EQ.** `output_eq` stays one
+cascade applied to both channels; no config-model, engine, or wire change
+anywhere in this phase. The phase is page-side only — zero firmware
+*behaviour* changes; one firmware-tree *test-only* update is budgeted:
+`test/dsp-config/test_editor_keys.py` regex-greps `collectModel()`'s
+object-literal shape, so restructuring it (defaults table, preset merge)
+may need the guard's extraction updated in the same commit.
+
+Decisions taken (interview, 2026-07-27):
+
+- **Presets are the full editable model** — the five editable groups
+  (`features`, `input_channels`, `output_eq`, `matrix`, `limiter`), exactly
+  the PUT body minus `source`, the generations, and `sample_rate_hz` (a
+  device fact, displayed read-only).
+- **Presets live at `/sd/www/presets/<name>.json`, using the existing SD
+  file surface end to end — zero new firmware routes.** GET is the public
+  read, PUT and DELETE are the existing auth-gated file verbs (the same
+  surface the flash page's uploader uses), and listing parses the documented
+  HTML directory index (`GET /sd/www/presets/`, 64-entry cap, exact framing
+  pinned in swagger). Chosen over a new `/aius/presets/` route family once
+  the reuse option surfaced; consequences accepted: presets are publicly
+  readable like every www asset, and a missing directory reads as an empty
+  list. Card re-provisioning must stay additive so it never clobbers user
+  presets (noted in `firmware/tools/aius-sd-sync.sh`'s header, where the
+  next provisioning author will look).
+
+  The prebuild gate (2026-07-27) pinned the transport facts slice 2 must
+  build against, all verified in firmware:
+
+  - **One fetch, string body.** The www PUT is a *streamed* request fed to
+    the SD job in chunks, so the 12,288-byte non-streamed body cap does not
+    apply — but it needs `Content-Length`, so the page sends a string, never
+    a `ReadableStream`. `Content-Range` is ignored on the non-replay branch
+    (REPLACE, whole body, offset 0): chunked preset upload is impossible and
+    unnecessary.
+  - **Name grammar, page-enforced before any PUT:** non-empty, ≤27 chars of
+    `[A-Za-z0-9._-]` (32-char segment cap minus `.json`), **not ending in
+    `config` case-insensitively** — `resource_is_config()` is a bare
+    case-sensitive suffix match on `config.json`, so `myconfig.json` would
+    403 on PUT/DELETE while GET still serves it — and a case-insensitive
+    duplicate check, because FAT lookup is case-insensitive (`Bass.json`
+    silently overwrites `bass.json`).
+  - **Refusals are enumerated from the firmware, not swagger** (swagger
+    under-documents the /sd file verbs; slice 2 also catches swagger's
+    `/sd/{resource}` PUT/DELETE response sets up in the same commit).
+    Notably `507 sd_upload` covers both invalid-path and busy-on-PUT and
+    must never render as "card full" (`sd_capacity` is the disk-full
+    token); DELETE of a missing preset is `404 sd_not_found`.
+  - **Index parsing:** skip the `../` row (present in any dir below
+    `www/`), key "empty list" on the `404 sd_not_found` *token* only
+    (`sd_not_directory` means a file named `presets` — an error; every 503
+    is an error, never empty), sort page-side (entries arrive in FAT
+    order), and surface the footer's `truncated: yes` instead of showing a
+    silently partial list.
+- **Load fills the editor; the existing `PUT /api/dsp/config` applies.**
+  There stays exactly one mutation path into the audio hot path; the
+  409/staged-apply flow is unchanged. Upload is the same shape: a local
+  file picked in the browser, validated page-side, then the same preset
+  PUT. **The merge rule is load-bearing:** loading a preset merges ONLY
+  the five editable groups into the form — never `adoptModel()`, which
+  would clobber `baseGeneration` and `sample_rate_hz`. `sample_rate_hz`
+  is live, not cosmetic: the PUT's value becomes the staged model's
+  biquad design rate and nothing compares it to the real audio clock, so
+  a preset saved elsewhere carrying a wrong rate would silently redesign
+  every filter. Preset save writes the five groups only; preset upload
+  validation ignores `source`, the generations, and `sample_rate_hz` if
+  present in a user-edited file.
+- **The visual mix/EQ surface is interactive**, beside text mode on the one
+  editor page: drag handles write frequency/gain back to the same model the
+  text fields edit (wheel adjusts Q); bounds validation identical. Layout:
+  EQ curves + metering top-adjacent in signal-flow order (input meters →
+  input EQ → matrix → output EQ → limiter GR → output meters/waveform).
+- **Auth token persists in `localStorage`**; restored on boot.
+- **Per-parameter reset-to-default** restores the factory value for that
+  field. The defaults table lives in the page and is pinned by a vitest
+  chain with a real anchor: page table → the `dsp-config-default.json`
+  fixture → `firmware/config/optical_dsp.json`, the checked-in input
+  `build_config.py` compiles into `AIUS_OPTICAL_CONFIG`. The gate found
+  the fixture itself was pre-drifted — it still carried pre-item-1/2
+  values (limiter off, LFE silenced, doubled headroom) and every test was
+  green — so the fixture→factory assertion landed with the corrected
+  values *before* slice 1, and the swagger `current` example was fixed in
+  the same commit.
+- **A realtime DSP processing-headroom number** (added 2026-07-27): percent
+  of the per-block cycle budget, derived page-side from the snapshot's
+  `dsp_cycles_last` / `dsp_cycles_max` against
+  `block_frames x cpu_hz / sample_rate_hz` (the same arithmetic the
+  measured-figures tables use: 6,400,000 cycles per 512-frame block at
+  48 kHz). Shown as load % and headroom % beside the existing raw cycle
+  counts; the constants mirror firmware facts with cited sources, like
+  `MODEL_MAX_BYTES`. Sample peak vs true peak is irrelevant here — this is
+  cycle accounting, not level.
+- **A limiter visualization** (added 2026-07-27): the snapshot's
+  `limiter_gain_reduction_db` (instantaneous at publish, documented as
+  such) rendered as a gain-reduction bar plus a short page-side history
+  strip at the 10 Hz poll rate; no firmware change.
+
+Slices, each a commit boundary with its vitest coverage in the same commit:
+
+1. **Ergonomics** — token in `localStorage` (harness adds
+   `localStorage.clear()` per test; accepted: a stored token is readable
+   by any script on the device origin), per-parameter reset, the
+   defaults-table pin.
+2. **Presets** — preset bar (name, save, load-from-list, delete, upload),
+   HTML-index parsing, page-side validation before any PUT, the
+   firmware-enumerated refusal surfacing, and the swagger
+   `/sd/{resource}` PUT/DELETE response-set catch-up with its contract
+   assertions.
+3. **Visual surface** — EQ magnitude curves (RBJ math mirrored in JS for
+   display only, never authoritative), drag/wheel editing, signal-flow
+   layout row, the DSP load/headroom numbers, and the limiter
+   gain-reduction bar + history strip. Geometry and curve math live in
+   pure functions (rect + client coords in, model values out): happy-dom
+   has no layout engine and returns all-zero `getBoundingClientRect`, so
+   unit tests drive the pure functions directly and wiring tests stub the
+   rect; the real-pointer proof of the drag surface belongs to slice 4's
+   browser pass, never synthetic dispatch.
+4. **Deploy + on-device smoke** — upload the changed www assets to the
+   card, load the page against the board (real browser), exercise one
+   preset save/load, one drag edit → Apply round trip, and the
+   load/headroom + limiter strip against live meters. This also closes
+   the long-open Track A asset-smoke debt (B6).
+
 ### OpenAPI catch-up
 
 **Step B5. The `PUT` half is done; `GET /api/meters` waits for 14b** and the wire

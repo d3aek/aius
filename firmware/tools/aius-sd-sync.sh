@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Uploads a web tree to the Aius device over HTTP PUT, one file at a time.
+#
+# ADDITIVE ONLY -- this must never delete, prune, or mirror. User data lives
+# inside the served tree (/sd/www/presets/<name>.json, the DSP editor's named
+# presets), so any future provisioning tool that removes files not present in
+# the source tree would destroy it. Keep every card-provisioning path additive,
+# or exclude presets/ explicitly before adding a destructive mode.
 set -euo pipefail
 
 usage() {
