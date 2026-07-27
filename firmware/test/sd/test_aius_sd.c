@@ -1289,6 +1289,43 @@ static void test_upload_modes(void)
 	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
 	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
 
+	scenario = "upload append-part fresh (.part absent, offset 0)";
+	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
+	request.initial_offset = 0u;
+	request.total = sizeof(abc);
+	action = begin_upload(
+		&job, &request, buffer, sizeof(buffer), AIUS_SD_ACTION_OPEN_READ);
+	/* The .part does not exist, so the size read-open faults -- which at a
+	 * zero claimed offset means "nothing to resume", not a failure: the job
+	 * proceeds to the append open that creates the file and records no
+	 * fault. Found on hardware, where every FRESH PUT /sd/replays/<id>
+	 * answered 500 sd_failure at this phase; only resumes of an existing
+	 * .part ever worked. */
+	action = step_action(&job, 0u, fault_event(action.action_id, 77u),
+	                     AIUS_SD_ACTION_OPEN_APPEND);
+	CHECK(strcmp(action.path, request.target_path) == 0,
+	      "fresh append open path mismatch");
+	CHECK(job.last_fault == AIUS_SD_FAULT_NONE,
+	      "fresh append recorded a fault");
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_NEED_INPUT);
+	CHECK(action.offset == 0u, "fresh append input offset mismatch");
+	action = supply_and_write(
+		&job, action, abc, sizeof(abc), sizeof(abc), AIUS_SD_ACTION_CLOSE);
+	action = acknowledge_ok(&job, &action, AIUS_SD_ACTION_COMPLETE);
+	expect_result(&job, AIUS_SD_RESULT_BYTES, AIUS_SD_FAULT_NONE, 0u);
+
+	scenario = "upload append-part resume against a missing .part still faults";
+	request = upload_request(AIUS_SD_INSTALL_APPEND_PART);
+	request.initial_offset = 4u;
+	request.total = sizeof(abc);
+	action = begin_upload(
+		&job, &request, buffer, sizeof(buffer), AIUS_SD_ACTION_OPEN_READ);
+	/* A non-zero claimed offset with no .part cannot be verified, so the
+	 * open's failure stays a fault. */
+	action = step_action(&job, 0u, fault_event(action.action_id, 78u),
+	                     AIUS_SD_ACTION_FAIL);
+	expect_result(&job, AIUS_SD_RESULT_FAULT, AIUS_SD_FAULT_OPEN, 78u);
+
 	scenario = "upload finalize-part";
 	request = upload_request(AIUS_SD_INSTALL_FINALIZE_PART);
 	request.initial_offset = 4u;

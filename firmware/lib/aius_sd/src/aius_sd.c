@@ -1576,6 +1576,22 @@ static FLASHMEM void handle_fault_event(AiusSdJob *job,
 	if (phase == AIUS_SD_PHASE_INSTALL_RENAME)
 		job->install_failed = true;
 
+	/* A FRESH upload has no .part to size: the read-open failing here with a
+	 * zero claimed offset IS the answer ("nothing to resume") rather than a
+	 * fault -- the append open that follows creates the file, exactly as it
+	 * does after a successful zero-length size check. A non-zero claimed
+	 * offset with no .part stays the fault below: the resume contract cannot
+	 * be verified against a file that is not there. Found on hardware, where
+	 * every fresh PUT /sd/replays/<id> answered 500 sd_failure at this phase
+	 * (fault 9 = OPEN, driver SDDR, zero bytes moved) while the web-tree
+	 * REPLACE path -- which never sizes a .part -- uploaded fine; the flow
+	 * had not been exercised on-device since the storage cutover. */
+	if (phase == AIUS_SD_PHASE_PART_SIZE_OPEN &&
+	    job->initial_offset == 0u) {
+		set_phase(job, AIUS_SD_PHASE_UPLOAD_OPEN, AIUS_SD_OPEN);
+		return;
+	}
+
 	record_fault(job, fault, driver_fault);
 
 	if (phase == AIUS_SD_PHASE_BEGIN) {
