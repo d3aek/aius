@@ -35,6 +35,11 @@ extern "C" {
 #define AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE (AIUS_OPTICAL_APP_USB_PAYLOAD_MAX + 1u)
 #define AIUS_OPTICAL_APP_REPLAY_ID_STORAGE (AIUS_HTTP_MAX_REPLAY_ID + 1u)
 
+/* Probe-bin cap for POST /api/measure/start. The dispatcher deliberately does
+ * not include aius_measure.h (the dispatch seam has no DSP dependency), so
+ * optical_main.cpp static_asserts this equals AIUS_MEASURE_PROBES_MAX. */
+#define AIUS_OPTICAL_APP_MEASURE_PROBES_MAX 8u
+
 /* Directory index -- GET /sd/<dir>/ ---------------------------------------
  *
  * Longest entry name the index lists. The /sd/ download route accepts a path
@@ -222,6 +227,22 @@ typedef struct {
 	 * `batch->capacity` alone. */
 	AiusOpticalAppDirResult (*read_directory)(void *context, const char *path,
 	                                          AiusOpticalAppDirBatch *batch);
+
+	/* The measurement loopback (item 3). Appended AFTER read_directory per the
+	 * append-only rule above, but both are REQUIRED entries -- app_complete()
+	 * refuses a table without them, so a positional initializer that stops at
+	 * read_directory fails init rather than dispatching into a null call.
+	 *
+	 * write_measure serializes the session (state machine, figures, floors,
+	 * vector id) for the public GET. measure_start arms a capture against the
+	 * named replay vector with the per-channel fit frequencies and up to
+	 * AIUS_OPTICAL_APP_MEASURE_PROBES_MAX frequency-response probe bins; false
+	 * means refused (a live capture, or parameters the analysis rejected) and
+	 * the dispatcher answers 409. */
+	size_t (*write_measure)(void *context, uint8_t *body, size_t capacity);
+	bool (*measure_start)(void *context, const char *vector_id,
+	                      uint32_t f0_l_hz, uint32_t f0_r_hz,
+	                      const uint32_t *probes_hz, size_t probe_count);
 } AiusOpticalApp;
 
 /* Caller-owned dispatcher state.

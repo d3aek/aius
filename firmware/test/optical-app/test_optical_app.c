@@ -67,6 +67,14 @@ typedef struct {
 	unsigned reboots;
 	unsigned clears;
 	unsigned stops;
+
+	/* What the last measure_start carried, and whether to accept it. */
+	bool measure_start_result;
+	char last_measure_id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
+	uint32_t last_measure_f0_l;
+	uint32_t last_measure_f0_r;
+	uint32_t last_measure_probes[AIUS_OPTICAL_APP_MEASURE_PROBES_MAX];
+	size_t last_measure_probe_count;
 } Fake;
 
 typedef struct {
@@ -288,6 +296,28 @@ static uint32_t fake_upload_id(void *context)
 	return fake->upload_id;
 }
 
+static size_t fake_write_measure(void *context, uint8_t *body, size_t capacity)
+{
+	return fake_serialize((Fake *)context, "measure", body, capacity);
+}
+
+static bool fake_measure_start(void *context, const char *vector_id,
+                               uint32_t f0_l_hz, uint32_t f0_r_hz,
+                               const uint32_t *probes_hz, size_t probe_count)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "measure_start");
+	snprintf(fake->last_measure_id, sizeof(fake->last_measure_id), "%s",
+	         vector_id);
+	fake->last_measure_f0_l = f0_l_hz;
+	fake->last_measure_f0_r = f0_r_hz;
+	assert(probe_count <= AIUS_OPTICAL_APP_MEASURE_PROBES_MAX);
+	memcpy(fake->last_measure_probes, probes_hz,
+	       probe_count * sizeof(uint32_t));
+	fake->last_measure_probe_count = probe_count;
+	return fake->measure_start_result;
+}
+
 static AiusOpticalApp fake_app(Fake *fake)
 {
 	AiusOpticalApp app;
@@ -314,6 +344,8 @@ static AiusOpticalApp fake_app(Fake *fake)
 	app.request_reboot = fake_request_reboot;
 	app.write_usb_payload = fake_write_usb_payload;
 	app.upload_id = fake_upload_id;
+	app.write_measure = fake_write_measure;
+	app.measure_start = fake_measure_start;
 	return app;
 }
 
@@ -334,6 +366,7 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.dsp_store = AIUS_OPTICAL_APP_STORE_ACCEPTED;
 	fixture->fake.replay_start_result = AIUS_OPTICAL_APP_REPLAY_OK;
 	fixture->fake.replay_delete_result = AIUS_OPTICAL_APP_REPLAY_OK;
+	fixture->fake.measure_start_result = true;
 	fixture->fake.dir_result = AIUS_OPTICAL_APP_DIR_OK;
 	fixture->fake.upload_id = 0x1234abcdu;
 	snprintf(fixture->fake.usb_payload, sizeof(fixture->fake.usb_payload),
@@ -511,7 +544,7 @@ static void test_init_validation(void)
 
 	/* Every callback is required; a hole must be refused at init, never
 	 * discovered as a null call during dispatch. */
-	for (size_t i = 0; i < 20u; ++i) {
+	for (size_t i = 0; i < 22u; ++i) {
 		AiusOpticalApp holed = fake_app(&fake);
 		void **slots[] = {
 			(void **)&holed.sd_ready, (void **)&holed.sd_busy,
@@ -525,9 +558,10 @@ static void test_init_validation(void)
 			(void **)&holed.replay_delete, (void **)&holed.replay_stop,
 			(void **)&holed.set_test_running, (void **)&holed.clear_counters,
 			(void **)&holed.request_reboot, (void **)&holed.write_usb_payload,
-			(void **)&holed.upload_id
+			(void **)&holed.upload_id, (void **)&holed.write_measure,
+			(void **)&holed.measure_start
 		};
-		assert(ARRAY_LENGTH(slots) == 20u);
+		assert(ARRAY_LENGTH(slots) == 22u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_init(&dispatcher, &holed, body, sizeof(body)));
 		assert(aius_optical_app_http_dispatch(&dispatcher, &request) == NULL);
@@ -561,6 +595,8 @@ static void test_golden_immediate_routes(void)
 	assert(fixture.fake.last_cursor == 42u);
 	expect_immediate(dispatch_get(&fixture, "GET /api/meters"), 200,
 	                 "{\"body\":\"meters\"}");
+	expect_immediate(dispatch_get(&fixture, "GET /api/measure"), 200,
+	                 "{\"body\":\"measure\"}");
 	expect_immediate(dispatch_get(&fixture, "GET /api/dsp/config"), 200,
 	                 "{\"body\":\"dsp_config\"}");
 	expect_immediate(dispatch_get(&fixture, "GET /api/sd"), 200,
@@ -620,7 +656,8 @@ static void test_control_routes_are_authenticated(void)
 		{ "POST /api/reboot", "{\"ok\":true,\"rebooting\":true}" }
 	};
 	static const char *const public_routes[] = {
-		"GET /api/status", "GET /api/events", "GET /api/meters"
+		"GET /api/status", "GET /api/events", "GET /api/meters",
+		"GET /api/measure"
 	};
 	static const char *const refused_calls[] = { "auth_matches" };
 	fixture_init(&fixture);
@@ -1651,6 +1688,97 @@ static void test_replay_body_whitespace(void)
 
 /* One dispatch touches exactly the callbacks its decision needs -- no probing,
  * no speculative serialization, and nothing after a refusal. */
+static void test_measure_control(void)
+{
+	Fixture fixture;
+	fixture_init(&fixture);
+
+	/* The arm is a control route: refused with no token and with a wrong one,
+	 * before the body is even parsed. */
+	static const char *const refused_calls[] = { "auth_matches" };
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+	                                  NULL, "{\"id\":\"pcm440_m6\"}", -1),
+	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+	expect_log(&fixture, refused_calls, ARRAY_LENGTH(refused_calls));
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+	                                  "X-Aius-SD-Auth: wrong\r\n",
+	                                  "{\"id\":\"pcm440_m6\"}", -1),
+	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+	assert(fixture.fake.last_measure_id[0] == '\0');
+
+	/* Minimal body: both fit frequencies default to the corpus baseline. */
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"pcm440_m6\"}", -1),
+	                 200,
+	                 "{\"ok\":true,\"state\":\"armed\",\"id\":\"pcm440_m6\"}");
+	assert(strcmp(fixture.fake.last_measure_id, "pcm440_m6") == 0);
+	assert(fixture.fake.last_measure_f0_l == 440u);
+	assert(fixture.fake.last_measure_f0_r == 440u);
+	assert(fixture.fake.last_measure_probe_count == 0u);
+
+	/* Full body: per-channel frequencies and probe bins arrive as sent. */
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"pcm440_660_split\","
+	                                  "\"f0_l\":440,\"f0_r\":660,"
+	                                  "\"probes\":[40,100,16000]}", -1),
+	                 200,
+	                 "{\"ok\":true,\"state\":\"armed\","
+	                 "\"id\":\"pcm440_660_split\"}");
+	assert(fixture.fake.last_measure_f0_l == 440u);
+	assert(fixture.fake.last_measure_f0_r == 660u);
+	assert(fixture.fake.last_measure_probe_count == 3u);
+	assert(fixture.fake.last_measure_probes[0] == 40u);
+	assert(fixture.fake.last_measure_probes[2] == 16000u);
+
+	/* An empty probes array is legal and arrives as zero probes. */
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"pcm440_m6\",\"probes\":[]}",
+	                                  -1),
+	                 200,
+	                 "{\"ok\":true,\"state\":\"armed\",\"id\":\"pcm440_m6\"}");
+	assert(fixture.fake.last_measure_probe_count == 0u);
+
+	/* A refusal from the application is the 409, verbatim. */
+	fixture.fake.measure_start_result = false;
+	expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+	                                  "X-Aius-SD-Auth: token\r\n",
+	                                  "{\"id\":\"pcm440_m6\"}", -1),
+	                 409, "{\"ok\":false,\"error\":\"measure_start\"}");
+	fixture.fake.measure_start_result = true;
+
+	/* Malformed bodies never reach the application: missing id, bad id
+	 * charset, duplicate keys, unknown keys, a ninth probe, a fractional
+	 * frequency, and trailing bytes. */
+	fixture_reset_log(&fixture);
+	static const char *const bad_bodies[] = {
+		"{}",
+		"{\"id\":\"bad id\"}",
+		"{\"id\":\"a\",\"id\":\"b\"}",
+		"{\"id\":\"a\",\"f0_l\":440,\"f0_l\":440}",
+		"{\"id\":\"a\",\"volume\":1}",
+		"{\"id\":\"a\",\"probes\":[1,2,3,4,5,6,7,8,9]}",
+		"{\"id\":\"a\",\"f0_l\":440.5}",
+		"{\"id\":\"a\"} x"
+	};
+	for (size_t i = 0; i < ARRAY_LENGTH(bad_bodies); ++i)
+		expect_immediate(dispatch_request(&fixture, "POST /api/measure/start",
+		                                  "X-Aius-SD-Auth: token\r\n",
+		                                  bad_bodies[i], -1),
+		                 400, "{\"ok\":false,\"error\":\"measure_body\"}");
+	for (size_t i = 0; i < fixture.fake.log_count; ++i)
+		assert(strcmp(fixture.fake.log[i], "measure_start") != 0);
+
+	/* The public read serves with no credential and no auth call. */
+	fixture_reset_log(&fixture);
+	expect_immediate(dispatch_get(&fixture, "GET /api/measure"), 200,
+	                 "{\"body\":\"measure\"}");
+	assert(fixture.fake.log_count == 1u);
+	assert(strcmp(fixture.fake.log[0], "measure") == 0);
+}
+
 static void test_callback_isolation(void)
 {
 	Fixture fixture;
@@ -1896,9 +2024,12 @@ static void test_route_coverage(void)
 		{ "POST /api/replays/stop", "X-Aius-SD-Auth: token\r\n", NULL, -1 },
 		{ "DELETE /api/replays", "X-Aius-SD-Auth: token\r\n",
 		  "{\"id\":\"take1\"}", -1 },
-		{ "GET /sd/replays/take1", NULL, NULL, -1 }
+		{ "GET /sd/replays/take1", NULL, NULL, -1 },
+		{ "GET /api/measure", NULL, NULL, -1 },
+		{ "POST /api/measure/start", "X-Aius-SD-Auth: token\r\n",
+		  "{\"id\":\"pcm440_m6\"}", -1 }
 	};
-	bool seen[AIUS_HTTP_ROUTE_SD_REPLAY + 1u];
+	bool seen[AIUS_HTTP_ROUTE_MEASURE_START + 1u];
 	memset(seen, 0, sizeof(seen));
 	fixture_init(&fixture);
 
@@ -1910,13 +2041,13 @@ static void test_route_coverage(void)
 		assert(response->status >= 200u && response->status < 600u);
 		assert(response->content_type != NULL);
 		assert(response->body_length == 0u || response->body != NULL);
-		assert(fixture.request.route <= AIUS_HTTP_ROUTE_SD_REPLAY);
+		assert(fixture.request.route <= AIUS_HTTP_ROUTE_MEASURE_START);
 		seen[fixture.request.route] = true;
 	}
 	/* AIUS_HTTP_ROUTE_UNKNOWN never survives the parser, so the inventory is
 	 * every other enumerator. */
 	for (unsigned route = AIUS_HTTP_ROUTE_HOME;
-	     route <= AIUS_HTTP_ROUTE_SD_REPLAY; ++route) {
+	     route <= AIUS_HTTP_ROUTE_MEASURE_START; ++route) {
 		if (!seen[route])
 			fprintf(stderr, "route %u has no dispatch coverage\n", route);
 		assert(seen[route]);
@@ -1944,6 +2075,7 @@ int main(void)
 	RUN_TEST(test_replay_control);
 	RUN_TEST(test_replay_card_routes_are_gated);
 	RUN_TEST(test_replay_body_whitespace);
+	RUN_TEST(test_measure_control);
 	RUN_TEST(test_callback_isolation);
 	RUN_TEST(test_dispatch_counts);
 	RUN_TEST(test_usb_commands);

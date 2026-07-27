@@ -746,6 +746,23 @@ bit-identical slicing invariance. Two findings the build added to the contract:
   on device — the 16-bit stimulus floors bind first — but the surface's
   per-figure floor statement (slice on the HTTP surface) should say it.
 
+**Slice 4 delivered (2026-07-27).** The surface: `GET /api/measure` (public
+read — state machine, figures once published, the stimulus floors beside
+them, vector id, and the METRICS overrun counter) and `POST
+/api/measure/start` (auth-gated — it joined `route_is_control()` as the
+fifth control route, which is exactly that gate's definition: mutates the
+running system, touches no card). The body is strict on the replay-body
+pattern: `id` required, `f0_l`/`f0_r` optional integers defaulting to 440,
+`probes` up to 8 integer Hz; duplicates, unknown keys, fractions and
+trailing bytes refuse with `400 measure_body`; a live capture or
+analysis-rejected parameters answer `409 measure_start`. Swagger and the
+contract suite moved in the same commit (`Measure`/`MeasureFigures`/
+`MeasureStartRequest` schemas pin the state vocabulary, both geometries,
+the floors and the arm-then-start operator order). Known adjacent debt,
+NOT this slice's: the pre-existing sd-editor vitest failures (15 in
+`dsp-editor.test.js`, apply/PUT flow) and the still-undocumented replay
+schemas in swagger.
+
 **Slice 3 delivered (2026-07-27).** The runtime wiring, exactly as contracted
 above: the tap sits after the tx24 commit in `enqueue()` (at 24-bit width the
 committed words ARE the processed planes, so tapping the planes taps the

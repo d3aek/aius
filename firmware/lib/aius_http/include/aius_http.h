@@ -49,7 +49,11 @@ typedef enum {
 	AIUS_HTTP_ROUTE_REPLAYS_STOP,
 	/* Deleting a replay is DELETE /api/replays, i.e. AIUS_HTTP_ROUTE_REPLAYS
 	 * with AIUS_HTTP_DELETE -- there is no separate delete path to parse. */
-	AIUS_HTTP_ROUTE_SD_REPLAY
+	AIUS_HTTP_ROUTE_SD_REPLAY,
+	/* The measurement loopback (item 3): GET /api/measure is the public read
+	 * (state machine + figures), POST /api/measure/start the auth-gated arm. */
+	AIUS_HTTP_ROUTE_MEASURE,
+	AIUS_HTTP_ROUTE_MEASURE_START
 } AiusHttpRoute;
 
 typedef enum {

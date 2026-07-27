@@ -144,6 +144,10 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_REPLAYS_START;
 	if (token_equals(path, length, "/api/replays/stop"))
 		return AIUS_HTTP_ROUTE_REPLAYS_STOP;
+	if (token_equals(path, length, "/api/measure"))
+		return AIUS_HTTP_ROUTE_MEASURE;
+	if (token_equals(path, length, "/api/measure/start"))
+		return AIUS_HTTP_ROUTE_MEASURE_START;
 	if (token_equals(path, length, "/api/sd"))
 		return AIUS_HTTP_ROUTE_SD_STATUS;
 	if (has_prefix(path, length, "/sd/replays/") &&
@@ -382,6 +386,10 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_START && request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS_STOP && request->method != AIUS_HTTP_POST)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_MEASURE && request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_MEASURE_START && request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS &&
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_DELETE)

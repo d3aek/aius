@@ -45,6 +45,29 @@ static void test_dsp_config_route(void)
 	       AIUS_HTTP_ERR_ROUTE);
 }
 
+/* The measurement loopback's two routes: the public read is GET-only, the arm
+ * is POST-only, and a near-miss path stays unknown. */
+static void test_measure_routes(void)
+{
+	AiusHttpRequest request;
+	const char *post_read = "POST /api/measure HTTP/1.0\r\n\r\n";
+	const char *get_start = "GET /api/measure/start HTTP/1.0\r\n\r\n";
+	const char *put_read = "PUT /api/measure HTTP/1.0\r\n\r\n";
+	const char *near_miss = "GET /api/measurement HTTP/1.0\r\n\r\n";
+
+	parse_ok("GET /api/measure HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_MEASURE);
+	parse_ok("POST /api/measure/start HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}",
+	         AIUS_HTTP_ROUTE_MEASURE_START);
+	assert(aius_http_parse((const uint8_t *)post_read, strlen(post_read),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)get_start, strlen(get_start),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)put_read, strlen(put_read),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)near_miss, strlen(near_miss),
+	                       &request) == AIUS_HTTP_ERR_ROUTE);
+}
+
 /* The directory index rides the existing /sd/ parse: a resource ending in a
  * slash is an ordinary AIUS_HTTP_ROUTE_SD_FILE resource, and the trailing slash
  * survives into `resource` for the dispatcher to read. That is why the listing
@@ -529,6 +552,7 @@ int main(void)
 	test_framing_header_name_case();
 	test_sd_directory_resource();
 	test_dsp_config_route();
+	test_measure_routes();
 	test_replay_routes();
 	test_framing();
 	test_response_headers();

@@ -448,6 +448,131 @@ static FLASHMEM bool replay_body_id(AiusOpticalAppDispatcher *dispatcher,
 	return true;
 }
 
+/* Strict unsigned integer for the measure body: bare digits only (no sign, no
+ * fraction, no exponent -- a frequency in Hz has no business carrying any),
+ * bounded to 7 digits so the value stays far inside uint32. */
+static FLASHMEM bool body_take_uint(AiusJsonCursor *cursor, uint32_t *value)
+{
+	aius_json_skip_whitespace(cursor);
+	uint32_t parsed = 0;
+	size_t digits = 0;
+	while (cursor->pos < cursor->len) {
+		uint8_t ch = cursor->data[cursor->pos];
+		if (ch < '0' || ch > '9')
+			break;
+		if (++digits > 7u)
+			return false;
+		parsed = parsed * 10u + (uint32_t)(ch - '0');
+		cursor->pos++;
+	}
+	if (digits == 0)
+		return false;
+	*value = parsed;
+	return true;
+}
+
+/* POST /api/measure/start body, read with the same strictness as
+ * replay_body_id above: {"id":"<vector>"} with optional "f0_l"/"f0_r"
+ * (integer Hz, default 440 -- the corpus baseline) and an optional "probes"
+ * array of up to AIUS_OPTICAL_APP_MEASURE_PROBES_MAX integer frequencies.
+ * Unknown keys, duplicates, non-integer numbers and trailing bytes refuse;
+ * range validation belongs to the analysis (fs/2 bounds), not the parser. */
+static FLASHMEM bool measure_body(const AiusHttpRequest *request,
+                                  char *id, size_t id_capacity,
+                                  uint32_t *f0_l_hz, uint32_t *f0_r_hz,
+                                  uint32_t *probes_hz, size_t *probe_count)
+{
+	AiusJsonCursor cursor = { request->body, request->body_length, 0u };
+	const uint8_t *vector = NULL;
+	size_t vector_length = 0u;
+	bool seen_f0_l = false, seen_f0_r = false, seen_probes = false;
+
+	id[0] = '\0';
+	*f0_l_hz = 440u;
+	*f0_r_hz = 440u;
+	*probe_count = 0u;
+	if (request->body == NULL || !body_consume(&cursor, '{'))
+		return false;
+	for (;;) {
+		const uint8_t *key;
+		size_t key_length;
+		if (!body_take_string(&cursor, &key, &key_length) ||
+		    !body_consume(&cursor, ':'))
+			return false;
+		if (body_key_is(key, key_length, "id")) {
+			if (vector != NULL ||
+			    !body_take_string(&cursor, &vector, &vector_length))
+				return false;
+		} else if (body_key_is(key, key_length, "f0_l")) {
+			if (seen_f0_l || !body_take_uint(&cursor, f0_l_hz))
+				return false;
+			seen_f0_l = true;
+		} else if (body_key_is(key, key_length, "f0_r")) {
+			if (seen_f0_r || !body_take_uint(&cursor, f0_r_hz))
+				return false;
+			seen_f0_r = true;
+		} else if (body_key_is(key, key_length, "probes")) {
+			if (seen_probes || !body_consume(&cursor, '['))
+				return false;
+			seen_probes = true;
+			if (!body_consume(&cursor, ']')) {
+				do {
+					if (*probe_count >= AIUS_OPTICAL_APP_MEASURE_PROBES_MAX ||
+					    !body_take_uint(&cursor, &probes_hz[*probe_count]))
+						return false;
+					(*probe_count)++;
+				} while (body_consume(&cursor, ','));
+				if (!body_consume(&cursor, ']'))
+					return false;
+			}
+		} else {
+			return false;
+		}
+		if (!body_consume(&cursor, ','))
+			break;
+	}
+	if (!body_consume(&cursor, '}'))
+		return false;
+	aius_json_skip_whitespace(&cursor);
+	if (!aius_json_at_end(&cursor))
+		return false;
+	if (vector == NULL || !replay_id_chars_valid(vector, vector_length) ||
+	    vector_length >= id_capacity)
+		return false;
+	memcpy(id, vector, vector_length);
+	id[vector_length] = '\0';
+	return true;
+}
+
+static FLASHMEM const AiusHttpApplicationResponse *dispatch_measure(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
+{
+	const AiusOpticalApp *app = &dispatcher->app;
+	if (request->route == AIUS_HTTP_ROUTE_MEASURE)
+		return http_serialized(dispatcher, kContentJson,
+		                       app->write_measure(app->context,
+		                                          dispatcher->body,
+		                                          dispatcher->body_capacity));
+	/* MEASURE_START: the control-route auth gate already ran in the entry
+	 * switch. Parsed into locals -- the callback copies synchronously, so
+	 * nothing here joins the dispatcher's borrow set. */
+	char id[AIUS_OPTICAL_APP_REPLAY_ID_STORAGE];
+	uint32_t f0_l_hz, f0_r_hz;
+	uint32_t probes_hz[AIUS_OPTICAL_APP_MEASURE_PROBES_MAX];
+	size_t probe_count;
+	if (!measure_body(request, id, sizeof(id), &f0_l_hz, &f0_r_hz,
+	                  probes_hz, &probe_count))
+		return http_error(dispatcher, 400, "measure_body");
+	if (!app->measure_start(app->context, id, f0_l_hz, f0_r_hz, probes_hz,
+	                        probe_count))
+		/* Refused: a live capture, or parameters the analysis rejected
+		 * (f0/probe outside (0, fs/2)). GET /api/measure says which. */
+		return http_error(dispatcher, 409, "measure_start");
+	return http_body_text(dispatcher, 200,
+		snprintf((char *)dispatcher->body, dispatcher->body_capacity,
+		         "{\"ok\":true,\"state\":\"armed\",\"id\":\"%s\"}", id));
+}
+
 /* ------------------------------------------------------------------ */
 /* SD job responses                                                    */
 /* ------------------------------------------------------------------ */
@@ -1019,7 +1144,8 @@ static FLASHMEM bool app_complete(const AiusOpticalApp *app)
 	       app->replay_start != NULL && app->replay_delete != NULL &&
 	       app->replay_stop != NULL && app->set_test_running != NULL &&
 	       app->clear_counters != NULL && app->request_reboot != NULL &&
-	       app->write_usb_payload != NULL && app->upload_id != NULL;
+	       app->write_usb_payload != NULL && app->upload_id != NULL &&
+	       app->write_measure != NULL && app->measure_start != NULL;
 }
 
 FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
@@ -1060,10 +1186,13 @@ FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
  * the board and read this repository. */
 static FLASHMEM bool route_is_control(AiusHttpRoute route)
 {
+	/* MEASURE_START is the fifth: arming a capture mutates the running system
+	 * without touching the card, which is exactly this gate's definition. */
 	return route == AIUS_HTTP_ROUTE_START ||
 	       route == AIUS_HTTP_ROUTE_STOP ||
 	       route == AIUS_HTTP_ROUTE_CLEAR ||
-	       route == AIUS_HTTP_ROUTE_REBOOT;
+	       route == AIUS_HTTP_ROUTE_REBOOT ||
+	       route == AIUS_HTTP_ROUTE_MEASURE_START;
 }
 
 FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
@@ -1113,6 +1242,9 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 	case AIUS_HTTP_ROUTE_REPLAYS_START:
 	case AIUS_HTTP_ROUTE_REPLAYS_STOP:
 		return dispatch_replays(dispatcher, request);
+	case AIUS_HTTP_ROUTE_MEASURE:
+	case AIUS_HTTP_ROUTE_MEASURE_START:
+		return dispatch_measure(dispatcher, request);
 	case AIUS_HTTP_ROUTE_START:
 		app->set_test_running(app->context, true);
 		return http_json(dispatcher, 200, "{\"ok\":true,\"running\":true}");

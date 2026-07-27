@@ -990,6 +990,26 @@ static uint32_t app_upload_id(void *context)
 	return 7u;
 }
 
+static size_t app_write_measure(void *context, uint8_t *body, size_t capacity)
+{
+	(void)context;
+	int written = snprintf((char *)body, capacity, "{\"body\":\"measure\"}");
+	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
+}
+
+static bool app_measure_start(void *context, const char *vector_id,
+                              uint32_t f0_l_hz, uint32_t f0_r_hz,
+                              const uint32_t *probes_hz, size_t probe_count)
+{
+	(void)context;
+	(void)vector_id;
+	(void)f0_l_hz;
+	(void)f0_r_hz;
+	(void)probes_hz;
+	(void)probe_count;
+	return true;
+}
+
 static AiusOpticalApp app_table(void)
 {
 	AiusOpticalApp app;
@@ -1016,6 +1036,8 @@ static AiusOpticalApp app_table(void)
 	app.request_reboot = app_request_reboot;
 	app.write_usb_payload = app_write_usb_payload;
 	app.upload_id = app_upload_id;
+	app.write_measure = app_write_measure;
+	app.measure_start = app_measure_start;
 	return app;
 }
 

@@ -2626,6 +2626,16 @@ static FLASHMEM AiusOpticalAppDirResult app_read_directory(
 	return AIUS_OPTICAL_APP_DIR_OK;
 }
 
+/* The measurement callbacks are DEFINED beside the measurement session (after
+ * this table -- their bodies read state that lives with the METRICS-checkpoint
+ * glue), and declared here so the positional aggregate can name them. FLASHMEM
+ * sits on the definitions, per the rule that a prototype-only attribute
+ * silently lands the code in ITCM. */
+static size_t app_write_measure(void *, uint8_t *body, size_t capacity);
+static bool app_measure_start(void *, const char *vector_id, uint32_t f0_l_hz,
+                              uint32_t f0_r_hz, const uint32_t *probes_hz,
+                              size_t probe_count);
+
 /* Handed to aius_optical_app_init() by slice S2a. Deliberately external
  * linkage: an internal-linkage table nothing references yet is exactly the
  * shape -Wunused-variable reports, whereas an extern definition is never
@@ -2655,7 +2665,9 @@ const AiusOpticalApp g_aius_optical_app = {
 	app_request_reboot,
 	app_write_usb_payload,
 	app_upload_id,
-	app_read_directory
+	app_read_directory,
+	app_write_measure,
+	app_measure_start
 };
 
 /* ------------------------------------------------------------------ */
@@ -3009,6 +3021,138 @@ static FLASHMEM void measure_epoch_service(uint32_t now_ms)
 	default:
 		break; /* idle, done, failed: nothing owed this epoch */
 	}
+}
+
+static_assert(AIUS_OPTICAL_APP_MEASURE_PROBES_MAX == AIUS_MEASURE_PROBES_MAX,
+              "the dispatcher's probe cap mirrors aius_measure.h's; change both");
+
+static FLASHMEM const char *measure_state_name(uint32_t state)
+{
+	switch (state) {
+	case AIUS_MEASURE_ARMED: return "armed";
+	case AIUS_MEASURE_CAPTURING: return "capturing";
+	case AIUS_MEASURE_CAPTURED: return "captured";
+	case AIUS_MEASURE_ANALYSING: return "analysing";
+	case AIUS_MEASURE_DONE: return "done";
+	case AIUS_MEASURE_CANCELLING: return "cancelling";
+	case AIUS_MEASURE_FAILED: return "failed";
+	default: return "idle";
+	}
+}
+
+static FLASHMEM const char *measure_fail_name(uint32_t reason)
+{
+	switch (reason) {
+	case AIUS_MEASURE_FAIL_GENERATION: return "generation";
+	case AIUS_MEASURE_FAIL_OVERRUN: return "overrun";
+	case AIUS_MEASURE_FAIL_CANCELLED: return "cancelled";
+	case AIUS_MEASURE_FAIL_RECLAIMED: return "reclaimed";
+	default: return "none";
+	}
+}
+
+/* One channel's figures as a nested object. Ratios to 0.01 dB (the analysis
+ * resolves far finer than any stated floor); harmonic and probe arrays are
+ * positional, like the meters' input array. */
+static FLASHMEM bool measure_figures_json(char *output, size_t capacity,
+                                          size_t *length, const char *key,
+                                          const AiusMeasureFigures *fig)
+{
+	if (!http_json_append(output, capacity, length,
+	                      "\"%s\":{\"f0_hz\":%.1f,\"fundamental_dbfs\":%.2f,"
+	                      "\"dc_dbfs\":%.1f,\"thd_n_db\":%.2f,\"snr_db\":%.2f,"
+	                      "\"thd_db\":%.2f,\"harmonics_dbc\":[",
+	                      key, fig->f0_hz, fig->fundamental_dbfs, fig->dc_dbfs,
+	                      fig->thd_n_db, fig->snr_db, fig->thd_db))
+		return false;
+	for (uint32_t h = 0; h < fig->harmonics; h++)
+		if (!http_json_append(output, capacity, length, "%s%.1f",
+		                      h == 0 ? "" : ",", fig->harmonic_dbc[h]))
+			return false;
+	if (!http_json_append(output, capacity, length, "],\"probes_dbfs\":["))
+		return false;
+	for (uint32_t p = 0; p < fig->probes; p++)
+		if (!http_json_append(output, capacity, length, "%s%.2f",
+		                      p == 0 ? "" : ",", fig->probe_dbfs[p]))
+			return false;
+	return http_json_append(output, capacity, length, "]}");
+}
+
+/* GET /api/measure: the state machine, the figures once published, and the
+ * resolvable floors beside them, as the design requires ("the figures, each
+ * with its resolvable floor, and the vector id they were measured against").
+ * The floors are properties of the 16-bit STIMULUS, not of the analysis:
+ * THD+N and SNR bottom out at the replay vectors' quantization floor
+ * (~-96 dB; the analysis itself proves ~-140 dB on 24-bit synthesis), Goertzel
+ * harmonic THD stays usable to ~-95 dBc, and the -140 dB inter-stage floor is
+ * not verifiable on-device by any 16-bit transport -- it stays host-proven.
+ * SNR's harmonic exclusion additionally inherits the harmonic estimate's
+ * leakage-limited accuracy (~-90 dB of the subtracted harmonic). */
+static FLASHMEM size_t http_measure_json(uint8_t *body, size_t capacity)
+{
+	const MeasureSession &s = g_measure_session;
+	const uint32_t state = g_measure_capture.state;
+	char *output = (char *)body;
+	size_t length = 0;
+	if (!http_json_append(output, capacity, &length,
+	                      "{\"state\":\"%s\",\"fail_reason\":\"%s\",",
+	                      measure_state_name(state),
+	                      measure_fail_name(g_measure_capture.fail_reason)))
+		return 0;
+	if (s.started) {
+		if (!http_json_append(output, capacity, &length,
+		                      "\"vector_id\":\"%s\",", s.vector_id))
+			return 0;
+	} else if (!http_json_append(output, capacity, &length,
+	                             "\"vector_id\":null,")) {
+		return 0;
+	}
+	if (!http_json_append(output, capacity, &length,
+	                      "\"captured_frames\":%lu,\"capture_frames\":%lu,"
+	                      "\"analysed_frames\":%lu,\"window_frames\":%lu,",
+	                      (unsigned long)g_measure_capture.cursor,
+	                      (unsigned long)AIUS_MEASURE_CAPTURE_FRAMES,
+	                      (unsigned long)s.analysis_offset,
+	                      (unsigned long)AIUS_MEASURE_WINDOW_FRAMES))
+		return 0;
+	if (s.figures_valid) {
+		if (!http_json_append(output, capacity, &length, "\"figures\":{") ||
+		    !measure_figures_json(output, capacity, &length, "l",
+		                          &s.figures_l) ||
+		    !http_json_append(output, capacity, &length, ",") ||
+		    !measure_figures_json(output, capacity, &length, "r",
+		                          &s.figures_r) ||
+		    !http_json_append(output, capacity, &length, "},"))
+			return 0;
+	} else if (!http_json_append(output, capacity, &length,
+	                             "\"figures\":null,")) {
+		return 0;
+	}
+	return http_json_append(output, capacity, &length,
+	                        "\"floors\":{\"thd_n_db\":-96.0,\"snr_db\":96.0,"
+	                        "\"thd_dbc\":-95.0},"
+	                        "\"metrics_service_overruns\":%lu}",
+	                        (unsigned long)g_metrics_service_overruns)
+		? length : 0;
+}
+
+static FLASHMEM size_t app_write_measure(void *, uint8_t *body, size_t capacity)
+{
+	return http_measure_json(body, capacity);
+}
+
+static FLASHMEM bool app_measure_start(void *, const char *vector_id,
+                                       uint32_t f0_l_hz, uint32_t f0_r_hz,
+                                       const uint32_t *probes_hz,
+                                       size_t probe_count)
+{
+	double probes[AIUS_MEASURE_PROBES_MAX];
+	if (probe_count > AIUS_MEASURE_PROBES_MAX)
+		return false;
+	for (size_t p = 0; p < probe_count; p++)
+		probes[p] = (double)probes_hz[p];
+	return measure_start(vector_id, (double)f0_l_hz, (double)f0_r_hz, probes,
+	                     (uint32_t)probe_count);
 }
 
 /* Checkpoint 3. service_hw_metrics() is already its own one-sample-per-second
