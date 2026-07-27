@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aius device status</title>
+  <!-- replays.css carries the shared chrome for every SD page; this page adds
+       nothing of its own beyond the page layer at the foot of that sheet. -->
+  <link rel="stylesheet" href="replays.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">AIUS / SD CARD</p>
+        <h1>Device status</h1>
+        <p class="lede">One <code>GET /api/status</code> per second, whole. Read-only and public: nothing on this page writes to the device, so it needs no auth token.</p>
+      </div>
+      <nav><a href="index.html">DSP editor</a><a href="replays.html">Replay manager</a></nav>
+    </header>
+
+    <section class="card status-card">
+      <div class="section-title"><h2>Audio path</h2><span id="audio-pill" class="pill">loading</span></div>
+      <p class="hint">What is feeding the output right now, and what the transmit gate did with it.</p>
+      <p id="flow" class="flow"></p>
+      <div id="audio-grid" class="status-grid">
+        <div><span>Input source</span><strong id="input-source">--</strong></div>
+        <div><span>Audio state</span><strong id="audio-state">--</strong></div>
+        <div><span>Optical carrier</span><strong id="carrier">--</strong></div>
+        <div><span>Stream format</span><strong id="format">--</strong></div>
+        <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
+        <div><span>Blocks processed</span><strong id="blocks">--</strong></div>
+        <div><span>Overruns</span><strong id="overruns">--</strong></div>
+        <div><span>Gate open</span><strong id="gate-open">--</strong></div>
+        <div><span>Gate carrier lock</span><strong id="gate-carrier">--</strong></div>
+        <div><span>Gate replay term</span><strong id="gate-replay">--</strong></div>
+      </div>
+      <p id="poll-status" class="hint" role="status">Reading device status...</p>
+      <p id="poll-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Configuration</h2><span id="config-pill" class="pill">loading</span></div>
+      <p class="hint">The effective DSP model's source and the boot configuration's validity. Edit the model on the <a href="index.html">DSP editor</a> page.</p>
+      <div id="config-grid" class="status-grid">
+        <div><span>DSP model source</span><strong id="dsp-source">--</strong></div>
+        <div><span>Configuration valid</span><strong id="config-valid">--</strong></div>
+        <div><span>Configuration error</span><strong id="config-error">--</strong></div>
+        <div><span>Errors since boot</span><strong id="config-errors">--</strong></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Network</h2><span id="network-pill" class="pill">loading</span></div>
+      <p class="hint">The supervisor owns every DHCP, listener and socket resource of one generation.</p>
+      <div id="network-grid" class="status-grid">
+        <div><span>Mode</span><strong id="network-mode">--</strong></div>
+        <div><span>IP address</span><strong id="ip">--</strong></div>
+        <div><span>Link</span><strong id="link">--</strong></div>
+        <div><span>Supervisor state</span><strong id="network-state">--</strong></div>
+        <div><span>Last fault</span><strong id="network-fault">--</strong></div>
+        <div><span>Generation</span><strong id="network-generation">--</strong></div>
+        <div><span>Restarts</span><strong id="network-restarts">--</strong></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Storage</h2><span id="storage-pill" class="pill">loading</span></div>
+      <p class="hint">The card this page is served from.</p>
+      <div id="storage-grid" class="status-grid">
+        <div><span>Card</span><strong id="sd-present">--</strong></div>
+        <div><span>Filesystem</span><strong id="sd-filesystem">--</strong></div>
+        <div><span>Free</span><strong id="sd-free">--</strong></div>
+        <div><span>Used of capacity</span><strong id="sd-used">--</strong></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Board</h2><span id="board-pill" class="pill">loading</span></div>
+      <p class="hint">The retained boot ledger, the watchdog's account of the last resets, and the running image.</p>
+      <div id="board-grid" class="status-grid">
+        <div><span>Boot generation</span><strong id="boot-generation">--</strong></div>
+        <div><span>Reset source</span><strong id="reset-source">--</strong></div>
+        <div><span>Early watchdog resets</span><strong id="watchdog-early">--</strong></div>
+        <div><span>Recovery-safe mode</span><strong id="recovery-safe">--</strong></div>
+        <div><span>Last checkpoint</span><strong id="last-checkpoint">--</strong></div>
+        <div><span>Loop epochs</span><strong id="loop-epoch">--</strong></div>
+        <div><span>CPU temperature</span><strong id="cpu-temp">--</strong></div>
+        <div><span>Peak CPU temperature</span><strong id="cpu-temp-max">--</strong></div>
+        <div><span>Build revision</span><strong id="build-revision">--</strong></div>
+        <div><span>Built (UTC)</span><strong id="build-utc">--</strong></div>
+      </div>
+    </section>
+  </main>
+  <script src="sd-shared.js"></script>
+  <script src="status.js"></script>
+</body>
+</html>

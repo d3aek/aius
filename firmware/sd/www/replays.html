@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Aius replay manager</title>
+  <!-- replays.css carries the shared chrome for every SD page; this page adds
+       its own rules in the page layer at the foot of that sheet. -->
   <link rel="stylesheet" href="replays.css">
 </head>
 <body>
@@ -14,42 +16,63 @@
         <h1>Replay manager</h1>
         <p class="lede">Upload IEC 61937 captures and feed them through the same DTS, DSP, limiter, and meter path as the optical input.</p>
       </div>
-      <nav><a href="/sd/www/index.html">DSP editor</a><a href="/">Device status</a></nav>
+      <nav><a href="index.html">DSP editor</a><a href="status.html">Device status</a></nav>
     </header>
 
     <section class="card status-card">
-      <div class="section-title"><h2>Playback</h2><span id="state" class="pill">stopped</span></div>
-      <div class="status-grid">
+      <div class="section-title"><h2>Playback</h2><span id="state" class="pill">loading</span></div>
+      <div id="playback-grid" class="status-grid">
         <div><span>Active replay</span><strong id="active">none</strong></div>
-        <div><span>Position</span><strong id="position">0 / 0 bytes</strong></div>
-        <div><span>Queue</span><strong id="queue">0 / 0 words</strong></div>
+        <div><span>Position</span><strong id="position">--</strong></div>
+        <div><span>Queue</span><strong id="queue">--</strong></div>
         <div><span>Underruns</span><strong id="underruns">0</strong></div>
         <div><span>Loops completed</span><strong id="loops">0</strong></div>
         <div><span>Input classifier</span><strong id="classifier">unknown</strong></div>
+        <div><span>Stopped by</span><strong id="stop-reason">none</strong></div>
       </div>
       <div class="meter-row"><label>Buffer fill <progress id="buffer" max="100" value="0"></progress></label><span id="decoder">decoder idle</span></div>
       <div class="controls">
         <label>Selected replay <select id="selected"><option value="">No replay selected</option></select></label>
         <label class="check"><input id="loop" type="checkbox"> Loop continuously</label>
-        <button id="start">Start selected</button><button id="stop" class="secondary">Stop</button>
+        <button id="start" type="button">Start selected</button><button id="stop" type="button" class="secondary">Stop</button>
+        <label>SD auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
       </div>
+      <p class="hint">The token is sent only with start, stop, delete and upload; every read on this page is public.</p>
+      <p id="playback-status" class="hint" role="status">Reading replay status...</p>
+      <p id="playback-errors" class="error-summary" role="alert" hidden></p>
     </section>
 
     <section class="card">
-      <div class="section-title"><h2>Replay library</h2><button id="refresh" class="secondary">Refresh</button></div>
-      <p class="hint">Files are little-endian 16-bit IEC 61937 words. Uploads resume at the server-reported offset after a network interruption.</p>
+      <div class="section-title"><h2>Replay library</h2><span id="library-state" class="pill">loading</span></div>
+      <p class="hint">Files are little-endian 16-bit IEC 61937 words.</p>
+      <div class="controls"><button id="refresh" type="button" class="secondary">Refresh list</button></div>
       <div id="files" class="file-list"><p class="muted">Loading replay files...</p></div>
+      <p id="library-status" class="hint" role="status"></p>
+      <p id="library-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Upload capture</h2><span id="upload-state" class="pill">idle</span></div>
+      <p class="hint">An interrupted upload resumes where the card left off when the same ID is uploaded again.</p>
       <form id="upload" class="upload">
         <label>Replay ID <input id="replay-id" pattern="[A-Za-z0-9_-]{1,48}" required placeholder="film-trailer-51"></label>
         <label>Capture file <input id="file" type="file" accept=".iec,application/octet-stream" required></label>
-        <label>USB auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
-        <button>Upload / resume</button>
+        <button id="upload-start">Upload / resume</button>
+        <button id="upload-cancel" type="button" class="secondary" disabled>Cancel</button>
       </form>
-      <p id="upload-status" class="hint" role="status"></p>
+      <div class="upload-progress"><progress id="upload-progress" max="100" value="0"></progress><span id="upload-percent">0 %</span></div>
+      <p id="upload-status" class="hint" role="status">No upload in flight.</p>
+      <p id="upload-errors" class="error-summary" role="alert" hidden></p>
     </section>
 
-    <section class="card meters"><div class="section-title"><h2>Live processing</h2><a href="/api/meters">machine meters</a></div><canvas id="waveform" width="960" height="180"></canvas><p id="meter-summary" class="hint">Meter data unavailable.</p></section>
+    <section class="card meters">
+      <div class="section-title"><h2>Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
+      <canvas id="waveform" width="960" height="180"></canvas>
+      <p id="meter-summary" class="hint">Meter data unavailable.</p>
+      <p class="hint"><a href="/api/meters">machine meters</a></p>
+    </section>
   </main>
+  <script src="sd-shared.js"></script>
   <script src="replays.js"></script>
 </body>
 </html>

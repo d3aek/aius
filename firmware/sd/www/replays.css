@@ -27,3 +27,29 @@ button.danger{background:#3a1f1f;border-color:#d16a6a;color:#f2a0a0}
    status + error pair and errors land in the card whose control was pressed. */
 .error-summary{color:#f2a0a0;font-size:.78rem;margin-top:10px}
 .error-summary[hidden]{display:none}
+
+/* ---- page layer, 2026-07-27 (task #7 slice 5, unit B) ----------------------
+   Appended BELOW the shared layer; nothing above is edited. These rules belong
+   to replays.html and status.html -- status.html links this sheet only, so the
+   handful of rules its cards need live here rather than in a third sheet. */
+
+/* A poll that failed leaves the last good values on screen; dim them so a
+   frozen grid cannot read as live data beside an `unreachable` pill (P4). */
+.status-grid[data-stale="true"],.file-list[data-stale="true"],.flow[data-stale="true"]{opacity:.45}
+
+/* Non-zero underruns and an incomplete upload read as ordinary text otherwise
+   (R-N8, P6); the playing row had no marker at all (R-N6). */
+.status-grid strong[data-tone="warn"],.file small[data-tone="warn"]{color:#e8c46a}
+.file__playing{color:#73e6a0;font-size:.72rem;letter-spacing:.08em}
+
+/* Upload progress: a bar and a percentage beside the byte counts, replacing an
+   hour-long operation's raw-byte-only text (P5). */
+.upload-progress{display:flex;align-items:center;gap:10px;margin-top:12px}
+.upload-progress progress{flex:1;accent-color:#73e6a0}
+.upload-progress span{color:#9aa8b5;font-size:.78rem;font-variant-numeric:tabular-nums;min-width:5ch}
+
+/* The transmit gate as a signal-flow line on the status page:
+   input -> DSP -> gate -> output. */
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:14px;font-size:.8rem;color:#9aa8b5}
+.flow b{color:#e8edf2;font-weight:600}
+.flow span[data-tone="ok"]{color:#73e6a0}
