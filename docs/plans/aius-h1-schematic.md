@@ -110,6 +110,16 @@ footprints are the only full-severity ERC warnings), placement, impedance
 (90 Ω USB / 100 Ω Ethernet), routing, DRC. Open item to confirm with the user:
 the Teensy 4.1 is an Ethernet-populated board.
 
+**Optical-jack footprint gate (added 2026-07-27):** the purchased optical
+modules are the RS PRO ORJ-5 (`805-1671`) / OTJ-5 (`805-1680`), not the Cliff
+parts the `aius:Cliff_ORJ5_TOSLINK` / `aius:Cliff_OTJ5_TOSLINK` footprints were
+drawn from. Before any board order, validate the Gerber against the RS PRO PCB
+layout drawings (page 4 of each datasheet in
+`docs/reference/datasheets.mdAIUS-OPTICAL-{ORJ5,OTJ5}-RS/`): 3 × Ø0.8 mm signal holes on
+2.54 mm pitch, 3 × Ø2.0 mm peg holes, 9.20 × 6.00 × 3.90 mm geometry, 1.6 mm
+substrate assumed. Sourcing record:
+[aius-optical-prototype.md](aius-optical-prototype.md#hardware-prototype-scope).
+
 ## Not in H1
 
 Footprint/land-pattern verification depth, placement, routing, impedance, and

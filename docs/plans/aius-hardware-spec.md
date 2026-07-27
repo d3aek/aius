@@ -83,7 +83,12 @@ the selected parts are in the BOM. Summary:
 
 - Socketed Teensy 4.1 (Samtec `SSW-124-02-G-S` side sockets, `MMS-103-01-L-DV`
   Ethernet header socket, `SSW-105-02-G-S` USB-host socket).
-- Cliff optical: ORJ5 (`FCR684205R`) receiver, OTJ5 (`FCR684205T`) transmitter.
+- Optical: RS PRO ORJ-5 receiver (RS `805-1671`) and OTJ-5 transmitter (RS
+  `805-1680`) — Cliff `FCR684205R`/`FCR684205T` class, sourced from RS PRO for
+  availability (2026-07-27); pin-compatible with the schematic symbols, same
+  EIAJ CP-1201 / 16 Mbps / V_OH 2.4 / V_IH 2.0 figures. Gerber must be
+  validated against the RS PRO footprint drawings before order
+  ([sourcing record](aius-optical-prototype.md#hardware-prototype-scope)).
 - S/PDIF **bypass mux** TI `SN74LVC1G3157DBVR`; **TX gate** TI `SN74LVC1G126DBVR`
   (active-high OE, so `TX_ENABLE` default-low = TX disabled with no inverter — set at H1).
 - Rear USB-C receptacle (candidate GCT `USB4105-GF-A`; see [open sourcing](#open-hardware-questions)),

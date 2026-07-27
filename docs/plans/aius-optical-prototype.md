@@ -27,8 +27,28 @@ Teensy SPDIF output → OTJ-5 logic input → TOSLINK TX
 
 The reset-safe transmit gate and raw-bypass mux remain fitted because they make
 the physical test safe and provide an independent optical loop-through mode.
-The RS PRO ORJ-5/OTJ-5 pair replaces the unavailable Cliff modules, subject to
-recording their final datasheet pinout and package variant in the BOM.
+
+**Sourcing decision (2026-07-27): the RS PRO ORJ-5/OTJ-5 pair replaces the
+unavailable Cliff modules, chosen for availability.** Purchased parts: receiver
+[RS 805-1671](https://uk.rs-online.com/web/p/fibre-optic-connectors/8051671),
+transmitter
+[RS 805-1680](https://uk.rs-online.com/web/p/fibre-optic-connectors/8051680);
+datasheets at `https://uk.rs-online.com/web/p/fibre-optic-connectors/8051671`
+and `https://uk.rs-online.com/web/p/fibre-optic-connectors/8051680`. Verified
+against the datasheets: pin functions match the schematic symbols exactly
+(receiver 1 = Vout, 2 = GND, 3 = Vcc; transmitter 1 = GND, 2 = Vcc, 3 = Vin —
+note the two orders are NOT the same), Vcc 2.7–5.5 V so the 3.3 V rail is in
+range, 16 Mbps NRZ, receiver V_OH ≥ 2.4 V and transmitter V_IH ≥ 2.0 V — the
+exact figures `connectivity/optical-spdif.json` §levels already assumes — and
+the same application precautions the carrier already carries (0.1 µF within
+7 mm of each jack, 30 pF GND-to-Vout on the receiver, ESD-sensitive).
+**Open gate (H2/H3): validate the Gerber against the RS PRO PCB layout
+drawings** (3 × Ø0.8 mm pins on 2.54 mm pitch, 3 × Ø2.0 mm pegs, 9.20/6.00/3.90
+geometry, page 4 of each datasheet) before any board order — the
+`aius:Cliff_ORJ5_TOSLINK` / `aius:Cliff_OTJ5_TOSLINK` footprints were drawn
+from the Cliff drawings and must be re-checked against the RS PRO ones. The
+cost-model rows still carry the old Cliff quotes; bench wiring for the first
+real signal test: [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md).
 
 ## Control boundary
 
