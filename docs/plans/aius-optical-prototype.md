@@ -130,16 +130,63 @@ adjustments.
 - **Bench-guide consequence:** the §What the bench omits caveat narrows to
   the static-construction blip once this lands.
 
-## PSRAM diagnostics — queued behind the editor plan
+## PSRAM flight recorder — contracted 2026-07-27
 
-Queued 2026-07-27 (user-directed): after the DSP-editor enhancement plan
-completes, design the long-capture diagnostic feature on the 16 MB PSRAM
-(see the declined-store note under §Hardware prototype scope). Hard
-requirement from the ask: **the firmware must auto-detect the PSRAM's
-presence** (the Teensy core's boot-time FlexSPI2 probe exposes the fitted
-size) **or at minimum sit behind a build flag** — not every board will have
-the chips soldered, and a build that assumes them must not fault a bare
-board.
+Designed in interview 2026-07-27. **A continuous audio flight recorder in
+the 16 MB PSRAM: the ring records always (when the chips are fitted), and
+FREEZES itself on detection of the faults it exists to explain** —
+preserving pre-trigger history, which is the whole diagnostic value: this
+board once shipped a 1.4-semitone pitch error with every counter clean,
+and an armed-after-the-fact capture records aftermath, not cause. Wear was
+examined and dismissed: PSRAM is DRAM behind QSPI, no endurance limit.
+
+Decisions from the interview:
+
+- **Model: flight recorder.** Continuous circular ring; freeze on trigger
+  or operator command, hold a short post-roll, then stay frozen until an
+  operator thaw/rearm. One-shot windows fall out for free (operator
+  freeze).
+- **Triggers (all v1): block overrun, transmit underrun, carrier loss,
+  and limiter gain reduction past a configured dB for a configured hold**
+  — plus the operator. Trigger metadata (which, when, ring position) is
+  part of the frozen state.
+- **Tap: the output wire words** (the committed planes item 3's tap
+  proved ARE the wire at 24-bit) — full ~43 s window. An input-side tap
+  is an explicitly contracted FOLLOW-UP slice, not v1.
+- **Egress: raw pull.** Auth-gated freeze/thaw plus a bounded chunked
+  read of the frozen ring over the existing HTTP transport, with a JSON
+  header (rate, width, trigger, positions, boot session); a committed
+  host script reassembles a WAV. Rationale recorded: you can LISTEN to a
+  capture, offline analysis is unbounded, the firmware surface stays
+  minimal, and volatile PSRAM means the data must leave the device
+  anyway. On-device summaries deliberately deferred.
+- **Presence: auto-detected, never assumed.** The Teensy core's boot
+  probe exposes the fitted size (`external_psram_size`); absent chips →
+  the feature reports `absent` on its status surface and every mutating
+  route refuses cleanly — a bare board must never fault. Auto-detect
+  satisfies the build-flag requirement outright; 8 MB single-chip boards
+  get a proportionally shorter ring, reported not assumed.
+
+Architecture constraints (binding for the build, per the standing
+hot-path tie-breaker):
+
+- **EXTMEM is never touched from audio context.** The ISR extends the
+  item 3 staging pattern: committed planes copy into a small `DMAMEM`
+  staging ring in the same interrupt that owns them; the EPOCH drains
+  staging into PSRAM in bounded slices from thread context, where a
+  FlexSPI2 stall costs nothing audible. Sustained rate is ~384 KB/s —
+  trivial bandwidth; the design cost is the staging ring's DMAMEM
+  footprint and a drain budget at an existing checkpoint.
+- **One writer per state transition**, the measure machine's discipline;
+  trigger inputs are the counters/latches the ISR already advances.
+- **The move-together set** for the HTTP surface: routes + swagger +
+  contract suite + a native suite registered in `firmware/scripts/test.sh`
+  and the registry, exactly as tx-gate did.
+- **First build step is the adversarial prebuild gate** over this
+  contract (staging sizing, drain budget vs the epoch table, freeze
+  race with the triggers' ISR-side latches, chunked-read interaction
+  with `sd_busy`-class refusals, and the probe's behaviour on 0/8/16 MB
+  boards).
 
 ## Control boundary
 
