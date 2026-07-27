@@ -305,6 +305,10 @@ measure)
 		"$fw_root/lib/aius_dsp/src/aius_measure.c" \
 		-lm -o "$measure_out"
 	"$measure_out"
+	# The committed PCM stimulus vectors carry two generation-time obligations
+	# (no IEC 61937 preamble by coincidence, per-vector loop coherence); this
+	# re-asserts them against the committed bytes, plus tone content/residual.
+	python3 "$fw_root/tools/measure_vectors/measure_vectors.py" validate
 	;;
 net)
 	# UDP codec plus the pure generation/deadline network supervisor oracle.

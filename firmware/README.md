@@ -41,6 +41,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `tools/net/` | HTTP and UDP exercisers for a running optical board. |
 | `tools/dts_vectors/`, `tools/iec_corpus/` | Committed DTS/IEC test corpora + generators. |
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
+| `tools/measure_vectors/` | Committed PCM stimulus vectors for the measurement loopback + their generator/validator (preamble-free and loop-coherence obligations asserted at generation, revalidated by the `measure` suite). |
 | `tools/memory/` | Linker-map → per-bank memory report. |
 | `test/` | Host test suites (one directory per suite). |
 | `scripts/test.sh` | Native (host, gcc) test runner — the firmware's test entry point. |

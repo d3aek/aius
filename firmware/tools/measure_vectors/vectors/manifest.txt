@@ -1,0 +1,9 @@
+PCM measurement-vector corpus for the measurement loopback.
+Columns: name | frames | tones (ch freq@amp) | detail
+(regenerate with tools/measure_vectors/measure_vectors.py; levels
+ are amplitudes re 16-bit full scale 32768)
+
+pcm440_m6 | 12000 | l 440@16384; r 440@16384 | the baseline THD+N/SNR vector; 110 cycles per loop
+pcm440_full | 12000 | l 440@32767; r 440@32767 | the limiter-hot vector -- pair with a config that opens the limiter (shipped headroom 0.5 alone leaves the tap at -6 dBFS, below the -1 dBFS threshold)
+pcm440_660_split | 12000 | l 440@16384; r 660@8192 | per-channel fit split; loop-coherent at lcm(1200, 800) = 2400
+pcm_fr_multitone | 12000 | l 40@4096,100@4096,440@4096,1000@4096,4000@4096,10000@4096,16000@4096; r 40@4096,100@4096,440@4096,1000@4096,4000@4096,10000@4096,16000@4096 | frequency-response probes at -18 dBFS each; worst-case sum 28,672

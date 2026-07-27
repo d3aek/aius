@@ -746,6 +746,16 @@ bit-identical slicing invariance. Two findings the build added to the contract:
   on device — the 16-bit stimulus floors bind first — but the surface's
   per-figure floor statement (slice on the HTTP surface) should say it.
 
+**Slice 2 delivered (2026-07-27).** The stimulus corpus is
+`firmware/tools/measure_vectors/`: four committed loop-coherent PCM vectors
+(the −6 dBFS 440 baseline, the full-scale limiter-hot 440, the L 440 / R 660
+split, and a seven-tone FR multitone at −18 dBFS per tone), 12,000 frames
+each — a common multiple of every tone period used. Both generator
+obligations are asserted before any byte is written and revalidated against
+the committed bytes by the `measure` suite (obligations + tone content +
+residual, deliberately not byte equality: `sin()` is libm's, so the committed
+bytes are the provenance record).
+
 ### Noted for later, deliberately not scheduled
 
 - **Linear-phase FIR EQ.** RBJ biquads are minimum-phase, so group delay varies
