@@ -1453,11 +1453,27 @@ Slices, each a commit boundary with its vitest coverage in the same commit:
    at `loaded` while the form differs from the device (typed edits
    included; `loadPreset()` already treats `loaded` as promotable). One
    word to fix, touches existing pill expectations.**
-4. **Deploy + on-device smoke** — upload the changed www assets to the
-   card, load the page against the board (real browser), exercise one
-   preset save/load, one drag edit → Apply round trip, and the
-   load/headroom + limiter strip against live meters. This also closes
-   the long-open Track A asset-smoke debt (B6).
+4. **Deploy + on-device smoke — DELIVERED 2026-07-27.** Full www tree
+   synced to the card (`aius-sd-sync.sh`); the smoke ran as Playwright
+   scenarios against `http://192.0.2.66/sd/www/index.html` in a real
+   browser (transcripts + screenshots in the session scratch,
+   `smoke-*-out.txt` / `smoke-*.png`). Proven on the device: page boots
+   from the card and loads the live config; a REAL-pointer drag on the
+   output-EQ handle wrote 999.7 Hz / 9.3 dB into the form; preset save
+   landed `presets/smoke-test.json` (640 B, exactly the five groups,
+   directory auto-created), listed, loaded (restored the dragged gain),
+   and deleted through the page UI; with a replay looping, meters went
+   live (7.0 % load / 93.0 % headroom displayed) and an EQ edit applied
+   end to end (generation 1→2, cleanup 2→3, zero overruns). **This
+   closes the Track A asset-smoke debt (B6).** Two findings for the
+   record: (a) a first-preset save can outlast 7.5 s (mkdir chain +
+   temp/backup replace) — the page's confirmation is correct, just slow;
+   nothing to fix beyond operator patience; (b) the first live sighting
+   of `503 sd_busy` on a page load racing a replay-refill burst — logged
+   against the PSRAM asset-cache reopen condition in
+   [`aius-optical-prototype.md`](aius-optical-prototype.md). Playwright
+   contexts are per-run, so cross-restart token persistence rests on the
+   vitest coverage; within-session restore was shown.
 
 ### OpenAPI catch-up
 

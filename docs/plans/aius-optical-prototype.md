@@ -487,7 +487,9 @@ clients share one contract artifact.
   (upload invalidation) and a second "which tree is truth" question the
   storage design deliberately avoids. Reopen only if `sd_busy` page
   unavailability during replay proves to be a real operator pain on the
-  bench. The strong PSRAM use case remains long diagnostic capture: the
+  bench. **First live sighting 2026-07-27:** during the editor slice 4
+  smoke, one page load racing a replay-refill burst answered `503`; a
+  retry loaded. One data point, not yet pain. The strong PSRAM use case remains long diagnostic capture: the
   item 3 window is 16,384 frames because it lives in 128 KiB of `DMAMEM`;
   16 MB holds ~40 s of 24-bit stereo and needs no persistence.
 
