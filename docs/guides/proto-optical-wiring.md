@@ -140,6 +140,24 @@ The firmware side is already proven against replay; this is the first time
    freezes and the carrier-loss counters increment once per event; replug
    and confirm recovery.
 
+## Electrical loopback — the pre-optical rung
+
+**Jumpering pad 14 directly to pad 15 proves the entire firmware chain with no
+optical parts at all** — proven 2026-07-28: carrier lock in seconds, blocks
+climbing, the recorder capturing. Lift the ORJ-5 Vout lead off pad 15 first
+(two output stages otherwise fight), then jumper 14→15; the OTJ-5 Vin can
+stay connected. Two behaviours to expect, both by design or known:
+
+- **A running replay stops the moment its own signal locks**
+  (`stop_reason:"carrier"` — the carrier-present policy), after which the
+  gate stays open on the locked carrier and the box settles into a silence
+  self-loop.
+- That self-loop currently floods the audio `overruns` counter at ~1 kHz
+  (defect 27 in `aius-network-hardening.md`); a reboot exits the state.
+
+Use the measure flow, not replay, for sustained loopback testing — replay is
+architecturally self-terminating over a loop.
+
 ## Troubleshooting with only a DC multimeter
 
 Worked out during the 2026-07-27/28 bench bring-up; every expected value below

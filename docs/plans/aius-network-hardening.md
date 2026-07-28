@@ -1052,6 +1052,28 @@ are follow-up work, recorded here so they are not lost.
     the NEXT resource squeeze diagnosable from the status surface
     instead of from a bisection afternoon.
 
+27. **A locked carrier with muted-PCM input floods the audio overrun
+    counter at ~1 kHz, sustained.** Found 2026-07-28 on the FIRST-ever
+    external-carrier input (electrical pad14→pad15 loopback, receiver
+    Vout lifted): a replay-driven IEC stream locks the RX in under a
+    second, the carrier-present policy stops the replay
+    (`stop_reason:"carrier"` — by design), the TX gate stays open on
+    the locked carrier, and the box settles into a self-sustaining
+    silence loop — RX → validity-muted PCM input → silent processed
+    output → TX → RX. In that state `overruns` climbs one per ~1–2 ms
+    indefinitely (16,756 in ~30 s) with a type-4 event storm at the
+    same rate, meters at −120 everywhere, classification pinned at
+    PCM(3). The loop makes the recovered RX clock and the TX clock the
+    SAME oscillator, so the input path's rate handling at exactly
+    unity ratio is the prime suspect; nothing is root-caused. The
+    flight recorder's overrun trigger fired at 557 ms and froze its
+    FIRST live capture (7168 frames, 178 gaps, pulled and archived) —
+    the instrument's first real catch. Unknowns: whether glass (real
+    jitter) or an independent-clock source reproduces it, and whether
+    the flood harms anything beyond counters (the watchdog stayed fed;
+    the board ran indefinitely; a reboot exits the state). Reproduce:
+    jumper 14→15, start any replay, wait for lock.
+
 #### Decisions taken, so they are not re-opened
 
 - **A network syslog sender was assessed and declined.** Not on cost — the event

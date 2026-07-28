@@ -41,16 +41,22 @@ specified here. Strike items here in the commit that closes them.
 
 ## Waiting on the operator
 
-- **First PSRAM chip: on the FLASH pad, and VERIFIED WORKING there
-  (2026-07-27, late).** The post-solder `ps=0` was placement, not joints:
-  the operator soldered chip 1 on the FLASH-silkscreened pad
-  (chip-select A2), which the core probe never interrogates while the
-  PSRAM pad is silent. The firmware's pad-2 ID probe (`psram_pad2_mb` on
-  `GET /api/status`) reads **8 MB — the chip answers**, so CLK, CS,
-  SIO0, SIO1, 3V3 and GND are all good; only SIO2/SIO3 stay unexercised
-  until the chip is QPI-mapped. Next bench session: solder chip 2 on the
-  pad marked PSRAM — **no rework of chip 1** — after which the stock
-  probe sizes both (`ps=16`) and the recorder arms at 16 MB.
+- ~~**First PSRAM chip: on the FLASH pad, and VERIFIED WORKING there
+  (2026-07-27, late).**~~ **RESOLVED 2026-07-28: chip 2 soldered on the
+  PSRAM pad, `ps=16`, recorder armed on the full 16 MB ring; capture,
+  freeze and WAV pull all proven live** (the recorder's first real
+  capture — see defect 27's gist).
+- **Optical TX joint: the one remaining bench fix (2026-07-28).** The
+  jacks are soldered and the wiring corrected twice (inverted TX pins;
+  bypass caps built in series — both now fixed, guide corrected). The
+  electrical pad14→pad15 loopback locks in seconds, exonerating BOTH
+  Teensy pads and the whole firmware chain; the TX module emits; the
+  receiver idles a healthy static high. The single unresolved fault:
+  the pad14→OTJ-5 Vin lead/joint reads 0.57 V under drive (healthy ≈
+  mid-rail) — resistive or open; reflow it, reconnect the receiver's
+  Vout→pad 15 lead (lifted for the loopback test), remove the 14→15
+  jumper, and the glass loopback should lock. Then guide §First real
+  signal test steps + the measure flow across glass.
 - **Bench first-signal test** — everything is staged:
   [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md)
   (22 pF fitted value recorded), RS PRO jacks + datasheets + AP214 STEP
@@ -135,6 +141,13 @@ specified here. Strike items here in the commit that closes them.
     instrumented flashes booted CLEAN — 0/2 against the prior 4/4, so
     the defect is CONDITIONAL and the instrument simply rides every
     future flash until it fires.
+  - **27**: the silence self-loop (locked carrier, validity-muted PCM
+    in, silent out, TX gate held open) floods `overruns` at ~1 kHz
+    sustained; found on the first-ever external-carrier input
+    (electrical 14→15 loopback, 2026-07-28); unity-clock-ratio input
+    rate handling is the prime suspect; the flight recorder's overrun
+    trigger caught it live (its first real capture). Reproducible on
+    demand; reboot exits it.
   - **26** (CLOSED same day, kept for the residue): OCRAM heap
     exhaustion under NativeEthernet's ~96 KiB boot mallocs bricked every
     boot when recorder staging took 64 KiB; root-caused by bisection,
