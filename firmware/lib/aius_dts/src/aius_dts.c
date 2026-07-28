@@ -68,7 +68,24 @@ struct AiusDtsDecoder {
     AiusMetrics metrics;        /* measurements from the most recent decode */
 };
 
-/* dcadec native speaker -> AIUS canonical plane, in AIUS emission order. */
+/* dcadec native speaker -> AIUS canonical plane, in AIUS emission order.
+ *
+ * THE INDIRECTION IS THE POINT: the DTS Core does not carry its primary
+ * channels in the order this device emits them. A 5.1 core stream is AMODE 9,
+ * whose primary channel order is CENTRE FIRST -- C, L, R, Ls, Rs -- and the
+ * vendored core's map_prm_ch_to_spkr scatters those into output_samples[]
+ * indexed by SPEAKER_*, never packed. This table reads that array back in AIUS
+ * order (FL, FR, FC, LFE, SL, SR), which is the order aius_dts.h promises and
+ * the order aius_dsp's mask-driven plane lookup expects.
+ *
+ * A rotation of the front three is therefore the natural failure mode here, and
+ * it is invisible to the differential suite (which compares our plane c against
+ * FFmpeg's channel c, so any shared permutation cancels) and to per-channel
+ * level meters (five equal tones look identical however they are ordered). The
+ * `dts` suite's channel-identity check on the `surround51_ident` vector is what
+ * pins this table: it Goertzels each decoded plane for the tone its channel
+ * owns. Defect 30 was a false alarm against this map -- the rotation was in the
+ * source material -- and that check is what proved it. */
 struct spkr_map {
     int          spkr_mask;  /* SPEAKER_MASK_* */
     int          spkr_index; /* SPEAKER_* (index into core->output_samples) */

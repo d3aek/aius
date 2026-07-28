@@ -1,13 +1,28 @@
-/* Host differential test for the Aius DTS Core decoder (capability-gate P3).
+/* Host differential + channel-identity test for the Aius DTS Core decoder (P3).
  *
- * For each committed vector, decode the raw DTS Core access units with the
- * AiusDtsDecoder (vendored dcadec fixed-point core) and compare the planar PCM
- * against FFmpeg's own decode of the same bitstream. FFmpeg's dca decoder and
- * dcadec share lineage, so the two agree to well within a fixed tolerance once
- * a constant integer decoder-delay offset and a constant amplitude scale are
- * aligned out. We require, per channel: exact channel count, matching sample
- * count (after the shared delay), Pearson correlation > 0.9999, and residual
- * error below -80 dBFS of full scale.
+ * Two independent questions about the same decode, because the first cannot
+ * answer the second.
+ *
+ * DIFFERENTIAL. For each committed vector, decode the raw DTS Core access units
+ * with the AiusDtsDecoder (vendored dcadec fixed-point core) and compare the
+ * planar PCM against FFmpeg's own decode of the same bitstream. FFmpeg's dca
+ * decoder and dcadec share lineage, so the two agree to well within a fixed
+ * tolerance once a constant integer decoder-delay offset and a constant
+ * amplitude scale are aligned out. We require, per channel: exact channel count,
+ * matching sample count (after the shared delay), Pearson correlation > 0.9999,
+ * and residual error below -80 dBFS of full scale.
+ *
+ * CHANNEL IDENTITY. The differential check compares OUR plane c against
+ * FFMPEG'S channel c, so it is blind by construction to anything both decoders
+ * do identically -- including a shared channel permutation, and including a
+ * permutation baked into the vector before either decoder saw it. Defect 30 was
+ * exactly that blind spot: a hardware capture of the 5.1 tone programme showed
+ * the left output carrying FR's tone, which reads as a decoder permutation, and
+ * the corpus README claimed distinct tones "verify correct channel ordering"
+ * when nothing checked the claim. So `surround51_ident` carries a known tone per
+ * named channel and check_channel_identity() Goertzels every decoded plane
+ * against that assignment: the tone the channel owns must be present at the
+ * encoder's level and every other channel's tone must be absent.
  *
  * Usage: test_dts <vectors_dir>
  * The vectors_dir holds <name>.dts and <name>.ref.s32 produced by
@@ -302,18 +317,269 @@ static unsigned int plane_aius_bit(uint32_t mask, int plane)
     return 0;
 }
 
-struct vector { const char *name; int channels; uint32_t expect_mask; };
+/* --- channel identity ----------------------------------------------------- */
+
+/* Analysis window over the decoded planes: samples [IDENT_SKIP, IDENT_SKIP +
+ * IDENT_N). IDENT_N = 4000 at 48 kHz makes the bin spacing exactly 12 Hz, and
+ * every tone in the identity vector (60, 300, 600, 900, 1200, 1500 Hz) is a
+ * whole multiple of it -- so each lands on its own bin, a rectangular window
+ * leaks nothing, and the measured level is the tone's own rather than a
+ * scalloped estimate. IDENT_SKIP clears the QMF start-up and the much longer
+ * 64x LFE interpolation start-up; the vector is 5120 samples, so the window is
+ * the tail of it. */
+#define IDENT_SKIP 1120u
+#define IDENT_N    4000u
+
+/* Full scale for the decoded planes: they carry the AIUS sample scale (signed,
+ * left-aligned to AIUS_PCM_SAMPLE_BITS), not FFmpeg's s32 range. */
+#define IDENT_FULL_SCALE ((double)AIUS_PCM_SAMPLE_MAX + 1.0)
+
+#define IDENT_PI 3.14159265358979323846
+
+/* A foreign channel's tone must arrive in this plane at least this far below
+ * the level it reaches in its OWN plane. Measured on the committed vector, the
+ * five full-band planes reject everything by 90-108 dB and the LFE plane -- the
+ * only interesting one, since its 64x decimation/interpolation pair passes a
+ * little of the 300 Hz neighbour -- by 45.7 dB. The bound sits below all of
+ * them deliberately: the failure it catches is a whole channel in the wrong
+ * plane, a 0 dB event, and tightening it would only convert encoder stopband
+ * behaviour into a false alarm. */
+#define IDENT_REJECT_DB 40.0
+
+/* Every full-band plane reproduces its own tone at the level the encoder was
+ * fed. The window is tight because the whole path is deterministic fixed point
+ * over committed bytes: the spread across the five full-band planes is under
+ * 0.01 dB. */
+#define IDENT_MAIN_DBFS     (-22.50)
+#define IDENT_MAIN_DBFS_TOL   0.20
+
+/* THE LFE PLANE IS NOT AT UNITY, and the deficit is a property of the bitstream
+ * rather than of this decoder. Fed the same 60 Hz level as the full-band
+ * channels, the decoded LFE plane comes back this far below them.
+ *
+ * It is a fixed attenuation of the ENCODED signal, not a mapping fault and not
+ * quantization. Measured through FFmpeg's own decoder on purpose-built
+ * material: sweeping the LFE input amplitude over 24 dB (0.45 down to 0.0225)
+ * moves the decoded level by the same 24 dB, holding the offset at 9.83 dB at
+ * every step; sweeping the LFE tone at fixed amplitude adds the residual
+ * low-pass of the encoder's 64x decimation FIR on top of it (7.25 dB at 10 Hz,
+ * 7.48 at 20, 8.36 at 40, 9.83 at 60, 14.66 at 100, 24.41 at 150). FFmpeg's
+ * decoder and ours both reproduce it, and the `dts-lfe` suite pins ours
+ * bit-exact against an upstream dcadec build, so it is upstream of every
+ * decoder involved.
+ *
+ * The pinned value is OURS, not FFmpeg's, and the two differ: FFmpeg reads
+ * -9.70 dB on this same vector because it reconstructs the 64x-decimated LFE
+ * with a different interpolation FIR (the same divergence the LFE_* thresholds
+ * above accommodate). Ours is the number the device actually hands the DSP.
+ *
+ * It matters because it is the second half of defect 30. The hardware capture
+ * put the LFE 19 dB below the dominant output tone against an expectation of
+ * about -10.5 dB from the fold gain and the crossover alone, and that gap read
+ * as part of a mapping fault. Fold (-10 dB) plus the LR4 at 60 Hz (-0.53 dB)
+ * plus this -8.32 dB predicts -18.85 dB, which is the capture. Pinned tightly
+ * so a genuine decode-side LFE regression -- a lost scale factor, the wrong
+ * interpolation FIR -- fails here rather than being waved through as more of
+ * the same encoder property. */
+#define IDENT_LFE_OFFSET_DB   (-8.32)
+#define IDENT_LFE_OFFSET_TOL    0.10
+
+/* Tone carried by each AIUS channel of the identity vector, in AIUS_CH_* bit
+ * order (FL, FR, FC, LFE, SL, SR). Mirrors the hardware bench tone programme. */
+static const double k_ident_tones[AIUS_MAX_CHANNELS] = {
+    300.0, 600.0, 900.0, 60.0, 1200.0, 1500.0,
+};
+
+/* What the identity check is expected to say about a vector.
+ *
+ * IDENT_REJECTS is a negative control, and it is not decoration. A guard that
+ * has quietly stopped discriminating reports green, which is exactly how the
+ * corpus README came to claim distinct tones "verify correct channel ordering"
+ * while nothing checked it. `surround51_tones` is the KNOWN-ROTATED vector (see
+ * tools/dts_vectors/README.md §The `join` channel trap), so the check must
+ * reject it on every run or it is not a check. */
+enum ident_mode {
+    IDENT_NONE = 0,   /* not an identity-bearing vector */
+    IDENT_PASSES,     /* tones on the channels they name */
+    IDENT_REJECTS     /* known permuted: the check MUST fail it */
+};
+
+struct vector {
+    const char *name;
+    int channels;
+    uint32_t expect_mask;
+    enum ident_mode identity;
+};
 
 static const struct vector k_vectors[] = {
     { "stereo_tones", 2,
-      AIUS_CH_FL | AIUS_CH_FR },
+      AIUS_CH_FL | AIUS_CH_FR, IDENT_NONE },
     { "surround51_tones", 6,
-      AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR },
+      AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      IDENT_REJECTS },
     { "stereo_impulse", 2,
-      AIUS_CH_FL | AIUS_CH_FR },
+      AIUS_CH_FL | AIUS_CH_FR, IDENT_NONE },
     { "surround51_impulse", 6,
-      AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR },
+      AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      IDENT_NONE },
+    { "surround51_ident", 6,
+      AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      IDENT_PASSES },
 };
+
+/* Level of `freq` in `x[0..n)` as dBFS of the AIUS sample scale. Single-bin
+ * Goertzel; `freq` is expected to land on a bin (see IDENT_N). */
+static double goertzel_dbfs(const double *x, uint32_t n, double freq,
+                            uint32_t rate)
+{
+    double k = (double)(long)(0.5 + (double)n * freq / (double)rate);
+    double coeff = 2.0 * cos(2.0 * IDENT_PI * k / (double)n);
+    double s1 = 0.0, s2 = 0.0;
+    for (uint32_t i = 0; i < n; i++) {
+        double s0 = x[i] + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    double power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    double amp = sqrt(power > 0.0 ? power : 0.0) * 2.0 / (double)n;
+    return 20.0 * log10(amp / IDENT_FULL_SCALE + 1e-30);
+}
+
+static const char *aius_bit_name(unsigned int bit)
+{
+    switch (bit) {
+    case AIUS_CH_FL:  return "FL";
+    case AIUS_CH_FR:  return "FR";
+    case AIUS_CH_FC:  return "FC";
+    case AIUS_CH_LFE: return "LFE";
+    case AIUS_CH_SL:  return "SL";
+    case AIUS_CH_SR:  return "SR";
+    default:          return "??";
+    }
+}
+
+/* Every decoded plane must carry the tone its channel owns and none of the
+ * others. Returns 0 on pass, 1 on any failure. `report` off silences the
+ * measurements and the diagnosis, for the negative control that expects to
+ * fail; the verdict is the return value either way. */
+static int check_channel_identity(const char *name, const struct pcm *dec,
+                                  int report)
+{
+    if (dec->frames < IDENT_SKIP + IDENT_N) {
+        if (report)
+            fprintf(stderr, "FAIL %s identity: %u frames, need %u\n",
+                    name, dec->frames, IDENT_SKIP + IDENT_N);
+        return 1;
+    }
+    if (dec->sample_rate != 48000u) {
+        if (report)
+            fprintf(stderr,
+                    "FAIL %s identity: rate %u, the window assumes 48000\n",
+                    name, dec->sample_rate);
+        return 1;
+    }
+    /* Full 5.1 only, so plane index == index into k_ident_tones. A narrower
+     * mask would pack the planes differently and silently compare the wrong
+     * tone against each plane. */
+    if (dec->channels != AIUS_MAX_CHANNELS ||
+        dec->channel_mask != (AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
+                              AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR)) {
+        if (report)
+            fprintf(stderr,
+                    "FAIL %s identity: mask 0x%x / %u channels; the identity "
+                    "check covers full 5.1 only\n",
+                    name, dec->channel_mask, dec->channels);
+        return 1;
+    }
+
+    int fail = 0;
+    double own[AIUS_MAX_CHANNELS];
+
+    /* Pass 1: each plane's own tone. `c` indexes k_ident_tones directly -- the
+     * full-5.1 guard above is what makes that true. */
+    for (int c = 0; c < dec->channels; c++)
+        own[c] = goertzel_dbfs(dec->ch[c] + IDENT_SKIP, IDENT_N,
+                               k_ident_tones[c], dec->sample_rate);
+
+    /* Pass 2: how much of every OTHER channel reached this plane. Bleed is
+     * measured against the tone's level in its OWN plane, not against this
+     * plane's level, so a plane that legitimately sits lower (the LFE) is held
+     * to the same standard as the rest and a swap reads as bleed near 0 dB. */
+    for (int c = 0; c < dec->channels; c++) {
+        unsigned int bit = plane_aius_bit(dec->channel_mask, c);
+        const double *win = dec->ch[c] + IDENT_SKIP;
+
+        double worst_bleed = -1e9;
+        int worst_idx = -1;
+        for (int t = 0; t < dec->channels; t++) {
+            if (t == c)
+                continue;
+            double bleed = goertzel_dbfs(win, IDENT_N, k_ident_tones[t],
+                                         dec->sample_rate) - own[t];
+            if (bleed > worst_bleed) { worst_bleed = bleed; worst_idx = t; }
+        }
+
+        if (report)
+            printf("    %-3s %6.0f Hz %8.3f dBFS   worst bleed %6.0f Hz "
+                   "%7.1f dB\n",
+                   aius_bit_name(bit), k_ident_tones[c], own[c],
+                   k_ident_tones[worst_idx], worst_bleed);
+
+        if (worst_bleed > -IDENT_REJECT_DB) {
+            if (report)
+                fprintf(stderr,
+                        "FAIL %s identity: plane %d (%s) carries %.0f Hz at "
+                        "%.2f dB of that channel's own level (<= -%.1f)\n"
+                        "     %.0f Hz belongs to plane %d. The decode is "
+                        "permuted, or the vector was\n"
+                        "     authored permuted (see "
+                        "tools/dts_vectors/README.md).\n",
+                        name, c, aius_bit_name(bit), k_ident_tones[worst_idx],
+                        worst_bleed, IDENT_REJECT_DB,
+                        k_ident_tones[worst_idx], worst_idx);
+            fail = 1;
+        }
+
+        if (bit != AIUS_CH_LFE &&
+            fabs(own[c] - IDENT_MAIN_DBFS) > IDENT_MAIN_DBFS_TOL) {
+            if (report)
+                fprintf(stderr,
+                        "FAIL %s identity: plane %d (%s) tone at %.3f dBFS, "
+                        "expected %.2f +/- %.2f\n",
+                        name, c, aius_bit_name(bit), own[c], IDENT_MAIN_DBFS,
+                        IDENT_MAIN_DBFS_TOL);
+            fail = 1;
+        }
+    }
+
+    /* The LFE plane's level against the full-band planes it was fed alongside.
+     * See IDENT_LFE_OFFSET_DB for why the expected value is not 0. */
+    int lfe_plane = -1, main_plane = -1;
+    for (int c = 0; c < dec->channels; c++) {
+        if (plane_aius_bit(dec->channel_mask, c) == AIUS_CH_LFE)
+            lfe_plane = c;
+        else if (main_plane < 0)
+            main_plane = c;
+    }
+    if (lfe_plane >= 0 && main_plane >= 0) {
+        double offset = own[lfe_plane] - own[main_plane];
+        if (report)
+            printf("    LFE offset vs full-band planes %.3f dB "
+                   "(expected %.2f +/- %.2f; encoder property, see source)\n",
+                   offset, IDENT_LFE_OFFSET_DB, IDENT_LFE_OFFSET_TOL);
+        if (fabs(offset - IDENT_LFE_OFFSET_DB) > IDENT_LFE_OFFSET_TOL) {
+            if (report)
+                fprintf(stderr,
+                        "FAIL %s identity: LFE plane at %.3f dB against the "
+                        "full-band planes, expected %.2f +/- %.2f\n",
+                        name, offset, IDENT_LFE_OFFSET_DB,
+                        IDENT_LFE_OFFSET_TOL);
+            fail = 1;
+        }
+    }
+
+    return fail;
+}
 
 static int run_vector(const char *dir, const struct vector *v)
 {
@@ -373,6 +639,27 @@ static int run_vector(const char *dir, const struct vector *v)
                         m.err_dbfs, err_max);
                 fail = 1;
             }
+        }
+    }
+
+    /* Runs whatever the differential result: the two answer different
+     * questions, and a permuted decode can pass the differential check. */
+    if (v->identity == IDENT_PASSES) {
+        fail |= check_channel_identity(v->name, &dec, 1);
+    } else if (v->identity == IDENT_REJECTS) {
+        if (check_channel_identity(v->name, &dec, 0) == 0) {
+            fprintf(stderr,
+                    "FAIL %s: the identity check PASSED a vector known to be "
+                    "channel-rotated.\n"
+                    "     The check is not discriminating, so its green result "
+                    "on surround51_ident\n"
+                    "     means nothing. See tools/dts_vectors/README.md "
+                    "§The `join` channel trap.\n",
+                    v->name);
+            fail = 1;
+        } else {
+            printf("    identity negative control: rotation detected, as it "
+                   "must be\n");
         }
     }
 

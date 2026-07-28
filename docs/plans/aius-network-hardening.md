@@ -1236,8 +1236,8 @@ are follow-up work, recorded here so they are not lost.
     reject tallies with last-rejected Pc/Pd capture) are permanent
     surfaces.
 
-30. **The decoded 5.1 channel order and the downmix matrix disagree — a
-    pure spatial permutation.** Found 2026-07-28 minutes after defect
+30. ~~**The decoded 5.1 channel order and the downmix matrix disagree — a
+    pure spatial permutation.**~~ Found 2026-07-28 minutes after defect
     29's fix, by DFT over a capture of the decoded tone programme
     (FL 300 / FR 600 / C 900 / LFE 60 / SL 1200 / SR 1500 Hz): left
     output carries 600 Hz at 0 dB with 300 and 1200 at −3 dB; right
@@ -1252,6 +1252,94 @@ are follow-up work, recorded here so they are not lost.
     question. Chase: diff `k_spkr_map`'s emission order against
     `AiusDownmixConfig`'s expected slot order; a per-channel tone test
     through the native pipeline suite would pin it without hardware.
+
+    **NOT A FIRMWARE DEFECT — the tone programme was rotated before it
+    was ever encoded (2026-07-28, same day).** The chase ran the
+    prescribed discriminating test and it came out clean, so the search
+    moved upstream one stage at a time until it found the rotation.
+    Every measurement below is bin-exact Goertzel (48 kHz, 12 Hz bins,
+    every tone on its own bin):
+
+    - **The decoder is correct.** A new explicitly-mapped 5.1 vector
+      (`surround51_ident`, the same tone programme) decodes through the
+      real `AiusDtsDecoder` with every plane carrying its own channel's
+      tone at −22.499 dBFS and rejecting all five others by 90–108 dB.
+      `k_spkr_map` and the downmix's mask-driven plane lookup agree,
+      and always did.
+    - **The material was rotated.** The bench programme's own WAV — read
+      before any encode — carries FL 600, FR 900, FC 300, surrounds and
+      LFE correct. So does the committed `surround51_tones` corpus
+      vector, in FFmpeg's own decode of it.
+    - **The mechanism is `join` guessing.** `join` without `map=`
+      assigns inputs to outputs BY CHANNEL NAME. Every mono lavfi source
+      declares layout `mono`, whose one channel is named FC, so all six
+      inputs claim FC: the guess satisfies output FC from input 0 and
+      fills the rest positionally, rotating exactly the front three
+      (in 0 → FC, in 1 → FL, in 2 → FR) and leaving LFE and the
+      surrounds alone. Nothing errors. Both `tools/replay_samples/`
+      (which generates the bench programme) and `tools/dts_vectors/`
+      omitted `map=`.
+    - **It predicts the capture exactly.** With FL = 600, FC = 300,
+      SL = 1200, the shipped matrix gives L = 600 at 0 dB with 300 and
+      1200 at −3 dB, and R = 900 at 0 dB with 300 and 1500 at −3 dB.
+      That is the DFT, term for term.
+
+    **The LFE half is a level, not a mapping, and it is also the
+    material.** The decoded LFE plane sits 8.32 dB below the full-band
+    planes for an identical input level. It is a fixed attenuation of
+    the ENCODED signal: sweeping the LFE input over 24 dB moves the
+    decoded level by the same 24 dB (offset constant at 9.83 dB through
+    FFmpeg's decoder), and sweeping the tone adds the encoder's 64x
+    decimation FIR on top (7.25 dB at 10 Hz, 9.83 at 60, 14.66 at 100,
+    24.41 at 150). FFmpeg's decoder reproduces it and the `dts-lfe`
+    suite pins ours bit-exact to an upstream dcadec build, so it is
+    upstream of every decoder involved. Fold (−10 dB) + LR4 at 60 Hz
+    (−0.53 dB) + this (−8.32 dB) = **−18.85 dB against the dominant
+    output tone, versus the −19 dB captured** — the gap that made the
+    LFE look like part of the mapping question closes to 0.15 dB. The
+    earlier −16.5 dB expectation counted the −6.02 dB headroom pad,
+    which applies to the mains too and cancels in a relative reading.
+
+    **The vendored `-1 -1` missing comma is upstream's, not ours.**
+    `core_decoder.c:73` (`prm_ch_to_spkr_map` row 6, AMODE 2F1R) reads
+    `{ SPEAKER_L, SPEAKER_R, SPEAKER_Cs, -1 -1 }` — four initializers
+    with −2 in element [3]. Fetched and diffed against upstream dcadec
+    at the pinned commit `b93deed1`: byte-identical, so it is an
+    upstream typo faithfully vendored, not a transcription error here.
+    Inert in every path — `audio_mode_nch[6]` is 3, so elements [3] and
+    [4] are never indexed — and left unedited on purpose: the vendored
+    subtree's `NOTICE.md` declares all 24 files byte-for-byte upstream,
+    and that invariant is worth more than cosmetically correcting a
+    dead table cell.
+
+    What shipped, so this cannot recur silently:
+
+    - `surround51_ident` in the DTS corpus — the tone programme with an
+      explicit `join ... map=`, the one vector whose channel identity is
+      an assertion rather than an assumption.
+    - A channel-identity check in the `dts` suite: every decoded plane
+      Goertzelled for the tone its channel owns, foreign tones held
+      40 dB below the level they reach in their own plane, full-band
+      levels held to ±0.2 dB and the LFE offset to ±0.1 dB. The
+      differential check could never have caught this — it compares our
+      plane *c* against FFmpeg's channel *c*, so any shared permutation
+      cancels.
+    - A **negative control**: the check must REJECT `surround51_tones`,
+      the known-rotated vector, on every run. The corpus README had
+      claimed distinct tones "verify correct channel ordering" while
+      nothing checked the claim; a guard that stops discriminating
+      reports green.
+    - `map=` on every `join` in `tools/dts_vectors/generate.sh` (new
+      vector) and in all three `tools/replay_samples/generate.sh`
+      recipes, with the trap written up in both READMEs.
+
+    **Operator action: regenerate and re-upload the replay pack.** Any
+    pack generated before 2026-07-28 carries the rotation;
+    `tools/replay_samples/generate.sh` now emits correctly-assigned
+    material. The two existing corpus vectors (`surround51_tones`,
+    `surround51_impulse`) keep their rotated bytes deliberately: their
+    jobs do not depend on channel identity, and regenerating them would
+    invalidate the committed dcadec reference PCM.
 
 31. **Sustained live DTS decode dies by watchdog within minutes — the
     ISR-hang shape, not the epoch-abort shape.** Found 2026-07-28

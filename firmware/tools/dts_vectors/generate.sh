@@ -43,7 +43,34 @@ encode_stereo() {
 		-map "[a]" -c:a dca -strict -2 -ar "$sr" "$out/$name.dts"
 }
 
+# THE `join` CHANNEL-ASSIGNMENT TRAP, and why one 5.1 recipe below carries `map=`
+# and the other two deliberately do not.
+#
+# `join` without `map=` GUESSES the input-to-output assignment BY CHANNEL NAME.
+# Every mono lavfi source declares layout `mono`, whose one channel is named FC,
+# so all six inputs claim FC: the guess satisfies output FC from the FIRST input
+# and then fills the remaining outputs positionally from what is left. The result
+# is a rotation of the front three -- input 0 lands on FC, input 1 on FL, input 2
+# on FR -- with LFE and the surrounds unaffected. It is silent: the file plays,
+# every channel is present, and only a per-channel tone identity check can see it.
+#
+# That rotation is exactly defect 30 in ../../../docs/plans/aius-network-hardening.md:
+# the hardware tone-programme capture read "FR's tone in the left output" and looked
+# like a decoder channel permutation. It was this, in the SOURCE MATERIAL. The
+# decoder was correct throughout.
+#
+# `surround51_tones` and `surround51_impulse` KEEP the un-mapped recipe that
+# produced the committed bytes. Their purpose is differential decode, DSP goldens
+# and the bit-exact LFE reference, none of which depend on which channel carries
+# which tone, and regenerating them would invalidate the committed dcadec
+# reference PCM (which needs an upstream dcadec build to reproduce). Their
+# rotation is documented in README.md.
+#
+# `surround51_ident` is the channel-identity vector and states `map=` explicitly;
+# it is the one the `dts` suite's tone-identity check reads.
+
 # encode_51 <name> <f_fl> <f_fr> <f_fc> <f_lfe> <f_bl> <f_br>
+# Un-mapped: the front three are rotated, per the note above. Byte-stable.
 encode_51() {
 	local name="$1"
 	echo "==> $name (5.1 tones)"
@@ -55,6 +82,22 @@ encode_51() {
 		-f lavfi -i "sine=frequency=$6:duration=$dur:sample_rate=$sr" \
 		-f lavfi -i "sine=frequency=$7:duration=$dur:sample_rate=$sr" \
 		-filter_complex "[0][1][2][3][4][5]join=inputs=6:channel_layout=5.1,volume=0.6[a]" \
+		-map "[a]" -c:a dca -strict -2 -ar "$sr" "$out/$name.dts"
+}
+
+# encode_51_ident <name> <f_fl> <f_fr> <f_fc> <f_lfe> <f_bl> <f_br>
+# Explicitly mapped: input k lands on the channel its argument position names.
+encode_51_ident() {
+	local name="$1"
+	echo "==> $name (5.1 channel-identity tones, explicit map)"
+	"$ffmpeg" -hide_banner -loglevel error -y \
+		-f lavfi -i "sine=frequency=$2:duration=$dur:sample_rate=$sr" \
+		-f lavfi -i "sine=frequency=$3:duration=$dur:sample_rate=$sr" \
+		-f lavfi -i "sine=frequency=$4:duration=$dur:sample_rate=$sr" \
+		-f lavfi -i "sine=frequency=$5:duration=$dur:sample_rate=$sr" \
+		-f lavfi -i "sine=frequency=$6:duration=$dur:sample_rate=$sr" \
+		-f lavfi -i "sine=frequency=$7:duration=$dur:sample_rate=$sr" \
+		-filter_complex "[0][1][2][3][4][5]join=inputs=6:channel_layout=5.1:map=0.0-FL|1.0-FR|2.0-FC|3.0-LFE|4.0-BL|5.0-BR,volume=0.6[a]" \
 		-map "[a]" -c:a dca -strict -2 -ar "$sr" "$out/$name.dts"
 }
 
@@ -98,8 +141,11 @@ encode_stereo         stereo_tones       440 660
 encode_51             surround51_tones   300 600 900 60 1200 1500
 encode_stereo_impulse stereo_impulse
 encode_51_impulse     surround51_impulse
+# Mirrors the hardware bench tone programme (defect 30), correctly assigned.
+encode_51_ident       surround51_ident   300 600 900 60 1200 1500
 
-for name in stereo_tones surround51_tones stereo_impulse surround51_impulse; do
+for name in stereo_tones surround51_tones stereo_impulse surround51_impulse \
+	surround51_ident; do
 	echo "==> decode reference: $name"
 	decode_ref "$name"
 done
