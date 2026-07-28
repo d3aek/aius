@@ -225,6 +225,113 @@ FFmpeg would have forced an equivalent structural edit anyway.
 condition), or if the arena ever gains ~25 KB of headroom, at which point
 FFmpeg's E-AC-3 coverage would change the defect-34 calculus.
 
+### SUPERSEDED 2026-07-28 by the decision to FORK (operator-approved)
+
+The "stay with liba52 as a verbatim vendor + documented edits" posture above
+is replaced by: **fork it, gut what we do not use, and bring it up to our
+spec.** The two cheap wins survive inside the fork; what changes is the
+discipline.
+
+**Why forking beats both alternatives.** We have already de facto forked —
+two edits shipped, a third contracted — and we are paying the costs of
+pretending otherwise. The verbatim-vendor discipline is inherited from
+dcadec, where it earns its keep because dcadec needs zero edits. Here it
+buys upstream resync worth approximately nothing: two releases in
+twenty-four years, and **both defects we found are still live in the newest
+one**. Against a from-scratch decoder (~20 KB, 8–12 sessions) the fork lands
+~27 KB in 1–2 sessions while keeping a working decoder, the corpus, both
+suites and the differential harness. The 7 KB delta does not buy eight
+sessions.
+
+**What the fork gets us that the vendor posture cannot:**
+
+1. **Delete `downmix.c` outright** — 655 lines, 25% of the tree, never
+   executed because we always request identity output. The
+   `samples + 1027` typo goes with it *permanently*, which is strictly
+   better than 0.8.0's fix of it.
+2. **Restore sanitizer coverage.** We currently compile the whole tree with
+   `-Wno-shift-negative-value` and `-fno-sanitize=shift`, disabling UBSan
+   shift checking across the decoder — exactly where both defects lived.
+   Fixing `tables.h`'s `(-2 << 15)` quantizer macros and the bitstream
+   idioms lets those flags go. **This is the single largest safety win
+   available and it is unavailable without forking.**
+3. **Put fixes where they belong**: the reader bound inside the reader, CRC
+   validation inside the decoder rather than bolted to the adapter, and a
+   real overlap-reset entry point for phase 2a's `abandon` instead of
+   reaching into `a52_samples(state) + 1536` and depending on internal
+   layout.
+
+**Placement:** the tree moves OUT of `vendor/`, which in this repo means
+verbatim upstream (dcadec, NativeEthernet), into `lib/`. `NOTICE.md` becomes
+a divergence log — upstream origin, what we deleted, what we changed, why —
+rather than a list of apologies for edits. GPL-2 obligations are unchanged;
+a fork is still a derivative work.
+
+#### The identity-only reduction (surveyed 2026-07-28, before any edit)
+
+Deleting `downmix.c` is not just removing a file: `parse.c` calls into it in
+four places, and one of them performs the output-flags negotiation. The
+survey, so the implementer does not have to re-derive it:
+
+- `parse.c:168` — `state->output = a52_downmix_init(acmod, *flags, level,
+  clev, slev)` is the flags negotiation. Under our identity request it
+  returns the stream's own coding. Replacement: grant `state->acmod`
+  directly (plus the `A52_LFE` bit at `:172-173`, unchanged), leave `*level`
+  untouched.
+- `parse.c:776` — `chanbias = a52_downmix_coeff(...)`. Under identity
+  (`acmod == output`) this sets `coeff[0..4] = level` and returns **0**
+  (`downmix.c:157-169`). Replacement: exactly that, inline.
+- `parse.c:848` — `nfchans_tbl[output & A52_CHANNEL_MASK] < nfchans` is
+  **always false** under identity, so `i` stays 0 and the `i < nfchans`
+  branch is **always taken**. The entire second branch (`:883-903`) is dead
+  code, as is the `a52_upmix` call at `:856` and the `a52_downmix` call at
+  `:881` (neither switch has an identity case, so both are already no-ops).
+- Consequently `chanbias` is always 0 → `bias = state->bias` for every
+  channel, and `coeff[i]` is `state->dynrng` for every channel.
+- `state->downmixed`, `state->output`, `state->clev`/`slev` become vestigial
+  or trivially derived; prune deliberately rather than leaving dead fields.
+
+Also deletable as unreferenced: `attributes.h`, `mm_accel.h`.
+
+#### Steps, each separately committed
+
+**Step F1 — move and prune, NO behaviour change.** `vendor/a52-core/` →
+`lib/aius_a52/a52/`; delete `downmix.c`, `attributes.h`, `mm_accel.h`;
+apply the identity-only reduction above; update `scripts/test.sh` paths;
+`NOTICE.md` becomes the divergence log. **Proof: the differential must stay
+BYTE-IDENTICAL (1906 LSB / 69.3 dB) and `a52-fuzz` green.** That is a strong
+oracle precisely because the reduction is meant to be behaviour-preserving
+for identity requests — any drift means the reduction was wrong.
+
+**Step F2 — fix the idioms, drop the carve-outs.** Correct `tables.h`'s
+negative-shift macros and the bitstream shift idioms; remove
+`-Wno-shift-negative-value`, `-fno-sanitize=shift`,
+`-Wno-implicit-fallthrough`, `-Wno-unused-parameter` from `a52_build`.
+Delete the `config.h` `fprintf` hack by deleting the offending
+`fprintf` in `imdct.c` — we own it now. **Proof: suites green under FULL
+UBSan, differential still byte-identical.** Expect this step to surface
+findings; that is the point.
+
+**Step F3 — bounded reader + CRC.** Phase 2a's step 1 moves here and becomes
+ordinary work rather than a vendored edit: an end pointer, fail-closed, set
+from the syncinfo-validated frame length. Plus **CRC-16/ANSI over the whole
+frame** (`crc16(&buf[2], frame_size-2) == 0`, which chains CRC1 and CRC2),
+rejecting corruption before decode. Then the 32 KiB pad goes and the scratch
+falls to one frame. **Proof: the positive suppressed-fill evidence phase 2a
+already specifies, plus a CRC-rejection case in the fuzz.**
+
+**Step F4 — take 0.8.0's fixes selectively.** `bitstream_init` zeroing
+`current_word`, the `uint8_t` underflow in three places, the per-frame
+`clev`/`slev` reset. **NOT the dither change** (0.707 → 0.75) unless we
+choose to re-baseline the differential — decide explicitly, do not inherit
+it by copying files. The `1027` typo fix is moot; `downmix.c` is gone.
+
+#### What this does NOT solve
+
+E-AC-3 remains out of reach, so defect 34's answer is unchanged. The arena
+is unaffected — the fork lands at roughly the same ~27 KB, and the residency
+arithmetic in the phase 2 contract stands.
+
 ## Phase 1 contract (2026-07-28) — vendor + wrapper + native suite
 
 Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
