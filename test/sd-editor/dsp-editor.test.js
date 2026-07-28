@@ -20,6 +20,12 @@
  * never-published (`sequence == 0`) cases. The `/api/status` stub carries the
  * `carrier` flag and the latched `tx_gate` object the swagger `Status` schema
  * documents.
+ *
+ * The analyser's `analysis_window` is the one stimulus NOT carried as a JSON
+ * fixture: it is synthesised per test as two bin-centred tones at stated
+ * amplitudes, because 1024 checked-in integers would be an unverifiable wall of
+ * numbers while `sin(2*pi*32*n/1024) / 2` says exactly what the expected bins
+ * are and why.
  */
 
 import { readFileSync } from 'node:fs';
@@ -120,7 +126,9 @@ function installCanvas() {
     context.closePath = record('closePath');
     context.moveTo = record('moveTo');
     context.lineTo = record('lineTo');
-    context.fillRect = record('fillRect');
+    /* A rect carries its fill state the way a stroke does: the analyser underlay
+     * is identified by being FAINT, which is drawing state and not geometry. */
+    context.fillRect = (...args) => ops.push(['fillRect', ...args, context.fillStyle, context.globalAlpha]);
     context.setLineDash = (segments) => {
       lineDash = segments;
       ops.push(['setLineDash', segments]);
@@ -1489,6 +1497,85 @@ describe('Aius SD DSP editor — meters', () => {
 
     await vi.advanceTimersByTimeAsync(4100);
     expect(callsTo('/api/meters').length).toBe(afterFirst + 1);
+  });
+});
+
+/* The transport facts this page is polled against (measured 2026-07-28): a
+ * request on a kept-alive connection costs 2-3 ms, one that has to open a fresh
+ * connection ~500 ms, and the firmware's bounded listener DROPS a connection
+ * that arrives before the previous one has been released. A stacked timer tick
+ * is therefore not a wasted request but a broken one, which is what the old
+ * setInterval pollers produced whenever a poll ran long. */
+describe('Aius SD DSP editor — serialised polling', () => {
+  /* Answers everything the device stub does EXCEPT the one url held open, whose
+   * resolver is handed to the test: "the previous request has not come back
+   * yet" becomes a state the test drives rather than a race it hopes for. */
+  const hold = (url) => {
+    const inner = globalThis.fetch;
+    const waiting = [];
+    globalThis.fetch = vi.fn((target, init = {}) => {
+      if (target !== url) return inner(target, init);
+      device.calls.push({ url: target, method: init.method || 'GET', headers: init.headers || {}, body: init.body });
+      return new Promise((resolve) => waiting.push(resolve));
+    });
+    return waiting;
+  };
+
+  it('holds the meter loop while a request hangs, and never queues the frames it missed', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callsTo('/api/meters')).toHaveLength(1);
+
+    const waiting = hold('/api/meters');
+    await vi.advanceTimersByTimeAsync(3000);
+
+    // Thirty 10 Hz ticks' worth of wall clock, ONE request on the wire.
+    expect(waiting).toHaveLength(1);
+    expect(callsTo('/api/meters')).toHaveLength(2);
+
+    // The ANSWER releases the next request, not the clock -- and the thirty
+    // frames the hang covered are skipped, not caught up on.
+    waiting[0](jsonResponse(200, fixture('meters-snapshot.json')));
+    await settle();
+    expect(callsTo('/api/meters')).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(callsTo('/api/meters')).toHaveLength(3);
+    expect(el('meter-state').textContent).toBe('live');
+  });
+
+  it('holds the status loop the same way, at its own 1 Hz cadence', async () => {
+    await boot();
+    expect(callsTo('/api/status')).toHaveLength(1);
+
+    const waiting = hold('/api/status');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(callsTo('/api/status')).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(waiting).toHaveLength(1);
+    expect(callsTo('/api/status')).toHaveLength(2);
+
+    waiting[0](jsonResponse(200, STATUS_IDLE));
+    await settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(callsTo('/api/status')).toHaveLength(3);
+  });
+
+  /* The pending window polls the config endpoint every 500 ms for up to 20 s;
+   * a slow read there stacks exactly as a slow meter read did. */
+  it('holds the pending-window loop while the generation read hangs', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await click('apply');
+    expect(el('apply-state').textContent).toBe('pending');
+
+    const before = callsTo('/api/dsp/config').length;
+    const waiting = hold('/api/dsp/config');
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(waiting).toHaveLength(1);
+    expect(callsTo('/api/dsp/config')).toHaveLength(before + 1);
   });
 });
 
@@ -3542,6 +3629,240 @@ describe('Aius SD DSP editor — DSP load, level bars and the limiter strip', ()
     // The curves are unaffected: they never read a snapshot.
     expect(handlesOf('curve')).toHaveLength(1);
     expect(el('apply-state').textContent).toBe('loaded');
+  });
+});
+
+/* A 10 Hz snapshot drives a bar in 100 ms steps -- a staircase, not an
+ * instrument. Between snapshots the page runs a real meter's ballistics:
+ * instant rise, hold, then a constant dB/s fall towards (never past) the level
+ * the device is actually publishing. */
+describe('Aius SD DSP editor — meter ballistics', () => {
+  /* The needle is pure: the frame ticker owns the clock, so a decay is provable
+   * with literal elapsed times instead of a wall-clock wait. */
+  it('rises instantly, holds the peak, then falls at a fixed dB per second', async () => {
+    await boot();
+    const ballistic = { floor: -60, fall: 20, hold: 500 };
+    const needle = maths().newNeedle(ballistic);
+    expect(needle.value).toBe(-60);
+
+    // A peak meter that lagged on the way up would UNDER-read, the one error it
+    // must never make.
+    expect(maths().stepNeedle(needle, -6, 0, ballistic)).toBe(-6);
+    // The device goes quiet: the peak sits for its hold ...
+    expect(maths().stepNeedle(needle, -40, 500, ballistic)).toBe(-6);
+    // ... and then falls 20 dB per second, half a second at a time.
+    expect(maths().stepNeedle(needle, -40, 500, ballistic)).toBeCloseTo(-16, 9);
+    // Never past what the device is publishing: the snapshot is still the truth.
+    expect(maths().stepNeedle(needle, -40, 10000, ballistic)).toBe(-40);
+    // A louder snapshot wins at once, whatever the needle was doing.
+    expect(maths().stepNeedle(needle, -3, 40, ballistic)).toBe(-3);
+    // No data at all is the floor, not the last level held for ever.
+    expect(maths().stepNeedle(needle, null, 10000, ballistic)).toBe(-60);
+  });
+
+  it('carries a level bar between two snapshots instead of stepping it', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
+
+    // fl drops 33.8 dB between one snapshot and the next.
+    const quiet = fixture('meters-snapshot.json');
+    quiet.input[0] = { peak_dbfs: -40, rms_dbfs: -52 };
+    device.meters = quiet;
+    await vi.advanceTimersByTimeAsync(100);
+
+    // The printed number is the published instant, immediately ...
+    expect(el('meter-in-fl-peak').textContent).toBe('-40.0');
+    // ... and the needle beside it is still holding the peak it saw.
+    expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
+
+    // Then it glides, arriving somewhere no 10 Hz snapshot ever named ...
+    await vi.advanceTimersByTimeAsync(700);
+    const falling = Number.parseFloat(el('bar-in-fl-fill').style.width);
+    expect(falling).toBeLessThan(89.7);
+    expect(falling).toBeGreaterThan(33.4);
+
+    // ... and settles ON the published level, not on zero.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(el('bar-in-fl-fill').style.width).toBe('33.3%');
+  });
+
+  it('holds the gain-reduction bar at the deepest reduction and lets it recover', async () => {
+    await boot({ meters: { ...fixture('meters-snapshot.json'), limiter_gain_reduction_db: -12 } });
+    await vi.advanceTimersByTimeAsync(100);
+    // 12 dB of the bar's 24 dB span.
+    expect(el('gr-fill').style.width).toBe('50.0%');
+
+    device.meters = { ...fixture('meters-snapshot.json'), limiter_gain_reduction_db: 0 };
+    await vi.advanceTimersByTimeAsync(100);
+    expect(el('gr-value').textContent).toBe('0.0 dB');
+    expect(el('gr-fill').style.width).toBe('50.0%');
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(el('gr-fill').style.width).toBe('0.0%');
+  });
+
+  /* A snapshot that stops arriving is not a signal that decayed: the needles go
+   * back to their floors rather than gliding down from a level nothing is
+   * publishing any more. */
+  it('drops every needle when the meters go away', async () => {
+    await boot();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(el('bar-in-fl-fill').style.width).toBe('89.7%');
+
+    device.meters = fixture('meters-idle.json');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(el('bar-in-fl-fill').style.width).toBe('0.0%');
+    expect(el('bar-in-fl-fill').dataset.zone).toBe('idle');
+    expect(el('gr-fill').style.width).toBe('0.0%');
+  });
+});
+
+/* The analyser: a radix-2 FFT over a raw sample window the meter snapshot
+ * carries, drawn as log-spaced bands under the EQ curves. The firmware change
+ * that publishes that window lands separately, so the page has to be correct
+ * both before and after it arrives. */
+describe('Aius SD DSP editor — the analyser', () => {
+  /* A SYNTHETIC window, not a captured one: two bin-centred tones at known
+   * amplitudes are the only stimulus whose spectrum can be asserted exactly.
+   * 1024 samples at 48 kHz put a bin every 46.875 Hz, so tone bins 32 and 128
+   * are 1500 Hz and 6000 Hz -- exactly on a bin, which is what makes the
+   * Hann-windowed answer exact instead of approximate. Samples are int16-scale
+   * integers, the raw PCM the pipeline carries. */
+  const FULL_SCALE = 32768;
+  const WINDOW_SIZE = 1024;
+  const RATE_HZ = 48000;
+  const LOUD_DBFS = 20 * Math.log10(0.5); /* -6.0206 */
+  const QUIET_DBFS = 20 * Math.log10(0.125); /* -18.0618 */
+  const TONES = [
+    { bin: 32, amplitude: 0.5 },
+    { bin: 128, amplitude: 0.125 },
+  ];
+  const twoToneWindow = () =>
+    Array.from({ length: WINDOW_SIZE }, (unused, sample) =>
+      Math.round(
+        TONES.reduce(
+          (total, tone) =>
+            total + tone.amplitude * FULL_SCALE * Math.sin((2 * Math.PI * tone.bin * sample) / WINDOW_SIZE),
+          0,
+        ),
+      ),
+    );
+  const analyserMeters = (over = {}) => ({
+    ...fixture('meters-snapshot.json'),
+    analysis_window: twoToneWindow(),
+    ...over,
+  });
+  const SPECTRUM_BANDS = 48;
+  const bandOf = (hz) => {
+    let index = 0;
+    while (index < SPECTRUM_BANDS - 1 && maths().bandEdgeHz(index + 1) <= hz) index++;
+    return index;
+  };
+  const underlay = () => lastFrame('curve').filter((op) => op[0] === 'fillRect');
+  const tallest = () => underlay().reduce((best, op) => (op[4] > best[4] ? op : best), underlay()[0]);
+  const redraws = () => opsOf('curve').filter((op) => op[0] === 'clearRect').length;
+
+  it('reads both tones back out of the window at their own amplitudes', async () => {
+    await boot();
+    const bins = maths().spectrumBins(twoToneWindow(), FULL_SCALE);
+
+    expect(bins).toHaveLength(WINDOW_SIZE / 2);
+    expect(bins[32]).toBeCloseTo(LOUD_DBFS, 2);
+    expect(bins[128]).toBeCloseTo(QUIET_DBFS, 2);
+    // Hann spreads a bin-centred tone over its two immediate neighbours at half
+    // the amplitude and nowhere else ...
+    expect(bins[31]).toBeCloseTo(LOUD_DBFS - 6.0206, 2);
+    expect(bins[129]).toBeCloseTo(QUIET_DBFS - 6.0206, 2);
+    // ... so two bins out is the 16-bit quantisation floor, not the tone.
+    expect(bins[34]).toBeLessThan(-80);
+    expect(bins[300]).toBeLessThan(-80);
+  });
+
+  it('refuses a window too short to say anything about 20 Hz to 20 kHz', async () => {
+    await boot();
+    expect(maths().spectrumBins(Array.from({ length: 64 }, () => 1000), FULL_SCALE)).toEqual([]);
+    expect(maths().spectrumBins([], FULL_SCALE)).toEqual([]);
+  });
+
+  it('maps the bins onto the log-spaced bands the plot shares its axis with', async () => {
+    await boot();
+    const bands = maths().spectrumBandsOf(maths().spectrumBins(twoToneWindow(), FULL_SCALE), RATE_HZ);
+
+    expect(bands).toHaveLength(SPECTRUM_BANDS);
+    // The loudest bin in a band is the band: a spectrum answers "how much is
+    // there at this frequency", not "how much across this width".
+    expect(bands[bandOf(1500)]).toBeCloseTo(LOUD_DBFS, 2);
+    expect(bands[bandOf(6000)]).toBeCloseTo(QUIET_DBFS, 2);
+    // A band the window cannot resolve is EMPTY rather than a level invented
+    // for it: the first bin of a 1024-point window at 48 kHz is 46.9 Hz, and a
+    // band stays narrower than that spacing until ~300 Hz -- so the bottom of
+    // the underlay is deliberately gappy and its top is continuous.
+    expect(bands[0]).toBe(null);
+    expect(bands[bandOf(25)]).toBe(null);
+    expect(bands.slice(bandOf(400)).every((band) => band !== null)).toBe(true);
+  });
+
+  it('draws nothing, and costs nothing, until a snapshot carries a window', async () => {
+    await boot({ meters: { ...fixture('meters-snapshot.json'), analysis_window: [1, 2, 3] } });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(underlay()).toHaveLength(0);
+    expect(el('meter-state').textContent).toBe('live');
+
+    // And the plot is not redrawing per frame either: a page whose firmware
+    // never publishes a window pays nothing for the analyser.
+    const before = redraws();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(redraws()).toBe(before);
+  });
+
+  it('lights the underlay up on the first snapshot that carries one', async () => {
+    await boot({ meters: analyserMeters() });
+    await vi.advanceTimersByTimeAsync(100);
+
+    const frame = lastFrame('curve');
+    const bars = underlay();
+    expect(bars.length).toBeGreaterThan(0);
+
+    // BENEATH the curves: every bar is drawn before the frame's first path.
+    expect(frame.indexOf(bars[bars.length - 1])).toBeLessThan(frame.findIndex((op) => op[0] === 'beginPath'));
+    // Faded, one colour, never competing with a cascade.
+    expect(bars.every((op) => op[6] < 0.25)).toBe(true);
+    // The tallest band sits under 1500 Hz on the plot's OWN frequency axis ...
+    const loud = tallest();
+    expect(loud[1]).toBeLessThanOrEqual(atHz(1500));
+    expect(loud[1] + loud[3]).toBeGreaterThanOrEqual(atHz(1500));
+    // ... and its height is its own dBFS scale (-96 dBFS to 0 over the canvas),
+    // growing up from the bottom, not the +-12 dB the curves are drawn against.
+    expect(loud[4]).toBeCloseTo(((LOUD_DBFS + 96) / 96) * 240, 3);
+    expect(loud[2] + loud[4]).toBeCloseTo(240, 6);
+    // The plot still works: the curves and their handles are drawn over it.
+    expect(cascadePaths()).toHaveLength(5);
+  });
+
+  it('smooths the bands between windows and puts the underlay away when it stops', async () => {
+    await boot({ meters: analyserMeters() });
+    await vi.advanceTimersByTimeAsync(100);
+    const loud = tallest()[4];
+
+    // The signal stops: the bands FALL rather than collapsing in one snapshot.
+    device.meters = analyserMeters({ analysis_window: Array.from({ length: WINDOW_SIZE }, () => 0) });
+    await vi.advanceTimersByTimeAsync(100);
+    const falling = tallest()[4];
+    expect(falling).toBeLessThan(loud);
+    expect(falling).toBeGreaterThan(0);
+
+    // The field itself disappears: the underlay goes with it, and the plot
+    // stops redrawing per frame.
+    device.meters = fixture('meters-snapshot.json');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(underlay()).toHaveLength(0);
+    const before = redraws();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(redraws()).toBe(before);
   });
 });
 

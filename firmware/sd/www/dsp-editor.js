@@ -4,10 +4,12 @@
  * field table below, rendering GET /api/dsp/config into it, validating edits
  * against the firmware parser's bounds, PUTting the model back with an
  * optimistic-concurrency token, polling GET /api/meters at 10 Hz and
- * GET /api/status at 1 Hz, and drawing the signal-flow strip: ONE stacked EQ
- * plot carrying every cascade, the downmix routing diagram, the level bars, the
- * DSP load and the limiter's gain reduction, all from that same model and those
- * same snapshots.
+ * GET /api/status at 1 Hz -- one serialised request at a time per endpoint,
+ * never a timer stack -- and drawing the signal-flow strip: ONE stacked EQ plot
+ * carrying every cascade (with the analyser's spectrum underneath it when the
+ * snapshot carries a sample window), the downmix routing diagram, the level
+ * bars under peak-hold ballistics, the DSP load and the limiter's gain
+ * reduction, all from that same model and those same snapshots.
  *
  * DOES NOT OWN: the replay manager (replays.js), the device status page
  * (status.js), the shared chrome behaviours (sd-shared.js -- pills, fetch
@@ -100,6 +102,42 @@
   const LOAD_DANGER_PERCENT = 90;
   const LIMITER_SPAN_DB = 24; /* gain-reduction bar + history full scale */
   const LIMITER_HISTORY_MAX = 128; /* ~12.8 s of history at the 10 Hz poll */
+
+  /* Meter ballistics. A 10 Hz snapshot drives a bar in 100 ms steps -- a
+   * staircase, not an instrument -- so BETWEEN snapshots the page runs the
+   * ballistics a real meter has: an INSTANT rise (a peak meter that lags going
+   * up under-reads, the one error it must never make), a HOLD at that peak so a
+   * transient is readable at all, and then a fall at a constant number of dB per
+   * second, which is an exponential decay of the amplitude. The snapshot stays
+   * the truth throughout: a needle only ever falls TOWARDS the last published
+   * level and never past it, and a louder snapshot wins immediately.
+   *
+   * A timer, not requestAnimationFrame: what moves is a needle falling at a
+   * fixed dB/s, which needs a known ELAPSED TIME rather than display sync, and a
+   * timer is the same self-scheduling discipline the pollers below use (and is
+   * provable under a fake clock, which rAF is not). */
+  const BALLISTIC_FRAME_MS = 40; /* 25 fps: continuous to the eye, cheap on a page this dense */
+  const METER_HOLD_MS = 700;
+  const METER_FALL_DB_PER_S = 26; /* slower than a studio PPM: the source is already 100 ms peaks */
+  const LIMITER_HOLD_MS = 400; /* gain reduction is news -- hold it, then let it recover */
+  const LIMITER_FALL_DB_PER_S = 36;
+
+  /* The analyser underlay under the stacked EQ plot. Bands are LOG-spaced over
+   * the plot's own 20 Hz..20 kHz axis, so a band sits under the frequency it
+   * describes; 48 of them is a fifth of an octave each, dense enough to show a
+   * spectrum's shape and coarse enough that one 1024-point window fills it.
+   * The vertical scale is its OWN dBFS -- it has no relationship to the +-12 dB
+   * the curves are drawn against, which is why the underlay is faint, unlabelled
+   * and never carries a handle. */
+  const SPECTRUM_BANDS = 48;
+  const SPECTRUM_FLOOR_DBFS = -96; /* the underlay's own floor, not the meters' -120 */
+  const SPECTRUM_MIN_SAMPLES = 256; /* below this a window says nothing about 20 Hz..20 kHz */
+  const SPECTRUM_MAX_SAMPLES = 4096; /* a longer window is truncated, not refused */
+  const SPECTRUM_HOLD_MS = 0; /* a spectrum is read as motion; a hold reads as a freeze */
+  const SPECTRUM_FALL_DB_PER_S = 48;
+  const SPECTRUM_ALPHA = 0.18; /* context under the curves, never competing with them */
+  const SPECTRUM_COLOUR = '#74d7ff';
+  const SPECTRUM_GAP_PX = 1; /* a hairline between bands, so 48 bars read as bars */
 
   /* Firmware facts mirrored here the way MODEL_MAX_BYTES mirrors
    * AIUS_DSP_MODEL_MAX_JSON_BYTES: the snapshot carries raw DWT cycle counts
@@ -238,11 +276,10 @@
     model: null,
     baseGeneration: 0,
     applyState: 'loading',
-    pendingTimer: null,
+    /* Stops the pending-window loop, or null when no write is waiting to land.
+     * The meter and status loops run for the life of the page and need none. */
+    pendingStop: null,
     pendingAttempts: 0,
-    meterInFlight: false,
-    meterRetryAt: 0,
-    statusInFlight: false,
     /* Serialised editable groups the device is believed to hold -- the
      * BASELINE. Null until the first successful read; isDirty() is this string
      * against a fresh collect, and each section's marker is one group of it
@@ -278,6 +315,21 @@
     limiterHistory: [],
     /* Last rendered waveform, so a resize can redraw without a fresh poll. */
     waveform: [],
+    /* Ballistics. A poll writes the TARGETS -- what the device last published --
+     * and the frame ticker walks each needle towards them, so what is on screen
+     * between two snapshots is a decay rather than a held frame. `needles` is
+     * keyed by the element the needle drives, so nothing keeps a parallel list
+     * of what is metered. */
+    needles: new Map(),
+    levelTargets: new Map(), /* bar id -> published dBFS, or null for no data */
+    limiterTarget: 0, /* published gain REDUCTION, 0..LIMITER_SPAN_DB */
+    /* The analyser's per-band dBFS from the last window, and where each band's
+     * needle actually is. BOTH empty means the snapshot carries no window --
+     * the underlay is not drawn and the plot does not redraw per frame. */
+    spectrumTargets: [],
+    spectrumBands: [],
+    /* Date.now() of the last ballistic frame; 0 until the first one. */
+    frameAt: 0,
     /* The handle currently under a captured pointer, or null -- one per canvas,
      * because the plot and the diagram are two independent instruments. */
     drag: null,
@@ -1280,6 +1332,48 @@
   const describe = shared.describe;
   const guard = (run) => shared.guard(run, showError);
 
+  /* ---- polling: one request at a time, never a stack ----------------------
+   * MEASURED on this device (2026-07-28): a request on a KEPT-ALIVE connection
+   * costs 2-3 ms, a request that has to open a FRESH one costs ~500 ms, and the
+   * firmware's bounded listener DROPS a connection that arrives before the
+   * previous one has been released. setInterval could respect none of that --
+   * it issued the next request on the clock whether or not the last had
+   * answered, and every overlap cost a dropped connection plus a 500 ms
+   * reconnect. That, not the render, is why the page stuttered at 10 fps.
+   *
+   * So each endpoint gets a SELF-SCHEDULING loop: the next request is scheduled
+   * only once the previous one has RESOLVED, so there is never more than one of
+   * them on the wire and the connection stays alive between them. A poll that
+   * overruns its cadence simply SKIPS the frames it overran -- the cadence is a
+   * floor on the gap between requests, not a deadline that queues work. URLs are
+   * same-origin and relative, which is what lets the browser reuse the socket.
+   *
+   * `poll` resolves to the delay before the NEXT request (a back-off is the
+   * poll's own answer, not a second timer) or to nothing for the plain cadence.
+   * The returned function stops the loop -- only the pending-window poll ends;
+   * the meter and status loops run for the life of the page. */
+  function startPolling(poll, cadenceMs, immediate) {
+    let timer = null;
+    let stopped = false;
+    const tick = async () => {
+      let delay = cadenceMs;
+      /* guard() routes a defect in a renderer to the page's error sink; the
+       * loop then re-arms at the plain cadence rather than dying silently. */
+      await guard(async () => {
+        const asked = await poll();
+        if (Number.isFinite(asked) && asked > 0) delay = asked;
+      });
+      if (!stopped) timer = setTimeout(() => void tick(), delay);
+    };
+    if (immediate) void tick();
+    else timer = setTimeout(() => void tick(), cadenceMs);
+    return () => {
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
+  }
+
   /* One in-flight request at a time from the page's own buttons: a second
    * click on Apply during a >7 s first save used to land a stale PUT and paint
    * a false 409 (UX finding E4). */
@@ -1445,7 +1539,7 @@
      * it carries the entire form and simply supersedes the first. A SECTION
      * apply is not: it composes from a baseline that has not rebased yet, so it
      * would write the first section's landed change straight back out. */
-    if (state.pendingTimer !== null) {
+    if (state.pendingStop !== null) {
       showError(
         'A write is already waiting to land at the next audio block boundary. Wait for it before applying another stage.',
       );
@@ -1456,16 +1550,20 @@
     await writeModel(sectionModel(section), token, `Writing ${section.label} to /aius/dsp.json...`);
   }
 
+  /* The same no-overlap loop the meters and the status use: a slow generation
+   * read must not queue a second one behind it, and pollPending() calls
+   * stopPendingPoll() from inside its own tick -- which the loop's stop flag
+   * honours, so a landed apply cannot re-arm itself. */
   function startPendingPoll() {
     stopPendingPoll();
     state.pendingAttempts = 0;
-    state.pendingTimer = setInterval(() => void guard(pollPending), PENDING_POLL_MS);
+    state.pendingStop = startPolling(pollPending, PENDING_POLL_MS);
   }
 
   function stopPendingPoll() {
-    if (state.pendingTimer !== null) {
-      clearInterval(state.pendingTimer);
-      state.pendingTimer = null;
+    if (state.pendingStop !== null) {
+      state.pendingStop();
+      state.pendingStop = null;
     }
   }
 
@@ -1910,25 +2008,24 @@
   /* ---- meters ------------------------------------------------------------ */
 
   /* Three outcomes, not two. A non-2xx or a dead transport means the endpoint
-   * is unavailable and is worth backing off from; a 200 whose sequence is 0
-   * means the device is answering perfectly well and has simply never
-   * published (metering bypassed, or no block processed yet), which is a
-   * render state rather than a fault -- so it keeps the full 10 Hz poll. */
+   * is unavailable and is worth backing off from -- returned as the loop's next
+   * delay, so the back-off IS the schedule rather than a gate a fast timer keeps
+   * bumping into; a 200 whose sequence is 0 means the device is answering
+   * perfectly well and has simply never published (metering bypassed, or no
+   * block processed yet), which is a render state rather than a fault -- so it
+   * keeps the full 10 Hz cadence. */
   async function pollMeters() {
-    if (state.meterInFlight || Date.now() < state.meterRetryAt) return;
-    state.meterInFlight = true;
     const result = await request('/api/meters', { headers: { Accept: 'application/json' } });
-    state.meterInFlight = false;
     if (!result.ok || !result.body) {
-      state.meterRetryAt = Date.now() + METER_RETRY_MS;
       renderMetersAbsent(result);
-      return;
+      return METER_RETRY_MS;
     }
     if (!(Number(result.body.sequence) > 0)) {
       renderMetersIdle();
-      return;
+      return METER_POLL_MS;
     }
     renderMeters(result.body);
+    return METER_POLL_MS;
   }
 
   function blankMeterRows() {
@@ -2026,6 +2123,10 @@
     renderDspLoad(meters);
     renderStripLevels(meters);
     pushLimiter(meters.limiter_gain_reduction_db);
+    driveSpectrum(meters);
+    /* The needles move on the snapshot's own arrival too, not only on the next
+     * frame: a peak has to be on screen the instant it is published. */
+    ballisticFrame();
   }
 
   /* ---- signal-flow ends: what the device is hearing, and transmitting -----
@@ -2039,12 +2140,13 @@
    * numbers on the status page -- one vocabulary, two readers. */
   const CARRIER_ENCODINGS = { 3: 'PCM', 4: 'DTS' };
 
+  /* The same serialised discipline at its own 1 Hz cadence: a status read that
+   * takes longer than a second must not put a second one on the wire behind it,
+   * because that overlap is exactly what costs a dropped connection. */
   async function pollStatus() {
-    if (state.statusInFlight) return;
-    state.statusInFlight = true;
     const result = await request('/api/status', { headers: { Accept: 'application/json' } });
-    state.statusInFlight = false;
     renderFlowEnds(result.ok && result.body ? result.body : null);
+    return STATUS_POLL_MS;
   }
 
   function setFlowEnd(id, dataState, text) {
@@ -2463,6 +2565,159 @@
     return 'ok';
   };
 
+  /* ---- meter ballistics: pure --------------------------------------------
+   * One needle is {value, holdLeft}; one step is a function of the milliseconds
+   * that have passed. The frame ticker owns the clock, so the decay is provable
+   * without one. A `ballistic` is the three tunables that describe an
+   * instrument -- {floor, fall, hold} -- because a level bar, the gain-reduction
+   * bar and an analyser band are the same needle with different numbers. */
+  const METER_BALLISTIC = { floor: BAR_FLOOR_DBFS, fall: METER_FALL_DB_PER_S, hold: METER_HOLD_MS };
+  const LIMITER_BALLISTIC = { floor: 0, fall: LIMITER_FALL_DB_PER_S, hold: LIMITER_HOLD_MS };
+  const SPECTRUM_BALLISTIC = { floor: SPECTRUM_FLOOR_DBFS, fall: SPECTRUM_FALL_DB_PER_S, hold: SPECTRUM_HOLD_MS };
+
+  const newNeedle = (ballistic) => ({ value: ballistic.floor, holdLeft: 0 });
+
+  /* At or above the target the needle is THERE at once and the hold restarts;
+   * below it, the needle sits for the rest of the hold and then falls at
+   * `fall` dB per second -- never below the target, which is the level the
+   * device is actually publishing. A target of null (no data) is the floor. */
+  function stepNeedle(needle, target, elapsedMs, ballistic) {
+    const wanted = Number.isFinite(target) ? Math.max(ballistic.floor, target) : ballistic.floor;
+    if (wanted >= needle.value) {
+      needle.value = wanted;
+      needle.holdLeft = ballistic.hold;
+      return needle.value;
+    }
+    const spent = Math.max(0, Number.isFinite(elapsedMs) ? elapsedMs : 0);
+    const falling = Math.max(0, spent - needle.holdLeft);
+    needle.holdLeft = Math.max(0, needle.holdLeft - spent);
+    needle.value = Math.max(wanted, needle.value - (ballistic.fall * falling) / 1000);
+    return needle.value;
+  }
+
+  /* ---- the analyser: a radix-2 FFT over the published sample window -------
+   * The snapshot's `waveform` is a 128-point per-mille ENVELOPE -- enough to see
+   * that audio is moving, far too coarse to say what is in it. The analyser
+   * reads a raw sample window instead and shows its spectrum under the EQ plot,
+   * so an operator can see the band a section is about to move.
+   *
+   * The transform is the textbook iterative Cooley-Tukey over a real input with
+   * a zeroed imaginary array. Packing the real signal into N/2 complex points
+   * and unpacking the spectrum afterwards halves the work and doubles the code;
+   * 1024 points every 100 ms is nothing in a browser, and this way the maths on
+   * the page is the maths in the book. */
+
+  /* Bit-reversal permutation, then log2(n) butterfly passes with the twiddle
+   * advanced by rotation rather than a fresh cos/sin per point. `real` and
+   * `imaginary` are transformed IN PLACE and `n` MUST be a power of two --
+   * spectrumBins() is the only caller and truncates to one. */
+  function fftInPlace(real, imaginary) {
+    const n = real.length;
+    for (let index = 1, mirror = 0; index < n; index++) {
+      let bit = n >> 1;
+      for (; mirror & bit; bit >>= 1) mirror ^= bit;
+      mirror ^= bit;
+      if (index < mirror) {
+        const swapReal = real[index];
+        const swapImaginary = imaginary[index];
+        real[index] = real[mirror];
+        imaginary[index] = imaginary[mirror];
+        real[mirror] = swapReal;
+        imaginary[mirror] = swapImaginary;
+      }
+    }
+    for (let span = 2; span <= n; span <<= 1) {
+      const angle = (-2 * Math.PI) / span;
+      const stepReal = Math.cos(angle);
+      const stepImaginary = Math.sin(angle);
+      const half = span >> 1;
+      for (let start = 0; start < n; start += span) {
+        let twiddleReal = 1;
+        let twiddleImaginary = 0;
+        for (let offset = 0; offset < half; offset++) {
+          const low = start + offset;
+          const high = low + half;
+          const oddReal = real[high] * twiddleReal - imaginary[high] * twiddleImaginary;
+          const oddImaginary = real[high] * twiddleImaginary + imaginary[high] * twiddleReal;
+          real[high] = real[low] - oddReal;
+          imaginary[high] = imaginary[low] - oddImaginary;
+          real[low] += oddReal;
+          imaginary[low] += oddImaginary;
+          const nextReal = twiddleReal * stepReal - twiddleImaginary * stepImaginary;
+          twiddleImaginary = twiddleReal * stepImaginary + twiddleImaginary * stepReal;
+          twiddleReal = nextReal;
+        }
+      }
+    }
+  }
+
+  /* The largest power of two the window can fill, capped: a 1024-sample window
+   * transforms whole, a 1500-sample one uses its last 1024. */
+  function fftSize(length) {
+    let size = 1;
+    while (size * 2 <= Math.min(length, SPECTRUM_MAX_SAMPLES)) size *= 2;
+    return size >= SPECTRUM_MIN_SAMPLES ? size : 0;
+  }
+
+  /* (window, full scale) -> one dBFS per bin, 0 dBFS being a full-scale sine.
+   * Hann-windowed, which spreads a tone over three bins in a known way: a
+   * bin-centred sinusoid of amplitude A leaves exactly A*N/4 in its own bin (the
+   * window's 0.5 coherent gain, halved again because a real signal splits into
+   * two conjugate halves), so 4/N turns a magnitude back into the amplitude that
+   * produced it. The LAST `size` samples are used -- the newest audio. */
+  function spectrumBins(samples, fullScale) {
+    const source = Array.isArray(samples) ? samples : [];
+    const size = fftSize(source.length);
+    const scale = Number.isFinite(fullScale) && fullScale > 0 ? fullScale : 1;
+    if (size === 0) return [];
+    const first = source.length - size;
+    const real = new Array(size);
+    const imaginary = new Array(size).fill(0);
+    for (let index = 0; index < size; index++) {
+      const sample = Number(source[first + index]);
+      const hann = 0.5 - 0.5 * Math.cos((2 * Math.PI * index) / size);
+      real[index] = (Number.isFinite(sample) ? sample / scale : 0) * hann;
+    }
+    fftInPlace(real, imaginary);
+    const bins = [];
+    for (let bin = 0; bin < size / 2; bin++) {
+      const amplitude = (4 * Math.hypot(real[bin], imaginary[bin])) / size;
+      bins.push(amplitude > 0 ? Math.max(SPECTRUM_FLOOR_DBFS, 20 * Math.log10(amplitude)) : SPECTRUM_FLOOR_DBFS);
+    }
+    return bins;
+  }
+
+  /* Band edges on the PLOT's axis, so hzToX() places a band under exactly the
+   * frequencies it describes. */
+  const bandEdgeHz = (index) => CURVE_MIN_HZ * Math.pow(CURVE_MAX_HZ / CURVE_MIN_HZ, index / SPECTRUM_BANDS);
+
+  /* (bins, rate) -> one dBFS per band, or null for a band no bin lands in. The
+   * LOUDEST bin in the band wins: a spectrum display answers "how much is there
+   * at this frequency", not "how much is there in total across this width".
+   *
+   * null rather than a floor value is deliberate. A 1024-point window at 48 kHz
+   * puts a bin every 46.9 Hz while a band down there is only a few Hz wide, so
+   * the bottom of the underlay is genuinely gappy (continuous from ~300 Hz, where
+   * a band first outgrows the bin spacing). A bar drawn in a band no bin lands in
+   * would be an invention; the underlay simply stops instead. */
+  function spectrumBandsOf(bins, sampleRateHz) {
+    const bands = [];
+    if (bins.length === 0 || !(sampleRateHz > 0)) return bands;
+    const spacing = sampleRateHz / (bins.length * 2);
+    for (let band = 0; band < SPECTRUM_BANDS; band++) {
+      const low = bandEdgeHz(band);
+      const high = bandEdgeHz(band + 1);
+      /* Bin 0 is DC: never a band's answer, whatever the low edge says. */
+      const from = Math.max(1, Math.ceil(low / spacing));
+      let loudest = null;
+      for (let bin = from; bin < bins.length && bin * spacing < high; bin++) {
+        if (loudest === null || bins[bin] > loudest) loudest = bins[bin];
+      }
+      bands.push(loudest);
+    }
+    return bands;
+  }
+
   /* ---- visual surface: DOM ----------------------------------------------- */
 
   const selectedEntity = () =>
@@ -2572,11 +2827,21 @@
     $(mountId).append(row);
   }
 
+  /* What the snapshot SAID, printed, and where the needle is being driven to.
+   * The printed number is the published instant; the bar beside it is the
+   * needle, moved by the frame ticker (paintBar) rather than by this call. */
   function setBar(id, dbfs) {
+    state.levelTargets.set(id, Number.isFinite(dbfs) ? dbfs : null);
+    $(`${id}-value`).textContent = formatDb(dbfs);
+  }
+
+  /* Where the needle IS -- or null, which is a bar with no data at all: it
+   * reads as the idle zone at zero width rather than as a needle resting on the
+   * floor, which is a level. */
+  function paintBar(id, dbfs) {
     const fill = $(`${id}-fill`);
     fill.style.width = `${(levelFraction(dbfs) * 100).toFixed(1)}%`;
     fill.dataset.zone = levelZone(dbfs);
-    $(`${id}-value`).textContent = formatDb(dbfs);
   }
 
   /* ---- visual surface: canvas backing store ------------------------------
@@ -2615,6 +2880,7 @@
     const scale = dprOf(canvas);
     const rect = { left: 0, top: 0, width: canvas.width, height: canvas.height };
     context.clearRect(0, 0, rect.width, rect.height);
+    drawSpectrumUnderlay(context, rect, scale);
     drawCurveGrid(context, rect, scale);
 
     const rate = curveSampleRate();
@@ -2686,6 +2952,35 @@
     if (!Number.isFinite(value)) return;
     beginSurfaceEdit(entity);
     surfaceWrite(entity, slot, 'q', value);
+  }
+
+  /* The analyser underlay. Drawn FIRST, so the grid, all five cascades, every
+   * handle and every label land on top of it: it is context for the curves and
+   * never a target -- there is nothing here for a gesture to grab, and the
+   * gesture code does not know it exists.
+   *
+   * It shares the plot's log-frequency axis EXACTLY (hzToX, same rect) and
+   * nothing else: the height of a band is its own dBFS scale, floored at
+   * SPECTRUM_FLOOR_DBFS, which is why it is faint and unlabelled rather than
+   * pretending to read against the +-12 dB rails beside it. A band no bin lands
+   * in is not drawn at all. */
+  function drawSpectrumUnderlay(context, rect, scale) {
+    const bands = state.spectrumBands;
+    if (bands.length === 0) return;
+    const gap = SPECTRUM_GAP_PX * scale;
+    context.globalAlpha = SPECTRUM_ALPHA;
+    context.fillStyle = SPECTRUM_COLOUR;
+    bands.forEach((db, band) => {
+      if (db === null) return;
+      const level = clamp((db - SPECTRUM_FLOOR_DBFS) / -SPECTRUM_FLOOR_DBFS, 0, 1);
+      const height = level * rect.height;
+      if (!(height > 0)) return;
+      const left = hzToX(bandEdgeHz(band), rect);
+      const width = hzToX(bandEdgeHz(band + 1), rect) - left - gap;
+      if (!(width > 0)) return;
+      context.fillRect(left, rect.top + rect.height - height, width, height);
+    });
+    context.globalAlpha = 1;
   }
 
   function drawCurveGrid(context, rect, scale) {
@@ -3411,10 +3706,16 @@
     $('meter-load-peak').dataset.zone = loadZone(peak);
   }
 
-  function setLimiterBar(db) {
-    const reduction = Number.isFinite(db) ? clamp(-db, 0, LIMITER_SPAN_DB) : 0;
-    $('gr-fill').style.width = `${((reduction / LIMITER_SPAN_DB) * 100).toFixed(1)}%`;
+  /* Gain reduction is published as a negative dB and read as a positive
+   * REDUCTION, which is what the bar (and its needle) carries. The printed
+   * number stays the published instant. */
+  function driveLimiter(db) {
+    state.limiterTarget = Number.isFinite(db) ? clamp(-db, 0, LIMITER_SPAN_DB) : 0;
     $('gr-value').textContent = Number.isFinite(db) ? `${formatDb(db)} dB` : '--';
+  }
+
+  function paintLimiterBar(reduction) {
+    $('gr-fill').style.width = `${((reduction / LIMITER_SPAN_DB) * 100).toFixed(1)}%`;
   }
 
   /* Each snapshot's gain reduction is the value at the publish instant, not a
@@ -3423,7 +3724,7 @@
   function pushLimiter(db) {
     state.limiterHistory.push(Number.isFinite(db) ? clamp(db, -LIMITER_SPAN_DB, 0) : 0);
     if (state.limiterHistory.length > LIMITER_HISTORY_MAX) state.limiterHistory.shift();
-    setLimiterBar(db);
+    driveLimiter(db);
     drawLimiterHistory();
   }
 
@@ -3435,9 +3736,123 @@
     $('meter-load').dataset.zone = 'idle';
     $('meter-load-peak').textContent = '--';
     $('meter-load-peak').dataset.zone = 'idle';
-    setLimiterBar(null);
+    driveLimiter(null);
     state.limiterHistory = [];
     drawLimiterHistory();
+    /* Every needle back to its floor, not decaying from wherever it stood: the
+     * data is GONE, and a bar gliding down from a level nothing is publishing
+     * any more would be a fiction. */
+    state.needles.clear();
+    driveSpectrum(null);
+    ballisticFrame();
+  }
+
+  /* ---- ballistics: the frame ticker --------------------------------------
+   * The one place a needle moves. A poll writes targets and then calls this
+   * immediately, so a fresh peak is on screen at the instant it arrives; the
+   * loop below calls it every BALLISTIC_FRAME_MS so the fall between two
+   * snapshots is drawn rather than skipped. */
+
+  /* Needles are created on first use and keyed by what they drive, so nothing
+   * has to keep a parallel list of what is metered. */
+  function needleFor(key, ballistic) {
+    let needle = state.needles.get(key);
+    if (needle === undefined) {
+      needle = newNeedle(ballistic);
+      state.needles.set(key, needle);
+    }
+    return needle;
+  }
+
+  function ballisticFrame() {
+    const now = Date.now();
+    const elapsed = state.frameAt === 0 ? 0 : Math.max(0, now - state.frameAt);
+    state.frameAt = now;
+    for (const [id, target] of state.levelTargets) {
+      const level = stepNeedle(needleFor(id, METER_BALLISTIC), target, elapsed, METER_BALLISTIC);
+      paintBar(id, target === null ? null : level);
+    }
+    paintLimiterBar(
+      stepNeedle(needleFor('limiter', LIMITER_BALLISTIC), state.limiterTarget, elapsed, LIMITER_BALLISTIC),
+    );
+    /* The plot redraws per frame ONLY while the analyser has something to say.
+     * Until the firmware publishes a window -- and on any device that never
+     * does -- the curves redraw exactly when the FORM changes, as before. */
+    if (stepSpectrum(elapsed)) drawCurveSurface();
+  }
+
+  /* The next frame is scheduled BEFORE the current one is drawn: a defect in one
+   * frame must leave a loud error and a still-running instrument, not a page
+   * whose meters quietly stopped. The frame is synchronous, so it cannot overlap
+   * itself however long it takes. */
+  function startBallistics() {
+    const tick = () => {
+      setTimeout(tick, BALLISTIC_FRAME_MS);
+      ballisticFrame();
+    };
+    setTimeout(tick, BALLISTIC_FRAME_MS);
+  }
+
+  /* ---- the analyser: feeding it ------------------------------------------
+   * FEATURE DETECTION, not configuration. The firmware change that publishes a
+   * raw sample window is landing separately, so this page has to be correct
+   * both before and after it arrives: with no window in the snapshot the
+   * underlay is simply not drawn -- no placeholder, no error, no transform run
+   * -- and the first snapshot that carries one lights it up on the next frame
+   * with no page change at all.
+   *
+   * The names are tried in order and the first that carries a long enough
+   * numeric array wins; `analysis_window` is the canonical one this page asks
+   * the firmware for, and the aliases exist only so a name settled on the
+   * device side does not need a matching SD-card write to be visible.
+   *
+   * The scale is the OTHER half of the contract: the window is raw integer
+   * samples, so the page needs to know what full scale is to call anything
+   * "0 dBFS". It reads `analysis_full_scale` when the snapshot states it and
+   * assumes int16 otherwise -- and because the underlay has its own vertical
+   * axis, a wrong assumption slides the whole picture rather than breaking it. */
+  const ANALYSIS_WINDOW_KEYS = ['analysis_window', 'sample_window', 'spectrum_window'];
+  const ANALYSIS_DEFAULT_FULL_SCALE = 32768; /* int16, the raw PCM the pipeline carries */
+
+  function analysisWindowOf(meters) {
+    for (const key of ANALYSIS_WINDOW_KEYS) {
+      const value = meters[key];
+      if (Array.isArray(value) && value.length >= SPECTRUM_MIN_SAMPLES) return value;
+    }
+    return null;
+  }
+
+  const analysisFullScaleOf = (meters) =>
+    Number.isFinite(meters.analysis_full_scale) && meters.analysis_full_scale > 0
+      ? meters.analysis_full_scale
+      : ANALYSIS_DEFAULT_FULL_SCALE;
+
+  /* One snapshot -- or null, for a strip with no snapshot at all -- becomes the
+   * band targets the needles chase. */
+  function driveSpectrum(meters) {
+    const samples = meters === null ? null : analysisWindowOf(meters);
+    const sampleRateHz = meters === null ? 0 : meters.sample_rate_hz;
+    if (samples === null || !(sampleRateHz > 0)) {
+      if (state.spectrumTargets.length === 0) return;
+      state.spectrumTargets = [];
+      state.spectrumBands = [];
+      /* One redraw to take the underlay off the plot; without it the last
+       * frame's bars would sit there until the form next changed. */
+      drawCurveSurface();
+      return;
+    }
+    state.spectrumTargets = spectrumBandsOf(spectrumBins(samples, analysisFullScaleOf(meters)), sampleRateHz);
+  }
+
+  /* True when a band moved, which is what makes the plot redraw. */
+  function stepSpectrum(elapsedMs) {
+    if (state.spectrumTargets.length === 0) return false;
+    state.spectrumBands = state.spectrumTargets.map((target, band) =>
+      target === null
+        ? null
+        : stepNeedle(needleFor(`spectrum:${band}`, SPECTRUM_BALLISTIC), target, elapsedMs, SPECTRUM_BALLISTIC),
+    );
+    return true;
   }
 
   function drawLimiterHistory() {
@@ -3536,6 +3951,7 @@
    * and the curve maths is to call them with literal rects. Nothing on the page
    * reads this back -- it is an export, not a channel. */
   window.aiusDspEditorMath = Object.freeze({
+    bandEdgeHz,
     cascadeMagnitudeDb,
     cascadeSignature,
     curvePoints,
@@ -3558,13 +3974,17 @@
     matrixPathStyle,
     matrixValueToY,
     matrixYToValue,
+    newNeedle,
     nudgeHz,
     nudgeMatrixValue,
     pickHandle,
     pointToEq,
     resolveCascade,
     sectionMagnitudeDb,
+    spectrumBandsOf,
+    spectrumBins,
     stepMatrixValue,
+    stepNeedle,
     stepQ,
     xToHz,
     yToDb,
@@ -3644,7 +4064,10 @@
   refreshPresetNameHint();
   void guard(loadConfig);
   void guard(refreshPresets);
-  void guard(pollStatus);
-  setInterval(() => void guard(pollMeters), METER_POLL_MS);
-  setInterval(() => void guard(pollStatus), STATUS_POLL_MS);
+  /* Two serialised loops, never two timers: the meters take their first
+   * cadence before asking (the strip reads "waiting" for 100 ms), the flow ends
+   * ask at once because the page opens with nothing to say about the input. */
+  startPolling(pollMeters, METER_POLL_MS);
+  startPolling(pollStatus, STATUS_POLL_MS, true);
+  startBallistics();
 })();
