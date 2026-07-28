@@ -3118,8 +3118,8 @@ static void test_storage_diagnostics(void)
 	static const char *const keys[] = {
 		"diag.clean",         "diag.busy-refusal",
 		"diag.card-refuses-write", "diag.mount-failure",
-		"diag.json-shape",    "diag.json-capacity",
-		"diag.null-guards"
+		"diag.json-shape",    "diag.upload-progress",
+		"diag.json-capacity",  "diag.null-guards"
 	};
 	const AiusRuntimeBudget *budget =
 		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_SD);
@@ -3130,7 +3130,7 @@ static void test_storage_diagnostics(void)
 	size_t length;
 	uint32_t now_ms = 1u;
 
-	validate_unique_keys("registry.diag", keys, ARRAY_COUNT(keys), 7u);
+	validate_unique_keys("registry.diag", keys, ARRAY_COUNT(keys), 8u);
 
 	current_key = "diag.clean";
 	{
@@ -3282,7 +3282,7 @@ static void test_storage_diagnostics(void)
 		arm_root_storage(&storage, 0u, true);
 		length = 0u;
 		json[0] = '\0';
-		CHECK(aius_runtime_storage_diag_json(&storage, json,
+		CHECK(aius_runtime_storage_diag_json(&storage, nullptr, json,
 		                                     sizeof(json), &length));
 		CHECK(length == strlen(json));
 		CHECK(strstr(json, ",\"sd_diag\":{") == json);
@@ -3299,7 +3299,7 @@ static void test_storage_diagnostics(void)
 		      AIUS_HTTP_SD_FAILED);
 		length = 0u;
 		json[0] = '\0';
-		CHECK(aius_runtime_storage_diag_json(&storage, json,
+		CHECK(aius_runtime_storage_diag_json(&storage, nullptr, json,
 		                                     sizeof(json), &length));
 		CHECK(length == strlen(json));
 		CHECK(strstr(json, "\"last_failure\":{\"seq\":1,") != nullptr);
@@ -3314,6 +3314,84 @@ static void test_storage_diagnostics(void)
 		CHECK(json[length - 1u] == '}');
 	}
 
+	current_key = "diag.upload-progress";
+	{
+		/* Prerequisite 2 of docs/plans/aius-ota-upgrade.md: an upload is
+		 * auditable WHILE it runs, not only after it fails. Both numbers
+		 * were live and neither was on the wire.
+		 *
+		 * The transaction is faked rather than driven, because the point
+		 * under test is that the serializer reads `upload_supplied` from
+		 * the transaction the caller hands it -- the transaction's own
+		 * accounting of that field is the http suite's job
+		 * (test_upload_supplied_tracks_the_supplied_body). A distinctive
+		 * value proves the field is read rather than defaulted. */
+		AiusHttpTransaction http;
+
+		arm_root_storage(&storage, 0u, true);
+		g_sd.exists_result = true;
+		g_sd.remove_ok = true;
+		now_ms = 1u;
+		memset(&http, 0, sizeof(http));
+
+		/* Before the job: nothing supplied, nothing committed, and no
+		 * total, so a reader cannot mistake an idle service for one
+		 * mid-transfer. */
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, &http, json,
+		                                     sizeof(json), &length));
+		CHECK(strstr(json, "\"upload_supplied\":0,") != nullptr);
+		CHECK(strstr(json, "\"job_transferred\":0,") != nullptr);
+		CHECK(strstr(json, "\"job_total\":0,") != nullptr);
+
+		CHECK(run_http_upload(&storage, &now_ms) ==
+		      AIUS_HTTP_SD_COMPLETE);
+		/* run_http_upload() pushes a 4-byte payload as one chunk, so a
+		 * completed job has committed its whole requested total. */
+		CHECK(storage.job.transferred == 4u);
+		CHECK(storage.job.total == 4u);
+		http.upload_supplied = 4u;
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, &http, json,
+		                                     sizeof(json), &length));
+		CHECK(strstr(json, "\"upload_supplied\":4,") != nullptr);
+		CHECK(strstr(json, "\"job_transferred\":4,") != nullptr);
+		CHECK(strstr(json, "\"job_total\":4,") != nullptr);
+
+		/* The in-flight reading the pair exists to expose: bytes off the
+		 * socket that the card has not taken yet. A mirror kept inside
+		 * this service could not show it, because the service only sees
+		 * the slice it was handed. */
+		http.upload_supplied = 512u;
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, &http, json,
+		                                     sizeof(json), &length));
+		CHECK(strstr(json, "\"upload_supplied\":512,") != nullptr);
+		CHECK(strstr(json, "\"job_transferred\":4,") != nullptr);
+
+		/* uint64 all the way to the wire: a multi-megabyte image is the
+		 * whole point, and a 32-bit truncation would wrap silently. */
+		http.upload_supplied = UINT64_C(4294967296);
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, &http, json,
+		                                     sizeof(json), &length));
+		CHECK(strstr(json, "\"upload_supplied\":4294967296,") !=
+		      nullptr);
+
+		/* A null transaction is a truthful zero, not a refusal: the
+		 * diagnostic must never fail the status body it rides in. */
+		length = 0u;
+		json[0] = '\0';
+		CHECK(aius_runtime_storage_diag_json(&storage, nullptr, json,
+		                                     sizeof(json), &length));
+		CHECK(strstr(json, "\"upload_supplied\":0,") != nullptr);
+		CHECK(strstr(json, "\"job_transferred\":4,") != nullptr);
+	}
+
 	current_key = "diag.json-capacity";
 	{
 		/* A body that cannot hold the object is refused, not truncated
@@ -3321,7 +3399,7 @@ static void test_storage_diagnostics(void)
 		size_t full;
 
 		length = 0u;
-		CHECK(aius_runtime_storage_diag_json(&storage, json,
+		CHECK(aius_runtime_storage_diag_json(&storage, nullptr, json,
 		                                     sizeof(json), &length));
 		full = length;
 		/* The object joins a status body that already carries net_diag,
@@ -3330,24 +3408,25 @@ static void test_storage_diagnostics(void)
 		CHECK(full > 32u && full < 640u);
 		for (size_t cap = 1u; cap <= full; ++cap) {
 			length = 0u;
-			CHECK(!aius_runtime_storage_diag_json(&storage, json,
-			                                      cap, &length));
+			CHECK(!aius_runtime_storage_diag_json(&storage, nullptr,
+			                                      json, cap,
+			                                      &length));
 			CHECK(length < cap);
 		}
 		/* An already-full body refuses without writing. */
 		length = sizeof(json);
-		CHECK(!aius_runtime_storage_diag_json(&storage, json,
+		CHECK(!aius_runtime_storage_diag_json(&storage, nullptr, json,
 		                                      sizeof(json), &length));
 	}
 
 	current_key = "diag.null-guards";
 	{
 		length = 0u;
-		CHECK(!aius_runtime_storage_diag_json(nullptr, json,
+		CHECK(!aius_runtime_storage_diag_json(nullptr, nullptr, json,
 		                                      sizeof(json), &length));
-		CHECK(!aius_runtime_storage_diag_json(&storage, nullptr,
+		CHECK(!aius_runtime_storage_diag_json(&storage, nullptr, nullptr,
 		                                      sizeof(json), &length));
-		CHECK(!aius_runtime_storage_diag_json(&storage, json,
+		CHECK(!aius_runtime_storage_diag_json(&storage, nullptr, json,
 		                                      sizeof(json), nullptr));
 	}
 }

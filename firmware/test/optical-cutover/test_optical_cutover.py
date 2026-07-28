@@ -447,6 +447,85 @@ def assert_status_json_carries_recovery_keys(text):
     )
 
 
+BOOT_FUSE_SERIALIZER = "http_boot_fuse_json"
+BOOT_FUSE_READER = "aius_boot_teensy_boot_fuse"
+BOOT_FUSE_JSON_KEYS = (
+    "boot_fuse_0x6e0",
+    "word",
+    "read",
+    "sec_image_offset",
+    "sec_image_size",
+)
+
+# An assignment, or any read-modify-write, to an OCOTP symbol. The MAC read in
+# derive_auth_token() puts three HW_OCOTP_* names on the right-hand side of an
+# assignment, which is why the scan stops at the statement terminator: a symbol
+# followed by `;` before any `=` is a read, and a read is exactly what is
+# allowed.
+OCOTP_WRITE = re.compile(
+    r"\b(?:HW_OCOTP_\w+|IMXRT_OCOTP\w*)\b[^;=<>!]*"
+    r"(?:\|=|&=|\^=|\+=|-=|>>=|<<=|=(?!=))"
+)
+# A raw pointer into the OCOTP block, which would bypass the check above.
+OCOTP_RAW_ADDRESS = re.compile(r"0x401[Ff]4[0-9A-Fa-f]{3}")
+
+
+def assert_boot_fuse_is_read_only_and_served(text):
+    """The boot-configuration fuse is served on /api/status, and NEVER written.
+
+    Whether PJRC blows 0x6E0[23:16] on a Teensy 4.1 is the single gating fact
+    for hardware A/B image selection on this part
+    (docs/plans/aius-ota-upgrade.md), it is documented nowhere, and only a board
+    can answer it -- so the answer has to be on the status surface or it is not
+    obtainable at all.
+
+    The second half is the one that matters more. Blowing an OCOTP fuse is
+    irreversible and per board, and this particular word decides where the boot
+    ROM looks for a secondary image, so a stray write permanently changes how
+    that board boots with no reflash that undoes it. Nothing in this file may
+    assign to an OCOTP symbol or reach the block through an address literal, and
+    no native suite compiles this file, so this scan is the only thing standing
+    between a careless edit and a bricked-to-a-different-boot-config part."""
+    clean = without_comments_and_literals(text)
+    write = OCOTP_WRITE.search(clean)
+    assert write is None, (
+        "an OCOTP write is present "
+        f"({clean[write.start():write.end()].strip()!r}); the fuse read is "
+        "read-only, the burn is irreversible, and 0x6E0 decides where the ROM "
+        "looks for a secondary boot image"
+    )
+    raw = OCOTP_RAW_ADDRESS.search(clean)
+    assert raw is None, (
+        f"a raw OCOTP address literal is present ({raw.group(0)}); reach the "
+        "register through the framework macro so the mapping has one owner"
+    )
+    definitions = function_definitions(text)
+    assert BOOT_FUSE_SERIALIZER in definitions, (
+        f"missing {BOOT_FUSE_SERIALIZER}() -- /api/status must carry the fuse "
+        "word, because nothing else can answer whether hardware A/B exists"
+    )
+    serializer = definitions[BOOT_FUSE_SERIALIZER]
+    assert f"{BOOT_FUSE_READER}(" in without_comments_and_literals(serializer), (
+        f"{BOOT_FUSE_SERIALIZER}() must obtain the word from "
+        f"{BOOT_FUSE_READER}(), the one guarded read"
+    )
+    literal = without_comments(serializer)
+    missing = [key for key in BOOT_FUSE_JSON_KEYS if f'\\"{key}\\"' not in literal]
+    assert not missing, (
+        f"the fuse JSON is missing keys {missing!r}; the raw word, the read "
+        "flag and both decoded fields are all load-bearing -- a decoded field "
+        "alone cannot be re-checked, and a word without `read` cannot be told "
+        "apart from a host sentinel"
+    )
+    status_body = without_comments_and_literals(
+        function_body(text, STATUS_JSON_MARKER)
+    )
+    assert f"{BOOT_FUSE_SERIALIZER}(" in status_body, (
+        f"{BOOT_FUSE_SERIALIZER}() is defined but GET /api/status never calls "
+        "it, so the fuse is unreadable from the network after all"
+    )
+
+
 def assert_usb_id_carries_recovery_keys(text):
     body = without_comments(function_body(text, USB_PAYLOAD_MARKER))
     missing = [key for key in RECOVERY_ID_KEYS if f" {key}=" not in body]
@@ -1377,6 +1456,10 @@ POSITIVE_CHECKS = (
         assert_usb_id_carries_recovery_keys,
     ),
     (
+        "boot fuse 0x6E0 is served on /api/status and never written",
+        assert_boot_fuse_is_read_only_and_served,
+    ),
+    (
         "the replay path performs no direct SD primitive",
         assert_replay_path_has_no_direct_sd,
     ),
@@ -1756,6 +1839,91 @@ def run_self_test():
     _expect_fail(
         assert_requested_reset_waits_for_the_drained_transaction,
         bad_reboot_epoch_delay, "reboot/fixed-epoch-delay", "AIUS_HTTP_TX_IDLE",
+    )
+
+    # The boot fuse is served and never written. Raw string: the synthetic C
+    # must keep the backslash escapes a JSON key carries inside a C literal.
+    good_boot_fuse = r'''static FLASHMEM bool http_boot_fuse_json(char *output, size_t capacity,
+	                                     size_t *length)
+{
+	const AiusBootFuse fuse = aius_boot_teensy_boot_fuse();
+
+	return http_json_append(output, capacity, length,
+	                        ",\"boot_fuse_0x6e0\":{\"word\":\"0x%08lx\","
+	                        "\"read\":%s,\"sec_image_offset\":%u,"
+	                        "\"sec_image_size\":%u}",
+	                        (unsigned long)fuse.word,
+	                        fuse.read ? "true" : "false",
+	                        (unsigned)fuse.sec_image_offset,
+	                        (unsigned)fuse.sec_image_size);
+}
+static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
+{
+	uint32_t mac0 = HW_OCOTP_MAC0;
+	size_t length = mac0;
+
+	if (!http_boot_fuse_json((char *)body, capacity, &length))
+		return 0;
+	return length;
+}
+'''
+    _expect_pass(
+        assert_boot_fuse_is_read_only_and_served, good_boot_fuse,
+        "boot-fuse/good",
+    )
+    # The MAC read above is the reason the write scan stops at `;`: it puts
+    # three OCOTP symbols on the right of an assignment and must stay legal.
+    bad_fuse_write = good_boot_fuse.replace(
+        "\tuint32_t mac0 = HW_OCOTP_MAC0;\n",
+        "\tHW_OCOTP_MISC_CONF1 = 0u;\n\tuint32_t mac0 = 0u;\n",
+        1,
+    )
+    _expect_fail(
+        assert_boot_fuse_is_read_only_and_served, bad_fuse_write,
+        "boot-fuse/write", "an OCOTP write is present",
+    )
+    bad_fuse_rmw = good_boot_fuse.replace(
+        "\tuint32_t mac0 = HW_OCOTP_MAC0;\n",
+        "\tHW_OCOTP_CTRL |= 1u;\n\tuint32_t mac0 = 0u;\n",
+        1,
+    )
+    _expect_fail(
+        assert_boot_fuse_is_read_only_and_served, bad_fuse_rmw,
+        "boot-fuse/read-modify-write", "an OCOTP write is present",
+    )
+    bad_fuse_raw_address = good_boot_fuse.replace(
+        "aius_boot_teensy_boot_fuse()",
+        "aius_boot_teensy_decode_boot_fuse("
+        "*(volatile uint32_t *)0x401F46E0)",
+        1,
+    )
+    _expect_fail(
+        assert_boot_fuse_is_read_only_and_served, bad_fuse_raw_address,
+        "boot-fuse/raw-address", "raw OCOTP address literal",
+    )
+    bad_fuse_unserved = good_boot_fuse.replace(
+        "\tif (!http_boot_fuse_json((char *)body, capacity, &length))\n"
+        "\t\treturn 0;\n",
+        "",
+        1,
+    )
+    _expect_fail(
+        assert_boot_fuse_is_read_only_and_served, bad_fuse_unserved,
+        "boot-fuse/unserved", "never calls",
+    )
+    bad_fuse_no_read_flag = good_boot_fuse.replace(
+        r'\"read\":%s,', "", 1
+    )
+    _expect_fail(
+        assert_boot_fuse_is_read_only_and_served, bad_fuse_no_read_flag,
+        "boot-fuse/no-read-flag", "missing keys",
+    )
+    bad_fuse_decoded_only = good_boot_fuse.replace(
+        r'{\"word\":\"0x%08lx\",', "{", 1
+    )
+    _expect_fail(
+        assert_boot_fuse_is_read_only_and_served, bad_fuse_decoded_only,
+        "boot-fuse/no-raw-word", "missing keys",
     )
 
     # watchdog arm-once / feed-once-per-epoch.

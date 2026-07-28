@@ -283,9 +283,20 @@ bool aius_runtime_storage_service(
  * has to interpret. The serializer's job is one call.
  *
  * `last_failure` is served as null when none has been latched, so "no failure
- * yet" cannot be misread as a failure with zeroed fields. */
+ * yet" cannot be misread as a failure with zeroed fields.
+ *
+ * `http` is the live transaction, and it is the ONE field this service does not
+ * own: `upload_supplied` is the transaction's running count of body bytes
+ * accepted by the job, and it exists nowhere else. Passing the transaction in
+ * rather than mirroring the count here is deliberate -- a mirror maintained
+ * beside the authority is precisely the drift this object exists to remove, and
+ * the composition root already holds both. Null is admissible and serializes
+ * `upload_supplied` as 0: a caller with no transaction wired (a unit test, or a
+ * teardown that discarded it) gets a truthful "nothing supplied" rather than a
+ * refusal, because a diagnostic must not fail the status body it rides in. */
 bool aius_runtime_storage_diag_json(
 	const AiusRuntimeStorage *service,
+	const AiusHttpTransaction *http,
 	char *output,
 	size_t capacity,
 	size_t *length);

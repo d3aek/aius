@@ -2225,6 +2225,49 @@ static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 	                        (unsigned long)g_replay_diag.last_fault_at_ms);
 }
 
+/* The boot-configuration fuse word, hex-encoded with its two decoded fields.
+ *
+ * This is prerequisite 4 of docs/plans/aius-ota-upgrade.md brought within reach
+ * of a browser: whether PJRC blows 0x6E0[23:16] on a Teensy 4.1 is the SINGLE
+ * gating fact for hardware A/B image selection on this part, it is documented
+ * nowhere PJRC publishes, and it cannot be answered by reading anything -- only
+ * by asking a board. Serving it beside boot_generation makes the answer a URL
+ * rather than a bench session with a debugger.
+ *
+ * The full word is served as hex rather than as a number because it is a bit
+ * field, not a quantity, and because the fields this firmware does not decode
+ * are still in there -- a later reader who learns what 0x6E0[31:24] means can
+ * recover it from an old capture. The two decoded fields are served beside it
+ * so nobody has to shift by hand:
+ *
+ *   sec_image_offset  [23:16]  secondary image base = 256 KiB x this. ZERO on
+ *                              a shipped part, and zero is exactly the finding
+ *                              that kills hardware A/B: the secondary image
+ *                              would live at the primary's address.
+ *   sec_image_size    [15:12]
+ *
+ * `read` is false on a host build, where `word` is AIUS_BOOT_FUSE_UNREAD and
+ * decodes to values no board can produce. A client must check it before
+ * concluding anything, and cannot be misled if it forgets.
+ *
+ * READ ONLY. Nothing on this path -- here, aius_boot_teensy_boot_fuse(), or
+ * anything either of them calls -- writes OCOTP in any form. The burn is
+ * irreversible and per board. */
+static FLASHMEM bool http_boot_fuse_json(char *output, size_t capacity,
+	                                     size_t *length)
+{
+	const AiusBootFuse fuse = aius_boot_teensy_boot_fuse();
+
+	return http_json_append(output, capacity, length,
+	                        ",\"boot_fuse_0x6e0\":{\"word\":\"0x%08lx\","
+	                        "\"read\":%s,\"sec_image_offset\":%u,"
+	                        "\"sec_image_size\":%u}",
+	                        (unsigned long)fuse.word,
+	                        fuse.read ? "true" : "false",
+	                        (unsigned)fuse.sec_image_offset,
+	                        (unsigned)fuse.sec_image_size);
+}
+
 static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	                                    size_t *length,
 	                                    const AiusNetworkTeensy *network)
@@ -2370,12 +2413,20 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	size_t length = (size_t)written - 1u;
 	if (!http_net_diag_json((char *)body, capacity, &length, network))
 		return 0;
-	/* The storage service's own failure record. Two SD failures that are
-	 * identical on the wire -- a job refused because another owner held the
-	 * volume, and a card that refused the write -- both surface as
-	 * `500 sd_failure`, so the difference has to come from the device. */
-	if (!aius_runtime_storage_diag_json(&g_runtime.storage, (char *)body,
-	                                    capacity, &length))
+	/* The storage service's own failure record, and the live upload progress
+	 * beside it. Two SD failures that are identical on the wire -- a job
+	 * refused because another owner held the volume, and a card that refused
+	 * the write -- both surface as `500 sd_failure`, so the difference has to
+	 * come from the device.
+	 *
+	 * The transaction is passed because it owns `upload_supplied` and the
+	 * storage service does not; this is the composition root, so it is the one
+	 * place both are in scope. Reading it here is a plain load of one field
+	 * outside any transaction step, exactly as reboot_drain_complete() reads
+	 * `state`, so it consumes no event and emits no action. */
+	if (!aius_runtime_storage_diag_json(&g_runtime.storage,
+	                                    &g_runtime.network_http.http,
+	                                    (char *)body, capacity, &length))
 		return 0;
 	/* The refill job's own record, BESIDE sd_diag rather than inside it. The
 	 * two are different job streams with different owners: sd_diag belongs to
@@ -2388,6 +2439,12 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_replay_diag_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
+		return 0;
+	/* Last, and a plain register read rather than a latched counter: the
+	 * OCOTP shadow is loaded once by the boot ROM and never changes, so
+	 * reading it at request time cannot disagree with anything else in this
+	 * body the way a re-derived live value could. */
+	if (!http_boot_fuse_json((char *)body, capacity, &length))
 		return 0;
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }

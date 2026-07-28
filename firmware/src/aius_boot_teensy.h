@@ -83,6 +83,57 @@ uint32_t aius_boot_teensy_reset_source(
 
 AiusResetKind aius_boot_teensy_reset_kind(uint32_t raw_reset_source);
 
+/* ------------------------------------------------------------------ */
+/* Boot-configuration fuse 0x6E0 -- READ ONLY, NO EXCEPTIONS           */
+/* ------------------------------------------------------------------ */
+
+/* The word served when the read did not happen, i.e. every host build.
+ *
+ * It is NOT zero, and that is the whole reason it exists: zero is the SHIPPED
+ * value of both fields on an unblown part, so a zero sentinel would be
+ * indistinguishable from the single most likely genuine answer -- and the
+ * question this read exists to settle is precisely "is this fuse blown".
+ * 0xFFFFFFFF decodes to a secondary-image offset of 255 x 256 KiB = 63.75 MiB
+ * on a part with 8 MiB of flash, so it is structurally impossible as a real
+ * reading and cannot be mistaken for one even by a client that ignores `read`.
+ */
+#define AIUS_BOOT_FUSE_UNREAD UINT32_C(0xFFFFFFFF)
+
+typedef struct {
+	/* The complete 32-bit shadow word, undecoded, so a field this firmware
+	 * does not know about is still recoverable from the wire. */
+	uint32_t word;
+	/* [23:16] FLASH_SEC_IMAGE_OFFSET. The secondary (slot B) image base is
+	 * 256 KiB x this value, so 0 means the secondary image is at the same
+	 * address as the primary and hardware A/B selection is unavailable.
+	 * RM p.212 Table 9-10. */
+	uint8_t sec_image_offset;
+	/* [15:12] secondary image size, same table. */
+	uint8_t sec_image_size;
+	/* False when `word` is AIUS_BOOT_FUSE_UNREAD because no OCOTP exists to
+	 * read -- every host build. Never false on the target. */
+	bool read;
+} AiusBootFuse;
+
+/* Decodes a fuse word. Pure arithmetic, no register access, `read` left false
+ * for the caller to set -- which is what makes the decode testable on the host
+ * over fabricated words including the ones no board would ever produce. */
+AiusBootFuse aius_boot_teensy_decode_boot_fuse(uint32_t word);
+
+/* Reads and decodes the fuse. On the target this performs ONE 32-bit load from
+ * the OCOTP shadow register; on a host build it decodes AIUS_BOOT_FUSE_UNREAD
+ * and reports read == false.
+ *
+ * THIS FUNCTION AND ITS CALLERS NEVER WRITE OCOTP. Not the fuse array, not a
+ * shadow register, not OCOTP_CTRL, not READ_CTRL, not the write-unlock key.
+ * Blowing a fuse is irreversible and per-board, and the one this reads decides
+ * where the boot ROM looks for a secondary image -- a stray write would
+ * permanently alter the boot behaviour of the part with no way back. The read
+ * path is deliberately incapable of it: it touches a single const-qualified
+ * load and nothing else, and test/boot-target/test_source_guard.py rejects any
+ * assignment to an OCOTP symbol in this adapter. */
+AiusBootFuse aius_boot_teensy_boot_fuse(void);
+
 bool aius_boot_teensy_watchdog_arm(
 	const AiusBootTeensyPrimitives *primitives);
 

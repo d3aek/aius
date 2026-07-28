@@ -29,6 +29,24 @@ FORBIDDEN_RUNTIME = re.compile(
     r"\b(?:delay|yield|millis|micros)\s*\(|\b(?:Serial|SD|Ethernet)\b"
 )
 
+# The adapter reads boot-configuration fuse 0x6E0 (HW_OCOTP_MISC_CONF1) to
+# report whether hardware A/B image selection is available. That read must stay
+# a read. Blowing an OCOTP fuse is irreversible and per board, and 0x6E0[23:16]
+# is where the boot ROM looks for a secondary image -- a stray write there
+# permanently changes how the part boots, with no way back and no reflash that
+# undoes it. Assignment, read-modify-write and compound forms are all rejected;
+# a bare mention is fine, because that is what a read looks like.
+OCOTP_WRITE = re.compile(
+    r"\b(?:HW_OCOTP_\w+|IMXRT_OCOTP\w*)\b[^;=<>!]*"
+    r"(?:\|=|&=|\^=|\+=|-=|>>=|<<=|=(?!=))"
+)
+# A raw pointer into the OCOTP block would sidestep the check above entirely,
+# so the adapter must reach the register through the framework macro rather
+# than through an address literal it maintains itself. The 0x401F4xxx addresses
+# in this file's derivation comment are stripped before matching, which is the
+# point of documenting the derivation in prose rather than in code.
+OCOTP_RAW_ADDRESS = re.compile(r"0x401[Ff]4[0-9A-Fa-f]{3}")
+
 
 COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 
@@ -67,6 +85,17 @@ def violations(text: str) -> list[str]:
         errors.append("unbounded loop in retained/reset/watchdog adapter")
     if FORBIDDEN_RUNTIME.search(source):
         errors.append("adapter acquired forbidden runtime authority")
+    if OCOTP_WRITE.search(source):
+        errors.append(
+            "OCOTP must be read-only in this adapter: blowing a fuse is "
+            "irreversible and 0x6E0 decides where the ROM looks for a "
+            "secondary boot image"
+        )
+    if OCOTP_RAW_ADDRESS.search(source):
+        errors.append(
+            "reach OCOTP through the framework macro (HW_OCOTP_*), never a "
+            "raw 0x401F4xxx address literal"
+        )
     if source.count("g_aius_boot_slots") < 1:
         errors.append("retained slot symbol is missing")
     return errors
@@ -128,6 +157,28 @@ def main() -> int:
     assert_mutation_rejected(
         source, source + "\nvoid forbidden(void) { SD.begin(1); }\n",
         "add SD authority")
+    assert_mutation_rejected(
+        source,
+        source + "\nvoid forbidden(void) { HW_OCOTP_CTRL = 1u; }\n",
+        "write an OCOTP control register")
+    assert_mutation_rejected(
+        source,
+        source + "\nvoid forbidden(void) { HW_OCOTP_MISC_CONF1 |= 1u; }\n",
+        "read-modify-write the fuse shadow this adapter reads")
+    assert_mutation_rejected(
+        source,
+        source + "\nvoid forbidden(void) { IMXRT_OCOTP.offset000 = 0u; }\n",
+        "write through the OCOTP register block")
+    assert_mutation_rejected(
+        source,
+        source + "\nvoid forbidden(void)"
+                 " { *(volatile uint32_t *)0x401F46E0 = 0u; }\n",
+        "write through a raw OCOTP address literal")
+    assert_mutation_rejected(
+        source,
+        source + "\nuint32_t peek(void)"
+                 " { return *(volatile uint32_t *)0x401F46E0; }\n",
+        "read through a raw OCOTP address literal")
     return 0
 
 

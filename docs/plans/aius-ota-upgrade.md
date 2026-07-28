@@ -3,7 +3,7 @@ title: Aius OTA firmware upgrade
 type: plans
 scope: component
 component: aius
-status: draft
+status: in-progress
 subtype: design
 tags: [aius, firmware, teensy, ota, http, security, recovery]
 updated: 2026-07-28
@@ -48,9 +48,10 @@ observations do weaken the original boundary slightly, and both are worth statin
 - **The boundary's own reliability rests on a mechanism whose sibling was broken.**
   `AIUS BOOTLOADER` entry over CDC was measured reliable — five consecutive trials
   with a reflash between each — but only after a fix for a buffered-treated-as-
-  transmitted race. `POST /api/reboot` has the *same* defect class and it is still
-  live (§Observability below). The boundary works; a neighbouring path built on the
-  same assumption did not.
+  transmitted race. `POST /api/reboot` had the *same* defect class; it was fixed
+  the same way on 2026-07-28 ([prerequisite 1](#prerequisites-in-order)) and
+  awaits B6 gate 2 on hardware. The boundary works; a neighbouring path built on
+  the same assumption did not, which is the point that survives the fix.
 - **Recovery-safe mode, the second half of the boundary, has never executed on
   hardware.** Its proof is B6 gate 3, which is blocked behind gate 2, and the
   retained-OCRAM survival that latches the mode is explicitly not to be claimed
@@ -166,8 +167,12 @@ Consequences, all favourable:
 1. **Whether PJRC blows `0x6E0[23:16]` on Teensy 4.1.** The annotated RM covers
    `BT_FUSE_SEL` and the GPIO boot pins but is silent on `BOOT_CONFIG_MISC`.
    **This is the single gating fact for hardware A/B** and needs a runtime OCOTP
-   read on real hardware, or PJRC. Note `imxrt.h` stops at `HW_OCOTP_0x6C0`, so
-   there is no macro for it.
+   read on real hardware, or PJRC. ~~Note `imxrt.h` stops at `HW_OCOTP_0x6C0`, so
+   there is no macro for it.~~ **Wrong, corrected 2026-07-28:** only the
+   *numerically named* macros stop there; `HW_OCOTP_MISC_CONF1` is fuse `0x6E0`.
+   The read is built and served on `/api/status`
+   ([§The fuse read, as built](#the-fuse-read-as-built)); the board has not been
+   asked yet.
 2. **Whether the ROM auto-fails-over primary → secondary for FlexSPI NOR.** The
    boot-flow figure shows no validity check and no fallback branch; documented
    auto-fallback covers Serial NAND (ECC) and SD/eMMC only. **Assume
@@ -292,20 +297,23 @@ step — offered, staged, verified, activated, healthy, rolled back:
 | Need | Available? |
 |---|---|
 | Upload accepted | no — `sd_diag.job_kind`/`job_state` say a job runs, not which |
-| **Upload progress** | **no** — `AiusSdJob::transferred` and `AiusHttpTransaction::upload_supplied` are both live and **neither is serialized** |
+| **Upload progress** | **yes, since 2026-07-28** — `sd_diag.upload_supplied`, `job_transferred`, `job_total` ([prerequisite 2](#prerequisites-in-order)) |
 | Upload failed, and why | partly — `sd_diag.last_failure` has fault, phase, driver fault and bytes, latched only on failure |
 | Image verified | no mechanism exists |
-| Activated / rebooting | **broken** — see below |
+| Activated / rebooting | **fixed 2026-07-28, unproven on hardware** — see below |
 | Healthy after boot | yes — `boot_generation`, `watchdog_early_resets`, `recovery_safe` |
 | Rolled back | no — nothing distinguishes a rollback from an ordinary recovery-safe latch |
 
 Three concrete defects, all recorded in the network-hardening plan:
 
-- **`POST /api/reboot` resets but never answers**, and the mechanism is now pinned:
-  dispatch retains the response un-formatted, formatting is the *next* epoch and
-  the first write the one after, while the reset fires at the end of the
-  dispatching epoch. **An OTA "activate" verb needs exactly this fixed**, and the
-  fix is to gate the reset on the transaction reaching `AIUS_HTTP_TX_IDLE`.
+- ~~**`POST /api/reboot` resets but never answers**~~ — **fixed 2026-07-28.** The
+  mechanism was pinned first: dispatch retains the response un-formatted,
+  formatting is the *next* epoch and the first write the one after, while the
+  reset fired at the end of the dispatching epoch. The reset is now gated on the
+  transaction reaching `AIUS_HTTP_TX_IDLE` with no action outstanding, bounded at
+  500 ms so a wedged peer cannot veto a requested reset. **An OTA "activate" verb
+  needed exactly this**, and it now has it — subject to B6 gate 2, which is the
+  only evidence that distinguishes "performed" from "acknowledged" on the board.
 - **The four `http_*` counters have no producer at all** — `put_status()` never
   writes bytes 55..70 and the JSON reads them back from those same untouched
   bytes. So the HTTP layer emits **no** per-request telemetry: no request count, no
@@ -314,9 +322,11 @@ Three concrete defects, all recorded in the network-hardening plan:
   are audio, network and config only, so an operator watching `/api/events` sees
   nothing about an upgrade.
 
-**Cheapest high-value fix, needing no new mechanism:** serialize
+~~**Cheapest high-value fix, needing no new mechanism:** serialize
 `AiusSdJob::transferred` and `AiusHttpTransaction::upload_supplied` into
-`sd_diag`. Both are already live.
+`sd_diag`. Both are already live.~~ **Done 2026-07-28**, as
+`sd_diag.job_transferred` and `sd_diag.upload_supplied`, with `job_total` beside
+them so the pair reads as progress rather than as two counts.
 
 ### The CDC parity question, resolved
 
@@ -353,9 +363,15 @@ could have, and the existing gate does not carry it.
   upper-case hex as equivalent.
 - **There is no rate limiting, lockout, delay, counter or event on an auth
   failure.** The only throttle is structural: one socket, ~672 epochs/s, four
-  epochs per round trip.
-- **`POST /api/reboot`, `/api/start`, `/api/stop` and `/api/clear` require no
-  authentication at all.** Any host on the subnet can reset the board mid-upload.
+  epochs per round trip. Still open.
+- ~~**`POST /api/reboot`, `/api/start`, `/api/stop` and `/api/clear` require no
+  authentication at all.** Any host on the subnet can reset the board
+  mid-upload.~~ **Gated 2026-07-28** on `X-Aius-SD-Auth`, along with
+  `POST /api/measure/start`, before the dispatch switch rather than inside each
+  arm — so a sixth control route cannot be added without the gate. **What that
+  is worth, stated honestly:** the token is FNV-1a-64 over the public MAC, so
+  this stops a stale browser tab, a scanner or a misdirected script, not an
+  attacker who can see a frame from the board. The bullet below still governs.
 
 **Recommendation: image authentication must be independent of the transport
 gate.** A signature the device verifies over the complete image, checked before
@@ -388,21 +404,164 @@ channel is already physical.
 Nothing about OTA should be built before these, and each is independently
 worthwhile:
 
-1. **Fix `POST /api/reboot`** so it answers before it resets, and **authenticate
-   it** along with `/api/start`, `/api/stop`, `/api/clear`. Recorded as open
-   defects; needed by any activate verb.
-2. **Serialize upload progress** — `transferred` and `upload_supplied` into
-   `sd_diag`. Trivial, and it is the difference between an auditable upload and a
-   blind one.
+1. ~~**Fix `POST /api/reboot`** so it answers before it resets, and
+   **authenticate it** along with `/api/start`, `/api/stop`, `/api/clear`.~~
+   **Done 2026-07-28.** The reset is gated on the transaction reaching
+   `AIUS_HTTP_TX_IDLE` with no action outstanding, bounded at 500 ms
+   (`firmware/src/optical_main.cpp` `reboot_drain_complete()` /
+   `service_reboot_request()`), and all four routes plus
+   `POST /api/measure/start` are gated on `X-Aius-SD-Auth` before the dispatch
+   switch (`firmware/src/aius_optical_app.cpp` `route_is_control()`). Three
+   suites hold it: the http transaction oracle walks the 200 one step at a time
+   and asserts `TX_IDLE` absent at every step before the close completes, the
+   optical-app oracle asserts 401 with no token and with a wrong one for all
+   five routes, and the optical-cutover structural guard rejects a `loop()` that
+   resets directly, an unbounded wait, or a fixed-epoch delay in place of the
+   drain predicate. **Still owed: B6 gate 2** — the fix is proven natively and
+   has not been exercised on the board.
+2. ~~**Serialize upload progress** — `transferred` and `upload_supplied` into
+   `sd_diag`.~~ **Done 2026-07-28.** `sd_diag` now carries
+   `upload_supplied` (bytes the transaction has handed down),
+   `job_transferred` (bytes the job has committed to the card) and `job_total`
+   (the requested size, so a reader has a denominator). The transaction is
+   passed into `aius_runtime_storage_diag_json()` rather than mirrored inside
+   the storage service, because a mirror beside the authority is the same drift
+   this object exists to remove. **The reading that pays for it:**
+   `upload_supplied` advancing while `job_transferred` stands still is a card
+   that has stopped accepting writes — previously indistinguishable from an
+   idle board.
 3. **Run B6.** Recovery-safe mode has never executed and retained-OCRAM survival
    is unconfirmed. **An A/B scheme whose fallback rests on both would be building
    on unproven ground** — this is the strongest sequencing argument in the
-   document.
+   document. Unchanged, and now the largest remaining prerequisite.
 4. **Read the OTP fuse on real hardware** to settle whether hardware A/B is
    available, and **measure a sector-erase stall** against the audio block. Those
    are the two remaining unknowns in
    [§Self-flashing is possible](#self-flashing-is-possible), and both need the
    device rather than more reading.
+   - ~~The fuse read.~~ **Mechanism done 2026-07-28; the board has not been
+     asked yet.** `GET /api/status` carries
+     `boot_fuse_0x6e0: {word, read, sec_image_offset, sec_image_size}` — the
+     full word hex-encoded, plus `[23:16]` and `[15:12]` decoded. Read-only by
+     construction and by guard: see
+     [§The fuse read, as built](#the-fuse-read-as-built).
+   - **The erase stall.** No flash was written or erased in this batch. The
+     measurement is designed rather than performed: see
+     [§Measuring the sector-erase stall](#measuring-the-sector-erase-stall).
+
+### The fuse read, as built
+
+**One 32-bit load from an OCOTP shadow register, and nothing else.**
+`aius_boot_teensy_boot_fuse()` (`firmware/src/aius_boot_teensy.cpp`) reads
+`HW_OCOTP_MISC_CONF1` on the target and decodes it;
+`aius_boot_teensy_decode_boot_fuse()` is the pure half, so the shift and mask
+are exercised on the host over fabricated words before any board is asked.
+
+**One correction to [§What remains genuinely unknown](#what-remains-genuinely-unknown).**
+That section says `imxrt.h` "stops at `HW_OCOTP_0x6C0`, so there is no macro for
+it". The *numerically named* macros stop there; the next two words are named
+rather than numbered — `HW_OCOTP_MISC_CONF0` (fuse `0x6D0`) and
+`HW_OCOTP_MISC_CONF1` (fuse `0x6E0`). So the framework does carry this register
+and no hand-rolled address literal is needed. The derivation that proves they
+are the same word:
+
+- `imxrt.h:427` — `IMXRT_OCOTP_ADDRESS 0x401F4000`.
+- `imxrt.h:7612` — `IMXRT_OCOTP_VALUE` is at `IMXRT_OCOTP_ADDRESS + 0x400`, so
+  the shadow block begins at `0x401F4400`.
+- `HW_OCOTP_0x6C0` is `IMXRT_OCOTP_VALUE.offset2C0` = `0x401F46C0`, i.e. the
+  `0xNNN` in a fuse-map name is `IMXRT_OCOTP_ADDRESS + 0xNNN`. Fuse `0x6E0` is
+  therefore `0x401F4400 + 0x2E0` = **`0x401F46E0`**, which is
+  `IMXRT_OCOTP_VALUE.offset2E0` = `HW_OCOTP_MISC_CONF1`.
+- Cross-checked on a word whose fuse address is known independently:
+  `HW_OCOTP_MAC0` is `IMXRT_OCOTP_VALUE.offset220` = `0x401F4620`, and MAC0 is
+  documented at fuse `0x620`. Same relation from a different entry.
+
+**Read-only, and enforced rather than intended.** The shadow register is loaded
+by the boot ROM; reading it is a plain AHB load with no `OCOTP_CTRL` address or
+unlock sequence, no `BUSY` poll, no `READ_CTRL`, no `RELOAD_SHADOWS` — none of
+the machinery a fuse write must go through. Two structural guards reject a
+regression: `test/boot-target/test_source_guard.py` and the optical-cutover
+check both fail on any assignment or read-modify-write to an `HW_OCOTP_*` /
+`IMXRT_OCOTP*` symbol, and on any raw `0x401F4xxx` address literal that would
+bypass the first check. Both carry mutation cases, so a guard that could never
+fire is itself a failure.
+
+**The host sentinel is `0xFFFFFFFF`, deliberately not zero.** Zero is the
+*shipped* value of both fields, so a zero sentinel would have made a host build
+report exactly the answer a genuine unblown board produces — and "is this fuse
+blown" is the entire question. `0xFFFFFFFF` decodes to a secondary-image offset
+of 255 × 256 KiB = 63.75 MiB on a part with 8 MiB of flash, which is
+structurally impossible, so a client that ignores `read` still cannot be misled.
+
+**What to do with the answer.** `sec_image_offset` 0 means the secondary image
+base is the primary's address and hardware A/B is unavailable without an
+irreversible burn; anything nonzero means the selector already has somewhere to
+point. Record the reading from a real board here when B6 runs.
+
+### Measuring the sector-erase stall
+
+**Nothing was erased or written in this batch, and nothing should be until this
+runs deliberately.** The remaining unknown is W25Q64JV erase/program timing, and
+what it costs is the audio block: the decoded block is 512 frames at 48 kHz, so
+`enqueue()` has a **10,667 µs** budget and runs 93.75 times a second. A sector
+erase that exceeds that budget drops audio; one that fits does not. No datasheet
+is held locally and no core comment gives a figure, so the number has to be
+measured on the part.
+
+**The measurement, in one sentence:** bracket a single 4 KiB sector erase in DWT
+cycles, on a scratch sector far above the image, with the audio path live, and
+compare the measured stall against the block budget.
+
+Preconditions, all of which must hold before the first erase:
+
+- **B6 has run.** Recovery-safe mode and retained-OCRAM survival are the
+  fallback if the measurement wedges the board, and neither has executed
+  ([prerequisite 3](#prerequisites-in-order)).
+- **The scratch sector is chosen and asserted at compile time.**
+  `_flashimagelen` is 585,728 bytes; a scratch sector at `0x60700000` is over
+  6 MiB clear of it and clear of any plausible slot B at `0x60100000` /
+  `0x60200000`. A `static_assert` against `_flashimagelen` is the guard, not a
+  comment — the driver has **no bounds checking whatsoever** and erasing sector
+  0 destroys the FCB.
+- **The whole call graph is verified non-`FLASHMEM` post-link**, including
+  `memcpy` and any helper. This inverts the firmware's own rule and the two
+  existing ITCM guards check the opposite direction, so it needs its own
+  post-link assertion ([§The Teensy 4 memory model](#the-teensy-4-memory-model-makes-this-safe-by-default-and-it-inverts-a-project-rule)).
+- **RM note 3 is discharged, not assumed.** The core's `__disable_irq()` covers
+  note 4 only. No DMA or ISR may touch a `FLASHMEM` function, a `PROGMEM`
+  string or a `const` array in `.text.progmem` during the operation — which the
+  audio path does, so the first measurement runs with the audio engine
+  **stopped**, and the live-audio measurement is a second, separate run.
+- **`flash_wait()` unconditionally calls `__enable_irq()`.** There is no
+  PRIMASK save/restore, so the bracket must not assume interrupts are still
+  disabled on return.
+
+Shape of the run, in order:
+
+1. **Audio stopped, one erase.** Bracket `eepromemu_flash_erase_sector()` with
+   `ARM_DWT_CYCCNT` (the counter the per-block cycle meters already use), and
+   record the delta as microseconds at 600 MHz. This is the number that decides
+   everything else; take at least 16 samples and report min / max / median,
+   because NOR erase time is specified as a range, not a value.
+2. **Compare against 10,667 µs.** Under budget → an erase can run between
+   blocks. Over budget → OTA cannot run with audio live and the design becomes
+   "stage to SD, stop audio, flash, reboot", which is a materially cheaper
+   design than A/B and worth knowing early.
+3. **Audio live, one erase**, only if step 2 is under budget. The convicting
+   reading is the existing underrun / overrun counters on `GET /api/meters`,
+   not the DWT delta: a stall that fits the budget on paper but drops a block
+   is what the counters exist to catch.
+4. **Record the measured range in this document**, and only then decide whether
+   the erase-during-audio case needs a block-boundary scheduler.
+
+**A zero-risk probe was considered and rejected for this batch.** Reading the
+FlexSPI LUT and `FLEXSPI_FLSHA1CR0` geometry is a plain register read and would
+be safe; issuing a JEDEC ID read (`0x9F`) to identify the part is not, because
+it drives `FLEXSPI_IPCMD` over LUT sequence 15 — the same sequence the erase
+driver overwrites, and the thing
+[§What remains genuinely unknown](#what-remains-genuinely-unknown) item 4 is
+already unsure about with respect to `bkpt #251`. The geometry read is the
+natural first step of the run above rather than a separate errand.
 
 ## Verdict, provisional
 
@@ -413,19 +572,21 @@ bricked. That is a much better starting position than the deferral bullet implie
 
 What still stands in the way, in descending order:
 
-- **The activate verb is broken and unauthenticated.** `POST /api/reboot` never
-  answers and requires no credential. OTA cannot be built on it as it stands.
+- ~~**The activate verb is broken and unauthenticated.**~~ **Fixed 2026-07-28**
+  and awaiting B6 gate 2. `POST /api/reboot` answers before it resets and all
+  five mutating routes carry a credential.
 - **Half the recovery boundary has never run on hardware.** Recovery-safe mode has
   never executed and retained-OCRAM survival is unconfirmed. An A/B fallback
-  resting on both would be building on unproven ground.
+  resting on both would be building on unproven ground. **Now the largest item.**
 - **The gate is computable from a MAC address**, so image signing has to be added
   rather than assumed.
-- **Two unknowns need the device**: the OTP fuse state, and the erase stall
-  against the audio block.
+- **Two unknowns need the device**: the OTP fuse state — the read is now built
+  and served, so this is one HTTP request away once a board is up — and the erase
+  stall against the audio block, whose measurement is designed but not run.
 
-**Fix the prerequisites and the answer likely becomes yes.** Three of the four are
-small, and the third — running B6 — is the milestone the network-hardening plan
-exists to reach anyway.
+**Fix the prerequisites and the answer likely becomes yes.** Two of the four are
+now done, and what remains is dominated by B6 — the milestone the
+network-hardening plan exists to reach anyway.
 
 The single fact that would most change the shape is **the OTP fuse turning out to
 be blown**, which would give hardware image selection and move most of the risk

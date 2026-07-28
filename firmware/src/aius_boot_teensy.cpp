@@ -404,6 +404,79 @@ extern "C" FLASHMEM AiusResetKind aius_boot_teensy_reset_kind(
 	return AIUS_RESET_OTHER;
 }
 
+/* ------------------------------------------------------------------ */
+/* Boot-configuration fuse 0x6E0 -- READ ONLY, NO EXCEPTIONS           */
+/*                                                                     */
+/* WHERE 0x6E0 IS, DERIVED RATHER THAN COPIED.                         */
+/*                                                                     */
+/* The OCOTP shadow registers are ordinary memory-mapped peripheral    */
+/* registers, and imxrt.h states the whole mapping in two lines:       */
+/*                                                                     */
+/*   imxrt.h:427   IMXRT_OCOTP_ADDRESS  0x401F4000                     */
+/*   imxrt.h:7612  IMXRT_OCOTP_VALUE    *(...)(IMXRT_OCOTP_ADDRESS + 0x400) */
+/*                                                                     */
+/* so the shadow block begins at 0x401F4400. The numerically-named     */
+/* macros then give the correspondence outright: HW_OCOTP_0x6C0 is     */
+/* IMXRT_OCOTP_VALUE.offset2C0, i.e. 0x401F4400 + 0x2C0 = 0x401F46C0.  */
+/* The `0xNNN` in a fuse-map name is therefore IMXRT_OCOTP_ADDRESS +   */
+/* 0xNNN, and fuse word 0x6E0 lives at 0x401F4400 + 0x2E0 =            */
+/* 0x401F46E0.                                                         */
+/*                                                                     */
+/* Cross-checked against a word whose fuse address is known            */
+/* independently: HW_OCOTP_MAC0 is IMXRT_OCOTP_VALUE.offset220 =       */
+/* 0x401F4620, and MAC0 is documented at fuse 0x620. Same relation,    */
+/* derived from a different macro, so the +0x400/offset pairing is the */
+/* rule and not a coincidence of one entry.                            */
+/*                                                                     */
+/* ONE CORRECTION TO THE PLAN. docs/plans/aius-ota-upgrade.md says     */
+/* "imxrt.h stops at HW_OCOTP_0x6C0, so there is no macro for it".     */
+/* The NUMERICALLY-NAMED macros stop there; the next two words are     */
+/* named rather than numbered -- HW_OCOTP_MISC_CONF0 (offset2D0 =      */
+/* fuse 0x6D0) and HW_OCOTP_MISC_CONF1 (offset2E0 = fuse 0x6E0). So    */
+/* the framework does carry this register and no hand-rolled volatile  */
+/* pointer is needed or wanted: a literal address in application code  */
+/* would be a second, unverified copy of a mapping the header already  */
+/* owns. The derivation above is retained because it is what proves    */
+/* HW_OCOTP_MISC_CONF1 and fuse 0x6E0 are the same word.               */
+/*                                                                     */
+/* WHY THIS CANNOT PROGRAM ANYTHING. This reads the SHADOW register,   */
+/* which the boot ROM has already loaded from the fuse array. It is a  */
+/* plain AHB load: no OCOTP_CTRL address/unlock sequence, no BUSY      */
+/* poll, no READ_CTRL, no RELOAD_SHADOWS -- none of the machinery a    */
+/* fuse write would have to go through. There is no write anywhere on  */
+/* this path, and there must never be: 0x6E0[23:16] tells the ROM      */
+/* where to find a secondary boot image, the burn is irreversible, and */
+/* it is per board. Enforced by test/boot-target/test_source_guard.py, */
+/* which rejects any assignment to an OCOTP symbol in this file.       */
+/* ------------------------------------------------------------------ */
+
+extern "C" FLASHMEM AiusBootFuse aius_boot_teensy_decode_boot_fuse(uint32_t word)
+{
+	AiusBootFuse fuse;
+
+	memset(&fuse, 0, sizeof(fuse));
+	fuse.word = word;
+	fuse.sec_image_offset = static_cast<uint8_t>((word >> 16) & 0xffu);
+	fuse.sec_image_size = static_cast<uint8_t>((word >> 12) & 0x0fu);
+	return fuse;
+}
+
+extern "C" FLASHMEM AiusBootFuse aius_boot_teensy_boot_fuse(void)
+{
+#if defined(__IMXRT1062__)
+	/* The one load. Nothing else on this path touches OCOTP. */
+	AiusBootFuse fuse =
+		aius_boot_teensy_decode_boot_fuse(HW_OCOTP_MISC_CONF1);
+	fuse.read = true;
+	return fuse;
+#else
+	/* Host builds have no OCOTP at all, so the sentinel is decoded exactly
+	 * as a real word would be -- the decoded fields are then impossible
+	 * values rather than the plausible zeros a memset would leave. */
+	return aius_boot_teensy_decode_boot_fuse(AIUS_BOOT_FUSE_UNREAD);
+#endif
+}
+
 extern "C" FLASHMEM bool aius_boot_teensy_watchdog_arm(
 	const AiusBootTeensyPrimitives *primitives)
 {

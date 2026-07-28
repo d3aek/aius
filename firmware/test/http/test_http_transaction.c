@@ -1213,6 +1213,76 @@ static void test_upload_read_would_block_and_progress(void)
 	assert(fixture.transaction.deadline_ms == 2102);
 }
 
+/* The upload-progress number `sd_diag.upload_supplied` publishes, driven across
+ * every chunk of a body rather than the single chunk the case above stops at.
+ *
+ * This field became observable in prerequisite 2 of
+ * docs/plans/aius-ota-upgrade.md: it was live but serialized nowhere, so an
+ * upload in flight was indistinguishable from an idle board. What a reader has
+ * to be able to rely on is asserted here rather than at the serializer, because
+ * the serializer only copies it:
+ *
+ *   - it counts BODY bytes accepted by the job, not bytes read off the socket,
+ *     so it advances on the SD PROGRESS result and not on the READ result;
+ *   - it is monotonic across chunks of unequal size;
+ *   - it reaches exactly body_expected, so `supplied == Content-Length` is a
+ *     sound completion test for a client watching /api/status.
+ *
+ * The first assertion is the load-bearing one. A count incremented on the read
+ * would run AHEAD of the job by up to one chunk, and the whole point of
+ * publishing it beside `job_transferred` is that the difference between them is
+ * the in-flight slice. */
+static void test_upload_supplied_tracks_the_supplied_body(void)
+{
+	Fixture fixture;
+	init_fixture(&fixture);
+	AiusHttpAction read = start_upload_read(&fixture);
+	assert(fixture.transaction.body_expected == 5);
+	assert(fixture.transaction.upload_supplied == 0);
+
+	/* First chunk: three bytes read, and STILL zero supplied -- the read has
+	 * completed but the job has not accepted them yet. */
+	memcpy(read.read_buffer, "abc", 3);
+	AiusHttpAction supply = call_step(
+		&fixture, 100, io_result(&read, AIUS_IO_PROGRESS, 3, 0));
+	assert(supply.kind == AIUS_HTTP_ACTION_SD_STEP);
+	assert(supply.sd_operation == AIUS_HTTP_SD_OP_SUPPLY_UPLOAD);
+	assert(supply.length == 3);
+	assert(fixture.transaction.upload_supplied == 0);
+
+	AiusHttpAction advance = call_step(
+		&fixture, 101, sd_result(&supply, AIUS_HTTP_SD_PROGRESS));
+	assert(advance.kind == AIUS_HTTP_ACTION_SD_STEP);
+	assert(advance.sd_operation == AIUS_HTTP_SD_OP_ADVANCE);
+	assert(fixture.transaction.upload_supplied == 3);
+
+	/* Second chunk, deliberately a different size: the remaining two bytes.
+	 * The job asks for four and the transaction offers what the body has
+	 * left, so a fixed-chunk assumption would show up here. */
+	AiusHttpEvent need = sd_result(&advance, AIUS_HTTP_SD_NEED_UPLOAD);
+	need.sd_length = 4;
+	AiusHttpAction read2 = call_step(&fixture, 102, need);
+	assert(read2.kind == AIUS_HTTP_ACTION_READ);
+	assert(read2.length == 2);
+	assert(fixture.transaction.upload_supplied == 3);
+
+	memcpy(read2.read_buffer, "de", 2);
+	AiusHttpAction supply2 = call_step(
+		&fixture, 103, io_result(&read2, AIUS_IO_PROGRESS, 2, 0));
+	assert(supply2.kind == AIUS_HTTP_ACTION_SD_STEP);
+	assert(supply2.sd_operation == AIUS_HTTP_SD_OP_SUPPLY_UPLOAD);
+	assert(supply2.length == 2);
+	assert(memcmp(supply2.data, "de", 2) == 0);
+	assert(fixture.transaction.upload_supplied == 3);
+
+	AiusHttpAction after = call_step(
+		&fixture, 104, sd_result(&supply2, AIUS_HTTP_SD_PROGRESS));
+	assert(after.kind == AIUS_HTTP_ACTION_SD_STEP);
+	assert(fixture.transaction.upload_supplied == 5);
+	assert(fixture.transaction.upload_supplied ==
+	       fixture.transaction.body_expected);
+}
+
 static void drain_upload_after_transport(
 	Fixture *fixture, AiusHttpAction close)
 {
@@ -4448,6 +4518,8 @@ int main(void)
 		  test_upload_prefix_staging_and_deadline },
 		{ "upload.read-would-block-progress",
 		  test_upload_read_would_block_and_progress },
+		{ "upload.supplied-tracks-body",
+		  test_upload_supplied_tracks_the_supplied_body },
 		{ "upload.read-transport-terminal-precedence",
 		  test_upload_read_transport_terminal_precedence },
 		{ "upload.invalid-complete-cancel",
@@ -4487,7 +4559,7 @@ int main(void)
 		{ "receive.large-body-chunk-boundaries",
 		  test_receive_large_body_chunk_boundaries },
 	};
-	assert(ARRAY_LENGTH(registry) == 39);
+	assert(ARRAY_LENGTH(registry) == 40);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

@@ -770,6 +770,82 @@ void test_hardware_primitive_factory()
 	assert(WDOG1_WSR == UINT16_C(0xaaaa));
 }
 
+/* The boot-configuration fuse decode, prerequisite 4 of
+ * docs/plans/aius-ota-upgrade.md. The single gating fact for hardware A/B on
+ * this part is whether PJRC blows 0x6E0[23:16]; the answer needs a real board,
+ * but the decode that will report it must be right BEFORE the board is asked,
+ * because a wrong shift silently answers the question wrongly and the answer
+ * looks plausible either way.
+ *
+ * Both fields are exercised over fabricated words, including the neighbouring
+ * bits that a one-off shift or a missing mask would pull in. */
+void test_boot_fuse_decode()
+{
+	struct Case {
+		uint32_t word;
+		uint8_t offset;
+		uint8_t size;
+	};
+	static const Case cases[] = {
+		/* The shipped part: both fields zero, so the secondary image
+		 * base is 0 -- the same address as the primary, which is what
+		 * makes hardware A/B unavailable on an unblown board. */
+		{ UINT32_C(0x00000000), 0x00u, 0x0u },
+		/* One bit in each field, at its low end. */
+		{ UINT32_C(0x00011000), 0x01u, 0x1u },
+		/* Each field saturated with every OTHER bit clear, so a decode
+		 * that forgot to mask would import the neighbours. */
+		{ UINT32_C(0x00FF0000), 0xFFu, 0x0u },
+		{ UINT32_C(0x0000F000), 0x00u, 0xFu },
+		/* Every neighbouring bit set and both fields clear: [31:24],
+		 * [11:0]. A shift that is off by four in either direction, or a
+		 * mask a nibble too wide, reads nonzero here. */
+		{ UINT32_C(0xFF000FFF), 0x00u, 0x0u },
+		/* A realistic blown reading: offset 4 -> 4 x 256 KiB = slot B
+		 * at 0x60100000, the base the plan's sizing section names. */
+		{ UINT32_C(0x00042000), 0x04u, 0x2u },
+		/* All ones -- the host sentinel, decoded like any other word. */
+		{ UINT32_C(0xFFFFFFFF), 0xFFu, 0xFu },
+	};
+
+	for (const Case &c : cases) {
+		const AiusBootFuse fuse =
+			aius_boot_teensy_decode_boot_fuse(c.word);
+		/* The full word survives undecoded, so a field this firmware
+		 * does not know about is still recoverable from the wire. */
+		assert(fuse.word == c.word);
+		assert(fuse.sec_image_offset == c.offset);
+		assert(fuse.sec_image_size == c.size);
+		/* The decode never claims a read happened; that is the
+		 * reader's to assert. */
+		assert(!fuse.read);
+	}
+}
+
+/* The host build has no OCOTP, and what it serves instead must be impossible to
+ * mistake for an answer.
+ *
+ * Zero would have been the natural sentinel and would have been the worst
+ * possible one: zero is the SHIPPED value of both fields, so a host build would
+ * have reported exactly the reading a genuine unblown board produces, and the
+ * one question this read exists to settle would have been answered "unblown" by
+ * a machine that never looked. */
+void test_boot_fuse_host_sentinel()
+{
+	const AiusBootFuse fuse = aius_boot_teensy_boot_fuse();
+
+	assert(!fuse.read);
+	assert(fuse.word == AIUS_BOOT_FUSE_UNREAD);
+	assert(fuse.word != 0u);
+	/* 255 x 256 KiB = 63.75 MiB of secondary-image offset on a part with
+	 * 8 MiB of flash: structurally impossible, so even a client that
+	 * ignores `read` cannot read it as a board answer. */
+	assert(fuse.sec_image_offset == 0xFFu);
+	assert(fuse.sec_image_size == 0x0Fu);
+	assert(static_cast<uint32_t>(fuse.sec_image_offset) * 256u * 1024u >
+	       UINT32_C(8) * 1024u * 1024u);
+}
+
 } // namespace
 
 void arm_dcache_delete(void *address, uint32_t size)
@@ -801,5 +877,7 @@ int main()
 	test_reset_capture_full_raw_w1c();
 	test_watchdog_exact_traces();
 	test_hardware_primitive_factory();
+	test_boot_fuse_decode();
+	test_boot_fuse_host_sentinel();
 	return 0;
 }

@@ -605,6 +605,7 @@ FLASHMEM bool aius_runtime_storage_service(
 
 FLASHMEM bool aius_runtime_storage_diag_json(
 	const AiusRuntimeStorage *service,
+	const AiusHttpTransaction *http,
 	char *output,
 	size_t capacity,
 	size_t *length)
@@ -648,13 +649,52 @@ FLASHMEM bool aius_runtime_storage_diag_json(
 	if (!diag_append(output, capacity, length,
 	                 "\"root_state\":%u,\"http_owned\":%s,"
 	                 "\"draining\":%s,\"file_open\":%s,\"job_kind\":%u,"
-	                 "\"job_state\":%u,\"last_failure\":",
+	                 "\"job_state\":%u,",
 	                 (unsigned)service->root_state,
 	                 service->http_owned ? "true" : "false",
 	                 service->draining ? "true" : "false",
 	                 service->target.file_open ? "true" : "false",
 	                 (unsigned)service->job.kind,
 	                 (unsigned)service->job.state))
+		return false;
+	/* Live PROGRESS. Until this existed the surface could say a job was
+	 * running and, on failure, how many bytes it had moved when it died --
+	 * and nothing at all about a job that was merely slow. An upload was
+	 * therefore auditable only in retrospect and only if it failed, which is
+	 * the opposite of what an operator watching a multi-megabyte push needs.
+	 * Recorded as the cheapest high-value observability fix in
+	 * docs/plans/aius-ota-upgrade.md (§Observability, prerequisite 2).
+	 *
+	 * Three numbers, deliberately, because two of them answer different
+	 * questions and the third is the denominator that turns a count into
+	 * progress:
+	 *
+	 *   upload_supplied  bytes the HTTP transaction has handed DOWN to the
+	 *                    job (AiusHttpTransaction::upload_supplied) -- how
+	 *                    much of the request body has been consumed off the
+	 *                    socket. Zero for every non-upload job kind, and
+	 *                    reset per request by the transaction.
+	 *   job_transferred  bytes the job has COMMITTED to the card
+	 *                    (AiusSdJob::transferred) -- how much actually
+	 *                    reached storage, for a download as well as an
+	 *                    upload.
+	 *   job_total        the job's requested transfer size, so a reader can
+	 *                    compute a fraction without knowing Content-Length.
+	 *
+	 * supplied minus transferred is the in-flight slice, bounded by
+	 * AIUS_SD_MAX_TRANSFER; a supplied count that advances while transferred
+	 * stands still is a card that has stopped accepting writes, which is
+	 * exactly the state the pre-existing counters could not distinguish from
+	 * an idle board. All three are uint64 on the wire because both fields are
+	 * uint64 in their owners and a multi-megabyte image is the point. */
+	if (!diag_append(output, capacity, length,
+	                 "\"upload_supplied\":%llu,\"job_transferred\":%llu,"
+	                 "\"job_total\":%llu,\"last_failure\":",
+	                 (unsigned long long)(http != nullptr
+	                                              ? http->upload_supplied
+	                                              : 0u),
+	                 (unsigned long long)service->job.transferred,
+	                 (unsigned long long)service->job.total))
 		return false;
 	if (failure->sequence == 0u)
 		return diag_append(output, capacity, length, "null}");
