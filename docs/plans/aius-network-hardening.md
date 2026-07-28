@@ -1362,6 +1362,22 @@ are follow-up work, recorded here so they are not lost.
     and feed a seam-corrupted AU corpus through the native harness
     hunting for non-terminating parses.
 
+    **The native half of that chase ran 2026-07-28 and came back
+    negative.** The `dts-fuzz` suite gained a deterministic seam hunt
+    (truncated-AU + next-AU splices byte-exact at the loop seam, step-16
+    across every adjacent pair, headless tails, bare truncations —
+    29,435 feeds over all five vectors) and a termination oracle on
+    every decode call (1 s soft bound, 8 s `alarm()` backstop matching
+    the board watchdog, hung input named on exit). Every seam-shaped
+    and random input terminated with a typed status; the slowest of
+    ~79k decode calls was 4.7 ms under sanitizers. A dcadec hang on a
+    seam-corrupted AU is now the DISFAVOURED hypothesis; the ISR-time
+    storm (decode-in-ISR budget) is the prime suspect, and the
+    decode-off-ISR restructure — already folded into
+    [`aius-ac3-support.md`](aius-ac3-support.md) phase 2 — is the fix
+    path. The oracle stays in the suite, so a parser regression that
+    CAN hang shows up named rather than as a hung run.
+
 32. ~~**Every DSP stage hard-clipped its own output, so an input-EQ boost
     on hot material distorted before the headroom pad or limiter could
     act.**~~ **FIXED 2026-07-28, same day as found — the chain now carries
