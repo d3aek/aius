@@ -46,22 +46,20 @@ specified here. Strike items here in the commit that closes them.
   PSRAM pad, `ps=16`, recorder armed on the full 16 MB ring; capture,
   freeze and WAV pull all proven live** (the recorder's first real
   capture — see defect 27's gist).
-- **Optical jacks: restore the ORIGINAL pin arrangement (2026-07-28,
-  ~04:00 correction).** BOTH bench faults trace to guide errors, now
-  fixed: the bypass caps were drawn in series (real fault, fixed on the
-  bench), and the guide's pinout paragraph claimed the datasheet
-  numbering sat on the REAR view — it is on the FRONT view (operator
-  caught it; both PDFs confirm; front L-to-R = 3,2,1, rear L-to-R =
-  1,2,3). The operator's original pin placement was CORRECT; the
-  "inversion fix" it prompted created the actual inversion, and the
-  0.57 V "bad joint" reading was mis-mapped pins, not a joint. Bench
-  list: rewire TX (and check RX) back to the original arrangement per
-  the front-view rule, reconnect the receiver's Vout→pad 15 lead
-  (lifted for the loopback test), remove the 14→15 jumper, power up —
-  glass loopback should lock. The electrical loopback verdicts stand:
-  both pads and the firmware chain are proven healthy. Watch for TX
-  module health after its accumulated anomalous-bias exposure (three
-  bounded episodes; expected to survive; cheap to replace if not).
+- ~~**Optical jacks: restore the ORIGINAL pin arrangement.**~~
+  **RESOLVED 2026-07-28 ~04:30: GLASS LOOPBACK LOCKED.** After both
+  guide errors were corrected (series bypass caps; pinout numbering is
+  on the FRONT view — the operator's original placement had been right
+  all along), the rewired jacks locked the carrier through real fibre
+  in seconds: 48 kHz, blocks climbing, both modules healthy (the TX
+  survived its accumulated anomalous-bias exposure). Defect 27's
+  overrun flood reproduces across glass too — real-jitter immunity is
+  ruled out as a factor. Remaining optical work: the measure flow
+  across glass (guide step 5, `measure_vectors/measure_run.py`) and
+  the remaining §First real signal test steps that need an EXTERNAL
+  source or sink (steps 2–4, 6) — plus DTS-over-carrier
+  classification, untested because replay self-terminates on lock
+  (defect 27's policy note) and the brief IEC window stayed PCM(3).
 - **Bench first-signal test** — everything is staged:
   [`../guides/proto-optical-wiring.md`](../guides/proto-optical-wiring.md)
   (22 pF fitted value recorded), RS PRO jacks + datasheets + AP214 STEP

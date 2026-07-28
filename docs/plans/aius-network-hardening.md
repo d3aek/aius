@@ -1072,7 +1072,12 @@ are follow-up work, recorded here so they are not lost.
     jitter) or an independent-clock source reproduces it, and whether
     the flood harms anything beyond counters (the watchdog stayed fed;
     the board ran indefinitely; a reboot exits the state). Reproduce:
-    jumper 14→15, start any replay, wait for lock.
+    jumper 14→15, start any replay, wait for lock. **Glass answered
+    same-night: the flood reproduces identically across the optical
+    loopback (17k+ overruns within a minute of lock), so real receiver
+    jitter does not perturb whatever the unity-ratio path trips on.
+    The independent-clock question is now the discriminating one and
+    waits for a genuine external source.**
 
 #### Decisions taken, so they are not re-opened
 
