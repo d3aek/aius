@@ -288,43 +288,220 @@ survey, so the implementer does not have to re-derive it:
   `:881` (neither switch has an identity case, so both are already no-ops).
 - Consequently `chanbias` is always 0 → `bias = state->bias` for every
   channel, and `coeff[i]` is `state->dynrng` for every channel.
-- `state->downmixed`, `state->output`, `state->clev`/`slev` become vestigial
-  or trivially derived; prune deliberately rather than leaving dead fields.
 
-Also deletable as unreferenced: `attributes.h`, `mm_accel.h`.
+**All six points above were verified by the gate against source AND by
+building the reduction and re-decoding the corpus: plane hashes came back
+bit-identical, including for a synthesised `dsurmod=2` (A52_DOLBY) variant.**
+The reduction is sound. What follows is where it goes wrong in the hands of
+an implementer.
+
+#### THE BITSTREAM TRAP — the one that silently destroys audio
+
+`state->clev` / `state->slev` are assigned from `bitstream_get(state, 2)`
+(`parse.c:161,164`), and `dsurmod` is read inside a condition at `:157`.
+**Those reads consume bitstream bits. The fields are vestigial; the READS
+ARE NOT.** Deleting them desynchronises the bitstream and every subsequent
+frame is garbage. The gate demonstrated both failures:
+
+- delete `:160-164` → stereo still bit-identical, `surround51_*` fails
+  `AIUS_MALFORMED`;
+- delete `:157-158` → `stereo_tones` fails `AIUS_MALFORMED`.
+
+**And `-Werror` actively pushes the implementer into it**: once the fields
+are pruned, the function-local `static sample_t clev[4]/slev[4]`
+(`parse.c:145-146`) become unused and the build FAILS with
+`-Werror=unused-variable`. The obvious way to clear that error takes the
+reads with it. So, verbatim: **delete the tables and the assignments, keep
+the reads** —
+
+```c
+if ((acmod & 1) && (acmod != 1))
+    bitstream_get (state, 2);   /* cmixlev: consumed, value unused */
+if (acmod & 4)
+    bitstream_get (state, 2);   /* surmixlev: consumed, value unused */
+```
+
+and leave `if ((acmod == 2) && (bitstream_get (state, 2) == 2)) acmod =
+A52_DOLBY;` intact. Other value-unused reads that must never be pruned for
+the same reason: `parse.c:155` (acmod skip), `:186-208` (bsi), `:195`,
+`:694` (gainrng), `:766-769` (skipl).
+
+#### Three corrections to the first draft of this survey
+
+1. **`mm_accel.h` is NOT unreferenced.** `imdct.c:41` includes it and
+   `MM_ACCEL_DJBFFT` is used at `imdct.c:421`. Deleting it breaks the build.
+   F1 must also delete `imdct.c:41` and the `#ifdef LIBA52_DJBFFT` blocks
+   (`:31-33, :420-426`), or keep the header. Only `attributes.h` is
+   genuinely unreferenced.
+2. **Grant `*flags & A52_CHANNEL_MASK`, NOT `state->acmod`.**
+   `state->acmod` is the RAW acmod (`parse.c:152`); the local `acmod`
+   becomes `A52_DOLBY` at `:158` while `state->acmod` stays 2. Granting
+   `state->acmod` yields `A52_STEREO` where upstream yields `A52_DOLBY`,
+   contradicting `aius_a52.h:40-41`'s stated agreement between syncinfo
+   flags and `a52_frame`'s out-flags. Audio is unaffected, no test reads the
+   out-flags, and no corpus vector sets `dsurmod=2` — **so this would ship
+   silently and F1's own oracle could not convict it.** Real Dolby Surround
+   stereo from a TV hits it.
+3. **Add a fail-closed guard.** After the reduction, a caller requesting
+   anything but the stream's own coding silently gets wrong audio instead of
+   `a52_downmix_init`'s `return 1`. One branch per frame turns the fork's
+   premise into an enforced invariant:
+   `if ((*flags & A52_CHANNEL_MASK) != acmod) return 1;` (post-Dolby local
+   `acmod`).
+
+**A fifth identity-dependent site the survey missed:** `parse.c:840-844`
+(the skip-LFE-coefficients branch) is dead only because the adapter always
+grants `A52_LFE` when the stream has it. It is not a `downmix.c` call site,
+so it STAYS — flagged so nobody prunes it as "dead under identity" and
+desyncs an LFE stream on some future non-identity request.
 
 #### Steps, each separately committed
 
 **Step F1 — move and prune, NO behaviour change.** `vendor/a52-core/` →
-`lib/aius_a52/a52/`; delete `downmix.c`, `attributes.h`, `mm_accel.h`;
-apply the identity-only reduction above; update `scripts/test.sh` paths;
-`NOTICE.md` becomes the divergence log. **Proof: the differential must stay
-BYTE-IDENTICAL (1906 LSB / 69.3 dB) and `a52-fuzz` green.** That is a strong
-oracle precisely because the reduction is meant to be behaviour-preserving
-for identity requests — any drift means the reduction was wrong.
+`lib/aius_a52/a52/`; delete `downmix.c` and `attributes.h` (NOT
+`mm_accel.h` — see correction 1); apply the identity-only reduction with
+the bitstream trap, the `*flags` grant and the fail-closed guard above;
+`NOTICE.md` becomes the divergence log.
 
-**Step F2 — fix the idioms, drop the carve-outs.** Correct `tables.h`'s
-negative-shift macros and the bitstream shift idioms; remove
+**The oracle must be made byte-level FIRST — today's suite cannot prove
+what F1 claims.** `test_a52.c` asserts only a max per-sample LSB diff and an
+SNR printed to 0.1 dB, so a few LSB of drift in non-peak samples moves
+neither figure. Add a per-vector FNV-1a checksum over all decoded planes
+(~15 lines), printed and asserted. **Baselines measured from the current
+tree by the gate:**
+
+| Vector | FNV-1a over all planes |
+|---|---|
+| `stereo_tones` | `5debbe6d77ab1953` |
+| `stereo_impulse` | `50b480e4f629b7e5` |
+| `surround51_impulse` | `1ca2c67a7dfe9efe` |
+| `surround51_ident` | `8db4ec7277667f18` |
+
+Land the checksum assertion as its own commit against the UNMODIFIED tree,
+so the baseline is pinned before anything moves. Then F1 must reproduce all
+four exactly, with `a52-fuzz` green.
+
+**Path references F1 must update** (grep-confirmed complete):
+`scripts/test.sh:125,135,142`; `lib/aius_a52/include/aius_a52.h:16,34`;
+`lib/aius_a52/include/config.h:1,4`; `lib/aius_a52/src/aius_a52.c:7`; this
+plan's phase-2a Owned-paths block and its NOTICE.md relative link. Nothing
+under `test/` or `tools/` references the vendor path. The `registry` suite
+and the target build are unaffected (a52 is not in `platformio.ini`, and
+`lib_ldf_mode = off` stops the LDF discovering the new tree).
+
+**Step F2 — fix the idioms, drop the carve-outs.** Remove
 `-Wno-shift-negative-value`, `-fno-sanitize=shift`,
-`-Wno-implicit-fallthrough`, `-Wno-unused-parameter` from `a52_build`.
-Delete the `config.h` `fprintf` hack by deleting the offending
-`fprintf` in `imdct.c` — we own it now. **Proof: suites green under FULL
-UBSan, differential still byte-identical.** Expect this step to surface
-findings; that is the point.
+`-Wno-implicit-fallthrough`, `-Wno-unused-parameter` from `a52_build`, and
+fix what they were hiding. **The gate compiled and ran with the carve-outs
+off, so this is the measured inventory rather than an estimate** — do not
+discover it mid-step:
 
-**Step F3 — bounded reader + CRC.** Phase 2a's step 1 moves here and becomes
-ordinary work rather than a vendored edit: an end pointer, fail-closed, set
-from the syncinfo-validated frame length. Plus **CRC-16/ANSI over the whole
-frame** (`crc16(&buf[2], frame_size-2) == 0`, which chains CRC1 and CRC2),
-rejecting corruption before decode. Then the 32 KiB pad goes and the scratch
-falls to one frame. **Proof: the positive suppressed-fill evidence phase 2a
-already specifies, plus a CRC-rejection case in the fuzz.**
+*Compile time:* `tables.h:49,78,79,118-132,177-181` — **297**
+`-Wshift-negative-value`, all from `(-n << 15)`, and all rewritable as
+`n * 32768`, **verified value-identical across all 36 distinct constants
+(0 bit-level differences)**. `parse.c:240,242,254,256,268,270` — exactly 6
+`-Wimplicit-fallthrough`. `imdct.c:365` — the single `-Wunused-parameter`.
 
-**Step F4 — take 0.8.0's fixes selectively.** `bitstream_init` zeroing
-`current_word`, the `uint8_t` underflow in three places, the per-frame
-`clev`/`slev` reset. **NOT the dither change** (0.707 → 0.75) unless we
-choose to re-baseline the differential — decide explicitly, do not inherit
-it by copying files. The `1027` typo fix is moot; `downmix.c` is gone.
+*Runtime UBSan, on the CLEAN corpus, 8 sites* — note three are outside
+"the bitstream idioms" and would be missed by a narrow reading:
+`bitstream.c:49:27` (`swab32`'s signed overflow — **not previously
+mentioned**), `bitstream.c:66:36` and `:66:64` (the `shift exponent 32`
+site), `bitstream.c:84:47` and `:90:19`, `bitstream.h:71:43`, and
+**`parse.c:414:49` and `:521:44`** (`bitstream_get_2(...) << (16 - bapi)`
+on a negative value — **not in `bitstream.c` at all**). All seven
+non-shift-exponent sites are wrap-preserving: rewrite each as an unsigned
+shift cast back to `int32_t`, which is value-identical and unflagged. So
+**byte-identity is achievable through F2** and the F1 checksums must still
+hold.
+
+**Correcting a premise about `current_word << 32`:** it is NOT a latent
+x86-vs-ARM portability defect. `bits_left == 0` is reachable only
+immediately after `a52_bitstream_set_ptr`, and that sole call site
+(`bitstream.c:41`) **discards the return value**; everywhere else
+`bits_left ∈ [8,32]`. x86's mod-32 garbage and an M7's zero are both thrown
+away, today and after the fix. Fix it locally —
+`result = state->bits_left ? (...) : 0;` in `_bh`/`_bh_2` only — and do NOT
+"generalise" it by masking `result` to `num_bits`, which would break
+`bitstream_get_2`'s deliberate sign extension.
+
+Also delete the `config.h` `fprintf` hack by deleting the offending
+`fprintf` in `imdct.c` — we own it now. **`config.h` itself survives**: its
+`HAVE_MEMALIGN` / `LIBA52_DOUBLE` non-definitions are what route allocation
+through the arena shim and keep `sample_t` as `float`. Update its header
+comment in the same commit.
+
+**Steps F3a / F3b / F3c — bounded reader, then pad removal, then CRC.**
+Re-issued as three commits after the gate returned NO-GO on the single-step
+version, for two independent reasons.
+
+*Why it splits (gate finding 4):* phase 2a already established — and this
+project already paid a gate round for — that the bound must be proven WHILE
+the 32 KiB pad still exists, using the pad as an oracle. A single step that
+adds the bound and removes the pad together cites evidence that is
+unobtainable once the pad is gone.
+
+- **F3a — the bound.** End pointer, fail-closed, byte-derived, set before
+  `a52_frame`, pad still in place and filled `0xFF` past `frame_length`.
+  Proof is the non-zero suppressed-fill count phase 2a specifies, plus the
+  F1 checksums.
+- **F3b — remove the pad**, scratch falls to one frame. Suites unchanged.
+- **F3c — CRC**, with the fuzz change below, which is not optional.
+
+**THE BLOCKER F3 originally shipped (gate finding 1): a CRC gate silently
+destroys the fuzz suite.** `fuzz_a52.c` mutates real access units
+(strategies 0, 2, 6) and depends on them still passing syncinfo to reach
+`a52_frame`/`a52_block`. The gate simulated the exact PRNG stream over all
+50,000 shipped iterations:
+
+- reaching `a52_frame` today: **17,115 / 50,000**
+- surviving a CRC gate: **6**
+
+That is a **99.96% loss of coverage over the mantissa, exponent and
+bit-allocation surface where BOTH phase-1 memory-safety defects lived** —
+and the suite would still print `RESULT: passed`. It would also contradict
+this plan's own standing conclusion that the fuzz suite belongs in the
+pre-flash gate. **F3c must therefore recompute CRC1/CRC2 and patch them back
+after corrupting**, so the suite tests what it exists to test: a
+CRC-*valid* hostile stream, which is precisely the shape of phase-1 defect 1
+(reachable from a legal frame). Land the gate-F16 reach counter with it and
+**assert a floor**, or this class of silent gutting recurs on the next guard
+tightening.
+
+**The CRC formulation is verified**, so implement it as stated: CRC-16/ANSI
+(poly `0x8005`, init 0, MSB-first, no reflection, no xorout) over
+`buf[2 .. frame_size)` yields 0 on all eight committed frames, and each
+segment (`[2, 5/8)` and `[5/8, end)`) is independently 0 — so a single pass
+genuinely chains CRC1 and CRC2.
+
+**Open mechanic F3 must settle:** `a52_frame` takes no length and
+`a52_syncinfo` sees only 7 bytes, yet both the bound and the CRC need the
+frame length. Pick the entry point and state it; phase 2a's rules (a)–(e)
+about the setter living in `a52.h` and `set_ptr` not clearing the end apply
+verbatim. Note also that the byte-exact bound relies on a **48 kHz-only
+invariant** — `set_ptr` aligns down, and 48 kHz frame sizes are always a
+multiple of 4 — so relaxing the rate guard later would make the bound off by
+up to 3 bytes.
+
+**Step F4 — REDUCES TO NOTHING; keep it only as an explicit decision.** The
+gate checked all three proposed 0.8.0 fixes and none is work:
+
+- `bitstream_init` zeroing `current_word` — already covered by edit 2's
+  `memset` at `a52_init`, and if 0.8.0's is per-frame it only rewrites a
+  value proven discarded (see F2's `<< 32` correction).
+- the `uint8_t do_bit_alloc = -1` underflow — `-1` to `uint8_t` is
+  well-defined modular conversion to 255, which IS the intended
+  all-bits-set, and every use is a mask test. Cosmetic; cannot move the
+  differential.
+- the per-frame `clev`/`slev` reset — **unreachable after F1**, which prunes
+  those fields.
+
+The `1027` typo fix is moot; `downmix.c` is gone. So F4 is not a step but a
+single question: **do we take the dither change (0.707 → 0.75) and
+re-baseline the differential and the F1 checksums?** It is cleanly separable
+(one line in `dither_gen`). Default answer: **no** — it buys nothing and
+costs the pinned baselines. Note also that the 0.8.0 endpoint is unreachable
+from this network, so any of this would be applied from prose rather than a
+diff.
 
 #### What this does NOT solve
 
@@ -880,9 +1057,11 @@ the phase-boundary rule that the affected artifact still builds. **Compile
 the vendor TUs to objects separately and link them**, rather than merging
 a52's carve-outs into the shared arm: `-fno-sanitize=shift` folded into the
 `pipeline` arm would silence UBSan's shift checks over `aius_pipeline.c` and
-`aius_iec61937.c` as collateral. **That requirement is HOST-ONLY** (gate
+`aius_iec61937.c` as collateral. (**After fork step F2 the carve-outs are
+gone entirely**, which removes this hazard at the source — sequence the
+fork before phase 3 if convenient.) **That requirement is HOST-ONLY** (gate
 N8): the target build carries neither `-Werror` nor a sanitizer, so
-`platformio.ini` needs only the five sources plus `-Ivendor/a52-core` and
+`platformio.ini` needs only the sources plus their include path and
 `-Ilib/aius_a52/include` (the `config.h` seam) — no carve-out flags, and
 none should be added env-wide.
 
@@ -1120,11 +1299,17 @@ So the real decision, which phase 4 must take deliberately:
    (undocumented) treatment, and add an `_itcm_block_count` assertion to the
    linker script so a future growth fails loudly instead of silently
    stealing 32 KB of stack.
-3. **If it does not**: place the vendor tree cold via a linker rule
-   (`*a52-core*.o(.text*) > FLASH`) rather than source annotation, which
-   preserves zero-edit vendoring. That takes ownership of
+3. **If it does not**: place the tree cold via a linker rule rather than
+   source annotation. **The glob must match the POST-FORK path** — after
+   F1 the tree is `lib/aius_a52/a52/`, so a rule written
+   `*a52-core*.o(.text*) > FLASH` matches nothing and becomes **a no-op
+   that still passes**, putting liba52 in ITCM and stealing 32 KB of stack
+   exactly as gate F15 describes. Take ownership of
    `link/aius_teensy41.ld` **and its byte-for-byte drift test**, neither of
-   which this contract currently owns — add both before starting.
+   which this contract currently owns — add both before starting. Note the
+   fork also changes route 3's cost: source annotation is no longer
+   forbidden, because there is no zero-edit vendoring discipline left to
+   violate.
 
 FLASH is the irrelevant bank throughout (95% free); ITCM headroom and the
 DTCM stack zone are the constraints.
