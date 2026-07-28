@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-07-25
+updated: 2026-07-28
 toc: true
 ---
 
@@ -1094,8 +1094,10 @@ are follow-up work, recorded here so they are not lost.
     exactly ratio 1.0, which remains the code path to inspect when
     this is chased).
 
-28. **A live carrier cannot reliably reach DTS decode — classification is
-    a coin flip at best and is never revisited.** Found 2026-07-28, the
+28. ~~**A live carrier cannot reliably reach DTS decode — classification is
+    a coin flip at best and is never revisited.**~~ **FIXED 2026-07-28 —
+    classification is continuous in both directions; record and fix at the
+    end of this entry.** Found 2026-07-28, the
     first day a genuine external DTS stream ever reached the box, via
     capture forensics + source reading. Two compounding replay-era
     assumptions:
@@ -1145,6 +1147,55 @@ are follow-up work, recorded here so they are not lost.
     pipeline reset to carrier lock transitions — which also clears the
     mirrored PCM-as-DTS hazard above. The 512-word stage buffer can
     stay as-is under (a).
+
+    **THE FIX (2026-07-28, same day; full gate protocol: contract →
+    adversarial prebuild NO-GO with five must-fix findings → rev 2 →
+    same-reviewer clean-room GO → red suite → implementation → delivery
+    audit).** Three mechanisms — (a) and (b) as directed, plus the
+    symmetric starvation leg:
+
+    - **Re-type (PCM→DTS), in `pcm_feed`**: a per-word detector carries
+      the previous word across pushes; two preamble pairs of the SAME
+      byte-order form spaced within [512, 8192] words re-type the stream
+      mid-flight — staged pass-through frames drop (at a genuine switch
+      they are burst data misread as PCM) and the parser restarts from
+      the validated pair. Sub-MIN pairs keep the OLDER candidate (gate
+      F4: pause/null-burst idles repeat pairs at sub-512-word spacing
+      and would otherwise never accumulate a valid delta); candidates
+      expire past MAX spacing at push boundaries (uint32 wrap-alias
+      hardening, gate F6).
+    - **Starvation (DTS→UNKNOWN)**: words consumed with no parser burst
+      outcome — completed or rejected, either is framing evidence —
+      starve the class back to UNKNOWN after 16,384 words (~170 ms);
+      the next push re-classifies. Framed-but-unsupported streams
+      (AC-3, pause bursts) complete an outcome every burst and never
+      starve: silence, not periodic noise, deliberately. Gate F1 (the
+      one BLOCKER): the counter zeroes on EVERY entry to the DTS class
+      and on each starvation fire — stale residue would have
+      permanently locked the box out of DTS after its first starve.
+    - **Carrier edge (target)**: `tx_gate_service()` arms the existing
+      block-boundary pipeline reset on a lock rising edge, debounced to
+      unlocked runs of ≥3 epochs (~27 ms; gate F3 — undebounced, a PLL
+      micro-flap becomes a fresh classify lottery with a noise blast)
+      and born saturated so the first-ever lock edge resets too.
+
+    Proof: seven new pipeline-suite tests at the live stream's exact
+    geometry (mid-burst entry — 17 red checks before the fix — mid-stream
+    switch, false-positive immunity, boundary-spanning pair,
+    starve-and-recover, unsupported-never-starves, reset semantics); all
+    13 suite tests green. `retype_count` / `reclassify_count` ride
+    `pipeline_diag` on `/api/status` (the swagger Status-schema debt
+    grows by two fields): on a live board a non-zero `retype_count`
+    distinguishes a mid-stream re-type from a reboot lottery win.
+    `aius_pipeline_reset()` clears detector/starvation state but not the
+    counters. Two EXPECTED live artifacts, recorded so traces are not
+    misread: a brief noise blip at a genuine live format switch (frames
+    emitted before the second pair validates — bounded, by design), and
+    phantom carrier-loss STATE events during the ~5-9 ms UNKNOWN windows
+    (`current_state()` maps UNKNOWN to 2, a pre-existing conflation whose
+    frequency grows). Live verification at this record's commit: pending
+    the flash — the running bench (operator's DTS loop playing, board
+    PCM-typed, state 3) is the exact red condition.
 
 29. ~~**With DTS correctly classified and a bit-perfect stream flowing,
     the decode path emits NOTHING — no blocks, no meters, no faults.**~~

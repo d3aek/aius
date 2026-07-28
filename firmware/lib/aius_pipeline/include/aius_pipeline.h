@@ -37,6 +37,29 @@ extern "C" {
  * wire byte order) within a bounded word window; a stream with no preamble in the
  * window is linear PCM. See aius_pipeline_classify.
  *
+ * CLASSIFICATION IS NOT ONE-SHOT (defect 28). A typed stream keeps being
+ * re-judged in both directions:
+ *
+ *   PCM -> DTS   the PCM route scans every word for preamble pairs. TWO pairs
+ *                of the same byte-order form at plausible spacing (see
+ *                AIUS_PIPELINE_RETYPE_*_SPACING_WORDS) re-type the stream to
+ *                DTS mid-flight: staged pass-through frames are dropped (at a
+ *                genuine format switch they are burst data misread as PCM),
+ *                the parser is reset and fed from the validated pair onward.
+ *                One pair is never enough -- a random 16-bit-word pair match
+ *                in real audio must not flip a live stream.
+ *   DTS -> PCM   words consumed by the DTS route with NO parser burst outcome
+ *                (completed OR rejected -- either is framing evidence) starve
+ *                the class back to UNKNOWN after
+ *                AIUS_PIPELINE_DTS_STARVE_WORDS, and the next words
+ *                re-classify. Framed-but-unsupported streams (AC-3, pause and
+ *                null bursts) complete bursts and therefore never starve:
+ *                they stay DTS-classified and silent by design, not as noise.
+ *
+ * Both transitions count into lifetime diagnostics (see
+ * aius_pipeline_get_reclass_counters); aius_pipeline_reset() clears the
+ * detector/starvation state but NOT the counters.
+ *
  * Every decoded or passed-through block is delivered to the caller's AiusPcmSink.
  * The steady-state push path performs no allocation beyond the DTS decoder's own
  * arena/heap (classify buffer and PCM staging live in the fixed instance). Only
@@ -46,6 +69,33 @@ extern "C" {
 /* Words scanned for a preamble before a stream is declared linear PCM. Also the
  * capacity of the fixed classification staging buffer in the instance. */
 #define AIUS_PIPELINE_CLASSIFY_MAX_WORDS 512u
+
+/* PCM->DTS re-type pair-spacing bounds, in words. Two same-form preamble pairs
+ * whose spacing lies inside [MIN, MAX] re-type a PCM stream to DTS.
+ *
+ * MIN sits below the smallest real DTS repetition period (1024 words for
+ * 512-frame access units) and rejects trivially-close random pairs. It MUST
+ * stay >= AIUS_PIPELINE_CLASSIFY_MAX_WORDS: that coupling is what makes a
+ * re-type inside finish()'s PCM-promotion flush impossible (asserted in the
+ * implementation). Pairs closer than MIN keep the OLDER candidate -- pause and
+ * null data-burst idles repeat pairs at sub-MIN intervals, and the accumulated
+ * spacing from the older pair is what lets such a stream re-type at all.
+ *
+ * MAX is 2x the largest DTS period (4096 words). A candidate older than MAX is
+ * expired (also kills uint32 position-wrap aliasing of an hours-stale
+ * candidate). Random-match arithmetic: one random pair in full-scale random
+ * PCM about every 6-12 h; a second same-form pair within MAX of it is a ~2e-6
+ * conditional -- a false re-type is effectively impossible. */
+#define AIUS_PIPELINE_RETYPE_MIN_SPACING_WORDS 512u
+#define AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS 8192u
+
+/* Words consumed by the DTS route with no parser burst outcome (completed or
+ * rejected) before the class starves back to UNKNOWN. >= 4x the worst
+ * legitimate NEED_MORE span (~2341-word 14-bit accumulation, ~4096-word
+ * type-III period); ~170 ms at 48 kHz bounds the silent interval after a live
+ * DTS->PCM material switch. Evaluated at push boundaries, so the observable
+ * re-classification needs subsequent input. */
+#define AIUS_PIPELINE_DTS_STARVE_WORDS 16384u
 
 /* Frames per emitted PCM pass-through block (staged in the fixed instance). */
 #define AIUS_PIPELINE_PCM_BLOCK_FRAMES 512u
@@ -140,6 +190,16 @@ AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out);
  * AIUS_OK or AIUS_INVALID_ARG. */
 AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,
                                          AiusIecDiag *out);
+
+/* Lifetime re-classification counters: *retype counts PCM->DTS re-types (the
+ * validated-pair path), *reclassify counts DTS->UNKNOWN starvation resets.
+ * Both survive aius_pipeline_reset() and clear only at create -- on a live
+ * board a non-zero retype_count is what distinguishes a mid-stream re-type
+ * from a reboot that happened to classify DTS. Returns AIUS_OK or
+ * AIUS_INVALID_ARG. */
+AiusStatus aius_pipeline_get_reclass_counters(const AiusPipeline *p,
+                                              uint32_t *retype,
+                                              uint32_t *reclassify);
 
 #ifdef __cplusplus
 }

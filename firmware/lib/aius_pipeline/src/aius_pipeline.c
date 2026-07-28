@@ -40,14 +40,54 @@ struct AiusPipeline {
 	uint32_t pcm_frames;       /* complete L/R frames staged */
 	int32_t pcm_pending_l;     /* a lone L sample awaiting its R */
 	int pcm_have_half;
+
+	/* PCM->DTS re-type detector: continuous across pushes, active only while
+	 * the class is PCM. Positions are a free-running uint32 word counter;
+	 * spacing math uses unsigned deltas, and candidate expiry (push-boundary,
+	 * age > MAX spacing) removes the wrap-aliasing hazard of an hours-stale
+	 * candidate. */
+	uint16_t rt_prev_word;     /* last word seen by the PCM route */
+	uint8_t rt_have_prev;
+	uint8_t rt_cand_valid;
+	uint8_t rt_cand_form;      /* candidate pair byte order: 1 BE, 2 LE */
+	uint32_t rt_pos;           /* stream position of the NEXT word */
+	uint32_t rt_cand_pos;      /* candidate pair's Pa position */
+
+	/* DTS starvation: words consumed by the DTS route since the last parser
+	 * burst outcome (completed or rejected). Zeroed on EVERY entry to the DTS
+	 * class and when starvation fires -- stale residue across a class
+	 * transition would immediately re-starve a valid re-type. */
+	uint32_t dts_starve_words;
+
+	/* Lifetime diagnostics: survive aius_pipeline_reset(), cleared at create. */
+	uint32_t retype_count;
+	uint32_t reclassify_count;
 };
+
+/* A re-type inside finish()'s PCM-promotion flush is impossible only while the
+ * minimum pair spacing spans the whole classify window; keep the coupling. */
+_Static_assert(AIUS_PIPELINE_RETYPE_MIN_SPACING_WORDS >=
+               AIUS_PIPELINE_CLASSIFY_MAX_WORDS,
+               "retype MIN spacing must cover the classify window");
 
 /* ---- classifier ---------------------------------------------------------- */
 
+/* 0 = not a pair; 1 = big-endian wire form; 2 = byte-swapped form. The form
+ * matters to the re-type detector: validation means two pairs of the SAME
+ * form -- a mixed-form sequence is not a real IEC stream, and requiring the
+ * match halves the random-false-pair rate for free. */
+static int pair_form(uint16_t a, uint16_t b)
+{
+	if (a == IEC_PA_BE && b == IEC_PB_BE)
+		return 1;
+	if (a == IEC_PA_LE && b == IEC_PB_LE)
+		return 2;
+	return 0;
+}
+
 static int is_preamble_pair(uint16_t a, uint16_t b)
 {
-	return (a == IEC_PA_BE && b == IEC_PB_BE) ||
-	       (a == IEC_PA_LE && b == IEC_PB_LE);
+	return pair_form(a, b) != 0;
 }
 
 AiusPipelineClass aius_pipeline_classify(const uint16_t *words, size_t count,
@@ -70,6 +110,8 @@ AiusPipelineClass aius_pipeline_classify(const uint16_t *words, size_t count,
 }
 
 /* ---- PCM pass-through ----------------------------------------------------- */
+
+static AiusStatus dts_feed(AiusPipeline *p, const uint16_t *w, size_t n);
 
 static AiusStatus pcm_emit_block(AiusPipeline *p)
 {
@@ -115,10 +157,70 @@ static inline int32_t pcm_wire_to_sample(uint16_t word)
 	return (int32_t)((uint32_t)wire << PCM_WIRE_SHIFT);
 }
 
+/* Complete a validated PCM->DTS re-type (defect 28): drop the staged
+ * pass-through tail (at a genuine format switch it is burst data misread as
+ * PCM -- its Pa is in there too), start the parser clean from the validated
+ * pair, and route the remainder of the caller's chunk after it. */
+static AiusStatus retype_to_dts(AiusPipeline *p, uint16_t pa, uint16_t pb,
+                                const uint16_t *rest, size_t n)
+{
+	p->pcm_frames = 0;
+	p->pcm_have_half = 0;
+	p->pcm_pending_l = 0;
+	p->rt_have_prev = 0;
+	p->rt_cand_valid = 0;
+	aius_iec61937_parser_reset(p->parser);
+	p->klass = AIUS_PIPELINE_DTS;
+	p->dts_starve_words = 0;
+	p->retype_count++;
+
+	const uint16_t pair[2] = { pa, pb };
+	AiusStatus st = dts_feed(p, pair, 2);
+	if (st != AIUS_OK)
+		return st;
+	return dts_feed(p, rest, n);
+}
+
 static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 {
 	for (size_t i = 0; i < n; i++) {
-		int32_t sample = pcm_wire_to_sample(w[i]);
+		const uint16_t word = w[i];
+
+		/* Re-type detector, ahead of staging: on a validated second pair the
+		 * staged tail (which holds its Pa) drops and Pb never stages. The
+		 * prev-word carry is what detects a pair split across pushes. */
+		if (p->rt_have_prev) {
+			const int form = pair_form(p->rt_prev_word, word);
+			if (form != 0) {
+				const uint32_t pa_pos = p->rt_pos - 1;
+				if (p->rt_cand_valid) {
+					const uint32_t delta = pa_pos - p->rt_cand_pos;
+					if (delta >= AIUS_PIPELINE_RETYPE_MIN_SPACING_WORDS &&
+					    delta <= AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS &&
+					    form == (int)p->rt_cand_form)
+						return retype_to_dts(p, p->rt_prev_word, word,
+						                     w + i + 1, n - i - 1);
+					if (delta > AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS ||
+					    form != (int)p->rt_cand_form) {
+						p->rt_cand_pos = pa_pos;
+						p->rt_cand_form = (uint8_t)form;
+					}
+					/* Sub-MIN same-form pairs keep the OLDER candidate:
+					 * pause/null-burst idles repeat pairs at sub-MIN
+					 * spacing, and only the accumulated distance from the
+					 * older pair lets such a stream ever re-type. */
+				} else {
+					p->rt_cand_valid = 1;
+					p->rt_cand_pos = pa_pos;
+					p->rt_cand_form = (uint8_t)form;
+				}
+			}
+		}
+		p->rt_prev_word = word;
+		p->rt_have_prev = 1;
+		p->rt_pos++;
+
+		int32_t sample = pcm_wire_to_sample(word);
 		if (!p->pcm_have_half) {
 			p->pcm_pending_l = sample;
 			p->pcm_have_half = 1;
@@ -141,6 +243,13 @@ static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 
 static AiusStatus dts_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 {
+	/* Starvation accounting (defect 28): presume the push sterile, then any
+	 * burst outcome below -- completed OR rejected, either is framing
+	 * evidence -- zeroes the counter. Granularity is one push; words after
+	 * the last outcome inside the same push go uncounted, a bounded
+	 * undercount the threshold's 4x margin absorbs. */
+	p->dts_starve_words += (uint32_t)n;
+
 	size_t pos = 0;
 	while (pos < n) {
 		size_t consumed = 0;
@@ -151,6 +260,8 @@ static AiusStatus dts_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 			break;
 		if (st == AIUS_INVALID_ARG)
 			return AIUS_INVALID_ARG;
+
+		p->dts_starve_words = 0;
 
 		if (st == AIUS_OK) {
 			/* A supported (DTS Core) burst completed: decode its access unit. */
@@ -199,6 +310,28 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 	if (count == 0)
 		return AIUS_OK;
 
+	/* Push-boundary re-judgements (defect 28). Starvation: a DTS class that
+	 * consumed the starve budget with no parser burst outcome returns to
+	 * UNKNOWN, and this push's words re-classify through the normal staging
+	 * path below. Candidate expiry: a re-type candidate older than the MAX
+	 * spacing can never validate and is dropped (which also removes the
+	 * uint32 position-wrap aliasing of an hours-stale candidate). */
+	if (p->klass == AIUS_PIPELINE_DTS &&
+	    p->dts_starve_words > AIUS_PIPELINE_DTS_STARVE_WORDS) {
+		aius_iec61937_parser_reset(p->parser);
+		p->klass = AIUS_PIPELINE_UNKNOWN;
+		p->cls_n = 0;
+		p->dts_starve_words = 0;
+		p->reclassify_count++;
+	}
+	if (p->klass == AIUS_PIPELINE_PCM && p->rt_cand_valid &&
+	    p->rt_pos - p->rt_cand_pos >
+	        AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS + 1u)
+		p->rt_cand_valid = 0;
+	/* ^ +1: with the candidate's Pa as the LAST word of a push, its age at
+	 * the next boundary is delta+1 -- a bare > MAX would expire a candidate
+	 * whose validating Pb (delta exactly MAX) is still legal. */
+
 	size_t off = 0;
 
 	/* Stage words until the stream is typed, then flush the staged run. */
@@ -212,6 +345,8 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 		off += take;
 
 		p->klass = aius_pipeline_classify(p->clsbuf, p->cls_n, p->window);
+		if (p->klass == AIUS_PIPELINE_DTS)
+			p->dts_starve_words = 0; /* every DTS entry starts unstarved */
 		if (p->klass != AIUS_PIPELINE_UNKNOWN) {
 			AiusStatus st = route(p, p->clsbuf, p->cls_n);
 			p->cls_n = 0;
@@ -264,6 +399,12 @@ void aius_pipeline_reset(AiusPipeline *p)
 	p->pcm_have_half = 0;
 	p->pcm_pending_l = 0;
 	p->last_status = AIUS_OK;
+	/* Detector/starvation STATE clears; the two lifetime counters do not --
+	 * they are the live proof that a re-type (not a reboot) happened. */
+	p->rt_have_prev = 0;
+	p->rt_cand_valid = 0;
+	p->rt_pos = 0;
+	p->dts_starve_words = 0;
 }
 
 AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,
@@ -277,6 +418,17 @@ AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,
 AiusPipelineClass aius_pipeline_classification(const AiusPipeline *p)
 {
 	return p ? p->klass : AIUS_PIPELINE_UNKNOWN;
+}
+
+AiusStatus aius_pipeline_get_reclass_counters(const AiusPipeline *p,
+                                              uint32_t *retype,
+                                              uint32_t *reclassify)
+{
+	if (!p || !retype || !reclassify)
+		return AIUS_INVALID_ARG;
+	*retype = p->retype_count;
+	*reclassify = p->reclassify_count;
+	return AIUS_OK;
 }
 
 AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out)

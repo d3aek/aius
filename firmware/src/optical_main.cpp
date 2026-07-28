@@ -969,6 +969,15 @@ public:
 		interrupts();
 		return got;
 	}
+	AiusStatus reclass_counters(uint32_t *retype, uint32_t *reclassify) const
+	{
+		noInterrupts();
+		const AiusStatus got = g_pipeline != nullptr
+			? aius_pipeline_get_reclass_counters(g_pipeline, retype, reclassify)
+			: AIUS_INVALID_ARG;
+		interrupts();
+		return got;
+	}
 	void clear_counters(void)
 	{
 		noInterrupts();
@@ -2049,6 +2058,12 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	const AiusPipelineClass klass = g_audio_processor.classification();
 	const AiusStatus got = g_audio_processor.pipeline_metrics(&metrics);
 	(void)g_audio_processor.parser_diag(&iec);
+	/* Defect 28: lifetime re-classification counters. On a live board a
+	 * non-zero retype_count is what distinguishes a mid-stream re-type from
+	 * a reboot that happened to classify DTS. */
+	uint32_t retype = 0;
+	uint32_t reclassify = 0;
+	(void)g_audio_processor.reclass_counters(&retype, &reclassify);
 
 	return http_json_append(output, capacity, length,
 	                        ",\"pipeline_diag\":{\"class\":%u,"
@@ -2063,7 +2078,9 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        "\"rejects_unsupported\":%lu,"
 	                        "\"resyncs\":%lu,"
 	                        "\"last_reject_pc\":%u,"
-	                        "\"last_reject_pd\":%u}",
+	                        "\"last_reject_pd\":%u,"
+	                        "\"retype_count\":%lu,"
+	                        "\"reclassify_count\":%lu}",
 	                        (unsigned)klass,
 	                        got == AIUS_OK ? 1u : 0u,
 	                        (int)metrics.last_status,
@@ -2077,7 +2094,9 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        (unsigned long)iec.rejects_unsupported,
 	                        (unsigned long)iec.resyncs,
 	                        (unsigned)iec.last_reject_pc,
-	                        (unsigned)iec.last_reject_pd);
+	                        (unsigned)iec.last_reject_pd,
+	                        (unsigned long)retype,
+	                        (unsigned long)reclassify);
 }
 
 static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
@@ -4479,9 +4498,32 @@ static FLASHMEM void replay_clock_service(void)
  * displacement have already landed. In recovery-safe the scheduler never
  * reaches this checkpoint, so the gate stays frozen dark from setup(), which
  * also mutes live passthrough there -- intended, and recorded in the plan. */
+/* Defect 28 (C3): a debounced carrier-lock rising edge re-classifies the
+ * pipeline through the same block-boundary reset replay start uses, so every
+ * NEW carrier types its own stream and neither latch hazard survives a source
+ * swap. Debounced on the unlocked-run length: a 1-2 epoch PLL micro-flap
+ * mid-programme keeps the latched class (the parser's per-burst re-lock is
+ * the right response there); only a drop of AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS
+ * or more (~27 ms at ~115 epoch/s) arms the reset on relock. Born saturated:
+ * the box HAS been unlocked since power-on, so the first-ever lock edge
+ * behaves like any post-drop relock -- pre-lock garbage words may already
+ * have typed the fresh pipeline. Epoch-thread writer beside the replay-start
+ * writer (same thread, no race); the pre-existing benign ISR set/clear race
+ * self-heals in-pipeline (re-type or starvation re-classify). */
+static constexpr uint8_t AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS = 3;
+static uint8_t g_carrier_unlocked_epochs = AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS;
+
 static FLASHMEM void tx_gate_service(void)
 {
 	const bool carrier = AudioInputSPDIF3::pllLocked();
+	if (!carrier) {
+		if (g_carrier_unlocked_epochs < UINT8_MAX)
+			g_carrier_unlocked_epochs++;
+	} else {
+		if (g_carrier_unlocked_epochs >= AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS)
+			g_pipeline_reset_pending = true;
+		g_carrier_unlocked_epochs = 0;
+	}
 	const AiusReplaySource source = g_replay_service.source;
 	const bool open = aius_tx_gate_permitted(carrier, source);
 	if (open != g_tx_gate_open)

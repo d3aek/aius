@@ -473,6 +473,428 @@ static void test_no_heap_steady_state(const char *dir)
 	free(w);
 }
 
+/* ---- defect-28: mid-stream re-classification ------------------------------
+ *
+ * The live-lottery repro (a carrier locked at random burst phase) and the
+ * mid-stream format-switch family. Streams are built by repeating committed
+ * corpus vectors: dts_be16/dts51_be16 are 946 words, Pa at word 0, zero tail,
+ * so N-fold repeats put preamble pairs at exact 946-word spacing -- inside
+ * the plausible re-type range. All long streams push in 256-word chunks (the
+ * target's push size): starvation is evaluated at push boundaries, so
+ * whole-buffer pushes would legitimately defer it past the stream's end. */
+
+static const uint16_t RAMP_PA = 0xF872u;
+static const uint16_t RAMP_PB = 0x4E1Fu;
+
+static uint16_t *repeat_wire(const uint16_t *v, size_t n, size_t reps,
+                             size_t *out_n)
+{
+	uint16_t *s = malloc(n * reps * sizeof(uint16_t));
+	for (size_t r = 0; r < reps; r++)
+		memcpy(s + r * n, v, n * sizeof(uint16_t));
+	*out_n = n * reps;
+	return s;
+}
+
+/* Linear ramp that cannot form a preamble pair by construction: consecutive
+ * words always differ by 131, and neither wire form's Pb - Pa equals 131. */
+static uint16_t *make_ramp(size_t n)
+{
+	uint16_t *w = malloc(n * sizeof(uint16_t));
+	for (size_t i = 0; i < n; i++)
+		w[i] = (uint16_t)((i * 131 + 7) & 0xFFFF);
+	return w;
+}
+
+static void push_chunked(AiusPipeline *p, const uint16_t *w, size_t n,
+                         size_t chunk, const char *label)
+{
+	for (size_t off = 0; off < n; off += chunk) {
+		size_t take = n - off;
+		if (take > chunk)
+			take = chunk;
+		AiusStatus st = aius_pipeline_push(p, w + off, take);
+		CHECK(st == AIUS_OK, "%s: push status %d at word %zu", label, st, off);
+	}
+}
+
+/* Full create/push/finish/counter-read runner for the re-classification
+ * tests. `retype`/`reclassify` receive the lifetime counters read BEFORE
+ * destroy. Returns the final classification. */
+static AiusPipelineClass run_reclass(const uint16_t *w, size_t n, size_t chunk,
+                                     struct capture *cap, uint32_t *retype,
+                                     uint32_t *reclassify, const char *label)
+{
+	AiusPcmSink sink = { .ctx = cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	if (aius_pipeline_create(&p, NULL, &sink) != AIUS_OK) {
+		CHECK(0, "%s: pipeline create failed", label);
+		return AIUS_PIPELINE_UNKNOWN;
+	}
+	push_chunked(p, w, n, chunk, label);
+	CHECK(aius_pipeline_finish(p) == AIUS_OK, "%s: finish status", label);
+	CHECK(aius_pipeline_get_reclass_counters(p, retype, reclassify) == AIUS_OK,
+	      "%s: counter read", label);
+	AiusPipelineClass klass = aius_pipeline_classification(p);
+	aius_pipeline_destroy(p);
+	return klass;
+}
+
+/* T1: the live lottery. Entry at word offset 4 puts the first visible pair at
+ * pushed position 942 -- outside the 512-word classify window -- so today the
+ * stream types PCM and stays there. The fix must re-type on the second pair
+ * (spacing 946) and decode every burst from there on. */
+static void test_retype_mid_burst_entry(const char *dir)
+{
+	size_t n = 0, sn = 0;
+	uint16_t *v = load_wire(dir, "dts_be16", &n);
+	if (!v) {
+		CHECK(0, "retype-entry: corpus load failed");
+		return;
+	}
+	CHECK(n == 946, "retype-entry: dts_be16 is %zu words, expected 946", n);
+	uint16_t *s = repeat_wire(v, n, 8, &sn);
+
+	/* 256-word chunks (the target shape) and 1-word chunks (worst-case
+	 * boundary carry for the pair detector). */
+	const size_t chunks[] = { 256, 1 };
+	for (size_t ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ci++) {
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		uint32_t rt = 0, rc = 0;
+		AiusPipelineClass klass = run_reclass(s + 4, sn - 4, chunks[ci], &cap,
+		                                      &rt, &rc, "retype-entry");
+		CHECK(klass == AIUS_PIPELINE_DTS,
+		      "retype-entry chunk=%zu: class %d != DTS (the defect-28 lottery)",
+		      chunks[ci], klass);
+		CHECK(rt == 1, "retype-entry chunk=%zu: retype_count %u != 1",
+		      chunks[ci], rt);
+		CHECK(rc == 0, "retype-entry chunk=%zu: reclassify_count %u != 0",
+		      chunks[ci], rc);
+		/* 1 PCM block (words 0..1888 = 944 frames -> one 512-frame emit, the
+		 * staged tail dropped at re-type) + bursts 3..8 decoded = 7 blocks. */
+		CHECK(cap.n == 7, "retype-entry chunk=%zu: %d blocks != 7", chunks[ci],
+		      cap.n);
+		capture_free(&cap);
+	}
+	printf("  retype-entry   mid-burst entry re-types to DTS (2 chunkings)\n");
+	free(s);
+	free(v);
+}
+
+/* T2: a genuine mid-stream PCM->DTS switch: 2048 ramp words (2 full PCM
+ * blocks), then 4 x dts51_be16. The burst-1 words play as PCM (unavoidable:
+ * they ARE the detector's evidence), the staged sub-block tail is dropped at
+ * re-type, bursts 2..4 decode as 6-channel blocks. */
+static void test_retype_mid_stream_switch(const char *dir)
+{
+	size_t n = 0, bn = 0;
+	uint16_t *v = load_wire(dir, "dts51_be16", &n);
+	if (!v) {
+		CHECK(0, "retype-switch: corpus load failed");
+		return;
+	}
+	uint16_t *bursts = repeat_wire(v, n, 4, &bn);
+	enum { RAMP_WORDS = 2048 };
+	size_t sn = RAMP_WORDS + bn;
+	uint16_t *s = malloc(sn * sizeof(uint16_t));
+	uint16_t *ramp = make_ramp(RAMP_WORDS);
+	memcpy(s, ramp, RAMP_WORDS * sizeof(uint16_t));
+	memcpy(s + RAMP_WORDS, bursts, bn * sizeof(uint16_t));
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	uint32_t rt = 0, rc = 0;
+	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &rt, &rc,
+	                                      "retype-switch");
+	CHECK(klass == AIUS_PIPELINE_DTS, "retype-switch: class %d != DTS", klass);
+	CHECK(rt == 1, "retype-switch: retype_count %u != 1", rt);
+	int pcm_blocks = 0, dts_blocks = 0;
+	for (int b = 0; b < cap.n; b++) {
+		if (cap.blocks[b].channels == 6)
+			dts_blocks++;
+		else if (cap.blocks[b].channels == 2)
+			pcm_blocks++;
+	}
+	CHECK(pcm_blocks == 2, "retype-switch: %d PCM blocks != 2", pcm_blocks);
+	CHECK(dts_blocks == 3, "retype-switch: %d decoded 5.1 blocks != 3",
+	      dts_blocks);
+	printf("  retype-switch  PCM ramp -> DTS re-type, 3 x 5.1 decoded\n");
+	capture_free(&cap);
+	free(ramp);
+	free(bursts);
+	free(s);
+	free(v);
+}
+
+/* T3: false-positive immunity. All embedded pairs sit AFTER the classify
+ * window so the stream types PCM first and the in-flight detector (not the
+ * classifier) is what is exercised. */
+static void test_retype_false_positive_immunity(void)
+{
+	/* (a) one pair only: stays PCM, pass-through byte-exact incl. the pair. */
+	{
+		enum { WORDS = 4000 };
+		uint16_t *w = make_ramp(WORDS);
+		w[1000] = RAMP_PA;
+		w[1001] = RAMP_PB;
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		uint32_t rt = 0, rc = 0;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		                                      "fp-one-pair");
+		CHECK(klass == AIUS_PIPELINE_PCM, "fp-one-pair: class %d != PCM", klass);
+		CHECK(rt == 0, "fp-one-pair: retype_count %u != 0", rt);
+		uint32_t got = 0;
+		int ok = 1;
+		for (int b = 0; b < cap.n && ok; b++) {
+			struct block_copy *bc = &cap.blocks[b];
+			for (uint32_t f = 0; f < bc->frames && ok; f++) {
+				if (bc->planes[0][f] != pcm_expected_sample(w[2 * (got + f)]) ||
+				    bc->planes[1][f] != pcm_expected_sample(w[2 * (got + f) + 1]))
+					ok = 0;
+			}
+			got += bc->frames;
+		}
+		CHECK(ok && got == WORDS / 2,
+		      "fp-one-pair: pass-through not byte-exact (%u frames)", got);
+		capture_free(&cap);
+		free(w);
+	}
+	/* (b) two pairs 100 words apart (sub-MIN, same form): candidate persists,
+	 * no re-type. */
+	{
+		enum { WORDS = 4000 };
+		uint16_t *w = make_ramp(WORDS);
+		w[1000] = RAMP_PA;
+		w[1001] = RAMP_PB;
+		w[1100] = RAMP_PA;
+		w[1101] = RAMP_PB;
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		uint32_t rt = 0, rc = 0;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		                                      "fp-close-pairs");
+		CHECK(klass == AIUS_PIPELINE_PCM && rt == 0,
+		      "fp-close-pairs: class %d retype %u (want PCM, 0)", klass, rt);
+		capture_free(&cap);
+		free(w);
+	}
+	/* (c) two pairs 16000 words apart (over MAX): replacement, no re-type. */
+	{
+		enum { WORDS = 17000 };
+		uint16_t *w = make_ramp(WORDS);
+		w[600] = RAMP_PA;
+		w[601] = RAMP_PB;
+		w[16600] = RAMP_PA;
+		w[16601] = RAMP_PB;
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		uint32_t rt = 0, rc = 0;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		                                      "fp-far-pairs");
+		CHECK(klass == AIUS_PIPELINE_PCM && rt == 0,
+		      "fp-far-pairs: class %d retype %u (want PCM, 0)", klass, rt);
+		capture_free(&cap);
+		free(w);
+	}
+	/* (d) form mismatch never validates, and DOES replace the candidate: a
+	 * BE pair, then an in-range LE pair (mismatch -> no re-type, candidate
+	 * replaced), then a second LE pair in range OF THE REPLACEMENT. Re-type
+	 * fires iff the replacement installed: had the BE candidate survived,
+	 * the third pair would mismatch it too and nothing would fire. */
+	{
+		enum { WORDS = 4000 };
+		uint16_t *w = make_ramp(WORDS);
+		w[1000] = RAMP_PA;
+		w[1001] = RAMP_PB;
+		w[2000] = 0x72F8u; /* LE Pa */
+		w[2001] = 0x1F4Eu; /* LE Pb */
+		w[2600] = 0x72F8u;
+		w[2601] = 0x1F4Eu;
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		uint32_t rt = 0, rc = 0;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		                                      "fp-form-mismatch");
+		CHECK(klass == AIUS_PIPELINE_DTS && rt == 1,
+		      "fp-form-mismatch: class %d retype %u (want DTS, 1 -- mismatch "
+		      "must replace, same-form must validate)", klass, rt);
+		capture_free(&cap);
+		free(w);
+	}
+	printf("  fp-immunity    one pair / sub-MIN / over-MAX / form-mismatch\n");
+}
+
+/* T4: the validated pair split exactly across a push boundary (Pa last word
+ * of one push, Pb first of the next): the prev-word carry must bridge it. */
+static void test_retype_boundary_pair(const char *dir)
+{
+	size_t n = 0, sn = 0;
+	uint16_t *v = load_wire(dir, "dts_be16", &n);
+	if (!v) {
+		CHECK(0, "boundary-pair: corpus load failed");
+		return;
+	}
+	uint16_t *s = repeat_wire(v, n, 8, &sn);
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "boundary-pair: create");
+	/* Entry at offset 4: second pair at pushed 1888/1889. Split there. */
+	CHECK(aius_pipeline_push(p, s + 4, 1889) == AIUS_OK, "boundary-pair: push A");
+	CHECK(aius_pipeline_push(p, s + 4 + 1889, sn - 4 - 1889) == AIUS_OK,
+	      "boundary-pair: push B");
+	CHECK(aius_pipeline_finish(p) == AIUS_OK, "boundary-pair: finish");
+	uint32_t rt = 0, rc = 0;
+	CHECK(aius_pipeline_get_reclass_counters(p, &rt, &rc) == AIUS_OK,
+	      "boundary-pair: counters");
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_DTS && rt == 1,
+	      "boundary-pair: class %d retype %u (want DTS, 1)",
+	      aius_pipeline_classification(p), rt);
+	aius_pipeline_destroy(p);
+	printf("  boundary-pair  Pa|Pb split across pushes still re-types\n");
+	capture_free(&cap);
+	free(s);
+	free(v);
+}
+
+/* T5: DTS -> starve -> PCM -> re-type -> DTS, in one stream. The resumed-DTS
+ * leg is the starvation-counter-residue regression (gate finding F1): stale
+ * residue across the class transition re-fires starvation instantly and the
+ * final class never holds DTS. */
+static void test_starve_and_recover(const char *dir)
+{
+	size_t n = 0, head_n = 0, tail_n = 0;
+	uint16_t *v = load_wire(dir, "dts_be16", &n);
+	if (!v) {
+		CHECK(0, "starve: corpus load failed");
+		return;
+	}
+	uint16_t *head = repeat_wire(v, n, 2, &head_n);
+	uint16_t *tail = repeat_wire(v, n, 4, &tail_n);
+	enum { RAMP_WORDS = 20000 };
+	uint16_t *ramp = make_ramp(RAMP_WORDS);
+	size_t sn = head_n + RAMP_WORDS + tail_n;
+	uint16_t *s = malloc(sn * sizeof(uint16_t));
+	memcpy(s, head, head_n * sizeof(uint16_t));
+	memcpy(s + head_n, ramp, RAMP_WORDS * sizeof(uint16_t));
+	memcpy(s + head_n + RAMP_WORDS, tail, tail_n * sizeof(uint16_t));
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	uint32_t rt = 0, rc = 0;
+	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &rt, &rc, "starve");
+	CHECK(klass == AIUS_PIPELINE_DTS, "starve: final class %d != DTS", klass);
+	CHECK(rc == 1, "starve: reclassify_count %u != 1", rc);
+	CHECK(rt == 1, "starve: retype_count %u != 1", rt);
+	/* 2 decoded (head) + 4 PCM (ramp tail + burst-1-as-PCM) + 3 decoded
+	 * (resumed tail bursts 2..4) = 9. */
+	CHECK(cap.n == 9, "starve: %d blocks != 9", cap.n);
+	printf("  starve-recover DTS starves to PCM, re-types back, 9 blocks\n");
+	capture_free(&cap);
+	free(s);
+	free(ramp);
+	free(head);
+	free(tail);
+	free(v);
+}
+
+/* T6: framed-but-unsupported never starves. A stream of AC-3 bursts completes
+ * an UNSUPPORTED burst every 28 words -- each is framing evidence, so the
+ * class must hold DTS in silence rather than decay into PCM noise. Fails if
+ * the starvation counter resets on AIUS_OK only. */
+static void test_unsupported_never_starves(const char *dir)
+{
+	size_t n = 0, sn = 0;
+	uint16_t *v = load_wire(dir, "unsupported_ac3", &n);
+	if (!v) {
+		CHECK(0, "unsupported: corpus load failed");
+		return;
+	}
+	CHECK(n == 28, "unsupported: vector is %zu words, expected 28", n);
+	uint16_t *s = repeat_wire(v, n, 700, &sn); /* 19600 > STARVE_WORDS */
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	uint32_t rt = 0, rc = 0;
+	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &rt, &rc,
+	                                      "unsupported");
+	CHECK(klass == AIUS_PIPELINE_DTS, "unsupported: class %d != DTS", klass);
+	CHECK(rc == 0, "unsupported: reclassify_count %u != 0 (starved!)", rc);
+	CHECK(cap.n == 0, "unsupported: %d blocks != 0", cap.n);
+	printf("  unsupported    19600 words of AC-3 bursts hold DTS, no starve\n");
+	capture_free(&cap);
+	free(s);
+	free(v);
+}
+
+/* T7: reset semantics. (a) the lifetime counters survive aius_pipeline_reset;
+ * (b) the detector's candidate does NOT -- a pre-reset pair may not validate
+ * a post-reset pair. */
+static void test_reset_semantics(const char *dir)
+{
+	size_t n = 0, sn = 0;
+	uint16_t *v = load_wire(dir, "dts_be16", &n);
+	if (!v) {
+		CHECK(0, "reset-sem: corpus load failed");
+		return;
+	}
+	uint16_t *s = repeat_wire(v, n, 8, &sn);
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK, "reset-sem: create");
+
+	/* (a) drive a re-type, then reset: counters must survive. */
+	push_chunked(p, s + 4, sn - 4, 256, "reset-sem");
+	uint32_t rt = 0, rc = 0;
+	CHECK(aius_pipeline_get_reclass_counters(p, &rt, &rc) == AIUS_OK,
+	      "reset-sem: counters");
+	CHECK(rt == 1, "reset-sem: retype_count %u != 1 before reset", rt);
+	aius_pipeline_reset(p);
+	CHECK(aius_pipeline_get_reclass_counters(p, &rt, &rc) == AIUS_OK,
+	      "reset-sem: counters after reset");
+	CHECK(rt == 1 && rc == 0,
+	      "reset-sem: counters (%u,%u) did not survive reset (want 1,0)", rt, rc);
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN,
+	      "reset-sem: class not UNKNOWN after reset");
+
+	/* (b) pair before reset + in-range pair after reset must NOT re-type:
+	 * ramp types PCM, pair at 550 arms a candidate, reset clears it, second
+	 * run's pair at 1550 (delta 1000 from the first if state leaked) becomes
+	 * a fresh candidate instead of validating. */
+	uint16_t *r1 = make_ramp(700);
+	r1[550] = RAMP_PA;
+	r1[551] = RAMP_PB;
+	push_chunked(p, r1, 700, 256, "reset-sem-b1");
+	aius_pipeline_reset(p);
+	uint16_t *r2 = make_ramp(2000);
+	r2[1550] = RAMP_PA;
+	r2[1551] = RAMP_PB;
+	push_chunked(p, r2, 2000, 256, "reset-sem-b2");
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_PCM,
+	      "reset-sem: class %d != PCM after leaked-candidate probe",
+	      aius_pipeline_classification(p));
+	CHECK(aius_pipeline_get_reclass_counters(p, &rt, &rc) == AIUS_OK,
+	      "reset-sem: final counters");
+	CHECK(rt == 1, "reset-sem: retype_count %u != 1 (pre-reset pair leaked!)",
+	      rt);
+
+	aius_pipeline_destroy(p);
+	printf("  reset-sem      counters survive reset; detector state does not\n");
+	capture_free(&cap);
+	free(r1);
+	free(r2);
+	free(s);
+	free(v);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -488,6 +910,13 @@ int main(int argc, char **argv)
 	test_pcm_sample_scale();
 	test_classifier(dir);
 	test_no_heap_steady_state(dir);
+	test_retype_mid_burst_entry(dir);
+	test_retype_mid_stream_switch(dir);
+	test_retype_false_positive_immunity();
+	test_retype_boundary_pair(dir);
+	test_starve_and_recover(dir);
+	test_unsupported_never_starves(dir);
+	test_reset_semantics(dir);
 
 	if (g_fail) {
 		printf("RESULT: %d check(s) FAILED\n", g_fail);
