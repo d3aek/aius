@@ -140,6 +140,38 @@ The firmware side is already proven against replay; this is the first time
    freezes and the carrier-loss counters increment once per event; replug
    and confirm recovery.
 
+## Troubleshooting with only a DC multimeter
+
+Worked out during the 2026-07-27/28 bench bring-up; every expected value below
+was derived from the datasheets plus the firmware's gate behaviour
+(`tx_gate_actuate`: gate open muxes pad 14 to SPDIF_OUT, gate closed drives it
+low as GPIO — so a closed gate reads a firm 0.00 V, never floating).
+
+**A steady red glow at the TX only proves the LED has power — not that data
+reaches it.** The OTJ-5's V_IH is 2.0 V: a drive whose high level sags below
+that leaves the LED in one state, emitting *constant* light. A receiver
+staring at constant light holds a *constant* Vout (≈2.5 V is a normal static
+high for its output stage; spec V_OH is only ≥ 2.4 V) and nothing ever locks.
+Light without lock therefore does not clear the TX side.
+
+The S/PDIF peripheral streams biphase continuously whenever the gate is open
+(silence still modulates), so a healthy drive reads mid-rail at all times:
+
+| Meter point | Healthy | Meaning of a deviation |
+|---|---|---|
+| Any Vcc pin to its GND pin | 3.3 V | Supply joint, or a bypass cap wired in series (see §Wiring) |
+| OTJ-5 pin 3 (Vin) to pin 1, gate open | ~1.4–1.8 V unsteady | Flat 0/3.3 V: no data arriving; ~0.5 V: weak or asymmetric drive |
+| Teensy pad 14 direct, gate open | ~1.4–1.8 V | Same low value as at the jack: pad driver suspect; higher than jack: resistive joint between |
+| Teensy pad 14 direct, gate closed | 0.00 V firm | Anything else: mux/actuation not switching |
+| ORJ-5 pin 1 (Vout) to pin 2, fibre out | steady high (~2.5–3.3 V) | — |
+| ORJ-5 pin 1 (Vout) to pin 2, live carrier in | reading CHANGES vs fibre-out | Same both ways: no modulation is being decoded (upstream, seating, or module) |
+
+Cheap DC meters misread 6 MHz streams (the true average is ~1.65 V; readings
+skew), so judge by *contrast* between states — fibre in vs out, gate open vs
+closed — rather than absolute numbers. The firmware can toggle the gate on
+demand (start/stop a replay over HTTP) while a meter sits on the pad: the
+0.00 V closed state is a built-in reference edge.
+
 Findings from this test belong in
 [`signal-path.md`](../reference/signal-path.md) (measured-on-glass notes) and
 the prototype plan's test-matrix records.
