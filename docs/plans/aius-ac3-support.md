@@ -53,7 +53,10 @@ sequenced after.
 5. **Corpus**: ffmpeg-encoded AC-3 vectors through the existing
    iec-corpus/vector tooling (tone-identity and impulse programmes
    mirroring the DTS set). Committed ahead of the phase so it starts at
-   the contract.
+   the contract. **Done 2026-07-28: `tools/ac3_vectors/` (95b20c140),
+   every recipe explicitly mapped, authoring Goertzel-proven; phase 1's
+   remaining scope is the `aius_a52` wrapper + native suite. IEC
+   wrapping joins phase 3 with the dispatch work.**
 
 ## The two named risks (the reason this is multi-phase)
 
