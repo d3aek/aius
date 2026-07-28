@@ -38,11 +38,16 @@ Handle by the body, touch ground first, wire everything with the power off.
 
 Pin functions from the RS PRO datasheets (page 4 of each), which match the
 schematic symbols in `electronics/connectivity/optical-spdif.json` exactly.
-The datasheets number the three signal pins 3-2-1 left-to-right on the
-rear-view drawing (the view with the Ø2.50 peg hole top-right); they carry no
-front-view numbering, so **identify pin 1 from that drawing with the jack in
-hand before powering** — miswiring Vcc onto the receiver's Vout is the one
-mistake this table exists to prevent.
+**The datasheets number the pins on the FRONT view — the drawing showing the
+square optical aperture and shutter (only visible from the front), Ø2.50 peg
+hole top-right: left-to-right reads 3, 2, 1. Working from the rear/solder
+side, left-to-right therefore reads 1, 2, 3.** Each sheet's page-4 layout is
+rear view, side profile, front view, in that order. (An earlier revision of
+this paragraph claimed the numbering sat on the rear view; that mirror-image
+error survived one bench build and caused a rework into genuinely inverted
+pins on 2026-07-28 — the operator's front-view reading was correct.)
+**Identify pin 1 with the jack in hand before powering** — miswiring Vcc onto
+the receiver's Vout is the one mistake this table exists to prevent.
 
 | Pin | ORJ-5 receiver (805-1671) | OTJ-5 transmitter (805-1680) |
 |---|---|---|
