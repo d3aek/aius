@@ -159,6 +159,72 @@ cannot use anyway, but because defect 34 means the box must eventually do
 two honest answers. The other is "stay dark", which is far cheaper and is
 the recommended path unless a real DD+ source appears on this bench.
 
+## Decoder alternatives — the comparison phase 1 should have carried
+
+Investigated 2026-07-28, after phase 1 shipped, because liba52 fit less well
+than expected: two memory-safety defects in the first two fuzz runs, an
+unbounded reader costing a 32 KiB pad, no CRC validation, four compile
+carve-outs. The choice was made without a comparison; this is that
+comparison, recorded so it is not re-opened on discomfort.
+
+| Candidate | License | Maintained / fuzzed | Reader bounded | E-AC-3 | RAM working set | Effort | Per-frame alloc |
+|---|---|---|---|---|---|---|---|
+| liba52 0.7.4 (shipped) | GPL-2 | dead since 2002 | No | No | 26,976 B post-2a | done | 0 (measured) |
+| liba52 0.8.0 | GPL-2 | released 2022, Adélie | No (byte-identical reader) | No | same | drop-in, API-compatible | 0 |
+| Rockbox liba52 | GPL-2 | 2005 CVS snapshot | No | No | lower (const tables) but fixed-point | 11 files | 0 |
+| FFmpeg `ac3dec` subset | LGPL-2.1 | HEAD; OSS-Fuzz per-decoder | **Yes** (+64 B pad) | **Yes** | **≥50 KB trimmed, 235 KB untrimmed** | 92 files / 34,655 lines | **15 malloc/free per frame** |
+| Bespoke, written to our constraints | ours | n/a | Yes by construction | No (out of reach) | **~20 KB** | ~1,500–2,000 lines, 8–12 sessions | 0 |
+
+**FFmpeg is the only technically superior library, and it does not fit.**
+`sizeof(AC3DecodeContext)` is **235,216 B** against **30,544 B** of actual
+arena headroom (131,072 − dcadec 62,560 − staging 32,768 − pipeline 5,200).
+The trim ladder bottoms out at ~50 KB for AC-3 alone — still 1.7× over —
+and ~94 KB with E-AC-3. Two further blockers make it worse than the
+arithmetic suggests: it performs **15 malloc/free pairs per frame**
+(~14 KB/s against a bump allocator that never frees, breaking the
+`alloc_count == 0` contract our suites assert), and `av_tx` reserves
+~262 KB of BSS in one object file. Driving it without `AVCodecContext` is
+feasible — the decoder touches only 9 context fields — but that means
+forking the calling convention, which forfeits the "verbatim vendor,
+accommodate from outside" discipline that made dcadec cheap and turns every
+upstream resync into a manual merge. The one real gain we would get is
+bit-exact goldens, since our 1906-LSB tolerance exists only because FFmpeg
+is the reference.
+
+**Bespoke is more viable than it sounds, and stays the contingency.**
+~20 KB working set beats liba52's 27 KB; a bounded reader and CRC come free;
+per-block emission is ours to define; tables live `const` in flash. AC-3 is
+a frozen format (unchanged since 1995), so ownership carries no maintenance
+treadmill, and the corpus, differential harness, Goertzel identity check and
+fuzz oracle already exist to drive development. The cost is ~10× the
+vendoring effort, the bit-allocation path must be bit-exact or the stream
+desynchronises, and **E-AC-3 would remain out of reach** — so it does not
+answer defect 34 either.
+
+### Decision: stay with liba52, and take the two cheap wins
+
+1. **Rebase the vendor tree to 0.8.0.** It fixes the `samples + 1027` typo
+   we currently dodge by construction (it stops being a latent
+   defect-30-class fault), zeroes `current_word` at init, corrects a
+   `uint8_t` underflow in three places, and resets `clev`/`slev` per frame.
+   It is API-compatible in float mode. **Cost: the dither level changes
+   0.707 → 0.75, so the differential must be re-baselined.** Both of our
+   edits remain necessary — 0.8.0's reader is byte-identical and its
+   `baptab` sites are still unclamped, which means our fuzz findings are
+   live against maintained upstream rather than against a 2002 fossil.
+2. **Add CRC-16/ANSI validation to the adapter (~30 lines).** AC-3 frames
+   carry CRC1/CRC2 and liba52 ignores both; validating the whole frame
+   before decode rejects most corruption before liba52 sees a byte. This
+   closes the gap that most justified looking elsewhere, without changing
+   decoders.
+
+Phase 2a's bounded-reader edit stays regardless: it is the right call, and
+FFmpeg would have forced an equivalent structural edit anyway.
+
+**Revisit if** a third memory-safety defect appears (the existing stop
+condition), or if the arena ever gains ~25 KB of headroom, at which point
+FFmpeg's E-AC-3 coverage would change the defect-34 calculus.
+
 ## Phase 1 contract (2026-07-28) — vendor + wrapper + native suite
 
 Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
@@ -167,7 +233,8 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
 
 ### Vendor: liba52 from a52dec 0.7.4, verbatim
 
-- **Source**: upstream a52dec 0.7.4 (liba52), the release every distro ships.
+- **Source**: upstream a52dec 0.7.4 (liba52), the release most distros ship
+  — **not the newest; 0.8.0 (2022) exists, see §Decoder alternatives**.
   Fetched as Debian's untouched `a52dec_0.7.4.orig.tar.gz` from
   `deb.debian.org/debian/pool/main/a/a52dec/` — the VideoLAN GitLab archive
   endpoint requires auth from this network and `liba52.videolan.org` no
@@ -322,7 +389,7 @@ both registered and `registry`-consistent.
   both decoders inside today's arena. See
   [§Phase 2 contract](#phase-2-contract-2026-07-28--decode-off-the-isr-and-the-footprint-that-makes-it-fit).
 - **The fuzz suite paid for itself twice, on its first two runs**, finding
-  two memory-safety defects in stock liba52 0.7.4 (unfixed upstream and in
+  two memory-safety defects in stock liba52 0.7.4 (unfixed in 0.8.0 and in
   Debian's patch series). Both required vendored edits — neither could be
   accommodated from outside — so this vendor dir carries TWO documented
   modifications where dcadec-core carries none

@@ -11,7 +11,8 @@ library directly (`a52_init` → `a52_syncinfo` → `a52_frame` → 6 × `a52_bl
 
 - Project: a52dec / liba52 — VideoLAN (originally Aaron Holtzman, Michel
   Lespinasse).
-- Version: 0.7.4, the release every distribution ships. Fetched as Debian's
+- Version: 0.7.4, the release most distributions ship. **NOT the newest —
+  see §Version currency.** Fetched as Debian's
   untouched `a52dec_0.7.4.orig.tar.gz` from
   `http://deb.debian.org/debian/pool/main/a/a52dec/` (the VideoLAN GitLab
   archive endpoint requires authentication and `liba52.videolan.org` no
@@ -44,8 +45,10 @@ Total: 12 files including `COPYING` and this notice.
 byte-for-byte upstream.** The dcadec-core vendor dir needs no edits at all,
 and both of these are documented here rather than hidden because neither
 could be accommodated from outside. Both were found by `a52-fuzz` on its
-first two runs, and both are memory-safety defects in stock liba52 0.7.4 —
-the current release, unfixed in Debian's `a52dec_0.7.4-22` patch series.
+first two runs, and both are memory-safety defects in stock liba52 0.7.4,
+unfixed in Debian's `a52dec_0.7.4-22` patch series. **Both are also unfixed
+in the CURRENT upstream release, 0.8.0** — see §Version currency below —
+so these are live findings against maintained upstream, not archaeology.
 Neither changes a conformant decode: the `a52` differential is
 bit-identical before and after (worst 1906 LSB / 69.3 dB either way).
 
@@ -114,4 +117,34 @@ The build accommodates everything else from outside, in the `a52` suites of
    path executes `memcpy (samples + 1027, ...)` where 1024 is meant
    (`downmix.c:586`), shifting SR by 3 samples. The adapter always requests
    the stream's OWN coding (`syncinfo_flags & (A52_CHANNEL_MASK|A52_LFE)`),
-   so no widening/downmix path — including this one — ever runs.
+   so no widening/downmix path — including this one — ever runs. **0.8.0
+   fixes this typo** (§Version currency).
+
+## Version currency — 0.7.4 is NOT the newest release
+
+**Correcting a claim this file and the plan both carried:** 0.7.4 is not
+"the current release, from 2002". Two later releases exist — **0.7.5
+(2004-03-03)** and **0.8.0 (2022-11-05)**, the latter maintained by the
+Adélie Linux project (`git.adelielinux.org/community/a52dec`, unreachable
+from this network, as the VideoLAN endpoint also is). 0.8.0 tarball sha256
+`03c181ce9c3fe0d2f5130de18dab9bd8bc63c354071515aa56983c74a9cffcc9`.
+
+**What 0.8.0 would change if we rebase** (diffed against these files):
+
+- **Fixes the `samples + 1027` typo** we currently dodge by construction —
+  it stops being a latent defect-30-class fault.
+- `bitstream_init` zeroes `current_word`, removing an uninitialised read.
+- `do_bit_alloc = -1` on a `uint8_t` corrected in three places.
+- `state->clev = state->slev = 0` added per frame.
+- **Dither level changes 0.707 → 0.75** (`dither_gen` returns
+  `(3*nstate)>>2`), which moves our differential numbers and forces a
+  re-baseline.
+- Adds a fixed-point mode, unused on an FPU part.
+- **API-compatible in float mode**: `level_t == sample_t == float`, so the
+  adapter's calls are source-compatible.
+
+**Both of our edits remain necessary in 0.8.0.** Its `bit_allocate.c` still
+has bare `(baptab+156)[mask + 4 * exp[i]]` at all five sites, `a52_init`
+still has no `memset`, and `bitstream.h` is byte-identical to 0.7.4 — the
+reader is still unbounded. Rockbox's fork (a 2005 CVS snapshot of 0.7.5)
+inherits the `baptab` defect verbatim as well.
