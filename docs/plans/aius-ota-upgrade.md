@@ -6,7 +6,7 @@ component: aius
 status: draft
 subtype: design
 tags: [aius, firmware, teensy, ota, http, security, recovery]
-updated: 2026-07-26
+updated: 2026-07-28
 toc: true
 ---
 
@@ -365,6 +365,23 @@ keep that job. **And OTA should be disableable, defaulting to disabled**, enable
 by a deliberate act rather than by being reachable. Requiring a physical action to
 arm it is a legitimate and probably correct answer for a device whose recovery
 channel is already physical.
+
+## Design constraints from the owner (2026-07-28)
+
+- **A/B OTA is a COMPILE-TIME option, off by default in the single-image
+  build.** A future fork may want the whole 8 MiB, and the option must not
+  force the split on them. The option gates everything the dual-slot design
+  actually costs: the second linker script and slot-B FCB/IVT headers, the
+  dual-slot flash layout, and the OTA HTTP surface. This composes with the
+  §Security recommendation above (OTA disableable, defaulting to disabled) as
+  two layers: compiled out entirely versus compiled in but unarmed.
+- **The fuse burn does not bind forks either way**, worth stating so the
+  irreversibility is not overweighted: `FLASH_SEC_IMAGE_OFFSET` only tells
+  the ROM where to look IF the secondary image is ever requested. A
+  single-image build spanning the full 8 MiB runs identically on a blown or
+  unblown board — it simply never invokes the selector, and nothing at the
+  secondary offset needs to be valid. The burn constrains a board only when
+  the A/B build asks it to.
 
 ## Prerequisites, in order
 
