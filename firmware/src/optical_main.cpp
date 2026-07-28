@@ -940,6 +940,20 @@ public:
 		interrupts();
 		return got;
 	}
+	/* The confirmation squelch's lifetime dropped-frame count and its LIVE
+	 * gate state -- the pair that makes "by-ear silence at the seam" a reading
+	 * rather than an inference. Same brief mask as its neighbours: the audio
+	 * ISR is the writer of both. */
+	AiusStatus squelch_diag(uint32_t *squelched_frames, int *pcm_confirmed) const
+	{
+		noInterrupts();
+		const AiusStatus got = g_pipeline != nullptr
+			? aius_pipeline_get_squelch_diag(g_pipeline, squelched_frames,
+			                                 pcm_confirmed)
+			: AIUS_INVALID_ARG;
+		interrupts();
+		return got;
+	}
 	void clear_counters(void)
 	{
 		noInterrupts();
@@ -2107,6 +2121,12 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	uint32_t retype = 0;
 	uint32_t reclassify = 0;
 	(void)g_audio_processor.reclass_counters(&retype, &reclassify);
+	/* The confirmation squelch: squelched_frames advancing with pcm_confirmed
+	 * false is the signature of a mis-typed run being dropped rather than
+	 * played -- the seam that used to be audible as periodic buzz. */
+	uint32_t squelched_frames = 0;
+	int pcm_confirmed = 0;
+	(void)g_audio_processor.squelch_diag(&squelched_frames, &pcm_confirmed);
 
 	return http_json_append(output, capacity, length,
 	                        ",\"pipeline_diag\":{\"class\":%u,"
@@ -2123,7 +2143,9 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        "\"last_reject_pc\":%u,"
 	                        "\"last_reject_pd\":%u,"
 	                        "\"retype_count\":%lu,"
-	                        "\"reclassify_count\":%lu}",
+	                        "\"reclassify_count\":%lu,"
+	                        "\"squelched_frames\":%lu,"
+	                        "\"pcm_confirmed\":%u}",
 	                        (unsigned)klass,
 	                        got == AIUS_OK ? 1u : 0u,
 	                        (int)metrics.last_status,
@@ -2139,7 +2161,9 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        (unsigned)iec.last_reject_pc,
 	                        (unsigned)iec.last_reject_pd,
 	                        (unsigned long)retype,
-	                        (unsigned long)reclassify);
+	                        (unsigned long)reclassify,
+	                        (unsigned long)squelched_frames,
+	                        (unsigned)(pcm_confirmed ? 1 : 0));
 }
 
 static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,

@@ -60,6 +60,14 @@ extern "C" {
  * aius_pipeline_get_reclass_counters); aius_pipeline_reset() clears the
  * detector/starvation state but NOT the counters.
  *
+ * NOTHING REACHES THE SINK UNTIL THE PCM CLASS IS CONFIRMED. The PCM typing is
+ * decided by the ABSENCE of a preamble in a bounded window, so a stream entered
+ * mid-burst types PCM and would play full-scale IEC burst data on whatever the
+ * sink drives. A PCM run therefore emits nothing for its first
+ * AIUS_PIPELINE_PCM_CONFIRM_WORDS words while the re-type detector runs; the
+ * words are DROPPED, not delayed, so the pass-through adds no latency -- it
+ * starts late. See AIUS_PIPELINE_PCM_CONFIRM_WORDS.
+ *
  * Every decoded or passed-through block is delivered to the caller's AiusPcmSink.
  * The steady-state push path performs no allocation beyond the DTS decoder's own
  * arena/heap (classify buffer and PCM staging live in the fixed instance). Only
@@ -99,6 +107,31 @@ extern "C" {
 
 /* Frames per emitted PCM pass-through block (staged in the fixed instance). */
 #define AIUS_PIPELINE_PCM_BLOCK_FRAMES 512u
+
+/* Words of a PCM run that pass in silence before the pass-through is allowed to
+ * reach the sink -- the confirmation squelch.
+ *
+ * While the class is PCM and fewer than CONFIRM words have been consumed SINCE
+ * THE CLASS WAS ENTERED -- counting from the first word of the run, the staged
+ * classification-window words INCLUDED -- the re-type detector runs exactly as
+ * it does once confirmed, but nothing is staged and no block is emitted. The
+ * boundary is run word CONFIRM exactly, taken from a per-run word counter and
+ * never from a push offset, so the boundary lands identically under any push
+ * sizing (1-word chunks included).
+ *
+ * MUST stay >= AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (asserted in the
+ * implementation). The widest supported burst period is 4096 words, so even the
+ * worst re-type phase validates its second pair no later than the boundary word
+ * itself -- a mis-typed stream can never reach the sink through a classification
+ * window. MUST also be EVEN (asserted): the boundary word is an L sample, and
+ * that parity is what makes the channel split at the boundary knowable.
+ *
+ * Emission is quantized to AIUS_PIPELINE_PCM_BLOCK_FRAMES, so the first frame
+ * can only reach the sink at run word CONFIRM + 2 * PCM_BLOCK_FRAMES. A caller
+ * that never calls aius_pipeline_finish() (the target does not) therefore emits
+ * NOTHING at all from a PCM run shorter than 9216 words (~96 ms at 48 kHz);
+ * genuine PCM opens ~85 ms late plus up to one block of that quantization. */
+#define AIUS_PIPELINE_PCM_CONFIRM_WORDS 8192u
 
 /* Sample rate stamped on PCM pass-through blocks. */
 #define AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ 48000u
@@ -203,6 +236,18 @@ AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,
 AiusStatus aius_pipeline_get_reclass_counters(const AiusPipeline *p,
                                               uint32_t *retype,
                                               uint32_t *reclassify);
+
+/* Confirmation-squelch diagnostics (see AIUS_PIPELINE_PCM_CONFIRM_WORDS).
+ *
+ * *squelched_frames is the lifetime count of FRAMES the squelch dropped (words
+ * / 2, floor -- a trailing half-word is not counted). Like the reclass counters
+ * it survives aius_pipeline_reset() and clears only at create.
+ * *pcm_confirmed is LIVE gate state -- 1 exactly while the class is PCM and its
+ * run has reached the confirm boundary -- so a verifier reads the gate rather
+ * than inferring it from a counter delta. Returns AIUS_OK or AIUS_INVALID_ARG. */
+AiusStatus aius_pipeline_get_squelch_diag(const AiusPipeline *p,
+                                          uint32_t *squelched_frames,
+                                          int *pcm_confirmed);
 
 #ifdef __cplusplus
 }

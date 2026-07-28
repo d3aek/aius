@@ -16,7 +16,10 @@
  *      *contract's* terms (a full-scale wire word reaches full scale) rather than
  *      against a copy of the producer's own expression -- which is how this test
  *      previously held a 48.16 dB level defect green for the whole life of the
- *      pass-through. See aius_codec.h §SAMPLE SCALE.
+ *      pass-through. See aius_codec.h §SAMPLE SCALE. Every pass-through stream
+ *      is measured FROM the confirmation squelch's boundary (run word
+ *      AIUS_PIPELINE_PCM_CONFIRM_WORDS): nothing is emitted before it, and the
+ *      first emitted frame is that boundary word pair, L-first.
  *   4. No-heap steady state. Two back-to-back DTS bursts decode with a non-zero
  *      warmup allocation then zero allocations on the steady-state frame (via the
  *      --wrap alloc shim + decoder metrics).
@@ -270,44 +273,90 @@ static int32_t pcm_expected_sample(uint16_t word)
 	return (int32_t)((uint32_t)wire << (AIUS_PCM_SAMPLE_BITS - 16));
 }
 
+/* Reassemble a capture's planes and compare them sample for sample against the
+ * stream from word `from` onward; returns the recovered frame count and clears
+ * *ok on the first mismatch. Every pass-through assertion in the suite is
+ * measured this way -- from the confirmation boundary, not from word 0 -- so
+ * `from` is what pins the emission's offset into the stream. */
+static uint32_t passthrough_frames_from(const uint16_t *w, size_t from,
+                                        const struct capture *cap, int *ok)
+{
+	uint32_t got = 0;
+	for (int b = 0; b < cap->n && *ok; b++) {
+		const struct block_copy *bc = &cap->blocks[b];
+		for (uint32_t f = 0; f < bc->frames && *ok; f++) {
+			if (bc->planes[0][f] !=
+			            pcm_expected_sample(w[from + 2 * (got + f)]) ||
+			    bc->planes[1][f] !=
+			            pcm_expected_sample(w[from + 2 * (got + f) + 1]))
+				*ok = 0;
+		}
+		got += bc->frames;
+	}
+	return got;
+}
+
 static void test_pcm_passthrough(void)
 {
-	/* 1024 frames of synthetic interleaved L,R 16-bit PCM, no IEC preamble. */
-	enum { FRAMES = 1024, WORDS = FRAMES * 2 };
+	/* Synthetic interleaved L,R 16-bit PCM, no IEC preamble, long enough to
+	 * clear the confirmation squelch and emit four full blocks past it. The
+	 * generator's stride has full period over 16 bits, so every word of the
+	 * stream is distinct and the sample-for-sample comparison below pins the
+	 * emission's OFFSET into the stream, not merely its content. */
+	enum {
+		CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+		FRAMES = 6144,
+		WORDS = FRAMES * 2,
+		EMIT_FRAMES = (WORDS - CONFIRM) / 2
+	};
 	uint16_t *w = malloc(WORDS * sizeof(uint16_t));
 	for (int i = 0; i < WORDS; i++)
 		w[i] = (uint16_t)(int16_t)((i * 131 + 7) & 0xFFFF);
 
-	struct capture cap;
-	memset(&cap, 0, sizeof(cap));
-	AiusPipelineClass klass = run_pipeline(w, WORDS, WORDS, &cap);
-	CHECK(klass == AIUS_PIPELINE_PCM, "pcm: class %d != PCM", klass);
+	/* Whole-buffer and one-word-at-a-time. The 1-word chunking is the
+	 * squelch-boundary alignment case: the confirm boundary is a per-RUN word
+	 * offset and never a push offset, so the first emitted frame must still be
+	 * the boundary word pair, L-first, when every push is a single word. */
+	const size_t chunks[] = { WORDS, 1 };
+	for (size_t ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ci++) {
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		AiusPipelineClass klass = run_pipeline(w, WORDS, chunks[ci], &cap);
+		CHECK(klass == AIUS_PIPELINE_PCM, "pcm chunk=%zu: class %d != PCM",
+		      chunks[ci], klass);
+		CHECK(cap.n > 0, "pcm chunk=%zu: no blocks emitted", chunks[ci]);
+		if (cap.n > 0)
+			CHECK(cap.blocks[0].planes[0][0] == pcm_expected_sample(w[CONFIRM]) &&
+			      cap.blocks[0].planes[1][0] ==
+			              pcm_expected_sample(w[CONFIRM + 1]),
+			      "pcm chunk=%zu: first emitted frame is not the confirm "
+			      "boundary word pair (run word %d, L-first)",
+			      chunks[ci], CONFIRM);
 
-	/* Reassemble captured planes and compare sample-for-sample. */
-	uint32_t got = 0;
-	int ok = 1;
-	for (int b = 0; b < cap.n && ok; b++) {
-		struct block_copy *bc = &cap.blocks[b];
-		if (bc->channels != 2 || bc->sample_rate_hz != 48000 ||
-		    bc->channel_mask != (uint32_t)(AIUS_CH_FL | AIUS_CH_FR)) {
-			ok = 0;
-			break;
+		/* Block shape, then the samples themselves measured FROM the boundary
+		 * word: everything before it was dropped. */
+		int shape = 1;
+		for (int b = 0; b < cap.n; b++) {
+			struct block_copy *bc = &cap.blocks[b];
+			if (bc->channels != 2 || bc->sample_rate_hz != 48000 ||
+			    bc->channel_mask != (uint32_t)(AIUS_CH_FL | AIUS_CH_FR))
+				shape = 0;
 		}
-		for (uint32_t f = 0; f < bc->frames; f++) {
-			int32_t expl = pcm_expected_sample(w[2 * (got + f)]);
-			int32_t expr = pcm_expected_sample(w[2 * (got + f) + 1]);
-			if (bc->planes[0][f] != expl || bc->planes[1][f] != expr) {
-				ok = 0;
-				break;
-			}
-		}
-		got += bc->frames;
+		CHECK(shape, "pcm chunk=%zu: emitted block is not 2ch/48k/FL|FR",
+		      chunks[ci]);
+		int ok = 1;
+		uint32_t got = passthrough_frames_from(w, CONFIRM, &cap, &ok);
+		CHECK(ok, "pcm chunk=%zu: pass-through samples differ from input",
+		      chunks[ci]);
+		CHECK(got == EMIT_FRAMES,
+		      "pcm chunk=%zu: recovered %u frames != %u -- the squelch must "
+		      "drop exactly the first %d run words and no more",
+		      chunks[ci], got, (unsigned)EMIT_FRAMES, CONFIRM);
+		capture_free(&cap);
 	}
-	CHECK(ok, "pcm: pass-through samples differ from input");
-	CHECK(got == FRAMES, "pcm: recovered %u frames != %u", got, (unsigned)FRAMES);
-	printf("  pcm            PCM pass-through 2ch/48k, %u frames byte-exact\n", got);
-
-	capture_free(&cap);
+	printf("  pcm            PCM pass-through 2ch/48k from run word %d, "
+	       "%d frames byte-exact (2 chunkings)\n",
+	       CONFIRM, EMIT_FRAMES);
 	free(w);
 }
 
@@ -326,8 +375,11 @@ static void test_pcm_passthrough(void)
 static void test_pcm_sample_scale(void)
 {
 	/* Both wire extremes and the two values that bracket zero, interleaved so
-	 * each lands on a known plane. Long enough to classify as PCM unaided. */
-	enum { FRAMES = 512, WORDS = FRAMES * 2 };
+	 * each lands on a known plane. Long enough to classify as PCM unaided AND
+	 * to clear the confirmation squelch with two full blocks to spare -- the
+	 * plane split is itself a boundary-parity check, since an odd boundary
+	 * would put the positive extreme on plane 0 and leave neg_peak at 0. */
+	enum { FRAMES = 5120, WORDS = FRAMES * 2 };
 	uint16_t *w = malloc(WORDS * sizeof(uint16_t));
 	for (int f = 0; f < FRAMES; f++) {
 		w[2 * f] = 0x8000u;     /* -32768: 16-bit negative full scale */
@@ -518,23 +570,38 @@ static void push_chunked(AiusPipeline *p, const uint16_t *w, size_t n,
 	}
 }
 
+/* Everything the re-classification tests read back off a pipeline before it is
+ * destroyed: the two lifetime re-class counters, plus the confirmation
+ * squelch's lifetime dropped-frame count and its live gate state. */
+struct reclass_diag {
+	uint32_t retype;
+	uint32_t reclassify;
+	uint32_t squelched_frames;
+	int pcm_confirmed;
+};
+
 /* Full create/push/finish/counter-read runner for the re-classification
- * tests. `retype`/`reclassify` receive the lifetime counters read BEFORE
- * destroy. Returns the final classification. */
+ * tests. `d` receives the diagnostics read BEFORE destroy. Returns the final
+ * classification. */
 static AiusPipelineClass run_reclass(const uint16_t *w, size_t n, size_t chunk,
-                                     struct capture *cap, uint32_t *retype,
-                                     uint32_t *reclassify, const char *label)
+                                     struct capture *cap, struct reclass_diag *d,
+                                     const char *label)
 {
 	AiusPcmSink sink = { .ctx = cap, .consume = capture_consume };
 	AiusPipeline *p = NULL;
+	memset(d, 0, sizeof(*d));
 	if (aius_pipeline_create(&p, NULL, &sink) != AIUS_OK) {
 		CHECK(0, "%s: pipeline create failed", label);
 		return AIUS_PIPELINE_UNKNOWN;
 	}
 	push_chunked(p, w, n, chunk, label);
 	CHECK(aius_pipeline_finish(p) == AIUS_OK, "%s: finish status", label);
-	CHECK(aius_pipeline_get_reclass_counters(p, retype, reclassify) == AIUS_OK,
+	CHECK(aius_pipeline_get_reclass_counters(p, &d->retype, &d->reclassify) ==
+	              AIUS_OK,
 	      "%s: counter read", label);
+	CHECK(aius_pipeline_get_squelch_diag(p, &d->squelched_frames,
+	                                     &d->pcm_confirmed) == AIUS_OK,
+	      "%s: squelch diag read", label);
 	AiusPipelineClass klass = aius_pipeline_classification(p);
 	aius_pipeline_destroy(p);
 	return klass;
@@ -561,20 +628,27 @@ static void test_retype_mid_burst_entry(const char *dir)
 	for (size_t ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ci++) {
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
-		uint32_t rt = 0, rc = 0;
+		struct reclass_diag d;
 		AiusPipelineClass klass = run_reclass(s + 4, sn - 4, chunks[ci], &cap,
-		                                      &rt, &rc, "retype-entry");
+		                                      &d, "retype-entry");
 		CHECK(klass == AIUS_PIPELINE_DTS,
 		      "retype-entry chunk=%zu: class %d != DTS (the defect-28 lottery)",
 		      chunks[ci], klass);
-		CHECK(rt == 1, "retype-entry chunk=%zu: retype_count %u != 1",
-		      chunks[ci], rt);
-		CHECK(rc == 0, "retype-entry chunk=%zu: reclassify_count %u != 0",
-		      chunks[ci], rc);
-		/* 1 PCM block (words 0..1888 = 944 frames -> one 512-frame emit, the
-		 * staged tail dropped at re-type) + bursts 3..8 decoded = 7 blocks. */
-		CHECK(cap.n == 7, "retype-entry chunk=%zu: %d blocks != 7", chunks[ci],
+		CHECK(d.retype == 1, "retype-entry chunk=%zu: retype_count %u != 1",
+		      chunks[ci], d.retype);
+		CHECK(d.reclassify == 0, "retype-entry chunk=%zu: reclassify_count %u != 0",
+		      chunks[ci], d.reclassify);
+		/* NO PCM block: the whole mis-typed run (words 0..1888, 1889 words)
+		 * sits inside the unconfirmed window, so it is dropped rather than
+		 * played -- this is the periodic-buzz seam the squelch exists for.
+		 * Bursts 3..8 decoded = 6 blocks. */
+		CHECK(cap.n == 6, "retype-entry chunk=%zu: %d blocks != 6", chunks[ci],
 		      cap.n);
+		/* 1889 dropped words -> 944 frames; the trailing half-word (word 1888
+		 * with no partner) is not counted. */
+		CHECK(d.squelched_frames == 944,
+		      "retype-entry chunk=%zu: squelched_frames %u != 944", chunks[ci],
+		      d.squelched_frames);
 		capture_free(&cap);
 	}
 	printf("  retype-entry   mid-burst entry re-types to DTS (2 chunkings)\n");
@@ -582,10 +656,21 @@ static void test_retype_mid_burst_entry(const char *dir)
 	free(v);
 }
 
-/* T2: a genuine mid-stream PCM->DTS switch: 2048 ramp words (2 full PCM
- * blocks), then 4 x dts51_be16. The burst-1 words play as PCM (unavoidable:
- * they ARE the detector's evidence), the staged sub-block tail is dropped at
- * re-type, bursts 2..4 decode as 6-channel blocks. */
+/* T2: a genuine mid-stream PCM->DTS switch, with the geometry chosen so both
+ * halves of the claim are observable. The ramp is 8192 + 3 x 1024 words: the
+ * confirmation window, then three whole blocks, so the confirmed PCM segment
+ * demonstrably PLAYS (byte-exact from the boundary word) and the switch lands
+ * at staged phase 0. Then 4 x dts51_be16: pair spacing is 946 words, under one
+ * block, so the burst tail staged as PCM never reaches a block boundary before
+ * the re-type drops it -- no burst data reaches the sink -- and bursts 2..4
+ * decode as 6-channel blocks.
+ *
+ * CAVEAT, deliberate: this pins drop-of-the-staged-tail at a BLOCK-ALIGNED
+ * switch, not a universal no-buzz property. A switch landing at staged phase
+ * 511 can still emit one mixed block out of a CONFIRMED PCM class -- by design
+ * and accepted ("burst noise is more acceptable than extra latency"). What the
+ * squelch closes is the other, common seam: burst data reaching the sink from a
+ * CLASSIFICATION window. */
 static void test_retype_mid_stream_switch(const char *dir)
 {
 	size_t n = 0, bn = 0;
@@ -595,7 +680,11 @@ static void test_retype_mid_stream_switch(const char *dir)
 		return;
 	}
 	uint16_t *bursts = repeat_wire(v, n, 4, &bn);
-	enum { RAMP_WORDS = 2048 };
+	enum {
+		CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+		BLOCK_WORDS = 2 * (int)AIUS_PIPELINE_PCM_BLOCK_FRAMES,
+		RAMP_WORDS = CONFIRM + 3 * BLOCK_WORDS
+	};
 	size_t sn = RAMP_WORDS + bn;
 	uint16_t *s = malloc(sn * sizeof(uint16_t));
 	uint16_t *ramp = make_ramp(RAMP_WORDS);
@@ -604,22 +693,36 @@ static void test_retype_mid_stream_switch(const char *dir)
 
 	struct capture cap;
 	memset(&cap, 0, sizeof(cap));
-	uint32_t rt = 0, rc = 0;
-	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &rt, &rc,
-	                                      "retype-switch");
+	struct reclass_diag d;
+	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &d, "retype-switch");
 	CHECK(klass == AIUS_PIPELINE_DTS, "retype-switch: class %d != DTS", klass);
-	CHECK(rt == 1, "retype-switch: retype_count %u != 1", rt);
-	int pcm_blocks = 0, dts_blocks = 0;
+	CHECK(d.retype == 1, "retype-switch: retype_count %u != 1", d.retype);
+	int pcm_blocks = 0, dts_blocks = 0, first_dts = -1;
 	for (int b = 0; b < cap.n; b++) {
-		if (cap.blocks[b].channels == 6)
+		if (cap.blocks[b].channels == 6) {
+			if (first_dts < 0)
+				first_dts = b;
 			dts_blocks++;
-		else if (cap.blocks[b].channels == 2)
+		} else if (cap.blocks[b].channels == 2) {
 			pcm_blocks++;
+		}
 	}
-	CHECK(pcm_blocks == 2, "retype-switch: %d PCM blocks != 2", pcm_blocks);
-	CHECK(dts_blocks == 3, "retype-switch: %d decoded 5.1 blocks != 3",
+	CHECK(pcm_blocks == 3,
+	      "retype-switch: %d PCM blocks != 3 (the confirmed ramp segment, and "
+	      "nothing at all from the burst tail)", pcm_blocks);
+	CHECK(first_dts == 3,
+	      "retype-switch: first decoded block at index %d != 3 -- a PCM block "
+	      "reached the sink after the switch", first_dts);
+	CHECK(dts_blocks >= 3, "retype-switch: %d decoded 5.1 blocks < 3",
 	      dts_blocks);
-	printf("  retype-switch  PCM ramp -> DTS re-type, 3 x 5.1 decoded\n");
+	CHECK(cap.n > 0 &&
+	              cap.blocks[0].planes[0][0] == pcm_expected_sample(s[CONFIRM]),
+	      "retype-switch: the first PCM frame is not the confirm boundary word");
+	CHECK(d.squelched_frames == (uint32_t)CONFIRM / 2u,
+	      "retype-switch: squelched_frames %u != %u", d.squelched_frames,
+	      (unsigned)(CONFIRM / 2));
+	printf("  retype-switch  confirmed PCM plays 3 blocks, the switch drops the "
+	       "staged burst tail, 3 x 5.1 decoded\n");
 	capture_free(&cap);
 	free(ramp);
 	free(bursts);
@@ -632,32 +735,79 @@ static void test_retype_mid_stream_switch(const char *dir)
  * classifier) is what is exercised. */
 static void test_retype_false_positive_immunity(void)
 {
-	/* (a) one pair only: stays PCM, pass-through byte-exact incl. the pair. */
+	/* (a) one pair only, AFTER the confirmation boundary: stays PCM and the
+	 * pass-through is byte-exact from the boundary word, the pair words
+	 * included. The candidate arms and later expires (the stream runs more than
+	 * one MAX spacing past it) with no effect on emission at all. The length is
+	 * deliberately not block-aligned -- 4904 emitted frames is 9 blocks plus
+	 * 296 -- so finish()'s partial flush runs from a CONFIRMED class, which is
+	 * this suite's only coverage of that flush. */
 	{
-		enum { WORDS = 4000 };
+		enum {
+			CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+			WORDS = 18000,
+			PAIR = 9000,
+			EMIT_FRAMES = (WORDS - CONFIRM) / 2
+		};
 		uint16_t *w = make_ramp(WORDS);
-		w[1000] = RAMP_PA;
-		w[1001] = RAMP_PB;
+		w[PAIR] = RAMP_PA;
+		w[PAIR + 1] = RAMP_PB;
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
-		uint32_t rt = 0, rc = 0;
-		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		struct reclass_diag d;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &d,
 		                                      "fp-one-pair");
 		CHECK(klass == AIUS_PIPELINE_PCM, "fp-one-pair: class %d != PCM", klass);
-		CHECK(rt == 0, "fp-one-pair: retype_count %u != 0", rt);
-		uint32_t got = 0;
+		CHECK(d.retype == 0, "fp-one-pair: retype_count %u != 0", d.retype);
+		CHECK(d.pcm_confirmed == 1,
+		      "fp-one-pair: pcm_confirmed 0 well past the confirm boundary");
 		int ok = 1;
-		for (int b = 0; b < cap.n && ok; b++) {
-			struct block_copy *bc = &cap.blocks[b];
-			for (uint32_t f = 0; f < bc->frames && ok; f++) {
-				if (bc->planes[0][f] != pcm_expected_sample(w[2 * (got + f)]) ||
-				    bc->planes[1][f] != pcm_expected_sample(w[2 * (got + f) + 1]))
-					ok = 0;
-			}
-			got += bc->frames;
-		}
-		CHECK(ok && got == WORDS / 2,
-		      "fp-one-pair: pass-through not byte-exact (%u frames)", got);
+		uint32_t got = passthrough_frames_from(w, CONFIRM, &cap, &ok);
+		CHECK(ok && got == EMIT_FRAMES,
+		      "fp-one-pair: pass-through not byte-exact from the boundary "
+		      "(%u frames, want %d)", got, EMIT_FRAMES);
+		capture_free(&cap);
+		free(w);
+	}
+	/* (a2) the same single pair placed INSIDE the unconfirmed window of a
+	 * stream that goes on to confirm. An armed candidate must not delay, blank
+	 * or shift the boundary: the first emitted frame is still exactly the
+	 * boundary word pair, L-first, and the stream is byte-exact from there.
+	 * Without this leg nothing in the suite couples detector candidate state to
+	 * the confirm boundary. */
+	{
+		enum {
+			CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+			WORDS = 12288,
+			PAIR = 1000,
+			EMIT_FRAMES = (WORDS - CONFIRM) / 2
+		};
+		uint16_t *w = make_ramp(WORDS);
+		w[PAIR] = RAMP_PA;
+		w[PAIR + 1] = RAMP_PB;
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		struct reclass_diag d;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &d,
+		                                      "fp-in-window-pair");
+		CHECK(klass == AIUS_PIPELINE_PCM, "fp-in-window-pair: class %d != PCM",
+		      klass);
+		CHECK(d.retype == 0, "fp-in-window-pair: retype_count %u != 0", d.retype);
+		CHECK(cap.n > 0 &&
+		              cap.blocks[0].planes[0][0] ==
+		                      pcm_expected_sample(w[CONFIRM]) &&
+		              cap.blocks[0].planes[1][0] ==
+		                      pcm_expected_sample(w[CONFIRM + 1]),
+		      "fp-in-window-pair: first emitted frame is not run word %d L-first",
+		      CONFIRM);
+		int ok = 1;
+		uint32_t got = passthrough_frames_from(w, CONFIRM, &cap, &ok);
+		CHECK(ok && got == EMIT_FRAMES,
+		      "fp-in-window-pair: pass-through not byte-exact from the boundary "
+		      "(%u frames, want %d)", got, EMIT_FRAMES);
+		CHECK(d.squelched_frames == (uint32_t)CONFIRM / 2u,
+		      "fp-in-window-pair: squelched_frames %u != %u",
+		      d.squelched_frames, (unsigned)(CONFIRM / 2));
 		capture_free(&cap);
 		free(w);
 	}
@@ -672,11 +822,12 @@ static void test_retype_false_positive_immunity(void)
 		w[1101] = RAMP_PB;
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
-		uint32_t rt = 0, rc = 0;
-		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		struct reclass_diag d;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &d,
 		                                      "fp-close-pairs");
-		CHECK(klass == AIUS_PIPELINE_PCM && rt == 0,
-		      "fp-close-pairs: class %d retype %u (want PCM, 0)", klass, rt);
+		CHECK(klass == AIUS_PIPELINE_PCM && d.retype == 0,
+		      "fp-close-pairs: class %d retype %u (want PCM, 0)", klass,
+		      d.retype);
 		capture_free(&cap);
 		free(w);
 	}
@@ -690,11 +841,11 @@ static void test_retype_false_positive_immunity(void)
 		w[16601] = RAMP_PB;
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
-		uint32_t rt = 0, rc = 0;
-		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		struct reclass_diag d;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &d,
 		                                      "fp-far-pairs");
-		CHECK(klass == AIUS_PIPELINE_PCM && rt == 0,
-		      "fp-far-pairs: class %d retype %u (want PCM, 0)", klass, rt);
+		CHECK(klass == AIUS_PIPELINE_PCM && d.retype == 0,
+		      "fp-far-pairs: class %d retype %u (want PCM, 0)", klass, d.retype);
 		capture_free(&cap);
 		free(w);
 	}
@@ -714,16 +865,69 @@ static void test_retype_false_positive_immunity(void)
 		w[2601] = 0x1F4Eu;
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
-		uint32_t rt = 0, rc = 0;
-		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &rt, &rc,
+		struct reclass_diag d;
+		AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &d,
 		                                      "fp-form-mismatch");
-		CHECK(klass == AIUS_PIPELINE_DTS && rt == 1,
+		CHECK(klass == AIUS_PIPELINE_DTS && d.retype == 1,
 		      "fp-form-mismatch: class %d retype %u (want DTS, 1 -- mismatch "
-		      "must replace, same-form must validate)", klass, rt);
+		      "must replace, same-form must validate)", klass, d.retype);
 		capture_free(&cap);
 		free(w);
 	}
-	printf("  fp-immunity    one pair / sub-MIN / over-MAX / form-mismatch\n");
+	printf("  fp-immunity    one pair (post- and in-window) / sub-MIN / "
+	       "over-MAX / form-mismatch\n");
+}
+
+/* T3b: the worst re-type phase against the confirm bound. Synthetic pairs at
+ * EXACTLY the maximum supported burst period (4096 words) with the first Pa at
+ * run word 4095, so the validating Pb lands on run word 8192 -- the confirm
+ * boundary word itself, the first word that would ever be staged.
+ *
+ * Zero blocks reach the sink, which is the honest statement of the bound: the
+ * worst phase validates AT the boundary, one word past the window rather than
+ * inside it, and still emits nothing because (a) the detector runs BEFORE
+ * staging in pcm_feed, so the validating Pb is consumed by the re-type and
+ * never staged, and (b) emission is quantized to a whole block, so even a
+ * staged boundary word would need 1024 more words to reach the sink. Narrow
+ * CONFIRM below the MAX pair spacing and this test emits burst data. */
+static void test_worst_phase_confirm_bound(void)
+{
+	enum {
+		CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+		SPACING = 4096, /* the widest supported burst period, in words */
+		/* so the SECOND Pa is the last squelched word and its Pb is the
+		 * boundary word */
+		FIRST_PA = CONFIRM - SPACING - 1,
+		WORDS = 10240
+	};
+	uint16_t *w = make_ramp(WORDS);
+	w[FIRST_PA] = RAMP_PA;
+	w[FIRST_PA + 1] = RAMP_PB;
+	w[FIRST_PA + SPACING] = RAMP_PA;
+	w[FIRST_PA + SPACING + 1] = RAMP_PB;
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	struct reclass_diag d;
+	AiusPipelineClass klass = run_reclass(w, WORDS, 256, &cap, &d,
+	                                      "worst-phase");
+	CHECK(klass == AIUS_PIPELINE_DTS,
+	      "worst-phase: class %d != DTS (the pair at the boundary must re-type)",
+	      klass);
+	CHECK(d.retype == 1, "worst-phase: retype_count %u != 1", d.retype);
+	CHECK(cap.n == 0,
+	      "worst-phase: %d blocks reached the sink -- the worst-phase re-type "
+	      "must emit nothing at all", cap.n);
+	/* Words 0..8191 dropped: the validating Pb at 8192 is consumed by the
+	 * re-type, so it is neither staged nor counted as squelched. */
+	CHECK(d.squelched_frames == (uint32_t)CONFIRM / 2u,
+	      "worst-phase: squelched_frames %u != %u", d.squelched_frames,
+	      (unsigned)(CONFIRM / 2));
+	CHECK(d.pcm_confirmed == 0, "worst-phase: pcm_confirmed set after re-type");
+	printf("  worst-phase    4096-spaced pairs validate AT run word %d, "
+	       "0 blocks emitted\n", CONFIRM);
+	capture_free(&cap);
+	free(w);
 }
 
 /* T4: the validated pair split exactly across a push boundary (Pa last word
@@ -765,7 +969,16 @@ static void test_retype_boundary_pair(const char *dir)
 /* T5: DTS -> starve -> PCM -> re-type -> DTS, in one stream. The resumed-DTS
  * leg is the starvation-counter-residue regression (gate finding F1): stale
  * residue across the class transition re-fires starvation instantly and the
- * final class never holds DTS. */
+ * final class never holds DTS.
+ *
+ * The re-stage point is deterministic for this corpus and this chunking: the
+ * burst-2 outcome lands in the 1792-2047 push, and the starvation check first
+ * fires 65 pushes later, at word 18688 -- so the recovered PCM run starts
+ * there. The ramp is sized from that so the confirmed run has exactly three
+ * whole blocks of post-confirm words before the DTS tail arrives: the recovered
+ * PCM demonstrably plays, and the switch lands at staged phase 0, so the burst
+ * tail staged as PCM is dropped whole. Same phase-511 caveat as T2 -- this pins
+ * the block-aligned case, not a universal no-buzz property. */
 static void test_starve_and_recover(const char *dir)
 {
 	size_t n = 0, head_n = 0, tail_n = 0;
@@ -776,25 +989,45 @@ static void test_starve_and_recover(const char *dir)
 	}
 	uint16_t *head = repeat_wire(v, n, 2, &head_n);
 	uint16_t *tail = repeat_wire(v, n, 4, &tail_n);
-	enum { RAMP_WORDS = 20000 };
-	uint16_t *ramp = make_ramp(RAMP_WORDS);
-	size_t sn = head_n + RAMP_WORDS + tail_n;
+	const size_t block_words = 2u * AIUS_PIPELINE_PCM_BLOCK_FRAMES;
+	const size_t restage_word = 18688u;
+	const size_t confirm_word = restage_word + AIUS_PIPELINE_PCM_CONFIRM_WORDS;
+	const size_t ramp_words = confirm_word + 3u * block_words - head_n;
+	uint16_t *ramp = make_ramp(ramp_words);
+	size_t sn = head_n + ramp_words + tail_n;
 	uint16_t *s = malloc(sn * sizeof(uint16_t));
 	memcpy(s, head, head_n * sizeof(uint16_t));
-	memcpy(s + head_n, ramp, RAMP_WORDS * sizeof(uint16_t));
-	memcpy(s + head_n + RAMP_WORDS, tail, tail_n * sizeof(uint16_t));
+	memcpy(s + head_n, ramp, ramp_words * sizeof(uint16_t));
+	memcpy(s + head_n + ramp_words, tail, tail_n * sizeof(uint16_t));
 
 	struct capture cap;
 	memset(&cap, 0, sizeof(cap));
-	uint32_t rt = 0, rc = 0;
-	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &rt, &rc, "starve");
+	struct reclass_diag d;
+	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &d, "starve");
 	CHECK(klass == AIUS_PIPELINE_DTS, "starve: final class %d != DTS", klass);
-	CHECK(rc == 1, "starve: reclassify_count %u != 1", rc);
-	CHECK(rt == 1, "starve: retype_count %u != 1", rt);
-	/* 2 decoded (head) + 4 PCM (ramp tail + burst-1-as-PCM) + 3 decoded
-	 * (resumed tail bursts 2..4) = 9. */
-	CHECK(cap.n == 9, "starve: %d blocks != 9", cap.n);
-	printf("  starve-recover DTS starves to PCM, re-types back, 9 blocks\n");
+	CHECK(d.reclassify == 1, "starve: reclassify_count %u != 1", d.reclassify);
+	CHECK(d.retype == 1, "starve: retype_count %u != 1", d.retype);
+	/* 2 decoded (head) + 3 PCM (the confirmed ramp segment, and NOTHING from
+	 * the burst tail) + 3 decoded (resumed tail bursts 2..4) = 8. A 9th block
+	 * would be burst data played as PCM. */
+	CHECK(cap.n == 8, "starve: %d blocks != 8", cap.n);
+	/* The three PCM blocks are the ramp from the confirm boundary on, in
+	 * order: this is what pins the re-stage point and the boundary together
+	 * (dts_be16 decodes to 2ch, so block shape cannot tell them apart). */
+	for (int i = 0; i < 3; i++)
+		CHECK(cap.n > 2 + i && cap.blocks[2 + i].frames ==
+		                               AIUS_PIPELINE_PCM_BLOCK_FRAMES &&
+		              cap.blocks[2 + i].planes[0][0] ==
+		                      pcm_expected_sample(
+		                              s[confirm_word + (size_t)i * block_words]),
+		      "starve: capture block %d is not confirmed ramp block %d", 2 + i,
+		      i);
+	/* One squelched run: 8192 words from the re-stage point. */
+	CHECK(d.squelched_frames == AIUS_PIPELINE_PCM_CONFIRM_WORDS / 2u,
+	      "starve: squelched_frames %u != %u", d.squelched_frames,
+	      (unsigned)(AIUS_PIPELINE_PCM_CONFIRM_WORDS / 2u));
+	printf("  starve-recover DTS starves to PCM, confirms, re-types back, "
+	       "8 blocks\n");
 	capture_free(&cap);
 	free(s);
 	free(ramp);
@@ -820,11 +1053,11 @@ static void test_unsupported_never_starves(const char *dir)
 
 	struct capture cap;
 	memset(&cap, 0, sizeof(cap));
-	uint32_t rt = 0, rc = 0;
-	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &rt, &rc,
-	                                      "unsupported");
+	struct reclass_diag d;
+	AiusPipelineClass klass = run_reclass(s, sn, 256, &cap, &d, "unsupported");
 	CHECK(klass == AIUS_PIPELINE_DTS, "unsupported: class %d != DTS", klass);
-	CHECK(rc == 0, "unsupported: reclassify_count %u != 0 (starved!)", rc);
+	CHECK(d.reclassify == 0, "unsupported: reclassify_count %u != 0 (starved!)",
+	      d.reclassify);
 	CHECK(cap.n == 0, "unsupported: %d blocks != 0", cap.n);
 	printf("  unsupported    19600 words of AC-3 bursts hold DTS, no starve\n");
 	capture_free(&cap);
@@ -834,7 +1067,9 @@ static void test_unsupported_never_starves(const char *dir)
 
 /* T7: reset semantics. (a) the lifetime counters survive aius_pipeline_reset;
  * (b) the detector's candidate does NOT -- a pre-reset pair may not validate
- * a post-reset pair. */
+ * a post-reset pair; (c) squelched_frames is a lifetime counter like (a) while
+ * pcm_confirmed is live gate state that goes false again on every PCM
+ * re-entry. */
 static void test_reset_semantics(const char *dir)
 {
 	size_t n = 0, sn = 0;
@@ -853,15 +1088,26 @@ static void test_reset_semantics(const char *dir)
 
 	/* (a) drive a re-type, then reset: counters must survive. */
 	push_chunked(p, s + 4, sn - 4, 256, "reset-sem");
-	uint32_t rt = 0, rc = 0;
+	uint32_t rt = 0, rc = 0, sq = 0;
+	int confirmed = 0;
 	CHECK(aius_pipeline_get_reclass_counters(p, &rt, &rc) == AIUS_OK,
 	      "reset-sem: counters");
 	CHECK(rt == 1, "reset-sem: retype_count %u != 1 before reset", rt);
+	/* Same mid-burst entry as T1: 1889 dropped words -> 944 frames. */
+	CHECK(aius_pipeline_get_squelch_diag(p, &sq, &confirmed) == AIUS_OK,
+	      "reset-sem: squelch diag");
+	CHECK(sq == 944 && confirmed == 0,
+	      "reset-sem: squelch diag (%u,%d) before reset (want 944,0)", sq,
+	      confirmed);
 	aius_pipeline_reset(p);
 	CHECK(aius_pipeline_get_reclass_counters(p, &rt, &rc) == AIUS_OK,
 	      "reset-sem: counters after reset");
 	CHECK(rt == 1 && rc == 0,
 	      "reset-sem: counters (%u,%u) did not survive reset (want 1,0)", rt, rc);
+	CHECK(aius_pipeline_get_squelch_diag(p, &sq, &confirmed) == AIUS_OK,
+	      "reset-sem: squelch diag after reset");
+	CHECK(sq == 944, "reset-sem: squelched_frames %u did not survive reset "
+	      "(want 944)", sq);
 	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN,
 	      "reset-sem: class not UNKNOWN after reset");
 
@@ -886,11 +1132,50 @@ static void test_reset_semantics(const char *dir)
 	CHECK(rt == 1, "reset-sem: retype_count %u != 1 (pre-reset pair leaked!)",
 	      rt);
 
+	/* (c) squelch counter/gate semantics. Both (b) runs ended well inside
+	 * their unconfirmed windows, so every one of their words was dropped:
+	 * 944 + 350 (r1) + 1000 (r2) frames, gate still closed. */
+	const uint32_t confirm_frames = AIUS_PIPELINE_PCM_CONFIRM_WORDS / 2u;
+	CHECK(aius_pipeline_get_squelch_diag(p, &sq, &confirmed) == AIUS_OK,
+	      "reset-sem: squelch diag (b)");
+	CHECK(sq == 944u + 350u + 1000u && confirmed == 0,
+	      "reset-sem: squelch diag (%u,%d) after two in-window runs "
+	      "(want %u,0)", sq, confirmed, 944u + 350u + 1000u);
+	/* Carry the SAME run past the boundary: the gate opens and this run's
+	 * dropped total tops out at CONFIRM/2 frames, not one frame more. */
+	uint16_t *r3 = make_ramp(AIUS_PIPELINE_PCM_CONFIRM_WORDS);
+	push_chunked(p, r3, AIUS_PIPELINE_PCM_CONFIRM_WORDS, 256, "reset-sem-c1");
+	CHECK(aius_pipeline_get_squelch_diag(p, &sq, &confirmed) == AIUS_OK,
+	      "reset-sem: squelch diag (c1)");
+	CHECK(sq == 944u + 350u + confirm_frames && confirmed == 1,
+	      "reset-sem: squelch diag (%u,%d) past the boundary (want %u,1)", sq,
+	      confirmed, 944u + 350u + confirm_frames);
+	/* Reset: the lifetime counter survives, the gate closes, and the next PCM
+	 * entry starts unconfirmed again -- a re-entered class is never trusted
+	 * because a previous run of the same class was. */
+	aius_pipeline_reset(p);
+	CHECK(aius_pipeline_get_squelch_diag(p, &sq, &confirmed) == AIUS_OK,
+	      "reset-sem: squelch diag (c2)");
+	CHECK(sq == 944u + 350u + confirm_frames && confirmed == 0,
+	      "reset-sem: squelch diag (%u,%d) after reset (want %u,0)", sq,
+	      confirmed, 944u + 350u + confirm_frames);
+	push_chunked(p, r3, 600, 256, "reset-sem-c3");
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_PCM,
+	      "reset-sem: class %d != PCM after re-entry",
+	      aius_pipeline_classification(p));
+	CHECK(aius_pipeline_get_squelch_diag(p, &sq, &confirmed) == AIUS_OK,
+	      "reset-sem: squelch diag (c3)");
+	CHECK(sq == 944u + 350u + confirm_frames + 300u && confirmed == 0,
+	      "reset-sem: squelch diag (%u,%d) on PCM re-entry (want %u,0)", sq,
+	      confirmed, 944u + 350u + confirm_frames + 300u);
+
 	aius_pipeline_destroy(p);
-	printf("  reset-sem      counters survive reset; detector state does not\n");
+	printf("  reset-sem      counters survive reset; detector state and the "
+	       "confirm gate do not\n");
 	capture_free(&cap);
 	free(r1);
 	free(r2);
+	free(r3);
 	free(s);
 	free(v);
 }
@@ -913,6 +1198,7 @@ int main(int argc, char **argv)
 	test_retype_mid_burst_entry(dir);
 	test_retype_mid_stream_switch(dir);
 	test_retype_false_positive_immunity();
+	test_worst_phase_confirm_bound();
 	test_retype_boundary_pair(dir);
 	test_starve_and_recover(dir);
 	test_unsupported_never_starves(dir);

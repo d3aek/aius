@@ -1189,8 +1189,9 @@ are follow-up work, recorded here so they are not lost.
     distinguishes a mid-stream re-type from a reboot lottery win.
     `aius_pipeline_reset()` clears detector/starvation state but not the
     counters. Two EXPECTED live artifacts, recorded so traces are not
-    misread: a brief noise blip at a genuine live format switch (frames
-    emitted before the second pair validates — bounded, by design), and
+    misread: a brief noise blip at a genuine live format switch — NARROWED
+    by the confirmation squelch (entry 33) to confirmed-class in-band
+    switches only; classification windows are silent — and
     phantom carrier-loss STATE events during the ~5-9 ms UNKNOWN windows
     (`current_state()` maps UNKNOWN to 2, a pre-existing conflation whose
     frequency grows). **LIVE-VERIFIED 2026-07-28, minutes after flash
@@ -1335,8 +1336,59 @@ are follow-up work, recorded here so they are not lost.
     cycle comparison (`dsp_cycles_last/max`) is the remaining instrument
     to read after flash — expected neutral.
 
+33. ~~**The PCM output emitted unvalidated data during the unconfirmed
+    classification window — the seam buzz on powered speakers.**~~
+    **FIXED 2026-07-28 with the confirmation squelch.** Operator direction:
+    "we should not hear anything out of the output until the input coding
+    is locked; the worst thing would be periodic dts buzz out of the pcm
+    output on powered speakers." Defect 28's continuous classification
+    deliberately let a mis-typed stream PLAY as PCM until two validated
+    pairs re-typed it: ~25-45 ms of full-scale burst data at p≈0.5 per
+    carrier relock — measured live at 7 re-types in ~15 minutes of looped
+    playback, an audible crackle at every loop seam.
+
+    The fix (four adversarial gate rounds to an unconditional GO): a PCM
+    classification is an emission heuristic until it has run clean for
+    `AIUS_PIPELINE_PCM_CONFIRM_WORDS` = 8192 words (~85 ms,
+    window-inclusive, the boundary at run word 8192 exactly under any push
+    sizing). Below the boundary the re-type detector runs unchanged but
+    nothing stages or emits — samples are dropped, never delayed (zero
+    added latency, per the standing decision below). The bound covers the
+    widest supported pair spacing, so ANY mis-typed IEC stream re-types
+    inside the squelched window and its data never reaches the sink —
+    pinned by a worst-phase test (4096-word spacing validating exactly at
+    the boundary word, zero blocks emitted). Emission quantization makes
+    the practical threshold 9216 words (~96 ms): a shorter PCM run emits
+    nothing at all, which also means every PCM replay start opens ~85 ms
+    muted and a sub-96 ms PCM replay plays nothing (disclosed, accepted).
+    `squelched_frames` + `pcm_confirmed` ride `pipeline_diag` (swagger
+    Status debt +2). The run counter SATURATES at the boundary — a
+    free-running counter would wrap every ~12.4 h of continuous PCM and
+    re-squelch a confirmed stream for ~85 ms (an implementation
+    improvement over the contract's wording, adjudicated and accepted at
+    delivery audit).
+
+    NARROWED RESIDUAL (supersedes entry 28's "expect a brief click"
+    note): the blip is no longer reachable at ANY classification window —
+    fresh lock, debounced relock, starvation re-entry, replay start. It
+    survives only at a format switch INSIDE a confirmed PCM class (in-band
+    switch or sub-debounce carrier event): 1-4 blocks (~11-43 ms), once —
+    a scenario the operator has declared not real on this bench. An
+    optional confirmed-stream mute (single-pair, behind a default-off
+    config flag) is queued as the escape hatch if that changes.
+
 #### Decisions taken, so they are not re-opened
 
+- **Zero added audio-path latency beats transient artifacts** (operator,
+  2026-07-28, stated twice): the confirmation squelch drops samples rather
+  than delaying them, and the delay-line full close of the in-band-switch
+  residual was REJECTED ("burst noise is more acceptable than extra
+  latency"). Weigh any future latency-adding audio feature against this
+  default.
+- **No in-stream switch machinery by default** (operator, 2026-07-28): "a
+  source is not going to switch while the audio is live." The
+  confirmed-PCM single-pair mute exists as a designed, gate-verified
+  option to ship behind a default-off config flag when wanted.
 - **A network syslog sender was assessed and declined.** Not on cost — the event
   ring has two call sites, so it would carry a lock change and nothing else. An
   absent collector is undetectable in both directions, and the board cannot claim

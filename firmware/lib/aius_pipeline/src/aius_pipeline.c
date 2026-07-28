@@ -41,6 +41,14 @@ struct AiusPipeline {
 	int32_t pcm_pending_l;     /* a lone L sample awaiting its R */
 	int pcm_have_half;
 
+	/* Confirmation squelch: words consumed by the PCM route since the class
+	 * was entered, SATURATING at AIUS_PIPELINE_PCM_CONFIRM_WORDS. Per-run and
+	 * push-independent, which is what fixes the boundary at run word CONFIRM
+	 * under any push sizing; saturating rather than free-running because a
+	 * wrapping uint32 would re-enter the unconfirmed window every ~12.4 h of
+	 * continuous PCM and squelch a confirmed stream for no reason. */
+	uint32_t pcm_run_words;
+
 	/* PCM->DTS re-type detector: continuous across pushes, active only while
 	 * the class is PCM. Positions are a free-running uint32 word counter;
 	 * spacing math uses unsigned deltas, and candidate expiry (push-boundary,
@@ -62,6 +70,7 @@ struct AiusPipeline {
 	/* Lifetime diagnostics: survive aius_pipeline_reset(), cleared at create. */
 	uint32_t retype_count;
 	uint32_t reclassify_count;
+	uint32_t squelched_frames;
 };
 
 /* A re-type inside finish()'s PCM-promotion flush is impossible only while the
@@ -69,6 +78,22 @@ struct AiusPipeline {
 _Static_assert(AIUS_PIPELINE_RETYPE_MIN_SPACING_WORDS >=
                AIUS_PIPELINE_CLASSIFY_MAX_WORDS,
                "retype MIN spacing must cover the classify window");
+
+/* The squelch is only a guarantee while the unconfirmed window is wide enough
+ * for the worst re-type phase to complete inside it: at the maximum pair
+ * spacing the validating Pb lands at run word CONFIRM at the latest, which the
+ * detector consumes before staging. A narrower CONFIRM would let a mis-typed
+ * stream emit burst data from a classification window. */
+_Static_assert(AIUS_PIPELINE_PCM_CONFIRM_WORDS >=
+               AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS,
+               "confirm window must cover the widest re-type pair spacing");
+
+/* Boundary word parity is what makes L-first alignment knowable: with an even
+ * boundary the first staged word after the squelch is always an L sample, under
+ * any push sizing. An odd CONFIRM would swap the channels of every squelched
+ * PCM run. */
+_Static_assert(AIUS_PIPELINE_PCM_CONFIRM_WORDS % 2u == 0u,
+               "confirm boundary must be even so staging resumes L-first");
 
 /* ---- classifier ---------------------------------------------------------- */
 
@@ -181,6 +206,20 @@ static AiusStatus retype_to_dts(AiusPipeline *p, uint16_t pa, uint16_t pb,
 	return dts_feed(p, rest, n);
 }
 
+/* Enter the PCM class: the confirmation window is counted from here, so the run
+ * counter restarts and the staging phase starts clean (the boundary word must
+ * land L-first). Every entry point funnels through this -- classify-window
+ * typing, which also covers starvation re-classification and a post-reset
+ * re-classify, and finish()'s promotion of an undecided tail. */
+static void pcm_enter(AiusPipeline *p)
+{
+	p->klass = AIUS_PIPELINE_PCM;
+	p->pcm_run_words = 0;
+	p->pcm_frames = 0;
+	p->pcm_have_half = 0;
+	p->pcm_pending_l = 0;
+}
+
 static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 {
 	for (size_t i = 0; i < n; i++) {
@@ -219,6 +258,21 @@ static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 		p->rt_prev_word = word;
 		p->rt_have_prev = 1;
 		p->rt_pos++;
+
+		/* Confirmation squelch: until the run has held PCM for CONFIRM words,
+		 * the word is DROPPED -- not staged, not delayed, and pcm_have_half
+		 * stays clear across the whole window so staging resumes L-first at
+		 * the boundary word. The detector above ran first and unchanged: it
+		 * must still re-type a mis-typed stream from inside the window, which
+		 * is the entire point of squelching. */
+		if (p->pcm_run_words < AIUS_PIPELINE_PCM_CONFIRM_WORDS) {
+			/* Frames, not words: the odd run word completes the dropped pair,
+			 * so a trailing half-word is never counted. */
+			if ((p->pcm_run_words & 1u) != 0u)
+				p->squelched_frames++;
+			p->pcm_run_words++;
+			continue;
+		}
 
 		int32_t sample = pcm_wire_to_sample(word);
 		if (!p->pcm_have_half) {
@@ -347,6 +401,8 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 		p->klass = aius_pipeline_classify(p->clsbuf, p->cls_n, p->window);
 		if (p->klass == AIUS_PIPELINE_DTS)
 			p->dts_starve_words = 0; /* every DTS entry starts unstarved */
+		else if (p->klass == AIUS_PIPELINE_PCM)
+			pcm_enter(p); /* every PCM entry starts unconfirmed */
 		if (p->klass != AIUS_PIPELINE_UNKNOWN) {
 			AiusStatus st = route(p, p->clsbuf, p->cls_n);
 			p->cls_n = 0;
@@ -368,9 +424,11 @@ AiusStatus aius_pipeline_finish(AiusPipeline *p)
 
 	AiusStatus rc = AIUS_OK;
 
-	/* No preamble ever arrived: the staged words are linear PCM. */
+	/* No preamble ever arrived: the staged words are linear PCM. They are a
+	 * sub-window run, so the squelch drops all of them -- an unconfirmed
+	 * promotion is exactly the case that must not reach the sink. */
 	if (p->klass == AIUS_PIPELINE_UNKNOWN && p->cls_n > 0) {
-		p->klass = AIUS_PIPELINE_PCM;
+		pcm_enter(p);
 		rc = route(p, p->clsbuf, p->cls_n);
 		p->cls_n = 0;
 	}
@@ -398,6 +456,7 @@ void aius_pipeline_reset(AiusPipeline *p)
 	p->pcm_frames = 0;
 	p->pcm_have_half = 0;
 	p->pcm_pending_l = 0;
+	p->pcm_run_words = 0; /* the next PCM run re-earns its confirmation */
 	p->last_status = AIUS_OK;
 	/* Detector/starvation STATE clears; the two lifetime counters do not --
 	 * they are the live proof that a re-type (not a reboot) happened. */
@@ -428,6 +487,22 @@ AiusStatus aius_pipeline_get_reclass_counters(const AiusPipeline *p,
 		return AIUS_INVALID_ARG;
 	*retype = p->retype_count;
 	*reclassify = p->reclassify_count;
+	return AIUS_OK;
+}
+
+AiusStatus aius_pipeline_get_squelch_diag(const AiusPipeline *p,
+                                          uint32_t *squelched_frames,
+                                          int *pcm_confirmed)
+{
+	if (!p || !squelched_frames || !pcm_confirmed)
+		return AIUS_INVALID_ARG;
+	*squelched_frames = p->squelched_frames;
+	/* Derived, not stored: the gate IS the class plus the run counter, and a
+	 * separate flag could only ever disagree with them. */
+	*pcm_confirmed = (p->klass == AIUS_PIPELINE_PCM &&
+	                  p->pcm_run_words >= AIUS_PIPELINE_PCM_CONFIRM_WORDS)
+	                         ? 1
+	                         : 0;
 	return AIUS_OK;
 }
 
