@@ -1273,6 +1273,68 @@ are follow-up work, recorded here so they are not lost.
     and feed a seam-corrupted AU corpus through the native harness
     hunting for non-terminating parses.
 
+32. ~~**Every DSP stage hard-clipped its own output, so an input-EQ boost
+    on hot material distorted before the headroom pad or limiter could
+    act.**~~ **FIXED 2026-07-28, same day as found — the chain now carries
+    double precision end to end with ONE quantize at the wire.** Operator-
+    reported during the first stereo PCM pass-through session with a
+    midrange peaking boost: "a substantial amount of compression (are we
+    unintentionally normalizing by default?) and what sounded like the
+    introduction of distortion." Nothing normalizes; the mechanism was
+    uglier: every stage quantized AND clamped its output back to int32
+    (`aius_quantize` at the EQ cascade, the downmix, and the limiter), and
+    the input EQ ran at full scale BEFORE the −6.02 dB downmix pad — with
+    pass-through PCM deliberately left-aligned to 24-bit full scale, any
+    positive midrange gain on hot material hard-clipped at the input
+    cascade's own quantize, unreachable by pad or limiter. Flattened peaks
+    read as compression; the clip read as distortion. (The shipped
+    limiter, enabled at −1 dBFS, was largely idle in this scenario: the
+    pad kept the already-clipped signal below threshold.)
+
+    The fix, operator-directed ("keeping the double precision until the
+    end of the signal path seems cleanest, then we have the headroom to
+    play with until the end") and gate-protocol complete (contract →
+    adversarial prebuild NO-GO, five must-fix → rev 2 → clean-room GO →
+    red suite → implementation → delivery audit): `aius_dsp_process`
+    converts int32 planes to double once (unconditional staging — the
+    int32→double boundary), runs trim + input EQ → downmix (+ LFE fold) →
+    output EQ → limiter entirely in double (the limiter's lookahead rings
+    widened to double — int32 rings would have been a hidden second
+    quantize), and performs THE single saturating quantize into the
+    output block at the end. The 24-bit wire ceiling exists only there.
+    A boost that overshoots full scale inter-stage is absorbed by the pad;
+    the limiter finally sees true unclipped peaks.
+
+    Proof: red-first native evidence at the exact complaint — a −1 dBFS
+    sine with a +6 dB midrange peaking boost measured 3rd-harmonic energy
+    at −14 dB (clipping) before the change and −167 dB after; the boost
+    now reaches −1.02 dBFS instead of plateauing at the half-rail; the
+    limiter engages honestly (−1.99 dB GR on the +8 dB case, matching the
+    double-domain model). Flat-path bit-exactness pinned by two new
+    byte-identical fixtures plus the pre-existing vector goldens, all
+    passing WITHOUT regeneration; premise-broken per-stage saturation
+    pins inverted (inter-stage saturation is now the defect). The dsp,
+    dsp-vectors, optical-cutover and pipeline suites are green and the
+    image fits all banks.
+
+    Deviations and escalations, recorded: the contracted OCRAM home for
+    the 32,768 B double staging tripped defect 26's link-time heap floor
+    (OCRAM had exactly 13,312 B of slack), so the planes are carved from
+    the pipeline's 128 KiB DTCM arena in `begin_pipeline()` — decode
+    high-water 62,560 of 131,072 leaves 35,744 B of margin, and the
+    published `arena_high_water` metric steps +32,768 against any prior
+    on-device baseline (the carve is counted). `begin_pipeline` moved
+    out-of-line FLASHMEM (the ITCM placement gate rejects grown cold
+    code in the hot bank) — outside the phase's optical_main seam grant,
+    surfaced. The optical-cutover suite's source-shape checks were
+    updated to track both moves — also outside owned paths, surfaced —
+    and the `PREVIOUS_STATIC` regex narrowing additionally fixed a
+    latent failure the defect-25 `fa=` instrument's two non-counter
+    `g_prev_` latches (521ba20bc) had introduced: that suite had been
+    failing at HEAD since the morning and nobody had run it. On-device
+    cycle comparison (`dsp_cycles_last/max`) is the remaining instrument
+    to read after flash — expected neutral.
+
 #### Decisions taken, so they are not re-opened
 
 - **A network syslog sender was assessed and declined.** Not on cost — the event

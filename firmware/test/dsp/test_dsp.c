@@ -50,19 +50,56 @@ static int32_t peak_abs_i(const int32_t *s, uint32_t n)
     return pk;
 }
 
+/* --- the single-quantize chain's test surface ----------------------------- */
+
+/* Since the single-quantize change, every stage helper (downmix, EQ, input trim,
+ * limiter) takes and returns DOUBLE planes and none of them rounds or clamps:
+ * the int32 <-> double boundary belongs to aius_dsp_process alone. So a test that
+ * drives a stage directly converts its own stimulus, and a test that compares a
+ * stage against aius_dsp_process applies THE quantize once, here, exactly where
+ * the chain does.
+ *
+ * q24 is deliberately a restatement rather than a call into the module: it is the
+ * independent reference the process tests hold aius_dsp_process's own final
+ * quantize against. */
+static int32_t q24(double x)
+{
+    double r = (x >= 0.0) ? floor(x + 0.5) : ceil(x - 0.5);
+    if (r > (double)AIUS_DSP_SAMPLE_MAX) {
+        return AIUS_DSP_SAMPLE_MAX;
+    }
+    if (r < (double)AIUS_DSP_SAMPLE_MIN) {
+        return AIUS_DSP_SAMPLE_MIN;
+    }
+    return (int32_t)r;
+}
+
+static void to_d(const int32_t *src, double *dst, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) {
+        dst[i] = (double)src[i];
+    }
+}
+
+static double peak_abs_d(const double *s, uint32_t n)
+{
+    double pk = 0.0;
+    for (uint32_t i = 0; i < n; i++) {
+        double a = s[i] < 0.0 ? -s[i] : s[i];
+        if (a > pk) pk = a;
+    }
+    return pk;
+}
+
 /* --- downmix known answers ------------------------------------------------ */
 
 static void test_stereo_passthrough(void)
 {
-    int32_t l[4] = {100, -200, 8388607, -8388608};
-    int32_t r[4] = {-1, 2, -3, 4};
-    int32_t ol[4], or_[4];
-    AiusPcmBlock in = {{l, r, 0, 0, 0, 0}, 2, 4, 48000,
-                       AIUS_CH_FL | AIUS_CH_FR};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = or_;
+    double l[4] = {100, -200, 8388607, -8388608};
+    double r[4] = {-1, 2, -3, 4};
+    double ol[4], or_[4];
+    AiusPcmBlockD in = {{l, r, 0, 0, 0, 0}, 2, 4, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR};
 
     /* Subject is ROUTING, so headroom is pinned to unity explicitly rather than
      * taken from the default (which is 0.5 -- see test_shipped_defaults). A
@@ -70,13 +107,13 @@ static void test_stereo_passthrough(void)
      * wrong reason the next time the level moved. */
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0;
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
-    assert(out.channels == 2);
-    assert(out.channel_mask == (AIUS_CH_FL | AIUS_CH_FR));
-    assert(out.frames == 4);
-    assert(out.sample_rate_hz == 48000);
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
+    /* The output block's META (channels/mask/frames/rate) is no longer this
+     * function's to write -- the downmix produces two double planes and nothing
+     * else. aius_dsp_process fills the block, and that is where the meta contract
+     * is asserted now (test_process_bypass_equals_downmix). */
     for (int i = 0; i < 4; i++) {
-        assert(ol[i] == l[i]); /* exact passthrough */
+        assert(ol[i] == l[i]); /* exact passthrough, in double */
         assert(or_[i] == r[i]);
     }
     printf("ok stereo passthrough\n");
@@ -84,17 +121,13 @@ static void test_stereo_passthrough(void)
 
 static void test_mono_to_both(void)
 {
-    int32_t m[3] = {1234, -5678, 42};
-    int32_t ol[3], or_[3];
-    AiusPcmBlock in = {{m, 0, 0, 0, 0, 0}, 1, 3, 48000, AIUS_CH_FC};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = or_;
+    double m[3] = {1234, -5678, 42};
+    double ol[3], or_[3];
+    AiusPcmBlockD in = {{m, 0, 0, 0, 0, 0}, 1, 3, 48000, AIUS_CH_FC};
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0; /* routing test: see test_stereo_passthrough */
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
     for (int i = 0; i < 3; i++) {
         assert(ol[i] == m[i]); /* unity replicate */
         assert(or_[i] == m[i]);
@@ -105,70 +138,69 @@ static void test_mono_to_both(void)
 /* FC maps equally to L and R at the documented center gain. */
 static void test_fc_equal_lr(void)
 {
-    int32_t fl[1] = {0}, fr[1] = {0}, fc[1] = {1000000};
-    int32_t lfe[1] = {0}, sl[1] = {0}, sr[1] = {0};
-    int32_t ol[1], or_[1];
-    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, 1, 48000,
-                       AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
-                           AIUS_CH_SL | AIUS_CH_SR};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = or_;
+    double fl[1] = {0}, fr[1] = {0}, fc[1] = {1000000};
+    double lfe[1] = {0}, sl[1] = {0}, sr[1] = {0};
+    double ol[1], or_[1];
+    AiusPcmBlockD in = {{fl, fr, fc, lfe, sl, sr}, 6, 1, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                            AIUS_CH_SL | AIUS_CH_SR};
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0; /* routing test: see test_stereo_passthrough */
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
     assert(ol[0] == or_[0]); /* equal into both */
-    double expect = (double)fc[0] * AIUS_DSP_DOWNMIX_CENTER_DEFAULT;
-    assert(fabs((double)ol[0] - expect) <= 1.0); /* at the -3 dB gain */
-    printf("ok FC equal L/R at center gain (%d == %d, ~%.1f)\n",
+    /* EXACT, not within a quantization step: with no quantize in the matrix the
+     * result is the product itself. */
+    double expect = fc[0] * AIUS_DSP_DOWNMIX_CENTER_DEFAULT;
+    assert(ol[0] == expect); /* at the -3 dB gain */
+    printf("ok FC equal L/R at center gain (%.1f == %.1f, ~%.1f)\n",
            ol[0], or_[0], expect);
 }
 
 /* SL routes to L only; SR routes to R only. */
 static void test_surround_routing(void)
 {
-    int32_t fl[1] = {0}, fr[1] = {0}, sl[1] = {2000000}, sr[1] = {0};
-    int32_t ol[1], or_[1];
+    double fl[1] = {0}, fr[1] = {0}, sl[1] = {2000000}, sr[1] = {0};
+    double ol[1], or_[1];
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR;
 
-    AiusPcmBlock in = {{fl, fr, sl, sr, 0, 0}, 4, 1, 48000, mask};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = or_;
+    AiusPcmBlockD in = {{fl, fr, sl, sr, 0, 0}, 4, 1, 48000, mask};
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0; /* routing test: see test_stereo_passthrough */
 
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
-    double expect = (double)sl[0] * AIUS_DSP_DOWNMIX_SURROUND_DEFAULT;
-    assert(fabs((double)ol[0] - expect) <= 1.0);
-    assert(or_[0] == 0); /* SL never leaks to R */
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
+    double expect = sl[0] * AIUS_DSP_DOWNMIX_SURROUND_DEFAULT;
+    assert(ol[0] == expect); /* exact: no quantize in the matrix */
+    assert(or_[0] == 0.0);   /* SL never leaks to R */
 
     /* Now SR only. */
     sl[0] = 0;
     sr[0] = 2000000;
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
-    assert(ol[0] == 0); /* SR never leaks to L */
-    assert(fabs((double)or_[0] - expect) <= 1.0);
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
+    assert(ol[0] == 0.0); /* SR never leaks to L */
+    assert(or_[0] == expect);
     printf("ok surround routing SL->L, SR->R\n");
 }
 
-/* Full-scale correlated input with unity headroom saturates, never wraps. */
+/* THE PIN THAT INVERTED (F5). It used to assert that a correlated full-scale
+ * input at unity headroom SATURATES at the matrix output ("saturated, not
+ * overflowed"). Since the single-quantize change the matrix does not clamp at
+ * all: it hands the next stage the true sum, 2.7303 x full scale, and clamping
+ * there would be the defect -- it is exactly the destroyed over that the limiter
+ * could never recover. The subject is unchanged (a correlated full-scale input
+ * at unity headroom is an over); what is asserted is now that the over ARRIVES
+ * INTACT, and that the chain's single final quantize is what turns it into a
+ * rail. */
 static void test_clip_headroom(void)
 {
-    int32_t fl[1] = {AIUS_DSP_SAMPLE_MAX}, fr[1] = {AIUS_DSP_SAMPLE_MAX};
-    int32_t fc[1] = {AIUS_DSP_SAMPLE_MAX}, lfe[1] = {AIUS_DSP_SAMPLE_MAX};
-    int32_t sl[1] = {AIUS_DSP_SAMPLE_MAX}, sr[1] = {AIUS_DSP_SAMPLE_MAX};
-    int32_t ol[1], or_[1];
+    const double FSMAX = (double)AIUS_DSP_SAMPLE_MAX;
+    double fl[1] = {FSMAX}, fr[1] = {FSMAX};
+    double fc[1] = {FSMAX}, lfe[1] = {FSMAX};
+    double sl[1] = {FSMAX}, sr[1] = {FSMAX};
+    double ol[1], or_[1];
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
                     AIUS_CH_SL | AIUS_CH_SR;
-    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, 1, 48000, mask};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = or_;
+    AiusPcmBlockD in = {{fl, fr, fc, lfe, sl, sr}, 6, 1, 48000, mask};
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0; /* the case this test is named for */
@@ -179,32 +211,42 @@ static void test_clip_headroom(void)
     memset(&fold, 0, sizeof fold);
     cfg.lfe_fold = &fold;
     assert(cfg.lfe == AIUS_DSP_LFE_GAIN_MINUS10DB);
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
-    assert(ol[0] == AIUS_DSP_SAMPLE_MAX); /* saturated, not overflowed */
-    assert(or_[0] == AIUS_DSP_SAMPLE_MAX);
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
 
-    /* Negative full scale saturates to MIN. */
-    fl[0] = fr[0] = fc[0] = lfe[0] = sl[0] = sr[0] = AIUS_DSP_SAMPLE_MIN;
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
-    assert(ol[0] == AIUS_DSP_SAMPLE_MIN);
-    assert(or_[0] == AIUS_DSP_SAMPLE_MIN);
-    printf("ok clipping headroom holds at full scale\n");
+    /* Unclamped and OVER: FL + center*FC + surround*SL + lfe*lp(LFE). The LFE
+     * term is the first sample of the LR4's impulse response rather than the flat
+     * fold gain, so the bound is stated as "past full scale, at least the dry
+     * terms" rather than as the flat-fold number. */
+    double dry = FSMAX * (1.0 + AIUS_DSP_DOWNMIX_CENTER_DEFAULT +
+                          AIUS_DSP_DOWNMIX_SURROUND_DEFAULT);
+    assert(ol[0] > FSMAX);  /* the over survives the matrix */
+    assert(ol[0] >= dry);   /* and carries every correlated term */
+    assert(ol[0] == or_[0]);
+    /* THE clamp still exists -- once, at the end of the chain. */
+    assert(q24(ol[0]) == AIUS_DSP_SAMPLE_MAX);
+
+    /* Negative full scale is the mirror: unclamped under, quantizing to MIN. */
+    fl[0] = fr[0] = fc[0] = lfe[0] = sl[0] = sr[0] = (double)AIUS_DSP_SAMPLE_MIN;
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
+    assert(ol[0] < (double)AIUS_DSP_SAMPLE_MIN);
+    assert(q24(ol[0]) == AIUS_DSP_SAMPLE_MIN);
+    assert(q24(or_[0]) == AIUS_DSP_SAMPLE_MIN);
+    printf("ok unity headroom over survives the matrix unclamped (%.0f, "
+           "%+.2f dBFS, quantizes to the rail)\n",
+           ol[0], 20.0 * log10(fabs(ol[0]) / FSMAX));
 }
 
 /* The clip-free headroom maps correlated full scale to exactly full scale. */
 static void test_clipfree_headroom(void)
 {
-    int32_t fl[1] = {AIUS_DSP_SAMPLE_MAX}, fr[1] = {AIUS_DSP_SAMPLE_MAX};
-    int32_t fc[1] = {AIUS_DSP_SAMPLE_MAX};
-    int32_t sl[1] = {AIUS_DSP_SAMPLE_MAX}, sr[1] = {AIUS_DSP_SAMPLE_MAX};
-    int32_t ol[1], or_[1];
+    const double FSMAX = (double)AIUS_DSP_SAMPLE_MAX;
+    double fl[1] = {FSMAX}, fr[1] = {FSMAX};
+    double fc[1] = {FSMAX};
+    double sl[1] = {FSMAX}, sr[1] = {FSMAX};
+    double ol[1], or_[1];
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_SL |
                     AIUS_CH_SR;
-    AiusPcmBlock in = {{fl, fr, fc, sl, sr, 0}, 5, 1, 48000, mask};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = or_;
+    AiusPcmBlockD in = {{fl, fr, fc, sl, sr, 0}, 5, 1, 48000, mask};
 
     /* The block is 5.0 -- no LFE plane -- so the config's LFE term is pinned to
      * excluded to match. Leaving the shipped fold gain in place would put a
@@ -214,10 +256,15 @@ static void test_clipfree_headroom(void)
     cfg.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
     cfg.headroom = aius_downmix_clipfree_headroom(&cfg);
     assert(cfg.headroom > 0.0 && cfg.headroom < 1.0);
-    assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
-    /* L = FS*(1 + center + surround)*headroom = FS, within rounding, never over. */
-    assert(ol[0] <= AIUS_DSP_SAMPLE_MAX);
-    assert(ol[0] >= AIUS_DSP_SAMPLE_MAX - 1);
+    assert(aius_dsp_downmix(&cfg, &in, ol, or_) == AIUS_OK);
+    /* L = FS*(1 + center + surround)*headroom = FS. The claim is stronger than it
+     * was: with no quantize in the matrix, "maps full scale to full scale" is a
+     * floating-point identity to within one ULP of the reciprocal, not "within
+     * one output LSB". And the point of the clip-free level is that the final
+     * quantize has nothing to clamp. */
+    assert(fabs(ol[0] - FSMAX) <= 1e-6);
+    assert(q24(ol[0]) <= AIUS_DSP_SAMPLE_MAX);
+    assert(q24(ol[0]) >= AIUS_DSP_SAMPLE_MAX - 1);
     printf("ok clip-free headroom maps full scale to full scale\n");
 }
 
@@ -246,27 +293,28 @@ static double fold_mag_hz(const AiusLfeFold *f, double fs, double hz)
 }
 
 /* Downmix an LFE-only block (FL/FR silent) and return L. The isolated fold-in
- * contribution, which is what every level assertion below is about. */
+ * contribution, which is what every level assertion below is about. Takes the LFE
+ * plane in int32 (that is how the decoder emits it and how these tests synthesize
+ * it) and converts, because the matrix is a double-plane stage now. */
 static void fold_lfe_only(const AiusDownmixConfig *cfg, const int32_t *lfe,
-                          uint32_t n, int32_t *outL, int32_t *outR)
+                          uint32_t n, double *outL, double *outR)
 {
-    int32_t *zero = calloc(n, sizeof(int32_t));
-    assert(zero != NULL);
-    AiusPcmBlock in = {{zero, zero, (int32_t *)lfe, 0, 0, 0}, 3, n, 48000,
-                       AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = outL;
-    out.planes[1] = outR;
-    assert(aius_dsp_downmix(cfg, &in, &out) == AIUS_OK);
+    double *zero = calloc(n, sizeof(double));
+    double *lfed = calloc(n, sizeof(double));
+    assert(zero != NULL && lfed != NULL);
+    to_d(lfe, lfed, n);
+    AiusPcmBlockD in = {{zero, zero, lfed, 0, 0, 0}, 3, n, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    assert(aius_dsp_downmix(cfg, &in, outL, outR) == AIUS_OK);
     free(zero);
+    free(lfed);
 }
 
-static double rms_tail(const int32_t *s, uint32_t n, uint32_t skip)
+static double rms_tail(const double *s, uint32_t n, uint32_t skip)
 {
     double acc = 0.0;
     for (uint32_t i = skip; i < n; i++)
-        acc += (double)s[i] * (double)s[i];
+        acc += s[i] * s[i];
     return sqrt(acc / (double)(n - skip));
 }
 
@@ -394,21 +442,23 @@ static void test_lfe_fold_zero_gain_bit_exact(void)
     }
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
                     AIUS_CH_SL | AIUS_CH_SR;
-    AiusPcmBlock in = {{fl, fr, fc, lfe, sl, sr}, 6, N, 48000, mask};
+    double dfl[N], dfr[N], dfc[N], dlfe[N], dsl[N], dsr[N];
+    to_d(fl, dfl, N); to_d(fr, dfr, N); to_d(fc, dfc, N);
+    to_d(lfe, dlfe, N); to_d(sl, dsl, N); to_d(sr, dsr, N);
+    AiusPcmBlockD in = {{dfl, dfr, dfc, dlfe, dsl, dsr}, 6, N, 48000, mask};
 
     /* The reference: what this matrix produced before the fold-in existed --
-     * computed here, from the documented formula, with no LFE term at all. */
-    int32_t refL[N], refR[N];
+     * computed here, from the documented formula, with no LFE term at all. It is
+     * no longer quantized, because the matrix no longer quantizes; "bit-exact"
+     * is now an exact double identity rather than an equality of two rounded
+     * integers, which is a STRICTER claim on the same subject. */
+    double refL[N], refR[N];
     AiusDownmixConfig d = aius_downmix_config_default();
     for (int i = 0; i < N; i++) {
-        double l = (double)fl[i] + (double)fc[i] * d.center +
-                   (double)sl[i] * d.surround;
-        double r = (double)fr[i] + (double)fc[i] * d.center +
-                   (double)sr[i] * d.surround;
-        refL[i] = (int32_t)(l * d.headroom >= 0.0 ? floor(l * d.headroom + 0.5)
-                                                  : ceil(l * d.headroom - 0.5));
-        refR[i] = (int32_t)(r * d.headroom >= 0.0 ? floor(r * d.headroom + 0.5)
-                                                  : ceil(r * d.headroom - 0.5));
+        double l = dfl[i] + dfc[i] * d.center + dsl[i] * d.surround;
+        double r = dfr[i] + dfc[i] * d.center + dsr[i] * d.surround;
+        refL[i] = l * d.headroom;
+        refR[i] = r * d.headroom;
     }
 
     /* Four shapes of "LFE excluded", all of which must be that reference. */
@@ -420,17 +470,13 @@ static void test_lfe_fold_zero_gain_bit_exact(void)
         {0.0, 1, "no corner, state present"},
     };
     for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
-        int32_t ol[N], orr[N];
-        AiusPcmBlock out;
-        memset(&out, 0, sizeof out);
-        out.planes[0] = ol;
-        out.planes[1] = orr;
+        double ol[N], orr[N];
         AiusDownmixConfig cfg = aius_downmix_config_default();
         cfg.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
         cfg.lfe_crossover_hz = cases[c].xover;
         memset(&fold, 0, sizeof fold);
         cfg.lfe_fold = cases[c].with_state ? &fold : NULL;
-        assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
+        assert(aius_dsp_downmix(&cfg, &in, ol, orr) == AIUS_OK);
         for (int i = 0; i < N; i++) {
             assert(ol[i] == refL[i]);
             assert(orr[i] == refR[i]);
@@ -444,15 +490,11 @@ static void test_lfe_fold_zero_gain_bit_exact(void)
     /* Not vacuous: the SHIPPED default (LFE folded) must differ from that
      * reference on this block, or "bit-exact at zero gain" proves nothing. */
     {
-        int32_t ol[N], orr[N];
-        AiusPcmBlock out;
-        memset(&out, 0, sizeof out);
-        out.planes[0] = ol;
-        out.planes[1] = orr;
+        double ol[N], orr[N];
         AiusDownmixConfig cfg = aius_downmix_config_default();
         memset(&fold, 0, sizeof fold);
         cfg.lfe_fold = &fold;
-        assert(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK);
+        assert(aius_dsp_downmix(&cfg, &in, ol, orr) == AIUS_OK);
         int differs = 0;
         for (int i = 0; i < N; i++)
             if (ol[i] != refL[i] || orr[i] != refR[i]) differs++;
@@ -476,8 +518,8 @@ static void test_lfe_fold_attenuates_above_corner(void)
     const double amp = 4000000.0;
     int32_t *lo = malloc(N * sizeof(int32_t));
     int32_t *hi = malloc(N * sizeof(int32_t));
-    int32_t *ol = malloc(N * sizeof(int32_t));
-    int32_t *orr = malloc(N * sizeof(int32_t));
+    double *ol = malloc(N * sizeof(double));
+    double *orr = malloc(N * sizeof(double));
     assert(lo && hi && ol && orr);
     for (int i = 0; i < N; i++) {
         lo[i] = (int32_t)floor(amp * sin(2.0 * M_PI * 40.0 * i / FS) + 0.5);
@@ -544,7 +586,7 @@ static void test_lfe_fold_unfiltered_is_flat_multiply(void)
     int32_t lfe[N];
     for (int i = 0; i < N; i++)
         lfe[i] = (i % 2 ? -1 : 1) * (int32_t)(i * 100000);
-    int32_t ol[N], orr[N];
+    double ol[N], orr[N];
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0;
@@ -553,10 +595,11 @@ static void test_lfe_fold_unfiltered_is_flat_multiply(void)
     cfg.lfe_fold = NULL;
     fold_lfe_only(&cfg, lfe, N, ol, orr);
     for (int i = 0; i < N; i++) {
+        /* "Exact" now means exact: the multiply itself, with no rounding to
+         * argue about. */
         double e = (double)lfe[i] * AIUS_DSP_LFE_GAIN_MINUS10DB;
-        int32_t q = (int32_t)(e >= 0.0 ? floor(e + 0.5) : ceil(e - 0.5));
-        assert(ol[i] == q);
-        assert(orr[i] == q); /* symmetric: one mono channel, no image */
+        assert(ol[i] == e);
+        assert(orr[i] == e); /* symmetric: one mono channel, no image */
     }
     printf("ok unfiltered fold is an exact flat multiply into both channels\n");
 }
@@ -572,7 +615,7 @@ static void test_lfe_fold_missing_state_fails_closed(void)
     int32_t lfe[N];
     for (int i = 0; i < N; i++)
         lfe[i] = 3000000 + i * 1000;
-    int32_t ol[N], orr[N], zl[N], zr[N], fl_[N], fr_[N];
+    double ol[N], orr[N], zl[N], zr[N], fl_[N], fr_[N];
 
     AiusDownmixConfig cfg = aius_downmix_config_default();
     cfg.headroom = 1.0;
@@ -605,21 +648,19 @@ static void test_lfe_fold_missing_state_fails_closed(void)
      * instead of being folded through whatever was there before. */
     AiusLfeFold fold;
     memset(&fold, 0, sizeof fold);
-    AiusPcmBlock in = {{zl, zr, lfe, 0, 0, 0}, 3, N, 800,
-                       AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    double dlfe[N];
+    to_d(lfe, dlfe, N);
     memset(zl, 0, sizeof zl);
     memset(zr, 0, sizeof zr);
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = orr;
+    AiusPcmBlockD in = {{zl, zr, dlfe, 0, 0, 0}, 3, N, 800,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
     AiusDownmixConfig bad = aius_downmix_config_default();
     bad.headroom = 1.0;
     bad.lfe_crossover_hz = AIUS_DSP_LFE_CROSSOVER_MAX_HZ;
     bad.lfe_fold = &fold;
-    assert(aius_dsp_downmix(&bad, &in, &out) == AIUS_OK);
+    assert(aius_dsp_downmix(&bad, &in, ol, orr) == AIUS_OK);
     for (int i = 0; i < N; i++)
-        assert(ol[i] == 0 && orr[i] == 0);
+        assert(ol[i] == 0.0 && orr[i] == 0.0);
     printf("ok missing/unusable crossover fails closed to LFE-excluded\n");
 }
 
@@ -630,9 +671,9 @@ static void test_lfe_fold_gain_applied_after_filter(void)
 {
     enum { N = 2048 };
     int32_t *lfe = malloc(N * sizeof(int32_t));
-    int32_t *a = malloc(N * sizeof(int32_t));
-    int32_t *b = malloc(N * sizeof(int32_t));
-    int32_t *tmp = malloc(N * sizeof(int32_t));
+    double *a = malloc(N * sizeof(double));
+    double *b = malloc(N * sizeof(double));
+    double *tmp = malloc(N * sizeof(double));
     assert(lfe && a && b && tmp);
     for (int i = 0; i < N; i++)
         lfe[i] = (int32_t)floor(3000000.0 * sin(2.0 * M_PI * 55.0 * i / FS) + 0.5);
@@ -650,9 +691,12 @@ static void test_lfe_fold_gain_applied_after_filter(void)
     memset(&fold, 0, sizeof fold);
     fold_lfe_only(&cfg, lfe, N, b, tmp);
 
-    /* 2x within one quantization step per sample (each side rounds once). */
+    /* EXACTLY 2x, sample for sample. This assertion tightened when the quantize
+     * left the matrix: it used to allow 1.5 LSB because each side rounded once,
+     * and both gains here are exact powers of two, so with no rounding at all the
+     * doubling is an IEEE identity. A tolerance would now hide a real defect. */
     for (int i = 0; i < N; i++)
-        assert(fabs((double)b[i] - 2.0 * (double)a[i]) <= 1.5);
+        assert(b[i] == 2.0 * a[i]);
     printf("ok fold gain applies after the filter (2x gain -> 2x output)\n");
     free(lfe);
     free(a);
@@ -667,15 +711,17 @@ static void test_lfe_fold_block_boundary_seamless(void)
 {
     enum { N = 1024, H = 400 };
     int32_t *lfe = malloc(N * sizeof(int32_t));
-    int32_t *whole_l = malloc(N * sizeof(int32_t));
-    int32_t *whole_r = malloc(N * sizeof(int32_t));
-    int32_t *split_l = malloc(N * sizeof(int32_t));
-    int32_t *split_r = malloc(N * sizeof(int32_t));
-    int32_t *zero = calloc(N, sizeof(int32_t));
-    assert(lfe && whole_l && whole_r && split_l && split_r && zero);
+    double *lfed = malloc(N * sizeof(double));
+    double *whole_l = malloc(N * sizeof(double));
+    double *whole_r = malloc(N * sizeof(double));
+    double *split_l = malloc(N * sizeof(double));
+    double *split_r = malloc(N * sizeof(double));
+    double *zero = calloc(N, sizeof(double));
+    assert(lfe && lfed && whole_l && whole_r && split_l && split_r && zero);
     for (int i = 0; i < N; i++)
         lfe[i] = (int32_t)floor(2500000.0 * sin(2.0 * M_PI * 85.0 * i / FS) +
                                 900000.0 * sin(2.0 * M_PI * 700.0 * i / FS) + 0.5);
+    to_d(lfe, lfed, N);
 
     AiusLfeFold fold;
     AiusDownmixConfig cfg = aius_downmix_config_default();
@@ -687,18 +733,10 @@ static void test_lfe_fold_block_boundary_seamless(void)
 
     memset(&fold, 0, sizeof fold);
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE;
-    AiusPcmBlock ha = {{zero, zero, lfe, 0, 0, 0}, 3, H, 48000, mask};
-    AiusPcmBlock hb = {{zero, zero, lfe + H, 0, 0, 0}, 3, N - H, 48000, mask};
-    AiusPcmBlock oa;
-    memset(&oa, 0, sizeof oa);
-    oa.planes[0] = split_l;
-    oa.planes[1] = split_r;
-    AiusPcmBlock ob;
-    memset(&ob, 0, sizeof ob);
-    ob.planes[0] = split_l + H;
-    ob.planes[1] = split_r + H;
-    assert(aius_dsp_downmix(&cfg, &ha, &oa) == AIUS_OK);
-    assert(aius_dsp_downmix(&cfg, &hb, &ob) == AIUS_OK);
+    AiusPcmBlockD ha = {{zero, zero, lfed, 0, 0, 0}, 3, H, 48000, mask};
+    AiusPcmBlockD hb = {{zero, zero, lfed + H, 0, 0, 0}, 3, N - H, 48000, mask};
+    assert(aius_dsp_downmix(&cfg, &ha, split_l, split_r) == AIUS_OK);
+    assert(aius_dsp_downmix(&cfg, &hb, split_l + H, split_r + H) == AIUS_OK);
     for (int i = 0; i < N; i++) {
         assert(split_l[i] == whole_l[i]);
         assert(split_r[i] == whole_r[i]);
@@ -707,10 +745,11 @@ static void test_lfe_fold_block_boundary_seamless(void)
      * first half's state, so a zeroed-state second call would differ. */
     int nonzero = 0;
     for (int i = H; i < N; i++)
-        if (whole_l[i] != 0) nonzero++;
+        if (whole_l[i] != 0.0) nonzero++;
     assert(nonzero > (N - H) / 2);
     printf("ok LFE fold is seamless across a block boundary\n");
     free(lfe);
+    free(lfed);
     free(whole_l);
     free(whole_r);
     free(split_l);
@@ -725,7 +764,8 @@ static void test_lfe_fold_block_boundary_seamless(void)
 static void test_lfe_fold_redesign_on_change(void)
 {
     enum { N = 256 };
-    int32_t lfe[N], ol[N], orr[N];
+    int32_t lfe[N];
+    double ol[N], orr[N];
     for (int i = 0; i < N; i++)
         lfe[i] = (int32_t)floor(2000000.0 * sin(2.0 * M_PI * 200.0 * i / FS) + 0.5);
 
@@ -751,20 +791,19 @@ static void test_lfe_fold_redesign_on_change(void)
     /* A RATE change redesigns too, from the block's own sample_rate_hz, so the
      * corner stays the same analog frequency. fold_lfe_only pins 48 kHz, so drive
      * a 96 kHz block directly. */
-    int32_t *zero = calloc(N, sizeof(int32_t));
-    assert(zero != NULL);
-    AiusPcmBlock in96 = {{zero, zero, lfe, 0, 0, 0}, 3, N, 96000,
-                         AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = ol;
-    out.planes[1] = orr;
-    assert(aius_dsp_downmix(&cfg, &in96, &out) == AIUS_OK);
+    double *zero = calloc(N, sizeof(double));
+    double *lfed = calloc(N, sizeof(double));
+    assert(zero != NULL && lfed != NULL);
+    to_d(lfe, lfed, N);
+    AiusPcmBlockD in96 = {{zero, zero, lfed, 0, 0, 0}, 3, N, 96000,
+                          AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    assert(aius_dsp_downmix(&cfg, &in96, ol, orr) == AIUS_OK);
     assert(fold.designed_fs == 96000.0 && fold.designed_hz == 80.0);
     /* 1e-9 for the reference's own cancellation at fs/f0 = 1200; see
      * test_lfe_fold_rate_independent. */
     assert(close(fold_mag_hz(&fold, 96000.0, 80.0), 0.5, 1e-9));
     free(zero);
+    free(lfed);
     printf("ok LFE fold redesigns on a corner or rate change\n");
 }
 
@@ -773,7 +812,8 @@ static void test_lfe_fold_redesign_on_change(void)
 static void test_lfe_fold_reset(void)
 {
     enum { N = 512 };
-    int32_t lfe[N], a_l[N], a_r[N], b_l[N], b_r[N];
+    int32_t lfe[N];
+    double a_l[N], a_r[N], b_l[N], b_r[N];
     for (int i = 0; i < N; i++)
         lfe[i] = (int32_t)floor(2000000.0 * sin(2.0 * M_PI * 60.0 * i / FS) + 0.5);
 
@@ -805,12 +845,12 @@ static void test_lfe_fold_reset(void)
 
 static void test_biquad_gain_bypass(void)
 {
-    int32_t s[4] = {1000, 0, 0, 0}; /* impulse */
+    double s[4] = {1000, 0, 0, 0}; /* impulse */
     AiusBiquad bp = aius_biquad_bypass();
     AiusBiquadState st;
     memset(&st, 0, sizeof st);
     aius_dsp_eq_run(&bp, 1, &st, s, 4);
-    assert(s[0] == 1000 && s[1] == 0 && s[2] == 0 && s[3] == 0);
+    assert(s[0] == 1000.0 && s[1] == 0.0 && s[2] == 0.0 && s[3] == 0.0);
     printf("ok bypass biquad passes impulse\n");
 }
 
@@ -818,26 +858,39 @@ static void test_biquad_gain_bypass(void)
 static void test_biquad_feedback_recurrence(void)
 {
     AiusBiquad q = {1.0, 0.0, 0.0, -0.5, 0.0};
-    int32_t s[4] = {1000, 0, 0, 0};
+    double s[4] = {1000, 0, 0, 0};
     AiusBiquadState st;
     memset(&st, 0, sizeof st);
     aius_dsp_eq_run(&q, 1, &st, s, 4);
-    assert(s[0] == 1000 && s[1] == 500 && s[2] == 250 && s[3] == 125);
+    assert(s[0] == 1000.0 && s[1] == 500.0 && s[2] == 250.0 && s[3] == 125.0);
     printf("ok DF-I feedback recurrence 1000,500,250,125\n");
 }
 
-/* A pure-gain section: y = 0.5*x, saturating + rounding checked. */
+/* THE PIN THAT INVERTED (F5), and the half-LSB is the whole point. This used to
+ * assert the cascade's rounding rule -- 100.5 -> 101, ties away from zero --
+ * because the cascade quantized its own output. It does not any more: the
+ * cascade is a double-in, double-out stage, and rounding here would be one of
+ * the intermediate requantizations the single-quantize chain exists to remove.
+ *
+ * So the same stimulus now pins the OPPOSITE property: the halves SURVIVE the
+ * stage intact, and the rounding rule they used to demonstrate is asserted where
+ * it now lives -- once, at the final quantize (q24, the same rule, same ties). */
 static void test_biquad_gain_scale(void)
 {
     AiusBiquad q = {0.5, 0.0, 0.0, 0.0, 0.0};
-    int32_t s[3] = {100, 201, -201};
+    double s[3] = {100, 201, -201};
     AiusBiquadState st;
     memset(&st, 0, sizeof st);
     aius_dsp_eq_run(&q, 1, &st, s, 3);
-    assert(s[0] == 50);   /* 50.0 */
-    assert(s[1] == 101);  /* 100.5 -> 101 (ties away from zero) */
-    assert(s[2] == -101); /* -100.5 -> -101 */
-    printf("ok gain section rounds half away from zero\n");
+    assert(s[0] == 50.0);    /* exact */
+    assert(s[1] == 100.5);   /* the half is CARRIED, not rounded away */
+    assert(s[2] == -100.5);
+    /* And the rounding rule still exists, at the one place that has it. */
+    assert(q24(s[0]) == 50);
+    assert(q24(s[1]) == 101);  /* 100.5 -> 101 (ties away from zero) */
+    assert(q24(s[2]) == -101); /* -100.5 -> -101 */
+    printf("ok gain section carries the half; the final quantize rounds it away "
+           "from zero\n");
 }
 
 /* RBJ cookbook DC/Nyquist analytic gains. */
@@ -874,33 +927,41 @@ static void test_biquad_dc_settle(void)
 {
     AiusBiquad lp = aius_biquad_lowpass(FS, 2000.0, 0.7071);
     enum { N = 4096 };
-    static int32_t s[N];
+    static double s[N];
     for (int i = 0; i < N; i++) {
-        s[i] = 1000000;
+        s[i] = 1000000.0;
     }
     AiusBiquadState st;
     memset(&st, 0, sizeof st);
     aius_dsp_eq_run(&lp, 1, &st, s, N);
-    assert(abs(s[N - 1] - 1000000) <= 1); /* DC passes at unity */
-    printf("ok lowpass settles to unity DC (%d)\n", s[N - 1]);
+    assert(fabs(s[N - 1] - 1000000.0) <= 1.0); /* DC passes at unity */
+    printf("ok lowpass settles to unity DC (%.6f)\n", s[N - 1]);
 }
 
 /* --- process + arena ------------------------------------------------------ */
 
-/* process with a bypass EQ equals bare downmix. */
+/* process with a bypass EQ equals bare downmix, quantized once.
+ *
+ * This is also where the OUTPUT BLOCK META is pinned now: the downmix stage no
+ * longer writes channels/mask/frames/rate (it produces two double planes and
+ * nothing else), so aius_dsp_process is the only thing that fills the block, and
+ * the contract belongs to the test that drives it. */
 static void test_process_bypass_equals_downmix(void)
 {
     int32_t fl[2] = {111, -222}, fr[2] = {333, -444}, fc[2] = {555, 666};
-    int32_t ol[2], or_[2], dl[2], dr[2];
+    int32_t ol[2], or_[2];
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
     AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 2, 48000, mask};
 
-    AiusPcmBlock dm;
-    memset(&dm, 0, sizeof dm);
-    dm.planes[0] = dl;
-    dm.planes[1] = dr;
+    /* Reference: the matrix alone, over the same planes converted to double, then
+     * THE single quantize applied by hand. */
+    double dfl[2], dfr[2], dfc[2], dl[2], dr[2];
+    to_d(fl, dfl, 2);
+    to_d(fr, dfr, 2);
+    to_d(fc, dfc, 2);
+    AiusPcmBlockD ind = {{dfl, dfr, dfc, 0, 0, 0}, 3, 2, 48000, mask};
     AiusDownmixConfig dcfg = aius_downmix_config_default();
-    assert(aius_dsp_downmix(&dcfg, &in, &dm) == AIUS_OK);
+    assert(aius_dsp_downmix(&dcfg, &ind, dl, dr) == AIUS_OK);
 
     AiusBiquad eq[1];
     AiusBiquadState state[2];
@@ -908,18 +969,31 @@ static void test_process_bypass_equals_downmix(void)
     size_t nsec = aius_eq_default(eq, 1);
     assert(nsec == 1);
 
+    double sc[AIUS_MAX_CHANNELS][2], wl[2], wr[2];
     AiusPcmBlock out;
     memset(&out, 0, sizeof out);
     out.planes[0] = ol;
     out.planes[1] = or_;
-    AiusDspConfig cfg = {aius_downmix_config_default(), eq, nsec, state, NULL,
-                         NULL};
+    AiusDspConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.downmix = aius_downmix_config_default();
+    cfg.eq = eq;
+    cfg.eq_sections = nsec;
+    cfg.eq_state = state;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) cfg.scratch[p] = sc[p];
+    cfg.work_l = wl;
+    cfg.work_r = wr;
     assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
     for (int i = 0; i < 2; i++) {
-        assert(ol[i] == dl[i]);
-        assert(or_[i] == dr[i]);
+        assert(ol[i] == q24(dl[i]));
+        assert(or_[i] == q24(dr[i]));
     }
-    printf("ok process(bypass EQ) == downmix\n");
+    /* The block meta the chain's tail is responsible for. */
+    assert(out.channels == 2);
+    assert(out.channel_mask == (AIUS_CH_FL | AIUS_CH_FR));
+    assert(out.frames == 2);
+    assert(out.sample_rate_hz == 48000);
+    printf("ok process(bypass EQ) == downmix + one quantize\n");
 }
 
 /* --- input stage: trim + EQ ----------------------------------------------- */
@@ -933,50 +1007,69 @@ static void test_db_to_linear(void)
     printf("ok db_to_linear endpoints\n");
 }
 
-/* Trim gain across the [-60, 12] dB endpoints, single quantize, saturation. */
+/* Trim gain across the [-60, 12] dB endpoints -- and the SATURATION half of this
+ * test is the second pin that inverted (F5).
+ *
+ * A +12 dB trim on a full-scale sample used to come back clamped at full scale:
+ * the input stage quantized and saturated its own output, so the boost was
+ * destroyed at the very first stage, 6 dB before the headroom pad that was going
+ * to make room for it. That is the defect in miniature. It must now come back as
+ * 3.981 x full scale, unclamped, for the pad and the limiter to deal with. */
 static void test_input_trim_gain(void)
 {
     /* Unity: exact passthrough including full scale. */
     {
-        int32_t s[3] = {1000, -2000, AIUS_DSP_SAMPLE_MAX};
+        double s[3] = {1000, -2000, (double)AIUS_DSP_SAMPLE_MAX};
         AiusInputChannelConfig ch = aius_input_channel_default();
         aius_dsp_input_run(&ch, s, 3);
-        assert(s[0] == 1000 && s[1] == -2000 && s[2] == AIUS_DSP_SAMPLE_MAX);
+        assert(s[0] == 1000.0 && s[1] == -2000.0 &&
+               s[2] == (double)AIUS_DSP_SAMPLE_MAX);
     }
-    /* -60 dB (0.001): 1_000_000 -> 1000. */
+    /* -60 dB (0.001): 1_000_000 -> 1000, and now exactly the product. */
     {
-        int32_t s[1] = {1000000};
+        double s[1] = {1000000};
         AiusInputChannelConfig ch = aius_input_channel_default();
         ch.gain_linear = aius_db_to_linear(-60.0);
         aius_dsp_input_run(&ch, s, 1);
-        assert(s[0] == 1000);
+        assert(s[0] == 1000000.0 * aius_db_to_linear(-60.0));
+        assert(q24(s[0]) == 1000);
     }
-    /* +12 dB (~3.981): 1000 -> 3981 (round half away from zero). */
+    /* +12 dB (~3.981): 1000 -> 3981 at the final quantize (ties away from zero),
+     * 3981.07... in the stage itself. */
     {
-        int32_t s[1] = {1000};
+        double s[1] = {1000};
         AiusInputChannelConfig ch = aius_input_channel_default();
         ch.gain_linear = aius_db_to_linear(12.0);
         aius_dsp_input_run(&ch, s, 1);
-        int32_t expect = (int32_t)floor(1000.0 * aius_db_to_linear(12.0) + 0.5);
-        assert(s[0] == expect);
+        assert(s[0] == 1000.0 * aius_db_to_linear(12.0));
+        assert(q24(s[0]) == (int32_t)floor(1000.0 * aius_db_to_linear(12.0) + 0.5));
     }
-    /* +12 dB saturates a near-full-scale sample instead of wrapping. */
+    /* THE INVERSION: +12 dB on full scale is an over, and it stays one. */
     {
-        int32_t s[1] = {AIUS_DSP_SAMPLE_MAX};
+        double s[1] = {(double)AIUS_DSP_SAMPLE_MAX};
         AiusInputChannelConfig ch = aius_input_channel_default();
         ch.gain_linear = aius_db_to_linear(12.0);
         aius_dsp_input_run(&ch, s, 1);
-        assert(s[0] == AIUS_DSP_SAMPLE_MAX);
+        assert(s[0] == (double)AIUS_DSP_SAMPLE_MAX * aius_db_to_linear(12.0));
+        assert(s[0] > (double)AIUS_DSP_SAMPLE_MAX); /* NOT clamped here */
+        /* Halved twice by the shipped pad's worth of headroom it is about to
+         * meet, it is back inside the wire -- which is the point of not
+         * clamping. */
+        assert(s[0] * AIUS_DSP_HEADROOM_DEFAULT * AIUS_DSP_HEADROOM_DEFAULT <
+               (double)AIUS_DSP_SAMPLE_MAX);
     }
-    printf("ok input trim gain endpoints + saturation\n");
+    printf("ok input trim gain endpoints; a +12 dB over survives the stage "
+           "unclamped\n");
 }
 
-/* Trim folds into the biquad input: a unity net cascade is a passthrough with a
- * single quantize (no intermediate double-rounding). */
+/* Trim folds into the biquad input: a unity net cascade is an exact passthrough.
+ * It used to be "a passthrough with a single quantize"; with the stage quantize
+ * gone it is a passthrough with NO quantize, so the equality is exact in double
+ * rather than exact-after-rounding. */
 static void test_input_trim_folds_into_eq(void)
 {
     /* gain 4.0 into a 0.25 pure-gain section -> net unity. */
-    int32_t s[3] = {123, -457, 900001};
+    double s[3] = {123, -457, 900001};
     AiusBiquad sec[1] = {{0.25, 0.0, 0.0, 0.0, 0.0}};
     AiusBiquadState st[1];
     memset(st, 0, sizeof st);
@@ -986,14 +1079,14 @@ static void test_input_trim_folds_into_eq(void)
     ch.eq_sections = 1;
     ch.eq_state = st;
     aius_dsp_input_run(&ch, s, 3);
-    assert(s[0] == 123 && s[1] == -457 && s[2] == 900001);
-    printf("ok input trim folds into EQ (single quantize)\n");
+    assert(s[0] == 123.0 && s[1] == -457.0 && s[2] == 900001.0);
+    printf("ok input trim folds into EQ (no intermediate quantize at all)\n");
 }
 
 /* Two-section input EQ runs as a cascade; two unity-net sections pass through. */
 static void test_input_two_section_eq(void)
 {
-    int32_t s[4] = {1000, 2000, -3000, 4000};
+    double s[4] = {1000, 2000, -3000, 4000};
     AiusBiquad sec[2] = {{2.0, 0.0, 0.0, 0.0, 0.0}, {0.5, 0.0, 0.0, 0.0, 0.0}};
     AiusBiquadState st[2];
     memset(st, 0, sizeof st);
@@ -1002,21 +1095,21 @@ static void test_input_two_section_eq(void)
     ch.eq_sections = 2;
     ch.eq_state = st;
     aius_dsp_input_run(&ch, s, 4);
-    assert(s[0] == 1000 && s[1] == 2000 && s[2] == -3000 && s[3] == 4000);
+    assert(s[0] == 1000.0 && s[1] == 2000.0 && s[2] == -3000.0 && s[3] == 4000.0);
 
     /* A real lowpass section still settles to unity DC through the input path. */
     AiusBiquad lp[1] = {aius_biquad_lowpass(FS, 2000.0, 0.7071)};
     AiusBiquadState lst[1];
     memset(lst, 0, sizeof lst);
     enum { N = 4096 };
-    static int32_t d[N];
-    for (int i = 0; i < N; i++) d[i] = 1000000;
+    static double d[N];
+    for (int i = 0; i < N; i++) d[i] = 1000000.0;
     AiusInputChannelConfig lc = aius_input_channel_default();
     lc.eq = lp;
     lc.eq_sections = 1;
     lc.eq_state = lst;
     aius_dsp_input_run(&lc, d, N);
-    assert(abs(d[N - 1] - 1000000) <= 1);
+    assert(fabs(d[N - 1] - 1000000.0) <= 1.0);
     printf("ok input two-section EQ cascade + DC settle\n");
 }
 
@@ -1028,81 +1121,100 @@ static void test_process_input_identity_equals_downmix(void)
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
     AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 3, 48000, mask};
 
-    int32_t dl[3], dr[3];
-    AiusPcmBlock dm;
-    memset(&dm, 0, sizeof dm);
-    dm.planes[0] = dl;
-    dm.planes[1] = dr;
+    double dfl[3], dfr[3], dfc[3], dl[3], dr[3];
+    to_d(fl, dfl, 3);
+    to_d(fr, dfr, 3);
+    to_d(fc, dfc, 3);
+    AiusPcmBlockD ind = {{dfl, dfr, dfc, 0, 0, 0}, 3, 3, 48000, mask};
     AiusDownmixConfig dcfg = aius_downmix_config_default();
-    assert(aius_dsp_downmix(&dcfg, &in, &dm) == AIUS_OK);
+    assert(aius_dsp_downmix(&dcfg, &ind, dl, dr) == AIUS_OK);
 
-    int32_t s0[3], s1[3], s2[3];
     AiusInputStage stage = aius_input_stage_default();
-    stage.scratch[0] = s0;
-    stage.scratch[1] = s1;
-    stage.scratch[2] = s2;
 
+    double sc[AIUS_MAX_CHANNELS][3], wl[3], wr[3];
     int32_t ol[3], or_[3];
     AiusPcmBlock out;
     memset(&out, 0, sizeof out);
     out.planes[0] = ol;
     out.planes[1] = or_;
-    AiusDspConfig cfg = {aius_downmix_config_default(), NULL, 0, NULL, &stage,
-                         NULL};
+    AiusDspConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.downmix = aius_downmix_config_default();
+    cfg.input = &stage;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) cfg.scratch[p] = sc[p];
+    cfg.work_l = wl;
+    cfg.work_r = wr;
     assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
     for (int i = 0; i < 3; i++) {
-        assert(ol[i] == dl[i]);
-        assert(or_[i] == dr[i]);
+        assert(ol[i] == q24(dl[i]));
+        assert(or_[i] == q24(dr[i]));
     }
-    /* The decoded input planes (const) were not mutated by the input stage. */
+    /* The decoded input planes (const) were not mutated: the staging convert-copy
+     * writes into cfg->scratch, and that is now unconditional rather than a
+     * property of the input stage being present. */
     assert(fl[0] == 111 && fl[1] == -222 && fl[2] == 333);
     assert(fc[0] == 777 && fc[1] == -888 && fc[2] == 999);
     printf("ok process(identity input stage) == downmix\n");
 }
 
 /* An input trim on FC halves its downmix contribution, matching a pre-scaled
- * downmix exactly (input stage = gain + quantize before the matrix). */
+ * downmix exactly.
+ *
+ * THE PIN THAT INVERTED (F5), third of three, and the subtlest. The reference
+ * used to be the FC plane pre-scaled by 0.5 AND QUANTIZED -- because that is
+ * literally what the input stage did: gain, then round to int32, then hand the
+ * matrix an integer plane. The equality was between two rounded paths. There is
+ * no rounding in either path now, so the reference is the DOUBLE-scaled plane and
+ * the equality is exact end to end. A test still pre-quantizing its reference
+ * would be asserting the removed defect, and would pass only by accident on
+ * inputs whose halves happen to be integral (as this test's originally were --
+ * 800000 * 0.5 is exact, which is precisely why the old pin could not see the
+ * difference). The stimulus therefore now carries an ODD sample, so the two
+ * paths differ if the stage ever rounds again. */
 static void test_process_input_trim_scales(void)
 {
     int32_t fl[2] = {100000, -100000}, fr[2] = {50000, -50000},
-            fc[2] = {800000, -400000};
+            fc[2] = {800001, -400001}; /* odd: 0.5x has a half-LSB to carry */
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
     AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 2, 48000, mask};
 
-    /* Reference: FC plane pre-scaled by 0.5 (quantized), then bare downmix. */
-    int32_t fcs[2];
+    /* Reference: FC plane pre-scaled by 0.5 IN DOUBLE, then the bare matrix, then
+     * the chain's one quantize. */
+    double dfl[2], dfr[2], fcs[2], rl[2], rr[2];
+    to_d(fl, dfl, 2);
+    to_d(fr, dfr, 2);
     for (int i = 0; i < 2; i++)
-        fcs[i] = (int32_t)floor((double)fc[i] * 0.5 + 0.5);
-    AiusPcmBlock refin = {{fl, fr, fcs, 0, 0, 0}, 3, 2, 48000, mask};
-    int32_t rl[2], rr[2];
-    AiusPcmBlock ref;
-    memset(&ref, 0, sizeof ref);
-    ref.planes[0] = rl;
-    ref.planes[1] = rr;
+        fcs[i] = (double)fc[i] * 0.5;
+    AiusPcmBlockD refin = {{dfl, dfr, fcs, 0, 0, 0}, 3, 2, 48000, mask};
     AiusDownmixConfig dcfg = aius_downmix_config_default();
-    assert(aius_dsp_downmix(&dcfg, &refin, &ref) == AIUS_OK);
+    assert(aius_dsp_downmix(&dcfg, &refin, rl, rr) == AIUS_OK);
 
     /* Input stage: FC (bit ordinal 2) trimmed to 0.5. */
-    int32_t s0[2], s1[2], s2[2];
     AiusInputStage stage = aius_input_stage_default();
     stage.channels[2].gain_linear = 0.5;
-    stage.scratch[0] = s0;
-    stage.scratch[1] = s1;
-    stage.scratch[2] = s2;
 
+    double sc[AIUS_MAX_CHANNELS][2], wl[2], wr[2];
     int32_t ol[2], or_[2];
     AiusPcmBlock out;
     memset(&out, 0, sizeof out);
     out.planes[0] = ol;
     out.planes[1] = or_;
-    AiusDspConfig cfg = {aius_downmix_config_default(), NULL, 0, NULL, &stage,
-                         NULL};
+    AiusDspConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.downmix = aius_downmix_config_default();
+    cfg.input = &stage;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) cfg.scratch[p] = sc[p];
+    cfg.work_l = wl;
+    cfg.work_r = wr;
     assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
     for (int i = 0; i < 2; i++) {
-        assert(ol[i] == rl[i]);
-        assert(or_[i] == rr[i]);
+        assert(ol[i] == q24(rl[i]));
+        assert(or_[i] == q24(rr[i]));
     }
-    printf("ok process(FC trim -6 dB) halves FC contribution\n");
+    /* Not vacuous: the half-LSB the trim produces really is carried into the
+     * matrix, so a stage that re-rounded would land somewhere else. */
+    assert(fcs[0] != floor(fcs[0]));
+    printf("ok process(FC trim -6 dB) halves FC contribution (half-LSB carried)\n");
 }
 
 /* --- true-peak safety limiter --------------------------------------------- */
@@ -1116,11 +1228,14 @@ static void test_limiter_disabled_is_bypass(void)
     memset(&lim, 0, sizeof lim);
     lim.cfg = aius_limiter_config_default();
     lim.cfg.enabled = 0;
-    int32_t l[4] = {10, AIUS_DSP_SAMPLE_MAX, -30, 40};
-    int32_t r[4] = {50, -60, AIUS_DSP_SAMPLE_MIN, 80};
+    /* Includes an over on each plane: a bypass must not clamp one either. */
+    double l[4] = {10, 2.0 * (double)AIUS_DSP_SAMPLE_MAX, -30, 40};
+    double r[4] = {50, -60, 2.0 * (double)AIUS_DSP_SAMPLE_MIN, 80};
     aius_dsp_limiter_run(&lim, 48000.0, l, r, 4);
-    assert(l[0] == 10 && l[1] == AIUS_DSP_SAMPLE_MAX && l[2] == -30 && l[3] == 40);
-    assert(r[0] == 50 && r[1] == -60 && r[2] == AIUS_DSP_SAMPLE_MIN && r[3] == 80);
+    assert(l[0] == 10.0 && l[1] == 2.0 * (double)AIUS_DSP_SAMPLE_MAX &&
+           l[2] == -30.0 && l[3] == 40.0);
+    assert(r[0] == 50.0 && r[1] == -60.0 &&
+           r[2] == 2.0 * (double)AIUS_DSP_SAMPLE_MIN && r[3] == 80.0);
     assert(close(aius_dsp_limiter_gain_reduction_db(&lim), 0.0, 1e-12));
     printf("ok limiter explicitly disabled is a pure bypass\n");
 }
@@ -1189,9 +1304,9 @@ static void test_limiter_transparent_below_threshold(void)
     lim.cfg.enabled = 1;
     lim.cfg.threshold_dbfs = 0.0; /* T = full scale */
     lim.cfg.lookahead_ms = 0.0;
-    int32_t l[5] = {100, -200, 300000, -400000, 12345};
-    int32_t r[5] = {-100, 200, -300000, 400000, -6789};
-    int32_t el[5], er[5];
+    double l[5] = {100, -200, 300000, -400000, 12345};
+    double r[5] = {-100, 200, -300000, 400000, -6789};
+    double el[5], er[5];
     memcpy(el, l, sizeof l);
     memcpy(er, r, sizeof r);
     aius_dsp_limiter_run(&lim, 48000.0, l, r, 5);
@@ -1232,10 +1347,10 @@ static void test_limiter_threshold_steady_state(void)
      * still 0.11 dB from settled at 8192 -- which is a property of the release
      * time, not of the steady state this test is about. */
     enum { N = 32768 };
-    static int32_t l[N], r[N];
+    static double l[N], r[N];
     for (int i = 0; i < N; i++) {
-        l[i] = AIUS_DSP_SAMPLE_MAX;
-        r[i] = AIUS_DSP_SAMPLE_MAX;
+        l[i] = (double)AIUS_DSP_SAMPLE_MAX;
+        r[i] = (double)AIUS_DSP_SAMPLE_MAX;
     }
     aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
 
@@ -1246,16 +1361,18 @@ static void test_limiter_threshold_steady_state(void)
      * test_limiter_catches_intersample_peak is where the interpolation semantics
      * are pinned. Under a sample-peak follower these would settle exactly AT T. */
     double floor_db = T * pow(10.0, -0.05 / 20.0); /* no more than 0.05 dB under */
-    assert((double)l[N - 1] <= T);
-    assert((double)l[N - 1] >= floor_db);
-    assert((double)r[N - 1] <= T);
-    assert((double)r[N - 1] >= floor_db);
-    /* The reported reduction agrees with the settled output it produced. */
+    assert(l[N - 1] <= T);
+    assert(l[N - 1] >= floor_db);
+    assert(r[N - 1] <= T);
+    assert(r[N - 1] >= floor_db);
+    /* The reported reduction agrees with the settled output it produced. The
+     * tolerance is 1e-6 sample units rather than the 2 LSB it needed when this
+     * stage rounded its own output: gain * input IS the output now. */
     double g = pow(10.0, aius_dsp_limiter_gain_reduction_db(&lim) / 20.0);
-    assert(fabs((double)l[N - 1] - (double)AIUS_DSP_SAMPLE_MAX * g) <= 2.0);
+    assert(fabs(l[N - 1] - (double)AIUS_DSP_SAMPLE_MAX * g) <= 1e-6);
     printf("ok limiter converges output true peak to threshold "
-           "(samples %d, T %.0f, %.4f dB under)\n",
-           l[N - 1], T, 20.0 * log10((double)l[N - 1] / T));
+           "(samples %.1f, T %.0f, %.4f dB under)\n",
+           l[N - 1], T, 20.0 * log10(l[N - 1] / T));
 }
 
 /* Lookahead delays the signal by exactly `delay` samples (transparent content).
@@ -1271,7 +1388,7 @@ static void test_limiter_lookahead_delay(void)
     lim.cfg.lookahead_ms = 5.0 * 1000.0 / 48000.0;
 
     enum { N = 32, D = 5 };
-    int32_t l[N], r[N], el[N], er[N];
+    double l[N], r[N], el[N], er[N];
     for (int i = 0; i < N; i++) {
         l[i] = (i + 1) * 1000;
         r[i] = -(i + 1) * 1000;
@@ -1280,7 +1397,7 @@ static void test_limiter_lookahead_delay(void)
     memcpy(er, r, sizeof r);
     aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
     for (int i = 0; i < D; i++) {
-        assert(l[i] == 0 && r[i] == 0); /* primed with silence */
+        assert(l[i] == 0.0 && r[i] == 0.0); /* primed with silence */
     }
     for (int i = D; i < N; i++) {
         assert(l[i] == el[i - D]);
@@ -1332,8 +1449,8 @@ static void test_limiter_attack_release_envelope(void)
         double env = i < FADE
                          ? 0.5 * (1.0 - cos(M_PI * (double)i / (double)FADE))
                          : 1.0;
-        int32_t v = (int32_t)(env * (double)AIUS_DSP_SAMPLE_MAX);
-        int32_t l = v, r = v;
+        double v = env * (double)AIUS_DSP_SAMPLE_MAX;
+        double l = v, r = v;
         aius_dsp_limiter_run(&lim, 48000.0, &l, &r, 1);
         double db = aius_dsp_limiter_gain_reduction_db(&lim);
         assert(db <= prev + ENV_MONOTONE_TOL_DB); /* monotone non-increasing */
@@ -1354,8 +1471,8 @@ static void test_limiter_attack_release_envelope(void)
         double env = i < FADE
                          ? 0.5 * (1.0 + cos(M_PI * (double)i / (double)FADE))
                          : 0.0;
-        int32_t v = (int32_t)(env * (double)AIUS_DSP_SAMPLE_MAX);
-        int32_t l = v, r = v;
+        double v = env * (double)AIUS_DSP_SAMPLE_MAX;
+        double l = v, r = v;
         aius_dsp_limiter_run(&lim, 48000.0, &l, &r, 1);
         double db = aius_dsp_limiter_gain_reduction_db(&lim);
         assert(db >= rprev - ENV_MONOTONE_TOL_DB); /* monotone non-decreasing */
@@ -1365,8 +1482,16 @@ static void test_limiter_attack_release_envelope(void)
     printf("ok limiter attack pulls down, release recovers\n");
 }
 
-/* A full-scale burst (as the downmix would clamp for surround51_impulse) is
- * pulled below full scale when the limiter is enabled: no output saturation. */
+/* A burst that is OVER full scale (as the downmix now hands it over for
+ * surround51_impulse) is pulled below full scale when the limiter is enabled: no
+ * output saturation.
+ *
+ * The stimulus is where this test moved with the chain. It used to be a burst
+ * CLAMPED at +-full scale, "as the downmix would clamp" -- but the matrix does
+ * not clamp any more, so a clamped burst is no longer a signal this stage can
+ * receive, and using one would be testing the removed behaviour. The burst is
+ * now the unclipped +2x over the matrix really produces, which is the case the
+ * limiter exists for and the one it could never see before. */
 static void test_limiter_prevents_saturation(void)
 {
     AiusLimiter lim;
@@ -1379,33 +1504,42 @@ static void test_limiter_prevents_saturation(void)
     lim.cfg.lookahead_ms = 5.0; /* 240 samples */
 
     enum { N = 1024 };
-    static int32_t l[N], r[N];
+    static double l[N], r[N];
     for (int i = 0; i < N; i++) {
-        l[i] = 1000;
-        r[i] = -1000;
+        l[i] = 1000.0;
+        r[i] = -1000.0;
     }
-    /* Clamped burst, as the downmix would emit for a correlated impulse. */
+    /* Unclipped over, as the matrix now emits for a correlated impulse. */
     for (int k = 300; k < 303; k++) {
-        l[k] = AIUS_DSP_SAMPLE_MAX;
-        r[k] = AIUS_DSP_SAMPLE_MIN;
+        l[k] = 2.0 * (double)AIUS_DSP_SAMPLE_MAX;
+        r[k] = 2.0 * (double)AIUS_DSP_SAMPLE_MIN;
     }
     aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
 
-    int32_t pk = 0;
+    double pk = 0.0;
     for (int i = 0; i < N; i++) {
-        int32_t a = l[i] < 0 ? -l[i] : l[i];
-        int32_t b = r[i] < 0 ? -r[i] : r[i];
+        double a = l[i] < 0.0 ? -l[i] : l[i];
+        double b = r[i] < 0.0 ? -r[i] : r[i];
         if (a > pk) pk = a;
         if (b > pk) pk = b;
-        assert(l[i] != AIUS_DSP_SAMPLE_MAX && l[i] != AIUS_DSP_SAMPLE_MIN);
-        assert(r[i] != AIUS_DSP_SAMPLE_MAX && r[i] != AIUS_DSP_SAMPLE_MIN);
+        /* Below the wire, so the final quantize has nothing to clamp. */
+        assert(q24(l[i]) != AIUS_DSP_SAMPLE_MAX &&
+               q24(l[i]) != AIUS_DSP_SAMPLE_MIN);
+        assert(q24(r[i]) != AIUS_DSP_SAMPLE_MAX &&
+               q24(r[i]) != AIUS_DSP_SAMPLE_MIN);
     }
-    assert(pk < AIUS_DSP_SAMPLE_MAX);
-    assert(pk < (int32_t)(0.9 * AIUS_DSP_SAMPLE_MAX)); /* pulled toward threshold */
-    printf("ok limiter prevents full-scale saturation (peak %d)\n", pk);
+    assert(pk < (double)AIUS_DSP_SAMPLE_MAX);
+    assert(pk < 0.9 * (double)AIUS_DSP_SAMPLE_MAX); /* pulled toward threshold */
+    printf("ok limiter prevents saturation from a +6 dB over (peak %.0f)\n", pk);
 }
 
-/* Bounded + finite: every output stays in the 24-bit range and gain in (0, 1]. */
+/* Bounded + finite: the gain is in (0, 1], so no output can exceed the magnitude
+ * that went in, and every sample is a finite double. "Bounded" is the property
+ * that survived the chain change; "inside the 24-bit range" was a consequence of
+ * the stage's own clamp and is now the final quantize's job, so it is asserted
+ * against the INPUT bound instead of against the rails. isfinite is new and
+ * earns its place: a double plane can carry a NaN where an int32 one could not,
+ * and a NaN in the envelope would latch the limiter open. */
 static void test_limiter_bounded_finite(void)
 {
     AiusLimiter lim;
@@ -1418,18 +1552,21 @@ static void test_limiter_bounded_finite(void)
     lim.cfg.lookahead_ms = 2.0;
 
     enum { N = 4096 };
-    static int32_t l[N], r[N];
+    static double l[N], r[N];
     uint32_t seed = 0x1234567u;
     for (int i = 0; i < N; i++) {
         seed = seed * 1103515245u + 12345u;
-        l[i] = (int32_t)(seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1);
+        l[i] = (double)((int32_t)(seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1));
         seed = seed * 1103515245u + 12345u;
-        r[i] = -(int32_t)((seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1));
+        r[i] = -(double)((int32_t)((seed >> 8) % (AIUS_DSP_SAMPLE_MAX + 1)));
     }
+    double in_pk = peak_abs_d(l, N) > peak_abs_d(r, N) ? peak_abs_d(l, N)
+                                                       : peak_abs_d(r, N);
     aius_dsp_limiter_run(&lim, 48000.0, l, r, N);
     for (int i = 0; i < N; i++) {
-        assert(l[i] >= AIUS_DSP_SAMPLE_MIN && l[i] <= AIUS_DSP_SAMPLE_MAX);
-        assert(r[i] >= AIUS_DSP_SAMPLE_MIN && r[i] <= AIUS_DSP_SAMPLE_MAX);
+        assert(isfinite(l[i]) && isfinite(r[i]));
+        assert(fabs(l[i]) <= in_pk); /* gain <= 1: never louder than it arrived */
+        assert(fabs(r[i]) <= in_pk);
     }
     double gr = aius_dsp_limiter_gain_reduction_db(&lim);
     assert(gr <= 1e-9); /* never a boost */
@@ -1441,12 +1578,12 @@ static void test_limiter_bounded_finite(void)
 static void test_limiter_block_boundary(void)
 {
     enum { N = 2048 };
-    static int32_t whole_l[N], whole_r[N], split_l[N], split_r[N], base_l[N],
+    static double whole_l[N], whole_r[N], split_l[N], split_r[N], base_l[N],
         base_r[N];
     for (int i = 0; i < N; i++) {
         double s = sin(i * 0.05);
-        base_l[i] = (int32_t)(s * 7000000.0);
-        base_r[i] = (int32_t)(-s * 7000000.0);
+        base_l[i] = s * 7000000.0;
+        base_r[i] = -s * 7000000.0;
     }
     memcpy(whole_l, base_l, sizeof base_l);
     memcpy(whole_r, base_r, sizeof base_r);
@@ -1489,11 +1626,7 @@ static void test_process_full_path(void)
     uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
     AiusPcmBlock in = {{fl, fr, fc, 0, 0, 0}, 3, 4, 48000, mask};
 
-    int32_t s0[4], s1[4], s2[4];
     AiusInputStage stage = aius_input_stage_default();
-    stage.scratch[0] = s0;
-    stage.scratch[1] = s1;
-    stage.scratch[2] = s2;
 
     AiusBiquad eq[1];
     AiusBiquadState est[2];
@@ -1509,21 +1642,35 @@ static void test_process_full_path(void)
     lim.cfg.release_ms = 50.0;
     lim.cfg.lookahead_ms = 0.0;
 
+    double sc[AIUS_MAX_CHANNELS][4], wl[4], wr[4];
     int32_t ol[4], or_[4];
     AiusPcmBlock out;
     memset(&out, 0, sizeof out);
     out.planes[0] = ol;
     out.planes[1] = or_;
-    AiusDspConfig cfg = {aius_downmix_config_default(), eq, ns, est, &stage,
-                         &lim};
+    AiusDspConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.downmix = aius_downmix_config_default();
+    cfg.eq = eq;
+    cfg.eq_sections = ns;
+    cfg.eq_state = est;
+    cfg.input = &stage;
+    cfg.limiter = &lim;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) cfg.scratch[p] = sc[p];
+    cfg.work_l = wl;
+    cfg.work_r = wr;
     assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
     assert(out.frames == 4);
     assert(out.channels == 2);
+    /* Bounded because the chain ENDS in a saturating quantize -- the only clamp
+     * left. The stages before it are free to exceed the range, and do. */
     for (int i = 0; i < 4; i++) {
         assert(ol[i] >= AIUS_DSP_SAMPLE_MIN && ol[i] <= AIUS_DSP_SAMPLE_MAX);
         assert(or_[i] >= AIUS_DSP_SAMPLE_MIN && or_[i] <= AIUS_DSP_SAMPLE_MAX);
+        assert(ol[i] == q24(wl[i])); /* out IS the quantized work plane */
+        assert(or_[i] == q24(wr[i]));
     }
-    printf("ok process full path (input+downmix+eq+limiter)\n");
+    printf("ok process full path (input+downmix+eq+limiter, one quantize)\n");
 }
 
 /* --- true-peak detection: the discriminating tests ------------------------ */
@@ -1570,10 +1717,13 @@ static void test_truepeak_catches_intersample_peak(void)
     double excess_db = 20.0 * log10(true_pk / (double)sample_pk);
     assert(excess_db > 2.8 && excess_db < 3.3);
 
-    /* 3. The limiter, at its shipped defaults, acts on it. */
-    static int32_t ol[N], or_[N];
-    memcpy(ol, l, sizeof l);
-    memcpy(or_, r, sizeof r);
+    /* 3. The limiter, at its shipped defaults, acts on it. The detector's input
+     *    is int32 here because the stimulus is (aius_dsp_true_peak measures the
+     *    decoded grid); the limiter is a double-plane stage, so the run copy is
+     *    converted. */
+    static double ol[N], or_[N];
+    to_d(l, ol, N);
+    to_d(r, or_, N);
     AiusLimiter lim;
     memset(&lim, 0, sizeof lim);
     lim.cfg = aius_limiter_config_default();
@@ -1585,7 +1735,7 @@ static void test_truepeak_catches_intersample_peak(void)
     /* 4. And the settled output true peak is held at the threshold, back inside
      *    full scale. Measured past the onset: the limiter starts from a fresh
      *    state (gain 1, envelope 0) so the first few ms pass unattenuated. */
-    double out_tp = aius_dsp_true_peak(ol + SETTLE, N - SETTLE);
+    double out_tp = aius_dsp_true_peak_d(ol + SETTLE, N - SETTLE);
     assert(out_tp <= T * pow(10.0, 0.05 / 20.0)); /* at most 0.05 dB over T */
     assert(out_tp < (double)AIUS_DSP_SAMPLE_MAX); /* no longer over full scale */
     printf("ok true-peak catches inter-sample peak (samples %+.2f dB, "
@@ -2384,12 +2534,9 @@ static void test_meter_process_no_mutation(void)
     limc.lookahead_ms = 0.0;
 
     /* Reference: no meter. */
-    int32_t s0[4], s1[4], s2[4];
+    double rsc[AIUS_MAX_CHANNELS][4], rwl[4], rwr[4];
     AiusInputStage stage = aius_input_stage_default();
     stage.channels[2].gain_linear = aius_db_to_linear(-3.0);
-    stage.scratch[0] = s0;
-    stage.scratch[1] = s1;
-    stage.scratch[2] = s2;
     AiusBiquadState est[2];
     memset(est, 0, sizeof est);
     AiusLimiter lim0;
@@ -2400,16 +2547,23 @@ static void test_meter_process_no_mutation(void)
     memset(&rout, 0, sizeof rout);
     rout.planes[0] = rl;
     rout.planes[1] = rr;
-    AiusDspConfig rc = {aius_downmix_config_default(), eq, ns, est, &stage, &lim0};
+    AiusDspConfig rc;
+    memset(&rc, 0, sizeof rc);
+    rc.downmix = aius_downmix_config_default();
+    rc.eq = eq;
+    rc.eq_sections = ns;
+    rc.eq_state = est;
+    rc.input = &stage;
+    rc.limiter = &lim0;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) rc.scratch[p] = rsc[p];
+    rc.work_l = rwl;
+    rc.work_r = rwr;
     assert(aius_dsp_process(&rc, &in, &rout) == AIUS_OK);
 
     /* Metered: identical (meter-free) config; the meter is driven caller-side. */
-    int32_t m0[4], m1[4], m2[4];
+    double msc[AIUS_MAX_CHANNELS][4], mwl[4], mwr[4];
     AiusInputStage mstage = aius_input_stage_default();
     mstage.channels[2].gain_linear = aius_db_to_linear(-3.0);
-    mstage.scratch[0] = m0;
-    mstage.scratch[1] = m1;
-    mstage.scratch[2] = m2;
     AiusBiquadState mest[2];
     memset(mest, 0, sizeof mest);
     AiusLimiter lim1;
@@ -2422,8 +2576,17 @@ static void test_meter_process_no_mutation(void)
     memset(&mout, 0, sizeof mout);
     mout.planes[0] = ml;
     mout.planes[1] = mr;
-    AiusDspConfig mc = {aius_downmix_config_default(), eq, ns, mest, &mstage,
-                        &lim1};
+    AiusDspConfig mc;
+    memset(&mc, 0, sizeof mc);
+    mc.downmix = aius_downmix_config_default();
+    mc.eq = eq;
+    mc.eq_sections = ns;
+    mc.eq_state = mest;
+    mc.input = &mstage;
+    mc.limiter = &lim1;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) mc.scratch[p] = msc[p];
+    mc.work_l = mwl;
+    mc.work_r = mwr;
     assert(aius_dsp_process(&mc, &in, &mout) == AIUS_OK);
 
     /* Caller-driven metering: run the taps around process, not inside it. */
@@ -2475,29 +2638,762 @@ static void test_invalid_args(void)
 {
     AiusDownmixConfig cfg = aius_downmix_config_default();
     int32_t l[1], r[1], p[1] = {0};
+    double dp[1] = {0.0}, dl[1], dr[1];
     AiusPcmBlock out;
     memset(&out, 0, sizeof out);
     out.planes[0] = l;
     out.planes[1] = r;
     AiusPcmBlock in = {{p, 0, 0, 0, 0, 0}, 1, 1, 48000, AIUS_CH_FC};
+    AiusPcmBlockD ind = {{dp, 0, 0, 0, 0, 0}, 1, 1, 48000, AIUS_CH_FC};
 
-    assert(aius_dsp_downmix(NULL, &in, &out) == AIUS_INVALID_ARG);
-    assert(aius_dsp_downmix(&cfg, NULL, &out) == AIUS_INVALID_ARG);
-    assert(aius_dsp_downmix(&cfg, &in, NULL) == AIUS_INVALID_ARG);
+    assert(aius_dsp_downmix(NULL, &ind, dl, dr) == AIUS_INVALID_ARG);
+    assert(aius_dsp_downmix(&cfg, NULL, dl, dr) == AIUS_INVALID_ARG);
+    /* Either output plane missing (they are separate arguments now, not a
+     * block). */
+    assert(aius_dsp_downmix(&cfg, &ind, NULL, dr) == AIUS_INVALID_ARG);
+    assert(aius_dsp_downmix(&cfg, &ind, dl, NULL) == AIUS_INVALID_ARG);
 
     /* channels != popcount(mask). */
-    AiusPcmBlock bad = {{p, 0, 0, 0, 0, 0}, 2, 1, 48000, AIUS_CH_FC};
-    assert(aius_dsp_downmix(&cfg, &bad, &out) == AIUS_INVALID_ARG);
+    AiusPcmBlockD bad = {{dp, 0, 0, 0, 0, 0}, 2, 1, 48000, AIUS_CH_FC};
+    assert(aius_dsp_downmix(&cfg, &bad, dl, dr) == AIUS_INVALID_ARG);
 
-    /* out plane NULL. */
+    /* process: the staging planes are REQUIRED now (staging is the int32 ->
+     * double conversion, not part of the optional input stage), so each missing
+     * piece is its own guard. */
+    double sc[AIUS_MAX_CHANNELS][1], wl[1], wr[1];
+    AiusDspConfig ok;
+    memset(&ok, 0, sizeof ok);
+    ok.downmix = cfg;
+    for (int i = 0; i < AIUS_MAX_CHANNELS; i++) ok.scratch[i] = sc[i];
+    ok.work_l = wl;
+    ok.work_r = wr;
+    assert(aius_dsp_process(&ok, &in, &out) == AIUS_OK); /* the control */
+    assert(aius_dsp_process(NULL, &in, &out) == AIUS_INVALID_ARG);
+    assert(aius_dsp_process(&ok, NULL, &out) == AIUS_INVALID_ARG);
+    assert(aius_dsp_process(&ok, &in, NULL) == AIUS_INVALID_ARG);
+
+    AiusDspConfig nowork = ok;
+    nowork.work_l = NULL;
+    assert(aius_dsp_process(&nowork, &in, &out) == AIUS_INVALID_ARG);
+    nowork = ok;
+    nowork.work_r = NULL;
+    assert(aius_dsp_process(&nowork, &in, &out) == AIUS_INVALID_ARG);
+
+    AiusDspConfig noscratch = ok;
+    noscratch.scratch[0] = NULL; /* the plane the present channel needs */
+    assert(aius_dsp_process(&noscratch, &in, &out) == AIUS_INVALID_ARG);
+
+    /* eq_sections>0 but null coeffs. */
+    AiusDspConfig pc = ok;
+    pc.eq_sections = 1;
+    assert(aius_dsp_process(&pc, &in, &out) == AIUS_INVALID_ARG);
+
+    /* out plane NULL: the block contract moved from the downmix to process. */
     AiusPcmBlock noout;
     memset(&noout, 0, sizeof noout);
-    assert(aius_dsp_downmix(&cfg, &in, &noout) == AIUS_INVALID_ARG);
-
-    /* process: eq_sections>0 but null coeffs. */
-    AiusDspConfig pc = {cfg, NULL, 1, NULL, NULL, NULL};
-    assert(aius_dsp_process(&pc, &in, &out) == AIUS_INVALID_ARG);
+    assert(aius_dsp_process(&ok, &in, &noout) == AIUS_INVALID_ARG);
     printf("ok invalid-arg guards\n");
+}
+
+/* ==========================================================================
+ * R1-R5: DOUBLE-PRECISION CHAIN PROOFS  (three of them are RED as committed)
+ * ==========================================================================
+ *
+ * THE CHANGE THESE EXIST FOR. The chain is to keep samples in DOUBLE from first
+ * touch to ONE final quantize. Today every stage quantizes and hard-clips its
+ * own output back into int32 -- the input EQ cascade (run_cascade), the downmix
+ * (which is also where the 0.5 headroom pad is applied), the output EQ cascade,
+ * and the limiter tail. So an input-stage BOOST clips against full scale BEFORE
+ * the pad that was going to make room for it and before the limiter that was
+ * going to catch it; the pad then attenuates the already-clipped waveform, so
+ * the over is invisible downstream. The output looks quiet and sounds broken,
+ * and no downstream stage can tell that anything happened.
+ *
+ * R1, R2 and R4 are RED as committed: they are the executable statement of the
+ * behaviour the change must produce, written against the code before it, and
+ * they are expected to fail until it lands. R3a, R3b and R5 are GREEN as
+ * committed and must STAY green -- R3a/R3b pin today's exact output BYTES on the
+ * default path (nothing that already lived in the double domain may move), and
+ * R5 pins the wire ceiling that must survive (the FINAL quantize still clips).
+ *
+ * MEASURED, on this host, so the transition each proof asserts is a number and
+ * not a hope (the "after" column is from a double-domain reference chain run
+ * beside the real one; see the per-test notes):
+ *
+ *   proof  today                            after the change
+ *   R1     3rd harmonic  -14.00 dB   RED    -167 dB  (one quantize's worth)
+ *   R2     peak -6.021 dBFS          RED    -3.021 dBFS == the linear prediction
+ *   R3a    byte-identical            GREEN  unchanged (never left double)
+ *   R3b    byte-identical            GREEN  unchanged (limiter gain is 1.0)
+ *   R4     GR 0.000 dB, h3 -12.14 dB RED    GR -1.98 dB, h3 ~ -115 dB
+ *   R5     both rails hit            GREEN  unchanged (final quantize clamps)
+ *
+ * WHY 996.09375 Hz AND NOT A ROUND 997. The harmonic proofs need to see -100 dB
+ * below the fundamental, and a rectangular-window Goertzel at a frequency that
+ * is not an exact bin of its own window leaks the fundamental into every other
+ * bin far above that floor. CHAIN_F0 is bin 85 of a 4096-sample window at 48 kHz
+ * -- exactly 85 cycles in the window, so 2*F0 and 3*F0 are exactly bins 170 and
+ * 255 and the measurement is leakage-free. It is the same 997 Hz-class tone,
+ * moved 0.9 Hz to make the measurement honest.
+ */
+
+/* These proofs record failures instead of aborting: every test above uses
+ * assert(), which would abort the run at R1 and hide R2-R5 plus the fixtures.
+ * main() turns a non-zero count into a non-zero exit, so the suite is still red
+ * for the runner. */
+static int g_chain_fail;
+
+#define CHAIN_CHECK(cond, ...)                                                 \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            fprintf(stderr, "FAIL: ");                                         \
+            fprintf(stderr, __VA_ARGS__);                                      \
+            fprintf(stderr, "\n");                                             \
+            g_chain_fail++;                                                    \
+        }                                                                      \
+    } while (0)
+
+enum {
+    CHAIN_BLOCK = 512,   /* the target's audio block size */
+    CHAIN_BLOCKS = 16,   /* 8192 frames: half settle, half analysis */
+    CHAIN_FRAMES = CHAIN_BLOCK * CHAIN_BLOCKS,
+    CHAIN_ANA = 4096,    /* analysis window; CHAIN_F0 is an exact bin of it */
+    CHAIN_FIX_BLOCKS = 4,
+    CHAIN_FIX_FRAMES = CHAIN_BLOCK * CHAIN_FIX_BLOCKS /* 2048 */
+};
+
+/* Bin 85 of 4096 at 48 kHz = 996.09375 Hz exactly (a binary fraction, so it is
+ * exact in double on host and target alike). See the section note above. */
+#define CHAIN_F0 (85.0 * FS / 4096.0)
+
+/* Energy at `f_hz` in an int32 plane: one Goertzel bin, double accumulation, no
+ * library beyond cos/sin/sqrt. Returns the bin magnitude in sample units -- the
+ * tests only take ratios of it, so the window's N/2 scale cancels. Leakage-free
+ * only when f_hz is an exact bin of the `frames`-long window. */
+static double chain_goertzel(const int32_t *x, uint32_t frames, double f_hz)
+{
+    double w = 2.0 * M_PI * f_hz / FS;
+    double c = 2.0 * cos(w);
+    double s1 = 0.0, s2 = 0.0;
+    for (uint32_t i = 0; i < frames; i++) {
+        double s0 = (double)x[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    double re = s1 - s2 * cos(w), im = s2 * sin(w);
+    return sqrt(re * re + im * im);
+}
+
+/* The `mult`-th harmonic of CHAIN_F0, in dB relative to the fundamental. */
+static double chain_harmonic_db(const int32_t *x, uint32_t frames, double mult)
+{
+    double f = chain_goertzel(x, frames, CHAIN_F0);
+    double h = chain_goertzel(x, frames, mult * CHAIN_F0);
+    if (!(f > 0.0)) {
+        return 0.0; /* no fundamental: report "not below the floor" */
+    }
+    if (!(h > 0.0)) {
+        return -400.0;
+    }
+    return 20.0 * log10(h / f);
+}
+
+/* Everything one chain proof owns: the config it drives aius_dsp_process with,
+ * plus every piece of caller-owned state and scratch that config points at. */
+struct chain_rig {
+    AiusInputStage  stage;
+    AiusBiquad      in_eq;  /* one peaking section, shared by all six channels */
+    AiusBiquadState in_eq_state[AIUS_DSP_INPUT_CHANNELS];
+    AiusBiquad      out_eq;
+    AiusBiquadState out_eq_state[2]; /* channel-major: L then R */
+    AiusLfeFold     fold;
+    AiusLimiter     limiter;
+    AiusDspConfig   cfg;
+};
+
+/* Chain staging: one double plane per decoded channel plus the stereo work pair,
+ * all block-sized. Static because the config holds pointers to them for the life
+ * of the rig. */
+static double g_chain_scratch[AIUS_MAX_CHANNELS][CHAIN_BLOCK];
+static double g_chain_work_l[CHAIN_BLOCK], g_chain_work_r[CHAIN_BLOCK];
+
+/* THE SINGLE CONSTRUCTION POINT for every R1-R5 config, staging plane and piece
+ * of DSP state. Every proof below builds its rig here and nowhere else.
+ *
+ * THAT IS DELIBERATE AND IT IS THE MIGRATION SEAM -- and it has now paid for
+ * itself. The single-quantize change moved the staging planes out of
+ * AiusInputStage.scratch (int32_t *, the requantisation point this whole section
+ * exists to remove) into AiusDspConfig.scratch as DOUBLE planes, and added the
+ * work pair. Carrying all six proofs across was exactly the three lines below:
+ * g_chain_scratch's element type, the loop that hands its planes to the CONFIG
+ * rather than to the stage, and work_l/work_r. No test body touches a staging
+ * plane, a plane pointer, or a state object directly.
+ *
+ * STAGING IS UNCONDITIONAL, which is why it is wired outside the `input` branch:
+ * it IS the int32 -> double conversion aius_dsp_process performs on every block,
+ * and cfg->input now gates only the optional trim/EQ over the staged planes.
+ *
+ * `in_boost_db` / `out_boost_db` == 0 means that stage is absent (input == NULL
+ * / eq_sections == 0) rather than present-at-unity, so "no input stage" is
+ * exactly the shipped default path. The downmix is always the shipped default
+ * WITH the LFE crossover state wired: leaving lfe_fold NULL makes the downmix
+ * fail closed and silently drop the LFE (aius_dsp.h §AiusDownmixConfig), which
+ * would quietly hollow out the R3a fixture. */
+static void chain_test_config(struct chain_rig *rig, double in_boost_db,
+                              double out_boost_db, int limiter_enabled)
+{
+    memset(rig, 0, sizeof *rig);
+
+    rig->cfg.downmix = aius_downmix_config_default();
+    assert(aius_lfe_fold_init(&rig->fold, FS,
+                              AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ) == AIUS_OK);
+    rig->cfg.downmix.lfe_fold = &rig->fold;
+
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) {
+        rig->cfg.scratch[p] = g_chain_scratch[p];
+    }
+    rig->cfg.work_l = g_chain_work_l;
+    rig->cfg.work_r = g_chain_work_r;
+
+    if (in_boost_db != 0.0) {
+        rig->stage = aius_input_stage_default();
+        rig->in_eq = aius_biquad_peaking(FS, CHAIN_F0, 1.0, in_boost_db);
+        for (int c = 0; c < AIUS_DSP_INPUT_CHANNELS; c++) {
+            rig->stage.channels[c].eq = &rig->in_eq;
+            rig->stage.channels[c].eq_sections = 1;
+            rig->stage.channels[c].eq_state = &rig->in_eq_state[c];
+        }
+        rig->cfg.input = &rig->stage;
+    }
+
+    if (out_boost_db != 0.0) {
+        rig->out_eq = aius_biquad_peaking(FS, CHAIN_F0, 1.0, out_boost_db);
+        rig->cfg.eq = &rig->out_eq;
+        rig->cfg.eq_sections = 1;
+        rig->cfg.eq_state = rig->out_eq_state;
+    }
+
+    if (limiter_enabled) {
+        rig->limiter.cfg = aius_limiter_config_default();
+        assert(rig->limiter.cfg.enabled == 1); /* shipped default, or R4 is void */
+        rig->cfg.limiter = &rig->limiter;
+    }
+}
+
+/* Drive `whole` through aius_dsp_process one CHAIN_BLOCK at a time, as the audio
+ * path does, so every biquad / crossover / limiter state crosses real block
+ * boundaries. `gr_min` (optional) collects the most negative gain reduction seen
+ * at any block boundary. */
+static void chain_run(struct chain_rig *rig, const AiusPcmBlock *whole,
+                      int32_t *out_l, int32_t *out_r, double *gr_min)
+{
+    assert(whole->frames % (uint32_t)CHAIN_BLOCK == 0);
+    for (uint32_t off = 0; off < whole->frames; off += (uint32_t)CHAIN_BLOCK) {
+        AiusPcmBlock in = *whole;
+        in.frames = (uint32_t)CHAIN_BLOCK;
+        for (int p = 0; p < AIUS_MAX_CHANNELS; p++) {
+            in.planes[p] = whole->planes[p] ? whole->planes[p] + off : NULL;
+        }
+        AiusPcmBlock out;
+        memset(&out, 0, sizeof out);
+        out.planes[0] = out_l + off;
+        out.planes[1] = out_r + off;
+        assert(aius_dsp_process(&rig->cfg, &in, &out) == AIUS_OK);
+        if (gr_min != NULL) {
+            double gr = aius_dsp_limiter_gain_reduction_db(rig->cfg.limiter);
+            if (gr < *gr_min) {
+                *gr_min = gr;
+            }
+        }
+    }
+}
+
+/* A CHAIN_F0 sine at `dbfs`, on the same 24-bit integer grid the decoder emits
+ * (so the stimulus carries its own quantisation, and the proofs cannot pass by
+ * being handed an impossibly clean input). */
+static void chain_tone(int32_t *dst, uint32_t frames, double dbfs)
+{
+    double a = pow(10.0, dbfs / 20.0) * (double)AIUS_DSP_SAMPLE_MAX;
+    for (uint32_t n = 0; n < frames; n++) {
+        double v = a * sin(2.0 * M_PI * CHAIN_F0 * (double)n / FS);
+        dst[n] = (int32_t)(v >= 0.0 ? floor(v + 0.5) : ceil(v - 0.5));
+    }
+}
+
+static AiusPcmBlock chain_stereo_block(int32_t *l, int32_t *r, uint32_t frames)
+{
+    AiusPcmBlock b;
+    memset(&b, 0, sizeof b);
+    b.planes[0] = l;
+    b.planes[1] = r;
+    b.channels = 2;
+    b.frames = frames;
+    b.sample_rate_hz = (uint32_t)FS;
+    b.channel_mask = AIUS_CH_FL | AIUS_CH_FR;
+    return b;
+}
+
+static uint32_t chain_rail_count(const int32_t *x, uint32_t frames, int32_t rail)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < frames; i++) {
+        if (x[i] == rail) {
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Shared stimulus/result buffers for the tone proofs (R1, R2, R4, R5). */
+static int32_t g_chain_in_l[CHAIN_FRAMES], g_chain_in_r[CHAIN_FRAMES];
+static int32_t g_chain_out_l[CHAIN_FRAMES], g_chain_out_r[CHAIN_FRAMES];
+
+/* --- R1: an input-stage boost must not manufacture harmonics -------------- */
+
+/* 997 Hz-class tone at -1 dBFS, +6 dB peaking boost at that same frequency on
+ * the input stage, default downmix (0.5 pad), no output EQ, no limiter.
+ *
+ * The arithmetic: -1 + 6 = +5 dB, i.e. the input cascade's result is 5 dB OVER
+ * full scale, and 5 dB - 6.02 dB of pad = -1.02 dBFS at the output. Nothing in
+ * that chain has to clip. Today the input cascade quantizes and saturates its
+ * own output, so the waveform is flat-topped at full scale BEFORE the pad ever
+ * runs; the pad then scales the clipped shape down to a tidy-looking
+ * -6.02 dBFS. Measured 3rd harmonic today: -14.00 dB. After the change the only
+ * quantize is the last one: -167 dB.
+ *
+ * The 2nd-harmonic check is not the discriminating one and is not meant to be --
+ * clipping a symmetric sine symmetrically produces ODD harmonics only, so 2*F0
+ * sits at ~-300 dB today as well. It is here because a chain that manufactures
+ * EVEN harmonics is broken in a different way (asymmetric clipping, a
+ * sign-dependent rounding path), and this is the cheapest place to notice. */
+static void test_chain_r1_input_boost_harmonics(void)
+{
+    chain_tone(g_chain_in_l, CHAIN_FRAMES, -1.0);
+    memcpy(g_chain_in_r, g_chain_in_l, sizeof g_chain_in_l);
+
+    struct chain_rig rig;
+    chain_test_config(&rig, 6.0, 0.0, 0);
+    AiusPcmBlock whole =
+        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+    chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, NULL);
+
+    /* Analyse the last CHAIN_ANA frames: the first half of the run is the
+     * biquad's settle allowance, and the window length is what makes the
+     * measurement leakage-free. */
+    const int32_t *wl = g_chain_out_l + (CHAIN_FRAMES - CHAIN_ANA);
+    const int32_t *wr = g_chain_out_r + (CHAIN_FRAMES - CHAIN_ANA);
+    double h2 = chain_harmonic_db(wl, CHAIN_ANA, 2.0);
+    double h3 = chain_harmonic_db(wl, CHAIN_ANA, 3.0);
+    int32_t pk = peak_abs_i(wl, CHAIN_ANA);
+
+    printf("R1 input +6 dB @ %.5f Hz: h2 %.2f dB, h3 %.2f dB, peak %d (%.3f dBFS)\n",
+           CHAIN_F0, h2, h3, pk,
+           20.0 * log10((double)pk / (double)AIUS_DSP_SAMPLE_MAX));
+
+    CHAIN_CHECK(memcmp(wl, wr, CHAIN_ANA * sizeof(int32_t)) == 0,
+                "R1 L and R differ on identical input (matrix asymmetry)");
+    CHAIN_CHECK(h2 < -100.0,
+                "R1 2nd harmonic %.2f dB rel fundamental, want < -100 dB "
+                "(input-stage boost must not clip before the pad)", h2);
+    CHAIN_CHECK(h3 < -100.0,
+                "R1 3rd harmonic %.2f dB rel fundamental, want < -100 dB "
+                "(input-stage boost hard-clips at the cascade's quantize today, "
+                "5 dB over full scale, before the 0.5 pad and with no limiter)",
+                h3);
+}
+
+/* --- R2: an inter-stage over that the pad resolves must survive it -------- */
+
+/* Same shape as R1, sized so the OVER is unambiguously inter-stage only: -1 dBFS
+ * in, +4 dB boost -> +3 dB over full scale between the stages, -3.02 dBFS after
+ * the pad. The whole point of a double intermediate is that this signal never
+ * needed to clip at all, and the output peak is then exactly the linear
+ * prediction (input amplitude * boost * headroom).
+ *
+ * The rail check passes TODAY -- today's failure is not that the output slams
+ * the rails, it is that the clipped plateau is scaled DOWN to a plausible-looking
+ * -6.02 dBFS half-rail, 3 dB below where the arithmetic says it belongs. The
+ * rail assertion is here so that the fix cannot trade one failure for the other:
+ * an implementation that stopped clipping mid-chain but let the final result
+ * ride the rails would pass the peak check and fail this one. */
+static void test_chain_r2_interstage_over_is_recovered(void)
+{
+    chain_tone(g_chain_in_l, CHAIN_FRAMES, -1.0);
+    memcpy(g_chain_in_r, g_chain_in_l, sizeof g_chain_in_l);
+
+    struct chain_rig rig;
+    chain_test_config(&rig, 4.0, 0.0, 0);
+    AiusPcmBlock whole =
+        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+    chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, NULL);
+
+    const int32_t *wl = g_chain_out_l + (CHAIN_FRAMES - CHAIN_ANA);
+    const int32_t *wr = g_chain_out_r + (CHAIN_FRAMES - CHAIN_ANA);
+    uint32_t rails = chain_rail_count(wl, CHAIN_ANA, AIUS_DSP_SAMPLE_MAX) +
+                     chain_rail_count(wl, CHAIN_ANA, AIUS_DSP_SAMPLE_MIN) +
+                     chain_rail_count(wr, CHAIN_ANA, AIUS_DSP_SAMPLE_MAX) +
+                     chain_rail_count(wr, CHAIN_ANA, AIUS_DSP_SAMPLE_MIN);
+
+    /* -1 dBFS * +4 dB * 0.5 pad. The peaking section's gain at its own centre
+     * frequency is exactly the designed gain with zero phase shift, and the
+     * sample grid lands within 1e-5 dB of the continuous peak (85 cycles in
+     * 4096 samples, gcd 1), so this is a prediction, not a fit. */
+    double predicted = pow(10.0, (-1.0 + 4.0) / 20.0) *
+                       AIUS_DSP_HEADROOM_DEFAULT * (double)AIUS_DSP_SAMPLE_MAX;
+    int32_t pk = peak_abs_i(wl, CHAIN_ANA);
+    double err_db = 20.0 * log10((double)pk / predicted);
+
+    printf("R2 input +4 dB: peak %d (%.3f dBFS), predicted %.1f (%.3f dBFS), "
+           "err %.3f dB, rail samples %u\n",
+           pk, 20.0 * log10((double)pk / (double)AIUS_DSP_SAMPLE_MAX),
+           predicted, 20.0 * log10(predicted / (double)AIUS_DSP_SAMPLE_MAX),
+           err_db, rails);
+
+    CHAIN_CHECK(rails == 0,
+                "R2 %u output samples sit on a rail; the padded result is "
+                "3.02 dB below full scale and must never reach one", rails);
+    CHAIN_CHECK(fabs(err_db) <= 0.1,
+                "R2 output peak %d is %.3f dB from the linear prediction %.1f "
+                "(want within 0.1 dB; an inter-stage clip at +3 dB over full "
+                "scale leaves the padded peak at the 0.5 half-rail instead)",
+                pk, err_db, predicted);
+}
+
+/* --- fixtures: byte-exact pins on the paths the change must NOT move ------ */
+
+/* The dsp suite is invoked with no arguments (scripts/test.sh --suite dsp), so
+ * the golden directory is derived from THIS FILE's compile-time path rather than
+ * from argv or the caller's cwd -- test.sh compiles it by absolute path
+ * ("$fw_root/test/dsp/test_dsp.c"), so __FILE__ resolves it unambiguously
+ * wherever the built binary is run from. */
+static void chain_golden_path(char *buf, size_t cap, const char *name)
+{
+    const char *self = __FILE__;
+    const char *slash = strrchr(self, '/');
+    int dir = slash != NULL ? (int)(slash - self) + 1 : 0;
+    snprintf(buf, cap, "%.*sgolden/%s.golden", dir, self, name);
+}
+
+/* Serialize a stereo result and hold it against the committed golden, BYTE for
+ * byte -- header included, so a stimulus or config description that drifts from
+ * the samples it produced is a failure too.
+ *
+ * Regenerate with AIUS_DSP_CHAIN_DUMP=1, and treat doing so as a reviewable
+ * event rather than a formality (the same rule the dsp-vectors goldens carry):
+ * these two files are the statement that the default path and the transparent
+ * limiter path produce the SAME BYTES before and after the chain change. If a
+ * regeneration is needed to make them pass, the change moved audio it was not
+ * supposed to move, and the diff is the evidence of what it moved.
+ *
+ * ONE LEGITIMATE NON-DSP REASON TO REGENERATE, so a future reader does not read
+ * it as a defect: the stimulus is libm-free by construction (integer LCG, exact
+ * power-of-two level), but the LFE crossover's coefficients come from
+ * aius_biquad_lowpass, i.e. from the host libm's cos/sin. A toolchain whose libm
+ * differs by an ulp there can move samples in the last bit. That is the same
+ * dependency the dsp-vectors goldens carry; the DSP arithmetic itself is
+ * bit-identical host-to-target under -ffp-contract=off. */
+static void chain_golden(const char *name, const char *desc, const int32_t *l,
+                         const int32_t *r, uint32_t frames)
+{
+    size_t cap = 1024u + (size_t)frames * 18u;
+    char *buf = (char *)malloc(cap);
+    assert(buf != NULL);
+    size_t n = 0;
+    n += (size_t)snprintf(buf + n, cap - n, "# aius dsp chain golden: %s\n", name);
+    n += (size_t)snprintf(buf + n, cap - n, "# %s\n", desc);
+    n += (size_t)snprintf(buf + n, cap - n, "# frames %u (int32 L R, hex)\n",
+                          frames);
+    size_t hdr = n;
+    for (uint32_t i = 0; i < frames; i++) {
+        n += (size_t)snprintf(buf + n, cap - n, "%08x %08x\n", (uint32_t)l[i],
+                              (uint32_t)r[i]);
+    }
+    assert(n < cap);
+
+    char path[1024];
+    chain_golden_path(path, sizeof path, name);
+
+    if (getenv("AIUS_DSP_CHAIN_DUMP") != NULL) {
+        FILE *f = fopen(path, "wb");
+        if (f == NULL) {
+            CHAIN_CHECK(0, "%s: cannot write golden %s", name, path);
+            free(buf);
+            return;
+        }
+        size_t put = fwrite(buf, 1, n, f);
+        fclose(f);
+        CHAIN_CHECK(put == n, "%s: short write to %s", name, path);
+        printf("  wrote golden %s (%zu bytes)\n", path, n);
+        free(buf);
+        return;
+    }
+
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        CHAIN_CHECK(0, "%s: cannot open golden %s (regenerate with "
+                       "AIUS_DSP_CHAIN_DUMP=1)", name, path);
+        free(buf);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    assert(size >= 0);
+    char *got = (char *)malloc((size_t)size + 1u);
+    assert(got != NULL);
+    size_t rd = fread(got, 1, (size_t)size, f);
+    fclose(f);
+
+    if (rd != n) {
+        CHAIN_CHECK(0, "%s: golden is %zu bytes, produced %zu", name, rd, n);
+    } else {
+        size_t off = 0;
+        while (off < n && got[off] == buf[off]) {
+            off++;
+        }
+        if (off < n) {
+            size_t line = 1;
+            for (size_t k = 0; k < off; k++) {
+                if (buf[k] == '\n') {
+                    line++;
+                }
+            }
+            long frame = (off >= hdr) ? (long)(line - 4u) : -1;
+            CHAIN_CHECK(0,
+                        "%s: output differs from the golden at byte %zu "
+                        "(line %zu, frame %ld) -- the chain moved audio on a "
+                        "path that must be bit-identical",
+                        name, off, line, frame);
+        } else {
+            printf("ok chain %s byte-identical to golden (%u frames)\n", name,
+                   frames);
+        }
+    }
+    free(got);
+    free(buf);
+}
+
+/* Deterministic 32-bit LCG (Numerical Recipes constants), in-harness so the
+ * fixture stimulus is reproducible with no libm, no platform RNG and no
+ * dependence on rounding anywhere. */
+static uint32_t chain_lcg(uint32_t *s)
+{
+    *s = *s * 1664525u + 1013904223u;
+    return *s;
+}
+
+/* Pseudo-random 24-bit stimulus from the LCG's TOP bits (the low bits of an LCG
+ * are notoriously weak), divided by `div`.
+ *
+ * `div` is a power of two and the division is integer, deliberately: an exact
+ * power-of-two level (div 4 == -12.04 dBFS) keeps the stimulus off libm, so the
+ * committed golden cannot move by an ulp of pow() between toolchains. */
+static void chain_noise(int32_t *dst, uint32_t frames, uint32_t *seed,
+                        int32_t div)
+{
+    for (uint32_t i = 0; i < frames; i++) {
+        int32_t raw = (int32_t)(chain_lcg(seed) >> 8) - 8388608; /* +-2^23 */
+        dst[i] = raw / div;
+    }
+}
+
+static int32_t g_chain_fix_in[AIUS_MAX_CHANNELS][CHAIN_FIX_FRAMES];
+static int32_t g_chain_fix_l[CHAIN_FIX_FRAMES], g_chain_fix_r[CHAIN_FIX_FRAMES];
+
+static AiusPcmBlock chain_51_block(int32_t *seed_planes[AIUS_MAX_CHANNELS],
+                                   uint32_t frames)
+{
+    AiusPcmBlock b;
+    memset(&b, 0, sizeof b);
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) {
+        b.planes[p] = seed_planes[p];
+    }
+    b.channels = AIUS_MAX_CHANNELS;
+    b.frames = frames;
+    b.sample_rate_hz = (uint32_t)FS;
+    b.channel_mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                     AIUS_CH_SL | AIUS_CH_SR;
+    return b;
+}
+
+static void chain_fill_51(uint32_t frames, int32_t div,
+                          int32_t *planes[AIUS_MAX_CHANNELS])
+{
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) {
+        /* One seed per plane, so the six channels are independent rather than
+         * six copies of one sequence (which the matrix would just sum). */
+        uint32_t seed = 0x12345678u + (uint32_t)p * 0x9E3779B9u;
+        chain_noise(g_chain_fix_in[p], frames, &seed, div);
+        planes[p] = g_chain_fix_in[p];
+    }
+}
+
+/* --- R3a: the default path is bit-identical ------------------------------ */
+
+/* Full-range pseudo-random 5.1 through the SHIPPED DEFAULT: default downmix
+ * including the LFE fold-in and its crossover state, no input stage, no output
+ * EQ, no limiter. This path already accumulates in double and already quantizes
+ * exactly once, so the change must not move a single sample of it -- including
+ * the samples where the matrix sum exceeds full scale and the quantize clamps,
+ * which is the one place a "clip later instead of here" refactor could silently
+ * land somewhere new. Full-range stimulus is what puts those samples in the
+ * fixture. */
+static void test_chain_r3a_default_path_golden(void)
+{
+    int32_t *planes[AIUS_MAX_CHANNELS];
+    chain_fill_51(CHAIN_FIX_FRAMES, 1, planes);
+
+    struct chain_rig rig;
+    chain_test_config(&rig, 0.0, 0.0, 0);
+    AiusPcmBlock whole = chain_51_block(planes, CHAIN_FIX_FRAMES);
+    chain_run(&rig, &whole, g_chain_fix_l, g_chain_fix_r, NULL);
+
+    /* The fixture is worthless if the stimulus never reached the clamp, so state
+     * the negative control rather than assuming it. */
+    uint32_t rails =
+        chain_rail_count(g_chain_fix_l, CHAIN_FIX_FRAMES, AIUS_DSP_SAMPLE_MAX) +
+        chain_rail_count(g_chain_fix_l, CHAIN_FIX_FRAMES, AIUS_DSP_SAMPLE_MIN);
+    CHAIN_CHECK(rails > 0,
+                "R3a stimulus never reached the downmix clamp; the fixture "
+                "would not cover the saturating path");
+
+    chain_golden("chain_default_downmix",
+                 "default downmix (0.5 pad, LFE folded at -10 dB through the "
+                 "120 Hz LR4), no input stage, no output EQ, no limiter; "
+                 "stimulus LCG 0x12345678+p*0x9E3779B9, full-range 24-bit on "
+                 "FL FR FC LFE SL SR, 4 blocks x 512 frames @ 48 kHz",
+                 g_chain_fix_l, g_chain_fix_r, CHAIN_FIX_FRAMES);
+    printf("R3a default-path fixture: %u rail samples in the stimulus\n", rails);
+}
+
+/* --- R3b: the transparent limiter path is bit-identical ------------------ */
+
+/* Same, with the limiter ENABLED at its shipped default and the content pinned
+ * at exactly -12.04 dBFS (a quarter of full scale).
+ *
+ * The level is not decorative. The limiter's true-peak FIR is gated at
+ * threshold / (33142/16384) = -7.12 dBFS, and the worst case this matrix can
+ * reach from quarter-scale inputs is (1 + 0.7071 + 0.7071 + 0.3162) * 0.25 * 0.5
+ * = 0.341 of full scale = -9.3 dBFS. So the FIR provably never runs, the
+ * envelope provably never crosses the -1 dBFS threshold, and the limiter's gain
+ * is EXACTLY 1.0 for every sample -- asserted below, not assumed. That makes
+ * this fixture a pin on the limiter tail as a pure delay-and-requantize, which
+ * is precisely the stage the change reroutes. */
+static void test_chain_r3b_transparent_limiter_golden(void)
+{
+    int32_t *planes[AIUS_MAX_CHANNELS];
+    chain_fill_51(CHAIN_FIX_FRAMES, 4, planes); /* -12.04 dBFS, exactly */
+
+    struct chain_rig rig;
+    chain_test_config(&rig, 0.0, 0.0, 1);
+    AiusPcmBlock whole = chain_51_block(planes, CHAIN_FIX_FRAMES);
+    double gr_min = 0.0;
+    chain_run(&rig, &whole, g_chain_fix_l, g_chain_fix_r, &gr_min);
+
+    CHAIN_CHECK(gr_min == 0.0,
+                "R3b limiter reduced gain by %.6f dB; the fixture is only a "
+                "transparency pin while the gain is exactly 1.0", gr_min);
+    chain_golden("chain_limiter_transparent",
+                 "default downmix + shipped-default limiter (enabled, -1 dBFS, "
+                 "0.5/100 ms, 2 ms lookahead), no input stage, no output EQ; "
+                 "stimulus LCG 0x12345678+p*0x9E3779B9 at exactly -12.04 dBFS "
+                 "(full-range/4) on FL FR FC LFE SL SR, 4 blocks x 512 frames "
+                 "@ 48 kHz",
+                 g_chain_fix_l, g_chain_fix_r, CHAIN_FIX_FRAMES);
+}
+
+/* --- R4: the limiter must get the over the input stage created ------------ */
+
+/* R1's shape with the limiter at its shipped default. Today the input cascade
+ * clips the over away and the pad hands the limiter a -6.02 dBFS signal, 5 dB
+ * BELOW its threshold: the limiter reports 0.000 dB of gain reduction while the
+ * audio it is guarding has already been destroyed upstream. That is the whole
+ * defect in one measurement.
+ *
+ * THE BOOST IS +8 dB, NOT R1's +6, and the reason is arithmetic rather than
+ * taste: at +6 dB the padded peak lands at -1.021 dBFS, 0.021 dB UNDER the
+ * shipped -1.0 dBFS threshold, so even a perfect double-precision chain would
+ * report GR == 0 and the gain-reduction assertion could never go green. +8 dB
+ * puts the padded peak at +0.98 dBFS, 1.98 dB into the limiter, which makes the
+ * assertion falsifiable in both directions. Measured against a double-domain
+ * reference chain: GR -1.98 dB, 3rd harmonic -115 dB (the residue of the
+ * limiter's own gain ripple), so the -100 dB bar has ~15 dB of margin after the
+ * change and fails by ~88 dB before it. */
+static void test_chain_r4_limiter_sees_the_over(void)
+{
+    chain_tone(g_chain_in_l, CHAIN_FRAMES, -1.0);
+    memcpy(g_chain_in_r, g_chain_in_l, sizeof g_chain_in_l);
+
+    struct chain_rig rig;
+    chain_test_config(&rig, 8.0, 0.0, 1);
+    AiusPcmBlock whole =
+        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+    double gr_min = 0.0;
+    chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, &gr_min);
+
+    const int32_t *wl = g_chain_out_l + (CHAIN_FRAMES - CHAIN_ANA);
+    double h2 = chain_harmonic_db(wl, CHAIN_ANA, 2.0);
+    double h3 = chain_harmonic_db(wl, CHAIN_ANA, 3.0);
+    int32_t pk = peak_abs_i(wl, CHAIN_ANA);
+
+    printf("R4 input +8 dB + limiter: gr_min %.4f dB, h2 %.2f dB, h3 %.2f dB, "
+           "peak %d (%.3f dBFS)\n",
+           gr_min, h2, h3, pk,
+           20.0 * log10((double)pk / (double)AIUS_DSP_SAMPLE_MAX));
+
+    CHAIN_CHECK(gr_min < -0.1,
+                "R4 limiter gain reduction bottomed at %.4f dB, want < -0.1 dB "
+                "(the input boost puts the padded peak 1.98 dB over the -1 dBFS "
+                "threshold; today the cascade clips it away first and the "
+                "limiter never sees it)", gr_min);
+    CHAIN_CHECK(h2 < -100.0,
+                "R4 2nd harmonic %.2f dB rel fundamental, want < -100 dB", h2);
+    CHAIN_CHECK(h3 < -100.0,
+                "R4 3rd harmonic %.2f dB rel fundamental, want < -100 dB "
+                "(a limiter riding a signal that was already hard-clipped "
+                "upstream cannot make it clean again)", h3);
+}
+
+/* --- R5: the wire ceiling still exists ----------------------------------- */
+
+/* The complement of R1-R4 and the reason none of them may be read as "stop
+ * clipping": the transmit word is 24 bits and the FINAL quantize must still
+ * saturate. No input stage, no limiter, and an output EQ boost applied AFTER the
+ * pad that is far too big for the remaining headroom (-1 dBFS tone, -7.02 dBFS
+ * after the pad, +12 dB of boost = +4.98 dB over full scale). Both rails must be
+ * reached, exactly, on both planes.
+ *
+ * Green today and green after: today the output cascade's quantize clamps, after
+ * the change the single final quantize clamps. What must never happen is a
+ * chain that wraps, or one whose "clip-free intermediate" leaks past the wire. */
+static void test_chain_r5_final_quantize_still_clips(void)
+{
+    chain_tone(g_chain_in_l, CHAIN_FRAMES, -1.0);
+    memcpy(g_chain_in_r, g_chain_in_l, sizeof g_chain_in_l);
+
+    struct chain_rig rig;
+    chain_test_config(&rig, 0.0, 12.0, 0);
+    AiusPcmBlock whole =
+        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+    chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, NULL);
+
+    const int32_t *wl = g_chain_out_l + (CHAIN_FRAMES - CHAIN_ANA);
+    const int32_t *wr = g_chain_out_r + (CHAIN_FRAMES - CHAIN_ANA);
+    uint32_t hi_l = chain_rail_count(wl, CHAIN_ANA, AIUS_DSP_SAMPLE_MAX);
+    uint32_t lo_l = chain_rail_count(wl, CHAIN_ANA, AIUS_DSP_SAMPLE_MIN);
+    uint32_t hi_r = chain_rail_count(wr, CHAIN_ANA, AIUS_DSP_SAMPLE_MAX);
+    uint32_t lo_r = chain_rail_count(wr, CHAIN_ANA, AIUS_DSP_SAMPLE_MIN);
+
+    CHAIN_CHECK(hi_l > 0 && lo_l > 0 && hi_r > 0 && lo_r > 0,
+                "R5 output does not reach both rails (L %u/%u, R %u/%u): a "
+                "+12 dB post-pad boost is 4.98 dB over full scale and the "
+                "final quantize must saturate", hi_l, lo_l, hi_r, lo_r);
+    for (uint32_t i = 0; i < CHAIN_ANA; i++) {
+        assert(wl[i] >= AIUS_DSP_SAMPLE_MIN && wl[i] <= AIUS_DSP_SAMPLE_MAX);
+        assert(wr[i] >= AIUS_DSP_SAMPLE_MIN && wr[i] <= AIUS_DSP_SAMPLE_MAX);
+    }
+    printf("ok chain R5 final quantize clamps exactly at the rails "
+           "(L %u/%u, R %u/%u of %d)\n", hi_l, lo_l, hi_r, lo_r, CHAIN_ANA);
 }
 
 int main(void)
@@ -2559,6 +3455,24 @@ int main(void)
     test_meter_process_no_mutation();
     test_arena_alloc();
     test_invalid_args();
+
+    /* Double-precision chain proofs. R1, R2 and R4 are RED until the
+     * single-quantize change lands; R3a, R3b and R5 are green now and must stay
+     * green. See the section header above test_chain_r1_input_boost_harmonics. */
+    test_chain_r1_input_boost_harmonics();
+    test_chain_r2_interstage_over_is_recovered();
+    test_chain_r3a_default_path_golden();
+    test_chain_r3b_transparent_limiter_golden();
+    test_chain_r4_limiter_sees_the_over();
+    test_chain_r5_final_quantize_still_clips();
+    if (g_chain_fail > 0) {
+        fprintf(stderr,
+                "\n%d CHAIN CHECK(S) FAILED -- the red-first proof for the "
+                "double-precision chain (R1/R2/R4 fail until it lands)\n",
+                g_chain_fail);
+        return 1;
+    }
+
     printf("ALL DSP TESTS PASSED\n");
     return 0;
 }

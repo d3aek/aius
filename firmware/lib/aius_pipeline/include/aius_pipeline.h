@@ -143,9 +143,12 @@ AiusStatus aius_pipeline_create(AiusPipeline **out,
 /* Create a pipeline whose instance and DTS decoder come from `arena` (the target-
  * shaped no-libc-heap path for the decode side; the IEC parser has no arena
  * provisioning and is libc-allocated at create in both modes). `arena` must
- * outlive the pipeline and be dedicated to it. Size it from the decoder's arena
- * high-water (see aius_dts_get_metrics) plus the instance. Returns AIUS_OK,
- * AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
+ * outlive the pipeline. The owner MAY carve its own long-lived allocations from
+ * the arena BEFORE this call (the target carves the DSP chain's double staging
+ * there -- see optical_main begin_pipeline); after create the remaining arena
+ * belongs to the pipeline alone, and nothing may ever reset it. Size it from
+ * the decoder's arena high-water (see aius_dts_get_metrics) plus the instance
+ * plus any owner carve. Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
 AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
                                       const AiusPipelineConfig *cfg,
                                       const AiusPcmSink *sink, AiusArena *arena);

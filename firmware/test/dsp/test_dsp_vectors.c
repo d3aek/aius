@@ -54,7 +54,7 @@ static uint32_t g_unity_clipped;
  * the "stereo output is untouched" checks cannot pass on a corpus in which nothing
  * carries LFE at all. */
 static uint32_t g_lfe_folded_vectors;
-static int32_t g_lfe_delta_peak;
+static double g_lfe_delta_peak; /* matrix units, unquantized */
 
 #define CHECK(cond, ...)                                                        \
     do {                                                                        \
@@ -215,6 +215,15 @@ static int32_t ref_quantize(double x)
     return (int32_t)r;
 }
 
+/* int32 decoded plane -> the double plane every DSP stage takes since the
+ * single-quantize change. aius_dsp_process does this internally into
+ * cfg->scratch; a test driving a stage directly does it here. */
+static void to_d(const int32_t *src, double *dst, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++)
+        dst[i] = (double)src[i];
+}
+
 static int mask_plane(uint32_t mask, uint32_t bit)
 {
     if (!(mask & bit))
@@ -240,9 +249,16 @@ static int mask_plane(uint32_t mask, uint32_t bit)
  * every rate) that no transcription here could match for rigour. Re-transcribing
  * the RBJ formulas here would also risk a last-bit disagreement on a knife-edge
  * sample, which would make this a flaky test of arithmetic order rather than a
- * firm test of routing. */
+ * firm test of routing.
+ *
+ * IT NO LONGER QUANTIZES, because the matrix no longer does: the reference ends
+ * where the module's stage ends, in double, and the harness applies THE single
+ * quantize (ref_quantize) once, at the same place aius_dsp_process does. The
+ * sample-exact comparison over a whole real vector therefore got stricter -- two
+ * unrounded doubles must agree bit for bit rather than agreeing after both were
+ * rounded to the same integer. */
 static void ref_downmix(const AiusDownmixConfig *cfg, const struct pcm *p,
-                        int32_t *outL, int32_t *outR)
+                        double *outL, double *outR)
 {
     int iFL = mask_plane(p->channel_mask, AIUS_CH_FL);
     int iFR = mask_plane(p->channel_mask, AIUS_CH_FR);
@@ -288,8 +304,8 @@ static void ref_downmix(const AiusDownmixConfig *cfg, const struct pcm *p,
         }
         if (iSL >= 0) l += (double)p->ch[iSL][n] * cfg->surround;
         if (iSR >= 0) r += (double)p->ch[iSR][n] * cfg->surround;
-        outL[n] = ref_quantize(l * cfg->headroom);
-        outR[n] = ref_quantize(r * cfg->headroom);
+        outL[n] = l * cfg->headroom;
+        outR[n] = r * cfg->headroom;
     }
 }
 
@@ -319,9 +335,12 @@ static const struct vector k_vectors[] = {
 /* Build a mask-consistent input block that carries `sig` on channel `bit` and
  * zero on every other channel of `mask`. Planes come from caller storage:
  * planes[] is filled in ascending AIUS_CH_* order. `zero` is a shared silent
- * plane. Returns the number of channels (popcount(mask)). */
-static int build_isolated(uint32_t mask, uint32_t bit, const int32_t *sig,
-                          const int32_t *zero, const int32_t *planes[])
+ * plane. Returns the number of channels (popcount(mask)).
+ *
+ * Double planes, because the isolation tests drive aius_dsp_downmix directly and
+ * that is a double-plane stage now. */
+static int build_isolated(uint32_t mask, uint32_t bit, double *sig,
+                          double *zero, double *planes[])
 {
     static const uint32_t order[] = {
         AIUS_CH_FL, AIUS_CH_FR, AIUS_CH_FC, AIUS_CH_LFE, AIUS_CH_SL, AIUS_CH_SR,
@@ -413,10 +432,38 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     uint32_t F = p.frames;
     int32_t *outL = malloc(F * sizeof(int32_t));
     int32_t *outR = malloc(F * sizeof(int32_t));
-    int32_t *refL = malloc(F * sizeof(int32_t));
-    int32_t *refR = malloc(F * sizeof(int32_t));
-    int32_t *zero = calloc(F, sizeof(int32_t));
-    if (!outL || !outR || !refL || !refR || !zero) {
+    /* The matrix's own (unquantized) result, and the independent reference for
+     * it. outL/outR below are these, quantized once -- which is exactly what the
+     * chain emits, so the retained golden signature is unchanged by the move to a
+     * double intermediate. */
+    double *dblL = malloc(F * sizeof(double));
+    double *dblR = malloc(F * sizeof(double));
+    double *refL = malloc(F * sizeof(double));
+    double *refR = malloc(F * sizeof(double));
+    double *zero = calloc(F, sizeof(double));
+    /* The decoded planes as doubles (for stages driven directly), plus the
+     * staging planes and stereo work pair aius_dsp_process now requires. Carved
+     * once per vector: the allocation-free guard below arms the shim after this
+     * point, so nothing on the process path may allocate. */
+    double *dch[AIUS_MAX_CHANNELS] = {0};
+    double *pscr[AIUS_MAX_CHANNELS] = {0};
+    double *pwl = malloc(F * sizeof(double));
+    double *pwr = malloc(F * sizeof(double));
+    int oom = (!outL || !outR || !dblL || !dblR || !refL || !refR || !zero ||
+               !pwl || !pwr);
+    for (int c = 0; c < AIUS_MAX_CHANNELS; c++) {
+        pscr[c] = malloc(F * sizeof(double));
+        if (pscr[c] == NULL) oom = 1;
+    }
+    for (int c = 0; c < p.channels; c++) {
+        dch[c] = malloc(F * sizeof(double));
+        if (dch[c] == NULL) {
+            oom = 1;
+            continue;
+        }
+        to_d(p.ch[c], dch[c], F);
+    }
+    if (oom) {
         fprintf(stderr, "FAIL %s: OOM\n", v->name);
         g_fail++;
         goto done;
@@ -446,6 +493,9 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     unity.headroom = 1.0;
 
     /* --- full-vector default downmix through the public interface --------- */
+    /* Two views of the same decoded block: the int32 one aius_dsp_process takes
+     * (it owns the int32 -> double boundary) and the double one the stages take
+     * when a test drives them directly. */
     AiusPcmBlock in;
     memset(&in, 0, sizeof in);
     for (int c = 0; c < p.channels; c++)
@@ -455,25 +505,35 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     in.sample_rate_hz = p.sample_rate;
     in.channel_mask = p.channel_mask;
 
-    AiusPcmBlock out;
-    memset(&out, 0, sizeof out);
-    out.planes[0] = outL;
-    out.planes[1] = outR;
-    aius_lfe_fold_reset(&fold);
-    CHECK(aius_dsp_downmix(&cfg, &in, &out) == AIUS_OK, "%s downmix", v->name);
+    AiusPcmBlockD ind;
+    memset(&ind, 0, sizeof ind);
+    for (int c = 0; c < p.channels; c++)
+        ind.planes[c] = dch[c];
+    ind.channels = p.channels;
+    ind.frames = F;
+    ind.sample_rate_hz = p.sample_rate;
+    ind.channel_mask = p.channel_mask;
 
-    /* Bounded latency: no buffering, output frame count == input. */
-    CHECK(out.frames == F, "%s frames %u != %u", v->name, out.frames, F);
-    CHECK(out.channels == 2 && out.channel_mask == (AIUS_CH_FL | AIUS_CH_FR),
-          "%s stereo layout", v->name);
+    aius_lfe_fold_reset(&fold);
+    CHECK(aius_dsp_downmix(&cfg, &ind, dblL, dblR) == AIUS_OK, "%s downmix",
+          v->name);
+    /* THE single quantize, applied by the harness exactly where the chain applies
+     * it. Everything downstream in this function that says "the shipped-default
+     * stereo output" means outL/outR, and they are the same integers this vector
+     * always produced -- which is why the retained golden did not move. */
+    for (uint32_t n = 0; n < F; n++) {
+        outL[n] = ref_quantize(dblL[n]);
+        outR[n] = ref_quantize(dblR[n]);
+    }
 
     /* Independent reference downmix: sample-exact over the whole real vector,
-     * fold-in and crossover included (ref_downmix runs its own recurrence). */
+     * fold-in and crossover included (ref_downmix runs its own recurrence), and
+     * now compared UNQUANTIZED -- two doubles, bit for bit. */
     ref_downmix(&cfg, &p, refL, refR);
     {
         uint32_t diff = 0, first = 0;
         for (uint32_t n = 0; n < F; n++) {
-            if (outL[n] != refL[n] || outR[n] != refR[n]) {
+            if (dblL[n] != refL[n] || dblR[n] != refR[n]) {
                 if (!diff) first = n;
                 diff++;
             }
@@ -482,14 +542,20 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
               v->name, diff, first);
     }
 
-    /* Finite / in-range output (no overflow-wrap; int is always finite). */
+    /* Finite intermediate, in-range wire. The two halves of what used to be one
+     * check: the matrix result may legitimately exceed the 24-bit range now (that
+     * is the whole point), but it must be finite, and what reaches the wire after
+     * the single quantize must be inside it. */
     {
-        int inrange = 1;
+        int finite = 1, inrange = 1;
         for (uint32_t n = 0; n < F; n++) {
+            if (!isfinite(dblL[n]) || !isfinite(dblR[n]))
+                finite = 0;
             if (outL[n] > AIUS_DSP_SAMPLE_MAX || outL[n] < AIUS_DSP_SAMPLE_MIN ||
                 outR[n] > AIUS_DSP_SAMPLE_MAX || outR[n] < AIUS_DSP_SAMPLE_MIN)
                 inrange = 0;
         }
+        CHECK(finite, "%s matrix produced a non-finite sample", v->name);
         CHECK(inrange, "%s output out of 24-bit range", v->name);
     }
 
@@ -507,30 +573,29 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
      * `lfe_delta_peak` is reported alongside the signature so a reviewer reading a
      * changed golden can see how much of the change the fold-in accounts for. */
     {
-        int32_t *xl = malloc(F * sizeof(int32_t));
-        int32_t *xr = malloc(F * sizeof(int32_t));
+        double *xl = malloc(F * sizeof(double));
+        double *xr = malloc(F * sizeof(double));
         if (xl == NULL || xr == NULL) {
             fprintf(stderr, "FAIL %s: OOM\n", v->name);
             g_fail++;
         } else {
-            AiusPcmBlock xo;
-            memset(&xo, 0, sizeof xo);
-            xo.planes[0] = xl;
-            xo.planes[1] = xr;
             AiusDownmixConfig ex = cfg;
             ex.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
             aius_lfe_fold_reset(&fold);
-            CHECK(aius_dsp_downmix(&ex, &in, &xo) == AIUS_OK, "%s excluded dmix",
-                  v->name);
+            CHECK(aius_dsp_downmix(&ex, &ind, xl, xr) == AIUS_OK,
+                  "%s excluded dmix", v->name);
+            /* Compared in the matrix's own units now: "bit-identical" for a
+             * vector with no LFE plane is a double identity, not an equality of
+             * two rounded integers. */
             uint32_t diff = 0;
-            int32_t dpk = 0;
+            double dpk = 0.0;
             for (uint32_t n = 0; n < F; n++) {
-                if (outL[n] != xl[n] || outR[n] != xr[n]) diff++;
-                int32_t d = outL[n] - xl[n];
-                if (d < 0) d = -d;
+                if (dblL[n] != xl[n] || dblR[n] != xr[n]) diff++;
+                double d = dblL[n] - xl[n];
+                if (d < 0.0) d = -d;
                 if (d > dpk) dpk = d;
-                d = outR[n] - xr[n];
-                if (d < 0) d = -d;
+                d = dblR[n] - xr[n];
+                if (d < 0.0) d = -d;
                 if (d > dpk) dpk = d;
             }
             if (p.channel_mask & AIUS_CH_LFE) {
@@ -541,7 +606,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             } else {
                 CHECK(diff == 0,
                       "%s has no LFE plane but the fold-in changed %u sample(s) "
-                      "(peak delta %d) -- stereo output must be untouched",
+                      "(peak delta %.3f) -- stereo output must be untouched",
                       v->name, diff, dpk);
             }
             g_lfe_delta_peak = dpk;
@@ -562,13 +627,27 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&pout, 0, sizeof pout);
         pout.planes[0] = pl;
         pout.planes[1] = pr;
-        AiusDspConfig dc = { cfg, eq, ns, st, NULL, NULL };
+        AiusDspConfig dc;
+        memset(&dc, 0, sizeof dc);
+        dc.downmix = cfg;
+        dc.eq = eq;
+        dc.eq_sections = ns;
+        dc.eq_state = st;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) dc.scratch[c] = pscr[c];
+        dc.work_l = pwl;
+        dc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&dc, &in, &pout) == AIUS_OK, "%s process", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
             if (pl[n] != outL[n] || pr[n] != outR[n]) diff++;
         CHECK(diff == 0, "%s process(bypass) != downmix (%u)", v->name, diff);
+        /* The block meta belongs to process now (the matrix writes planes only),
+         * so bounded latency and the stereo layout are asserted here. */
+        CHECK(pout.frames == F, "%s frames %u != %u", v->name, pout.frames, F);
+        CHECK(pout.channels == 2 &&
+              pout.channel_mask == (AIUS_CH_FL | AIUS_CH_FR),
+              "%s stereo layout", v->name);
         free(pl);
         free(pr);
     }
@@ -590,17 +669,27 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&wout, 0, sizeof wout);
         wout.planes[0] = wl;
         wout.planes[1] = wr;
-        AiusDspConfig wc = { cfg, eq, 1, wst, NULL, NULL };
+        AiusDspConfig wc;
+        memset(&wc, 0, sizeof wc);
+        wc.downmix = cfg;
+        wc.eq = eq;
+        wc.eq_sections = 1;
+        wc.eq_state = wst;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) wc.scratch[c] = pscr[c];
+        wc.work_l = pwl;
+        wc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&wc, &in, &wout) == AIUS_OK, "%s eq whole", v->name);
 
-        /* two halves, state carried */
+        /* two halves, state carried (staging planes reused per call, as on the
+         * target: they are block scratch, not stream state) */
         uint32_t h = F / 2;
         AiusBiquadState sst[2];
         memset(sst, 0, sizeof sst);
         int32_t *sl = malloc(F * sizeof(int32_t));
         int32_t *sr = malloc(F * sizeof(int32_t));
-        AiusDspConfig sc = { cfg, eq, 1, sst, NULL, NULL };
+        AiusDspConfig sc = wc;
+        sc.eq_state = sst;
 
         AiusPcmBlock ha = in; ha.frames = h;
         AiusPcmBlock hb = in;
@@ -631,18 +720,14 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     /* --- channel-routing signal math via isolated real content ------------ */
     if (v->channels == 2) {
         /* Stereo: FL/FR passthrough + isolation (no cross-bleed), at unity. */
-        int32_t *uL = malloc(F * sizeof(int32_t));
-        int32_t *uR = malloc(F * sizeof(int32_t));
-        AiusPcmBlock uo;
-        memset(&uo, 0, sizeof uo);
-        uo.planes[0] = uL;
-        uo.planes[1] = uR;
-        CHECK(aius_dsp_downmix(&unity, &in, &uo) == AIUS_OK, "%s unity dmix",
+        double *uL = malloc(F * sizeof(double));
+        double *uR = malloc(F * sizeof(double));
+        CHECK(aius_dsp_downmix(&unity, &ind, uL, uR) == AIUS_OK, "%s unity dmix",
               v->name);
         int exactL = 1, exactR = 1;
         for (uint32_t n = 0; n < F; n++) {
-            if (uL[n] != p.ch[0][n]) exactL = 0;
-            if (uR[n] != p.ch[1][n]) exactR = 0;
+            if (uL[n] != (double)p.ch[0][n]) exactL = 0;
+            if (uR[n] != (double)p.ch[1][n]) exactR = 0;
         }
         CHECK(exactL, "%s FL->L not exact passthrough at unity", v->name);
         CHECK(exactR, "%s FR->R not exact passthrough at unity", v->name);
@@ -662,14 +747,13 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         free(uR);
     } else {
         /* 5.1: isolate each decoded channel into a mask-consistent block and
-         * prove placement + gain through the public downmix. */
-        const int32_t *pl[AIUS_MAX_CHANNELS];
-        int32_t *iL = malloc(F * sizeof(int32_t));
-        int32_t *iR = malloc(F * sizeof(int32_t));
-        AiusPcmBlock isoOut;
-        memset(&isoOut, 0, sizeof isoOut);
-        isoOut.planes[0] = iL;
-        isoOut.planes[1] = iR;
+         * prove placement + gain through the public downmix. Every expectation
+         * below dropped its ref_quantize: an isolated channel through the matrix
+         * at unity headroom is exactly one product, and that is what comes back
+         * now. */
+        double *pl[AIUS_MAX_CHANNELS];
+        double *iL = malloc(F * sizeof(double));
+        double *iR = malloc(F * sizeof(double));
 
         int iFC = mask_plane(p.channel_mask, AIUS_CH_FC);
         int iLFE = mask_plane(p.channel_mask, AIUS_CH_LFE);
@@ -679,16 +763,15 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         /* FC: symmetric contribution, L == R == center*FC. */
         {
             int nch = build_isolated(AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC,
-                                     AIUS_CH_FC, p.ch[iFC], zero, pl);
-            AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1],
-                                (int32_t *)pl[2], 0, 0, 0}, (uint16_t)nch, F,
-                               48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC };
-            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s FC iso",
+                                     AIUS_CH_FC, dch[iFC], zero, pl);
+            AiusPcmBlockD b = { {pl[0], pl[1], pl[2], 0, 0, 0}, (uint16_t)nch, F,
+                                48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC };
+            CHECK(aius_dsp_downmix(&unity, &b, iL, iR) == AIUS_OK, "%s FC iso",
                   v->name);
             int sym = 1, gain = 1;
             for (uint32_t n = 0; n < F; n++) {
                 if (iL[n] != iR[n]) sym = 0;
-                if (iL[n] != ref_quantize((double)p.ch[iFC][n] * unity.center)) gain = 0;
+                if (iL[n] != (double)p.ch[iFC][n] * unity.center) gain = 0;
             }
             CHECK(sym, "%s FC not symmetric L==R", v->name);
             CHECK(gain, "%s FC gain != center", v->name);
@@ -696,15 +779,15 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         /* SL -> L only. */
         {
             int nch = build_isolated(AIUS_CH_FL | AIUS_CH_SL, AIUS_CH_SL,
-                                     p.ch[iSL], zero, pl);
-            AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1], 0, 0, 0, 0},
-                               (uint16_t)nch, F, 48000, AIUS_CH_FL | AIUS_CH_SL };
-            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s SL iso",
+                                     dch[iSL], zero, pl);
+            AiusPcmBlockD b = { {pl[0], pl[1], 0, 0, 0, 0},
+                                (uint16_t)nch, F, 48000, AIUS_CH_FL | AIUS_CH_SL };
+            CHECK(aius_dsp_downmix(&unity, &b, iL, iR) == AIUS_OK, "%s SL iso",
                   v->name);
             int placed = 1, quiet = 1;
             for (uint32_t n = 0; n < F; n++) {
-                if (iL[n] != ref_quantize((double)p.ch[iSL][n] * unity.surround)) placed = 0;
-                if (iR[n] != 0) quiet = 0;
+                if (iL[n] != (double)p.ch[iSL][n] * unity.surround) placed = 0;
+                if (iR[n] != 0.0) quiet = 0;
             }
             CHECK(placed, "%s SL->L gain wrong", v->name);
             CHECK(quiet, "%s SL leaked to R", v->name);
@@ -712,15 +795,15 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         /* SR -> R only. */
         {
             int nch = build_isolated(AIUS_CH_FR | AIUS_CH_SR, AIUS_CH_SR,
-                                     p.ch[iSR], zero, pl);
-            AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1], 0, 0, 0, 0},
-                               (uint16_t)nch, F, 48000, AIUS_CH_FR | AIUS_CH_SR };
-            CHECK(aius_dsp_downmix(&unity, &b, &isoOut) == AIUS_OK, "%s SR iso",
+                                     dch[iSR], zero, pl);
+            AiusPcmBlockD b = { {pl[0], pl[1], 0, 0, 0, 0},
+                                (uint16_t)nch, F, 48000, AIUS_CH_FR | AIUS_CH_SR };
+            CHECK(aius_dsp_downmix(&unity, &b, iL, iR) == AIUS_OK, "%s SR iso",
                   v->name);
             int placed = 1, quiet = 1;
             for (uint32_t n = 0; n < F; n++) {
-                if (iR[n] != ref_quantize((double)p.ch[iSR][n] * unity.surround)) placed = 0;
-                if (iL[n] != 0) quiet = 0;
+                if (iR[n] != (double)p.ch[iSR][n] * unity.surround) placed = 0;
+                if (iL[n] != 0.0) quiet = 0;
             }
             CHECK(placed, "%s SR->R gain wrong", v->name);
             CHECK(quiet, "%s SR leaked to L", v->name);
@@ -731,10 +814,9 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
          * and failing closed with no state. */
         {
             int nch = build_isolated(AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE,
-                                     AIUS_CH_LFE, p.ch[iLFE], zero, pl);
-            AiusPcmBlock b = { {(int32_t *)pl[0], (int32_t *)pl[1],
-                                (int32_t *)pl[2], 0, 0, 0}, (uint16_t)nch, F,
-                               48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE };
+                                     AIUS_CH_LFE, dch[iLFE], zero, pl);
+            AiusPcmBlockD b = { {pl[0], pl[1], pl[2], 0, 0, 0}, (uint16_t)nch, F,
+                                48000, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE };
 
             /* (1) NEGATIVE CONTROL at vector scale: gain 0 -> stereo silent, so
              * the fold-in is genuinely opt-in on real content and not just on a
@@ -742,11 +824,11 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             AiusDownmixConfig ec = unity;
             ec.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
             aius_lfe_fold_reset(&fold);
-            CHECK(aius_dsp_downmix(&ec, &b, &isoOut) == AIUS_OK, "%s LFE excluded",
+            CHECK(aius_dsp_downmix(&ec, &b, iL, iR) == AIUS_OK, "%s LFE excluded",
                   v->name);
             int silent = 1;
             for (uint32_t n = 0; n < F; n++)
-                if (iL[n] != 0 || iR[n] != 0) silent = 0;
+                if (iL[n] != 0.0 || iR[n] != 0.0) silent = 0;
             CHECK(silent, "%s LFE not excluded at gain 0", v->name);
 
             /* (2) -10 dB with NO corner: still the exact flat multiply the matrix
@@ -756,15 +838,15 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             lc.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
             lc.lfe_crossover_hz = 0.0;
             lc.lfe_fold = NULL;
-            CHECK(aius_dsp_downmix(&lc, &b, &isoOut) == AIUS_OK, "%s LFE flat fold",
+            CHECK(aius_dsp_downmix(&lc, &b, iL, iR) == AIUS_OK, "%s LFE flat fold",
                   v->name);
             int folded = 1, nonzero = 0;
-            int32_t flat_peak = 0;
+            double flat_peak = 0.0;
             for (uint32_t n = 0; n < F; n++) {
-                int32_t e = ref_quantize((double)p.ch[iLFE][n] * AIUS_DSP_LFE_GAIN_MINUS10DB);
+                double e = (double)p.ch[iLFE][n] * AIUS_DSP_LFE_GAIN_MINUS10DB;
                 if (iL[n] != e || iR[n] != e) folded = 0;
-                if (e != 0) nonzero = 1;
-                int32_t a = e < 0 ? -e : e;
+                if (e != 0.0) nonzero = 1;
+                double a = e < 0.0 ? -e : e;
                 if (a > flat_peak) flat_peak = a;
             }
             CHECK(folded, "%s LFE flat fold gain wrong", v->name);
@@ -778,31 +860,31 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             AiusDownmixConfig fc = unity;
             fc.lfe = AIUS_DSP_LFE_GAIN_MINUS10DB;
             aius_lfe_fold_reset(&fold);
-            CHECK(aius_dsp_downmix(&fc, &b, &isoOut) == AIUS_OK, "%s LFE LR4 fold",
+            CHECK(aius_dsp_downmix(&fc, &b, iL, iR) == AIUS_OK, "%s LFE LR4 fold",
                   v->name);
             int sym = 1;
-            int32_t lp_peak = 0;
+            double lp_peak = 0.0;
             for (uint32_t n = 0; n < F; n++) {
                 if (iL[n] != iR[n]) sym = 0;
-                int32_t a = iL[n] < 0 ? -iL[n] : iL[n];
+                double a = iL[n] < 0.0 ? -iL[n] : iL[n];
                 if (a > lp_peak) lp_peak = a;
             }
             CHECK(sym, "%s LR4 fold not symmetric L==R", v->name);
-            CHECK(lp_peak > 0, "%s LR4 fold silent (filter killed everything)",
+            CHECK(lp_peak > 0.0, "%s LR4 fold silent (filter killed everything)",
                   v->name);
             CHECK(lp_peak < flat_peak,
-                  "%s LR4 fold peak %d not below the unfiltered %d -- the crossover "
-                  "is not attenuating", v->name, lp_peak, flat_peak);
+                  "%s LR4 fold peak %.1f not below the unfiltered %.1f -- the "
+                  "crossover is not attenuating", v->name, lp_peak, flat_peak);
 
             /* (4) And with no state to hold the corner it fails CLOSED, to (1)
              * rather than to (2): silent, not an unfiltered fold. */
             AiusDownmixConfig nc = fc;
             nc.lfe_fold = NULL;
-            CHECK(aius_dsp_downmix(&nc, &b, &isoOut) == AIUS_OK, "%s LFE no state",
+            CHECK(aius_dsp_downmix(&nc, &b, iL, iR) == AIUS_OK, "%s LFE no state",
                   v->name);
             int closed = 1;
             for (uint32_t n = 0; n < F; n++)
-                if (iL[n] != 0 || iR[n] != 0) closed = 0;
+                if (iL[n] != 0.0 || iR[n] != 0.0) closed = 0;
             CHECK(closed, "%s missing crossover state did not fail closed", v->name);
         }
         free(iL);
@@ -829,18 +911,20 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
          * could pass on a corpus that never stressed the matrix at all, and the
          * defect would be untestable. Accumulated across vectors and asserted once
          * in main, because only one of the four is hot enough to clip. */
-        int32_t *ul = malloc(F * sizeof(int32_t));
-        int32_t *ur = malloc(F * sizeof(int32_t));
-        AiusPcmBlock uo2;
-        memset(&uo2, 0, sizeof uo2);
-        uo2.planes[0] = ul;
-        uo2.planes[1] = ur;
+        double *ul = malloc(F * sizeof(double));
+        double *ur = malloc(F * sizeof(double));
         aius_lfe_fold_reset(&fold);
-        CHECK(aius_dsp_downmix(&unity, &in, &uo2) == AIUS_OK, "%s unity clip probe",
-              v->name);
+        CHECK(aius_dsp_downmix(&unity, &ind, ul, ur) == AIUS_OK,
+              "%s unity clip probe", v->name);
+        /* "Would clip" is now a statement about what the FINAL QUANTIZE would do
+         * to this matrix result, since the matrix itself no longer clamps. Same
+         * samples, same count: a value at or past the rail is one the wire cannot
+         * carry. */
         for (uint32_t n = 0; n < F; n++) {
-            if (ul[n] >= AIUS_DSP_SAMPLE_MAX || ul[n] <= AIUS_DSP_SAMPLE_MIN ||
-                ur[n] >= AIUS_DSP_SAMPLE_MAX || ur[n] <= AIUS_DSP_SAMPLE_MIN)
+            if (ref_quantize(ul[n]) >= AIUS_DSP_SAMPLE_MAX ||
+                ref_quantize(ul[n]) <= AIUS_DSP_SAMPLE_MIN ||
+                ref_quantize(ur[n]) >= AIUS_DSP_SAMPLE_MAX ||
+                ref_quantize(ur[n]) <= AIUS_DSP_SAMPLE_MIN)
                 g_unity_clipped++;
         }
         free(ul);
@@ -855,17 +939,16 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         cc.lfe_fold = &cfold; /* the clip-free bound covers the fold, so run it */
         cc.headroom = aius_downmix_clipfree_headroom(&cc);
         CHECK(cc.headroom > 0.0 && cc.headroom <= 1.0, "%s clipfree headroom", v->name);
-        AiusPcmBlock co;
-        memset(&co, 0, sizeof co);
-        int32_t *cl = malloc(F * sizeof(int32_t));
-        int32_t *cr = malloc(F * sizeof(int32_t));
-        co.planes[0] = cl;
-        co.planes[1] = cr;
-        CHECK(aius_dsp_downmix(&cc, &in, &co) == AIUS_OK, "%s clipfree dmix", v->name);
+        double *cl = malloc(F * sizeof(double));
+        double *cr = malloc(F * sizeof(double));
+        CHECK(aius_dsp_downmix(&cc, &ind, cl, cr) == AIUS_OK, "%s clipfree dmix",
+              v->name);
         int saturated = 0;
         for (uint32_t n = 0; n < F; n++) {
-            if (cl[n] == AIUS_DSP_SAMPLE_MAX || cl[n] == AIUS_DSP_SAMPLE_MIN ||
-                cr[n] == AIUS_DSP_SAMPLE_MAX || cr[n] == AIUS_DSP_SAMPLE_MIN)
+            if (ref_quantize(cl[n]) == AIUS_DSP_SAMPLE_MAX ||
+                ref_quantize(cl[n]) == AIUS_DSP_SAMPLE_MIN ||
+                ref_quantize(cr[n]) == AIUS_DSP_SAMPLE_MAX ||
+                ref_quantize(cr[n]) == AIUS_DSP_SAMPLE_MIN)
                 saturated++;
         }
         CHECK(saturated == 0, "%s clip-free downmix saturated %u samples",
@@ -877,76 +960,91 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     /* --- input stage: identity trim/EQ leaves the downmix unchanged -------- */
     {
         AiusInputStage stage = aius_input_stage_default();
-        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
-        for (int c = 0; c < p.channels; c++) {
-            scr[c] = malloc(F * sizeof(int32_t));
-            stage.scratch[c] = scr[c];
-        }
         int32_t *pl = malloc(F * sizeof(int32_t));
         int32_t *pr = malloc(F * sizeof(int32_t));
         AiusPcmBlock po;
         memset(&po, 0, sizeof po);
         po.planes[0] = pl;
         po.planes[1] = pr;
-        AiusDspConfig dc = { cfg, NULL, 0, NULL, &stage, NULL };
+        AiusDspConfig dc;
+        memset(&dc, 0, sizeof dc);
+        dc.downmix = cfg;
+        dc.input = &stage;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) dc.scratch[c] = pscr[c];
+        dc.work_l = pwl;
+        dc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&dc, &in, &po) == AIUS_OK, "%s input-id", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
             if (pl[n] != outL[n] || pr[n] != outR[n]) diff++;
         CHECK(diff == 0, "%s identity input stage != downmix (%u)", v->name, diff);
-        /* Input planes are const: unchanged after processing. */
+        /* Input planes are const: unchanged after processing. The staging
+         * convert-copy writes into cfg->scratch, and it runs on every block now
+         * rather than only when an input stage is configured. */
         int mutated = 0;
         for (uint32_t n = 0; n < F; n++)
             if (p.ch[0][n] != in.planes[0][n]) mutated = 1;
         CHECK(!mutated, "%s input stage mutated decoded plane", v->name);
         free(pl);
         free(pr);
-        for (int c = 0; c < p.channels; c++) free(scr[c]);
     }
 
-    /* --- input trim: FL -6 dB matches a pre-scaled-FL downmix exactly ------- */
+    /* --- input trim: FL -6 dB matches a pre-scaled-FL downmix exactly -------
+     *
+     * THE PIN THAT INVERTED (F5), on real content. The reference used to be the
+     * FL plane scaled by 0.5 AND QUANTIZED, because that is what the input stage
+     * did: gain, round to int32, hand the matrix an integer plane. Neither path
+     * rounds now, so the reference pre-scales IN DOUBLE and the equality holds
+     * end to end. It is a real difference on this corpus, not a formality: the
+     * decoded FL plane is full of odd samples, so a pre-quantized reference now
+     * disagrees with the trimmed chain by up to half an LSB per sample. */
     {
-        int32_t *fls = malloc(F * sizeof(int32_t)); /* FL plane * 0.5, quantized */
-        for (uint32_t n = 0; n < F; n++)
-            fls[n] = ref_quantize((double)p.ch[0][n] * 0.5);
-        AiusPcmBlock rin = in;
+        double *fls = malloc(F * sizeof(double)); /* FL plane * 0.5, in double */
+        double odd = 0.0;
+        for (uint32_t n = 0; n < F; n++) {
+            fls[n] = (double)p.ch[0][n] * 0.5;
+            if (fls[n] != floor(fls[n])) odd += 1.0;
+        }
+        AiusPcmBlockD rin = ind;
         rin.planes[0] = fls;
-        int32_t *rl = malloc(F * sizeof(int32_t));
-        int32_t *rr = malloc(F * sizeof(int32_t));
-        AiusPcmBlock ro;
-        memset(&ro, 0, sizeof ro);
-        ro.planes[0] = rl;
-        ro.planes[1] = rr;
+        double *rdl = malloc(F * sizeof(double));
+        double *rdr = malloc(F * sizeof(double));
         aius_lfe_fold_reset(&fold);
-        CHECK(aius_dsp_downmix(&cfg, &rin, &ro) == AIUS_OK, "%s trim ref", v->name);
+        CHECK(aius_dsp_downmix(&cfg, &rin, rdl, rdr) == AIUS_OK, "%s trim ref",
+              v->name);
 
         AiusInputStage stage = aius_input_stage_default();
         stage.channels[0].gain_linear = 0.5; /* FL trim */
-        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
-        for (int c = 0; c < p.channels; c++) {
-            scr[c] = malloc(F * sizeof(int32_t));
-            stage.scratch[c] = scr[c];
-        }
         int32_t *tl = malloc(F * sizeof(int32_t));
         int32_t *tr = malloc(F * sizeof(int32_t));
         AiusPcmBlock to;
         memset(&to, 0, sizeof to);
         to.planes[0] = tl;
         to.planes[1] = tr;
-        AiusDspConfig tc = { cfg, NULL, 0, NULL, &stage, NULL };
+        AiusDspConfig tc;
+        memset(&tc, 0, sizeof tc);
+        tc.downmix = cfg;
+        tc.input = &stage;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) tc.scratch[c] = pscr[c];
+        tc.work_l = pwl;
+        tc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&tc, &in, &to) == AIUS_OK, "%s trim proc", v->name);
         uint32_t diff = 0;
         for (uint32_t n = 0; n < F; n++)
-            if (tl[n] != rl[n] || tr[n] != rr[n]) diff++;
+            if (tl[n] != ref_quantize(rdl[n]) || tr[n] != ref_quantize(rdr[n]))
+                diff++;
         CHECK(diff == 0, "%s FL trim != pre-scaled downmix (%u)", v->name, diff);
+        /* Not vacuous: the trim really does produce half-LSBs for the matrix to
+         * carry, so a stage that re-rounded would land somewhere else. */
+        CHECK(odd > 0.0, "%s FL trim produced no half-LSB (test is vacuous)",
+              v->name);
         free(fls);
-        free(rl);
-        free(rr);
+        free(rdl);
+        free(rdr);
         free(tl);
         free(tr);
-        for (int c = 0; c < p.channels; c++) free(scr[c]);
     }
 
     /* --- limiter: disabled tail leaves the downmix bit-identical ------------ */
@@ -961,7 +1059,13 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&lo, 0, sizeof lo);
         lo.planes[0] = ll;
         lo.planes[1] = lr;
-        AiusDspConfig lc = { cfg, NULL, 0, NULL, NULL, &lim };
+        AiusDspConfig lc;
+        memset(&lc, 0, sizeof lc);
+        lc.downmix = cfg;
+        lc.limiter = &lim;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) lc.scratch[c] = pscr[c];
+        lc.work_l = pwl;
+        lc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&lc, &in, &lo) == AIUS_OK, "%s lim off", v->name);
         uint32_t diff = 0;
@@ -988,7 +1092,13 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&lo, 0, sizeof lo);
         lo.planes[0] = ll;
         lo.planes[1] = lr;
-        AiusDspConfig lc = { cfg, NULL, 0, NULL, NULL, &lim };
+        AiusDspConfig lc;
+        memset(&lc, 0, sizeof lc);
+        lc.downmix = cfg;
+        lc.limiter = &lim;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) lc.scratch[c] = pscr[c];
+        lc.work_l = pwl;
+        lc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&lc, &in, &lo) == AIUS_OK, "%s lim on", v->name);
 
@@ -1026,11 +1136,6 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
     {
         AiusInputStage stage = aius_input_stage_default();
         stage.channels[2].gain_linear = aius_db_to_linear(-3.0); /* FC trim */
-        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
-        for (int c = 0; c < p.channels; c++) {
-            scr[c] = malloc(F * sizeof(int32_t));
-            stage.scratch[c] = scr[c];
-        }
         AiusBiquad oeq[1];
         oeq[0] = aius_biquad_lowpass(48000.0, 4000.0, 0.7071);
 
@@ -1053,7 +1158,17 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         memset(&wo, 0, sizeof wo);
         wo.planes[0] = wl;
         wo.planes[1] = wr;
-        AiusDspConfig wc = { cfg, oeq, 1, west, &stage, &wlim };
+        AiusDspConfig wc;
+        memset(&wc, 0, sizeof wc);
+        wc.downmix = cfg;
+        wc.eq = oeq;
+        wc.eq_sections = 1;
+        wc.eq_state = west;
+        wc.input = &stage;
+        wc.limiter = &wlim;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) wc.scratch[c] = pscr[c];
+        wc.work_l = pwl;
+        wc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&wc, &in, &wo) == AIUS_OK, "%s full whole", v->name);
         CHECK(wo.frames == F, "%s full frames %u != %u", v->name, wo.frames, F);
@@ -1066,7 +1181,9 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         slim.cfg = limc;
         int32_t *sl = malloc(F * sizeof(int32_t));
         int32_t *sr = malloc(F * sizeof(int32_t));
-        AiusDspConfig sc = { cfg, oeq, 1, sest, &stage, &slim };
+        AiusDspConfig sc = wc;
+        sc.eq_state = sest;
+        sc.limiter = &slim;
 
         uint32_t hh = F / 2;
         AiusPcmBlock ha = in;
@@ -1098,7 +1215,6 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         free(wr);
         free(sl);
         free(sr);
-        for (int c = 0; c < p.channels; c++) free(scr[c]);
     }
 
     /* --- allocation-free proof: the full process path touches no allocator -- */
@@ -1109,11 +1225,6 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 
         AiusInputStage stage = aius_input_stage_default();
         stage.channels[0].gain_linear = aius_db_to_linear(-2.0);
-        int32_t *scr[AIUS_MAX_CHANNELS] = {0};
-        for (int c = 0; c < p.channels; c++) {
-            scr[c] = malloc(F * sizeof(int32_t));
-            stage.scratch[c] = scr[c];
-        }
         AiusBiquad oeq[1];
         oeq[0] = aius_biquad_highshelf(48000.0, 8000.0, 0.7071, 3.0);
         AiusBiquadState oest[2];
@@ -1134,7 +1245,20 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         go.planes[1] = gr;
         AiusMeter gmeter;
         aius_meter_init(&gmeter, 48000);
-        AiusDspConfig gc = { cfg, oeq, 1, oest, &stage, &lim };
+        AiusDspConfig gc;
+        memset(&gc, 0, sizeof gc);
+        gc.downmix = cfg;
+        gc.eq = oeq;
+        gc.eq_sections = 1;
+        gc.eq_state = oest;
+        gc.input = &stage;
+        gc.limiter = &lim;
+        /* Staging planes carved at the top of run_vector, i.e. BEFORE the shim is
+         * armed: the chain's double scratch is caller-owned precisely so the
+         * process path can stay allocation-free. */
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) gc.scratch[c] = pscr[c];
+        gc.work_l = pwl;
+        gc.work_r = pwr;
 
         /* Arm the shim AFTER every buffer is allocated; the process path, the
          * caller-driven meter taps, publish, and read must not touch
@@ -1165,7 +1289,6 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 
         free(gl);
         free(gr);
-        for (int c = 0; c < p.channels; c++) free(scr[c]);
     }
 
     /* --- meter taps do not alter audio + capture real vector peaks ---------- */
@@ -1184,7 +1307,15 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         AiusBiquadState st[2];
         memset(st, 0, sizeof st);
         size_t ns = aius_eq_default(eq, 1);
-        AiusDspConfig mc = { cfg, eq, ns, st, NULL, NULL };
+        AiusDspConfig mc;
+        memset(&mc, 0, sizeof mc);
+        mc.downmix = cfg;
+        mc.eq = eq;
+        mc.eq_sections = ns;
+        mc.eq_state = st;
+        for (int c = 0; c < AIUS_MAX_CHANNELS; c++) mc.scratch[c] = pscr[c];
+        mc.work_l = pwl;
+        mc.work_r = pwr;
         aius_lfe_fold_reset(&fold);
         CHECK(aius_dsp_process(&mc, &in, &mo) == AIUS_OK, "%s meter proc", v->name);
 
@@ -1282,7 +1413,7 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
          * against a golden change wants to see how close to the rail it lands, and
          * "8388607/8388607" versus "0 dBFS" is the difference between reading a
          * number and reading a clip. */
-        printf(" out_peak=%d/%d (%+.2f/%+.2f dBFS) lfe_delta_peak=%d\n",
+        printf(" out_peak=%d/%d (%+.2f/%+.2f dBFS) lfe_delta_peak=%.0f\n",
                sig.out_peak_l, sig.out_peak_r,
                20.0 * log10((double)sig.out_peak_l / (double)AIUS_DSP_SAMPLE_MAX),
                20.0 * log10((double)sig.out_peak_r / (double)AIUS_DSP_SAMPLE_MAX),
@@ -1292,9 +1423,17 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
 done:
     free(outL);
     free(outR);
+    free(dblL);
+    free(dblR);
     free(refL);
     free(refR);
     free(zero);
+    free(pwl);
+    free(pwr);
+    for (int c = 0; c < AIUS_MAX_CHANNELS; c++) {
+        free(dch[c]);
+        free(pscr[c]);
+    }
     pcm_free(&p);
 }
 

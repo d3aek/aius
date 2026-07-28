@@ -893,7 +893,11 @@ EDGE_SERVICE = "service_event_edges"
 EDGE_HELPER = "counter_edge"
 AUDIO_CALLBACK_MARKER = "void update(void) override"
 ENUM_ENTRY = re.compile(r"\b(AIUS_EVENT_[A-Z0-9_]+)\s*=\s*(\d+)\s*[,}]")
-PREVIOUS_STATIC = re.compile(r"^static\b.*\bg_prev_")
+# uint32_t-typed only: the counter-edge scalars are all uint32_t, and the
+# retained boot-ledger latches (g_prev_boot_checkpoint uint16_t,
+# g_prev_first_abort uint8_t -- the defect-25 fa= instrument, 521ba20bc) are a
+# different, legitimate previous-value pattern this check must not count.
+PREVIOUS_STATIC = re.compile(r"^static uint32_t\b.*\bg_prev_")
 PREVIOUS_SCALAR = re.compile(r"static uint32_t g_prev_[a-z0-9_]+;")
 
 
@@ -1074,7 +1078,11 @@ TX_SNAPSHOT = (
 TX_MODULE = FIRMWARE_ROOT / "lib" / "aius_audio" / "src" / "aius_spdif_sources.cpp"
 
 ENQUEUE_MARKER = "AiusStatus enqueue(const AiusPcmBlock *block)"
-BEGIN_PIPELINE_MARKER = "void begin_pipeline(void)"
+# The out-of-line definition (begin_pipeline moved out of the class body with
+# FLASHMEM when the DSP staging carve grew it past the inliner -- the ITCM
+# placement gate's requirement). The in-class line is now a declaration ending
+# in `;`, which a body extractor must not match.
+BEGIN_PIPELINE_MARKER = "FLASHMEM void AiusAudioProcessor::begin_pipeline(void)"
 OUTPUT_WIDTH_CONSTANT = "OUTPUT_WIDTH_BITS"
 TX24_BEGIN = "aius_spdif_tx24_begin"
 # The line that proves the old path put 16-bit data in a 24-bit register, and
@@ -2440,11 +2448,7 @@ def run_self_test():
     good_output = (
         "class AiusAudioProcessor : public AudioStream\n"
         "{\n"
-        "\tvoid begin_pipeline(void)\n"
-        "\t{\n"
-        "\t\taius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);\n"
-        "\t\taius_spdif_tx24_begin();\n"
-        "\t}\n"
+        "\tFLASHMEM void begin_pipeline(void);\n"
         "\tvoid update(void) override\n"
         "\t{\n"
         "\t\taius_pipeline_push(g_pipeline, words, count);\n"
@@ -2471,6 +2475,15 @@ def run_self_test():
         "\t\treturn AIUS_OK;\n"
         "\t}\n"
         "};\n"
+        # Out-of-line, matching the real source's shape (FLASHMEM belongs on
+        # the definition; the in-class line above is a declaration a body
+        # extractor must skip). Two-tab body indentation is synthetic-input
+        # convention here, shared with the mutation splices below.
+        "FLASHMEM void AiusAudioProcessor::begin_pipeline(void)\n"
+        "{\n"
+        "\t\taius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);\n"
+        "\t\taius_spdif_tx24_begin();\n"
+        "}\n"
         "static AiusAudioProcessor g_audio_processor;\n"
         "static AudioOutputSPDIF3 g_spdif_out;\n"
         "static AudioConnection g_spdif_left(g_spdif_in, 0, g_audio_processor, 0);\n"

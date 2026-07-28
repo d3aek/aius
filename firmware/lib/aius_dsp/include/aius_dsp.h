@@ -31,6 +31,17 @@ extern "C" {
  *                                    coefficients supplied by the caller.
  *   3. Limiter   (aius_dsp_limiter_run)  true-peak safety limiter tail.
  *
+ * ONE QUANTIZE PER SAMPLE, AT THE END (defect: inter-stage clipping, fixed
+ * 2026-07-28). Samples travel this chain as double from the moment
+ * aius_dsp_process converts the decoded int32 planes into the caller's double
+ * scratch until the single aius_quantize into the output block after the
+ * limiter. No stage in between rounds or clamps: an input-EQ boost that
+ * overshoots full scale inter-stage is absorbed by the downmix headroom pad
+ * instead of hard-clipping at a cascade boundary, and the limiter sees TRUE
+ * unclipped peaks. The 24-bit wire ceiling exists only at that final quantize.
+ * Stage helpers therefore take double planes; the int32 <-> double boundary
+ * belongs to aius_dsp_process alone.
+ *
  * ...and then, at the boundary to the playback engine, the separate output
  * stage:
  *
@@ -247,15 +258,18 @@ extern "C" {
  * types below. Forward-declared here because AiusDownmixConfig refers to it. */
 typedef struct AiusLfeFold AiusLfeFold;
 
-/* Overall post-downmix gain applied to L' and R' before the saturating clamp.
+/* Overall post-downmix gain applied to L' and R' before the (final) clamp.
  *
- * WHY 0.5 AND NOT 1.0. The downmix quantizes and SATURATES into the 24-bit range
- * at the end of aius_dsp_downmix (and the EQ cascade saturates again), so every
- * later stage — the limiter included — sees an already-clamped signal. A limiter
- * downstream of a saturating matrix cannot recover an over the matrix has
- * already destroyed, so the headroom, not the limiter, is what has to keep the
- * matrix sum inside full scale. That rules out "unity headroom, let the limiter
- * catch the overs" until the pipeline carries an unclamped intermediate.
+ * WHY 0.5 AND NOT 1.0. When this default was chosen the downmix quantized and
+ * SATURATED into the 24-bit range at the end of aius_dsp_downmix (and the EQ
+ * cascade saturated again), so every later stage — the limiter included — saw
+ * an already-clamped signal, and the headroom, not the limiter, was what kept
+ * the matrix sum inside full scale. THE PIPELINE NOW CARRIES AN UNCLAMPED
+ * DOUBLE INTERMEDIATE (see §ONE QUANTIZE above), so "unity headroom, let the
+ * limiter catch the overs" is no longer structurally ruled out — but 0.5 stays:
+ * the corpus evidence below still supports it, the exact-power-of-two multiply
+ * is still bit-exact, and the pad is now also what gives an input-EQ boost its
+ * working room before the wire ceiling.
  *
  * The committed DTS corpus (tools/dts_vectors/vectors, 4 vectors x 5120 frames,
  * measured through this matrix at unity headroom, LFE EXCLUDED — this table
@@ -387,7 +401,20 @@ AiusDownmixConfig aius_downmix_config_default(void);
  * recorded at AIUS_DSP_HEADROOM_DEFAULT. */
 double aius_downmix_clipfree_headroom(const AiusDownmixConfig *cfg);
 
-/* Downmix `in` (1..6 channels, mask-driven) into stereo `out`.
+/* Double-plane view of a planar block: the inter-stage carrier of the
+ * single-quantize chain. Meta mirrors AiusPcmBlock; the planes are the
+ * caller's double scratch (see AiusDspConfig.scratch). */
+typedef struct {
+    double  *planes[AIUS_MAX_CHANNELS];
+    uint16_t channels;
+    uint32_t frames;
+    uint32_t sample_rate_hz;
+    uint32_t channel_mask;
+} AiusPcmBlockD;
+
+/* Downmix `in` (1..6 channels, mask-driven) into the double planes `out_l` /
+ * `out_r` (>= in->frames each). NO QUANTIZE: the result stays in double for
+ * the stages after it; the caller performs the single final quantize.
  *
  * Channel routing is driven entirely by in->channel_mask (AIUS_CH_*), so
  * narrower inputs are handled without a mode flag:
@@ -412,16 +439,12 @@ double aius_downmix_clipfree_headroom(const AiusDownmixConfig *cfg);
  * plane is present; a layout change that drops LFE freezes its state rather than
  * decaying it, and the next config apply resets it.
  *
- * `out` must have out->planes[0] (L) and out->planes[1] (R) pointing at
- * caller-owned buffers of at least in->frames int32 samples each; the other
- * fields are overwritten (channels=2, mask=FL|FR, frames=in->frames,
- * sample_rate_hz=in->sample_rate_hz). in and out planes must not overlap.
- *
- * Returns AIUS_OK, or AIUS_INVALID_ARG (null args/planes, channels/mask
- * mismatch, channels outside 1..AIUS_MAX_CHANNELS). Allocation-free. */
+ * in and out planes must not overlap. Returns AIUS_OK, or AIUS_INVALID_ARG
+ * (null args/planes, channels/mask mismatch, channels outside
+ * 1..AIUS_MAX_CHANNELS). Allocation-free. */
 AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
-                            const AiusPcmBlock *in,
-                            AiusPcmBlock *out);
+                            const AiusPcmBlockD *in,
+                            double *out_l, double *out_r);
 
 /* A Direct Form I biquad section, a0 normalized to 1:
  *   y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]  */
@@ -560,14 +583,15 @@ void aius_lfe_fold_reset(AiusLfeFold *fold);
  * first thing to check is whether the M7 is spilling the cascade's state to the
  * stack each sample rather than keeping it in FPU registers. */
 
-/* Run an `n`-section cascade in place over one plane of `frames` int32 samples.
- * `state` is an array of `n` AiusBiquadState (one per section), advanced across
- * calls so block boundaries are seamless. Output is rounded to nearest (ties
- * away from zero) and saturated to [AIUS_DSP_SAMPLE_MIN, AIUS_DSP_SAMPLE_MAX].
- * n == 0 (or sections == NULL) is a no-op passthrough. Allocation-free. */
+/* Run an `n`-section cascade in place over one plane of `frames` double
+ * samples. `state` is an array of `n` AiusBiquadState (one per section),
+ * advanced across calls so block boundaries are seamless. NO QUANTIZE and no
+ * clamp: the cascade output stays in double (the single final quantize is
+ * aius_dsp_process's). n == 0 (or sections == NULL) is a no-op passthrough.
+ * Allocation-free. */
 void aius_dsp_eq_run(const AiusBiquad *sections, size_t n,
                      AiusBiquadState *state,
-                     int32_t *samples, uint32_t frames);
+                     double *samples, uint32_t frames);
 
 /* --- input stage: per-input trim + EQ, runs BEFORE the downmix matrix ----- */
 
@@ -587,7 +611,7 @@ double aius_db_to_linear(double db);
  * 1.0, from aius_db_to_linear). `eq` is `eq_sections` biquads (0..
  * AIUS_DSP_INPUT_EQ_MAX) with `eq_sections` states in `eq_state`, advanced
  * across blocks so section boundaries are seamless. gain_linear == 1.0 with
- * eq_sections == 0 is an exact passthrough. */
+ * eq_sections == 0 is an exact passthrough (a double plane is untouched). */
 typedef struct {
     double gain_linear;
     const AiusBiquad *eq;
@@ -598,28 +622,27 @@ typedef struct {
 /* Identity input channel: unity trim, no EQ. */
 AiusInputChannelConfig aius_input_channel_default(void);
 
-/* Apply one input channel's trim then EQ cascade over `samples` in place, with a
- * SINGLE saturating quantize per sample (the trim is folded into the biquad
- * input, so there is no intermediate double-rounding). ch == NULL or samples ==
- * NULL is a no-op; eq_sections > 0 with a NULL eq/eq_state skips the EQ (trim
- * still applies). Allocation-free. */
+/* Apply one input channel's trim then EQ cascade over the double plane
+ * `samples` in place. NO QUANTIZE and no clamp -- the trim folds into the
+ * biquad input and the result stays in double for the downmix (the single
+ * final quantize is aius_dsp_process's). ch == NULL or samples == NULL is a
+ * no-op; eq_sections > 0 with a NULL eq/eq_state skips the EQ (trim still
+ * applies). Allocation-free. */
 void aius_dsp_input_run(const AiusInputChannelConfig *ch,
-                        int32_t *samples, uint32_t frames);
+                        double *samples, uint32_t frames);
 
-/* Input stage: per-channel trim + EQ for every decoded plane, plus caller-owned
- * scratch planes the process path stages into before the downmix (downmix reads
- * a const input). `channels` is indexed in AIUS_CH_* bit order (FL, FR, FC, LFE,
- * SL, SR); the entry for a channel absent from the decoded mask is ignored.
- * `scratch[p]` must hold at least the block's frame count int32 samples for each
- * present plane index `p` (packed in ascending bit order, as the decoder emits).
- * Carve them once from an arena before the steady-state loop. */
+/* Input stage: per-channel trim + EQ, indexed in AIUS_CH_* bit order (FL, FR,
+ * FC, LFE, SL, SR); the entry for a channel absent from the decoded mask is
+ * ignored. The staging scratch this stage used to carry lives on AiusDspConfig
+ * now: staging is unconditional in aius_dsp_process (it IS the int32->double
+ * conversion), and this struct is only the OPTIONAL trim/EQ over the staged
+ * planes. */
 typedef struct {
     AiusInputChannelConfig channels[AIUS_DSP_INPUT_CHANNELS];
-    int32_t *scratch[AIUS_MAX_CHANNELS];
 } AiusInputStage;
 
 /* An input stage that is an exact passthrough: unity trim and no EQ on every
- * channel. `scratch` is zeroed; the caller fills in the plane pointers. */
+ * channel. */
 AiusInputStage aius_input_stage_default(void);
 
 /* --- true-peak safety limiter: tail stage, after output EQ ---------------- */
@@ -756,8 +779,13 @@ typedef struct {
     uint32_t delay;          /* active lookahead length in samples */
     uint32_t pos;            /* ring write cursor, mod delay */
     int      primed;         /* gain/env initialized on the first run */
-    int32_t  buf_l[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
-    int32_t  buf_r[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
+    /* The lookahead rings are DOUBLE, deliberately: int32 rings would be a
+     * hidden second quantize on the single-quantize chain, and would make the
+     * envelope (which reads the unquantized incoming sample) disagree with
+     * the gained output (the quantized delayed sample) by up to half an LSB.
+     * Costs 1,920 B over the int32 form, counted in the phase's budget. */
+    double   buf_l[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
+    double   buf_r[AIUS_DSP_LIMITER_MAX_LOOKAHEAD];
     double   tp_l[AIUS_DSP_TRUEPEAK_RING]; /* interpolation history, L */
     double   tp_r[AIUS_DSP_TRUEPEAK_RING]; /* interpolation history, R */
     uint32_t tp_pos;         /* history write cursor, masked to the ring */
@@ -772,19 +800,25 @@ typedef struct {
     AiusLimiterState  state;
 } AiusLimiter;
 
-/* Run the true-peak safety limiter over the stereo pair (`l`, `r`) in place at
- * `fs` Hz. A peak follower (instant attack, release-timed decay) tracks the
- * incoming TRUE peak — max(|sample|, 4x-oversampled interpolated magnitude) per
- * the BS.1770-4 note above, so an inter-sample peak a sample-peak detector cannot
- * see still opens the gain reduction. A single stereo-linked gain (so the L/R
- * image is preserved) is smoothed toward T/peak with the attack/release time
- * constants and applied to the signal delayed by the lookahead, so the reduction
- * LEADS the peak by cfg.lookahead_ms. Below threshold the gain is unity
- * (transparent). cfg.enabled == 0 is a pure bypass with no delay and no FIR.
- * Output frame count equals input (the last `delay` samples stay in the ring as
- * bounded latency). Allocation-free; lim == NULL or a NULL plane is a no-op. */
+/* Run the true-peak safety limiter over the double stereo pair (`l`, `r`) in
+ * place at `fs` Hz. A peak follower (instant attack, release-timed decay)
+ * tracks the incoming TRUE peak — max(|sample|, 4x-oversampled interpolated
+ * magnitude) per the BS.1770-4 note above, so an inter-sample peak a
+ * sample-peak detector cannot see still opens the gain reduction. Fed by the
+ * single-quantize chain the input is UNCLIPPED: peaks above full scale arrive
+ * intact, which is what makes the reduction honest. A single stereo-linked
+ * gain (so the L/R image is preserved) is smoothed toward T/peak with the
+ * attack/release time constants and applied to the signal delayed by the
+ * lookahead, so the reduction LEADS the peak by cfg.lookahead_ms. Below
+ * threshold the gain is unity (transparent). NO QUANTIZE: the gained result
+ * stays in double (the final quantize is aius_dsp_process's). A non-finite
+ * envelope (only reachable through a pathological direct-API config) is
+ * clamped to zero once per run, so NaN cannot latch the limiter open.
+ * cfg.enabled == 0 is a pure bypass with no delay and no FIR. Output frame
+ * count equals input (the last `delay` samples stay in the ring as bounded
+ * latency). Allocation-free; lim == NULL or a NULL plane is a no-op. */
 void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
-                          int32_t *l, int32_t *r, uint32_t frames);
+                          double *l, double *r, uint32_t frames);
 
 /* The true peak of one plane, as the limiter's detector measures it: the maximum
  * over every sample of max(|x[n]|, the four BS.1770-4 interpolated phases). In
@@ -800,6 +834,10 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
  * least the buffer's sample peak. samples == NULL or frames == 0 returns 0.0.
  * Allocation-free. */
 double aius_dsp_true_peak(const int32_t *samples, uint32_t frames);
+
+/* The same measurement over a double plane, for tests reasoning about the
+ * unquantized inter-stage signal. Same priming and units. */
+double aius_dsp_true_peak_d(const double *samples, uint32_t frames);
 
 /* Current gain reduction in dB (<= 0), for later metering. 0.0 dB means no
  * reduction. lim == NULL returns 0.0. Reads state only; does not process. */
@@ -1112,10 +1150,20 @@ int aius_meter_read(const AiusMeter *m, AiusMeterSnapshot *out);
  * channel-major (all L-channel section states, then all R-channel). eq_sections
  * == 0 (or eq == NULL) runs downmix only.
  *
- * `input` == NULL bypasses the input stage (decoded planes feed the downmix
- * directly). `limiter` == NULL bypasses the limiter tail. Both default to NULL
- * under aggregate zero-initialization, so a config built only through the
- * downmix/EQ fields behaves exactly as before these stages existed.
+ * `scratch` and `work_l`/`work_r` are the double staging the single-quantize
+ * chain runs in, caller-owned like every state object here. `scratch[p]` must
+ * hold the block's frame count of doubles for every present plane index `p`
+ * (packed in ascending AIUS_CH_* bit order, as the decoder emits); the work
+ * pair holds the stereo result between the downmix and the final quantize.
+ * The staging convert-copy is UNCONDITIONAL -- it is the int32 -> double
+ * boundary, not part of the optional trim/EQ -- so these planes are required
+ * whenever aius_dsp_process runs. On the target they are carved from the
+ * audio pipeline's DTCM arena at bring-up (the OCRAM home was vetoed by the
+ * defect-26 link-time heap floor); never on the ISR stack.
+ *
+ * `input` == NULL skips the trim/EQ over the staged planes (the staging itself
+ * still happens). `limiter` == NULL bypasses the limiter tail. Both default to
+ * NULL under aggregate zero-initialization.
  *
  * Metering is deliberately NOT a field here: the AiusMeter taps are driven by the
  * caller around aius_dsp_process (accumulate the decoded/trimmed input and the
@@ -1128,14 +1176,21 @@ typedef struct {
     AiusBiquadState *eq_state;
     const AiusInputStage *input;
     AiusLimiter *limiter;
+    double *scratch[AIUS_MAX_CHANNELS];
+    double *work_l;
+    double *work_r;
 } AiusDspConfig;
 
-/* Stage `in` through the input stage (if any) into the stage's scratch planes,
- * downmix into `out`, run the EQ cascade over L and R, then the limiter (if any).
- * Same `out` buffer contract and return values as aius_dsp_downmix, plus
- * AIUS_INVALID_ARG when eq_sections > 0 but eq or eq_state is NULL, or when the
- * input stage is present but a scratch plane for a decoded channel is NULL.
- * Allocation-free. */
+/* The single-quantize chain: convert `in`'s int32 planes into cfg->scratch
+ * (double), run trim + input EQ over the staged planes (if cfg->input), downmix
+ * into cfg->work_l/work_r, run the output EQ cascade, then the limiter (if
+ * any), all in double -- then perform THE one saturating quantize per sample
+ * into `out`'s int32 planes. `out` must have planes[0]/planes[1] pointing at
+ * caller-owned buffers of at least in->frames int32 samples; its other fields
+ * are overwritten (channels=2, mask=FL|FR, frames, sample_rate_hz). Returns
+ * AIUS_OK, or AIUS_INVALID_ARG for the downmix's reasons, a missing scratch
+ * plane for a present channel, a missing work plane, or eq_sections > 0 with
+ * eq/eq_state NULL. Allocation-free. */
 AiusStatus aius_dsp_process(const AiusDspConfig *cfg,
                             const AiusPcmBlock *in,
                             AiusPcmBlock *out);

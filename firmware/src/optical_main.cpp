@@ -877,55 +877,17 @@ static FLASHMEM void record_state(void)
 /* ring is a stage/commit single-producer/single-consumer structure and */
 /* not the plain read/write/count triple the int16 ring could afford.   */
 /* ------------------------------------------------------------------ */
+
 class AiusAudioProcessor : public AudioStream
 {
 public:
 	AiusAudioProcessor(void) : AudioStream(2, g_input_queue) {}
 
-	void begin_pipeline(void)
-	{
-		apply_config(AIUS_OPTICAL_CONFIG);
-		aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
-		/* Bind the capture planes; memory only. The machine starts idle, and
-		 * an idle capture costs the tap one volatile load per block. */
-		(void)aius_measure_capture_init(&g_measure_capture,
-		                                g_measure_capture_l,
-		                                g_measure_capture_r,
-		                                AIUS_MEASURE_CAPTURE_FRAMES);
-		/* Bind the flight recorder before the transmit interrupt arms
-		 * (its rule, same as the tx24 cursors). The probe ran in
-		 * ResetHandler, so external_psram_size is settled; 0 MB arms
-		 * nothing and the recorder reports absent -- a bare board must
-		 * never fault, and the MPU maps the absent region RW so only
-		 * this latch protects it. */
-		g_recorder_present = external_psram_size != 0u &&
-			aius_recorder_init(&g_recorder,
-			                   reinterpret_cast<uint8_t *>(0x70000000u),
-			                   (uint32_t)external_psram_size * 1048576u,
-			                   external_psram_size, g_recorder_staging,
-			                   g_recorder_staging_frames,
-			                   RECORDER_STAGING_SLOTS,
-			                   RECORDER_SLOT_FRAMES) == AIUS_OK;
-		if (!g_recorder_present)
-			(void)aius_recorder_init(&g_recorder, nullptr, 0u, 0u,
-			                         nullptr, nullptr, 0u, 0u);
-		/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
-		 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
-		 * before it, the vendor ISR transmits block_silent, which is the same
-		 * silence the board idles in. Here rather than in setup() because this
-		 * is the one function that owns bringing the audio path up, and it runs
-		 * after the static AudioOutputSPDIF3 constructor has allocated the DMA
-		 * channel. */
-		aius_spdif_tx24_begin();
-		if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
-			g_create_status = AIUS_NO_SPACE;
-			return;
-		}
-		AiusPcmSink sink = {this, consume_block};
-		AiusPipelineConfig config = {AIUS_IEC61937_PACK_16, 0};
-		g_create_status = aius_pipeline_create_arena(&g_pipeline, &config,
-		                                             &sink, &g_arena);
-	}
+	/* Bring-up only, FLASHMEM, and out-of-line for apply_config()'s reason
+	 * (see its comment): the arena carve grew this past what the compiler
+	 * inlines away, and the ITCM placement gate rightly rejects cold code in
+	 * the hot bank. Definition follows the class. */
+	FLASHMEM void begin_pipeline(void);
 
 	AiusPipelineClass classification(void) const
 	{
@@ -1083,16 +1045,22 @@ private:
 	AiusBiquadState g_eq_state[4] = {};
 	size_t g_eq_count = 0;
 	/* Input stage: per-channel trim + up to two EQ sections, wired from
-	 * AIUS_OPTICAL_CONFIG.input_channels[]. The scratch planes are hot per-block
-	 * staging buffers input_stage_apply() copies decoded planes into before
-	 * trim/EQ (see aius_dsp.h); sized to the largest block enqueue() accepts
-	 * (AUDIO_BLOCK_SAMPLES * 4 frames) across all AIUS_MAX_CHANNELS planes. */
+	 * AIUS_OPTICAL_CONFIG.input_channels[]. The double staging scratch the
+	 * single-quantize chain runs in is NOT embedded here: the 32,768 B of
+	 * planes are carved from g_arena in begin_pipeline() (see the placement
+	 * rationale there -- OCRAM was vetoed by the defect-26 heap floor) and
+	 * only the POINTERS live below, wired into the per-block AiusDspConfig. */
 	AiusInputStage g_input_stage = aius_input_stage_default();
 	AiusBiquad g_input_eq[AIUS_DSP_INPUT_CHANNELS][AIUS_DSP_INPUT_EQ_MAX] = {};
 	AiusBiquadState g_input_eq_state[AIUS_DSP_INPUT_CHANNELS][AIUS_DSP_INPUT_EQ_MAX] = {};
-	static constexpr uint32_t INPUT_SCRATCH_FRAMES = AUDIO_BLOCK_SAMPLES * 4;
-	int32_t g_input_scratch[AIUS_MAX_CHANNELS][INPUT_SCRATCH_FRAMES];
 	bool g_input_stage_active = false;
+	/* The double staging planes, carved from g_arena in begin_pipeline() (see
+	 * the placement rationale there). Pointer members only: the storage is
+	 * arena DTCM, sized to the largest block enqueue() accepts. */
+	static constexpr uint32_t DSP_STAGE_FRAMES = AUDIO_BLOCK_SAMPLES * 4;
+	double *g_dsp_scratch_d[AIUS_MAX_CHANNELS] = {};
+	double *g_dsp_work_l = nullptr;
+	double *g_dsp_work_r = nullptr;
 	AiusLimiter g_limiter = {};
 	/* The LFE fold's LR4 low-pass state, 160 B. Beside g_limiter so it lands in
 	 * the same DTCM .bss as the other DSP state rather than the free-for-locals
@@ -1134,7 +1102,7 @@ private:
 			g_config_generation++;
 			g_dsp_apply_pending = false;
 		}
-		if (block == nullptr || block->frames > AUDIO_BLOCK_SAMPLES * 4 ||
+		if (block == nullptr || block->frames > DSP_STAGE_FRAMES ||
 		    block->planes[0] == nullptr)
 			return AIUS_INVALID_ARG;
 		if (block->frames > aius_spdif_tx24_free(&g_aius_spdif_tx24))
@@ -1149,8 +1117,14 @@ private:
 		dsp.eq = g_eq;
 		dsp.eq_sections = g_eq_count;
 		dsp.eq_state = g_eq_state;
+		/* Trim/EQ gate only: the double staging below is unconditional inside
+		 * aius_dsp_process (it is the chain's int32->double boundary). */
 		dsp.input = g_input_stage_active ? &g_input_stage : nullptr;
 		dsp.limiter = g_limiter_active ? &g_limiter : nullptr;
+		for (size_t p = 0; p < AIUS_MAX_CHANNELS; p++)
+			dsp.scratch[p] = g_dsp_scratch_d[p];
+		dsp.work_l = g_dsp_work_l;
+		dsp.work_r = g_dsp_work_r;
 		/* Phase 14b meter tap, opened here and closed at the bottom of this
 		 * function. Everything it does is gated on one bool, so a config with
 		 * features.meters false costs exactly that test; nothing publishes,
@@ -1270,6 +1244,78 @@ private:
 	}
 };
 
+FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
+{
+	apply_config(AIUS_OPTICAL_CONFIG);
+	aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
+	/* Bind the capture planes; memory only. The machine starts idle, and
+	 * an idle capture costs the tap one volatile load per block. */
+	(void)aius_measure_capture_init(&g_measure_capture,
+	                                g_measure_capture_l,
+	                                g_measure_capture_r,
+	                                AIUS_MEASURE_CAPTURE_FRAMES);
+	/* Bind the flight recorder before the transmit interrupt arms
+	 * (its rule, same as the tx24 cursors). The probe ran in
+	 * ResetHandler, so external_psram_size is settled; 0 MB arms
+	 * nothing and the recorder reports absent -- a bare board must
+	 * never fault, and the MPU maps the absent region RW so only
+	 * this latch protects it. */
+	g_recorder_present = external_psram_size != 0u &&
+		aius_recorder_init(&g_recorder,
+		                   reinterpret_cast<uint8_t *>(0x70000000u),
+		                   (uint32_t)external_psram_size * 1048576u,
+		                   external_psram_size, g_recorder_staging,
+		                   g_recorder_staging_frames,
+		                   RECORDER_STAGING_SLOTS,
+		                   RECORDER_SLOT_FRAMES) == AIUS_OK;
+	if (!g_recorder_present)
+		(void)aius_recorder_init(&g_recorder, nullptr, 0u, 0u,
+		                         nullptr, nullptr, 0u, 0u);
+	/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
+	 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
+	 * before it, the vendor ISR transmits block_silent, which is the same
+	 * silence the board idles in. Here rather than in setup() because this
+	 * is the one function that owns bringing the audio path up, and it runs
+	 * after the static AudioOutputSPDIF3 constructor has allocated the DMA
+	 * channel. */
+	aius_spdif_tx24_begin();
+	if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
+		g_create_status = AIUS_NO_SPACE;
+		return;
+	}
+	/* The single-quantize chain's double staging, carved from the SAME
+	 * DTCM arena the pipeline decodes in: six input planes (24,576 B) +
+	 * the stereo work pair (8,192 B), once, before the pipeline claims
+	 * the rest. OCRAM was the contracted home but the build's heap-floor
+	 * gate (defect 26: NativeEthernet needs 128 KiB of boot heap) vetoed
+	 * it -- OCRAM sat 13 KiB above the floor, this needs 32. The arena
+	 * has the headroom instead: decode high-water 62,560 of 131,072, so
+	 * the carve leaves ~36 KiB of margin, everything stays in DTCM (the
+	 * fastest bank for the four per-block passes over the work pair),
+	 * and DTCM free-for-locals still improves because the old 12,288 B
+	 * int32 scratch member is gone. */
+	for (size_t p = 0; p < AIUS_MAX_CHANNELS; p++) {
+		g_dsp_scratch_d[p] = (double *)aius_arena_alloc(
+			&g_arena, DSP_STAGE_FRAMES * sizeof(double), 16);
+		if (g_dsp_scratch_d[p] == nullptr) {
+			g_create_status = AIUS_NO_SPACE;
+			return;
+		}
+	}
+	g_dsp_work_l = (double *)aius_arena_alloc(
+		&g_arena, DSP_STAGE_FRAMES * sizeof(double), 16);
+	g_dsp_work_r = (double *)aius_arena_alloc(
+		&g_arena, DSP_STAGE_FRAMES * sizeof(double), 16);
+	if (g_dsp_work_l == nullptr || g_dsp_work_r == nullptr) {
+		g_create_status = AIUS_NO_SPACE;
+		return;
+	}
+	AiusPcmSink sink = {this, consume_block};
+	AiusPipelineConfig config = {AIUS_IEC61937_PACK_16, 0};
+	g_create_status = aius_pipeline_create_arena(&g_pipeline, &config,
+	                                             &sink, &g_arena);
+}
+
 FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 {
 	/* features.output_eq, the other flag that was stored and never read. Zero
@@ -1365,19 +1411,16 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 		channel.eq_state = g_input_eq_state[c];
 	}
 	memset(g_input_eq_state, 0, sizeof(g_input_eq_state));
-	for (size_t p = 0; p < AIUS_MAX_CHANNELS; p++)
-		g_input_stage.scratch[p] = g_input_scratch[p];
-	/* The stage runs only when it would change a sample.
+	/* The trim/EQ runs only when it would change a sample.
 	 *
-	 * THE DEFAULT CONFIG MADE THIS AN EXACT IDENTITY THAT STILL COST. Every
-	 * channel ships at gain_db 0 and eq [], with features.input_eq true, so all
-	 * six planes were copied to scratch and run through run_cascade(1.0, NULL,
-	 * 0, ...) -- an int-to-double convert and an aius_quantize per sample, 3,072
-	 * quantizes per block, to reproduce the input exactly.
-	 *
-	 * Skipping is behaviourally identical rather than an approximation: the
-	 * downmix reads block->planes when dsp.input is null, and the stage's only
-	 * effect in this state was to hand it a verbatim copy of those same planes.
+	 * RE-SCOPED with the single-quantize chain: the staging convert-copy into
+	 * double scratch is UNCONDITIONAL inside aius_dsp_process now (it is the
+	 * chain's int32->double boundary), so this gate no longer skips staging --
+	 * it skips only the per-channel trim/EQ cascades over the staged planes.
+	 * The old gate's 3,072 saved quantizes per block are gone from the path
+	 * entirely (nothing between the stages quantizes any more); what the gate
+	 * still saves on an identity config is six run_cascade calls of pure
+	 * multiply-by-1.0.
 	 *
 	 * Unity is tested exactly, and that is safe because it is the value the
 	 * conversion produces rather than a tolerance: aius_db_to_linear(0.0) is

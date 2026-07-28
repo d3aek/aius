@@ -52,12 +52,12 @@ static int aius_plane_index(uint32_t mask, uint32_t bit)
  * memory: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2].
  *
  * THE ONLY DEFINITION of the recurrence in this module. Both consumers go through
- * it: run_cascade (the EQ and input stages, which quantize the result) and the
- * LFE fold-in crossover (which does not, because its output is summed into the
- * matrix accumulator while still in double). The expression is written out in one
- * place precisely because the two must stay bit-identical -- and because
- * -ffp-contract=off means what is written is what executes, term by term, with no
- * fused multiply-add on either host or target. */
+ * it: run_cascade (the EQ and input stages) and the LFE fold-in crossover. Since
+ * the single-quantize chain landed, NEITHER quantizes its result -- everything
+ * stays in double until aius_dsp_process's final quantize. The expression is
+ * written out in one place precisely because the two must stay bit-identical --
+ * and because -ffp-contract=off means what is written is what executes, term by
+ * term, with no fused multiply-add on either host or target. */
 static double biquad_step(const AiusBiquad *q, AiusBiquadState *st, double x)
 {
     double y = q->b0 * x + q->b1 * st->x1 + q->b2 * st->x2
@@ -70,7 +70,9 @@ static double biquad_step(const AiusBiquad *q, AiusBiquadState *st, double x)
 }
 
 /* Round to nearest (ties away from zero) and saturate into the 24-bit range.
- * Deterministic: no library rounding-mode dependence. */
+ * Deterministic: no library rounding-mode dependence. THE audio path calls this
+ * exactly once per output sample, at the end of aius_dsp_process -- the wire
+ * ceiling lives here and nowhere between the stages. */
 static int32_t aius_quantize(double x)
 {
     double r = (x >= 0.0) ? floor(x + 0.5) : ceil(x - 0.5);
@@ -192,10 +194,10 @@ double aius_downmix_clipfree_headroom(const AiusDownmixConfig *cfg)
 }
 
 AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
-                            const AiusPcmBlock *in,
-                            AiusPcmBlock *out)
+                            const AiusPcmBlockD *in,
+                            double *out_l, double *out_r)
 {
-    if (cfg == NULL || in == NULL || out == NULL) {
+    if (cfg == NULL || in == NULL || out_l == NULL || out_r == NULL) {
         return AIUS_INVALID_ARG;
     }
     if (in->channels < 1 || in->channels > AIUS_MAX_CHANNELS) {
@@ -204,24 +206,21 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
     if ((int)in->channels != aius_popcount(in->channel_mask)) {
         return AIUS_INVALID_ARG;
     }
-    if (out->planes[0] == NULL || out->planes[1] == NULL) {
-        return AIUS_INVALID_ARG;
-    }
 
-    int32_t *outL = out->planes[0];
-    int32_t *outR = out->planes[1];
+    double *outL = out_l;
+    double *outR = out_r;
     double headroom = cfg->headroom;
 
     /* Mono: replicate the single plane to both channels at unity gain. */
     if (in->channels == 1) {
-        const int32_t *m = in->planes[0];
+        const double *m = in->planes[0];
         if (m == NULL) {
             return AIUS_INVALID_ARG;
         }
         for (uint32_t i = 0; i < in->frames; i++) {
-            double v = (double)m[i] * headroom;
-            outL[i] = aius_quantize(v);
-            outR[i] = aius_quantize(v);
+            double v = m[i] * headroom;
+            outL[i] = v;
+            outR[i] = v;
         }
     } else {
         /* Resolve plane pointers for every possible 5.1 channel (NULL if
@@ -233,12 +232,12 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
         int iSL = aius_plane_index(in->channel_mask, AIUS_CH_SL);
         int iSR = aius_plane_index(in->channel_mask, AIUS_CH_SR);
 
-        const int32_t *pFL = iFL >= 0 ? in->planes[iFL] : NULL;
-        const int32_t *pFR = iFR >= 0 ? in->planes[iFR] : NULL;
-        const int32_t *pFC = iFC >= 0 ? in->planes[iFC] : NULL;
-        const int32_t *pLFE = iLFE >= 0 ? in->planes[iLFE] : NULL;
-        const int32_t *pSL = iSL >= 0 ? in->planes[iSL] : NULL;
-        const int32_t *pSR = iSR >= 0 ? in->planes[iSR] : NULL;
+        const double *pFL = iFL >= 0 ? in->planes[iFL] : NULL;
+        const double *pFR = iFR >= 0 ? in->planes[iFR] : NULL;
+        const double *pFC = iFC >= 0 ? in->planes[iFC] : NULL;
+        const double *pLFE = iLFE >= 0 ? in->planes[iLFE] : NULL;
+        const double *pSL = iSL >= 0 ? in->planes[iSL] : NULL;
+        const double *pSR = iSR >= 0 ? in->planes[iSR] : NULL;
 
         /* LFE fold-in crossover, resolved once per block rather than per sample:
          * the design/redesign decision, the unfiltered selection and the
@@ -255,13 +254,13 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
             double l = 0.0;
             double r = 0.0;
             if (pFL) {
-                l += (double)pFL[i];
+                l += pFL[i];
             }
             if (pFR) {
-                r += (double)pFR[i];
+                r += pFR[i];
             }
             if (pFC) {
-                double c = (double)pFC[i] * cfg->center;
+                double c = pFC[i] * cfg->center;
                 l += c;
                 r += c;
             }
@@ -270,7 +269,7 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
                  * crossover state stays in raw sample units and a gain change
                  * needs no reset. Symmetric into both: one mono channel, no
                  * image. */
-                double e = (double)pLFE[i];
+                double e = pLFE[i];
                 if (fold != NULL) {
                     e = lfe_fold_sample(fold, e);
                 }
@@ -279,20 +278,18 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
                 r += e;
             }
             if (pSL) {
-                l += (double)pSL[i] * cfg->surround;
+                l += pSL[i] * cfg->surround;
             }
             if (pSR) {
-                r += (double)pSR[i] * cfg->surround;
+                r += pSR[i] * cfg->surround;
             }
-            outL[i] = aius_quantize(l * headroom);
-            outR[i] = aius_quantize(r * headroom);
+            /* NO quantize: the pad's result stays in double for the output EQ,
+             * limiter and the chain's single final quantize. */
+            outL[i] = l * headroom;
+            outR[i] = r * headroom;
         }
     }
 
-    out->channels = 2;
-    out->frames = in->frames;
-    out->sample_rate_hz = in->sample_rate_hz;
-    out->channel_mask = AIUS_CH_FL | AIUS_CH_FR;
     return AIUS_OK;
 }
 
@@ -417,22 +414,26 @@ size_t aius_eq_default(AiusBiquad *sections, size_t cap)
 /* Shared cascade core: multiply each sample by `pregain`, run the `n`-section
  * Direct Form I cascade, and quantize once. n == 0 applies pregain + quantize
  * only. Callers guarantee `state` holds `n` sections when n > 0. */
+/* NO QUANTIZE: the cascade's result stays in double. Inter-stage rounding and
+ * clamping were the defect the single-quantize chain removed -- a boost that
+ * overshoots full scale here is absorbed by the downmix pad instead of
+ * hard-clipping before the limiter can see it. */
 static void run_cascade(double pregain, const AiusBiquad *sections, size_t n,
-                        AiusBiquadState *state, int32_t *samples,
+                        AiusBiquadState *state, double *samples,
                         uint32_t frames)
 {
     for (uint32_t i = 0; i < frames; i++) {
-        double s = (double)samples[i] * pregain;
+        double s = samples[i] * pregain;
         for (size_t k = 0; k < n; k++) {
             s = biquad_step(&sections[k], &state[k], s);
         }
-        samples[i] = aius_quantize(s);
+        samples[i] = s;
     }
 }
 
 void aius_dsp_eq_run(const AiusBiquad *sections, size_t n,
                      AiusBiquadState *state,
-                     int32_t *samples, uint32_t frames)
+                     double *samples, uint32_t frames)
 {
     if (sections == NULL || state == NULL || samples == NULL || n == 0) {
         return;
@@ -458,7 +459,7 @@ AiusInputChannelConfig aius_input_channel_default(void)
 }
 
 void aius_dsp_input_run(const AiusInputChannelConfig *ch,
-                        int32_t *samples, uint32_t frames)
+                        double *samples, uint32_t frames)
 {
     if (ch == NULL || samples == NULL) {
         return;
@@ -482,20 +483,19 @@ AiusInputStage aius_input_stage_default(void)
     return stage;
 }
 
-/* Stage every decoded plane through its input channel's trim + EQ into the
- * stage's scratch planes, and fill `staged` to mirror `in` with those scratch
- * planes. Channels are packed in ascending AIUS_CH_* bit order, so the k-th
- * present bit is plane index k and its per-channel config is channels[bit
- * ordinal]. Returns AIUS_INVALID_ARG on a null/absent plane or scratch. */
-static AiusStatus input_stage_apply(const AiusInputStage *stage,
-                                    const AiusPcmBlock *in, AiusPcmBlock *staged)
+/* Stage every decoded plane into cfg's double scratch -- the ONE int32->double
+ * conversion of the chain, unconditional -- then run each present channel's
+ * trim + EQ over its staged plane when an input stage is configured. Channels
+ * are packed in ascending AIUS_CH_* bit order, so the k-th present bit is
+ * plane index k and its per-channel config is channels[bit ordinal]. Fills
+ * `staged` as the double view of `in`. Returns AIUS_INVALID_ARG on a
+ * null/absent plane or scratch. */
+static AiusStatus stage_input(const AiusDspConfig *cfg,
+                              const AiusPcmBlock *in, AiusPcmBlockD *staged)
 {
     static const uint32_t order[AIUS_DSP_INPUT_CHANNELS] = {
         AIUS_CH_FL, AIUS_CH_FR, AIUS_CH_FC, AIUS_CH_LFE, AIUS_CH_SL, AIUS_CH_SR,
     };
-    if (in == NULL || staged == NULL) {
-        return AIUS_INVALID_ARG;
-    }
     if (in->channels < 1 || in->channels > AIUS_MAX_CHANNELS) {
         return AIUS_INVALID_ARG;
     }
@@ -503,19 +503,28 @@ static AiusStatus input_stage_apply(const AiusInputStage *stage,
         return AIUS_INVALID_ARG;
     }
 
-    *staged = *in;
+    memset(staged, 0, sizeof *staged);
+    staged->channels = in->channels;
+    staged->frames = in->frames;
+    staged->sample_rate_hz = in->sample_rate_hz;
+    staged->channel_mask = in->channel_mask;
+
     int p = 0;
     for (int b = 0; b < AIUS_DSP_INPUT_CHANNELS; b++) {
         if (!(in->channel_mask & order[b])) {
             continue;
         }
         const int32_t *src = in->planes[p];
-        int32_t *dst = stage->scratch[p];
+        double *dst = cfg->scratch[p];
         if (src == NULL || dst == NULL) {
             return AIUS_INVALID_ARG;
         }
-        memcpy(dst, src, (size_t)in->frames * sizeof(int32_t));
-        aius_dsp_input_run(&stage->channels[b], dst, in->frames);
+        for (uint32_t i = 0; i < in->frames; i++) {
+            dst[i] = (double)src[i];
+        }
+        if (cfg->input != NULL) {
+            aius_dsp_input_run(&cfg->input->channels[b], dst, in->frames);
+        }
         staged->planes[p] = dst;
         p++;
     }
@@ -617,6 +626,24 @@ double aius_dsp_true_peak(const int32_t *samples, uint32_t frames)
     return pk;
 }
 
+double aius_dsp_true_peak_d(const double *samples, uint32_t frames)
+{
+    if (samples == NULL || frames == 0) {
+        return 0.0;
+    }
+    double hist[AIUS_DSP_TRUEPEAK_RING];
+    memset(hist, 0, sizeof hist);
+    double pk = 0.0;
+    for (uint32_t i = 0; i < frames; i++) {
+        int run_fir = i >= (uint32_t)(AIUS_DSP_TRUEPEAK_TAPS - 1);
+        double m = truepeak_push(hist, i, samples[i], run_fir);
+        if (m > pk) {
+            pk = m;
+        }
+    }
+    return pk;
+}
+
 /* One-pole smoothing coefficient for a time constant `ms` at `fs` Hz:
  * exp(-1 / (ms * fs / 1000)). Larger ms -> coefficient nearer 1 (slower). */
 static double limiter_coeff(double ms, double fs)
@@ -629,7 +656,7 @@ static double limiter_coeff(double ms, double fs)
 }
 
 void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
-                          int32_t *l, int32_t *r, uint32_t frames)
+                          double *l, double *r, uint32_t frames)
 {
     if (lim == NULL || l == NULL || r == NULL) {
         return;
@@ -674,17 +701,26 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
         s->tp_fill = 0;
         s->primed = 1;
     }
+    /* Unclipped doubles can carry a NaN from a pathological direct-API config
+     * (the validated config surface bounds everything); once in `env` it would
+     * latch the limiter open forever, so it is cleared per run, not per sample. */
+    if (!isfinite(s->env)) {
+        s->env = 0.0;
+    }
+    if (!isfinite(s->gain)) {
+        s->gain = 1.0;
+    }
 
     for (uint32_t i = 0; i < frames; i++) {
-        int32_t cur_l = l[i];
-        int32_t cur_r = r[i];
+        double cur_l = l[i];
+        double cur_r = r[i];
 
         /* True-peak follower on the incoming (lookahead-leading) sample: instant
          * attack, release-timed decay. `m` is the 4x-oversampled magnitude, not
          * the sample magnitude, so an inter-sample peak that sits above every
          * sample around it still opens the reduction. */
-        double xl = (double)cur_l;
-        double xr = (double)cur_r;
+        double xl = cur_l;
+        double xr = cur_r;
         double raw_l = xl < 0.0 ? -xl : xl;
         double raw_r = xr < 0.0 ? -xr : xr;
         double raw = raw_l > raw_r ? raw_l : raw_r;
@@ -726,9 +762,12 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
         double coeff = (desired < s->gain) ? atk : rel;
         s->gain = desired + (s->gain - desired) * coeff;
 
-        /* Apply the gain to the delayed sample so the reduction leads the peak. */
-        int32_t del_l = cur_l;
-        int32_t del_r = cur_r;
+        /* Apply the gain to the delayed sample so the reduction leads the peak.
+         * NO quantize: the gained result stays in double for the chain's single
+         * final quantize (an int32 ring here would be a hidden second quantize
+         * and would make the envelope disagree with the output it gains). */
+        double del_l = cur_l;
+        double del_r = cur_r;
         if (delay > 0) {
             del_l = s->buf_l[s->pos];
             del_r = s->buf_r[s->pos];
@@ -739,8 +778,8 @@ void aius_dsp_limiter_run(AiusLimiter *lim, double fs,
                 s->pos = 0;
             }
         }
-        l[i] = aius_quantize((double)del_l * s->gain);
-        r[i] = aius_quantize((double)del_r * s->gain);
+        l[i] = del_l * s->gain;
+        r[i] = del_r * s->gain;
     }
 }
 
@@ -1132,42 +1171,60 @@ AiusStatus aius_dsp_process(const AiusDspConfig *cfg,
                             const AiusPcmBlock *in,
                             AiusPcmBlock *out)
 {
-    if (cfg == NULL) {
+    if (cfg == NULL || in == NULL || out == NULL) {
         return AIUS_INVALID_ARG;
     }
     if (cfg->eq_sections > 0 && (cfg->eq == NULL || cfg->eq_state == NULL)) {
         return AIUS_INVALID_ARG;
     }
-
-    /* Input stage (trim + EQ) before the downmix, staged into caller scratch so
-     * the const decoded input is untouched. */
-    const AiusPcmBlock *dmix_in = in;
-    AiusPcmBlock staged;
-    if (cfg->input != NULL) {
-        AiusStatus ist = input_stage_apply(cfg->input, in, &staged);
-        if (ist != AIUS_OK) {
-            return ist;
-        }
-        dmix_in = &staged;
+    if (cfg->work_l == NULL || cfg->work_r == NULL) {
+        return AIUS_INVALID_ARG;
+    }
+    if (out->planes[0] == NULL || out->planes[1] == NULL) {
+        return AIUS_INVALID_ARG;
     }
 
-    AiusStatus st = aius_dsp_downmix(&cfg->downmix, dmix_in, out);
+    /* The one int32 -> double boundary: every present plane is convert-copied
+     * into cfg->scratch (and trim/EQ'd there when an input stage is present).
+     * Unconditional -- staging IS the conversion, not part of the optional
+     * trim/EQ. */
+    AiusPcmBlockD staged;
+    AiusStatus ist = stage_input(cfg, in, &staged);
+    if (ist != AIUS_OK) {
+        return ist;
+    }
+
+    AiusStatus st = aius_dsp_downmix(&cfg->downmix, &staged,
+                                     cfg->work_l, cfg->work_r);
     if (st != AIUS_OK) {
         return st;
     }
 
     if (cfg->eq_sections > 0) {
         aius_dsp_eq_run(cfg->eq, cfg->eq_sections, cfg->eq_state,
-                        out->planes[0], out->frames);
+                        cfg->work_l, in->frames);
         aius_dsp_eq_run(cfg->eq, cfg->eq_sections,
                         cfg->eq_state + cfg->eq_sections,
-                        out->planes[1], out->frames);
+                        cfg->work_r, in->frames);
     }
 
     if (cfg->limiter != NULL) {
-        aius_dsp_limiter_run(cfg->limiter, (double)out->sample_rate_hz,
-                             out->planes[0], out->planes[1], out->frames);
+        aius_dsp_limiter_run(cfg->limiter, (double)in->sample_rate_hz,
+                             cfg->work_l, cfg->work_r, in->frames);
     }
+
+    /* THE final quantize: the chain's only rounding and its only clamp. The
+     * 24-bit wire ceiling exists here and nowhere upstream. */
+    int32_t *outL = out->planes[0];
+    int32_t *outR = out->planes[1];
+    for (uint32_t i = 0; i < in->frames; i++) {
+        outL[i] = aius_quantize(cfg->work_l[i]);
+        outR[i] = aius_quantize(cfg->work_r[i]);
+    }
+    out->channels = 2;
+    out->frames = in->frames;
+    out->sample_rate_hz = in->sample_rate_hz;
+    out->channel_mask = AIUS_CH_FL | AIUS_CH_FR;
 
     return AIUS_OK;
 }
