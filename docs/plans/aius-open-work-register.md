@@ -123,9 +123,11 @@ specified here. Strike items here in the commit that closes them.
     five characterized places (void `close`, `MSG_PEEK` ignored, `int8`
     error type, no `AGAIN` on empty accept, `SO_SNDNUM` hard-wired 0);
     the two UDP mappings are fixed, the rest stands.
-  - **14**: the 128 KB DTCM DTS arena is reserved and never used
-    (`--wrap` unflagged in the optical env) — resolving it either way
-    changes the memory story every later item reads.
+  - ~~**14**: the 128 KB DTCM DTS arena is reserved and never used.~~
+    RESOLVED 2026-07-28 with defect 29: the optical env's
+    `build_unflags` stripped the wrap set; restored, the arena now
+    serves every decode (62.5 KB peak, steady-state no-heap proven
+    on hardware).
   - **18**: five source comments still quote the pre-fix DTCM free
     figure.
   - **19**: `read_once()` carries the latch-substitution hole the send
@@ -151,6 +153,18 @@ specified here. Strike items here in the commit that closes them.
     instrumented flashes booted CLEAN — 0/2 against the prior 4/4, so
     the defect is CONDITIONAL and the instrument simply rides every
     future flash until it fires.
+  - ~~**29**: live DTS decode silent (state 4, zero output, zero
+    faults).~~ ROOT-CAUSED AND FIXED 2026-07-28 (with 14): the
+    optical env unflagged `--wrap=malloc`, so the armed arena was
+    bypassed into the NativeEthernet-drained heap and every access
+    unit died AIUS_NO_SPACE, silently. First live 5.1 decode ever on
+    this hardware followed within minutes of the fix. Full chase +
+    the permanent diagnostics it left: hardening doc entry 29.
+  - **30**: decoded 5.1 plane order vs downmix slot order disagree — a
+    pure spatial permutation, found by tone-identity DFT the same
+    hour (left carries FR's 600 Hz strong; right carries C's 900).
+    Chase is a table diff plus a native per-channel tone test; no
+    hardware needed.
   - **27**: the silence self-loop (locked carrier, validity-muted PCM
     in, silent out, TX gate held open) floods `overruns` at ~1 kHz
     sustained; found on the first-ever external-carrier input

@@ -530,7 +530,11 @@ are follow-up work, recorded here so they are not lost.
       exactly why it printed "1024 frames byte-exact" for the whole life of the
       defect. Reverting the fix still leaves that check green; only the new
       contract-terms check (`pcm-scale`) fails, reporting the measured −48.16 dB.
-14. **The DTS decoder does not use the 128 KB DTCM arena reserved for it.**
+14. ~~**The DTS decoder does not use the 128 KB DTCM arena reserved for
+    it.**~~ **RESOLVED 2026-07-28 by defect 29's fix** — the optical
+    env's `build_unflags` was the reason; with the wrap set restored
+    the arena serves every decode (62,560 peak, steady-state
+    alloc_count 0). Original record follows.
     `[env:teensy41-optical]` `build_unflags` removes
     `-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free`
     (`platformio.ini:197`), and the shim's routing depends entirely on those flags.
@@ -1089,6 +1093,101 @@ are follow-up work, recorded here so they are not lost.
     self-loop test rigs (and for whatever the rate-estimator does at
     exactly ratio 1.0, which remains the code path to inspect when
     this is chased).
+
+28. **A live carrier cannot reliably reach DTS decode — classification is
+    a coin flip at best and is never revisited.** Found 2026-07-28, the
+    first day a genuine external DTS stream ever reached the box, via
+    capture forensics + source reading. Two compounding replay-era
+    assumptions:
+
+    - **One-shot typing.** `aius_pipeline_push` stages words only while
+      the class is UNKNOWN; after the first window types the stream,
+      nothing ever re-evaluates. The ONLY pipeline reset in the firmware
+      is replay start (`optical_main.cpp` `g_pipeline_reset_pending`),
+      and replay refuses to start while a carrier is present (the
+      §step-3 409) — so a live box that typed PCM can never reach DTS
+      without a reboot. Mid-stream format switches (a source moving
+      from menu PCM to programme DTS — normal S/PDIF behaviour) are
+      structurally invisible.
+    - **The classify window is half a burst period.**
+      `AIUS_PIPELINE_CLASSIFY_MAX_WORDS` is 512 words; the measured
+      1.235 Mbps DTS stream repeats its Pa+Pb preamble every 1024
+      words. A live lock lands at uniform random phase, so even a
+      fresh boot into a continuous DTS stream types DTS with p ≈
+      window/period = 0.5 (worse for lower bitrates). Replay never saw
+      either gap because `.iec` files begin at a burst boundary.
+
+    Evidence: a frozen capture of the live stream is byte-exact wire
+    content times exactly 0.5 (the PCM path's deliberate left-align
+    headroom); undoing the shift resurrects 533/533 DTS core syncs AND
+    533/533 IEC Pa+Pb preambles at exact 1024-word spacing over 5.7 s —
+    so the classifier's input words were pristine and the source chain
+    (macOS `afplay`, bit-perfect) is exonerated. A reboot into the
+    running stream then typed PCM anyway (the coin flip).
+
+    **Empirically confirmed the same morning: a reboot lottery into the
+    continuously playing stream typed PCM, PCM, PCM, DTS — the win on
+    trial 4, consistent with the predicted ~0.5 per trial.** Two more
+    behaviours observed once DTS latched: the class SURVIVES carrier
+    drops (nothing resets on unlock/relock, so the ~30 s `afplay` loop
+    seams flip state 4↔2 with no new lottery) — which also means the
+    hazard mirrors: a DTS-latched box will treat any FUTURE PCM
+    carrier as DTS until reboot. And with DTS classified and a
+    pristine stream flowing, the decode path emitted NOTHING — zero
+    blocks, meters silent, no faults, every push AIUS_OK — which is
+    defect 29's record, not this one's.
+
+    Fix directions, for the phase that takes this: (a) keep scanning
+    for preamble pairs inside `pcm_feed` and re-type on a validated
+    detection (two pairs at plausible spacing, so a random 32-bit
+    match in real music cannot flip a live stream), which subsumes the
+    window-size gap and handles mid-stream switches; (b) wire a
+    pipeline reset to carrier lock transitions — which also clears the
+    mirrored PCM-as-DTS hazard above. The 512-word stage buffer can
+    stay as-is under (a).
+
+29. ~~**With DTS correctly classified and a bit-perfect stream flowing,
+    the decode path emits NOTHING — no blocks, no meters, no faults.**~~
+    **ROOT-CAUSED AND FIXED 2026-07-28, closing defect 14 with it.** The
+    chase, instrumented in three steps on a live bench: (1) surfacing
+    the pipeline's swallowed `last_status` read AIUS_NO_SPACE with
+    `decode_cycles` 0 and `arena_high_water` frozen at the create-time
+    5,168; (2) a host harness pushing the identical ffmpeg stream
+    through the identical portable code decoded 30 s of 5.1 flawlessly
+    from every entry phase — code exonerated, device context indicted;
+    (3) parser-level reject tallies then read 1,641 bursts_ok with ZERO
+    rejects — parser exonerated, decoder indicted. The cause was
+    `[env:teensy41-optical]`'s `build_unflags` stripping the
+    `--wrap=malloc` set: the alloc shim armed the reserved 128 KB DTCM
+    arena on every decode, but with `__wrap_malloc` unlinked every
+    dcadec allocation fell through to the OCRAM heap — which
+    NativeEthernet's ~96 KiB bring-up demand (defect 26's measurement)
+    had already drained — so every access unit failed ENOMEM →
+    AIUS_NO_SPACE → silently skipped, by dts_feed's deliberate
+    skip-and-relock design. Fix: the unflag is deleted; on-device the
+    arena now peaks at 62,560 of 131,072 with steady-state
+    `alloc_count` 0 — the no-heap contract proven on hardware. All six
+    decoded channels meter at the programme's exact levels. The
+    diagnostics that found it (`pipeline_diag` on `/api/status`, parser
+    reject tallies with last-rejected Pc/Pd capture) are permanent
+    surfaces.
+
+30. **The decoded 5.1 channel order and the downmix matrix disagree — a
+    pure spatial permutation.** Found 2026-07-28 minutes after defect
+    29's fix, by DFT over a capture of the decoded tone programme
+    (FL 300 / FR 600 / C 900 / LFE 60 / SL 1200 / SR 1500 Hz): left
+    output carries 600 Hz at 0 dB with 300 and 1200 at −3 dB; right
+    carries 900 at 0 dB with 300 and 1500 at −3 dB. Both channels show
+    a coherent 1.0 + 0.707 + 0.707 downmix STRUCTURE applied to the
+    WRONG source planes, so the fault is a channel-index permutation
+    between `aius_dts.c`'s `k_spkr_map` plane order (DTS-native,
+    centre-first) and the downmix matrix's slot assumptions — not
+    corruption. Per-channel input meters could not see it (five equal
+    -9.9 dBFS channels); only the tone-identity capture could. LFE
+    lands at −19 dB in both outputs, part of the same mapping
+    question. Chase: diff `k_spkr_map`'s emission order against
+    `AiusDownmixConfig`'s expected slot order; a per-channel tone test
+    through the native pipeline suite would pin it without hardware.
 
 #### Decisions taken, so they are not re-opened
 
