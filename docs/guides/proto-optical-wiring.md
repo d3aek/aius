@@ -52,16 +52,30 @@ mistake this table exists to prevent.
 
 ## Wiring
 
+**Every horizontal run below is a direct wire. The capacitors hang BETWEEN two
+runs (shunt); nothing is ever in series with a supply or a signal.** A bypass
+capacitor in series with Vcc blocks DC entirely and leaves the module
+unpowered — a previous revision of this diagram was readable exactly that way
+and produced a dark, deaf bench build (2026-07-27); the module survives it
+unharmed, but nothing works until the cap moves to shunt.
+
+Receiver:
+
 ```
-ORJ-5 pin 1 (Vout) ──────────────── Teensy pad 15  (SPDIF_IN)
-ORJ-5 pin 2 (GND)  ──┬───────────── Teensy GND
-ORJ-5 pin 3 (Vcc)  ──┼── 100 nF ──┐
-                     │            ├─ Teensy 3V3
-OTJ-5 pin 2 (Vcc)  ──┼── 100 nF ──┘
-OTJ-5 pin 1 (GND)  ──┤
-OTJ-5 pin 3 (Vin)  ──┼───────────── Teensy pad 14  (SPDIF_OUT)
-                     │
-     30 pF between ORJ-5 pin 1 (Vout) and pin 2 (GND)
+ORJ-5 pin 1 (Vout) ──┬──────────── Teensy pad 15 (SPDIF_IN)
+                 22–30 pF
+ORJ-5 pin 2 (GND)  ──┴──┬───────── Teensy GND
+                     100 nF
+ORJ-5 pin 3 (Vcc)  ─────┴───────── Teensy 3V3
+```
+
+Transmitter:
+
+```
+OTJ-5 pin 1 (GND)  ─────┬───────── Teensy GND
+                     100 nF
+OTJ-5 pin 2 (Vcc)  ─────┴───────── Teensy 3V3
+OTJ-5 pin 3 (Vin)  ─────────────── Teensy pad 14 (SPDIF_OUT)
 ```
 
 - Teensy pads 15/14 are the spec-fixed `SPDIF_IN`/`SPDIF_OUT` pads
