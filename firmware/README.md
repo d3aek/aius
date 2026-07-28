@@ -265,6 +265,8 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `dts-arena` | No-heap arena decode path + allocation metrics. |
 | `dts-fuzz` | DTS decoder robustness fuzz. |
 | `dts-lfe` | LFE bit-exactness vs a full dcadec build. |
+| `a52` | AC-3 decode differential vs FFmpeg (committed corpus), channel identity by Goertzel, arena/metrics contract. |
+| `a52-fuzz` | AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle (liba52 has no CRC and an unbounded bit reader — the padded scratch is what this proves). |
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |

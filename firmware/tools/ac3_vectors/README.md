@@ -12,8 +12,9 @@ summary below is a pointer, not a second source of truth.
 
 ## Corpus
 
-All vectors are 48 kHz, ~0.1 s (5120 samples), amplitude-limited to leave
-encoder headroom. Bitrates are pinned in the script (640k for 5.1, 192k for
+All vectors are 48 kHz, 0.1 s of source (4800 samples), which the encoder
+carries as 4 complete AC-3 frames — 6144 decoded samples per channel —
+amplitude-limited to leave encoder headroom. Bitrates are pinned in the script (640k for 5.1, 192k for
 stereo) so committed bytes do not drift with FFmpeg's defaults.
 
 - `stereo_tones` — L 440 Hz, R 660 Hz.

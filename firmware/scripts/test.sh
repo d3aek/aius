@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
-#         dts-fuzz, dts-lfe, iec61937, iec61937-fuzz, capability-protocol,
+#         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
 #         usb-control, replay, tx-gate, recorder, boot, boot-target, fault-target,
@@ -118,6 +118,41 @@ dts_build() {
 		-lm -o "$out"
 }
 
+# Shared build inputs for the AC-3 suites. Mirrors dts_build: the adapter and
+# the vendored liba52 allocate through libc malloc/free, intercepted at LINK
+# time by aius_alloc_shim via --wrap so the no-heap arena path is provable
+# without editing any vendored file. The carve-outs are recorded decisions
+# (vendor/a52-core/NOTICE.md): liba52's config.h seam lives in
+# lib/aius_a52/include, -Wno-unused-parameter / -Wno-implicit-fallthrough
+# cover upstream 0.7.4 idioms, and -fno-sanitize=shift silences the
+# by-design current_word << 32 and signed-shift mantissa idioms UBSan would
+# flood on every frame.
+a52_build() {
+	local out="$1"
+	shift
+	local a52_inc=("-I$fw_root/lib/aius_a52/include" \
+		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
+		"-I$fw_root/vendor/a52-core")
+	# The comma-separated --wrap list is one linker argument.
+	# shellcheck disable=SC2054
+	local a52_cflags=(-D_GNU_SOURCE \
+		-Wno-unused-parameter -Wno-implicit-fallthrough \
+		-Wno-shift-negative-value -fno-sanitize=shift \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+	local vendor="$fw_root/vendor/a52-core"
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+		"$@" \
+		"$fw_root/lib/aius_a52/src/aius_a52.c" \
+		"$fw_root/lib/aius_dts/src/aius_alloc_shim.c" \
+		"$src/aius_arena.c" \
+		"$vendor/parse.c" \
+		"$vendor/bit_allocate.c" \
+		"$vendor/bitstream.c" \
+		"$vendor/imdct.c" \
+		"$vendor/downmix.c" \
+		-lm -o "$out"
+}
+
 case "$suite" in
 config)
 	# Two halves of "configuration": the build-time optical DSP header generator,
@@ -213,6 +248,20 @@ dts-lfe)
 	out="$build_dir/dts-lfe"
 	dts_build "$out" "$fw_root/test/dts-lfe/test_dts_lfe.c"
 	"$out" "$fw_root/tools/dts_vectors/vectors" "$fw_root/tools/dcadec_ref"
+	;;
+a52)
+	# AC-3 decode differential vs FFmpeg (committed corpus) + channel identity
+	# + arena/metrics contract.
+	out="$build_dir/a52"
+	a52_build "$out" "$fw_root/test/a52/test_a52.c"
+	"$out" "$fw_root/tools/ac3_vectors/vectors"
+	;;
+a52-fuzz)
+	# AC-3 adapter robustness under ASan/UBSan: deterministic seam hunt +
+	# random corruption, every decode under the defect-31 termination oracle.
+	out="$build_dir/a52-fuzz"
+	a52_build "$out" "$fw_root/test/a52/fuzz_a52.c"
+	"$out" "$fw_root/tools/ac3_vectors/vectors" 50000
 	;;
 iec61937)
 	# IEC 61937 burst parser known-answer test against the committed corpus.
