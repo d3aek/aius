@@ -275,9 +275,10 @@ survey, so the implementer does not have to re-derive it:
 
 - `parse.c:168` — `state->output = a52_downmix_init(acmod, *flags, level,
   clev, slev)` is the flags negotiation. Under our identity request it
-  returns the stream's own coding. Replacement: grant `state->acmod`
-  directly (plus the `A52_LFE` bit at `:172-173`, unchanged), leave `*level`
-  untouched.
+  returns the stream's own coding. Replacement: grant
+  `*flags & A52_CHANNEL_MASK` (~~`state->acmod` directly~~ — superseded by
+  correction 2 below; the raw `state->acmod` is wrong for A52_DOLBY), plus
+  the `A52_LFE` bit at `:172-173` unchanged, leaving `*level` untouched.
 - `parse.c:776` — `chanbias = a52_downmix_coeff(...)`. Under identity
   (`acmod == output`) this sets `coeff[0..4] = level` and returns **0**
   (`downmix.c:157-169`). Replacement: exactly that, inline.
@@ -288,8 +289,12 @@ survey, so the implementer does not have to re-derive it:
   `:881` (neither switch has an identity case, so both are already no-ops).
 - Consequently `chanbias` is always 0 → `bias = state->bias` for every
   channel, and `coeff[i]` is `state->dynrng` for every channel.
+- `state->downmixed` (and its `a52_init` initialiser at `parse.c:83`)
+  becomes vestigial once the upmix/downmix calls go — prune the field
+  deliberately. **This is the ONLY field safe to prune on sight**; see the
+  bitstream trap below for the ones that are not.
 
-**All six points above were verified by the gate against source AND by
+**All five points above were verified by the gate against source AND by
 building the reduction and re-decoding the corpus: plane hashes came back
 bit-identical, including for a synthesised `dsurmod=2` (A52_DOLBY) variant.**
 The reduction is sound. What follows is where it goes wrong in the hands of
@@ -357,29 +362,39 @@ desyncs an LFE stream on some future non-identity request.
 
 #### Steps, each separately committed
 
+**Step F0 — pin a byte-level oracle, BEFORE anything moves.** Today's suite
+cannot prove what F1 claims: `test_a52.c` asserts only a max per-sample LSB
+diff and an SNR printed to 0.1 dB, so a few LSB of drift in non-peak samples
+moves neither figure. Add a per-vector FNV-1a checksum over all decoded
+planes, printed and asserted, as its own commit against the UNMODIFIED tree.
+
+**The construction must be pinned with the values, or the baselines are
+unreproducible and the oracle degenerates into a tautology** (gate B: a
+rerun under a different basis produced four different digests, and on first
+mismatch an implementer simply re-baselines). Fully determined:
+
+- 64-bit FNV-1a, basis `0xcbf29ce484222325`, prime `0x100000001b3`;
+- one hash per vector, starting at the basis and accumulating across every
+  access unit in stream order;
+- iteration channel-major, then sample;
+- each sample taken as `(uint32_t)block.planes[c][i]` and fed as **4
+  little-endian bytes**.
+
+| Vector | FNV-1a over all planes |
+|---|---|
+| `stereo_tones` | `7d7d27ae1ae01351` |
+| `stereo_impulse` | `e5ace9204e8da8bb` |
+| `surround51_impulse` | `27ca745607a8b834` |
+| `surround51_ident` | `d549a217bb66b3c6` |
+
+F1 must then reproduce all four exactly, with `a52-fuzz` green.
+
 **Step F1 — move and prune, NO behaviour change.** `vendor/a52-core/` →
 `lib/aius_a52/a52/`; delete `downmix.c` and `attributes.h` (NOT
 `mm_accel.h` — see correction 1); apply the identity-only reduction with
 the bitstream trap, the `*flags` grant and the fail-closed guard above;
-`NOTICE.md` becomes the divergence log.
-
-**The oracle must be made byte-level FIRST — today's suite cannot prove
-what F1 claims.** `test_a52.c` asserts only a max per-sample LSB diff and an
-SNR printed to 0.1 dB, so a few LSB of drift in non-peak samples moves
-neither figure. Add a per-vector FNV-1a checksum over all decoded planes
-(~15 lines), printed and asserted. **Baselines measured from the current
-tree by the gate:**
-
-| Vector | FNV-1a over all planes |
-|---|---|
-| `stereo_tones` | `5debbe6d77ab1953` |
-| `stereo_impulse` | `50b480e4f629b7e5` |
-| `surround51_impulse` | `1ca2c67a7dfe9efe` |
-| `surround51_ident` | `8db4ec7277667f18` |
-
-Land the checksum assertion as its own commit against the UNMODIFIED tree,
-so the baseline is pinned before anything moves. Then F1 must reproduce all
-four exactly, with `a52-fuzz` green.
+`NOTICE.md` becomes the divergence log. **F0 must have landed first** — F1's
+entire proof is the four checksums, so without them it has no oracle.
 
 **Path references F1 must update** (grep-confirmed complete):
 `scripts/test.sh:125,135,142`; `lib/aius_a52/include/aius_a52.h:16,34`;
@@ -408,9 +423,11 @@ discover it mid-step:
 mentioned**), `bitstream.c:66:36` and `:66:64` (the `shift exponent 32`
 site), `bitstream.c:84:47` and `:90:19`, `bitstream.h:71:43`, and
 **`parse.c:414:49` and `:521:44`** (`bitstream_get_2(...) << (16 - bapi)`
-on a negative value — **not in `bitstream.c` at all**). All seven
-non-shift-exponent sites are wrap-preserving: rewrite each as an unsigned
-shift cast back to `int32_t`, which is value-identical and unflagged. So
+on a negative value — **not in `bitstream.c` at all**). All six
+non-shift-exponent sites are wrap-preserving (eight reports, two of which
+are the two operands of the single line `bitstream.c:66`): rewrite each as
+an unsigned shift cast back to `int32_t`, which is value-identical and
+unflagged. So
 **byte-identity is achievable through F2** and the F1 checksums must still
 hold.
 
@@ -460,12 +477,29 @@ That is a **99.96% loss of coverage over the mantissa, exponent and
 bit-allocation surface where BOTH phase-1 memory-safety defects lived** —
 and the suite would still print `RESULT: passed`. It would also contradict
 this plan's own standing conclusion that the fuzz suite belongs in the
-pre-flash gate. **F3c must therefore recompute CRC1/CRC2 and patch them back
-after corrupting**, so the suite tests what it exists to test: a
-CRC-*valid* hostile stream, which is precisely the shape of phase-1 defect 1
-(reachable from a legal frame). Land the gate-F16 reach counter with it and
-**assert a floor**, or this class of silent gutting recurs on the next guard
-tightening.
+pre-flash gate. **F3c must therefore restore the CRCs after corrupting**, so the suite tests
+what it exists to test: a CRC-*valid* hostile stream, which is precisely the
+shape of phase-1 defect 1 (reachable from a legal frame). Land the gate-F16
+reach counter with it and **assert a floor**, or this class of silent
+gutting recurs on the next guard tightening.
+
+**"Recompute and patch back" has no working naive implementation — name the
+mechanism or the fix reproduces the blocker** (gate A). CRC2 is an appended
+CRC and recomputes trivially. **CRC1 does not: it sits at bytes 2–3, BEFORE
+the region it protects, so the field must be SOLVED for, not computed.**
+Measured on `surround51_ident` frame 0 with a bit flipped at offset 100:
+storing `crc16(frame[4:fs58])` at bytes 2–3 and recomputing CRC2 yields a
+whole-frame residue of `0x4b06` — rejected by the very gate F3c installs,
+i.e. decoder reach collapses to ~0 again. Two acceptable mechanisms:
+
+- **Solve the 16×16 GF(2) system** for the CRC1 field (equivalently
+  ffmpeg's `mul_poly` pre-division), ~25 lines, and cache the map per frame
+  length since it depends only on `fs58`. Verified to give
+  `seg1 = seg2 = whole = 0` with the corrupted byte intact.
+- **Cheap fallback:** corrupt only at or after `fs58` and recompute CRC2
+  alone. Works naively, but **forfeits coverage of blocks 0–2 — where
+  phase-1 defect 2 (first-block `EXP_REUSE`) lived** — so take it only as a
+  stopgap, and never without the reach-floor assertion.
 
 **The CRC formulation is verified**, so implement it as stated: CRC-16/ANSI
 (poly `0x8005`, init 0, MSB-first, no reflection, no xorout) over
