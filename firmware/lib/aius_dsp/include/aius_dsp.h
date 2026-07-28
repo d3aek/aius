@@ -1063,6 +1063,21 @@ void aius_out_stage_run(AiusOut16Stage *st, int width_bits,
  * this many points and never requests full-rate samples. */
 #define AIUS_METER_WAVEFORM_MAX 128
 
+/* Raw-sample analysis window, in mono frames. Distinct from the waveform above
+ * in KIND, not just in length: the waveform is a peak-magnitude ENVELOPE, and
+ * an envelope has no spectrum -- |x| is not x, so an FFT of it answers a
+ * question nobody asked. This window is the signal itself, so a client can
+ * transform it.
+ *
+ * 1024 is chosen against three bounds at once. A spectrum consumer needs a
+ * power of two of at least 256 to say anything about 20 Hz..20 kHz (1024 at
+ * 48 kHz is 21.3 ms, a 46.9 Hz bin). The publish cadence is 20 Hz (~2400 frames
+ * at 48 kHz), so the ring always refills between publishes and the window is
+ * never stitched from two eras. And it is the largest power of two whose
+ * decimal JSON still fits the runtime's response body beside the rest of the
+ * meters payload -- the arithmetic is in optical_main.cpp's serializer. */
+#define AIUS_METER_ANALYSIS_WINDOW 1024u
+
 /* Bounded seqlock read retries: a reader contended by an in-progress publish
  * retries this many times, then reports failure rather than returning a torn
  * snapshot. The audio-path writer completes a publish in bounded time, so a
@@ -1079,6 +1094,14 @@ void aius_out_stage_run(AiusOut16Stage *st, int width_bits,
  * `queue_frames`, `estimated_latency_us`, `dsp_cycles_last`, and `dsp_cycles_max`
  * are populated by the target adapter (it owns the audio queue and the DWT cycle
  * counter); the portable path carries them through unmeasured as staged fields.
+ *
+ * SIZE. `analysis_window` is 4 KiB of the ~4.7 kB total, so every publish and
+ * every read copies it. Both are cold: publish runs at the adapter's cadence
+ * (20 Hz on target -> ~80 KiB/s of memcpy) and read runs per HTTP request
+ * (10 Hz from the SD editor -> ~47 KiB/s). Neither is per-block, and a 4 KiB
+ * word copy is ~1 k stores; at 600 MHz that is single-digit microseconds. A
+ * caller that puts a snapshot on the stack should think again -- 4.7 kB is a
+ * large automatic on a microcontroller.
  */
 typedef struct {
     uint32_t sequence;      /* strictly increasing publish counter (0 = never published) */
@@ -1090,6 +1113,14 @@ typedef struct {
     double   limiter_gain_reduction_db;             /* <= 0.0; 0 = no reduction */
     uint32_t waveform_count;                        /* valid points, <= AIUS_METER_WAVEFORM_MAX */
     int32_t  waveform[AIUS_METER_WAVEFORM_MAX];     /* per-bucket peak-magnitude envelope */
+    /* Raw mono output samples, OLDEST FIRST, in the same 24-bit sample units as
+     * the peaks above (full scale AIUS_DSP_SAMPLE_MAX). `analysis_count` is 0
+     * until the capture ring has been fed at all and saturates at the window
+     * size thereafter; samples past it are zero. A consumer that needs a power
+     * of two takes the last one it wants -- oldest-first ordering makes the
+     * NEWEST samples the tail, which is what a rolling analyser wants. */
+    uint32_t analysis_count;                        /* valid samples, <= AIUS_METER_ANALYSIS_WINDOW */
+    int32_t  analysis_window[AIUS_METER_ANALYSIS_WINDOW];
     uint32_t queue_frames;                          /* target adapter: audio queue depth */
     uint32_t estimated_latency_us;                  /* target adapter: estimated path latency */
     uint32_t dsp_cycles_last;                       /* target adapter: last block DWT cycles */
@@ -1119,6 +1150,16 @@ typedef struct {
     uint64_t out_frames;  /* frames accumulated into the stereo output */
     int32_t  wave[AIUS_METER_WAVEFORM_MAX];
     uint32_t wave_count;
+    /* Raw mono capture ring, written one sample per output frame. ROLLING, not
+     * windowed: unlike every accumulator above it, this deliberately survives
+     * aius_meter_reset_accumulators(), because the window is "the newest N
+     * frames the pipeline produced", not "the frames since the last publish".
+     * Resetting it would leave the first publish of every window analysing a
+     * partially refilled buffer whenever a block/rate pairing puts fewer than
+     * AIUS_METER_ANALYSIS_WINDOW frames in a publish window. */
+    int32_t  analysis[AIUS_METER_ANALYSIS_WINDOW];
+    uint32_t analysis_cursor;  /* next write index, wraps at the window size */
+    uint32_t analysis_filled;  /* samples ever written, saturating at the window size */
     double   limiter_gr_db;
     uint32_t sample_rate_hz;
     /* target-supplied telemetry, staged for the next publish */
@@ -1136,8 +1177,9 @@ typedef struct {
 void aius_meter_init(AiusMeter *m, uint32_t sample_rate_hz);
 
 /* Zero only the windowed accumulators (peak/RMS sums, frame counts, waveform),
- * leaving the seqlock, published snapshot, limiter GR, and staged telemetry
- * intact. Called by publish; exposed for an explicit window reset. */
+ * leaving the seqlock, published snapshot, limiter GR, staged telemetry, and
+ * the rolling analysis capture ring intact. Called by publish; exposed for an
+ * explicit window reset. */
 void aius_meter_reset_accumulators(AiusMeter *m);
 
 /* Accumulate per-input peak + sum-of-squares from a decoded/trimmed block. The
@@ -1145,8 +1187,17 @@ void aius_meter_reset_accumulators(AiusMeter *m);
  * narrower layout leaves absent channels at zero. m/block NULL is a no-op. */
 void aius_meter_accumulate_input(AiusMeter *m, const AiusPcmBlock *block);
 
-/* Accumulate stereo-output peak + sum-of-squares and refresh the decimated
- * waveform envelope from this block's L/R result. m or a NULL plane is a no-op. */
+/* Accumulate stereo-output peak + sum-of-squares, refresh the decimated waveform
+ * envelope, and write this block's frames into the rolling raw-sample analysis
+ * ring as mono ((l + r) / 2). m or a NULL plane is a no-op.
+ *
+ * The mono fold is the SIGNAL, not a magnitude: max(|l|, |r|) is what the
+ * waveform envelope already carries, and it has no meaningful spectrum. The
+ * fold costs one 64-bit add, one arithmetic shift and one store per frame --
+ * the widening is what makes it total for any int32 input rather than only for
+ * the documented 24-bit domain, and the shift (rather than a divide) keeps the
+ * rounding error a constant half-LSB offset in bin 0 instead of a
+ * signal-correlated error smeared across the spectrum. */
 void aius_meter_accumulate_output(AiusMeter *m, const int32_t *l, const int32_t *r,
                                   uint32_t frames);
 
@@ -1170,7 +1221,8 @@ uint32_t aius_meter_decimate(const int32_t *l, const int32_t *r, uint32_t frames
 
 /* Commit a coherent snapshot: bump the sequence, compute RMS from the window's
  * sum-of-squares, copy peaks/waveform/limiter-GR/telemetry into the published
- * snapshot behind the seqlock, then reset the windowed accumulators. m NULL is a
+ * snapshot behind the seqlock, unroll the analysis capture ring into the
+ * snapshot oldest-first, then reset the windowed accumulators. m NULL is a
  * no-op. Allocation-free. */
 void aius_meter_publish(AiusMeter *m);
 

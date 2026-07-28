@@ -392,8 +392,9 @@ static volatile bool g_dsp_apply_pending;
  * it.
  *
  * OCRAM, exactly as the AiusMeter contract asks ("on target the adapter places
- * this in OCRAM"). At ~1.4 kB it is far too big to spend on the 23 kB DTCM
- * free-for-locals zone when OCRAM has 416 kB spare -- §Deciding principle's
+ * this in OCRAM"). At ~9.5 kB (the analysis ring and its published window are
+ * most of it) it is far too big to spend on the ~48 kB DTCM
+ * free-for-locals zone when OCRAM has ~128 kB spare -- §Deciding principle's
  * "memory that is genuinely free is not an argument" points the same way.
  * DMAMEM is not zeroed at startup, so apply_config() runs aius_meter_init()
  * before the first block ever reaches enqueue().
@@ -407,7 +408,7 @@ static volatile bool g_dsp_apply_pending;
  *
  * WHY THAT CANNOT TEAR HERE. The two sides are not concurrent, they are
  * nested: the audio interrupt preempts the main thread, runs a publish to
- * completion and returns. A reader whose 676-byte copy is straddled by a
+ * completion and returns. A reader whose ~4.7 kB copy is straddled by a
  * publish therefore always observes seq advanced by two across the copy, fails
  * the s1 == s2 check, and retries; it can never observe the payload half-old.
  * The converse hazard -- a compiler sinking one of the writer's payload stores
@@ -1873,12 +1874,35 @@ static constexpr uint32_t AIUS_METERS_WAVEFORM_FULL_SCALE = 1000u;
  *                                                                 ----
  *                                                                 1472
  *
+ * The raw-sample analysis window adds the rest. A sample is at worst
+ * "-8388608" -- 8 characters, because the window carries 24-bit sample units,
+ * NOT int32 -- and the separators are one fewer than the count:
+ *
+ *   ,"analysis_window":[                                            20
+ *   1024 x 8 characters + 1023 separators                          9215
+ *   ],"analysis_full_scale":8388607                                  31
+ *                                                                 -----
+ *                                                                  9266
+ *
+ * 1472 + 9266 = 10,738 against the 12,288-byte AIUS_RUNTIME_TEENSY_APP_BODY,
+ * so the full window fits on the existing route with ~1.5 kB spare and needs
+ * neither a shorter window nor a second endpoint. AIUS_METER_ANALYSIS_WINDOW
+ * is pinned below because that headroom is the reason it can be 1024: at 2048
+ * the body would be ~20 kB and the arithmetic stops working.
+ *
  * Rounded up for the NUL and for arithmetic drift. Every append is still
  * capacity-checked, so exceeding it would be a deterministic 0 (-> 500), never
  * an overrun. */
-static constexpr size_t AIUS_METERS_MAX_JSON_BYTES = 1600u;
+static constexpr size_t AIUS_METERS_MAX_JSON_BYTES = 10880u;
 static_assert(AIUS_METERS_MAX_JSON_BYTES <= AIUS_RUNTIME_TEENSY_APP_BODY,
 	"the meters body must fit the runtime's application response buffer");
+static_assert(AIUS_METER_ANALYSIS_WINDOW == 1024u,
+	"the meters body arithmetic above is computed for a 1024-sample window");
+/* 9 bytes is the widest one sample can serialize to: a separator plus
+ * "-8388608". The window's own share of the body, checked against the total. */
+static_assert(1472u + 20u + AIUS_METER_ANALYSIS_WINDOW * 9u + 31u <=
+		AIUS_METERS_MAX_JSON_BYTES,
+	"the analysis window does not fit the meters body budget");
 
 /* 20*log10(v / AIUS_DSP_SAMPLE_MAX), floored. The `!(v > 0)` test also takes
  * NaN to the floor, so no non-finite value can reach the wire. */
@@ -1904,6 +1928,51 @@ static FLASHMEM uint32_t meter_permille(int32_t point)
 		? AIUS_METERS_WAVEFORM_FULL_SCALE : (uint32_t)scaled;
 }
 
+/* One analysis-window sample, optionally comma-separated, appended as a plain
+ * decimal integer. Same contract as http_json_append(): false on capacity
+ * exhaustion, and the body stays NUL-terminated either way.
+ *
+ * WHY NOT http_json_append(). It is one vsnprintf() per call, and this array
+ * is 1024 elements against the HTTP checkpoint's 2 ms service_budget_ms --
+ * enough to spend the whole budget on formatting alone and tick
+ * http_service_overruns on every poll of a route the SD editor polls at 10 Hz.
+ * Emitting the digits directly is a few tens of instructions per sample. The
+ * envelope loop below is left on http_json_append(): 128 points is not worth
+ * a second spelling. */
+static FLASHMEM bool meter_append_sample(char *body, size_t capacity,
+                                         size_t *length, int32_t sample,
+                                         bool separator)
+{
+	/* Widest output: ',' + '-' + the 10 digits of any uint32. */
+	char text[12];
+	size_t written = 0;
+	if (separator)
+		text[written++] = ',';
+	/* Widened before the negation so INT32_MIN has no undefined behaviour. */
+	uint32_t magnitude;
+	if (sample < 0) {
+		text[written++] = '-';
+		magnitude = (uint32_t)-(int64_t)sample;
+	} else {
+		magnitude = (uint32_t)sample;
+	}
+	char digits[10];
+	size_t count = 0;
+	do {
+		digits[count++] = (char)('0' + (magnitude % 10u));
+		magnitude /= 10u;
+	} while (magnitude != 0u);
+	while (count > 0)
+		text[written++] = digits[--count];
+	/* +1 for the NUL, so the body a caller may still printf into is valid. */
+	if (*length + written + 1u > capacity)
+		return false;
+	memcpy(body + *length, text, written);
+	*length += written;
+	body[*length] = '\0';
+	return true;
+}
+
 /* Serialize the last complete snapshot. sequence == 0 is not special-cased: a
  * board that has never published serves an ordinary 200 whose levels are all
  * at the floor and whose waveform is empty, which is exactly what "no data"
@@ -1914,11 +1983,26 @@ static FLASHMEM uint32_t meter_permille(int32_t point)
  * refusing to hand back a torn snapshot after AIUS_METER_READ_RETRIES
  * contended attempts. That is the dispatcher's ordinary "cannot serve" answer
  * (a deterministic 500), and it needs a publish to straddle eight consecutive
- * 676-byte copies to happen at all -- against a writer that publishes 20 times
- * a second and completes in about a microsecond. */
+ * snapshot copies to happen at all -- against a writer that publishes 20 times
+ * a second and completes in about a microsecond.
+ *
+ * The raw-sample analysis window rides on this same response rather than a
+ * second route: it fits the body budget (see the arithmetic above), it is the
+ * same snapshot at the same instant as the levels beside it, and a separate
+ * GET would let a client pair a window with levels from a different publish.
+ * It is FEATURE-DETECTED by its consumer, so a board that has never published
+ * serves "analysis_window":[] and the analyser simply does not light up --
+ * which is also exactly what features.meters false produces, with no
+ * special case anywhere on this path. */
 static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 {
-	AiusMeterSnapshot snapshot;
+	/* STATIC, not automatic: the snapshot is ~4.7 kB now that it carries the
+	 * analysis window, and the DTCM free-for-locals zone is ~48 kB. Safe
+	 * because this runs only from app_write_meters() on the main thread, one
+	 * request at a time and never reentrantly; DMAMEM keeps it off DTCM for
+	 * the reason g_meter is there, and it needs no startup zeroing because
+	 * aius_meter_read() overwrites it before any read. */
+	DMAMEM static AiusMeterSnapshot snapshot;
 	if (!aius_meter_read(&g_meter, &snapshot))
 		return 0;
 	if (capacity > AIUS_METERS_MAX_JSON_BYTES)
@@ -1962,9 +2046,26 @@ static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 		                      (unsigned long)meter_permille(snapshot.waveform[point])))
 			return 0;
 	}
+	/* The raw mono window, oldest first, in 24-bit sample units -- unscaled
+	 * and unconverted, because a client that wants a spectrum needs the
+	 * signal, not a rendering of it. analysis_full_scale states what "0 dBFS"
+	 * is for these integers; without it a consumer would have to guess, and
+	 * the obvious guess is int16. */
+	if (!http_json_append(output, capacity, &length, "],\"analysis_window\":["))
+		return 0;
+	uint32_t samples = snapshot.analysis_count;
+	if (samples > AIUS_METER_ANALYSIS_WINDOW)
+		samples = AIUS_METER_ANALYSIS_WINDOW;
+	for (uint32_t sample = 0; sample < samples; sample++) {
+		if (!meter_append_sample(output, capacity, &length,
+		                         snapshot.analysis_window[sample], sample != 0))
+			return 0;
+	}
 	return http_json_append(output, capacity, &length,
-	                        "],\"queue_frames\":%lu,\"estimated_latency_us\":%lu,"
+	                        "],\"analysis_full_scale\":%ld,"
+	                        "\"queue_frames\":%lu,\"estimated_latency_us\":%lu,"
 	                        "\"dsp_cycles_last\":%lu,\"dsp_cycles_max\":%lu}",
+	                        (long)AIUS_DSP_SAMPLE_MAX,
 	                        (unsigned long)snapshot.queue_frames,
 	                        (unsigned long)snapshot.estimated_latency_us,
 	                        (unsigned long)snapshot.dsp_cycles_last,

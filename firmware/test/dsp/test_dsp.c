@@ -2868,6 +2868,205 @@ static void test_meter_bounds_finite(void)
     printf("ok meter fields finite + in range\n");
 }
 
+/* --- raw-sample analysis window ------------------------------------------- */
+
+/* The mono fold, sample-exactly, on both signs, both parities and both 24-bit
+ * extremes. The fold is an arithmetic shift of the widened sum, so it FLOORS:
+ * an odd sum rounds down on either side of zero. The two extremes are the load-
+ * bearing pair -- they prove a full-scale stereo signal folds to exactly full
+ * scale, which is what the published analysis_full_scale claims. */
+static void test_meter_analysis_mono_fold(void)
+{
+    enum { N = 8 };
+    const int32_t l[N] = {0, 100, 1, -1, 7, -7,
+                          AIUS_DSP_SAMPLE_MAX, AIUS_DSP_SAMPLE_MIN};
+    const int32_t r[N] = {0, -100, 0, 0, 0, 0,
+                          AIUS_DSP_SAMPLE_MAX, AIUS_DSP_SAMPLE_MIN};
+    const int32_t want[N] = {0, 0, 0, -1, 3, -4,
+                             AIUS_DSP_SAMPLE_MAX, AIUS_DSP_SAMPLE_MIN};
+
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+    aius_meter_accumulate_output(&m, l, r, (uint32_t)N);
+    aius_meter_publish(&m);
+
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&m, &s) == 1);
+    assert(s.analysis_count == (uint32_t)N);
+    for (int i = 0; i < N; i++)
+        assert(s.analysis_window[i] == want[i]);
+    /* Never outside the declared full scale, which is what makes the raw
+     * integers interpretable without a second scale field. */
+    for (uint32_t i = 0; i < s.analysis_count; i++)
+        assert(s.analysis_window[i] >= AIUS_DSP_SAMPLE_MIN &&
+               s.analysis_window[i] <= AIUS_DSP_SAMPLE_MAX);
+    printf("ok meter analysis mono fold (floors, full scale preserved)\n");
+}
+
+/* Ordering across the ring's wrap: more frames than the window, so the cursor
+ * ends mid-buffer, and the published window must be the NEWEST window-many
+ * frames, oldest first.
+ *
+ * The expectation is independent of the implementation's expression: with
+ * l = 3k and r = -k the fold is (3k - k) >> 1 == k exactly, so every published
+ * sample must equal its own frame index. A dropped channel, a reversed
+ * unrolling, or an off-by-one at the wrap all move it. */
+static void test_meter_analysis_window_wrap_order(void)
+{
+    /* 337 is deliberately coprime with 1024: the cursor lands mid-buffer, so
+     * the unrolled window is genuinely two runs and not one lucky memcpy. */
+    const uint32_t n = AIUS_METER_ANALYSIS_WINDOW + 337u;
+    static int32_t l[AIUS_METER_ANALYSIS_WINDOW + 337u];
+    static int32_t r[AIUS_METER_ANALYSIS_WINDOW + 337u];
+    for (uint32_t k = 0; k < n; k++) {
+        l[k] = (int32_t)k * 3;
+        r[k] = -(int32_t)k;
+    }
+
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+    aius_meter_accumulate_output(&m, l, r, n);
+    assert(m.analysis_cursor == 337u); /* wrapped, cursor mid-buffer */
+    aius_meter_publish(&m);
+
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&m, &s) == 1);
+    assert(s.analysis_count == AIUS_METER_ANALYSIS_WINDOW);
+    for (uint32_t i = 0; i < AIUS_METER_ANALYSIS_WINDOW; i++)
+        assert(s.analysis_window[i] ==
+               (int32_t)(n - AIUS_METER_ANALYSIS_WINDOW + i));
+    /* Oldest first, so the newest frame is the TAIL. */
+    assert(s.analysis_window[0] == (int32_t)(n - AIUS_METER_ANALYSIS_WINDOW));
+    assert(s.analysis_window[AIUS_METER_ANALYSIS_WINDOW - 1] ==
+           (int32_t)(n - 1u));
+    printf("ok meter analysis window oldest-first across ring wrap\n");
+}
+
+/* Before the ring has filled: a short count, the valid samples in order, and a
+ * zeroed tail. A consumer's minimum window length is its own business (the SD
+ * editor wants 256), so an under-filled window has to be honestly SHORT rather
+ * than padded -- and a meter that never saw output publishes an empty one,
+ * which is the same observable as metering being switched off. */
+static void test_meter_analysis_window_partial(void)
+{
+    /* Never fed: count 0, window all zero. */
+    {
+        AiusMeter m;
+        aius_meter_init(&m, 48000);
+        aius_meter_publish(&m);
+        AiusMeterSnapshot s;
+        assert(aius_meter_read(&m, &s) == 1);
+        assert(s.analysis_count == 0);
+        for (uint32_t i = 0; i < AIUS_METER_ANALYSIS_WINDOW; i++)
+            assert(s.analysis_window[i] == 0);
+    }
+    /* Partially fed: exactly that many samples, zeroed past them. The published
+     * tail is scribbled first so the zeroing is actually proven, not inherited
+     * from aius_meter_init's memset. */
+    {
+        enum { N = 100 };
+        int32_t l[N], r[N];
+        for (int i = 0; i < N; i++) {
+            l[i] = (i + 1) * 3;
+            r[i] = -(i + 1);
+        }
+        AiusMeter m;
+        aius_meter_init(&m, 48000);
+        memset(m.published.analysis_window, 0x5a,
+               sizeof m.published.analysis_window);
+        aius_meter_accumulate_output(&m, l, r, (uint32_t)N);
+        aius_meter_publish(&m);
+        AiusMeterSnapshot s;
+        assert(aius_meter_read(&m, &s) == 1);
+        assert(s.analysis_count == (uint32_t)N);
+        for (uint32_t i = 0; i < (uint32_t)N; i++)
+            assert(s.analysis_window[i] == (int32_t)(i + 1u));
+        for (uint32_t i = (uint32_t)N; i < AIUS_METER_ANALYSIS_WINDOW; i++)
+            assert(s.analysis_window[i] == 0);
+    }
+    printf("ok meter analysis window short before the ring fills\n");
+}
+
+/* The ring is ROLLING, not windowed. A publish window shorter than the analysis
+ * window still yields a full window, stitched from the frames that preceded it
+ * -- exactly the property a per-publish reset would destroy, and the reason
+ * aius_meter_reset_accumulators leaves the ring alone. */
+static void test_meter_analysis_window_rolls_across_publishes(void)
+{
+    enum { BLOCK = 128, BLOCKS_PER_PUBLISH = 6 };
+    int32_t l[BLOCK], r[BLOCK];
+    AiusMeter m;
+    aius_meter_init(&m, 48000);
+
+    uint32_t frame = 0;
+    for (int publish = 0; publish < 2; publish++) {
+        for (int block = 0; block < BLOCKS_PER_PUBLISH; block++) {
+            for (uint32_t i = 0; i < (uint32_t)BLOCK; i++) {
+                l[i] = (int32_t)frame * 3;
+                r[i] = -(int32_t)frame;
+                frame++;
+            }
+            aius_meter_accumulate_output(&m, l, r, (uint32_t)BLOCK);
+        }
+        aius_meter_publish(&m);
+    }
+    /* 768 frames per publish, so the second window can only be full if 256 of
+     * its samples survived the first publish's accumulator reset. */
+    assert(frame == 1536u);
+
+    AiusMeterSnapshot s;
+    assert(aius_meter_read(&m, &s) == 1);
+    assert(s.analysis_count == AIUS_METER_ANALYSIS_WINDOW);
+    for (uint32_t i = 0; i < AIUS_METER_ANALYSIS_WINDOW; i++)
+        assert(s.analysis_window[i] ==
+               (int32_t)(frame - AIUS_METER_ANALYSIS_WINDOW + i));
+    /* The windowed accumulators DID reset: this publish saw 768 frames only. */
+    assert(s.output_peak[0] == (double)(frame - 1u) * 3.0);
+    printf("ok meter analysis window rolls across publish boundaries\n");
+}
+
+/* The window's JSON cost, pinned here rather than only at the target.
+ *
+ * The emitter is target-side (optical_main.cpp's http_meters_json), so what is
+ * provable natively is the ARITHMETIC its static_asserts encode: a worst-case
+ * window plus the rest of the meters payload fits the runtime's response body.
+ * That is the constraint that decides AIUS_METER_ANALYSIS_WINDOW, and raising
+ * the window without re-checking it would otherwise only fail on a cross-build
+ * -- or, worse, at runtime as a 500 on a route the editor polls. */
+static void test_meter_analysis_window_json_budget(void)
+{
+    /* Mirrors src/aius_runtime_teensy.h's AIUS_RUNTIME_TEENSY_APP_BODY (which
+     * is AIUS_DSP_MODEL_MAX_JSON_BYTES, from lib/aius_dsp_config -- not on this
+     * suite's include path), and the 1,472-byte worst case the meters
+     * serializer's own comment tabulates for everything else in the body. */
+    enum { APP_BODY = 12288, METERS_PRELUDE = 1472 };
+    static char body[16384];
+    size_t length = 0;
+    int written;
+
+    written = snprintf(body, sizeof body, ",\"analysis_window\":[");
+    assert(written > 0);
+    length += (size_t)written;
+    /* The widest sample there is: AIUS_DSP_SAMPLE_MIN is the only 8-character
+     * value in the domain, so a full window of it is the true worst case. */
+    for (uint32_t i = 0; i < AIUS_METER_ANALYSIS_WINDOW; i++) {
+        written = snprintf(body + length, sizeof body - length, "%s%ld",
+                           i == 0 ? "" : ",", (long)AIUS_DSP_SAMPLE_MIN);
+        assert(written > 0);
+        length += (size_t)written;
+    }
+    written = snprintf(body + length, sizeof body - length,
+                       "],\"analysis_full_scale\":%ld", (long)AIUS_DSP_SAMPLE_MAX);
+    assert(written > 0);
+    length += (size_t)written;
+
+    assert(length == 9266u); /* the figure optical_main.cpp's comment records */
+    /* +1 for the NUL the serializer keeps the body terminated with. */
+    assert((size_t)METERS_PRELUDE + length + 1u <= (size_t)APP_BODY);
+    printf("ok meter analysis window JSON fits the body (%zu + %d + 1 <= %d)\n",
+           length, (int)METERS_PRELUDE, (int)APP_BODY);
+}
+
 /* Metering does not alter audio: process with a meter attached is bit-identical
  * to the same config with no meter, and the meter captured the true output peak. */
 static void test_meter_process_no_mutation(void)
@@ -3852,6 +4051,11 @@ int main(void)
     test_meter_decimate();
     test_meter_coherence();
     test_meter_bounds_finite();
+    test_meter_analysis_mono_fold();
+    test_meter_analysis_window_wrap_order();
+    test_meter_analysis_window_partial();
+    test_meter_analysis_window_rolls_across_publishes();
+    test_meter_analysis_window_json_budget();
     test_meter_process_no_mutation();
     test_arena_alloc();
     test_invalid_args();

@@ -1023,6 +1023,9 @@ void aius_meter_reset_accumulators(AiusMeter *m)
     m->wave_count = 0;
     m->in_frames = 0;
     m->out_frames = 0;
+    /* m->analysis/_cursor/_filled are deliberately NOT reset: the raw-sample
+     * window is a rolling capture of the newest frames, not a per-publish
+     * accumulator. See the field's comment in aius_dsp.h. */
 }
 
 void aius_meter_accumulate_input(AiusMeter *m, const AiusPcmBlock *block)
@@ -1066,6 +1069,8 @@ void aius_meter_accumulate_output(AiusMeter *m, const int32_t *l, const int32_t 
     double peak_r = m->out_peak[1];
     double sq_l = m->out_sqsum[0];
     double sq_r = m->out_sqsum[1];
+    uint32_t cursor = m->analysis_cursor;
+    uint32_t filled = m->analysis_filled;
     for (uint32_t i = 0; i < frames; i++) {
         double vl = (double)l[i];
         double vr = (double)r[i];
@@ -1079,7 +1084,21 @@ void aius_meter_accumulate_output(AiusMeter *m, const int32_t *l, const int32_t 
         }
         sq_l += vl * vl;
         sq_r += vr * vr;
+        /* Mono fold into the rolling raw-sample ring. Widened before the add so
+         * a full-int32 plane cannot overflow (the documented domain is 24-bit,
+         * but this function's contract does not enforce it), and shifted rather
+         * than divided so the truncation is a constant offset. */
+        m->analysis[cursor] = (int32_t)(((int64_t)l[i] + (int64_t)r[i]) >> 1);
+        cursor++;
+        if (cursor == AIUS_METER_ANALYSIS_WINDOW) {
+            cursor = 0;
+        }
+        if (filled < AIUS_METER_ANALYSIS_WINDOW) {
+            filled++;
+        }
     }
+    m->analysis_cursor = cursor;
+    m->analysis_filled = filled;
     m->out_peak[0] = peak_l;
     m->out_peak[1] = peak_r;
     m->out_sqsum[0] = sq_l;
@@ -1170,6 +1189,34 @@ void aius_meter_publish(AiusMeter *m)
     s->waveform_count = m->wave_count;
     for (uint32_t i = 0; i < AIUS_METER_WAVEFORM_MAX; i++) {
         s->waveform[i] = i < m->wave_count ? m->wave[i] : 0;
+    }
+
+    /* Unroll the capture ring oldest-first. Once it has wrapped, the oldest
+     * sample is the one the cursor is about to overwrite, so the window is
+     * [cursor, end) followed by [0, cursor) -- two memcpy runs rather than a
+     * modulo per sample. Before it has wrapped, cursor == filled and the
+     * samples already sit in order at [0, filled); the tail is zeroed so no
+     * sample past analysis_count is stale.
+     *
+     * COST: 4 KiB per publish (20 Hz on target -> ~80 KiB/s), and the same
+     * 4 KiB again inside every aius_meter_read() struct copy (10 Hz from the
+     * one HTTP reader -> ~47 KiB/s including the rest of the snapshot). Both
+     * sides are cold; the audio path's per-block cost is unchanged apart from
+     * accumulate_output's ring write -- an add, a shift, a store and a wrap
+     * test per frame, beside the four doubles it was already touching. */
+    s->analysis_count = m->analysis_filled;
+    if (m->analysis_filled == AIUS_METER_ANALYSIS_WINDOW) {
+        uint32_t head = AIUS_METER_ANALYSIS_WINDOW - m->analysis_cursor;
+        memcpy(s->analysis_window, m->analysis + m->analysis_cursor,
+               head * sizeof m->analysis[0]);
+        memcpy(s->analysis_window + head, m->analysis,
+               m->analysis_cursor * sizeof m->analysis[0]);
+    } else {
+        memcpy(s->analysis_window, m->analysis,
+               m->analysis_filled * sizeof m->analysis[0]);
+        memset(s->analysis_window + m->analysis_filled, 0,
+               (AIUS_METER_ANALYSIS_WINDOW - m->analysis_filled) *
+                   sizeof m->analysis[0]);
     }
 
     s->queue_frames = m->queue_frames;
