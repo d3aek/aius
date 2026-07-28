@@ -23,25 +23,28 @@
     <section class="card status-card">
       <div class="section-title"><h2>Effective configuration</h2><span id="apply-state" class="pill">loading</span></div>
       <div class="status-grid">
-        <div><span>Source</span><strong id="source">unknown</strong></div>
+        <!-- Where the effective DSP MODEL came from, not what the device is
+             hearing: the signal-flow strip below owns the audio input. -->
+        <div><span>Config</span><strong id="source">unknown</strong></div>
         <div><span>Generation</span><strong id="generation">--</strong></div>
         <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
       </div>
       <div id="stale" class="notice" hidden>
-        <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Re-reading discards the edits on this page.</span>
-        <button id="stale-reload">Re-read device config</button>
+        <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Reloading discards the edits on this page.</span>
+        <button id="stale-reload">Reload device config</button>
       </div>
       <div class="controls">
         <label>SD auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
-        <!-- Explicit save/edit pair over silent per-keystroke storage: Save
-             writes the token to this browser's localStorage and locks the
-             field; Edit unlocks it. -->
-        <button id="token-save" type="button" class="secondary">Save token</button>
-        <button id="token-edit" type="button" class="secondary">Edit token</button>
+        <!-- ONE toggle over silent per-keystroke storage: unlocked it writes
+             the token to this browser's localStorage and locks the field,
+             locked it unlocks the field again. The label says which. -->
+        <button id="token-toggle" type="button" class="secondary">Save token</button>
         <button id="apply">Apply to device</button>
-        <button id="reload" class="secondary">Re-read</button>
-        <!-- A fact about the form, not about the device: it moves with every
-             keystroke, so it sits beside the button that would send it. -->
+        <button id="reload" class="secondary">Reload from device</button>
+        <!-- Two facts about the FORM, not about the device, beside the button
+             that would send it: whether it has diverged from what the device
+             last said, and how many bytes it would put on the wire. -->
+        <span id="dirty-state" class="pill" hidden>unsaved changes</span>
         <span id="model-bytes" class="form-fact">--</span>
       </div>
       <p id="status" class="hint" role="status">Loading configuration...</p>
@@ -50,17 +53,29 @@
 
     <section class="card">
       <div class="section-title"><h2>Presets</h2><span id="preset-state" class="pill">idle</span></div>
-      <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply to device</em> sends it. Save, upload and delete need the SD auth token above.</p>
+      <p class="hint">Named snapshots of the editable groups, stored on the card at <code>/sd/www/presets/</code>. Load fills the form only; <em>Apply to device</em> sends it. Save, upload and delete need the SD auth token above; a download is a browser save and needs none.</p>
+      <!-- The name owns its own row and the slack in it: it is the widest
+           control on this card, and both buttons beside it read it. -->
       <div class="controls">
-        <label>Preset name <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
+        <label class="preset-name-field">Preset name <input id="preset-name" type="text" maxlength="27" autocomplete="off" spellcheck="false" placeholder="e.g. movie-night"></label>
         <button id="preset-save">Save current as preset</button>
+        <button id="preset-download" class="secondary">Download current</button>
+      </div>
+      <p id="preset-name-hint" class="hint">0 / 27 characters. Letters, digits, dot, underscore and hyphen. An upload uses this name when it is filled, and the file's own name when it is empty.</p>
+      <!-- File operations on their own row, under the name the upload borrows
+           when it is filled. -->
+      <div class="controls">
         <input id="preset-file" type="file" accept=".json,application/json">
         <button id="preset-upload" class="secondary">Upload file as preset</button>
         <button id="preset-refresh" class="secondary">Refresh list</button>
       </div>
-      <p id="preset-name-hint" class="hint">0 / 27 characters. Letters, digits, dot, underscore and hyphen. An upload uses this name when it is filled, and the file's own name when it is empty.</p>
       <ul id="preset-list" class="preset-list"></ul>
-      <p id="preset-status" class="hint" role="status">Reading presets...</p>
+      <!-- Two lines' worth of fact on one line: the status sentence moves with
+           the last action, the origin with every keystroke. -->
+      <p class="hint preset-line">
+        <span id="preset-status" role="status">Reading presets...</span>
+        <span id="preset-origin" class="preset-origin"></span>
+      </p>
       <p id="preset-errors" class="error-summary" role="alert" hidden></p>
     </section>
 

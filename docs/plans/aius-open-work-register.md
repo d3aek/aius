@@ -5,7 +5,7 @@ scope: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-07-27
+updated: 2026-07-28
 toc: true
 ---
 
@@ -79,23 +79,24 @@ specified here. Strike items here in the commit that closes them.
   HTTP counters. The TYPE lies were fixed and pinned 2026-07-27
   (`4eb3744ce`); the absences remain. No `additionalProperties:false`, so
   nothing breaks — but a schema-coded client cannot discover these fields.
-- **DSP editor does not surface the live source type / channel count /
-  rate.** Found the moment a real source was first connected
-  (2026-07-28): no at-a-glance "PCM 2.0 @ 48 kHz" vs "DTS 5.1" vs "no
-  carrier" indicator, though `/api/status` already serves `state`
-  (2/3/4 = none/PCM/DTS) and `sample_rate`. Pure card-www change: a
-  source badge beside the meter cards reading existing fields; no
-  firmware needed.
+- ~~**DSP editor does not surface the live source type / channel count /
+  rate.**~~ **CLOSED 2026-07-28** (operator-directed UI batch): the
+  editor's input line now names the encoding and rate from `status.state`
+  / `status.sample_rate` ("input: optical carrier · PCM · 48000 Hz"), and
+  the header's overloaded "Source" label (DSP-model provenance, not audio)
+  was renamed "Config". Residual: no channel count — `/api/status` serves
+  none today, so that half needs firmware if ever wanted.
 - **hiDPI waveform stroke in `sd-shared.js`.** `drawWaveform` strokes the
   backing store directly: one device pixel on a 2× display while the EQ
   plot's strokes are DPR-scaled. Cosmetic; fix is a DPR-aware backing in
   the shared renderer.
 - **UX NICE-tier residue** from the 2026-07-27 review (full list: session
   scratch `ux/ux-review-report.md`, sections B/D; the MUST-FIX tiers all
-  shipped). Known outstanding: no marker of which preset the form came
-  from (N2); the replay upload form sits below the full library (R-N5).
-  Sweep the B/D lists against the shipped pages before assuming any other
-  item's state.
+  shipped). ~~No marker of which preset the form came from (N2)~~ — N2
+  CLOSED 2026-07-28: the preset line names the origin and tracks its
+  "(modified)" state live. Still outstanding: the replay upload form sits
+  below the full library (R-N5). Sweep the B/D lists against the shipped
+  pages before assuming any other item's state.
 - **Cost-model rows carry the old Cliff quotes** for the optical jacks
   (`aius-cost-model.md`); the purchased parts are RS PRO 805-1671/805-1680.
   Update when the cost model is next touched.

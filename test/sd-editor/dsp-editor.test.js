@@ -187,6 +187,32 @@ function createDevice(options = {}) {
   return stub;
 }
 
+/* Saving a preset to a FILE is a browser action, so the only observable is the
+ * anchor the page clicks: the object URL and the `download` filename. The URL
+ * factory is RECORDED rather than mocked away, so a test can read the exact
+ * bytes handed over (and check the page revoked the URL afterwards). The
+ * anchor's click is intercepted only when it carries a download attribute --
+ * the error summary's own links stay real, because they rely on happy-dom's
+ * navigation-on-click and their handler's preventDefault to suppress it. */
+const objectUrls = [];
+const downloads = [];
+URL.createObjectURL = (blob) => {
+  const url = `blob:aius/${objectUrls.length}`;
+  objectUrls.push({ url, blob, revoked: false });
+  return url;
+};
+URL.revokeObjectURL = (url) => {
+  const entry = objectUrls.find((candidate) => candidate.url === url);
+  if (entry) entry.revoked = true;
+};
+const nativeAnchorClick = window.HTMLAnchorElement.prototype.click;
+window.HTMLAnchorElement.prototype.click = function click() {
+  if (!this.hasAttribute('download')) return nativeAnchorClick.call(this);
+  downloads.push({ name: this.getAttribute('download'), url: this.getAttribute('href') });
+};
+const downloadBody = async (index = 0) =>
+  JSON.parse(await objectUrls.find((entry) => entry.url === downloads[index].url).blob.text());
+
 /* The document is rebuilt per test but `window` is not, so a previous boot's
  * window-level listeners (pointerup, resize, beforeunload) would answer for a
  * page instance that no longer exists -- with the state of the test that
@@ -340,6 +366,8 @@ const matrixEdgePaths = () =>
 
 beforeEach(() => {
   rejections.length = 0;
+  objectUrls.length = 0;
+  downloads.length = 0;
   process.on('unhandledRejection', trackRejection);
   vi.useFakeTimers();
   /* happy-dom's localStorage persists across tests in a suite; without this a
@@ -362,6 +390,7 @@ describe('Aius SD DSP editor — model to DOM', () => {
 
     expect(el('source').textContent).toBe('default');
     expect(el('generation').textContent).toBe('0');
+    expect(el('dirty-state').hidden).toBe(true);
     expect(el('sample-rate').textContent).toBe('48000 Hz');
     expect(el('apply-state').textContent).toBe('loaded');
 
@@ -459,8 +488,9 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect([frequency.min, frequency.max, frequency.step]).toEqual(['10', '24000', '1']);
     const q = fieldOf('input_channels.fl.eq.0.q');
     expect([q.min, q.max, q.step]).toEqual(['0.1', '20', '0.05']);
+    // The EDITOR's working range, narrower than the device's own +-24 dB.
     const gain = fieldOf('input_channels.fl.eq.0.gain_db');
-    expect([gain.min, gain.max, gain.step]).toEqual(['-24', '24', '0.5']);
+    expect([gain.min, gain.max, gain.step]).toEqual(['-12', '12', '0.5']);
     const threshold = fieldOf('limiter.threshold_dbfs');
     expect([threshold.min, threshold.max, threshold.step]).toEqual(['-24', '0', '0.5']);
     const headroom = fieldOf('matrix.headroom_linear');
@@ -679,6 +709,47 @@ describe('Aius SD DSP editor — bounds validation', () => {
     });
   }
 
+  /* The editor offers +-12 dB (operator request 2026-07-28); the firmware
+   * accepts +-24 (EQ_GAIN_{MIN,MAX}_DB). Those are two different questions, so
+   * they are two different bounds: the NATIVE one constrains what this surface
+   * can produce, the VALIDATED one is the device's and is what a message
+   * describes. A config already carrying a wider gain therefore round-trips
+   * untouched instead of being refused by the page that just rendered it. */
+  it('renders and applies a gain wider than its own input range', async () => {
+    const wide = fixture('dsp-config-sd.json');
+    wide.input_channels.fl.eq[0].gain_db = -18;
+    wide.input_channels.fr.eq[0].gain_db = -18;
+    await boot({ config: wide });
+    el('token').value = '0123456789abcdef';
+
+    expect(valueOf('input_channels.fl.eq.0.gain_db')).toBe('-18');
+    expect(errorOf('input_channels.fl.eq.0.gain_db')).toBe('');
+    expect(el('apply-state').textContent).toBe('loaded');
+
+    await click('apply');
+    expect(putCalls()).toHaveLength(1);
+    expect(JSON.parse(putCalls()[0].body).input_channels.fl.eq[0].gain_db).toBe(-18);
+  });
+
+  it('constrains new gain input to +-12 while validating against the device +-24', async () => {
+    await boot();
+    await setChoice('input_channels.fl.eq.0.type', 'peaking');
+
+    // The rails a spinner, a drag or an arrow press may reach.
+    const gain = fieldOf('input_channels.fl.eq.0.gain_db');
+    expect([gain.min, gain.max]).toEqual(['-12', '12']);
+
+    // Outside those rails but inside the firmware's: not something this
+    // surface would produce, but not an error either.
+    await setNumber('input_channels.fl.eq.0.gain_db', '18');
+    expect(errorOf('input_channels.fl.eq.0.gain_db')).toBe('');
+
+    await setNumber('input_channels.fl.eq.0.gain_db', '24.5');
+    expect(errorOf('input_channels.fl.eq.0.gain_db')).toBe(
+      'Front left section 1 gain must be between -24 and 24 dB.',
+    );
+  });
+
   it('stops validating a section switched to bypass, and keeps validating a peaking one', async () => {
     await boot();
     await setChoice('input_channels.fl.eq.0.type', 'peaking');
@@ -814,6 +885,46 @@ describe('Aius SD DSP editor — protecting unapplied work', () => {
 
     await setNumber('limiter.release_ms', '250');
     expect(el('apply-state').textContent).toBe('edited');
+  });
+
+  /* isDirty() has always guarded the destructive paths; nothing on the page
+   * SAID the form had diverged (operator request 2026-07-28). The pill is that
+   * predicate made visible, so it is a comparison rather than a latch: typing
+   * a value back clears it. */
+  it('shows an unsaved-changes pill exactly while the form differs from the device', async () => {
+    await boot();
+    expect(el('dirty-state').hidden).toBe(true);
+
+    await setNumber('limiter.release_ms', '250');
+    expect(el('dirty-state').hidden).toBe(false);
+    expect(el('dirty-state').textContent).toBe('unsaved changes');
+    expect(el('dirty-state').dataset.state).toBe('unsaved changes');
+
+    await setNumber('limiter.release_ms', '100');
+    expect(el('dirty-state').hidden).toBe(true);
+  });
+
+  /* A re-read is the one path that re-anchors "what the device last told us",
+   * so it is the one that clears the pill. An apply deliberately does NOT: the
+   * pending window keeps whatever the form holds rather than adopting the
+   * device's answer (the keepForm contract above), so the form is still an
+   * unadopted edit until it is re-read -- which is exactly what the apply-state
+   * pill says with `edited` on the same beat. */
+  it('clears the unsaved-changes pill on a re-read, and keeps it while an apply holds the form', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('limiter.release_ms', '250');
+    await click('apply');
+
+    device.config = { ...fixture('dsp-config-default.json'), source: 'sd', config_generation: 1 };
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
+    expect(el('apply-state').textContent).toBe('edited');
+    expect(el('dirty-state').hidden).toBe(false);
+
+    await click('reload');
+    expect(valueOf('limiter.release_ms')).toBe('100');
+    expect(el('dirty-state').hidden).toBe(true);
   });
 
   it('asks before a re-read discards edits, and keeps them on a refusal', async () => {
@@ -1004,6 +1115,44 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
     expect(el('tx-gate').dataset.state).toBe('open');
   });
 
+  /* "optical carrier" alone never said WHAT was on it. `state` is the
+   * firmware's own decode vocabulary (2 no carrier, 3 PCM, 4 DTS) and
+   * `sample_rate` the negotiated rate; both ride the same 1 Hz snapshot the
+   * flow ends already read. */
+  const carrierStatus = (over) => ({
+    carrier: 1,
+    state: 3,
+    format: 1,
+    sample_rate: 48000,
+    tx_gate: { open: 1, carrier_locked: 1, replay_running: 0 },
+    ...over,
+  });
+
+  it('names the encoding and the rate a locked PCM carrier is delivering', async () => {
+    await boot({ status: carrierStatus() });
+
+    expect(el('input-source').textContent).toBe('input: optical carrier · PCM · 48000 Hz');
+    expect(el('input-source').dataset.state).toBe('carrier');
+  });
+
+  it('names a DTS carrier by its decode state', async () => {
+    await boot({ status: carrierStatus({ state: 4, format: 2, sample_rate: 44100 }) });
+
+    expect(el('input-source').textContent).toBe('input: optical carrier · DTS · 44100 Hz');
+  });
+
+  it('leaves off a term the snapshot cannot support instead of printing "unknown"', async () => {
+    // state 2 is a carrier with nothing decoded off it, and a rate of 0 is one
+    // that has not been negotiated: neither is a fact worth a word.
+    await boot({ status: carrierStatus({ state: 2, format: 0, sample_rate: 0 }) });
+    expect(el('input-source').textContent).toBe('input: optical carrier');
+
+    // A state this page has no name for drops the encoding only.
+    device.status = carrierStatus({ state: 9, sample_rate: 96000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(el('input-source').textContent).toBe('input: optical carrier · 96000 Hz');
+  });
+
   it('names a replay when the latched gate says a replay is running', async () => {
     await boot({ status: { carrier: 0, tx_gate: { open: 1, carrier_locked: 0, replay_running: 1 } } });
 
@@ -1067,44 +1216,46 @@ describe('Aius SD DSP editor — ergonomics', () => {
     await boot();
     expect(el('token').value).toBe('0123456789abcdef');
     expect(el('token').readOnly).toBe(true);
-    expect(el('token-save').disabled).toBe(true);
-    expect(el('token-edit').disabled).toBe(false);
+    expect(el('token-toggle').textContent).toBe('Change token');
   });
 
-  /* The save/edit pair (2026-07-27 feedback, item 7) replaced the silent
-   * per-keystroke store: nothing persists until Save is pressed. */
-  it('stores the token on Save -- not per keystroke -- and locks the field', async () => {
+  /* One toggle (2026-07-28) replaced the save/edit pair, which replaced the
+   * silent per-keystroke store: nothing persists until the button is pressed,
+   * and the button's own label is the lock state. */
+  it('stores the token on Save token -- not per keystroke -- and locks the field', async () => {
     await boot();
     expect(el('token').readOnly).toBe(false);
-    expect(el('token-edit').disabled).toBe(true);
+    expect(el('token-toggle').textContent).toBe('Save token');
 
     el('token').value = 'fedcba9876543210';
     el('token').dispatchEvent(new Event('input'));
     expect(localStorage.getItem('aius-sd-auth')).toBe(null);
 
-    await click('token-save');
+    await click('token-toggle');
     expect(localStorage.getItem('aius-sd-auth')).toBe('fedcba9876543210');
     expect(el('token').readOnly).toBe(true);
-    expect(el('token-save').disabled).toBe(true);
-    expect(el('token-edit').disabled).toBe(false);
+    expect(el('token-toggle').textContent).toBe('Change token');
     expect(el('status').textContent).toContain('token saved');
   });
 
-  it('unlocks on Edit, and an empty Save clears the stored token', async () => {
+  it('unlocks on Change token, and an empty save clears the stored token', async () => {
     localStorage.setItem('aius-sd-auth', 'fedcba9876543210');
     await boot();
     expect(el('token').readOnly).toBe(true);
 
-    await click('token-edit');
+    await click('token-toggle');
     expect(el('token').readOnly).toBe(false);
-    expect(el('token-save').disabled).toBe(false);
+    expect(el('token-toggle').textContent).toBe('Save token');
     expect(document.activeElement).toBe(el('token'));
+    // Unlocking is not a write: the stored value is still there.
+    expect(localStorage.getItem('aius-sd-auth')).toBe('fedcba9876543210');
 
     el('token').value = '';
-    await click('token-save');
+    await click('token-toggle');
     expect(localStorage.getItem('aius-sd-auth')).toBe(null);
     // Nothing stored, so nothing to lock: the field stays editable.
     expect(el('token').readOnly).toBe(false);
+    expect(el('token-toggle').textContent).toBe('Save token');
     expect(el('status').textContent).toContain('token cleared');
   });
 
@@ -1481,6 +1632,123 @@ describe('Aius SD DSP editor — presets', () => {
 
     expect(device.calls.find((call) => call.method === 'PUT').url).toBe('/sd/www/presets/renamed.json');
   });
+
+  /* The name is the widest thing this card asks for and both buttons beside it
+   * read it, so it owns a row; the file controls are a separate errand and
+   * take the row below (operator request 2026-07-28). */
+  it('gives the preset name its own row and puts the file operations below it', async () => {
+    await boot();
+    const rows = [...el('preset-name').closest('.card').querySelectorAll('.controls')];
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].contains(el('preset-name'))).toBe(true);
+    expect(rows[0].contains(el('preset-save'))).toBe(true);
+    expect(rows[0].contains(el('preset-download'))).toBe(true);
+    expect(rows[1].contains(el('preset-file'))).toBe(true);
+    expect(rows[1].contains(el('preset-upload'))).toBe(true);
+    expect(rows[1].contains(el('preset-refresh'))).toBe(true);
+    // The name takes the slack in its row rather than sitting at label width.
+    expect(el('preset-name').closest('label').className).toBe('preset-name-field');
+  });
+
+  /* Saving to a FILE is the mirror of the upload: a browser save that touches
+   * neither the card nor the device, so no token and no write. */
+  it('downloads the current form as exactly the five preset groups', async () => {
+    await boot({ config: fixture('dsp-config-sd.json'), presetsIndex: PRESET_INDEX_DEFAULT });
+    el('preset-name').value = 'evening';
+
+    await click('preset-download');
+
+    expect(downloads).toEqual([{ name: 'evening.json', url: 'blob:aius/0' }]);
+    const body = await downloadBody();
+    expect(Object.keys(body).sort()).toEqual(['features', 'input_channels', 'limiter', 'matrix', 'output_eq']);
+    expect(body).toEqual(fiveGroups('dsp-config-sd.json'));
+    expect(putCalls()).toHaveLength(0);
+    expect(el('preset-status').textContent).toBe('Downloaded evening.json.');
+  });
+
+  it('names an unnamed export "current", and hands the object URL back afterwards', async () => {
+    await boot();
+
+    await click('preset-download');
+
+    expect(downloads[0].name).toBe('current.json');
+    expect(objectUrls[0].revoked).toBe(true);
+  });
+
+  /* An out-of-range field collects as its fallback, so an ungated export would
+   * quietly write a zero nobody typed -- the same reason the card save refuses
+   * an invalid form. */
+  it('refuses to export a form Apply itself would refuse', async () => {
+    await boot();
+    await setNumber('limiter.release_ms', '1200');
+
+    await click('preset-download');
+
+    expect(downloads).toEqual([]);
+    expect(el('preset-errors').textContent).toContain('Fix the form first');
+  });
+
+  it('downloads a stored preset as the card holds it, over a public GET', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetFiles: { movie: fiveGroups('dsp-config-default.json') },
+    });
+
+    presetRowButton('movie', 'Download').click();
+    await settle();
+
+    expect(downloads[0].name).toBe('movie.json');
+    expect(await downloadBody()).toEqual(fiveGroups('dsp-config-default.json'));
+    const read = device.calls.find((call) => call.url === '/sd/www/presets/movie.json');
+    expect(read.method).toBe('GET');
+    expect(read.headers['X-Aius-SD-Auth']).toBe(undefined);
+    // The form is untouched: a download reads the card, it does not load it.
+    expect(el('preset-origin').textContent).toBe('');
+    expect(el('preset-status').textContent).toBe('Downloaded movie.json.');
+  });
+
+  /* Which preset the form came from is a different question from whether it
+   * differs from the DEVICE: a loaded preset is dirty against the device and
+   * unmodified against itself, and both are worth saying. */
+  it('names the preset the form came from and marks it modified once it diverges', async () => {
+    await boot({
+      config: fixture('dsp-config-sd.json'),
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetFiles: { movie: fiveGroups('dsp-config-default.json') },
+    });
+    expect(el('preset-origin').textContent).toBe('');
+
+    presetRowButton('movie', 'Load').click();
+    await settle();
+    expect(el('preset-origin').textContent).toBe('preset: movie');
+    expect(el('dirty-state').hidden).toBe(false);
+
+    await setNumber('limiter.release_ms', '250');
+    expect(el('preset-origin').textContent).toBe('preset: movie (modified)');
+
+    // A comparison, not a latch: typing the preset's own value back clears it.
+    await setNumber('limiter.release_ms', '100');
+    expect(el('preset-origin').textContent).toBe('preset: movie');
+  });
+
+  it('drops the preset provenance when the device is re-read', async () => {
+    await boot({
+      presetsIndex: PRESET_INDEX_DEFAULT,
+      presetFiles: { movie: fiveGroups('dsp-config-sd.json') },
+    });
+    presetRowButton('movie', 'Load').click();
+    await settle();
+    expect(el('preset-origin').textContent).toBe('preset: movie');
+
+    await click('reload');
+
+    expect(el('preset-origin').textContent).toBe('');
+    // The status sentence describes the last ACTION and is untouched; the
+    // origin describes the FORM, which the re-read replaced. Two beats, two
+    // elements.
+    expect(el('preset-status').textContent).toContain('Loaded movie');
+  });
 });
 
 /* The pure half of the visual surface. These call the page's exported maths
@@ -1543,10 +1811,10 @@ describe('Aius SD DSP editor — curve and geometry maths', () => {
 
   it('round-trips a drag point through the log-frequency and dB axes', () => {
     for (const [hz, db] of [
-      [20, 24],
+      [20, 12],
       [120, -4.5],
       [1000, 0],
-      [12000, 12],
+      [12000, 6],
     ]) {
       const point = maths().pointToEq(rect, maths().hzToX(hz, rect), maths().dbToY(db, rect));
       expect(point.frequency_hz).toBeCloseTo(hz, 6);
@@ -1558,15 +1826,17 @@ describe('Aius SD DSP editor — curve and geometry maths', () => {
     // A client rect is offset by the page scroll and the card's own position.
     const offset = { left: 40, top: 100, width: 960, height: 240 };
     expect(maths().xToHz(40, offset)).toBeCloseTo(20, 9);
-    expect(maths().yToDb(100, offset)).toBeCloseTo(24, 9);
+    expect(maths().yToDb(100, offset)).toBeCloseTo(12, 9);
     const point = maths().pointToEq(offset, maths().hzToX(1000, offset), maths().dbToY(-6, offset));
     expect(point.frequency_hz).toBeCloseTo(1000, 6);
     expect(point.gain_db).toBeCloseTo(-6, 6);
   });
 
+  /* The rails are the EDITOR's +-12 dB range, not the device's +-24: a gesture
+   * may never write a value the surface it was made on cannot show. */
   it('clamps a drag to the axis bounds, so no reachable pixel is out of range', () => {
-    expect(maths().pointToEq(rect, -500, -500)).toEqual({ frequency_hz: 20, gain_db: 24 });
-    expect(maths().pointToEq(rect, 5000, 5000)).toEqual({ frequency_hz: 20000, gain_db: -24 });
+    expect(maths().pointToEq(rect, -500, -500)).toEqual({ frequency_hz: 20, gain_db: 12 });
+    expect(maths().pointToEq(rect, 5000, 5000)).toEqual({ frequency_hz: 20000, gain_db: -12 });
   });
 
   it('steps Q multiplicatively and clamps it to the field bounds', () => {
@@ -2249,12 +2519,12 @@ describe('Aius SD DSP editor — canvas honesty', () => {
     expect(top[2]).toBeLessThanOrEqual(960);
     expect(top[2]).toBeGreaterThan(900);
 
-    // "-24" and "20" used to collide into "204" in the bottom-left corner.
+    // The bottom rail and "20" used to collide in the bottom-left corner.
     const floor = hzLabels.find((op) => op[1] === '20');
-    const rail = dbLabels.find((op) => op[1] === '-24');
+    const rail = dbLabels.find((op) => op[1] === '-12');
     expect(floor[2]).toBeGreaterThan(rail[2] + 20);
-    // "+24" used to be drawn above the top edge; it hangs below its rail now.
-    const ceiling = dbLabels.find((op) => op[1] === '+24');
+    // The top rail used to be drawn above the top edge; it hangs below it now.
+    const ceiling = dbLabels.find((op) => op[1] === '+12');
     expect(ceiling[3]).toBeGreaterThan(0);
     expect(rail[3]).toBeLessThan(240);
   });
@@ -2904,6 +3174,20 @@ describe('Aius SD DSP editor — page structure', () => {
       'Signal flow',
       'Live processing',
     ]);
+  });
+
+  /* "Source" named the DSP MODEL's provenance beside a strip whose whole job is
+   * to say what the device is HEARING -- two different sources under one word.
+   * The re-read buttons said "Re-read" without saying of what. */
+  it('names the config provenance and the two reload affordances after what they do', async () => {
+    await boot();
+    const labels = [...document.querySelectorAll('.status-grid span')].map((node) => node.textContent);
+
+    expect(labels).toContain('Config');
+    expect(labels).not.toContain('Source');
+    expect(el('source').textContent).toBe('default');
+    expect(el('reload').textContent).toBe('Reload from device');
+    expect(el('stale-reload').textContent).toBe('Reload device config');
   });
 
   it('embeds each stage form inside its own visual block, after the picture', async () => {

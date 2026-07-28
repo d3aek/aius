@@ -42,18 +42,22 @@
   const ERROR_LINK_MAX = 4; /* linked problems in the summary before "+N more" */
 
   /* Signal-flow strip. The curve axes are the page's own display choice; the
-   * gain axis deliberately equals the gain_db field bound so a drag handle can
-   * reach either rail and no reachable pixel is an invalid value. */
+   * gain axis deliberately equals the gain_db field's INPUT bound, so a drag
+   * handle can reach either rail and no reachable pixel is an invalid value.
+   * That bound is NARROWER than the firmware's (+-12 against +-24, operator
+   * request 2026-07-28): a config carrying a wider gain draws off the top or
+   * bottom of the plot rather than being clamped behind the operator's back --
+   * the field still holds the value and validation still passes it. */
   const CURVE_MIN_HZ = 20;
   const CURVE_MAX_HZ = 20000;
-  const CURVE_SPAN_DB = 24; /* the +-24 dB gain_db bound in eqFields() */
+  const CURVE_SPAN_DB = 12; /* the +-12 dB gain_db input bound in eqFields() */
   const CURVE_FLOOR_DB = -120; /* a highpass is -inf at DC; floor it so the polyline stays finite */
   const CURVE_STEPS = 192; /* polyline segments across the log-frequency axis */
   const CURVE_GRID_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-  const CURVE_GRID_DB = [-24, -12, 0, 12, 24];
+  const CURVE_GRID_DB = [-12, -6, 0, 6, 12];
   const CURVE_DEFAULT_RATE_HZ = 48000; /* until GET /api/dsp/config reports the device rate */
   const CURVE_DIM_ALPHA = 0.3; /* an unselected cascade is context, not a target */
-  const HZ_LABEL_INSET_PX = 34; /* the 20 Hz label clears the -24 dB rail label */
+  const HZ_LABEL_INSET_PX = 34; /* the 20 Hz label clears the bottom dB rail label */
   const HANDLE_RADIUS_PX = 6;
   const HANDLE_GRAB_PX = 14; /* pointer slop around a handle, in client pixels */
   const Q_WHEEL_STEP = 1.12; /* one wheel notch, multiplicative */
@@ -203,6 +207,11 @@
     /* True when the last listing FAILED: state.presets is then unknown rather
      * than empty, and a case-insensitive duplicate check cannot be trusted. */
     presetsFaulted: false,
+    /* Which preset the form was last filled from -- {name, snapshot} -- or
+     * null when the form came from the device instead. The snapshot is the
+     * serialised groups as they arrived, so "modified" is a comparison rather
+     * than a flag something has to remember to set. */
+    presetOrigin: null,
     /* Which cascade the stacked plot is editing, and which of its sections the
      * keyboard and the wheel act on. */
     curveEntity: CURVE_ENTITIES[0].key,
@@ -239,7 +248,13 @@
    * shown without being sent (or vice versa). `step` is the NATIVE stepping
    * granularity (UX finding E8: step="any" made ArrowUp take Q from 0.707 to
    * 1.707); min/max are emitted natively too, and JS validation stays the
-   * authority -- the device's bounds are what a message must describe. */
+   * authority -- the device's bounds are what a message must describe.
+   *
+   * `min`/`max` are what the EDITOR offers: native stepping, the visual rails
+   * and every gesture stop there. `deviceMin`/`deviceMax` are the FIRMWARE's
+   * bounds and default to them; a descriptor states them separately only where
+   * the editor deliberately offers a narrower working range than the device
+   * accepts, so a config already carrying a wider value stays valid. */
 
   const eqFields = (base, label) => [
     { path: `${base}.type`, kind: 'eq-type', label: `${label} type`, caption: 'Type' },
@@ -259,9 +274,15 @@
       kind: 'number',
       label: `${label} gain`,
       caption: 'Gain (dB)',
-      min: -24,
-      max: 24,
+      /* +-12 dB is the working range this surface offers (operator request
+       * 2026-07-28); +-24 is EQ_GAIN_{MIN,MAX}_DB in lib/aius_dsp_config, so a
+       * model written before this range narrowed -- or by hand -- renders,
+       * validates and applies untouched. */
+      min: -12,
+      max: 12,
       step: 0.5,
+      deviceMin: -24,
+      deviceMax: 24,
       unit: ' dB',
     },
   ];
@@ -446,8 +467,10 @@
       input.min = String(descriptor.min);
       input.max = String(descriptor.max);
       input.step = String(descriptor.step);
-      input.dataset.min = String(descriptor.min);
-      input.dataset.max = String(descriptor.max);
+      /* What fieldProblem() answers to: the DEVICE's bound, which is the same
+       * number for every field but the ones that narrow their input range. */
+      input.dataset.min = String(descriptor.deviceMin ?? descriptor.min);
+      input.dataset.max = String(descriptor.deviceMax ?? descriptor.max);
       if (descriptor.exclusiveMin) input.dataset.exclusiveMin = 'true';
       if (descriptor.unit) input.dataset.unit = descriptor.unit;
     }
@@ -864,6 +887,11 @@
     }
     const bytes = JSON.stringify(collectModel()).length;
     $('model-bytes').textContent = `request body ${bytes} of ${MODEL_MAX_BYTES} bytes`;
+    /* Both are facts about the form as it stands, so they move on the same
+     * beat as the byte count: every edit -- typed, reset, preset-loaded or
+     * dragged -- arrives here. */
+    refreshDirtyPill();
+    refreshPresetOrigin();
     syncResetButtons();
     /* The curves and the routing diagram are views of the fields, so every
      * edit -- typed, reset, preset-loaded or dragged -- redraws them from here,
@@ -953,9 +981,19 @@
 
   const markClean = () => {
     state.clean = JSON.stringify(collectPresetGroups());
+    refreshDirtyPill();
   };
 
   const isDirty = () => state.clean !== null && state.clean !== JSON.stringify(collectPresetGroups());
+
+  /* The same fact the confirm() guards and beforeunload have always consulted,
+   * finally SAID on the page (operator request 2026-07-28). It rides the Apply
+   * row because Apply is what resolves it, and it is absent rather than
+   * negative when the form matches the device -- "no unsaved changes" is not
+   * news. */
+  function refreshDirtyPill() {
+    $('dirty-state').hidden = !isDirty();
+  }
 
   const DISCARD_QUESTION = 'This page has edits that have not been applied to the device. Discard them?';
   const confirmDiscard = () => !isDirty() || window.confirm(DISCARD_QUESTION);
@@ -1056,7 +1094,15 @@
   /* One in-flight request at a time from the page's own buttons: a second
    * click on Apply during a >7 s first save used to land a stale PUT and paint
    * a false 409 (UX finding E4). */
-  const BUSY_BUTTONS = ['apply', 'reload', 'stale-reload', 'preset-save', 'preset-upload', 'preset-refresh'];
+  const BUSY_BUTTONS = [
+    'apply',
+    'reload',
+    'stale-reload',
+    'preset-save',
+    'preset-download',
+    'preset-upload',
+    'preset-refresh',
+  ];
 
   function setBusy(busy) {
     state.busy = busy;
@@ -1105,6 +1151,10 @@
     }
     render(model);
     markClean();
+    /* The form is the device's now, not a preset's. The keepForm path above
+     * returns before this on purpose: it keeps the operator's edits, so it
+     * keeps where those edits came from too. */
+    setPresetOrigin(null);
   }
 
   async function applyConfig() {
@@ -1265,12 +1315,19 @@
       load.type = 'button';
       load.textContent = 'Load';
       load.addEventListener('click', () => void act(() => loadPreset(name)));
+      /* A browser save of the card's own bytes: a public GET and a blob, so no
+       * token, no write, and nothing on the device moves. */
+      const download = document.createElement('button');
+      download.type = 'button';
+      download.className = 'secondary';
+      download.textContent = 'Download';
+      download.addEventListener('click', () => void act(() => downloadPreset(name)));
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'danger';
       remove.textContent = 'Delete';
       remove.addEventListener('click', () => void act(() => deletePreset(name)));
-      row.append(title, load, remove);
+      row.append(title, load, download, remove);
       list.append(row);
     }
   }
@@ -1410,6 +1467,7 @@
     if (state.applyState === 'applied' || state.applyState === 'loaded' || state.applyState === 'error') {
       setApplyState('edited');
     }
+    setPresetOrigin(name);
     setPresetState('idle');
     setPresetStatus(`Loaded ${name} into the form. Apply to send it to the device.`);
   }
@@ -1478,6 +1536,55 @@
     });
   }
 
+  /* ---- saving a preset to a FILE -----------------------------------------
+   * The mirror of the upload, and the only path here that talks to neither the
+   * card nor the device: the JSON is handed to the browser's own download,
+   * which needs no auth token because nothing is written anywhere. */
+
+  function downloadJson(name, text) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${name}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  /* The card's bytes, verbatim: a download is how an operator RESCUES a preset
+   * the page would refuse to load, so this deliberately skips the shape check
+   * loadPreset() applies. */
+  async function downloadPreset(name) {
+    clearPresetError();
+    const result = await requestRaw(presetUrl(name), { headers: { Accept: 'application/json' } });
+    if (!result.ok) {
+      setPresetState('error');
+      showPresetError(`Could not read ${name}.json -- ${describe(result)}.`);
+      return;
+    }
+    downloadJson(name, result.text);
+    setPresetState('idle');
+    setPresetStatus(`Downloaded ${name}.json.`);
+  }
+
+  /* The form itself as a file. Validated like the card save for the same
+   * reason -- an out-of-range field collects as its fallback, so an ungated
+   * export would quietly write a 0 nobody typed -- but NOT name-checked: the
+   * grammar exists for the SD path, and this file never reaches one. */
+  function downloadCurrent() {
+    clearPresetError();
+    const problems = validateAll();
+    if (problems.length > 0) {
+      showPresetError(
+        `Fix the form first -- ${problems.length} field${problems.length === 1 ? '' : 's'} out of range: ${problems[0].message}`,
+      );
+      return;
+    }
+    const name = $('preset-name').value.trim() || 'current';
+    downloadJson(name, JSON.stringify(collectPresetGroups()));
+    setPresetState('idle');
+    setPresetStatus(`Downloaded ${name}.json.`);
+  }
+
   /* Grammar as it is typed, not only when the save is refused (UX finding N8:
    * maxlength silently swallowed the 28th keystroke). */
   function refreshPresetNameHint() {
@@ -1499,6 +1606,28 @@
   const setPresetStatus = (text) => {
     $('preset-status').textContent = text;
   };
+
+  /* Where the form came from, kept beside the status sentence rather than
+   * inside it: the sentence describes the last ACTION, this describes the
+   * form, and the two change on different beats. */
+  function setPresetOrigin(name) {
+    state.presetOrigin = name === null ? null : { name, snapshot: JSON.stringify(collectPresetGroups()) };
+    refreshPresetOrigin();
+  }
+
+  /* "modified" is the loaded snapshot against a fresh collect -- the same
+   * question isDirty() asks of the DEVICE's model, asked of the preset. The
+   * two answers genuinely differ: a preset can be loaded and applied (clean,
+   * unmodified), or edited and never applied (dirty AND modified). */
+  function refreshPresetOrigin() {
+    const origin = state.presetOrigin;
+    if (origin === null) {
+      $('preset-origin').textContent = '';
+      return;
+    }
+    const modified = origin.snapshot !== JSON.stringify(collectPresetGroups());
+    $('preset-origin').textContent = `preset: ${origin.name}${modified ? ' (modified)' : ''}`;
+  }
 
   function showPresetError(text) {
     $('preset-errors').textContent = text;
@@ -1632,8 +1761,15 @@
   }
 
   /* ---- signal-flow ends: what the device is hearing, and transmitting -----
-   * GET /api/status at 1 Hz. `carrier` and the latched tx_gate terms are the
-   * only facts the page needs, and they are the two ends of the strip. */
+   * GET /api/status at 1 Hz. `carrier`, the decode `state`, the negotiated
+   * `sample_rate` and the latched tx_gate terms are the facts the page needs,
+   * and they are the two ends of the strip. */
+
+  /* The firmware's own numeric vocabulary for `state`, mirrored the way
+   * MODEL_MAX_BYTES mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: 2 no carrier,
+   * 3 PCM, 4 DTS (optical_main.cpp current_state()). status.js names the same
+   * numbers on the status page -- one vocabulary, two readers. */
+  const CARRIER_ENCODINGS = { 3: 'PCM', 4: 'DTS' };
 
   async function pollStatus() {
     if (state.statusInFlight) return;
@@ -1649,6 +1785,19 @@
     element.textContent = text;
   }
 
+  /* "optical carrier" alone never said WHAT was arriving on it, which is the
+   * question a DSP editor is opened to answer. A term the snapshot cannot
+   * support -- state 2 or a state this page has no name for, a rate not yet
+   * negotiated -- is LEFT OFF rather than printed as "unknown". */
+  function carrierText(status) {
+    const parts = ['optical carrier'];
+    const encoding = CARRIER_ENCODINGS[Number(status.state)];
+    if (encoding) parts.push(encoding);
+    const rate = Number(status.sample_rate);
+    if (Number.isFinite(rate) && rate > 0) parts.push(`${rate} Hz`);
+    return `input: ${parts.join(' · ')}`;
+  }
+
   function renderFlowEnds(status) {
     if (!status) {
       setFlowEnd('input-source', 'unreachable', 'input: device unreachable');
@@ -1656,7 +1805,7 @@
       return;
     }
     const gate = status.tx_gate && typeof status.tx_gate === 'object' ? status.tx_gate : {};
-    if (status.carrier) setFlowEnd('input-source', 'carrier', 'input: optical carrier');
+    if (status.carrier) setFlowEnd('input-source', 'carrier', carrierText(status));
     else if (gate.replay_running) setFlowEnd('input-source', 'replay', 'input: replay');
     else setFlowEnd('input-source', 'none', 'input: none');
     if (gate.open) setFlowEnd('tx-gate', 'open', 'output: gate open');
@@ -2297,8 +2446,8 @@
     context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
     CURVE_GRID_HZ.forEach((hz, index) => {
       /* The last label is right-aligned INSIDE the plot ("20k" used to be
-       * clipped off the right edge) and the first is inset clear of the -24 dB
-       * rail label it used to collide with. */
+       * clipped off the right edge) and the first is inset clear of the bottom
+       * dB rail label it used to collide with. */
       const last = index === CURVE_GRID_HZ.length - 1;
       context.textAlign = last ? 'right' : 'left';
       const x = last
@@ -2311,8 +2460,8 @@
     context.textAlign = 'left';
     for (const db of CURVE_GRID_DB) {
       if (db === 0) continue;
-      /* The rails are inset INTO the plot: +24 sat above the top edge and -24
-       * below the bottom one, so neither was readable. */
+      /* The rails are inset INTO the plot: the top label sat above the top
+       * edge and the bottom one below it, so neither was readable. */
       const inset = db === CURVE_SPAN_DB ? 12 : db === -CURVE_SPAN_DB ? -6 : -4;
       context.fillText(`${db > 0 ? '+' : ''}${db}`, 3 * scale, dbToY(db, rect) + inset * scale);
     }
@@ -3171,25 +3320,27 @@
       }
       await loadConfig();
     });
-  /* Explicit save/edit pair over the old silent per-keystroke store
-   * (2026-07-27 feedback, item 7), on the SAME sd-shared localStorage slot.
-   * A saved token locks the field so a stray keystroke cannot diverge the
-   * field from the store; Edit unlocks it. An empty save clears the store and
-   * leaves the field editable -- there is nothing to lock. */
+  /* ONE toggle over the old silent per-keystroke store (2026-07-27 feedback
+   * item 7; the save/edit pair merged 2026-07-28), on the SAME sd-shared
+   * localStorage slot. Unlocked it saves and locks, so a stray keystroke
+   * cannot diverge the field from the store; locked it unlocks for a change.
+   * An empty save clears the store and leaves the field editable -- there is
+   * nothing to lock. The LABEL is the state: one control never has to explain
+   * which of two buttons is the live one. */
   function setTokenLocked(locked) {
     $('token').readOnly = locked;
-    $('token-save').disabled = locked;
-    $('token-edit').disabled = !locked;
+    $('token-toggle').textContent = locked ? 'Change token' : 'Save token';
   }
-  $('token-save').addEventListener('click', () => {
+  $('token-toggle').addEventListener('click', () => {
+    if ($('token').readOnly) {
+      setTokenLocked(false);
+      $('token').focus();
+      return;
+    }
     const value = $('token').value.trim();
     shared.storeToken(value);
     setTokenLocked(value !== '');
     setStatus(value === '' ? 'SD auth token cleared from this browser.' : 'SD auth token saved in this browser.');
-  });
-  $('token-edit').addEventListener('click', () => {
-    setTokenLocked(false);
-    $('token').focus();
   });
   $('token').value = shared.readStoredToken();
   setTokenLocked($('token').value !== '');
@@ -3208,6 +3359,7 @@
       }
       await savePreset($('preset-name').value.trim(), collectPresetGroups());
     });
+  $('preset-download').onclick = () => void act(downloadCurrent);
   $('preset-upload').onclick = () => void act(uploadPreset);
   $('preset-refresh').onclick = () => void act(refreshPresets);
   /* The last guard on the way out: an unapplied edit is work, and the browser
@@ -3218,6 +3370,9 @@
     event.returnValue = '';
   });
   setApplyState('loading');
+  /* Authored text, JS-stamped data-state: the shared tone map in replays.css
+   * keys off the state, and dsp-editor.css adds this one word to it. */
+  shared.setPill($('dirty-state'), 'unsaved changes');
   refreshPresetNameHint();
   void guard(loadConfig);
   void guard(refreshPresets);

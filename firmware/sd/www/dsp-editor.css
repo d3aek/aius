@@ -64,10 +64,27 @@ code{color:#74d7ff}
 /* A fact about the FORM, beside the button that would send it. */
 .form-fact{color:#9aa8b5;font-size:.72rem;font-variant-numeric:tabular-nums;align-self:center}
 .hint--warn{color:#e8dcc0}
+/* The unapplied-edits pill. The shared vocabulary in replays.css has no word
+   for it, so its tone lives here -- amber, like `edited`, because it is the
+   same fact restated in the Apply row. A clean form says nothing at all. */
+.pill[data-state="unsaved changes"]{border-color:#e8c46a;color:#e8dcc0}
+.pill[hidden]{display:none}
+/* The row bottom-aligns its 36 px controls; a pill is shorter, so centre it
+   against them rather than letting it hang off their baseline. */
+.controls .pill{align-self:center}
+
+/* The preset name takes the slack in its own row: it is the widest control the
+   card asks for, and both buttons beside it read it. */
+.preset-name-field{flex:1 1 260px}
+.preset-name-field input{width:100%}
 
 .preset-list{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px}
 .preset-list li{display:flex;gap:10px;align-items:center;padding:6px 10px;background:#11151b;border-radius:6px}
 .preset-list__name{flex:1;color:#aab4c0;font-size:.82rem;overflow-wrap:anywhere}
+/* Last action and current provenance on one line, as two elements: the
+   sentence moves when something happens, the origin with every keystroke. */
+.preset-line{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
+.preset-origin{color:#aab4c0}
 
 .notice{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:14px 0;padding:12px;border:1px solid #e8c46a;border-radius:6px;background:#211d13;color:#e8dcc0;font-size:.8rem}
 .notice[hidden]{display:none}
