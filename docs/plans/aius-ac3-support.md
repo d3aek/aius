@@ -7,7 +7,7 @@ status: in-progress
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
 updated: 2026-07-28
-toc: false
+toc: true
 ---
 
 # Aius AC-3 decode support
@@ -15,7 +15,8 @@ toc: false
 Decode AC-3 (Dolby Digital) bitstreams alongside DTS Core, because AC-3 is
 the mission format: the project exists to replace the TV's own unintelligible
 2-channel downmix, TVs emit AC-3 5.1 over TOSLINK (DD+/Atmos is transcoded
-down; E-AC-3 never rides S/PDIF), and a TV set to PCM output hands the box
+down to AC-3 by most TVs, though E-AC-3 CAN ride S/PDIF — see §The format
+space and defect 34), and a TV set to PCM output hands the box
 the already-ruined stereo — the discrete 5.1 the dialogue lever
 (`center_gain_linear` + center EQ) needs only arrives as AC-3. Owner
 decision 2026-07-28: next phase after the USB-attached batch closes;
@@ -75,8 +76,8 @@ sequenced after.
   grow the arena or swap to a single resident decoder at class time.~~
   **RESOLVED by the phase 2 contract, and the answer reversed: they DO
   fit.** The 90,464 B measurement was almost entirely adapter overhead, not
-  liba52; phase 2a takes AC-3 to ~27 KB, giving 122,304 against 131,072
-  with both decoders resident. Neither growing the arena nor swapping is
+  liba52; phase 2a takes AC-3 to ~27 KB, giving ~127,504 against 131,072
+  (including the ~5.2 KB pipeline instance) with both decoders resident. Neither growing the arena nor swapping is
   needed — and both were investigated and rejected on their own merits.
   See [§Phase 2 contract](#phase-2-contract-2026-07-28--decode-off-the-isr-and-the-footprint-that-makes-it-fit).
   This risk is closed.
@@ -93,6 +94,70 @@ sequenced after.
 4. Target integration: arena measurement, cycle meters, flash, live TV
    validation (the actual mission test: nightly content, dialogue lifted
    via center gain).
+
+## The format space after AC-3 — why this is the last decoder
+
+Recorded 2026-07-28 in answer to "what else could we conceivably support,
+7.1 varieties perhaps", so the reasoning is not re-derived. **The decode
+roadmap ends with AC-3**, and one number decides most of it: optical S/PDIF
+at 48 kHz carries 2 × 16 bits per frame, so **1.536 Mbit/s of IEC 61937
+payload, total.**
+
+| Format | Fits optical? | Max channels |
+|---|---|---|
+| PCM 2.0 | Yes (it is the baseline) | 2 |
+| AC-3 (Dolby Digital) | Yes, ≤ 640 kbps | 5.1 |
+| DTS Core | Yes, ≤ ~1.5 Mbps | 5.1 (6.1 via ES extensions) |
+| E-AC-3 (DD+) | **Yes**, up to the full 1.536 Mbps — most TVs transcode to AC-3, but one configured to pass DD+ emits it. See defect 34. | 7.1 |
+| TrueHD / Atmos, DTS-HD MA / DTS:X | No — 6–18 Mbps, HDMI only | 7.1+ |
+| MPEG-1/2 audio, AAC / HE-AAC | Yes technically (DVB broadcast) | 5.1 |
+
+**The E-AC-3 row corrects an error this document carried from its first
+draft** ("E-AC-3 never rides S/PDIF"), caught by the phase-3 gate and
+verified arithmetically: a type-21 burst has a 6,144-frame period, so it
+carries 6,144 × 2 × 16 = 24,576 B per burst at 7.8125 bursts/s = **192,000
+B/s = 1.536 Mbps**, which is the entire S/PDIF payload rate. Broadcast and
+streaming DD+ runs 384–768 kbps and fits easily; Blu-ray's typical 7.1 DD+
+rate (~1.7 Mbps) does not, and E-AC-3's own ceiling is far higher (6.144
+Mbps), so the transport bounds this, not the codec. The reason the box rarely meets E-AC-3 is TV
+*configuration* — sets transcode DD+ to AC-3 for legacy receiver
+compatibility — not physics. This is what makes defect 34 a real hazard
+rather than a hypothetical one.
+
+**So 7.1 over optical is possible after all, through exactly one door:
+E-AC-3.** AC-3 is 5.1 by specification and DTS Core reaches 6.1 only through
+matrixed ES extensions, so of the formats that fit, DD+ alone carries 7.1.
+Three things stand between that observation and a feature:
+
+1. **liba52 cannot decode E-AC-3.** It is an AC-3 decoder; E-AC-3's
+   enhancements (transient pre-noise processing, spectral extension,
+   channel coupling changes) need a different codebase entirely — realistic
+   candidates are heavier than liba52 by a wide margin, against an arena
+   already at ~2.7% spare.
+2. **`AIUS_MAX_CHANNELS` is 6**, with a 6-bit channel mask referenced across
+   18 sites spanning the codec ABI, pipeline, DSP matrix, downmix and
+   meters. 7.1 is a data-model change before it is a decoder change.
+3. **Defect 34 must be fixed first regardless**, because today an E-AC-3
+   link is not merely undecodable but actively harmful.
+
+HDMI eARC remains the only route to the lossless 7.1 formats (TrueHD/Atmos,
+DTS-HD MA, DTS:X) and is a hardware redesign well beyond this board. The 7.1
+USB audio interface on the bench is an output and measurement device, not a
+route to 7.1 content.
+
+Of the remaining formats, **AAC is the only one with a real-world case**
+(some DVB broadcast chains), and televisions transcode it to AC-3 or PCM
+before the optical port regardless. PCM plus AC-3 covers essentially
+everything a TV will hand this box; DTS covers discs and media players.
+
+**Strategic conclusion:** once AC-3 is live on target, further capability is
+better spent on the DSP and the dialogue-intelligibility mission this
+project exists for than on additional decoders. **E-AC-3 is the one
+defensible exception** — not for 7.1, which the operator's 5.1 speakers
+cannot use anyway, but because defect 34 means the box must eventually do
+*something* deliberate about a type-21 link, and "decode it" is one of the
+two honest answers. The other is "stay dark", which is far cheaper and is
+the recommended path unless a real DD+ source appears on this bench.
 
 ## Phase 1 contract (2026-07-28) — vendor + wrapper + native suite
 
@@ -278,7 +343,9 @@ both registered and `registry`-consistent.
 ### Out of scope for phase 1 (see the phase 2 contract below for 2a)
 
 Pipeline dispatch (phase 3), ISR restructure (phase 2), target build and
-arena growth (phase 4), DRC config flag, E-AC-3 (never rides S/PDIF).
+arena growth (phase 4), DRC config flag, E-AC-3 (which DOES ride S/PDIF —
+see §The format space and defect 34 — but needs a decoder liba52 cannot
+provide, and is out of scope for every phase here).
 
 ## Phase 2 contract (2026-07-28) — decode off the ISR, and the footprint that makes it fit
 
@@ -318,12 +385,20 @@ is. Resulting arithmetic:
 - planes 36,864 → **6,144** (emit per 256-frame block, saving 30,720)
 - scratch 36,608 → **3,840** (bound the reader, saving 32,768)
 - AC-3 resident ≈ **26,976 B**
-- dcadec 62,560 + DSP staging 32,768 + 26,976 = **122,304 vs the existing
-  131,072-byte arena — both decoders resident, no growth, no swapping,
-  8,768 B spare.**
+- dcadec 62,560 + DSP staging 32,768 + 26,976 = 122,304, **plus the
+  `AiusPipeline` instance itself at ~5,200 B** (`aius_pipeline.c:586` —
+  `clsbuf` 1,024 + `pcm_l`/`pcm_r` 4,096 + fields), which the first draft
+  omitted and which is ~60% of the apparent slack (phase-3 gate F12):
+  **≈ 127,504 vs the existing 131,072-byte arena — both decoders resident,
+  no growth, no swapping, ~3,568 B spare.**
 
-That spare is thin (6.7%), and **it may be the only margin there is** — the
-OCRAM fallback is NOT established (gate F13). The arena is a plain static
+**That spare is now ~2.7%, not 6.7%** — under 4 KB — and **it may be the
+only margin there is**, because the OCRAM fallback is NOT established (gate
+F13). At this margin the on-target re-measurement in phase 4 is not a
+formality: the ~27 KB figure is host LP64-derived while dcadec's 62,560 is
+an on-target ILP32 measurement, and a few hundred bytes of struct-layout
+drift is now material. Phase 4 must be prepared to trim (the parse scratch
+is the obvious candidate) rather than assume. The arena is a plain static
 array in DTCM today (`optical_main.cpp:1048`), so growing it in place was
 never available: DTCM's whole free-for-locals zone is 48,800 B and that
 region is also the stack. But relocating it to OCRAM is not simply a matter
@@ -332,7 +407,7 @@ by the defect-26 link-time heap floor with only 13,312 B of slack
 (`optical_main.cpp:1305-1311`), and moving the whole 131,072 B arena is 4×
 what was rejected. The gate is the boot-heap floor, not free space. **Phase
 4 must corroborate the OCRAM route against that floor before relying on it,
-or treat 122,304/131,072 as the budget.**
+or treat 127,504/131,072 as the budget.**
 
 **Dynamic decoder loading is REJECTED, with the reasoning recorded so it is
 not re-opened.** Dynamic code loading buys nothing: decoder code is
@@ -437,23 +512,82 @@ reachable from a corrupt bitstream (`parse.c:584,592,664,680,693,701,733,
 737`), the adapter aborts the whole AU, and `fuzz_a52.c` asserts that as a
 property. Under the iterator, blocks 0..k-1 are already in the caller's
 hands when block k fails. **Policy: `decode_next_block` returns the typed
-error, the iterator disarms, and the caller MUST treat every prior block of
-that AU as discardable.** The fuzz gets a matching property (see below).
+error and the iterator disarms.** The fuzz gets a matching property (see
+below).
 
-**How phase 3 holds the AU, named here because the naive answer gives back
-2a's whole saving (gate R3).** A pipeline-side accumulator would be
-6 × 1536 × 4 = 36,864 B — precisely the 30,720 B this slice exists to
-recover, handed straight back. **It is therefore forbidden.** The transmit
-ring already provides the mechanism: `aius_spdif_tx24_stage` / `_commit`
-guarantee a preempting consumer never sees a half-written region until
-commit, so phase 3 stages all six blocks and commits after block 6, holding
-zero extra buffer. On a mid-AU error it simply never commits.
+**What the caller does with the blocks already delivered — REVISED
+2026-07-28 after the phase-3 gate.** An earlier draft required them to be
+discarded and named `aius_spdif_tx24_stage`/`_commit` as the hold-back. That
+was wrong on the mechanism: the pipeline delivers through
+`AiusPcmSink.consume`, not the ring; the ring holds POST-DSP stereo frames,
+not decoder planes; and `enqueue` commits per block
+(`optical_main.cpp:1205`), so blocks 0..k-1 are published to the transmit
+ISR before block k can fail. A hold-back would mean restructuring `enqueue`
+for a whole-AU deferred commit.
+
+**It is not worth it, and the discard was the wrong instinct.** Blocks
+0..k-1 were validly decoded; a later block failing does not retroactively
+corrupt them. So the policy is: **emit each block as it decodes, and a
+mid-AU error simply TRUNCATES the AU** — at most 32 ms of audio is cut
+short (plus, on the sink-refusal path, the unconsumed words of that push,
+bounded at 256 on target but enough to swallow the next burst's preamble —
+gate R3), nothing garbage or stale is emitted, and no accumulator, hold-back
+or ring restructure is needed anywhere. This also keeps the standing operator
+principle intact ("burst noise is more acceptable than extra latency"): a
+deferred commit would add up to a whole AU of latency to buy atomicity
+nobody asked for. The invariant that actually matters — *a non-OK status
+never emits fresh PCM for the block it failed on* — is preserved exactly.
+
+**A sink refusal truncates the same way but is NOT an error** (gate N1). A
+full transmit ring is an ordinary condition, and AC-3 meets it more often
+than DTS: six `enqueue` calls per AU occupy 1,536 of the ring's 2,048
+frames, so AC-3 has 512 frames of tolerance where DTS had 1,536. The caller
+must therefore call `aius_a52_abandon` before returning, or the iterator
+stays armed into the next burst.
+
+**The fuzz property that replaces "a malformed AU emits nothing"** (gate
+N3): on a mid-AU error, **exactly k blocks were emitted, the iterator is
+disarmed, and no 7th call succeeds.** That is the concrete suite change
+emit-as-decoded forces, and it must be written or the old property is simply
+deleted with nothing in its place. **It is not sufficient on its own** — pair
+it with the fresh-decoder equivalence assertion in the iterator rules below,
+which is what distinguishes a real overlap reset from a flag flip.
 
 **Iterator state machine, specified (gate F8):**
 
 - `decode_next_block` without a live `begin` → `AIUS_INVALID_ARG`.
 - A 7th call errors and never runs a 7th `a52_block`.
 - A mid-AU error disarms the iterator.
+- **`aius_a52_abandon(dec)` is part of the API** (added after the phase-3
+  gate, N1). Implicit abandon-on-`begin` is not sufficient: a caller that
+  stops mid-AU for a reason of its own — above all a FULL TRANSMIT RING,
+  which is an ordinary condition, not an error — must be able to stop
+  cleanly. Without it the iterator stays armed and the next
+  `begin_access_unit` abandons at a point that is not a stream
+  discontinuity, corrupting the next AU's block 0 through the IMDCT overlap.
+- **`abandon` RESETS THE OVERLAP; disarming a flag is not enough** (gate
+  R1 — the second defect this API's own introduction created). The harm is
+  the stale overlap in `state->samples[1536..3071]`, and neither clearing an
+  `armed` flag nor `a52_frame` touches it, so an implementation of
+  `dec->armed = 0; return AIUS_OK;` would satisfy a naive contract, satisfy
+  the fuzz property below, and still ship a ~5.3 ms seam artifact on every
+  ring-full. `abandon` therefore zeroes 1,536 floats at
+  `a52_samples(state) + 1536` — reachable through the public `a52.h`, and
+  consistent with phase 1's edit 2, which already zeroes all 3,072 at init.
+- **The assertion that actually proves it**: after `abandon` + `begin` on a
+  fresh AU, block 0 is **bit-identical to a fresh decoder's block 0 on the
+  same AU**. A block-count-and-disarm check cannot distinguish a real reset
+  from a flag flip; this can. (Gate-verified against the vendor source: all
+  six IMDCT delay slots resolve to `state->samples[1536..3071]` with or
+  without LFE, so 1,536 floats is exactly the right span — no over- or
+  under-write.)
+- **What `abandon` deliberately does NOT reset**: `state->fbw_expbap` /
+  `lfe_expbap` still hold the truncated AU's exponents rather than a fresh
+  decoder's zeros. Harmless as specified — conformant AC-3 codes new
+  exponents in block 0, so the assertion passes and real audio is
+  unaffected, and edit 2's init zeroing bounds the malformed case. Recorded
+  so that widening `abandon`'s contract, or running the assertion over a
+  fuzz-corrupted AU, does not trip on it unexpectedly.
 - `block->planes` are valid only until the next `decode_next_block`,
   `begin_access_unit`, or `destroy`; the caller must not hold them across a
   call.
@@ -462,10 +596,14 @@ zero extra buffer. On a mid-AU error it simply never commits.
   IMDCT overlap in `state->samples[1536..3071]` carries the abandoned
   block's un-overlapped tail into the next AU's block 0 — the same hazard
   the differential's fresh-decoder-per-vector rule already documents.
-  Abandonment also emits a partial AU with NO error, so the discard policy
-  above does not reach it (gate R8): **abandonment is permitted only at a
-  stream discontinuity** — carrier edge, squelch, or re-type — where the
-  partial output is being dropped anyway.
+  **Abandonment is permitted at a stream discontinuity — carrier edge,
+  squelch, re-type — OR at a caller-driven stop that has reset the overlap
+  via `aius_a52_abandon`** (gate R1b: the earlier wording listed `abandon`
+  itself among the permitted discontinuities, so the rule licensed exactly
+  what it constrained). The reason survives the withdrawal of the discard
+  policy (gate N3): truncation merely loses audio, whereas abandoning
+  mid-AU with a stale overlap POISONS the next AU's block 0. Truncate
+  freely; never leave an armed iterator behind.
 - **Scratch lifetime (gate F7): the next AU must NOT be copied into scratch
   until block 6 of the current AU completes**, because all six `a52_block`
   calls read from it through the bitstream state. Easy to violate in 2b's
@@ -520,14 +658,16 @@ pad already returns for a past-end read.
   doing, so DTS's fix is relocation to epoch context. AC-3 gets both. Record
   the asymmetry rather than pretending the codecs are symmetric.
 - Decode runs in the runtime's epoch/service context, feeding the existing
-  transmit ring; the audio ISR's job shrinks to moving words. **Ring depth
-  must be sized against the stage/commit HOLD-BACK, not just latency and
-  jitter (gate R4)**: the ring is 2048 frames, and holding a whole AU
-  uncommitted occupies 1536 of them (75%), leaving 512 committed frames —
-  10.7 ms — for the ISR to drain while an AU is in flight. That, plus worst
-  service latency and jitter, is the real criterion. `enqueue`'s free-space
-  check is per-block today; under stage/commit the whole-AU free must be
-  checked up front instead.
+  transmit ring; the audio ISR's job shrinks to moving words. **The whole-AU
+  hold-back an earlier draft required is withdrawn** along with the discard
+  policy it served, so `enqueue` keeps its per-block free check and
+  per-block commit unchanged — **but the ring-depth arithmetic that draft
+  carried survives the withdrawal and must not be deleted with it (gate
+  N1b)**: six back-to-back `enqueue` calls occupy the same 1,536 of 2,048
+  frames whether or not the commit is deferred, leaving AC-3 512 frames
+  (10.7 ms) of drain tolerance against DTS's 1,536. Ring depth is sized
+  against worst service latency, jitter, **and that per-AU occupancy**;
+  ring-full mid-AU is an expected condition to handle, not an edge case.
 - Watchdog, starvation, squelch and carrier-edge interactions re-proven on
   the `pipeline` suite — the restructure moves the code that those state
   machines drive, so their oracles are the regression surface.
@@ -544,6 +684,366 @@ pad already returns for a past-end read.
 
 ### Out of scope for phase 2
 
-Pipeline dispatch by Pc data type and the 512-frame staging split (phase 3),
-arena relocation (phase 4, only if the 8,768 B spare proves uncomfortable),
-DRC config flag.
+Pipeline dispatch by Pc data type (phase 3), arena relocation (phase 4, only
+if the ~3,568 B spare proves uncomfortable), DRC config flag.
+
+## Phase 3 contract (2026-07-28) — dispatch, and the observability it forces
+
+**Owned paths:** `firmware/lib/aius_iec61937/`, `firmware/lib/aius_pipeline/`,
+`firmware/tools/iec_corpus/`, `firmware/test/{pipeline,iec61937}/`,
+`firmware/src/optical_main.cpp` (status JSON only),
+`firmware/sd/www/{status.js,dsp-editor.js,replays.html,index.html}`,
+**`firmware/scripts/test.sh`**, **`firmware/platformio.ini`**, this plan.
+Relative to ``.
+
+**The last two are not optional (gate F1) — without them phase 3 does not
+build, host or target.** `aius_pipeline.c` gaining `aius_a52` calls breaks
+three suite arms that link only dcadec + `aius_dts` (`pipeline`, and
+`replay`/`tx-gate` which compile `aius_pipeline.h`), and
+`teensy41-optical`'s `build_src_filter` has no a52 sources or include path,
+so the target link breaks from phase 3's commit until phase 4 — violating
+the phase-boundary rule that the affected artifact still builds. **Compile
+the vendor TUs to objects separately and link them**, rather than merging
+a52's carve-outs into the shared arm: `-fno-sanitize=shift` folded into the
+`pipeline` arm would silence UBSan's shift checks over `aius_pipeline.c` and
+`aius_iec61937.c` as collateral. **That requirement is HOST-ONLY** (gate
+N8): the target build carries neither `-Werror` nor a sanitizer, so
+`platformio.ini` needs only the five sources plus `-Ivendor/a52-core` and
+`-Ilib/aius_a52/include` (the `config.h` seam) — no carve-out flags, and
+none should be added env-wide.
+
+### The parser rejects AC-3 today — that is the first change
+
+`aius_iec61937.c:202` sets `in_scope = (data_type == 11 || 12 || 13)`, so an
+AC-3 burst is framed and then counted in `rejects_unsupported`. Phase 3
+widens that to include **type 1**. Two properties to preserve rather than
+assume:
+
+- **Pd is a BIT count for AC-3 as for DTS** (gate-verified by muxing a real
+  stream: Pc `0x0001`, Pd `0x3800` = 14,336 bits = 1,792 B, matching
+  `frmsizecod`), so `payload_bytes = (length_bits + 7) / 8` is already
+  correct.
+- **The payload cap holds with room**: `AIUS_IEC61937_MAX_PAYLOAD` is 4,096
+  and AC-3's maximum at 48 kHz is 2,560 B (640 kbps × 32 ms). Note the
+  asymmetry with `AIUS_A52_MAX_FRAME` = 3,840, which is the spec maximum
+  across ALL sample rates; the adapter rejects non-48 kHz before decode, so
+  2,560 is the operative bound and 3,840 is the scratch's safety size.
+- **`in_scope` gates more than the return code (gate F4)**, and both effects
+  must be stated rather than discovered: the `length_bits == 0` MALFORMED
+  check at `aius_iec61937.c:204` is in-scope-only, so a zero-Pd AC-3 burst
+  flips from UNSUPPORTED to MALFORMED; and the burst now tallies `bursts_ok`
+  instead of `rejects_unsupported`. The second is the dangerous one — **an
+  AC-3 stream the ADAPTER refuses (non-48 kHz, unmappable mode) would show
+  `bursts_ok` climbing while the box sits silent, with no reject counter
+  anywhere.** Phase 3 therefore adds a decode-reject tally to
+  `pipeline_diag` beside the codec field below.
+
+### Dispatch
+
+The pipeline holds both decoders, created together at
+`aius_pipeline_create_arena` (this is where phase 2a's residency arithmetic
+lands: 62,560 + 32,768 + ~26,976 + the ~5,200 B pipeline instance ≈ 127,504
+of 131,072). `dts_feed`'s burst
+completion (`aius_pipeline.c:320-334`) routes on `AiusBurst.data_type`:
+11/12/13 to `aius_dts`, **1 to `aius_a52`**, everything else skipped exactly
+as today. The class stays `AIUS_PIPELINE_DTS` — "non-linear bitstream" — with
+no new classification state, because classification is preamble logic and
+format-agnostic.
+
+**AC-3 consumption follows phase 2a's iterator**: six `decode_next_block`
+calls, each delivered straight through `AiusPcmSink.consume` exactly as the
+DTS path delivers its one block — **six sink calls per AU, no accumulator,
+no hold-back, no ring restructure** (phase 2a's emit-as-decoded revision;
+the transmit ring is post-DSP stereo and unreachable from here). A mid-AU
+error truncates the AU after the blocks already delivered.
+
+**This section describes the PRE-2b synchronous shape and must be rebased
+when 2b lands (gate F3).** Two things change under epoch-context decode:
+`AiusBurst.payload` is a single parser-owned buffer overwritten by the next
+push, so an AU cannot outlive its push without a copy; and an iterator left
+armed across service slices collides with 2a's "abandon only at a stream
+discontinuity" rule. **The abandon call sites must be named and wired** —
+`aius_pipeline_reset`, `retype_to_dts`, and the starvation branch in
+`aius_pipeline_push` are three discontinuities, and none of them calls
+anything today.
+
+**A FOURTH site, which is not a discontinuity at all and is the one that
+will actually fire (gate N1):** `aius_pipeline.c:330-331` returns
+immediately when the sink refuses a block, and `enqueue` returns
+`AIUS_NO_SPACE` whenever the block exceeds `aius_spdif_tx24_free()`. With
+six sink calls per AU that is a routine ring-full, and it currently returns
+out of `dts_feed` with the iterator armed at block k+1 — so the next burst's
+`begin_access_unit` abandons mid-AU and poisons its block 0. **Phase 3 must
+call `aius_a52_abandon` before `return cs`.** The API for that is added by
+phase 2a specifically because phase 3 cannot express the fix without it.
+
+### The false-green trap this creates — the finding that most needs recording
+
+`test_pipeline.c:1039-1062` (**T6, `test_unsupported_never_starves`**) uses
+**AC-3 bursts as its unsupported stimulus**, over a committed vector
+`unsupported_ac3` whose payload is 48 bytes of SYNTHETIC data
+(`gen_iec_corpus.c:301-307`), not a real AC-3 frame. Once type 1 is in
+scope:
+
+- the vector stops being "rejected by the parser as out of scope" and
+  becomes "accepted, handed to liba52, rejected as malformed";
+- **every assertion in T6 still passes** — no starve, class still DTS, zero
+  blocks emitted — so the suite stays green while the test silently changes
+  meaning and no longer covers framed-but-unsupported at all.
+
+Phase 3 must therefore do BOTH, and neither substitutes for the other:
+
+1. **Add a genuinely unsupported vector** to keep T6 honest — a well-formed
+   burst of a type the box still refuses. **Type 21 (E-AC-3) is the right
+   vector but for the OPPOSITE reason the first draft gave** (gate F7): its
+   Pd is a BYTE count, not bits (measured Pc `0x0015`, Pd `0x0700` = 1,792
+   B), so the manifest entry must not reuse the `len*8` convention; and it
+   is emphatically NOT a type the box merely "stays dark for" — see the
+   hazard below. It is constructible by `add_preamble` as-is and exercises
+   the same finalize/starve path T6 covers.
+2. **Add a real AC-3 burst vector that DECODES** — `gen_iec_corpus.c` already
+   wraps real DTS access units from `dts_vectors`; it does the same for a
+   real access unit from `tools/ac3_vectors`, and the new positive test
+   asserts blocks emitted, 1536 frames per AU, and the `surround51_ident`
+   channel assignment surviving the whole parser → dispatch → decoder path.
+   Two mechanics the gate flagged: derive the AU length from
+   `frmsizecod` (`buf[4]`) rather than scanning for the next 2-byte `0x0B77`
+   sync, which is one regeneration away from a silent short AU; and note the
+   `pipeline` suite's capture holds 64 blocks, so at 6 blocks/AU a positive
+   test tops out at 10 AUs.
+
+### HAZARD found by this gate: a real E-AC-3 link plays full-scale noise
+
+Not a phase-3 deliverable, recorded here because the gate found it while
+checking the type-21 vector and it is the same class of harm defect 33 was
+built to prevent. **E-AC-3's burst period is 12,288 words, which exceeds
+`AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS` (8,192).** A stream that enters
+outside the 512-word classify window — roughly 96% of phases — therefore
+types as PCM and **can never re-type**, because the re-type detector needs
+two validated pairs within MAX spacing. It then clears the 8,192-word
+confirmation squelch and plays E-AC-3 burst data as full-scale noise on
+powered speakers, which is precisely the outcome the operator described as
+"the worst thing" when specifying the squelch.
+
+The box does not encounter E-AC-3 today only because nothing on this bench
+sources it; a TV whose optical output is set to pass "Dolby Digital Plus"
+would, and the transport carries it comfortably (see §The format space —
+the "never rides S/PDIF" claim this document opened with was wrong).
+**Recorded as defect 34 in
+[`aius-network-hardening.md`](aius-network-hardening.md)**, with the
+mechanism, the ~4% safe case, and two candidate fixes — raising the re-type
+spacing bound to cover 12,288 (which lengthens every genuine PCM source's
+confirmation mute, since `PCM_CONFIRM_WORDS` must stay >= MAX) or detecting
+type 21 in the classify window and refusing to leave the dark state. **The
+decision is deliberately NOT taken here** and must not be folded into
+phase 3 silently.
+
+### The UI is about to start lying, and the fix belongs here
+
+`status.js:36-37` hard-codes `AUDIO_STATES {4: 'DTS'}` and `STREAM_FORMATS
+{2: 'DTS (IEC 61937)'}` — codec-specific names over a codec-AGNOSTIC firmware
+class. The moment AC-3 decodes, the box reports "DTS" while playing Dolby.
+
+- **Firmware**: expose the data type of the last successfully decoded burst
+  on `pipeline_diag` (the parser already carries it as
+  `AiusBurst.data_type`), so the codec is a read of live state rather than a
+  UI guess, plus the decode-reject tally from the `in_scope` note above.
+- **`aius_pipeline_get_metrics` must be extended here, not in phase 4
+  (gate F5)**: it is hardwired to `aius_dts_get_metrics(p->decoder, …)`
+  (`aius_pipeline.c:513`) and `optical_main.cpp` publishes `decode_cycles` /
+  `alloc_count` from it, so with AC-3 decoding the box would report stale
+  DTS figures — and phase 4's "decode cycles per codec" would have no
+  accessor to read. `lib/aius_pipeline/` is phase-3-owned and phase 4 does
+  not own it, so the extension belongs in this phase. (`arena_high_water` is
+  unaffected: it reads whole-arena high water either way. `alloc_count` is a
+  single global shim counter, so with two decoders arming per call its
+  meaning needs restating rather than doubling.)
+- **`g_overruns` changes meaning under AC-3 and must not be left to lie
+  (gate R2).** `optical_main.cpp:1010,1022` increments it on any non-OK
+  `aius_pipeline_push`, and by this contract's own arithmetic AC-3 refuses
+  above ring level 512 where DTS refuses above 1,536 — so identical clock
+  drift moves the counter roughly 3× more readily, on a condition this
+  contract explicitly calls "NOT an error". The counter is published on
+  status and fed to the flight recorder (`:1226`), so a silent 3× shift
+  would mislead exactly the diagnostics defect 31 depends on. Either
+  suppress the increment for a truncating refusal or record the meaning
+  change beside the counter — decide, do not inherit.
+- **UI**: labels become bitstream-generic with the codec named from that
+  field — "bitstream (DTS)" / "bitstream (AC-3)", "unknown" until a burst
+  has decoded. **Four files, not one** (gate F6): `status.js:36-37`,
+  `dsp-editor.js:2141` (`CARRIER_ENCODINGS = {3:'PCM', 4:'DTS'}`),
+  `replays.html:17`, `index.html:34`.
+- Swagger/status schema debt grows by both fields; record it with the others.
+
+### Proof
+
+The `pipeline` suite is the regression surface: T6 re-pointed and honest, the
+new positive AC-3 path test, and the squelch/re-type constants re-asserted
+against AC-3's **3,072-word burst period** (worst-phase re-type at 6,144
+words, inside both `RETYPE_MAX_SPACING_WORDS` and `PCM_CONFIRM_WORDS` =
+8,192). **That period must be built, not assumed (gate F9):**
+`gen_iec_corpus.c:321-322` stuffs at most 8 words between bursts, so a
+vector wrapping a 2,560 B AU repeats at ~1,284-word spacing and pins nothing
+about 3,072 — each burst must be stuffed out to the real period.
+
+The `iec61937` suite covers the widened `in_scope`, including that a type-21
+burst is still refused. **It is a hard RED until phase 3 updates it
+(gate F8):** `test/iec61937/test_iec61937.c:144` expects `AIUS_UNSUPPORTED`
+for `unsupported_ac3`, and the same stale claim appears in
+`tools/iec_corpus/vectors/manifest.txt:10`, `tools/iec_corpus/README.md:33`,
+`gen_iec_corpus.c:307`, and `lib/aius_iec61937/include/aius_iec61937.h:33-36`.
+All five move in the commit that widens the scope.
+
+## Phase 4 contract (2026-07-28) — target integration
+
+**Owned paths:** `firmware/test/itcm-placement/verify_target.py`,
+`firmware/src/optical_main.cpp`, `firmware/tools/replay_samples/`,
+`firmware/README.md`, this plan — plus, **if the placement measurement below
+sends us down route 2 OR route 3**, `firmware/link/aius_teensy41.ld` and its
+drift test (route 2 adds the `_itcm_block_count` assertion, route 3 the
+cold-placement rule; both edit that file). (`platformio.ini` moved to phase 3: the target must stay
+buildable from the commit that adds dispatch, so a52's sources and include
+path join the build there, not here.)
+
+**Build-order dependency neither phase stated:** phase 4's arena and cycle
+measurements cannot start until the target links, which is phase 3's
+`platformio.ini` change. Phase 3 first, always.
+
+### Placement — the decision, on a premise the gate had to correct
+
+**An earlier draft claimed the cold-placement guard "already lists every
+dcadec object" and that the five a52 objects just join it. Both halves were
+false (gate F14).** `verify_target.py:44-53`'s `COLD_OBJECTS` is eight
+objects — `aius_boot`, `aius_http` ×2, `aius_net`, `aius_runtime`,
+`aius_sd`, and two Teensy adapters — with **no dcadec object and no
+`aius_dts`**, and `COLD_TREES` covers no vendor tree. The mechanism is
+source annotation (`FLASHMEM`), and grepping the dcadec sources returns
+zero: **dcadec's code is in ITCM today.** Adding a52 objects to that list
+would fail immediately, since they emit `.text` and phase 1's zero-edit
+discipline forbids annotating vendored sources.
+
+**And the consequence of overflow is not a build failure but something
+worse (gate F15).** ITCM is allocated in 32 KiB blocks, and the linker
+derives the stack top from the block count:
+`_estack = ORIGIN(DTCM) + ((16 - _itcm_block_count) << 15)`
+(`link/aius_teensy41.ld:177-179`). ITCM currently sits at 6 blocks with
+23,028 B of padding. Exceeding that padding takes a 7th block and **moves
+`_estack` down 32,768 B, taking that much off the STACK** — the
+free-for-locals zone above `_ebss`, which drops from 48,800 B to 16,032 B
+for the main loop and the audio ISR together. **This does NOT touch the
+residency budget** (gate N6): `g_arena_memory` is a fixed static in `.bss`
+(`optical_main.cpp:1048`) and is unaffected. Stating it as an arena problem
+would send phase 4 to the wrong number — the harm is stack exhaustion, which
+is arguably worse and certainly harder to diagnose. The existing ld ASSERTs
+guard OCRAM only; nothing guards the DTCM locals zone.
+
+So the real decision, which phase 4 must take deliberately:
+
+1. **Measure first** (`scripts/build.sh` + the per-bank report makes this
+   nearly free): does liba52's `.text` fit inside the 23,028 B ITCM
+   headroom? That number decides everything below and costs one build.
+2. **If it fits**: accept ITCM placement, matching dcadec's existing
+   (undocumented) treatment, and add an `_itcm_block_count` assertion to the
+   linker script so a future growth fails loudly instead of silently
+   stealing 32 KB of stack.
+3. **If it does not**: place the vendor tree cold via a linker rule
+   (`*a52-core*.o(.text*) > FLASH`) rather than source annotation, which
+   preserves zero-edit vendoring. That takes ownership of
+   `link/aius_teensy41.ld` **and its byte-for-byte drift test**, neither of
+   which this contract currently owns — add both before starting.
+
+FLASH is the irrelevant bank throughout (95% free); ITCM headroom and the
+DTCM stack zone are the constraints.
+
+### What the target run must establish
+
+- **Arena, measured on hardware, not inferred from the host.** The phase-2a
+  figure is host LP64-derived while dcadec's 62,560 is an on-target ILP32
+  measurement; the two must be re-measured together on target. If the real
+  total exceeds 131,072, the ordered fallbacks are: trim the parse scratch,
+  then relocate the arena to OCRAM **only after corroborating it against the
+  defect-26 boot-heap floor** (which already vetoed a 32,768 B carve with
+  13,312 B of slack — the floor, not free bytes, is the gate).
+- **Decode cycles per codec** through `AiusMetrics.decode_cycles` (DWT).
+  It surfaces on **`/api/status`'s `pipeline_diag`, not `/api/meters`**
+  (`optical_main.cpp:2256, 2274` — gate F16), and reading it per codec
+  depends on phase 3 having extended `aius_pipeline_get_metrics` past its
+  DTS hardwiring. This is the number that says whether phase 2b actually
+  fixed defect 31: AC-3 is 1536 frames (32 ms of audio) per AU, so a decode
+  that fits the epoch service budget with margin is the pass condition.
+- **Per-bank report green** (`build.sh` fails the build on over-capacity),
+  with the OCRAM delta from phase 2a's arena occupancy recorded.
+
+### Live validation — the actual mission test
+
+Bench first, TV second, because the bench is scriptable and the TV is not:
+
+- **IEC-wrapped AC-3 replay — gate-verified end to end, not assumed.**
+  `tools/replay_samples/generate.sh` already produces `.iec` via ffmpeg's
+  `spdif` muxer for DTS, and the reviewer ran the AC-3 route: one second
+  muxes to 196,608 B (32 bursts × 6,144 B) with `Pa/Pb/Pc/Pd =
+  F872/4E1F/0001/3800`, an exact 3,072-word period, zero-stuffed to that
+  period. **No endianness problem**: the file is LE on disk with the payload
+  byte-swapped, so read through `aius_replay_word_from_le` the words are the
+  canonical big-endian wire form and the parser locks with `swap = 0` —
+  identical to the DTS route, and 16-vs-24-bit is a non-issue. Word rate is
+  96,000 words/s, exactly the replay ring's existing budget. The only recipe
+  change is `-c:a dca -strict -2` → `-c:a ac3 -b:a <rate>`; every `join`
+  already states `map=`. This gives a repeatable on-card AC-3 source with
+  **known channel identity** — the defect-30 lesson applied to bring-up, so
+  the first AC-3 decode on hardware is validated against a tone programme
+  rather than by ear on unknown content. `tools/replay_samples/README.md`
+  is titled "DTS replay sample pack" and needs re-titling with the on-card
+  budget stated (AC-3 `.iec` is the same 192,000 B/s).
+- **Then the TV**: nightly content, dialogue lifted via `center_gain_linear`
+  plus centre EQ. That is the reason this project exists, and it is the only
+  test that can confirm the mission.
+- By-ear checks already owed (squelch seam silence, layout-aware stereo
+  level) fold into the same session.
+
+### Debt this phase must close or record
+
+`firmware/README.md` lacks the `sd_diag` / `boot_fuse` fields added on
+2026-07-28; the swagger Status schema owes `pipeline_diag` (+4 from defect
+28/33, + phase 3's codec field), `matrix.layout_aware`, `sd_diag` (+3),
+`boot_fuse_0x6e0`, and `/api/meters`'s `analysis_window` /
+`analysis_full_scale`. Record what is not closed rather than letting it grow
+silently.
+
+## Done, and what would make us stop
+
+**AC-3 is done when the TV's own bitstream decodes on the box and dialogue
+is intelligible with the centre lifted** — not when the suites are green.
+Everything before that is instrumentation. Concretely:
+
+1. `a52` + `a52-fuzz` + `pipeline` + `iec61937` green (phases 1–3).
+2. On-target arena inside 131,072 B and per-bank report green (phase 4).
+3. An IEC-wrapped AC-3 replay from the card decodes with correct channel
+   identity, verified against the tone programme rather than by ear.
+4. Sustained live AC-3 from the TV for a full evening with no watchdog reset
+   — which is also defect 31's acceptance test.
+5. The operator can hear the dialogue.
+
+**Stop conditions, decided in advance so they are not rationalised away
+mid-flight:**
+
+- **The on-target arena does not fit** after trimming the parse scratch, and
+  the OCRAM relocation fails to corroborate against the defect-26 heap
+  floor. Then AC-3 residency is a real design problem, not a tuning
+  exercise, and it goes back to design rather than being forced.
+- **liba52's ITCM footprint takes a 7th block** and no cold-placement route
+  is acceptable — that silently costs 32 KB of stack, and shipping it would
+  trade a working box for a decoding one.
+- **Phase 2b does not fix defect 31.** If sustained decode still dies by
+  watchdog with decode off the ISR, the ISR-storm hypothesis was wrong; stop
+  and re-diagnose rather than adding AC-3 load to an unexplained crash.
+- **A third memory-safety defect surfaces in liba52.** Two were found in the
+  first two fuzz runs. A third would say the library needs either a
+  systematic audit or replacement, and continuing to patch site-by-site
+  would be the wrong response to a pattern.
+
+**Rollback posture:** every phase is separately committed and the target
+image is flashable from any of them, so the fallback at any point is the
+last flashed DTS-only image. AC-3 adds no config surface a rollback would
+strand — `features.*` gains nothing, and a board flashed backwards simply
+refuses type 1 again as it does today.

@@ -1481,6 +1481,48 @@ are follow-up work, recorded here so they are not lost.
     optional confirmed-stream mute (single-pair, behind a default-off
     config flag) is queued as the escape hatch if that changes.
 
+34. **Defect 34 — an E-AC-3 (Dolby Digital Plus) link would type as PCM and
+    play full-scale burst noise, the exact harm defect 33 exists to
+    prevent.**
+    Found 2026-07-28 by the AC-3 phase-3 prebuild gate while checking a
+    type-21 corpus vector; NOT yet reproduced on hardware, because nothing
+    on this bench sources E-AC-3. Recorded now because the mechanism is
+    arithmetic, not conjecture.
+
+    E-AC-3's IEC 61937 repetition period is **12,288 words** (measured by
+    muxing a real stream; data type 21, and note its Pd is a BYTE count
+    unlike AC-3's and DTS's bit counts). `AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS`
+    is **8,192**, and its own comment says why: "2x the largest DTS period
+    (4096 words)" — it was sized for DTS alone. A re-type needs two
+    validated preamble pairs no more than MAX apart, so at 12,288-word
+    spacing the first candidate always expires before the second pair
+    arrives and **an E-AC-3 stream can never re-type, ever.**
+
+    The classification window is at most 512 words, so a stream entered at
+    a random phase sees a preamble in roughly 512/12,288 ≈ 4% of cases.
+    The other ~96% see only payload and stuffing, type PCM, and — because
+    no re-type is possible — sail through the 8,192-word confirmation
+    squelch and emit compressed burst data as if it were linear PCM. That
+    is periodic full-scale noise on powered speakers, which is precisely
+    what the operator called "the worst thing" when specifying defect 33's
+    squelch. Starvation does not save it either: starvation re-classifies
+    the DTS route when bursts stop arriving, and this stream is in the PCM
+    class consuming words happily.
+
+    The ~4% case is safe and dark: the parser frames type 21, rejects it as
+    out of scope, and the rejection counts as framing evidence so the class
+    holds DTS with no output.
+
+    **Candidate fixes, decision NOT taken** (it belongs with whoever next
+    touches these constants, and it perturbs shared arithmetic):
+    raise the re-type spacing bound to cover 12,288 — but
+    `AIUS_PIPELINE_PCM_CONFIRM_WORDS` must stay >= MAX by a static assert,
+    so the confirmation mute grows from ~85 ms toward ~128 ms for every
+    genuine PCM source; or detect data type 21 inside the classification
+    window and refuse to leave the dark state, which costs nothing for real
+    PCM but only covers streams whose window catches a preamble. Tracked in
+    [`aius-ac3-support.md`](aius-ac3-support.md) §Phase 3 contract.
+
 #### Decisions taken, so they are not re-opened
 
 - **Zero added audio-path latency beats transient artifacts** (operator,
