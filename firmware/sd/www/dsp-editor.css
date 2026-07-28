@@ -56,6 +56,26 @@ code{color:#74d7ff}
 .eq-table .field--invalid .field__error{display:block;min-height:0;font-size:.68rem}
 .eq-table .field__reset{position:static;flex:none;white-space:nowrap}
 
+/* Each stage's own head: what it governs, whether it has unsent edits, and the
+   button that sends just this panel. margin-left:auto rather than the row's
+   space-between, so the group stays together on the right whether the title
+   beside it is an h2 or an h3. */
+.stage-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.stage-head__note{color:#e8dcc0;font-size:.72rem}
+.stage-head button{padding:5px 9px;font-size:.75rem}
+.stage-enable{display:flex;gap:6px;align-items:center;color:#9aa8b5;font-size:.75rem}
+.stage-enable input{margin:0}
+/* Static, not the absolute corner the stacked field cards park it in. */
+.stage-enable .field__reset{position:static}
+/* A checkbox has no range to be out of, so its error line is structure the
+   validator writes through, never something a reader sees. */
+.stage-enable .field__error{display:none}
+/* A bypassed stage is dimmed, NOT disabled: the device still parses, bounds-
+   checks and stores its values, and an operator sets a stage up before
+   switching it on. The head stays at full contrast -- it is the control that
+   turns the stage back on. */
+[data-stage="off"] .form-mount{opacity:.5}
+
 /* A card whose fields are out of range says so at its own title, because the
    error summary sits thousands of pixels up the page. */
 .card-marker{color:#f2a0a0;font-size:.72rem;white-space:nowrap}

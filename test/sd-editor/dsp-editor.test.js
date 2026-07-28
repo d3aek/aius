@@ -259,6 +259,13 @@ async function setChoice(path, choice) {
   await settle();
 }
 
+async function setCheck(path, on) {
+  const input = fieldOf(path);
+  input.checked = on;
+  input.dispatchEvent(new Event('change'));
+  await settle();
+}
+
 async function click(id) {
   el(id).click();
   await settle();
@@ -640,6 +647,9 @@ describe('Aius SD DSP editor — writing the model back', () => {
     expect(el('apply').disabled).toBe(true);
     expect(el('reload').disabled).toBe(true);
     expect(el('preset-save').disabled).toBe(true);
+    // Every panel's own Apply is in the same one-in-flight discipline: a
+    // section write during another write would carry a stale base_generation.
+    expect(el('apply:matrix').disabled).toBe(true);
 
     // A second press during the flight is not a second write.
     el('apply').click();
@@ -787,7 +797,8 @@ describe('Aius SD DSP editor — bounds validation', () => {
     expect(el('m:card-matrix').hidden).toBe(false);
     expect(el('m:card-matrix').textContent).toBe('1 out of range');
     expect(el('card-matrix').classList.contains('card--invalid')).toBe(true);
-    expect(el('m:card-features').hidden).toBe(true);
+    // A card with nothing wrong in it stays unmarked.
+    expect(el('m:card-input-channels').hidden).toBe(true);
 
     const scrolled = [];
     fieldOf('limiter.release_ms').scrollIntoView = (options) => scrolled.push(options);
@@ -799,6 +810,294 @@ describe('Aius SD DSP editor — bounds validation', () => {
     await setNumber('limiter.release_ms', '100');
     expect(el('m:card-limiter').hidden).toBe(true);
     expect(el('card-limiter').classList.contains('card--invalid')).toBe(false);
+  });
+});
+
+/* Each processing stage is a PANEL (operator request 2026-07-28): the feature
+ * flag that governs it, its own dirty marker and its own Apply all ride the
+ * head of the card that holds its controls, so a 4000 px page never sends the
+ * operator back to the top to commit one change. */
+describe('Aius SD DSP editor — stage panels', () => {
+  const SECTION_CARDS = [
+    ['input_eq', 'card-input-channels'],
+    ['matrix', 'card-matrix'],
+    ['output_eq', 'card-output-eq'],
+    ['limiter', 'card-limiter'],
+    ['meters', 'card-meters'],
+  ];
+  const factory = () => fixture('dsp-config-default.json');
+
+  it('mounts every stage enable, dirty marker and Apply in the head of the panel it governs', async () => {
+    await boot();
+
+    for (const [key, card] of SECTION_CARDS) {
+      const head = el(card).querySelector('.section-title');
+      expect(head.contains(fieldOf(`features.${key}`))).toBe(true);
+      expect(head.contains(el(`dirty:${key}`))).toBe(true);
+      expect(head.contains(el(`apply:${key}`))).toBe(true);
+    }
+    // The cluster they came from is gone, not merely emptied.
+    expect(el('card-features')).toBe(null);
+    expect(el('features')).toBe(null);
+  });
+
+  it('round-trips a stage enable through features.* in the PUT body', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    el('token').value = '0123456789abcdef';
+    // The SD fixture ships output_eq off, and the box in that panel says so.
+    expect(fieldOf('features.output_eq').checked).toBe(false);
+
+    await setCheck('features.output_eq', true);
+    await setCheck('features.limiter', false);
+    await click('apply');
+
+    expect(JSON.parse(putCalls()[0].body).features).toEqual({
+      input_eq: true,
+      matrix: true,
+      output_eq: true,
+      limiter: false,
+      meters: true,
+    });
+  });
+
+  /* A bypassed stage is still parsed, bounds-checked and STORED by the device,
+   * and an operator sets a stage up before switching it on -- so "off" is a
+   * dimmed panel and a note, never `disabled` on the inputs. Disabling them
+   * would take them out of fieldProblem()'s reach (it skips a disabled input,
+   * which is how a bypassed EQ section's unused fields stop being validated)
+   * and a bad value would reach the device as a 400 instead of a message. */
+  it('dims a bypassed panel and says what stopped, without disabling anything', async () => {
+    await boot();
+    expect(el('card-limiter').dataset.stage).toBe(undefined);
+    expect(el('off:limiter').textContent).toBe('');
+
+    await setCheck('features.limiter', false);
+    expect(el('card-limiter').dataset.stage).toBe('off');
+    expect(el('off:limiter').textContent).toBe('bypassed');
+
+    expect(fieldOf('limiter.release_ms').disabled).toBe(false);
+    await setNumber('limiter.release_ms', '1200');
+    expect(errorOf('limiter.release_ms')).toBe('Release must be between 1 and 1000 ms.');
+
+    await setCheck('features.limiter', true);
+    expect(el('card-limiter').dataset.stage).toBe(undefined);
+    expect(el('off:limiter').textContent).toBe('');
+  });
+
+  /* Per-channel trim is not the input EQ: it runs whatever the flag says, so
+   * the note refuses to let the dimmed panel imply otherwise. */
+  it('says the per-channel trim survives its own panel being bypassed', async () => {
+    await boot();
+    await setCheck('features.input_eq', false);
+
+    expect(el('card-input-channels').dataset.stage).toBe('off');
+    expect(el('off:input_eq').textContent).toBe('EQ bypassed; per-channel trim still runs');
+  });
+
+  it('marks each panel dirty on its own', async () => {
+    await boot();
+    expect(el('dirty:matrix').hidden).toBe(true);
+    expect(el('dirty:limiter').hidden).toBe(true);
+
+    await setNumber('matrix.center_gain_linear', '0.5');
+    expect(el('dirty:matrix').hidden).toBe(false);
+    expect(el('dirty:limiter').hidden).toBe(true);
+
+    await setNumber('limiter.release_ms', '250');
+    expect(el('dirty:limiter').hidden).toBe(false);
+
+    // A comparison, not a latch, exactly like the aggregate pill.
+    await setNumber('matrix.center_gain_linear', '0.70711');
+    expect(el('dirty:matrix').hidden).toBe(true);
+    expect(el('dirty:limiter').hidden).toBe(false);
+    expect(el('dirty-state').hidden).toBe(false);
+  });
+
+  it('marks a panel dirty from its enable box alone', async () => {
+    await boot();
+    await setCheck('features.meters', false);
+
+    expect(el('dirty:meters').hidden).toBe(false);
+    expect(el('dirty:limiter').hidden).toBe(true);
+    expect(el('dirty-state').hidden).toBe(false);
+  });
+
+  /* THE discriminating case: two panels dirty, one applied. The body is the
+   * baseline the device already confirmed with only the applied panel written
+   * over it, so the other panel's edit stays local and unsent. */
+  it('sends only its own section, leaving another dirty section unapplied', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await setNumber('limiter.release_ms', '250');
+
+    await click('apply:matrix');
+
+    expect(putCalls()).toHaveLength(1);
+    const put = putCalls()[0];
+    expect(put.url).toBe('/api/dsp/config');
+    expect(put.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
+    const body = JSON.parse(put.body);
+    expect(body.matrix.center_gain_linear).toBe(0.5);
+    expect(body.limiter).toEqual(factory().limiter);
+    expect(body.input_channels).toEqual(factory().input_channels);
+    expect(body.base_generation).toBe(0);
+    // ... and the limiter edit is still on the page, waiting.
+    expect(valueOf('limiter.release_ms')).toBe('250');
+  });
+
+  it('carries its own enable flag and leaves every other panel flag at the baseline', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setCheck('features.matrix', false);
+    await setCheck('features.limiter', false);
+
+    await click('apply:matrix');
+
+    const body = JSON.parse(putCalls()[0].body);
+    expect(body.features.matrix).toBe(false);
+    expect(body.features.limiter).toBe(true);
+    // The unchecked limiter box is a local edit until ITS panel is applied.
+    expect(fieldOf('features.limiter').checked).toBe(false);
+    expect(el('dirty:limiter').hidden).toBe(false);
+  });
+
+  it('applies the meters panel, which governs a flag and nothing else', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setCheck('features.meters', false);
+
+    await click('apply:meters');
+
+    const body = JSON.parse(putCalls()[0].body);
+    expect(body.features).toEqual({
+      input_eq: true,
+      matrix: true,
+      output_eq: true,
+      limiter: true,
+      meters: false,
+    });
+    expect(body.matrix).toEqual(factory().matrix);
+    expect(body.limiter).toEqual(factory().limiter);
+  });
+
+  /* A panel answers for its OWN fields. What it sends for every other group is
+   * the baseline the device already accepted, so a neighbour's broken field is
+   * not this panel's problem. */
+  it('refuses a section whose own field is out of range, and sends one whose neighbour is', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('limiter.release_ms', '1200');
+
+    await click('apply:limiter');
+    expect(putCalls()).toHaveLength(0);
+    expect(el('apply-state').textContent).toBe('invalid');
+    expect(el('errors').textContent).toContain('Release must be between 1 and 1000 ms.');
+
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await click('apply:matrix');
+
+    expect(putCalls()).toHaveLength(1);
+    expect(JSON.parse(putCalls()[0].body).limiter).toEqual(factory().limiter);
+  });
+
+  /* THE rebase: the baseline moves onto what was WRITTEN, so the applied panel
+   * goes clean and every other panel's edits become diffs against the new
+   * baseline rather than being silently declared applied. */
+  it('rebases only the applied panel when the write lands, and keeps the rest dirty', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await setNumber('limiter.release_ms', '250');
+
+    await click('apply:matrix');
+    device.config = { ...factory(), source: 'sd', config_generation: 1 };
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
+
+    expect(el('generation').textContent).toBe('1');
+    expect(el('dirty:matrix').hidden).toBe(true);
+    expect(el('dirty:limiter').hidden).toBe(false);
+    // The aggregate still says the page as a whole has unsent work.
+    expect(el('dirty-state').hidden).toBe(false);
+    expect(el('apply-state').textContent).toBe('edited');
+    expect(el('status').textContent).toContain('this write did not carry');
+    // The form is untouched by the landing: both edits are still on screen.
+    expect(valueOf('matrix.center_gain_linear')).toBe('0.5');
+    expect(valueOf('limiter.release_ms')).toBe('250');
+
+    // Applying the other panel now diffs against the NEW baseline, so its body
+    // carries the matrix value that already landed.
+    await click('apply:limiter');
+    const second = JSON.parse(putCalls()[1].body);
+    expect(second.limiter.release_ms).toBe(250);
+    expect(second.matrix.center_gain_linear).toBe(0.5);
+    expect(second.base_generation).toBe(1);
+  });
+
+  it('puts a section apply through the same token and 409 discipline as the top-level one', async () => {
+    await boot({ put: () => jsonResponse(409, { ok: false, error: 'stale_generation' }) });
+    await setNumber('matrix.center_gain_linear', '0.5');
+
+    await click('apply:matrix');
+    expect(putCalls()).toHaveLength(0);
+    expect(el('errors').textContent).toContain('SD auth token required');
+
+    el('token').value = '0123456789abcdef';
+    await click('apply:matrix');
+
+    expect(putCalls()).toHaveLength(1);
+    expect(el('apply-state').textContent).toBe('stale');
+    expect(el('stale').hidden).toBe(false);
+    expect(el('status').textContent).toContain('Nothing was written');
+  });
+
+  /* setBusy spans the REQUEST; the pending window after it is up to 20 s of
+   * re-enabled buttons. A second FULL apply into that window is harmless -- it
+   * carries the entire form and supersedes the first -- but a SECTION apply
+   * composes from a baseline that has not rebased yet, so it would write the
+   * first section's landed change straight back out. */
+  it('refuses a second section apply while the first is still waiting to land', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await click('apply:matrix');
+    expect(el('apply-state').textContent).toBe('pending');
+
+    await setNumber('limiter.release_ms', '250');
+    await click('apply:limiter');
+
+    expect(putCalls()).toHaveLength(1);
+    expect(el('errors').textContent).toContain('already waiting to land');
+
+    // The whole-form apply is NOT refused: it carries both edits anyway.
+    await click('apply');
+    expect(putCalls()).toHaveLength(2);
+    expect(JSON.parse(putCalls()[1].body).limiter.release_ms).toBe(250);
+
+    // Once it lands, a section apply composes from the new baseline again.
+    device.config = { ...factory(), source: 'sd', config_generation: 1 };
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
+    await click('apply:limiter');
+
+    expect(putCalls()).toHaveLength(3);
+    expect(JSON.parse(putCalls()[2].body).matrix.center_gain_linear).toBe(0.5);
+  });
+
+  it('clears every section marker on a reload', async () => {
+    await boot();
+    await setNumber('matrix.center_gain_linear', '0.5');
+    await setCheck('features.limiter', false);
+    expect(el('dirty:matrix').hidden).toBe(false);
+    expect(el('dirty:limiter').hidden).toBe(false);
+
+    await click('reload');
+
+    expect(el('dirty:matrix').hidden).toBe(true);
+    expect(el('dirty:limiter').hidden).toBe(true);
+    expect(el('dirty-state').hidden).toBe(true);
+    expect(el('card-limiter').dataset.stage).toBe(undefined);
   });
 });
 
@@ -904,27 +1203,51 @@ describe('Aius SD DSP editor — protecting unapplied work', () => {
     expect(el('dirty-state').hidden).toBe(true);
   });
 
-  /* A re-read is the one path that re-anchors "what the device last told us",
-   * so it is the one that clears the pill. An apply deliberately does NOT: the
-   * pending window keeps whatever the form holds rather than adopting the
-   * device's answer (the keepForm contract above), so the form is still an
-   * unadopted edit until it is re-read -- which is exactly what the apply-state
-   * pill says with `edited` on the same beat. */
-  it('clears the unsaved-changes pill on a re-read, and keeps it while an apply holds the form', async () => {
+  /* Two paths re-anchor "what the device holds": a re-read, and an apply that
+   * lands. The apply rebases the baseline onto WHAT WAS WRITTEN, so a full
+   * apply of an edited form ends clean -- it used to end `edited` with the pill
+   * still lit, because the baseline was compared before the write and then
+   * never moved (reported 2026-07-28, fixed with the per-section applies that
+   * depend on the same rebase). */
+  it('clears the unsaved-changes pill when a full apply lands, and when the device is re-read', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    await setNumber('limiter.release_ms', '250');
+    await click('apply');
+    expect(el('dirty-state').hidden).toBe(false);
+
+    device.config = { ...fixture('dsp-config-default.json'), source: 'sd', config_generation: 1 };
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
+    expect(el('apply-state').textContent).toBe('applied');
+    expect(el('dirty-state').hidden).toBe(true);
+
+    await setNumber('limiter.release_ms', '400');
+    expect(el('dirty-state').hidden).toBe(false);
+    await click('reload');
+    expect(valueOf('limiter.release_ms')).toBe('100');
+    expect(el('dirty-state').hidden).toBe(true);
+  });
+
+  /* The keepForm contract is untouched: an edit typed DURING the pending window
+   * was not part of the write, so it survives the landing and stays dirty
+   * against the newly rebased baseline. */
+  it('keeps a mid-flight edit dirty after the apply it was not part of lands', async () => {
     await boot();
     el('token').value = '0123456789abcdef';
     await setNumber('limiter.release_ms', '250');
     await click('apply');
 
+    await setNumber('limiter.attack_ms', '3');
     device.config = { ...fixture('dsp-config-default.json'), source: 'sd', config_generation: 1 };
     await vi.advanceTimersByTimeAsync(500);
     await settle();
+
+    expect(valueOf('limiter.release_ms')).toBe('250');
+    expect(valueOf('limiter.attack_ms')).toBe('3');
     expect(el('apply-state').textContent).toBe('edited');
     expect(el('dirty-state').hidden).toBe(false);
-
-    await click('reload');
-    expect(valueOf('limiter.release_ms')).toBe('100');
-    expect(el('dirty-state').hidden).toBe(true);
+    expect(el('status').textContent).toContain('this write did not carry');
   });
 
   it('asks before a re-read discards edits, and keeps them on a refusal', async () => {
@@ -3167,13 +3490,9 @@ describe('Aius SD DSP editor — page structure', () => {
     const titles = [...document.querySelectorAll('main > section')].map(
       (section) => section.querySelector('h2').textContent,
     );
-    expect(titles).toEqual([
-      'Effective configuration',
-      'Presets',
-      'Processing stages',
-      'Signal flow',
-      'Live processing',
-    ]);
+    // "Processing stages" was a cluster of five checkboxes with no controls of
+    // its own; each moved into the head of the panel it governs.
+    expect(titles).toEqual(['Effective configuration', 'Presets', 'Signal flow', 'Live processing']);
   });
 
   /* "Source" named the DSP MODEL's provenance beside a strip whose whole job is

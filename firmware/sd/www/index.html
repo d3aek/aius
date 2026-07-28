@@ -29,6 +29,9 @@
         <div><span>Generation</span><strong id="generation">--</strong></div>
         <div><span>Sample rate</span><strong id="sample-rate">--</strong></div>
       </div>
+      <!-- The stage bypass flags used to be one cluster here; each now rides
+           the head of the panel it governs, beside that panel's own Apply. -->
+      <p class="hint">Every processing stage carries its own <em>enabled</em> box in the panel it governs: unchecking one bypasses that stage for latency and diagnostic comparisons, and its values are still stored and still validated. DTS framing and decoding cannot be bypassed. <a href="/api/dsp/config">machine config</a></p>
       <div id="stale" class="notice" hidden>
         <span>The device moved to a newer generation than this page (HTTP 409). Nothing was written to SD and the active DSP is untouched. Reloading discards the edits on this page.</span>
         <button id="stale-reload">Reload device config</button>
@@ -77,12 +80,6 @@
         <span id="preset-origin" class="preset-origin"></span>
       </p>
       <p id="preset-errors" class="error-summary" role="alert" hidden></p>
-    </section>
-
-    <section id="card-features" class="card">
-      <div class="section-title"><h2>Processing stages</h2></div>
-      <p class="hint">A checked stage runs; unchecking it bypasses that stage for latency and diagnostic comparisons. DTS framing and decoding cannot be bypassed. <a href="/api/dsp/config">machine config</a></p>
-      <div id="features" class="form-mount"></div>
     </section>
 
     <section class="card visual">
@@ -178,7 +175,9 @@
       </div>
     </section>
 
-    <section class="card meters">
+    <!-- The meters card IS the meters stage's panel: its enable, its dirty
+         marker and its own Apply mount in the head below. -->
+    <section id="card-meters" class="card meters">
       <div class="section-title"><h2>Live processing</h2><span id="meter-state" class="pill">waiting</span></div>
       <p class="hint">The 10 Hz <a href="/api/meters">meter snapshot</a> the strip above reads, with the output waveform envelope and the per-block DSP cost.</p>
       <canvas id="waveform" width="960" height="180"></canvas>

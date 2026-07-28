@@ -120,13 +120,58 @@
     ['sl', 'Surround left'],
     ['sr', 'Surround right'],
   ];
-  const FEATURES = [
-    ['input_eq', 'Input EQ'],
-    ['matrix', 'Downmix matrix'],
-    ['output_eq', 'Output EQ'],
-    ['limiter', 'Limiter'],
-    ['meters', 'Meters'],
+  /* ---- sections ----------------------------------------------------------
+   * A processing stage is a PANEL (operator request 2026-07-28): the feature
+   * flag that governs it, the model groups it edits, its own dirty marker and
+   * its own Apply button all live in that panel's head, so nothing sends the
+   * operator back to the top of a 4000 px page. `key` IS the feature key --
+   * one name, so there is no table joining flags to panels.
+   *
+   * `card` is the second join: cardIdOf() already routes a field path to its
+   * card, so "which fields does this section own" needs no third table.
+   * `groups` is empty for meters -- it is a flag and a picture, governing no
+   * editable value at all, which the empty array says out loud. */
+  const SECTIONS = [
+    {
+      key: 'input_eq',
+      card: 'card-input-channels',
+      label: 'Input channels',
+      featureLabel: 'Input EQ',
+      groups: ['input_channels'],
+      /* Per-channel trim is NOT the input EQ: it runs whatever this flag says,
+       * so the note refuses to let the dimmed panel imply otherwise. */
+      offNote: 'EQ bypassed; per-channel trim still runs',
+    },
+    {
+      key: 'matrix',
+      card: 'card-matrix',
+      label: 'Matrix values',
+      featureLabel: 'Downmix matrix',
+      groups: ['matrix'],
+      offNote: 'bypassed',
+    },
+    {
+      key: 'output_eq',
+      card: 'card-output-eq',
+      label: 'Output EQ',
+      featureLabel: 'Output EQ',
+      groups: ['output_eq'],
+      offNote: 'bypassed',
+    },
+    {
+      key: 'limiter',
+      card: 'card-limiter',
+      label: 'Limiter',
+      featureLabel: 'Limiter',
+      groups: ['limiter'],
+      offNote: 'bypassed',
+    },
+    { key: 'meters', card: 'card-meters', label: 'Meters', featureLabel: 'Meters', groups: [], offNote: 'not published' },
   ];
+
+  /* The feature flags, in the order the wire model carries them. Derived, not
+   * restated: a stage that gains a panel cannot forget to gain a flag. */
+  const FEATURES = SECTIONS.map((section) => [section.key, section.featureLabel]);
   /* "none" is a page-level state, not a wire value: the section is absent from
    * the eq[] array. "bypass" is a real firmware EQ type -- a section that is
    * present but does nothing -- so both round-trip faithfully. */
@@ -197,9 +242,16 @@
     meterInFlight: false,
     meterRetryAt: 0,
     statusInFlight: false,
-    /* Serialised editable groups as last read from the device; null until the
-     * first successful read. isDirty() is this string against a fresh collect. */
+    /* Serialised editable groups the device is believed to hold -- the
+     * BASELINE. Null until the first successful read; isDirty() is this string
+     * against a fresh collect, and each section's marker is one group of it
+     * against the same. */
     clean: null,
+    /* The five groups the device was ASKED to store by the write now in its
+     * pending window, or null. The baseline rebases onto this when the apply
+     * lands -- never onto the form, because a per-section apply deliberately
+     * sends less than the form holds. */
+    pendingApplied: null,
     /* One request at a time from the page's own buttons (UX finding E4). */
     busy: false,
     /* Names as stored on the card (with case), .json stripped. */
@@ -430,9 +482,10 @@
   ];
 
   /* Which card owns a field, so a validation message can put a marker on the
-   * title the reader has to scroll to (UX finding E6). */
+   * title the reader has to scroll to (UX finding E6). `features.` is absent
+   * on purpose: a checkbox has no range to be out of, and since the flags moved
+   * into the panels they govern there is no features card to mark. */
   const CARD_OF_PREFIX = [
-    ['features.', 'card-features'],
     ['input_channels.', 'card-input-channels'],
     ['output.', 'card-output-eq'],
     ['matrix.', 'card-matrix'],
@@ -440,6 +493,13 @@
   ];
   const CARD_IDS = CARD_OF_PREFIX.map(([, id]) => id);
   const cardIdOf = (path) => (CARD_OF_PREFIX.find(([prefix]) => path.startsWith(prefix)) || [null, null])[1];
+
+  /* A section owns its own enable flag plus every field its card owns -- so a
+   * per-section apply validates and sends exactly the panel the operator is
+   * looking at, and nothing else. */
+  const sectionOwnsPath = (section, path) => path === `features.${section.key}` || cardIdOf(path) === section.card;
+  const sectionFields = (section) =>
+    [...document.querySelectorAll('[data-field]')].filter((input) => sectionOwnsPath(section, input.dataset.field));
 
   const field = (path) => $(`f:${path}`);
 
@@ -659,18 +719,71 @@
     return wrap;
   }
 
-  function buildForm() {
-    const features = $('features');
-    features.append(
-      buildFieldGrid(
-        FEATURES.map(([key, label]) => ({ path: `features.${key}`, kind: 'bool', label, caption: `${label} enabled` })),
-      ),
-    );
+  /* ---- the panel head (operator request 2026-07-28) ----------------------
+   * The five feature flags used to sit in one "Processing stages" cluster,
+   * nowhere near the controls they govern, and the only Apply was at the top of
+   * the page. Each flag now rides the head of its own panel, beside that
+   * panel's dirty marker and its own Apply. The descriptor is the SAME one the
+   * field table would have produced, through the SAME buildInput(), so
+   * render/collect/validate never learn that the chrome moved. */
 
+  function buildStageEnable(section) {
+    const descriptor = {
+      path: `features.${section.key}`,
+      kind: 'bool',
+      label: section.featureLabel,
+      caption: `${section.featureLabel} enabled`,
+    };
+    const holder = document.createElement('div');
+    holder.className = 'stage-enable';
+    const input = buildInput(descriptor);
+    /* No <label for> can carry the full subject here -- the visible word is
+     * "enabled" and the panel title supplies the rest -- so the input names
+     * itself, exactly as a dense table cell does. */
+    input.setAttribute('aria-label', descriptor.caption);
+    const caption = document.createElement('label');
+    caption.className = 'stage-enable__label';
+    caption.htmlFor = `f:${descriptor.path}`;
+    caption.textContent = 'enabled';
+    /* Kept even though a checkbox cannot be out of range: it is what
+     * aria-describedby points at, and what validateField() writes through. */
+    holder.append(input, caption, buildError(descriptor.path), buildReset(descriptor));
+    return holder;
+  }
+
+  function buildSectionHead(section) {
+    const head = document.createElement('div');
+    head.className = 'stage-head';
+
+    const note = document.createElement('span');
+    note.className = 'stage-head__note';
+    note.id = `off:${section.key}`;
+
+    const dirty = document.createElement('span');
+    dirty.className = 'pill';
+    dirty.id = `dirty:${section.key}`;
+    shared.setPill(dirty, 'edited');
+    dirty.hidden = true;
+
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.className = 'secondary';
+    apply.id = `apply:${section.key}`;
+    apply.textContent = 'Apply';
+    apply.setAttribute('aria-label', `Apply ${section.label} to the device`);
+    apply.addEventListener('click', () => void act(() => applySection(section)));
+
+    head.append(note, dirty, buildStageEnable(section), apply);
+    $(section.card).querySelector('.section-title').append(head);
+  }
+
+  function buildForm() {
     $('input-channels').append(buildInputChannelTable());
     $('output-eq').append(buildOutputEqTable());
     $('matrix').append(buildFieldGrid(MATRIX_FIELDS));
     $('limiter').append(buildFieldGrid(LIMITER_FIELDS));
+
+    for (const section of SECTIONS) buildSectionHead(section);
 
     for (const id of CARD_IDS) {
       const marker = document.createElement('span');
@@ -686,6 +799,11 @@
       input.addEventListener('input', () => onFieldInput(input));
       input.addEventListener('change', () => onFieldInput(input));
     }
+
+    /* The panels must agree with their own enable boxes before the first read
+     * -- and whether or not that read ever succeeds. Everything else on the
+     * page waits for a model; this is answerable from the DOM alone. */
+    refreshStageInertness();
 
     buildVisualStrip();
   }
@@ -887,10 +1005,12 @@
     }
     const bytes = JSON.stringify(collectModel()).length;
     $('model-bytes').textContent = `request body ${bytes} of ${MODEL_MAX_BYTES} bytes`;
-    /* Both are facts about the form as it stands, so they move on the same
-     * beat as the byte count: every edit -- typed, reset, preset-loaded or
-     * dragged -- arrives here. */
+    /* All facts about the form as it stands, so they move on the same beat as
+     * the byte count: every edit -- typed, reset, preset-loaded or dragged --
+     * arrives here. */
     refreshDirtyPill();
+    refreshSectionDirty();
+    refreshStageInertness();
     refreshPresetOrigin();
     syncResetButtons();
     /* The curves and the routing diagram are views of the fields, so every
@@ -979,10 +1099,18 @@
    * adopted, cheap enough to run on demand and never per keystroke. Every
    * work-destroying path consults it (UX finding E2). */
 
-  const markClean = () => {
-    state.clean = JSON.stringify(collectPresetGroups());
+  /* The ONE way the baseline moves. `groups` is what the device is believed to
+   * hold: the form after a full read, or the body a write asked it to store.
+   * Never "the form, because a write happened" -- a per-section apply sends
+   * less than the form holds, and rebasing onto the form would silently
+   * declare every other panel's unsent edit applied. */
+  const setBaseline = (groups) => {
+    state.clean = JSON.stringify(groups);
     refreshDirtyPill();
+    refreshSectionDirty();
   };
+
+  const markClean = () => setBaseline(collectPresetGroups());
 
   const isDirty = () => state.clean !== null && state.clean !== JSON.stringify(collectPresetGroups());
 
@@ -990,9 +1118,43 @@
    * finally SAID on the page (operator request 2026-07-28). It rides the Apply
    * row because Apply is what resolves it, and it is absent rather than
    * negative when the form matches the device -- "no unsaved changes" is not
-   * news. */
+   * news. It stays the AGGREGATE; each panel answers for itself below. */
   function refreshDirtyPill() {
     $('dirty-state').hidden = !isDirty();
+  }
+
+  /* One section's slice of the same comparison: its enable flag, plus the model
+   * groups it edits. Called with the baseline parsed and the form collected
+   * once for the whole sweep -- this runs on every keystroke. */
+  function sectionDiffers(section, baseline, form) {
+    if (form.features[section.key] !== baseline.features[section.key]) return true;
+    return section.groups.some((group) => JSON.stringify(form[group]) !== JSON.stringify(baseline[group]));
+  }
+
+  function refreshSectionDirty() {
+    const baseline = state.clean === null ? null : JSON.parse(state.clean);
+    const form = baseline === null ? null : collectPresetGroups();
+    for (const section of SECTIONS) {
+      $(`dirty:${section.key}`).hidden = baseline === null || !sectionDiffers(section, baseline, form);
+    }
+  }
+
+  /* A stage whose enable is unchecked is BYPASSED, not unreachable. Its values
+   * are still parsed, bounds-checked and stored by the device, and an operator
+   * sets a stage up before switching it on -- so "off" is a dimmed panel and a
+   * note saying what stopped, never `disabled` on the inputs. Disabling them
+   * would take them out of fieldProblem()'s reach (it skips a disabled input,
+   * which is how a bypassed EQ section's unused fields stop being validated),
+   * and a bad value would then reach the device as a 400 instead of a message
+   * here. */
+  function refreshStageInertness() {
+    for (const section of SECTIONS) {
+      const on = field(`features.${section.key}`).checked;
+      const card = $(section.card);
+      if (on) delete card.dataset.stage;
+      else card.dataset.stage = 'off';
+      $(`off:${section.key}`).textContent = on ? '' : section.offNote;
+    }
   }
 
   const DISCARD_QUESTION = 'This page has edits that have not been applied to the device. Discard them?';
@@ -1048,15 +1210,20 @@
     }
   }
 
-  /* In DOM order, so "the first problem" is the first one down the page. */
-  function validateAll() {
+  /* In DOM order, so "the first problem" is the first one down the page. The
+   * SCOPE is an argument because a per-section apply must answer for its own
+   * panel only: the values it does not send come from the baseline the device
+   * already accepted, so refusing the write over them would be a lie. */
+  function validateFields(inputs) {
     const problems = [];
-    for (const input of document.querySelectorAll('[data-field]')) {
+    for (const input of inputs) {
       const message = validateField(input);
       if (message !== '') problems.push({ path: input.dataset.field, message });
     }
     return problems;
   }
+
+  const validateAll = () => validateFields(document.querySelectorAll('[data-field]'));
 
   function onFieldInput(input) {
     const isEqType = input.dataset.kind === 'eq-type';
@@ -1102,6 +1269,9 @@
     'preset-download',
     'preset-upload',
     'preset-refresh',
+    /* Every panel's own Apply is the same one-in-flight discipline: a section
+     * write during another write would carry a stale base_generation. */
+    ...SECTIONS.map((section) => `apply:${section.key}`),
   ];
 
   function setBusy(busy) {
@@ -1157,24 +1327,37 @@
     setPresetOrigin(null);
   }
 
-  async function applyConfig() {
+  /* ---- applying ----------------------------------------------------------
+   * Two entry points, one write. `applyConfig` sends the whole form; a panel's
+   * own Apply sends the BASELINE with only that panel's groups and enable flag
+   * taken from the form, so every other pending edit stays local and unsent
+   * (operator request 2026-07-28). Everything after the body -- the size cap,
+   * the PUT, the 409, the pending poll -- is written once. */
+
+  /* Shared preflight. `fields` is the validation scope; the return is the token
+   * to write with, or null when the page has already said why it will not. */
+  function applyPreflight(fields) {
     clearError();
-    const token = $('token').value.trim();
     if (!state.model) {
       showError('No configuration loaded yet -- re-read the device first.');
-      return;
+      return null;
     }
+    const token = $('token').value.trim();
     if (token === '') {
       showError('SD auth token required. Read it over USB with the AIUS AUTH command.');
-      return;
+      return null;
     }
-    const problems = validateAll();
+    const problems = validateFields(fields);
     if (problems.length > 0) {
       setApplyState('invalid');
       showFieldProblems(problems);
-      return;
+      return null;
     }
-    const payload = JSON.stringify(collectModel());
+    return token;
+  }
+
+  async function writeModel(model, token, sending) {
+    const payload = JSON.stringify(model);
     if (payload.length > MODEL_MAX_BYTES) {
       setApplyState('invalid');
       showError(`Model is ${payload.length} bytes; the device accepts at most ${MODEL_MAX_BYTES}.`);
@@ -1182,7 +1365,7 @@
     }
 
     setApplyState('sending');
-    setStatus('Writing /aius/dsp.json...');
+    setStatus(sending);
     const result = await request('/api/dsp/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'X-Aius-SD-Auth': token },
@@ -1200,9 +1383,55 @@
       setStatus('Configuration unchanged.');
       return;
     }
+    /* What the device was ASKED to store, held until the apply lands: the
+     * baseline rebases onto this, not onto the form. */
+    state.pendingApplied = presetGroupsOf(model);
     setApplyState('pending');
     setStatus('Written to SD. Waiting for the apply at the next audio block boundary...');
     startPendingPoll();
+  }
+
+  async function applyConfig() {
+    const token = applyPreflight(document.querySelectorAll('[data-field]'));
+    if (token === null) return;
+    await writeModel(collectModel(), token, 'Writing /aius/dsp.json...');
+  }
+
+  /* The baseline with one panel's worth of the form written over it. The
+   * features object is REBUILT in table order rather than spread, so the
+   * baseline's key order can never diverge from a fresh collect's -- isDirty()
+   * and every section marker are JSON.stringify comparisons. */
+  function sectionModel(section) {
+    const baseline = JSON.parse(state.clean);
+    const form = collectPresetGroups();
+    const groups = { ...baseline, features: {} };
+    for (const [key] of FEATURES) {
+      groups.features[key] = key === section.key ? form.features[key] : baseline.features[key];
+    }
+    for (const group of section.groups) groups[group] = form[group];
+    return { ...collectModel(), ...presetGroupsOf(groups) };
+  }
+
+  async function applySection(section) {
+    clearError();
+    if (state.clean === null) {
+      showError('No configuration loaded yet -- reload the device before applying one stage.');
+      return;
+    }
+    /* setBusy spans the REQUEST; the pending window after it is up to 20 s of
+     * re-enabled buttons. A second FULL apply into that window is harmless --
+     * it carries the entire form and simply supersedes the first. A SECTION
+     * apply is not: it composes from a baseline that has not rebased yet, so it
+     * would write the first section's landed change straight back out. */
+    if (state.pendingTimer !== null) {
+      showError(
+        'A write is already waiting to land at the next audio block boundary. Wait for it before applying another stage.',
+      );
+      return;
+    }
+    const token = applyPreflight(sectionFields(section));
+    if (token === null) return;
+    await writeModel(sectionModel(section), token, `Writing ${section.label} to /aius/dsp.json...`);
   }
 
   function startPendingPoll() {
@@ -1223,12 +1452,26 @@
     const result = await request('/api/dsp/config', { headers: { Accept: 'application/json' } });
     if (result.ok && result.body && result.body.config_generation !== state.baseGeneration) {
       stopPendingPoll();
+      const applied = state.pendingApplied;
+      state.pendingApplied = null;
+      /* keepForm is unchanged: the pending window is up to 20 s and the form
+       * stays live throughout, so a form that has moved is never re-rendered
+       * over (delivery audit finding). */
       const dirty = isDirty();
       adoptModel(result.body, dirty);
-      if (dirty) {
+      /* ... but the BASELINE still has to move, and it moves onto what was
+       * written, not onto the form. Without this a per-section apply could
+       * never clear its own marker (the form is dirty by construction when one
+       * panel is applied), and a full apply left the whole form reading
+       * "unsaved" after landing successfully. */
+      if (dirty && applied !== null) setBaseline(applied);
+      /* Asked AGAIN, after the rebase: "still dirty" now means "still holds
+       * something this write did not carry", which is a different question
+       * from the one asked two lines up. */
+      if (isDirty()) {
         setApplyState('edited');
         setStatus(
-          `Applied at generation ${state.baseGeneration} (source ${result.body.source}). The device moved while this form was being edited, so the edits were kept -- re-read to see the device's values.`,
+          `Applied at generation ${state.baseGeneration} (source ${result.body.source}). The form still holds edits this write did not carry -- apply them, or re-read to discard them.`,
         );
         return;
       }
@@ -1238,6 +1481,7 @@
     }
     if (state.pendingAttempts >= PENDING_POLL_MAX) {
       stopPendingPoll();
+      state.pendingApplied = null;
       setApplyState('error');
       showError('The write was accepted but no generation change appeared. Re-read the device to check.');
     }
@@ -1290,16 +1534,18 @@
     return '';
   }
 
-  const collectPresetGroups = () => {
-    const model = collectModel();
-    return {
-      features: model.features,
-      input_channels: model.input_channels,
-      output_eq: model.output_eq,
-      matrix: model.matrix,
-      limiter: model.limiter,
-    };
-  };
+  /* The five editable groups out of any wire model, in ONE canonical key order.
+   * Every baseline, every preset and every dirty comparison funnels through
+   * here, so a JSON.stringify of two of them is a meaningful comparison. */
+  const presetGroupsOf = (model) => ({
+    features: model.features,
+    input_channels: model.input_channels,
+    output_eq: model.output_eq,
+    matrix: model.matrix,
+    limiter: model.limiter,
+  });
+
+  const collectPresetGroups = () => presetGroupsOf(collectModel());
 
   const presetUrl = (name) => `${PRESET_DIR_URL}${encodeURIComponent(name)}.json`;
 
