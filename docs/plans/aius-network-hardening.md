@@ -1193,9 +1193,21 @@ are follow-up work, recorded here so they are not lost.
     emitted before the second pair validates — bounded, by design), and
     phantom carrier-loss STATE events during the ~5-9 ms UNKNOWN windows
     (`current_state()` maps UNKNOWN to 2, a pre-existing conflation whose
-    frequency grows). Live verification at this record's commit: pending
-    the flash — the running bench (operator's DTS loop playing, board
-    PCM-typed, state 3) is the exact red condition.
+    frequency grows). **LIVE-VERIFIED 2026-07-28, minutes after flash
+    (image content `2ae6fea17`, stamped `220fd0f0c461`).** The watcher
+    caught the textbook sequence at the first carrier return: lock →
+    classify window typed PCM (state 3, the lottery loss, exactly as
+    predicted at mid-burst entry) → re-typed to DTS mid-stream in under
+    the 3 s settle poll (state 4, `retype_count` 1, 24 bursts already
+    decoded) — the first time this hardware has EVER escaped a PCM-typed
+    state without a reboot. The operator's afplay loop seams then
+    exercised the full cycle repeatedly: long carrier gaps starved the
+    DTS latch back to UNKNOWN→PCM (silence, by design), each relock
+    re-ran classification via the debounced carrier-edge reset, each
+    PCM-typed relock re-typed to DTS within one settle poll — counters
+    walked retype 1→4, reclassify 0→3 across four cycles with the box
+    landing on state 4 every time. All three mechanisms proven on
+    hardware under the live stream.
 
 29. ~~**With DTS correctly classified and a bit-perfect stream flowing,
     the decode path emits NOTHING — no blocks, no meters, no faults.**~~
