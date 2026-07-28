@@ -93,6 +93,47 @@ profile count, EQ sections, names, and numeric ranges at parse time.
 - Removing the card during HTTP service does not reset or stall audio.
 - The complete SD-backed page is optional; the fallback page always remains usable.
 
+## Dashboard mode — scope, recovered 2026-07-28
+
+**Recovered from the 2026-07-28 session transcript after it was nearly lost.**
+It was live in the operator's queue, never deferred by them; a handover note
+flattened it to the single word "dashboard (parked)", and the task list
+carrying its detail died with a mid-day process restart. Written here so it
+is in a checked-in home rather than scratch. Not yet a contract — this is
+the agreed scope, and it needs a phase contract and a gate before build.
+
+**What it is: one resizable, gridded surface on the existing SD-served
+editor page** that gathers the DSP control and visualisation elements
+together. It is a mode of the existing editor, never a second page — the
+one-surface rule from the editor work applies.
+
+**What it carries:**
+
+- **The interactive EQ curve**, with the realtime FFT bar graph underlaid.
+  (That underlay shipped separately as the analyzer, `19b7351fe` +
+  `5d56f84cf`; the dashboard is where it becomes part of a composed
+  surface.)
+- **The downmix controls**, alongside the visualisations rather than in a
+  separate panel.
+- **A spectrogram.** Its origin is the operator's judgement that "the meter
+  waveform is not useful visualization" — the spectrogram replaces it as
+  the default visual, at comparable cost.
+- **Everything free to resize.**
+
+**The consequence that makes resizing more than cosmetic:** free resizing
+forces every renderer to become size- and DPR-aware. That is not overhead —
+**it retires the existing hiDPI waveform debt as a side effect**, which is
+why resizing is in scope rather than deferred.
+
+**Q editing, an open thread to resolve inside this phase.** The EQ canvas
+already has a mouse-wheel-over-handle Q binding, so it is either broken or
+undiscoverable. The dashboard phase must verify which, make it visible, and
+add a modifier-drag alternative so Q is fully mouse-editable either way.
+
+**Deployment**: this is card-hosted UI, so it needs no USB and no flash —
+it deploys over HTTP via `aius-sd-sync.sh` and remains fully available after
+the board is unplugged from USB.
+
 ## Extension plan: SD scheduling, feature flags, and physical-access authorization
 
 ### Phase 5: budgeted SD service scheduling
