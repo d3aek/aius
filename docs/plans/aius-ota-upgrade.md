@@ -17,12 +17,14 @@ with watchdog fallback would look like on this part, and whether the network
 surface is observable enough to make that safe. Investigated 2026-07-26 at the
 owner's request.
 
-**The feasibility question is answered: yes, with one gating unknown.** The part
-can self-program its own flash using routines Teensyduino already ships, and
-hardware A/B image selection genuinely exists on the i.MX RT1062 — but it is
-gated behind an irreversible OTP fuse whose state on a Teensy cannot be
-determined from anything available locally. See
-[§Self-flashing is possible](#self-flashing-is-possible).
+**The feasibility question is answered: yes, and the gating unknown is now
+resolved.** The part can self-program its own flash using routines Teensyduino
+already ships, and hardware A/B image selection genuinely exists on the
+i.MX RT1062 — but it is gated behind an irreversible OTP fuse, **read on the
+board 2026-07-28: unblown (`0x00000000`)**, so hardware A/B does not exist on
+this board without a burn, and the owner has ruled a burn out for the scoping
+phase (see [§Design constraints from the owner](#design-constraints-from-the-owner-2026-07-28)).
+See [§Self-flashing is possible](#self-flashing-is-possible).
 
 Companion to [`aius-network-hardening.md`](aius-network-hardening.md), whose
 §Deciding principle governs, and [`firmware-io.md`](../reference/firmware-io.md).
@@ -398,6 +400,15 @@ channel is already physical.
   unblown board — it simply never invokes the selector, and nothing at the
   secondary offset needs to be valid. The burn constrains a board only when
   the A/B build asks it to.
+- **No fuse burn, under any circumstances, while OTA is being scoped**
+  (2026-07-28, after the fuse read came back unblown). This document is a
+  scoping exercise, not an implementation commitment. The path is: explore
+  the staged-image design first — WITHOUT burning the fuse — and only after
+  that exploration decide whether to permanently modify the board. That
+  exploration is itself deferred; it is future work in this plan, not a
+  next step. Until the owner explicitly revisits this, no work item here
+  may write OCOTP, and the read-only structural guards in
+  [§The fuse read, as built](#the-fuse-read-as-built) stay load-bearing.
 
 ## Prerequisites, in order
 
@@ -439,12 +450,17 @@ worthwhile:
    are the two remaining unknowns in
    [§Self-flashing is possible](#self-flashing-is-possible), and both need the
    device rather than more reading.
-   - ~~The fuse read.~~ **Mechanism done 2026-07-28; the board has not been
-     asked yet.** `GET /api/status` carries
+   - ~~The fuse read.~~ **Done 2026-07-28, mechanism and reading.**
+     `GET /api/status` carries
      `boot_fuse_0x6e0: {word, read, sec_image_offset, sec_image_size}` — the
      full word hex-encoded, plus `[23:16]` and `[15:12]` decoded. Read-only by
      construction and by guard: see
-     [§The fuse read, as built](#the-fuse-read-as-built).
+     [§The fuse read, as built](#the-fuse-read-as-built). **The board answered
+     `word 0x00000000` (`read: true`, both fields 0): the fuse is unblown and
+     hardware A/B is unavailable without an irreversible burn — which the
+     owner has ruled out for scoping
+     ([§Design constraints](#design-constraints-from-the-owner-2026-07-28)).
+     Any A/B continuation is therefore the staged-image design, deferred.**
    - **The erase stall.** No flash was written or erased in this batch. The
      measurement is designed rather than performed: see
      [§Measuring the sector-erase stall](#measuring-the-sector-erase-stall).
@@ -496,7 +512,15 @@ structurally impossible, so a client that ignores `read` still cannot be misled.
 **What to do with the answer.** `sec_image_offset` 0 means the secondary image
 base is the primary's address and hardware A/B is unavailable without an
 irreversible burn; anything nonzero means the selector already has somewhere to
-point. Record the reading from a real board here when B6 runs.
+point.
+
+**The reading, from the real board (2026-07-28,** image `7a66153703d1`
+`teensy41-optical`**):** `{word: "0x00000000", read: true, sec_image_offset: 0,
+sec_image_size: 0}`. Unblown — the shipped value, exactly what the sentinel
+design anticipated. Hardware A/B does not exist on this board today, and per
+[§Design constraints](#design-constraints-from-the-owner-2026-07-28) no burn
+may change that during scoping; the staged-image design is the exploration
+path, deferred.
 
 ### Measuring the sector-erase stall
 
