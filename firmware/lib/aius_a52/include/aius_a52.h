@@ -34,11 +34,13 @@ extern "C" {
  * vendor/a52-core/NOTICE.md).
  *
  * Output flags always request the stream's OWN coding
- * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0: identity
- * grants never enter liba52's downmix/upmix mixers (sidestepping the
- * upstream 3F1R memcpy typo), and the plane mapping keys off the flags
- * a52_frame returns. Dynamic range compression stays at liba52's default
- * (dynrng APPLIED — the plan records this as a decision).
+ * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0. a52_downmix
+ * and a52_upmix are still CALLED, but an identity request matches no case
+ * in either switch, so both no-op -- which is what sidesteps the upstream
+ * 3F1R memcpy typo. The plane mapping is derived from the SYNCINFO flags
+ * (they agree with the flags a52_frame returns for every mode this adapter
+ * supports). Dynamic range compression stays at liba52's default (dynrng
+ * APPLIED -- the plan records this as a decision).
  *
  * Channel modes carried: MONO (FC), STEREO / DOLBY (FL FR), 3F (FL FC FR),
  * 2F2R (FL FR SL SR), 3F2R (FL FR FC SL SR), each with or without LFE.

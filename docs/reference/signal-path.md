@@ -226,20 +226,28 @@ with `AIUS_UNSUPPORTED` (`:222`).
 `int32`** (`lib/aius_dts/include/aius_dts.h:31`). That is the unit every later stage's
 magnitudes, thresholds and meter values are expressed in.
 
-**Where the decoder's memory actually lives is not where the design intended.** The
-image reserves `AiusAudioProcessor::g_arena_memory` — **131,072 B, 40 % of the whole
-DTCM bank**, measured in the ELF — and `begin_pipeline()` creates the pipeline through
-`aius_pipeline_create_arena` (`src/optical_main.cpp:712`). But routing dcadec's
-allocation into that arena depends on the `--wrap` link-time shim
-(`lib/aius_dts/src/aius_alloc_shim.c:95`), and `[env:teensy41-optical]` **removes that
-flag** in `build_unflags` (`platformio.ini:198`). The linked image contains plain
-`malloc`, `calloc`, `realloc` and `free` and **no `__wrap_malloc` or `__real_malloc` at
-all** (measured with `arm-none-eabi-nm`), so the decoder handle, its input scratch and
-the entire dcadec `ta` tree come from the newlib heap in OCRAM. Only the `AiusPipeline`
-instance itself is arena-allocated (`lib/aius_pipeline/src/aius_pipeline.c:326`), which
-is roughly 5.2 kB *derived* from its members — `clsbuf` 1,024 B plus `pcm_l`/`pcm_r`
-4,096 B plus scalars. The remaining ~126 kB of DTCM arena is reserved and unused. See
-[§Contradictions found against the plans](#contradictions-found-against-the-plans).
+**The decoder's memory lives where the design intended — since 2026-07-28.** The image
+reserves `AiusAudioProcessor::g_arena_memory` — **131,072 B, 40 % of the whole DTCM
+bank**, measured in the ELF — and `begin_pipeline()` creates the pipeline through
+`aius_pipeline_create_arena` (`src/optical_main.cpp:712`). Routing dcadec's allocation
+into that arena depends on the `--wrap` link-time shim
+(`lib/aius_dts/src/aius_alloc_shim.c:95`), and that flag is now live for
+`[env:teensy41-optical]` (`platformio.ini:102`), so the decoder handle, its input
+scratch and the entire dcadec `ta` tree come from the DTCM arena rather than the newlib
+OCRAM heap.
+
+**Until that date the flag was `build_unflags`'d**, the linked image contained plain
+`malloc`/`calloc`/`realloc`/`free` and no `__wrap_malloc` at all (measured with
+`arm-none-eabi-nm`), only the ~5.2 kB `AiusPipeline` instance was arena-allocated
+(`lib/aius_pipeline/src/aius_pipeline.c:326`), and ~126 kB of the reserved arena was
+never touched. Any measurement or reasoning predating 2026-07-28 rests on that older
+state.
+
+The arena is now a budget rather than dead weight: dcadec 62,560 B plus a 32,768 B DSP
+staging carve, with the AC-3 decoder joining at ~27 kB after
+[`aius-ac3-support.md`](../plans/aius-ac3-support.md) phase 2a. That plan's §Phase 2
+contract carries the residency arithmetic and, importantly, why growing or relocating
+this arena is not the free move it looks like.
 
 ### Stage 4c — PCM passthrough
 
@@ -1014,14 +1022,16 @@ design that replaces the assert with real rate following is
 [§Interaction with the 24-bit output path](../plans/aius-sample-rate-following.md#interaction-with-the-24-bit-output-path)
 is the section that has to account for this chain, and it is not restated here.
 
-**The DTS decoder does not use the DTCM arena the image reserves for it.** 131,072 B —
-40 % of DTCM — is set aside, but the `--wrap` shim that would route dcadec's allocation
-into it is removed by `platformio.ini:198`, so the decoder allocates from the OCRAM heap
-and about 126 kB of the reserved arena is never touched. No plan records a rationale for
-the `build_unflags` line. Either the arena should shrink to what
-`aius_pipeline_create_arena` actually takes — recovering most of a bank whose free zone
-is 25,376 B — or the wrap should be restored; the current state pays the DTCM cost and
-gets none of the determinism benefit that justified it.
+**The DTS decoder uses the DTCM arena the image reserves for it — since
+2026-07-28.** 131,072 B (40 % of DTCM) is set aside, and the `--wrap` shim that routes
+dcadec's allocation into it is live (`platformio.ini:102`; the wrap set was
+`build_unflags`'d until that date, which left the decoder allocating from the OCRAM heap
+with about 126 kB of the reserved arena never touched). The arena's occupancy is now a
+budget rather than dead weight: dcadec 62,560 B plus a 32,768 B DSP staging carve, and
+the AC-3 decoder joins it at ~27 kB after
+[`aius-ac3-support.md`](../plans/aius-ac3-support.md) phase 2a — see that plan's
+§Phase 2 contract for the residency arithmetic and why growing or relocating this arena
+is not the free move it appears to be.
 
 **All five bypass flags now work; two of them did nothing until 2026-07-26.**
 `features.matrix` and `features.output_eq` were parsed, stored, round-tripped through

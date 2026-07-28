@@ -45,8 +45,12 @@ sequenced after.
    parser's Pc data type — DTS types to `aius_dts`, type 1 to `aius_a52`,
    everything else UNSUPPORTED as today. The class stays "non-linear
    bitstream"; no new classification states.
-3. **Block shape**: AC-3 access units decode 1536 frames; the enqueue cap
-   and DSP staging are 512. Emit three 512-frame blocks per AU.
+3. ~~**Block shape**: AC-3 access units decode 1536 frames; the enqueue cap
+   and DSP staging are 512. Emit three 512-frame blocks per AU.~~
+   **SUPERSEDED by phase 2a (gate F6):** the decoder emits liba52's own
+   six 256-frame blocks, and `enqueue`'s cap is 512, so 256 is accepted
+   directly. **Phase 3 has no splitter to build** — 256 divides 512, so
+   nothing is foreclosed, but do not go looking for the 3 × 512 split.
 4. **Channel order**: the a52 plane order vs `AIUS_CH_*` mapping is pinned
    by per-channel tone tests from day one — defect 30's lesson, applied
    before the defect can exist.
@@ -67,11 +71,15 @@ sequenced after.
   closing defect 31 for both codecs rather than inheriting a worse copy.
   Transmit-ring depth must be verified against the AU cadence.
 - **Arena sizing.** ~~Two resident decoders may exceed the 128 KiB arena~~
-  **MEASURED 2026-07-28 and CONFIRMED: they do not fit.** a52 peaks at
-  90,464 B; with dcadec's 62,560 and the 32,768 DSP staging carve that is
-  185,792 against 131,072. Phase 4 must grow the arena (OCRAM has ~128 KiB
-  spare after the analyzer landed) or swap to a single resident decoder at
-  class time. No longer a risk to assess — an input to a decision.
+  ~~**MEASURED 2026-07-28 and CONFIRMED: they do not fit.** Phase 4 must
+  grow the arena or swap to a single resident decoder at class time.~~
+  **RESOLVED by the phase 2 contract, and the answer reversed: they DO
+  fit.** The 90,464 B measurement was almost entirely adapter overhead, not
+  liba52; phase 2a takes AC-3 to ~27 KB, giving 122,304 against 131,072
+  with both decoders resident. Neither growing the arena nor swapping is
+  needed — and both were investigated and rejected on their own merits.
+  See [§Phase 2 contract](#phase-2-contract-2026-07-28--decode-off-the-isr-and-the-footprint-that-makes-it-fit).
+  This risk is closed.
 
 ## Phases (each gated per house protocol)
 
@@ -79,9 +87,9 @@ sequenced after.
    **DONE 2026-07-28** — see §Phase 1 delivered.
 2. Defect-31 restructure: decode off the ISR, both codecs, with the
    watchdog/starvation interactions re-proven on the pipeline suite.
-3. Pipeline dispatch + block split + squelch/re-type suite extension
-   (the framed-but-unsupported test moves to a type the box still
-   refuses).
+3. Pipeline dispatch + squelch/re-type suite extension (the
+   framed-but-unsupported test moves to a type the box still refuses).
+   **No block split** — 2a's 256-frame emission already fits `enqueue`.
 4. Target integration: arena measurement, cycle meters, flash, live TV
    validation (the actual mission test: nightly content, dialogue lifted
    via center gain).
@@ -165,13 +173,15 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
 - **Output flags request the stream's OWN coding**:
   `flags = syncinfo_flags & (A52_CHANNEL_MASK | A52_LFE)`, `level = 1.0`,
   `bias = 0`, no `A52_ADJUST_LEVEL` (dead weight under identity grants).
-  Identity requests never enter `a52_downmix`/`a52_upmix`, which both
-  sidesteps liba52's widening behaviour (a 3F1R request row returns 3F2R,
-  not the stream coding) and the upstream 0.7.4 3F1R→3F2R typo
-  (`downmix.c:586`, `samples + 1027` for `samples + 1024`) that would
-  otherwise ship a latent defect-30-class channel fault no phase-1 vector
-  can convict (gate F2). Plane mapping keys off the flags `a52_frame`
-  RETURNS.
+  `a52_downmix`/`a52_upmix` are still called but an identity request
+  matches no case in either switch, so both no-op — which sidesteps both
+  liba52's widening behaviour (a 3F2R *request* over a 3F1R *stream* is
+  granted as 3F2R, `table[7][5]`) and the upstream 0.7.4 3F1R→3F2R typo
+  that widening reaches (`downmix.c:586`,
+  `samples + 1027` for `samples + 1024`) that would otherwise ship a latent
+  defect-30-class channel fault no phase-1 vector can convict (gate F2).
+  Plane mapping is derived from the SYNCINFO flags, which agree with the
+  flags `a52_frame` returns for every supported mode.
 - **Channel order is liba52's trap to pin**: with `A52_LFE` granted, the
   output block order is LFE FIRST (LFE, L, C, R, SL, SR). The wrapper maps
   to `AIUS_CH_*` planes; the corpus `surround51_ident` tone test convicts
@@ -200,7 +210,8 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
   abs diff in 24-bit LSBs + minimum SNR, bounds set from the observed
   slack at implementation with margin), plus EXACT tone identity per plane
   (Goertzel, the `surround51_ident` assignment), block shape
-  (1536 frames = 3 × 512 emission quanta), metrics sanity
+  (1536 frames per AU — ~~3 × 512 emission quanta~~ SUPERSEDED by phase 2a,
+  which emits 6 × 256 and asserts that shape instead), metrics sanity
   (steady-state `alloc_count` 0 after warmup; `arena_high_water` reported —
   the phase-4 arena decision's input), and decode-vs-DTS coexistence
   (both decoders arena-resident where the arena fits, else the measured
@@ -236,12 +247,15 @@ both registered and `registry`-consistent.
   8192 LSB / 55 dB (~4x / ~14 dB margin), which still convicts a channel
   permutation, a gain error, or a block misalignment — the differential's
   actual job. Channel identity is asserted EXACTLY (Goertzel per plane).
-- **Arena high-water 90,464 B, zero allocations per decode.** The phase-4
-  input, and it is already decisive: a52 90,464 + dcadec 62,560 + DSP
-  staging 32,768 = 185,792 against the current 131,072-byte arena.
-  **Two resident decoders do not fit — phase 4 must grow the arena or
-  swap at class time**, as the risk section anticipated. The ~36 KiB
-  parse scratch is inside that 90,464.
+- **Arena high-water 90,464 B, zero allocations per decode.** As measured
+  this looked decisive against residency: 90,464 + dcadec 62,560 + DSP
+  staging 32,768 = 185,792 against a 131,072-byte arena. ~~Two resident
+  decoders do not fit — phase 4 must grow the arena or swap at class
+  time.~~ **That reading was wrong and the phase 2 contract reverses it:**
+  ~73 KB of the 90,464 is adapter overhead (the ~36 KiB parse scratch and
+  the ~36 KiB whole-AU planes), both removable, taking AC-3 to ~27 KB and
+  both decoders inside today's arena. See
+  [§Phase 2 contract](#phase-2-contract-2026-07-28--decode-off-the-isr-and-the-footprint-that-makes-it-fit).
 - **The fuzz suite paid for itself twice, on its first two runs**, finding
   two memory-safety defects in stock liba52 0.7.4 (unfixed upstream and in
   Debian's patch series). Both required vendored edits — neither could be
@@ -261,7 +275,275 @@ both registered and `registry`-consistent.
   the pre-flash gate** — liba52 is materially less hardened than dcadec,
   and the box's input is arbitrary S/PDIF from a TV.
 
-### Out of scope for phase 1
+### Out of scope for phase 1 (see the phase 2 contract below for 2a)
 
 Pipeline dispatch (phase 3), ISR restructure (phase 2), target build and
 arena growth (phase 4), DRC config flag, E-AC-3 (never rides S/PDIF).
+
+## Phase 2 contract (2026-07-28) — decode off the ISR, and the footprint that makes it fit
+
+Phase 2 closes defect 31 for BOTH codecs by moving bitstream decode out of
+the audio ISR. Folded into it (operator direction 2026-07-28, after the
+phase-1 arena measurement): the AC-3 footprint reduction, because the same
+change delivers both — the reason AC-3 costs 90 KiB is that the wrapper
+accumulates a whole access unit before returning, and that accumulation is
+also the ISR burst defect 31 is about.
+
+**Slice 2a is separable, host-only, and lands first.** 2b is the target-side
+restructure.
+
+**Owned paths** (2a): `firmware/vendor/a52-core/{a52.h,bitstream.c,
+bitstream.h,a52_internal.h}`, `firmware/lib/aius_a52/{include,src}`,
+`firmware/test/a52/{test_a52.c,fuzz_a52.c}`, `firmware/scripts/test.sh`,
+`firmware/vendor/a52-core/NOTICE.md`, this plan. Relative to
+``.
+
+### The residency question this settles (measured, not assumed)
+
+Phase 1 measured AC-3 at 90,464 B and concluded two resident decoders do not
+fit. That framing was wrong: **almost none of it is liba52's.**
+
+| Item | Bytes | Owner |
+|---|---|---|
+| Parse scratch (`MAX_FRAME + 32 KiB pad`) | 36,608 | adapter, only because liba52's reader is unbounded |
+| Output planes (6 × 1536 × 4) | 36,864 | adapter, only because it accumulates a whole AU |
+| liba52 sample buffer (256 × 12 × 4) | 12,288 | liba52 |
+| State + handle + alignment | ~4,704 | liba52 + adapter |
+
+The DTS adapter allocates NO planes — `block->planes` points straight into
+dcadec's own `output_samples` (`aius_dts.c:259`), which is why it is cheap.
+Both adapter-side items above are removable, and removing them is what 2a
+is. Resulting arithmetic:
+
+- planes 36,864 → **6,144** (emit per 256-frame block, saving 30,720)
+- scratch 36,608 → **3,840** (bound the reader, saving 32,768)
+- AC-3 resident ≈ **26,976 B**
+- dcadec 62,560 + DSP staging 32,768 + 26,976 = **122,304 vs the existing
+  131,072-byte arena — both decoders resident, no growth, no swapping,
+  8,768 B spare.**
+
+That spare is thin (6.7%), and **it may be the only margin there is** — the
+OCRAM fallback is NOT established (gate F13). The arena is a plain static
+array in DTCM today (`optical_main.cpp:1048`), so growing it in place was
+never available: DTCM's whole free-for-locals zone is 48,800 B and that
+region is also the stack. But relocating it to OCRAM is not simply a matter
+of free bytes: the 32,768 B DSP staging carve was already VETOED from OCRAM
+by the defect-26 link-time heap floor with only 13,312 B of slack
+(`optical_main.cpp:1305-1311`), and moving the whole 131,072 B arena is 4×
+what was rejected. The gate is the boot-heap floor, not free space. **Phase
+4 must corroborate the OCRAM route against that floor before relying on it,
+or treat 122,304/131,072 as the budget.**
+
+**Dynamic decoder loading is REJECTED, with the reasoning recorded so it is
+not re-opened.** Dynamic code loading buys nothing: decoder code is
+cold-placed in flash by an existing build guard and flash is 95% free, while
+the constraint is RAM. Dynamic instantiation (create/destroy at class change)
+is *nominally* legal under the arena contract, which permits allocation
+"during a declared stream-format change", and its re-init cost would be
+masked by the 170–255 ms mute a format switch already incurs — **but it does
+not actually work here, deterministically (gate F15).** The arena is a bump
+allocator with no per-block free, and `__wrap_free` on an arena pointer is a
+no-op, so destroy/create at each class change LEAKS the whole footprint
+every switch and fails after a handful of them — not probabilistically, but
+by construction. Making it work would require a per-decoder sub-arena reset,
+i.e. more machinery than 2a, to buy memory 2a shows we do not need. Beyond
+that it would introduce an allocation that can fail mid-stream, leaving no
+decoder exactly when audio should resume: the silent-death shape defects 28
+and 31 taught us to design out.
+
+### Slice 2a — per-block emission + a bounded reader (host-only)
+
+**Three ORDERED steps, each committed separately (gate F2).** The 32 KiB pad
+is today's containment and the fuzz suite is the only proof the bound
+replaces it; removing the pad in the same commit that rewrites the API the
+fuzz drives could ship a green suite over *worse* memory safety than phase 1
+— a harness that only reached `begin_access_unit` would leave the entire
+mantissa/exponent/bit-allocation surface unfuzzed, and that is exactly where
+both phase-1 defects lived. So the bound is proven while the pad still
+exists, and only then does the pad go.
+
+**Step 1 — vendored edit 3: bound liba52's bit reader (pad still in place).**
+`bitstream_fill_current` (`bitstream.c:44-50`) is the SOLE dereference of
+`buffer_start`, `a52_bitstream_get_bh`/`_bh_2` each call it exactly once, the
+inline fast paths touch only `current_word`, there are no byte-wise reads,
+and max `num_bits` is 24 so one fill always suffices. One choke point, so an
+end pointer plus zero-fill is sufficient — provided all five of these hold,
+each of which the gate found the first draft did not state:
+
+- **(a) The setter runs in `begin_access_unit`, BEFORE `a52_frame`, and
+  `a52_bitstream_set_ptr` must NOT clear the end.** `a52_frame` calls
+  `set_ptr` itself (`parse.c:154`), so a naive "reset to unbounded there"
+  drops the bound for the whole frame.
+- **(b) A BYTE end pointer (`scratch + frame_length`), never a word count.**
+  `set_ptr` aligns *down*, so any word-derived bound is off by one word.
+- **(c) FAIL-CLOSED.** With edit 2's `memset` an unset end is NULL and
+  `if (buffer_start >= buffer_end)` correctly yields zeros. The form
+  `if (buffer_end && ...)` fails OPEN and is forbidden.
+- **(d) The field lives in `a52_state_s` (`a52_internal.h`).** Safe: `a52.h`
+  keeps the type opaque, the adapter and both suites include only `a52.h`,
+  and all five vendor TUs compile in one invocation.
+- **(e) The setter is declared in `a52.h`, not `bitstream.h`.**
+  `bitstream.h` has no include guard and declares inline functions that
+  dereference the state, so including it to reach the setter would drag in
+  `a52_internal.h` and destroy (d)'s opacity argument. `a52.h` is guarded
+  and keeps `a52_state_t` opaque, so it is the only home that preserves
+  the property (d) claims.
+
+**Step 1's proof must be POSITIVE, not self-referential (gate R1 — the
+blocker on the first amendment).** "Assert `buffer_start` never passes
+`scratch + frame_length`" is circular: if the guard is present that holds by
+construction, and it cannot distinguish a bound that is armed and binding
+from one that was never armed while the 32 KiB pad silently absorbs the
+overread — which is exactly the state step 2 makes fatal. Four failure modes
+are green under it and out-of-bounds after step 2: setter never called;
+setter called *after* `a52_frame`; `set_ptr` clearing the end (the hazard
+(a) names); end set to the scratch end rather than the frame end. So step 1
+proves instead:
+
+- `bitstream_fill_current` counts total fills and fills SUPPRESSED by the
+  bound, and asserts at every fill that `buffer_end` is non-NULL and equals
+  `scratch + frame_length` (frame-derived, never pad-derived).
+- **The fuzz must report a NON-ZERO suppressed count** — that is the
+  evidence the bound is actually reached and binding, which no
+  self-consistent assertion can supply.
+- For step 1 only, **everything past `frame_length` is filled with `0xFF`**
+  rather than zeros — not just the nominal pad region. The bytes between
+  `frame_length` and `AIUS_A52_MAX_FRAME` are also past the bound, and at
+  typical 48 kHz frame sizes that is up to ~1,280 B in which a short
+  overread would otherwise read zeros and fail to diverge. With a correct
+  bound the differential and the fuzz's ok/reject counts are unchanged;
+  with a broken one they diverge loudly. This turns the pad into an oracle
+  for the one commit where it is both net and instrument. (Supplementary:
+  all four failure modes above are already caught independently by the
+  suppressed-fill counter and the `buffer_end` identity assert.)
+
+**Step 2 — remove the pad**, taking the scratch to one frame (3,840 B).
+Same suites, unchanged, must stay green: with the pad gone the bound is now
+load-bearing, so this commit is the real test of edit 3. Step 2 also retires
+the prose that describes the pad as the safety mechanism, all of it inside
+owned paths and all of it now wrong: `NOTICE.md` §3, and `aius_a52.h`'s
+SAFETY SHAPE paragraph plus the `AIUS_A52_PARSE_PAD` comment (gate R10).
+
+**Step 3 — iterator API + suite rewrite.** Replace whole-AU decode with
+`aius_a52_begin_access_unit()` (validates, runs `a52_frame`, arms the
+iterator) + `aius_a52_decode_next_block()` (decodes ONE 256-frame block into
+reusable planes). The caller decides when each block is decoded — the
+slicing 2b needs, taking worst-case work per service slice from a whole AU
+to a sixth of one.
+
+**The invariant this trades away, stated because it is not free (gate F1).**
+Today a malformed AU emits NOTHING: `a52_block` returns 1 from eight sites
+reachable from a corrupt bitstream (`parse.c:584,592,664,680,693,701,733,
+737`), the adapter aborts the whole AU, and `fuzz_a52.c` asserts that as a
+property. Under the iterator, blocks 0..k-1 are already in the caller's
+hands when block k fails. **Policy: `decode_next_block` returns the typed
+error, the iterator disarms, and the caller MUST treat every prior block of
+that AU as discardable.** The fuzz gets a matching property (see below).
+
+**How phase 3 holds the AU, named here because the naive answer gives back
+2a's whole saving (gate R3).** A pipeline-side accumulator would be
+6 × 1536 × 4 = 36,864 B — precisely the 30,720 B this slice exists to
+recover, handed straight back. **It is therefore forbidden.** The transmit
+ring already provides the mechanism: `aius_spdif_tx24_stage` / `_commit`
+guarantee a preempting consumer never sees a half-written region until
+commit, so phase 3 stages all six blocks and commits after block 6, holding
+zero extra buffer. On a mid-AU error it simply never commits.
+
+**Iterator state machine, specified (gate F8):**
+
+- `decode_next_block` without a live `begin` → `AIUS_INVALID_ARG`.
+- A 7th call errors and never runs a 7th `a52_block`.
+- A mid-AU error disarms the iterator.
+- `block->planes` are valid only until the next `decode_next_block`,
+  `begin_access_unit`, or `destroy`; the caller must not hold them across a
+  call.
+- `begin_access_unit` while an AU is in flight ABANDONS and re-arms.
+  Recovery is correct (`a52_frame` re-arms the reader) but **lossy**: the
+  IMDCT overlap in `state->samples[1536..3071]` carries the abandoned
+  block's un-overlapped tail into the next AU's block 0 — the same hazard
+  the differential's fresh-decoder-per-vector rule already documents.
+  Abandonment also emits a partial AU with NO error, so the discard policy
+  above does not reach it (gate R8): **abandonment is permitted only at a
+  stream discontinuity** — carrier edge, squelch, or re-type — where the
+  partial output is being dropped anyway.
+- **Scratch lifetime (gate F7): the next AU must NOT be copied into scratch
+  until block 6 of the current AU completes**, because all six `a52_block`
+  calls read from it through the bitstream state. Easy to violate in 2b's
+  ring-fed service loop, and it produces plausible garbage audio rather than
+  a crash. `begin_access_unit`'s abandon-and-re-arm rule is what makes the
+  violation impossible to express accidentally.
+- The shim is armed and disarmed PER CALL, not held across the AU
+  (`g_arena` is a single global and 2b runs decode beside other allocators).
+- `begin_access_unit` derives the channel mapping from the SYNCINFO flags
+  (as the current adapter does); they agree with the flags `a52_frame`
+  returns for every supported mode, but begin is exactly where a cached
+  mapping could take the wrong one, so the source is named.
+
+**Proofs that must be preserved verbatim through the suite rewrite
+(gate F4)** — each exists because it caught something:
+
+- The termination oracle stays scoped to ONE ACCESS UNIT (`begin` + 6
+  blocks bounded as a unit). Porting it per-block would sextuple the
+  effective bound — gutting the defect-31 oracle inside the phase that
+  exists to close defect 31.
+- Block-shape assertion becomes "exactly 6 blocks of 256 frames per AU, and
+  a 7th call errors" — the 1536-frame shape proof must not simply vanish.
+- The full-plane XOR read (ASan's plane-sizing tripwire) runs over all 6
+  blocks; the block is poisoned before EVERY call, now 7 per AU.
+- The differential's whole-vector Goertzel needs 6144 contiguous samples per
+  channel, so the 6 × 256 accumulation must be in order.
+- `ref_samples == naus × 1536` precondition and the fresh-decoder-per-vector
+  rule both stay.
+- NEW: a counter for feeds that actually reached `a52_frame`/`a52_block`.
+  The fuzz currently cannot distinguish "rejected at the adapter's length
+  guard" from "parsed and rejected", so a stricter guard could gut its reach
+  and still print green (gate F16).
+
+**Step 3's numeric proof, ASSERTED not printed (gate F5):** the arena pass
+must assert `arena_high_water <= 28000`, not merely report it. An unasserted
+headline number is free to regress silently. Expect ~26,992 rather than the
+26,976 computed above once the iterator's per-AU state crosses an allocator
+bucket; the figure is host LP64-derived, while dcadec's 62,560 is an
+on-target ILP32 measurement, so treat single-byte agreement between them as
+coincidence, not proof (gate F12).
+
+**The differential must remain byte-identical** (1906 LSB / 69.3 dB) at
+every step, and this is provable rather than hopeful: decode order and count
+are unchanged so `dither_gen`'s LFSR advances identically, the quantize is
+per-sample, and edit 3's synthesized zeros are exactly what the tail-zeroed
+pad already returns for a past-end read.
+
+### Slice 2b — decode off the audio ISR (target)
+
+- **AC-3 slices; DTS moves.** dcadec decodes an AU in one `core_parse` +
+  `core_filter` pair and cannot be sliced without vendor surgery we are not
+  doing, so DTS's fix is relocation to epoch context. AC-3 gets both. Record
+  the asymmetry rather than pretending the codecs are symmetric.
+- Decode runs in the runtime's epoch/service context, feeding the existing
+  transmit ring; the audio ISR's job shrinks to moving words. **Ring depth
+  must be sized against the stage/commit HOLD-BACK, not just latency and
+  jitter (gate R4)**: the ring is 2048 frames, and holding a whole AU
+  uncommitted occupies 1536 of them (75%), leaving 512 committed frames —
+  10.7 ms — for the ISR to drain while an AU is in flight. That, plus worst
+  service latency and jitter, is the real criterion. `enqueue`'s free-space
+  check is per-block today; under stage/commit the whole-AU free must be
+  checked up front instead.
+- Watchdog, starvation, squelch and carrier-edge interactions re-proven on
+  the `pipeline` suite — the restructure moves the code that those state
+  machines drive, so their oracles are the regression surface.
+- **Per-AU fixed overhead rises** (gate F17): sink calls go from 1 to 6 per
+  access unit, and each `enqueue` re-runs the config-apply check and its
+  per-call setup. Budget for it in the cycle measurement rather than
+  discovering it on the meters.
+- **The defect-31 hypothesis this tests.** The native seam hunt
+  (`bfa73a6f8`) found no non-terminating dcadec parse across 29,435
+  seam-shaped feeds, leaving the ISR-time storm as prime suspect. 2b removes
+  that suspect. If sustained decode still dies by watchdog afterwards, the
+  hypothesis was wrong and the next suspect is the transmit path, not the
+  parser.
+
+### Out of scope for phase 2
+
+Pipeline dispatch by Pc data type and the 512-frame staging split (phase 3),
+arena relocation (phase 4, only if the 8,768 B spare proves uncomfortable),
+DRC config flag.
