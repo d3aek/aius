@@ -165,6 +165,12 @@ specified here. Strike items here in the commit that closes them.
     hour (left carries FR's 600 Hz strong; right carries C's 900).
     Chase is a table diff plus a native per-channel tone test; no
     hardware needed.
+  - **31**: sustained live DTS decode watchdog-crashes within ~10 min
+    under capture/HTTP load — ISR-hang shape (`pv=5`, `fa=254`: main
+    loop starved, never aborting; the whole-AU decode runs in one
+    audio block callback). Chase after 28: bound per-callback decode
+    work + hunt non-terminating dcadec parses with seam-corrupted AUs
+    on the host.
   - **27**: the silence self-loop (locked carrier, validity-muted PCM
     in, silent out, TX gate held open) floods `overruns` at ~1 kHz
     sustained; found on the first-ever external-carrier input

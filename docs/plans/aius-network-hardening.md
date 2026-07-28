@@ -1189,6 +1189,27 @@ are follow-up work, recorded here so they are not lost.
     `AiusDownmixConfig`'s expected slot order; a per-channel tone test
     through the native pipeline suite would pin it without hardware.
 
+31. **Sustained live DTS decode dies by watchdog within minutes — the
+    ISR-hang shape, not the epoch-abort shape.** Found 2026-07-28
+    within the hour of defect 29's fix: after ~10 minutes of live
+    decode (including two recorder capture drains and HTTP load), the
+    board took a WDOG reset (`rsrc=16`, `bgen` +1) and the retained
+    instruments read `pv=5` with `fa=254` — the final epoch had walked
+    to the HTTP checkpoint and NO service ever returned false, so the
+    main loop was starved or stopped outright rather than aborting.
+    The decode runs inside the audio ISR (`update()` decodes one whole
+    access unit in a single block callback: ~10.6 ms of audio's worth
+    of dcadec work against a 2.67 ms block budget, made up on the
+    other three blocks), so the prime suspects are a dcadec hang on a
+    loop-seam-corrupted access unit, or an ISR-time storm compounding
+    with capture/HTTP load until the 8 s watchdog starved. The
+    defect-25 instrument pair discriminated the shape on first use.
+    Post-crash the classification lottery (defect 28) relanded PCM,
+    which is how it surfaced audibly. Chase after 28's fix: bound
+    dcadec per-callback work (decode outside the ISR, or slice it),
+    and feed a seam-corrupted AU corpus through the native harness
+    hunting for non-terminating parses.
+
 #### Decisions taken, so they are not re-opened
 
 - **A network syslog sender was assessed and declined.** Not on cost — the event
