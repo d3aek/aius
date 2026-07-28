@@ -24,7 +24,8 @@
     "lfe_gain_linear": 0.31622776601683794,
     "lfe_crossover_hz": 120,
     "headroom_linear": 0.5,
-    "clipfree": false
+    "clipfree": false,
+    "layout_aware": true
   },
   "limiter": {
     "enabled": true,

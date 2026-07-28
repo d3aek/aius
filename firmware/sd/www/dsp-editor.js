@@ -229,6 +229,7 @@
       lfe_crossover_hz: 120,
       headroom_linear: 0.5,
       clipfree: false,
+      layout_aware: true,
     },
     limiter: { enabled: true, threshold_dbfs: -1, attack_ms: 0.5, release_ms: 100, lookahead_ms: 2 },
   };
@@ -398,6 +399,17 @@
       unit: ' linear',
     },
     { path: 'matrix.clipfree', kind: 'bool', label: 'Clip-free headroom policy' },
+    /* The one field whose ABSENCE is not "false". The device treats a missing
+     * matrix.layout_aware as TRUE (lib/aius_dsp_config: every config written
+     * before the field existed omits it, and none of them asked for the old
+     * level), so the form must read an absent value the same way or the first
+     * save from an older device would silently turn the fix off. */
+    {
+      path: 'matrix.layout_aware',
+      kind: 'bool',
+      label: 'Layout-aware headroom',
+      absentDefault: true,
+    },
   ];
 
   /* The diagram's bounds are the FORM's bounds, read back out of the descriptor
@@ -928,7 +940,13 @@
     for (const descriptor of [...MATRIX_FIELDS, ...LIMITER_FIELDS]) {
       const input = field(descriptor.path);
       const value = readPath(model, descriptor.path);
-      if (descriptor.kind === 'bool') input.checked = Boolean(value);
+      /* `absentDefault` is what an ABSENT key renders as, and it exists for
+       * matrix.layout_aware: a device (or a hand-written config) that predates
+       * the field means TRUE by omitting it, so Boolean(undefined) would show
+       * the box unticked and the next save would send that back as a real
+       * false. A present value always wins, either way. */
+      if (descriptor.kind === 'bool')
+        input.checked = value === undefined ? Boolean(descriptor.absentDefault) : Boolean(value);
       else setNumberValue(input, value);
     }
     refreshDerived();
@@ -1081,6 +1099,10 @@
         lfe_crossover_hz: numberOf('matrix.lfe_crossover_hz', 120),
         headroom_linear: numberOf('matrix.headroom_linear', 1),
         clipfree: field('matrix.clipfree').checked,
+        /* Optional to the validator (absent reads true) and sent anyway: this
+         * body is the whole matrix, and omitting the box's own state would make
+         * unticking it unsendable. */
+        layout_aware: field('matrix.layout_aware').checked,
       },
       limiter: {
         enabled: field('limiter.enabled').checked,

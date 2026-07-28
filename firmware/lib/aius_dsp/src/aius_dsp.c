@@ -177,6 +177,10 @@ AiusDownmixConfig aius_downmix_config_default(void)
     c.headroom = AIUS_DSP_HEADROOM_DEFAULT;
     c.lfe_crossover_hz = AIUS_DSP_LFE_CROSSOVER_DEFAULT_HZ;
     c.lfe_fold = NULL; /* caller-owned state; see aius_dsp.h */
+    /* THE MODULE'S HOME OF THE DEFAULT-ON, and the reason every caller should
+     * construct through here: a zeroed struct means the LEGACY uniform pad, so a
+     * config assembled field by field gets the old behaviour by omission. */
+    c.layout_aware = 1;
     return c;
 }
 
@@ -191,6 +195,36 @@ double aius_downmix_clipfree_headroom(const AiusDownmixConfig *cfg)
         return 1.0;
     }
     return 1.0 / denom;
+}
+
+/* The channels whose presence makes the matrix SUM. FC and the LFE fold land on
+ * BOTH outputs, SL lands on L and SR on R, so each of them arrives on top of a
+ * front channel; FL and FR alone route 1:1 and add nothing to each other. */
+#define AIUS_DSP_SUMMING_MASK \
+    (AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR)
+
+/* The effective headroom for one block, FROM THE MASK ALONE.
+ *
+ * MASK-ONLY IS THE CONTRACT, not an implementation shortcut (see aius_dsp.h
+ * §aius_dsp_downmix). Deciding from the resolved plane pointers or from the gain
+ * values instead would make the pad depend on cfg->lfe being non-zero, or on the
+ * fold-in's fail-closed verdict -- and both of those claim to be bit-for-bit
+ * equivalent to the same block without the LFE, which they could not be if they
+ * also moved the output level by 6 dB.
+ *
+ * Mono is unity by the `channels > 1` term whatever its mask bit says: one plane
+ * replicated to both outputs sums nothing. Off the audio path's inner loop:
+ * resolved once per block, like the crossover above it. */
+static double resolve_headroom(const AiusDownmixConfig *cfg,
+                               const AiusPcmBlockD *in)
+{
+    if (!cfg->layout_aware) {
+        return cfg->headroom; /* legacy: the uniform pad, every layout */
+    }
+    if (in->channels > 1 && (in->channel_mask & AIUS_DSP_SUMMING_MASK) != 0u) {
+        return cfg->headroom;
+    }
+    return 1.0; /* a <= FS input through a unity route cannot exceed FS */
 }
 
 AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
@@ -209,9 +243,12 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
 
     double *outL = out_l;
     double *outR = out_r;
-    double headroom = cfg->headroom;
+    double headroom = resolve_headroom(cfg, in);
 
-    /* Mono: replicate the single plane to both channels at unity gain. */
+    /* Mono: replicate the single plane to both channels at unity gain. The
+     * headroom multiply stays in the loop for the layout-aware-off case; with
+     * the flag set `headroom` is exactly 1.0 here, and x * 1.0 == x, so the
+     * replicate is bit-exact rather than approximately so. */
     if (in->channels == 1) {
         const double *m = in->planes[0];
         if (m == NULL) {

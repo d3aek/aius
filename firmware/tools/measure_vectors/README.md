@@ -23,9 +23,16 @@ regeneration on another host is not guaranteed byte-identical, and validation
 therefore checks obligations, not byte equality.
 
 Upload to the board as `PUT /sd/replays/<name>` (they land at
-`/aius/replays/<name>.iec`) and start with `POST /api/replays/start`. The
-`pcm440_full` vector needs a config that opens the limiter — at the shipped
-0.5 headroom the tap sees −6 dBFS against the −1 dBFS threshold.
+`/aius/replays/<name>.iec`) and start with `POST /api/replays/start`.
+
+**These vectors reach the tap at their own level.** PCM pass-through is a stereo
+FL|FR layout, which sums nothing, so the downmix headroom pad does not apply to
+it ([`signal-path.md` §Channel layout and downmix rules](../../../docs/reference/signal-path.md#channel-layout-and-downmix-rules)):
+a −6 dBFS vector measures at −6 dBFS and `pcm440_full` engages the limiter at
+the shipped config. Before the layout-aware pad landed (2026-07-28) every
+figure sat 6.02 dB lower and `pcm440_full` needed `headroom_linear` raised to
+1.0 to reach the −1 dBFS threshold at all; recorded measurements from before
+that date read 6.02 dB quiet for that reason and not because anything drifted.
 
 `measure_run.py` is the committed driver for all of it against a live board
 (`AIUS_DEVICE`, `AIUS_SD_AUTH`): `upload` chunks the corpus through

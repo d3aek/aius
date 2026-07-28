@@ -417,6 +417,9 @@ describe('Aius SD DSP editor — model to DOM', () => {
     expect(valueOf('matrix.lfe_crossover_hz')).toBe('120');
     expect(valueOf('matrix.headroom_linear')).toBe('0.5');
     expect(fieldOf('matrix.clipfree').checked).toBe(false);
+    // The factory model ships layout-aware headroom ON: the 0.5 pad is the
+    // summing-layout pad, so stereo pass-through runs at source level.
+    expect(fieldOf('matrix.layout_aware').checked).toBe(true);
     expect(fieldOf('matrix.headroom_linear').disabled).toBe(false);
     expect(fieldOf('limiter.enabled').checked).toBe(true);
     expect(valueOf('limiter.threshold_dbfs')).toBe('-1');
@@ -467,6 +470,9 @@ describe('Aius SD DSP editor — model to DOM', () => {
 
     expect(valueOf('matrix.lfe_crossover_hz')).toBe('80');
     expect(fieldOf('matrix.clipfree').checked).toBe(true);
+    // This fixture has the layout-aware rule explicitly OFF -- the diagnostic
+    // setting, in which the pad applies to every layout including mono.
+    expect(fieldOf('matrix.layout_aware').checked).toBe(false);
     expect(fieldOf('matrix.headroom_linear').disabled).toBe(true);
     // 1 / (1 + 0.85 + 0.6 + |0.25|), resolved client-side exactly as the DSP does.
     expect(valueOf('matrix.headroom_linear')).toBe('0.37037');
@@ -530,11 +536,11 @@ describe('Aius SD DSP editor — model to DOM', () => {
       'e:input_channels.fl.eq.0.frequency_hz',
     );
 
-    // 22 per-field resets (features, trims, matrix, limiter) + 14 per-section
-    // ones (6 channels x 2 + output x 2), all reachable by AT but out of the
-    // tab order.
+    // 23 per-field resets (features, trims, matrix incl. layout_aware, limiter)
+    // + 14 per-section ones (6 channels x 2 + output x 2), all reachable by AT
+    // but out of the tab order.
     const resets = [...document.querySelectorAll('.field__reset')];
-    expect(resets.length).toBe(36);
+    expect(resets.length).toBe(37);
     expect(resets.every((button) => button.tabIndex === -1)).toBe(true);
     expect(document.querySelectorAll('.eq-table__reset').length).toBe(14);
   });
@@ -944,6 +950,66 @@ describe('Aius SD DSP editor — stage panels', () => {
     expect(body.base_generation).toBe(0);
     // ... and the limiter edit is still on the page, waiting.
     expect(valueOf('limiter.release_ms')).toBe('250');
+  });
+
+  /* matrix.layout_aware: a matrix-panel FIELD, not a stage enable. It decides
+   * whether `headroom_linear` is the summing-layout pad (mono and stereo
+   * pass-through at source level) or the uniform pad on every layout, and it
+   * travels in the matrix group like every other value on that panel. */
+  it('round-trips the layout-aware headroom checkbox in the matrix body', async () => {
+    await boot();
+    el('token').value = '0123456789abcdef';
+    expect(fieldOf('matrix.layout_aware').checked).toBe(true);
+
+    await setCheck('matrix.layout_aware', false);
+    expect(el('dirty:matrix').hidden).toBe(false);
+    await click('apply:matrix');
+
+    const body = JSON.parse(putCalls()[0].body);
+    expect(body.matrix.layout_aware).toBe(false);
+    // It is one field of the matrix group, so the rest of that group rides along
+    // unchanged and no other group moves.
+    expect(body.matrix.headroom_linear).toBe(0.5);
+    expect(body.limiter).toEqual(factory().limiter);
+    expect(body.features).toEqual(factory().features);
+
+    // Let it land, off, and come back from the device that way: the OFF state
+    // has to survive a GET or the next save would quietly re-enable it.
+    device.config = {
+      ...factory(),
+      source: 'sd',
+      config_generation: 1,
+      matrix: { ...factory().matrix, layout_aware: false },
+    };
+    await vi.advanceTimersByTimeAsync(500);
+    await settle();
+    expect(fieldOf('matrix.layout_aware').checked).toBe(false);
+
+    // And back on: the box is the only thing that decides what the device gets.
+    await setCheck('matrix.layout_aware', true);
+    await click('apply:matrix');
+    expect(JSON.parse(putCalls()[1].body).matrix.layout_aware).toBe(true);
+  });
+
+  /* THE ABSENT-READS-ON RULE, which is the editor's half of the firmware's own
+   * default: lib/aius_dsp_config treats a matrix with no layout_aware as TRUE,
+   * because every config written before the field existed omits it. A page that
+   * rendered the missing key as Boolean(undefined) would show the box unticked
+   * and then SEND that back as a real false on the next save, turning the fix
+   * off on exactly the installed base it was written for. */
+  it('reads a config with no layout_aware as on, and says so on the wire', async () => {
+    const older = JSON.parse(JSON.stringify(fixture('dsp-config-default.json')));
+    delete older.matrix.layout_aware;
+    await boot({ config: older });
+    el('token').value = '0123456789abcdef';
+
+    expect(fieldOf('matrix.layout_aware').checked).toBe(true);
+    // Nothing was touched, so the page is clean: an absent key reading ON is not
+    // an edit the operator has to notice.
+    expect(el('dirty:matrix').hidden).toBe(true);
+
+    await click('apply:matrix');
+    expect(JSON.parse(putCalls()[0].body).matrix.layout_aware).toBe(true);
   });
 
   it('carries its own enable flag and leaves every other panel flag at the baseline', async () => {

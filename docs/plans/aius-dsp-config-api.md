@@ -997,7 +997,9 @@ The config shape is:
 - `input_channels`: fixed `fl`, `fr`, `fc`, `lfe`, `sl`, `sr`, each `gain_db` + `eq[]`
 - `output_eq[]`: up to two bounded EQ sections
 - `matrix`: `center_gain_linear`, `surround_gain_linear`, `lfe_gain_linear`,
-  `lfe_crossover_hz`, `headroom_linear`, `clipfree`
+  `lfe_crossover_hz`, `headroom_linear`, `clipfree`, and `layout_aware`
+  (2026-07-28: OPTIONAL, absent reads true — the pad applies only to
+  summing layouts; see `signal-path.md`)
 - `limiter`: `enabled`, `threshold_dbfs`, `attack_ms`, `release_ms`, `lookahead_ms`
 
 Bounds are unchanged (input trim `[-60,12]` dB; EQ freq `[10,24000]`, Q `[0.1,20]`,
@@ -1008,7 +1010,10 @@ gain `[-24,24]`; limiter threshold `[-24,0]`, attack `[0.1,100]`, release
 by a corner of zero, which would otherwise mean two encodings of one state. The whole
 config is well under the 12,288-byte cap.
 
-**`matrix` is all-or-nothing on `PUT`: every key above is required.** So a stored
+**`matrix` is all-or-nothing on `PUT` for the six ORIGINAL keys: those are
+required.** `layout_aware` is the one deliberate exception (optional,
+absent = true), so configs written before it existed keep validating — the
+required-key check masks to the legacy six. So a stored
 `/aius/dsp.json` written before `lfe_crossover_hz` existed now fails validation on a
 missing key, and a `GET`-then-`PUT` round-trip against firmware whose serializer
 omitted the key would 400. Both are why the `GET` serializer carries it. `POST /api/mode`, `POST /api/mix`, and

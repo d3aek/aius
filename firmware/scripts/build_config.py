@@ -43,8 +43,14 @@ LFE_CROSSOVER_MAX_HZ = 500.0
 EQ_TYPES = {"bypass": 0, "highpass": 1, "peaking": 2}
 INPUT_CHANNELS = ("fl", "fr", "fc", "lfe", "sl", "sr")
 FEATURE_KEYS = ("input_eq", "matrix", "output_eq", "limiter", "meters")
+# `layout_aware` is REQUIRED here and OPTIONAL in the PUT validator, and the
+# asymmetry is deliberate. This file bakes the factory model, where a missing key
+# is a build error rather than a default; lib/aius_dsp_config parses configs
+# written before the field existed, where a missing key must read TRUE (the
+# shipped behaviour) rather than reintroduce the uniform pad by omission.
 MATRIX_KEYS = ("center_gain_linear", "surround_gain_linear", "lfe_gain_linear",
-               "lfe_crossover_hz", "headroom_linear", "clipfree")
+               "lfe_crossover_hz", "headroom_linear", "clipfree",
+               "layout_aware")
 LIMITER_KEYS = ("enabled", "threshold_dbfs", "attack_ms", "release_ms",
                 "lookahead_ms")
 
@@ -149,6 +155,7 @@ def validate_config(config):
     if matrix["headroom_linear"] <= 0 or matrix["headroom_linear"] > 1:
         raise ValueError("matrix headroom_linear must be greater than 0 and at most 1")
     _require_bool(matrix["clipfree"], "matrix clipfree")
+    _require_bool(matrix["layout_aware"], "matrix layout_aware")
 
     limiter = config["limiter"]
     _require_exact_keys(limiter, LIMITER_KEYS, "limiter")
@@ -206,7 +213,7 @@ def generate_header(config):
         "typedef struct { uint8_t type; double frequency_hz; double q; double gain_db; } AiusOpticalEqConfig;",
         "typedef struct { double gain_db; uint8_t eq_count; AiusOpticalEqConfig eq[2]; } AiusOpticalInputChannelConfig;",
         "typedef struct { uint8_t input_eq; uint8_t matrix; uint8_t output_eq; uint8_t limiter; uint8_t meters; } AiusOpticalFeaturesConfig;",
-        "typedef struct { double center_gain_linear; double surround_gain_linear; double lfe_gain_linear; double lfe_crossover_hz; double headroom_linear; uint8_t clipfree; } AiusOpticalMatrixConfig;",
+        "typedef struct { double center_gain_linear; double surround_gain_linear; double lfe_gain_linear; double lfe_crossover_hz; double headroom_linear; uint8_t clipfree; uint8_t layout_aware; } AiusOpticalMatrixConfig;",
         "typedef struct { uint8_t enabled; double threshold_dbfs; double attack_ms; double release_ms; double lookahead_ms; } AiusOpticalLimiterConfig;",
         "typedef struct {",
         "\tuint32_t sample_rate_hz;",
@@ -233,7 +240,7 @@ def generate_header(config):
         "\t{%s}," % ", ".join(input_initializers),
         f"\t{len(config['output_eq'])},",
         "\t%s," % _eq_initializer(config["output_eq"]),
-        "\t{%.17g, %.17g, %.17g, %.17g, %.17g, %d},"
+        "\t{%.17g, %.17g, %.17g, %.17g, %.17g, %d, %d},"
         % (
             matrix["center_gain_linear"],
             matrix["surround_gain_linear"],
@@ -241,6 +248,7 @@ def generate_header(config):
             matrix["lfe_crossover_hz"],
             matrix["headroom_linear"],
             1 if matrix["clipfree"] else 0,
+            1 if matrix["layout_aware"] else 0,
         ),
         "\t{%d, %.17g, %.17g, %.17g, %.17g},"
         % (

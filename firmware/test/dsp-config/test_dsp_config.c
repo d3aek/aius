@@ -613,6 +613,103 @@ static void test_lfe_crossover(void)
 #undef LFE_XOVER_BODY
 }
 
+/* matrix.layout_aware: THE ONE OPTIONAL MATRIX KEY.
+ *
+ * The flag decides whether headroom_linear is the SUMMING-layout pad (true: mono
+ * and stereo FL|FR pass through at unity) or the uniform pad on every layout
+ * (false: the pre-2026-07-28 behaviour). Everything below drives REAL JSON
+ * BODIES through aius_dsp_config_parse_put, never a hand-built struct, because
+ * the two defects this pin exists for are both parse-level and invisible to a
+ * struct test:
+ *
+ *   - THE REQUIRED-KEY INVERSION. The required-key check is a MASK,
+ *     (seen & 0x3F) != 0x3F. Written as the naive `seen != 0x3F` it would reject
+ *     every body that CARRIES the field -- the editor's own -- and written as
+ *     `seen != 0x7F` it would reject every body that does not, which is every
+ *     config written before the field existed. The first two cases here fail on
+ *     one spelling each.
+ *   - THE ABSENT-READS-ON DEFAULT. aius_dsp_model_set_defaults() is a memset to
+ *     zero, so the default cannot live there; it lives in parse_matrix's local
+ *     initializer. If it were dropped, an old config would parse to
+ *     layout_aware == 0 and the fix would ship as a silent no-op on exactly the
+ *     installed base it was written for. */
+static void test_layout_aware(void)
+{
+	/* A body with the matrix object's tail spelled by the caller, so "absent",
+	 * "true" and "false" are the same body apart from the key under test. */
+#define LAYOUT_BODY(tail)                                                          \
+	"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"     \
+	"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"      \
+	"\"limiter\":true,\"meters\":true},"                                       \
+	"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"                    \
+	"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"       \
+	"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"      \
+	"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"                      \
+	"\"matrix\":{\"center_gain_linear\":0.7071067811865475,"                   \
+	"\"surround_gain_linear\":0.7071067811865475,"                             \
+	"\"lfe_gain_linear\":0.31622776601683794,\"lfe_crossover_hz\":120,"        \
+	"\"headroom_linear\":0.5,\"clipfree\":false" tail "},"                     \
+	"\"limiter\":{\"enabled\":true,\"threshold_dbfs\":-1,\"attack_ms\":0.5,"   \
+	"\"release_ms\":100,\"lookahead_ms\":2},\"base_generation\":0}"
+
+	static const struct {
+		const char *body;
+		uint8_t expect;
+		const char *label;
+	} accepted[] = {
+		{LAYOUT_BODY(""), 1u, "absent reads ON (a pre-2026-07-28 config)"},
+		{LAYOUT_BODY(",\"layout_aware\":true"), 1u, "present true"},
+		{LAYOUT_BODY(",\"layout_aware\":false"), 0u, "present false"},
+	};
+	for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+		AiusDspModel m;
+		memset(&m, 0xa5, sizeof(m));
+		AiusDspConfigErrorCode error = parse(accepted[i].body, &m);
+		check(error == AIUS_DSP_CONFIG_OK, "layout_aware %s: error %d (%s)",
+		      accepted[i].label, (int)error,
+		      aius_dsp_config_error_message(error));
+		if (error != AIUS_DSP_CONFIG_OK)
+			continue;
+		check(m.matrix.layout_aware == accepted[i].expect,
+		      "layout_aware %s: parsed %u, want %u", accepted[i].label,
+		      (unsigned)m.matrix.layout_aware, (unsigned)accepted[i].expect);
+		/* And the rest of the matrix is unharmed by the optional key's arm. */
+		check(m.matrix.headroom_linear == 0.5 &&
+		          m.matrix.lfe_crossover_hz == 120.0 &&
+		          m.matrix.clipfree == 0u,
+		      "layout_aware %s: the rest of the matrix moved",
+		      accepted[i].label);
+	}
+
+	/* It is a BOOLEAN, and a duplicate is still a duplicate: optional does not
+	 * mean unvalidated. */
+	body_bound(LAYOUT_BODY(",\"layout_aware\":1"),
+	           AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "layout_aware number");
+	body_bound(LAYOUT_BODY(",\"layout_aware\":\"true\""),
+	           AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "layout_aware string");
+	body_bound(LAYOUT_BODY(",\"layout_aware\":true,\"layout_aware\":false"),
+	           AIUS_DSP_CONFIG_ERR_DUPLICATE_KEY, "layout_aware duplicated");
+
+	/* The six legacy keys stay REQUIRED: carrying the new one does not excuse a
+	 * missing old one. (clipfree is dropped here, layout_aware supplied.) */
+	expect_error(
+		"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"
+		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
+		"\"limiter\":true,\"meters\":true},"
+		"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"
+		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"
+		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"layout_aware\":true},"
+		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
+		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
+		AIUS_DSP_CONFIG_ERR_MISSING_KEY,
+		"matrix.clipfree still required when layout_aware is present");
+#undef LAYOUT_BODY
+}
+
 static void test_headroom(void)
 {
 	/* headroom_linear == 0 rejected (must be > 0). */
@@ -1017,6 +1114,7 @@ int main(void)
 	test_missing_keys();
 	test_bounds();
 	test_lfe_crossover();
+	test_layout_aware();
 	test_headroom();
 	test_sample_rate();
 	test_wrong_types();

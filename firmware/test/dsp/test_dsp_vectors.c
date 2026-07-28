@@ -20,11 +20,14 @@
  *
  * THE OUTPUT SIGNATURE MOVES WHEN THE SHIPPED DEFAULT MOVES, which is what makes
  * it worth retaining and also what makes a regeneration a reviewable event rather
- * than a formality. It moved twice so far: for the 0.5 headroom (defect 2) and for
- * the LFE fold-in (roadmap item 2). A regeneration must be able to account for
- * every changed number, so the harness prints `lfe_delta_peak` per vector and
- * asserts the blast radius directly -- a vector with no LFE plane must be
- * BIT-IDENTICAL with the fold-in enabled, and a vector with one must differ.
+ * than a formality. It moved three times so far: for the 0.5 headroom (defect 2),
+ * for the LFE fold-in (roadmap item 2), and for the layout-aware pad
+ * (2026-07-28), which moved the two STEREO vectors' output peaks up by exactly
+ * 6.02 dB to their own input peaks and left both 5.1 vectors' bytes untouched.
+ * A regeneration must be able to account for every changed number, so the harness
+ * prints `lfe_delta_peak` per vector and asserts the blast radius directly -- a
+ * vector with no LFE plane must be BIT-IDENTICAL with the fold-in enabled, and a
+ * vector with one must differ.
  *
  * Usage: test_dsp_vectors <vectors_dir> <golden_dir>
  * Exit 0 on all-pass, 1 on any failure.
@@ -235,6 +238,27 @@ static int mask_plane(uint32_t mask, uint32_t bit)
     return idx;
 }
 
+/* The LAYOUT-AWARE HEADROOM PREDICATE, implemented here from the contract and
+ * never delegated to the module: with the flag set, `headroom` applies when the
+ * layout sums (more than one channel AND any of FC/LFE/SL/SR in the mask) and
+ * the effective gain is exactly 1.0 otherwise; with the flag clear it applies
+ * uniformly, as it did before 2026-07-28.
+ *
+ * A REFERENCE THAT ASKED THE MODULE would agree with it about a broken rule --
+ * which is the whole reason this harness computes its own answer over real
+ * decoded content. It reads the MASK and the channel count, the same two facts
+ * the contract names, and nothing else: not the gains, not the planes. */
+static double ref_headroom(const AiusDownmixConfig *cfg, const struct pcm *p)
+{
+    const uint32_t summing =
+        AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR;
+    if (!cfg->layout_aware)
+        return cfg->headroom;
+    if (p->channels > 1 && (p->channel_mask & summing) != 0u)
+        return cfg->headroom;
+    return 1.0;
+}
+
 /* Independent Lo/Ro downmix of a planar block per the documented formula,
  * including the LFE fold-in and its crossover.
  *
@@ -279,6 +303,9 @@ static void ref_downmix(const AiusDownmixConfig *cfg, const struct pcm *p,
     double y1[AIUS_DSP_LFE_CROSSOVER_SECTIONS] = {0};
     double y2[AIUS_DSP_LFE_CROSSOVER_SECTIONS] = {0};
 
+    /* Resolved once per block, from the layout, exactly as the module does. */
+    const double headroom = ref_headroom(cfg, p);
+
     for (uint32_t n = 0; n < p->frames; n++) {
         double l = 0.0, r = 0.0;
         if (iFL >= 0) l += (double)p->ch[iFL][n];
@@ -304,8 +331,8 @@ static void ref_downmix(const AiusDownmixConfig *cfg, const struct pcm *p,
         }
         if (iSL >= 0) l += (double)p->ch[iSL][n] * cfg->surround;
         if (iSR >= 0) r += (double)p->ch[iSR][n] * cfg->surround;
-        outL[n] = l * cfg->headroom;
-        outR[n] = r * cfg->headroom;
+        outL[n] = l * headroom;
+        outR[n] = r * headroom;
     }
 }
 
@@ -732,17 +759,24 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
         CHECK(exactL, "%s FL->L not exact passthrough at unity", v->name);
         CHECK(exactR, "%s FR->R not exact passthrough at unity", v->name);
 
-        /* And the shipped default is EXACTLY that scaled by the headroom -- so the
-         * level change between the two is the intended 0.5, sample for sample, and
-         * not an accidental gain or a rounding artefact. This is the assertion that
-         * distinguishes an intended level change from an accidental one. */
-        int scaled = 1;
+        /* THE DISCRIMINATOR THAT INVERTED (layout-aware headroom, 2026-07-28).
+         * It used to assert that the shipped default was EXACTLY the unity
+         * result scaled by 0.5, sample for sample -- the assertion that told an
+         * intended level change from an accidental one while stereo paid the
+         * pad. Stereo sums nothing, so it pays no pad now, and the same
+         * assertion is made on the same subject in its stronger form: the
+         * shipped default IS the unity result, and the integers that reach the
+         * wire are the decoder's own. Convert -> x1.0 -> quantize is the
+         * identity, so this is an int32 ROUND-TRIP over a whole real vector,
+         * which no scaled comparison could have said. */
+        int identical = 1;
         for (uint32_t n = 0; n < F; n++) {
-            if (outL[n] != ref_quantize((double)p.ch[0][n] * cfg.headroom) ||
-                outR[n] != ref_quantize((double)p.ch[1][n] * cfg.headroom))
-                scaled = 0;
+            if (outL[n] != p.ch[0][n] || outR[n] != p.ch[1][n])
+                identical = 0;
         }
-        CHECK(scaled, "%s default downmix != unity scaled by headroom", v->name);
+        CHECK(identical,
+              "%s default downmix is not an exact stereo pass-through -- a "
+              "layout that sums nothing must take no headroom pad", v->name);
         free(uL);
         free(uR);
     } else {
@@ -1372,6 +1406,21 @@ static void run_vector(const char *vec_dir, const char *golden_dir,
             sig.in_peak[c] = peak_abs(p.ch[c], F);
         sig.out_peak_l = peak_abs(outL, F);
         sig.out_peak_r = peak_abs(outR, F);
+
+        /* THE STEREO GOLDEN IS NOW CHECKABLE BY EYE, which is worth an assertion
+         * of its own: a vector whose layout sums nothing passes through, so its
+         * output peak IS its input peak, in the same units, in the same file. A
+         * regenerated stereo golden that shows anything else -- half, or a
+         * rounded half -- is a pad that came back. */
+        if (p.channels == 2 &&
+            !(p.channel_mask & (AIUS_CH_FC | AIUS_CH_LFE | AIUS_CH_SL |
+                                AIUS_CH_SR))) {
+            CHECK(sig.out_peak_l == sig.in_peak[0] &&
+                  sig.out_peak_r == sig.in_peak[1],
+                  "%s out_peak %d/%d != in_peak %d/%d -- a non-summing layout "
+                  "must reach the wire at source level", v->name,
+                  sig.out_peak_l, sig.out_peak_r, sig.in_peak[0], sig.in_peak[1]);
+        }
 
         if (dump) {
             char gp[1024];

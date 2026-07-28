@@ -322,7 +322,18 @@ typedef struct AiusLfeFold AiusLfeFold;
  *
  * Still a PRODUCT DECISION, now an evidenced one; a caller wanting the
  * theoretical guarantee instead sets headroom from
- * aius_downmix_clipfree_headroom and may then turn the limiter off. */
+ * aius_downmix_clipfree_headroom and may then turn the limiter off.
+ *
+ * IT IS THE SUMMING-LAYOUT PAD, AND ONLY THAT (2026-07-28). Every number above
+ * -- the corpus, the 0.5 choice, the clip-free math -- describes a matrix that
+ * SUMS: FC into both sides, SL/SR onto the fronts, the LFE folded in. A layout
+ * that sums nothing cannot overshoot, so aius_dsp_downmix resolves an EFFECTIVE
+ * headroom per block FROM THE INPUT MASK ALONE (see
+ * AiusDownmixConfig.layout_aware): mono and stereo pass-through (FL|FR) take
+ * exactly 1.0, and any layout carrying FC, LFE, SL or SR takes this value. A
+ * <= full-scale input through a unity route is <= full scale at the output, so
+ * removing the pad there costs no protection whatsoever -- and paying it cost
+ * every stereo source 6.02 dB for nothing until this landed. */
 #define AIUS_DSP_HEADROOM_DEFAULT 0.5
 
 /* Downmix configuration. Fill from aius_downmix_config_default() then override.
@@ -368,16 +379,28 @@ typedef struct {
     double center;   /* FC gain into both L and R */
     double surround; /* SL->L and SR->R gain */
     double lfe;      /* LFE gain into both L and R, applied AFTER the crossover */
-    double headroom; /* overall output gain before the clamp */
+    double headroom; /* output gain before the clamp, on SUMMING layouts only
+                      * (see layout_aware and §AIUS_DSP_HEADROOM_DEFAULT) */
     double lfe_crossover_hz; /* LR4 low-pass corner; 0 = fold unfiltered */
     AiusLfeFold *lfe_fold;   /* crossover state; required when the corner is > 0 */
+    /* Nonzero: `headroom` is the SUMMING-layout pad, and aius_dsp_downmix
+     * resolves 1.0 for a block whose layout sums nothing (mono, and stereo
+     * FL|FR). Zero: the legacy uniform pad, applied to every layout including
+     * mono -- the diagnostic lever, and what a config written before this field
+     * existed asks for.
+     *
+     * ZERO-INIT CAVEAT: this struct is often memset to zero and then filled
+     * field by field, and a zeroed `layout_aware` is the LEGACY UNIFORM PAD, not
+     * the shipped behaviour. Construct through aius_downmix_config_default(),
+     * which sets it, or set it explicitly. */
+    int layout_aware;
 } AiusDownmixConfig;
 
 /* The shipped default: BS.775/A52 -3 dB center+surround, the LFE folded in at
- * -10 dB through a 120 Hz LR4 low-pass, and AIUS_DSP_HEADROOM_DEFAULT. `lfe_fold`
- * is NULL — the caller owns the crossover state and points this at it (see the
- * fail-closed note above), which is the one field a value-returning constructor
- * cannot supply. */
+ * -10 dB through a 120 Hz LR4 low-pass, AIUS_DSP_HEADROOM_DEFAULT, and
+ * layout_aware ON. `lfe_fold` is NULL — the caller owns the crossover state and
+ * points this at it (see the fail-closed note above), which is the one field a
+ * value-returning constructor cannot supply. */
 AiusDownmixConfig aius_downmix_config_default(void);
 
 /* The headroom that makes a fully correlated full-scale input downmix to exactly
@@ -419,14 +442,29 @@ typedef struct {
  * Channel routing is driven entirely by in->channel_mask (AIUS_CH_*), so
  * narrower inputs are handled without a mode flag:
  *   - mono   (channels == 1): the lone plane is copied to BOTH L and R at unity
- *            gain (headroom still applies), regardless of which mask bit is set.
- *            The LFE fold-in does NOT apply on this path: a one-channel block is
- *            a mono programme, not an effects channel, whatever its mask bit.
- *   - stereo (FL|FR):          FL->L, FR->R at unity -> exact passthrough.
+ *            gain (and, with layout_aware set, NO headroom pad either: one
+ *            replicated plane sums nothing), regardless of which mask bit is
+ *            set. The LFE fold-in does NOT apply on this path: a one-channel
+ *            block is a mono programme, not an effects channel, whatever its
+ *            mask bit.
+ *   - stereo (FL|FR):          FL->L, FR->R at unity and, with layout_aware set,
+ *                              no pad either -> the route is an exact int32
+ *                              round-trip through the whole chain.
  *   - 3.0/4.0/5.0/5.1 etc.:    every present channel routed per its AIUS_CH_*
  *                              rule above; absent channels contribute nothing.
  * Planes must be tightly packed to `channels` in AIUS_CH_* bit order, as the
  * decoder emits them.
+ *
+ * THE HEADROOM PAD IS RESOLVED PER BLOCK, FROM THE MASK ALONE. With
+ * cfg->layout_aware set, cfg->headroom applies when the layout SUMS -- channels
+ * > 1 and any of FC, LFE, SL, SR present -- and the effective gain is exactly
+ * 1.0 otherwise. Nothing else is consulted: not the resolved plane pointers, not
+ * the gain values. A block carrying an LFE plane at cfg->lfe == 0.0, or one
+ * whose fold failed closed, therefore takes exactly the pad it would have taken
+ * with the fold running -- which is what keeps "gain 0.0 is bit for bit the
+ * pre-fold-in output" true across this change, when a level-dependent predicate
+ * would have moved that output by 6 dB. With layout_aware clear, cfg->headroom
+ * applies to every layout, which is the pre-2026-07-28 behaviour exactly.
  *
  * The LFE fold-in runs here, inside the matrix accumulation and in DOUBLE: the
  * crossover reads the LFE plane's integer sample and its filtered result is

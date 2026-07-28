@@ -268,6 +268,356 @@ static void test_clipfree_headroom(void)
     printf("ok clip-free headroom maps full scale to full scale\n");
 }
 
+/* --- layout-aware headroom: the pad applies only to layouts that sum --------
+ *
+ * THE RULE, restated here because every pin below is one clause of it: with
+ * cfg.layout_aware set, the effective headroom is cfg.headroom when the block's
+ * layout SUMS (channels > 1 AND any of FC/LFE/SL/SR in the mask) and exactly 1.0
+ * otherwise. The decision reads THE MASK and nothing else -- not the resolved
+ * plane pointers, not the gain values -- which is what keeps the fold-in's "LFE
+ * gain 0.0 is bit for bit the pre-fold-in output" claim true on a layout whose
+ * level this change moves by 6 dB.
+ *
+ * Every comparison here is an exact identity rather than a tolerance: the
+ * shipped pad is a power of two, so scaling by it is an exponent decrement with
+ * no rounding, and a test that allowed an LSB would hide precisely the kind of
+ * near-miss (a pad applied twice, or resolved from a stale block) this exists to
+ * catch. */
+
+enum { LAYOUT_N = 64 }; /* frames per layout-pin block */
+
+/* Which of the two candidate levels the configured matrix produced on this
+ * block: the unity-headroom result scaled by cfg->headroom (`padded`), the
+ * unity-headroom result itself (`unity`), or -- if the reference is silent --
+ * both, which `nonzero` exists to expose rather than let a test pass on. */
+struct pad_verdict { int padded; int unity; int nonzero; };
+
+static struct pad_verdict headroom_verdict(const AiusDownmixConfig *cfg,
+                                           const AiusPcmBlockD *in)
+{
+    static double pl[LAYOUT_N], pr[LAYOUT_N], ul[LAYOUT_N], ur[LAYOUT_N];
+    assert(in->frames <= (uint32_t)LAYOUT_N);
+
+    /* Each run gets its OWN crossover memory: the reference must see the same
+     * filter history as the subject, and a shared fold would hand the second run
+     * the first one's tail. */
+    AiusLfeFold pad_fold, unity_fold;
+    memset(&pad_fold, 0, sizeof pad_fold);
+    memset(&unity_fold, 0, sizeof unity_fold);
+    AiusDownmixConfig padded = *cfg;
+    AiusDownmixConfig unity = *cfg;
+    if (cfg->lfe_fold != NULL) {
+        padded.lfe_fold = &pad_fold;
+        unity.lfe_fold = &unity_fold;
+    }
+    /* The reference is the bare matrix: headroom 1.0 resolves to 1.0 whichever
+     * way the layout predicate goes, so this run is the same double sum under
+     * either flag setting. */
+    unity.headroom = 1.0;
+
+    assert(aius_dsp_downmix(&padded, in, pl, pr) == AIUS_OK);
+    assert(aius_dsp_downmix(&unity, in, ul, ur) == AIUS_OK);
+
+    struct pad_verdict v = {1, 1, 0};
+    for (uint32_t i = 0; i < in->frames; i++) {
+        if (pl[i] != ul[i] * cfg->headroom || pr[i] != ur[i] * cfg->headroom)
+            v.padded = 0;
+        if (pl[i] != ul[i] || pr[i] != ur[i]) v.unity = 0;
+        if (ul[i] != 0.0 || ur[i] != 0.0) v.nonzero = 1;
+    }
+    return v;
+}
+
+/* Two uncorrelated non-silent ramps, so no pin below can pass on silence and the
+ * two planes of a 2-channel block are distinguishable. */
+static void layout_fill(double *dst, uint32_t n, int32_t seed)
+{
+    for (uint32_t i = 0; i < n; i++)
+        dst[i] = (double)(seed + (int32_t)i * 9973 * (i % 2 ? -1 : 1));
+}
+
+/* (c) EVERY summing bit, alone with FL in a 2-channel mask, takes the pad. A
+ * predicate that dropped one bit -- or that tested "channels >= 3" -- passes
+ * three of these four and fails the fourth, which is the point of testing them
+ * one at a time rather than through a 5.1 block that carries all of them. */
+static void test_layout_each_summing_bit_takes_the_pad(void)
+{
+    static const uint32_t summing[] = {
+        AIUS_CH_FC, AIUS_CH_LFE, AIUS_CH_SL, AIUS_CH_SR,
+    };
+    double a[LAYOUT_N], b[LAYOUT_N];
+    layout_fill(a, LAYOUT_N, 100000);
+    layout_fill(b, LAYOUT_N, -250000);
+
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe_fold = &fold;
+    assert(cfg.layout_aware != 0);
+    assert(cfg.headroom == AIUS_DSP_HEADROOM_DEFAULT);
+
+    for (size_t k = 0; k < sizeof summing / sizeof summing[0]; k++) {
+        /* Planes are packed in ascending AIUS_CH_* order and FL is the lowest
+         * bit, so FL is plane 0 and the summing channel is plane 1. */
+        AiusPcmBlockD in = {{a, b, 0, 0, 0, 0}, 2, LAYOUT_N, 48000,
+                            AIUS_CH_FL | summing[k]};
+        struct pad_verdict v = headroom_verdict(&cfg, &in);
+        assert(v.nonzero);
+        assert(v.padded);
+        assert(!v.unity);
+    }
+
+    /* The contrast, and the change itself: FL|FR sums nothing and takes unity. */
+    AiusPcmBlockD stereo = {{a, b, 0, 0, 0, 0}, 2, LAYOUT_N, 48000,
+                            AIUS_CH_FL | AIUS_CH_FR};
+    struct pad_verdict s = headroom_verdict(&cfg, &stereo);
+    assert(s.nonzero);
+    assert(s.unity);
+    assert(!s.padded);
+
+    /* And a full 5.1 layout is padded, unchanged from before this landed. */
+    double c[LAYOUT_N], d[LAYOUT_N];
+    layout_fill(c, LAYOUT_N, 33333);
+    layout_fill(d, LAYOUT_N, -71717);
+    AiusPcmBlockD full = {{a, b, c, d, a, b}, 6, LAYOUT_N, 48000,
+                          AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                              AIUS_CH_SL | AIUS_CH_SR};
+    struct pad_verdict f = headroom_verdict(&cfg, &full);
+    assert(f.nonzero);
+    assert(f.padded);
+    assert(!f.unity);
+    printf("ok layout-aware pad: FC/LFE/SL/SR each arm it, FL|FR does not, "
+           "5.1 unchanged\n");
+}
+
+/* (c2) THE MASK-ONLY PIN. An LFE plane the config excludes (lfe == 0.0) still
+ * arms the pad, and the result is bit-for-bit the FL/FR terms scaled by it --
+ * so the fold-in's "gain 0.0 is exactly the pre-fold-in output" claim survives
+ * this change intact, on a layout whose LEVEL the change moves. A predicate that
+ * consulted the gain, or the resolved plane pointer, gets unity here and breaks
+ * both properties at once. */
+static void test_layout_predicate_reads_the_mask_not_the_gains(void)
+{
+    double fl[LAYOUT_N], fr[LAYOUT_N], lfe[LAYOUT_N];
+    layout_fill(fl, LAYOUT_N, 400000);
+    layout_fill(fr, LAYOUT_N, -900000);
+    layout_fill(lfe, LAYOUT_N, 1234567);
+
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+    cfg.lfe_fold = &fold;
+
+    double ol[LAYOUT_N], orr[LAYOUT_N];
+    AiusPcmBlockD in = {{fl, fr, lfe, 0, 0, 0}, 3, LAYOUT_N, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_LFE};
+    assert(aius_dsp_downmix(&cfg, &in, ol, orr) == AIUS_OK);
+    for (uint32_t i = 0; i < LAYOUT_N; i++) {
+        assert(ol[i] == fl[i] * cfg.headroom);
+        assert(orr[i] == fr[i] * cfg.headroom);
+    }
+
+    /* The same block WITHOUT the silent-by-configuration LFE channel is the
+     * other side of the rule: no summing bit, no pad. */
+    AiusPcmBlockD without = {{fl, fr, 0, 0, 0, 0}, 2, LAYOUT_N, 48000,
+                             AIUS_CH_FL | AIUS_CH_FR};
+    assert(aius_dsp_downmix(&cfg, &without, ol, orr) == AIUS_OK);
+    for (uint32_t i = 0; i < LAYOUT_N; i++) {
+        assert(ol[i] == fl[i]);
+        assert(orr[i] == fr[i]);
+    }
+    printf("ok layout predicate is mask-only (LFE at gain 0.0 still pads)\n");
+}
+
+/* (b) Mono is unity at the SHIPPED default, whichever mask bit it carries: one
+ * replicated plane sums nothing. This is a deliberate change to mono's shipped
+ * level (+6.02 dB), with the same justification as stereo. */
+static void test_layout_mono_is_unity_at_the_shipped_default(void)
+{
+    static const uint32_t bits[] = {
+        AIUS_CH_FL, AIUS_CH_FR, AIUS_CH_FC, AIUS_CH_LFE, AIUS_CH_SL, AIUS_CH_SR,
+    };
+    double m[LAYOUT_N], ol[LAYOUT_N], orr[LAYOUT_N];
+    layout_fill(m, LAYOUT_N, 700000);
+
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe_fold = &fold;
+
+    for (size_t k = 0; k < sizeof bits / sizeof bits[0]; k++) {
+        AiusPcmBlockD in = {{m, 0, 0, 0, 0, 0}, 1, LAYOUT_N, 48000, bits[k]};
+        assert(aius_dsp_downmix(&cfg, &in, ol, orr) == AIUS_OK);
+        for (uint32_t i = 0; i < LAYOUT_N; i++) {
+            assert(ol[i] == m[i]);
+            assert(orr[i] == m[i]);
+        }
+    }
+    printf("ok mono replicates at unity under the shipped pad (6 mask bits)\n");
+}
+
+/* (e) The decision is PER BLOCK and holds no state: a stream that alternates
+ * decoded 5.1 with pass-through stereo -- exactly what this device does when the
+ * source switches -- must produce the padded answer and then the unity answer,
+ * every time, with no latch in either direction. Driven straight at
+ * aius_dsp_downmix so no limiter delay ring couples one block to the next.
+ *
+ * The LFE is excluded here so the blocks are genuinely independent: with the
+ * fold running, a 5.1 block's crossover memory legitimately carries into the
+ * next one and "identical on every repetition" would stop being true for a
+ * reason that has nothing to do with the pad. */
+static void test_layout_decision_is_per_block_and_unlatched(void)
+{
+    double fl[LAYOUT_N], fr[LAYOUT_N], fc[LAYOUT_N], sl[LAYOUT_N];
+    layout_fill(fl, LAYOUT_N, 210000);
+    layout_fill(fr, LAYOUT_N, -310000);
+    layout_fill(fc, LAYOUT_N, 410000);
+    layout_fill(sl, LAYOUT_N, -510000);
+
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+    cfg.lfe_fold = NULL;
+
+    AiusPcmBlockD stereo = {{fl, fr, 0, 0, 0, 0}, 2, LAYOUT_N, 48000,
+                            AIUS_CH_FL | AIUS_CH_FR};
+    AiusPcmBlockD five1 = {{fl, fr, fc, fc, sl, fr}, 6, LAYOUT_N, 48000,
+                           AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                               AIUS_CH_SL | AIUS_CH_SR};
+    double ol[LAYOUT_N], orr[LAYOUT_N];
+
+    for (int pass = 0; pass < 3; pass++) {
+        assert(aius_dsp_downmix(&cfg, &stereo, ol, orr) == AIUS_OK);
+        for (uint32_t i = 0; i < LAYOUT_N; i++) {
+            assert(ol[i] == fl[i]); /* unity, on every repetition */
+            assert(orr[i] == fr[i]);
+        }
+        assert(aius_dsp_downmix(&cfg, &five1, ol, orr) == AIUS_OK);
+        for (uint32_t i = 0; i < LAYOUT_N; i++) {
+            double l = (fl[i] + fc[i] * cfg.center + sl[i] * cfg.surround) *
+                       cfg.headroom;
+            double r = (fr[i] + fc[i] * cfg.center + fr[i] * cfg.surround) *
+                       cfg.headroom;
+            assert(ol[i] == l); /* padded, on every repetition */
+            assert(orr[i] == r);
+        }
+    }
+    printf("ok layout decision is per block (stereo/5.1 alternated, no latch)\n");
+}
+
+/* (f, the module's half) THE FLAG OFF IS THE OLD BEHAVIOUR, EXACTLY: the uniform
+ * pad on every layout, mono included, and 5.1 untouched by the flag either way.
+ * The parse-level half of this pin -- that a real JSON body reads ON when the
+ * field is absent -- belongs to the config parser's own suite.
+ *
+ * The zero-init case is here too, because it is the reachable mistake: a struct
+ * memset to zero and filled field by field asks for the LEGACY pad, which is why
+ * the field's doc says to construct through aius_downmix_config_default(). */
+static void test_layout_aware_off_is_the_legacy_uniform_pad(void)
+{
+    double fl[LAYOUT_N], fr[LAYOUT_N], fc[LAYOUT_N];
+    layout_fill(fl, LAYOUT_N, 620000);
+    layout_fill(fr, LAYOUT_N, -180000);
+    layout_fill(fc, LAYOUT_N, 990000);
+
+    AiusDownmixConfig off = aius_downmix_config_default();
+    off.lfe = AIUS_DSP_LFE_GAIN_EXCLUDED;
+    off.lfe_fold = NULL;
+    off.layout_aware = 0;
+
+    /* Stereo pays the uniform pad again. */
+    double ol[LAYOUT_N], orr[LAYOUT_N];
+    AiusPcmBlockD stereo = {{fl, fr, 0, 0, 0, 0}, 2, LAYOUT_N, 48000,
+                            AIUS_CH_FL | AIUS_CH_FR};
+    assert(aius_dsp_downmix(&off, &stereo, ol, orr) == AIUS_OK);
+    for (uint32_t i = 0; i < LAYOUT_N; i++) {
+        assert(ol[i] == fl[i] * off.headroom);
+        assert(orr[i] == fr[i] * off.headroom);
+    }
+
+    /* And so does mono, bit for bit -- the one behaviour the flag exists to
+     * restore that no config field could express before. */
+    AiusPcmBlockD mono = {{fc, 0, 0, 0, 0, 0}, 1, LAYOUT_N, 48000, AIUS_CH_FC};
+    assert(aius_dsp_downmix(&off, &mono, ol, orr) == AIUS_OK);
+    for (uint32_t i = 0; i < LAYOUT_N; i++) {
+        assert(ol[i] == fc[i] * off.headroom);
+        assert(orr[i] == fc[i] * off.headroom);
+    }
+
+    /* 5.1 is the same audio under either setting: the flag only ever decides
+     * what happens on a layout that sums nothing. */
+    double on_l[LAYOUT_N], on_r[LAYOUT_N];
+    AiusDownmixConfig on = off;
+    on.layout_aware = 1;
+    AiusPcmBlockD five1 = {{fl, fr, fc, fc, fl, fr}, 6, LAYOUT_N, 48000,
+                           AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC | AIUS_CH_LFE |
+                               AIUS_CH_SL | AIUS_CH_SR};
+    assert(aius_dsp_downmix(&off, &five1, ol, orr) == AIUS_OK);
+    assert(aius_dsp_downmix(&on, &five1, on_l, on_r) == AIUS_OK);
+    for (uint32_t i = 0; i < LAYOUT_N; i++) {
+        assert(ol[i] == on_l[i]);
+        assert(orr[i] == on_r[i]);
+    }
+
+    /* The zero-init caveat, asserted rather than trusted to the comment. */
+    AiusDownmixConfig zeroed;
+    memset(&zeroed, 0, sizeof zeroed);
+    zeroed.center = AIUS_DSP_DOWNMIX_CENTER_DEFAULT;
+    zeroed.surround = AIUS_DSP_DOWNMIX_SURROUND_DEFAULT;
+    zeroed.headroom = AIUS_DSP_HEADROOM_DEFAULT;
+    assert(zeroed.layout_aware == 0);
+    assert(aius_dsp_downmix(&zeroed, &stereo, ol, orr) == AIUS_OK);
+    for (uint32_t i = 0; i < LAYOUT_N; i++)
+        assert(ol[i] == fl[i] * AIUS_DSP_HEADROOM_DEFAULT);
+    printf("ok layout_aware off restores the uniform pad (stereo, mono, "
+           "zero-init; 5.1 identical either way)\n");
+}
+
+/* (a) THE COMPLAINT'S FIX, end to end: stereo pass-through through the whole
+ * chain at the shipped default config is an EXACT int32 round-trip. Convert to
+ * double, multiply by 1.0, quantize back -- every 24-bit code survives,
+ * including both rails.
+ *
+ * THE LIMITER IS OFF FOR THIS PIN, deliberately and not as a simplification: at
+ * the shipped default it is ENABLED with 2 ms of lookahead, so it delays the
+ * signal by design and would legitimately reduce gain on hot material. "Bit
+ * exact" is a claim about the matrix, the pad and the quantize; the limiter's
+ * own transparency is pinned by its own tests. */
+static void test_layout_stereo_chain_is_an_exact_round_trip(void)
+{
+    enum { N = 8 };
+    int32_t l[N] = {0, 1, -1, 123457, -7654321,
+                    AIUS_DSP_SAMPLE_MAX, AIUS_DSP_SAMPLE_MIN, 4242};
+    int32_t r[N] = {-4242, AIUS_DSP_SAMPLE_MIN, AIUS_DSP_SAMPLE_MAX, -1, 1,
+                    -333333, 8388606, 0};
+    int32_t ol[N], orr[N];
+    AiusPcmBlock in = {{l, r, 0, 0, 0, 0}, 2, N, 48000,
+                       AIUS_CH_FL | AIUS_CH_FR};
+    AiusPcmBlock out;
+    memset(&out, 0, sizeof out);
+    out.planes[0] = ol;
+    out.planes[1] = orr;
+
+    AiusLfeFold fold;
+    memset(&fold, 0, sizeof fold);
+    double sc[AIUS_MAX_CHANNELS][N], wl[N], wr[N];
+    AiusDspConfig cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.downmix = aius_downmix_config_default(); /* the SHIPPED config */
+    cfg.downmix.lfe_fold = &fold;
+    for (int p = 0; p < AIUS_MAX_CHANNELS; p++) cfg.scratch[p] = sc[p];
+    cfg.work_l = wl;
+    cfg.work_r = wr;
+
+    assert(aius_dsp_process(&cfg, &in, &out) == AIUS_OK);
+    for (int i = 0; i < N; i++) {
+        assert(ol[i] == l[i]);
+        assert(orr[i] == r[i]);
+    }
+    printf("ok stereo pass-through is an exact int32 round-trip at the shipped "
+           "config (limiter off)\n");
+}
+
 /* --- LFE fold-in crossover (roadmap item 2) -------------------------------- */
 
 /* |H(f)| of a normalized biquad at `f` Hz, evaluated on the unit circle. An
@@ -1253,6 +1603,10 @@ static void test_shipped_defaults(void)
     AiusDownmixConfig d = aius_downmix_config_default();
     assert(d.headroom == 0.5); /* exact: a power of two, so no tolerance needed */
     assert(d.headroom < 1.0);  /* the defect: unity headroom clipped the corpus */
+    /* And it is the SUMMING-layout pad. The constructor is where this module's
+     * default-on lives; a zeroed struct is the legacy uniform pad, so a caller
+     * that skipped the constructor would ship the fix as a silent no-op. */
+    assert(d.layout_aware == 1);
     assert(d.center == AIUS_DSP_DOWNMIX_CENTER_DEFAULT);
     assert(d.surround == AIUS_DSP_DOWNMIX_SURROUND_DEFAULT);
     /* The LFE is now FOLDED IN, not discarded. Roadmap item 2: 0.0 threw away the
@@ -2933,6 +3287,35 @@ static AiusPcmBlock chain_stereo_block(int32_t *l, int32_t *r, uint32_t frames)
     return b;
 }
 
+/* A silent third plane, so the tone proofs can present their stereo stimulus as
+ * a SUMMING layout. Never written; static zero-init is the content. */
+static int32_t g_chain_silent_fc[CHAIN_FRAMES];
+
+/* The same stereo tone, presented as FL|FR|FC with a SILENT centre.
+ *
+ * WHY R1, R2 AND R4 MOVED HERE (layout-aware headroom, 2026-07-28). Those three
+ * proofs are about the PAD absorbing an inter-stage over -- the +5 dBFS the input
+ * boost creates, the -6.02 dB that resolves it, the -1.02 dBFS that comes out,
+ * R4's -1.98 dB of gain reduction. All of that requires a layout the pad applies
+ * to, and stereo FL|FR is now, deliberately, not one. FL|FR|FC with a zero FC
+ * plane IS one, and the arithmetic is bit-identical to the stereo block they used
+ * to carry: the centre term is 0.0 * center == 0.0 added to an accumulator, and
+ * the input EQ maps a silent plane to a silent plane exactly. Every measured
+ * number in the comments below therefore still holds, and the property they pin
+ * -- the pad absorbs the overshoot the input stage created -- is pinned on the
+ * layout that still has a pad.
+ *
+ * R5 deliberately did NOT move: it is about the wire ceiling, which exists on
+ * every layout, and it is stronger at unity (see its own note). */
+static AiusPcmBlock chain_summing_block(int32_t *l, int32_t *r, uint32_t frames)
+{
+    AiusPcmBlock b = chain_stereo_block(l, r, frames);
+    b.planes[2] = g_chain_silent_fc;
+    b.channels = 3;
+    b.channel_mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC;
+    return b;
+}
+
 static uint32_t chain_rail_count(const int32_t *x, uint32_t frames, int32_t rail)
 {
     uint32_t n = 0;
@@ -2950,8 +3333,10 @@ static int32_t g_chain_out_l[CHAIN_FRAMES], g_chain_out_r[CHAIN_FRAMES];
 
 /* --- R1: an input-stage boost must not manufacture harmonics -------------- */
 
-/* 997 Hz-class tone at -1 dBFS, +6 dB peaking boost at that same frequency on
- * the input stage, default downmix (0.5 pad), no output EQ, no limiter.
+/* 997 Hz-class tone at -1 dBFS on FL and FR of a FL|FR|FC block with a silent
+ * centre (chain_summing_block: a layout the pad applies to), +6 dB peaking boost
+ * at that same frequency on the input stage, default downmix (0.5 pad), no
+ * output EQ, no limiter.
  *
  * The arithmetic: -1 + 6 = +5 dB, i.e. the input cascade's result is 5 dB OVER
  * full scale, and 5 dB - 6.02 dB of pad = -1.02 dBFS at the output. Nothing in
@@ -2974,7 +3359,7 @@ static void test_chain_r1_input_boost_harmonics(void)
     struct chain_rig rig;
     chain_test_config(&rig, 6.0, 0.0, 0);
     AiusPcmBlock whole =
-        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+        chain_summing_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
     chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, NULL);
 
     /* Analyse the last CHAIN_ANA frames: the first half of the run is the
@@ -3004,9 +3389,9 @@ static void test_chain_r1_input_boost_harmonics(void)
 
 /* --- R2: an inter-stage over that the pad resolves must survive it -------- */
 
-/* Same shape as R1, sized so the OVER is unambiguously inter-stage only: -1 dBFS
- * in, +4 dB boost -> +3 dB over full scale between the stages, -3.02 dBFS after
- * the pad. The whole point of a double intermediate is that this signal never
+/* Same shape and same summing layout as R1, sized so the OVER is unambiguously
+ * inter-stage only: -1 dBFS in, +4 dB boost -> +3 dB over full scale between the
+ * stages, -3.02 dBFS after the pad. The whole point of a double intermediate is that this signal never
  * needed to clip at all, and the output peak is then exactly the linear
  * prediction (input amplitude * boost * headroom).
  *
@@ -3024,7 +3409,7 @@ static void test_chain_r2_interstage_over_is_recovered(void)
     struct chain_rig rig;
     chain_test_config(&rig, 4.0, 0.0, 0);
     AiusPcmBlock whole =
-        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+        chain_summing_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
     chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, NULL);
 
     const int32_t *wl = g_chain_out_l + (CHAIN_FRAMES - CHAIN_ANA);
@@ -3304,7 +3689,8 @@ static void test_chain_r3b_transparent_limiter_golden(void)
 
 /* --- R4: the limiter must get the over the input stage created ------------ */
 
-/* R1's shape with the limiter at its shipped default. Today the input cascade
+/* R1's shape and summing layout with the limiter at its shipped default. Today
+ * the input cascade
  * clips the over away and the pad hands the limiter a -6.02 dBFS signal, 5 dB
  * BELOW its threshold: the limiter reports 0.000 dB of gain reduction while the
  * audio it is guarding has already been destroyed upstream. That is the whole
@@ -3327,7 +3713,7 @@ static void test_chain_r4_limiter_sees_the_over(void)
     struct chain_rig rig;
     chain_test_config(&rig, 8.0, 0.0, 1);
     AiusPcmBlock whole =
-        chain_stereo_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
+        chain_summing_block(g_chain_in_l, g_chain_in_r, CHAIN_FRAMES);
     double gr_min = 0.0;
     chain_run(&rig, &whole, g_chain_out_l, g_chain_out_r, &gr_min);
 
@@ -3358,14 +3744,21 @@ static void test_chain_r4_limiter_sees_the_over(void)
 
 /* The complement of R1-R4 and the reason none of them may be read as "stop
  * clipping": the transmit word is 24 bits and the FINAL quantize must still
- * saturate. No input stage, no limiter, and an output EQ boost applied AFTER the
- * pad that is far too big for the remaining headroom (-1 dBFS tone, -7.02 dBFS
- * after the pad, +12 dB of boost = +4.98 dB over full scale). Both rails must be
- * reached, exactly, on both planes.
+ * saturate. No input stage, no limiter, and an output EQ boost far too big for
+ * the headroom left in front of it.
  *
- * Green today and green after: today the output cascade's quantize clamps, after
- * the change the single final quantize clamps. What must never happen is a
- * chain that wraps, or one whose "clip-free intermediate" leaks past the wire. */
+ * THE ARITHMETIC MOVED WITH THE LAYOUT-AWARE PAD, and the proof got stronger for
+ * it. This block is stereo FL|FR, which now takes NO pad: a -1 dBFS tone reaches
+ * the output EQ at -1 dBFS rather than -7.02, and +12 dB of boost puts it +11 dB
+ * over full scale instead of +4.98. The margin the final quantize has to clamp
+ * therefore doubled in dB; the assertion is unchanged because the claim is
+ * unchanged. It is also the pin that says the removed pad did not remove the
+ * WIRE ceiling with it -- the one thing "stereo comes out at source level" must
+ * never be allowed to mean.
+ *
+ * Green before and green after: before, the output cascade's own quantize
+ * clamped; now the single final quantize does. What must never happen is a chain
+ * that wraps, or one whose "clip-free intermediate" leaks past the wire. */
 static void test_chain_r5_final_quantize_still_clips(void)
 {
     chain_tone(g_chain_in_l, CHAIN_FRAMES, -1.0);
@@ -3386,8 +3779,9 @@ static void test_chain_r5_final_quantize_still_clips(void)
 
     CHAIN_CHECK(hi_l > 0 && lo_l > 0 && hi_r > 0 && lo_r > 0,
                 "R5 output does not reach both rails (L %u/%u, R %u/%u): a "
-                "+12 dB post-pad boost is 4.98 dB over full scale and the "
-                "final quantize must saturate", hi_l, lo_l, hi_r, lo_r);
+                "+12 dB boost on an unpadded stereo layout is 11 dB over full "
+                "scale and the final quantize must saturate",
+                hi_l, lo_l, hi_r, lo_r);
     for (uint32_t i = 0; i < CHAIN_ANA; i++) {
         assert(wl[i] >= AIUS_DSP_SAMPLE_MIN && wl[i] <= AIUS_DSP_SAMPLE_MAX);
         assert(wr[i] >= AIUS_DSP_SAMPLE_MIN && wr[i] <= AIUS_DSP_SAMPLE_MAX);
@@ -3404,6 +3798,12 @@ int main(void)
     test_surround_routing();
     test_clip_headroom();
     test_clipfree_headroom();
+    test_layout_each_summing_bit_takes_the_pad();
+    test_layout_predicate_reads_the_mask_not_the_gains();
+    test_layout_mono_is_unity_at_the_shipped_default();
+    test_layout_decision_is_per_block_and_unlatched();
+    test_layout_aware_off_is_the_legacy_uniform_pad();
+    test_layout_stereo_chain_is_an_exact_round_trip();
     test_lfe_fold_design();
     test_lfe_fold_rate_independent();
     test_lfe_fold_init_rejects();

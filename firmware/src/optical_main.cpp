@@ -638,6 +638,10 @@ static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, Aius
 	out.matrix.lfe_crossover_hz = model.matrix.lfe_crossover_hz;
 	out.matrix.headroom_linear = model.matrix.headroom_linear;
 	out.matrix.clipfree = model.matrix.clipfree;
+	/* A FIELD-BY-FIELD COPY SILENTLY PINS ANYTHING IT FORGETS: a matrix key the
+	 * parser accepts and this line omits reaches the model, round-trips through
+	 * GET, and never reaches the audio path. layout_aware is the newest one. */
+	out.matrix.layout_aware = model.matrix.layout_aware;
 	out.limiter.enabled = model.limiter.enabled;
 	out.limiter.threshold_dbfs = model.limiter.threshold_dbfs;
 	out.limiter.attack_ms = model.limiter.attack_ms;
@@ -1393,6 +1397,16 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	g_downmix.lfe_fold = &g_lfe_fold;
 	(void)aius_lfe_fold_init(&g_lfe_fold, (double)rate,
 	                         cfg.matrix.lfe_crossover_hz);
+	/* WHICH LAYOUTS THE PAD APPLIES TO, as opposed to what it is worth. Set (the
+	 * default, and what a config omitting the key parses to) the downmix scales
+	 * only layouts that SUM and passes mono and stereo FL|FR at unity; clear
+	 * restores the uniform pad on every layout. Assigned unconditionally and
+	 * ahead of the bypass branch below because it is a property of the matrix
+	 * stage's rule, not of its value -- with the stage bypassed the headroom is
+	 * 1.0 and the rule cannot be observed either way. The seed at the top of this
+	 * function is aius_downmix_config_default(), i.e. ON, so omitting this line
+	 * would make a hand-set false apply as true and look like it had worked. */
+	g_downmix.layout_aware = cfg.matrix.layout_aware;
 	if (!cfg.features.matrix)
 		/* Unity, completing the bypass: a headroom scale is part of the matrix
 		 * stage, so a bypassed matrix must not attenuate either. Note
@@ -1802,12 +1816,18 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	double headroom = cfg.matrix.clipfree ?
 		aius_downmix_clipfree_headroom(&resolved) : cfg.matrix.headroom_linear;
 	/* lfe_crossover_hz is required by the PUT validator, so omitting it here
-	 * would make a GET -> PUT round-trip fail 400 on a missing key. */
+	 * would make a GET -> PUT round-trip fail 400 on a missing key.
+	 *
+	 * layout_aware is the mirror hazard and the reason it is emitted even though
+	 * the validator would accept its absence: parse-without-emit makes every
+	 * GET-modify-PUT silently reset a hand-set false back to true, because absent
+	 * reads ON. The rule for this endpoint is that the two key sets match. */
 	if (!http_json_append(output, capacity, &length,
-	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s},",
+	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s,\"layout_aware\":%s},",
 	                      cfg.matrix.center_gain_linear, cfg.matrix.surround_gain_linear,
 	                      cfg.matrix.lfe_gain_linear, cfg.matrix.lfe_crossover_hz,
-	                      headroom, cfg.matrix.clipfree ? "true" : "false"))
+	                      headroom, cfg.matrix.clipfree ? "true" : "false",
+	                      cfg.matrix.layout_aware ? "true" : "false"))
 		return 0;
 	if (!http_json_append(output, capacity, &length,
 	                      "\"limiter\":{\"enabled\":%s,\"threshold_dbfs\":%.17g,\"attack_ms\":%.17g,\"release_ms\":%.17g,\"lookahead_ms\":%.17g}}",

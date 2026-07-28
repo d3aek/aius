@@ -49,12 +49,20 @@ def test_valid_fixture_and_model_bound():
     # low-pass at lfe_crossover_hz. Re-measured: 0.5 headroom still clears the
     # corpus, the binding vector moving only from -0.791 to -0.790 dBFS.
     # See aius-dsp-config-api.md #audio-quality-roadmap and aius_dsp.h.
+    #
+    # The trailing 1 is layout_aware, added 2026-07-28: the 0.5 pad is the
+    # SUMMING-layout pad, so the downmix resolves 1.0 for a block whose layout
+    # sums nothing (mono, and stereo FL|FR pass-through, which was paying 6.02 dB
+    # for protection it could not need). It is ON in the factory model; setting it
+    # false restores the uniform pad on every layout.
     assert (
-        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0}"
+        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 1}"
         in header
     )
-    # The generated struct grew the crossover field alongside it.
+    # The generated struct grew the crossover field alongside it, and the
+    # layout-aware flag after that.
     assert "double lfe_crossover_hz;" in header
+    assert "uint8_t layout_aware;" in header
     # Six identity input channels (unity trim, no EQ) and no output EQ sections.
     assert "{0, 0, {{0, 0, 0, 0}, {0, 0, 0, 0}}}" in header
     # profiles[]/mixes[] machinery is gone.
@@ -188,6 +196,27 @@ def test_matrix_and_limiter_bounds():
     config = copy.deepcopy(fixture)
     config["matrix"]["clipfree"] = "no"
     expect_invalid(config, "matrix clipfree must be a boolean")
+
+    # layout_aware is a boolean and, in the BAKED model, required like every other
+    # matrix key. The PUT validator treats it as optional and defaults it TRUE,
+    # deliberately: that parser meets configs written before the field existed,
+    # this generator meets one checked-in file that a build error can fix.
+    config = copy.deepcopy(fixture)
+    config["matrix"]["layout_aware"] = "yes"
+    expect_invalid(config, "matrix layout_aware must be a boolean")
+
+    config = copy.deepcopy(fixture)
+    del config["matrix"]["layout_aware"]
+    expect_invalid(config, "matrix is missing key: layout_aware")
+
+    # And false really does bake a 0, so the diagnostic lever is reachable from
+    # the factory model and not only over HTTP.
+    config = copy.deepcopy(fixture)
+    config["matrix"]["layout_aware"] = False
+    assert (
+        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 0}"
+        in build_config.generate_header(config)
+    )
 
     config = copy.deepcopy(fixture)
     config["matrix"]["tilt"] = 1

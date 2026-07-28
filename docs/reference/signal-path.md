@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, dsp, signal-path, dither, limiter]
-updated: 2026-07-27
+updated: 2026-07-28
 toc: true
 ---
 
@@ -101,7 +101,7 @@ flowchart TD
     PCM["PCM passthrough<br/>pcm_feed, 16 left-aligned onto 24-bit"]
     ENQ["AiusAudioProcessor::enqueue<br/>93.75/s, 512 frames<br/>DWT bracket opens"]
     IN["Input stage: trim + EQ per channel<br/>aius_dsp_input_run"]
-    DMX["Downmix matrix, 6 to 2<br/>aius_dsp_downmix<br/>headroom 0.5"]
+    DMX["Downmix matrix, 6 to 2<br/>aius_dsp_downmix<br/>headroom 0.5 on summing layouts,<br/>1.0 on mono and FL|FR"]
     OEQ["Output EQ cascade, L and R<br/>aius_dsp_eq_run"]
     LIM["True-peak safety limiter<br/>aius_dsp_limiter_run<br/>4x oversampled, 2 ms lookahead"]
     OUT["Output word width<br/>aius_out_stage_run<br/>24-bit: copy. 16-bit: TPDF dither"]
@@ -317,8 +317,9 @@ section" from "a bypass section".
 `aius_dsp_downmix` (`lib/aius_dsp/src/aius_dsp.c:78`, **1,254 B of ITCM** as
 `aius_dsp_downmix.part.0`, the largest single function in the DSP) is mask-driven
 rather than mode-driven: routing follows `in->channel_mask`, so mono, stereo, 3.0, 4.0,
-5.0 and 5.1 are all handled without a layout flag (`:113`–`:154`). The rules are stated
-authoritatively once in
+5.0 and 5.1 are all handled without a layout flag (`:113`–`:154`). **The headroom pad is
+mask-driven too**, resolved once per block by `resolve_headroom` rather than per sample.
+The rules are stated authoritatively once in
 [§Channel layout and downmix rules](#channel-layout-and-downmix-rules).
 
 ### Stage 7 — output EQ
@@ -505,6 +506,14 @@ stimulus floors bind everything below: a 16-bit vector bottoms THD+N/SNR near th
 quantization floor at the tone's own level, so a figure at its floor reads "at least
 this good".
 
+**These are PRE-CHANGE measurements, kept as history.** Every vector here is 16-bit PCM
+pass-through — stereo FL|FR, the exact layout the headroom pad stopped applying to on
+2026-07-28 ([§Channel layout and downmix rules](#channel-layout-and-downmix-rules)) — so
+the *levels* in the table are 6.02 dB below what the same run reads today, and the
+`pcm440_full` row's raised headroom is no longer how you engage the limiter (a full-scale
+stereo vector now reaches it at the shipped config). The distortion, noise and flatness
+figures are level-relative and stand as measured; the fundamentals are superseded.
+
 | Vector, channel | Fundamental | THD+N | SNR | THD (2nd–10th) | Stimulus floor at this level |
 |---|---|---|---|---|---|
 | `pcm440_m6`, L | −12.04 dBFS @ 440 Hz | **−91.7 dB** | 91.8 dB | −107.9 dBc | ≈ −92.1 dB |
@@ -521,13 +530,16 @@ What the numbers say, in order of what they prove:
   −6 dBFS stimulus; −86.0 vs ≈ −86.1 at −12 dBFS). Whatever the chain adds sits below a
   16-bit transport's ability to resolve — the −140 dB inter-stage claims stay
   host-proven, as the design says they must.
-- **Levels are arithmetic-exact.** Every fundamental reads stimulus level + 6.02 dB of
+- **Levels are arithmetic-exact** *(superseded: the pad these figures pay no longer
+  applies to a stereo layout)*. Every fundamental reads stimulus level − 6.02 dB of
   shipped headroom to the hundredth of a dB, and L/R figures on identical stimulus are
-  identical to the last printed digit (bit-identical DSP on bit-identical input).
+  identical to the last printed digit (bit-identical DSP on bit-identical input). The
+  arithmetic-exactness is the durable claim; the 6.02 dB term is not.
 - **Frequency response is flat to 0.01 dB, 40 Hz to 16 kHz** (all seven multitone
   probes at −24.08 dBFS on both channels, bypass EQ).
 - **The limiter's steady-state gain reduction is distortion-free at this floor.** With
-  headroom raised to 1.0 so the full-scale vector engages it, the limiter holds the tone
+  headroom raised to 1.0 so the full-scale vector engages it — the layout-aware pad makes
+  that step unnecessary now — the limiter holds the tone
   at −1.01 dBFS (threshold plus its documented e⁻⁴ smoothing residual,
   [stage 8](#stage-8--the-true-peak-safety-limiter)) and THD+N still reads −95.6 dB. A
   *transient* limiter-distortion figure needs a modulated hot vector; deliberately not
@@ -564,17 +576,21 @@ The matrix, per ITU-R BS.775 / ATSC A/52 "Lo/Ro"
 (`lib/aius_dsp/include/aius_dsp.h:87`):
 
 ```text
-L' = headroom * (FL + center*FC + surround*SL + lfe*LFE)
-R' = headroom * (FR + center*FC + surround*SR + lfe*LFE)
+L' = pad * (FL + center*FC + surround*SL + lfe*LFE)
+R' = pad * (FR + center*FC + surround*SR + lfe*LFE)
+
+pad = headroom  when the layout SUMS  (channels > 1 and any of FC, LFE, SL, SR)
+pad = 1.0       otherwise             (mono, and stereo FL|FR)
 ```
 
 | Coefficient | Shipped value | Source |
 |---|---|---|
 | `center` | 0.70710678118654752440 (1/√2, −3.01 dB) | `aius_dsp.h:94`, `optical_dsp.json:22` |
 | `surround` | 0.70710678118654752440 (1/√2, −3.01 dB) | `aius_dsp.h:95`, `optical_dsp.json:23` |
-| `lfe` | 0.0 — **LFE is discarded** | `aius_dsp.h:103`, `optical_dsp.json:24` |
-| `headroom` | 0.5 (−6.02 dB) | `aius_dsp.h:143`, `optical_dsp.json:25` |
-| `clipfree` | false | `optical_dsp.json:26` |
+| `lfe` | 0.316228 (−10 dB) — **folded in through the 120 Hz LR4 low-pass** (0.0 was the pre-fold-in shipping value; stale here since the fold landed) | `aius_dsp.h` §LFE, `optical_dsp.json:24` |
+| `headroom` | 0.5 (−6.02 dB) **on summing layouts only**; 1.0 elsewhere | `aius_dsp.h:143`, `optical_dsp.json:26` |
+| `clipfree` | false | `optical_dsp.json:27` |
+| `layout_aware` | true (absent in a PUT body also reads true) | `optical_dsp.json:28`, `aius_dsp_config.h:59` |
 
 - **1/√2 on centre and surround is the standard default**, not a taste choice: mixing FC
   and each surround down 3 dB preserves acoustic power when the two summed sources are
@@ -591,14 +607,25 @@ R' = headroom * (FR + center*FC + surround*SR + lfe*LFE)
   crossover or bass management — the generic biquad EQ is not a Linkwitz-Riley
   crossover.
 - **Narrower inputs need no mode flag.** Mono copies the lone plane to both channels at
-  unity (headroom still applies) regardless of which mask bit is set; stereo FL|FR is an
-  exact passthrough at unity; absent channels contribute nothing
+  unity — **and takes no headroom pad**, whichever mask bit it carries; stereo FL|FR is an
+  exact passthrough at unity and takes no pad either; absent channels contribute nothing
   (`lib/aius_dsp/include/aius_dsp.h:162`).
-- **Headroom 0.5 is an evidenced product decision**, and the evidence is in
-  [§Decisions recorded](#decisions-recorded-with-their-alternatives).
+- **The headroom pad applies only to layouts that sum**, resolved per block from the input
+  mask alone (`aius_dsp.c`'s `resolve_headroom`). FC and the LFE fold land on both outputs
+  and SL/SR land on one each, so a layout carrying any of them can overshoot and pays the
+  pad; mono and FL|FR route 1:1, and a ≤ full-scale input through a unity route is
+  ≤ full scale at the output, so paying it there bought no protection and cost every
+  stereo source 6.02 dB. The decision reads the mask and nothing else — not the resolved
+  plane pointers, not the gains — so an LFE plane at `lfe_gain_linear = 0` still pads and
+  stays bit-for-bit the same block without it. `matrix.layout_aware` (default on, absent
+  reads on) turns the rule off and restores the uniform pad on every layout, mono
+  included.
+- **Headroom 0.5 is an evidenced product decision** *for the summing case*, and the
+  evidence is in [§Decisions recorded](#decisions-recorded-with-their-alternatives).
   `aius_downmix_clipfree_headroom()` returns the theoretical `1/(1 + center + surround +
   |lfe|)` = 0.414214 (−7.66 dB) and is selectable via `clipfree`, at which point a
-  caller may reasonably turn the limiter off.
+  caller may reasonably turn the limiter off. Both describe the summing matrix; neither
+  applies to a pass-through layout.
 
 The two sensible configurations are **(modest headroom + limiter on)** and **(clip-free
 headroom + limiter off)**. The shipped one is the first.
@@ -877,6 +904,18 @@ power of two — so the headroom multiply is an exponent decrement with no round
 all, bit-exact on host and target alike. It is deliberately *not* clip-free in theory: a
 fully correlated full-scale 5.1 input still reaches 2.4142 × 0.5 = +1.63 dBFS, which is
 why the shipped limiter default is enabled.
+
+**Why the pad became layout-aware, and why that is not "unity headroom" by another
+name.** The evidence above is a *summing* argument: every over in it comes from FC, the
+surrounds and the LFE landing on top of the fronts. A stereo pass-through sums nothing —
+FL→L and FR→R at unity — so it could never produce the peak the pad exists to absorb, and
+paid 6.02 dB for protection it could not need; the operator's report was simply that
+PCM pass-through was quiet. The rejected alternative was dropping `headroom` to 1.0
+globally, which is the choice this evidence rules out for 5.1. Resolving the pad per
+block from the input mask keeps 5.1 exactly as measured (both 5.1 vector goldens are
+byte-identical across the change) and gives every non-summing layout its source level
+back. The trade accepted with it: an EQ boost on hot stereo material now reaches the
+limiter, or the wire ceiling with the limiter off, instead of pad room.
 
 **Why the true-peak detector folds in the raw sample.** Phase 0 of the BS.1770-4 filter
 has a 0.9722 centre tap, so a literal 4× meter can read an isolated impulse about 0.2 dB

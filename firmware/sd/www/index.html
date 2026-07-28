@@ -140,7 +140,7 @@
         <p id="matrix-status" class="hint" role="status">Drag a handle up or down to set its gain: centre and the LFE fold-in feed both sides, surround keeps its own, and headroom scales the pair. Double-click a handle to reset it to the factory default; click the crossover label to edit it below.</p>
         <section id="card-matrix" class="embedded-form">
           <div class="section-title"><h3>Matrix values</h3></div>
-          <p class="hint">Centre and surround gains are shared by both stereo sides by design, and are linear multipliers rather than decibels. With the clip-free policy selected the device resolves headroom itself.</p>
+          <p class="hint">Centre and surround gains are shared by both stereo sides by design, and are linear multipliers rather than decibels. With the clip-free policy selected the device resolves headroom itself. Headroom and the clip-free policy describe the <em>summing</em> case: with layout-aware headroom on, the pad applies only to layouts that sum (any of centre, LFE or the surrounds), so mono and stereo pass-through run at source level; turn it off to pad every layout as before.</p>
           <div id="matrix" class="form-mount"></div>
         </section>
       </div>

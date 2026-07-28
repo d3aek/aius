@@ -651,7 +651,11 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 	aius_json_skip_whitespace(parser);
 
 	uint8_t seen = 0u;
-	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0.0, 0u};
+	/* THE HOME OF THE ABSENT-READS-ON DEFAULT for layout_aware (the trailing 1u).
+	 * It cannot live in aius_dsp_model_set_defaults(), which is a memset to zero,
+	 * and a body omitting the key must not silently ask for the legacy uniform
+	 * pad -- every config written before the field existed omits it. */
+	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0.0, 0u, 1u};
 	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
@@ -675,6 +679,8 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 				field = 4u;
 			else if (aius_json_key_is(key, key_len, overflow, "lfe_crossover_hz"))
 				field = 5u;
+			else if (aius_json_key_is(key, key_len, overflow, "layout_aware"))
+				field = 6u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
 
@@ -713,10 +719,13 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 			case 4u:
 				error = take_bool(parser, &matrix.clipfree);
 				break;
-			default:
+			case 5u:
 				error = take_bounded(parser, MATRIX_LFE_CROSSOVER_MIN_HZ,
 				                     MATRIX_LFE_CROSSOVER_MAX_HZ,
 				                     &matrix.lfe_crossover_hz);
+				break;
+			default:
+				error = take_bool(parser, &matrix.layout_aware);
 				break;
 			}
 			if (error != AIUS_DSP_CONFIG_OK)
@@ -731,7 +740,13 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 		}
 	}
 
-	if (seen != 0x3Fu)
+	/* MASK, NOT EQUALITY, and the difference is the whole point: the six legacy
+	 * keys (bits 0..5) stay REQUIRED, while layout_aware (bit 6) is optional. The
+	 * naive `seen != 0x7Fu` would reject every config that does NOT carry the new
+	 * field -- which is every config written before it existed -- and `seen !=
+	 * 0x3Fu` would reject every config that DOES, which is inverted from the
+	 * intent in the more embarrassing direction: it 400s the editor's own body. */
+	if ((seen & 0x3Fu) != 0x3Fu)
 		return AIUS_DSP_CONFIG_ERR_MISSING_KEY;
 	*out = matrix;
 	return AIUS_DSP_CONFIG_OK;

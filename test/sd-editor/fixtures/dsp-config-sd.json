@@ -24,7 +24,8 @@
     "lfe_gain_linear": 0.25,
     "lfe_crossover_hz": 80,
     "headroom_linear": 0.37037037037037035,
-    "clipfree": true
+    "clipfree": true,
+    "layout_aware": false
   },
   "limiter": { "enabled": true, "threshold_dbfs": -1.5, "attack_ms": 0.5, "release_ms": 120, "lookahead_ms": 2 }
 }
