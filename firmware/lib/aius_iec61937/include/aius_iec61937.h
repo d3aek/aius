@@ -101,6 +101,25 @@ AiusStatus aius_iec61937_finish(AiusIec61937Parser *p);
 AiusStatus aius_iec61937_current_burst(const AiusIec61937Parser *p,
                                        AiusBurst *out);
 
+/* Cumulative reject/accept tallies plus the last rejected burst header, for
+ * after-the-fact diagnosis of a stream the parser refuses (defect 29: a live
+ * carrier whose every status was swallowed). `last_reject_pc`/`_pd` hold the
+ * NORMALIZED header words of the most recent MALFORMED or NO_SPACE burst --
+ * reading them answers byte order, bit slips, or genuine garbage in one look. */
+typedef struct {
+	uint32_t bursts_ok;
+	uint32_t rejects_no_space;
+	uint32_t rejects_malformed;
+	uint32_t rejects_unsupported;
+	uint32_t resyncs; /* returns to Pa-search from a non-terminal state */
+	uint16_t last_reject_pc;
+	uint16_t last_reject_pd;
+} AiusIecDiag;
+
+/* Copy the diagnostic tallies. Returns AIUS_OK or AIUS_INVALID_ARG. */
+AiusStatus aius_iec61937_get_diag(const AiusIec61937Parser *p,
+                                  AiusIecDiag *out);
+
 #ifdef __cplusplus
 }
 #endif

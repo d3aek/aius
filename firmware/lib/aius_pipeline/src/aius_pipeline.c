@@ -266,6 +266,14 @@ void aius_pipeline_reset(AiusPipeline *p)
 	p->last_status = AIUS_OK;
 }
 
+AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,
+                                         AiusIecDiag *out)
+{
+	if (!p || !out)
+		return AIUS_INVALID_ARG;
+	return aius_iec61937_get_diag(p->parser, out);
+}
+
 AiusPipelineClass aius_pipeline_classification(const AiusPipeline *p)
 {
 	return p ? p->klass : AIUS_PIPELINE_UNKNOWN;

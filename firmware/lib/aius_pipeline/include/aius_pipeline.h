@@ -136,6 +136,11 @@ AiusPipelineClass aius_pipeline_classification(const AiusPipeline *p);
  * pipeline observed. Returns AIUS_OK or AIUS_INVALID_ARG. */
 AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out);
 
+/* Copy the IEC 61937 parser's reject tallies (see AiusIecDiag). Returns
+ * AIUS_OK or AIUS_INVALID_ARG. */
+AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,
+                                         AiusIecDiag *out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -948,6 +948,27 @@ public:
 		return value;
 	}
 	AiusStatus create_status(void) const { return g_create_status; }
+	/* Copy the pipeline's metrics snapshot for the status surface. The audio
+	 * ISR is the writer, so the copy sits under the same brief mask the
+	 * counter reads use. INVALID_ARG when the pipeline never constructed. */
+	AiusStatus pipeline_metrics(AiusMetrics *out) const
+	{
+		noInterrupts();
+		const AiusStatus got = g_pipeline != nullptr
+			? aius_pipeline_get_metrics(g_pipeline, out)
+			: AIUS_INVALID_ARG;
+		interrupts();
+		return got;
+	}
+	AiusStatus parser_diag(AiusIecDiag *out) const
+	{
+		noInterrupts();
+		const AiusStatus got = g_pipeline != nullptr
+			? aius_pipeline_get_parser_diag(g_pipeline, out)
+			: AIUS_INVALID_ARG;
+		interrupts();
+		return got;
+	}
 	void clear_counters(void)
 	{
 		noInterrupts();
@@ -2010,6 +2031,55 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
  * `fault_phase` is the load-bearing one: a terminal FAILED has already moved
  * `phase` on to the cleanup arm, so without the latched copy an open failure and
  * a read failure are indistinguishable after the fact. */
+/* The pipeline's own record -- the classifier's verdict and the decode path's
+ * swallowed faults. dts_feed() deliberately skips a faulted burst and keeps
+ * streaming (a decode error must not gap the wire), which left defect 29's
+ * silent decoder invisible from every surface: state 4, zero output, and
+ * `last_status` trapped in RAM. Copied under a brief interrupt mask because
+ * the audio ISR is the writer; `metrics_valid` is 0 only when the pipeline
+ * never constructed (create_status carries why). */
+static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
+	                                         size_t *length)
+{
+	AiusMetrics metrics;
+	AiusIecDiag iec;
+
+	memset(&metrics, 0, sizeof(metrics));
+	memset(&iec, 0, sizeof(iec));
+	const AiusPipelineClass klass = g_audio_processor.classification();
+	const AiusStatus got = g_audio_processor.pipeline_metrics(&metrics);
+	(void)g_audio_processor.parser_diag(&iec);
+
+	return http_json_append(output, capacity, length,
+	                        ",\"pipeline_diag\":{\"class\":%u,"
+	                        "\"metrics_valid\":%u,\"last_status\":%d,"
+	                        "\"create_status\":%d,"
+	                        "\"decode_cycles\":%llu,"
+	                        "\"arena_high_water\":%lu,"
+	                        "\"alloc_count\":%lu,"
+	                        "\"bursts_ok\":%lu,"
+	                        "\"rejects_no_space\":%lu,"
+	                        "\"rejects_malformed\":%lu,"
+	                        "\"rejects_unsupported\":%lu,"
+	                        "\"resyncs\":%lu,"
+	                        "\"last_reject_pc\":%u,"
+	                        "\"last_reject_pd\":%u}",
+	                        (unsigned)klass,
+	                        got == AIUS_OK ? 1u : 0u,
+	                        (int)metrics.last_status,
+	                        (int)g_audio_processor.create_status(),
+	                        (unsigned long long)metrics.decode_cycles,
+	                        (unsigned long)metrics.arena_high_water,
+	                        (unsigned long)metrics.alloc_count,
+	                        (unsigned long)iec.bursts_ok,
+	                        (unsigned long)iec.rejects_no_space,
+	                        (unsigned long)iec.rejects_malformed,
+	                        (unsigned long)iec.rejects_unsupported,
+	                        (unsigned long)iec.resyncs,
+	                        (unsigned)iec.last_reject_pc,
+	                        (unsigned)iec.last_reject_pd);
+}
+
 static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 	                                       size_t *length)
 {
@@ -2210,6 +2280,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	 * job streams in one `last_failure` would make the next fault as hard to
 	 * attribute as this one was. */
 	if (!http_replay_diag_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_pipeline_diag_json((char *)body, capacity, &length))
 		return 0;
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }

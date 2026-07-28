@@ -57,6 +57,12 @@ struct AiusIec61937Parser {
 	uint16_t burst_type;
 	uint32_t burst_len;
 
+	/* Normalized Pc of the burst being parsed, retained for reject capture. */
+	uint16_t hdr_pc;
+
+	/* Defect-29 forensics: reject tallies + the last rejected header. */
+	AiusIecDiag diag;
+
 	uint8_t payload[AIUS_IEC61937_MAX_PAYLOAD];
 };
 
@@ -126,6 +132,11 @@ static AiusStatus finalize_burst(AiusIec61937Parser *p)
 	p->burst_len = p->payload_bytes;
 	p->have_burst = 1;
 
+	if (p->in_scope)
+		p->diag.bursts_ok++;
+	else
+		p->diag.rejects_unsupported++;
+
 	begin_search(p);
 	return p->in_scope ? AIUS_OK : AIUS_UNSUPPORTED;
 }
@@ -160,6 +171,7 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 				/* False sync: re-examine this word as a Pa candidate
 				 * without consuming it. i is unchanged, so the next
 				 * iteration re-reads words[i] in ST_SEARCH_PA. */
+				p->diag.resyncs++;
 				p->state = ST_SEARCH_PA;
 			}
 			break;
@@ -169,6 +181,7 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 			i++;
 			p->data_type = (uint16_t)(pc & PC_DATA_TYPE_MASK);
 			p->error_flag = (pc & PC_ERROR_FLAG) != 0;
+			p->hdr_pc = pc;
 			p->state = ST_EXPECT_PD;
 			break;
 		}
@@ -178,6 +191,9 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 			uint32_t length_bits = pd;
 
 			if (p->error_flag) {
+				p->diag.rejects_malformed++;
+				p->diag.last_reject_pc = p->hdr_pc;
+				p->diag.last_reject_pd = pd;
 				begin_search(p);
 				*consumed = i;
 				return AIUS_MALFORMED;
@@ -186,6 +202,9 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 			p->in_scope = (p->data_type == 11 || p->data_type == 12 ||
 			               p->data_type == 13);
 			if (p->in_scope && length_bits == 0) {
+				p->diag.rejects_malformed++;
+				p->diag.last_reject_pc = p->hdr_pc;
+				p->diag.last_reject_pd = pd;
 				begin_search(p);
 				*consumed = i;
 				return AIUS_MALFORMED;
@@ -193,6 +212,9 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 
 			p->payload_bytes = (length_bits + 7u) / 8u;
 			if (p->payload_bytes > AIUS_IEC61937_MAX_PAYLOAD) {
+				p->diag.rejects_no_space++;
+				p->diag.last_reject_pc = p->hdr_pc;
+				p->diag.last_reject_pd = pd;
 				begin_search(p);
 				*consumed = i;
 				return AIUS_NO_SPACE;
@@ -257,6 +279,14 @@ AiusStatus aius_iec61937_finish(AiusIec61937Parser *p)
 	int mid_burst = (p->state != ST_SEARCH_PA);
 	begin_search(p);
 	return mid_burst ? AIUS_TRUNCATED : AIUS_OK;
+}
+
+AiusStatus aius_iec61937_get_diag(const AiusIec61937Parser *p, AiusIecDiag *out)
+{
+	if (!p || !out)
+		return AIUS_INVALID_ARG;
+	*out = p->diag;
+	return AIUS_OK;
 }
 
 AiusStatus aius_iec61937_current_burst(const AiusIec61937Parser *p, AiusBurst *out)
