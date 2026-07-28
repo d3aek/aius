@@ -79,6 +79,13 @@ specified here. Strike items here in the commit that closes them.
   HTTP counters. The TYPE lies were fixed and pinned 2026-07-27
   (`4eb3744ce`); the absences remain. No `additionalProperties:false`, so
   nothing breaks — but a schema-coded client cannot discover these fields.
+- **DSP editor does not surface the live source type / channel count /
+  rate.** Found the moment a real source was first connected
+  (2026-07-28): no at-a-glance "PCM 2.0 @ 48 kHz" vs "DTS 5.1" vs "no
+  carrier" indicator, though `/api/status` already serves `state`
+  (2/3/4 = none/PCM/DTS) and `sample_rate`. Pure card-www change: a
+  source badge beside the meter cards reading existing fields; no
+  firmware needed.
 - **hiDPI waveform stroke in `sd-shared.js`.** `drawWaveform` strokes the
   backing store directly: one device pixel on a 2× display while the EQ
   plot's strokes are DPR-scaled. Cosmetic; fix is a DPR-aware backing in
@@ -147,10 +154,12 @@ specified here. Strike items here in the commit that closes them.
   - **27**: the silence self-loop (locked carrier, validity-muted PCM
     in, silent out, TX gate held open) floods `overruns` at ~1 kHz
     sustained; found on the first-ever external-carrier input
-    (electrical 14→15 loopback, 2026-07-28); unity-clock-ratio input
-    rate handling is the prime suspect; the flight recorder's overrun
-    trigger caught it live (its first real capture). Reproducible on
-    demand; reboot exits it.
+    (electrical 14→15 loopback, 2026-07-28); the flight recorder's
+    overrun trigger caught it live (its first real capture).
+    Reproducible on demand; reboot exits it. Same-day verdict: a real
+    independent-clock source runs CLEAN (0 overruns / 20 s), so the
+    unity-clock-ratio path is convicted and the flood is
+    loopback-rig-specific in practice.
   - **26** (CLOSED same day, kept for the residue): OCRAM heap
     exhaustion under NativeEthernet's ~96 KiB boot mallocs bricked every
     boot when recorder staging took 64 KiB; root-caused by bisection,

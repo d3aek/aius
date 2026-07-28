@@ -1079,6 +1079,17 @@ are follow-up work, recorded here so they are not lost.
     The independent-clock question is now the discriminating one and
     waits for a genuine external source.**
 
+    **ANSWERED 2026-07-28 morning, and the unity-ratio path is
+    convicted: with a real external source (independent clock, 48 kHz
+    PCM playing), overruns advanced 0 in 20 s while 1,881 blocks
+    flowed** — against ~1 per 1–2 ms sustained in both loopback forms.
+    The ~1.6k on the counter accrued around lock acquisition, then
+    stopped. The defect is therefore loopback-specific in practice:
+    real sources are clean, and the flood matters only for
+    self-loop test rigs (and for whatever the rate-estimator does at
+    exactly ratio 1.0, which remains the code path to inspect when
+    this is chased).
+
 #### Decisions taken, so they are not re-opened
 
 - **A network syslog sender was assessed and declined.** Not on cost — the event
