@@ -6,7 +6,7 @@
  * recorded in aius-ac3-support.md §Phase 1 contract and
  * lib/aius_a52/a52/NOTICE.md. The load-bearing shape: the fork's bit reader
  * has a byte-exact fail-closed bound, and decode NEVER runs on the caller's
- * buffer. F3a retains the owned pad as a 0xFF proof oracle. The `a52` suite's
+ * buffer, only on one owned maximum-frame scratch. The `a52` suite's
  * channel-identity check on the `surround51_ident` vector is what pins the
  * channel map (defect 30's lesson: the map is convicted by tones, not trusted
  * from documentation). */
@@ -43,7 +43,7 @@ static const struct a52_mode_map k_mode_map[] = {
 struct AiusA52Decoder {
     a52_state_t *state;
     AiusArena *arena;        /* NULL on the libc path */
-    uint8_t *scratch;        /* AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD */
+    uint8_t *scratch;        /* AIUS_A52_MAX_FRAME */
     int32_t *planes[AIUS_MAX_CHANNELS];
     AiusMetrics metrics;
 };
@@ -78,10 +78,10 @@ static AiusStatus decoder_create(AiusA52Decoder **out, AiusArena *arena)
     if (!dec->state)
         goto fail;
 
-    dec->scratch = malloc(AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD);
+    dec->scratch = malloc(AIUS_A52_MAX_FRAME);
     if (!dec->scratch)
         goto fail;
-    memset(dec->scratch, 0, AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD);
+    memset(dec->scratch, 0, AIUS_A52_MAX_FRAME);
 
     for (int c = 0; c < AIUS_MAX_CHANNELS; c++) {
         dec->planes[c] = malloc(AIUS_A52_FRAME_SAMPLES * sizeof(int32_t));
@@ -179,13 +179,6 @@ AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
     }
     int lfe = (flags & A52_LFE) != 0;
 
-    /* F3a keeps the old pad as a positive oracle. Any missing, late, cleared,
-     * or pad-derived bound now changes parse behaviour instead of silently
-     * consuming the former zero tail. The reader itself substitutes zeros at
-     * the byte-exact frame end. */
-    memset(dec->scratch + frame_length, 0xFF,
-           AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD -
-               (size_t)frame_length);
 #ifdef AIUS_A52_BOUND_PROBE
     a52_bitstream_probe_expect_end(dec->state, dec->scratch,
                                    (uint32_t)frame_length);

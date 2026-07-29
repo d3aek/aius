@@ -3,9 +3,9 @@
  * threat model.
  *
  * liba52 does not CRC-check frames, so this suite is load-bearing, not
- * ceremonial. The fork's bit reader now has a fail-closed byte end; F3a keeps
- * the old pad filled with 0xFF as a positive oracle and counts every load the
- * bound suppresses. ASan watches the allocation bounds on every feed.
+ * ceremonial. The fork's bit reader has a fail-closed byte end and its former
+ * 32 KiB safety pad is gone; every load the bound suppresses is counted. ASan
+ * watches the one-frame scratch allocation on every feed.
  * Properties:
  *   1. Never crashes and never reads out of bounds (sanitizers are the
  *      oracle).
@@ -51,6 +51,8 @@
 #define SHIPPED_FUZZ_ITERATIONS 50000L
 #define SHIPPED_OK_COUNT 5617L
 #define SHIPPED_REJECT_COUNT 60183L
+#define SHIPPED_FILL_COUNT UINT32_C(3889968)
+#define SHIPPED_SUPPRESSED_FILL_COUNT UINT32_C(54922)
 
 struct seed_file {
     const char *name;
@@ -423,8 +425,8 @@ int main(int argc, char **argv)
             for (size_t i = 0; i < len; i++)
                 work[i] = (uint8_t)rng_next();
             break;
-        case 4: /* random noise behind a valid 0x0B77 sync — the hostile
-                 * payload the padded scratch exists for */
+        case 4: /* random noise behind a valid 0x0B77 sync: the hostile
+                 * payload the bounded reader must contain */
             len = 7 + rng_range(4096);
             for (size_t i = 0; i < len; i++)
                 work[i] = (uint8_t)rng_next();
@@ -489,12 +491,16 @@ int main(int argc, char **argv)
     }
     if (!fail && iters == SHIPPED_FUZZ_ITERATIONS &&
         (ok_count != SHIPPED_OK_COUNT ||
-         reject_count != SHIPPED_REJECT_COUNT)) {
+         reject_count != SHIPPED_REJECT_COUNT ||
+         bound_fills != SHIPPED_FILL_COUNT ||
+         suppressed_fills != SHIPPED_SUPPRESSED_FILL_COUNT)) {
         fprintf(stderr,
-                "FAIL: shipped fuzz outcome %ld ok / %ld rejected "
-                "!= %ld / %ld\n",
-                ok_count, reject_count, SHIPPED_OK_COUNT,
-                SHIPPED_REJECT_COUNT);
+                "FAIL: shipped fuzz outcome %ld/%ld ok/rejected, "
+                "%" PRIu32 "/%" PRIu32 " fills/suppressed; expected "
+                "%ld/%ld and %" PRIu32 "/%" PRIu32 "\n",
+                ok_count, reject_count, bound_fills, suppressed_fills,
+                SHIPPED_OK_COUNT, SHIPPED_REJECT_COUNT,
+                SHIPPED_FILL_COUNT, SHIPPED_SUPPRESSED_FILL_COUNT);
         fail = 1;
     }
 

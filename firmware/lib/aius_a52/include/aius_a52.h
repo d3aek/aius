@@ -27,10 +27,9 @@ extern "C" {
  *
  * SAFETY SHAPE, unlike upstream liba52: the fork's bit reader has a byte-exact,
  * fail-closed end bound. The adapter sets it from the validated 48 kHz frame
- * length before a52_frame. F3a retains AIUS_A52_PARSE_PAD temporarily and
- * fills it with 0xFF as a positive proof oracle; the reader substitutes zeros
- * at the bound, never reading the oracle bytes (contract + derivation:
- * lib/aius_a52/a52/NOTICE.md).
+ * length before a52_frame and copies into one AIUS_A52_MAX_FRAME scratch.
+ * The reader substitutes zeros at the bound and never reads beyond that owned
+ * frame allocation (contract + derivation: lib/aius_a52/a52/NOTICE.md).
  *
  * Output flags always request the stream's OWN coding
  * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0. The fork
@@ -50,11 +49,6 @@ extern "C" {
 /* The AC-3 maximum frame size (frmsizecod ceiling: 640 kbps at 32 kHz). */
 #define AIUS_A52_MAX_FRAME 3840u
 
-/* Temporary F3a proof pad behind the copied AU. It is filled with 0xFF so the
- * bounded reader's zero substitution is behaviorally distinguishable from an
- * accidental read. F3b removes this allocation. */
-#define AIUS_A52_PARSE_PAD (32u * 1024u)
-
 /* Frames one AC-3 access unit decodes to (6 blocks x 256). */
 #define AIUS_A52_FRAME_SAMPLES 1536u
 
@@ -71,8 +65,8 @@ AiusStatus aius_a52_decoder_create(AiusA52Decoder **out);
  * aius_a52_get_metrics). Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
 AiusStatus aius_a52_decoder_create_arena(AiusA52Decoder **out, AiusArena *arena);
 
-/* Decode one AC-3 access unit. `data`/`size` need not be aligned or padded (the
- * adapter copies into its padded scratch). Preconditions owned here, not by the
+/* Decode one AC-3 access unit. `data`/`size` need not be aligned (the adapter
+ * copies into its owned frame scratch). Preconditions owned here, not by the
  * caller: size < 7 and sync/length/bsid violations return AIUS_MALFORMED
  * before liba52's unguarded paths can run; sample rate != 48 kHz and
  * unmappable channel modes return AIUS_UNSUPPORTED. On AIUS_OK, `block` holds

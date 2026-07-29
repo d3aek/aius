@@ -120,6 +120,12 @@ end mismatches and its prior 5,617/60,183 OK/reject outcome unchanged. A
 seven-byte direct-core case leaves the end unset and proves that every attempted
 fill is suppressed under ASan.
 
+F3b removes the 32 KiB proof pad, leaving one `AIUS_A52_MAX_FRAME` scratch.
+The same fail-fast suites preserve all counts and decoded hashes with ASan
+watching that exact allocation. The probe build's arena high-water is 57,680 B;
+the reproducible production configuration
+(`AIUS_A52_BOUND_PROBE=0 ... --suite a52`) measures 57,664 B.
+
 ## Remaining external accommodations
 
 `../include/config.h` keeps `sample_t` as `float`, routes the sample-buffer
@@ -128,8 +134,6 @@ macro override. The a52 suites build under the common `-Werror` plus
 ASan/UBSan flags with fail-fast shift checking and no fork-specific warning or
 sanitizer carve-out.
 
-The adapter still copies an access unit into an owned `AIUS_A52_MAX_FRAME` plus
-32 KiB scratch. The reader bound is now the containment mechanism; for F3a
-only, every byte beyond the validated frame is `0xFF`, making the retained pad
-a positive proof oracle rather than a safety net. F3b removes the pad, then F3c
-adds CRC validation.
+The adapter copies an access unit into one owned `AIUS_A52_MAX_FRAME` scratch.
+The reader bound is the load-bearing containment mechanism. F3c still needs to
+add CRC validation.

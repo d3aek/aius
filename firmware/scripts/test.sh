@@ -28,6 +28,7 @@
 #   CC, CXX              host compilers                        (default: gcc, g++)
 #   AIUS_ITCM_ENV        image `itcm-placement` inspects       (default: teensy41-optical)
 #   PLATFORMIO_CORE_DIR  toolchain cache holding readelf       (default: ~/.platformio)
+#   AIUS_A52_BOUND_PROBE AC-3 host reader instrumentation       (default: 1; 0 disables)
 #
 # Exit codes: 0 ok; 2 usage error or unknown suite; 3 a suite's prerequisite
 #             artifact or tool is absent; any other non-zero is the failing
@@ -132,9 +133,12 @@ a52_build() {
 	# AIUS_A52_BOUND_PROBE is host-only instrumentation for the F3a positive
 	# reader-bound oracle. The comma-separated --wrap list is one linker
 	# argument.
+	local a52_cflags=(-D_GNU_SOURCE)
+	if [ "${AIUS_A52_BOUND_PROBE:-1}" != "0" ]; then
+		a52_cflags+=(-DAIUS_A52_BOUND_PROBE)
+	fi
 	# shellcheck disable=SC2054
-	local a52_cflags=(-D_GNU_SOURCE -DAIUS_A52_BOUND_PROBE \
-		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+	a52_cflags+=(-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 	local a52="$fw_root/lib/aius_a52/a52"
 	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
 		"$@" \

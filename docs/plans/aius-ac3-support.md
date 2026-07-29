@@ -523,7 +523,8 @@ unobtainable once the pad is gone.
   byte-derived, set before `a52_frame`, pad still in place and filled `0xFF`
   past `frame_length`. Proof is the non-zero suppressed-fill count phase 2a
   specifies, plus the F1 checksums.
-- **F3b — remove the pad**, scratch falls to one frame. Suites unchanged.
+- **F3b — remove the pad. DONE 2026-07-29.** Scratch falls to one frame.
+  Suites unchanged.
 - **F3c — CRC**, with the fuzz change below, which is not optional.
 
 **THE BLOCKER F3 originally shipped (gate finding 1): a CRC gate silently
@@ -820,10 +821,13 @@ fit. That framing was wrong: **almost none of it is liba52's.**
 
 | Item | Bytes | Owner |
 |---|---|---|
-| Parse scratch (`MAX_FRAME + 32 KiB pad`) | 36,608 | adapter; pad retained only as F3a's positive oracle until F3b |
+| Parse scratch (`MAX_FRAME + 32 KiB pad`) | 36,608 | phase-1 adapter; F3b has now removed the proof pad |
 | Output planes (6 × 1536 × 4) | 36,864 | adapter, only because it accumulates a whole AU |
 | liba52 sample buffer (256 × 12 × 4) | 12,288 | liba52 |
 | State + handle + alignment | ~4,704 | liba52 + adapter |
+
+At the current F3b boundary the parse-scratch line is 3,840 B; the output-plane
+line remains until Step 3.
 
 The DTS adapter allocates NO planes — `block->planes` points straight into
 dcadec's own `output_samples` (`aius_dts.c:259`), which is why it is cheap.
@@ -949,12 +953,21 @@ outcome while observing 3,889,968 fills, 54,922 non-zero suppressions, and
 zero frame-end mismatches. The retained `0xFF` pad is therefore an exercised
 oracle, not the containment mechanism.
 
-**Step 2 — remove the pad**, taking the scratch to one frame (3,840 B).
+**Step 2 — remove the pad. DONE 2026-07-29.** Scratch is one frame
+(3,840 B).
 Same suites, unchanged, must stay green: with the pad gone the bound is now
 load-bearing, so this commit is the real test of edit 3. Step 2 also retires
 the prose that describes the pad as the safety mechanism, all of it inside
-owned paths and all of it now wrong: `NOTICE.md` §3, and `aius_a52.h`'s
-SAFETY SHAPE paragraph plus the `AIUS_A52_PARSE_PAD` comment (gate R10).
+owned paths and all of it now wrong: `NOTICE.md`'s external-accommodations
+section, and `aius_a52.h`'s SAFETY SHAPE paragraph plus
+`AIUS_A52_PARSE_PAD` (gate R10).
+
+**Delivered proof:** with the allocation reduced from 36,608 B to 3,840 B,
+fail-fast `a52` preserves all four exact hashes and `a52-fuzz` preserves the
+exact 5,617/60,183 outcome, 3,889,968 fills, 54,922 suppressions, and zero
+end mismatches under ASan/UBSan. Arena high-water falls from 90,448 B to
+57,680 B in the probe build. The reproducible production configuration
+(`AIUS_A52_BOUND_PROBE=0`) passes the same suite at 57,664 B.
 
 **Step 3 — iterator API + suite rewrite.** Replace whole-AU decode with
 `aius_a52_begin_access_unit()` (validates, runs `a52_frame`, arms the
