@@ -389,6 +389,15 @@ mismatch an implementer simply re-baselines). Fully determined:
 
 F1 must then reproduce all four exactly, with `a52-fuzz` green.
 
+**The probe already exists** — `firmware/tools/a52_probes/hash_a52.c`, kept
+from the gate that measured these baselines, alongside `tabcheck.c` (F2's
+table-rewrite proof) and the reproduction recipes for the two synthetic
+inputs the gate used: a `dsurmod = 2` corpus variant (byte 6 of every frame
+`0x43` → `0x53`, which is the only way to convict the A52_DOLBY flags
+defect, since no committed vector sets it) and an E-AC-3 IEC stream. F0 is
+therefore turning an existing, measured probe into an asserted suite check,
+not writing one.
+
 **Step F1 — move and prune, NO behaviour change.** `vendor/a52-core/` →
 `lib/aius_a52/a52/`; delete `downmix.c` and `attributes.h` (NOT
 `mm_accel.h` — see correction 1); apply the identity-only reduction with
