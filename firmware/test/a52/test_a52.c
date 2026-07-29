@@ -39,21 +39,38 @@
 #define A52_MIN_SNR_DB 55.0
 
 #define MAX_FRAMES_PER_VECTOR 16
+#define FNV1A64_BASIS UINT64_C(0xcbf29ce484222325)
+#define FNV1A64_PRIME UINT64_C(0x100000001b3)
 
 struct vector {
     const char *name;
     uint16_t channels;      /* expected decoded channels */
     uint32_t channel_mask;  /* expected AIUS mask */
+    uint64_t decoded_hash;  /* FNV-1a over AU-order decoded planes */
 };
 
 static const struct vector k_vectors[] = {
-    { "stereo_tones",       2, AIUS_CH_FL | AIUS_CH_FR },
-    { "stereo_impulse",     2, AIUS_CH_FL | AIUS_CH_FR },
+    { "stereo_tones",       2, AIUS_CH_FL | AIUS_CH_FR,
+      UINT64_C(0x7d7d27ae1ae01351) },
+    { "stereo_impulse",     2, AIUS_CH_FL | AIUS_CH_FR,
+      UINT64_C(0xe5ace9204e8da8bb) },
     { "surround51_impulse", 6, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
-                               AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR },
+                               AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      UINT64_C(0x27ca745607a8b834) },
     { "surround51_ident",   6, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
-                               AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR },
+                               AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      UINT64_C(0xd549a217bb66b3c6) },
 };
+
+static uint64_t fnv1a_sample_le(uint64_t hash, int32_t sample)
+{
+    uint32_t bits = (uint32_t)sample;
+    for (uint32_t byte = 0; byte < 4; byte++) {
+        hash ^= (uint8_t)(bits >> (8 * byte));
+        hash *= FNV1A64_PRIME;
+    }
+    return hash;
+}
 
 static uint8_t *read_file(const char *dir, const char *name, const char *ext,
                           size_t *size_out)
@@ -147,6 +164,13 @@ int main(int argc, char **argv)
             fprintf(stderr, "FAIL: %s: no complete AUs\n", vec->name);
             return 1;
         }
+        size_t parsed_size = starts[naus - 1] + lens[naus - 1];
+        if (parsed_size != es_size) {
+            fprintf(stderr,
+                    "FAIL: %s: parsed %zu of %zu bytes (partial AU or cap)\n",
+                    vec->name, parsed_size, es_size);
+            return 1;
+        }
         /* Precondition (gate F9): the reference must be exactly the decoded
          * frames — no priming/trim ambiguity exists for raw elementary
          * streams, and this pins it. */
@@ -173,6 +197,7 @@ int main(int argc, char **argv)
 
         int vec_diff = 0;
         double sig = 0.0, err = 0.0;
+        uint64_t decoded_hash = FNV1A64_BASIS;
         for (size_t a = 0; a < naus; a++) {
             AiusPcmBlock block;
             memset(&block, 0xA5, sizeof(block));
@@ -204,12 +229,21 @@ int main(int argc, char **argv)
                     sig += (double)theirs * (double)theirs;
                     err += (double)(ours - theirs) * (double)(ours - theirs);
                     decoded[c][fr] = ours;
+                    decoded_hash = fnv1a_sample_le(decoded_hash, ours);
                 }
             }
         }
         double snr = 10.0 * log10(sig / (err > 0.0 ? err : 1e-30));
-        printf("ok %s: %zu AUs, max diff %d LSB, SNR %.1f dB vs FFmpeg\n",
-               vec->name, naus, vec_diff, snr);
+        printf("ok %s: %zu AUs, hash %016" PRIx64
+               ", max diff %d LSB, SNR %.1f dB vs FFmpeg\n",
+               vec->name, naus, decoded_hash, vec_diff, snr);
+        if (decoded_hash != vec->decoded_hash) {
+            fprintf(stderr,
+                    "FAIL: %s decoded hash %016" PRIx64
+                    " != expected %016" PRIx64 "\n",
+                    vec->name, decoded_hash, vec->decoded_hash);
+            return 1;
+        }
         if (vec_diff > A52_DIFF_TOL_LSB || snr < A52_MIN_SNR_DB) {
             fprintf(stderr, "FAIL: %s outside tolerance (%d LSB / %.1f dB)\n",
                     vec->name, A52_DIFF_TOL_LSB, A52_MIN_SNR_DB);

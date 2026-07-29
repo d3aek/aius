@@ -95,6 +95,26 @@ sequenced after.
    validation (the actual mission test: nightly content, dialogue lifted
    via center gain).
 
+`doc-index --validate-outstanding-work` cannot validate this plan because
+document discovery does not yet index `src/hardware/**/docs`; it reports
+`outstanding.snapshot.plan-absent`. The required component-wide disposition
+is therefore recorded manually below, using the same canonical grammar.
+
+## Outstanding-work audit
+
+- `docs/plans/aius-capability-gate.md` — `coordinate`: Preserve the shipped DTS capability contract; AC-3 reuses its codec ABI, arena, and target timing evidence while phase 2 moves DTS decode out of the ISR.
+- `docs/plans/aius-cost-model.md` — `unrelated`: Decoder firmware does not change the prototype BOM, layer-count decision, or supplier pricing.
+- `docs/plans/aius-dsp-config-api.md` — `coordinate`: AC-3 feeds the existing layout-aware DSP and phase 3 updates its status labels; DSP configuration semantics remain owned by that plan.
+- `docs/plans/aius-hardware-spec.md` — `coordinate`: Phase 4 must preserve the hardware spec's optical path and memory gates while proving the decoder's target footprint.
+- `docs/plans/aius-network-hardening.md` — `coordinate`: AC-3 phase 2 owns the defect-31 decode-off-ISR fix and proof; the hardening plan remains the defect ledger and retains defect 34.
+- `docs/plans/aius-open-work-register.md` — `coordinate`: The register remains a projection of authoritative work and must strike defect 31 when phase 2 closes it.
+- `docs/plans/aius-optical-prototype.md` — `coordinate`: Phase 4's card replay and live-TV checks extend the existing optical validation without replacing its broader prototype gates.
+- `docs/plans/aius-ota-upgrade.md` — `unrelated`: AC-3 adds no update format, rollback state, or OTA transport surface.
+- `docs/plans/aius-replay-manager.md` — `coordinate`: Phase 4 adds AC-3 IEC fixtures through the existing replay transport without changing replay-manager scheduling or storage semantics.
+- `docs/plans/aius-sample-rate-following.md` — `coordinate`: AC-3 remains 48 kHz-only and its bounded-reader proof relies on 48 kHz frame alignment; later rate following must revisit that invariant deliberately.
+- `docs/plans/aius-sd-config-web.md` — `coordinate`: Phase 3 edits the shared status UI and must preserve the shipped dashboard and SD-served page contracts.
+- `docs/plans/aius-tls-termination.md` — `coordinate`: TLS is parked, but its future epoch-latency budget must consume phase 4's measured decode cost rather than its current DTS-only assumption.
+
 ## The format space after AC-3 — why this is the last decoder
 
 Recorded 2026-07-28 in answer to "what else could we conceivably support,
@@ -362,11 +382,12 @@ desyncs an LFE stream on some future non-identity request.
 
 #### Steps, each separately committed
 
-**Step F0 — pin a byte-level oracle, BEFORE anything moves.** Today's suite
-cannot prove what F1 claims: `test_a52.c` asserts only a max per-sample LSB
-diff and an SNR printed to 0.1 dB, so a few LSB of drift in non-peak samples
-moves neither figure. Add a per-vector FNV-1a checksum over all decoded
-planes, printed and asserted, as its own commit against the UNMODIFIED tree.
+**Step F0 — pin a byte-level oracle, BEFORE anything moves. DONE
+2026-07-29.** The pre-F0 suite could not prove what F1 claims:
+`test_a52.c` asserted only a max per-sample LSB diff and an SNR printed to
+0.1 dB, so a few LSB of drift in non-peak samples moved neither figure. F0
+adds a per-vector FNV-1a checksum over all decoded planes, printed and
+asserted in its own commit against the UNMODIFIED tree.
 
 **The construction must be pinned with the values, or the baselines are
 unreproducible and the oracle degenerates into a tautology** (gate B: a
@@ -374,11 +395,13 @@ rerun under a different basis produced four different digests, and on first
 mismatch an implementer simply re-baselines). Fully determined:
 
 - 64-bit FNV-1a, basis `0xcbf29ce484222325`, prime `0x100000001b3`;
-- one hash per vector, starting at the basis and accumulating across every
-  access unit in stream order;
-- iteration channel-major, then sample;
+- one hash per vector, starting at the basis and accumulating in the fully
+  nested order access unit in stream order, then channel, then sample;
 - each sample taken as `(uint32_t)block.planes[c][i]` and fed as **4
   little-endian bytes**.
+- the corpus walker asserts that the final declared frame ends exactly at
+  the file size, so a trailing partial AU or the frame cap cannot silently
+  shorten the hashed input.
 
 | Vector | FNV-1a over all planes |
 |---|---|
@@ -403,7 +426,17 @@ not writing one.
 `mm_accel.h` — see correction 1); apply the identity-only reduction with
 the bitstream trap, the `*flags` grant and the fail-closed guard above;
 `NOTICE.md` becomes the divergence log. **F0 must have landed first** — F1's
-entire proof is the four checksums, so without them it has no oracle.
+byte-identity proof is the four checksums, so without them it has no oracle.
+Two core-level semantic assertions complete F1's proof because decoded
+samples cannot convict flag negotiation:
+
+- derive a synthetic `dsurmod=2` stereo AU from the recorded gate recipe,
+  call `a52_frame` directly, and assert its returned coding is
+  `A52_DOLBY`, matching `a52_syncinfo`;
+- request a non-identity coding directly from `a52_frame` and assert the
+  reduced core rejects it, pinning the fail-closed guard. This assertion
+  joins F1 rather than F0 because the unmodified core legitimately supports
+  downmix requests.
 
 **Path references F1 must update** (grep-confirmed complete):
 `scripts/test.sh:125,135,142`; `lib/aius_a52/include/aius_a52.h:16,34`;
