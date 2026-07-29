@@ -29,6 +29,7 @@
  */
 
 #include <math.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -543,6 +544,21 @@ static void test_classifier(const char *dir)
 
 /* ---- test 4: no-heap steady state via the arena-backed pipeline ---------- */
 
+struct increment_cycle_clock {
+	uint32_t now;
+	uint32_t step;
+	uint32_t calls;
+};
+
+static uint32_t increment_cycle_read(void *ctx)
+{
+	struct increment_cycle_clock *clock = ctx;
+	uint32_t value = clock->now;
+	clock->now += clock->step;
+	clock->calls++;
+	return value;
+}
+
 /* Arena dedicated to the pipeline instance + DTS decoder. 5.1 core decode
  * high-water measures well under 256 KiB; the instance adds a few KiB. */
 #define PIPE_ARENA_BYTES (256u * 1024u)
@@ -571,8 +587,19 @@ static void test_no_heap_steady_state(const char *dir)
 	struct capture cap;
 	memset(&cap, 0, sizeof(cap));
 	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	struct increment_cycle_clock fake_clock = {
+		.now = UINT32_MAX - 20u,
+		.step = 19u,
+	};
+	AiusPipelineConfig config = {
+		.packing = AIUS_IEC61937_PACK_16,
+		.cycle_clock = {
+			.ctx = &fake_clock,
+			.read = increment_cycle_read,
+		},
+	};
 	AiusPipeline *p = NULL;
-	CHECK(aius_pipeline_create_arena(&p, NULL, &sink, &arena) == AIUS_OK,
+	CHECK(aius_pipeline_create_arena(&p, &config, &sink, &arena) == AIUS_OK,
 	      "ss: create_arena");
 	if (!p) {
 		free(w);
@@ -596,6 +623,9 @@ static void test_no_heap_steady_state(const char *dir)
 	CHECK(aius_pipeline_push(p, w, n) == AIUS_OK, "ss: warmup push");
 	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK, "ss: warmup metrics");
 	CHECK(m.alloc_count > 0, "ss: warmup allocated 0 (arena/shim not wired?)");
+	CHECK(m.decode_cycles == fake_clock.step,
+	      "ss: DTS warmup cycles=%" PRIu64 " expected=%u",
+	      m.decode_cycles, fake_clock.step);
 	printf("  steady-state   warmup alloc_count=%u arena_high_water=%u bytes\n",
 	       m.alloc_count, m.arena_high_water);
 
@@ -611,13 +641,15 @@ static void test_no_heap_steady_state(const char *dir)
 	      "ss: DTS codec Pc %u", aius_pipeline_codec_pc(p));
 	CHECK(aius_pipeline_get_codec_metrics(p, aius_pipeline_codec_pc(p),
 	                                      &dts_m) == AIUS_OK &&
-	          dts_m.alloc_count == 0u,
+	          dts_m.alloc_count == 0u &&
+	          dts_m.decode_cycles == fake_clock.step,
 	      "ss: separately-addressed DTS metrics");
 
 	CHECK(aius_pipeline_push(p, ac3, ac3_n) == AIUS_OK, "ss: AC-3 push");
 	CHECK(aius_pipeline_codec_pc(p) == 1u, "ss: AC-3 codec Pc not selected");
 	CHECK(aius_pipeline_get_codec_metrics(p, 1u, &ac3_m) == AIUS_OK &&
-	          ac3_m.alloc_count == 0u,
+	          ac3_m.alloc_count == 0u &&
+	          ac3_m.decode_cycles == 7u * (uint64_t)fake_clock.step,
 	      "ss: AC-3 steady-state decode allocated");
 	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
 	          m.alloc_count == ac3_m.alloc_count &&
@@ -625,6 +657,12 @@ static void test_no_heap_steady_state(const char *dir)
 	          m.arena_high_water >= dts_m.arena_high_water &&
 	          m.arena_high_water >= ac3_m.arena_high_water,
 	      "ss: compatibility/per-codec metric projection");
+	CHECK(dts_m.decode_cycles == fake_clock.step &&
+	          ac3_m.decode_cycles == 7u * (uint64_t)fake_clock.step &&
+	          fake_clock.calls == 32u,
+	      "ss: per-codec timing projections/calls dts=%" PRIu64
+	      " ac3=%" PRIu64 " calls=%u",
+	      dts_m.decode_cycles, ac3_m.decode_cycles, fake_clock.calls);
 	printf("  steady-state   2nd burst alloc_count=0 (no-heap steady state)\n");
 
 	aius_pipeline_destroy(p);
@@ -1352,8 +1390,19 @@ static void test_deferred_ac3(const char *dir)
 
 	struct deferred_sink sink_state = { .block_once = 1 };
 	AiusPcmSink sink = { .ctx = &sink_state, .consume = deferred_consume };
+	struct increment_cycle_clock fake_clock = {
+		.now = UINT32_MAX - 12u,
+		.step = 17u,
+	};
+	AiusPipelineConfig clock_config = {
+		.packing = AIUS_IEC61937_PACK_16,
+		.cycle_clock = {
+			.ctx = &fake_clock,
+			.read = increment_cycle_read,
+		},
+	};
 	AiusPipeline *p = NULL;
-	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	CHECK(aius_pipeline_create(&p, &clock_config, &sink) == AIUS_OK,
 	      "defer-ac3: create");
 	size_t consumed = 0u;
 	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK &&
@@ -1364,9 +1413,17 @@ static void test_deferred_ac3(const char *dir)
 	CHECK(aius_pipeline_service_one(p, &result) == AIUS_NO_SPACE &&
 	          result == AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED,
 	      "defer-ac3: first block backpressure");
+	CHECK(fake_clock.calls == 4u,
+	      "defer-ac3: begin/block timing reads=%u", fake_clock.calls);
 	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
 	          result == AIUS_PIPELINE_SERVICE_PROGRESSED,
 	      "defer-ac3: identical retained retry");
+	AiusMetrics cycle_metrics;
+	CHECK(fake_clock.calls == 4u &&
+	          aius_pipeline_get_codec_metrics(p, 1u, &cycle_metrics) ==
+	              AIUS_OK &&
+	          cycle_metrics.decode_cycles == 0u,
+	      "defer-ac3: retry remeasured or partial timing published");
 	CHECK(sink_state.first == sink_state.second &&
 	          memcmp(&sink_state.first_copy, &sink_state.second_copy,
 	                 sizeof(sink_state.first_copy)) == 0 &&
@@ -1390,6 +1447,12 @@ static void test_deferred_ac3(const char *dir)
 	      "defer-ac3: six-unit/retry accounting");
 	CHECK(aius_pipeline_codec_pc(p) == 1u,
 	      "defer-ac3: codec not live after all six commits");
+	CHECK(fake_clock.calls == 14u &&
+	          aius_pipeline_get_codec_metrics(p, 1u, &cycle_metrics) ==
+	              AIUS_OK &&
+	          cycle_metrics.decode_cycles ==
+	              7u * (uint64_t)fake_clock.step,
+	      "defer-ac3: completed timing aggregate/retry calls");
 
 	/* Explicit reset (also the source/generation-gap entry point) abandons an
 	 * armed iterator. A restarted AU must reproduce a clean block zero. */
@@ -1399,10 +1462,16 @@ static void test_deferred_ac3(const char *dir)
 	      "defer-ac3: arm reset probe");
 	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK,
 	      "defer-ac3: commit pre-reset block zero");
+	CHECK(fake_clock.calls == 18u,
+	      "defer-ac3: partial AU timing reads=%u", fake_clock.calls);
 	aius_pipeline_reset(p);
 	CHECK(aius_pipeline_codec_pc(p) == 0u &&
 	          !aius_pipeline_has_pending(p),
 	      "defer-ac3: reset clears pending codec state");
+	CHECK(aius_pipeline_get_codec_metrics(p, 1u, &cycle_metrics) == AIUS_OK &&
+	          cycle_metrics.decode_cycles ==
+	              7u * (uint64_t)fake_clock.step,
+	      "defer-ac3: reset published partial timing");
 	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK,
 	      "defer-ac3: clean AU after reset");
 	CHECK(sink_state.hashes[8] == sink_state.hashes[0],

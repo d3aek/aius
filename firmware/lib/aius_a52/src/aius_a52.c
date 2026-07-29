@@ -51,6 +51,9 @@ struct AiusA52Decoder {
     uint8_t lfe;
     uint8_t next_block;
     uint8_t armed;
+    uint8_t cycle_armed;
+    AiusCycleClock cycle_clock;
+    uint64_t cycle_accumulator;
     AiusMetrics metrics;
 };
 
@@ -128,6 +131,22 @@ AiusStatus aius_a52_decoder_create_arena(AiusA52Decoder **out, AiusArena *arena)
     return decoder_create(out, arena);
 }
 
+AiusStatus aius_a52_set_cycle_clock(AiusA52Decoder *dec,
+                                    const AiusCycleClock *clock)
+{
+    if (!dec)
+        return AIUS_INVALID_ARG;
+    if (clock)
+        dec->cycle_clock = *clock;
+    else
+        memset(&dec->cycle_clock, 0, sizeof(dec->cycle_clock));
+    dec->cycle_armed = 0;
+    dec->cycle_accumulator = 0;
+    if (!dec->cycle_clock.read)
+        dec->metrics.decode_cycles = 0;
+    return AIUS_OK;
+}
+
 /* One saturating float->int32 quantize at the AIUS_PCM_SAMPLE_BITS scale.
  * liba52 (level 1, bias 0) nominally emits [-1,1] but clipping is legal
  * upstream of us, so the clamp is unconditional. */
@@ -168,6 +187,8 @@ static void decoder_reset_incomplete(AiusA52Decoder *dec)
     a52_reset_discontinuity(dec->state);
     dec->armed = 0;
     dec->next_block = 0;
+    dec->cycle_armed = 0;
+    dec->cycle_accumulator = 0;
 }
 
 AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
@@ -177,16 +198,22 @@ AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
         return AIUS_INVALID_ARG;
 
     decoder_call_start(dec);
+
+    /* Every replacement begin is a discontinuity, including a malformed
+     * replacement. A partial timing aggregate must not survive it. */
+    if (dec->armed)
+        decoder_reset_incomplete(dec);
     if (!data || size == 0)
         return decoder_call_end(dec, AIUS_INVALID_ARG);
 
-    /* A replacement begin is an explicit lossy discontinuity. Reset before
-     * scratch overwrite so the old reader can never observe the new AU. */
-    if (dec->armed)
-        decoder_reset_incomplete(dec);
+    const int timed = dec->cycle_clock.read != NULL;
+    const uint32_t cycles_begin =
+        timed ? dec->cycle_clock.read(dec->cycle_clock.ctx) : 0u;
 
     /* a52_syncinfo reads buf[0..6] unconditionally: length is OUR guard. */
     if (size < 7 || size > AIUS_A52_MAX_FRAME) {
+        if (timed)
+            (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         return decoder_call_end(dec, AIUS_MALFORMED);
     }
 
@@ -200,14 +227,22 @@ AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
         /* Bad sync/bsid/frmsizecod, or the burst payload disagrees with the
          * header's own length. a52_frame never runs on a buffer syncinfo did
          * not accept (its halfrate[] lookup is unguarded). */
+        if (timed)
+            (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         return decoder_call_end(dec, AIUS_MALFORMED);
     }
-    if (sample_rate != 48000)
+    if (sample_rate != 48000) {
+        if (timed)
+            (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         return decoder_call_end(dec, AIUS_UNSUPPORTED);
+    }
 
     const struct a52_mode_map *map = mode_lookup(flags & A52_CHANNEL_MASK);
-    if (!map)
+    if (!map) {
+        if (timed)
+            (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         return decoder_call_end(dec, AIUS_UNSUPPORTED);
+    }
     int lfe = (flags & A52_LFE) != 0;
 
 #ifdef AIUS_A52_BOUND_PROBE
@@ -221,6 +256,8 @@ AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
     int request = (flags & (A52_CHANNEL_MASK | A52_LFE));
     sample_t level = 1.0f;
     if (a52_frame(dec->state, dec->scratch, &request, &level, 0.0f)) {
+        if (timed)
+            (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         decoder_reset_incomplete(dec);
         return decoder_call_end(dec, AIUS_MALFORMED);
     }
@@ -234,6 +271,11 @@ AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
     dec->channel_mask = mask;
     dec->next_block = 0;
     dec->armed = 1;
+    dec->cycle_armed = (uint8_t)timed;
+    dec->cycle_accumulator =
+        timed ? (uint64_t)(uint32_t)(
+                    dec->cycle_clock.read(dec->cycle_clock.ctx) - cycles_begin)
+              : 0u;
     return decoder_call_end(dec, AIUS_OK);
 }
 
@@ -247,7 +289,12 @@ AiusStatus aius_a52_decode_next_block(AiusA52Decoder *dec,
     if (!block || !dec->armed)
         return decoder_call_end(dec, AIUS_INVALID_ARG);
 
+    const int timed = dec->cycle_armed != 0u;
+    const uint32_t cycles_begin =
+        timed ? dec->cycle_clock.read(dec->cycle_clock.ctx) : 0u;
     if (a52_block(dec->state)) {
+        if (timed)
+            (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         decoder_reset_incomplete(dec);
         return decoder_call_end(dec, AIUS_MALFORMED);
     }
@@ -294,9 +341,18 @@ AiusStatus aius_a52_decode_next_block(AiusA52Decoder *dec,
     block->frames = AIUS_A52_BLOCK_SAMPLES;
     block->sample_rate_hz = 48000;
     block->channel_mask = mask;
+    if (timed)
+        dec->cycle_accumulator +=
+            (uint64_t)(uint32_t)(
+                dec->cycle_clock.read(dec->cycle_clock.ctx) - cycles_begin);
     dec->next_block++;
-    if (dec->next_block == AIUS_A52_BLOCKS_PER_ACCESS_UNIT)
+    if (dec->next_block == AIUS_A52_BLOCKS_PER_ACCESS_UNIT) {
+        if (dec->cycle_armed)
+            dec->metrics.decode_cycles = dec->cycle_accumulator;
         dec->armed = 0;
+        dec->cycle_armed = 0;
+        dec->cycle_accumulator = 0;
+    }
     return decoder_call_end(dec, AIUS_OK);
 }
 

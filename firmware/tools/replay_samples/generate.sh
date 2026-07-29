@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the synthetic 5.1 replay sample pack (WAV + raw DTS Core + IEC 61937).
+# Generate the synthetic 5.1 replay sample pack (WAV + raw DTS/AC-3 + IEC 61937).
 #
 # Usage:
 #   tools/replay_samples/generate.sh                 # 30 s pack into ./generated
@@ -42,7 +42,7 @@ mkdir -p "$out"
 encode() {
 	local name="$1"
 	local filter="$2"
-	echo "==> $name (${duration}s 5.1 WAV, DTS Core, IEC 61937)"
+	echo "==> $name (${duration}s 5.1 WAV, DTS Core, AC-3, IEC 61937)"
 	"$ffmpeg" -hide_banner -loglevel error -y \
 		-filter_complex "$filter" \
 		-map "[mix]" -t "$duration" -ar "$sr" -c:a pcm_s24le "$out/$name.wav"
@@ -51,6 +51,12 @@ encode() {
 		"$out/$name.dts"
 	"$ffmpeg" -hide_banner -loglevel error -y \
 		-i "$out/$name.dts" -map 0:a -c:a copy -f spdif "$out/$name.iec"
+	"$ffmpeg" -hide_banner -loglevel error -y \
+		-i "$out/$name.wav" -map 0:a -ar "$sr" -c:a ac3 -b:a 448k \
+		"$out/$name.ac3"
+	"$ffmpeg" -hide_banner -loglevel error -y \
+		-i "$out/$name.ac3" -map 0:a -c:a copy -f spdif \
+		"$out/${name}_ac3.iec"
 }
 
 encode channel_id_51 \

@@ -870,7 +870,8 @@ an on-target ILP32 measurement, and a few hundred bytes of struct-layout
 drift is now material. Phase 4 must be prepared to trim (the parse scratch
 is the obvious candidate) rather than assume. The arena is a plain static
 array in DTCM today (`optical_main.cpp:1048`), so growing it in place was
-never available: DTCM's whole free-for-locals zone is 48,800 B and that
+never available: the Phase-3 target build leaves 37,856 B in DTCM's
+free-for-locals zone and that
 region is also the stack. But relocating it to OCRAM is not simply a matter
 of free bytes: the 32,768 B DSP staging carve was already VETOED from OCRAM
 by the defect-26 link-time heap floor with only 13,312 B of slack
@@ -880,9 +881,9 @@ what was rejected. The gate is the boot-heap floor, not free space. **Phase
 or treat 127,504/131,072 as the budget.**
 
 **Dynamic decoder loading is REJECTED, with the reasoning recorded so it is
-not re-opened.** Dynamic code loading buys nothing: decoder code is
-cold-placed in flash by an existing build guard and flash is 95% free, while
-the constraint is RAM. Dynamic instantiation (create/destroy at class change)
+not re-opened.** Dynamic code loading is not supported and would not solve the
+data-residency constraint; decoder text currently fits six ITCM blocks while
+flash is 95% free. Dynamic instantiation (create/destroy at class change)
 is *nominally* legal under the arena contract, which permits allocation
 "during a declared stream-format change", and its re-init cost would be
 masked by the 170–255 ms mute a format switch already incurs — **but it does
@@ -1951,14 +1952,67 @@ the built dispatch path, not the hardware source.
 
 ## Phase 4 contract (2026-07-28) — target measurement and live validation
 
-**Owned paths:** `firmware/test/itcm-placement/verify_target.py`,
-`firmware/src/optical_main.cpp`, `firmware/tools/replay_samples/`,
-`firmware/README.md`, this plan — plus, **if the placement measurement below
-sends us down route 2 OR route 3**, `firmware/link/aius_teensy41.ld` and its
-drift test (route 2 adds the `_itcm_block_count` assertion, route 3 the
-cold-placement rule; both edit that file). (`platformio.ini` moved to phase 3: the target must stay
-buildable from the commit that adds dispatch, so a52's sources and include
-path join the build there, not here.)
+```yaml
+phase: 4
+title: Target cycle metrics, ITCM ceiling, replay source and live acceptance
+unit: component-behind-interface
+seams:
+  - AiusCycleClock target timing
+  - _itcm_block_count link ceiling
+  - replay-sample transport validator
+  - committed-wire measurement oracle
+contract-artifact: spec-only
+fan-out:
+  - name: phase4-cycle-metrics
+    owned-paths:
+      - firmware/lib/aius_codec_api/include/aius_codec.h
+      - firmware/lib/aius_dts/
+      - firmware/lib/aius_a52/
+      - firmware/lib/aius_pipeline/
+      - firmware/test/dts/
+      - firmware/test/a52/
+      - firmware/test/pipeline/
+      - firmware/test/itcm-placement/verify_target.py
+      - firmware/src/optical_main.cpp
+  - name: phase4-itcm-ceiling
+    owned-paths:
+      - firmware/link/aius_teensy41.ld
+      - firmware/test/boot-target/test_ldscript_drift.py
+  - name: phase4-replay-source
+    owned-paths:
+      - firmware/tools/replay_samples/generate.sh
+      - firmware/tools/replay_samples/README.md
+      - firmware/tools/replay_samples/validate.py
+      - firmware/test/replay-samples/
+      - firmware/scripts/test.sh
+review-intensity: active
+commit-checkpoint:
+  green:
+    - a52
+    - a52-fuzz
+    - dts
+    - pipeline
+    - iec61937
+    - memory
+    - itcm-placement
+    - boot-target
+    - replay-samples
+    - registry
+  buildable:
+    - teensy41-optical
+    - teensy41-optical-fault
+  parent-commit: "feat(aius): validate AC-3 on target"
+```
+
+**Coordination:** the three implementation seams are disjoint. The parent owns
+this plan, `firmware/README.md`, combined native/target proof, exact-image flash,
+hardware evidence, delivery audits, commits and pushes. Workers never mutate
+Git. The foreign untracked `firmware/tools/replay_samples/generated/` directory
+is an output cache and is never staged.
+
+**Owned paths:** the union of the fan-out paths above,
+`firmware/README.md`, and this plan. `platformio.ini` moved to phase 3: the
+target has already linked both decoders at the preceding buildable boundary.
 
 **Build-order dependency satisfied by phase 3:** both target images now link
 both decoders. Phase 4 starts from that buildable boundary and owns only the
@@ -1968,29 +2022,28 @@ runtime arena/cycle measurements, linker guard and live validation below.
 
 **An earlier draft claimed the cold-placement guard "already lists every
 dcadec object" and that the five a52 objects just join it. Both halves were
-false (gate F14).** `verify_target.py:44-53`'s `COLD_OBJECTS` is eight
+false (gate F14).** `verify_target.py`'s `COLD_OBJECTS` is now nine
 objects — `aius_boot`, `aius_http` ×2, `aius_net`, `aius_runtime`,
-`aius_sd`, and two Teensy adapters — with **no dcadec object and no
+`aius_sd`, `aius_audio_service`, and two Teensy adapters — with **no dcadec object and no
 `aius_dts`**, and `COLD_TREES` covers no vendor tree. The mechanism is
 source annotation (`FLASHMEM`), and grepping the dcadec sources returns
 zero: **dcadec's code is in ITCM today.** Adding a52 objects to that list
-would fail immediately, since they emit `.text` and phase 1's zero-edit
-discipline forbids annotating vendored sources.
+would fail immediately because they emit `.text`; the fork is now first-party,
+so source annotation is possible but remains only route 3's fallback.
 
 **The phase-3 target build answered the placement branch:** liba52 fits in the
-existing six ITCM blocks. ITCM is now 190,460 B with 6,148 B padding; DTCM
-retains 37,856 B for stack/locals. The remaining action is route 2 below: pin
-the six-block result with a linker assertion so later growth cannot silently
-consume another 32 KiB of stack.
+existing six ITCM blocks. Phase 4 retained the six-block split and added the
+linker ceiling. Its production build uses 191,100 B ITCM with 5,508 B padding,
+while DTCM retains 37,856 B for stack/locals.
 
 **The consequence of future overflow is not a build failure without that guard
 but something worse (gate F15).** ITCM is allocated in 32 KiB blocks, and the linker
 derives the stack top from the block count:
 `_estack = ORIGIN(DTCM) + ((16 - _itcm_block_count) << 15)`
-(`link/aius_teensy41.ld:177-179`). ITCM currently sits at 6 blocks with
-23,028 B of padding. Exceeding that padding takes a 7th block and **moves
+(`link/aius_teensy41.ld:177-179`). Phase 4 sits at 6 blocks with
+5,508 B of padding. Exceeding that padding takes a 7th block and **moves
 `_estack` down 32,768 B, taking that much off the STACK** — the
-free-for-locals zone above `_ebss`, which drops from 48,800 B to 16,032 B
+free-for-locals zone above `_ebss`, which drops from 37,856 B to 5,088 B
 for the main loop and the audio ISR together. **This does NOT touch the
 residency budget** (gate N6): `g_arena_memory` is a fixed static in `.bss`
 (`optical_main.cpp:1048`) and is unaffected. Stating it as an arena problem
@@ -2002,70 +2055,138 @@ The measured decision and retained fallbacks are:
 
 1. ~~**Measure first:** does liba52 fit the existing ITCM allocation?~~
    **Done in phase 3:** yes, with 6,148 B padding remaining.
-2. **Selected:** accept ITCM placement, matching dcadec's existing
-   (undocumented) treatment, and add an `_itcm_block_count` assertion to the
-   linker script so a future growth fails loudly instead of silently
-   stealing 32 KB of stack.
+2. ~~**Selected:** accept ITCM placement, matching dcadec's existing
+   (undocumented) treatment, and add
+   `ASSERT(_itcm_block_count <= 6, ...)` to the linker script so a future
+   growth fails loudly instead of silently stealing 32 KB of stack. Equality
+   is deliberately not required: code shrinkage remains legal. The
+   byte-for-byte drift oracle must require the assertion and mutation-test
+   both its removal and a weakened ceiling.~~ **Done in phase 4:** the
+   production and checkpoint-9 fault images pass the ceiling, and mutation
+   tests reject both removal and weakening to seven blocks.
 3. **Fallback only if the selected route later fails:** place the tree cold via a linker rule rather than
    source annotation. **The glob must match the POST-FORK path** — after
    F1 the tree is `lib/aius_a52/a52/`, so a rule written
    `*a52-core*.o(.text*) > FLASH` matches nothing and becomes **a no-op
    that still passes**, putting liba52 in ITCM and stealing 32 KB of stack
-   exactly as gate F15 describes. Take ownership of
-   `link/aius_teensy41.ld` **and its byte-for-byte drift test**, neither of
-   which this contract currently owns — add both before starting. Note the
-   fork also changes route 3's cost: source annotation is no longer
-   forbidden, because there is no zero-edit vendoring discipline left to
-   violate.
+   exactly as gate F15 describes. The fork changes route 3's cost: source
+   annotation is no longer forbidden because there is no zero-edit vendoring
+   discipline left to violate.
 
 FLASH is the irrelevant bank throughout (95% free); ITCM headroom and the
 DTCM stack zone are the constraints.
 
 ### What the target run must establish
 
-- **Arena, measured on hardware, not inferred from the host.** The phase-2a
-  figure is host LP64-derived while dcadec's 62,560 is an on-target ILP32
-  measurement; the two must be re-measured together on target. If the real
-  total exceeds 131,072, the ordered fallbacks are: trim the parse scratch,
-  then relocate the arena to OCRAM **only after corroborating it against the
-  defect-26 boot-heap floor** (which already vetoed a 32,768 B carve with
-  13,312 B of slack — the floor, not free bytes, is the gate).
-- **Decode cycles per codec** through `AiusMetrics.decode_cycles` (DWT).
-  It surfaces on **`/api/status`'s `pipeline_diag`, not `/api/meters`**
-  (`optical_main.cpp:2256, 2274` — gate F16), and reading it per codec
-  depends on phase 3 having extended `aius_pipeline_get_metrics` past its
-  DTS hardwiring. This is the number that says whether phase 2b actually
-  fixed defect 31: AC-3 is 1536 frames (32 ms of audio) per AU, so a decode
-  that fits the epoch service budget with margin is the pass condition.
-- **Per-bank report green** (`build.sh` fails the build on over-capacity),
-  with the OCRAM delta from phase 2a's arena occupancy recorded.
+- **Arena, measured on hardware, not inferred from the host.** The target must
+  report `create_status == AIUS_OK`, `metrics_valid == 1`, shared
+  `arena_high_water <= 131072`, and both codec `alloc_count` values at zero
+  after warm-up. The arena is fixed DTCM `.bss`; its runtime high-water is a
+  DTCM-resident usage measurement, not an OCRAM delta. If it exceeds 131,072,
+  the ordered fallbacks are: trim the parse scratch, then relocate the arena to
+  OCRAM **only after corroborating it against the defect-26 boot-heap floor**.
+- ~~**Decode cycles per codec require implementation, not merely publication.**
+  Both adapters previously left `AiusMetrics.decode_cycles` at zero. Add one
+  shared `AiusCycleClock` callback type in the codec API, configured through
+  the pipeline: a zeroed clock keeps native/default metrics at zero; the target
+  reader returns `ARM_DWT_CYCCNT`. DTS records the wrap-safe 32-bit delta for
+  one complete AU. AC-3 accumulates `begin_access_unit` plus all six
+  `decode_next_block` calls and publishes only the last completed AU. Reset,
+  abandon and failure discard a partial accumulator; retained sink retries do
+  not call the reader or decoder again. Deterministic tests cover default zero,
+  DTS delta, six-block AC-3 aggregation, 32-bit wrap, partial-AU discard,
+  retained retry, and both per-codec pipeline projections.~~ **Implemented and
+  covered in phase 4.** The target reader's exact 12-byte section is pinned as
+  intentionally hot by the post-link placement oracle.
+- **The live cycle result** surfaces on `/api/status`'s `pipeline_diag`, not
+  `/api/meters`. A valid AC-3 run has nonzero `ac3_decode_cycles`; because that
+  value is the sum of six bounded service units, the hard runtime gate remains
+  `audio_diag.service_max_us < 8000` with no service-budget overrun. The
+  clock-coherent SD bench requires the completed-AU aggregate below 4,800,000
+  cycles: all six units may execute inside one 8 ms AUDIO checkpoint at
+  600 MHz, so the checkpoint budget must not be multiplied by six.
+- **Every link-time bank gate remains green.** Record Phase-4 FLASH, ITCM,
+  DTCM and OCRAM figures and deltas against Phase 3's 430,080 / 190,460 /
+  289,824 / 392,832-byte baseline. OCRAM retains its independent 128 KiB heap
+  floor; it is not evidence for decoder-arena occupancy.
+
+The Phase-4 production and checkpoint-9 fault builds are green at
+FLASH/ITCM/DTCM/OCRAM **431,104 / 191,100 / 289,824 / 392,832 bytes**:
+**+1,024 / +640 / 0 / 0 bytes** against Phase 3. The link leaves 37,856 B for
+stack/locals and 131,456 B free in OCRAM. These figures prove placement and
+capacity only; runtime arena high-water and AC-3 cycles remain exact-image
+hardware evidence.
 
 ### Live validation — the actual mission test
 
 Bench first, TV second, because the bench is scriptable and the TV is not:
 
 - **IEC-wrapped AC-3 replay — gate-verified end to end, not assumed.**
-  `tools/replay_samples/generate.sh` already produces `.iec` via ffmpeg's
-  `spdif` muxer for DTS, and the reviewer ran the AC-3 route: one second
-  muxes to 196,608 B (32 bursts × 6,144 B) with `Pa/Pb/Pc/Pd =
-  F872/4E1F/0001/3800`, an exact 3,072-word period, zero-stuffed to that
-  period. **No endianness problem**: the file is LE on disk with the payload
-  byte-swapped, so read through `aius_replay_word_from_le` the words are the
-  canonical big-endian wire form and the parser locks with `swap = 0` —
-  identical to the DTS route, and 16-vs-24-bit is a non-issue. Word rate is
-  96,000 words/s, exactly the replay ring's existing budget. The only recipe
-  change is `-c:a dca -strict -2` → `-c:a ac3 -b:a <rate>`; every `join`
-  already states `map=`. This gives a repeatable on-card AC-3 source with
-  **known channel identity** — the defect-30 lesson applied to bring-up, so
-  the first AC-3 decode on hardware is validated against a tone programme
-  rather than by ear on unknown content. `tools/replay_samples/README.md`
-  is titled "DTS replay sample pack" and needs re-titling with the on-card
-  budget stated (AC-3 `.iec` is the same 192,000 B/s).
-- **Then the TV**: nightly content, dialogue lifted via `center_gain_linear`
-  plus centre EQ. That is the reason this project exists, and it is the only
-  test that can confirm the mission.
+  Preserve every existing DTS output and add raw `<name>.ac3` plus
+  `<name>_ac3.iec`; never reuse the ambiguous legacy `<name>.iec` ID. Pin
+  FFmpeg to 48 kHz, 5.1 and `-c:a ac3 -b:a 448k`. The generated AC-3 transport
+  validator proves every 6,144-byte period has `Pa/Pb/Pc/Pd =
+  F872/4E1F/0001/3800`, a 1,792-byte byte-swapped AC-3 payload, zero padding,
+  48 kHz 5.1 headers and byte identity with the raw stream **after undoing the
+  IEC payload's pairwise byte swap**. A parser-backed native oracle consumes
+  those generated periods with no rejection. The stream rate is 192,000 B/s;
+  32 AC-3 frames are 1.024 seconds, so file size is not asserted from an integer
+  requested duration.
+- **The bench replay uses `channel_id_51_ac3`.** Upload and loop it from the
+  SD replay manager under that distinct ID. Poll `/api/status` across at least
+  120 seconds and require: `codec_pc == 1`, completed output and `bursts_ok`
+  increase, nonzero AC-3 cycles below the aggregate bound, both codec
+  allocation counts zero, stable boot generation, no watchdog reset, carrier
+  not required for the SD source, and zero deltas for parse/decode rejects,
+  service-budget overruns, output drops and AU abandons.
+- **Channel identity is an on-device committed-wire measurement, not an ear
+  check or dependence on the physical reverse fibre.** Record the DSP
+  configuration (layout-aware 5.1 matrix, EQ bypass, fixed headroom and limiter
+  state), arm `/api/measure` over `channel_id_51_ac3`, and probe 60, 300, 600,
+  900, 1200 and 1500 Hz. Expected-side tones must exceed -40 dBFS; 300/1200 Hz
+  must favour left over right by at least 40 dB, 600/1500 Hz must favour right
+  over left by at least 40 dB, and the centre 900 Hz plus LFE 60 Hz must match
+  left/right within 0.5 dB. This proves FL/FR/C/LFE/SL/SR identity through
+  decode, DSP and the committed transmit words.
+- **External optical bench replay precedes the TV.** Play the same
+  `<name>_ac3.iec` through the CM6206 IEC958 output for at least 120 seconds;
+  require continuous carrier, `codec_pc == 1`, decode/output progress and the
+  same reject/drop/abandon invariants. The known 48,021-versus-48,000 clock
+  defect may increase `transmit_stalls` only when `retained_retries` increases
+  by the same amount; it may not cause output drops, AU abandons, service
+  overruns, ingress drops/overflow, service-generation resets, gap/source
+  flushes or a watchdog reset.
+- **The four-hour TV gate is dependency-blocked by sample-rate following.**
+  The known 48,021-versus-48,000 mismatch eventually exhausts retained
+  capacity and produces ingress overflow/reset behavior, so paired
+  stalls/retries cannot make a four-hour run a valid AC-3 acceptance. Phase 4
+  completes the clock-coherent SD bench and bounded external optical proof;
+  it explicitly defers the production-duration gate until
+  `aius-sample-rate-following.md` is delivered. A temporary clock-matched image
+  cannot satisfy it.
+- **After that dependency, run the TV for four continuous hours** on an exact
+  committed production image containing both changes: nightly AC-3 content, dialogue
+  lifted via `center_gain_linear` plus centre EQ. Poll at fixed intervals and
+  record deltas for boot/watchdog generation, carrier, `bursts_ok`, completed
+  output, codec Pc, service maxima/overruns, parse/decode rejects, output drops,
+  AU abandons, ingress drops/overflow, service-generation resets and
+  gap/source flushes. Stable boot generation, continuous carrier/decode progress
+  and zero harmful deltas are mandatory. This is the only gate that confirms
+  the mission rather than the instrument.
 - By-ear checks already owed (squelch seam silence, layout-aware stereo
   level) fold into the same session.
+
+### Phase boundary and exact-image proof
+
+The code boundary runs `a52`, `a52-fuzz`, `dts`, `pipeline`, `iec61937`,
+`memory`, `itcm-placement`, `boot-target`, `replay-samples` and `registry`,
+plus shell checks. It builds production and AUDIO-checkpoint-9 fault images,
+completes a clean-room delivery audit, commits and pushes. Hardware proof starts
+only from a rebuilt and flashed copy of that exact committed production
+revision, verified through the image-reported build identity. The bench and TV
+evidence update this plan and `firmware/README.md` in audited evidence commits:
+Phase 4 records the SD and bounded CM6206 benches; the four-hour TV result lands
+only after the sample-rate-following dependency.
 
 ### Debt this phase must close or record
 
@@ -2075,7 +2196,11 @@ Bench first, TV second, because the bench is scriptable and the TV is not:
 `decode_rejects`), `matrix.layout_aware`, `sd_diag` (+3),
 `boot_fuse_0x6e0`, and `/api/meters`'s `analysis_window` /
 `analysis_full_scale`. Record what is not closed rather than letting it grow
-silently.
+silently. The same README update replaces its stale 9,248-byte
+free-for-locals claim with the exact Phase-4 build figure, documents the
+six-block link ceiling, corrects `a52-fuzz`'s obsolete claim that liba52 lacks
+CRC/bounded reads, registers the `replay-samples` suite, and removes the
+now-false statement that the optical input is unsoldered and unexercised.
 
 ## Done, and what would make us stop
 
@@ -2086,9 +2211,11 @@ Everything before that is instrumentation. Concretely:
 1. `a52` + `a52-fuzz` + `pipeline` + `iec61937` green (phases 1–3).
 2. On-target arena inside 131,072 B and per-bank report green (phase 4).
 3. An IEC-wrapped AC-3 replay from the card decodes with correct channel
-   identity, verified against the tone programme rather than by ear.
-4. Sustained live AC-3 from the TV for a full evening with no watchdog reset
-   — which is also defect 31's acceptance test.
+   identity under the committed-wire spectral oracle, followed by the same
+   transport through the CM6206 optical input.
+4. Sustained live AC-3 from the TV for four hours with continuous progress,
+   no watchdog reset, and no harmful diagnostic delta — which is also defect
+   31's acceptance test.
 5. The operator can hear the dialogue.
 
 **Stop conditions, decided in advance so they are not rationalised away

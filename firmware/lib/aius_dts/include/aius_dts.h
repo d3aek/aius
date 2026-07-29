@@ -45,6 +45,11 @@ AiusStatus aius_dts_decoder_create(AiusDtsDecoder **out);
  * or AIUS_INVALID_ARG. */
 AiusStatus aius_dts_decoder_create_arena(AiusDtsDecoder **out, AiusArena *arena);
 
+/* Copy the cycle-clock callback into the decoder. NULL or a clock with a NULL
+ * reader disables timing and restores the native/default zero-cycle contract. */
+AiusStatus aius_dts_set_cycle_clock(AiusDtsDecoder *dec,
+                                    const AiusCycleClock *clock);
+
 /* Decode one DTS Core access unit. `data`/`size` need not be aligned or padded;
  * the decoder copies into an internally aligned, padded scratch buffer. On
  * AIUS_OK, `block` describes decoder-owned planar PCM valid until the next
@@ -61,9 +66,10 @@ AiusStatus aius_dts_decode_access_unit(AiusDtsDecoder *dec,
  * process-wide to every decoder. */
 void aius_dts_set_log_quiet(int quiet);
 
-/* Copy the measurements from the most recent decode into *out. `arena_high_water`
- * and `alloc_count` are populated on both provisioning modes (alloc_count is 0
- * for a libc decoder); `decode_cycles` and `stack_high_water` stay 0 on the host.
+/* Copy the measurements into *out. `arena_high_water` and `alloc_count` are
+ * populated on both provisioning modes (alloc_count is 0 for a libc decoder).
+ * `decode_cycles` is the wrap-safe elapsed count of the last completed AU when
+ * a clock is configured, otherwise 0; `stack_high_water` remains target-only.
  * `last_status` is the status the last decode returned. Returns AIUS_OK, or
  * AIUS_INVALID_ARG if either pointer is NULL. */
 AiusStatus aius_dts_get_metrics(const AiusDtsDecoder *dec, AiusMetrics *out);

@@ -984,6 +984,19 @@ AiusStatus aius_pipeline_create(AiusPipeline **out, const AiusPipelineConfig *cf
 		free(p);
 		return st;
 	}
+	AiusCycleClock cycle_clock = {0};
+	if (cfg)
+		cycle_clock = cfg->cycle_clock;
+	st = aius_dts_set_cycle_clock(p->dts_decoder, &cycle_clock);
+	if (st == AIUS_OK)
+		st = aius_a52_set_cycle_clock(p->a52_decoder, &cycle_clock);
+	if (st != AIUS_OK) {
+		aius_a52_decoder_destroy(p->a52_decoder);
+		aius_dts_decoder_destroy(p->dts_decoder);
+		aius_iec61937_parser_destroy(p->parser);
+		free(p);
+		return st;
+	}
 	*out = p;
 	return AIUS_OK;
 }
@@ -1014,6 +1027,18 @@ AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
 	}
 	st = aius_a52_decoder_create_arena(&p->a52_decoder, arena);
 	if (st != AIUS_OK) {
+		aius_dts_decoder_destroy(p->dts_decoder);
+		aius_iec61937_parser_destroy(p->parser);
+		return st;
+	}
+	AiusCycleClock cycle_clock = {0};
+	if (cfg)
+		cycle_clock = cfg->cycle_clock;
+	st = aius_dts_set_cycle_clock(p->dts_decoder, &cycle_clock);
+	if (st == AIUS_OK)
+		st = aius_a52_set_cycle_clock(p->a52_decoder, &cycle_clock);
+	if (st != AIUS_OK) {
+		aius_a52_decoder_destroy(p->a52_decoder);
 		aius_dts_decoder_destroy(p->dts_decoder);
 		aius_iec61937_parser_destroy(p->parser);
 		return st;

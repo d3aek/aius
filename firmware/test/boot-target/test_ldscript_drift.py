@@ -68,6 +68,7 @@ REQUIRED_ASSERTS = (
     "ADDR(.bss.aius_staging) >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
     "_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
     "_heap_end - _heap_start >= 0x20000",
+    "_itcm_block_count <= 6",
 )
 
 # The heap must be re-based past the staging carve-out, or malloc grows into
@@ -179,6 +180,14 @@ def self_test(ours: Path) -> None:
         ),
         "drop the headroom ASSERT": re.sub(
             r"ASSERT\(SIZEOF\(\.bss\.aius_retained\)[^\n]*\n[^\n]*\n", "", text
+        ),
+        "drop the ITCM block ceiling": re.sub(
+            r'ASSERT\(_itcm_block_count <= 6,\n\t"[^"]*"\)\n?', "", text
+        ),
+        "weaken the ITCM block ceiling": text.replace(
+            "_itcm_block_count <= 6",
+            "_itcm_block_count <= 7",
+            1,
         ),
         "edit the vendor body": text.replace(
             "RAM (rw):   ORIGIN = 0x20200000, LENGTH = 512K",

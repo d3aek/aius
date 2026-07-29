@@ -486,6 +486,118 @@ fail:
     return 1;
 }
 
+struct step_cycle_clock {
+    uint32_t now;
+    uint32_t step;
+    uint32_t calls;
+};
+
+static uint32_t step_cycle_read(void *ctx)
+{
+    struct step_cycle_clock *clock = ctx;
+    uint32_t value = clock->now;
+    clock->now += clock->step;
+    clock->calls++;
+    return value;
+}
+
+static int decode_complete_au(AiusA52Decoder *dec, const uint8_t *au,
+                              size_t au_size)
+{
+    AiusPcmBlock block;
+    if (aius_a52_begin_access_unit(dec, au, au_size) != AIUS_OK)
+        return 0;
+    for (uint32_t n = 0; n < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; n++)
+        if (aius_a52_decode_next_block(dec, &block) != AIUS_OK)
+            return 0;
+    return 1;
+}
+
+static int test_cycle_metrics(const char *dir)
+{
+    size_t es_size = 0u;
+    uint8_t *es = read_file(dir, "surround51_ident", "ac3", &es_size);
+    if (!es)
+        return 3;
+    size_t starts[MAX_FRAMES_PER_VECTOR], lens[MAX_FRAMES_PER_VECTOR];
+    size_t naus = collect_aus(es, es_size, starts, lens,
+                              MAX_FRAMES_PER_VECTOR);
+    if (naus == 0u) {
+        free(es);
+        return 1;
+    }
+    const uint8_t *au = es + starts[0];
+    const size_t au_size = lens[0];
+
+    AiusA52Decoder *dec = NULL;
+    AiusMetrics metrics;
+    AiusPcmBlock block;
+    if (aius_a52_decoder_create(&dec) != AIUS_OK ||
+        !decode_complete_au(dec, au, au_size) ||
+        aius_a52_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != 0u) {
+        fprintf(stderr, "FAIL cycle metrics: default clock not zero\n");
+        aius_a52_decoder_destroy(dec);
+        free(es);
+        return 1;
+    }
+
+    struct step_cycle_clock fake = {
+        .now = UINT32_MAX - 50u,
+        .step = 23u,
+    };
+    AiusCycleClock clock = { .ctx = &fake, .read = step_cycle_read };
+    const uint64_t expected =
+        7u * (uint64_t)fake.step; /* begin + six block calls */
+    if (aius_a52_set_cycle_clock(dec, &clock) != AIUS_OK ||
+        !decode_complete_au(dec, au, au_size) ||
+        aius_a52_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != expected || fake.calls != 14u) {
+        fprintf(stderr,
+                "FAIL cycle metrics: aggregate=%" PRIu64 " reads=%u\n",
+                metrics.decode_cycles, fake.calls);
+        goto fail;
+    }
+
+    /* Abandon discards a partial sum and leaves the last completed AU
+     * published. A later complete AU must not inherit the discarded work. */
+    if (aius_a52_begin_access_unit(dec, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(dec, &block) != AIUS_OK ||
+        aius_a52_abandon(dec) != AIUS_OK ||
+        aius_a52_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != expected) {
+        fprintf(stderr, "FAIL cycle metrics: abandon published partial AU\n");
+        goto fail;
+    }
+
+    /* A malformed replacement is also a discontinuity: it resets the live
+     * iterator and its partial sum before reporting the failure. */
+    if (aius_a52_begin_access_unit(dec, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(dec, &block) != AIUS_OK ||
+        aius_a52_begin_access_unit(dec, au, 6u) != AIUS_MALFORMED ||
+        aius_a52_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != expected ||
+        !decode_complete_au(dec, au, au_size) ||
+        aius_a52_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != expected || fake.calls != 38u) {
+        fprintf(stderr,
+                "FAIL cycle metrics: failure/restart aggregate=%" PRIu64
+                " reads=%u\n",
+                metrics.decode_cycles, fake.calls);
+        goto fail;
+    }
+
+    aius_a52_decoder_destroy(dec);
+    free(es);
+    printf("ok cycle metrics default zero, six-unit aggregate, wrap, discard\n");
+    return 0;
+
+fail:
+    aius_a52_decoder_destroy(dec);
+    free(es);
+    return 1;
+}
+
 static double goertzel(const int32_t *x, uint32_t n, double freq)
 {
     double k = floor(0.5 + (double)n * freq / 48000.0);
@@ -517,6 +629,9 @@ int main(int argc, char **argv)
     int iterator_contract = test_iterator_reset_contract(dir);
     if (iterator_contract != 0)
         return iterator_contract;
+    int cycle_metrics = test_cycle_metrics(dir);
+    if (cycle_metrics != 0)
+        return cycle_metrics;
 
     int32_t *decoded[AIUS_MAX_CHANNELS] = { 0 }; /* whole-vector planes */
     double worst_snr = 1e9;

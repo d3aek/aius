@@ -21,7 +21,8 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_codec_api/` | Portable C ABI (`aius_arena.h`, `aius_codec.h`) + the arena allocator. |
 | `lib/aius_iec61937/` | IEC 61937 data-burst parser. |
 | `lib/aius_dts/` | `AiusDtsDecoder` adapter over the vendored DTS Core + the arena alloc shim. |
-| `lib/aius_pipeline/` | PCM/DTS classifier + parser→decoder end-to-end chaining. |
+| `lib/aius_a52/` | `AiusA52Decoder` adapter over the hardened liba52 fork, with six-step AC-3 AU decode. |
+| `lib/aius_pipeline/` | PCM/DTS/AC-3 classifier + parser→decoder end-to-end chaining. |
 | `lib/aius_dsp/` | 5.1→stereo downmix + biquad EQ output DSP. |
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
 | `lib/aius_replay/` | Replay service over a caller-supplied `AiusReplayReader`. |
@@ -40,6 +41,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `tools/device/` | Simulated device + host runner, including the P6 hidraw transport. |
 | `tools/net/` | HTTP and UDP exercisers for a running optical board. |
 | `tools/dts_vectors/`, `tools/iec_corpus/` | Committed DTS/IEC test corpora + generators. |
+| `tools/replay_samples/` | Additive DTS/AC-3 SD replay-pack generator and AC-3 transport validator. |
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
 | `tools/measure_vectors/` | Committed PCM stimulus vectors for the measurement loopback + their generator/validator (preamble-free and loop-coherence obligations asserted at generation, revalidated by the `measure` suite). |
 | `tools/memory/` | Linker-map → per-bank memory report. |
@@ -117,12 +119,12 @@ no code compares a decoded block's `sample_rate_hz` against the engine, so a
 disagreement is neither absorbed nor counted — the queue stays level and the only
 symptom is pitch. That is why the equality is enforced at compile time.
 
-**Two block sizes, and the per-block figures name different ones.**
+**The engine and codec work units have different sizes.**
 `AUDIO_BLOCK_SAMPLES` is the core default 128 frames and is the *engine* block, so
-`update()` runs 375 times a second. The *decoded* block is 512 frames — a DTS Core
-access unit, and `AIUS_PIPELINE_PCM_BLOCK_FRAMES` for passthrough — so `enqueue()`,
-which is what `blocks` counts and what the DWT cycle counters bracket, runs 93.75
-times a second with a 10,667 µs budget.
+`update()` runs 375 times a second. A DTS access unit and
+`AIUS_PIPELINE_PCM_BLOCK_FRAMES` passthrough block are 512 frames. An AC-3 access
+unit is six 256-frame decode units; its DWT metric is their completed-AU
+aggregate, while partial or abandoned AUs publish no timing result.
 
 ### Portable engines behind Teensy adapters
 
@@ -233,10 +235,9 @@ straight out of the audio path's headroom. Three rules, all enforced:
   source defines a no-op fallback so the host suites still compile Arduino-free.
 - **Large buffers in `DMAMEM`** (OCRAM). The composed runtime is roughly 35 kB,
   dominated by the HTTP request/response buffers and the model-sized application
-  body buffer, against a DTCM free-for-locals zone of **rather under 10 kB**
-  (`_estack - _ebss`, `teensy41-optical`; 9,248 bytes as of `c20a03c8e`, and it
-  moves with every static added, so read it from the build); a DTCM instance
-  could not fit. The
+  body buffer, against a DTCM free-for-locals zone of **37,856 bytes**
+  (`_estack - _ebss`, Phase-4 `teensy41-optical`; it moves with every static
+  addition, so read it from the build); a DTCM instance could not fit. The
   active and pending DSP models, the replay service and the three UDP buffers are
   placed the same way. That zone is the whole stack for both the main loop and
   audio ISR. `enqueue()` uses about 4 kB of frame at the bounded AUDIO
@@ -244,10 +245,15 @@ straight out of the audio path's headroom. Three rules, all enforced:
 - **Four post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
   run by every optical build. They reject executable `.text` from declared cold
   objects, pin the mixed ingress library to its five producer entry points, and
-  pin `optical_main.cpp` to its two ingress-producer functions. New objects under
-  a cold engine tree must be declared, so "this is legitimately hot" remains a
-  reviewable claim rather than an opinion. The fourth keeps the recorder's
-  bring-up-only PSRAM geometry helper out of ITCM.
+  pin `optical_main.cpp` to its two ingress-producer functions plus the 12-byte
+  per-decode DWT reader. New objects under a cold engine tree must be declared,
+  so "this is legitimately hot" remains a reviewable claim rather than an
+  opinion. The fourth keeps the recorder's bring-up-only PSRAM geometry helper
+  out of ITCM.
+- **A six-block ITCM link ceiling.** The linker rejects
+  `_itcm_block_count > 6`; otherwise a small code increase could silently take a
+  seventh 32 KiB FlexRAM block and remove the same amount from the shared
+  stack/local zone.
 - **A post-link audio-memory guard**, in `test/memory/verify_target.py`, pins the
   16 KiB OCRAM ingress, the 128 KiB DTCM decoder arena, zero OCRAM recorder
   staging, and the committed 131,424-byte OCRAM free floor.
@@ -271,8 +277,9 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `dts-fuzz` | DTS decoder robustness fuzz. |
 | `dts-lfe` | LFE bit-exactness vs a full dcadec build. |
 | `a52` | AC-3 decode differential vs FFmpeg (committed corpus), channel identity by Goertzel, arena/metrics contract. |
-| `a52-fuzz` | AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle (liba52 has no CRC and an unbounded bit reader — the padded scratch is what this proves). |
+| `a52-fuzz` | AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle, including the fork's CRC and bounded bit-reader guards. |
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
+| `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser. |
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, and the same through the public DSP interface over the DTS corpus. |
@@ -351,9 +358,11 @@ flash as complete while the loader is still waiting.
 Everything that can be done without the physical Teensy is done and green on the
 host: the portable ABI + arena, the IEC 61937 parser (P2), the `dcadec` DTS Core
 decoder bit-exact to a full dcadec build including LFE (P3, no-heap arena path),
+the hardened liba52 AC-3 decoder differential-tested against FFmpeg,
 the reproducible Teensy cross-build + per-bank memory report (P4, all banks fit),
-the USB capability protocol + simulated device + host runner (P5), the PCM/DTS
-classifier + end-to-end pipeline, and the 5.1→stereo downmix + EQ output DSP.
+the USB capability protocol + simulated device + host runner (P5), the
+PCM/DTS/AC-3 classifier + end-to-end pipeline, and the 5.1→stereo downmix + EQ
+output DSP.
 
 The P6 target entry point is `teensy41-capability`, using Teensy RawHID with the
 same framed protocol and device handler as the host simulator. Build it with
@@ -387,10 +396,10 @@ transaction to drain, bounded at 500 ms, and the four control routes
 (`/api/reboot`, `/api/start`, `/api/stop`, `/api/clear`) are gated on
 `X-Aius-SD-Auth`. **Confirmation is B6 gate 2**, which has not yet run.
 
-Not yet confirmed on hardware: the S/PDIF input path. The optical input is
-unsoldered, so there is no carrier, passthrough and DTS decode have never run
-against a live stream, and the per-block cost is
-still a static estimate.
+The S/PDIF input is physically connected and has confirmed carrier plus live PCM
+passthrough. Live DTS decode also passed for 1,857 seconds on the tagged
++438 ppm clock-isolation image. AC-3 decode, the new per-codec DWT timing and
+sustained production-clock input remain target-validation gates.
 
 Three HTTP interop defects are open, all found by pointing a non-browser client
 at the board and all making the control surface work only for the exact byte

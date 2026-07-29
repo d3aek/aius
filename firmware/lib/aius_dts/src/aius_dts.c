@@ -65,6 +65,7 @@ struct AiusDtsDecoder {
     uint8_t *inbuf;             /* aligned, padded scratch for one access unit */
     size_t   inbuf_cap;
     AiusArena *arena;           /* non-NULL => allocation routes through this arena */
+    AiusCycleClock cycle_clock;  /* zeroed => native/default timing disabled */
     AiusMetrics metrics;        /* measurements from the most recent decode */
 };
 
@@ -153,6 +154,20 @@ AiusStatus aius_dts_decoder_create_arena(AiusDtsDecoder **out, AiusArena *arena)
     if (!arena)
         return AIUS_INVALID_ARG;
     return decoder_create(out, arena);
+}
+
+AiusStatus aius_dts_set_cycle_clock(AiusDtsDecoder *dec,
+                                    const AiusCycleClock *clock)
+{
+    if (!dec)
+        return AIUS_INVALID_ARG;
+    if (clock)
+        dec->cycle_clock = *clock;
+    else
+        memset(&dec->cycle_clock, 0, sizeof(dec->cycle_clock));
+    if (!dec->cycle_clock.read)
+        dec->metrics.decode_cycles = 0;
+    return AIUS_OK;
 }
 
 AiusStatus aius_dts_get_metrics(const AiusDtsDecoder *dec, AiusMetrics *out)
@@ -278,7 +293,12 @@ AiusStatus aius_dts_decode_access_unit(AiusDtsDecoder *dec,
         aius_alloc_shim_reset_count();
     }
 
+    const int timed = dec->cycle_clock.read != NULL;
+    const uint32_t cycles_begin =
+        timed ? dec->cycle_clock.read(dec->cycle_clock.ctx) : 0u;
     AiusStatus st = decode_locked(dec, data, size, block);
+    const uint32_t cycles_end =
+        timed ? dec->cycle_clock.read(dec->cycle_clock.ctx) : 0u;
 
     if (dec->arena) {
         dec->metrics.alloc_count = aius_alloc_shim_alloc_count();
@@ -288,6 +308,9 @@ AiusStatus aius_dts_decode_access_unit(AiusDtsDecoder *dec,
         dec->metrics.alloc_count = 0;
         dec->metrics.arena_high_water = 0;
     }
+    if (timed && st == AIUS_OK)
+        dec->metrics.decode_cycles =
+            (uint64_t)(uint32_t)(cycles_end - cycles_begin);
     dec->metrics.last_status = st;
 
     return st;

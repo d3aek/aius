@@ -157,10 +157,11 @@ AiusPipelineClass aius_pipeline_classify(const uint16_t *words, size_t count,
                                          size_t window);
 
 /* Pipeline configuration. A zeroed struct selects the defaults (16-bit packing,
- * the maximum classification window). */
+ * the maximum classification window, and disabled/native-zero cycle timing). */
 typedef struct {
 	AiusIec61937Packing packing;    /* burst payload packing for the DTS path */
 	size_t classify_window_words;   /* 0 => AIUS_PIPELINE_CLASSIFY_MAX_WORDS; clamped to it */
+	AiusCycleClock cycle_clock;     /* copied into both resident decoders */
 } AiusPipelineConfig;
 
 /* Opaque pipeline instance. */

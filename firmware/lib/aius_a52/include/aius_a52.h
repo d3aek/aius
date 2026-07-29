@@ -70,6 +70,11 @@ AiusStatus aius_a52_decoder_create(AiusA52Decoder **out);
  * aius_a52_get_metrics). Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
 AiusStatus aius_a52_decoder_create_arena(AiusA52Decoder **out, AiusArena *arena);
 
+/* Copy the cycle-clock callback into the decoder. NULL or a clock with a NULL
+ * reader disables timing and discards any partial-AU accumulator. */
+AiusStatus aius_a52_set_cycle_clock(AiusA52Decoder *dec,
+                                    const AiusCycleClock *clock);
+
 /* Begin one AC-3 access unit. `data`/`size` need not be aligned; the adapter
  * copies the complete AU into owned scratch that remains live through all six
  * block calls. Size < 7 and sync/length/bsid/CRC violations return
@@ -91,9 +96,10 @@ AiusStatus aius_a52_decode_next_block(AiusA52Decoder *dec,
  * decoders return AIUS_OK without disturbing completed-stream continuity. */
 AiusStatus aius_a52_abandon(AiusA52Decoder *dec);
 
-/* Copy the measurements from the most recent iterator call into *out. Mirrors
- * aius_dts_get_metrics: arena_high_water and alloc_count populated on both
- * provisioning modes; decode_cycles / stack_high_water stay 0 on the host. */
+/* Copy the measurements into *out. Mirrors aius_dts_get_metrics:
+ * arena_high_water and alloc_count are populated on both provisioning modes.
+ * `decode_cycles` is begin plus all six block deltas for the last completed AU;
+ * partial/reset/abandoned/failed AUs never publish. It stays 0 with no clock. */
 AiusStatus aius_a52_get_metrics(const AiusA52Decoder *dec, AiusMetrics *out);
 
 #ifdef AIUS_A52_BOUND_PROBE

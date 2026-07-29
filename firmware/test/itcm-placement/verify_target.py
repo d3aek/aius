@@ -87,10 +87,13 @@ HOT_OBJECT = "src/optical_main.cpp.o"
 
 # 1. The software-audio-ISR functions, by exact section name. `update` is now
 #    only a bounded ingress producer and `audio_ingress_publish_live` is its
-#    exact 128-frame interleave walk. Decode, DSP, metering, recording and the
-#    transmit-ring producer run from the epoch's AUDIO checkpoint and carry
-#    FLASHMEM, so they no longer consume the ISR-hot bank.
+#    exact 128-frame interleave walk. `codec_cycle_clock` is the target DWT read
+#    bracketing each decoder work unit; keeping that 12-byte callback hot avoids
+#    adding flash-call latency to every measurement. Decode, DSP, metering,
+#    recording and the transmit-ring producer run from the epoch's AUDIO
+#    checkpoint and carry FLASHMEM, so they no longer consume the ISR-hot bank.
 HOT_SECTIONS = (
+    ".text._ZL17codec_cycle_clockPv",
     ".text._ZL26audio_ingress_publish_livePtPK18audio_block_structS2_",
     ".text._ZN18AiusAudioProcessor6updateEv",
 )

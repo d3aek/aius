@@ -98,6 +98,17 @@ typedef struct {
 	AiusStatus last_status;
 } AiusMetrics;
 
+/* Injectable 32-bit cycle reader for target timing without coupling the
+ * portable codec libraries to Teensy headers. A zeroed value disables timing.
+ * Callers compute elapsed time as an unsigned subtraction, so one counter wrap
+ * within a measured decode unit is handled exactly. */
+typedef uint32_t (*AiusCycleClockRead)(void *ctx);
+
+typedef struct {
+	void *ctx;
+	AiusCycleClockRead read;
+} AiusCycleClock;
+
 /* Opaque codec instances, sized and placed by the caller via the arena. */
 typedef struct AiusIec61937Parser AiusIec61937Parser;
 typedef struct AiusDtsDecoder AiusDtsDecoder;

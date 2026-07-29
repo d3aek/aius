@@ -11,7 +11,7 @@
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, tx-gate, recorder, boot, boot-target, fault-target,
+#         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry.
@@ -506,6 +506,31 @@ replay)
 		"$fw_root/lib/aius_replay/src/aius_replay.c" \
 		-o "$replay_out"
 	"$replay_out"
+	;;
+replay-samples)
+	replay_samples_generated="$build_dir/replay-samples-generated"
+	OUT="$replay_samples_generated" DURATION=1 \
+		"$fw_root/tools/replay_samples/generate.sh"
+	python3 "$fw_root/tools/replay_samples/validate.py" \
+		"$replay_samples_generated"
+	python3 "$fw_root/test/replay-samples/test_validate.py" \
+		"$fw_root/tools/replay_samples/validate.py" \
+		"$replay_samples_generated" \
+		"$build_dir/replay-samples-negative"
+	replay_samples_out="$build_dir/replay-samples"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_iec61937/include" \
+		"$fw_root/test/replay-samples/test_replay_samples.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
+		-o "$replay_samples_out"
+	"$replay_samples_out" \
+		"$replay_samples_generated/channel_id_51.ac3" \
+		"$replay_samples_generated/channel_id_51_ac3.iec"
+	"$replay_samples_out" \
+		"$replay_samples_generated/channel_impulse_51.ac3" \
+		"$replay_samples_generated/channel_impulse_51_ac3.iec"
+	"$replay_samples_out" \
+		"$replay_samples_generated/cinematic_program_51.ac3" \
+		"$replay_samples_generated/cinematic_program_51_ac3.iec"
 	;;
 tx-gate)
 	# Header-only predicate: the test compiles against the replay lib's

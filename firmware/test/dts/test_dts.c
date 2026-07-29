@@ -30,6 +30,7 @@
  */
 
 #include <math.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -668,6 +669,86 @@ static int run_vector(const char *dir, const struct vector *v)
     return fail;
 }
 
+struct fake_cycle_clock {
+    const uint32_t *values;
+    size_t count;
+    size_t next;
+};
+
+static uint32_t fake_cycle_read(void *ctx)
+{
+    struct fake_cycle_clock *clock = ctx;
+    if (clock->next >= clock->count)
+        return 0u;
+    return clock->values[clock->next++];
+}
+
+static int test_cycle_metrics(const char *dir)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/surround51_ident.dts", dir);
+    size_t size = 0u;
+    uint8_t *data = read_file(path, &size);
+    if (!data)
+        return 1;
+
+    size_t offsets[2];
+    int frames = find_frames(data, size, offsets, 2);
+    if (frames < 1) {
+        fprintf(stderr, "FAIL cycle metrics: no DTS AU\n");
+        free(data);
+        return 1;
+    }
+    size_t au_size = frames > 1 ? offsets[1] - offsets[0]
+                                : size - offsets[0];
+
+    AiusDtsDecoder *dec = NULL;
+    AiusPcmBlock block;
+    AiusMetrics metrics;
+    if (aius_dts_decoder_create(&dec) != AIUS_OK ||
+        aius_dts_decode_access_unit(dec, data + offsets[0], au_size,
+                                    &block) != AIUS_OK ||
+        aius_dts_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != 0u) {
+        fprintf(stderr, "FAIL cycle metrics: default clock not zero\n");
+        aius_dts_decoder_destroy(dec);
+        free(data);
+        return 1;
+    }
+
+    const uint32_t values[] = { UINT32_MAX - 15u, 32u };
+    struct fake_cycle_clock fake = {
+        .values = values,
+        .count = sizeof(values) / sizeof(values[0]),
+    };
+    AiusCycleClock clock = { .ctx = &fake, .read = fake_cycle_read };
+    if (aius_dts_set_cycle_clock(dec, &clock) != AIUS_OK ||
+        aius_dts_decode_access_unit(dec, data + offsets[0], au_size,
+                                    &block) != AIUS_OK ||
+        aius_dts_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != 48u || fake.next != 2u) {
+        fprintf(stderr,
+                "FAIL cycle metrics: wrap delta=%" PRIu64 " reads=%zu\n",
+                metrics.decode_cycles, fake.next);
+        aius_dts_decoder_destroy(dec);
+        free(data);
+        return 1;
+    }
+    if (aius_dts_set_cycle_clock(dec, NULL) != AIUS_OK ||
+        aius_dts_get_metrics(dec, &metrics) != AIUS_OK ||
+        metrics.decode_cycles != 0u) {
+        fprintf(stderr, "FAIL cycle metrics: disable did not restore zero\n");
+        aius_dts_decoder_destroy(dec);
+        free(data);
+        return 1;
+    }
+
+    aius_dts_decoder_destroy(dec);
+    free(data);
+    printf("DTS cycle metrics: default zero + uint32 wrap-safe AU delta\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) {
@@ -677,6 +758,7 @@ int main(int argc, char **argv)
     const char *dir = argv[1];
 
     int failures = 0;
+    failures += test_cycle_metrics(dir);
     printf("DTS Core differential test (dcadec core vs FFmpeg)\n");
     for (size_t i = 0; i < sizeof(k_vectors) / sizeof(k_vectors[0]); i++)
         failures += run_vector(dir, &k_vectors[i]);

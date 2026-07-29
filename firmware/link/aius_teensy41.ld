@@ -218,3 +218,9 @@ ASSERT(_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma),
  * defect belongs. */
 ASSERT(_heap_end - _heap_start >= 0x20000,
 	"aius: OCRAM heap below the 128 KiB floor NativeEthernet's boot-time mallocs need (defect 26)")
+/* ITCM consumes FlexRAM in 32 KiB blocks and moves _estack down by one block
+ * for every block it claims. Six blocks leave the measured 37,856-byte DTCM
+ * stack/locals zone intact; a seventh would reduce it to 5,088 bytes. Keep
+ * this an upper bound rather than equality so code shrinkage remains legal. */
+ASSERT(_itcm_block_count <= 6,
+	"aius: ITCM growth would claim a seventh FlexRAM block and remove 32 KiB from the DTCM stack/locals zone")

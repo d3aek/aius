@@ -1301,6 +1301,11 @@ static FLASHMEM uint32_t audio_clock_us(void *)
 	return micros();
 }
 
+static uint32_t codec_cycle_clock(void *)
+{
+	return ARM_DWT_CYCCNT;
+}
+
 static FLASHMEM void audio_enter_reset_critical(void *)
 {
 	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
@@ -1380,7 +1385,11 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 		return;
 	}
 	AiusPcmSink sink = {this, consume_block};
-	AiusPipelineConfig config = {AIUS_IEC61937_PACK_16, 0};
+	AiusPipelineConfig config = {
+		AIUS_IEC61937_PACK_16,
+		0,
+		{nullptr, codec_cycle_clock},
+	};
 	g_create_status = aius_pipeline_create_arena(&g_pipeline, &config,
 	                                             &sink, &g_arena);
 	if (g_create_status == AIUS_OK && g_audio_ingress_ready) {
