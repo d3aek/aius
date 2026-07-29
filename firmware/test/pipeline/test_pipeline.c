@@ -973,8 +973,9 @@ static void test_retype_boundary_pair(const char *dir)
  *
  * The re-stage point is deterministic for this corpus and this chunking: the
  * burst-2 outcome lands in the 1792-2047 push, and the starvation check first
- * fires 65 pushes later, at word 18688 -- so the recovered PCM run starts
- * there. The ramp is sized from that so the confirmed run has exactly three
+ * fires 64 pushes later, at word 18432 -- exact consumed-prefix starvation
+ * accounting includes the sterile suffix after the preceding burst outcome.
+ * The ramp is sized from that so the confirmed run has exactly three
  * whole blocks of post-confirm words before the DTS tail arrives: the recovered
  * PCM demonstrably plays, and the switch lands at staged phase 0, so the burst
  * tail staged as PCM is dropped whole. Same phase-511 caveat as T2 -- this pins
@@ -990,7 +991,7 @@ static void test_starve_and_recover(const char *dir)
 	uint16_t *head = repeat_wire(v, n, 2, &head_n);
 	uint16_t *tail = repeat_wire(v, n, 4, &tail_n);
 	const size_t block_words = 2u * AIUS_PIPELINE_PCM_BLOCK_FRAMES;
-	const size_t restage_word = 18688u;
+	const size_t restage_word = 18432u;
 	const size_t confirm_word = restage_word + AIUS_PIPELINE_PCM_CONFIRM_WORDS;
 	const size_t ramp_words = confirm_word + 3u * block_words - head_n;
 	uint16_t *ramp = make_ramp(ramp_words);
@@ -1180,6 +1181,207 @@ static void test_reset_semantics(const char *dir)
 	free(v);
 }
 
+struct deferred_sink {
+	uint32_t calls;
+	uint32_t commits;
+	int block_once;
+	const AiusPcmBlock *first;
+	const AiusPcmBlock *second;
+};
+
+static AiusStatus deferred_consume(void *ctx, const AiusPcmBlock *block)
+{
+	struct deferred_sink *sink = ctx;
+	sink->calls++;
+	if (sink->calls == 1u)
+		sink->first = block;
+	else if (sink->calls == 2u)
+		sink->second = block;
+	if (sink->block_once) {
+		sink->block_once = 0;
+		return AIUS_NO_SPACE;
+	}
+	sink->commits++;
+	return AIUS_OK;
+}
+
+static void test_deferred_dts(const char *dir)
+{
+	size_t n = 0u;
+	uint16_t *wire = load_wire(dir, "dts_be16", &n);
+	CHECK(wire != NULL, "defer-dts: corpus load");
+	if (!wire)
+		return;
+	struct deferred_sink sink_state = { .block_once = 1 };
+	AiusPcmSink sink = { .ctx = &sink_state, .consume = deferred_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-dts: create");
+
+	size_t consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK &&
+	          consumed == n && aius_pipeline_has_pending(p),
+	      "defer-dts: exact complete-AU prefix");
+	AiusPipelineServiceDiag diag;
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(sink_state.calls == 0u && diag.decode_units == 0u,
+	      "defer-dts: ingest invokes neither decoder nor sink");
+	uint16_t suffix[16] = { 0 };
+	consumed = 99u;
+	CHECK(aius_pipeline_ingest(p, suffix, 16u, &consumed) == AIUS_OK &&
+	          consumed == 0u,
+	      "defer-dts: parser payload blocks later ingestion");
+
+	AiusPipelineServiceResult result;
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_NO_SPACE &&
+	          result == AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED,
+	      "defer-dts: first output blocked");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
+	          result == AIUS_PIPELINE_SERVICE_PROGRESSED,
+	      "defer-dts: retained output retries");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.decode_units == 1u && diag.sink_attempts == 2u &&
+	          diag.committed_blocks == 1u && diag.transmit_stalls == 1u &&
+	          diag.retained_retries == 1u &&
+	          sink_state.first == sink_state.second,
+	      "defer-dts: one bounded decode and identical retry");
+	consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK &&
+	          consumed == n && aius_pipeline_has_pending(p),
+	      "defer-dts: arm reset cleanup");
+	aius_pipeline_reset(p);
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
+	          result == AIUS_PIPELINE_SERVICE_IDLE &&
+	          sink_state.calls == 2u,
+	      "defer-dts: reset abandons parser-owned pending AU");
+	aius_pipeline_destroy(p);
+
+	memset(&sink_state, 0, sizeof(sink_state));
+	sink_state.block_once = 1;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "legacy-dts-loss: create");
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_NO_SPACE,
+	      "legacy-dts-loss: blocked push returns no-space");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.output_drops == 1u && diag.au_abandons == 1u &&
+	          diag.committed_blocks == 0u,
+	      "legacy-dts-loss: output drop abandons its AU");
+	aius_pipeline_destroy(p);
+
+	memset(&sink_state, 0, sizeof(sink_state));
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-finish: create");
+	uint16_t staged[AIUS_PIPELINE_CLASSIFY_MAX_WORDS] = { 0 };
+	staged[0] = 0xf872u;
+	staged[1] = 0x4e1fu;
+	staged[2] = 0x000du;
+	staged[3] = 0x0010u;
+	consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, staged,
+	                           AIUS_PIPELINE_CLASSIFY_MAX_WORDS,
+	                           &consumed) == AIUS_OK &&
+	          consumed == AIUS_PIPELINE_CLASSIFY_MAX_WORDS &&
+	          aius_pipeline_has_pending(p) &&
+	          aius_pipeline_has_buffered_input(p),
+	      "defer-finish: accepted typed suffix retained behind AU");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
+	          result == AIUS_PIPELINE_SERVICE_PROGRESSED,
+	      "defer-finish: reject malformed staged DTS AU");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.decode_rejects == 1u && diag.committed_blocks == 0u,
+	      "defer-finish: rejected service work is not committed");
+	CHECK(aius_pipeline_finish(p) == AIUS_OK &&
+	          !aius_pipeline_has_buffered_input(p),
+	      "defer-finish: typed retained suffix is routed");
+	aius_pipeline_destroy(p);
+	free(wire);
+	printf("  deferred-dts   exact prefix, retained retry and finish suffix\n");
+}
+
+static void test_output_slicing(void)
+{
+	int32_t left[1536];
+	int32_t right[1536];
+	AiusPcmBlock source;
+	memset(&source, 0, sizeof(source));
+	source.planes[0] = left;
+	source.planes[1] = right;
+	source.channels = 2u;
+	source.frames = 1536u;
+	source.sample_rate_hz = 48000u;
+	source.channel_mask = AIUS_CH_FL | AIUS_CH_FR;
+	AiusPcmBlock slice;
+	CHECK(aius_pipeline_slice_pcm_block(&source, 0u, &slice) == AIUS_OK &&
+	          slice.frames == 512u && slice.planes[0] == left &&
+	          slice.planes[1] == right,
+	      "slice: first 512-frame view");
+	CHECK(aius_pipeline_slice_pcm_block(&source, 512u, &slice) == AIUS_OK &&
+	          slice.frames == 512u && slice.planes[0] == left + 512u &&
+	          slice.planes[1] == right + 512u,
+	      "slice: second 512-frame view");
+	CHECK(aius_pipeline_slice_pcm_block(&source, 1024u, &slice) == AIUS_OK &&
+	          slice.frames == 512u && slice.planes[0] == left + 1024u &&
+	          slice.planes[1] == right + 1024u,
+	      "slice: third 512-frame view");
+	CHECK(aius_pipeline_slice_pcm_block(&source, 1536u, &slice) ==
+	          AIUS_INVALID_ARG,
+	      "slice: completed block has no view");
+	printf("  output-slice   1536 decoder-owned frames -> 512/512/512 views\n");
+}
+
+static void test_deferred_pcm_and_legacy_loss(void)
+{
+	const size_t block_words = 2u * AIUS_PIPELINE_PCM_BLOCK_FRAMES;
+	const size_t total =
+		AIUS_PIPELINE_PCM_CONFIRM_WORDS + block_words + 100u;
+	uint16_t *words = make_ramp(total);
+	struct deferred_sink sink_state = { .block_once = 1 };
+	AiusPcmSink sink = { .ctx = &sink_state, .consume = deferred_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-pcm: create");
+	size_t consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, words, total, &consumed) == AIUS_OK &&
+	          consumed == AIUS_PIPELINE_PCM_CONFIRM_WORDS + block_words &&
+	          aius_pipeline_has_pending(p),
+	      "defer-pcm: exact pending-block prefix");
+	CHECK(sink_state.calls == 0u, "defer-pcm: ingest does not sink");
+	AiusPipelineServiceResult result;
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_NO_SPACE &&
+	          result == AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED,
+	      "defer-pcm: block retained");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
+	          result == AIUS_PIPELINE_SERVICE_PROGRESSED,
+	      "defer-pcm: retry commits");
+	size_t suffix_consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, words + consumed, total - consumed,
+	                           &suffix_consumed) == AIUS_OK &&
+	          suffix_consumed == total - consumed,
+	      "defer-pcm: caller re-presents exact suffix");
+	aius_pipeline_destroy(p);
+
+	memset(&sink_state, 0, sizeof(sink_state));
+	sink_state.block_once = 1;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "legacy-loss: create");
+	CHECK(aius_pipeline_push(p, words, total) == AIUS_NO_SPACE,
+	      "legacy-loss: blocked push returns no-space");
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_UNKNOWN &&
+	          !aius_pipeline_has_pending(p),
+	      "legacy-loss: blocked push abandons pending state");
+	AiusPipelineServiceDiag diag;
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.output_drops == 1u && diag.au_abandons == 0u &&
+	          diag.committed_blocks == 0u,
+	      "legacy-loss: PCM output drop is not an AU abandon");
+	CHECK(aius_pipeline_push(p, words, block_words) == AIUS_OK &&
+	          sink_state.calls == 1u,
+	      "legacy-loss: suffix was lost and next push re-confirms");
+	aius_pipeline_destroy(p);
+	free(words);
+	printf("  deferred-pcm   retained retry; legacy NO_SPACE drops suffix cleanly\n");
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -1203,6 +1405,9 @@ int main(int argc, char **argv)
 	test_starve_and_recover(dir);
 	test_unsupported_never_starves(dir);
 	test_reset_semantics(dir);
+	test_deferred_dts(dir);
+	test_output_slicing();
+	test_deferred_pcm_and_legacy_loss();
 
 	if (g_fail) {
 		printf("RESULT: %d check(s) FAILED\n", g_fail);

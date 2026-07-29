@@ -74,6 +74,7 @@ extern "C" {
  * plentiful bank rather than the scarce one. */
 #define AIUS_REPLAY_REFILL_MAX_BYTES 32768u
 #define AIUS_REPLAY_DELIVER_MAX_BYTES 512u
+#define AIUS_REPLAY_DISCARD_MAX_WORDS 256u
 
 /* Consecutive failed refills before the replay gives up.
  *
@@ -313,6 +314,12 @@ void aius_replay_service_refill_complete(AiusReplayService *service, bool ok);
  * it must not gain a lock, a branch that can wait, or any refill work. */
 size_t aius_replay_service_pop_words(AiusReplayService *service,
 	                                uint16_t *out, size_t capacity);
+
+/* Advance the same callback timeline without copying samples. A short discard
+ * has exactly the same underrun transition and accounting as a short pop.
+ * Work is clamped to one 256-word audio callback. */
+size_t aius_replay_service_discard_words(AiusReplayService *service,
+	                                    size_t capacity);
 
 void aius_replay_service_stop(AiusReplayService *service);
 AiusStatus aius_replay_service_status(const AiusReplayService *service,

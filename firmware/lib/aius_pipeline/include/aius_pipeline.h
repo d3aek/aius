@@ -107,6 +107,7 @@ extern "C" {
 
 /* Frames per emitted PCM pass-through block (staged in the fixed instance). */
 #define AIUS_PIPELINE_PCM_BLOCK_FRAMES 512u
+#define AIUS_PIPELINE_MAX_OUTPUT_FRAMES 512u
 
 /* Words of a PCM run that pass in silence before the pass-through is allowed to
  * reach the sink -- the confirmation squelch.
@@ -165,6 +166,25 @@ typedef struct {
 /* Opaque pipeline instance. */
 typedef struct AiusPipeline AiusPipeline;
 
+typedef enum {
+	AIUS_PIPELINE_SERVICE_IDLE = 0,
+	AIUS_PIPELINE_SERVICE_PROGRESSED,
+	AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED
+} AiusPipelineServiceResult;
+
+typedef struct {
+	uint32_t decode_units;
+	uint32_t sink_attempts;
+	uint32_t committed_blocks;
+	uint32_t transmit_stalls;
+	uint32_t retained_retries;
+	uint32_t parse_rejects;
+	uint32_t decode_rejects;
+	uint32_t output_drops;
+	uint32_t au_abandons;
+	AiusStatus last_failure;
+} AiusPipelineServiceDiag;
+
 /* Create a pipeline whose DTS decoder allocates through libc (host convenience).
  * `cfg` may be NULL for defaults; `sink` (with a non-NULL consume) is required
  * and copied. On success *out holds a heap-owned handle; destroy with
@@ -186,8 +206,11 @@ AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
                                       const AiusPipelineConfig *cfg,
                                       const AiusPcmSink *sink, AiusArena *arena);
 
-/* Push `count` S/PDIF payload words. Consumes all of them, emitting zero or more
- * decoded/passed-through blocks to the sink. Returns:
+/* Push `count` S/PDIF payload words through the synchronous compatibility
+ * driver, emitting zero or more decoded/passed-through blocks to the sink.
+ * It resumes exact input suffixes only while service succeeds. Its legacy
+ * signature cannot return a retained suffix, so sink AIUS_NO_SPACE resets the
+ * pending item and loses the rest of this call. Returns:
  *
  *   AIUS_OK          input processed; any produced blocks were delivered.
  *   AIUS_INVALID_ARG p is NULL, or words is NULL with count > 0.
@@ -199,6 +222,31 @@ AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
  * fault is recorded (see aius_pipeline_get_metrics.last_status). */
 AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words,
                               size_t count);
+
+/* Deferred target path. Ingest classifies and de-frames only: it never calls a
+ * decoder or sink. It reports the exact accepted prefix and stops when one
+ * output work item is pending. Parser-owned payload remains valid until that
+ * item is serviced or reset. */
+AiusStatus aius_pipeline_ingest(AiusPipeline *p, const uint16_t *words,
+	                            size_t count, size_t *consumed);
+
+/* Perform at most one output work unit. AIUS_NO_SPACE is reported as
+ * TRANSMIT_BLOCKED and retains the identical PCM descriptor for retry without
+ * another decode. Other sink failures reset pending stream state. */
+AiusStatus aius_pipeline_service_one(AiusPipeline *p,
+	                                 AiusPipelineServiceResult *result);
+
+/* Produce a non-copying, at-most-512-frame view into a decoder-owned block.
+ * `frame_offset` advances only after the caller commits the prior view. */
+AiusStatus aius_pipeline_slice_pcm_block(const AiusPcmBlock *source,
+	                                     uint32_t frame_offset,
+	                                     AiusPcmBlock *slice);
+
+int aius_pipeline_has_pending(const AiusPipeline *p);
+int aius_pipeline_has_buffered_input(const AiusPipeline *p);
+void aius_pipeline_get_service_diag(const AiusPipeline *p,
+	                                AiusPipelineServiceDiag *out);
+void aius_pipeline_clear_service_diag(AiusPipeline *p);
 
 /* Signal end of input: flush a partial PCM block, and finalize the parser
  * (AIUS_TRUNCATED if a DTS burst was mid-parse). Returns AIUS_OK or the first

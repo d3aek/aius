@@ -261,6 +261,8 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | Suite | Covers |
 | --- | --- |
 | `arena`, `codec-api-contract` | The allocator and ABI contract. |
+| `audio-ingress` | Exact 256-word SPSC publish, wrap, gaps, flush and diagnostics. |
+| `audio-service` | Deferred ingress/service quotas, suffix retry, resets and backpressure. |
 | `dts` | DTS Core decode differential vs FFmpeg (committed corpus). |
 | `dts-arena` | No-heap arena decode path + allocation metrics. |
 | `dts-fuzz` | DTS decoder robustness fuzz. |

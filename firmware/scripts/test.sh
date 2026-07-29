@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
+# Suites: arena, audio-ingress, audio-service, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
@@ -303,6 +303,31 @@ capability)
 		"$fw_root/lib/aius_capability/src/aius_cap_payload.c" \
 		"$fw_root/lib/aius_capability/src/aius_cap_device.c"
 	"$out" "$fw_root/tools/dts_vectors/vectors"
+	;;
+audio-ingress)
+	audio_ingress_out="$build_dir/audio-ingress"
+	"$cc" "${cflags[@]}" \
+		"-I$fw_root/lib/aius_audio_ingress/include" \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free \
+		"$fw_root/test/audio-ingress/test_audio_ingress.c" \
+		"$fw_root/lib/aius_audio_ingress/src/aius_audio_ingress.c" \
+		-o "$audio_ingress_out"
+	"$audio_ingress_out"
+	;;
+audio-service)
+	# The real portable controller over the real ingress and deferred pipeline.
+	out="$build_dir/audio-service"
+	dts_build "$out" \
+		"-I$fw_root/lib/aius_audio_ingress/include" \
+		"-I$fw_root/lib/aius_audio_service/include" \
+		"-I$fw_root/lib/aius_pipeline/include" \
+		"-I$fw_root/lib/aius_iec61937/include" \
+		"$fw_root/test/audio-service/test_audio_service.c" \
+		"$fw_root/lib/aius_audio_ingress/src/aius_audio_ingress.c" \
+		"$fw_root/lib/aius_audio_service/src/aius_audio_service.c" \
+		"$fw_root/lib/aius_pipeline/src/aius_pipeline.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c"
+	"$out" "$fw_root/tools/iec_corpus/vectors"
 	;;
 pipeline)
 	# S/PDIF pipeline: classifier + IEC 61937 parser chained into the DTS decoder,

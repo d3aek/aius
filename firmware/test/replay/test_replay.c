@@ -23,6 +23,27 @@ static void test_ring(void)
 	assert(memcmp(input, output, sizeof(input)) == 0);
 }
 
+static void test_bounded_discard(void)
+{
+	static AiusReplayService service;
+	uint16_t input[300];
+	uint16_t tail[44] = {};
+	for (size_t i = 0; i < 300u; i++)
+		input[i] = (uint16_t)i;
+	aius_replay_service_init(&service);
+	service.state = AIUS_REPLAY_PLAYING;
+	assert(aius_replay_word_ring_push(&service.ring, input, 300u) == 300u);
+	assert(aius_replay_service_discard_words(&service, 300u) == 256u);
+	assert(service.state == AIUS_REPLAY_PLAYING && service.underruns == 0u);
+	assert(aius_replay_service_pop_words(&service, tail, 44u) == 44u);
+	for (size_t i = 0; i < 44u; i++)
+		assert(tail[i] == (uint16_t)(256u + i));
+
+	assert(aius_replay_word_ring_push(&service.ring, input, 100u) == 100u);
+	assert(aius_replay_service_discard_words(&service, 256u) == 100u);
+	assert(service.state == AIUS_REPLAY_UNDERRUN && service.underruns == 1u);
+}
+
 static void test_format(void)
 {
 	const uint8_t bytes[] = {0x72, 0xF8, 0x1F, 0x4E};
@@ -676,6 +697,7 @@ static void test_restart_and_stop(void)
 int main(void)
 {
 	test_ring();
+	test_bounded_discard();
 	test_format();
 	test_start_is_memory_only();
 	test_refill_reaches_watermark();

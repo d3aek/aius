@@ -20,6 +20,13 @@
 #define IEC_PA_LE 0x72F8u
 #define IEC_PB_LE 0x1F4Eu
 
+typedef enum {
+	PENDING_NONE = 0,
+	PENDING_PCM,
+	PENDING_DTS_AU,
+	PENDING_DTS_OUTPUT
+} PendingKind;
+
 struct AiusPipeline {
 	AiusIec61937Parser *parser;
 	AiusDtsDecoder *decoder;
@@ -33,6 +40,7 @@ struct AiusPipeline {
 	/* Classification staging: raw words held until the stream is typed. */
 	uint16_t clsbuf[AIUS_PIPELINE_CLASSIFY_MAX_WORDS];
 	size_t cls_n;
+	size_t cls_off;
 
 	/* PCM pass-through staging (interleaved L,R -> planar). */
 	int32_t pcm_l[AIUS_PIPELINE_PCM_BLOCK_FRAMES];
@@ -71,6 +79,13 @@ struct AiusPipeline {
 	uint32_t retype_count;
 	uint32_t reclassify_count;
 	uint32_t squelched_frames;
+
+	PendingKind pending;
+	AiusPcmBlock retained_block;
+	AiusPcmBlock sink_block;
+	uint32_t retained_offset;
+	uint8_t retained_retry;
+	AiusPipelineServiceDiag service_diag;
 };
 
 /* A re-type inside finish()'s PCM-promotion flush is impossible only while the
@@ -136,26 +151,8 @@ AiusPipelineClass aius_pipeline_classify(const uint16_t *words, size_t count,
 
 /* ---- PCM pass-through ----------------------------------------------------- */
 
-static AiusStatus dts_feed(AiusPipeline *p, const uint16_t *w, size_t n);
-
-static AiusStatus pcm_emit_block(AiusPipeline *p)
-{
-	if (p->pcm_frames == 0)
-		return AIUS_OK;
-
-	AiusPcmBlock blk;
-	memset(&blk, 0, sizeof(blk));
-	blk.planes[0] = p->pcm_l;
-	blk.planes[1] = p->pcm_r;
-	blk.channels = 2;
-	blk.frames = p->pcm_frames;
-	blk.sample_rate_hz = AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ;
-	blk.channel_mask = AIUS_CH_FL | AIUS_CH_FR;
-
-	AiusStatus st = p->sink.consume(p->sink.ctx, &blk);
-	p->pcm_frames = 0;
-	return st;
-}
+static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
+	                         size_t *consumed);
 
 /* Wire word (16-bit, IEC 60958 subframe payload) -> AiusPcmBlock sample scale.
  *
@@ -187,7 +184,8 @@ static inline int32_t pcm_wire_to_sample(uint16_t word)
  * PCM -- its Pa is in there too), start the parser clean from the validated
  * pair, and route the remainder of the caller's chunk after it. */
 static AiusStatus retype_to_dts(AiusPipeline *p, uint16_t pa, uint16_t pb,
-                                const uint16_t *rest, size_t n)
+	                            const uint16_t *rest, size_t n,
+	                            size_t *consumed)
 {
 	p->pcm_frames = 0;
 	p->pcm_have_half = 0;
@@ -200,10 +198,15 @@ static AiusStatus retype_to_dts(AiusPipeline *p, uint16_t pa, uint16_t pb,
 	p->retype_count++;
 
 	const uint16_t pair[2] = { pa, pb };
-	AiusStatus st = dts_feed(p, pair, 2);
+	size_t pair_consumed = 0u;
+	AiusStatus st = dts_ingest(p, pair, 2u, &pair_consumed);
 	if (st != AIUS_OK)
 		return st;
-	return dts_feed(p, rest, n);
+	if (p->pending != PENDING_NONE) {
+		*consumed = 0u;
+		return AIUS_OK;
+	}
+	return dts_ingest(p, rest, n, consumed);
 }
 
 /* Enter the PCM class: the confirmation window is counted from here, so the run
@@ -220,8 +223,10 @@ static void pcm_enter(AiusPipeline *p)
 	p->pcm_pending_l = 0;
 }
 
-static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
+static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
+	                         size_t *consumed)
 {
+	*consumed = 0u;
 	for (size_t i = 0; i < n; i++) {
 		const uint16_t word = w[i];
 
@@ -236,9 +241,15 @@ static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 					const uint32_t delta = pa_pos - p->rt_cand_pos;
 					if (delta >= AIUS_PIPELINE_RETYPE_MIN_SPACING_WORDS &&
 					    delta <= AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS &&
-					    form == (int)p->rt_cand_form)
-						return retype_to_dts(p, p->rt_prev_word, word,
-						                     w + i + 1, n - i - 1);
+					    form == (int)p->rt_cand_form) {
+						size_t rest_consumed = 0u;
+						AiusStatus st =
+							retype_to_dts(p, p->rt_prev_word, word,
+							              w + i + 1, n - i - 1,
+							              &rest_consumed);
+						*consumed = i + 1u + rest_consumed;
+						return st;
+					}
 					if (delta > AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS ||
 					    form != (int)p->rt_cand_form) {
 						p->rt_cand_pos = pa_pos;
@@ -285,83 +296,107 @@ static AiusStatus pcm_feed(AiusPipeline *p, const uint16_t *w, size_t n)
 		p->pcm_have_half = 0;
 		p->pcm_frames++;
 		if (p->pcm_frames == AIUS_PIPELINE_PCM_BLOCK_FRAMES) {
-			AiusStatus st = pcm_emit_block(p);
-			if (st != AIUS_OK)
-				return st;
+			p->pending = PENDING_PCM;
+			*consumed = i + 1u;
+			return AIUS_OK;
 		}
 	}
+	*consumed = n;
 	return AIUS_OK;
 }
 
 /* ---- DTS de-frame -> decode ---------------------------------------------- */
 
-static AiusStatus dts_feed(AiusPipeline *p, const uint16_t *w, size_t n)
+static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
+	                         size_t *consumed_out)
 {
-	/* Starvation accounting (defect 28): presume the push sterile, then any
-	 * burst outcome below -- completed OR rejected, either is framing
-	 * evidence -- zeroes the counter. Granularity is one push; words after
-	 * the last outcome inside the same push go uncounted, a bounded
-	 * undercount the threshold's 4x margin absorbs. */
-	p->dts_starve_words += (uint32_t)n;
-
 	size_t pos = 0;
 	while (pos < n) {
 		size_t consumed = 0;
 		AiusStatus st = aius_iec61937_push(p->parser, w + pos, n - pos, &consumed);
 		pos += consumed;
+		p->dts_starve_words += (uint32_t)consumed;
 
 		if (st == AIUS_NEED_MORE)
 			break;
-		if (st == AIUS_INVALID_ARG)
+		if (st == AIUS_INVALID_ARG) {
+			*consumed_out = pos;
 			return AIUS_INVALID_ARG;
+		}
 
 		p->dts_starve_words = 0;
 
 		if (st == AIUS_OK) {
-			/* A supported (DTS Core) burst completed: decode its access unit. */
 			AiusBurst b;
 			if (aius_iec61937_current_burst(p->parser, &b) == AIUS_OK) {
-				AiusPcmBlock blk;
-				AiusStatus ds = aius_dts_decode_access_unit(p->decoder, b.payload,
-				                                            b.length, &blk);
-				p->last_status = ds;
-				if (ds == AIUS_OK) {
-					AiusStatus cs = p->sink.consume(p->sink.ctx, &blk);
-					if (cs != AIUS_OK)
-						return cs;
-				}
-				/* A decode fault is non-fatal: skip this burst, keep streaming. */
+				p->pending = PENDING_DTS_AU;
+				*consumed_out = pos;
+				return AIUS_OK;
 			}
 		} else {
 			/* UNSUPPORTED / MALFORMED / NO_SPACE: skip; the parser re-locks. */
 			p->last_status = st;
+			p->service_diag.parse_rejects++;
+			p->service_diag.last_failure = st;
 		}
 
 		if (consumed == 0)
 			break; /* defensive: never spin on a non-advancing parser */
 	}
+	*consumed_out = pos;
 	return AIUS_OK;
 }
 
 /* ---- routing ------------------------------------------------------------- */
 
-/* Route already-decided-class words to the matching consumer. */
-static AiusStatus route(AiusPipeline *p, const uint16_t *w, size_t n)
+static AiusStatus route_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
+	                           size_t *consumed)
 {
 	if (p->klass == AIUS_PIPELINE_DTS)
-		return dts_feed(p, w, n);
+		return dts_ingest(p, w, n, consumed);
 	if (p->klass == AIUS_PIPELINE_PCM)
-		return pcm_feed(p, w, n);
+		return pcm_ingest(p, w, n, consumed);
+	*consumed = 0u;
 	return AIUS_OK;
 }
 
-AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t count)
+static void cleanup_pending(AiusPipeline *p)
 {
-	if (!p)
+	p->pending = PENDING_NONE;
+	p->retained_retry = 0u;
+	p->retained_offset = 0u;
+	memset(&p->retained_block, 0, sizeof(p->retained_block));
+	memset(&p->sink_block, 0, sizeof(p->sink_block));
+	p->pcm_frames = 0u;
+	p->pcm_have_half = 0;
+	p->pcm_pending_l = 0;
+}
+
+static void begin_ingest_call(AiusPipeline *p)
+{
+	if (p->klass == AIUS_PIPELINE_DTS &&
+	    p->dts_starve_words > AIUS_PIPELINE_DTS_STARVE_WORDS) {
+		aius_iec61937_parser_reset(p->parser);
+		cleanup_pending(p);
+		p->klass = AIUS_PIPELINE_UNKNOWN;
+		p->cls_n = 0;
+		p->cls_off = 0;
+		p->dts_starve_words = 0;
+		p->reclassify_count++;
+	}
+	if (p->klass == AIUS_PIPELINE_PCM && p->rt_cand_valid &&
+	    p->rt_pos - p->rt_cand_pos >
+	        AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS + 1u)
+		p->rt_cand_valid = 0;
+}
+
+AiusStatus aius_pipeline_ingest(AiusPipeline *p, const uint16_t *words,
+	                            size_t count, size_t *consumed)
+{
+	if (!p || !consumed || (count > 0u && !words))
 		return AIUS_INVALID_ARG;
-	if (count > 0 && !words)
-		return AIUS_INVALID_ARG;
-	if (count == 0)
+	*consumed = 0u;
+	if (p->pending != PENDING_NONE)
 		return AIUS_OK;
 
 	/* Push-boundary re-judgements (defect 28). Starvation: a DTS class that
@@ -370,33 +405,36 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 	 * path below. Candidate expiry: a re-type candidate older than the MAX
 	 * spacing can never validate and is dropped (which also removes the
 	 * uint32 position-wrap aliasing of an hours-stale candidate). */
-	if (p->klass == AIUS_PIPELINE_DTS &&
-	    p->dts_starve_words > AIUS_PIPELINE_DTS_STARVE_WORDS) {
-		aius_iec61937_parser_reset(p->parser);
-		p->klass = AIUS_PIPELINE_UNKNOWN;
-		p->cls_n = 0;
-		p->dts_starve_words = 0;
-		p->reclassify_count++;
-	}
-	if (p->klass == AIUS_PIPELINE_PCM && p->rt_cand_valid &&
-	    p->rt_pos - p->rt_cand_pos >
-	        AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS + 1u)
-		p->rt_cand_valid = 0;
+	begin_ingest_call(p);
 	/* ^ +1: with the candidate's Pa as the LAST word of a push, its age at
 	 * the next boundary is delta+1 -- a bare > MAX would expire a candidate
 	 * whose validating Pb (delta exactly MAX) is still legal. */
 
-	size_t off = 0;
+	/* Classification words were accepted before their class was known. Finish
+	 * routing that retained prefix before accepting later input. */
+	if (p->cls_off < p->cls_n && p->klass != AIUS_PIPELINE_UNKNOWN) {
+		size_t routed = 0u;
+		AiusStatus st =
+			route_ingest(p, p->clsbuf + p->cls_off, p->cls_n - p->cls_off,
+			             &routed);
+		p->cls_off += routed;
+		if (p->cls_off == p->cls_n)
+			p->cls_off = p->cls_n = 0u;
+		if (st != AIUS_OK || p->pending != PENDING_NONE ||
+		    p->cls_off < p->cls_n)
+			return st;
+	}
 
 	/* Stage words until the stream is typed, then flush the staged run. */
-	while (off < count && p->klass == AIUS_PIPELINE_UNKNOWN) {
+	while (*consumed < count && p->klass == AIUS_PIPELINE_UNKNOWN) {
 		size_t room = p->window - p->cls_n;
-		size_t take = count - off;
+		size_t take = count - *consumed;
 		if (take > room)
 			take = room;
-		memcpy(p->clsbuf + p->cls_n, words + off, take * sizeof(uint16_t));
+		memcpy(p->clsbuf + p->cls_n, words + *consumed,
+		       take * sizeof(uint16_t));
 		p->cls_n += take;
-		off += take;
+		*consumed += take;
 
 		p->klass = aius_pipeline_classify(p->clsbuf, p->cls_n, p->window);
 		if (p->klass == AIUS_PIPELINE_DTS)
@@ -404,16 +442,193 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 		else if (p->klass == AIUS_PIPELINE_PCM)
 			pcm_enter(p); /* every PCM entry starts unconfirmed */
 		if (p->klass != AIUS_PIPELINE_UNKNOWN) {
-			AiusStatus st = route(p, p->clsbuf, p->cls_n);
-			p->cls_n = 0;
-			if (st != AIUS_OK)
+			size_t routed = 0u;
+			AiusStatus st =
+				route_ingest(p, p->clsbuf, p->cls_n, &routed);
+			p->cls_off = routed;
+			if (p->cls_off == p->cls_n)
+				p->cls_off = p->cls_n = 0u;
+			if (st != AIUS_OK || p->pending != PENDING_NONE ||
+			    p->cls_off < p->cls_n)
 				return st;
 		}
 		/* Still UNKNOWN only when cls_n < window; the loop takes more input. */
 	}
 
-	if (off < count)
-		return route(p, words + off, count - off);
+	if (*consumed < count) {
+		size_t routed = 0u;
+		AiusStatus st =
+			route_ingest(p, words + *consumed, count - *consumed, &routed);
+		*consumed += routed;
+		return st;
+	}
+	return AIUS_OK;
+}
+
+static void fill_pcm_descriptor(AiusPipeline *p)
+{
+	memset(&p->sink_block, 0, sizeof(p->sink_block));
+	p->sink_block.planes[0] = p->pcm_l;
+	p->sink_block.planes[1] = p->pcm_r;
+	p->sink_block.channels = 2u;
+	p->sink_block.frames = p->pcm_frames;
+	p->sink_block.sample_rate_hz = AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ;
+	p->sink_block.channel_mask = AIUS_CH_FL | AIUS_CH_FR;
+}
+
+AiusStatus aius_pipeline_slice_pcm_block(const AiusPcmBlock *source,
+	                                     uint32_t frame_offset,
+	                                     AiusPcmBlock *slice)
+{
+	if (!source || !slice || source->channels == 0u ||
+	    source->channels > AIUS_MAX_CHANNELS || source->frames == 0u ||
+	    frame_offset >= source->frames)
+		return AIUS_INVALID_ARG;
+	uint32_t frames = source->frames - frame_offset;
+	if (frames > AIUS_PIPELINE_MAX_OUTPUT_FRAMES)
+		frames = AIUS_PIPELINE_MAX_OUTPUT_FRAMES;
+	for (uint16_t ch = 0u; ch < source->channels; ch++)
+		if (!source->planes[ch])
+			return AIUS_INVALID_ARG;
+	*slice = *source;
+	slice->frames = frames;
+	for (uint16_t ch = 0u; ch < source->channels; ch++)
+		slice->planes[ch] = source->planes[ch] + frame_offset;
+	return AIUS_OK;
+}
+
+AiusStatus aius_pipeline_service_one(AiusPipeline *p,
+	                                 AiusPipelineServiceResult *result)
+{
+	if (!p || !result)
+		return AIUS_INVALID_ARG;
+	*result = AIUS_PIPELINE_SERVICE_IDLE;
+	if (p->pending == PENDING_NONE)
+		return AIUS_OK;
+
+	if (p->pending == PENDING_DTS_AU) {
+		AiusBurst b;
+		if (aius_iec61937_current_burst(p->parser, &b) != AIUS_OK) {
+			p->service_diag.au_abandons++;
+			aius_pipeline_reset(p);
+			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
+			return AIUS_MALFORMED;
+		}
+		p->service_diag.decode_units++;
+		AiusStatus ds =
+			aius_dts_decode_access_unit(p->decoder, b.payload, b.length,
+			                            &p->retained_block);
+		p->last_status = ds;
+		if (ds != AIUS_OK) {
+			p->service_diag.decode_rejects++;
+			p->service_diag.last_failure = ds;
+			p->pending = PENDING_NONE;
+			memset(&p->retained_block, 0, sizeof(p->retained_block));
+			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
+			return AIUS_OK;
+		}
+		p->pending = PENDING_DTS_OUTPUT;
+		p->retained_offset = 0u;
+	}
+
+	if (p->pending == PENDING_PCM)
+		fill_pcm_descriptor(p);
+	else if (p->pending == PENDING_DTS_OUTPUT && !p->retained_retry) {
+		AiusStatus slice_status =
+			aius_pipeline_slice_pcm_block(&p->retained_block,
+			                              p->retained_offset,
+			                              &p->sink_block);
+		if (slice_status != AIUS_OK) {
+			p->service_diag.decode_rejects++;
+			p->service_diag.last_failure = slice_status;
+			p->service_diag.au_abandons++;
+			aius_pipeline_reset(p);
+			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
+			return AIUS_OK;
+		}
+	}
+
+	p->service_diag.sink_attempts++;
+	if (p->retained_retry)
+		p->service_diag.retained_retries++;
+	AiusStatus st = p->sink.consume(p->sink.ctx, &p->sink_block);
+	if (st == AIUS_NO_SPACE) {
+		p->service_diag.transmit_stalls++;
+		p->retained_retry = 1u;
+		*result = AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED;
+		return AIUS_NO_SPACE;
+	}
+	if (st != AIUS_OK) {
+		p->service_diag.output_drops++;
+		if (p->pending == PENDING_DTS_OUTPUT)
+			p->service_diag.au_abandons++;
+		p->service_diag.last_failure = st;
+		*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
+		aius_pipeline_reset(p);
+		return st;
+	}
+
+	p->service_diag.committed_blocks++;
+	if (p->pending == PENDING_PCM) {
+		p->pcm_frames = 0u;
+		p->pending = PENDING_NONE;
+	} else {
+		p->retained_offset += p->sink_block.frames;
+		if (p->retained_offset >= p->retained_block.frames)
+			p->pending = PENDING_NONE;
+	}
+	p->retained_retry = 0u;
+	memset(&p->sink_block, 0, sizeof(p->sink_block));
+	if (p->pending == PENDING_NONE) {
+		p->retained_offset = 0u;
+		memset(&p->retained_block, 0, sizeof(p->retained_block));
+	}
+	*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
+	return AIUS_OK;
+}
+
+int aius_pipeline_has_pending(const AiusPipeline *p)
+{
+	return p && p->pending != PENDING_NONE;
+}
+
+int aius_pipeline_has_buffered_input(const AiusPipeline *p)
+{
+	return p && p->cls_off < p->cls_n &&
+	       p->klass != AIUS_PIPELINE_UNKNOWN;
+}
+
+AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t count)
+{
+	if (!p || (count > 0u && !words))
+		return AIUS_INVALID_ARG;
+	size_t off = 0u;
+	while (off < count || aius_pipeline_has_pending(p) ||
+	       aius_pipeline_has_buffered_input(p)) {
+		if (aius_pipeline_has_pending(p)) {
+			AiusPipelineServiceResult result;
+			AiusStatus st = aius_pipeline_service_one(p, &result);
+			if (st != AIUS_OK) {
+				if (st == AIUS_NO_SPACE) {
+					p->service_diag.output_drops++;
+					if (p->pending == PENDING_DTS_OUTPUT)
+						p->service_diag.au_abandons++;
+					aius_pipeline_reset(p);
+				}
+				return st;
+			}
+			continue;
+		}
+		size_t accepted = 0u;
+		AiusStatus st =
+			aius_pipeline_ingest(p, off < count ? words + off : NULL,
+			                     count - off, &accepted);
+		off += accepted;
+		if (st != AIUS_OK)
+			return st;
+		if (accepted == 0u && !aius_pipeline_has_pending(p))
+			break;
+	}
 	return AIUS_OK;
 }
 
@@ -423,20 +638,47 @@ AiusStatus aius_pipeline_finish(AiusPipeline *p)
 		return AIUS_INVALID_ARG;
 
 	AiusStatus rc = AIUS_OK;
+	while (p->pending != PENDING_NONE) {
+		AiusPipelineServiceResult result;
+		rc = aius_pipeline_service_one(p, &result);
+		if (rc != AIUS_OK)
+			return rc;
+	}
+
+	/* A completed work item can leave a typed suffix in the classification
+	 * staging buffer. Route and service that accepted suffix before finalizing
+	 * either stream. */
+	while (aius_pipeline_has_buffered_input(p)) {
+		const size_t before = p->cls_off;
+		size_t consumed = 0u;
+		rc = aius_pipeline_ingest(p, NULL, 0u, &consumed);
+		if (rc != AIUS_OK)
+			return rc;
+		while (p->pending != PENDING_NONE) {
+			AiusPipelineServiceResult result;
+			rc = aius_pipeline_service_one(p, &result);
+			if (rc != AIUS_OK)
+				return rc;
+		}
+		if (aius_pipeline_has_buffered_input(p) && p->cls_off == before)
+			return AIUS_MALFORMED;
+	}
 
 	/* No preamble ever arrived: the staged words are linear PCM. They are a
 	 * sub-window run, so the squelch drops all of them -- an unconfirmed
 	 * promotion is exactly the case that must not reach the sink. */
 	if (p->klass == AIUS_PIPELINE_UNKNOWN && p->cls_n > 0) {
 		pcm_enter(p);
-		rc = route(p, p->clsbuf, p->cls_n);
-		p->cls_n = 0;
+		size_t routed = 0u;
+		rc = route_ingest(p, p->clsbuf, p->cls_n, &routed);
+		p->cls_n = p->cls_off = 0u;
 	}
 
-	if (p->klass == AIUS_PIPELINE_PCM) {
-		AiusStatus st = pcm_emit_block(p); /* flush a partial block */
-		if (rc == AIUS_OK)
-			rc = st;
+	if (rc == AIUS_OK && p->klass == AIUS_PIPELINE_PCM &&
+	    p->pcm_frames > 0u) {
+		p->pending = PENDING_PCM;
+		AiusPipelineServiceResult result;
+		rc = aius_pipeline_service_one(p, &result);
 		/* A dangling half-frame (lone L) is incomplete and dropped. */
 	}
 
@@ -453,9 +695,8 @@ void aius_pipeline_reset(AiusPipeline *p)
 	aius_iec61937_parser_reset(p->parser);
 	p->klass = AIUS_PIPELINE_UNKNOWN;
 	p->cls_n = 0;
-	p->pcm_frames = 0;
-	p->pcm_have_half = 0;
-	p->pcm_pending_l = 0;
+	p->cls_off = 0;
+	cleanup_pending(p);
 	p->pcm_run_words = 0; /* the next PCM run re-earns its confirmation */
 	p->last_status = AIUS_OK;
 	/* Detector/starvation STATE clears; the two lifetime counters do not --
@@ -464,6 +705,24 @@ void aius_pipeline_reset(AiusPipeline *p)
 	p->rt_cand_valid = 0;
 	p->rt_pos = 0;
 	p->dts_starve_words = 0;
+}
+
+void aius_pipeline_get_service_diag(const AiusPipeline *p,
+	                                AiusPipelineServiceDiag *out)
+{
+	if (!out)
+		return;
+	memset(out, 0, sizeof(*out));
+	if (p)
+		*out = p->service_diag;
+}
+
+void aius_pipeline_clear_service_diag(AiusPipeline *p)
+{
+	if (!p)
+		return;
+	memset(&p->service_diag, 0, sizeof(p->service_diag));
+	p->service_diag.last_failure = AIUS_OK;
 }
 
 AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,

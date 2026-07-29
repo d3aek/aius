@@ -4,13 +4,14 @@
 
 /* Cold code -> FLASH, hot code -> ITCM, and the split is the point of this file.
  *
- * The ONLY functions that run per audio block are the pop path --
- * aius_replay_service_pop_words, aius_replay_pop_words,
- * aius_replay_word_ring_available and next_index -- so those four carry no
- * attribute and stay in ITCM, where the audio callback needs them.  Everything
- * else (start, planning, delivery, status, stop) runs in epoch or HTTP context
- * once per refill at most, so it carries FLASHMEM and leaves ITCM to the code
- * that earns it (docs/plans/aius-network-hardening.md, "Deciding principle").
+ * The ONLY functions that run per audio block are the pop/discard path --
+ * aius_replay_service_pop_words, aius_replay_service_discard_words,
+ * aius_replay_pop_words, aius_replay_word_ring_available and next_index -- so
+ * those five carry no attribute and stay in ITCM, where the audio callback
+ * needs them. Everything else (start, planning, delivery, status, stop) runs
+ * in epoch or HTTP context once per refill at most, so it carries FLASHMEM and
+ * leaves ITCM to the code that earns it
+ * (docs/plans/aius-network-hardening.md, "Deciding principle").
  *
  * FLASHMEM is Teensyduino's __attribute__((section(".flashmem"))) from
  * <avr/pgmspace.h>; TEENSYDUINO is a project-wide compiler -D, so the native
@@ -336,6 +337,29 @@ size_t aius_replay_service_pop_words(AiusReplayService *service, uint16_t *out,
 		service->state = AIUS_REPLAY_UNDERRUN;
 	}
 	return count;
+}
+
+size_t aius_replay_service_discard_words(AiusReplayService *service,
+	                                    size_t capacity)
+{
+	if (service == NULL)
+		return 0u;
+	if (capacity > AIUS_REPLAY_DISCARD_MAX_WORDS)
+		capacity = AIUS_REPLAY_DISCARD_MAX_WORDS;
+	size_t discarded = aius_replay_word_ring_available(&service->ring);
+	if (discarded > capacity)
+		discarded = capacity;
+	const uint32_t read = atomic_load_explicit(&service->ring.read_index,
+	                                          memory_order_relaxed);
+	atomic_store_explicit(
+		&service->ring.read_index,
+		(read + (uint32_t)discarded) % AIUS_REPLAY_WORD_RING_CAPACITY,
+		memory_order_release);
+	if (service->state == AIUS_REPLAY_PLAYING && discarded < capacity) {
+		service->underruns++;
+		service->state = AIUS_REPLAY_UNDERRUN;
+	}
+	return discarded;
 }
 
 FLASHMEM void aius_replay_service_stop(AiusReplayService *service)

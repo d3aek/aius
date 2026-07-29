@@ -105,14 +105,14 @@ is therefore recorded manually below, using the same canonical grammar.
 
 - `docs/plans/aius-capability-gate.md` — `coordinate`: Preserve the shipped DTS capability contract; AC-3 reuses its codec ABI, arena, and target timing evidence while phase 2 moves DTS decode out of the ISR.
 - `docs/plans/aius-cost-model.md` — `unrelated`: Decoder firmware does not change the prototype BOM, layer-count decision, or supplier pricing.
-- `docs/plans/aius-dsp-config-api.md` — `coordinate`: AC-3 feeds the existing layout-aware DSP and phase 3 updates its status labels; DSP configuration semantics remain owned by that plan.
+- `docs/plans/aius-dsp-config-api.md` — `coordinate`: AC-3 feeds the existing layout-aware DSP and phase 3 updates its status labels. Slice 2b moves the block producer to epoch context but preserves block-boundary apply, meter publication, and the rule that a refused block applies no configuration and advances no DSP state; configuration semantics remain owned by that plan.
 - `docs/plans/aius-hardware-spec.md` — `coordinate`: Phase 4 must preserve the hardware spec's optical path and memory gates while proving the decoder's target footprint.
-- `docs/plans/aius-network-hardening.md` — `coordinate`: AC-3 phase 2 owns the defect-31 decode-off-ISR fix and proof; the hardening plan remains the defect ledger and retains defect 34.
-- `docs/plans/aius-open-work-register.md` — `coordinate`: The register remains a projection of authoritative work and must strike defect 31 when phase 2 closes it.
-- `docs/plans/aius-optical-prototype.md` — `coordinate`: Phase 4's card replay and live-TV checks extend the existing optical validation without replacing its broader prototype gates.
+- `docs/plans/aius-network-hardening.md` — `coordinate`: AC-3 phase 2 owns the defect-31 decode-off-ISR fix, the new AUDIO checkpoint, and the sustained DTS proof; the hardening plan remains the defect ledger and retains defect 34. Existing one-feed watchdog and recovery-safe scheduling semantics do not change.
+- `docs/plans/aius-open-work-register.md` — `coordinate`: The register remains a projection of authoritative work and must strike defect 31 only after Slice 2b's capture-plus-HTTP hardware soak, never at code completion alone.
+- `docs/plans/aius-optical-prototype.md` — `coordinate`: Slice 2b moves the measurement and flight-recorder block producer from audio-ISR to epoch context without changing their committed-wire tap; phase 4's card replay and live-TV checks extend the existing optical validation without replacing its broader prototype gates.
 - `docs/plans/aius-ota-upgrade.md` — `unrelated`: AC-3 adds no update format, rollback state, or OTA transport surface.
-- `docs/plans/aius-replay-manager.md` — `coordinate`: Phase 4 adds AC-3 IEC fixtures through the existing replay transport without changing replay-manager scheduling or storage semantics.
-- `docs/plans/aius-sample-rate-following.md` — `coordinate`: AC-3 remains 48 kHz-only and its bounded-reader proof relies on 48 kHz frame alignment; later rate following must revisit that invariant deliberately.
+- `docs/plans/aius-replay-manager.md` — `coordinate`: Slice 2b preserves replay's audio-ISR consumer, exact 256-word pop cadence, short-pop underrun semantics, and epoch refill ownership; only the pop destination changes from synchronous decode to the ingress ring. Phase 4 adds AC-3 IEC fixtures through the same transport.
+- `docs/plans/aius-sample-rate-following.md` — `coordinate`: AC-3 remains 48 kHz-only. Slice 2b's 96,000-word/s ingress and 187.5-block/s service arithmetic is explicitly 48 kHz-only, so later rate following must resize or derive the quotas and ring rather than inherit hidden 48 kHz constants.
 - `docs/plans/aius-sd-config-web.md` — `coordinate`: Phase 3 edits the shared status UI and must preserve the shipped dashboard and SD-served page contracts.
 - `docs/plans/aius-tls-termination.md` — `coordinate`: TLS is parked, but its future epoch-latency budget must consume phase 4's measured decode cost rather than its current DTS-only assumption.
 
@@ -1174,34 +1174,387 @@ reproduces the same four digests.
 
 ### Slice 2b — decode off the audio ISR (target)
 
-- **AC-3 slices; DTS moves.** dcadec decodes an AU in one `core_parse` +
-  `core_filter` pair and cannot be sliced without vendor surgery we are not
-  doing, so DTS's fix is relocation to epoch context. AC-3 gets both. Record
-  the asymmetry rather than pretending the codecs are symmetric.
-- Decode runs in the runtime's epoch/service context, feeding the existing
-  transmit ring; the audio ISR's job shrinks to moving words. **The whole-AU
-  hold-back an earlier draft required is withdrawn** along with the discard
-  policy it served, so `enqueue` keeps its per-block free check and
-  per-block commit unchanged — **but the ring-depth arithmetic that draft
-  carried survives the withdrawal and must not be deleted with it (gate
-  N1b)**: six back-to-back `enqueue` calls occupy the same 1,536 of 2,048
-  frames whether or not the commit is deferred, leaving AC-3 512 frames
-  (10.7 ms) of drain tolerance against DTS's 1,536. Ring depth is sized
-  against worst service latency, jitter, **and that per-AU occupancy**;
-  ring-full mid-AU is an expected condition to handle, not an edge case.
-- Watchdog, starvation, squelch and carrier-edge interactions re-proven on
-  the `pipeline` suite — the restructure moves the code that those state
-  machines drive, so their oracles are the regression surface.
-- **Per-AU fixed overhead rises** (gate F17): sink calls go from 1 to 6 per
-  access unit, and each `enqueue` re-runs the config-apply check and its
-  per-call setup. Budget for it in the cycle measurement rather than
-  discovering it on the meters.
-- **The defect-31 hypothesis this tests.** The native seam hunt
-  (`bfa73a6f8`) found no non-terminating dcadec parse across 29,435
-  seam-shaped feeds, leaving the ISR-time storm as prime suspect. 2b removes
-  that suspect. If sustained decode still dies by watchdog afterwards, the
-  hypothesis was wrong and the next suspect is the transmit path, not the
-  parser.
+**Owned paths:** `firmware/lib/{aius_audio,aius_audio_ingress,
+aius_audio_service,aius_pipeline,aius_boot,aius_runtime,aius_replay,
+aius_recorder,aius_dsp}/`,
+`firmware/src/{aius_runtime_teensy.h,aius_runtime_teensy.cpp,optical_main.cpp}`,
+`firmware/test/{audio-ingress,audio-service,pipeline,runtime,runtime-target,
+replay,tx-gate,recorder,measure,optical-cutover,memory,itcm-placement}/`,
+`firmware/scripts/test.sh`, `firmware/README.md`, `firmware/platformio.ini`,
+`docs/plans/{aius-ac3-support,aius-network-hardening,aius-open-work-register}.md`.
+Relative to ``.
+
+#### The two contexts and the one handoff
+
+The audio software ISR remains the sole ingress producer. The runtime AUDIO
+checkpoint is the sole ingress consumer, pipeline owner, decoder caller, DSP
+producer and transmit-ring producer. The transmit DMA ISR remains the sole
+transmit-ring consumer. Decode never runs from `AiusAudioProcessor::update()`.
+
+The handoff is a portable `AiusAudioIngress` SPSC with caller-provided word
+storage. The target places exactly **8,192 `uint16_t` words (16 KiB) in
+`DMAMEM`/OCRAM**; its cursors and counters are ordinary 32-bit state. Capacity
+is a power of two and exactly 32 engine chunks:
+
+- `AIUS_AUDIO_INGRESS_CHUNK_WORDS = 256` (128 stereo frames);
+- `AIUS_AUDIO_INGRESS_CAPACITY_WORDS = 8192`;
+- producer-owned free-running `written`, discontinuity generation, drop
+  counters and high-water;
+- consumer-owned free-running `consumed`, observed generation and flush
+  counters.
+
+Aligned 32-bit cursor loads/stores are single-copy atomic on Cortex-M7. As with
+the transmit ring, staged words become visible only when the producer publishes
+`written`. A reservation always covers one complete, contiguous 256-word slot
+(the chunk divides the ring), and commit is all-or-none. The ISR performs at
+most one reservation and one 256-word fill per callback:
+
+- live optical interleaves the 128 left/right samples directly into the
+  reserved slot;
+- replay keeps `aius_replay_service_pop_words` in the ISR and pops exactly 256
+  words directly into that slot;
+- if no slot is free, live drops the whole callback and replay advances the
+  same 256-word timeline through a new bounded discard API;
+- a short replay pop, a missing live channel, or a full ring commits no partial
+  chunk and records one complete gap.
+
+The ISR does no parser reset, classification, decoder call, sink call, DSP,
+meter, recorder, measurement, transmit-ring write, wall-clock read, or loop.
+`optical-cutover` asserts those absences structurally.
+
+At 48 kHz the producer rate is 96,000 words/s. The 8,192-word ring therefore
+holds 85.33 ms and its 32 chunks make wrap/full arithmetic exact. This is
+elasticity, not permission to fall behind: the AUDIO checkpoint must sustain
+more than 375 chunks/s.
+
+The current linked image has only **131,424 B OCRAM free**, 352 B above the
+linker's enforced 128 KiB network-heap floor, so the ingress ring cannot be a
+net new OCRAM allocation. Slice 2b removes the recorder's existing 16,384-byte
+sample staging from `DMAMEM` and creates **eight 512-frame slots (32 KiB)** in
+the recorder's PSRAM reservation in the same commit:
+
+- when PSRAM is present, the first aligned 32 KiB holds eight staging slots;
+  the recorder ring receives the largest power-of-two byte capacity that fits
+  after that carve (4 MiB on an 8 MiB board, 8 MiB on a 16 MiB board), satisfying
+  `aius_recorder_init`'s power-of-two frame-mask invariant explicitly;
+- when PSRAM is absent, the recorder stays absent and binds no staging, as
+  today;
+- both staging producer and drain now run serially in epoch context, so the old
+  "ISR must not touch EXTMEM" reason no longer applies;
+- both ends are CPU accesses through the same write-back cache and no DMA sees
+  the staging, so no cache maintenance is introduced.
+
+Eight slots are required because AUDIO may commit eight output steps after the
+epoch's REPLAY drain has already run; four slots would deterministically gap
+the fifth through eighth blocks. The recorder suite drives exactly eight
+producer blocks before the next drain and requires zero staging gaps. The
+smaller power-of-two recorder ring is a deliberate capacity trade: on the
+common 8 MiB board it retains 4 MiB, about 10.9 s at the recorder's 384 KiB/s
+stereo rate, rather than failing initialization with a non-power-of-two
+remainder.
+
+Adding the 16 KiB ingress and removing the old 16 KiB OCRAM recorder staging is
+OCRAM net-zero even though the replacement PSRAM staging is 32 KiB. The
+decoder/DSP arena is deliberately not used for the relocation: phase 3 needs
+its remaining headroom for liba52, and an arena workaround would make Slice 2b
+build while pre-breaking AC-3 residency.
+
+#### Gaps and source changes
+
+Ingress overflow drops the whole 256-word chunk. The producer increments a
+monotonic discontinuity generation before accepting any later chunk and records
+`dropped_chunks += 1`, `dropped_words += 256`, and the cause. The consumer reads
+that generation before every drain and between original chunks. On a change it
+discards every queued word, calls the one pipeline discontinuity helper, updates
+its observed generation, and rechecks before parsing. Thus a parser can never
+join words across a missing chunk.
+
+Replay/optical selection remains owned by the replay manager. `update()` latches
+the effective source used for each callback; an actual OPTICAL<->REPLAY change
+records the same producer discontinuity before the first new-source chunk. The
+epoch-owned carrier/replay reset request becomes a sequence rather than the
+current set/clear boolean. AUDIO consumes it before any ring peek by briefly
+masking the audio update, publishing `consumed = written`, and acknowledging the
+sequence; it then unmasks and resets the pipeline in epoch context. A racing
+first chunk may be deliberately included in that flush, but an old-source chunk
+is never decoded after the reset. `source_flushes` and `source_flush_words`
+make that disposition visible.
+
+Replay refill, clock reconciliation, source state and underrun ownership do not
+move. A successful replay callback still consumes exactly 256 words. A short
+pop keeps the replay service's existing underrun transition, records an ingress
+gap, and commits nothing. Ring-full replay discard keeps media time moving
+instead of silently turning service lag into replay backpressure.
+
+#### Deferred pipeline contract
+
+The pipeline gains two deepened operations while the existing synchronous
+`aius_pipeline_push` remains as a host/backward-compatibility driver:
+
+1. `aius_pipeline_ingest(..., size_t *consumed)` classifies and de-frames only.
+   It never calls a decoder or sink. It consumes until the offered words end or
+   one work item becomes pending, and reports the exact prefix consumed.
+2. `aius_pipeline_service_one(...)` performs at most one output work unit and
+   reports idle, progressed, or transmit-blocked separately from its typed
+   status.
+
+The target offers at most the remainder of one original 256-word engine chunk
+to each ingest call and never coalesces across chunk boundaries. A completed
+burst may stop mid-chunk; the ingress cursor advances only by `consumed`, the
+service resolves the pending item, and the suffix is re-presented. The only
+extra call boundary is therefore immediately after a parser burst outcome,
+which already zeroes DTS starvation. Sterile DTS input still reaches the
+pipeline in exact 256-word segments, preserving the starvation oracle's
+granularity. Starvation accumulation changes from offered words to exact
+consumed words so partial progress cannot over-count.
+
+Parser payload is not copied: when an IEC burst completes, ingestion stops and
+the parser-owned `AiusBurst.payload` remains valid until service resolves it.
+No later parser push may overwrite it. PCM likewise stops when its existing
+512-frame planes become pending. This avoids a second 4 KiB compressed scratch
+inside the 131,072-byte arena.
+
+`service_one` owns these states:
+
+- PCM pending: offer the existing 512-frame staging planes once;
+- DTS AU pending: perform one whole `aius_dts_decode_access_unit`, retain its
+  decoder-owned `AiusPcmBlock`, then offer at most 512 frames from it;
+- decoded output pending: retry the same retained descriptor without another
+  decoder call;
+- phase 3 AC-3: `begin` plus its first `decode_next_block` is one work unit,
+  each later 256-frame block is one unit, and a refused block stays retained
+  without advancing the iterator. Exactly six committed units complete an AU.
+
+dcadec cannot be interrupted inside `aius_dts_decode_access_unit`, so one DTS
+decode remains one atomic operation. Its decoder-owned PCM **can** be exposed
+without copying as consecutive sink views of at most
+`AIUS_PIPELINE_PCM_BLOCK_FRAMES` (512) frames: advance each plane pointer by the
+committed offset, retain the offset on `AIUS_NO_SPACE`, and do not ingest the
+next AU until every view commits. Decode plus the first view is one service
+step; each later view is one step. AC-3 is both relocated and decoded blockwise.
+The asymmetry is atomic compressed decode versus blockwise decode, not an
+oversized sink call.
+
+Sink `AIUS_NO_SPACE` is backpressure, not an AU fault. The pending decoded block
+and decoder storage remain untouched and the next epoch retries the same block
+without re-decode. Any other sink failure records the status, abandons the
+current AU, and invokes the shared discontinuity reset before later input.
+Decode/parse rejection is non-fatal and advances the appropriate rejection
+counter without emitting stale PCM.
+
+`aius_pipeline_reset`, PCM->DTS retype, DTS starvation, source flush, ingress
+gap and fatal service failure all use the same pending-work cleanup. Once phase
+3 arms AC-3, that helper calls `aius_a52_abandon` before clearing parser,
+retained-block and iterator state. No discontinuity can leave an iterator armed.
+
+The synchronous compatibility driver repeatedly ingests, services pending work,
+and resumes the exact suffix **only while service succeeds**. Its legacy
+signature has no consumed result and owns no suffix buffer, so backpressure
+cannot be resumable: if its sink returns `AIUS_NO_SPACE`, it abandons/reset the
+pending item, drops the unconsumed suffix of that call exactly as the old
+synchronous path did, and returns `AIUS_NO_SPACE`. A regression pins the loss
+and clean-next-push behavior. The target never uses this lossy compatibility
+path; only `ingest` plus the ingress cursor may retain a suffix. `finish` first
+drains pending work or reports it, never overwrites a parser payload or PCM
+block that service still owns.
+
+#### Transmit backpressure and block side effects
+
+`enqueue` moves to AUDIO checkpoint context. It validates the block and checks
+`aius_spdif_tx24_free()` **before** applying staged configuration or touching
+DSP state. The epoch is the transmit ring's only producer and the DMA ISR only
+increases free space, so a successful preflight cannot become false before the
+same producer commits; there is no second producer race.
+
+On `AIUS_NO_SPACE`, none of these advance: active config/generation, DSP
+biquad/limiter/dither state, input/output meter accumulators, measurement
+capture, flight recorder, transmit `written`, or committed block count. On
+success they run exactly once, in this order:
+
+1. apply a staged config at the accepted block boundary;
+2. DSP and meter accumulation;
+3. stage and atomically commit the transmit block;
+4. measurement and recorder taps over exactly the committed wire planes;
+5. committed-block and cycle metrics.
+
+The measurement and recorder APIs/comments are renamed from `*_isr_block` to
+`*_producer_block`; their state machines retain one block producer and one
+epoch controller, but both now run serially in runtime context. Recorder epoch
+evaluation/drain remains at REPLAY before AUDIO, so a block produced this epoch
+is observed by its controller on the next epoch. Its sample staging grows to
+eight slots in the first 32 KiB of the existing PSRAM reservation and its
+power-of-two recorder ring starts after that carve; PSRAM status/capacity
+reports use the reduced ring capacity.
+Meter publication keeps its single-writer snapshot protocol, with AUDIO as
+writer. The transmit-ring SPSC documentation changes its producer from audio
+ISR to AUDIO checkpoint.
+
+Six AC-3 blocks can occupy 1,536 of the 2,048-frame transmit ring, leaving 512
+frames (10.67 ms) of drain tolerance. Ring-full mid-AU is routine: it retains
+the current 256-frame block and resumes when the DMA drain creates room. A DTS
+decode that returns 1,536 frames occupies the same amount through three
+back-to-back 512-frame commits, never one oversized sink call. Ring sizing
+remains a function of service latency, jitter and this per-AU occupancy, not
+merely average rate.
+
+#### AUDIO checkpoint, quota and watchdog
+
+Add `AIUS_BOOT_CHECKPOINT_AUDIO = 9` while preserving the existing REPLAY=7 and
+SD=8 identifiers; move only EPOCH_COMPLETE to 10. Normal execution is explicitly
+`0..7, AUDIO(9), SD(8), EPOCH_COMPLETE(10)`. The non-monotonic numeric trace is
+deliberate: replay/source/gate state settles before audio, audio runs before the
+potentially blocking SD primitive, and retained reports keep the established SD
+identifier. Recovery-safe execution remains USB_RX, USB_TX, EPOCH_COMPLETE and
+does not run audio.
+
+`AiusRuntimeTeensyPlatformOps` gains one required `audio` callback. Its budget
+row is `{AUDIO, 1 call, 0 transport RX bytes, 0 transport TX bytes, 8 ms}`.
+Audio's own non-transport quotas live with the audio seam:
+
+- `AIUS_AUDIO_INPUT_WORDS_PER_EPOCH = 4096` (16 original chunks);
+- `AIUS_AUDIO_OUTPUT_STEPS_PER_EPOCH = 8`;
+- `AIUS_AUDIO_SERVICE_BUDGET_US = 8000`.
+
+The pre-change ~115 epochs/s is **not** used as a throughput proof because AUDIO
+adds work to the epoch that schedules it. Slice 2b declares and instruments a
+healthy post-change normal-epoch ceiling of **25,000 us**, hence a minimum
+40 epochs/s. The existing timed non-AUDIO healthy allowances total 5.75 ms;
+AUDIO's 8 ms leaves 11.25 ms inside that ceiling for untimed network/replay work
+and the one bounded SD primitive. Every completed normal epoch is timed around
+the real `aius_runtime_teensy_epoch`; `runtime_epoch_max_us` and
+`runtime_epoch_budget_overruns` expose the bound, and the hardware gate fails on
+any overrun during steady state.
+
+At the derived 40 epochs/s floor, ingress capacity is 163,840 words/s, 70.7%
+over the 96,000-word/s source, and eight output steps supply 320 blocks/s against
+AC-3's 187.5. The controller may stop early on its 8 ms wall budget, so the AC-3
+target gate must additionally prove at least six service steps fit in 8 ms and
+that long-run committed output stays at 187.5 blocks/s without ingress growth;
+the numeric maximum alone is not credited as throughput. `begin` plus block 0
+counts as one AC-3 step, so an AU costs exactly six, not seven. The 85.33 ms ring
+absorbs bounded jitter only; it is not the steady-rate argument.
+
+The checkpoint alternates pending service and ingress until either quota is
+spent. It stops immediately on transmit backpressure. Elapsed cycles/time is
+checked between atomic work units; a whole DTS decode cannot be preempted, but
+an over-budget unit prevents any second unit or further ingress that epoch. A
+budget overrun is counted and the callback still returns success after putting
+the pipeline in a recoverable state, so the runtime reaches its sole watchdog
+feed. Only invalid construction returns false. A truly non-returning decoder
+would still be caught by the 8 s watchdog; the retained 29,435-case DTS seam
+hunt and per-call termination oracle are the evidence that relocation plus a
+measured unit bound is the correct control.
+
+This scheduling logic is not target-private. A portable `AiusAudioService` owns
+the ingress consumer cursor, observed discontinuity/reset sequences, partial
+chunk suffix, ingest/service alternation, word/step quotas, time checks and
+diagnostics. It is constructed with the real `AiusAudioIngress`,
+`AiusPipeline`, and a monotonic-microsecond callback; `platform_audio` is only a
+thin call into it. The portable suite runs the real controller with a fake clock
+and controlled pipeline/sink outcomes. Generation reset, partial consumption,
+quota exhaustion, time exhaustion and transmit backpressure therefore exercise
+the same control flow the target uses, not a runtime callback mock or a source
+text assertion.
+
+#### Observability and proof
+
+Do not add another meaning to `g_overruns`. The legacy `overruns` status becomes
+a compatibility projection of ingress chunks actually dropped. New committed
+diagnostics report:
+
+- ingress level/high-water, generation, dropped chunks/words by overflow,
+  missing-live and short-replay cause, source flushes/words;
+- checkpoint calls, input words consumed, service steps attempted/committed,
+  service max cycles/us and budget overruns;
+- transmit stalls, retained retries, output drops, AU abandons and last typed
+  failure;
+- attempted versus committed output blocks, while `blocks` remains committed
+  blocks only.
+
+The full AUDIO checkpoint cycle meter covers parser/decoder plus every sink-side
+effect. Existing DSP-cycle fields continue to mean DSP/sink cost only; phase 3's
+six-call fixed overhead is visible in both, rather than being mislabelled as
+decode or hidden.
+
+Ingress producer counters and high-water are cleared only through
+`aius_audio_ingress_clear_producer_diag`, called by `/api/counters` while audio
+updates are briefly masked. It resets cause counters and sets high-water to the
+current level; it never changes cursors or generation, so `high_water >= level`
+remains true. AUDIO-service counters are epoch-owned and clear directly after
+the producer diagnostic clear. `g_blocks` is now epoch-owned; `g_overruns` is
+read from the ingress drop projection. Status snapshots use the same brief mask
+for producer-owned fields. The ingress suite interleaves publish, snapshot,
+clear and a post-clear publish to prove no post-clear event is lost or charged
+to the old interval.
+
+Portable proofs:
+
+- `audio-ingress`: power-of-two/wrap/full arithmetic, exact all-or-none
+  256-word publish, SPSC cursor wrap, generation on every gap, source flush,
+  high-water and counter ownership, concurrent-clear interleavings, no
+  allocation;
+- `audio-service`: the real portable controller's generation/reset consumption,
+  partial ingress suffix, ingest/service alternation, 4,096-word and eight-step
+  quotas, fake-clock 8 ms stop, transmit-backpressure stop/retry, exact
+  attempted/committed counters and no allocation;
+- `pipeline`: ingest invokes neither decoder nor sink; exact consumed prefixes
+  and original-chunk segmentation; pending parser payload lifetime; one bounded
+  DTS decode unit; a decoder-owned 1,536-frame DTS block exposed as three exact
+  512-frame sink views; retained PCM and DTS output retry without re-decode or
+  slice-offset advance;
+  `AIUS_NO_SPACE`; reset/retype/starvation/squelch/carrier-discontinuity cleanup;
+  attempted/committed/reject metrics; legacy-push backpressure drops its suffix
+  then accepts a clean next push; no allocation. Phase 3 adds the exact six-step
+  AC-3 resumability oracle against this same service API before target dispatch
+  lands;
+- `runtime` + `runtime-target`: exact `0..7,9,8,10` normal trace, recovery-safe
+  exclusion, AUDIO budget units/callback validation, quota stop, over-budget
+  success and one final watchdog feed;
+- `replay`, `tx-gate`, `recorder`, `measure`: unchanged 256-word replay cadence
+  and underrun transition; renamed producer semantics; gate/trigger ordering;
+  eight consecutive 512-frame producer blocks before the next drain with zero
+  staging gap;
+- `optical-cutover`: `update()` contains ingress movement only and no pipeline,
+  decoder, sink, reset or output side effects; AUDIO owns those calls;
+- target: `pipeline`, `replay`, `tx-gate`, `recorder`, `measure`,
+  `runtime`, `runtime-target`, `optical-cutover`, `memory`, `itcm-placement`,
+  both `teensy41-optical` and `teensy41-optical-fault` PlatformIO images, plus
+  stack/heap/arena and per-bank reports. The link/map proof must show the
+  16,384-byte ingress in OCRAM, no recorder sample-staging symbol there,
+  unchanged-or-better OCRAM free versus the pre-Slice-2b image, and an untouched
+  decoder arena ceiling.
+
+Buildable commit boundaries:
+
+1. **2b1 portable defer/backpressure:** add the ingress SPSC, real portable
+   AUDIO controller and deferred pipeline operations beside the retained
+   compatibility driver; land native ingress/controller/pipeline/replay tests
+   and registry/docs. Existing target calls still compile and behave
+   synchronously. **Complete:** native `audio-ingress`, `audio-service`,
+   `pipeline`, `replay`, `tx-gate`, `optical-app`, and `registry` proofs pass;
+   `shellcheck` and the owned diff check are clean. Delivery review additionally
+   pinned rejected-work accounting, producer source-change attribution,
+   typed-suffix finalization, loop-free replay discard, the real eight-step
+   stop/resume, narrow reset masking, and exact 1,536-frame-to-three-512-frame
+   slicing.
+2. **2b2 scheduler seam:** add AUDIO checkpoint/budget/callback and exact
+   runtime tests; wire a temporary no-work target callback so both target images
+   remain buildable.
+3. **2b3 cutover and evidence:** switch `update()` to ingress, implement AUDIO
+   drain/service, move and rename block-writer effects, publish diagnostics,
+   update structural/target proofs, flash, and run the hardware gate below.
+   Remove the temporary callback in the same diff that makes it real.
+
+The defect-31 hardware gate is **30 minutes** of continuous live DTS through the
+CM6206 optical loop while recorder capture/drain and repeated HTTP status/capture
+requests run. It must show no watchdog/boot-generation change, AUDIO max service
+time at or below 8 ms, normal epoch max at or below 25 ms with zero epoch-budget
+overruns, ingress and transmit high-water below capacity, zero unexplained
+ingress drops, output drops or AU abandons, and all retained retries paired with
+transmit stalls. Only then may defect 31 be struck from
+`aius-network-hardening.md` and the open-work register. If the board still dies,
+the ISR-storm hypothesis is false and the next diagnosis starts at transmit
+backpressure/producer timing, not parser termination.
 
 ### Out of scope for phase 2
 
