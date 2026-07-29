@@ -13,8 +13,8 @@
  *
  * DOES NOT OWN: the replay manager (replays.js), the device status page
  * (status.js), the shared chrome behaviours (sd-shared.js -- pills, fetch
- * discipline, formatters, token storage, waveform renderer; consumed here,
- * never mutated), and anything the firmware decides -- the device is the
+ * discipline, formatters, token storage and replay waveform renderer; consumed
+ * here, never mutated), and anything the firmware decides -- the device is the
  * authority on what a valid config is. The bounds here mirror
  * lib/aius_dsp_config (and scripts/build_config.py) so a mistake is caught
  * before the round trip, never to replace the device-side validation.
@@ -103,6 +103,26 @@
   const LIMITER_SPAN_DB = 24; /* gain-reduction bar + history full scale */
   const LIMITER_HISTORY_MAX = 128; /* ~12.8 s of history at the 10 Hz poll */
 
+  /* Dashboard layout is a per-browser VIEW preference, never device config.
+   * The versioned record is deliberately closed over the six authored cells:
+   * unknown versions fall back whole, while bad numeric values in a known
+   * record clamp to the same bounds the pointer and keyboard paths use. */
+  const LAYOUT_STORAGE_KEY = 'aius-dsp-editor-layout-v1';
+  const LAYOUT_VERSION = 1;
+  const LAYOUT_MAX_HEIGHT = 1200;
+  const LAYOUT_MIN_SPAN = 3;
+  const LAYOUT_MAX_SPAN = 12;
+  const LAYOUT_PHONE_MAX_PX = 650;
+  const LAYOUT_KEY_HEIGHT_STEP = 20;
+  const DASHBOARD_CELLS = Object.freeze({
+    input: Object.freeze({ span: 4, height: 180, minHeight: 180 }),
+    eq: Object.freeze({ span: 8, height: 480, minHeight: 480 }),
+    matrix: Object.freeze({ span: 8, height: 420, minHeight: 420 }),
+    limiter: Object.freeze({ span: 4, height: 300, minHeight: 300 }),
+    output: Object.freeze({ span: 4, height: 180, minHeight: 180 }),
+    live: Object.freeze({ span: 8, height: 360, minHeight: 360 }),
+  });
+
   /* Meter ballistics. A 10 Hz snapshot drives a bar in 100 ms steps -- a
    * staircase, not an instrument -- so BETWEEN snapshots the page runs the
    * ballistics a real meter has: an INSTANT rise (a peak meter that lags going
@@ -138,6 +158,7 @@
   const SPECTRUM_ALPHA = 0.18; /* context under the curves, never competing with them */
   const SPECTRUM_COLOUR = '#74d7ff';
   const SPECTRUM_GAP_PX = 1; /* a hairline between bands, so 48 bars read as bars */
+  const SPECTROGRAM_HISTORY_MAX = 256;
 
   /* Firmware facts mirrored here the way MODEL_MAX_BYTES mirrors
    * AIUS_DSP_MODEL_MAX_JSON_BYTES: the snapshot carries raw DWT cycle counts
@@ -313,8 +334,11 @@
     /* Page-side ring of polled limiter_gain_reduction_db values; the device
      * publishes an instant, never a history. */
     limiterHistory: [],
-    /* Last rendered waveform, so a resize can redraw without a fresh poll. */
-    waveform: [],
+    /* Browser-local dashboard preference and the one live resize gesture.
+     * Neither is part of the form model and neither dispatches input. */
+    layout: null,
+    layoutDrag: null,
+    layoutObserver: null,
     /* Ballistics. A poll writes the TARGETS -- what the device last published --
      * and the frame ticker walks each needle towards them, so what is on screen
      * between two snapshots is a decay rather than a held frame. `needles` is
@@ -328,6 +352,10 @@
      * the underlay is not drawn and the plot does not redraw per frame. */
     spectrumTargets: [],
     spectrumBands: [],
+    /* One column per accepted, previously unseen meter sequence. The same
+     * spectrumBins() result feeds this and spectrumTargets. */
+    spectrogramHistory: [],
+    lastAnalysisSequence: null,
     /* Date.now() of the last ballistic frame; 0 until the first one. */
     frameAt: 0,
     /* The handle currently under a captured pointer, or null -- one per canvas,
@@ -335,6 +363,81 @@
     drag: null,
     matrixDrag: null,
     lastTap: null,
+  };
+
+  function defaultLayoutPreference() {
+    const cells = {};
+    for (const [key, bounds] of Object.entries(DASHBOARD_CELLS)) {
+      cells[key] = { span: bounds.span, height: bounds.height };
+    }
+    return { version: LAYOUT_VERSION, mode: 'dashboard', cells };
+  }
+
+  /* Accepts a parsed value or JSON text so the storage adapter and pure tests
+   * share one validator. Unknown versions and malformed shapes fall back whole;
+   * a known record keeps usable dimensions and defaults each unsafe one. */
+  function normalizeLayoutPreference(value) {
+    let candidate = value;
+    if (typeof candidate === 'string') {
+      try {
+        candidate = JSON.parse(candidate);
+      } catch (parseError) {
+        return defaultLayoutPreference();
+      }
+    }
+    if (!candidate || typeof candidate !== 'object' || candidate.version !== LAYOUT_VERSION) {
+      return defaultLayoutPreference();
+    }
+    const fallback = defaultLayoutPreference();
+    const cells = {};
+    for (const [key, bounds] of Object.entries(DASHBOARD_CELLS)) {
+      const supplied = candidate.cells && typeof candidate.cells === 'object' ? candidate.cells[key] : null;
+      const suppliedSpan = supplied ? Number(supplied.span) : NaN;
+      const suppliedHeight = supplied ? Number(supplied.height) : NaN;
+      const span =
+        Number.isFinite(suppliedSpan) && suppliedSpan >= LAYOUT_MIN_SPAN && suppliedSpan <= LAYOUT_MAX_SPAN
+          ? Math.round(suppliedSpan)
+          : bounds.span;
+      const height =
+        Number.isFinite(suppliedHeight) &&
+        suppliedHeight >= bounds.minHeight &&
+        suppliedHeight <= LAYOUT_MAX_HEIGHT
+          ? Math.round(suppliedHeight)
+          : bounds.height;
+      cells[key] = {
+        span,
+        height,
+      };
+    }
+    return {
+      version: LAYOUT_VERSION,
+      mode: candidate.mode === 'editor' || candidate.mode === 'dashboard' ? candidate.mode : fallback.mode,
+      cells,
+    };
+  }
+
+  function readLayoutPreference() {
+    try {
+      const stored = localStorage.getItem(LAYOUT_STORAGE_KEY);
+      return stored === null ? defaultLayoutPreference() : normalizeLayoutPreference(stored);
+    } catch (storageError) {
+      return defaultLayoutPreference();
+    }
+  }
+
+  function storeLayoutPreference() {
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(state.layout));
+    } catch (storageError) {
+      /* The current session still keeps the layout in state. */
+    }
+  }
+
+  const dashboardCanvasHeight = (key, height) => {
+    if (key === 'eq') return clamp(Math.round(height * 0.46), 180, 360);
+    if (key === 'matrix') return clamp(Math.round(height * 0.54), 220, 420);
+    if (key === 'live') return clamp(Math.round(height * 0.55), 220, 520);
+    return 0;
   };
 
   /* Preset name grammar, page-enforced BEFORE any PUT. The 27-char cap is the
@@ -2032,8 +2135,6 @@
     for (const [key] of CHANNELS) setMeterRow(`meter-in-${key}`, null, null);
     setMeterRow('meter-out-l', null, null);
     setMeterRow('meter-out-r', null, null);
-    state.waveform = [];
-    shared.drawWaveform($('waveform'), []);
     blankStrip();
   }
 
@@ -2118,8 +2219,6 @@
     $('meter-summary').textContent = `Limiter gain reduction ${formatDb(meters.limiter_gain_reduction_db)} dB at ${
       Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : '--'
     } Hz.`;
-    state.waveform = Array.isArray(meters.waveform) ? meters.waveform : [];
-    shared.drawWaveform($('waveform'), state.waveform);
     renderDspLoad(meters);
     renderStripLevels(meters);
     pushLimiter(meters.limiter_gain_reduction_db);
@@ -2371,6 +2470,14 @@
   const stepQ = (q, deltaY) => {
     const base = Number.isFinite(q) && q > 0 ? q : EQ_SEED.q;
     return roundQ(clamp(deltaY < 0 ? base * Q_WHEEL_STEP : base / Q_WHEEL_STEP, Q_MIN, Q_MAX));
+  };
+
+  /* Shift-drag's captured-start mapping: moving 120 CSS px upward multiplies Q
+   * by e, downward divides by e. Pointer-move frequency does not affect it. */
+  const qFromDrag = (startQ, startY, currentY) => {
+    const base = Number.isFinite(startQ) && startQ > 0 ? startQ : EQ_SEED.q;
+    const delta = Number.isFinite(startY) && Number.isFinite(currentY) ? (startY - currentY) / 120 : 0;
+    return roundQ(clamp(base * Math.exp(delta), Q_MIN, Q_MAX));
   };
 
   /* ---- the downmix matrix's geometry -------------------------------------
@@ -2750,6 +2857,145 @@
   const labelHz = (hz) => (hz >= 1000 ? `${hz / 1000}k` : String(hz));
 
   const shortName = (base) => (base.startsWith('input_channels.') ? base.slice('input_channels.'.length) : base);
+  const dashboardCell = (key) => document.querySelector(`[data-dashboard-cell="${key}"]`);
+
+  function applyDashboardCell(key) {
+    const cell = dashboardCell(key);
+    const value = state.layout.cells[key];
+    cell.style.setProperty('--dashboard-span', String(value.span));
+    cell.style.setProperty('--dashboard-height', `${value.height}px`);
+    const canvasHeight = dashboardCanvasHeight(key, value.height);
+    if (canvasHeight > 0) cell.style.setProperty('--dashboard-canvas-height', `${canvasHeight}px`);
+  }
+
+  function redrawDashboardCanvases() {
+    fitCanvases();
+    drawCurveSurface();
+    drawMatrixSurface();
+    drawLimiterHistory();
+    drawSpectrogram();
+  }
+
+  function applyDashboardLayout() {
+    const surface = $('dashboard-surface');
+    surface.dataset.view = state.layout.mode;
+    $('view-editor').setAttribute('aria-pressed', state.layout.mode === 'editor' ? 'true' : 'false');
+    $('view-dashboard').setAttribute('aria-pressed', state.layout.mode === 'dashboard' ? 'true' : 'false');
+    for (const key of Object.keys(DASHBOARD_CELLS)) applyDashboardCell(key);
+    redrawDashboardCanvases();
+  }
+
+  function selectDashboardMode(mode) {
+    if (mode !== 'editor' && mode !== 'dashboard') return;
+    state.layout.mode = mode;
+    applyDashboardLayout();
+    storeLayoutPreference();
+  }
+
+  function resetDashboardLayout() {
+    state.layout = defaultLayoutPreference();
+    applyDashboardLayout();
+    storeLayoutPreference();
+  }
+
+  function dashboardResizeGeometry(cell) {
+    const surfaceRect = $('dashboard-surface').getBoundingClientRect();
+    const cellRect = cell.getBoundingClientRect();
+    const gap = 12;
+    const column = surfaceRect.width > gap * 11 ? (surfaceRect.width - gap * 11) / 12 + gap : 1;
+    return { column, height: cellRect.height > 0 ? cellRect.height : state.layout.cells[cell.dataset.dashboardCell].height };
+  }
+
+  function resizeDashboardCell(key, span, height) {
+    const bounds = DASHBOARD_CELLS[key];
+    state.layout.cells[key] = {
+      span: clamp(Math.round(span), LAYOUT_MIN_SPAN, LAYOUT_MAX_SPAN),
+      height: clamp(Math.round(height), bounds.minHeight, LAYOUT_MAX_HEIGHT),
+    };
+    applyDashboardCell(key);
+    redrawDashboardCanvases();
+  }
+
+  function buildDashboardResizer(cell) {
+    const key = cell.dataset.dashboardCell;
+    const handle = document.createElement('button');
+    handle.type = 'button';
+    handle.className = 'dashboard-resizer';
+    handle.setAttribute('aria-label', `Resize ${key} dashboard cell`);
+
+    handle.addEventListener('pointerdown', (event) => {
+      if (state.layout.mode !== 'dashboard') return;
+      event.preventDefault();
+      const geometry = dashboardResizeGeometry(cell);
+      const current = state.layout.cells[key];
+      state.layoutDrag = {
+        key,
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startSpan: current.span,
+        startHeight: geometry.height,
+        column: geometry.column,
+      };
+      if (typeof handle.setPointerCapture === 'function') handle.setPointerCapture(event.pointerId);
+    });
+
+    handle.addEventListener('pointermove', (event) => {
+      const drag = state.layoutDrag;
+      if (!drag || drag.key !== key || drag.pointerId !== event.pointerId) return;
+      const phone = window.innerWidth <= LAYOUT_PHONE_MAX_PX;
+      const span = phone ? drag.startSpan : drag.startSpan + Math.round((event.clientX - drag.startX) / drag.column);
+      resizeDashboardCell(key, span, drag.startHeight + event.clientY - drag.startY);
+    });
+
+    const finish = (event) => {
+      const drag = state.layoutDrag;
+      if (!drag || drag.key !== key || drag.pointerId !== event.pointerId) return;
+      state.layoutDrag = null;
+      storeLayoutPreference();
+      if (typeof handle.releasePointerCapture !== 'function') return;
+      try {
+        handle.releasePointerCapture(event.pointerId);
+      } catch (captureError) {
+        /* The browser may have released it before pointercancel arrives. */
+      }
+    };
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+
+    handle.addEventListener('keydown', (event) => {
+      if (state.layout.mode !== 'dashboard') return;
+      const current = state.layout.cells[key];
+      const phone = window.innerWidth <= LAYOUT_PHONE_MAX_PX;
+      let span = current.span;
+      let height = current.height;
+      if (!phone && event.key === 'ArrowLeft') span--;
+      else if (!phone && event.key === 'ArrowRight') span++;
+      else if (event.key === 'ArrowUp') height -= LAYOUT_KEY_HEIGHT_STEP;
+      else if (event.key === 'ArrowDown') height += LAYOUT_KEY_HEIGHT_STEP;
+      else return;
+      event.preventDefault();
+      resizeDashboardCell(key, span, height);
+      storeLayoutPreference();
+    });
+
+    cell.append(handle);
+  }
+
+  function buildDashboardLayout() {
+    state.layout = readLayoutPreference();
+    for (const key of Object.keys(DASHBOARD_CELLS)) buildDashboardResizer(dashboardCell(key));
+    $('view-editor').addEventListener('click', () => selectDashboardMode('editor'));
+    $('view-dashboard').addEventListener('click', () => selectDashboardMode('dashboard'));
+    $('layout-reset').addEventListener('click', resetDashboardLayout);
+
+    const ResizeObserverConstructor = window.ResizeObserver;
+    if (typeof ResizeObserverConstructor === 'function') {
+      state.layoutObserver = new ResizeObserverConstructor(() => redrawDashboardCanvases());
+      for (const key of Object.keys(DASHBOARD_CELLS)) state.layoutObserver.observe(dashboardCell(key));
+    }
+    applyDashboardLayout();
+  }
 
   function buildVisualStrip() {
     const legend = $('curve-legend');
@@ -2778,6 +3024,7 @@
     buildBar('bars-output', 'bar-out-l', 'Output left');
     buildBar('bars-output', 'bar-out-r', 'Output right');
 
+    buildDashboardLayout();
     attachCurveSurface();
     $('curve-add').addEventListener('click', () => addSection(selectedEntity(), EQ_SEED.frequency_hz));
     $('curve-remove').addEventListener('click', () => removeSection(selectedEntity(), state.activeSlot));
@@ -2798,7 +3045,7 @@
       drawCurveSurface();
       drawMatrixSurface();
       drawLimiterHistory();
-      shared.drawWaveform($('waveform'), state.waveform);
+      drawSpectrogram();
     });
 
     fitCanvases();
@@ -2852,21 +3099,24 @@
    * maths keeps working against the CLIENT rect. A zero clientWidth (no layout
    * engine, or a hidden card) keeps the authored attributes. */
 
-  const CANVAS_IDS = ['curve', 'matrix-diagram', 'gr-history', 'waveform'];
+  const CANVAS_IDS = ['curve', 'matrix-diagram', 'gr-history', 'spectrogram'];
   const dprOf = (canvas) => Number(canvas.dataset.dpr) || 1;
 
   function fitCanvas(canvas) {
-    if (!canvas.dataset.aspect) canvas.dataset.aspect = String(canvas.height / canvas.width);
     const dpr = clamp(window.devicePixelRatio || 1, 1, 3);
     const cssWidth = canvas.clientWidth;
-    if (!(cssWidth > 0)) return false;
+    const cssHeight = canvas.clientHeight;
+    if (!(cssWidth > 0) || !(cssHeight > 0)) return false;
     const width = Math.round(cssWidth * dpr);
-    const height = Math.round(cssWidth * Number(canvas.dataset.aspect) * dpr);
-    if (canvas.width === width && canvas.height === height) return false;
-    canvas.width = width;
-    canvas.height = height;
+    const height = Math.round(cssHeight * dpr);
+    const backingChanged = canvas.width !== width || canvas.height !== height;
+    const scaleChanged = dprOf(canvas) !== dpr;
+    if (backingChanged) {
+      canvas.width = width;
+      canvas.height = height;
+    }
     canvas.dataset.dpr = String(dpr);
-    return true;
+    return backingChanged || scaleChanged;
   }
 
   const fitCanvases = () => CANVAS_IDS.forEach((id) => fitCanvas($(id)));
@@ -3007,11 +3257,13 @@
 
     context.fillStyle = '#5d6b78';
     context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
+    const compact = rect.width / scale < 420;
     CURVE_GRID_HZ.forEach((hz, index) => {
       /* The last label is right-aligned INSIDE the plot ("20k" used to be
        * clipped off the right edge) and the first is inset clear of the bottom
        * dB rail label it used to collide with. */
       const last = index === CURVE_GRID_HZ.length - 1;
+      if (compact && ((index % 2 === 1 && !last) || index === CURVE_GRID_HZ.length - 2)) return;
       context.textAlign = last ? 'right' : 'left';
       const x = last
         ? rect.width - 3 * scale
@@ -3175,7 +3427,18 @@
       event.preventDefault();
       state.activeSlot = handle.slot;
       beginSurfaceEdit(selectedEntity());
-      state.drag = { entity: selectedEntity(), slot: handle.slot, type: handle.type, pointerId: event.pointerId };
+      const entity = selectedEntity();
+      const qDrag = event.shiftKey === true;
+      state.drag = {
+        entity,
+        slot: handle.slot,
+        type: handle.type,
+        mode: qDrag ? 'q' : 'position',
+        startY: event.clientY,
+        startQ: numberOf(`${entity.bases[0]}.eq.${handle.slot}.q`, EQ_SEED.q),
+        pointerId: event.pointerId,
+      };
+      if (qDrag) setCurveStatus('Q drag: vertical movement changes Q while frequency and gain stay fixed.');
       /* Suppress panning for the duration of the drag ONLY: an unconditional
        * touch-action:none made the whole plot a scroll trap (UX finding E1). */
       canvas.style.touchAction = 'none';
@@ -3280,6 +3543,11 @@
 
   function dragTo(event) {
     const drag = state.drag;
+    if (drag.mode === 'q') {
+      surfaceWrite(drag.entity, drag.slot, 'q', qFromDrag(drag.startQ, drag.startY, event.clientY));
+      showReadout(drag.slot);
+      return;
+    }
     const rect = clientRect();
     if (!rect) return;
     const point = pointToEq(rect, event.clientX, event.clientY);
@@ -3374,7 +3642,7 @@
     context.clearRect(0, 0, rect.width, rect.height);
     drawMatrixTracks(context, layout, rect, scale);
     drawMatrixEdges(context, values, rect, scale);
-    drawMatrixNodes(context, layout, scale);
+    drawMatrixNodes(context, layout, scale, rect.width / scale < 420);
     drawMatrixHandles(context, values, rect, scale);
     drawMatrixLabels(context, values, rect, scale);
 
@@ -3422,12 +3690,14 @@
 
   /* Nodes are squares and handles are circles, so the picture says which of the
    * two a shape is before anything is read. */
-  function drawMatrixNodes(context, layout, scale) {
+  function drawMatrixNodes(context, layout, scale, compact) {
     const size = MATRIX_NODE_PX * scale;
     context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
     for (const node of [...layout.sources, ...layout.outputs]) {
       context.fillStyle = '#5d6b78';
       context.fillRect(node.x - size / 2, node.y - size / 2, size, size);
+      const sourceIndex = layout.sources.indexOf(node);
+      if (compact && sourceIndex >= 0 && sourceIndex % 2 === 1) continue;
       context.fillStyle = '#9aa8b5';
       context.textAlign = layout.outputs.includes(node) ? 'left' : 'right';
       const offset = layout.outputs.includes(node) ? size : -size;
@@ -3827,21 +4097,58 @@
       ? meters.analysis_full_scale
       : ANALYSIS_DEFAULT_FULL_SCALE;
 
-  /* One snapshot -- or null, for a strip with no snapshot at all -- becomes the
-   * band targets the needles chase. */
+  const appendSpectrogramColumn = (history, bands) =>
+    [...history, bands.slice(0, SPECTRUM_BANDS)].slice(-SPECTROGRAM_HISTORY_MAX);
+
+  const spectrogramLevel = (db) =>
+    Number.isFinite(db) ? clamp((db - SPECTRUM_FLOOR_DBFS) / -SPECTRUM_FLOOR_DBFS, 0, 1) : 0;
+
+  function pauseSpectrum(message) {
+    const hadUnderlay = state.spectrumTargets.length > 0 || state.spectrumBands.length > 0;
+    state.spectrumTargets = [];
+    state.spectrumBands = [];
+    $('spectrogram-status').textContent = message;
+    if (hadUnderlay) drawCurveSurface();
+  }
+
+  /* One NEW snapshot -- or null, for no snapshot at all -- becomes both the
+   * underlay target and one history column. The transform is performed here
+   * exactly once and its bands fan out; redraw paths consume stored bands. */
   function driveSpectrum(meters) {
-    const samples = meters === null ? null : analysisWindowOf(meters);
-    const sampleRateHz = meters === null ? 0 : meters.sample_rate_hz;
-    if (samples === null || !(sampleRateHz > 0)) {
-      if (state.spectrumTargets.length === 0) return;
-      state.spectrumTargets = [];
-      state.spectrumBands = [];
-      /* One redraw to take the underlay off the plot; without it the last
-       * frame's bars would sit there until the form next changed. */
-      drawCurveSurface();
+    if (meters === null) {
+      pauseSpectrum(
+        'Analysis unavailable; retained history is strobed, not gapless · 20 Hz–20 kHz · -96–0 dBFS.',
+      );
       return;
     }
-    state.spectrumTargets = spectrumBandsOf(spectrumBins(samples, analysisFullScaleOf(meters)), sampleRateHz);
+
+    const sequence = Number(meters.sequence);
+    if (!Number.isFinite(sequence)) {
+      pauseSpectrum('Latest snapshot has no finite sequence; history is paused · strobed, not gapless.');
+      return;
+    }
+    if (sequence === state.lastAnalysisSequence) {
+      pauseSpectrum('No new analysis sequence; history is paused · strobed, not gapless · newest retained.');
+      return;
+    }
+    state.lastAnalysisSequence = sequence;
+    const samples = analysisWindowOf(meters);
+    const sampleRateHz = meters.sample_rate_hz;
+    if (samples === null || !(sampleRateHz > 0)) {
+      pauseSpectrum(
+        'Latest snapshot has no analysis window; history is paused · strobed, not gapless · 20 Hz–20 kHz.',
+      );
+      return;
+    }
+    const bins = spectrumBins(samples, analysisFullScaleOf(meters));
+    const bands = spectrumBandsOf(bins, sampleRateHz);
+    state.spectrumTargets = bands;
+    state.spectrogramHistory = appendSpectrogramColumn(state.spectrogramHistory, bands);
+    const sampledMs = (samples.length * 1000) / sampleRateHz;
+    $('spectrogram-status').textContent =
+      `${sampledMs.toFixed(1)} ms sampled per ${METER_POLL_MS} ms poll — strobed, not gapless · ` +
+      '20 Hz–20 kHz · -96–0 dBFS · newest right.';
+    drawSpectrogram();
   }
 
   /* True when a band moved, which is what makes the plot redraw. */
@@ -3853,6 +4160,38 @@
         : stepNeedle(needleFor(`spectrum:${band}`, SPECTRUM_BALLISTIC), target, elapsedMs, SPECTRUM_BALLISTIC),
     );
     return true;
+  }
+
+  function drawSpectrogram() {
+    const canvas = $('spectrogram');
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const { width, height } = canvas;
+    const scale = dprOf(canvas);
+    context.clearRect(0, 0, width, height);
+    const history = state.spectrogramHistory;
+    if (history.length > 0) {
+      const columnWidth = width / SPECTROGRAM_HISTORY_MAX;
+      const bandHeight = height / SPECTRUM_BANDS;
+      history.forEach((bands, column) => {
+        const x = width - (history.length - column) * columnWidth;
+        bands.forEach((db, band) => {
+          if (db === null) return;
+          const level = spectrogramLevel(db);
+          if (!(level > 0)) return;
+          context.fillStyle = `rgba(116,215,255,${(0.08 + level * 0.92).toFixed(3)})`;
+          context.fillRect(x, height - (band + 1) * bandHeight, Math.max(scale, columnWidth), bandHeight + scale);
+        });
+      });
+    }
+    context.fillStyle = '#9aa8b5';
+    context.font = `${Math.round(11 * scale)}px ui-monospace,monospace`;
+    context.textAlign = 'left';
+    context.fillText('20k', 4 * scale, 13 * scale);
+    context.fillText('20', 4 * scale, height - 5 * scale);
+    context.textAlign = 'right';
+    context.fillText('newest', width - 4 * scale, height - 5 * scale);
+    context.textAlign = 'left';
   }
 
   function drawLimiterHistory() {
@@ -3951,6 +4290,7 @@
    * and the curve maths is to call them with literal rects. Nothing on the page
    * reads this back -- it is an export, not a channel. */
   window.aiusDspEditorMath = Object.freeze({
+    appendSpectrogramColumn,
     bandEdgeHz,
     cascadeMagnitudeDb,
     cascadeSignature,
@@ -3958,7 +4298,9 @@
     dbToY,
     dspBudgetCycles,
     dspLoadPercent,
+    dashboardCanvasHeight,
     factoryValueOf,
+    fitCanvas,
     handlePoints,
     hzToX,
     levelFraction,
@@ -3975,14 +4317,17 @@
     matrixValueToY,
     matrixYToValue,
     newNeedle,
+    normalizeLayoutPreference,
     nudgeHz,
     nudgeMatrixValue,
     pickHandle,
     pointToEq,
+    qFromDrag,
     resolveCascade,
     sectionMagnitudeDb,
     spectrumBandsOf,
     spectrumBins,
+    spectrogramLevel,
     stepMatrixValue,
     stepNeedle,
     stepQ,

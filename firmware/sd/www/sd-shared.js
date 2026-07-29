@@ -135,14 +135,29 @@
 
   /* The one waveform renderer (UX consolidation row 6): centre line ALWAYS
    * drawn so an idle canvas reads as an instrument at zero rather than a
-   * dead element, mirrored per-mille envelope when points arrive. */
+   * dead element, mirrored per-mille envelope when points arrive. It owns its
+   * backing fit because the replay page has no other canvas manager. */
   function drawWaveform(canvas, points) {
+    const dpr = Math.max(1, Math.min(3, Number(window.devicePixelRatio) || 1));
+    const cssWidth = canvas.clientWidth;
+    const cssHeight = canvas.clientHeight;
+    if (cssWidth > 0 && cssHeight > 0) {
+      const width = Math.round(cssWidth * dpr);
+      const height = Math.round(cssHeight * dpr);
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      canvas.dataset.dpr = String(dpr);
+    }
+    const scale = Number(canvas.dataset.dpr) || 1;
     const context = canvas.getContext('2d');
     if (!context) return;
     const { width, height } = canvas;
     const middle = height / 2;
     context.clearRect(0, 0, width, height);
     context.strokeStyle = '#2a3542';
+    context.lineWidth = scale;
     context.beginPath();
     context.moveTo(0, middle);
     context.lineTo(width, middle);
@@ -156,6 +171,7 @@
     if (values.length === 0) return;
     const xOf = (index) => (values.length < 2 ? 0 : (index * width) / (values.length - 1));
     context.strokeStyle = '#74d7ff';
+    context.lineWidth = scale;
     context.fillStyle = 'rgba(116,215,255,0.22)';
     context.beginPath();
     values.forEach((value, index) => {

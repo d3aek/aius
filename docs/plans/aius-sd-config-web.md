@@ -1,6 +1,11 @@
 ---
 title: Aius SD-backed configuration and web assets
-status: active
+type: plans
+scope: component
+component: aius
+status: in-progress
+updated: 2026-07-29
+toc: true
 ---
 
 # Aius SD-backed configuration and web assets
@@ -137,7 +142,8 @@ the board is unplugged from USB.
 ### Contract (2026-07-29) — grounded in the editor as it actually stands
 
 **Owned paths:** `firmware/sd/www/{dsp-editor.js,dsp-editor.css,sd-shared.js,
-index.html}`, `test/sd-editor/`, this plan. Relative to ``.
+index.html}`, `test/sd-editor/`, `docs/plans/aius-open-work-register.md`, this
+plan. Relative to ``.
 
 **Three assumptions in the scope above were wrong; the code already answers
 them.** Grounding first, because each changes the work:
@@ -204,9 +210,177 @@ dashboard inherits it rather than adding a second one.
 **Not in scope:** any firmware change (this is card-only), a second page, and
 any new `/api` surface — everything the dashboard renders is already served.
 
-**Owed before build:** this contract has NOT had its adversarial prebuild
-gate. Every gate this project has run has found real defects, including in
-contracts that read clean.
+### Phase 9: dashboard view mode
+
+```yaml
+phase: 9
+title: Resizable DSP dashboard view
+unit: parent-only
+seams:
+  - existing editor DOM and form model ↔ editor/dashboard layout modes
+  - dashboard cell rectangle ↔ aspect-free DPR-scaled canvas backing
+  - one accepted meter snapshot FFT ↔ EQ underlay and spectrogram history
+  - pointer/keyboard resize gesture ↔ validated browser-local layout preference
+contract-artifact: spec-only
+review-intensity: active
+commit-checkpoint:
+  green:
+    - pnpm exec vitest run test/sd-editor
+  buildable:
+    - card-served DSP editor at /sd/www/index.html
+  parent-commit: "feat(aius): add the resizable DSP dashboard"
+```
+
+**Plan coordination.** This is Phase 9 of the existing 2026-07-22 plan, not a
+new feature plan. It extends `aius-dsp-config-api.md`'s shipped editor, closes
+the hiDPI waveform item in `aius-open-work-register.md`, and inherits the
+editor's outstanding desktop/phone device pass. The outstanding-work validator
+cannot audit this path: `DocumentDiscovery` deliberately walks only `docs/` and
+`src/{apps,libs,services,tools}/**/docs`, so both this plan and
+`aius-dsp-config-api.md` return `outstanding.snapshot.plan-absent`. Expanding
+the repository document/owner model to `src/hardware` is unrelated tooling work
+and is not smuggled into a card-only dashboard phase.
+
+**Placement and mode.** The existing Signal flow `.section-title` row owns an
+`Editor / Dashboard` mode switch and `Reset layout`; no new bar or page is
+introduced. Dashboard is the first-visit default. The selected mode and cell
+sizes persist together in the versioned `aius-dsp-editor-layout-v1`
+`localStorage` record. Editor mode preserves the current vertical reading order
+and hides the resize handles. Reset restores the default dashboard grid,
+remains in Dashboard mode, and replaces the stored record. A malformed,
+unknown-version, unavailable, quota-failed, or out-of-range stored value falls
+back to the defaults without making the page fail.
+
+The shared repository `mr-*` kit is not loadable on this self-hosted card: these
+assets must remain classic, build-free files that work with no repository host.
+The phase therefore composes the established SD-page chrome and native controls
+already shared through `replays.css`/`sd-shared.js`; it does not introduce a
+parallel application shell or a reusable repo widget.
+
+**Surface inventory and default grid.** Effective configuration and Presets
+remain above and outside the surface. The existing Signal flow content and Live
+processing panel become one dashboard surface with six cells, all using the
+same controls and DOM nodes as Editor mode:
+
+1. input levels;
+2. stacked EQ/analyser plus its input/output EQ forms;
+3. downmix diagram plus its matrix form;
+4. limiter reduction/history plus its form;
+5. output levels; and
+6. live processing telemetry plus the spectrogram.
+
+At desktop width the surface is a 12-column grid: input 4 + EQ 8, matrix 8 +
+limiter 4, output 4 + live processing 8. A cell may resize from 3–12 columns
+and from its exact minimum through 1,200 CSS px: input levels 180 px, EQ
+workspace 480 px, matrix workspace 420 px, limiter 300 px, output levels
+180 px, and live processing/spectrogram 360 px. A cell scrolls internally
+instead of clipping controls. Resizing snaps width to grid columns and keeps
+DOM order; movement/reordering is not in scope. The EQ and matrix drawing areas
+never shrink below 280 CSS px wide; below 420 px they cull alternate
+non-essential axis/source labels rather than overlap them. The spectrogram
+drawing area never shrinks below 240 px wide. At phone width (650 px and below)
+cells collapse to one full-width column, retain independently resizable heights,
+and preserve page scrolling. Stored desktop spans survive the phone layout and
+apply again when the viewport widens.
+
+Each cell has one bottom-right resize handle with pointer capture for mouse and
+touch, plus arrow-key resizing for keyboard use. Width/height changes are
+clamped before rendering and stored only at resize end (or the keyboard
+equivalent), so pointer movement does not churn `localStorage`. A
+`ResizeObserver` watches the cells/canvases and refits after direct resizing,
+mode changes, and responsive reflow. `fitCanvas` takes both positive
+`clientWidth` and `clientHeight`, clamps DPR to 1–3, and leaves the current
+backing store untouched when either dimension is zero. Dashboard CSS supplies
+the independent canvas height; Editor CSS retains the authored aspect. Renderers
+must remain legible at the declared minima and may cull non-essential labels
+below their own safe widths rather than drawing them over controls.
+
+**EQ and matrix editing.** The visible `Section Q` field remains the touch path,
+and the existing wheel binding remains the fine mouse path. Shift held at EQ
+handle pointer-down selects Q-drag for that gesture: vertical movement changes
+Q multiplicatively from the captured starting value, 120 CSS px per `e` ratio,
+clamped to 0.1–20, while frequency and gain remain frozen. The canvas copy and
+accessible label disclose wheel, Shift-drag, and the visible Q field.
+
+The matrix is not given a duplicate gesture. Its existing direct vertical
+handle drag already works with mouse and touch, its number fields remain the
+explicit touch/typing escape hatch, and the wheel/keyboard paths remain fine
+adjustments. Dashboard work preserves and re-proves those paths.
+
+**Spectrogram.** The DSP editor waveform is replaced by a strobed spectrogram.
+For each finite, previously unseen meter `sequence`, the page performs exactly
+one `spectrumBins()` FFT over the accepted analysis window and derives both the
+EQ underlay and one spectrogram column from that result. Repeated sequences,
+missing/short windows, and failed polls append nothing and run no transform.
+They clear the live EQ underlay but retain the bounded historical image with a
+paused/unavailable label until a later accepted window arrives.
+
+The history holds at most 256 snapshot columns of the existing 48 log-frequency
+bands, 20 Hz at the bottom and 20 kHz at the top, coloured over -96–0 dBFS,
+with newest time at the right. Append happens only at the existing meter poll
+cadence; there is no second poll, animation loop, or FFT. Resize redraws the
+stored history without recomputation. Visible copy is derived from the current
+window and rate, for example `21.3 ms sampled per 100 ms poll — strobed, not
+gapless`; it never implies continuous coverage.
+
+**No second write path.** Mode changes, Reset layout, and cell resizing mutate
+only DOM layout state and the versioned browser preference. They dispatch no
+form `input`, change no dirty marker or generation, modify no preset, perform no
+fetch, and issue no PUT. EQ and matrix interaction continue through
+`writeField()` and the existing section Apply/full Apply semantics.
+
+**Shared waveform debt.** Although the DSP editor stops showing the waveform,
+`sd-shared.js` still renders it for the replay page. `drawWaveform` must size its
+backing store from both CSS dimensions and DPR, scale its strokes by DPR, and
+retain the centre-line/128-point contract. Replay waveform coverage is part of
+the phase gate.
+
+**Targeted proof.** Extend the SD-editor vitest scope for:
+
+- two independent width/height changes observed through `ResizeObserver`,
+  zero-size fallback, DPR clamping, and aspect-free coordinate maths;
+- default, restored, malformed, wrong-version, out-of-range, failed-storage,
+  reset, and phone-collapse layout behavior;
+- zero PUTs and unchanged dirty state/generation across mode switch, reset, and
+  resize;
+- Shift-drag Q with captured modifier, multiplicative sensitivity and bounds,
+  plus the visible touch Q field;
+- preserved mouse/touch matrix drag;
+- one FFT/history append per new sequence, no duplicate append, the 256-column
+  bound, missing-window pause, scales/labels, and resize-only redraw; and
+- DPR-scaled shared waveform rendering while retaining replay-page tests.
+
+The exact `www` tree is first synced with `aius-sd-sync.sh` using the
+already-available 16-hex USB-derived token, then the changed assets and page are
+GET-verified from the device. The boundary browser pass then runs against that
+deployed page at 1280×900 desktop and 390×844 phone viewports. It verifies mode
+placement/default/persistence,
+mouse/touch/keyboard resizing and reset, phone scroll without canvas traps,
+aspect-free redraw, Shift-drag Q, touch Q field, touch matrix drag, spectrogram
+history and strobed label, unchanged dirty state after layout operations, and
+one successful existing Apply. No firmware flash occurs, and the final
+page-availability check is over Ethernet with USB not required.
+
+**Adversarial prebuild review (2026-07-29): RED, amended.** The review found
+the original scope under-specified in placement, cell inventory, resize
+mechanics, Q/matrix behavior, spectrogram bounds, persistence failure handling,
+proof, deployment, and plan indexing. The operator chose the Signal flow title
+row, Dashboard-first default, and persisted mode. The contract above resolves
+the remaining findings. Implementation begins only after the same reviewer
+confirms them exhausted and a fresh clean-room reviewer returns GREEN.
+
+**Phase 9 completed 2026-07-29.** The retained reviewer and a fresh clean-room
+reviewer both returned GREEN before build. The delivered view keeps the six
+existing control blocks and write path, adds the versioned Dashboard layout,
+aspect-free canvas fitting, Shift-drag Q, the bounded strobed spectrogram, and
+the DPR-scaled shared replay waveform. Targeted proof is 283/283 SD-editor
+Vitest cases. The exact four changed assets hash-matched after additive card
+sync. On-device Chromium passed at 1280×900 and 390×844 with DPR 2, including
+mouse/keyboard/touch resizing, reset and persistence, phone scrolling, touch
+matrix drag, Shift-drag and visible-field Q, spectrogram disclosure, and clean
+reloads after interaction. An unchanged-model Apply advanced device generation
+1→2, and the page/status endpoints remained HTTP 200 over Ethernet without a
+firmware flash.
 
 ## Extension plan: SD scheduling, feature flags, and physical-access authorization
 

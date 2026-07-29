@@ -15,9 +15,10 @@
  * pairs whose members DIFFER. `meters-*.json` are the settled
  * `GET /api/meters` shape that `http_meters_json()` emits as of Phase 14b --
  * six positional dBFS input entries floored at -120, `[L, R]` output arrays,
- * and a per-mille integer waveform -- authored to the contract rather than
- * captured from a device, and covering the live, all-at-the-floor, and
- * never-published (`sequence == 0`) cases. The `/api/status` stub carries the
+ * a per-mille integer replay waveform, and the optional analysis window --
+ * authored to the contract rather than captured from a device, and covering
+ * the live, all-at-the-floor, and never-published (`sequence == 0`) cases.
+ * The `/api/status` stub carries the
  * `carrier` flag and the latched `tx_gate` object the swagger `Status` schema
  * documents.
  *
@@ -397,6 +398,203 @@ afterEach(() => {
   vi.useRealTimers();
   process.off('unhandledRejection', trackRejection);
   expect(rejections).toEqual([]);
+});
+
+describe('Aius SD DSP editor — dashboard layout', () => {
+  const LAYOUT_KEY = 'aius-dsp-editor-layout-v1';
+  const storedLayout = () => JSON.parse(localStorage.getItem(LAYOUT_KEY));
+
+  it('starts in the six-cell Dashboard view with the contracted desktop layout', async () => {
+    await boot();
+
+    expect(el('dashboard-surface').dataset.view).toBe('dashboard');
+    expect(el('view-dashboard').getAttribute('aria-pressed')).toBe('true');
+    expect(el('view-editor').getAttribute('aria-pressed')).toBe('false');
+    expect(
+      [...document.querySelectorAll('[data-dashboard-cell]')].map((cell) => cell.dataset.dashboardCell),
+    ).toEqual(['input', 'eq', 'matrix', 'limiter', 'output', 'live']);
+    expect([...document.querySelectorAll('.dashboard-resizer')]).toHaveLength(6);
+
+    expect(el('dashboard-input').style.getPropertyValue('--dashboard-span')).toBe('4');
+    expect(el('dashboard-eq').style.getPropertyValue('--dashboard-span')).toBe('8');
+    expect(el('dashboard-matrix').style.getPropertyValue('--dashboard-height')).toBe('420px');
+    expect(el('card-meters').style.getPropertyValue('--dashboard-height')).toBe('360px');
+    expect(el('card-meters').closest('[data-dashboard-cell]').dataset.dashboardCell).toBe('live');
+  });
+
+  it('remembers the chosen view and reset restores the Dashboard defaults without a device write', async () => {
+    await boot();
+    expect(putCalls()).toHaveLength(0);
+
+    await click('view-editor');
+    expect(el('dashboard-surface').dataset.view).toBe('editor');
+    expect(storedLayout().mode).toBe('editor');
+    expect(el('apply-state').textContent).toBe('loaded');
+    expect(putCalls()).toHaveLength(0);
+
+    await click('layout-reset');
+    expect(el('dashboard-surface').dataset.view).toBe('dashboard');
+    expect(storedLayout()).toEqual(maths().normalizeLayoutPreference(null));
+    expect(el('apply-state').textContent).toBe('loaded');
+    expect(putCalls()).toHaveLength(0);
+  });
+
+  it('loads a known layout, clamps unsafe values, and falls back for malformed or unknown records', async () => {
+    await boot();
+    const normalize = maths().normalizeLayoutPreference;
+
+    expect(normalize('{broken')).toEqual(normalize(null));
+    expect(normalize({ version: 2, mode: 'editor', cells: {} })).toEqual(normalize(null));
+
+    const known = normalize({
+      version: 1,
+      mode: 'editor',
+      cells: {
+        input: { span: 99, height: -10 },
+        eq: { span: 3.4, height: 9999 },
+      },
+    });
+    expect(known.mode).toBe('editor');
+    expect(known.cells.input).toEqual({ span: 4, height: 180 });
+    expect(known.cells.eq).toEqual({ span: 3, height: 480 });
+    expect(known.cells.live).toEqual({ span: 8, height: 360 });
+  });
+
+  it('restores a valid stored mode and cell size on the next boot', async () => {
+    localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({
+        version: 1,
+        mode: 'editor',
+        cells: {
+          input: { span: 6, height: 240 },
+          eq: { span: 8, height: 500 },
+          matrix: { span: 8, height: 440 },
+          limiter: { span: 4, height: 320 },
+          output: { span: 4, height: 200 },
+          live: { span: 8, height: 400 },
+        },
+      }),
+    );
+
+    await boot();
+    expect(el('dashboard-surface').dataset.view).toBe('editor');
+    expect(el('dashboard-input').style.getPropertyValue('--dashboard-span')).toBe('6');
+    expect(el('dashboard-input').style.getPropertyValue('--dashboard-height')).toBe('240px');
+  });
+
+  it('keeps working when layout storage is unavailable or full', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation((key) => {
+      if (key === LAYOUT_KEY) throw new DOMException('disabled', 'SecurityError');
+      return null;
+    });
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key) => {
+      if (key === LAYOUT_KEY) throw new DOMException('full', 'QuotaExceededError');
+    });
+    try {
+      await boot();
+      expect(el('dashboard-surface').dataset.view).toBe('dashboard');
+      await click('view-editor');
+      expect(el('dashboard-surface').dataset.view).toBe('editor');
+      expect(el('apply-state').textContent).toBe('loaded');
+      expect(putCalls()).toHaveLength(0);
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
+  it('persists pointer and keyboard resizing, while phone arrows keep every cell full-width', async () => {
+    await boot();
+    const surface = el('dashboard-surface');
+    const cell = el('dashboard-eq');
+    const handle = cell.querySelector('.dashboard-resizer');
+    surface.getBoundingClientRect = () => ({ width: 1200 });
+    cell.getBoundingClientRect = () => ({ height: 480 });
+
+    handle.dispatchEvent(
+      new window.PointerEvent('pointerdown', {
+        pointerId: 7,
+        clientX: 0,
+        clientY: 0,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    handle.dispatchEvent(
+      new window.PointerEvent('pointermove', {
+        pointerId: 7,
+        clientX: 101,
+        clientY: 40,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    handle.dispatchEvent(
+      new window.PointerEvent('pointerup', {
+        pointerId: 7,
+        clientX: 101,
+        clientY: 40,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(storedLayout().cells.eq).toEqual({ span: 9, height: 520 });
+    expect(putCalls()).toHaveLength(0);
+
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
+    try {
+      handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+      handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      expect(storedLayout().cells.eq).toEqual({ span: 9, height: 540 });
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
+    }
+  });
+
+  it('uses ResizeObserver to fit independently changing width and height at a bounded DPR', async () => {
+    const observations = [];
+    const NativeResizeObserver = window.ResizeObserver;
+    window.ResizeObserver = class ResizeObserver {
+      constructor(callback) {
+        this.callback = callback;
+        observations.push(this);
+      }
+      observe() {}
+    };
+    Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
+    try {
+      await boot();
+      const canvas = el('curve');
+      Object.defineProperty(canvas, 'clientWidth', { value: 480, configurable: true });
+      Object.defineProperty(canvas, 'clientHeight', { value: 333, configurable: true });
+      observations[0].callback([]);
+      expect([canvas.width, canvas.height]).toEqual([960, 666]);
+
+      Object.defineProperty(canvas, 'clientWidth', { value: 300, configurable: true });
+      observations[0].callback([]);
+      expect([canvas.width, canvas.height]).toEqual([600, 666]);
+
+      Object.defineProperty(canvas, 'clientHeight', { value: 200, configurable: true });
+      observations[0].callback([]);
+      expect([canvas.width, canvas.height]).toEqual([600, 400]);
+
+      Object.defineProperty(canvas, 'clientWidth', { value: 0, configurable: true });
+      observations[0].callback([]);
+      expect([canvas.width, canvas.height]).toEqual([600, 400]);
+
+      Object.defineProperty(canvas, 'clientWidth', { value: 300, configurable: true });
+      Object.defineProperty(window, 'devicePixelRatio', { value: 9, configurable: true });
+      observations[0].callback([]);
+      expect([canvas.width, canvas.height]).toEqual([900, 600]);
+      delete canvas.dataset.dpr;
+      observations[0].callback([]);
+      expect(canvas.dataset.dpr).toBe('3');
+    } finally {
+      window.ResizeObserver = NativeResizeObserver;
+      Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+    }
+  });
 });
 
 describe('Aius SD DSP editor — model to DOM', () => {
@@ -1422,40 +1620,25 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-sequence').textContent).toBe('1287');
   });
 
-  it('draws the waveform envelope mirrored about the centre line', async () => {
+  it('uses the spectrum history canvas instead of duplicating the replay waveform', async () => {
     await boot();
     await vi.advanceTimersByTimeAsync(100);
 
-    const paths = opsOf('waveform').reduce((groups, op) => {
-      if (op[0] === 'beginPath') groups.push([]);
-      else if (groups.length > 0) groups[groups.length - 1].push(op);
-      return groups;
-    }, []);
-    expect(paths).toHaveLength(2);
-
-    const envelope = vertices(paths[1]);
-    // Five per-mille points [0, 500, 1000, 500, 0] across a 960x180 canvas:
-    // x = index * 240, y = 90 -/+ (permille / 1000) * 90.
-    expect(envelope[0]).toEqual(['moveTo', 0, 90]);
-    expect(envelope[1][1]).toBe(240);
-    expect(envelope[1][2]).toBeCloseTo(45, 3);
-    expect(envelope[2]).toEqual(['lineTo', 480, 0]);
-    expect(envelope[4]).toEqual(['lineTo', 960, 90]);
-    // The return leg mirrors below the centre line, ending back at the origin.
-    expect(envelope[7][1]).toBe(480);
-    expect(envelope[7][2]).toBeCloseTo(180, 3);
-    expect(envelope[envelope.length - 1]).toEqual(['lineTo', 0, 90]);
-    expect(paths[1].some((op) => op[0] === 'fill')).toBe(true);
+    expect(el('waveform')).toBe(null);
+    expect(el('spectrogram').tagName).toBe('CANVAS');
+    expect(el('spectrogram-status').textContent).toContain('history');
   });
 
-  it('caps rendering at the contract 128 points', async () => {
-    const oversized = { ...fixture('meters-snapshot.json'), waveform: Array.from({ length: 400 }, () => 500) };
-    await boot({ meters: oversized });
-    await vi.advanceTimersByTimeAsync(100);
+  it('bounds spectrum history at 256 newest columns', async () => {
+    await boot();
+    let history = [];
+    for (let sequence = 0; sequence < 300; sequence++) {
+      history = maths().appendSpectrogramColumn(history, [sequence]);
+    }
 
-    const points = opsOf('waveform').filter((op) => op[0] === 'lineTo' || op[0] === 'moveTo');
-    // Centre line (moveTo + lineTo) plus the mirrored envelope of 128 points.
-    expect(points).toHaveLength(2 + 128 * 2);
+    expect(history).toHaveLength(256);
+    expect(history[0]).toEqual([44]);
+    expect(history[255]).toEqual([299]);
   });
 
   /* The per-channel table became grouped cards (2026-07-27 feedback, item 9):
@@ -2658,6 +2841,25 @@ describe('Aius SD DSP editor — editing through the plot', () => {
     expect(el('curve-readout').hidden).toBe(true);
   });
 
+  it('uses Shift captured at pointer-down to drag Q without moving frequency or gain', async () => {
+    await boot({ config: fixture('dsp-config-sd.json') });
+    stubRect();
+    const x = atHz(120);
+    const y = atDb(-4.5);
+
+    pointer('pointerdown', x, y, { shiftKey: true });
+    pointer('pointermove', atHz(9000), y - 120);
+    pointer('pointerup', atHz(9000), y - 120);
+    await settle();
+
+    expect(valueOf('input_channels.fl.eq.0.frequency_hz')).toBe('120');
+    expect(valueOf('input_channels.fl.eq.0.gain_db')).toBe('-4.5');
+    expect(Number(valueOf('input_channels.fl.eq.0.q'))).toBeCloseTo(3.262, 3);
+    expect(valueOf('input_channels.fr.eq.0.q')).toBe(valueOf('input_channels.fl.eq.0.q'));
+    expect(maths().qFromDrag(20, 0, -1000)).toBe(20);
+    expect(maths().qFromDrag(0.1, 0, 1000)).toBe(0.1);
+  });
+
   /* An unconditional touch-action:none made the plot a scroll trap on touch
    * (UX finding E1): panning is suppressed for the duration of a grab only. */
   it('suppresses panning only while a handle is actually held', async () => {
@@ -2964,18 +3166,18 @@ describe('Aius SD DSP editor — adding sections from the plot', () => {
 });
 
 describe('Aius SD DSP editor — canvas honesty', () => {
-  it('sizes the backing store to the laid-out width and the device pixel ratio', async () => {
+  it('sizes the backing store to the independent laid-out dimensions and device pixel ratio', async () => {
     await boot();
     const canvas = el('curve');
     expect([canvas.width, canvas.height]).toEqual([960, 240]);
 
     Object.defineProperty(canvas, 'clientWidth', { value: 500, configurable: true });
+    Object.defineProperty(canvas, 'clientHeight', { value: 175, configurable: true });
     Object.defineProperty(window, 'devicePixelRatio', { value: 2, configurable: true });
     try {
       window.dispatchEvent(new window.Event('resize'));
       await settle();
-      // 500 CSS px at 2x, keeping the authored 4:1 aspect.
-      expect([canvas.width, canvas.height]).toEqual([1000, 250]);
+      expect([canvas.width, canvas.height]).toEqual([1000, 350]);
       // And the axis text is scaled with it, rather than shrinking to 3.6 px.
       expect(lastFrame('curve').some((op) => op[0] === 'fillText')).toBe(true);
     } finally {
@@ -3003,6 +3205,19 @@ describe('Aius SD DSP editor — canvas honesty', () => {
     const ceiling = dbLabels.find((op) => op[1] === '+12');
     expect(ceiling[3]).toBeGreaterThan(0);
     expect(rail[3]).toBeLessThan(240);
+  });
+
+  it('culls the penultimate frequency label at the 280px drawing minimum', async () => {
+    await boot();
+    const canvas = el('curve');
+    Object.defineProperty(canvas, 'clientWidth', { value: 280, configurable: true });
+    Object.defineProperty(canvas, 'clientHeight', { value: 220, configurable: true });
+    window.dispatchEvent(new window.Event('resize'));
+    await settle();
+
+    const labels = labelsOf('curve').map((op) => op[1]);
+    expect(labels).not.toContain('10k');
+    expect(labels).toContain('20k');
   });
 });
 
@@ -3233,16 +3448,16 @@ describe('Aius SD DSP editor — the downmix matrix diagram', () => {
     expect(moved[0]).toBe(first[0]);
   });
 
-  it('writes a dragged centre gain into the same field text mode edits', async () => {
+  it('writes a touch-dragged centre gain into the same field text mode edits', async () => {
     await boot();
     stubMatrixRect();
     el('token').value = '0123456789abcdef';
     const handle = matrixHandle('center');
 
     // Grabbed near the handle rather than exactly on it, as a hand would.
-    matrixPointer('pointerdown', handle.x + 6, handle.y - 5);
-    matrixPointer('pointermove', handle.x + 9, atGain('center', 1.5));
-    matrixPointer('pointerup', handle.x + 9, atGain('center', 1.5));
+    matrixPointer('pointerdown', handle.x + 6, handle.y - 5, { pointerType: 'touch' });
+    matrixPointer('pointermove', handle.x + 9, atGain('center', 1.5), { pointerType: 'touch' });
+    matrixPointer('pointerup', handle.x + 9, atGain('center', 1.5), { pointerType: 'touch' });
     await settle();
 
     expect(valueOf('matrix.center_gain_linear')).toBe('1.5');
@@ -3841,6 +4056,28 @@ describe('Aius SD DSP editor — the analyser', () => {
     expect(loud[2] + loud[4]).toBeCloseTo(240, 6);
     // The plot still works: the curves and their handles are drawn over it.
     expect(cascadePaths()).toHaveLength(5);
+    expect(lastFrame('spectrogram').some((op) => op[0] === 'fillRect')).toBe(true);
+    expect(el('spectrogram-status').textContent).toContain('21.3 ms sampled per 100 ms poll');
+    expect(el('spectrogram-status').textContent).toContain('strobed, not gapless');
+    expect(el('spectrogram-status').textContent).toContain('newest right');
+  });
+
+  it('does not transform or append the same meter sequence twice', async () => {
+    await boot({ meters: analyserMeters() });
+    await vi.advanceTimersByTimeAsync(100);
+    const before = opsOf('spectrogram').filter((op) => op[0] === 'clearRect').length;
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(opsOf('spectrogram').filter((op) => op[0] === 'clearRect')).toHaveLength(before);
+    expect(underlay()).toHaveLength(0);
+    expect(el('spectrogram-status').textContent).toContain('No new analysis sequence');
+    expect(el('spectrogram-status').textContent).toContain('history is paused');
+
+    device.meters = analyserMeters({ sequence: 1288 });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(opsOf('spectrogram').filter((op) => op[0] === 'clearRect')).toHaveLength(before + 1);
+    expect(underlay().length).toBeGreaterThan(0);
+    expect(el('spectrogram-status').textContent).toContain('21.3 ms sampled per 100 ms poll');
   });
 
   it('smooths the bands between windows and puts the underlay away when it stops', async () => {
@@ -3849,7 +4086,10 @@ describe('Aius SD DSP editor — the analyser', () => {
     const loud = tallest()[4];
 
     // The signal stops: the bands FALL rather than collapsing in one snapshot.
-    device.meters = analyserMeters({ analysis_window: Array.from({ length: WINDOW_SIZE }, () => 0) });
+    device.meters = analyserMeters({
+      sequence: 1288,
+      analysis_window: Array.from({ length: WINDOW_SIZE }, () => 0),
+    });
     await vi.advanceTimersByTimeAsync(100);
     const falling = tallest()[4];
     expect(falling).toBeLessThan(loud);
@@ -3857,7 +4097,7 @@ describe('Aius SD DSP editor — the analyser', () => {
 
     // The field itself disappears: the underlay goes with it, and the plot
     // stops redrawing per frame.
-    device.meters = fixture('meters-snapshot.json');
+    device.meters = { ...fixture('meters-snapshot.json'), sequence: 1289 };
     await vi.advanceTimersByTimeAsync(100);
     expect(underlay()).toHaveLength(0);
     const before = redraws();
@@ -3872,14 +4112,16 @@ describe('Aius SD DSP editor — the analyser', () => {
  * (items 12 + 13) -- the limiter's controls sharing the panel with its
  * metering being the named case. */
 describe('Aius SD DSP editor — page structure', () => {
-  it('orders the cards: config, presets, stages, signal flow, live processing', async () => {
+  it('orders the cards and nests live processing inside the Signal flow dashboard', async () => {
     await boot();
     const titles = [...document.querySelectorAll('main > section')].map(
       (section) => section.querySelector('h2').textContent,
     );
     // "Processing stages" was a cluster of five checkboxes with no controls of
     // its own; each moved into the head of the panel it governs.
-    expect(titles).toEqual(['Effective configuration', 'Presets', 'Signal flow', 'Live processing']);
+    expect(titles).toEqual(['Effective configuration', 'Presets', 'Signal flow']);
+    expect(el('card-meters').closest('main > section').querySelector('h2').textContent).toBe('Signal flow');
+    expect(el('card-meters').querySelector('h3').textContent).toBe('Live processing');
   });
 
   /* "Source" named the DSP MODEL's provenance beside a strip whose whole job is

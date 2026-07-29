@@ -666,6 +666,24 @@ describe('Aius SD replay manager — meters', () => {
     expect(envelope()).toHaveLength(256);
   });
 
+  it('fits the shared waveform backing store to independent CSS dimensions and a bounded DPR', async () => {
+    await boot();
+    const canvas = el('waveform');
+    Object.defineProperty(canvas, 'clientWidth', { value: 500, configurable: true });
+    Object.defineProperty(canvas, 'clientHeight', { value: 137, configurable: true });
+    Object.defineProperty(window, 'devicePixelRatio', { value: 9, configurable: true });
+    try {
+      window.aiusSdShared.drawWaveform(canvas, [0, 1000, 0]);
+      expect([canvas.width, canvas.height]).toEqual([1500, 411]);
+      expect(canvas.dataset.dpr).toBe('3');
+      const points = envelope();
+      expect(points[1]).toEqual(['lineTo', 750, 0]);
+      expect(points[4]).toEqual(['lineTo', 750, 411]);
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+    }
+  });
+
   it('renders a never-published snapshot as no data, with the centre line still drawn', async () => {
     await boot({ meters: fixture('meters-idle.json') });
 

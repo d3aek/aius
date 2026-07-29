@@ -86,10 +86,10 @@ specified here. Strike items here in the commit that closes them.
   the header's overloaded "Source" label (DSP-model provenance, not audio)
   was renamed "Config". Residual: no channel count — `/api/status` serves
   none today, so that half needs firmware if ever wanted.
-- **hiDPI waveform stroke in `sd-shared.js`.** `drawWaveform` strokes the
-  backing store directly: one device pixel on a 2× display while the EQ
-  plot's strokes are DPR-scaled. Cosmetic; fix is a DPR-aware backing in
-  the shared renderer.
+- ~~**hiDPI waveform stroke in `sd-shared.js`.**~~ **CLOSED 2026-07-29
+  (SD dashboard Phase 9):** the shared replay renderer now fits its backing
+  store from both CSS dimensions and DPR, scales its strokes by DPR, and
+  retains the centre-line/128-point contract under replay-page coverage.
 - **UX NICE-tier residue** from the 2026-07-27 review (full list: session
   scratch `ux/ux-review-report.md`, sections B/D; the MUST-FIX tiers all
   shipped). ~~No marker of which preset the form came from (N2)~~ — N2
