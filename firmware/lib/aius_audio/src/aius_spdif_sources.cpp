@@ -116,6 +116,18 @@ FLASHMEM void AiusSpdifTx24Hook::install(void)
 FLASHMEM void aius_spdif_tx24_begin(void)
 {
 	AiusSpdifTx24Hook::install();
+	/* The snapshot never initializes the consumer channel-status registers,
+	 * leaving their reset-zero message at 44.1 kHz with copyright asserted
+	 * while config_spdif3() generates a 48 kHz carrier. Permissive DACs ignore
+	 * that contradiction; the CM6206 rejects it and substitutes silence.
+	 *
+	 * i.MX RT packs chronological status bits from register bit 23 downward:
+	 * STCSCH bit 21 is IEC 60958 consumer byte 0 bit 2 (copyright not
+	 * asserted), and STCSCL bit 22 is byte 3 bit 1 (48 kHz code 0x02).
+	 * These exact words were checked against the CM6206 input's 48 kHz status
+	 * and then proven over the physical output-to-input fibre loop. */
+	SPDIF_STCSCH = UINT32_C(0x00200000);
+	SPDIF_STCSCL = UINT32_C(0x00400000);
 }
 
 #endif /* __IMXRT1062__ */

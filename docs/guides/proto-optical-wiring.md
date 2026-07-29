@@ -145,6 +145,33 @@ The firmware side is already proven against replay; this is the first time
    freezes and the carrier-loss counters increment once per event; replug
    and confirm recovery.
 
+### CM6206 USB fixture
+
+The StarTech ICUSBAUDIO7D bench adapter uses a C-Media CM6206. Linux may label
+USB ID `0d8c:0102` as `CM106 Like Sound Device`; the generic
+`snd_usb_audio` binding is nevertheless correct. Its useful ALSA contract is
+48 kHz stereo S16 capture plus 2/4/6/8-channel playback.
+
+- Select `IEC958 In` on `PCM Capture Source` before recording. The exposed
+  `IEC958 In Capture Switch` and `PCM Capture Switch` did not mute this direct
+  selector route on the measured unit; apply capture mute in software when
+  the fixture needs a trustworthy mute.
+- The headphone output is a playback sink, not an automatic optical-input
+  monitor. Silence there says nothing about the capture route.
+- Prove the adapter first with CM6206 optical out → optical in. Then use two
+  fibres, CM6206 out → Teensy in and Teensy out → CM6206 in. This separates a
+  host-fixture failure from a Teensy transmit failure without moving the input
+  stimulus.
+
+Measured 2026-07-29 with a 997 Hz source: the CM6206 self-loop and the full
+Teensy loop both captured `−41.06 dBFS` peak on both channels; during the
+Teensy loop `/api/meters` reported input and output `−41.1 dBFS` peak /
+`−44.1 dBFS` RMS with zero overruns. The strict CM6206 receiver also exposed a
+transmit metadata defect permissive DACs had hidden: reset-zero channel status
+advertised 44.1 kHz/copyright asserted on a 48 kHz PCM carrier, so it
+substituted silence. The fixed firmware emits explicit 48 kHz consumer PCM
+status; see [`firmware-io.md` §S/PDIF output](../reference/firmware-io.md#spdif-output--the-transmit-half-of-the-hot-path).
+
 ## Electrical loopback — the pre-optical rung
 
 **Jumpering pad 14 directly to pad 15 proves the entire firmware chain with no

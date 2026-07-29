@@ -420,6 +420,19 @@ PLL4 is 24 MHz × 28.672 = 688.128 MHz (`NUM`/`DENOM` = 6720/10000, an exact
 fraction), `SPDIF0_CLK_ROOT` is that ÷ 8 = 86.016 MHz, and `TXCLK_DF` = 27 gives
 86.016 MHz ÷ 28 = 3.072 MHz = 64 × 48,000 with zero remainder.
 
+**The channel-status message agrees with that clock.** The retained snapshot
+initializes neither `SPDIF_STCSCH` nor `SPDIF_STCSCL`, so their reset-zero message
+advertised 44.1 kHz with copyright asserted while the generated carrier ran at
+48 kHz. Permissive DACs ignored the contradiction; a CM6206 receiving the same
+real payload substituted exact digital silence. `aius_spdif_tx24_begin()` now writes
+`0x00200000` / `0x00400000`: consumer PCM, copyright not asserted, 48 kHz. The
+packing follows the i.MX RT1060 reference manual §40.3.2.2.1: chronological channel
+status starts at register bit 23, so consumer byte 0 bit 2 maps to `STCSCH[21]` and
+byte 3's 48 kHz code `0x02` maps to `STCSCL[22]`. The
+`optical-cutover` suite pins both register words, and a 2026-07-29 physical
+CM6206 → Teensy → CM6206 glass loop captured the 997 Hz stimulus on both channels at
+`−41.06 dBFS` peak, matching the Teensy input/output meters.
+
 **Nothing in this path resamples.** The receiver DMAs words into audio blocks at the
 incoming carrier's rate and the transmitter clocks them out at
 `AUDIO_SAMPLE_RATE_EXACT`; the retained receive snapshot predates the upstream

@@ -1137,6 +1137,9 @@ def assert_counter_edges_are_epoch_loop_bound(text):
 #   - Losing the aius_spdif_tx24_begin() call leaves the vendor ISR installed,
 #     which transmits `block_silent` forever: a board that decodes, counts
 #     blocks, reports no overruns and makes no sound.
+#   - Leaving the transmit channel-status registers at reset zero advertises
+#     44.1 kHz and copyright asserted on a 48 kHz PCM carrier. Strict receivers
+#     reject it while permissive DACs make the same firmware appear healthy.
 #   - Dropping DMAMEM from the ring definition moves 16 KB into DTCM's
 #     free-for-locals zone -- which is 25 KB -- and the only symptom is a stack
 #     that overflows somewhere else entirely.
@@ -1344,6 +1347,21 @@ def assert_transmit_isr_drains_the_24_bit_ring(text):
         "the transmit handler still touches audio_block_t; bypassing that type "
         "for the final hop is the whole point of the path"
     )
+    begin = without_comments_and_literals(
+        function_body(text, "FLASHMEM void aius_spdif_tx24_begin(void)")
+    )
+    for assignment, meaning in (
+        ("SPDIF_STCSCH = UINT32_C(0x00200000);",
+         "consumer PCM with copyright not asserted"),
+        ("SPDIF_STCSCL = UINT32_C(0x00400000);",
+         "48 kHz sample-frequency status"),
+    ):
+        assert begin.count(assignment) == 1, (
+            f"aius_spdif_tx24_begin() must set {assignment!r} exactly once "
+            f"({meaning}). The snapshot leaves both channel-status registers "
+            "at reset zero, which disagrees with its 48 kHz carrier and strict "
+            "receivers substitute silence"
+        )
 
 
 OUTPUT_PATH_CHECKS = (
@@ -2800,6 +2818,12 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "{\n"
         "\tdma.attachInterrupt(AiusSpdifTx24Hook::isr);\n"
         "}\n"
+        "FLASHMEM void aius_spdif_tx24_begin(void)\n"
+        "{\n"
+        "\tAiusSpdifTx24Hook::install();\n"
+        "\tSPDIF_STCSCH = UINT32_C(0x00200000);\n"
+        "\tSPDIF_STCSCL = UINT32_C(0x00400000);\n"
+        "}\n"
     )
     _expect_pass(
         assert_transmit_isr_drains_the_24_bit_ring, good_isr, "tx-isr/good"
@@ -2817,6 +2841,10 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
          "arm_dcache_flush("),
         ("\tif (update_responsibility)\n\t\tupdate_all();\n",
          "update_responsibility"),
+        ("\tSPDIF_STCSCH = UINT32_C(0x00200000);\n",
+         "SPDIF_STCSCH = UINT32_C(0x00200000);"),
+        ("\tSPDIF_STCSCL = UINT32_C(0x00400000);\n",
+         "SPDIF_STCSCL = UINT32_C(0x00400000);"),
     ):
         _expect_fail(
             assert_transmit_isr_drains_the_24_bit_ring,
