@@ -28,8 +28,9 @@ extern "C" {
  * SAFETY SHAPE, unlike upstream liba52: the fork's bit reader has a byte-exact,
  * fail-closed end bound. The adapter sets it from the validated 48 kHz frame
  * length before a52_frame and copies into one AIUS_A52_MAX_FRAME scratch.
- * The reader substitutes zeros at the bound and never reads beyond that owned
- * frame allocation (contract + derivation: lib/aius_a52/a52/NOTICE.md).
+ * a52_frame validates the chained CRC1/CRC2 residue before parsing; the reader
+ * substitutes zeros at the bound and never reads beyond that owned frame
+ * allocation (contract + derivation: lib/aius_a52/a52/NOTICE.md).
  *
  * Output flags always request the stream's OWN coding
  * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0. The fork
@@ -67,7 +68,7 @@ AiusStatus aius_a52_decoder_create_arena(AiusA52Decoder **out, AiusArena *arena)
 
 /* Decode one AC-3 access unit. `data`/`size` need not be aligned (the adapter
  * copies into its owned frame scratch). Preconditions owned here, not by the
- * caller: size < 7 and sync/length/bsid violations return AIUS_MALFORMED
+ * caller: size < 7 and sync/length/bsid/CRC violations return AIUS_MALFORMED
  * before liba52's unguarded paths can run; sample rate != 48 kHz and
  * unmappable channel modes return AIUS_UNSUPPORTED. On AIUS_OK, `block` holds
  * decoder-owned planes valid until the next decode or destroy, AIUS_CH_*

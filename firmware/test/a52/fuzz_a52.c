@@ -2,9 +2,10 @@
  * (aius-ac3-support.md phase 1) — the dts-fuzz shape ported to liba52's
  * threat model.
  *
- * liba52 does not CRC-check frames, so this suite is load-bearing, not
- * ceremonial. The fork's bit reader has a fail-closed byte end and its former
- * 32 KiB safety pad is gone; every load the bound suppresses is counted. ASan
+ * The fork validates both AC-3 CRC regions before parsing and has a fail-closed
+ * byte end with no safety pad. Mutated real AUs have both CRCs repaired so the
+ * fuzz stream still reaches mantissa/exponent/bit-allocation logic; random
+ * core reach and every load the reader bound suppresses are counted. ASan
  * watches the one-frame scratch allocation on every feed.
  * Properties:
  *   1. Never crashes and never reads out of bounds (sanitizers are the
@@ -16,6 +17,8 @@
  *   4. TERMINATION: every decode call runs under a wall-clock bound (1 s
  *      soft) and an alarm() hard backstop (8 s, the board's watchdog) that
  *      names the offending input — the defect-31 oracle shape.
+ *   5. COVERAGE: the shipped random stream keeps at least 16,000 CRC-valid
+ *      feeds reaching a52_frame/a52_block.
  *
  * Phase 1 is a deterministic seam hunt (truncated AU spliced with the next
  * AU byte-exact at the loop seam, step-16 across adjacent pairs, headless
@@ -36,6 +39,7 @@
 #include <unistd.h>
 
 #include "a52.h" /* a52_syncinfo only: seed AU walking */
+#include "a52_crc_test.h"
 #include "aius_a52.h"
 
 #ifndef AIUS_A52_BOUND_PROBE
@@ -49,10 +53,11 @@
 #define DECODE_HARD_BOUND_S 8u
 #define DECODE_SOFT_BOUND_NS 1000000000ull
 #define SHIPPED_FUZZ_ITERATIONS 50000L
-#define SHIPPED_OK_COUNT 5617L
-#define SHIPPED_REJECT_COUNT 60183L
-#define SHIPPED_FILL_COUNT UINT32_C(3889968)
-#define SHIPPED_SUPPRESSED_FILL_COUNT UINT32_C(54922)
+#define SHIPPED_OK_COUNT 5616L
+#define SHIPPED_REJECT_COUNT 60184L
+#define SHIPPED_FILL_COUNT UINT32_C(3889955)
+#define SHIPPED_SUPPRESSED_FILL_COUNT UINT32_C(54909)
+#define SHIPPED_MIN_CORE_REACH 16000L
 
 struct seed_file {
     const char *name;
@@ -186,12 +191,28 @@ static void poison_block(AiusPcmBlock *b)
 }
 
 static int checked_feed(AiusA52Decoder *dec, const uint8_t *buf, size_t len,
-                        long *ok_count, long *reject_count)
+                        long *ok_count, long *reject_count,
+                        long *core_reach_count)
 {
     AiusPcmBlock block;
     poison_block(&block);
+    uint32_t fills_before = 0;
+    if (core_reach_count) {
+        uint32_t suppressed = 0, mismatches = 0;
+        if (aius_a52_get_bound_probe(dec, &fills_before, &suppressed,
+                                     &mismatches) != AIUS_OK)
+            return 1;
+    }
     uint64_t ns = 0;
     AiusStatus st = timed_decode(dec, buf, len, &block, &ns);
+    if (core_reach_count) {
+        uint32_t fills_after = 0, suppressed = 0, mismatches = 0;
+        if (aius_a52_get_bound_probe(dec, &fills_after, &suppressed,
+                                     &mismatches) != AIUS_OK)
+            return 1;
+        if (fills_after != fills_before)
+            (*core_reach_count)++;
+    }
     if (ns > DECODE_SOFT_BOUND_NS) {
         fprintf(stderr, "FAIL: decode took %.1f ms (soft bound): %s\n",
                 (double)ns / 1e6, g_decode_ctx);
@@ -238,7 +259,8 @@ static int seam_hunt_file(AiusA52Decoder *dec, const struct seed_file *sf,
         snprintf(g_decode_ctx, sizeof(g_decode_ctx),
                  "%s S1 loop-seam k=%zu (of %zu) + AU0", sf->name, k,
                  last_len);
-        if (checked_feed(dec, buf, k + head_len, ok_count, reject_count))
+        if (checked_feed(dec, buf, k + head_len, ok_count, reject_count,
+                         NULL))
             return 1;
         (*feeds)++;
     }
@@ -246,7 +268,7 @@ static int seam_hunt_file(AiusA52Decoder *dec, const struct seed_file *sf,
         snprintf(g_decode_ctx, sizeof(g_decode_ctx),
                  "%s S2 truncate AU0 at k=%zu (of %zu)", sf->name, k,
                  head_len);
-        if (checked_feed(dec, head, k, ok_count, reject_count))
+        if (checked_feed(dec, head, k, ok_count, reject_count, NULL))
             return 1;
         (*feeds)++;
     }
@@ -261,7 +283,7 @@ static int seam_hunt_file(AiusA52Decoder *dec, const struct seed_file *sf,
                          "%s S1 splice AU%zu k=%zu + AU%zu", sf->name, i, k,
                          i + 1);
                 if (checked_feed(dec, buf, k + sf->lens[i + 1], ok_count,
-                                 reject_count))
+                                 reject_count, NULL))
                     return 1;
                 (*feeds)++;
             }
@@ -273,7 +295,7 @@ static int seam_hunt_file(AiusA52Decoder *dec, const struct seed_file *sf,
                          "%s S3 tail AU%zu from k=%zu + AU%zu", sf->name, i,
                          k, i + 1);
                 if (checked_feed(dec, buf, tail + sf->lens[i + 1], ok_count,
-                                 reject_count))
+                                 reject_count, NULL))
                     return 1;
                 (*feeds)++;
             }
@@ -362,7 +384,8 @@ int main(int argc, char **argv)
         }
     }
 
-    long ok_count = 0, reject_count = 0;
+    long ok_count = 0, reject_count = 0, core_reach_count = 0;
+    long crc_repaired_count = 0;
     int fail = 0;
 
     /* Phase 1: deterministic seam hunt. */
@@ -454,9 +477,27 @@ int main(int argc, char **argv)
             break;
         }
 
+        if (strategy == 0 || strategy == 2 || strategy == 6) {
+            int flags = 0, sample_rate = 0, bit_rate = 0;
+            int frame_size = a52_syncinfo(work, &flags, &sample_rate,
+                                          &bit_rate);
+            if (frame_size == (int)len && sample_rate == 48000) {
+                if (!a52_test_crc_repair(work, len)) {
+                    fprintf(stderr,
+                            "FAIL: CRC repair at random iter %ld strat %d "
+                            "len %zu\n",
+                            it, strategy, len);
+                    fail = 1;
+                    break;
+                }
+                crc_repaired_count++;
+            }
+        }
+
         snprintf(g_decode_ctx, sizeof(g_decode_ctx),
                  "random iter %ld strat %d len %zu", it, strategy, len);
-        if (checked_feed(dec, work, len, &ok_count, &reject_count)) {
+        if (checked_feed(dec, work, len, &ok_count, &reject_count,
+                         &core_reach_count)) {
             fail = 1;
             break;
         }
@@ -503,6 +544,14 @@ int main(int argc, char **argv)
                 SHIPPED_FILL_COUNT, SHIPPED_SUPPRESSED_FILL_COUNT);
         fail = 1;
     }
+    if (!fail && iters == SHIPPED_FUZZ_ITERATIONS &&
+        core_reach_count < SHIPPED_MIN_CORE_REACH) {
+        fprintf(stderr,
+                "FAIL: only %ld/%ld random feeds reached the AC-3 core "
+                "(floor %ld)\n",
+                core_reach_count, iters, SHIPPED_MIN_CORE_REACH);
+        fail = 1;
+    }
 
     free(work);
     aius_a52_decoder_destroy(dec);
@@ -518,6 +567,9 @@ int main(int argc, char **argv)
     printf("  reader bound: %" PRIu32 " fills, %" PRIu32
            " suppressed, 0 end mismatches\n",
            bound_fills, suppressed_fills);
+    printf("  CRC-valid core reach: %ld / %ld random feeds "
+           "(%ld repaired)\n",
+           core_reach_count, iters, crc_repaired_count);
     printf("  slowest decode: %.3f ms (%s)\n",
            (double)g_max_decode_ns / 1e6, g_max_decode_ctx);
     printf("RESULT: passed\n");

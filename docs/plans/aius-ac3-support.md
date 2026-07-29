@@ -235,8 +235,9 @@ answer defect 34 either.
    edits remain necessary — 0.8.0's reader is byte-identical and its
    `baptab` sites are still unclamped, which means our fuzz findings are
    live against maintained upstream rather than against a 2002 fossil.
-2. **Add CRC-16/ANSI validation to the adapter (~30 lines).** AC-3 frames
-   carry CRC1/CRC2 and liba52 ignores both; validating the whole frame
+2. **CRC-16/ANSI validation now lives at the fork's frame entry point
+   (F3c DONE).** AC-3 frames
+   carry CRC1/CRC2 and upstream liba52 ignores both; validating the whole frame
    before decode rejects most corruption before liba52 sees a byte. This
    closes the gap that most justified looking elsewhere, without changing
    decoders.
@@ -525,7 +526,8 @@ unobtainable once the pad is gone.
   specifies, plus the F1 checksums.
 - **F3b — remove the pad. DONE 2026-07-29.** Scratch falls to one frame.
   Suites unchanged.
-- **F3c — CRC**, with the fuzz change below, which is not optional.
+- **F3c — CRC. DONE 2026-07-29.** Includes the mandatory fuzz repair and
+  reach proof below.
 
 **THE BLOCKER F3 originally shipped (gate finding 1): a CRC gate silently
 destroys the fuzz suite.** `fuzz_a52.c` mutates real access units
@@ -579,6 +581,17 @@ already validated frame length for CRC. The byte-exact bound relies on a
 invariant** — `set_ptr` aligns down, and 48 kHz frame sizes are always a
 multiple of 4 — so relaxing the rate guard later would make the bound off by
 up to 3 bytes.
+
+**F3c delivered proof:** `a52_frame` validates CRC1, CRC2, and their chained
+zero-residue before header or bitstream parsing, after rejecting NULL,
+reversed, <7 B, and >3,840 B spans using integer-address checks. The
+independent test repair solves CRC1 with a cached 16×16 GF(2) inverse and
+appends CRC2; every repaired frame asserts both segment residues and the whole
+residue are zero. The 50,000-iteration stream repairs 17,118 mutations and
+keeps 16,690 random feeds reaching the core against an asserted 16,000 floor.
+Its new exact baseline is 5,616 OK / 60,184 rejected, 3,889,955 fills,
+54,909 suppressions, and zero end mismatches. All four clean hashes remain
+exact.
 
 **Step F4 — REDUCES TO NOTHING; keep it only as an explicit decision.** The
 gate checked all three proposed 0.8.0 fixes and none is work:
@@ -743,8 +756,8 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
   deterministic seam-splice phase (loop seam byte-exact, adjacent step-16),
   random corruption strategies, the termination oracle (1 s soft / 8 s
   alarm) from the defect-31 hunt, typed-status + sane-block + stale-PCM
-  poisoning contracts. liba52 does not CRC-check frames, so the fuzz
-  posture is load-bearing, not ceremonial.
+  poisoning contracts. At the phase-1 boundary liba52 did not CRC-check
+  frames, so the fuzz posture was load-bearing, not ceremonial.
 - `scripts/test.sh` gains `a52` and `a52-fuzz` arms; the suites table in
   the firmware README and the `registry` suite stay consistent (the
   registry suite fails the commit otherwise).

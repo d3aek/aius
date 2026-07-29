@@ -137,11 +137,56 @@ int a52_syncinfo (uint8_t * buf, int * flags,
     }
 }
 
+#define A52_MAX_FRAME_BYTES UINT32_C(3840)
+#define A52_CRC16_POLY UINT16_C(0x8005)
+
+/* A/52 CRC-16/ANSI: init 0, MSB-first, no reflection or xorout. */
+static uint16_t a52_crc16 (const uint8_t * data, size_t size)
+{
+    uint16_t crc = 0;
+
+    while (size--) {
+	crc ^= (uint16_t)*data++ << 8;
+	for (int bit = 0; bit < 8; bit++)
+	    crc = (crc & UINT16_C(0x8000))
+		? (uint16_t)((crc << 1) ^ A52_CRC16_POLY)
+		: (uint16_t)(crc << 1);
+    }
+    return crc;
+}
+
+static int a52_crc_valid (const a52_state_t * state, const uint8_t * buf)
+{
+    if (state == NULL || buf == NULL)
+	return 0;
+
+    uintptr_t start = (uintptr_t)buf;
+    uintptr_t end = (uintptr_t)state->buffer_end;
+    if (start == 0 || end == 0 || end < start)
+	return 0;
+
+    uintptr_t span = end - start;
+    if (span < 7 || span > A52_MAX_FRAME_BYTES)
+	return 0;
+
+    size_t frame_size = (size_t)span;
+    size_t split = frame_size / 2 + frame_size / 8;
+    if (split < 4 || split > frame_size - 2)
+	return 0;
+
+    return a52_crc16 (buf + 2, split - 2) == 0 &&
+	a52_crc16 (buf + split, frame_size - split) == 0 &&
+	a52_crc16 (buf + 2, frame_size - 2) == 0;
+}
+
 int a52_frame (a52_state_t * state, uint8_t * buf, int * flags,
 	       sample_t * level, sample_t bias)
 {
     int chaninfo;
     int acmod;
+
+    if (!a52_crc_valid (state, buf))
+	return 1;
 
     state->fscod = buf[4] >> 6;
     state->halfrate = halfrate[buf[5] >> 3];

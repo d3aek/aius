@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "a52.h" /* a52_syncinfo only: corpus AU walking, not decode */
+#include "a52_crc_test.h"
 #include "aius_a52.h"
 #include "aius_arena.h"
 
@@ -137,6 +138,26 @@ static int core_bound_is_exact(const a52_state_t *state)
 #endif
 }
 
+static int core_crc_span_rejected(uint8_t *frame, const uint8_t *end,
+                                  int flags)
+{
+    a52_state_t *state = a52_init(0);
+    if (!state)
+        return 0;
+    if (end)
+        a52_bitstream_set_end(state, end);
+    sample_t level = 1.0f;
+    int request = flags & (A52_CHANNEL_MASK | A52_LFE);
+    int rejected = a52_frame(state, frame, &request, &level, 0) != 0;
+#ifdef AIUS_A52_BOUND_PROBE
+    uint32_t fills = 0;
+    a52_bitstream_get_probe(state, &fills, NULL, NULL);
+    rejected = rejected && fills == 0;
+#endif
+    a52_free(state);
+    return rejected;
+}
+
 static int test_core_identity_contract(const char *dir)
 {
     size_t es_size = 0;
@@ -149,7 +170,7 @@ static int test_core_identity_contract(const char *dir)
     size_t starts[MAX_FRAMES_PER_VECTOR], lens[MAX_FRAMES_PER_VECTOR];
     size_t naus = collect_aus(es, es_size, starts, lens,
                               MAX_FRAMES_PER_VECTOR);
-    if (naus == 0 || lens[0] < 7) {
+    if (naus == 0 || lens[0] <= 100) {
         fprintf(stderr, "FAIL: no stereo AU for core identity contract\n");
         free(es);
         return 1;
@@ -163,6 +184,100 @@ static int test_core_identity_contract(const char *dir)
     memcpy(frame, es + starts[0], lens[0]);
     free(es);
 
+    int original_flags = 0, original_rate = 0, original_bit_rate = 0;
+    int original_size = a52_syncinfo(frame, &original_flags, &original_rate,
+                                     &original_bit_rate);
+    if (original_size != (int)lens[0] ||
+        !a52_test_crc_segments_valid(frame, lens[0])) {
+        fprintf(stderr, "FAIL: original core fixture CRC/size invalid\n");
+        free(frame);
+        return 1;
+    }
+
+    {
+        uint8_t *oversized = calloc(A52_TEST_MAX_FRAME + 1u, 1);
+        if (!oversized ||
+            !core_crc_span_rejected(NULL, NULL, original_flags) ||
+            !core_crc_span_rejected(frame, NULL, original_flags) ||
+            !core_crc_span_rejected(frame, frame + 6, original_flags) ||
+            !core_crc_span_rejected(oversized + 1, oversized,
+                                    original_flags) ||
+            !core_crc_span_rejected(oversized,
+                                    oversized + A52_TEST_MAX_FRAME + 1u,
+                                    original_flags)) {
+            fprintf(stderr, "FAIL: core CRC span guards\n");
+            free(oversized);
+            free(frame);
+            return 1;
+        }
+        free(oversized);
+        printf("ok core CRC span guards (NULL, short, reversed, oversized)\n");
+    }
+
+    /* Pin independent region validation: make the chained whole-frame residue
+     * zero while leaving at least one protected segment invalid. A whole-only
+     * gate would accept this cancellation frame. */
+    {
+        uint8_t *bad = malloc(lens[0]);
+        a52_state_t *crc_state = a52_init(0);
+        if (!bad || !crc_state) {
+            free(bad);
+            if (crc_state)
+                a52_free(crc_state);
+            free(frame);
+            return 1;
+        }
+        memcpy(bad, frame, lens[0]);
+        bad[100] ^= 1u;
+        bad[lens[0] - 2] = 0;
+        bad[lens[0] - 1] = 0;
+        uint16_t whole_crc = a52_test_crc16(bad + 2, lens[0] - 4);
+        bad[lens[0] - 2] = (uint8_t)(whole_crc >> 8);
+        bad[lens[0] - 1] = (uint8_t)whole_crc;
+        size_t split = a52_test_crc_split(lens[0]);
+        uint16_t crc1 = a52_test_crc16(bad + 2, split - 2);
+        uint16_t crc2 =
+            a52_test_crc16(bad + split, lens[0] - split);
+        uint16_t chained = a52_test_crc16(bad + 2, lens[0] - 2);
+        if (chained != 0 || (crc1 == 0 && crc2 == 0)) {
+            fprintf(stderr,
+                    "FAIL: could not construct CRC cancellation frame "
+                    "(crc1=%04x crc2=%04x whole=%04x)\n",
+                    crc1, crc2, chained);
+            a52_free(crc_state);
+            free(bad);
+            free(frame);
+            return 1;
+        }
+        int bad_flags = original_flags & (A52_CHANNEL_MASK | A52_LFE);
+        sample_t bad_level = 1.0f;
+        arm_core_bound(crc_state, bad, lens[0]);
+        if (a52_frame(crc_state, bad, &bad_flags, &bad_level, 0) == 0) {
+            fprintf(stderr, "FAIL: core accepted CRC cancellation frame\n");
+            a52_free(crc_state);
+            free(bad);
+            free(frame);
+            return 1;
+        }
+#ifdef AIUS_A52_BOUND_PROBE
+        uint32_t fills = 0;
+        a52_bitstream_get_probe(crc_state, &fills, NULL, NULL);
+        if (fills != 0) {
+            fprintf(stderr,
+                    "FAIL: CRC-corrupt frame reached reader (%" PRIu32
+                    " fills)\n", fills);
+            a52_free(crc_state);
+            free(bad);
+            free(frame);
+            return 1;
+        }
+#endif
+        a52_free(crc_state);
+        free(bad);
+        printf("ok core CRC rejects whole-zero segment cancellation "
+               "before bitstream parse\n");
+    }
+
     /* Gate recipe: stereo_tones is acmod=2, dsurmod=0 (byte 6 == 0x43).
      * Changing only dsurmod to 2 makes the core's negotiated coding
      * A52_DOLBY while preserving the decoded stereo samples. */
@@ -173,6 +288,11 @@ static int test_core_identity_contract(const char *dir)
         return 1;
     }
     frame[6] = 0x53;
+    if (!a52_test_crc_repair(frame, lens[0])) {
+        fprintf(stderr, "FAIL: could not repair dsurmod fixture CRCs\n");
+        free(frame);
+        return 1;
+    }
 
     int flags = 0, sample_rate = 0, bit_rate = 0;
     int frame_size = a52_syncinfo(frame, &flags, &sample_rate, &bit_rate);
@@ -197,9 +317,7 @@ static int test_core_identity_contract(const char *dir)
             free(frame);
             return 1;
         }
-        sample_t unset_level = 1.0f;
-        int unset_flags = flags & (A52_CHANNEL_MASK | A52_LFE);
-        (void)a52_frame(unarmed, header, &unset_flags, &unset_level, 0);
+        a52_bitstream_set_ptr(unarmed, header + 6);
         uint32_t fills = 0, suppressed = 0, mismatches = 0;
         a52_bitstream_get_probe(unarmed, &fills, &suppressed, &mismatches);
         a52_free(unarmed);
@@ -324,6 +442,13 @@ int main(int argc, char **argv)
                     "FAIL: %s: parsed %zu of %zu bytes (partial AU or cap)\n",
                     vec->name, parsed_size, es_size);
             return 1;
+        }
+        for (size_t a = 0; a < naus; a++) {
+            if (!a52_test_crc_segments_valid(es + starts[a], lens[a])) {
+                fprintf(stderr, "FAIL: %s AU %zu has invalid CRC regions\n",
+                        vec->name, a);
+                return 1;
+            }
         }
         /* Precondition (gate F9): the reference must be exactly the decoded
          * frames — no priming/trim ambiguity exists for raw elementary

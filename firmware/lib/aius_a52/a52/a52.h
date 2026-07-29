@@ -54,6 +54,7 @@ int a52_syncinfo (uint8_t * buf, int * flags,
 		  int * sample_rate, int * bit_rate);
 void a52_bitstream_set_end (a52_state_t * state, const uint8_t * end);
 #ifdef AIUS_A52_BOUND_PROBE
+void a52_bitstream_set_ptr (a52_state_t * state, uint8_t * buf);
 void a52_bitstream_probe_expect_end (a52_state_t * state,
 				     const uint8_t * frame,
 				     uint32_t frame_length);

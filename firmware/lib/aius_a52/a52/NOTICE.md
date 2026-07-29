@@ -126,6 +126,24 @@ watching that exact allocation. The probe build's arena high-water is 57,680 B;
 the reproducible production configuration
 (`AIUS_A52_BOUND_PROBE=0 ... --suite a52`) measures 57,664 B.
 
+### 6. Validate both AC-3 CRC regions
+
+`a52_frame` now validates CRC-16/ANSI (poly `0x8005`, init 0, MSB-first,
+no reflection or xorout) before reading header or bitstream state. It requires
+zero residue for CRC1's `[buf + 2, fs58)` region, CRC2's `[fs58, frame_end)`
+region, and their chained `[buf + 2, frame_end)` span. The frame end is
+converted to integer addresses and rejected when NULL, reversed, shorter than
+7 B, or longer than the 3,840 B AC-3 maximum before the CRC loop reads a byte.
+
+The test-side repair is deliberately independent from production validation.
+CRC2 is appended normally; CRC1 is solved with a cached inverse 16x16 GF(2)
+influence matrix because its field precedes the bytes it protects. The repaired
+fuzz stream keeps mutations across both CRC regions and reaches the decoder core
+on 16,690 of 50,000 random feeds, above the asserted 16,000 floor. The F3c
+deterministic baseline is 5,616 OK / 60,184 rejected, 3,889,955 reader fills,
+54,909 suppressions, and zero end mismatches; all four clean PCM hashes remain
+unchanged.
+
 ## Remaining external accommodations
 
 `../include/config.h` keeps `sample_t` as `float`, routes the sample-buffer
@@ -135,5 +153,4 @@ ASan/UBSan flags with fail-fast shift checking and no fork-specific warning or
 sanitizer carve-out.
 
 The adapter copies an access unit into one owned `AIUS_A52_MAX_FRAME` scratch.
-The reader bound is the load-bearing containment mechanism. F3c still needs to
-add CRC validation.
+The core CRC gate and reader bound are the load-bearing containment mechanisms.
