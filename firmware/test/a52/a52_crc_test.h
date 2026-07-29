@@ -37,7 +37,8 @@ static inline uint16_t a52_test_crc16(const uint8_t *data, size_t size)
 
 static inline size_t a52_test_crc_split(size_t frame_size)
 {
-    return frame_size / 2u + frame_size / 8u;
+    size_t frame_words = frame_size / 2u;
+    return 2u * (frame_words / 2u + frame_words / 8u);
 }
 
 static inline uint16_t a52_test_crc1_effect(uint16_t field,

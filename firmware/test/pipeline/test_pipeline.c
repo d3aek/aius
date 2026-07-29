@@ -433,6 +433,66 @@ static void test_pcm_passthrough(void)
 	free(w);
 }
 
+static void test_pcm_runtime_rates(void)
+{
+	enum {
+		WORDS = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS +
+		        2 * (int)AIUS_PIPELINE_PCM_BLOCK_FRAMES
+	};
+	uint16_t *w = malloc(WORDS * sizeof(uint16_t));
+	for (int i = 0; i < WORDS; i++)
+		w[i] = (uint16_t)(int16_t)((i * 131 + 7) & 0xFFFF);
+
+	const uint32_t rates[] = { 32000u, 44100u, 48000u };
+	for (size_t r = 0; r < sizeof(rates) / sizeof(rates[0]); r++) {
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "pcm-rate %u: create", rates[r]);
+		if (!p)
+			continue;
+		CHECK(aius_pipeline_set_pcm_sample_rate(p, rates[r]) == AIUS_OK,
+		      "pcm-rate %u: setter rejected nominal", rates[r]);
+		/* Runtime configuration survives stream-state resets. */
+		aius_pipeline_reset(p);
+		CHECK(aius_pipeline_push(p, w, WORDS) == AIUS_OK,
+		      "pcm-rate %u: push", rates[r]);
+		CHECK(aius_pipeline_finish(p) == AIUS_OK,
+		      "pcm-rate %u: finish", rates[r]);
+		CHECK(cap.n == 1 && cap.blocks[0].sample_rate_hz == rates[r],
+		      "pcm-rate %u: descriptor count=%d rate=%u", rates[r], cap.n,
+		      cap.n == 1 ? cap.blocks[0].sample_rate_hz : 0u);
+		capture_free(&cap);
+		aius_pipeline_destroy(p);
+	}
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "pcm-rate invalid: create");
+	if (p) {
+		CHECK(aius_pipeline_set_pcm_sample_rate(p, 44100u) == AIUS_OK &&
+		          aius_pipeline_set_pcm_sample_rate(p, 96000u) ==
+		              AIUS_INVALID_ARG &&
+		          aius_pipeline_set_pcm_sample_rate(NULL, 48000u) ==
+		              AIUS_INVALID_ARG,
+		      "pcm-rate invalid: acceptance");
+		CHECK(aius_pipeline_push(p, w, WORDS) == AIUS_OK &&
+		          aius_pipeline_finish(p) == AIUS_OK,
+		      "pcm-rate invalid: push/finish");
+		CHECK(cap.n == 1 && cap.blocks[0].sample_rate_hz == 44100u,
+		      "pcm-rate invalid: rejected value changed configured nominal");
+		aius_pipeline_destroy(p);
+	}
+	capture_free(&cap);
+	free(w);
+	printf("  pcm-rate       runtime 32/44.1/48 kHz stamps survive reset\n");
+}
+
 /* ---- test 2b: the pass-through's sample scale, in the contract's terms ------
  *
  * THE DISCRIMINATING TEST, and the reason it is separate from test 2. Test 2
@@ -1805,6 +1865,7 @@ int main(int argc, char **argv)
 	test_dts_equivalence(dir, "dts51_be16");
 	test_ac3_dispatch_and_identity(dir);
 	test_pcm_passthrough();
+	test_pcm_runtime_rates();
 	test_pcm_sample_scale();
 	test_classifier(dir);
 	test_no_heap_steady_state(dir);

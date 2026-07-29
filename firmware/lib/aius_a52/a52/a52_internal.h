@@ -69,6 +69,7 @@ struct a52_state_s {
 #ifdef AIUS_A52_BOUND_PROBE
     const uint8_t * buffer_expected_end;
     uint32_t bitstream_fills;
+    uint32_t bitstream_partial_fills;
     uint32_t bitstream_suppressed_fills;
     uint32_t bitstream_end_mismatches;
 #endif

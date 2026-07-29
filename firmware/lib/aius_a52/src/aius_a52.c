@@ -47,6 +47,7 @@ struct AiusA52Decoder {
     int32_t *planes[AIUS_MAX_CHANNELS];
     const struct a52_mode_map *map;
     uint32_t channel_mask;
+    uint32_t sample_rate_hz;
     uint16_t channels;
     uint8_t lfe;
     uint8_t next_block;
@@ -231,7 +232,8 @@ AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
             (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         return decoder_call_end(dec, AIUS_MALFORMED);
     }
-    if (sample_rate != 48000) {
+    if (sample_rate != 32000 && sample_rate != 44100 &&
+        sample_rate != 48000) {
         if (timed)
             (void)dec->cycle_clock.read(dec->cycle_clock.ctx);
         return decoder_call_end(dec, AIUS_UNSUPPORTED);
@@ -269,6 +271,7 @@ AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
     for (uint16_t s = 0; s < map->channels; s++)
         mask |= map->aius_bits[s];
     dec->channel_mask = mask;
+    dec->sample_rate_hz = (uint32_t)sample_rate;
     dec->next_block = 0;
     dec->armed = 1;
     dec->cycle_armed = (uint8_t)timed;
@@ -339,7 +342,7 @@ AiusStatus aius_a52_decode_next_block(AiusA52Decoder *dec,
         block->planes[c] = dec->planes[c];
     block->channels = dec->channels;
     block->frames = AIUS_A52_BLOCK_SAMPLES;
-    block->sample_rate_hz = 48000;
+    block->sample_rate_hz = dec->sample_rate_hz;
     block->channel_mask = mask;
     if (timed)
         dec->cycle_accumulator +=

@@ -30,6 +30,7 @@ extern "C" {
 	#include "aius_recorder.h"
 	#include "aius_audio_ingress.h"
 	#include "aius_audio_service.h"
+	#include "aius_clock.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
 	#include "aius_usb_control.h"
@@ -77,26 +78,23 @@ extern "C" {
 #define AIUS_BUILD_ID 0u
 #endif
 
-/* THE ONE PLACE THE OUTPUT CLOCK AND THE DSP MODEL ARE FORCED TO AGREE.
+/* THE BOOT/REPLAY CLOCK AND GENERATED DEFAULT ARE FORCED TO AGREE.
  *
  * AudioStream.h defaults AUDIO_SAMPLE_RATE_EXACT to 44100.0f behind an #ifndef,
  * and config_spdif3() (output_spdif3.cpp) derives the whole S/PDIF transmit clock
- * tree from that macro -- so it, and nothing else, is the rate this board's
- * optical output actually runs at. Every other rate in the firmware is 48 kHz:
- * the DTS Core decoder's `output_rate`, AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ, this
- * file's biquad and limiter coefficients (apply_config), the meter's
- * `sample_rate_hz` and publish cadence, and the replay seam's 192,000 B/s.
+ * tree from that macro at boot. PCM and both decoders now carry runtime nominal
+ * rates, while apply_config() derives filters and meters from each accepted
+ * stream. The generated model and replay format remain 48 kHz, so the boot
+ * default must remain equal to those two compile-time contracts.
  *
  * With the default left in place those two disagreed by 8.1 % and NOTHING
  * observed it: the graph's producer and its consumer are both driven by the same
  * clock, so the queue stayed level, the overrun counters stayed honestly zero,
  * and the only symptom was audio playing ~1.4 semitones flat. There is no
- * resampler anywhere in this path to absorb the difference -- see the audio
- * clock note above AiusAudioProcessor -- so the rates must simply be equal.
+ * resampler anywhere in this path to absorb the difference.
  *
- * A compile-time equality is the whole fix for the class of defect, not just
- * this instance (root CLAUDE.md §Convention enforcement): the build flag and the
- * config JSON can now only move together. */
+ * The compile-time equality continues to protect boot and replay. Live optical
+ * plans are reconciled separately before the physical gate may open. */
 static_assert((uint32_t)AUDIO_SAMPLE_RATE_EXACT == AIUS_OPTICAL_SAMPLE_RATE_HZ,
 	"the Teensy audio engine clock (AUDIO_SAMPLE_RATE_EXACT, set in "
 	"platformio.ini) must equal the configured DSP sample rate "
@@ -164,6 +162,45 @@ static uint32_t g_runtime_epoch_budget_overruns;
 static uint32_t g_audio_checkpoint_max_cycles;
 static uint32_t g_tx_high_water_frames;
 static constexpr uint32_t AIUS_RUNTIME_EPOCH_BUDGET_US = 25000u;
+
+/* Portable rate truth is updated once at checkpoint 7 and consumed by AUDIO
+ * and the physical-gate decision later in the epoch. Phase 1 deliberately
+ * keeps the applied output plan at the boot 48 kHz value; accepted 32/44.1
+ * carriers are observable but cannot open the pad until Phase 2 applies their
+ * clock plan. */
+static AiusRateTracker g_rate_tracker;
+static uint32_t g_clock_carrier_rate_millihz;
+static uint32_t g_clock_nominal_rate_hz;
+static uint32_t g_clock_stream_rate_hz;
+static uint32_t g_clock_output_rate_millihz = UINT32_C(48000000);
+static uint32_t g_pipeline_pcm_rate_hz = AIUS_OPTICAL_SAMPLE_RATE_HZ;
+static uint32_t g_clock_rate_changes;
+static uint32_t g_clock_mismatch_blocks;
+static uint32_t g_clock_unsupported_blocks;
+static uint32_t g_clock_unsupported_episodes;
+static bool g_clock_carrier_ready;
+static bool g_clock_plan_applied;
+static bool g_clock_live_ready;
+static bool g_clock_carrier_unsupported;
+static bool g_clock_stream_unsupported_episode;
+static bool g_tx_gate_open;    /* latched decision, .bss = closed */
+static bool g_tx_gate_carrier; /* latched checkpoint-7 carrier input */
+static bool g_tx_gate_replay;  /* never re-derived at request time */
+
+static FLASHMEM void tx_gate_actuate(bool open);
+
+static inline bool supported_program_rate(uint32_t rate_hz)
+{
+	return rate_hz == 32000u || rate_hz == 44100u || rate_hz == 48000u;
+}
+
+static inline void close_stream_rate_gate(void)
+{
+	g_clock_live_ready = false;
+	if (g_tx_gate_open)
+		tx_gate_actuate(false);
+	g_tx_gate_open = false;
+}
 
 /* ------------------------------------------------------------------ */
 /* Replay refill -- Phase 14c                                          */
@@ -728,6 +765,8 @@ enum AiusEventType : uint8_t {
 	AIUS_EVENT_NETWORK_RESTART = 8,
 	AIUS_EVENT_DHCP_UPDATE = 9,
 	AIUS_EVENT_WATCHDOG_EARLY_RESET = 10,
+	AIUS_EVENT_RATE_CHANGE = 11,
+	AIUS_EVENT_RATE_UNSUPPORTED = 12,
 };
 
 static AiusEvent g_events[8];
@@ -851,45 +890,35 @@ static FLASHMEM void record_state(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* The audio clock, and the TWO block sizes that are easy to confuse   */
+/* The audio clock, and the block sizes that are easy to confuse       */
 /*                                                                     */
 /* THERE IS NO RESAMPLER ANYWHERE IN THIS PATH. Neither peripheral      */
 /* converts rate: AudioInputSPDIF3 DMAs receiver words straight into    */
 /* audio blocks at the incoming carrier's rate (the retained snapshot   */
 /* predates the upstream asynchronous converter, and the framework copy */
-/* is byte-identical to it), and the transmit DMA clocks frames out at  */
-/* AUDIO_SAMPLE_RATE_EXACT. Nothing between them compares the two, and  */
-/* nothing compares block->sample_rate_hz against either. A rate        */
-/* disagreement is therefore not absorbed and not counted -- it is      */
-/* simply heard, which is why the static_assert at the top of this file */
-/* exists. The engine rate and the decoded rate must be equal by        */
-/* construction; 48 kHz, because DTS Core is 48 kHz.                    */
+/* is byte-identical to it). Phase 1 still clocks transmit at 48 kHz,    */
+/* but the tracker accepts 32/44.1/48 kHz as runtime data. enqueue()     */
+/* compares every decoded/passthrough block rate with the accepted       */
+/* carrier and the applied output plan before config, DSP or output; a   */
+/* mismatch is muted and counted. Non-48 output remains dark until the   */
+/* target clock adapter applies its plan in Phase 2.                      */
 /*                                                                     */
-/* TWO BLOCK SIZES, and every per-block figure names one of them:       */
+/* THREE BLOCK SIZES, and every per-block figure names one of them:     */
 /*                                                                     */
 /*   AUDIO_BLOCK_SAMPLES = 128 frames (the Teensy core default; this    */
 /*   build does not override it) is the ENGINE block. It sizes the DMA  */
 /*   buffers, the audio_block_t pool, update()'s word staging and the   */
-/*   transmit ISR's drain of the 24-bit ring. update() therefore runs   */
-/*   48000/128 = 375 times a second and moves 256 IEC words = 512 bytes */
-/*   each time -- the 192,000 B/s the replay ring is sized for.         */
+/*   transmit ISR's drain of the 24-bit ring. At 48 kHz update() runs   */
+/*   375 times a second and moves 256 IEC words = 512 bytes each time;  */
+/*   live input cadence instead follows the accepted carrier.           */
 /*                                                                     */
-/*   512 frames is the DECODED block, and it is what `blocks` counts.   */
-/*   A DTS Core access unit reconstructs to 512 samples per channel and */
-/*   the PCM passthrough stages the same 512                           */
-/*   (AIUS_PIPELINE_PCM_BLOCK_FRAMES), so enqueue() is called once per  */
-/*   four update()s, at 48000/512 = 93.75 blocks per second. The        */
-/*   AUDIO_BLOCK_SAMPLES * 4 cap enqueue() applies is exactly that 512: */
-/*   the two constants are coupled, so changing the engine block would  */
-/*   change the decoder block this file will accept.                    */
+/*   AC-3 emits 256-frame decoded slices. DTS Core and PCM passthrough   */
+/*   emit 512-frame blocks. Both pass through enqueue(), whose           */
+/*   AUDIO_BLOCK_SAMPLES * 4 cap is the largest accepted block.         */
 /*                                                                     */
-/* The DWT bracket in enqueue() measures the DECODED block, so its      */
-/* budget is 512 frames / 48 kHz = 10,667 us (6,400,000 cycles at       */
-/* 600 MHz), not 128 frames. The meter's `queue_frames` is neither of   */
-/* these: it is aius_spdif_tx24_level(), the 24-bit ring's occupancy at */
-/* the publish instant, which sits at 512 because one decode fills the  */
-/* ring by 512 and the four following transmit interrupts drain it by   */
-/* 128 each.                                                           */
+/* The DWT bracket in enqueue() measures one decoded/passthrough block, */
+/* not the 128-frame engine block. The meter's `queue_frames` is        */
+/* aius_spdif_tx24_level(), the 24-bit ring occupancy at publication.   */
 /*                                                                     */
 /* THE FINAL HOP IS NO LONGER audio_block_t. The transmit DMA interrupt */
 /* drains the 24-bit ring straight into SPDIF_tx_buffer                */
@@ -991,6 +1020,10 @@ public:
 			aius_audio_service_clear_diag(&g_audio_service);
 		if (g_pipeline != nullptr)
 			aius_pipeline_clear_service_diag(g_pipeline);
+		g_clock_rate_changes = 0u;
+		g_clock_mismatch_blocks = 0u;
+		g_clock_unsupported_blocks = 0u;
+		g_clock_unsupported_episodes = 0u;
 	}
 
 	/* Resolve `cfg` (either AIUS_OPTICAL_CONFIG, the const factory default in
@@ -1007,7 +1040,8 @@ public:
 	 * at compile time with the plain FLASHMEM free functions already sharing the
 	 * .flashmem section ("section type conflict") once the function is too large
 	 * to fully inline away. Out-of-line gives it ordinary linkage instead. */
-	FLASHMEM void apply_config(const AiusOpticalConfig &cfg);
+	FLASHMEM void apply_config(const AiusOpticalConfig &cfg,
+	                           uint32_t stream_rate_hz);
 
 protected:
 	void update(void) override
@@ -1130,6 +1164,7 @@ private:
 	uint32_t g_meter_us_per_frame_q16 = 0; /* 1e6 / fs in Q16.16, hoisted */
 	uint32_t g_dsp_cycles_last = 0;
 	uint32_t g_dsp_cycles_max = 0;
+	uint32_t g_applied_stream_rate_hz = AIUS_OPTICAL_SAMPLE_RATE_HZ;
 
 	static __attribute__((section(".flashmem.audio_consume")))
 	AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
@@ -1147,9 +1182,45 @@ private:
 			return AIUS_NO_SPACE;
 		/* Capacity preflight is first: a refused block applies no staged model
 		 * and advances no DSP, meter, recorder, measurement or output state. */
-		if (g_dsp_apply_pending) {
+		g_clock_stream_rate_hz = block->sample_rate_hz;
+		if (!supported_program_rate(block->sample_rate_hz)) {
+			g_clock_unsupported_blocks++;
+			close_stream_rate_gate();
+			if (!g_clock_stream_unsupported_episode) {
+				g_clock_stream_unsupported_episode = true;
+				g_clock_unsupported_episodes++;
+				record_event(AIUS_EVENT_RATE_UNSUPPORTED,
+				             current_state(), 0u);
+			}
+			return AIUS_UNSUPPORTED;
+		}
+		g_clock_stream_unsupported_episode = false;
+		const bool replay =
+			g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;
+		const uint32_t expected_rate_hz =
+			replay ? AIUS_OPTICAL_SAMPLE_RATE_HZ
+			       : g_clock_nominal_rate_hz;
+		const bool output_plan_ready =
+			replay ? g_clock_output_rate_millihz == UINT32_C(48000000)
+			       : g_clock_plan_applied;
+		if (!output_plan_ready ||
+		    block->sample_rate_hz != expected_rate_hz) {
+			g_clock_mismatch_blocks++;
+			close_stream_rate_gate();
+			return AIUS_UNSUPPORTED;
+		}
+		g_clock_live_ready = !replay && g_clock_carrier_ready;
+		const bool model_pending = g_dsp_apply_pending;
+		if (model_pending)
 			g_active_model = g_pending_dsp_model;
-			apply_config(g_active_model);
+		if (model_pending ||
+		    g_applied_stream_rate_hz != block->sample_rate_hz) {
+			apply_config(g_active_model, block->sample_rate_hz);
+			g_applied_stream_rate_hz = block->sample_rate_hz;
+			if (!model_pending)
+				g_config_generation++;
+		}
+		if (model_pending) {
 			g_dsp_source_sd = true;
 			g_config_generation++;
 			g_dsp_apply_pending = false;
@@ -1318,7 +1389,7 @@ static FLASHMEM void audio_exit_reset_critical(void *)
 
 FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 {
-	apply_config(AIUS_OPTICAL_CONFIG);
+	apply_config(AIUS_OPTICAL_CONFIG, AIUS_OPTICAL_SAMPLE_RATE_HZ);
 	aius_out16_init(&g_out16, AIUS_DSP_DITHER_SEED_DEFAULT, 1);
 	/* Bind the capture planes; memory only. The machine starts idle, and
 	 * an idle capture costs the tap one volatile load per block. */
@@ -1404,8 +1475,11 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	}
 }
 
-FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
+FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg,
+	                                            uint32_t stream_rate_hz)
 {
+	const uint32_t rate = stream_rate_hz != 0u ? stream_rate_hz
+	                                           : AIUS_OPTICAL_SAMPLE_RATE_HZ;
 	/* features.output_eq, the other flag that was stored and never read. Zero
 	 * sections IS the bypass -- aius_dsp_process() runs no cascade for an empty
 	 * table -- which is why this stage appeared to work: a config that happened
@@ -1417,10 +1491,10 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 		if (section.type == 0)
 			g_eq[i] = aius_biquad_bypass();
 		else if (section.type == 1)
-			g_eq[i] = aius_biquad_highpass(cfg.sample_rate_hz,
+			g_eq[i] = aius_biquad_highpass(rate,
 				section.frequency_hz, section.q);
 		else
-			g_eq[i] = aius_biquad_peaking(cfg.sample_rate_hz,
+			g_eq[i] = aius_biquad_peaking(rate,
 				section.frequency_hz, section.q, section.gain_db);
 	}
 	memset(g_eq_state, 0, sizeof(g_eq_state));
@@ -1428,8 +1502,6 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 	 * cold: aius_lfe_fold_init() evaluates two cos/sin pairs, which belongs
 	 * beside the biquad trig below rather than in the audio ISR. The downmix
 	 * would design lazily on the first block otherwise. */
-	const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz
-	                                               : AIUS_OPTICAL_SAMPLE_RATE_HZ;
 	g_downmix = aius_downmix_config_default();
 	/* features.matrix, which was parsed, stored, round-tripped and then never
 	 * read -- the contract promises all five flags bypass their stage and this
@@ -1499,10 +1571,10 @@ FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
 			if (section.type == 0)
 				g_input_eq[c][i] = aius_biquad_bypass();
 			else if (section.type == 1)
-				g_input_eq[c][i] = aius_biquad_highpass(cfg.sample_rate_hz,
+				g_input_eq[c][i] = aius_biquad_highpass(rate,
 					section.frequency_hz, section.q);
 			else
-				g_input_eq[c][i] = aius_biquad_peaking(cfg.sample_rate_hz,
+				g_input_eq[c][i] = aius_biquad_peaking(rate,
 					section.frequency_hz, section.q, section.gain_db);
 		}
 		channel.eq = g_input_eq[c];
@@ -1619,10 +1691,8 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  * A ~0.1-2 ms silence-carrier blip at static construction (~300 ms after
  * every reset, begin() starting DMA before setup() can run) is unavoidable
  * and recorded in the plan; setup()'s first act is the dark-set that ends
- * it. Evaluation lives in tx_gate_service() at checkpoint 7. */
-static bool g_tx_gate_open;    /* latched per-epoch decision, .bss = closed */
-static bool g_tx_gate_carrier; /* latched inputs, served on /api/status -- */
-static bool g_tx_gate_replay;  /* never re-derived at request time */
+ * it. Routine evaluation lives in tx_gate_service() at checkpoint 7; an AUDIO
+ * block whose rate contract fails closes it immediately before returning. */
 
 static FLASHMEM void tx_gate_actuate(bool open)
 {
@@ -2393,6 +2463,69 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		(unsigned long)g_runtime_epoch_budget_overruns);
 }
 
+static FLASHMEM bool http_clock_json(char *output, size_t capacity,
+	                                 size_t *length)
+{
+	AiusAudioIngressDiag ingress;
+	const bool output_master =
+		!g_tx_gate_carrier &&
+		g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;
+	const char *state =
+		output_master ? "replay" :
+		!g_tx_gate_carrier ? "unlocked" :
+		g_clock_carrier_unsupported ? "unsupported" :
+		g_clock_carrier_ready
+			? (g_clock_plan_applied ? "tracking" : "refused")
+			: "acquiring";
+
+	memset(&ingress, 0, sizeof(ingress));
+	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+	aius_audio_ingress_get_diag(&g_audio_ingress, &ingress);
+	NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
+
+	return http_json_append(
+		output, capacity, length,
+		",\"clock\":{"
+		"\"carrier_locked\":%s,"
+		"\"carrier_ready\":%s,"
+		"\"carrier_rate_millihz\":%lu,"
+		"\"nominal_rate_hz\":%lu,"
+		"\"stream_rate_hz\":%lu,"
+		"\"output_rate_millihz\":%lu,"
+		"\"trim_ppm\":0,"
+		"\"master\":\"%s\","
+		"\"state\":\"%s\","
+		"\"rate_changes\":%lu,"
+		"\"trim_updates\":0,"
+		"\"structural_replans\":0,"
+		"\"invalid_windows\":0,"
+		"\"clock_faults\":0,"
+		"\"last_clock_fault\":0,"
+		"\"mismatch_blocks\":%lu,"
+		"\"unsupported_blocks\":%lu,"
+		"\"unsupported_episodes\":%lu,"
+		"\"tx_level_frames\":%lu,"
+		"\"tx_underrun_frames\":%lu,"
+		"\"ingress_level_words\":%lu,"
+		"\"ingress_high_water_words\":%lu}",
+		g_tx_gate_carrier ? "true" : "false",
+		g_clock_carrier_ready ? "true" : "false",
+		(unsigned long)g_clock_carrier_rate_millihz,
+		(unsigned long)(output_master ? AIUS_OPTICAL_SAMPLE_RATE_HZ
+		                             : g_clock_nominal_rate_hz),
+		(unsigned long)g_clock_stream_rate_hz,
+		(unsigned long)g_clock_output_rate_millihz,
+		output_master ? "output" : "input", state,
+		(unsigned long)g_clock_rate_changes,
+		(unsigned long)g_clock_mismatch_blocks,
+		(unsigned long)g_clock_unsupported_blocks,
+		(unsigned long)g_clock_unsupported_episodes,
+		(unsigned long)aius_spdif_tx24_level(&g_aius_spdif_tx24),
+		(unsigned long)g_aius_spdif_tx24.underruns,
+		(unsigned long)ingress.level_words,
+		(unsigned long)ingress.high_water_words);
+}
+
 /* The pipeline's own record -- the classifier's verdict and the decode path's
  * swallowed faults. Deferred service skips a faulted burst and keeps
  * streaming (a decode error must not gap the wire), which left defect 29's
@@ -2740,6 +2873,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_replay_diag_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_audio_diag_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_clock_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
 		return 0;
@@ -3727,13 +3862,15 @@ static FLASHMEM bool measure_start(const char *vector_id, double f0_l_hz,
 		return false;
 	/* Validate the analysis parameters before the machine moves, so a bad f0
 	 * or probe list leaves a retired session fully intact. */
+	const double output_rate_hz =
+		(double)g_clock_output_rate_millihz / 1000.0;
 	if (aius_measure_analysis_init(&g_measure_analysis_l,
-	                               (double)AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ,
+	                               output_rate_hz,
 	                               f0_l_hz, AIUS_MEASURE_WINDOW_FRAMES,
 	                               probes_hz, probe_count) != AIUS_OK)
 		return false;
 	if (aius_measure_analysis_init(&g_measure_analysis_r,
-	                               (double)AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ,
+	                               output_rate_hz,
 	                               f0_r_hz, AIUS_MEASURE_WINDOW_FRAMES,
 	                               probes_hz, probe_count) != AIUS_OK)
 		return false;
@@ -4961,6 +5098,72 @@ static FLASHMEM void replay_clock_service(void)
 static constexpr uint8_t AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS = 3;
 static uint8_t g_carrier_unlocked_epochs = AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS;
 
+static FLASHMEM void pipeline_pcm_rate_service(uint32_t rate_hz)
+{
+	if (!g_audio_service_ready || rate_hz == g_pipeline_pcm_rate_hz)
+		return;
+	if (aius_pipeline_set_pcm_sample_rate(g_audio_service.pipeline, rate_hz) ==
+	    AIUS_OK)
+		g_pipeline_pcm_rate_hz = rate_hz;
+}
+
+static FLASHMEM void sample_rate_service(uint32_t now_ms)
+{
+	const bool carrier = AudioInputSPDIF3::pllLocked();
+	const AiusReplaySource source = g_replay_service.source;
+	const uint32_t measured_hz =
+		carrier ? AudioInputSPDIF3::sampleRate() : 0u;
+	AiusRateTrackerSample sample = {
+		carrier,
+		measured_hz * UINT32_C(1000),
+		source == AIUS_REPLAY_SOURCE_REPLAY
+			? AIUS_CLOCK_SOURCE_REPLAY
+			: AIUS_CLOCK_SOURCE_LIVE,
+		now_ms,
+	};
+	const AiusRateTrackerResult result =
+		aius_rate_tracker_step(&g_rate_tracker, &sample);
+
+	if (source == AIUS_REPLAY_SOURCE_REPLAY)
+		pipeline_pcm_rate_service(AIUS_OPTICAL_SAMPLE_RATE_HZ);
+	g_clock_carrier_rate_millihz = sample.carrier_rate_millihz;
+	g_clock_carrier_ready = result.carrier_ready;
+	if (!result.carrier_ready)
+		g_clock_live_ready = false;
+
+	if (result.nominal_accepted) {
+		const uint32_t old_nominal = g_clock_nominal_rate_hz;
+		g_clock_nominal_rate_hz = result.nominal_rate_hz;
+		g_clock_stream_rate_hz = 0u;
+		g_clock_live_ready = false;
+		g_clock_carrier_unsupported = false;
+		g_clock_plan_applied =
+			result.nominal_rate_hz == AIUS_OPTICAL_SAMPLE_RATE_HZ;
+		pipeline_pcm_rate_service(result.nominal_rate_hz);
+		if (g_clock_plan_applied)
+			(void)aius_rate_tracker_note_target_applied(
+				&g_rate_tracker, g_clock_output_rate_millihz, now_ms);
+		if (old_nominal != result.nominal_rate_hz) {
+			g_clock_rate_changes++;
+			record_event(AIUS_EVENT_RATE_CHANGE, current_state(),
+			             (uint16_t)result.nominal_rate_hz);
+			if (old_nominal != 0u)
+				request_audio_reset();
+		}
+	}
+
+	if (result.unsupported_accepted) {
+		g_clock_carrier_unsupported = true;
+		g_clock_unsupported_episodes++;
+		record_event(AIUS_EVENT_RATE_UNSUPPORTED, current_state(),
+		             measured_hz > UINT16_MAX
+			             ? UINT16_MAX
+			             : (uint16_t)measured_hz);
+	}
+	if (!carrier)
+		g_clock_carrier_unsupported = false;
+}
+
 static FLASHMEM void tx_gate_service(void)
 {
 	const bool carrier = AudioInputSPDIF3::pllLocked();
@@ -4973,12 +5176,13 @@ static FLASHMEM void tx_gate_service(void)
 		g_carrier_unlocked_epochs = 0;
 	}
 	const AiusReplaySource source = g_replay_service.source;
-	const bool open = aius_tx_gate_permitted(carrier, source);
+	const bool open =
+		aius_tx_gate_permitted(carrier, g_clock_live_ready, source);
 	if (open != g_tx_gate_open)
 		tx_gate_actuate(open);
 	g_tx_gate_open = open;
 	g_tx_gate_carrier = carrier;
-	g_tx_gate_replay = aius_tx_gate_permitted(false, source);
+	g_tx_gate_replay = aius_tx_gate_permitted(false, false, source);
 }
 
 /* Checkpoint 7: the SD lifecycle and the replay refill, in that order, with the
@@ -5010,6 +5214,7 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * one's. Memory only -- two byte stores under one critical section -- so it
 	 * spends none of the epoch's single SD primitive. */
 	replay_clock_service();
+	sample_rate_service(now_ms);
 	/* After the clock reconciler for the same reason it runs last: the gate
 	 * must judge this epoch's settled source and carrier, not the previous
 	 * one's. A boolean and at most three register stores; no budget row. */
@@ -5201,6 +5406,7 @@ FLASHMEM void setup(void)
 	 * .bss false, so the latched state and the pad agree from here until
 	 * checkpoint 7 first evaluates the policy. */
 	tx_gate_actuate(false);
+	aius_rate_tracker_init(&g_rate_tracker);
 
 	capture_retained_boot_state();
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);

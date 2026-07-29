@@ -27,7 +27,7 @@ extern "C" {
  * allocates nothing (aius_a52_get_metrics.alloc_count proves it).
  *
  * SAFETY SHAPE, unlike upstream liba52: the fork's bit reader has a byte-exact,
- * fail-closed end bound. The adapter sets it from the validated 48 kHz frame
+ * fail-closed end bound. The adapter sets it from the validated frame
  * length before a52_frame and copies into one AIUS_A52_MAX_FRAME scratch.
  * a52_frame validates CRC1, CRC2, and their chained residue before parsing;
  * the reader substitutes zeros at the bound and never reads beyond that owned
@@ -78,8 +78,9 @@ AiusStatus aius_a52_set_cycle_clock(AiusA52Decoder *dec,
 /* Begin one AC-3 access unit. `data`/`size` need not be aligned; the adapter
  * copies the complete AU into owned scratch that remains live through all six
  * block calls. Size < 7 and sync/length/bsid/CRC violations return
- * AIUS_MALFORMED; sample rate != 48 kHz and unmappable channel modes return
- * AIUS_UNSUPPORTED. A live iterator is reset before replacement. */
+ * AIUS_MALFORMED; rates other than 32, 44.1 or 48 kHz and unmappable channel
+ * modes return AIUS_UNSUPPORTED. A live iterator is reset before replacement.
+ * The accepted AU rate is retained and stamped on all six output blocks. */
 AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
                                       const uint8_t *data, size_t size);
 

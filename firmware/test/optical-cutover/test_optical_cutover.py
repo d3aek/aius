@@ -118,6 +118,23 @@ def function_body(text, marker):
     return text[opening + 1: closing]
 
 
+def conditional_body(text, marker):
+    """The brace-matched body of one exact `if (...)` marker."""
+    clean = without_comments_and_literals(text)
+    start = clean.find(marker)
+    assert start >= 0, f"missing conditional marker {marker!r}"
+    assert clean.find(marker, start + 1) == -1, (
+        f"conditional marker {marker!r} is not unique"
+    )
+    opening = clean.find("{", start + len(marker))
+    assert opening >= 0, f"missing body for conditional {marker!r}"
+    assert not clean[start + len(marker):opening].strip(), (
+        f"unexpected tokens before body for conditional {marker!r}"
+    )
+    closing = matching_delimiter(clean, opening, "{", "}")
+    return text[opening + 1:closing]
+
+
 def loop_bodies(text):
     """Every `for (...)` / `while (...)` loop body found anywhere in `text`,
     brace-delimited when the loop has a compound body, single-statement
@@ -963,10 +980,12 @@ EVENT_TYPE_VALUES = {
     "AIUS_EVENT_NETWORK_RESTART": 8,
     "AIUS_EVENT_DHCP_UPDATE": 9,
     "AIUS_EVENT_WATCHDOG_EARLY_RESET": 10,
+    "AIUS_EVENT_RATE_CHANGE": 11,
+    "AIUS_EVENT_RATE_UNSUPPORTED": 12,
 }
-# The three that predate the counter edges; the rest are the edges themselves.
+# Values 4..10 are the fixed counter-edge range; later episode events are not.
 COUNTER_EDGE_TYPES = tuple(
-    name for name, value in EVENT_TYPE_VALUES.items() if value > 3
+    name for name, value in EVENT_TYPE_VALUES.items() if 4 <= value <= 10
 )
 EDGE_SERVICE = "service_event_edges"
 EDGE_HELPER = "counter_edge"
@@ -1380,7 +1399,7 @@ TRANSMIT_MODULE_CHECKS = (
 
 
 APPLY_CONFIG_MARKER = (
-    "void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)"
+    "void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg,"
 )
 
 FEATURE_FLAGS = ("input_eq", "matrix", "output_eq", "limiter", "meters")
@@ -1440,6 +1459,204 @@ def assert_input_stage_skips_an_exact_identity(text):
             "nothing in apply_config() tests channel gain and section count, so "
             "the identity it claims to detect is not actually being detected"
         )
+
+
+def assert_apply_config_uses_stream_rate(text):
+    body = without_comments_and_literals(function_body(text, APPLY_CONFIG_MARKER))
+    assert "stream_rate_hz" in body, (
+        "apply_config() does not consume the accepted stream rate"
+    )
+    assert "cfg.sample_rate_hz" not in body, (
+        "apply_config() still designs a rate-dependent stage from the model's "
+        "generated/default rate"
+    )
+    for call in (
+        "aius_biquad_highpass(rate,",
+        "aius_biquad_peaking(rate,",
+        "aius_lfe_fold_init(&g_lfe_fold, (double)rate,",
+        "aius_meter_init(&g_meter, rate)",
+    ):
+        assert call in body, (
+            f"apply_config() does not bind {call} to the accepted stream rate"
+        )
+
+
+def assert_rate_service_orders_safe_gate(text):
+    replay = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool platform_replay(")
+    )
+    order = [
+        replay.find("replay_clock_service();"),
+        replay.find("sample_rate_service(now_ms);"),
+        replay.find("tx_gate_service();"),
+    ]
+    assert min(order) >= 0 and order == sorted(order) and len(set(order)) == 3, (
+        "checkpoint 7 must settle replay, update rate truth, then evaluate the "
+        "physical gate"
+    )
+    service = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void sample_rate_service(")
+    )
+    for call in (
+        "aius_rate_tracker_step(",
+        "pipeline_pcm_rate_service(",
+        "aius_rate_tracker_note_target_applied(",
+    ):
+        assert call in service, f"sample_rate_service() never calls {call}"
+    pipeline_rate = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void pipeline_pcm_rate_service(")
+    )
+    assert "aius_pipeline_set_pcm_sample_rate(" in pipeline_rate, (
+        "the rate service never updates PCM passthrough metadata"
+    )
+    gate = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void tx_gate_service(")
+    )
+    assert "aius_tx_gate_permitted(carrier, g_clock_live_ready, source)" in gate, (
+        "a locked but unaccepted/mismatched live carrier can still open the pad"
+    )
+
+
+def assert_enqueue_refuses_rate_before_dsp(text):
+    body = without_comments_and_literals(
+        function_body(text, "AiusStatus enqueue(const AiusPcmBlock *block)")
+    )
+    support = body.find("supported_program_rate(block->sample_rate_hz)")
+    applied = body.find("!output_plan_ready")
+    config = body.find("g_dsp_apply_pending")
+    dsp = body.find("aius_dsp_process(")
+    assert min(support, applied, config, dsp) >= 0, (
+        "enqueue() is missing the supported/applied rate gate or DSP seam"
+    )
+    assert support < config and applied < config and config < dsp, (
+        "enqueue() advances staged config or DSP before refusing an unsupported "
+        "or unapplied stream rate"
+    )
+    assert body.count("return AIUS_UNSUPPORTED;") >= 2, (
+        "enqueue() does not have distinct unsupported and mismatch refusal arms"
+    )
+    assert body.count("close_stream_rate_gate();") >= 2, (
+        "a refused stream waits until the next epoch to close the physical pad"
+    )
+    assert "replay ? AIUS_OPTICAL_SAMPLE_RATE_HZ" in body, (
+        "replay is not reconciled against its fixed 48 kHz rate contract"
+    )
+
+
+CLOCK_JSON_KEYS = (
+    "clock",
+    "carrier_locked",
+    "carrier_ready",
+    "carrier_rate_millihz",
+    "nominal_rate_hz",
+    "stream_rate_hz",
+    "output_rate_millihz",
+    "trim_ppm",
+    "master",
+    "state",
+    "rate_changes",
+    "trim_updates",
+    "structural_replans",
+    "invalid_windows",
+    "clock_faults",
+    "last_clock_fault",
+    "mismatch_blocks",
+    "unsupported_blocks",
+    "unsupported_episodes",
+    "tx_level_frames",
+    "tx_underrun_frames",
+    "ingress_level_words",
+    "ingress_high_water_words",
+)
+CLOCK_COUNTERS = (
+    "g_clock_rate_changes",
+    "g_clock_mismatch_blocks",
+    "g_clock_unsupported_blocks",
+    "g_clock_unsupported_episodes",
+)
+RATE_UNSUPPORTED_EVENT = "record_event(AIUS_EVENT_RATE_UNSUPPORTED"
+
+
+def assert_clock_status_clear_and_episode_contract(text):
+    """Clock observability is complete, clearable and episode-bounded."""
+    clean = without_comments_and_literals(text)
+    status = without_comments_and_literals(
+        function_body(text, "static FLASHMEM size_t http_status_json(")
+    )
+    assert status.count("http_clock_json(") == 1, (
+        "GET /api/status does not append exactly one authoritative clock object"
+    )
+
+    clock_json = without_comments(
+        function_body(text, "static FLASHMEM bool http_clock_json(")
+    )
+    keys = tuple(re.findall(r'\\"([a-z_]+)\\":', clock_json))
+    assert keys == CLOCK_JSON_KEYS, (
+        "the clock status object field set or order changed. Expected "
+        f"{CLOCK_JSON_KEYS}, found {keys}"
+    )
+    for counter in CLOCK_COUNTERS:
+        assert clock_json.count(counter) == 1, (
+            f"clock status does not publish {counter} exactly once"
+        )
+
+    clear = without_comments_and_literals(
+        function_body(text, "void clear_counters(void)")
+    )
+    for counter in CLOCK_COUNTERS:
+        assignment = counter + " = 0u;"
+        assert clear.count(assignment) == 1, (
+            f"counter clear does not reset {counter} exactly once"
+        )
+
+    enqueue = without_comments_and_literals(
+        function_body(text, "AiusStatus enqueue(const AiusPcmBlock *block)")
+    )
+    stream_episode = without_comments_and_literals(
+        conditional_body(
+            enqueue, "if (!g_clock_stream_unsupported_episode)"
+        )
+    )
+    for needle in (
+        "g_clock_stream_unsupported_episode = true;",
+        "g_clock_unsupported_episodes++;",
+        RATE_UNSUPPORTED_EVENT,
+    ):
+        assert stream_episode.count(needle) == 1, (
+            "unsupported stream-rate episode guard is incomplete: "
+            f"{needle!r}"
+        )
+    assert enqueue.count(RATE_UNSUPPORTED_EVENT) == 1, (
+        "stream-rate refusal has an unguarded or duplicate unsupported event"
+    )
+    assert enqueue.count("g_clock_stream_unsupported_episode = false;") == 1, (
+        "a supported stream does not re-arm exactly one later unsupported event"
+    )
+
+    rate_service = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void sample_rate_service(")
+    )
+    carrier_episode = without_comments_and_literals(
+        conditional_body(rate_service, "if (result.unsupported_accepted)")
+    )
+    for needle in (
+        "g_clock_carrier_unsupported = true;",
+        "g_clock_unsupported_episodes++;",
+        RATE_UNSUPPORTED_EVENT,
+    ):
+        assert carrier_episode.count(needle) == 1, (
+            "unsupported carrier-rate episode edge is incomplete: "
+            f"{needle!r}"
+        )
+    assert rate_service.count(RATE_UNSUPPORTED_EVENT) == 1, (
+        "carrier-rate tracking has an unguarded or duplicate unsupported event"
+    )
+    assert "if (!carrier)" in rate_service
+    assert "g_clock_carrier_unsupported = false;" in rate_service
+    assert clean.count(RATE_UNSUPPORTED_EVENT) == 2, (
+        "rate-unsupported events must have exactly two producers: one guarded "
+        "stream episode and one tracker-accepted carrier episode"
+    )
 
 
 def assert_audio_update_is_ingress_only(text):
@@ -1668,6 +1885,22 @@ POSITIVE_CHECKS = (
         assert_input_stage_skips_an_exact_identity,
     ),
     (
+        "rate-dependent DSP configuration uses the accepted stream rate",
+        assert_apply_config_uses_stream_rate,
+    ),
+    (
+        "checkpoint 7 updates rate truth before evaluating the gate",
+        assert_rate_service_orders_safe_gate,
+    ),
+    (
+        "enqueue refuses unsupported and unapplied rates before DSP",
+        assert_enqueue_refuses_rate_before_dsp,
+    ),
+    (
+        "clock status, clears and unsupported episodes remain observable",
+        assert_clock_status_clear_and_episode_contract,
+    ),
+    (
         "a requested reset waits for the drained transaction, bounded",
         assert_requested_reset_waits_for_the_drained_transaction,
     ),
@@ -1873,6 +2106,8 @@ def run_helper_self_test():
     text = "int foo(void)\n{\n\tif (x) { return 1; }\n\treturn 0;\n}\n"
     body = function_body(text, "int foo(void)")
     assert "return 0;" in body and "int foo" not in body, "function_body extraction is broken"
+    branch = conditional_body(body, "if (x)")
+    assert "return 1;" in branch, "conditional_body extraction is broken"
 
     loop_text = (
         "void bar(void) {\n"
@@ -1944,6 +2179,10 @@ def run_audio_cutover_self_test():
         assert_audio_checkpoint_owns_service,
         assert_enqueue_preflights_before_effects,
         assert_audio_storage_and_diagnostics,
+        assert_apply_config_uses_stream_rate,
+        assert_rate_service_orders_safe_gate,
+        assert_enqueue_refuses_rate_before_dsp,
+        assert_clock_status_clear_and_episode_contract,
     )
     for check in checks:
         _expect_pass(check, text, "audio-cutover/current")
@@ -1969,6 +2208,57 @@ def run_audio_cutover_self_test():
         "audio-cutover/outer-mask",
         "masks the whole",
     )
+    clock_status_unappended = text.replace(
+        "if (!http_clock_json((char *)body, capacity, &length))",
+        "if (!http_pipeline_diag_json((char *)body, capacity, &length))",
+        1,
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        clock_status_unappended,
+        "clock-status/unappended",
+        "does not append exactly one",
+    )
+    clock_status_key_removed = text.replace(
+        '"\\"carrier_locked\\":%s,"',
+        '"\\"carrier_missing\\":%s,"',
+        1,
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        clock_status_key_removed,
+        "clock-status/key-removed",
+        "field set or order changed",
+    )
+    clock_counter_not_cleared = text.replace(
+        "\t\tg_clock_unsupported_episodes = 0u;\n", "", 1
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        clock_counter_not_cleared,
+        "clock-status/not-cleared",
+        "does not reset g_clock_unsupported_episodes",
+    )
+    stream_event_unguarded = text.replace(
+        "if (!g_clock_stream_unsupported_episode)", "if (true)", 1
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        stream_event_unguarded,
+        "clock-event/stream-unguarded",
+        "missing conditional marker",
+    )
+    carrier_event_not_edge_guarded = text.replace(
+        "if (result.unsupported_accepted)",
+        "if (result.carrier_ready)",
+        1,
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        carrier_event_not_edge_guarded,
+        "clock-event/carrier-not-edge-guarded",
+        "missing conditional marker",
+    )
     global_reset_mask = text.replace(
         "static FLASHMEM void audio_enter_reset_critical(void *)\n"
         "{\n\tNVIC_DISABLE_IRQ(IRQ_SOFTWARE);\n}",
@@ -1983,9 +2273,9 @@ def run_audio_cutover_self_test():
         "must mask only",
     )
     reordered = text.replace(
-        "\t\tif (g_dsp_apply_pending) {",
+        "\t\tconst bool model_pending = g_dsp_apply_pending;",
         "\t\t(void)aius_dsp_process(nullptr, nullptr, nullptr);\n"
-        "\t\tif (g_dsp_apply_pending) {",
+        "\t\tconst bool model_pending = g_dsp_apply_pending;",
         1,
     )
     _expect_fail(
@@ -1993,6 +2283,31 @@ def run_audio_cutover_self_test():
         reordered,
         "audio-cutover/effect-before-config",
         "must validate",
+    )
+    model_rate = text.replace(
+        "const uint32_t rate = stream_rate_hz != 0u ? stream_rate_hz",
+        "const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz",
+        1,
+    )
+    _expect_fail(
+        assert_apply_config_uses_stream_rate,
+        model_rate,
+        "audio-cutover/model-rate",
+        "accepted stream rate",
+    )
+    no_rate_service = text.replace("\tsample_rate_service(now_ms);\n", "", 1)
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        no_rate_service,
+        "audio-cutover/rate-service-after-gate",
+        "settle replay",
+    )
+    no_applied_gate = text.replace("!output_plan_ready", "false", 1)
+    _expect_fail(
+        assert_enqueue_refuses_rate_before_dsp,
+        no_applied_gate,
+        "audio-cutover/no-applied-rate-gate",
+        "missing the supported/applied",
     )
     unpinned = text.replace(
         "static_assert(sizeof(g_audio_ingress_words) == 16384u,",
@@ -2020,7 +2335,7 @@ def run_audio_cutover_self_test():
 
 def _synthetic_counter_edges():
     """A minimal file with the counter-edge shape: the allocated enum, one
-    scalar static and one guarded emission per counter, the three transition
+    scalar static and one guarded emission per counter, the five transition
     events that predate them, an audio callback, and a loop() that reaches the
     service exactly once. Generated from EVENT_TYPE_VALUES so the fixture cannot
     drift from the contract the checks assert."""
@@ -2051,6 +2366,11 @@ def _synthetic_counter_edges():
           "static FLASHMEM void replay_clock_service(void)\n"
           "{\n"
           "\trecord_event(AIUS_EVENT_REPLAY_STOP, current_state(), REPLAY_STOP_CARRIER);\n"
+          "}\n"
+          "static FLASHMEM void sample_rate_service(void)\n"
+          "{\n"
+          "\trecord_event(AIUS_EVENT_RATE_CHANGE, current_state(), 48000u);\n"
+          "\trecord_event(AIUS_EVENT_RATE_UNSUPPORTED, current_state(), 0u);\n"
           "}\n"
           "static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)\n"
           "{\n"

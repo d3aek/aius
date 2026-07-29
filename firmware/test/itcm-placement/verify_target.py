@@ -49,6 +49,7 @@ from typing import Iterable, Mapping
 # Objects that must contribute zero ITCM, relative to $BUILD_DIR. Every function
 # defined in these translation units carries FLASHMEM.
 COLD_OBJECTS = (
+    "lib/aius_clock/src/aius_clock.c.o",
     "lib/aius_audio_service/src/aius_audio_service.c.o",
     "lib/aius_boot/src/aius_boot.c.o",
     "lib/aius_http/src/aius_http.c.o",
@@ -74,6 +75,7 @@ FRAMEWORK_CLONES = {
 # Adding a source to one of these engines without annotating it is a build
 # failure rather than silent ITCM.
 COLD_TREES = (
+    "lib/aius_clock/",
     "lib/aius_audio_service/",
     "lib/aius_boot/",
     "lib/aius_http/",

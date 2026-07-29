@@ -25,13 +25,13 @@ extern "C" {
  *                      AiusDtsDecoder, emitting decoded planar AiusPcmBlocks.
  *   AIUS_PIPELINE_PCM  the stream is IEC 60958 linear PCM. The words are treated
  *                      as interleaved L,R 16-bit samples and emitted (no decode)
- *                      as 2ch / 48 kHz blocks, left-aligned to the AiusPcmBlock
- *                      sample scale so they arrive at the same full scale as a
- *                      decoded DTS block. Bit-exact -- the scaling is a shift, not
- *                      a resample -- but NOT "verbatim": this header said verbatim
- *                      while the samples stayed in 16-bit units, and that cost
- *                      48.16 dB on every pass-through stream. See aius_codec.h
- *                      §SAMPLE SCALE.
+ *                      as 2ch blocks at the caller-supplied nominal carrier rate,
+ *                      left-aligned to the AiusPcmBlock sample scale so they
+ *                      arrive at the same full scale as a decoded DTS block.
+ *                      Bit-exact -- the scaling is a shift, not a resample -- but
+ *                      NOT "verbatim": this header said verbatim while the
+ *                      samples stayed in 16-bit units, and that cost 48.16 dB on
+ *                      every pass-through stream. See aius_codec.h §SAMPLE SCALE.
  *
  * Classification detects the IEC 61937 preamble (Pa=0xF872, Pb=0x4E1F, either
  * wire byte order) within a bounded word window; a stream with no preamble in the
@@ -134,9 +134,6 @@ extern "C" {
  * genuine PCM opens ~85 ms late plus up to one block of that quantization. */
 #define AIUS_PIPELINE_PCM_CONFIRM_WORDS 8192u
 
-/* Sample rate stamped on PCM pass-through blocks. */
-#define AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ 48000u
-
 /* Typed classification of the payload-word stream. */
 typedef enum {
 	AIUS_PIPELINE_UNKNOWN = 0, /* undecided: fewer than `window` words, no preamble yet */
@@ -206,6 +203,14 @@ AiusStatus aius_pipeline_create(AiusPipeline **out,
 AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
                                       const AiusPipelineConfig *cfg,
                                       const AiusPcmSink *sink, AiusArena *arena);
+
+/* Set the accepted nominal carrier rate stamped on subsequent PCM
+ * pass-through blocks. The supported IEC 60958 rates are 32, 44.1 and 48 kHz;
+ * other values return AIUS_INVALID_ARG without changing the current rate.
+ * New instances default to 48 kHz. The value is configuration and therefore
+ * survives aius_pipeline_reset(). */
+AiusStatus aius_pipeline_set_pcm_sample_rate(AiusPipeline *p,
+                                             uint32_t sample_rate_hz);
 
 /* Push `count` S/PDIF payload words through the synchronous compatibility
  * driver, emitting zero or more decoded/passed-through blocks to the sink.

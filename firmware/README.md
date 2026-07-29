@@ -22,6 +22,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_iec61937/` | IEC 61937 data-burst parser. |
 | `lib/aius_dts/` | `AiusDtsDecoder` adapter over the vendored DTS Core + the arena alloc shim. |
 | `lib/aius_a52/` | `AiusA52Decoder` adapter over the hardened liba52 fork, with six-step AC-3 AU decode. |
+| `lib/aius_clock/` | Portable supported-rate tracker and pure S/PDIF PLL4 planner. |
 | `lib/aius_pipeline/` | PCM/DTS/AC-3 classifier + parser→decoder end-to-end chaining. |
 | `lib/aius_dsp/` | 5.1→stereo downmix + biquad EQ output DSP. |
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
@@ -102,22 +103,27 @@ the feed — which is what makes a wedged call a bounded reset rather than a han
 
 ### The audio clock
 
-**The engine runs at 48 kHz, and `teensy41-optical` pins it with
+**The boot and replay clock run at 48 kHz, and `teensy41-optical` pins that
+default with
 `-DAUDIO_SAMPLE_RATE_EXACT=48000.0f`.** `AudioStream.h` defaults that macro to
 `44100.0f` behind an `#ifndef`, and `config_spdif3()` derives the whole S/PDIF
 transmit clock tree from it — so the default silently made the optical output
 44.1 kHz while the DTS decoder, the PCM passthrough tag, the DSP config, the meters
 and the replay seam all said 48,000. The audible result was 48 kHz material playing
 8.1 % slow, about 1.4 semitones flat, with every counter honestly zero because the
-producer and the consumer both ran off the same wrong clock. DTS Core is 48 kHz, so
-48 kHz is the rate this decoder must run at. `optical_main.cpp` `static_assert`s the
-build flag equal to `AIUS_OPTICAL_SAMPLE_RATE_HZ`, which
+producer and the consumer both ran off the same wrong clock.
+`optical_main.cpp` still `static_assert`s the boot flag equal to the 48 kHz
+generated model/replay contract, which
 `scripts/build_config.py` generates from `config/optical_dsp.json`.
 
-**Nothing in the audio path resamples.** Neither S/PDIF peripheral converts rate, and
-no code compares a decoded block's `sample_rate_hz` against the engine, so a
-disagreement is neither absorbed nor counted — the queue stays level and the only
-symptom is pitch. That is why the equality is enforced at compile time.
+**Nothing in the audio path resamples.** The portable clock tracker recognizes
+32, 44.1 and 48 kHz carriers; PCM, DTS and AC-3 blocks retain their nominal
+rate; and rate-dependent DSP coefficients and meters use that block rate.
+Phase 1 intentionally keeps the physical output at its boot 48 kHz plan:
+accepted non-48 input and any block/clock mismatch are counted, refused before
+DSP/output state advances, and hold the physical pad dark. The `clock` object
+on `GET /api/status` reports carrier, stream and applied-output truth
+separately. Whole-rate PLL following is the next phase.
 
 **The engine and codec work units have different sizes.**
 `AUDIO_BLOCK_SAMPLES` is the core default 128 frames and is the *engine* block, so
@@ -272,6 +278,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `arena`, `codec-api-contract` | The allocator and ABI contract. |
 | `audio-ingress` | Exact 256-word SPSC publish, wrap, gaps, flush and diagnostics. |
 | `audio-service` | Deferred ingress/service quotas, suffix retry, resets and backpressure. |
+| `clock` | Stable 32/44.1/48 kHz acquisition, quiescence, target cadence and PLL-plan arithmetic. |
 | `dts` | DTS Core decode differential vs FFmpeg (committed corpus). |
 | `dts-arena` | No-heap arena decode path + allocation metrics. |
 | `dts-fuzz` | DTS decoder robustness fuzz. |

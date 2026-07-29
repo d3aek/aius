@@ -277,9 +277,11 @@ Through `uint32_t` because a left shift of a negative `int` is undefined behavio
 (C17 6.5.7p4) and the host suites build with UBSan; the two's-complement result is
 identical, which is what makes the unsigned round-trip correct rather than merely quiet.
 
-Blocks are emitted at `AIUS_PIPELINE_PCM_BLOCK_FRAMES` = 512 frames, stamped
-`AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ` = 48,000 unconditionally
-(`lib/aius_pipeline/include/aius_pipeline.h:45`, `:48`).
+Blocks are emitted at `AIUS_PIPELINE_PCM_BLOCK_FRAMES` = 512 frames. Their
+runtime sample rate defaults to 48,000 Hz, then follows the tracker-accepted
+32, 44.1 or 48 kHz carrier through `aius_pipeline_set_pcm_sample_rate()`. The
+value survives pipeline resets so a carrier-loss reset retains the last
+accepted rate.
 
 **Both branches now enter the DSP at the same full scale, and the fix landed at the
 contract rather than at this call site.** Until 2026-07-26 there was no left shift, so

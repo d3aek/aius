@@ -186,7 +186,11 @@ static int a52_crc_valid (const a52_state_t * state, const uint8_t * buf)
 	return 0;
 
     size_t frame_size = (size_t)span;
-    size_t split = frame_size / 2 + frame_size / 8;
+    /* AC-3's word-aligned 5/8 boundary, matching FFmpeg ac3enc's
+     * ((frame_size >> 2) + (frame_size >> 4)) << 1. 44.1 kHz frame
+     * lengths alternate, so a byte-wise 5/8 can land between words. */
+    size_t frame_words = frame_size / 2;
+    size_t split = 2 * (frame_words / 2 + frame_words / 8);
     if (split < 4 || split > frame_size - 2)
 	return 0;
 

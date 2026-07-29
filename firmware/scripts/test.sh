@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, audio-ingress, audio-service, auth, codec-api-contract, config, dsp-config, json, dts, dts-arena,
+# Suites: arena, audio-ingress, audio-service, auth, clock, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
 #         recovery-runner, flash, http,
@@ -372,6 +372,12 @@ audio-service)
 		"$fw_root/lib/aius_pipeline/src/aius_pipeline.c" \
 		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c"
 	"$out" "$fw_root/tools/iec_corpus/vectors"
+	;;
+clock)
+	compile_and_run clock \
+		"-I$fw_root/lib/aius_clock/include" \
+		"$fw_root/test/clock/test_clock.c" \
+		"$fw_root/lib/aius_clock/src/aius_clock.c"
 	;;
 pipeline)
 	# S/PDIF pipeline: classifier + IEC 61937 parser chained into both resident

@@ -23,8 +23,10 @@ extern "C" {
  * WHY THESE INPUTS, EXACTLY:
  *
  * - `carrier_locked` is the S/PDIF receiver's PLL lock (SPDIF_SRPC LOCK), the
- *   same single volatile read the status surface serves. Locked input means
- *   the device is passing something through; the output must carry.
+ *   same single volatile read the status surface serves.
+ * - `live_ready` proves the accepted carrier rate, applied output clock and
+ *   decoded stream agree. A locked but unaccepted or mismatched carrier stays
+ *   physically dark.
  * - `SWITCHING_TO_REPLAY` counts as running ON PURPOSE: the prebuffer phase
  *   is the sink's lock lead time. Opening the gate only at SOURCE_REPLAY
  *   would hand the sink audio in the same instant it first sees a carrier,
@@ -41,10 +43,11 @@ extern "C" {
  * "Firmware carrier management".
  */
 static inline bool aius_tx_gate_permitted(bool carrier_locked,
+                                          bool live_ready,
                                           AiusReplaySource source)
 {
 	if (carrier_locked)
-		return true;
+		return live_ready;
 	return source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY ||
 	       source == AIUS_REPLAY_SOURCE_REPLAY;
 }

@@ -12,12 +12,20 @@ summary below is a pointer, not a second source of truth.
 
 ## Corpus
 
-All vectors are 48 kHz, 0.1 s of source (4800 samples), which the encoder
-carries as 4 complete AC-3 frames — 6144 decoded samples per channel —
-amplitude-limited to leave encoder headroom. Bitrates are pinned in the script (640k for 5.1, 192k for
-stereo) so committed bytes do not drift with FFmpeg's defaults.
+Vectors are 0.1 s of source, which the encoder pads to complete AC-3 frames,
+and are amplitude-limited to leave encoder headroom. Bitrates are pinned in
+the script (640k for 5.1, 192k for differential stereo) so committed bytes do
+not drift with FFmpeg's defaults.
 
 - `stereo_tones` — L 440 Hz, R 660 Hz.
+- `stereo_tones_44100` / `stereo_tones_32000` — the stereo tones at the
+  other two AC-3 sample rates.
+- `stereo_tones_44100_32k` — 32 kb/s CRC-boundary oracle. Its 138/140/140
+  byte frame sequence distinguishes the specified word-rounded CRC1 boundary
+  from a byte-level `5/8` approximation. It is decoded only for CRC acceptance,
+  not compared with FFmpeg under the high-bitrate fidelity tolerance.
+- `stereo_tones_44100` — the same stereo programme at 44.1 kHz.
+- `stereo_tones_32000` — the same stereo programme at 32 kHz.
 - `stereo_impulse` — stereo click train (impulse every 1024 samples).
 - `surround51_impulse` — 5.1 click train on every channel.
 - `surround51_ident` — the channel-identity vector: FL 300, FR 600, FC 900,
@@ -36,10 +44,12 @@ trap). This corpus is new, so none of the rotated recipes are carried over.
 ## Files per vector
 
 - `<name>.ac3` — raw AC-3, encoded with `ffmpeg ... -c:a ac3`.
-- `<name>.ref.s32` — FFmpeg's decode, interleaved signed 32-bit little-endian
-  PCM at 48 kHz (`-f s32le -acodec pcm_s32le`), the comparison reference.
+- `<name>.ref.s32` — FFmpeg's decode for differential vectors, interleaved
+  signed 32-bit little-endian
+  PCM at the encoded rate (`-f s32le -acodec pcm_s32le`), the comparison
+  reference.
 
-The AC-3 sync word is `0x0B77`; a 48 kHz frame carries 1536 samples, so the
+The AC-3 sync word is `0x0B77`; every AC-3 frame carries 1536 samples, so the
 target emits six 256-frame blocks per access unit
 ([`aius-ac3-support.md`](../../../docs/plans/aius-ac3-support.md) §Design
 sketch).

@@ -47,19 +47,30 @@ struct vector {
     const char *name;
     uint16_t channels;      /* expected decoded channels */
     uint32_t channel_mask;  /* expected AIUS mask */
+    uint32_t sample_rate_hz;
     uint64_t decoded_hash;  /* FNV-1a over AU-order decoded planes */
 };
 
 static const struct vector k_vectors[] = {
     { "stereo_tones",       2, AIUS_CH_FL | AIUS_CH_FR,
+      48000u,
       UINT64_C(0x7d7d27ae1ae01351) },
+    { "stereo_tones_44100", 2, AIUS_CH_FL | AIUS_CH_FR,
+      44100u,
+      UINT64_C(0x6c4d818cf8d0b821) },
+    { "stereo_tones_32000", 2, AIUS_CH_FL | AIUS_CH_FR,
+      32000u,
+      UINT64_C(0xd82ce8a9bbabf841) },
     { "stereo_impulse",     2, AIUS_CH_FL | AIUS_CH_FR,
+      48000u,
       UINT64_C(0xe5ace9204e8da8bb) },
     { "surround51_impulse", 6, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
                                AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      48000u,
       UINT64_C(0x27ca745607a8b834) },
     { "surround51_ident",   6, AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
                                AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR,
+      48000u,
       UINT64_C(0xd549a217bb66b3c6) },
 };
 
@@ -160,6 +171,49 @@ static int core_crc_span_rejected(uint8_t *frame, const uint8_t *end,
 
 static int test_core_identity_contract(const char *dir)
 {
+    if (a52_test_crc_split(138u) != 84u ||
+        a52_test_crc_split(834u) != 520u ||
+        a52_test_crc_split(836u) != 522u) {
+        fprintf(stderr, "FAIL: AC-3 CRC1 5/8 word boundary\n");
+        return 1;
+    }
+
+    {
+        size_t boundary_size = 0;
+        uint8_t *boundary =
+            read_file(dir, "stereo_tones_44100_32k", "ac3",
+                      &boundary_size);
+        size_t boundary_starts[MAX_FRAMES_PER_VECTOR];
+        size_t boundary_lens[MAX_FRAMES_PER_VECTOR];
+        size_t boundary_aus;
+
+        if (!boundary) {
+            fprintf(stderr, "CRC boundary fixture missing\n");
+            return 3;
+        }
+        boundary_aus =
+            collect_aus(boundary, boundary_size, boundary_starts,
+                        boundary_lens, MAX_FRAMES_PER_VECTOR);
+        if (boundary_aus != 3u || boundary_lens[0] != 138u ||
+            boundary_lens[1] != 140u || boundary_lens[2] != 140u) {
+            fprintf(stderr,
+                    "FAIL: CRC boundary fixture frame lengths\n");
+            free(boundary);
+            return 1;
+        }
+        for (size_t i = 0; i < boundary_aus; i++) {
+            if (!a52_test_crc_segments_valid(boundary + boundary_starts[i],
+                                             boundary_lens[i])) {
+                fprintf(stderr,
+                        "FAIL: CRC boundary fixture AU %zu regions\n", i);
+                free(boundary);
+                return 1;
+            }
+        }
+        free(boundary);
+        printf("ok CRC boundary fixture (138/140/140-byte AUs)\n");
+    }
+
     size_t es_size = 0;
     uint8_t *es = read_file(dir, "stereo_tones", "ac3", &es_size);
     if (!es) {
@@ -306,6 +360,47 @@ static int test_core_identity_contract(const char *dir)
     }
 
 #ifdef AIUS_A52_BOUND_PROBE
+    /* A legal 44.1 kHz frame can end after two bytes of its last reader word.
+     * Poison the two following owned bytes: the reader must return the valid
+     * prefix plus zeros, never the stale tail. ASan separately proves the
+     * bounded copy. */
+    {
+        uint32_t storage[2] = {
+            UINT32_C(0x44332211),
+            UINT32_C(0xaaaa6655),
+        };
+        uint8_t *partial = (uint8_t *)(void *)storage;
+        a52_state_t *bounded = a52_init(0);
+        if (!bounded) {
+            free(frame);
+            return 1;
+        }
+        a52_bitstream_probe_expect_end(bounded, partial, 6u);
+        a52_bitstream_set_end(bounded, partial + 6u);
+        a52_bitstream_set_ptr(bounded, partial);
+        uint32_t first = a52_bitstream_get_bh(bounded, 32u);
+        uint32_t second = a52_bitstream_get_bh(bounded, 32u);
+        uint32_t fills = 0, suppressed = 0, mismatches = 0;
+        a52_bitstream_get_probe(bounded, &fills, &suppressed, &mismatches);
+        uint32_t partial_fills =
+            a52_bitstream_get_partial_fills(bounded);
+        a52_free(bounded);
+        if (first != UINT32_C(0x11223344) ||
+            second != UINT32_C(0x55660000) ||
+            partial_fills != 1u || suppressed != 1u ||
+            mismatches != 0u) {
+            fprintf(stderr,
+                    "FAIL: partial reader word first=%08" PRIx32
+                    " second=%08" PRIx32 " partial=%" PRIu32
+                    " suppressed=%" PRIu32 " mismatches=%" PRIu32 "\n",
+                    first, second, partial_fills, suppressed, mismatches);
+            free(frame);
+            return 1;
+        }
+        printf("ok partial reader word zero-pads stale tail "
+               "(%" PRIu32 " partial fill)\n", partial_fills);
+    }
+
     /* An unset end must fail closed before the reader can leave this seven-byte
      * header. ASan makes any fail-open load a hard failure; the probe proves
      * every attempted fill was suppressed and convicted as unarmed. */
@@ -513,6 +608,81 @@ static int decode_complete_au(AiusA52Decoder *dec, const uint8_t *au,
     return 1;
 }
 
+static int test_sample_rate_retention(const char *dir)
+{
+    size_t es_441_size = 0u, es_32_size = 0u;
+    uint8_t *es_441 =
+        read_file(dir, "stereo_tones_44100", "ac3", &es_441_size);
+    uint8_t *es_32 =
+        read_file(dir, "stereo_tones_32000", "ac3", &es_32_size);
+    if (!es_441 || !es_32) {
+        free(es_441);
+        free(es_32);
+        return 3;
+    }
+    size_t starts_441[MAX_FRAMES_PER_VECTOR], lens_441[MAX_FRAMES_PER_VECTOR];
+    size_t starts_32[MAX_FRAMES_PER_VECTOR], lens_32[MAX_FRAMES_PER_VECTOR];
+    if (collect_aus(es_441, es_441_size, starts_441, lens_441,
+                    MAX_FRAMES_PER_VECTOR) == 0u ||
+        collect_aus(es_32, es_32_size, starts_32, lens_32,
+                    MAX_FRAMES_PER_VECTOR) == 0u) {
+        free(es_441);
+        free(es_32);
+        return 1;
+    }
+
+    AiusA52Decoder *dec = NULL;
+    if (aius_a52_decoder_create(&dec) != AIUS_OK ||
+        aius_a52_begin_access_unit(dec, es_441 + starts_441[0],
+                                   lens_441[0]) != AIUS_OK) {
+        fprintf(stderr, "FAIL: sample-rate retention begin 44.1 kHz\n");
+        goto fail;
+    }
+
+    /* The adapter owns the accepted AU and its syncinfo result. Poisoning the
+     * caller's fscod after begin must not change any later block descriptor. */
+    es_441[starts_441[0] + 4u] =
+        (uint8_t)((es_441[starts_441[0] + 4u] & 0x3fu) | 0x80u);
+    for (uint32_t b = 0; b < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; b++) {
+        AiusPcmBlock block = { 0 };
+        if (aius_a52_decode_next_block(dec, &block) != AIUS_OK ||
+            block.sample_rate_hz != 44100u) {
+            fprintf(stderr,
+                    "FAIL: sample-rate retention 44.1 kHz block %u rate %u\n",
+                    b, block.sample_rate_hz);
+            goto fail;
+        }
+    }
+
+    if (aius_a52_begin_access_unit(dec, es_32 + starts_32[0],
+                                   lens_32[0]) != AIUS_OK) {
+        fprintf(stderr, "FAIL: sample-rate retention begin 32 kHz\n");
+        goto fail;
+    }
+    for (uint32_t b = 0; b < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; b++) {
+        AiusPcmBlock block = { 0 };
+        if (aius_a52_decode_next_block(dec, &block) != AIUS_OK ||
+            block.sample_rate_hz != 32000u) {
+            fprintf(stderr,
+                    "FAIL: sample-rate retention 32 kHz block %u rate %u\n",
+                    b, block.sample_rate_hz);
+            goto fail;
+        }
+    }
+
+    aius_a52_decoder_destroy(dec);
+    free(es_441);
+    free(es_32);
+    printf("ok AU sample rate retained across all six blocks\n");
+    return 0;
+
+fail:
+    aius_a52_decoder_destroy(dec);
+    free(es_441);
+    free(es_32);
+    return 1;
+}
+
 static int test_cycle_metrics(const char *dir)
 {
     size_t es_size = 0u;
@@ -632,6 +802,9 @@ int main(int argc, char **argv)
     int cycle_metrics = test_cycle_metrics(dir);
     if (cycle_metrics != 0)
         return cycle_metrics;
+    int sample_rate_retention = test_sample_rate_retention(dir);
+    if (sample_rate_retention != 0)
+        return sample_rate_retention;
 
     int32_t *decoded[AIUS_MAX_CHANNELS] = { 0 }; /* whole-vector planes */
     double worst_snr = 1e9;
@@ -722,12 +895,14 @@ int main(int argc, char **argv)
                 }
                 if (block.channels != vec->channels ||
                     block.channel_mask != vec->channel_mask ||
-                    block.frames != AIUS_A52_BLOCK_SAMPLES) {
+                    block.frames != AIUS_A52_BLOCK_SAMPLES ||
+                    block.sample_rate_hz != vec->sample_rate_hz) {
                     fprintf(stderr,
                             "FAIL: %s AU %zu block %u shape "
-                            "ch=%u mask=%x fr=%u\n",
+                            "ch=%u mask=%x fr=%u rate=%u\n",
                             vec->name, a, b, block.channels,
-                            block.channel_mask, block.frames);
+                            block.channel_mask, block.frames,
+                            block.sample_rate_hz);
                     return 1;
                 }
                 /* Packed AIUS order FL,FR,FC,LFE,SL,SR == FFmpeg's 5.1

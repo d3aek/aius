@@ -2,10 +2,11 @@
 # Deterministically (re)generate the AC-3 differential-test corpus.
 #
 # Synthesizes known PCM with FFmpeg lavfi sources, encodes each to raw AC-3
-# at 48 kHz with FFmpeg's native `ac3` encoder, and decodes each back with
-# FFmpeg to produce the reference PCM the host test compares against. The exact
-# FFmpeg command lines are the provenance record; re-running reproduces the
-# committed .ac3 / .ref.s32 bit-for-bit on a given FFmpeg build.
+# at 32, 44.1 or 48 kHz with FFmpeg's native `ac3` encoder, and decodes the
+# differential vectors back with FFmpeg to produce the reference PCM the host
+# test compares against. The 44.1 kHz / 32 kb/s vector is a CRC-boundary oracle
+# only. The exact FFmpeg command lines are the provenance record; re-running
+# reproduces the committed output bit-for-bit on a given FFmpeg build.
 #
 # Usage:
 #   tools/ac3_vectors/generate.sh            # write into ./vectors
@@ -56,6 +57,18 @@ encode_stereo() {
 		-map "[a]" -c:a ac3 -b:a "$br_stereo" -ar "$sr" "$out/$name.ac3"
 }
 
+# encode_stereo_rate <name> <sample_rate> <freq_l> <freq_r> [bitrate]
+encode_stereo_rate() {
+	local name="$1" rate="$2" fl="$3" fr="$4"
+	local bitrate="${5:-$br_stereo}"
+	echo "==> $name (${rate} Hz stereo tones ${fl}/${fr} Hz, $bitrate)"
+	"$ffmpeg" -hide_banner -loglevel error -y \
+		-f lavfi -i "sine=frequency=$fl:duration=$dur:sample_rate=$rate" \
+		-f lavfi -i "sine=frequency=$fr:duration=$dur:sample_rate=$rate" \
+		-filter_complex "[0][1]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR,volume=0.6[a]" \
+		-map "[a]" -c:a ac3 -b:a "$bitrate" -ar "$rate" "$out/$name.ac3"
+}
+
 # encode_51_ident <name> <f_fl> <f_fr> <f_fc> <f_lfe> <f_bl> <f_br>
 # Explicitly mapped: input k lands on the channel its argument position names.
 encode_51_ident() {
@@ -100,15 +113,18 @@ encode_51_impulse() {
 		-map "[a]" -c:a ac3 -b:a "$br_51" -ar "$sr" "$out/$name.ac3"
 }
 
-# decode_ref <name> : FFmpeg's own decode, interleaved s32le, the comparison ref.
+# decode_ref <name> <sample_rate> : FFmpeg's own decode, interleaved s32le.
 decode_ref() {
-	local name="$1"
+	local name="$1" rate="$2"
 	"$ffmpeg" -hide_banner -loglevel error -y \
-		-i "$out/$name.ac3" -f s32le -acodec pcm_s32le -ar "$sr" \
+		-i "$out/$name.ac3" -f s32le -acodec pcm_s32le -ar "$rate" \
 		"$out/$name.ref.s32"
 }
 
 encode_stereo         stereo_tones       440 660
+encode_stereo_rate    stereo_tones_44100 44100 440 660
+encode_stereo_rate    stereo_tones_44100_32k 44100 440 660 32k
+encode_stereo_rate    stereo_tones_32000 32000 440 660
 encode_stereo_impulse stereo_impulse
 encode_51_impulse     surround51_impulse
 # Mirrors the hardware bench tone programme (defect 30), correctly assigned.
@@ -116,7 +132,13 @@ encode_51_ident       surround51_ident   300 600 900 60 1200 1500
 
 for name in stereo_tones stereo_impulse surround51_impulse surround51_ident; do
 	echo "==> decode reference: $name"
-	decode_ref "$name"
+	decode_ref "$name" "$sr"
+done
+
+for rate in 44100 32000; do
+	name="stereo_tones_$rate"
+	echo "==> decode reference: $name"
+	decode_ref "$name" "$rate"
 done
 
 echo "==> corpus written to $out"

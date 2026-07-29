@@ -109,12 +109,14 @@ unconditional diagnostic.
 `a52_bitstream_set_ptr` reset deliberately preserves it. The sole word-fill
 choke point compares integer addresses, substitutes a zero word without
 advancing at or beyond the end, and treats an unset NULL end as already
-exhausted. Accepted adapter frames are 48 kHz, so their byte lengths and the
-owned scratch base are four-byte aligned; every start below the end therefore
-has one complete word remaining.
+exhausted. The adapter accepts 32, 44.1 and 48 kHz frames. Some 44.1 kHz frame
+lengths leave a two-byte final reader word, so that word is copied only through
+the validated byte end and zero-padded; stale bytes in the owned scratch cannot
+enter the bitstream.
 
 The F3a host probe derives its expected end independently from the scratch base
-and validated frame length, then checks it at every fill. The shipped fuzz run
+and validated frame length, then checks it at every fill. A poisoned six-byte
+probe pins the short-word copy as `0x55660000`, never `0x5566aaaa`. The shipped fuzz run
 observes 3,889,968 fills, including 54,922 suppressed at the bound, with zero
 end mismatches and its prior 5,617/60,183 OK/reject outcome unchanged. A
 seven-byte direct-core case leaves the end unset and proves that every attempted

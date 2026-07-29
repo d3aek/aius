@@ -57,6 +57,7 @@ int a52_syncinfo (uint8_t * buf, int * flags,
 void a52_bitstream_set_end (a52_state_t * state, const uint8_t * end);
 #ifdef AIUS_A52_BOUND_PROBE
 void a52_bitstream_set_ptr (a52_state_t * state, uint8_t * buf);
+uint32_t a52_bitstream_get_bh (a52_state_t * state, uint32_t num_bits);
 void a52_bitstream_probe_expect_end (a52_state_t * state,
 				     const uint8_t * frame,
 				     uint32_t frame_length);
@@ -64,6 +65,7 @@ void a52_bitstream_get_probe (const a52_state_t * state,
 			      uint32_t * fills,
 			      uint32_t * suppressed_fills,
 			      uint32_t * end_mismatches);
+uint32_t a52_bitstream_get_partial_fills (const a52_state_t * state);
 #endif
 int a52_frame (a52_state_t * state, uint8_t * buf, int * flags,
 	       sample_t * level, sample_t bias);

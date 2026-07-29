@@ -25,6 +25,7 @@
 
 #include <inttypes.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "a52.h"
 #include "a52_internal.h"
@@ -61,6 +62,11 @@ void a52_bitstream_get_probe (const a52_state_t * state,
     if (end_mismatches != NULL)
 	*end_mismatches = state->bitstream_end_mismatches;
 }
+
+uint32_t a52_bitstream_get_partial_fills (const a52_state_t * state)
+{
+    return state != NULL ? state->bitstream_partial_fills : 0;
+}
 #endif
 
 void a52_bitstream_set_ptr (a52_state_t * state, uint8_t * buf)
@@ -76,6 +82,8 @@ void a52_bitstream_set_ptr (a52_state_t * state, uint8_t * buf)
 static inline void bitstream_fill_current (a52_state_t * state)
 {
     uint32_t tmp;
+    uintptr_t start;
+    uintptr_t end;
 
 #ifdef AIUS_A52_BOUND_PROBE
     state->bitstream_fills++;
@@ -84,11 +92,15 @@ static inline void bitstream_fill_current (a52_state_t * state)
 	state->bitstream_end_mismatches++;
 #endif
 
-    /* The adapter accepts only 48 kHz frames, whose byte length and aligned
-     * scratch base make every reachable word start four-byte aligned. The
-     * integer comparison also makes an unset NULL end fail closed without an
-     * undefined relational comparison between unrelated pointers. */
-    if ((uintptr_t)state->buffer_start >= (uintptr_t)state->buffer_end) {
+    /* Integer comparison makes an unset NULL end fail closed without an
+     * undefined relational comparison between unrelated pointers. AC-3 frame
+     * lengths are word-sized but not necessarily four-byte-sized (44.1 kHz
+     * includes 138-byte frames), so the final short word is copied and
+     * zero-padded instead of reading stale scratch bytes beyond the validated
+     * frame end. */
+    start = (uintptr_t)state->buffer_start;
+    end = (uintptr_t)state->buffer_end;
+    if (start >= end) {
 	state->current_word = 0;
 #ifdef AIUS_A52_BOUND_PROBE
 	state->bitstream_suppressed_fills++;
@@ -96,7 +108,16 @@ static inline void bitstream_fill_current (a52_state_t * state)
 	return;
     }
 
-    tmp = *(state->buffer_start++);
+    if (end - start < sizeof (tmp)) {
+	tmp = 0;
+	memcpy (&tmp, (const void *)start, (size_t)(end - start));
+	state->buffer_start++;
+#ifdef AIUS_A52_BOUND_PROBE
+	state->bitstream_partial_fills++;
+#endif
+    } else {
+	tmp = *(state->buffer_start++);
+    }
     state->current_word = swab32 (tmp);
 }
 

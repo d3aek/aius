@@ -21,6 +21,7 @@
 #define IEC_PB_BE 0x4E1Fu
 #define IEC_PA_LE 0x72F8u
 #define IEC_PB_LE 0x1F4Eu
+#define PCM_DEFAULT_SAMPLE_RATE_HZ 48000u
 
 typedef enum {
 	PENDING_NONE = 0,
@@ -54,6 +55,7 @@ struct AiusPipeline {
 	uint32_t pcm_frames;       /* complete L/R frames staged */
 	int32_t pcm_pending_l;     /* a lone L sample awaiting its R */
 	int pcm_have_half;
+	uint32_t pcm_sample_rate_hz;
 
 	/* Confirmation squelch: words consumed by the PCM route since the class
 	 * was entered, SATURATING at AIUS_PIPELINE_PCM_CONFIRM_WORDS. Per-run and
@@ -499,7 +501,7 @@ static void fill_pcm_descriptor(AiusPipeline *p)
 	p->sink_block.planes[1] = p->pcm_r;
 	p->sink_block.channels = 2u;
 	p->sink_block.frames = p->pcm_frames;
-	p->sink_block.sample_rate_hz = AIUS_PIPELINE_PCM_SAMPLE_RATE_HZ;
+	p->sink_block.sample_rate_hz = p->pcm_sample_rate_hz;
 	p->sink_block.channel_mask = AIUS_CH_FL | AIUS_CH_FR;
 }
 
@@ -811,6 +813,16 @@ void aius_pipeline_reset(AiusPipeline *p)
 	p->dts_starve_words = 0;
 }
 
+AiusStatus aius_pipeline_set_pcm_sample_rate(AiusPipeline *p,
+                                             uint32_t sample_rate_hz)
+{
+	if (!p || (sample_rate_hz != 32000u && sample_rate_hz != 44100u &&
+	           sample_rate_hz != 48000u))
+		return AIUS_INVALID_ARG;
+	p->pcm_sample_rate_hz = sample_rate_hz;
+	return AIUS_OK;
+}
+
 void aius_pipeline_get_service_diag(const AiusPipeline *p,
 	                                AiusPipelineServiceDiag *out)
 {
@@ -949,6 +961,7 @@ static AiusStatus init_fields(AiusPipeline *p, const AiusPipelineConfig *cfg,
 	p->window = window;
 	p->klass = AIUS_PIPELINE_UNKNOWN;
 	p->last_status = AIUS_OK;
+	p->pcm_sample_rate_hz = PCM_DEFAULT_SAMPLE_RATE_HZ;
 
 	AiusIec61937Config pcfg = { .packing = packing };
 	return aius_iec61937_parser_create(&p->parser, &pcfg);
