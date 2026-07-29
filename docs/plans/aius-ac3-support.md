@@ -2176,6 +2176,60 @@ Bench first, TV second, because the bench is scriptable and the TV is not:
 - By-ear checks already owed (squelch seam silence, layout-aware stereo
   level) fold into the same session.
 
+### Phase 4 exact-image evidence (2026-07-29)
+
+Phase 4's bounded hardware gates pass on production image
+`bc05232880a5+teensy41-optical`, built `2026-07-29T21:37:13Z`. Independent
+Intel-HEX parsing and a fresh live CDC identity read report the same revision
+and build timestamp.
+
+- **CM6206 external optical, 120.005 seconds / 61 polls:** continuous carrier,
+  `codec_pc == 1`, 3,749 accepted bursts and 22,498 committed blocks. Completed
+  AC-3 AU timing was 1,114,200 cycles, arena high-water 77,688 B, both codec
+  allocation counts zero and AUDIO service maximum 2.070 ms. Parse/decode
+  rejects, service overruns, output drops, AU abandons, ingress drops,
+  generation resets and gap/source flushes all had zero delta; boot generation
+  stayed 4 and the watchdog count stayed zero. The live final snapshot caught
+  one retained transmission between its stall and retry
+  (848,374 / 848,373 delta); across all polls the absolute difference was never
+  above one, and the final TX queue was at its 2,048-frame high-water. This is
+  evidence of a bounded one-item in-flight state, not an accumulating unpaired
+  failure.
+- **Clock-coherent SD replay, 120.007 seconds / 61 polls:** carrier absent,
+  replay gate open, `codec_pc == 1`, 3,747 accepted bursts and 22,482 committed
+  blocks. Completed AC-3 AU timing was 1,114,373 cycles, arena high-water
+  77,688 B, both codec allocation counts zero and AUDIO service maximum
+  5.008 ms. Parse/decode rejects, AUDIO service overruns, output drops, AU
+  abandons, ingress drops and gap flushes all had zero delta; boot generation
+  stayed 4 and the watchdog count stayed zero. Replay start intentionally
+  requested one service-generation reset and two source flushes relative to
+  the pre-start baseline; they completed by the 2.013-second poll and remained
+  flat through 120 seconds.
+- **Committed-wire channel oracle:** the running DSP configuration was
+  layout-aware with 0.5 fixed headroom, 0.707107 centre/surround gains,
+  0.316228 LFE gain at 120 Hz, empty per-input EQ, output EQ disabled and the
+  -1 dBFS limiter enabled. `/api/measure` completed 16,384 captured and 8,192
+  analysed frames with zero metrics-service overruns:
+
+  | Tone / source | Left dBFS | Right dBFS | Result |
+  | --- | ---: | ---: | --- |
+  | 60 Hz / LFE | -23.48 | -23.48 | 0.00 dB L/R |
+  | 300 Hz / FL | -12.96 | -127.54 | left +114.58 dB |
+  | 600 Hz / FR | -129.02 | -12.96 | right +116.06 dB |
+  | 900 Hz / FC | -15.97 | -15.97 | 0.00 dB L/R |
+  | 1200 Hz / SL | -15.97 | -128.62 | left +112.65 dB |
+  | 1500 Hz / SR | -116.49 | -15.97 | right +100.52 dB |
+
+  Every expected side exceeds -40 dBFS, directional rejection exceeds 40 dB
+  and centre/LFE matching is inside 0.5 dB. This proves all six AC-3 identities
+  through decode, layout-aware DSP and committed transmit words without using
+  the reverse optical fibre as an oracle.
+
+The bounded Phase 4 gates are complete. The four-hour TV mission gate and
+by-ear checks remain dependency-blocked by `aius-sample-rate-following.md`; this
+evidence does not substitute a temporary clock-matched run for production
+acceptance.
+
 ### Phase boundary and exact-image proof
 
 The code boundary runs `a52`, `a52-fuzz`, `dts`, `pipeline`, `iec61937`,
