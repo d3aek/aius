@@ -40,6 +40,6 @@ trap). This corpus is new, so none of the rotated recipes are carried over.
   PCM at 48 kHz (`-f s32le -acodec pcm_s32le`), the comparison reference.
 
 The AC-3 sync word is `0x0B77`; a 48 kHz frame carries 1536 samples, so the
-target emits three 512-frame blocks per access unit
+target emits six 256-frame blocks per access unit
 ([`aius-ac3-support.md`](../../../docs/plans/aius-ac3-support.md) §Design
 sketch).

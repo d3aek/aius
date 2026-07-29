@@ -117,7 +117,7 @@ void aius_iec61937_parser_destroy(AiusIec61937Parser *p)
 }
 
 /* Finalize the payload buffer and publish the completed-burst descriptor.
- * Returns AIUS_OK for in-scope (DTS Core) types, AIUS_UNSUPPORTED otherwise. */
+ * Returns AIUS_OK for in-scope AC-3/DTS Core types, AIUS_UNSUPPORTED otherwise. */
 static AiusStatus finalize_burst(AiusIec61937Parser *p)
 {
 	/* Flush a trailing sub-byte group (14-bit packing, non-byte-aligned tail). */
@@ -188,7 +188,12 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 		case ST_EXPECT_PD: {
 			uint16_t pd = normalize(p, words[i]);
 			i++;
-			uint32_t length_bits = pd;
+			/* IEC 61937 encodes Pd as a byte count for E-AC-3 (Pc 21);
+			 * AC-3, DTS Core and the remaining types use a bit count. Pc
+			 * 21 stays unsupported, but de-framing it with the right length
+			 * keeps the unsupported-burst path honest. */
+			uint32_t payload_bits =
+				(p->data_type == 21) ? (uint32_t)pd * 8u : (uint32_t)pd;
 
 			if (p->error_flag) {
 				p->diag.rejects_malformed++;
@@ -199,9 +204,10 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 				return AIUS_MALFORMED;
 			}
 
-			p->in_scope = (p->data_type == 11 || p->data_type == 12 ||
+			p->in_scope = (p->data_type == 1 || p->data_type == 11 ||
+			               p->data_type == 12 ||
 			               p->data_type == 13);
-			if (p->in_scope && length_bits == 0) {
+			if (p->in_scope && payload_bits == 0) {
 				p->diag.rejects_malformed++;
 				p->diag.last_reject_pc = p->hdr_pc;
 				p->diag.last_reject_pd = pd;
@@ -210,7 +216,7 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 				return AIUS_MALFORMED;
 			}
 
-			p->payload_bytes = (length_bits + 7u) / 8u;
+			p->payload_bytes = (payload_bits + 7u) / 8u;
 			if (p->payload_bytes > AIUS_IEC61937_MAX_PAYLOAD) {
 				p->diag.rejects_no_space++;
 				p->diag.last_reject_pc = p->hdr_pc;
@@ -221,8 +227,8 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 			}
 
 			p->words_needed = (p->packing == AIUS_IEC61937_PACK_14)
-			                      ? (length_bits + 13u) / 14u
-			                      : (length_bits + 15u) / 16u;
+			                      ? (payload_bits + 13u) / 14u
+			                      : (payload_bits + 15u) / 16u;
 			p->words_read = 0;
 			p->bytes_out = 0;
 			p->bitacc = 0;

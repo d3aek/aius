@@ -508,7 +508,7 @@ def render(elf, banks, fields, arena_bytes, arena_symbol=None):
         share = 100.0 * arena_bytes / dtcm.capacity if dtcm.capacity else 0.0
         origin = f" [{arena_symbol}]" if arena_symbol else ""
         lines.append(
-            f"  note: DTS decoder static arena{origin} = {arena_bytes}B "
+            f"  note: shared codec decoder static arena{origin} = {arena_bytes}B "
             f"({kib(arena_bytes)}), {share:.1f}% of DTCM, inside the DTCM 'used' figure")
 
     for section in unplaced(elf):

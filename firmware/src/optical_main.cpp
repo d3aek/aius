@@ -939,6 +939,21 @@ public:
 			? aius_pipeline_get_metrics(g_pipeline, out)
 			: AIUS_INVALID_ARG;
 	}
+	uint16_t pipeline_codec_pc(void) const
+	{
+		return g_pipeline != nullptr ? aius_pipeline_codec_pc(g_pipeline) : 0u;
+	}
+	AiusStatus pipeline_codec_metrics(uint16_t codec_pc,
+	                                 AiusMetrics *out) const
+	{
+		return g_pipeline != nullptr
+			? aius_pipeline_get_codec_metrics(g_pipeline, codec_pc, out)
+			: AIUS_INVALID_ARG;
+	}
+	void pipeline_service_diag(AiusPipelineServiceDiag *out) const
+	{
+		aius_pipeline_get_service_diag(g_pipeline, out);
+	}
 	AiusStatus parser_diag(AiusIecDiag *out) const
 	{
 		return g_pipeline != nullptr
@@ -2379,13 +2394,27 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                                         size_t *length)
 {
 	AiusMetrics metrics;
+	AiusMetrics dts_metrics;
+	AiusMetrics ac3_metrics;
 	AiusIecDiag iec;
+	AiusPipelineServiceDiag service;
 
 	memset(&metrics, 0, sizeof(metrics));
+	memset(&dts_metrics, 0, sizeof(dts_metrics));
+	memset(&ac3_metrics, 0, sizeof(ac3_metrics));
 	memset(&iec, 0, sizeof(iec));
+	memset(&service, 0, sizeof(service));
 	const AiusPipelineClass klass = g_audio_processor.classification();
+	const uint16_t codec_pc = g_audio_processor.pipeline_codec_pc();
 	const AiusStatus got = g_audio_processor.pipeline_metrics(&metrics);
+	(void)g_audio_processor.pipeline_codec_metrics(11u, &dts_metrics);
+	(void)g_audio_processor.pipeline_codec_metrics(1u, &ac3_metrics);
+	const uint32_t shared_arena_high_water =
+		dts_metrics.arena_high_water > ac3_metrics.arena_high_water
+			? dts_metrics.arena_high_water
+			: ac3_metrics.arena_high_water;
 	(void)g_audio_processor.parser_diag(&iec);
+	g_audio_processor.pipeline_service_diag(&service);
 	/* Defect 28: lifetime re-classification counters. On a live board a
 	 * non-zero retype_count is what distinguishes a mid-stream re-type from
 	 * a reboot that happened to classify DTS. */
@@ -2401,11 +2430,17 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 
 	return http_json_append(output, capacity, length,
 	                        ",\"pipeline_diag\":{\"class\":%u,"
+	                        "\"codec_pc\":%u,"
 	                        "\"metrics_valid\":%u,\"last_status\":%d,"
 	                        "\"create_status\":%d,"
 	                        "\"decode_cycles\":%llu,"
 	                        "\"arena_high_water\":%lu,"
 	                        "\"alloc_count\":%lu,"
+	                        "\"dts_decode_cycles\":%llu,"
+	                        "\"dts_alloc_count\":%lu,"
+	                        "\"ac3_decode_cycles\":%llu,"
+	                        "\"ac3_alloc_count\":%lu,"
+	                        "\"decode_rejects\":%lu,"
 	                        "\"bursts_ok\":%lu,"
 	                        "\"rejects_no_space\":%lu,"
 	                        "\"rejects_malformed\":%lu,"
@@ -2418,12 +2453,18 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        "\"squelched_frames\":%lu,"
 	                        "\"pcm_confirmed\":%u}",
 	                        (unsigned)klass,
+	                        (unsigned)codec_pc,
 	                        got == AIUS_OK ? 1u : 0u,
 	                        (int)metrics.last_status,
 	                        (int)g_audio_processor.create_status(),
 	                        (unsigned long long)metrics.decode_cycles,
-	                        (unsigned long)metrics.arena_high_water,
+	                        (unsigned long)shared_arena_high_water,
 	                        (unsigned long)metrics.alloc_count,
+	                        (unsigned long long)dts_metrics.decode_cycles,
+	                        (unsigned long)dts_metrics.alloc_count,
+	                        (unsigned long long)ac3_metrics.decode_cycles,
+	                        (unsigned long)ac3_metrics.alloc_count,
+	                        (unsigned long)service.decode_rejects,
 	                        (unsigned long)iec.bursts_ok,
 	                        (unsigned long)iec.rejects_no_space,
 	                        (unsigned long)iec.rejects_malformed,

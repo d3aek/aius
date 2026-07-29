@@ -13,16 +13,16 @@
 extern "C" {
 #endif
 
-/* S/PDIF input pipeline: classify -> (IEC 61937 de-frame -> DTS Core decode)
- * or PCM pass-through (capability-gate phase, chains P2 parser into P3 decoder).
+/* S/PDIF input pipeline: classify -> (IEC 61937 de-frame -> codec dispatch)
+ * or PCM pass-through.
  *
  * Consumes the 16-bit S/PDIF (IEC 60958) subframe payload-word stream and routes
  * it two ways off a single classification:
  *
- *   AIUS_PIPELINE_DTS  the stream carries IEC 61937 non-linear PCM (DTS Core).
+ *   AIUS_PIPELINE_DTS  the stream carries IEC 61937 non-linear PCM.
  *                      The pipeline drives AiusIec61937Parser to unwrap bursts
- *                      and feeds each burst payload (a raw DTS Core access unit)
- *                      into AiusDtsDecoder, emitting decoded planar AiusPcmBlocks.
+ *                      and routes Pc 1 to AiusA52Decoder and Pc 11/12/13 to
+ *                      AiusDtsDecoder, emitting decoded planar AiusPcmBlocks.
  *   AIUS_PIPELINE_PCM  the stream is IEC 60958 linear PCM. The words are treated
  *                      as interleaved L,R 16-bit samples and emitted (no decode)
  *                      as 2ch / 48 kHz blocks, left-aligned to the AiusPcmBlock
@@ -69,9 +69,9 @@ extern "C" {
  * starts late. See AIUS_PIPELINE_PCM_CONFIRM_WORDS.
  *
  * Every decoded or passed-through block is delivered to the caller's AiusPcmSink.
- * The steady-state push path performs no allocation beyond the DTS decoder's own
- * arena/heap (classify buffer and PCM staging live in the fixed instance). Only
- * create allocates: the instance, the IEC parser, and the DTS decoder.
+ * The steady-state push path performs no allocation beyond the decoders' own
+ * arena/heap (classify buffer and PCM staging live in the fixed instance).
+ * Only create allocates: the instance, parser, and both resident decoders.
  */
 
 /* Words scanned for a preamble before a stream is declared linear PCM. Also the
@@ -185,7 +185,7 @@ typedef struct {
 	AiusStatus last_failure;
 } AiusPipelineServiceDiag;
 
-/* Create a pipeline whose DTS decoder allocates through libc (host convenience).
+/* Create a pipeline whose decoders allocate through libc (host convenience).
  * `cfg` may be NULL for defaults; `sink` (with a non-NULL consume) is required
  * and copied. On success *out holds a heap-owned handle; destroy with
  * aius_pipeline_destroy. Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
@@ -193,14 +193,14 @@ AiusStatus aius_pipeline_create(AiusPipeline **out,
                                 const AiusPipelineConfig *cfg,
                                 const AiusPcmSink *sink);
 
-/* Create a pipeline whose instance and DTS decoder come from `arena` (the target-
+/* Create a pipeline whose instance and both decoders come from `arena` (the target-
  * shaped no-libc-heap path for the decode side; the IEC parser has no arena
  * provisioning and is libc-allocated at create in both modes). `arena` must
  * outlive the pipeline. The owner MAY carve its own long-lived allocations from
  * the arena BEFORE this call (the target carves the DSP chain's double staging
  * there -- see optical_main begin_pipeline); after create the remaining arena
  * belongs to the pipeline alone, and nothing may ever reset it. Size it from
- * the decoder's arena high-water (see aius_dts_get_metrics) plus the instance
+ * the decoders' arena high-water (see aius_pipeline_get_metrics) plus the instance
  * plus any owner carve. Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
 AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
                                       const AiusPipelineConfig *cfg,
@@ -265,10 +265,29 @@ void aius_pipeline_destroy(AiusPipeline *p);
 /* The current classification (AIUS_PIPELINE_UNKNOWN until decided). */
 AiusPipelineClass aius_pipeline_classification(const AiusPipeline *p);
 
-/* Copy the DTS decoder's most-recent measurements into *out (see
- * aius_dts_get_metrics). `last_status` is the last parse/decode result the
- * pipeline observed. Returns AIUS_OK or AIUS_INVALID_ARG. */
+/* Data type (Pc) of the last successfully decoded access unit: 1 for AC-3,
+ * 11/12/13 for DTS, or 0 until one succeeds. Stream discontinuities clear it;
+ * a later malformed burst alone does not. NULL returns 0. */
+uint16_t aius_pipeline_codec_pc(const AiusPipeline *p);
+
+/* Copy one resident codec's most-recent measurements into *out. Pc 1 selects
+ * AC-3; Pc 11/12/13 select DTS. Other values are invalid. */
+AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
+                                           uint16_t codec_pc,
+                                           AiusMetrics *out);
+
+/* Compatibility projection for the last successfully decoded codec.
+ * `last_status` is always the last parse/decode result the pipeline observed.
+ * Before a codec succeeds, operation fields are zero and arena_high_water is
+ * the maximum of both resident decoder readings. */
 AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out);
+
+#ifdef AIUS_PIPELINE_TEST_HOOKS
+/* Controlled native-suite oracle: make the named AC-3 block decode fail once.
+ * Block numbers are 1..6; 0 disables the hook. */
+AiusStatus aius_pipeline_test_fail_a52_block(AiusPipeline *p,
+                                             uint8_t block_number);
+#endif
 
 /* Copy the IEC 61937 parser's reject tallies (see AiusIecDiag). Returns
  * AIUS_OK or AIUS_INVALID_ARG. */

@@ -28,13 +28,14 @@
   /* Numeric vocabularies mirrored from the firmware the way dsp-editor.js
    * mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: the wire carries the raw number and
    * nothing on it says what the number means.
-   *   state   optical_main.cpp current_state(): 2 no carrier, 3 PCM, 4 DTS
-   *   format  AiusPipelineClass, aius_pipeline.h: 0 unknown, 1 PCM, 2 DTS
+   *   state   optical_main.cpp current_state(): 2 no carrier, 3 PCM, 4 bitstream
+   *   format  AiusPipelineClass: 0 unknown, 1 PCM, 2 IEC 61937 bitstream
+   *   codec   pipeline_diag.codec_pc: 0 unknown, 1 AC-3, 11/12/13 DTS
    *   the network and checkpoint vocabularies are the ones swagger's Status
    *   schema documents for network_state, network_last_fault and
    *   last_checkpoint. */
-  const AUDIO_STATES = { 2: 'no carrier', 3: 'PCM', 4: 'DTS' };
-  const STREAM_FORMATS = { 0: 'unknown', 1: 'PCM (IEC 60958)', 2: 'DTS (IEC 61937)' };
+  const AUDIO_STATES = { 2: 'no carrier', 3: 'PCM' };
+  const STREAM_FORMATS = { 0: 'unknown', 1: 'PCM (IEC 60958)' };
   const NETWORK_STATES = ['stack-start', 'dhcp-wait', 'online', 'teardown', 'backoff', 'recovery-safe'];
   const NETWORK_FAULTS = [
     'none',
@@ -74,9 +75,28 @@
     return Number.isFinite(key) && table[key] !== undefined ? `${table[key]} (${key})` : String(value ?? '--');
   };
 
-  const streamFormat = (value) => {
-    const key = Number(value);
-    return Number.isFinite(key) && STREAM_FORMATS[key] !== undefined ? STREAM_FORMATS[key] : String(value ?? '--');
+  const codecName = (status) => {
+    const pipeline = status.pipeline_diag || {};
+    const codecPc = Number(pipeline.codec_pc);
+    if (codecPc === 1) return 'AC-3';
+    if (codecPc === 11 || codecPc === 12 || codecPc === 13) return 'DTS';
+    return 'unknown';
+  };
+
+  const bitstreamLabel = (status) => `bitstream (${codecName(status)})`;
+
+  const audioState = (status) => {
+    const key = Number(status.state);
+    if (key === 4) return `${bitstreamLabel(status)} (4)`;
+    return named(AUDIO_STATES, status.state);
+  };
+
+  const streamFormat = (status) => {
+    const key = Number(status.format);
+    if (key === 2) return bitstreamLabel(status);
+    return Number.isFinite(key) && STREAM_FORMATS[key] !== undefined
+      ? STREAM_FORMATS[key]
+      : String(status.format ?? '--');
   };
 
   const listed = (list, value) => {
@@ -131,7 +151,7 @@
     const gate = status.tx_gate || {};
     const open = truthy(gate.open);
     const source = inputSource(status);
-    const format = streamFormat(status.format);
+    const format = streamFormat(status);
     const stages = [
       ['input', source, source !== 'none'],
       ['DSP', format, Number(status.format) > 0],
@@ -161,9 +181,9 @@
   function renderAudio(status) {
     renderFlow(status);
     put('input-source', inputSource(status));
-    put('audio-state', named(AUDIO_STATES, status.state));
+    put('audio-state', audioState(status));
     put('carrier', truthy(status.carrier) ? 'locked' : 'absent');
-    put('format', streamFormat(status.format));
+    put('format', streamFormat(status));
     const rate = Number(status.sample_rate) || 0;
     put('sample-rate', rate > 0 ? `${rate} Hz` : '-- (no carrier)');
     put('blocks', String(Number(status.blocks) || 0));

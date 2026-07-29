@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "aius_a52.h"
 #include "aius_dts.h"
 #include "aius_pipeline.h"
 
@@ -193,6 +194,77 @@ static int blocks_equal(const struct block_copy *a, const struct block_copy *b)
 			return 0;
 	}
 	return 1;
+}
+
+static AiusPipelineClass run_pipeline(const uint16_t *w, size_t n,
+                                      size_t chunk, struct capture *cap);
+
+static double goertzel_blocks(const struct capture *cap, int channel,
+                              double frequency_hz)
+{
+	const double omega = 2.0 * 3.14159265358979323846 *
+	                     frequency_hz / 48000.0;
+	const double coeff = 2.0 * cos(omega);
+	double s1 = 0.0;
+	double s2 = 0.0;
+	for (int b = 0; b < cap->n; b++) {
+		if (channel >= cap->blocks[b].channels)
+			continue;
+		for (uint32_t n = 0; n < cap->blocks[b].frames; n++) {
+			double s0 = (double)cap->blocks[b].planes[channel][n] +
+			            coeff * s1 - s2;
+			s2 = s1;
+			s1 = s0;
+		}
+	}
+	return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+}
+
+static void test_ac3_dispatch_and_identity(const char *dir)
+{
+	size_t n = 0u;
+	uint16_t *wire = load_wire(dir, "ac3_surround51_ident", &n);
+	CHECK(wire != NULL, "ac3: corpus load");
+	if (!wire)
+		return;
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPipelineClass klass = run_pipeline(wire, n, 256u, &cap);
+	const uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
+	                      AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR;
+	CHECK(klass == AIUS_PIPELINE_DTS, "ac3: class %d != bitstream", klass);
+	CHECK(cap.n == 12, "ac3: %d blocks != 12 (two six-block AUs)", cap.n);
+	for (int b = 0; b < cap.n; b++)
+		CHECK(cap.blocks[b].channels == 6u &&
+		          cap.blocks[b].frames == AIUS_A52_BLOCK_SAMPLES &&
+		          cap.blocks[b].sample_rate_hz == 48000u &&
+		          cap.blocks[b].channel_mask == mask,
+		      "ac3: block %d descriptor (%u,%u,%u,%08x)", b,
+		      cap.blocks[b].channels, cap.blocks[b].frames,
+		      cap.blocks[b].sample_rate_hz, cap.blocks[b].channel_mask);
+
+	if (cap.n == 12) {
+		static const double tones[6] = { 300, 600, 900, 60, 1200, 1500 };
+		for (int channel = 0; channel < 6; channel++) {
+			double own = goertzel_blocks(&cap, channel, tones[channel]);
+			double next = 0.0;
+			for (int tone = 0; tone < 6; tone++) {
+				if (tone == channel)
+					continue;
+				double magnitude =
+					goertzel_blocks(&cap, channel, tones[tone]);
+				if (magnitude > next)
+					next = magnitude;
+			}
+			CHECK(own > 3.0 * next,
+			      "ac3: channel %d identity own %.0f next %.0f",
+			      channel, own, next);
+		}
+	}
+	printf("  ac3-dispatch   2 AUs -> 12 x 256, 3072 frames/channel identity\n");
+	capture_free(&cap);
+	free(wire);
 }
 
 /* ---- test 1: end-to-end DTS equivalence ---------------------------------- */
@@ -480,8 +552,12 @@ static void test_no_heap_steady_state(const char *dir)
 {
 	size_t n = 0;
 	uint16_t *w = load_wire(dir, "dts_be16", &n);
-	if (!w) {
+	size_t ac3_n = 0u;
+	uint16_t *ac3 = load_wire(dir, "ac3_surround51_ident", &ac3_n);
+	if (!w || !ac3) {
 		CHECK(0, "steady-state: corpus load failed");
+		free(ac3);
+		free(w);
 		return;
 	}
 
@@ -504,6 +580,17 @@ static void test_no_heap_steady_state(const char *dir)
 	}
 
 	AiusMetrics m;
+	AiusMetrics dts_m;
+	AiusMetrics ac3_m;
+
+	CHECK(aius_pipeline_codec_pc(p) == 0u, "ss: initial codec Pc is nonzero");
+	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
+	          m.decode_cycles == 0u && m.stack_high_water == 0u &&
+	          m.alloc_count == 0u && m.arena_high_water > 0u &&
+	          m.last_status == AIUS_OK,
+	      "ss: unknown compatibility metrics are not zero-operation");
+	CHECK(aius_pipeline_get_codec_metrics(p, 21u, &m) == AIUS_INVALID_ARG,
+	      "ss: unsupported codec metrics Pc accepted");
 
 	/* Warmup burst: allocates (proves the arena + alloc shim are wired). */
 	CHECK(aius_pipeline_push(p, w, n) == AIUS_OK, "ss: warmup push");
@@ -518,10 +605,31 @@ static void test_no_heap_steady_state(const char *dir)
 	CHECK(m.alloc_count == 0,
 	      "ss: steady-state decode allocated %u (must be 0)", m.alloc_count);
 	CHECK(cap.n == 2, "ss: emitted %d blocks != 2", cap.n);
+	CHECK(aius_pipeline_codec_pc(p) == 13u ||
+	          aius_pipeline_codec_pc(p) == 12u ||
+	          aius_pipeline_codec_pc(p) == 11u,
+	      "ss: DTS codec Pc %u", aius_pipeline_codec_pc(p));
+	CHECK(aius_pipeline_get_codec_metrics(p, aius_pipeline_codec_pc(p),
+	                                      &dts_m) == AIUS_OK &&
+	          dts_m.alloc_count == 0u,
+	      "ss: separately-addressed DTS metrics");
+
+	CHECK(aius_pipeline_push(p, ac3, ac3_n) == AIUS_OK, "ss: AC-3 push");
+	CHECK(aius_pipeline_codec_pc(p) == 1u, "ss: AC-3 codec Pc not selected");
+	CHECK(aius_pipeline_get_codec_metrics(p, 1u, &ac3_m) == AIUS_OK &&
+	          ac3_m.alloc_count == 0u,
+	      "ss: AC-3 steady-state decode allocated");
+	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
+	          m.alloc_count == ac3_m.alloc_count &&
+	          m.decode_cycles == ac3_m.decode_cycles &&
+	          m.arena_high_water >= dts_m.arena_high_water &&
+	          m.arena_high_water >= ac3_m.arena_high_water,
+	      "ss: compatibility/per-codec metric projection");
 	printf("  steady-state   2nd burst alloc_count=0 (no-heap steady state)\n");
 
 	aius_pipeline_destroy(p);
 	capture_free(&cap);
+	free(ac3);
 	free(w);
 }
 
@@ -1037,20 +1145,21 @@ static void test_starve_and_recover(const char *dir)
 	free(v);
 }
 
-/* T6: framed-but-unsupported never starves. A stream of AC-3 bursts completes
- * an UNSUPPORTED burst every 28 words -- each is framing evidence, so the
- * class must hold DTS in silence rather than decay into PCM noise. Fails if
- * the starvation counter resets on AIUS_OK only. */
+/* T6: framed-but-unsupported never starves. Repeated E-AC-3 bursts are framing
+ * evidence, so the class must hold bitstream in silence rather than decay into
+ * PCM noise. Fails if the starvation counter resets on AIUS_OK only. */
 static void test_unsupported_never_starves(const char *dir)
 {
 	size_t n = 0, sn = 0;
-	uint16_t *v = load_wire(dir, "unsupported_ac3", &n);
+	uint16_t *v = load_wire(dir, "unsupported_eac3", &n);
 	if (!v) {
 		CHECK(0, "unsupported: corpus load failed");
 		return;
 	}
-	CHECK(n == 28, "unsupported: vector is %zu words, expected 28", n);
-	uint16_t *s = repeat_wire(v, n, 700, &sn); /* 19600 > STARVE_WORDS */
+	const size_t repeats = AIUS_PIPELINE_DTS_STARVE_WORDS / n + 2u;
+	uint16_t *s = repeat_wire(v, n, repeats, &sn);
+	CHECK(sn > AIUS_PIPELINE_DTS_STARVE_WORDS,
+	      "unsupported: repeated vector does not span starvation budget");
 
 	struct capture cap;
 	memset(&cap, 0, sizeof(cap));
@@ -1060,7 +1169,7 @@ static void test_unsupported_never_starves(const char *dir)
 	CHECK(d.reclassify == 0, "unsupported: reclassify_count %u != 0 (starved!)",
 	      d.reclassify);
 	CHECK(cap.n == 0, "unsupported: %d blocks != 0", cap.n);
-	printf("  unsupported    19600 words of AC-3 bursts hold DTS, no starve\n");
+	printf("  unsupported    E-AC-3 bursts hold bitstream class, no starve\n");
 	capture_free(&cap);
 	free(s);
 	free(v);
@@ -1185,24 +1294,256 @@ struct deferred_sink {
 	uint32_t calls;
 	uint32_t commits;
 	int block_once;
+	uint32_t fail_on_call;
+	AiusStatus fail_status;
 	const AiusPcmBlock *first;
 	const AiusPcmBlock *second;
+	AiusPcmBlock first_copy;
+	AiusPcmBlock second_copy;
+	uint64_t hashes[32];
 };
+
+static uint64_t deferred_block_hash(const AiusPcmBlock *block)
+{
+	uint64_t hash = UINT64_C(0xcbf29ce484222325);
+	for (uint16_t channel = 0u; channel < block->channels; channel++) {
+		for (uint32_t frame = 0u; frame < block->frames; frame++) {
+			uint32_t sample = (uint32_t)block->planes[channel][frame];
+			for (uint32_t byte = 0u; byte < 4u; byte++) {
+				hash ^= (uint8_t)(sample >> (8u * byte));
+				hash *= UINT64_C(0x100000001b3);
+			}
+		}
+	}
+	return hash;
+}
 
 static AiusStatus deferred_consume(void *ctx, const AiusPcmBlock *block)
 {
 	struct deferred_sink *sink = ctx;
 	sink->calls++;
-	if (sink->calls == 1u)
+	if (sink->calls <=
+	    (uint32_t)(sizeof(sink->hashes) / sizeof(sink->hashes[0])))
+		sink->hashes[sink->calls - 1u] = deferred_block_hash(block);
+	if (sink->calls == 1u) {
 		sink->first = block;
-	else if (sink->calls == 2u)
+		sink->first_copy = *block;
+	} else if (sink->calls == 2u) {
 		sink->second = block;
+		sink->second_copy = *block;
+	}
 	if (sink->block_once) {
 		sink->block_once = 0;
 		return AIUS_NO_SPACE;
 	}
+	if (sink->fail_on_call == sink->calls)
+		return sink->fail_status;
 	sink->commits++;
 	return AIUS_OK;
+}
+
+static void test_deferred_ac3(const char *dir)
+{
+	size_t n = 0u;
+	uint16_t *wire = load_wire(dir, "ac3_surround51_ident", &n);
+	CHECK(wire != NULL, "defer-ac3: corpus load");
+	if (!wire)
+		return;
+
+	struct deferred_sink sink_state = { .block_once = 1 };
+	AiusPcmSink sink = { .ctx = &sink_state, .consume = deferred_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-ac3: create");
+	size_t consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK &&
+	          consumed > 0u && consumed < n && aius_pipeline_has_pending(p),
+	      "defer-ac3: first AU retained at exact prefix");
+
+	AiusPipelineServiceResult result;
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_NO_SPACE &&
+	          result == AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED,
+	      "defer-ac3: first block backpressure");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
+	          result == AIUS_PIPELINE_SERVICE_PROGRESSED,
+	      "defer-ac3: identical retained retry");
+	CHECK(sink_state.first == sink_state.second &&
+	          memcmp(&sink_state.first_copy, &sink_state.second_copy,
+	                 sizeof(sink_state.first_copy)) == 0 &&
+	          sink_state.hashes[0] == sink_state.hashes[1],
+	      "defer-ac3: retry descriptor/sample identity");
+	CHECK(aius_pipeline_codec_pc(p) == 0u,
+	      "defer-ac3: codec became live before all six blocks");
+	for (uint32_t block = 1u;
+	     block < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; block++)
+		CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK &&
+		          result == AIUS_PIPELINE_SERVICE_PROGRESSED,
+		      "defer-ac3: block %u service", block + 1u);
+
+	AiusPipelineServiceDiag diag;
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.decode_units == 6u && diag.sink_attempts == 7u &&
+	          diag.committed_blocks == 6u &&
+	          diag.transmit_stalls == 1u &&
+	          diag.retained_retries == 1u &&
+	          diag.output_drops == 0u && diag.au_abandons == 0u,
+	      "defer-ac3: six-unit/retry accounting");
+	CHECK(aius_pipeline_codec_pc(p) == 1u,
+	      "defer-ac3: codec not live after all six commits");
+
+	/* Explicit reset (also the source/generation-gap entry point) abandons an
+	 * armed iterator. A restarted AU must reproduce a clean block zero. */
+	consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK &&
+	          aius_pipeline_has_pending(p),
+	      "defer-ac3: arm reset probe");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK,
+	      "defer-ac3: commit pre-reset block zero");
+	aius_pipeline_reset(p);
+	CHECK(aius_pipeline_codec_pc(p) == 0u &&
+	          !aius_pipeline_has_pending(p),
+	      "defer-ac3: reset clears pending codec state");
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK,
+	      "defer-ac3: clean AU after reset");
+	CHECK(sink_state.hashes[8] == sink_state.hashes[0],
+	      "defer-ac3: abandon/reset did not reproduce fresh block zero");
+	aius_pipeline_destroy(p);
+
+	/* A fatal sink status is a discontinuity and abandons the partial AU. */
+	memset(&sink_state, 0, sizeof(sink_state));
+	sink_state.fail_on_call = 2u;
+	sink_state.fail_status = AIUS_MALFORMED;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-ac3-fatal: create");
+	consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK,
+	      "defer-ac3-fatal: ingest");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK,
+	      "defer-ac3-fatal: first block");
+	CHECK(aius_pipeline_service_one(p, &result) == AIUS_MALFORMED,
+	      "defer-ac3-fatal: fatal sink status");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.committed_blocks == 1u && diag.output_drops == 1u &&
+	          diag.au_abandons == 1u && diag.decode_rejects == 0u &&
+	          aius_pipeline_codec_pc(p) == 0u &&
+	          !aius_pipeline_has_pending(p),
+	      "defer-ac3-fatal: discontinuity accounting/cleanup");
+	sink_state.fail_on_call = 0u;
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK &&
+	          aius_pipeline_codec_pc(p) == 1u,
+	      "defer-ac3-fatal: clean restart");
+	aius_pipeline_destroy(p);
+
+	/* Legacy push cannot retain its caller-owned suffix: it abandons, then a
+	 * later complete push starts clean. */
+	memset(&sink_state, 0, sizeof(sink_state));
+	sink_state.block_once = 1;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "legacy-ac3-loss: create");
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_NO_SPACE,
+	      "legacy-ac3-loss: returns no-space");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.output_drops == 1u && diag.au_abandons == 1u &&
+	          diag.committed_blocks == 0u &&
+	          aius_pipeline_codec_pc(p) == 0u,
+	      "legacy-ac3-loss: exact abandon accounting");
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK &&
+	          aius_pipeline_codec_pc(p) == 1u,
+	      "legacy-ac3-loss: clean next push");
+	aius_pipeline_destroy(p);
+
+	/* Controlled core error after three committed blocks: reject/abandon are
+	 * each counted once, later blocks are truncated, and the next AU is fresh. */
+	memset(&sink_state, 0, sizeof(sink_state));
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-ac3-midfail: create");
+	CHECK(aius_pipeline_test_fail_a52_block(p, 4u) == AIUS_OK,
+	      "defer-ac3-midfail: inject");
+	consumed = 0u;
+	CHECK(aius_pipeline_ingest(p, wire, n, &consumed) == AIUS_OK,
+	      "defer-ac3-midfail: ingest");
+	for (uint32_t unit = 0u; unit < 4u; unit++)
+		CHECK(aius_pipeline_service_one(p, &result) == AIUS_OK,
+		      "defer-ac3-midfail: unit %u", unit + 1u);
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.decode_units == 4u && diag.committed_blocks == 3u &&
+	          diag.decode_rejects == 1u && diag.au_abandons == 1u &&
+	          diag.output_drops == 0u && !aius_pipeline_has_pending(p) &&
+	          aius_pipeline_codec_pc(p) == 0u,
+	      "defer-ac3-midfail: exact reject/abandon accounting");
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK &&
+	          aius_pipeline_codec_pc(p) == 1u,
+	      "defer-ac3-midfail: clean restart");
+	aius_pipeline_destroy(p);
+
+	free(wire);
+	printf("  deferred-ac3   six units, retry identity, all abandon paths\n");
+}
+
+static void test_codec_lifecycle(const char *dir)
+{
+	size_t ac3_n = 0u;
+	size_t malformed_n = 0u;
+	size_t dts_n = 0u;
+	uint16_t *ac3 = load_wire(dir, "ac3_surround51_ident", &ac3_n);
+	uint16_t *malformed = load_wire(dir, "zero_len_ac3", &malformed_n);
+	uint16_t *dts = load_wire(dir, "dts_be16", &dts_n);
+	CHECK(ac3 && malformed && dts, "codec-life: corpus load");
+	if (!ac3 || !malformed || !dts) {
+		free(ac3);
+		free(malformed);
+		free(dts);
+		return;
+	}
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "codec-life: create");
+	CHECK(aius_pipeline_push(p, ac3, ac3_n) == AIUS_OK &&
+	          aius_pipeline_codec_pc(p) == 1u,
+	      "codec-life: successful AC-3 selects Pc1");
+	CHECK(aius_pipeline_push(p, malformed, malformed_n) == AIUS_OK &&
+	          aius_pipeline_codec_pc(p) == 1u,
+	      "codec-life: later malformed burst erased successful Pc");
+	AiusMetrics metrics;
+	CHECK(aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+	          metrics.last_status == AIUS_MALFORMED,
+	      "codec-life: compatibility status did not preserve parse reject");
+
+	aius_pipeline_reset(p);
+	CHECK(aius_pipeline_codec_pc(p) == 0u &&
+	          aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+	          metrics.decode_cycles == 0u && metrics.alloc_count == 0u &&
+	          metrics.stack_high_water == 0u &&
+	          metrics.last_status == AIUS_OK,
+	      "codec-life: reset did not clear live codec projection");
+
+	CHECK(aius_pipeline_push(p, dts, dts_n) == AIUS_OK &&
+	          aius_pipeline_codec_pc(p) >= 11u &&
+	          aius_pipeline_codec_pc(p) <= 13u,
+	      "codec-life: successful DTS did not select its Pc");
+	size_t starve_n = AIUS_PIPELINE_DTS_STARVE_WORDS + 256u;
+	uint16_t *starve = calloc(starve_n, sizeof(uint16_t));
+	CHECK(starve != NULL, "codec-life: starve allocation");
+	if (starve) {
+		CHECK(aius_pipeline_push(p, starve, starve_n) == AIUS_OK,
+		      "codec-life: starve body");
+		uint16_t boundary = 0u;
+		CHECK(aius_pipeline_push(p, &boundary, 1u) == AIUS_OK &&
+		          aius_pipeline_codec_pc(p) == 0u,
+		      "codec-life: starvation did not clear codec Pc");
+		free(starve);
+	}
+
+	aius_pipeline_destroy(p);
+	capture_free(&cap);
+	free(ac3);
+	free(malformed);
+	free(dts);
+	printf("  codec-lifecycle preserve reject; clear reset/starvation/reclass\n");
 }
 
 static void test_deferred_dts(const char *dir)
@@ -1390,9 +1731,10 @@ int main(int argc, char **argv)
 	}
 	const char *dir = argv[1];
 
-	printf("Aius S/PDIF pipeline test (classify + IEC 61937 -> DTS)\n");
+	printf("Aius S/PDIF pipeline test (classify + IEC 61937 -> codecs)\n");
 	test_dts_equivalence(dir, "dts_be16");
 	test_dts_equivalence(dir, "dts51_be16");
+	test_ac3_dispatch_and_identity(dir);
 	test_pcm_passthrough();
 	test_pcm_sample_scale();
 	test_classifier(dir);
@@ -1406,6 +1748,8 @@ int main(int argc, char **argv)
 	test_unsupported_never_starves(dir);
 	test_reset_semantics(dir);
 	test_deferred_dts(dir);
+	test_deferred_ac3(dir);
+	test_codec_lifecycle(dir);
 	test_output_slicing();
 	test_deferred_pcm_and_legacy_loss();
 

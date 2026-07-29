@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Deterministically (re)generate the IEC 61937 parser known-answer corpus.
 #
-# Compiles gen_iec_corpus.c and runs it to wrap a real DTS Core access unit (from
-# the committed dts_vectors corpus) in IEC 61937 framing across the packing/endian
-# matrix, plus the synthesized edge cases. The C generator is the authoritative
-# provenance record; re-running reproduces the committed vectors bit-for-bit.
+# Compiles gen_iec_corpus.c and runs it to wrap real DTS Core and AC-3 access
+# units (from the committed codec corpora) in IEC 61937 framing, plus the
+# synthesized edge cases. The C generator is the authoritative provenance
+# record; re-running reproduces the committed vectors bit-for-bit.
 #
 # Usage:
 #   tools/iec_corpus/generate.sh            # write into ./vectors
@@ -22,6 +22,7 @@ fw_root="$(cd "$here/../.." && pwd)"
 cc="${CC:-gcc}"
 out="${OUT:-$here/vectors}"
 dts="$fw_root/tools/dts_vectors/vectors"
+ac3="$fw_root/tools/ac3_vectors/vectors"
 
 mkdir -p "$out"
 
@@ -36,6 +37,6 @@ echo "==> compiling generator"
 	"$here/gen_iec_corpus.c" -o "$gen"
 
 echo "==> generating corpus into $out"
-"$gen" "$dts" "$out"
+"$gen" "$dts" "$ac3" "$out"
 
 echo "==> corpus written"

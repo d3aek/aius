@@ -2235,9 +2235,24 @@
 
   /* The firmware's own numeric vocabulary for `state`, mirrored the way
    * MODEL_MAX_BYTES mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: 2 no carrier,
-   * 3 PCM, 4 DTS (optical_main.cpp current_state()). status.js names the same
-   * numbers on the status page -- one vocabulary, two readers. */
-  const CARRIER_ENCODINGS = { 3: 'PCM', 4: 'DTS' };
+   * 3 PCM, 4 IEC 61937 bitstream (optical_main.cpp current_state()).
+   * pipeline_diag.codec_pc decorates the generic bitstream class only after a
+   * successful decode: 1 AC-3, 11/12/13 DTS, otherwise unknown. */
+  const CARRIER_ENCODINGS = { 3: 'PCM' };
+
+  function codecName(status) {
+    const pipeline = status.pipeline_diag || {};
+    const codecPc = Number(pipeline.codec_pc);
+    if (codecPc === 1) return 'AC-3';
+    if (codecPc === 11 || codecPc === 12 || codecPc === 13) return 'DTS';
+    return 'unknown';
+  }
+
+  function carrierEncoding(status) {
+    return Number(status.state) === 4
+      ? `bitstream (${codecName(status)})`
+      : CARRIER_ENCODINGS[Number(status.state)];
+  }
 
   /* The same serialised discipline at its own 1 Hz cadence: a status read that
    * takes longer than a second must not put a second one on the wire behind it,
@@ -2255,12 +2270,12 @@
   }
 
   /* "optical carrier" alone never said WHAT was arriving on it, which is the
-   * question a DSP editor is opened to answer. A term the snapshot cannot
-   * support -- state 2 or a state this page has no name for, a rate not yet
-   * negotiated -- is LEFT OFF rather than printed as "unknown". */
+   * question a DSP editor is opened to answer. An undecoded bitstream says
+   * unknown explicitly because that is live codec state; an unrecognised
+   * carrier state or rate is still left off rather than invented. */
   function carrierText(status) {
     const parts = ['optical carrier'];
-    const encoding = CARRIER_ENCODINGS[Number(status.state)];
+    const encoding = carrierEncoding(status);
     if (encoding) parts.push(encoding);
     const rate = Number(status.sample_rate);
     if (Number.isFinite(rate) && rate > 0) parts.push(`${rate} Hz`);

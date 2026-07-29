@@ -66,12 +66,11 @@ sequenced after.
 
 ## The two named risks (the reason this is multi-phase)
 
-- **ISR budget — the defect-31 fold-in.** A 1536-frame AU decoded in one
-  audio callback is three times DTS's already-over-budget spike (defect
-  31's prime suspect). This phase moves bitstream decode OFF the audio
-  ISR (epoch-context decode into the transmit ring, or sliced decode),
-  closing defect 31 for both codecs rather than inheriting a worse copy.
-  Transmit-ring depth must be verified against the AU cadence.
+- **ISR budget — closed by Slice 2b.** Bitstream ingress alone remains in the
+  audio callback; parser, decoder, DSP, recorder and transmit work now run in
+  the bounded AUDIO epoch checkpoint. The 30-minute DTS gate held AUDIO service
+  to 2.401 ms and normal epochs to 3.036 ms without a watchdog reset, closing
+  defect 31 before AC-3 dispatch.
 - **Arena sizing.** ~~Two resident decoders may exceed the 128 KiB arena~~
   ~~**MEASURED 2026-07-28 and CONFIRMED: they do not fit.** Phase 4 must
   grow the arena or swap to a single resident decoder at class time.~~
@@ -87,11 +86,14 @@ sequenced after.
 
 1. ~~Corpus + `aius_a52` wrapper + native decode suite (host-only).~~
    **DONE 2026-07-28** — see §Phase 1 delivered.
-2. Defect-31 restructure: decode off the ISR, both codecs, with the
-   watchdog/starvation interactions re-proven on the pipeline suite.
-3. Pipeline dispatch + squelch/re-type suite extension (the
+2. ~~Defect-31 restructure: decode off the ISR, both codecs, with the
+   watchdog/starvation interactions re-proven on the pipeline suite.~~
+   **DONE 2026-07-29** — Slice 2b1–2b3, commit `cb43fd560`.
+3. ~~Pipeline dispatch + squelch/re-type suite extension (the
    framed-but-unsupported test moves to a type the box still refuses).
-   **No block split** — 2a's 256-frame emission already fits `enqueue`.
+   **No block split** — 2a's 256-frame emission already fits `enqueue`.~~
+   **DONE 2026-07-29** — parser scope, deferred dispatch, observability,
+   target integration and UI truth are complete; live AC-3 remains phase 4.
 4. Target integration: arena measurement, cycle meters, flash, live TV
    validation (the actual mission test: nightly content, dialogue lifted
    via center gain).
@@ -1591,6 +1593,16 @@ Operationally, "zero growth" means the least-squares slope across every
 one-second ingress-level sample has magnitude at most 1 word/s, more than 40
 times below the reproduced untrimmed slope.
 
+The mandatory exact-production reflash then verified
+`cb43fd560c7a+teensy41-optical`, boot generation 3 and zero watchdog resets.
+After a diagnostic clear, the untrimmed image reproduced the same independent
+clock-domain defect: the transmit ring reached its 2,048-frame capacity and
+retained stalls/retries rose equally by 1,425. Ingress drops, service-generation
+resets, output drops and AU abandons all remained zero. This is not accepted as
+a rate-following pass, but it completes the production-image smoke and confirms
+that Slice 2b's backpressure path retains rather than loses work. The
+sample-rate-following plan remains authoritative for the clock fix.
+
 Playback uses one raw IEC file pre-expanded beyond the gate duration, not a
 real-time demux loop, and the harness owns both ALSA processes and lets the
 complete source reach natural EOF. The real-time loop produced a
@@ -1629,11 +1641,72 @@ if the ~3,568 B spare proves uncomfortable), DRC config flag.
 
 ## Phase 3 contract (2026-07-28) — dispatch, and the observability it forces
 
+```yaml
+phase: 3
+title: AC-3 parser scope, deferred dispatch and live codec observability
+unit: component-behind-interface
+seams:
+  - AiusBurst.data_type dispatch
+  - aius_pipeline_get_codec_metrics
+  - pipeline_diag codec and per-codec metrics
+contract-artifact: spec-only
+fan-out:
+  - name: phase3-parser-corpus
+    owned-paths:
+      - firmware/lib/aius_iec61937/
+      - firmware/tools/iec_corpus/
+      - firmware/tools/ac3_vectors/README.md
+      - firmware/test/iec61937/
+  - name: phase3-pipeline
+    owned-paths:
+      - firmware/lib/aius_pipeline/
+      - firmware/test/pipeline/
+  - name: phase3-status-ui
+    owned-paths:
+      - firmware/src/optical_main.cpp
+      - firmware/sd/www/status.js
+      - firmware/sd/www/dsp-editor.js
+      - firmware/sd/www/replays.html
+      - firmware/sd/www/index.html
+      - firmware/test/optical-app/
+      - docs/plans/aius-open-work-register.md
+  - name: phase3-build-registration
+    owned-paths:
+      - firmware/scripts/test.sh
+      - firmware/platformio.ini
+review-intensity: active
+commit-checkpoint:
+  green:
+    - a52
+    - a52-fuzz
+    - iec61937
+    - pipeline
+    - replay
+    - tx-gate
+    - optical-app
+    - registry
+  buildable:
+    - teensy41-optical
+    - teensy41-optical-fault
+  parent-commit: "feat(aius): dispatch AC-3 bitstreams"
+```
+
+**Coordination:** owned paths are disjoint. Build registration may be authored
+in parallel from the locked source/API contract, but the parent alone runs the
+combined native and target proofs after all other seams return. The parent owns
+this plan, the integration commit and the target-compiler repair to
+`firmware/lib/aius_a52/a52/imdct.c`; workers never mutate Git.
+
 **Owned paths:** `firmware/lib/aius_iec61937/`, `firmware/lib/aius_pipeline/`,
-`firmware/tools/iec_corpus/`, `firmware/test/{pipeline,iec61937}/`,
+`firmware/tools/{iec_corpus,ac3_vectors/README.md}`,
+`firmware/test/{pipeline,iec61937,optical-app}/`,
+`firmware/lib/aius_a52/a52/imdct.c` (target-compiler repair),
+`firmware/tools/memory/mem_report.py` (shared decoder-arena report wording),
 `firmware/src/optical_main.cpp` (status JSON only),
 `firmware/sd/www/{status.js,dsp-editor.js,replays.html,index.html}`,
 **`firmware/scripts/test.sh`**, **`firmware/platformio.ini`**, this plan.
+The matching projection entry in `aius-open-work-register.md` is also owned so
+the new status-schema debt is not left only in this phase narrative.
 Relative to ``.
 
 **The last two are not optional (gate F1) — without them phase 3 does not
@@ -1685,40 +1758,31 @@ assume:
 The pipeline holds both decoders, created together at
 `aius_pipeline_create_arena` (this is where phase 2a's residency arithmetic
 lands: 62,560 + 32,768 + ~26,976 + the ~5,200 B pipeline instance ≈ 127,504
-of 131,072). `dts_feed`'s burst
-completion (`aius_pipeline.c:320-334`) routes on `AiusBurst.data_type`:
+of 131,072). The deferred ingress burst completion routes on
+`AiusBurst.data_type`:
 11/12/13 to `aius_dts`, **1 to `aius_a52`**, everything else skipped exactly
 as today. The class stays `AIUS_PIPELINE_DTS` — "non-linear bitstream" — with
 no new classification state, because classification is preamble logic and
 format-agnostic.
 
-**AC-3 consumption follows phase 2a's iterator**: six `decode_next_block`
-calls, each delivered straight through `AiusPcmSink.consume` exactly as the
-DTS path delivers its one block — **six sink calls per AU, no accumulator,
-no hold-back, no ring restructure** (phase 2a's emit-as-decoded revision;
-the transmit ring is post-DSP stereo and unreachable from here). A mid-AU
-error truncates the AU after the blocks already delivered.
+**AC-3 consumption follows phase 2a's iterator inside Slice 2b's deferred
+state machine.** Completing a type-1 burst arms an AC-3 pending state.
+`aius_a52_begin_access_unit` copies the parser payload into decoder-owned
+scratch, so no second pipeline payload copy is required and ingestion remains
+blocked while the AU is pending. The first service unit begins the AU and
+decodes its first block; five later units call `decode_next_block`. Each
+256-frame block is delivered directly through `AiusPcmSink.consume`: **six
+sink calls per AU, no accumulator, no splitter and no ring restructure**.
 
-**This section describes the PRE-2b synchronous shape and must be rebased
-when 2b lands (gate F3).** Two things change under epoch-context decode:
-`AiusBurst.payload` is a single parser-owned buffer overwritten by the next
-push, so an AU cannot outlive its push without a copy; and an iterator left
-armed across service slices collides with 2a's scratch-lifetime and explicit
-iterator-state rules. **The abandon call sites must be named and wired** —
-`aius_pipeline_reset`, `retype_to_dts`, and the starvation branch in
-`aius_pipeline_push` are three discontinuities, and none of them calls
-anything today.
-
-**A FOURTH site, which is not a discontinuity at all and is the one that
-will actually fire (gate N1):** `aius_pipeline.c:330-331` returns
-immediately when the sink refuses a block, and `enqueue` returns
-`AIUS_NO_SPACE` whenever the block exceeds `aius_spdif_tx24_free()`. With
-six sink calls per AU that is a routine ring-full, and it currently returns
-out of `dts_feed` with the iterator armed at block k+1 — so the next burst's
-`begin_access_unit` would have to preempt and reset an iterator that should
-not have escaped the push. **Phase 3 must call `aius_a52_abandon` before
-`return cs`.** The API for that is added by phase 2a specifically because
-phase 3 cannot express the fix without it.
+`AIUS_NO_SPACE` is retained work, not an abandon: keep the same decoded block
+descriptor and iterator position, then retry without re-decoding. The legacy
+synchronous `aius_pipeline_push` compatibility wrapper may still abandon its
+unaccepted suffix when it returns `AIUS_NO_SPACE`, using the existing reset
+path. Every real discontinuity funnels through one pending-work cleanup that
+calls `aius_a52_abandon`: explicit pipeline reset, source/generation gap,
+reclassification/starvation at `begin_ingest_call`, and fatal service or sink
+failure. A mid-AU decode error truncates only the remaining blocks and records
+one decode rejection plus one AU abandonment.
 
 ### The false-green trap this creates — the finding that most needs recording
 
@@ -1791,32 +1855,46 @@ class. The moment AC-3 decodes, the box reports "DTS" while playing Dolby.
   on `pipeline_diag` (the parser already carries it as
   `AiusBurst.data_type`), so the codec is a read of live state rather than a
   UI guess, plus the decode-reject tally from the `in_scope` note above.
+  The state is exact: Pc 1 means AC-3, Pc 11/12/13 means DTS and 0 means
+  unknown. A DTS decode sets it after its access unit decodes successfully;
+  AC-3 sets it only after all six blocks of the first successful AU. Pipeline
+  reset, source/generation gap, starvation and reclassification clear it to 0.
+  A later malformed burst does not erase an earlier successful codec unless
+  one of those stream discontinuities occurs.
 - **`aius_pipeline_get_metrics` must be extended here, not in phase 4
   (gate F5)**: it is hardwired to `aius_dts_get_metrics(p->decoder, …)`
   (`aius_pipeline.c:513`) and `optical_main.cpp` publishes `decode_cycles` /
   `alloc_count` from it, so with AC-3 decoding the box would report stale
   DTS figures — and phase 4's "decode cycles per codec" would have no
   accessor to read. `lib/aius_pipeline/` is phase-3-owned and phase 4 does
-  not own it, so the extension belongs in this phase. (`arena_high_water` is
-  unaffected: it reads whole-arena high water either way. `alloc_count` is a
-  single global shim counter, so with two decoders arming per call its
-  meaning needs restating rather than doubling.)
-- **`g_overruns` changes meaning under AC-3 and must not be left to lie
-  (gate R2).** `optical_main.cpp:1010,1022` increments it on any non-OK
-  `aius_pipeline_push`, and by this contract's own arithmetic AC-3 refuses
-  above ring level 512 where DTS refuses above 1,536 — so identical clock
-  drift moves the counter roughly 3× more readily, on a condition this
-  contract explicitly calls "NOT an error". The counter is published on
-  status and fed to the flight recorder (`:1226`), so a silent 3× shift
-  would mislead exactly the diagnostics defect 31 depends on. Either
-  suppress the increment for a truncating refusal or record the meaning
-  change beside the counter — decide, do not inherit.
+  not own it, so the extension belongs in this phase. Add a separately
+  addressable codec accessor that accepts Pc 1 or Pc 11/12/13 and returns the
+  corresponding adapter's `AiusMetrics`; the existing accessor remains the
+  compatibility projection for the last successfully decoded codec and returns
+  zero operation fields plus pipeline `last_status` while the codec is unknown.
+  `pipeline_diag` publishes `codec_pc`, `dts_decode_cycles`,
+  `dts_alloc_count`, `ac3_decode_cycles`, `ac3_alloc_count` and
+  `decode_rejects`. Its existing `decode_cycles` / `alloc_count` remain aliases
+  for `codec_pc`, and `arena_high_water` is the maximum of the two adapter
+  readings because it describes the shared arena. Thus no caller or operator
+  must infer one codec's measurements from the other's last operation.
+- **The old `g_overruns` decision is obsolete after Slice 2b.** The public
+  `overruns` field now projects ingress `dropped_chunks`; transmit backpressure
+  has distinct `transmit_stalls`, `retained_retries`, `output_drops` and
+  `au_abandons` counters. AC-3 dispatch must preserve those meanings. A routine
+  `AIUS_NO_SPACE` retry increments stalls/retries only and never ingress
+  overruns, output drops or AU abandons.
 - **UI**: labels become bitstream-generic with the codec named from that
   field — "bitstream (DTS)" / "bitstream (AC-3)", "unknown" until a burst
   has decoded. **Four files, not one** (gate F6): `status.js:36-37`,
   `dsp-editor.js:2141` (`CARRIER_ENCODINGS = {3:'PCM', 4:'DTS'}`),
   `replays.html:17`, `index.html:34`.
-- Swagger/status schema debt grows by both fields; record it with the others.
+- Swagger/status schema debt grows by six fields: `codec_pc`, the four
+  per-codec cycle/allocation fields and `decode_rejects`; record all six in the
+  open-work register. Extend the `optical-app` structural suite to prove all
+  four UI surfaces use the generic bitstream label, decorate it from the live
+  codec, render unknown before a successful decode, and contain no stale
+  DTS-only class label.
 
 ### Proof
 
@@ -1837,7 +1915,41 @@ for `unsupported_ac3`, and the same stale claim appears in
 `gen_iec_corpus.c:307`, and `lib/aius_iec61937/include/aius_iec61937.h:33-36`.
 All five move in the commit that widens the scope.
 
-## Phase 4 contract (2026-07-28) — target integration
+The AC-3 adapter suite continues to prove exactly six 256-frame blocks; update
+`tools/ac3_vectors/README.md` in the same commit because its current
+"three 512-frame blocks" statement is stale. The phase boundary runs `a52`,
+`a52-fuzz`, `iec61937`, `pipeline`, `replay`, `tx-gate`, `optical-app` and
+`registry`, then builds both Teensy optical images. All four liba52 fork
+translation units (`parse.c`, `bit_allocate.c`, `bitstream.c`, `imdct.c`) remain
+separately object-compiled from pipeline/parser code in native tests so no
+sanitizer carve-out leaks onto those shared sources. Target memory and ITCM
+placement must remain green; live AC-3 playback remains phase 4.
+
+**Delivered 2026-07-29.** Pc 1 now de-frames and dispatches to the resident
+AC-3 decoder while Pc 11/12/13 retain DTS and Pc 21 remains unsupported. The
+real `surround51_ident` corpus proves two 2,560-byte AC-3 access units at the
+exact 3,072-word IEC period, twelve 256-frame blocks, channel identity and zero
+steady-state allocation. Deferred tests prove identical retained retries,
+six-unit service, every abandon/reset path, a controlled mid-AU failure and the
+last-successful codec/metrics lifecycle. Status and all four SD UI surfaces use
+generic bitstream vocabulary with live DTS/AC-3/unknown decoration; all six
+new schema fields are recorded as debt.
+
+The first GCC 15 target build exposed legacy liba52 IMDCT pointer arithmetic
+that formed pointers before the root tables and then indexed back into range.
+`ifft_pass` now receives each real table base and uses equivalent forward
+indices; all four decoder reference hashes remain byte-identical. `a52`,
+`a52-fuzz`, `iec61937`, `pipeline`, `audio-service`, `replay`, `tx-gate`,
+`optical-app` and `registry` pass, as do shell checks. Both
+`teensy41-optical` and AUDIO-checkpoint-9 `teensy41-optical-fault` build with
+target memory/placement gates green: FLASH 430,080 B, ITCM 190,460 B with
+6,148 B padding, DTCM 289,824 B with 37,856 B for stack/locals, and OCRAM
+392,832 B with 131,456 B free. The memory report now names the 131,072-byte
+allocation as the shared codec-decoder arena rather than attributing it only
+to DTS. Live AC-3 playback is deliberately still phase 4; this phase proves
+the built dispatch path, not the hardware source.
+
+## Phase 4 contract (2026-07-28) — target measurement and live validation
 
 **Owned paths:** `firmware/test/itcm-placement/verify_target.py`,
 `firmware/src/optical_main.cpp`, `firmware/tools/replay_samples/`,
@@ -1848,9 +1960,9 @@ cold-placement rule; both edit that file). (`platformio.ini` moved to phase 3: t
 buildable from the commit that adds dispatch, so a52's sources and include
 path join the build there, not here.)
 
-**Build-order dependency neither phase stated:** phase 4's arena and cycle
-measurements cannot start until the target links, which is phase 3's
-`platformio.ini` change. Phase 3 first, always.
+**Build-order dependency satisfied by phase 3:** both target images now link
+both decoders. Phase 4 starts from that buildable boundary and owns only the
+runtime arena/cycle measurements, linker guard and live validation below.
 
 ### Placement — the decision, on a premise the gate had to correct
 
@@ -1865,8 +1977,14 @@ zero: **dcadec's code is in ITCM today.** Adding a52 objects to that list
 would fail immediately, since they emit `.text` and phase 1's zero-edit
 discipline forbids annotating vendored sources.
 
-**And the consequence of overflow is not a build failure but something
-worse (gate F15).** ITCM is allocated in 32 KiB blocks, and the linker
+**The phase-3 target build answered the placement branch:** liba52 fits in the
+existing six ITCM blocks. ITCM is now 190,460 B with 6,148 B padding; DTCM
+retains 37,856 B for stack/locals. The remaining action is route 2 below: pin
+the six-block result with a linker assertion so later growth cannot silently
+consume another 32 KiB of stack.
+
+**The consequence of future overflow is not a build failure without that guard
+but something worse (gate F15).** ITCM is allocated in 32 KiB blocks, and the linker
 derives the stack top from the block count:
 `_estack = ORIGIN(DTCM) + ((16 - _itcm_block_count) << 15)`
 (`link/aius_teensy41.ld:177-179`). ITCM currently sits at 6 blocks with
@@ -1880,16 +1998,15 @@ would send phase 4 to the wrong number — the harm is stack exhaustion, which
 is arguably worse and certainly harder to diagnose. The existing ld ASSERTs
 guard OCRAM only; nothing guards the DTCM locals zone.
 
-So the real decision, which phase 4 must take deliberately:
+The measured decision and retained fallbacks are:
 
-1. **Measure first** (`scripts/build.sh` + the per-bank report makes this
-   nearly free): does liba52's `.text` fit inside the 23,028 B ITCM
-   headroom? That number decides everything below and costs one build.
-2. **If it fits**: accept ITCM placement, matching dcadec's existing
+1. ~~**Measure first:** does liba52 fit the existing ITCM allocation?~~
+   **Done in phase 3:** yes, with 6,148 B padding remaining.
+2. **Selected:** accept ITCM placement, matching dcadec's existing
    (undocumented) treatment, and add an `_itcm_block_count` assertion to the
    linker script so a future growth fails loudly instead of silently
    stealing 32 KB of stack.
-3. **If it does not**: place the tree cold via a linker rule rather than
+3. **Fallback only if the selected route later fails:** place the tree cold via a linker rule rather than
    source annotation. **The glob must match the POST-FORK path** — after
    F1 the tree is `lib/aius_a52/a52/`, so a rule written
    `*a52-core*.o(.text*) > FLASH` matches nothing and becomes **a no-op
@@ -1954,7 +2071,8 @@ Bench first, TV second, because the bench is scriptable and the TV is not:
 
 `firmware/README.md` lacks the `sd_diag` / `boot_fuse` fields added on
 2026-07-28; the swagger Status schema owes `pipeline_diag` (+4 from defect
-28/33, + phase 3's codec field), `matrix.layout_aware`, `sd_diag` (+3),
+28/33, + phase 3's codec field, four per-codec metric fields and
+`decode_rejects`), `matrix.layout_aware`, `sd_diag` (+3),
 `boot_fuse_0x6e0`, and `/api/meters`'s `analysis_window` /
 `analysis_full_scale`. Record what is not closed rather than letting it grow
 silently.

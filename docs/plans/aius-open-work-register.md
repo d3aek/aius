@@ -76,7 +76,9 @@ specified here. Strike items here in the commit that closes them.
 - **Swagger `Status` schema incompleteness.** Served but unlisted:
   `sd_diag`, `replay_diag`, `dhcp_pending`, `cpu_temp_c` /
   `cpu_temp_valid` / `cpu_temp_max_c` / `cpu_temp_age_ms`, the event and
-  HTTP counters. The TYPE lies were fixed and pinned 2026-07-27
+  HTTP counters, and `pipeline_diag`'s `codec_pc`, `dts_decode_cycles`,
+  `dts_alloc_count`, `ac3_decode_cycles`, `ac3_alloc_count`, and
+  `decode_rejects`. The TYPE lies were fixed and pinned 2026-07-27
   (`4eb3744ce`); the absences remain. No `additionalProperties:false`, so
   nothing breaks — but a schema-coded client cannot discover these fields.
 - ~~**DSP editor does not surface the live source type / channel count /

@@ -26,21 +26,24 @@ extern "C" {
  * Wire byte order is auto-detected per burst from the Pa preamble (0xF872 big-
  * endian, 0x72F8 byte-swapped little-endian); the detected order then applies to
  * Pb/Pc/Pd and the payload words. Payload packing (16- or 14-bit) is a create-
- * time configuration, not auto-detected. The classifier that routes PCM vs DTS
- * and picks the packing, and the end-to-end wiring into AiusDtsDecoder, are later
- * phases; this parser only de-frames bursts and types them.
+ * time configuration, not auto-detected. The classifier that routes PCM vs
+ * non-linear bitstreams and picks the packing, and the end-to-end decoder
+ * dispatch, are separate concerns; this parser only de-frames bursts and types
+ * them.
  *
- * DTS Core data types 11/12/13 (0x0B/0x0C/0x0D, burst types I/II/III at 48 kHz)
- * are in scope and complete with AIUS_OK; the payload bytes are the raw DTS Core
- * access unit ready for AiusDtsDecoder. Every other well-formed type completes
- * with AIUS_UNSUPPORTED (still de-framed, never AIUS_MALFORMED).
+ * AC-3 data type 1 and DTS Core data types 11/12/13 (0x0B/0x0C/0x0D, burst
+ * types I/II/III at 48 kHz) are in scope and complete with AIUS_OK; the payload
+ * bytes are the raw codec access unit ready for decoder dispatch. Every other
+ * well-formed type completes with AIUS_UNSUPPORTED (still de-framed, never
+ * AIUS_MALFORMED). Pd is a bit count for AC-3 and DTS Core. E-AC-3 type 21,
+ * though unsupported, is de-framed using its specified byte-count Pd.
  */
 
-/* Fixed de-framed-payload capacity. Covers the in-scope IEC 61937 DTS Core burst
- * repetition periods at 48 kHz (through type III, the 2048-frame period, ~4 KiB
- * of 16-bit payload). A length-code demanding more than this completes with
- * AIUS_NO_SPACE (never a buffer overrun) so the caller can provision more; the
- * 16-bit Pd can express up to 8192 bytes, beyond this in-scope buffer. */
+/* Fixed de-framed-payload capacity. Covers AC-3 at 48 kHz and the in-scope IEC
+ * 61937 DTS Core burst repetition periods (through type III, the 2048-frame
+ * period, ~4 KiB of 16-bit payload). A length-code demanding more than this
+ * completes with AIUS_NO_SPACE (never a buffer overrun) so the caller can
+ * provision more; the 16-bit Pd can express lengths beyond this buffer. */
 #define AIUS_IEC61937_MAX_PAYLOAD 4096u
 
 /* How the burst payload words encode payload bytes on the wire. */
@@ -72,9 +75,10 @@ void aius_iec61937_parser_destroy(AiusIec61937Parser *p);
  * single call emits at most one burst, so a coalesced read carrying several
  * bursts is drained by repeated calls. Return values:
  *
- *   AIUS_OK          a supported (DTS Core) burst completed; its descriptor is
- *                    available via aius_iec61937_current_burst. `*consumed` stops
- *                    just past the burst's final payload word.
+ *   AIUS_OK          a supported AC-3 or DTS Core burst completed; its
+ *                    descriptor is available via
+ *                    aius_iec61937_current_burst. `*consumed` stops just past
+ *                    the burst's final payload word.
  *   AIUS_UNSUPPORTED a well-formed but out-of-scope burst completed; the
  *                    descriptor (type + de-framed payload) is still available.
  *   AIUS_NEED_MORE   all input consumed, no burst yet; call again with more.
@@ -85,7 +89,9 @@ void aius_iec61937_parser_destroy(AiusIec61937Parser *p);
  *                    and searching resumes from `*consumed`.
  *   AIUS_INVALID_ARG p, words (with count>0), or consumed is NULL.
  *
- * No non-OK status leaves a stale payload readable as a fresh burst. */
+ * AIUS_UNSUPPORTED intentionally publishes its freshly de-framed descriptor.
+ * Rejected and argument-error statuses leave no stale payload readable as a
+ * fresh burst. */
 AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
                               size_t count, size_t *consumed);
 

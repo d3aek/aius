@@ -119,37 +119,81 @@ dts_build() {
 		-lm -o "$out"
 }
 
+# Compile the AC-3 adapter and each fork translation unit to its own object.
+# Keeping these inputs out of a shared pipeline/parser compilation command
+# prevents any fork-local accommodation from weakening sanitizer or warning
+# coverage on those shared sources. The fork currently needs no sanitizer or
+# warning carve-out: _GNU_SOURCE supplies M_PI and the common strict sanitized
+# flags apply to every object.
+a52_compile_objects() {
+	local out_prefix="$1"
+	local bound_probe="$2"
+	local a52_inc=("-I$fw_root/lib/aius_a52/include" \
+		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
+		"-I$fw_root/lib/aius_a52/a52")
+	local a52_cflags=(-D_GNU_SOURCE -fno-sanitize-recover=undefined)
+	if [ "$bound_probe" = "1" ]; then
+		a52_cflags+=(-DAIUS_A52_BOUND_PROBE)
+	fi
+	local a52="$fw_root/lib/aius_a52/a52"
+	a52_objects=(
+		"$out_prefix-aius-a52.o"
+		"$out_prefix-a52-parse.o"
+		"$out_prefix-a52-bit-allocate.o"
+		"$out_prefix-a52-bitstream.o"
+		"$out_prefix-a52-imdct.o"
+	)
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+		-c "$fw_root/lib/aius_a52/src/aius_a52.c" \
+		-o "${a52_objects[0]}"
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+		-c "$a52/parse.c" -o "${a52_objects[1]}"
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+		-c "$a52/bit_allocate.c" -o "${a52_objects[2]}"
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+		-c "$a52/bitstream.c" -o "${a52_objects[3]}"
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+		-c "$a52/imdct.c" -o "${a52_objects[4]}"
+}
+
 # Shared build inputs for the AC-3 suites. Mirrors dts_build: the adapter and
 # the forked liba52 allocate through libc malloc/free, intercepted at LINK
 # time by aius_alloc_shim via --wrap so the no-heap arena path is provable
-# in both. The fork compiles under the common -Werror plus ASan/UBSan flags;
-# lib/aius_a52/include is only the config.h seam and _GNU_SOURCE supplies M_PI.
+# in both.
 a52_build() {
 	local out="$1"
 	shift
 	local a52_inc=("-I$fw_root/lib/aius_a52/include" \
 		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
 		"-I$fw_root/lib/aius_a52/a52")
-	# AIUS_A52_BOUND_PROBE is host-only instrumentation for the F3a positive
-	# reader-bound oracle. The comma-separated --wrap list is one linker
-	# argument.
-	local a52_cflags=(-D_GNU_SOURCE -fno-sanitize-recover=undefined)
+	local a52_test_cflags=(-D_GNU_SOURCE -fno-sanitize-recover=undefined)
+	local bound_probe=0
 	if [ "${AIUS_A52_BOUND_PROBE:-1}" != "0" ]; then
-		a52_cflags+=(-DAIUS_A52_BOUND_PROBE)
+		a52_test_cflags+=(-DAIUS_A52_BOUND_PROBE)
+		bound_probe=1
 	fi
+	a52_compile_objects "$out" "$bound_probe"
+	# The comma-separated --wrap list is one linker argument.
 	# shellcheck disable=SC2054
-	a52_cflags+=(-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
-	local a52="$fw_root/lib/aius_a52/a52"
-	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
+	a52_test_cflags+=(-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_test_cflags[@]}" \
 		"$@" \
-		"$fw_root/lib/aius_a52/src/aius_a52.c" \
 		"$fw_root/lib/aius_dts/src/aius_alloc_shim.c" \
 		"$src/aius_arena.c" \
-		"$a52/parse.c" \
-		"$a52/bit_allocate.c" \
-		"$a52/bitstream.c" \
-		"$a52/imdct.c" \
+		"${a52_objects[@]}" \
 		-lm -o "$out"
+}
+
+# Pipeline-bearing suites link both resident decoders. A52 stays in dedicated
+# objects while dts_build retains the established dcadec build and allocator
+# wrapping.
+pipeline_build() {
+	local out="$1"
+	shift
+	a52_compile_objects "$out" 0
+	dts_build "$out" \
+		"-I$fw_root/lib/aius_a52/include" \
+		"$@" "${a52_objects[@]}"
 }
 
 case "$suite" in
@@ -317,7 +361,7 @@ audio-ingress)
 audio-service)
 	# The real portable controller over the real ingress and deferred pipeline.
 	out="$build_dir/audio-service"
-	dts_build "$out" \
+	pipeline_build "$out" \
 		"-I$fw_root/lib/aius_audio_ingress/include" \
 		"-I$fw_root/lib/aius_audio_service/include" \
 		"-I$fw_root/lib/aius_pipeline/include" \
@@ -330,10 +374,11 @@ audio-service)
 	"$out" "$fw_root/tools/iec_corpus/vectors"
 	;;
 pipeline)
-	# S/PDIF pipeline: classifier + IEC 61937 parser chained into the DTS decoder,
-	# end-to-end vs a direct raw-AU decode over the committed IEC corpus.
+	# S/PDIF pipeline: classifier + IEC 61937 parser chained into both resident
+	# decoders, end-to-end over the committed IEC corpus.
 	out="$build_dir/pipeline"
-	dts_build "$out" \
+	pipeline_build "$out" \
+		-DAIUS_PIPELINE_TEST_HOOKS \
 		"-I$fw_root/lib/aius_pipeline/include" \
 		"-I$fw_root/lib/aius_iec61937/include" \
 		"$fw_root/test/pipeline/test_pipeline.c" \
@@ -633,6 +678,7 @@ optical-app)
 		"$optical_app_json" \
 		-o "$optical_app_out"
 	"$optical_app_out"
+	python3 "$fw_root/test/optical-app/test_bitstream_ui.py"
 	;;
 runtime-target)
 	# Composed Teensy runtime: the composition root, the three bounded target

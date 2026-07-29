@@ -130,7 +130,7 @@ static const char *status_name(AiusStatus s)
 struct kav {
 	const char *name;
 	AiusIec61937Packing packing;
-	AiusStatus expect;   /* AIUS_OK or AIUS_UNSUPPORTED */
+	AiusStatus expect; /* AIUS_OK or AIUS_UNSUPPORTED */
 	uint16_t data_type;
 };
 
@@ -141,11 +141,73 @@ static const struct kav k_burst[] = {
 	{ "dts51_be16", AIUS_IEC61937_PACK_16, AIUS_OK, 13 },
 	{ "type11", AIUS_IEC61937_PACK_16, AIUS_OK, 11 },
 	{ "type12", AIUS_IEC61937_PACK_16, AIUS_OK, 12 },
-	{ "unsupported_ac3", AIUS_IEC61937_PACK_16, AIUS_UNSUPPORTED, 1 },
+	{ "unsupported_eac3", AIUS_IEC61937_PACK_16, AIUS_UNSUPPORTED, 21 },
 	{ "null_type", AIUS_IEC61937_PACK_16, AIUS_UNSUPPORTED, 0 },
 	{ "padded", AIUS_IEC61937_PACK_16, AIUS_OK, 13 },
 	{ "recover", AIUS_IEC61937_PACK_16, AIUS_OK, 13 },
 };
+
+/* ---- AC-3: two real bursts at the exact 3072-word repetition period ------ */
+
+static void run_ac3_period_vector(const char *dir)
+{
+	size_t n = 0;
+	uint16_t *w = load_wire(dir, "ac3_surround51_ident", &n);
+	size_t plen = 0;
+	uint8_t *pay = load_pay(dir, "ac3_surround51_ident", &plen);
+	if (!w || !pay) {
+		CHECK(0, "ac3_surround51_ident: corpus load failed");
+		free(w);
+		free(pay);
+		return;
+	}
+
+	CHECK(n == 3072u + 4u + (plen + 1u) / 2u,
+	      "ac3_surround51_ident: %zu words does not encode exact period", n);
+	CHECK(n > 3072u && w[0] == 0xF872u && w[3072] == 0xF872u,
+	      "ac3_surround51_ident: Pa positions are not 0 and 3072");
+
+	const size_t chunks[] = { n ? n : 1, 1, 3 };
+	for (size_t ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ci++) {
+		AiusIec61937Parser *p = NULL;
+		CHECK(aius_iec61937_parser_create(&p, NULL) == AIUS_OK,
+		      "ac3_surround51_ident: create");
+		size_t pos = 0;
+		int emitted = 0;
+		while (pos < n) {
+			AiusStatus st = pump(p, w, n, chunks[ci], &pos);
+			if (st == AIUS_NEED_MORE)
+				break;
+			CHECK(st == AIUS_OK,
+			      "ac3_surround51_ident chunk=%zu burst=%d status %s",
+			      chunks[ci], emitted, status_name(st));
+			AiusBurst b;
+			CHECK(aius_iec61937_current_burst(p, &b) == AIUS_OK,
+			      "ac3_surround51_ident chunk=%zu burst=%d missing",
+			      chunks[ci], emitted);
+			CHECK(b.data_type == 1 && b.length == plen,
+			      "ac3_surround51_ident chunk=%zu burst=%d header differs",
+			      chunks[ci], emitted);
+			if (b.length == plen)
+				CHECK(memcmp(b.payload, pay, plen) == 0,
+				      "ac3_surround51_ident chunk=%zu burst=%d payload differs",
+				      chunks[ci], emitted);
+			emitted++;
+		}
+		CHECK(emitted == 2,
+		      "ac3_surround51_ident chunk=%zu emitted %d != 2", chunks[ci],
+		      emitted);
+		AiusIecDiag diag;
+		CHECK(aius_iec61937_get_diag(p, &diag) == AIUS_OK &&
+		          diag.bursts_ok == 2 && diag.rejects_unsupported == 0,
+		      "ac3_surround51_ident chunk=%zu diagnostics differ", chunks[ci]);
+		aius_iec61937_parser_destroy(p);
+	}
+	printf("  %-18s OK,OK type=1 payload=%zu B Pa spacing=3072 (3 chunkings)\n",
+	       "ac3_surround51_ident", plen);
+	free(w);
+	free(pay);
+}
 
 static void run_burst_vector(const char *dir, const struct kav *v)
 {
@@ -183,6 +245,18 @@ static void run_burst_vector(const char *dir, const struct kav *v)
 			CHECK(memcmp(b.payload, pay, plen) == 0,
 			      "%s chunk=%zu: payload bytes differ", v->name, chunks[ci]);
 
+		AiusIecDiag diag;
+		CHECK(aius_iec61937_get_diag(p, &diag) == AIUS_OK,
+		      "%s chunk=%zu: diagnostics unavailable", v->name, chunks[ci]);
+		if (v->expect == AIUS_OK)
+			CHECK(diag.bursts_ok == 1 && diag.rejects_unsupported == 0,
+			      "%s chunk=%zu: accepted-burst diagnostics differ", v->name,
+			      chunks[ci]);
+		else
+			CHECK(diag.bursts_ok == 0 && diag.rejects_unsupported == 1,
+			      "%s chunk=%zu: unsupported-burst diagnostics differ", v->name,
+			      chunks[ci]);
+
 		aius_iec61937_parser_destroy(p);
 	}
 	printf("  %-18s %s type=%u payload=%zu B (3 chunkings)\n", v->name,
@@ -201,6 +275,7 @@ struct rejv {
 static const struct rejv k_reject[] = {
 	{ "error_flag", AIUS_MALFORMED },
 	{ "zero_len", AIUS_MALFORMED },
+	{ "zero_len_ac3", AIUS_MALFORMED },
 	{ "overlong", AIUS_NO_SPACE },
 };
 
@@ -347,6 +422,7 @@ int main(int argc, char **argv)
 	printf("IEC 61937 parser known-answer test\n");
 	for (size_t i = 0; i < sizeof(k_burst) / sizeof(k_burst[0]); i++)
 		run_burst_vector(dir, &k_burst[i]);
+	run_ac3_period_vector(dir);
 	for (size_t i = 0; i < sizeof(k_reject) / sizeof(k_reject[0]); i++)
 		run_reject_vector(dir, &k_reject[i]);
 	run_two_bursts(dir);

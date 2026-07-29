@@ -10,6 +10,8 @@
 
 #include "aius_pipeline.h"
 
+#include "aius_a52.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,12 +26,16 @@ typedef enum {
 	PENDING_NONE = 0,
 	PENDING_PCM,
 	PENDING_DTS_AU,
-	PENDING_DTS_OUTPUT
+	PENDING_DTS_OUTPUT,
+	PENDING_A52_AU,
+	PENDING_A52_NEXT,
+	PENDING_A52_OUTPUT
 } PendingKind;
 
 struct AiusPipeline {
 	AiusIec61937Parser *parser;
-	AiusDtsDecoder *decoder;
+	AiusDtsDecoder *dts_decoder;
+	AiusA52Decoder *a52_decoder;
 	AiusPcmSink sink;
 
 	AiusPipelineClass klass;
@@ -85,6 +91,13 @@ struct AiusPipeline {
 	AiusPcmBlock sink_block;
 	uint32_t retained_offset;
 	uint8_t retained_retry;
+	uint8_t a52_blocks_decoded;
+	uint8_t a52_inflight;
+	uint16_t pending_pc;
+	uint16_t codec_pc;
+#ifdef AIUS_PIPELINE_TEST_HOOKS
+	uint8_t test_fail_a52_block;
+#endif
 	AiusPipelineServiceDiag service_diag;
 };
 
@@ -194,6 +207,7 @@ static AiusStatus retype_to_dts(AiusPipeline *p, uint16_t pa, uint16_t pb,
 	p->rt_cand_valid = 0;
 	aius_iec61937_parser_reset(p->parser);
 	p->klass = AIUS_PIPELINE_DTS;
+	p->codec_pc = 0u;
 	p->dts_starve_words = 0;
 	p->retype_count++;
 
@@ -329,7 +343,14 @@ static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 		if (st == AIUS_OK) {
 			AiusBurst b;
 			if (aius_iec61937_current_burst(p->parser, &b) == AIUS_OK) {
-				p->pending = PENDING_DTS_AU;
+				if (b.data_type == 1u)
+					p->pending = PENDING_A52_AU;
+				else if (b.data_type == 11u || b.data_type == 12u ||
+				         b.data_type == 13u)
+					p->pending = PENDING_DTS_AU;
+				else
+					continue; /* parser owns the unsupported-code policy */
+				p->pending_pc = b.data_type;
 				*consumed_out = pos;
 				return AIUS_OK;
 			}
@@ -362,6 +383,11 @@ static AiusStatus route_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 
 static void cleanup_pending(AiusPipeline *p)
 {
+	if (p->a52_inflight)
+		(void)aius_a52_abandon(p->a52_decoder);
+	p->a52_inflight = 0u;
+	p->a52_blocks_decoded = 0u;
+	p->pending_pc = 0u;
 	p->pending = PENDING_NONE;
 	p->retained_retry = 0u;
 	p->retained_offset = 0u;
@@ -379,6 +405,7 @@ static void begin_ingest_call(AiusPipeline *p)
 		aius_iec61937_parser_reset(p->parser);
 		cleanup_pending(p);
 		p->klass = AIUS_PIPELINE_UNKNOWN;
+		p->codec_pc = 0u;
 		p->cls_n = 0;
 		p->cls_off = 0;
 		p->dts_starve_words = 0;
@@ -506,34 +533,95 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (p->pending == PENDING_NONE)
 		return AIUS_OK;
 
-	if (p->pending == PENDING_DTS_AU) {
+	if (p->pending == PENDING_DTS_AU || p->pending == PENDING_A52_AU) {
 		AiusBurst b;
 		if (aius_iec61937_current_burst(p->parser, &b) != AIUS_OK) {
 			p->service_diag.au_abandons++;
 			aius_pipeline_reset(p);
+			p->last_status = AIUS_MALFORMED;
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_MALFORMED;
 		}
 		p->service_diag.decode_units++;
-		AiusStatus ds =
-			aius_dts_decode_access_unit(p->decoder, b.payload, b.length,
-			                            &p->retained_block);
+		AiusStatus ds;
+		if (p->pending == PENDING_DTS_AU) {
+			ds = aius_dts_decode_access_unit(p->dts_decoder, b.payload,
+			                                 b.length, &p->retained_block);
+		} else {
+			ds = aius_a52_begin_access_unit(p->a52_decoder, b.payload,
+			                                b.length);
+			if (ds == AIUS_OK) {
+				p->a52_inflight = 1u;
+#ifdef AIUS_PIPELINE_TEST_HOOKS
+				if (p->test_fail_a52_block == 1u) {
+					p->test_fail_a52_block = 0u;
+					ds = AIUS_MALFORMED;
+				} else
+#endif
+					ds = aius_a52_decode_next_block(p->a52_decoder,
+					                                &p->retained_block);
+				if (ds == AIUS_OK)
+					p->a52_blocks_decoded = 1u;
+			}
+		}
 		p->last_status = ds;
 		if (ds != AIUS_OK) {
 			p->service_diag.decode_rejects++;
 			p->service_diag.last_failure = ds;
-			p->pending = PENDING_NONE;
-			memset(&p->retained_block, 0, sizeof(p->retained_block));
+			if (p->a52_inflight) {
+				p->service_diag.au_abandons++;
+				aius_pipeline_reset(p);
+				p->last_status = ds;
+			} else {
+				p->pending = PENDING_NONE;
+				p->pending_pc = 0u;
+				memset(&p->retained_block, 0,
+				       sizeof(p->retained_block));
+			}
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_OK;
 		}
-		p->pending = PENDING_DTS_OUTPUT;
+		if (p->pending == PENDING_DTS_AU) {
+			p->pending = PENDING_DTS_OUTPUT;
+			p->codec_pc = p->pending_pc;
+		} else {
+			p->pending = PENDING_A52_OUTPUT;
+		}
+		p->retained_offset = 0u;
+	}
+
+	if (p->pending == PENDING_A52_NEXT) {
+		p->service_diag.decode_units++;
+		AiusStatus ds;
+#ifdef AIUS_PIPELINE_TEST_HOOKS
+		if (p->test_fail_a52_block ==
+		    (uint8_t)(p->a52_blocks_decoded + 1u)) {
+			p->test_fail_a52_block = 0u;
+			ds = AIUS_MALFORMED;
+		} else
+#endif
+			ds = aius_a52_decode_next_block(p->a52_decoder,
+			                                &p->retained_block);
+		p->last_status = ds;
+		if (ds != AIUS_OK) {
+			p->service_diag.decode_rejects++;
+			p->service_diag.au_abandons++;
+			p->service_diag.last_failure = ds;
+			aius_pipeline_reset(p);
+			p->last_status = ds;
+			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
+			return AIUS_OK;
+		}
+		p->a52_blocks_decoded++;
+		p->pending = PENDING_A52_OUTPUT;
 		p->retained_offset = 0u;
 	}
 
 	if (p->pending == PENDING_PCM)
 		fill_pcm_descriptor(p);
-	else if (p->pending == PENDING_DTS_OUTPUT && !p->retained_retry) {
+	else if ((p->pending == PENDING_DTS_OUTPUT ||
+	          p->pending == PENDING_A52_OUTPUT) &&
+	         !p->retained_retry) {
 		AiusStatus slice_status =
 			aius_pipeline_slice_pcm_block(&p->retained_block,
 			                              p->retained_offset,
@@ -543,6 +631,7 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 			p->service_diag.last_failure = slice_status;
 			p->service_diag.au_abandons++;
 			aius_pipeline_reset(p);
+			p->last_status = slice_status;
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_OK;
 		}
@@ -560,11 +649,13 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	}
 	if (st != AIUS_OK) {
 		p->service_diag.output_drops++;
-		if (p->pending == PENDING_DTS_OUTPUT)
+		if (p->pending == PENDING_DTS_OUTPUT ||
+		    p->pending == PENDING_A52_OUTPUT)
 			p->service_diag.au_abandons++;
 		p->service_diag.last_failure = st;
 		*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 		aius_pipeline_reset(p);
+		p->last_status = st;
 		return st;
 	}
 
@@ -572,10 +663,21 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (p->pending == PENDING_PCM) {
 		p->pcm_frames = 0u;
 		p->pending = PENDING_NONE;
-	} else {
+	} else if (p->pending == PENDING_DTS_OUTPUT) {
 		p->retained_offset += p->sink_block.frames;
-		if (p->retained_offset >= p->retained_block.frames)
+		if (p->retained_offset >= p->retained_block.frames) {
 			p->pending = PENDING_NONE;
+			p->pending_pc = 0u;
+		}
+	} else {
+		if (p->a52_blocks_decoded == AIUS_A52_BLOCKS_PER_ACCESS_UNIT) {
+			p->codec_pc = p->pending_pc;
+			p->a52_inflight = 0u;
+			p->pending = PENDING_NONE;
+			p->pending_pc = 0u;
+		} else {
+			p->pending = PENDING_A52_NEXT;
+		}
 	}
 	p->retained_retry = 0u;
 	memset(&p->sink_block, 0, sizeof(p->sink_block));
@@ -611,7 +713,8 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 			if (st != AIUS_OK) {
 				if (st == AIUS_NO_SPACE) {
 					p->service_diag.output_drops++;
-					if (p->pending == PENDING_DTS_OUTPUT)
+					if (p->pending == PENDING_DTS_OUTPUT ||
+					    p->pending == PENDING_A52_OUTPUT)
 						p->service_diag.au_abandons++;
 					aius_pipeline_reset(p);
 				}
@@ -694,6 +797,7 @@ void aius_pipeline_reset(AiusPipeline *p)
 		return;
 	aius_iec61937_parser_reset(p->parser);
 	p->klass = AIUS_PIPELINE_UNKNOWN;
+	p->codec_pc = 0u;
 	p->cls_n = 0;
 	p->cls_off = 0;
 	cleanup_pending(p);
@@ -769,11 +873,56 @@ AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out)
 {
 	if (!p || !out)
 		return AIUS_INVALID_ARG;
-	AiusStatus st = aius_dts_get_metrics(p->decoder, out);
-	if (st == AIUS_OK)
-		out->last_status = p->last_status;
-	return st;
+	AiusMetrics dts;
+	AiusMetrics a52;
+	AiusStatus ds = aius_dts_get_metrics(p->dts_decoder, &dts);
+	AiusStatus as = aius_a52_get_metrics(p->a52_decoder, &a52);
+	if (ds != AIUS_OK || as != AIUS_OK)
+		return ds != AIUS_OK ? ds : as;
+	if (p->codec_pc != 0u) {
+		AiusStatus st =
+			aius_pipeline_get_codec_metrics(p, p->codec_pc, out);
+		if (st != AIUS_OK)
+			return st;
+	} else {
+		memset(out, 0, sizeof(*out));
+	}
+	if (a52.arena_high_water > dts.arena_high_water)
+		out->arena_high_water = a52.arena_high_water;
+	else
+		out->arena_high_water = dts.arena_high_water;
+	out->last_status = p->last_status;
+	return AIUS_OK;
 }
+
+uint16_t aius_pipeline_codec_pc(const AiusPipeline *p)
+{
+	return p ? p->codec_pc : 0u;
+}
+
+AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
+                                           uint16_t codec_pc,
+                                           AiusMetrics *out)
+{
+	if (!p || !out)
+		return AIUS_INVALID_ARG;
+	if (codec_pc == 1u)
+		return aius_a52_get_metrics(p->a52_decoder, out);
+	if (codec_pc == 11u || codec_pc == 12u || codec_pc == 13u)
+		return aius_dts_get_metrics(p->dts_decoder, out);
+	return AIUS_INVALID_ARG;
+}
+
+#ifdef AIUS_PIPELINE_TEST_HOOKS
+AiusStatus aius_pipeline_test_fail_a52_block(AiusPipeline *p,
+                                             uint8_t block_number)
+{
+	if (!p || block_number > AIUS_A52_BLOCKS_PER_ACCESS_UNIT)
+		return AIUS_INVALID_ARG;
+	p->test_fail_a52_block = block_number;
+	return AIUS_OK;
+}
+#endif
 
 /* ---- lifecycle ----------------------------------------------------------- */
 
@@ -822,8 +971,15 @@ AiusStatus aius_pipeline_create(AiusPipeline **out, const AiusPipelineConfig *cf
 		free(p);
 		return st;
 	}
-	st = aius_dts_decoder_create(&p->decoder);
+	st = aius_dts_decoder_create(&p->dts_decoder);
 	if (st != AIUS_OK) {
+		aius_iec61937_parser_destroy(p->parser);
+		free(p);
+		return st;
+	}
+	st = aius_a52_decoder_create(&p->a52_decoder);
+	if (st != AIUS_OK) {
+		aius_dts_decoder_destroy(p->dts_decoder);
 		aius_iec61937_parser_destroy(p->parser);
 		free(p);
 		return st;
@@ -851,8 +1007,14 @@ AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
 	AiusStatus st = init_fields(p, cfg, sink);
 	if (st != AIUS_OK)
 		return st; /* arena storage reclaimed by the caller discarding the arena */
-	st = aius_dts_decoder_create_arena(&p->decoder, arena);
+	st = aius_dts_decoder_create_arena(&p->dts_decoder, arena);
 	if (st != AIUS_OK) {
+		aius_iec61937_parser_destroy(p->parser);
+		return st;
+	}
+	st = aius_a52_decoder_create_arena(&p->a52_decoder, arena);
+	if (st != AIUS_OK) {
+		aius_dts_decoder_destroy(p->dts_decoder);
 		aius_iec61937_parser_destroy(p->parser);
 		return st;
 	}
@@ -864,8 +1026,10 @@ void aius_pipeline_destroy(AiusPipeline *p)
 {
 	if (!p)
 		return;
+	cleanup_pending(p);
 	aius_iec61937_parser_destroy(p->parser);
-	aius_dts_decoder_destroy(p->decoder);
+	aius_a52_decoder_destroy(p->a52_decoder);
+	aius_dts_decoder_destroy(p->dts_decoder);
 	if (!p->arena_backed)
 		free(p);
 }

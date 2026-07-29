@@ -1,9 +1,9 @@
 /* Deterministically generate the IEC 61937 parser known-answer corpus.
  *
- * Wraps a real DTS Core access unit (extracted from the committed dts_vectors
- * corpus) in IEC 61937 framing across the in-scope packing/endian matrix, and
- * synthesizes the edge cases the parser must type correctly (unsupported types,
- * corrupt sync, bad/over-long length, truncation, padding, coalesced bursts).
+ * Wraps real DTS Core and AC-3 access units (extracted from the committed codec
+ * corpora) in IEC 61937 framing, and synthesizes the edge cases the parser must
+ * type correctly (unsupported types, corrupt sync, bad/over-long length,
+ * truncation, padding, coalesced bursts).
  *
  * Every vector is written as a `.iec` wire file (a sequence of 16-bit words, each
  * serialized big-endian on disk) plus, for vectors that complete a burst, a
@@ -13,9 +13,9 @@
  * A manifest.txt records how each vector is built and its expected parse result.
  *
  * This is the provenance record: re-running reproduces the committed corpus
- * bit-for-bit from the same dts_vectors input. It needs no ffmpeg.
+ * bit-for-bit from the same dts_vectors/ac3_vectors inputs. It needs no ffmpeg.
  *
- * Usage: gen_iec_corpus <dts_vectors_dir> <out_dir>
+ * Usage: gen_iec_corpus <dts_vectors_dir> <ac3_vectors_dir> <out_dir>
  */
 
 #include <stdarg.h>
@@ -56,12 +56,12 @@ static void wb_free(struct wb *b) { free(b->w); memset(b, 0, sizeof(*b)); }
 /* ---- framing builders ---------------------------------------------------- */
 
 static void add_preamble(struct wb *b, uint16_t data_type, int error,
-                         uint32_t length_bits, int swap)
+                         uint32_t pd_value, int swap)
 {
 	uint16_t pc = (uint16_t)(data_type & 0x1Fu);
 	if (error)
 		pc |= 0x0080u;
-	uint16_t pa = IEC_PA, pb = IEC_PB, pd = (uint16_t)length_bits;
+	uint16_t pa = IEC_PA, pb = IEC_PB, pd = (uint16_t)pd_value;
 	if (swap) {
 		pa = bswap16(pa);
 		pb = bswap16(pb);
@@ -183,6 +183,46 @@ static void first_access_unit(const uint8_t *data, size_t size,
 	*au_len = end - start;
 }
 
+/* Extract the first 48 kHz AC-3 access unit. Frame size is derived from
+ * fscod/frmsizecod in buf[4], never by scanning for a second sync word. */
+static void first_ac3_access_unit(const uint8_t *data, size_t size,
+                                  const uint8_t **au_out, size_t *au_len)
+{
+	static const uint16_t bitrate_kbps[19] = {
+		32, 40, 48, 56, 64, 80, 96, 112, 128, 160,
+		192, 224, 256, 320, 384, 448, 512, 576, 640
+	};
+	if (size < 7 || data[0] != 0x0B || data[1] != 0x77) {
+		fprintf(stderr, "no AC-3 sync at corpus start\n");
+		exit(1);
+	}
+	uint8_t fscod = (uint8_t)(data[4] >> 6);
+	uint8_t frmsizecod = (uint8_t)(data[4] & 0x3Fu);
+	if (fscod != 0 || frmsizecod >= 38) {
+		fprintf(stderr, "AC-3 corpus is not a valid 48 kHz frame\n");
+		exit(1);
+	}
+	size_t frame_bytes = (size_t)bitrate_kbps[frmsizecod >> 1] * 4u;
+	if (frame_bytes > size) {
+		fprintf(stderr, "AC-3 frame length %zu exceeds corpus size %zu\n",
+		        frame_bytes, size);
+		exit(1);
+	}
+	*au_out = data;
+	*au_len = frame_bytes;
+}
+
+static void pad_to_word_count(struct wb *b, size_t target)
+{
+	if (b->n > target) {
+		fprintf(stderr, "burst occupies %zu words, exceeds %zu-word period\n",
+		        b->n, target);
+		exit(1);
+	}
+	while (b->n < target)
+		wb_push(b, 0x0000);
+}
+
 /* Deterministic synthetic payload pattern. */
 static void synth_fill(uint8_t *p, size_t len)
 {
@@ -203,12 +243,15 @@ static void manifest(const char *fmt, ...)
 
 int main(int argc, char **argv)
 {
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s <dts_vectors_dir> <out_dir>\n", argv[0]);
+	if (argc != 4) {
+		fprintf(stderr,
+		        "usage: %s <dts_vectors_dir> <ac3_vectors_dir> <out_dir>\n",
+		        argv[0]);
 		return 2;
 	}
 	const char *dts_dir = argv[1];
-	const char *out = argv[2];
+	const char *ac3_dir = argv[2];
+	const char *out = argv[3];
 
 	char mpath[1024];
 	snprintf(mpath, sizeof(mpath), "%s/manifest.txt", out);
@@ -221,20 +264,27 @@ int main(int argc, char **argv)
 	manifest("(regenerate with tools/iec_corpus/generate.sh)");
 	manifest("");
 
-	/* Load real DTS Core access units. */
-	char p1[1024], p2[1024];
+	/* Load real DTS Core and AC-3 access units. */
+	char p1[1024], p2[1024], p3[1024];
 	snprintf(p1, sizeof(p1), "%s/stereo_tones.dts", dts_dir);
 	snprintf(p2, sizeof(p2), "%s/surround51_tones.dts", dts_dir);
-	size_t s1 = 0, s2 = 0;
+	snprintf(p3, sizeof(p3), "%s/surround51_ident.ac3", ac3_dir);
+	size_t s1 = 0, s2 = 0, s3 = 0;
 	uint8_t *d1 = read_file(p1, &s1);
 	uint8_t *d2 = read_file(p2, &s2);
-	const uint8_t *au1, *au2;
-	size_t au1n, au2n;
+	uint8_t *d3 = read_file(p3, &s3);
+	const uint8_t *au1, *au2, *ac3_au;
+	size_t au1n, au2n, ac3_aun;
 	first_access_unit(d1, s1, &au1, &au1n);
 	first_access_unit(d2, s2, &au2, &au2n);
-	fprintf(stderr, "stereo AU=%zu bytes, surround AU=%zu bytes (cap=%u)\n",
-	        au1n, au2n, AIUS_IEC61937_MAX_PAYLOAD);
-	if (au1n > AIUS_IEC61937_MAX_PAYLOAD || au2n > AIUS_IEC61937_MAX_PAYLOAD) {
+	first_ac3_access_unit(d3, s3, &ac3_au, &ac3_aun);
+	fprintf(stderr,
+	        "stereo DTS AU=%zu bytes, surround DTS AU=%zu bytes, AC-3 AU=%zu "
+	        "bytes (cap=%u)\n",
+	        au1n, au2n, ac3_aun, AIUS_IEC61937_MAX_PAYLOAD);
+	if (au1n > AIUS_IEC61937_MAX_PAYLOAD ||
+	    au2n > AIUS_IEC61937_MAX_PAYLOAD ||
+	    ac3_aun > AIUS_IEC61937_MAX_PAYLOAD) {
 		fprintf(stderr, "access unit exceeds parser capacity\n");
 		return 1;
 	}
@@ -277,6 +327,20 @@ int main(int argc, char **argv)
 	         au2n);
 	wb_free(&b);
 
+	/* 5. ac3_surround51_ident — two real AC-3 AUs at the 3072-word IEC
+	 * repetition period. The second Pa therefore begins at word 3072. */
+	add_preamble(&b, 1, 0, (uint32_t)(ac3_aun * 8u), 0);
+	add_payload_16(&b, ac3_au, ac3_aun, 0);
+	pad_to_word_count(&b, 3072);
+	add_preamble(&b, 1, 0, (uint32_t)(ac3_aun * 8u), 0);
+	add_payload_16(&b, ac3_au, ac3_aun, 0);
+	write_iec(out, "ac3_surround51_ident", &b);
+	write_pay(out, "ac3_surround51_ident", ac3_au, ac3_aun);
+	manifest("ac3_surround51_ident | 16 | OK,OK type=1 | two real "
+	         "surround51_ident AC-3 AUs (%zu B), Pa spacing=3072 words",
+	         ac3_aun);
+	wb_free(&b);
+
 	/* Synthetic payloads for the type / edge vectors. */
 	uint8_t syn[128];
 
@@ -298,24 +362,32 @@ int main(int argc, char **argv)
 	manifest("type12 | 16 | OK type=12 | synthetic 64 B, DTS burst type II");
 	wb_free(&b);
 
-	/* 7. unsupported_ac3 — well-formed non-DTS type => UNSUPPORTED. */
-	synth_fill(syn, 48);
-	add_preamble(&b, 1, 0, 48 * 8, 0);
-	add_payload_16(&b, syn, 48, 0);
-	write_iec(out, "unsupported_ac3", &b);
-	write_pay(out, "unsupported_ac3", syn, 48);
-	manifest("unsupported_ac3 | 16 | UNSUPPORTED type=1 | AC-3, de-framed but out "
-	         "of scope");
+	/* 8. unsupported_eac3 — a transport-shaped E-AC-3 frame. Pc 21 uses a
+	 * BYTE-count Pd, unlike the bit-count convention for AC-3 and DTS. */
+	uint8_t eac3[0x0700];
+	synth_fill(eac3, sizeof(eac3));
+	eac3[0] = 0x0B;
+	eac3[1] = 0x77;
+	eac3[2] = 0x03; /* independent stream 0, frmsiz[10:8] = 3 */
+	eac3[3] = 0x7F; /* frmsiz = 895 => (895 + 1) * 2 = 1792 B */
+	eac3[4] = 0x3F; /* 48 kHz, 6 blocks, 3/2+surround with LFE */
+	eac3[5] = 0x80; /* bsid = 16 (E-AC-3) */
+	add_preamble(&b, 21, 0, sizeof(eac3), 0);
+	add_payload_16(&b, eac3, sizeof(eac3), 0);
+	write_iec(out, "unsupported_eac3", &b);
+	write_pay(out, "unsupported_eac3", eac3, sizeof(eac3));
+	manifest("unsupported_eac3 | 16 | UNSUPPORTED type=21 | E-AC-3-shaped "
+	         "1792 B frame, Pd=0x0700 BYTE count");
 	wb_free(&b);
 
-	/* 8. null_type — data type 0, zero length => UNSUPPORTED, empty payload. */
+	/* 9. null_type — data type 0, zero length => UNSUPPORTED, empty payload. */
 	add_preamble(&b, 0, 0, 0, 0);
 	write_iec(out, "null_type", &b);
 	write_pay(out, "null_type", syn, 0);
 	manifest("null_type | 16 | UNSUPPORTED type=0 | null-data burst, 0 B payload");
 	wb_free(&b);
 
-	/* 9. two_bursts — two type-13 DTS bursts with pause stuffing between. */
+	/* 10. two_bursts — two type-13 DTS bursts with pause stuffing between. */
 	add_preamble(&b, 13, 0, (uint32_t)(au1n * 8), 0);
 	add_payload_16(&b, au1, au1n, 0);
 	for (int i = 0; i < 8; i++)
@@ -328,7 +400,7 @@ int main(int argc, char **argv)
 	         "between; payload == dts_be16.pay");
 	wb_free(&b);
 
-	/* 10. recover — false sync + garbage, then a valid burst re-locks. */
+	/* 11. recover — false sync + garbage, then a valid burst re-locks. */
 	wb_push(&b, 0x1234);
 	wb_push(&b, IEC_PA);   /* false Pa ... */
 	wb_push(&b, 0x0000);   /* ... not followed by Pb: bounded re-scan */
@@ -342,7 +414,7 @@ int main(int argc, char **argv)
 	         "payload == dts_be16.pay");
 	wb_free(&b);
 
-	/* 11. padded — pause stuffing before and after a single burst. */
+	/* 12. padded — pause stuffing before and after a single burst. */
 	for (int i = 0; i < 6; i++)
 		wb_push(&b, 0x0000);
 	add_preamble(&b, 13, 0, (uint32_t)(au1n * 8), 0);
@@ -354,7 +426,7 @@ int main(int argc, char **argv)
 	manifest("padded | 16 | OK type=13 | pause stuffing around one burst");
 	wb_free(&b);
 
-	/* 12. error_flag — Pc error bit set => MALFORMED. */
+	/* 13. error_flag — Pc error bit set => MALFORMED. */
 	add_preamble(&b, 13, 1, 32 * 8, 0);
 	synth_fill(syn, 32);
 	add_payload_16(&b, syn, 32, 0);
@@ -362,20 +434,26 @@ int main(int argc, char **argv)
 	manifest("error_flag | 16 | MALFORMED type=13 | Pc error flag set");
 	wb_free(&b);
 
-	/* 13. zero_len — in-scope type with zero length => MALFORMED. */
+	/* 14. zero_len — in-scope type with zero length => MALFORMED. */
 	add_preamble(&b, 13, 0, 0, 0);
 	write_iec(out, "zero_len", &b);
 	manifest("zero_len | 16 | MALFORMED type=13 | length-code 0 on a DTS type");
 	wb_free(&b);
 
-	/* 14. overlong — length-code beyond the parser buffer => NO_SPACE. */
+	/* 15. zero_len_ac3 — widening Pc 1 makes its zero Pd malformed too. */
+	add_preamble(&b, 1, 0, 0, 0);
+	write_iec(out, "zero_len_ac3", &b);
+	manifest("zero_len_ac3 | 16 | MALFORMED type=1 | Pd=0 on an AC-3 type");
+	wb_free(&b);
+
+	/* 16. overlong — length-code beyond the parser buffer => NO_SPACE. */
 	add_preamble(&b, 13, 0, 0xFFFFu, 0); /* 65535 bits => 8192 B > capacity */
 	write_iec(out, "overlong", &b);
 	manifest("overlong | 16 | NO_SPACE type=13 | Pd=0xFFFF (8192 B) > %u cap",
 	         AIUS_IEC61937_MAX_PAYLOAD);
 	wb_free(&b);
 
-	/* 15. truncated — full header, only half the payload words present. */
+	/* 17. truncated — full header, only half the payload words present. */
 	add_preamble(&b, 13, 0, (uint32_t)(au1n * 8), 0);
 	add_payload_16(&b, au1, au1n / 2, 0); /* short */
 	write_iec(out, "truncated", &b);
@@ -386,6 +464,7 @@ int main(int argc, char **argv)
 	fclose(g_manifest);
 	free(d1);
 	free(d2);
+	free(d3);
 	fprintf(stderr, "corpus written to %s\n", out);
 	return 0;
 }
