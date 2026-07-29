@@ -7,7 +7,8 @@ alternatives investigation.
 
 ## Why this exists
 
-The vendored decoder under `../../firmware/vendor/a52-core/` is **0.7.4**,
+The active fork under `../../../firmware/lib/aius_a52/a52/` is based on
+**0.7.4**,
 and the record originally claimed 0.7.4 was "the current release, from
 2002". That was wrong: **0.7.5 (2004-03-03)** and **0.8.0 (2022-11-05)**
 both exist, the latter maintained by the Adélie Linux project. Any future
@@ -26,18 +27,19 @@ from here.
 
 ## What is here
 
-The decoder subset only — the same 11 files we vendor, so a diff against
-`../../firmware/vendor/a52-core/` is direct. Autotools scaffolding,
-`libao` output drivers and the `a52dec` player are excluded.
+The decoder subset only — the 11 upstream files from which the active fork
+started. A diff against `../../../firmware/lib/aius_a52/a52/` now shows the
+fork's deliberate deletions and reductions. Autotools scaffolding, `libao`
+output drivers and the `a52dec` player are excluded.
 
 Sources: `parse.c`, `bit_allocate.c`, `bitstream.c`, `imdct.c`,
 `downmix.c`. Headers: `a52_internal.h`, `bitstream.h`, `tables.h` (from
 `liba52/`), `a52.h`, `attributes.h`, `mm_accel.h` (from `include/`).
 
-## What 0.8.0 changes, relative to our vendored 0.7.4
+## What 0.8.0 changes, relative to our 0.7.4 base
 
 Diffed 2026-07-28; the analysis lives in
-[`aius-ac3-support.md`](../../docs/plans/aius-ac3-support.md) §Decoder
+[`aius-ac3-support.md`](../../../docs/plans/aius-ac3-support.md) §Decoder
 alternatives.
 
 - **Fixes the `samples + 1027` typo** (`downmix.c`, should be `+ 1024`)

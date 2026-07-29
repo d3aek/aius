@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
-updated: 2026-07-28
+updated: 2026-07-29
 toc: true
 ---
 
@@ -37,11 +37,12 @@ sequenced after.
 
 ## Design sketch
 
-1. **Decoder**: vendor liba52 (mature portable C, GPL — fine for this
-   personal, non-commercial build) under `firmware/vendor/`, wrapped as
-   `aius_a52` mirroring the `aius_dts` shape: arena-backed create, one
-   access-unit decode call, metrics, no-heap steady state via the alloc
-   shim. Float output scaled to the 24-bit int32 plane contract.
+1. **Decoder**: the Aius-owned identity-only liba52 fork (mature portable C,
+   GPL — fine for this personal, non-commercial build) under
+   `firmware/lib/aius_a52/a52/`, wrapped as `aius_a52` mirroring the
+   `aius_dts` shape: arena-backed create, one access-unit decode call,
+   metrics, no-heap steady state via the alloc shim. Float output scaled to
+   the 24-bit int32 plane contract.
 2. **Dispatch**: the pipeline routes each completed burst payload by the
    parser's Pc data type — DTS types to `aius_dts`, type 1 to `aius_a52`,
    everything else UNSUPPORTED as today. The class stays "non-linear
@@ -421,8 +422,9 @@ defect, since no committed vector sets it) and an E-AC-3 IEC stream. F0 is
 therefore turning an existing, measured probe into an asserted suite check,
 not writing one.
 
-**Step F1 — move and prune, NO behaviour change.** `vendor/a52-core/` →
-`lib/aius_a52/a52/`; delete `downmix.c` and `attributes.h` (NOT
+**Step F1 — move and prune, NO decoded-sample change. DONE 2026-07-29.**
+`vendor/a52-core/` → `lib/aius_a52/a52/`; delete `downmix.c` and
+`attributes.h` (NOT
 `mm_accel.h` — see correction 1); apply the identity-only reduction with
 the bitstream trap, the `*flags` grant and the fail-closed guard above;
 `NOTICE.md` becomes the divergence log. **F0 must have landed first** — F1's
@@ -438,13 +440,21 @@ samples cannot convict flag negotiation:
   joins F1 rather than F0 because the unmodified core legitimately supports
   downmix requests.
 
-**Path references F1 must update** (grep-confirmed complete):
+**Path references F1 updated:**
 `scripts/test.sh:125,135,142`; `lib/aius_a52/include/aius_a52.h:16,34`;
 `lib/aius_a52/include/config.h:1,4`; `lib/aius_a52/src/aius_a52.c:7`; this
-plan's phase-2a Owned-paths block and its NOTICE.md relative link. Nothing
-under `test/` or `tools/` references the vendor path. The `registry` suite
-and the target build are unaffected (a52 is not in `platformio.ini`, and
-`lib_ldf_mode = off` stops the LDF discovering the new tree).
+plan's phase-2a Owned-paths block and its NOTICE.md relative link; and the
+two live comparison paths in
+`evidence/source-snapshots/A52DEC-0.8.0-UPSTREAM/README.md`, which the first
+inventory missed. Nothing under `test/` or `tools/` referenced the vendor
+path. The `registry` suite and the target build are unaffected (a52 is not
+in `platformio.ini`, and `lib_ldf_mode = off` stops the LDF discovering the
+new tree).
+
+**Delivered proof:** the two direct-core flag assertions pass; all four F0
+hashes remain exact; `a52-fuzz` passes 50,000 iterations. Removing the three
+vestigial state fields lowers the current padded adapter's host arena
+high-water from 90,464 B to 90,448 B.
 
 **Step F2 — fix the idioms, drop the carve-outs.** Remove
 `-Wno-shift-negative-value`, `-fno-sanitize=shift`,
@@ -750,10 +760,10 @@ both registered and `registry`-consistent.
   [§Phase 2 contract](#phase-2-contract-2026-07-28--decode-off-the-isr-and-the-footprint-that-makes-it-fit).
 - **The fuzz suite paid for itself twice, on its first two runs**, finding
   two memory-safety defects in stock liba52 0.7.4 (unfixed in 0.8.0 and in
-  Debian's patch series). Both required vendored edits — neither could be
-  accommodated from outside — so this vendor dir carries TWO documented
-  modifications where dcadec-core carries none
-  ([`vendor/a52-core/NOTICE.md`](../../firmware/vendor/a52-core/NOTICE.md)):
+  Debian's patch series). Both required source edits — neither could be
+  accommodated from outside. They originated in the phase-1 vendor tree and
+  remain recorded in the active fork's divergence log
+  ([`lib/aius_a52/a52/NOTICE.md`](../../firmware/lib/aius_a52/a52/NOTICE.md)):
   1. `a52_bit_allocate` indexes `baptab` up to 4 entries below the table
      for `floorcod == 7` — **reachable from a LEGAL stream**, so no input
      validation could have prevented it. Clamped at all five sites.
@@ -786,11 +796,10 @@ also the ISR burst defect 31 is about.
 **Slice 2a is separable, host-only, and lands first.** 2b is the target-side
 restructure.
 
-**Owned paths** (2a): `firmware/vendor/a52-core/{a52.h,bitstream.c,
-bitstream.h,a52_internal.h}`, `firmware/lib/aius_a52/{include,src}`,
+**Owned paths** (2a): `firmware/lib/aius_a52/a52/{a52.h,bitstream.c,
+bitstream.h,a52_internal.h,NOTICE.md}`, `firmware/lib/aius_a52/{include,src}`,
 `firmware/test/a52/{test_a52.c,fuzz_a52.c}`, `firmware/scripts/test.sh`,
-`firmware/vendor/a52-core/NOTICE.md`, this plan. Relative to
-``.
+this plan. Relative to ``.
 
 ### The residency question this settles (measured, not assumed)
 
@@ -864,7 +873,7 @@ mantissa/exponent/bit-allocation surface unfuzzed, and that is exactly where
 both phase-1 defects lived. So the bound is proven while the pad still
 exists, and only then does the pad go.
 
-**Step 1 — vendored edit 3: bound liba52's bit reader (pad still in place).**
+**Step 1 — fork edit 4: bound liba52's bit reader (pad still in place).**
 `bitstream_fill_current` (`bitstream.c:44-50`) is the SOLE dereference of
 `buffer_start`, `a52_bitstream_get_bh`/`_bh_2` each call it exactly once, the
 inline fast paths touch only `current_word`, there are no byte-wise reads,
@@ -883,7 +892,7 @@ each of which the gate found the first draft did not state:
   `if (buffer_end && ...)` fails OPEN and is forbidden.
 - **(d) The field lives in `a52_state_s` (`a52_internal.h`).** Safe: `a52.h`
   keeps the type opaque, the adapter and both suites include only `a52.h`,
-  and all five vendor TUs compile in one invocation.
+  and all four fork TUs compile in one invocation.
 - **(e) The setter is declared in `a52.h`, not `bitstream.h`.**
   `bitstream.h` has no include guard and declares inline functions that
   dereference the state, so including it to reach the setter would drag in
@@ -1130,7 +1139,7 @@ three suite arms that link only dcadec + `aius_dts` (`pipeline`, and
 `teensy41-optical`'s `build_src_filter` has no a52 sources or include path,
 so the target link breaks from phase 3's commit until phase 4 — violating
 the phase-boundary rule that the affected artifact still builds. **Compile
-the vendor TUs to objects separately and link them**, rather than merging
+the fork TUs to objects separately and link them**, rather than merging
 a52's carve-outs into the shared arm: `-fno-sanitize=shift` folded into the
 `pipeline` arm would silence UBSan's shift checks over `aius_pipeline.c` and
 `aius_iec61937.c` as collateral. (**After fork step F2 the carve-outs are

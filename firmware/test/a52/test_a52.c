@@ -116,6 +116,90 @@ static size_t collect_aus(uint8_t *data, size_t size,
     return count;
 }
 
+static int test_core_identity_contract(const char *dir)
+{
+    size_t es_size = 0;
+    uint8_t *es = read_file(dir, "stereo_tones", "ac3", &es_size);
+    if (!es) {
+        fprintf(stderr, "corpus missing for core identity contract\n");
+        return 3;
+    }
+
+    size_t starts[MAX_FRAMES_PER_VECTOR], lens[MAX_FRAMES_PER_VECTOR];
+    size_t naus = collect_aus(es, es_size, starts, lens,
+                              MAX_FRAMES_PER_VECTOR);
+    if (naus == 0 || lens[0] < 7) {
+        fprintf(stderr, "FAIL: no stereo AU for core identity contract\n");
+        free(es);
+        return 1;
+    }
+
+    uint8_t *frame = malloc(lens[0]);
+    if (!frame) {
+        free(es);
+        return 1;
+    }
+    memcpy(frame, es + starts[0], lens[0]);
+    free(es);
+
+    /* Gate recipe: stereo_tones is acmod=2, dsurmod=0 (byte 6 == 0x43).
+     * Changing only dsurmod to 2 makes the core's negotiated coding
+     * A52_DOLBY while preserving the decoded stereo samples. */
+    if (frame[6] != 0x43) {
+        fprintf(stderr, "FAIL: dsurmod fixture byte 0x%02x != 0x43\n",
+                frame[6]);
+        free(frame);
+        return 1;
+    }
+    frame[6] = 0x53;
+
+    int flags = 0, sample_rate = 0, bit_rate = 0;
+    int frame_size = a52_syncinfo(frame, &flags, &sample_rate, &bit_rate);
+    if (frame_size != (int)lens[0] ||
+        (flags & A52_CHANNEL_MASK) != A52_DOLBY) {
+        fprintf(stderr,
+                "FAIL: dsurmod syncinfo size=%d flags=0x%x (want %zu/DOLBY)\n",
+                frame_size, flags, lens[0]);
+        free(frame);
+        return 1;
+    }
+
+    a52_state_t *state = a52_init(0);
+    if (!state) {
+        free(frame);
+        return 1;
+    }
+    sample_t level = 1.0f;
+    int frame_flags = flags & (A52_CHANNEL_MASK | A52_LFE);
+    if (a52_frame(state, frame, &frame_flags, &level, 0) != 0 ||
+        (frame_flags & A52_CHANNEL_MASK) != A52_DOLBY) {
+        fprintf(stderr, "FAIL: dsurmod frame flags=0x%x (want DOLBY)\n",
+                frame_flags);
+        a52_free(state);
+        free(frame);
+        return 1;
+    }
+    a52_free(state);
+
+    state = a52_init(0);
+    if (!state) {
+        free(frame);
+        return 1;
+    }
+    level = 1.0f;
+    frame_flags = A52_STEREO;
+    if (a52_frame(state, frame, &frame_flags, &level, 0) == 0) {
+        fprintf(stderr, "FAIL: core accepted non-identity DOLBY->STEREO\n");
+        a52_free(state);
+        free(frame);
+        return 1;
+    }
+    a52_free(state);
+    free(frame);
+    printf("ok core identity-only flags (DOLBY grant, non-identity reject)\n");
+    return 0;
+}
+
 static double goertzel(const int32_t *x, uint32_t n, double freq)
 {
     double k = floor(0.5 + (double)n * freq / 48000.0);
@@ -140,6 +224,10 @@ int main(int argc, char **argv)
     /* Unbuffered stdout: a sanitizer abort on a failure path must not eat
      * the measurement lines the failure is diagnosed from. */
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    int core_contract = test_core_identity_contract(dir);
+    if (core_contract != 0)
+        return core_contract;
 
     int32_t *decoded[AIUS_MAX_CHANNELS] = { 0 }; /* whole-vector planes */
     double worst_snr = 1e9;

@@ -1,7 +1,7 @@
-/* config.h for the vendored liba52 (vendor/a52-core) — the zero-edit
- * accommodation seam. ONLY the vendored a52 sources include this file; the
+/* config.h for the identity-only liba52 fork (lib/aius_a52/a52).
+ * ONLY the forked a52 sources include this file; the
  * adapter and the test sources must not. Every choice here is a recorded
- * decision (aius-ac3-support.md §Phase 1 contract; vendor/a52-core/NOTICE.md):
+ * decision (aius-ac3-support.md; lib/aius_a52/a52/NOTICE.md):
  *
  * - HAVE_MEMALIGN deliberately NOT defined: parse.c then allocates the sample
  *   buffer via malloc, so the aius_alloc_shim --wrap routes every liba52

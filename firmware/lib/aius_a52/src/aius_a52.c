@@ -1,10 +1,10 @@
-/* AC-3 decoder adapter: vendored liba52 behind the AiusA52Decoder handle,
+/* AC-3 decoder adapter: identity-only liba52 fork behind AiusA52Decoder,
  * remapping liba52's LFE-first block output to the AIUS_CH_* plane convention
  * and the [-1,1] float samples to the AIUS_PCM_SAMPLE_BITS int32 scale.
  *
- * The contract, its gate findings, and every vendored-code accommodation are
+ * The contract, its gate findings, and every fork divergence are
  * recorded in aius-ac3-support.md §Phase 1 contract and
- * vendor/a52-core/NOTICE.md. The load-bearing shape: liba52's bit reader is
+ * lib/aius_a52/a52/NOTICE.md. The load-bearing shape: liba52's bit reader is
  * unbounded, so decode NEVER runs on the caller's buffer — only on the owned,
  * padded, tail-zeroed scratch. The `a52` suite's channel-identity check on the
  * `surround51_ident` vector is what pins the channel map (defect 30's lesson:

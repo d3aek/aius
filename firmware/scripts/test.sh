@@ -119,12 +119,12 @@ dts_build() {
 }
 
 # Shared build inputs for the AC-3 suites. Mirrors dts_build: the adapter and
-# the vendored liba52 allocate through libc malloc/free, intercepted at LINK
+# the forked liba52 allocate through libc malloc/free, intercepted at LINK
 # time by aius_alloc_shim via --wrap so the no-heap arena path is provable
-# without editing any vendored file. The carve-outs are recorded decisions
-# (vendor/a52-core/NOTICE.md): liba52's config.h seam lives in
+# in both. The carve-outs are recorded decisions
+# (lib/aius_a52/a52/NOTICE.md): liba52's config.h seam lives in
 # lib/aius_a52/include, -Wno-unused-parameter / -Wno-implicit-fallthrough
-# cover upstream 0.7.4 idioms, and -fno-sanitize=shift silences the
+# cover remaining upstream 0.7.4 idioms, and -fno-sanitize=shift silences the
 # by-design current_word << 32 and signed-shift mantissa idioms UBSan would
 # flood on every frame.
 a52_build() {
@@ -132,24 +132,23 @@ a52_build() {
 	shift
 	local a52_inc=("-I$fw_root/lib/aius_a52/include" \
 		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
-		"-I$fw_root/vendor/a52-core")
+		"-I$fw_root/lib/aius_a52/a52")
 	# The comma-separated --wrap list is one linker argument.
 	# shellcheck disable=SC2054
 	local a52_cflags=(-D_GNU_SOURCE \
 		-Wno-unused-parameter -Wno-implicit-fallthrough \
 		-Wno-shift-negative-value -fno-sanitize=shift \
 		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
-	local vendor="$fw_root/vendor/a52-core"
+	local a52="$fw_root/lib/aius_a52/a52"
 	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
 		"$@" \
 		"$fw_root/lib/aius_a52/src/aius_a52.c" \
 		"$fw_root/lib/aius_dts/src/aius_alloc_shim.c" \
 		"$src/aius_arena.c" \
-		"$vendor/parse.c" \
-		"$vendor/bit_allocate.c" \
-		"$vendor/bitstream.c" \
-		"$vendor/imdct.c" \
-		"$vendor/downmix.c" \
+		"$a52/parse.c" \
+		"$a52/bit_allocate.c" \
+		"$a52/bitstream.c" \
+		"$a52/imdct.c" \
 		-lm -o "$out"
 }
 

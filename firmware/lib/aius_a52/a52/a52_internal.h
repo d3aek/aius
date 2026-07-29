@@ -37,8 +37,6 @@ struct a52_state_s {
     uint8_t halfrate;		/* halfrate factor */
     uint8_t acmod;		/* coded channels */
     uint8_t lfeon;		/* coded lfe channel */
-    sample_t clev;		/* centre channel mix level */
-    sample_t slev;		/* surround channels mix level */
 
     int output;			/* type of output */
     sample_t level;		/* output level */
@@ -84,7 +82,6 @@ struct a52_state_s {
     expbap_t lfe_expbap;
 
     sample_t * samples;
-    int downmixed;
 };
 
 #define LEVEL_PLUS6DB 2.0
@@ -106,14 +103,6 @@ struct a52_state_s {
 void a52_bit_allocate (a52_state_t * state, ba_t * ba, int bndstart,
 		       int start, int end, int fastleak, int slowleak,
 		       expbap_t * expbap);
-
-int a52_downmix_init (int input, int flags, sample_t * level,
-		      sample_t clev, sample_t slev);
-int a52_downmix_coeff (sample_t * coeff, int acmod, int output, sample_t level,
-		       sample_t clev, sample_t slev);
-void a52_downmix (sample_t * samples, int acmod, int output, sample_t bias,
-		  sample_t clev, sample_t slev);
-void a52_upmix (sample_t * samples, int acmod, int output);
 
 void a52_imdct_init (uint32_t mm_accel);
 void a52_imdct_256 (sample_t * data, sample_t * delay, sample_t bias);

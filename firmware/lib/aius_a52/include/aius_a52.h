@@ -13,7 +13,7 @@ extern "C" {
 
 /* AC-3 (Dolby Digital) decoder adapter (aius-ac3-support.md phase 1).
  *
- * Wraps the vendored liba52 (vendor/a52-core) behind the portable
+ * Wraps the identity-only liba52 fork (lib/aius_a52/a52) behind the portable
  * AiusA52Decoder handle, mirroring the AiusDtsDecoder contract. Feeds one raw
  * AC-3 access unit at a time (the IEC 61937 parser's complete burst payload,
  * starting at the 0x0B77 sync word) and emits planar PCM in the AIUS_CH_*
@@ -31,16 +31,15 @@ extern "C" {
  * AIUS_A52_PARSE_PAD whose tail is re-zeroed per decode, so a hostile
  * payload's overread parses zeros inside owned memory and returns a bounded,
  * typed result — never out-of-bounds (contract + derivation:
- * vendor/a52-core/NOTICE.md).
+ * lib/aius_a52/a52/NOTICE.md).
  *
  * Output flags always request the stream's OWN coding
- * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0. a52_downmix
- * and a52_upmix are still CALLED, but an identity request matches no case
- * in either switch, so both no-op -- which is what sidesteps the upstream
- * 3F1R memcpy typo. The plane mapping is derived from the SYNCINFO flags
- * (they agree with the flags a52_frame returns for every mode this adapter
- * supports). Dynamic range compression stays at liba52's default (dynrng
- * APPLIED -- the plan records this as a decision).
+ * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0. The fork
+ * contains no downmix/upmix machinery and rejects a non-identity request.
+ * The plane mapping is derived from the SYNCINFO flags (direct core tests
+ * pin their agreement with a52_frame, including A52_DOLBY). Dynamic range
+ * compression stays at liba52's default (dynrng APPLIED -- the plan records
+ * this as a decision).
  *
  * Channel modes carried: MONO (FC), STEREO / DOLBY (FL FR), 3F (FL FC FR),
  * 2F2R (FL FR SL SR), 3F2R (FL FR FC SL SR), each with or without LFE.
@@ -54,7 +53,7 @@ extern "C" {
 
 /* Scratch padding behind the copied AU, covering liba52's worst-case
  * over-consumption on a hostile payload (~25 KiB; derivation in
- * vendor/a52-core/NOTICE.md) with margin. */
+ * lib/aius_a52/a52/NOTICE.md) with margin. */
 #define AIUS_A52_PARSE_PAD (32u * 1024u)
 
 /* Frames one AC-3 access unit decodes to (6 blocks x 256). */
