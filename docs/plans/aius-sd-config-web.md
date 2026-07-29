@@ -134,6 +134,80 @@ add a modifier-drag alternative so Q is fully mouse-editable either way.
 it deploys over HTTP via `aius-sd-sync.sh` and remains fully available after
 the board is unplugged from USB.
 
+### Contract (2026-07-29) — grounded in the editor as it actually stands
+
+**Owned paths:** `firmware/sd/www/{dsp-editor.js,dsp-editor.css,sd-shared.js,
+index.html}`, `test/sd-editor/`, this plan. Relative to ``.
+
+**Three assumptions in the scope above were wrong; the code already answers
+them.** Grounding first, because each changes the work:
+
+1. **DPR handling already exists and is correct.** `fitCanvas`
+   (`dsp-editor.js:2858`) clamps `devicePixelRatio` to 1–3, sizes the
+   backing store from `clientWidth × dpr`, and every renderer already works
+   in FRACTIONS of the canvas rect (`:77`). The dashboard does **not** need
+   to invent DPR awareness.
+2. **What `fitCanvas` DOES lock is ASPECT** — `canvas.dataset.aspect` is
+   captured once from the initial `height/width` and height is thereafter
+   derived from width. **That single line is the real barrier to free
+   resizing**, and the honest statement of the renderer work: height and
+   width both become inputs, so any renderer that assumed a fixed aspect
+   must take the rect instead. "Size-aware" means aspect-free, not
+   DPR-aware.
+3. **The hiDPI waveform debt is one precise residue, already recorded**:
+   `aius-dsp-config-api.md:1534-1536` — the shared waveform renderer strokes
+   one *device* pixel while the plot is DPR-scaled, noted as "a future
+   `sd-shared.js` touch". Small and surgical; the scope's claim that
+   resizing "retires the hiDPI debt as a side effect" is **too strong** —
+   fixing it is a deliberate line item here, not a by-product.
+
+**The Q thread is resolved: the binding is not broken, it is invisible.**
+`Q_WHEEL_STEP`, `stepQ()` and the plot's `wheel` handler
+(`dsp-editor.js:65, 2371, 3214`, `passive: false` so the page does not
+scroll) all work. The code already diagnoses the problem itself at `:2934`:
+*"the wheel was the only way to Q from the plot and a wheel is invisible
+(and absent on touch)"*. So the phase owes three things, not a bug hunt:
+an affordance that makes it discoverable, a modifier-drag alternative for
+mouse, and a touch path. **The identical problem exists for the downmix
+matrix** (`MATRIX_WHEEL_STEP`, `stepMatrixValue`, `:91, 2522, 3565`) — fix
+both, or record why not.
+
+**The spectrogram's data source is already shipped, with one honest
+limitation.** `/api/meters` carries `analysis_window` (1024 raw mono
+samples) plus `analysis_full_scale`, and the analyzer already computes an
+FFT from it for the EQ underlay — **reuse that transform, do not add a
+second**. The limitation to state in the UI rather than paper over: at 10 Hz
+polling each 1024-sample window is 21.3 ms of signal taken every ~100 ms, so
+the time axis is **sampled, not gapless**. It is a strobed spectrogram, and
+labelling it honestly is cheaper than pretending otherwise.
+
+**One surface, one control path.** The dashboard is a VIEW MODE over the
+same model and the same controls — per-panel enables, section Apply and
+per-section dirty markers keep their current semantics exactly. It must not
+become a second way to write config, and the editor is already ~3,600 lines,
+so the deletion test applies: if the mode cannot be expressed as layout over
+existing controls, that is the signal it is being built wrong.
+
+**Layout persistence:** cell sizes persist to `localStorage`, matching where
+the editor already keeps the auth token. Not to SD — layout is per-browser
+preference, not device configuration, and putting it in the config model
+would drag it through the PUT validator and the config generation counter
+for no benefit.
+
+**Proof:** the `sd-editor` vitest suite (currently 272/272) covers the
+model, dirty tracking and surface writes; extend it for the aspect-free
+renderer maths and the new Q affordances. Layout and touch interaction need
+the on-device browser pass at desktop and phone widths that
+`aius-dsp-config-api.md` already lists as owed for the editor slice — the
+dashboard inherits it rather than adding a second one.
+
+**Not in scope:** any firmware change (this is card-only), a second page, and
+any new `/api` surface — everything the dashboard renders is already served.
+
+**Owed before build:** this contract has NOT had its adversarial prebuild
+gate. Every gate this project has run has found real defects, including in
+contracts that read clean.
+
 ## Extension plan: SD scheduling, feature flags, and physical-access authorization
 
 ### Phase 5: budgeted SD service scheduling
