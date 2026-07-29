@@ -16,20 +16,20 @@ BUILD_SCRIPT = FIRMWARE_ROOT / "scripts" / "build.sh"
 FIXED_REVISION = "0123456789ab"
 PRODUCTION_IDENTITY = f"{FIXED_REVISION}+teensy41-optical"
 FAULT_IDENTITIES = [
-    f"{FIXED_REVISION}+teensy41-optical-fault.cp{checkpoint}"
+    f"{FIXED_REVISION}+fault.cp{checkpoint}"
     for checkpoint in range(9)
 ]
 KNOWN_BUILD_IDS = [
     2180687348,
-    32485611,
-    4197417182,
-    1154994480,
-    1825988421,
-    699459688,
-    697461079,
-    1696768083,
-    1708153775,
-    1027319482,
+    518221850,
+    2919486046,
+    3698413212,
+    4061990289,
+    2250602284,
+    3146728504,
+    3693711741,
+    1770631961,
+    3963842019,
 ]
 REQUIRED_DEFINES = {
     "AIUS_BUILD_SOURCE_REV",
@@ -212,7 +212,7 @@ def test_build_id_is_timestamp_independent_and_source_sensitive():
     assert changed_source["AIUS_BUILD_ID"] != first["AIUS_BUILD_ID"]
     assert (
         unstring(changed_source["AIUS_BUILD_GIT_REV"])
-        == "fedcba987654+teensy41-optical-fault.cp4"
+        == "fedcba987654+fault.cp4"
     )
 
 

@@ -48,7 +48,13 @@ def derive_metadata(project_dir, environment, selector=None, build_time=None):
     """Derive the complete compile-time metadata for one target image."""
     revision = source_revision(project_dir)
     checkpoint = validate_fault_selector(environment, selector)
-    identity = f"{revision}+{environment}"
+    # The fault environment's full PlatformIO name makes the USB ID response
+    # exceed its protocol-wide 256-byte payload limit once every retained
+    # diagnostic is present. The separate AIUS_BUILD_TARGET define still
+    # carries the canonical environment; keep the human-facing revision
+    # unique but compact enough for the control protocol.
+    identity_target = "fault" if environment == FAULT_ENVIRONMENT else environment
+    identity = f"{revision}+{identity_target}"
     if checkpoint >= 0:
         identity = f"{identity}.cp{checkpoint}"
     build_id = int.from_bytes(
