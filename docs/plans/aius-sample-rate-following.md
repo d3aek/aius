@@ -6,7 +6,7 @@ component: aius
 status: draft
 subtype: design
 tags: [aius, firmware, teensy, audio, clocking, spdif, resampling]
-updated: 2026-07-26
+updated: 2026-07-29
 toc: true
 ---
 
@@ -63,6 +63,27 @@ the repeat happen inside vendor code that touches none of our counters.** At a
 
 `AudioInputSPDIF3::sampleRate()` is served at UDP status payload offset 25 and
 compared to nothing.
+
+**Live same-nominal evidence, 2026-07-29.** The CM6206 optical loop reports
+48,021 Hz while the Teensy output remains fixed at 48,000 Hz. During continuous
+DTS decode the new ingress ring grew linearly by 1,280 words every 30 seconds,
+42.7 words/s, matching the predicted two IEC words for each of the ~21 excess
+input frames/s. It reached 8,192 words and dropped one 256-word chunk after
+about 137 seconds. AUDIO stayed below 2.25 ms, the normal epoch stayed below
+2.90 ms, and no output drop, AU abandon, budget overrun, watchdog reset or
+recorder gap occurred. This converts same-nominal asynchronous drift from a
+design risk into a reproduced hardware defect and gives phases 2/3 a live
+feedback loop on this board.
+
+The tagged +438 ppm isolation trim subsequently held the same loop for 1,857
+seconds of live DTS without an ingress drop or generation reset. Ingress
+high-water stayed at 442 words from the first minute through the final sample;
+because every one-second level sample lies between zero and that unchanged
+ceiling, the worst possible least-squares magnitude over the run is below 0.36
+words/s, inside the 1 word/s gate. AUDIO max was 2.401 ms and the normal epoch
+max 3.036 ms. This is long-run evidence for the selected live PLL numerator
+control, not a production implementation: the tagged write remains absent from
+the working tree and proper slew/mute/control policy remains Phase 3b here.
 
 **There is a second uncounted loss, closer to home.** `emit_block()` zero-fills
 when the ring is empty (`src/optical_main.cpp:932`) and increments no counter.
@@ -397,6 +418,11 @@ drifts at 48,000 · ε frames/s:
 | ±20 ppm | 0.96 frames/s | ~1,067 s |
 | ±100 ppm | 4.8 frames/s | ~213 s |
 
+The CM6206 loop now measures about **+437.5 ppm**, or 21 excess frames/s. Slice
+2b's 8,192-word compressed ingress ring reaches full in about 137 seconds from
+the observed starting level. Its larger capacity exposes the mismatch; it does
+not correct it.
+
 **Fixed-ratio therefore still needs drift correction** — one single-frame drop or
 duplicate every 208 ms at 100 ppm. A single frame at 48 kHz is a 20.8 µs
 discontinuity, inaudible at a zero crossing, but it is the *same defect class* as
@@ -462,11 +488,17 @@ retune, no mute on the steady-state path, no receiver re-lock.**
 
 **What would overturn it**, in priority order:
 
-- **A live `PLL_AUDIO_NUM` trim proves glitch-free on the device.** Then the
-  ideal design is a fixed 160/147 upsampler (4.1 %, half the cost) with the
-  *residual ppm* absorbed by trimming PLL4 to track the measured input — no drift
-  corrections, no adaptive FIR, and literally "the input clock drives the
-  output". **This hinges on one measurement.**
+- ~~**A live `PLL_AUDIO_NUM` trim proves glitch-free on the device.**~~
+  **Confirmed for carrier continuity on 2026-07-29.** A tagged one-shot
+  +438 ppm numerator write after receiver lock produced no carrier event,
+  reclassification, reset or capture-process failure. On the same CM6206 loop,
+  ingress slope changed from +42.667 words/s untrimmed to +0.200 words/s over
+  185.1 seconds, output committed at 48,021.783 frames/s against the measured
+  48,017–48,021 Hz source, and ingress HWM stayed 256 words with zero drops.
+  The write boundary was not sampled for waveform continuity, so the production
+  transition still mutes one block. The phase-3 drift actuator is therefore
+  PLL4 trim; adaptive FIR remains the fallback for a non-native nominal rate
+  until a whole-rate retune is separately proven.
 - **Measured cycles/MAC comes in at 4+ rather than 2.** Then adaptive costs
   ~16 % and fixed-ratio-plus-PLL-trim becomes clearly preferable.
 - **The production board accepts the pin 40 → pin 16 trace.** Then hardware
@@ -549,17 +581,19 @@ would foreclose the option is designing it out**, so:
 - Keep the Phase 4 note in the hardware plan live so the trace is considered
   before the production layout is released, per §Hardware release gates.
 
-### The most likely path, and what is being proceeded with
+### The path selected by the live measurement
 
 **Phase 1, then Phase 2 with the frame drop/duplicate corrector behind the seam.**
-That is the most likely path on the evidence: it is the common substrate, it is
-fully provable on this board, and **on this board drift is identically zero**
-because a replay's producer and consumer share one crystal — so nothing testable
-is being left untested.
+That is the most likely path on the evidence: it is the common substrate and is
+fully provable on this board. Replay still has zero drift because its producer
+and consumer share one crystal; the CM6206 optical loop now supplies the
+independent-clock hardware proof and makes the drift corrector directly
+testable.
 
-The deferred choice is genuinely deferred rather than pre-empted: Phase 3 picks
-the phase-increment corrector or the PLL-trim corrector once the measurement
-exists, and both plug into the same seam.
+The deferred choice is now resolved for same-nominal input: Phase 3 uses the
+PLL-trim corrector. The adaptive phase-increment implementation remains the
+fallback for a non-native nominal rate until a live whole-rate PLL retune is
+proven. Both still plug into the same seam.
 
 ## Placement, and why it costs no DTCM
 
@@ -815,32 +849,32 @@ muted and reported instead of stuttering silently.
 6. Ring-level drift reporting, and the `AiusClockCorrector` seam with its first
    implementation: drop or duplicate one frame, counted and rate-limited.
 
-**Provable via a 44.1 kHz replay fixture. Not provable here: the asynchronous
-part** — both clocks come from the same crystal on a replay, so drift is
-identically zero. Ships with `corrections` expected to read 0 here and non-zero
-on production.
+**Provable via a 44.1 kHz replay fixture and the CM6206 optical loop.** Both
+clocks come from the same crystal on replay, so replay drift is identically
+zero. The live loop provides the asynchronous case and must show non-zero
+corrections without ingress growth or unexplained drops.
 
-### Phase 3 — eliminate drift, actuator chosen by measurement
+### Phase 3 — eliminate drift with the measured PLL actuator
 
-The control loop is common; **which corrector it drives is the deferred hardware
-decision** ([§The two hardware questions](#the-two-hardware-questions-and-why-they-do-not-block)).
-Both plug into the seam Phase 2 established.
+The control loop is common and the live 2026-07-29 measurement selects the
+PLL-trim corrector for same-nominal input. The adaptive corrector remains the
+non-native-rate fallback. Both plug into the seam Phase 2 established.
 
 1. The control loop on ring level, as a separately tested pure state machine.
-2. **Either** 3a — a phase-increment corrector: Q32 phase accumulator plus linear
-   interpolation between adjacent phases, extending Phase 2's kernel in place at
-   +4.1 % of block budget; **or** 3b — a PLL-trim corrector writing
-   `CCM_ANALOG_PLL_AUDIO_NUM`, at ~0 % and delivering literal clock-following,
-   **if and only if the live trim proves glitch-free on the device.**
-3. Extend the supported set to 32 kHz.
+2. **3b — the selected same-nominal path:** a bounded PLL-trim corrector writes
+   `CCM_ANALOG_PLL_AUDIO_NUM`, at ~0 % and delivering literal clock-following.
+   Mute the transition for one block because the measurement proved carrier
+   continuity but did not capture the trim boundary's waveform.
+3. **3a — retained non-native fallback:** a phase-increment corrector uses a Q32
+   phase accumulator plus linear interpolation between adjacent phases,
+   extending Phase 2's kernel in place at +4.1 % of block budget.
+4. Extend the supported set to 32 kHz.
 
-**Measure before choosing.** 3b is strictly better if it works — no FIR cost, no
-discrete corrections at all — and the measurement that decides it is item 1 of
-[§What could not be established](#what-could-not-be-established). 3a is the
-fallback and needs no hardware permission.
+3b is strictly better for the measured 48 kHz case: no FIR cost and no discrete
+corrections. 3a remains the path that needs no whole-rate PLL assumption.
 
-**Needs the production hardware to validate either.** Two independent crystals is
-the entire point.
+**The CM6206 optical loop can validate either on this board.** Two independent
+clocks are the entire point, and the loop now reproduces their relative drift.
 
 ### Phase 4 — the hardware option, if the board accepts it
 
@@ -859,18 +893,19 @@ the clock-master inversion (already proven during replay); all counters and
 `static_assert` changes; and the resampler's real per-block cost via the existing
 DWT bracket.
 
-**Needs the production hardware:** anything asynchronous; carrier detection and
-debounce against a real flapping source; whether a live `PLL_AUDIO_NUM` trim is
-glitch-free; the Phase 4 loopback; any downstream receiver's behaviour on a
-carrier interruption.
+**Needs live hardware:** carrier detection and debounce against a real flapping
+source; whether a live `PLL_AUDIO_NUM` trim is glitch-free; the Phase 4
+recovered-clock loopback; any downstream receiver's behaviour on a carrier
+interruption. The CM6206 loop supplies the ordinary asynchronous source/sink
+case on this board.
 
 ## What could not be established
 
-1. **Whether a live `CCM_ANALOG_PLL_AUDIO_NUM` write is glitch-free.**
-   §14.6.1.5.3 says to power the PLL down; §14.8.9 describes the 30-bit numerator
-   and says nothing about live updates. **Measurable:** trim `NUM` by ±100 ppm
-   with a carrier out and watch a receiver's lock indicator. **This single
-   measurement could halve the recommended cost.**
+1. ~~**Whether a live `CCM_ANALOG_PLL_AUDIO_NUM` write preserves the
+   carrier.**~~ **Resolved 2026-07-29:** the +438 ppm live write kept the
+   CM6206 capture path and carrier locked and eliminated measured ring drift.
+   Waveform continuity exactly at the write boundary was not captured, so the
+   production transition remains one-block muted.
 2. **Actual cycles per MAC for an `int32` Q31 FIR reading coefficients from
    OCRAM.** 2 cyc/MAC is an estimate; OCRAM latency could make it 3–4. **Every
    figure in §Cost scales linearly on it.** Measure before committing Phase 2.
@@ -882,9 +917,9 @@ carrier interruption.
    44.1 kHz DTS vector in `tools/dts_vectors/`**.
 5. **The measured jitter and settling time of `SRFM`.** It sets the debounce
    window, currently a guess of 8 samples.
-6. **The live passthrough path has never executed at all.** The optical input is
-   unsoldered, so every carrier-side claim here is reasoned from source and the
-   reference manual, not observed.
+6. ~~**The live passthrough path has never executed at all.**~~ **Resolved
+   2026-07-29:** the CM6206 loop ran live PCM and DTS through the optical input
+   and exposed the +437.5 ppm same-nominal drift described above.
 7. **The cost of one `fnet_poll` against the widened block budget.** Already open
    in `firmware-io.md`.
 

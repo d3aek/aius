@@ -1230,8 +1230,9 @@ more than 375 chunks/s.
 The current linked image has only **131,424 B OCRAM free**, 352 B above the
 linker's enforced 128 KiB network-heap floor, so the ingress ring cannot be a
 net new OCRAM allocation. Slice 2b removes the recorder's existing 16,384-byte
-sample staging from `DMAMEM` and creates **eight 512-frame slots (32 KiB)** in
-the recorder's PSRAM reservation in the same commit:
+sample staging from the OCRAM `.aius_recorder_staging` linker section and
+creates **eight 512-frame slots (32 KiB)** in the recorder's PSRAM reservation
+in the same commit:
 
 - when PSRAM is present, the first aligned 32 KiB holds eight staging slots;
   the recorder ring receives the largest power-of-two byte capacity that fits
@@ -1549,14 +1550,74 @@ Buildable commit boundaries:
    drain/service, move and rename block-writer effects, publish diagnostics,
    update structural/target proofs, flash, and run the hardware gate below.
    Remove the temporary callback in the same diff that makes it real.
+   **Complete:** all focused native suites, both target images, memory/ITCM
+   placement, registry and shell checks pass. On the tagged +438 ppm
+   clock-isolation image, 1,857 seconds of live DTS remained green across 1,831
+   status polls while cumulative status reached 184,448 committed blocks: AUDIO
+   max 2.401 ms, normal epoch max 3.036 ms, ingress high-water 442 words with
+   zero drops/resets, TX high-water 640 frames, zero
+   stalls/retries/output drops/AU abandons, and unchanged boot/watchdog
+   generation. Thirty-one measurement captures started;
+   the state-machine evidence proves at least thirty completed, and recorder
+   generation 52 retained 45,568 post-thaw frames with zero gaps. The corrected
+   run-owned-ID harness then passed the complete aligned EOF path. The
+   adversarial reviewer accepted the composite evidence and explicitly waived a
+   redundant second soak.
 
 The defect-31 hardware gate is **30 minutes** of continuous live DTS through the
 CM6206 optical loop while recorder capture/drain and repeated HTTP status/capture
 requests run. It must show no watchdog/boot-generation change, AUDIO max service
 time at or below 8 ms, normal epoch max at or below 25 ms with zero epoch-budget
-overruns, ingress and transmit high-water below capacity, zero unexplained
-ingress drops, output drops or AU abandons, and all retained retries paired with
-transmit stalls. Only then may defect 31 be struck from
+overruns, transmit high-water at or below capacity with every sampled and final
+transmit level below capacity, and zero output drops or AU abandons. Recorder
+ring position must advance, at least two measurement captures must complete,
+and all gate assertions use interval deltas from a no-pending baseline rather
+than clearing counters under live retained work.
+
+The 2026-07-29 preflight reproduced the separate
+[`aius-sample-rate-following.md`](aius-sample-rate-following.md) defect: the
+CM6206's measured 48,021 Hz input gains about 42 IEC words/s against the fixed
+48,000 Hz output, fills the 8,192-word ingress ring and causes one explained
+overflow/reset about every three minutes after the first fill. A tagged,
+uncommitted +438 ppm PLL4 trim then reduced that slope from +42.667 to +0.200
+words/s over 185 seconds without a carrier event, reset or drop. The defect-31
+gate runs on that instrumented image and requires zero ingress growth or drops;
+the trim changes only the output clock ratio and leaves the ingress, scheduler,
+decoder, DSP, recorder and HTTP paths under test unchanged. The tagged probe is
+removed from the working tree and a post-commit production reflash/smoke remains
+mandatory. This isolates the ISR-watchdog regression without closing or
+excusing the separately recorded rate-following defect.
+Operationally, "zero growth" means the least-squares slope across every
+one-second ingress-level sample has magnitude at most 1 word/s, more than 40
+times below the reproduced untrimmed slope.
+
+Playback uses one raw IEC file pre-expanded beyond the gate duration, not a
+real-time demux loop, and the harness owns both ALSA processes and lets the
+complete source reach natural EOF. The real-time loop produced a
+recorder-confirmed TX underrun 239.813 seconds after DTS start, within 230 ms of
+the eighth 30.005-second file boundary, while carrier, class, ingress generation
+and scheduler metrics stayed clean. Arbitrarily terminating playback mid-burst
+is also not an acceptance transition: a 2026-07-29 preflight kept every measured
+DTS poll clean, then its SIGTERM-cut burst produced one 120.438 ms AUDIO service,
+14 ingress overflows / 3,584 dropped words and a recorder underrun. The same
+2,813-burst source reaching natural EOF produced none of those changes across
+202 samples and ten seconds after EOF. That abrupt-source-loss defect remains
+separate from the steady-state defect-31 gate.
+
+Recorder load is explicit: at least twice during the full gate, request a
+freeze, wait for `FROZEN`, read and validate a 4 KiB generation-bound data chunk,
+then thaw and require ring position to resume advancing. Natural trigger freezes
+use the same drain/thaw path and remain counted.
+
+At arbitrary steady-state snapshots, the interval deltas of
+`transmit_stalls` and `retained_retries` may differ by at most one. After the
+aligned source reaches natural EOF, this CM6206 keeps optical carrier present and
+supplies zero PCM, so the transmit ring remains active rather than draining to
+zero. Four consecutive post-EOF polls must instead show PCM class, no additional
+DTS decode unit, transmit level below capacity and equal stall/retry deltas
+across the uninterrupted gate generation. That proves retained DTS work drained
+without pretending the carrier-valid PCM producer stopped. Only then may defect
+31 be struck from
 `aius-network-hardening.md` and the open-work register. If the board still dies,
 the ISR-storm hypothesis is false and the next diagnosis starts at transmit
 backpressure/producer timing, not parser termination.

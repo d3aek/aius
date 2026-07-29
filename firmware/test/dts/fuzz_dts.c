@@ -20,8 +20,9 @@
  * Phase 1 (before the random iterations) is the defect-31 seam hunt: a
  * DETERMINISTIC sweep of loop-seam-shaped access units -- truncated AU spliced
  * with a full AU (the replay-loop / relock seam), byte-exact at the loop seam
- * and step-16 across every adjacent pair, plus headless tails and bare
- * truncations. Every decode call in BOTH phases runs under a termination
+ * and step-16 across every adjacent pair, plus headless tails, bare
+ * truncations, and a cut AU zero-filled to its declared length. Every decode
+ * call in BOTH phases runs under a termination
  * oracle the random phase previously lacked: a per-call wall-clock bound
  * (soft fail at 1 s) with an alarm() hard backstop (8 s -- the board's
  * watchdog period) that names the offending input before exiting, so a
@@ -301,11 +302,22 @@ static int seam_hunt_file(AiusDtsDecoder *dec, const uint8_t *data, size_t size,
         (*feeds)++;
     }
 
-    /* Bare truncation, byte-exact, on AU 0. */
+    /* Bare truncation, byte-exact, on AU 0. A live source that stops
+     * mid-burst can retain carrier and fill the declared remainder with PCM
+     * zero words, so exercise that distinct full-length corruption too. */
     for (size_t k = 4; k < lens[0]; k++) {
         snprintf(g_decode_ctx, sizeof(g_decode_ctx),
                  "%s S2 truncate AU0 at k=%zu (of %zu)", name, k, lens[0]);
         if (checked_feed(dec, head, k, ok_count, reject_count))
+            return 1;
+        (*feeds)++;
+
+        memcpy(buf, head, k);
+        memset(buf + k, 0, lens[0] - k);
+        snprintf(g_decode_ctx, sizeof(g_decode_ctx),
+                 "%s S4 zero-tail AU0 at k=%zu (of %zu)",
+                 name, k, lens[0]);
+        if (checked_feed(dec, buf, lens[0], ok_count, reject_count))
             return 1;
         (*feeds)++;
     }

@@ -701,19 +701,18 @@ sd-target)
 	"$sd_target_out"
 	;;
 memory)
-	# The per-bank memory report, tools/memory/mem_report.py -- the P4 release
-	# gate build.sh fails the build on. It derives every bank figure from the
-	# linked ELF's section table and linker symbols, so the suite drives its CLI
-	# over a committed reduction of a real optical image (section headers, program
-	# headers and linker symbols, byte-for-byte from the linker) plus the matching
-	# teensy_size log. Host-only: no cross-build and no cross toolchain, unlike
-	# itcm-placement below.
+	# The per-bank report plus the optical audio-memory post-link verifier.
+	# Host tests drive the generic gate over a committed real-ELF reduction and
+	# the target verifier over synthetic symbol/section snapshots, including
+	# every refusal. No cross-build or cross toolchain is needed here.
 	python3 "$fw_root/test/memory/test_mem_report.py"
+	python3 "$fw_root/test/memory/test_target_memory.py"
 	;;
 itcm-placement)
-	# The post-link ITCM placement guard: two checks, cold objects emit no
-	# ITCM and the one hot object emits exactly its pinned audio-block
-	# allowlist. Named here so it is reachable the way its siblings are --
+	# The post-link ITCM placement guard: four checks, cold objects emit no
+	# ITCM while the optical and mixed-ingress objects emit exactly their
+	# pinned producer allowlists, and recorder bring-up geometry stays cold.
+	# Named here so it is reachable like its siblings --
 	# boot-target runs the mutation tests for its own post-link verifier, and
 	# network-transport runs the vendor-header source contract, while this
 	# guard was reachable only through platformio.ini's post-link hook.

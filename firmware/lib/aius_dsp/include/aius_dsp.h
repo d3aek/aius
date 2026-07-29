@@ -810,7 +810,7 @@ AiusLimiterConfig aius_limiter_config_default(void);
  * PERSISTENT STATE, not stack: the detector needs the max of the interpolated
  * values, never the values themselves, so it materializes no oversampled buffer
  * and aius_dsp_limiter_run's stack frame is unchanged. That matters because this
- * runs in the audio ISR. */
+ * runs in the bounded AUDIO checkpoint. */
 typedef struct {
     double   env;            /* true-peak follower envelope (sample units) */
     double   gain;           /* current smoothed gain reduction, (0, 1] */
@@ -1138,8 +1138,8 @@ typedef struct {
  * progress), writes the payload, then makes it even (complete). A reader samples
  * `seq`, copies the payload, re-samples `seq`, and accepts the copy only if it
  * was even and unchanged -- otherwise it retries. On target the adapter places
- * this in OCRAM and issues the memory barriers the ISR/reader pair needs; the
- * portable logic is single-thread host-testable via the same protocol. */
+ * this in OCRAM and issues the memory barriers the producer/reader protocol needs;
+ * the portable logic is single-thread host-testable via the same protocol. */
 typedef struct {
     /* live accumulators for the current (unpublished) window */
     double   in_peak[AIUS_METER_INPUT_CHANNELS];
@@ -1249,7 +1249,7 @@ int aius_meter_read(const AiusMeter *m, AiusMeterSnapshot *out);
  * boundary, not part of the optional trim/EQ -- so these planes are required
  * whenever aius_dsp_process runs. On the target they are carved from the
  * audio pipeline's DTCM arena at bring-up (the OCRAM home was vetoed by the
- * defect-26 link-time heap floor); never on the ISR stack.
+ * defect-26 link-time heap floor); never on the runtime stack.
  *
  * `input` == NULL skips the trim/EQ over the staged planes (the staging itself
  * still happens). `limiter` == NULL bypasses the limiter tail. Both default to

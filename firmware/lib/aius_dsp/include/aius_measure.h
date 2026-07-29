@@ -14,14 +14,13 @@ extern "C" {
  *
  * Two halves, both host-testable with no Arduino dependency:
  *
- *   1. The CAPTURE STATE MACHINE. The audio ISR copies the same stereo 24-bit
+ *   1. The CAPTURE STATE MACHINE. The block producer copies the same stereo 24-bit
  *      frames it commits to the S/PDIF transmit ring into a caller-owned
  *      capture buffer while a capture is armed; the epoch loop arms, analyses
  *      and retires. One writer per transition (enumerated below), because the
- *      first draft's "epoch arms, ISR retires" hid a race: with no replay
- *      running the ISR never executes, so only the epoch side can time out an
- *      armed capture, and an epoch-side cancel can collide with an ISR
- *      mid-block retire.
+ *      first draft's "controller arms, producer retires" hid a stalled-producer
+ *      case: with no committed output, only the controller can time out an
+ *      armed capture.
  *
  *   2. The sliced ANALYSIS. Runs only over a frozen (captured) buffer, in
  *      epoch context, a bounded slice at a time, and produces the figures the
@@ -84,25 +83,24 @@ extern "C" {
  *
  *   idle       -> armed       epoch  (aius_measure_arm; every parameter stored
  *                                     before the state store -- stage/commit)
- *   armed      -> capturing   ISR    (first block after the arm)
- *   capturing  -> captured    ISR    (buffer complete; the ISR's terminal --
+ *   armed      -> capturing   producer (first block after the arm)
+ *   capturing  -> captured    producer (buffer complete; producer terminal --
  *                                     captured means buffer-complete, NOT
  *                                     figures-published)
  *   armed/
  *   capturing  -> cancelling  epoch  (aius_measure_cancel sets the token only)
- *   capturing  -> failed      ISR    (arm-time generation/overrun latch moved
+ *   capturing  -> failed      producer (arm-time generation/overrun latch moved
  *                                     at a block boundary; also from armed,
  *                                     when the latch check fails on the very
  *                                     first block)
- *   cancelling -> failed      ISR    (acknowledges the token at its next
+ *   cancelling -> failed      producer (acknowledges the token at its next
  *                                     block) or epoch (aius_measure_reclaim,
  *                                     after a bounded number of epochs with
  *                                     the block counter unchanged -- the one
- *                                     case where the ISR is provably not
- *                                     running). THE ONE DUAL-TERMINAL EDGE,
- *                                     benign by construction: both writers
- *                                     store the same terminal state value,
- *                                     and the ISR cannot act again once the
+ *                                     case where the producer has stopped).
+ *                                     THE ONE DUAL-TERMINAL EDGE is benign:
+ *                                     both paths store the same terminal state,
+ *                                     and the producer cannot act again once the
  *                                     epoch moves failed -> idle. The native
  *                                     suite drives exactly that interleaving.
  *   captured   -> analysing   epoch  (aius_measure_begin_analysis; analysis
@@ -111,7 +109,7 @@ extern "C" {
  *                                     means the figures are published)
  *   done/failed-> idle        epoch  (aius_measure_release)
  *
- * The ISR side acts only in armed/capturing/cancelling and ignores every
+ * The producer acts only in armed/capturing/cancelling and ignores every
  * other state, so a stale block that lands after an epoch-side retire is a
  * no-op rather than a corruption. */
 typedef enum {
@@ -129,8 +127,8 @@ typedef enum {
  * latch checks: enqueue() applies a staged DSP model at any block boundary and
  * an overrun drops 512 frames outright, and either splice inside a window is
  * exactly the seam artifact the stimulus work paid to remove. CANCELLED is
- * the ISR's acknowledgement of the cancel token; RECLAIMED is the epoch's,
- * when the ISR is provably not running. */
+ * the producer's acknowledgement of the cancel token; RECLAIMED is the
+ * controller's, when the producer has stopped. */
 typedef enum {
     AIUS_MEASURE_FAIL_NONE = 0,
     AIUS_MEASURE_FAIL_GENERATION,
@@ -143,16 +141,14 @@ typedef enum {
  * DMAMEM: .bss.dma is NOLOAD and the boot ROM scribbles OCRAM at reset); the
  * sample planes it points at live in DMAMEM, which needs no init for the
  * transmit ring's same reason. `state` and `cursor` are read across the
- * ISR/epoch boundary, so they are volatile; the target adapter owes the
- * ISR/epoch pair its memory barriers, exactly as it does for AiusMeter's
- * seqlock. */
+ * producer/controller boundary, so they remain volatile. */
 typedef struct {
     volatile uint32_t state;       /* AiusMeasureState */
     uint32_t fail_reason;          /* AiusMeasureFailReason, valid in failed */
     int32_t *l;                    /* caller-owned plane, frames_cap samples */
     int32_t *r;                    /* caller-owned plane, frames_cap samples */
     uint32_t frames_cap;           /* capture length (target: CAPTURE_FRAMES) */
-    volatile uint32_t cursor;      /* frames captured; ISR-owned while capturing */
+    volatile uint32_t cursor;      /* frames captured; producer-owned */
     uint32_t armed_generation;     /* config generation latched at arm */
     uint32_t armed_overruns;       /* overrun counter latched at arm */
 } AiusMeasureCapture;
@@ -164,15 +160,15 @@ AiusStatus aius_measure_capture_init(AiusMeasureCapture *c,
                                      uint32_t frames_cap);
 
 /* Epoch: idle -> armed. Latches the config generation and the overrun counter
- * the caller reads AT ARM; the ISR retires the capture to failed if either
+ * the caller reads AT ARM; the producer retires the capture to failed if either
  * has moved at any later block boundary. All fields are stored before the
- * state store (the transmit ring's stage/commit rule), so an ISR that sees
+ * state store (the transmit ring's stage/commit rule), so a producer that sees
  * `armed` sees complete parameters. Any state but idle: AIUS_INVALID_ARG. */
 AiusStatus aius_measure_arm(AiusMeasureCapture *c,
                             uint32_t config_generation,
                             uint32_t overruns);
 
-/* ISR, once per committed block: the tap. In armed/capturing, first re-checks
+/* Producer, once per committed block: the tap. In armed/capturing, first re-checks
  * the arm-time latches against the values passed here (retiring to failed on
  * a mismatch, WITHOUT copying the block), then copies `frames` samples of the
  * committed stereo pair into the capture planes and retires to captured when
@@ -180,17 +176,17 @@ AiusStatus aius_measure_arm(AiusMeasureCapture *c,
  * and copies nothing. In every other state: a no-op. Bounded, allocation-free.
  * NOT marked FLASHMEM: this is the one function here that genuinely runs per
  * audio block. */
-void aius_measure_isr_block(AiusMeasureCapture *c,
+void aius_measure_producer_block(AiusMeasureCapture *c,
                             const int32_t *l, const int32_t *r,
                             uint32_t frames,
                             uint32_t config_generation,
                             uint32_t overruns);
 
-/* Epoch: armed/capturing -> cancelling. Sets the token only; the ISR
+/* Controller: armed/capturing -> cancelling. Sets the token only; the producer
  * acknowledges it at its next block. Any other state: AIUS_INVALID_ARG.
  *
  * KNOWN, ACCEPTED interleaving (delivery audit): this is a check-then-store,
- * so an ISR terminal (captured/failed) retiring between the check and the
+ * so a producer terminal (captured/failed) retiring between the check and the
  * store is clobbered by cancelling and that capture is lost to the reclaim.
  * The only caller is the epoch stall watch, which cancels after seconds of
  * the block counter unchanged -- the window requires the stream to resume
@@ -199,10 +195,10 @@ void aius_measure_isr_block(AiusMeasureCapture *c,
  * cost the machine its portable no-atomics simplicity. */
 AiusStatus aius_measure_cancel(AiusMeasureCapture *c);
 
-/* Epoch: cancelling -> failed (reclaimed), for the one case where the ISR is
- * provably not running -- the caller has watched its block counter stay
- * unchanged for a bounded number of epochs. If the ISR's acknowledgement won
- * the race between the epoch's check and this call, the capture is already
+/* Controller: cancelling -> failed (reclaimed), for the case where the producer
+ * has stopped -- the caller watched its block counter remain unchanged for a
+ * bounded number of epochs. If the producer acknowledgement happened first,
+ * the capture is already
  * failed (cancelled): that is the benign dual-terminal edge -- same terminal
  * state, first reason kept -- and this returns AIUS_OK. Any other state:
  * AIUS_INVALID_ARG. */
@@ -215,7 +211,7 @@ AiusStatus aius_measure_begin_analysis(AiusMeasureCapture *c);
 /* Epoch: analysing -> done, once the figures are published. */
 AiusStatus aius_measure_finish_analysis(AiusMeasureCapture *c);
 
-/* Epoch: done/failed -> idle. After this the ISR cannot act on the retired
+/* Controller: done/failed -> idle. After this the producer cannot act on the retired
  * capture again (it ignores idle), which is what makes the dual-terminal
  * cancel edge safe to leave benign. Any other state: AIUS_INVALID_ARG. */
 AiusStatus aius_measure_release(AiusMeasureCapture *c);

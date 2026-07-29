@@ -1442,6 +1442,220 @@ def assert_input_stage_skips_an_exact_identity(text):
         )
 
 
+def assert_audio_update_is_ingress_only(text):
+    body = function_body(text, "void update(void) override")
+    clean = without_comments_and_literals(body)
+    assert not loop_headers(clean), (
+        "AiusAudioProcessor::update() contains a loop; the exact sample walk "
+        "belongs only in audio_ingress_publish_live()"
+    )
+    allowed_calls = {
+        "if",
+        "receiveReadOnly",
+        "release",
+        "aius_audio_ingress_record_source_change",
+        "aius_audio_ingress_reserve",
+        "aius_replay_service_pop_words",
+        "aius_audio_ingress_commit",
+        "aius_audio_ingress_cancel_gap",
+        "aius_replay_service_discard_words",
+        "audio_ingress_publish_live",
+        "aius_audio_ingress_record_gap",
+    }
+    calls = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", clean))
+    unexpected = sorted(calls - allowed_calls)
+    assert not unexpected, (
+        "AiusAudioProcessor::update() performs work beyond ingress movement: "
+        + ", ".join(unexpected)
+    )
+    assert clean.count("audio_ingress_publish_live(") == 1, (
+        "live input must use exactly one named bounded producer helper"
+    )
+    assert re.search(
+        r"aius_replay_service_pop_words\s*\(\s*&g_replay_service\s*,\s*"
+        r"slot\s*,\s*AIUS_AUDIO_INGRESS_CHUNK_WORDS\s*\)",
+        clean,
+    ), "replay does not pop its exact 256 words directly into the reserved slot"
+    assert re.search(
+        r"aius_replay_service_discard_words\s*\(\s*&g_replay_service\s*,\s*"
+        r"AIUS_AUDIO_INGRESS_CHUNK_WORDS\s*\)",
+        clean,
+    ), "full ingress does not discard one bounded 256-word replay chunk"
+    source_change = clean.find("aius_audio_ingress_record_source_change(")
+    first_reserve = clean.find("aius_audio_ingress_reserve(")
+    assert 0 <= source_change < first_reserve, (
+        "the effective-source transition must publish before the first "
+        "commit, overflow gap, or missing-input gap"
+    )
+    helper = function_body(
+        text,
+        "audio_ingress_publish_live(uint16_t *slot, const audio_block_t *left,",
+    )
+    headers = loop_headers(without_comments_and_literals(helper))
+    assert len(headers) == 1 and "i < AUDIO_BLOCK_SAMPLES" in headers[0], (
+        "audio_ingress_publish_live() must contain the one exact "
+        "AUDIO_BLOCK_SAMPLES interleave walk"
+    )
+
+
+def assert_audio_checkpoint_owns_service(text):
+    body = function_body(text, "static FLASHMEM bool platform_audio")
+    clean = without_comments_and_literals(body)
+    assert clean.count("aius_audio_service_run(") == 1, (
+        "the AUDIO checkpoint must run the portable service exactly once"
+    )
+    assert "noInterrupts(" not in clean and "interrupts(" not in clean, (
+        "platform_audio() masks the whole reset/service path; only the service "
+        "critical-section hooks may mask the ingress producer"
+    )
+    assert "ARM_DWT_CYCCNT" in clean, (
+        "the full AUDIO checkpoint path is not measured in target cycles"
+    )
+    begin = function_body(
+        text, "FLASHMEM void AiusAudioProcessor::begin_pipeline(void)"
+    )
+    begin_clean = without_comments_and_literals(begin)
+    call = begin_clean.find("aius_audio_service_init(")
+    assert call >= 0, "begin_pipeline() never initialises the AUDIO service"
+    opening = begin_clean.find("(", call)
+    closing = matching_delimiter(begin_clean, opening, "(", ")")
+    args = begin_clean[opening + 1: closing]
+    assert len([part for part in args.split(",") if part.strip()]) == 8, (
+        "aius_audio_service_init() must receive all eight arguments, including "
+        "the narrow reset critical-section hooks"
+    )
+    assert "audio_enter_reset_critical" in args
+    assert "audio_exit_reset_critical" in args
+    enter = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void audio_enter_reset_critical")
+    )
+    leave = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void audio_exit_reset_critical")
+    )
+    assert enter.strip() == "NVIC_DISABLE_IRQ(IRQ_SOFTWARE);", (
+        "the reset enter hook must mask only the software-audio ingress producer"
+    )
+    assert leave.strip() == "NVIC_ENABLE_IRQ(IRQ_SOFTWARE);", (
+        "the reset exit hook must unmask only the software-audio ingress producer"
+    )
+    assert "noInterrupts(" not in enter and "interrupts(" not in leave, (
+        "the narrow reset hooks must never globally mask every target IRQ"
+    )
+    clear = without_comments_and_literals(
+        function_body(text, "void clear_counters(void)")
+    )
+    status = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool http_audio_diag_json")
+    )
+    for label, producer_snapshot in (
+        ("counter clear", clear),
+        ("status snapshot", status),
+    ):
+        assert "NVIC_DISABLE_IRQ(IRQ_SOFTWARE);" in producer_snapshot
+        assert "NVIC_ENABLE_IRQ(IRQ_SOFTWARE);" in producer_snapshot
+        assert "noInterrupts(" not in producer_snapshot, (
+            f"{label} globally masks every target IRQ"
+        )
+    loop = without_comments_and_literals(function_body(text, LOOP_MARKER))
+    assert "AIUS_RUNTIME_EPOCH_BUDGET_US = 25000u" in text
+    assert "completed && !g_runtime.recovery_safe" in loop
+    assert loop.count("epoch_us > AIUS_RUNTIME_EPOCH_BUDGET_US") == 1, (
+        "completed normal epochs are not checked exactly once against 25 ms"
+    )
+
+
+def assert_enqueue_preflights_before_effects(text):
+    body = function_body(text, "AiusStatus enqueue(const AiusPcmBlock *block)")
+    clean = without_comments_and_literals(body)
+    order = (
+        clean.find("block == nullptr"),
+        clean.find("aius_spdif_tx24_free("),
+        clean.find("g_dsp_apply_pending"),
+        clean.find("aius_dsp_process("),
+        clean.find("aius_spdif_tx24_commit("),
+        clean.find("aius_measure_producer_block("),
+        clean.find("aius_recorder_producer_block("),
+        clean.find("g_blocks++"),
+    )
+    assert all(position >= 0 for position in order), (
+        "enqueue() is missing validation, capacity preflight, or one committed "
+        "writer effect"
+    )
+    assert tuple(sorted(order)) == order, (
+        "enqueue() must validate and check TX capacity before config/DSP state, "
+        "then commit TX before measurement, recorder and counters"
+    )
+
+
+def assert_audio_storage_and_diagnostics(text):
+    clean = without_comments_and_literals(text)
+    assert re.search(
+        r"\bDMAMEM\s+static\s+uint16_t\s+"
+        r"g_audio_ingress_words\s*\[\s*AIUS_AUDIO_INGRESS_CAPACITY_WORDS\s*\]",
+        clean,
+    ), "the exact target ingress storage is not a DMAMEM uint16_t array"
+    assert "AIUS_AUDIO_INGRESS_CAPACITY_WORDS == 8192u" in clean, (
+        "the target does not pin ingress capacity to exactly 8192 words"
+    )
+    assert "sizeof(g_audio_ingress_words) == 16384u" in clean, (
+        "the target does not pin ingress storage to exactly 16 KiB"
+    )
+    assert re.search(r"\bg_recorder_staging\s*\[", clean) is None, (
+        "the obsolete OCRAM recorder sample array still exists"
+    )
+    assert "RECORDER_STAGING_SLOTS 8u" in clean
+    assert "aius_recorder_ring_bytes_after_staging(" in clean
+    required_fields = (
+        "ingress_drop_overflow",
+        "ingress_drop_missing_live",
+        "ingress_drop_short_replay",
+        "source_flushes",
+        "gap_flushes",
+        "service_steps_attempted",
+        "service_steps_committed",
+        "service_max_us",
+        "service_max_cycles",
+        "service_budget_overruns",
+        "decode_units",
+        "parse_rejects",
+        "decode_rejects",
+        "transmit_stalls",
+        "retained_retries",
+        "output_drops",
+        "au_abandons",
+        "tx_high_water_frames",
+        "runtime_epoch_max_us",
+        "runtime_epoch_budget_overruns",
+    )
+    missing = [field for field in required_fields if field not in text]
+    assert not missing, "audio diagnostics are missing: " + ", ".join(missing)
+    overrun = without_comments_and_literals(
+        function_body(text, "uint32_t overrun_count(void) const")
+    )
+    assert (
+        "__atomic_load_n(&g_audio_ingress.dropped_chunks,"
+        in overrun
+        and "__ATOMIC_ACQUIRE" in overrun
+    ), (
+        "legacy overruns no longer projects the ingress dropped-chunk count"
+    )
+    assert "noInterrupts(" not in overrun, (
+        "the per-block overrun projection globally masks every target IRQ"
+    )
+
+
+def assert_noload_diagnostics_are_initialized(text):
+    setup = without_comments_and_literals(function_body(text, SETUP_MARKER))
+    clear = "memset(&g_replay_diag, 0, sizeof(g_replay_diag));"
+    assert setup.count(clear) == 1, (
+        "setup() must clear the NOLOAD replay diagnostics exactly once"
+    )
+    assert setup.find(clear) < setup.find("AudioMemory("), (
+        "NOLOAD replay diagnostics must be initialized before audio/runtime "
+        "startup can serve status"
+    )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -1504,6 +1718,26 @@ POSITIVE_CHECKS = (
     (
         "the final hop bypasses audio_block_t entirely",
         assert_no_audio_block_output_hop,
+    ),
+    (
+        "the software audio callback performs ingress movement only",
+        assert_audio_update_is_ingress_only,
+    ),
+    (
+        "the AUDIO checkpoint owns deferred service and narrow reset masking",
+        assert_audio_checkpoint_owns_service,
+    ),
+    (
+        "enqueue preflights before every writer effect",
+        assert_enqueue_preflights_before_effects,
+    ),
+    (
+        "audio storage and cause-separated diagnostics remain exact",
+        assert_audio_storage_and_diagnostics,
+    ),
+    (
+        "NOLOAD diagnostics are initialized before runtime startup",
+        assert_noload_diagnostics_are_initialized,
     ),
 )
 
@@ -1700,6 +1934,87 @@ def run_helper_self_test():
     )
     assert qualified_text[sites[0]:].startswith("Shim::set(true)"), (
         "qualified_call_sites returned an offset into the wrong string"
+    )
+
+
+def run_audio_cutover_self_test():
+    text = OPTICAL_MAIN.read_text()
+    checks = (
+        assert_audio_update_is_ingress_only,
+        assert_audio_checkpoint_owns_service,
+        assert_enqueue_preflights_before_effects,
+        assert_audio_storage_and_diagnostics,
+    )
+    for check in checks:
+        _expect_pass(check, text, "audio-cutover/current")
+    looped = text.replace(
+        "\t\taudio_block_t *left = receiveReadOnly(0);",
+        "\t\tfor (;;) {}\n\t\taudio_block_t *left = receiveReadOnly(0);",
+        1,
+    )
+    _expect_fail(
+        assert_audio_update_is_ingress_only,
+        looped,
+        "audio-cutover/loop-in-update",
+        "contains a loop",
+    )
+    masked = text.replace(
+        "\tconst uint32_t cycles_started = ARM_DWT_CYCCNT;",
+        "\tnoInterrupts();\n\tconst uint32_t cycles_started = ARM_DWT_CYCCNT;",
+        1,
+    )
+    _expect_fail(
+        assert_audio_checkpoint_owns_service,
+        masked,
+        "audio-cutover/outer-mask",
+        "masks the whole",
+    )
+    global_reset_mask = text.replace(
+        "static FLASHMEM void audio_enter_reset_critical(void *)\n"
+        "{\n\tNVIC_DISABLE_IRQ(IRQ_SOFTWARE);\n}",
+        "static FLASHMEM void audio_enter_reset_critical(void *)\n"
+        "{\n\tnoInterrupts();\n}",
+        1,
+    )
+    _expect_fail(
+        assert_audio_checkpoint_owns_service,
+        global_reset_mask,
+        "audio-cutover/global-reset-mask",
+        "must mask only",
+    )
+    reordered = text.replace(
+        "\t\tif (g_dsp_apply_pending) {",
+        "\t\t(void)aius_dsp_process(nullptr, nullptr, nullptr);\n"
+        "\t\tif (g_dsp_apply_pending) {",
+        1,
+    )
+    _expect_fail(
+        assert_enqueue_preflights_before_effects,
+        reordered,
+        "audio-cutover/effect-before-config",
+        "must validate",
+    )
+    unpinned = text.replace(
+        "static_assert(sizeof(g_audio_ingress_words) == 16384u,",
+        "static_assert(sizeof(g_audio_ingress_words) > 0u,",
+        1,
+    )
+    _expect_fail(
+        assert_audio_storage_and_diagnostics,
+        unpinned,
+        "audio-cutover/unpinned-size",
+        "exactly 16 KiB",
+    )
+    uncleared_diag = text.replace(
+        "\tmemset(&g_replay_diag, 0, sizeof(g_replay_diag));\n",
+        "",
+        1,
+    )
+    _expect_fail(
+        assert_noload_diagnostics_are_initialized,
+        uncleared_diag,
+        "audio-cutover/uncleared-noload-diag",
+        "must clear",
     )
 
 
@@ -2907,6 +3222,7 @@ def main():
     args = parser.parse_args()
 
     run_helper_self_test()
+    run_audio_cutover_self_test()
     run_self_test()
     print("optical-cutover self-test (checks discriminate against synthetic input): PASS")
 

@@ -3,12 +3,19 @@
 #include <math.h>
 #include <string.h>
 
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 /* The flight recorder's portable core. Context rules, the transition table
  * and the gap policy are the header's contract; this file keeps every
  * function bounded, allocation-free, and single-writer per transition.
  *
  * KNOWN, ACCEPTED interleaving (the measure machine's cancel-token shape):
- * `freeze_token` is set by the epoch and cleared by the ISR at acknowledge;
+ * `freeze_token` is set by the controller and cleared by the block producer;
  * `suppressed_triggers` is incremented from both contexts. Both are
  * diagnostic-bearing, not state-bearing: a collision costs one suppressed
  * count or one redundant token store, never a corrupt transition, because
@@ -17,6 +24,22 @@
 static int power_of_two(uint32_t value)
 {
 	return value != 0u && (value & (value - 1u)) == 0u;
+}
+
+FLASHMEM uint32_t
+aius_recorder_ring_bytes_after_staging(uint32_t storage_bytes,
+	                                   uint32_t staging_bytes)
+{
+	if (storage_bytes <= staging_bytes)
+		return 0u;
+	const uint32_t available = storage_bytes - staging_bytes;
+	if (available < AIUS_RECORDER_FRAME_BYTES)
+		return 0u;
+	uint32_t ring_bytes = AIUS_RECORDER_FRAME_BYTES;
+	while (ring_bytes <= available / 2u &&
+	       ring_bytes <= UINT32_MAX / 2u)
+		ring_bytes *= 2u;
+	return ring_bytes;
 }
 
 static void reset_capture(AiusRecorder *r)
@@ -82,11 +105,11 @@ AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
 	return AIUS_OK;
 }
 
-/* ISR: latch trigger metadata, then the POSTROLL state store publishes it
+/* Producer: latch trigger metadata, then the POSTROLL state store publishes it
  * (stage/commit). postroll_blocks == 0 skips straight to DRAINING: the
  * post-roll counts staged blocks from the trigger block inclusive, and zero
  * of them means the capture ends at the trigger boundary. */
-static void isr_latch_trigger(AiusRecorder *r, uint32_t which,
+static void producer_latch_trigger(AiusRecorder *r, uint32_t which,
                               uint32_t now_ms)
 {
 	uint32_t postroll = r->postroll_blocks;
@@ -104,7 +127,7 @@ static void isr_latch_trigger(AiusRecorder *r, uint32_t which,
 	r->state = AIUS_RECORDER_POSTROLL;
 }
 
-void aius_recorder_isr_block(AiusRecorder *r, const int32_t *l,
+void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
                              const int32_t *right, uint32_t frames,
                              uint32_t overruns, uint32_t underruns,
                              bool limiter_gain_valid, float limiter_gain,
@@ -160,7 +183,7 @@ void aius_recorder_isr_block(AiusRecorder *r, const int32_t *l,
 
 	if (fired != AIUS_RECORDER_TRIGGER_NONE) {
 		if (state == AIUS_RECORDER_RECORDING) {
-			isr_latch_trigger(r, fired, now_ms);
+				producer_latch_trigger(r, fired, now_ms);
 			state = r->state;
 			if (state == AIUS_RECORDER_DRAINING)
 				return; /* zero post-roll: this block is out */
@@ -203,9 +226,8 @@ void aius_recorder_isr_block(AiusRecorder *r, const int32_t *l,
 	}
 }
 
-/* Epoch: perform the reclaim transition itself -- the ISR is provably not
- * running (block counter unchanged for the bounded window), so the epoch is
- * the only writer left. */
+/* Controller: reclaim after the producer block counter remains unchanged for
+ * the bounded window. */
 static void epoch_reclaim(AiusRecorder *r, uint32_t now_ms)
 {
 	uint32_t state = r->state;
@@ -229,9 +251,9 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 	uint32_t state = r->state;
 	if (state == AIUS_RECORDER_ABSENT)
 		return;
-	/* Latch the gate for the ISR's underrun qualification. The underrun
+	/* Latch the gate for the producer's underrun qualification. The underrun
 	 * counter FREE-RUNS as silence substitution while the gate is dark, so
-	 * a closed -> open transition re-adopts every baseline (epoch and ISR
+	 * a closed -> open transition re-adopts every baseline (controller and producer
 	 * alike) rather than reading the dark-era growth as an edge. Costs at
 	 * most one missed real edge per transition, never a spurious freeze. */
 	uint32_t prev_gate = r->gate_open;
@@ -239,7 +261,7 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 	if (gate_open && !prev_gate)
 		r->baseline_sync = 0u;
 
-	/* Epoch-side underrun tracking, resync on decrease as the ISR does. */
+	/* Controller underrun tracking, resync on decrease as the producer does. */
 	if (underruns < r->underrun_base_epoch)
 		r->underrun_base_epoch = underruns;
 
@@ -252,7 +274,7 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 		    r->carrier_prev && !carrier_locked)
 			r->freeze_token = AIUS_RECORDER_TRIGGER_CARRIER_LOSS;
 		/* Underrun fallback: the flagship producer-stall case advances
-		 * the counter while the ISR never runs again. Qualified by the
+		 * the counter while the producer commits no further block. Qualified by the
 		 * gate at BOTH ends of the delta: this epoch's (a stop closes
 		 * the gate in the same evaluation, suppressing the drain
 		 * transient) and the previous epoch's (the baseline must have
@@ -266,7 +288,7 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 	r->underrun_base_epoch = underruns;
 
 	/* Reclaim: a pending token or an open post-roll with the block counter
-	 * unchanged for the bounded window means the ISR stopped. */
+	 * unchanged for the bounded window means the producer stopped. */
 	state = r->state;
 	if ((state == AIUS_RECORDER_RECORDING && r->freeze_token != 0u) ||
 	    state == AIUS_RECORDER_POSTROLL) {
@@ -349,8 +371,8 @@ AiusStatus aius_recorder_thaw(AiusRecorder *r)
 {
 	if (r == NULL || r->state != AIUS_RECORDER_FROZEN)
 		return AIUS_INVALID_ARG;
-	/* FROZEN means the ISR side is a no-op, so the epoch may reset the
-	 * ISR-owned fields; the RECORDING store last is what re-arms it. */
+	/* FROZEN means the producer is a no-op, so the controller may reset the
+	 * producer-owned fields; the RECORDING store last re-arms it. */
 	reset_capture(r);
 	r->freeze_generation++;
 	r->state = AIUS_RECORDER_RECORDING;

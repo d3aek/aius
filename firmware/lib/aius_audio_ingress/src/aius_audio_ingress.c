@@ -2,6 +2,13 @@
 
 #include <string.h>
 
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 static uint32_t load_u32(const volatile uint32_t *value)
 {
 	return __atomic_load_n(value, __ATOMIC_ACQUIRE);
@@ -28,8 +35,8 @@ static void record_gap(AiusAudioIngress *ingress,
 	store_u32(&ingress->generation, load_u32(&ingress->generation) + 1u);
 }
 
-AiusStatus aius_audio_ingress_init(AiusAudioIngress *ingress, uint16_t *storage,
-	                               size_t capacity_words)
+FLASHMEM AiusStatus aius_audio_ingress_init(
+	AiusAudioIngress *ingress, uint16_t *storage, size_t capacity_words)
 {
 	if (!ingress || !storage ||
 	    capacity_words < AIUS_AUDIO_INGRESS_CHUNK_WORDS ||
@@ -102,8 +109,8 @@ void aius_audio_ingress_record_source_change(AiusAudioIngress *ingress)
 	store_u32(&ingress->generation, load_u32(&ingress->generation) + 1u);
 }
 
-size_t aius_audio_ingress_peek(const AiusAudioIngress *ingress,
-	                           const uint16_t **words)
+FLASHMEM size_t aius_audio_ingress_peek(const AiusAudioIngress *ingress,
+	                                    const uint16_t **words)
 {
 	if (!ingress || !words || !ingress->words)
 		return 0u;
@@ -121,8 +128,8 @@ size_t aius_audio_ingress_peek(const AiusAudioIngress *ingress,
 	return count;
 }
 
-AiusStatus aius_audio_ingress_consume(AiusAudioIngress *ingress,
-	                                  size_t words)
+FLASHMEM AiusStatus aius_audio_ingress_consume(AiusAudioIngress *ingress,
+	                                           size_t words)
 {
 	if (!ingress)
 		return AIUS_INVALID_ARG;
@@ -137,37 +144,38 @@ AiusStatus aius_audio_ingress_consume(AiusAudioIngress *ingress,
 	return AIUS_OK;
 }
 
-uint32_t aius_audio_ingress_generation(const AiusAudioIngress *ingress)
+FLASHMEM uint32_t
+aius_audio_ingress_generation(const AiusAudioIngress *ingress)
 {
 	return ingress ? load_u32(&ingress->generation) : 0u;
 }
 
-uint32_t aius_audio_ingress_source_generation(
+FLASHMEM uint32_t aius_audio_ingress_source_generation(
 	const AiusAudioIngress *ingress)
 {
 	return ingress ? load_u32(&ingress->source_generation) : 0u;
 }
 
-uint32_t aius_audio_ingress_observed_generation(
+FLASHMEM uint32_t aius_audio_ingress_observed_generation(
 	const AiusAudioIngress *ingress)
 {
 	return ingress ? ingress->observed_generation : 0u;
 }
 
-uint32_t aius_audio_ingress_observed_source_generation(
+FLASHMEM uint32_t aius_audio_ingress_observed_source_generation(
 	const AiusAudioIngress *ingress)
 {
 	return ingress ? ingress->observed_source_generation : 0u;
 }
 
-void aius_audio_ingress_observe_generation(AiusAudioIngress *ingress,
-	                                       uint32_t generation)
+FLASHMEM void aius_audio_ingress_observe_generation(
+	AiusAudioIngress *ingress, uint32_t generation)
 {
 	if (ingress)
 		ingress->observed_generation = generation;
 }
 
-void aius_audio_ingress_observe_source_generation(
+FLASHMEM void aius_audio_ingress_observe_source_generation(
 	AiusAudioIngress *ingress, uint32_t generation)
 {
 	if (ingress)
@@ -182,7 +190,7 @@ static uint32_t flush_words(AiusAudioIngress *ingress)
 	return written - consumed;
 }
 
-void aius_audio_ingress_flush_gap(AiusAudioIngress *ingress)
+FLASHMEM void aius_audio_ingress_flush_gap(AiusAudioIngress *ingress)
 {
 	if (!ingress)
 		return;
@@ -190,7 +198,7 @@ void aius_audio_ingress_flush_gap(AiusAudioIngress *ingress)
 	ingress->gap_flush_words += flush_words(ingress);
 }
 
-void aius_audio_ingress_flush_source(AiusAudioIngress *ingress)
+FLASHMEM void aius_audio_ingress_flush_source(AiusAudioIngress *ingress)
 {
 	if (!ingress)
 		return;
@@ -198,13 +206,13 @@ void aius_audio_ingress_flush_source(AiusAudioIngress *ingress)
 	ingress->source_flush_words += flush_words(ingress);
 }
 
-size_t aius_audio_ingress_level(const AiusAudioIngress *ingress)
+FLASHMEM size_t aius_audio_ingress_level(const AiusAudioIngress *ingress)
 {
 	return ingress ? current_level(ingress) : 0u;
 }
 
-void aius_audio_ingress_get_diag(const AiusAudioIngress *ingress,
-	                             AiusAudioIngressDiag *out)
+FLASHMEM void aius_audio_ingress_get_diag(
+	const AiusAudioIngress *ingress, AiusAudioIngressDiag *out)
 {
 	if (!out)
 		return;
@@ -225,7 +233,8 @@ void aius_audio_ingress_get_diag(const AiusAudioIngress *ingress,
 	out->gap_flush_words = ingress->gap_flush_words;
 }
 
-void aius_audio_ingress_clear_producer_diag(AiusAudioIngress *ingress)
+FLASHMEM void
+aius_audio_ingress_clear_producer_diag(AiusAudioIngress *ingress)
 {
 	if (!ingress)
 		return;

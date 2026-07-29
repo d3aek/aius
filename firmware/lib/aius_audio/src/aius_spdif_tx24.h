@@ -70,8 +70,8 @@ extern "C" {
  * exactly one side, and the level is their unsigned difference -- which is
  * correct across the counters' own wrap. This matters because the two sides are
  * no longer the same context: the producer (enqueue(), reached from the
- * software ISR that AudioStream::update_all() pends) can be PREEMPTED
- * mid-write by the consumer (the transmit DMA ISR, a higher NVIC priority).
+ * runtime AUDIO checkpoint) can be PREEMPTED mid-write by the consumer (the
+ * transmit DMA ISR, a higher NVIC priority).
  * The old int16 ring had both ends inside update(), so a plain `count` was
  * safe there and would be a race here. Staged frames become visible only at
  * aius_spdif_tx24_commit(), so a preempting consumer never sees a half-written

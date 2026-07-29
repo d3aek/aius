@@ -5,7 +5,7 @@ scope: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-07-28
+updated: 2026-07-29
 toc: true
 ---
 
@@ -166,12 +166,17 @@ specified here. Strike items here in the commit that closes them.
     hour (left carries FR's 600 Hz strong; right carries C's 900).
     Chase is a table diff plus a native per-channel tone test; no
     hardware needed.
-  - **31**: sustained live DTS decode watchdog-crashes within ~10 min
-    under capture/HTTP load — ISR-hang shape (`pv=5`, `fa=254`: main
-    loop starved, never aborting; the whole-AU decode runs in one
-    audio block callback). Chase after 28: bound per-callback decode
-    work + hunt non-terminating dcadec parses with seam-corrupted AUs
-    on the host.
+  - ~~**31**: sustained live DTS decode watchdog-crashes within ~10 min
+    under capture/HTTP load.~~ FIXED 2026-07-29: decode/DSP/TX moved
+    out of the ISR; a 1,857-second live DTS soak under recorder and
+    measurement/HTTP load held AUDIO to 2.401 ms and the epoch to
+    3.036 ms with zero drops, gaps, generation changes or resets.
+  - **35**: terminating a live DTS source mid-burst causes one 120 ms
+    AUDIO service, 14 ingress overflow chunks / 3,584 dropped words,
+    a recorder underrun and an HTTP disconnect before PCM recovery.
+    Natural EOF of the same complete 2,813-burst source is clean.
+    Capture the exact transition AU, add target decode/sink substep
+    timing, then drop partial compressed work on source discontinuity.
   - **27**: the silence self-loop (locked carrier, validity-muted PCM
     in, silent out, TX gate held open) floods `overruns` at ~1 kHz
     sustained; found on the first-ever external-carrier input

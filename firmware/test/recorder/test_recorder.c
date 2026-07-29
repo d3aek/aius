@@ -17,6 +17,13 @@
 #define RING_BYTES (RING_FRAMES * AIUS_RECORDER_FRAME_BYTES)
 #define SLOTS 4u
 #define SLOT_FRAMES 8u
+#define AUDIO_BURST_SLOTS 8u
+#define AUDIO_BURST_SLOT_FRAMES 512u
+#define AUDIO_BURST_RING_FRAMES \
+	(AUDIO_BURST_SLOTS * AUDIO_BURST_SLOT_FRAMES)
+#define AUDIO_BURST_RING_BYTES \
+	(AUDIO_BURST_RING_FRAMES * AIUS_RECORDER_FRAME_BYTES)
+#define MIB (1024u * 1024u)
 
 typedef struct {
 	AiusRecorder r;
@@ -46,7 +53,7 @@ static void feed_block(Fixture *f, uint32_t frames, int32_t base,
 		l[i] = base + (int32_t)i;
 		r[i] = -(base + (int32_t)i);
 	}
-	aius_recorder_isr_block(&f->r, l, r, frames, overruns, underruns,
+	aius_recorder_producer_block(&f->r, l, r, frames, overruns, underruns,
 	                        false, 0.0f, 1000u);
 }
 
@@ -70,7 +77,7 @@ static void test_absent_is_first_class(void)
 	assert(aius_recorder_read(&r, 0u, 8u, 0u, &p, &n) == AIUS_INVALID_ARG);
 	assert(aius_recorder_drain(&r, 65536u) == 0u);
 	int32_t plane[4] = { 0, 0, 0, 0 };
-	aius_recorder_isr_block(&r, plane, plane, 4u, 0u, 0u, false, 0.0f, 0u);
+	aius_recorder_producer_block(&r, plane, plane, 4u, 0u, 0u, false, 0.0f, 0u);
 	assert(r.frames_staged == 0u);
 	/* Config is reportable and settable on an absent board (the status
 	 * surface echoes it; there is just nothing to arm). */
@@ -109,6 +116,60 @@ static void test_init_geometry(void)
 	assert(s.oldest_frame == 0u);
 	assert(s.trigger_mask == AIUS_RECORDER_MASK_DEFAULT);
 	assert(s.postroll_blocks == AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS);
+}
+
+static void test_target_psram_geometry(void)
+{
+	const uint32_t staging_bytes = 32u * 1024u;
+	assert(aius_recorder_ring_bytes_after_staging(0u, staging_bytes) == 0u);
+	assert(aius_recorder_ring_bytes_after_staging(staging_bytes,
+	                                              staging_bytes) == 0u);
+	assert(aius_recorder_ring_bytes_after_staging(8u * MIB,
+	                                              staging_bytes) ==
+	       4u * MIB);
+	assert(aius_recorder_ring_bytes_after_staging(16u * MIB,
+	                                              staging_bytes) ==
+	       8u * MIB);
+	assert(aius_recorder_ring_bytes_after_staging(UINT32_MAX, 0u) ==
+	       0x80000000u);
+}
+
+static void test_eight_step_audio_burst_is_gap_free(void)
+{
+	AiusRecorder r;
+	static uint8_t ring[AUDIO_BURST_RING_BYTES];
+	static int32_t
+		staging[AUDIO_BURST_SLOTS * AUDIO_BURST_SLOT_FRAMES * 2u];
+	static uint32_t staging_frames[AUDIO_BURST_SLOTS];
+	static int32_t left[AUDIO_BURST_SLOT_FRAMES];
+	static int32_t right[AUDIO_BURST_SLOT_FRAMES];
+
+	memset(&r, 0, sizeof(r));
+	memset(ring, 0, sizeof(ring));
+	assert(aius_recorder_init(&r, ring, sizeof(ring), 8u, staging,
+	                          staging_frames, AUDIO_BURST_SLOTS,
+	                          AUDIO_BURST_SLOT_FRAMES) == AIUS_OK);
+	for (uint32_t frame = 0; frame < AUDIO_BURST_SLOT_FRAMES; frame++) {
+		left[frame] = (int32_t)frame;
+		right[frame] = -(int32_t)frame;
+	}
+	for (uint32_t step = 0; step < AUDIO_BURST_SLOTS; step++)
+		aius_recorder_producer_block(
+			&r, left, right, AUDIO_BURST_SLOT_FRAMES,
+			0u, 0u, false, 0.0f,
+			1000u + step);
+	assert(r.slot_write == AUDIO_BURST_SLOTS);
+	assert(r.frames_staged == AUDIO_BURST_RING_FRAMES);
+	assert(r.gap_count == 0u);
+	aius_recorder_producer_block(
+		&r, left, right, AUDIO_BURST_SLOT_FRAMES, 0u, 0u,
+		false, 0.0f, 2000u);
+	assert(r.gap_count == 1u);
+	assert(r.frames_staged == AUDIO_BURST_RING_FRAMES);
+	assert(aius_recorder_drain(&r, AUDIO_BURST_RING_BYTES) ==
+	       AUDIO_BURST_RING_BYTES);
+	assert(r.slot_read == AUDIO_BURST_SLOTS);
+	assert(r.gap_count == 1u);
 }
 
 static void test_stage_drain_interleave(void)
@@ -194,7 +255,7 @@ static void test_operator_freeze_ack_postroll(void)
 	assert(f.r.freeze_token == AIUS_RECORDER_TRIGGER_OPERATOR);
 	/* A second freeze while the token is pending is idempotent. */
 	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
-	/* The ISR acknowledges at its next block: POSTROLL, token cleared,
+	/* The producer acknowledges at its next block: POSTROLL, token cleared,
 	 * metadata latched at the pre-block boundary. */
 	feed_block(&f, 8u, 1, 0u, 0u);
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
@@ -288,7 +349,7 @@ static void test_underrun_epoch_fallback_and_reclaim(void)
 	Fixture f;
 	fixture_init(&f);
 	feed_block(&f, 8u, 0, 0u, 0u);
-	/* Producer stall: no more ISR blocks, underruns advance, gate open.
+	/* Producer stall: no more blocks, underruns advance, gate open.
 	 * The epoch sets the token... */
 	aius_recorder_epoch(&f.r, false, true, 0u, 100u);
 	aius_recorder_epoch(&f.r, false, true, 4096u, 101u);
@@ -328,7 +389,7 @@ static void test_carrier_falling_edge(void)
 	for (uint32_t i = 0; i < 100u; i++)
 		aius_recorder_epoch(&f.r, false, false, 0u, i);
 	assert(f.r.freeze_token == 0u);
-	/* Locked then lost: the falling edge sets the token; the ISR
+	/* Locked then lost: the falling edge sets the token; the producer
 	 * acknowledges. */
 	aius_recorder_epoch(&f.r, true, true, 0u, 200u);
 	aius_recorder_epoch(&f.r, false, false, 0u, 201u);
@@ -347,14 +408,14 @@ static void test_gr_hold(void)
 	                                3u, 2u) == AIUS_OK);
 	int32_t plane[8] = { 0 };
 	/* Two held blocks then a recovery: the hold count resets. */
-	aius_recorder_isr_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_isr_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_isr_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.9f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.9f, 0u);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
 	/* Three consecutive held blocks fire. */
-	aius_recorder_isr_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_isr_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_isr_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_LIMITER_GR);
 	/* GR disabled (0 dB) never fires whatever the mask. */
@@ -363,7 +424,7 @@ static void test_gr_hold(void)
 	assert(aius_recorder_set_config(&g.r, AIUS_RECORDER_MASK_ALL, 0.0f, 1u,
 	                                2u) == AIUS_OK);
 	for (uint32_t i = 0; i < 10u; i++)
-		aius_recorder_isr_block(&g.r, plane, plane, 8u, 0u, 0u, true,
+		aius_recorder_producer_block(&g.r, plane, plane, 8u, 0u, 0u, true,
 		                        0.01f, 0u);
 	assert(g.r.state == AIUS_RECORDER_RECORDING);
 }
@@ -497,6 +558,8 @@ int main(void)
 {
 	test_absent_is_first_class();
 	test_init_geometry();
+	test_target_psram_geometry();
+	test_eight_step_audio_burst_is_gap_free();
 	test_stage_drain_interleave();
 	test_gap_on_staging_full();
 	test_ring_wrap_and_extent();

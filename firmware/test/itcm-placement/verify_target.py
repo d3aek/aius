@@ -7,7 +7,8 @@ out of the audio path's headroom. The deciding principle (see
 docs/plans/aius-network-hardening.md) is: ITCM belongs to code that genuinely
 runs per audio block; everything else is FLASHMEM.
 
-Two checks, one per shape of translation unit.
+Four checks cover the cold, mixed ingress-producer, mixed recorder and optical
+composition translation-unit shapes.
 
 Wholly-cold objects: this reads the per-object section table of every object
 named in COLD_OBJECTS and fails the link if any of them still emits executable
@@ -21,7 +22,13 @@ COLD_TREES makes the list non-optional: a new object compiled out of a cold
 engine tree that nobody added to COLD_OBJECTS fails the build, so an unannotated
 engine cannot land silently.
 
-The one hot object: `src/optical_main.cpp` defines the audio processor, so it
+The mixed ingress object keeps only its five producer entry points in ITCM.
+Initialisation, consumption, flush and diagnostics are epoch work in FLASH.
+
+The mixed recorder object must keep its new PSRAM-geometry helper out of ITCM.
+The rest of that pre-existing object is outside this phase's placement contract.
+
+The optical hot object: `src/optical_main.cpp` defines the audio processor, so it
 cannot join COLD_OBJECTS -- some of its ITCM is exactly what ITCM is for. Its
 contents are pinned instead, by an exact per-symbol allowlist (HOT_SECTIONS plus
 the two kinds no attribute can reach), so "this is legitimately hot" is an
@@ -42,6 +49,7 @@ from typing import Iterable, Mapping
 # Objects that must contribute zero ITCM, relative to $BUILD_DIR. Every function
 # defined in these translation units carries FLASHMEM.
 COLD_OBJECTS = (
+    "lib/aius_audio_service/src/aius_audio_service.c.o",
     "lib/aius_boot/src/aius_boot.c.o",
     "lib/aius_http/src/aius_http.c.o",
     "lib/aius_http/src/aius_http_transaction.c.o",
@@ -66,6 +74,7 @@ FRAMEWORK_CLONES = {
 # Adding a source to one of these engines without annotating it is a build
 # failure rather than silent ITCM.
 COLD_TREES = (
+    "lib/aius_audio_service/",
     "lib/aius_boot/",
     "lib/aius_http/",
     "lib/aius_net/",
@@ -76,28 +85,28 @@ COLD_TREES = (
 # The one object allowed to contribute ITCM, and the exact set it may contribute.
 HOT_OBJECT = "src/optical_main.cpp.o"
 
-# 1. The audio-block functions, by exact section name. `update` is AudioStream's
-#    per-block callback, `enqueue` the pipeline hand-off it makes, and
-#    `consume_block` the callback the pipeline calls back through -- all three
-#    run once per AUDIO_BLOCK_SAMPLES block. Every one must be present: a
-#    missing entry means a rename, an inline-away, or a FLASHMEM landing on hot
-#    code, and the build should reject all three rather than quietly pass.
-#
-#    Phase 14b deliberately added nothing here. Its meter tap is genuinely hot,
-#    but it is written inline in `enqueue` rather than as a helper, so it grows
-#    an already-pinned section (424 -> 600 bytes) instead of introducing a
-#    fourth name. That is the honest placement AND the checkable one: a
-#    single-call-site static helper would almost certainly have been inlined by
-#    GCC at -O2, which would have made an entry added here fail the "no longer
-#    emits its audio-block code" check below -- so the allowlist would have had
-#    to describe a function that does not exist. Everything else 14b added --
-#    http_meters_json and its two conversion helpers, and the meter tunables
-#    apply_config resolves -- runs in HTTP or block-boundary context and carries
-#    FLASHMEM on its definition, which is why this list is still exactly three.
+# 1. The software-audio-ISR functions, by exact section name. `update` is now
+#    only a bounded ingress producer and `audio_ingress_publish_live` is its
+#    exact 128-frame interleave walk. Decode, DSP, metering, recording and the
+#    transmit-ring producer run from the epoch's AUDIO checkpoint and carry
+#    FLASHMEM, so they no longer consume the ISR-hot bank.
 HOT_SECTIONS = (
+    ".text._ZL26audio_ingress_publish_livePtPK18audio_block_structS2_",
     ".text._ZN18AiusAudioProcessor6updateEv",
-    ".text._ZN18AiusAudioProcessor7enqueueEPK12AiusPcmBlock",
-    ".text._ZN18AiusAudioProcessor13consume_blockEPvPK12AiusPcmBlock",
+)
+
+INGRESS_HOT_OBJECT = "lib/aius_audio_ingress/src/aius_audio_ingress.c.o"
+INGRESS_HOT_SECTIONS = (
+    ".text.aius_audio_ingress_reserve",
+    ".text.aius_audio_ingress_commit",
+    ".text.aius_audio_ingress_cancel_gap",
+    ".text.aius_audio_ingress_record_gap",
+    ".text.aius_audio_ingress_record_source_change",
+)
+
+RECORDER_OBJECT_GLOB = "lib*/aius_recorder/aius_recorder.c.o"
+RECORDER_COLD_SECTIONS = (
+    ".text.aius_recorder_ring_bytes_after_staging",
 )
 
 # 2. The dynamic-initialization thunk GCC emits for the file's statics. It has
@@ -220,7 +229,9 @@ def inspect_object(
 def verify_declared_set(linked: Iterable[str]) -> None:
     linked = set(linked)
     missing = [
-        name for name in COLD_OBJECTS + (HOT_OBJECT,) if name not in linked
+        name
+        for name in COLD_OBJECTS + (HOT_OBJECT, INGRESS_HOT_OBJECT)
+        if name not in linked
     ]
     if missing:
         raise VerificationError(
@@ -306,6 +317,66 @@ def verify_hot_object(build_dir: Path, readelf: str) -> tuple[int, int, int]:
     return sum(audio.values()), sum(startup.values()), framework
 
 
+def verify_ingress_hot_object(build_dir: Path, readelf: str) -> int:
+    """The mixed ingress object keeps only producer entry points in ITCM."""
+    obj = build_dir / INGRESS_HOT_OBJECT
+    if not obj.is_file():
+        raise VerificationError(
+            f"ingress hot object is missing from the build: {obj}"
+        )
+    sections, comdat, clones = inspect_object(obj, readelf)
+    if comdat or clones:
+        raise VerificationError(
+            f"{INGRESS_HOT_OBJECT} unexpectedly emits COMDAT/clone code"
+        )
+    offenders = {
+        name: size
+        for name, size in sections.items()
+        if name not in INGRESS_HOT_SECTIONS
+    }
+    if offenders:
+        raise VerificationError(
+            f"{INGRESS_HOT_OBJECT} emits ITCM outside its producer set: "
+            + ", ".join(
+                f"{name}: {size} bytes"
+                for name, size in sorted(offenders.items())
+            )
+        )
+    missing = [
+        name for name in INGRESS_HOT_SECTIONS if name not in sections
+    ]
+    if missing:
+        raise VerificationError(
+            f"{INGRESS_HOT_OBJECT} no longer emits producer code: {missing}"
+        )
+    return sum(sections.values())
+
+
+def verify_recorder_cold_helper(build_dir: Path, readelf: str) -> int:
+    """The bring-up-only PSRAM geometry helper must execute from flash."""
+    objects = list(build_dir.glob(RECORDER_OBJECT_GLOB))
+    if len(objects) != 1:
+        raise VerificationError(
+            "expected one linked recorder object matching "
+            f"{RECORDER_OBJECT_GLOB!r}, found {objects}"
+        )
+    sections, _comdat, _clones = inspect_object(objects[0], readelf)
+    offenders = {
+        name: sections[name]
+        for name in RECORDER_COLD_SECTIONS
+        if name in sections
+    }
+    if offenders:
+        raise VerificationError(
+            "recorder bring-up helper still emits ITCM code: "
+            + ", ".join(
+                f"{name}: {size} bytes"
+                for name, size in sorted(offenders.items())
+            )
+        )
+    return len(RECORDER_COLD_SECTIONS)
+
+
 def _summary(count: int, comdat: int, clones: int) -> str:
     return (
         f"cold-object ITCM placement: PASS ({count} objects, 0 owned ITCM bytes, "
@@ -318,6 +389,21 @@ def _hot_summary(audio: int, startup: int, framework: int) -> str:
         f"hot-object ITCM placement: PASS ({HOT_OBJECT}, {audio} audio-block "
         f"bytes in {len(HOT_SECTIONS)} pinned sections, {startup} static-init "
         f"thunk + {framework} framework COMDAT bytes excluded)"
+    )
+
+
+def _ingress_hot_summary(producer: int) -> str:
+    return (
+        "ingress-object ITCM placement: PASS "
+        f"({INGRESS_HOT_OBJECT}, {producer} producer bytes in "
+        f"{len(INGRESS_HOT_SECTIONS)} pinned sections)"
+    )
+
+
+def _recorder_cold_summary(checked: int) -> str:
+    return (
+        "recorder-object ITCM placement: PASS "
+        f"({checked} bring-up-only section absent from ITCM)"
     )
 
 
@@ -341,6 +427,10 @@ def verify_cold_placement(source, target, env) -> None:
     readelf = _resolve_readelf(env)
     print(_summary(*verify_placement(build_dir, linked, readelf)))
     print(_hot_summary(*verify_hot_object(build_dir, readelf)))
+    print(_ingress_hot_summary(verify_ingress_hot_object(build_dir, readelf)))
+    print(_recorder_cold_summary(
+        verify_recorder_cold_helper(build_dir, readelf)
+    ))
 
 
 def _main(argv: list[str]) -> int:
@@ -369,6 +459,18 @@ def _main(argv: list[str]) -> int:
         print(f"hot-object ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
     print(_hot_summary(*hot_summary))
+    try:
+        ingress = verify_ingress_hot_object(build_dir, args.readelf)
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"ingress-object ITCM placement: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_ingress_hot_summary(ingress))
+    try:
+        recorder = verify_recorder_cold_helper(build_dir, args.readelf)
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"recorder-object ITCM placement: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_recorder_cold_summary(recorder))
     return 0
 
 

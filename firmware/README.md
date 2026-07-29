@@ -238,19 +238,22 @@ straight out of the audio path's headroom. Three rules, all enforced:
   moves with every static added, so read it from the build); a DTCM instance
   could not fit. The
   active and pending DSP models, the replay service and the three UDP buffers are
-  placed the same way. That zone is the whole stack, main loop and audio ISR
-  both — `enqueue()` alone places about 4 kB of frame in it from the audio
-  interrupt path.
-- **Two post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
-  run by every optical build. The first fails the link if any declared cold
-  object emits executable `.text`, and makes the declaration non-optional: a new
-  object under a cold engine tree that nobody declared fails the build. The
-  second pins the one object that may contribute ITCM, `optical_main.cpp`, to an
-  exact per-symbol allowlist of its audio-block functions, so "this is
-  legitimately hot" is a reviewable claim rather than an opinion.
+  placed the same way. That zone is the whole stack for both the main loop and
+  audio ISR. `enqueue()` uses about 4 kB of frame at the bounded AUDIO
+  checkpoint; the ISR now only publishes ingress.
+- **Four post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
+  run by every optical build. They reject executable `.text` from declared cold
+  objects, pin the mixed ingress library to its five producer entry points, and
+  pin `optical_main.cpp` to its two ingress-producer functions. New objects under
+  a cold engine tree must be declared, so "this is legitimately hot" remains a
+  reviewable claim rather than an opinion. The fourth keeps the recorder's
+  bring-up-only PSRAM geometry helper out of ITCM.
+- **A post-link audio-memory guard**, in `test/memory/verify_target.py`, pins the
+  16 KiB OCRAM ingress, the 128 KiB DTCM decoder arena, zero OCRAM recorder
+  staging, and the committed 131,424-byte OCRAM free floor.
 
 `scripts/build.sh` prints the per-bank report and fails when a bank is over
-capacity; `scripts/test.sh --suite itcm-placement` re-runs the two guards over
+capacity; `scripts/test.sh --suite itcm-placement` re-runs the four guards over
 an existing build.
 
 ## Running host tests
@@ -284,17 +287,17 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `usb-control` | USB control command parser + runtime transaction. |
 | `replay` | Replay service over a fake reader. |
 | `tx-gate` | The transmit-gate predicate's whole truth table (no carrier and no replay → no output carrier). |
-| `recorder` | The flight recorder's portable core: freeze state machine, trigger edges/qualification, staging drain + gap accounting, chunk arithmetic, and the firmware-wide extmem-heap ban. |
+| `recorder` | The flight recorder's portable core: freeze state machine, trigger edges/qualification, exact eight-step × 512-frame staging burst, PSRAM carve geometry, drain + gap accounting, chunk arithmetic, and the firmware-wide extmem-heap ban. |
 | `boot`, `boot-target` | Retained ledger and recovery-mode rules; the Teensy boot adapter + its post-link verifier. |
 | `sd`, `sd-target` | Portable SD job machine; the one-shot Teensy SD adapter. |
 | `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |
 | `network-transport` | NativeEthernet behaviour + the vendor-header source contract. |
 | `optical-app` | One bounded dispatch decision per HTTP route and USB command. |
-| `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, one watchdog feed, and the absence of the legacy path. |
+| `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, ingress-only audio callback, deferred AUDIO ownership/preflight, one watchdog feed, exact storage/diagnostics, and the absence of the legacy path. |
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
-| `memory` | The per-bank release gate `build.sh` fails the build on, driven over a committed ELF reduction of a real optical image. |
-| `itcm-placement` | The two post-link ITCM guards, re-run over an existing optical build. |
+| `memory` | The per-bank release gate plus the optical post-link ingress/arena/staging/headroom proof; the native suite is driven over a committed ELF reduction of a real optical image. |
+| `itcm-placement` | The four post-link ITCM guards, re-run over an existing optical build. |
 | `fake-fidelity` | Every host fake's constants against the real framework headers, both directions: a listed constant must exist upstream with the same value, and a fake must not invent one. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 

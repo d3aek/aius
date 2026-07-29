@@ -5,7 +5,8 @@
 
 /* Cold code -> FLASH, hot code -> ITCM, the same split aius_replay.c documents.
  *
- * The ONLY function here that runs per audio block is aius_measure_isr_block
+ * The ONLY function here that runs per committed block is
+ * aius_measure_producer_block
  * (the tap), so it alone carries no attribute and stays in ITCM. Everything
  * else -- arm/cancel/retire transitions and the whole sliced analysis -- runs
  * in epoch or HTTP context and carries FLASHMEM on its definition, leaving
@@ -44,9 +45,7 @@ FLASHMEM AiusStatus aius_measure_arm(AiusMeasureCapture *c,
     if (c->state != AIUS_MEASURE_IDLE)
         return AIUS_INVALID_ARG;
     /* Stage/commit: every parameter is stored before the state store, so an
-     * ISR that observes `armed` observes complete arm parameters. The target
-     * adapter issues the barrier between the two, as it does for the transmit
-     * ring's commit. */
+     * producer that observes `armed` observes complete arm parameters. */
     c->fail_reason = AIUS_MEASURE_FAIL_NONE;
     c->cursor = 0;
     c->armed_generation = config_generation;
@@ -58,7 +57,7 @@ FLASHMEM AiusStatus aius_measure_arm(AiusMeasureCapture *c,
 /* Hot: the tap, reached from AiusAudioProcessor::enqueue() once per committed
  * block while a capture is in flight. Bounded: one latch compare pair and at
  * most one block's memcpy per plane. */
-void aius_measure_isr_block(AiusMeasureCapture *c,
+void aius_measure_producer_block(AiusMeasureCapture *c,
                             const int32_t *l, const int32_t *r,
                             uint32_t frames,
                             uint32_t config_generation,
@@ -107,7 +106,7 @@ void aius_measure_isr_block(AiusMeasureCapture *c,
     cursor += take;
     c->cursor = cursor;
     if (cursor == c->frames_cap)
-        c->state = AIUS_MEASURE_CAPTURED; /* the ISR's terminal: buffer-complete */
+        c->state = AIUS_MEASURE_CAPTURED; /* producer terminal: buffer-complete */
 }
 
 FLASHMEM AiusStatus aius_measure_cancel(AiusMeasureCapture *c)
@@ -116,7 +115,7 @@ FLASHMEM AiusStatus aius_measure_cancel(AiusMeasureCapture *c)
         return AIUS_INVALID_ARG;
     if (c->state != AIUS_MEASURE_ARMED && c->state != AIUS_MEASURE_CAPTURING)
         return AIUS_INVALID_ARG;
-    c->state = AIUS_MEASURE_CANCELLING; /* the token; the ISR acknowledges it */
+    c->state = AIUS_MEASURE_CANCELLING; /* producer acknowledges at next block */
     return AIUS_OK;
 }
 
@@ -124,8 +123,7 @@ FLASHMEM AiusStatus aius_measure_reclaim(AiusMeasureCapture *c)
 {
     if (!c)
         return AIUS_INVALID_ARG;
-    /* The ISR's acknowledgement may land between the epoch's observation of
-     * `cancelling` and this call -- the interleaving the native suite drives.
+    /* The producer acknowledgement may precede the controller reclaim.
      * Same terminal state either way; the first reason is kept. */
     if (c->state == AIUS_MEASURE_FAILED)
         return AIUS_OK;

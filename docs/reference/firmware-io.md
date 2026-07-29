@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, memory, io]
-updated: 2026-07-27
+updated: 2026-07-29
 toc: true
 ---
 
@@ -68,9 +68,10 @@ here as the order of magnitude and `scripts/build.sh teensy41-optical` as the
 authority. It has already moved once since the table above: `c20a03c8e` added
 seven `uint32_t` edge-detection statics and took it to **9,248**. That is the
 point — a zone this small is measured, not remembered, which is why the gate that
-reports it was the first thing fixed in this sequence. `AiusAudioProcessor::enqueue()` alone places about 4 kB of frame
-in it from the audio interrupt path (`src/optical_main.cpp:662`), so roughly 45 % of
-the true headroom belongs to one hot function. Every placement decision below
+reports it was the first thing fixed in this sequence. Before the Slice 2b3 cutover,
+`AiusAudioProcessor::enqueue()` placed about 4 kB of frame on the interrupt stack.
+That frame still exists, but now belongs to the bounded AUDIO checkpoint in thread
+context (`src/optical_main.cpp:1126`). Every placement decision below
 follows from that scarcity, and from §Deciding principle's rule that "memory that is
 genuinely free is not an argument" — OCRAM is plentiful, DTCM is not
 (`docs/plans/aius-network-hardening.md:47`).
@@ -85,7 +86,9 @@ DTCM and was excluded from both the used and the free figure
 
 ## Execution contexts
 
-Five contexts perform work in this firmware. Only the first two touch audio.
+Five execution contexts perform work in this firmware. The S/PDIF DMA ISRs own the
+wire clock, the software audio ISR publishes ingress, and the epoch's AUDIO checkpoint
+owns the deferred pipeline and output producer.
 
 ```mermaid
 flowchart TB
@@ -97,13 +100,17 @@ flowchart TB
     usb["USB1 controller ISR, 128"]
   end
   subgraph thread["Thread context"]
-    epoch["loop: one runtime epoch, checkpoints 0 to 9"]
+    epoch["loop: one runtime epoch, checkpoints 0 to 10"]
   end
   rx -->|pends while holding update_responsibility, carrier| sw
   tx -->|pends while holding update_responsibility, replay| sw
-  sw --> chain["AudioStream update_all, then AiusAudioProcessor update and enqueue"]
+  sw --> publish["AudioStream update_all, then bounded ingress publish"]
+  publish --> ingress["8192-word SPSC ingress in OCRAM"]
+  ingress -->|AUDIO checkpoint 9| chain["reset/flush, ingest, classify, decode, enqueue and DSP"]
   chain -->|seqlock publish| meter["AiusMeter g_meter in OCRAM"]
   chain -->|capture tap, armed session only| cap["measurement capture planes in OCRAM"]
+  chain --> txring["24-bit transmit ring in OCRAM"]
+  txring --> tx
   epoch -->|seqlock read| meter
   epoch -->|METRICS-checkpoint sliced analysis| cap
   epoch --> io["every SD, TCP, UDP, CDC and retained-slot operation"]
@@ -116,10 +123,9 @@ flowchart TB
   `replay_clock_service()` hands it to the transmitter while a replay plays
   (`src/optical_main.cpp:3973`).
 - **The audio software interrupt** — pended by `update_all()`'s trigger, at NVIC
-  priority 208 (`cores/teensy4/AudioStream.cpp:424`) — runs the whole decode and DSP
-  chain: `update()`, `enqueue()`, the meter taps and the measurement capture tap.
-  Every "audio ISR" cost elsewhere in this document is spent here, except the
-  transmit DMA ISR's own 228-byte ring drain.
+  priority 208 (`cores/teensy4/AudioStream.cpp:424`) — now does only the bounded
+  `update()` ingress publish and releases its two pool blocks. It never classifies,
+  decodes, enqueues, runs DSP, meters or records (`src/optical_main.cpp:998`).
 - **The FNET poll timer** is the one I/O actor outside the epoch loop.
   `Ethernet.beginNoWait()` starts an `IntervalTimer` calling `fnet_poll` every
   1,000 µs for the life of the network generation
@@ -130,22 +136,27 @@ flowchart TB
 - **The USB1 controller ISR** moves CDC bytes between the host and the driver's
   ring; the firmware only ever reads and writes that ring from thread context.
 - **The epoch loop** is `loop()`, which runs exactly one runtime epoch and nothing
-  else (`src/optical_main.cpp:4489`). Every other I/O operation in this document
+  else. Its AUDIO checkpoint drains ingress and owns classify, decode, `enqueue()`,
+  DSP, meter publication, measurement capture and recorder production
+  (`src/optical_main.cpp:4985`). Every other I/O operation in this document also
   happens here.
 
 **Priorities are tiered since 2026-07-26, and the tier order is deliberate.** Teensy's
 startup sets every interrupt to priority 128 (`cores/teensy4/startup.c:136` in
 `framework-arduinoteensy`) and the S/PDIF DMA channels stay there
 (`evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp:67`), but the audio
-*software* interrupt — the context that actually runs the DSP — sits at 208, so
+*software* interrupt — the context that publishes ingress — sits at 208, so
 `IntervalTimer`'s default of 128 (`cores/teensy4/IntervalTimer.h:108`) had `fnet_poll`
-*preempting* the DSP a thousand times a second, not interleaving with it as this
-section once claimed. `stack_start()` now demotes
+preempting that publisher a thousand times a second, not interleaving with it as this
+section once claimed. `stack_start()` demotes
 `IRQ_PIT` to 224 — one *implemented* level below 208 on this four-priority-bit M7, the
 smallest demotion the hardware can express — re-applied after every `beginNoWait()`
 because `IntervalTimer::beginCycles()` restores its own default on each `begin()`
-(`src/aius_network_teensy.cpp:268`, `:277`). The whole audio path, DMA ISRs and DSP
-alike, now preempts network polling and never waits on it.
+(`src/aius_network_teensy.cpp:268`, `:277`). The DMA and software audio ISRs therefore
+preempt network polling. The deferred AUDIO checkpoint is thread work and remains
+preemptible by PIT; its separate 8 ms checkpoint timer measures that complete
+classify/decode/output service rather than relying on the old interrupt-priority
+argument (`src/optical_main.cpp:4985`).
 `test/network-transport/test_poll_priority.py` reads the framework's own
 `IRQ_SOFTWARE` value rather than pinning 208, so a framework bump that inverted the
 relationship cannot pass. **The cost of one `fnet_poll` call has never been measured on
@@ -153,10 +164,12 @@ this board** — see [§Figures that need the device](#figures-that-need-the-dev
 
 ## The per-epoch budget
 
-One epoch runs checkpoints 0 to 9 in order, records `EPOCH_COMPLETE`, and feeds the
-watchdog exactly once; an epoch that does not complete does not feed, which is what
+One normal epoch runs checkpoints 0 through 7, then AUDIO checkpoint 9, then SD
+checkpoint 8, records `EPOCH_COMPLETE` checkpoint 10, and feeds the watchdog exactly
+once. AUDIO precedes SD so a blocking card primitive cannot defer already-published
+ingress into the next epoch. An epoch that does not complete does not feed, which
 turns a wedged service into a bounded reset rather than a hang
-(`src/optical_main.cpp:3137`). The budgets are compile-time constants in
+(`lib/aius_runtime/src/aius_runtime.c:82`). The budgets are compile-time constants in
 `lib/aius_runtime/src/aius_runtime.c:22`:
 
 | Checkpoint | Service | `max_calls` | `max_rx_bytes` | `max_tx_bytes` | Budget |
@@ -169,8 +182,9 @@ turns a wedged service into a bounded reset rather than a hang
 | `5 HTTP` | one transaction step | 1 | 256 | 512 | 2 ms |
 | `6 UDP` | one datagram | 1 | 532 | 532 | 2 ms |
 | `7 REPLAY` | SD lifecycle + replay refill | 1 | 2048 | 0 | none |
+| `9 AUDIO` | ingress drain + pipeline/output service | 1 | 0 | 0 | 8 ms |
 | `8 SD` | one SD job step | 1 | 512 | 512 | none |
-| `9 EPOCH_COMPLETE` | ledger + watchdog feed | 0 | 0 | 0 | 8 s watchdog |
+| `10 EPOCH_COMPLETE` | ledger + watchdog feed | 0 | 0 | 0 | 8 s watchdog |
 
 **The METRICS and HTTP wall-clock budgets are declared bounds, not aborts.** The
 METRICS row's 1 ms exists because the checkpoint now hosts the measurement loopback's
@@ -186,18 +200,19 @@ overrun rather than aborting — `g_metrics_service_overruns` inside
 payload).
 
 In recovery-safe mode the scheduler runs only `USB_RX` and `USB_TX` before
-`EPOCH_COMPLETE` (`lib/aius_runtime/src/aius_runtime.c:93`), so no network, SD or
-replay I/O happens at all.
+`EPOCH_COMPLETE` (`lib/aius_runtime/src/aius_runtime.c:82`), so no network, audio,
+SD or replay service happens at all.
 
 ## The five isolation mechanisms
 
 Every entry below justifies itself against these five. They are the mechanisms the
 hardening plan spent its phases establishing.
 
-- **Services run in the epoch loop, never in the audio ISR.** The audio path reaches
-  the processor through `AudioStream`'s interrupt and never through `loop()`
-  (`src/optical_main.cpp:3147`). No I/O operation in this document is reachable from
-  `update()` or `enqueue()`.
+- **The software audio ISR publishes ingress only.** `update()` reserves and commits
+  one exact 256-word slot, or records a bounded gap; the AUDIO checkpoint owns every
+  later pipeline and output operation (`src/optical_main.cpp:998`,
+  `src/optical_main.cpp:4985`). No network, SD, CDC or retained-slot operation is
+  reachable from `update()` or `enqueue()`.
 - **`FLASHMEM` on every cold definition, applied to the definition itself.** GCC does
   not merge a `section` attribute from a forward declaration, so a prototype-only
   attribute silently leaves the code in ITCM
@@ -211,9 +226,10 @@ hardening plan spent its phases establishing.
   wedge the 8 s watchdog must absorb (`src/aius_runtime_storage.h:8`). Three routes
   break this rule today — see
   [§Raw SD access outside the job engine](#raw-sd-access-outside-the-job-engine).
-- **The meters snapshot crosses the ISR boundary through a seqlock, not a lock.** The
-  writer takes no lock, tests no reader state and never retries; retry belongs
-  entirely to the reader (`src/optical_main.cpp:298`).
+- **The meters snapshot crosses its producer/reader boundary through a seqlock, not a
+  lock.** The AUDIO writer takes no lock, tests no reader state and never retries;
+  retry belongs entirely to the HTTP reader (`lib/aius_dsp/include/aius_dsp.h`,
+  `AiusMeter`).
 
 ## S/PDIF input — the receive half of the hot path
 
@@ -228,32 +244,34 @@ The optical receiver, and the clock master whenever a carrier is present.
   (`cores/teensy4/AudioStream.h:72`), taken from `AudioMemory(24)` — 24 blocks,
   6,240 B, `DMAMEM` (`cores/teensy4/AudioStream.h:110`, allocated at
   `src/optical_main.cpp:3114`).
-- `uint16_t words[AUDIO_BLOCK_SAMPLES * 2]`, 512 B, DTCM stack, inside `update()`
-  (`src/optical_main.cpp:569`).
+- `g_audio_ingress_words[8192]`, **16,384 B**, `DMAMEM` (OCRAM) — 32 exact
+  256-word SPSC slots between the software audio ISR and AUDIO checkpoint
+  (`src/optical_main.cpp:147`).
 
 **Why this implementation.** The receiver is the PJRC `AudioInputSPDIF3` unit,
 compiled from a checked-in source snapshot rather than the framework copy, so the
 implementation boundary is a reviewable artifact
-(`lib/aius_audio/src/aius_spdif_sources.cpp:4`). The block pass converts the
-interleaved pair into IEC words and pushes them into the portable pipeline, which
-classifies PCM against DTS and calls back with decoded blocks
-(`src/optical_main.cpp:578`).
+(`lib/aius_audio/src/aius_spdif_sources.cpp:4`). The block pass interleaves the
+pair directly into a reserved ingress slot and commits that exact chunk. The
+AUDIO checkpoint later drains the slot into the portable pipeline, which classifies
+PCM against DTS and calls back with decoded blocks
+(`src/optical_main.cpp:998`, `lib/aius_audio_service/src/aius_audio_service.c:85`).
 
-**Audio-path justification.** This *is* the audio path. Its DMA landing runs in the
-receive DMA ISR and its block pass in the audio software interrupt that ISR pends
-([§Execution contexts](#execution-contexts)), and the ITCM guard pins exactly the three sections that may live
-there — `update`, `enqueue` and `consume_block` — so any fourth hot section, or a
-`FLASHMEM` landing on one of these three, fails the link
-(`test/itcm-placement/verify_target.py:97`). Its per-block work is bounded by
-`AUDIO_BLOCK_SAMPLES` and by the decoder's fixed arena; a ring overflow increments
-`overruns` rather than blocking (`src/optical_main.cpp:660`).
+**Audio-path justification.** This *is* the interrupt-facing audio path. Its DMA
+landing runs in the receive DMA ISR and its block pass in the software interrupt that
+ISR pends ([§Execution contexts](#execution-contexts)). The post-link guard pins the
+optical object to exactly `update()` and `audio_ingress_publish_live()` and the mixed
+ingress object to its five producer entry points; all consumption, reset and
+diagnostic entry points remain cold (`test/itcm-placement/verify_target.py:90`).
+The sample walk is exactly `AUDIO_BLOCK_SAMPLES`; a full ingress records one dropped
+chunk and replay discards the matching 256-word time slice rather than blocking
+(`src/optical_main.cpp:998`).
 
-**Its DTCM cost is the reason everything else is in OCRAM.** The processor object is
-an ordinary `.bss` static in DTCM (`src/optical_main.cpp:853`) holding a
-2,048-frame stereo ring at 16,384 B (`:598`, `:605`) and a 12,288-byte input scratch
-plane set (`:625`); the DTS decoder's static arena beside it is 131,072 B — 40 % of
-the whole DTCM bank (`:599`, `:850`). What remains of DTCM after those is the 9,280
-bytes of stack that `enqueue()`'s 4,096-byte frame is spent from.
+**Its storage moved to OCRAM, while decode remains in DTCM.** The exact 16 KiB ingress
+absorbs interrupt-to-epoch jitter. The decoder/pipeline arena remains 131,072 B in
+DTCM, and the post-link memory gate also proves that the obsolete OCRAM recorder
+sample staging is zero bytes and at least 131,424 B of OCRAM remains free
+(`test/memory/verify_target.py:16`).
 
 ## S/PDIF output — the transmit half of the hot path
 
@@ -345,11 +363,10 @@ enough: the filled half is the one the DMA is *not* reading, so it has a full 2.
 before the transfer reaches it.
 
 **Single producer, single consumer, no critical section — and the priorities are why
-that had to change.** The producer is `enqueue()`, reached from the software interrupt
-`update_all()` pends, at NVIC priority 208 (`cores/teensy4/AudioStream.cpp:424`); the
-consumer is the transmit DMA interrupt at the startup default of 128
-(`cores/teensy4/startup.c:136`). Lower number wins, so **the consumer can preempt the
-producer mid-block**. The `int16` ring had both ends inside `update()` and could
+that had to change.** The producer is `enqueue()`, reached from the target's AUDIO
+service checkpoint; the consumer is the transmit DMA interrupt at the startup
+default of 128 (`cores/teensy4/startup.c:136`). The consumer can therefore preempt
+the producer mid-block. The `int16` ring had both ends inside `update()` and could
 therefore afford a plain `read`/`write`/`count` triple; that would be a race here. The
 24-bit ring instead keeps two free-running 32-bit frame counters, each written by
 exactly one side, with the level as their unsigned difference — correct across the
@@ -357,15 +374,16 @@ counters' own wrap, and single-copy atomic on the Cortex-M7. Staged frames becom
 visible only at `aius_spdif_tx24_commit()`, so a preempting consumer never observes a
 half-written block (`lib/aius_audio/src/aius_spdif_tx24.h:153`).
 
-**A measurement tap reads the committed words in the same interrupt.** Since the
-audio-quality roadmap's item 3, `enqueue()` calls `aius_measure_isr_block()`
+**A measurement tap reads the committed words in the same AUDIO checkpoint.** Since
+the audio-quality roadmap's item 3, `enqueue()` calls
+`aius_measure_producer_block()`
 immediately after `aius_spdif_tx24_commit()` and before anything else
 (`src/optical_main.cpp:1029`): at the shipped 24-bit width the committed planes *are*
 the wire words (the out stage is a copy), so capturing them captures the output, and
 the tap latches this block's config generation and overrun count in the same
-interrupt that would have advanced them. Idle cost is one volatile load and compare
+producer call that would have advanced them. Idle cost is one volatile load and compare
 per decoded block. The buffers, the epoch driver and the state machine are
-[§Measurement capture](#measurement-capture--audio-isr-to-the-metrics-checkpoint).
+[§Measurement capture](#measurement-capture--audio-checkpoint-to-the-metrics-checkpoint).
 
 **An underflow is now counted rather than merely heard.** The vendor path substituted
 `block_silent` and advanced nothing, so a dry queue was inaudible *and* invisible; the
@@ -445,13 +463,13 @@ stays honestly zero, and the only symptom is pitch. That is why the equality is 
 **Two block sizes, and every per-block figure names one of them.**
 `AUDIO_BLOCK_SAMPLES` is 128 frames — the Teensy core default, which this build does
 not override — and is the *engine* block: it sizes both DMA buffers, the
-`audio_block_t` pool, `update()`'s word staging and the transmit interrupt's drain of
-the 24-bit ring, so
-`update()` runs 48000/128 = 375 times a second and moves 512 bytes each time (the
-192,000 B/s the replay ring is sized for). 512 frames is the *decoded* block and is
-what `blocks` counts: a DTS Core access unit reconstructs to 512 samples per channel
-and PCM passthrough stages the same 512 (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`), so
-`enqueue()` runs once per four `update()`s, at 48000/512 = 93.75 blocks per second.
+`audio_block_t` pool, the ingress chunk and the transmit interrupt's drain of the
+24-bit ring, so `update()` runs 48000/128 = 375 times a second and publishes 512
+bytes each time (the 192,000 B/s the replay ring is sized for). 512 frames is the
+*decoded* block and is what `blocks` counts: a DTS Core access unit reconstructs to
+512 samples per channel and PCM passthrough stages the same 512
+(`AIUS_PIPELINE_PCM_BLOCK_FRAMES`), so AUDIO reaches `enqueue()` once per four
+published chunks on a continuous stream, at 48000/512 = 93.75 blocks per second.
 `enqueue()`'s `AUDIO_BLOCK_SAMPLES * 4` cap is exactly that 512, which couples the
 two constants: changing the engine block changes the decoder block this file accepts.
 
@@ -461,41 +479,39 @@ context, not in either ISR, and costs two byte stores under one critical section
 the both-drive window (a double-processed block) or the neither-drives window (a
 stalled one); it is shorter than the critical section `block_count()` already takes
 (`src/optical_main.cpp:2942`). Keeping the
-reconciler in thread context is also what keeps `pllLocked()` out of the audio ISR,
-which is why the ITCM allowlist is still exactly three sections
-(`src/optical_main.cpp:2905`).
+reconciler in thread context is also what keeps `pllLocked()` out of the audio ISR.
 
-The 24-bit path did not add a fourth. `optical_main.cpp`'s pinned audio-block set
-*shrank* from 1,024 to 820 bytes when `emit_block()` left, and the new transmit handler
-lives in `lib/aius_audio/src/aius_spdif_sources.cpp.o` — neither a declared cold object
-nor the pinned hot one — so `test/itcm-placement/verify_target.py` does not police it,
-correctly: it is 228 bytes of code that genuinely runs per audio block.
+The Slice 2b3 cutover reduced `optical_main.cpp`'s pinned ISR-hot set to exactly two
+sections: `update()` and the live interleave helper, **316 B total** in the 2026-07-29
+target link. `enqueue()` and `consume_block()` now link in FLASH, while the 228-byte
+transmit handler remains in `lib/aius_audio/src/aius_spdif_sources.cpp.o` because it
+genuinely runs in the DMA ISR. The post-link test independently proves zero ITCM in
+cold objects, the five allowed ingress-producer sections, and those two optical
+sections (`test/itcm-placement/verify_target.py:48`).
 
-## Meter snapshot handover — audio ISR to HTTP
+## Meter snapshot handover — AUDIO checkpoint to HTTP
 
 `GET /api/meters` serves a coherent snapshot published by the audio path.
 
 **Buffers.**
 
-- `g_meter`, an `AiusMeter`, about 1.4 kB, `DMAMEM` (`src/optical_main.cpp:316`). Its
-  published snapshot alone is 676 bytes — six input peak/RMS pairs as doubles, a
-  128-point `int32_t` waveform, and four telemetry words
-  (`lib/aius_dsp/include/aius_dsp.h:291`).
-- The reader's `AiusMeterSnapshot snapshot` copy, 676 B, DTCM stack inside
-  `http_meters_json()` (`src/optical_main.cpp:1195`).
+- `g_meter`, an `AiusMeter`, **9,584 B**, `DMAMEM` (`src/optical_main.cpp:438`). Its
+  published snapshot is about 4.7 kB: six input peak/RMS pairs, a 128-point waveform,
+  a 1,024-sample analysis window and telemetry
+  (`lib/aius_dsp/include/aius_dsp.h:1106`).
+- The reader's `AiusMeterSnapshot snapshot` copy is also a `DMAMEM` static, not a
+  DTCM automatic (`src/optical_main.cpp:2049`).
 - The response body is written into the runtime's shared `app_body` buffer, capped at
-  1,600 bytes by a `static_assert`-checked worst-case computation
-  (`src/optical_main.cpp:1153`).
+  10,880 bytes by a `static_assert`-checked worst-case computation
+  (`src/optical_main.cpp:1940`).
 
 **Why this implementation, and the alternative that was rejected.** One writer, one
-reader, no lock: the writer is `enqueue()` in ISR context and owns every accumulator,
-both seqlock increments and the published snapshot; the reader only ever calls
-`aius_meter_read()` (`src/optical_main.cpp:298`). **A lock the audio path could wait
-on was rejected by construction** — the writer never tests reader state and never
-retries. The two sides are not concurrent but nested: the interrupt preempts the main
-thread, runs the publish to completion and returns, so a reader straddled by a
-publish always sees `seq` advanced by two and retries
-(`src/optical_main.cpp:304`).
+reader, no lock: `enqueue()` at the AUDIO checkpoint owns every accumulator, both
+seqlock increments and the published snapshot; the HTTP side only ever calls
+`aius_meter_read()`. The target now serializes those services in one runtime epoch,
+but the portable seqlock contract still guarantees a coherent copy without letting a
+reader protocol enter the per-block writer (`lib/aius_dsp/include/aius_dsp.h`,
+`AiusMeter`).
 
 The dBFS conversion is deliberately on the HTTP side, not in the tap: `log10(0)` is
 `-Infinity`, which is not JSON, and silence is a meter's resting state rather than an
@@ -516,16 +532,16 @@ decoded block, and off 18 blocks in every 19 were the block 128 frames. The `lib
 window, not per block, because "a diagnostic field does not buy a `log10` in the block
 callback" (`src/optical_main.cpp:714`).
 
-**Written into an already-pinned ITCM section, deliberately.** The tap is inline in
-`enqueue` rather than a helper, so it grew a pinned section from 424 to 600 bytes
-instead of introducing a fourth allowlist name that GCC would probably have inlined
-away (`test/itcm-placement/verify_target.py:86`).
+**The whole producer moved out of the ISR-hot object set.** The tap remains inline in
+`enqueue()` but that function now links in FLASH and runs at AUDIO. The optical
+post-link allowlist contains only the two ingress-publisher sections
+(`test/itcm-placement/verify_target.py:90`).
 
 **If the bound were violated** — an unbounded waveform, an allocation, or a publish
 per block — the cost would land inside the block callback, and at 2.67 ms per block
 an overrun becomes audible before it becomes visible in `overruns`.
 
-## Measurement capture — audio ISR to the METRICS checkpoint
+## Measurement capture — AUDIO checkpoint to the METRICS checkpoint
 
 `GET /api/measure` serves quality figures the device measured on its own output —
 the audio-quality roadmap's item 3 (design:
@@ -553,9 +569,9 @@ the measured figures and their stimulus floors:
   `GET /api/measure` reads it before any session ever starts, so it must read "none"
   on a cold boot, which `.bss` zeroing guarantees (`src/optical_main.cpp:2900`).
 
-**The ISR side is the tap in `enqueue()`** described under
+**The producer side is the tap in `enqueue()`** described under
 [§S/PDIF output](#spdif-output--the-transmit-half-of-the-hot-path):
-`aius_measure_isr_block()` re-checks the arm-time latches — config generation and
+`aius_measure_producer_block()` re-checks the arm-time latches — config generation and
 overrun count — at every block boundary, retiring the capture to `failed` on a
 mismatch *without* copying, because either splice inside a window is exactly the seam
 artifact the loop-coherent stimulus paid to remove; otherwise it copies the committed
@@ -567,7 +583,7 @@ in an object the ITCM guard does not police (`lib/aius_dsp/include/aius_measure.
 **The epoch side runs at the METRICS checkpoint inside its declared 1 ms budget.**
 `platform_metrics()` calls `measure_epoch_service()` beside the 1 Hz die-temperature
 sample (`src/optical_main.cpp:3169`, `:2973`). One epoch advances exactly one of: the
-**wall-clock stall watch** — only the epoch can time out a capture the ISR provably
+**wall-clock stall watch** — only the epoch can time out a capture the producer provably
 is not feeding, cancelling after 10 s armed (the operator gap between
 `POST /api/measure/start` and `POST /api/replays/start`), 2 s capturing (a replay
 stopped underneath the capture), and reclaiming an unacknowledged cancel after a
@@ -578,27 +594,20 @@ in `g_metrics_service_overruns` (`src/optical_main.cpp:2916`), served on
 `GET /api/measure`; nothing aborts on one.
 
 **Why this implementation: one writer per transition, no lock.** The portable machine
-gives every state transition exactly one writing side, ISR or epoch, under the same
-nested-not-concurrent argument as the meter seqlock
-(`lib/aius_dsp/include/aius_measure.h:83`). Two residues are documented rather than
-mechanised away: the dual-terminal cancel edge (ISR acknowledgement racing the
-epoch's reclaim) is benign because both writers store the same terminal value, and
-one check-then-store interleaving — an ISR terminal clobbered by a cancel landing
-between the epoch's check and store — is **accepted with its bound**: the only cancel
-caller is the stall watch, so the window requires the stream to resume within
-microseconds of a 2 s timeout, and the outcome is a lost capture to re-arm, never
-corruption (`lib/aius_dsp/include/aius_measure.h:192`). Closing it would cost the
-machine its portable no-atomics simplicity.
+distinguishes producer and controller transitions even though the target now runs both
+serially in the epoch. The dual-terminal cancel edge remains benign for portable
+callers because both sides store the same terminal value, and the documented
+check-then-store interleaving can lose only that capture, never corrupt it
+(`lib/aius_dsp/include/aius_measure.h`, `AiusMeasureCapture`).
 
 **Interlocks with the rest of the control surface.**
 
-- **`POST /api/replays/start` arms a pipeline reset that `update()` consumes in audio
-  context** before any words are pushed, so every replay classifies its own stream
-  (`src/optical_main.cpp:463`, `:824`, `:2408`) — the item 3 prerequisite fix:
-  nothing on target ever called `aius_pipeline_reset()`, so a DTS-first boot followed
-  by a PCM replay hunted for an IEC preamble that never comes (zero blocks, a capture
-  armed forever). A start against a live carrier is refused upstream, so the reset
-  cannot land mid live-input stream.
+- **`POST /api/replays/start` advances a monotonic audio-reset sequence.** At the
+  next AUDIO checkpoint the service briefly masks interrupts only while it flushes
+  queued ingress and acknowledges the matching ingress generations, then unmasks
+  before calling `aius_pipeline_reset()` (`src/optical_main.cpp:611`,
+  `lib/aius_audio_service/src/aius_audio_service.c:45`). The sequence cannot lose two
+  requests to a boolean clear, and `update()` remains an ingress-only publisher.
 - **`POST /api/clear` retires a live capture rather than clearing under it.**
   Clearing zeroes `g_overruns`, the baseline the arm-time latch compares by
   *equality*, so a clear during capture could mask a real overrun's 512-frame seam
@@ -913,15 +922,15 @@ the snapshot retains rather than a choice this project made.
 the life of the network generation
 (`vendor/NativeEthernet/src/NativeEthernet.cpp:167`). Until 2026-07-26 it ran at the
 startup-default priority 128, which read as "equal priority, neither preempts"
-against the S/PDIF DMA ISRs and was in fact a 1 kHz *preemption* of the DSP — the
-audio software interrupt that runs `update_all()`, `enqueue()` and the whole of
-`aius_dsp_process` sits at 208, and lower is stronger on the NVIC. `stack_start()`
-now demotes `IRQ_PIT` to 224, one implemented level below 208, re-applied after every
+against the S/PDIF DMA ISRs and, before the Slice 2b3 cutover, preempted the
+software-interrupt DSP chain at 1 kHz. `stack_start()` demotes `IRQ_PIT` to 224, one
+implemented level below the software audio interrupt at 208, re-applied after every
 `beginNoWait()` because `IntervalTimer` restores its own default per `begin()`
-(`src/aius_network_teensy.cpp:268`, `:277`), so the whole audio path preempts network
-polling and never waits on it. Starvation is not the trade: the DSP spends 8.4–8.8 %
-of a block, so polling still gets over 90 % of the time, and a delayed poll costs a
-retransmit while a preempted block callback costs audio. Enforced three ways —
+(`src/aius_network_teensy.cpp:268`, `:277`). The DMA and software audio ISRs therefore
+preempt polling. The current DSP chain runs in the AUDIO checkpoint in thread context
+and can be preempted by PIT, so the 8 ms AUDIO diagnostic and 25 ms complete-epoch
+diagnostic are the current timing evidence. The old 8.4–8.8 % interrupt-block figure
+is retained only as pre-cutover history. The priority relationship is enforced three ways —
 `test/network-transport/test_poll_priority.py` against the framework's own
 `IRQ_SOFTWARE` value, a fake-NVIC behaviour test that the demotion survives a
 teardown and restart, and `fake-fidelity` registration of `IRQ_PIT`.
@@ -1075,7 +1084,7 @@ before `.bss.dma`, which pins it to `ORIGIN(RAM)` by construction and below
   (`src/optical_main.cpp:587`). Thread context, one sample per epoch by budget
   (`lib/aius_runtime/src/aius_runtime.c:33`). The checkpoint also hosts the
   measurement session's epoch work inside the same declared 1 ms budget — see
-  [§Measurement capture](#measurement-capture--audio-isr-to-the-metrics-checkpoint).
+  [§Measurement capture](#measurement-capture--audio-checkpoint-to-the-metrics-checkpoint).
 - **Fused MAC read**, once at `setup()`: `HW_OCOTP_MAC0..2` are read to derive the
   per-device auth token; memory only thereafter
   (`src/optical_main.cpp:3078`).
@@ -1113,9 +1122,9 @@ interface to a converter.
 What plays the role of "codec control" is the DSP model, and its transport is the
 config path already documented: a validated `PUT /api/dsp/config` staged in RAM and
 written as an `UPLOAD/REPLACE` job, or a boot-time `CONFIG_LOAD` of
-`/aius/dsp.json`, with the audio-side apply happening at the block boundary in
+`/aius/dsp.json`, with the AUDIO-side apply happening at the block boundary in
 `enqueue()` and nowhere else (`src/optical_main.cpp:2399`, `:645`). The model is
-staged fully before the single `volatile` handoff flag is set, so the ISR never
+staged fully before the single `volatile` handoff flag is set, so AUDIO never
 observes a partially written model (`src/optical_main.cpp:269`). **A `PUT` that fails
 its write never reaches the block boundary**: `g_dsp_apply_pending` is armed only from
 the commit arm (`src/optical_main.cpp:1766`).
@@ -1139,12 +1148,14 @@ number comes from a real build or a real device.
   only the denominator does. Later whole-path figures — 534,411/565,024 cycles, and
   ≈281 k p50 on the PCM passthrough path during the item 3 loopback session — are
   recorded in [`signal-path.md`](signal-path.md#the-per-block-budget), which is the
-  authority for the current number. There is still no S/PDIF carrier — the optical
-  input is unsoldered — so the live-carrier path remains unmeasured.
+  authority for the current number. That evidence predates the Slice 2b3
+  interrupt-to-AUDIO cutover. A 2026-07-29 CM6206 → Teensy → CM6206 physical PCM
+  loop has since confirmed carrier and payload in both directions; the current
+  cutover image still requires its own timed live-carrier gate.
 - **The cost of one `fnet_poll` call is not measured.** Nothing in the repository
-  records it. Since the `IRQ_PIT` demotion to 224 it can no longer extend the audio
-  path, so the unmeasured magnitude now bears on network and epoch latency rather
-  than the block budget.
+  records it. The `IRQ_PIT` demotion to 224 prevents it from extending the ingress
+  ISR, but the PIT can preempt the thread-context AUDIO checkpoint, so the magnitude
+  now bears on the measured AUDIO and complete-epoch budgets.
 - **The worst-case duration of a 128-entry raw directory walk is not measured**, on
   any card. `GET /sd/<dir>/` and `GET /api/replays` bound the *entry count*; the
   per-entry cost of `openNextFile()` on this library is not a number anyone has
@@ -1187,10 +1198,11 @@ the plan's isolation claims against the linked image.
   SD primitive per epoch" holds for checkpoint 8 and reads "at most 128 bounded raw
   reads" for an epoch whose checkpoint 5 served a directory listing.
 - **~~The FNET poll timer shares the audio ISR's interrupt priority.~~ Closed
-  2026-07-26**, and the finding as first recorded understated it: 128-vs-128 was the
-  relationship with the S/PDIF *DMA* ISRs, while the DSP itself runs in the audio
-  software interrupt at 208, which `fnet_poll` preempted a thousand times a second.
-  `IRQ_PIT` is now demoted to 224 — see
+  2026-07-26.** Before the Slice 2b3 cutover, 128-vs-128 was the relationship with
+  the S/PDIF *DMA* ISRs, while the DSP ran in the software audio interrupt at 208 and
+  `fnet_poll` preempted it a thousand times a second. `IRQ_PIT` remains demoted to
+  224; after Slice 2b3 that protects the ingress publisher, while AUDIO checkpoint
+  timing covers the thread-context DSP — see
   [§Ethernet stack background I/O](#ethernet-stack-background-io--the-fnet-poll-timer).
 - **Five source comments still quote the pre-fix DTCM free figure.**
   `src/aius_runtime_teensy.h:17` says "~22 kB", `src/optical_main.cpp:77` says

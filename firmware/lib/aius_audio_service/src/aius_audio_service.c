@@ -2,12 +2,19 @@
 
 #include <string.h>
 
-static uint32_t elapsed_us(uint32_t start, uint32_t now)
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
+static FLASHMEM uint32_t elapsed_us(uint32_t start, uint32_t now)
 {
 	return now - start;
 }
 
-AiusStatus aius_audio_service_init(AiusAudioService *service,
+FLASHMEM AiusStatus aius_audio_service_init(AiusAudioService *service,
 	                               AiusAudioIngress *ingress,
 	                               AiusPipeline *pipeline,
 	                               AiusAudioServiceClockUs clock_us,
@@ -35,8 +42,8 @@ AiusStatus aius_audio_service_init(AiusAudioService *service,
 	return AIUS_OK;
 }
 
-static void apply_reset_sequence(AiusAudioService *service,
-	                             uint32_t reset_sequence)
+static FLASHMEM void apply_reset_sequence(AiusAudioService *service,
+	                                      uint32_t reset_sequence)
 {
 	if (reset_sequence == service->observed_reset_sequence)
 		return;
@@ -54,7 +61,7 @@ static void apply_reset_sequence(AiusAudioService *service,
 	service->diag.requested_resets++;
 }
 
-static void apply_generation(AiusAudioService *service)
+static FLASHMEM void apply_generation(AiusAudioService *service)
 {
 	const uint32_t generation =
 		aius_audio_ingress_generation(service->ingress);
@@ -75,8 +82,8 @@ static void apply_generation(AiusAudioService *service)
 	service->diag.generation_resets++;
 }
 
-AiusStatus aius_audio_service_run(AiusAudioService *service,
-	                              uint32_t reset_sequence)
+FLASHMEM AiusStatus aius_audio_service_run(AiusAudioService *service,
+	                                       uint32_t reset_sequence)
 {
 	if (!service || !service->valid || !service->ingress ||
 	    !service->pipeline || !service->clock_us ||
@@ -172,8 +179,8 @@ AiusStatus aius_audio_service_run(AiusAudioService *service,
 	return AIUS_OK;
 }
 
-void aius_audio_service_get_diag(const AiusAudioService *service,
-	                             AiusAudioServiceDiag *out)
+FLASHMEM void aius_audio_service_get_diag(
+	const AiusAudioService *service, AiusAudioServiceDiag *out)
 {
 	if (!out)
 		return;
@@ -182,7 +189,7 @@ void aius_audio_service_get_diag(const AiusAudioService *service,
 		*out = service->diag;
 }
 
-void aius_audio_service_clear_diag(AiusAudioService *service)
+FLASHMEM void aius_audio_service_clear_diag(AiusAudioService *service)
 {
 	if (!service)
 		return;

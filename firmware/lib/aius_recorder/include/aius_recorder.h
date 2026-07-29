@@ -19,31 +19,31 @@ extern "C" {
  * both host-testable with no Arduino dependency, extending the measure
  * machine's split:
  *
- *   1. The ISR side (aius_recorder_isr_block): copies the committed planes
- *      into a caller-owned OCRAM staging ring in the same interrupt that owns
- *      them, evaluates the block-evaluable triggers (overrun edge, underrun
+ *   1. The block producer (aius_recorder_producer_block): copies committed
+ *      planes into caller-owned staging, evaluates block-evaluable triggers
+ *      (overrun edge, underrun
  *      edge, limiter-GR hold), acknowledges epoch freeze tokens, and counts
- *      the post-roll. EXTMEM is NEVER touched from this context.
+ *      the post-roll. On target the caller-owned staging is the first 32 KiB
+ *      of PSRAM; producer and drain are serialized in the AUDIO/epoch path.
  *
  *   2. The epoch side: sets freeze tokens for the epoch-detected triggers
  *      (carrier falling edge, operator, the underrun fallback), reclaims when
- *      the ISR provably stopped, and DRAINS staging into the PSRAM ring in
- *      bounded byte slices from thread context, where a FlexSPI2 stall costs
- *      nothing audible. The drain interleaves (planar staging -> interleaved
- *      LR ring) because the epoch loop is free and the ISR copy is not.
+ *      the block producer stopped, and DRAINS staging into the PSRAM ring in
+ *      bounded byte slices. The drain interleaves (planar staging ->
+ *      interleaved LR ring) outside the producer call.
  *
- * RECORDING IS GAP-HONEST, NOT GAPLESS. Staging rides out the measured normal
- * worst case (~170 ms); a mount-class (~1 s) or watchdog-class epoch stall
- * fills it, and the ISR then DROPS the block and stamps a gap -- it never
- * blocks and never overwrites unconsumed staging. Gap count and last-gap
- * position are status and frozen-header fields.
+ * RECORDING IS GAP-HONEST, NOT GAPLESS. Eight target slots hold the maximum
+ * eight output steps one AUDIO checkpoint may commit before the next drain.
+ * A longer stall fills them, and the producer then DROPS the block and stamps
+ * a gap -- it never blocks and never overwrites unconsumed staging. Gap count
+ * and last-gap position are status and frozen-header fields.
  *
  * ONE WRITER PER TRANSITION (the measure machine's discipline):
  *
- *   RECORDING -> POSTROLL   ISR   (block-evaluable trigger at a block
+ *   RECORDING -> POSTROLL   producer (block-evaluable trigger at a block
  *                                  boundary, or token acknowledgement;
  *                                  metadata stored before the state store)
- *   POSTROLL  -> DRAINING   ISR   (post-roll block count reached; end
+ *   POSTROLL  -> DRAINING   producer (post-roll block count reached; end
  *                                  position latched first)
  *   RECORDING/POSTROLL
  *             -> DRAINING   epoch (reclaim: the block counter unchanged for
@@ -55,19 +55,19 @@ extern "C" {
  *                                  capture is not readable before this)
  *   FROZEN    -> RECORDING  epoch (thaw; increments freeze_generation)
  *
- * The ISR stages only in RECORDING and POSTROLL and ignores every other
+ * The producer stages only in RECORDING and POSTROLL and ignores every other
  * state, so a stale block after an epoch-side transition is a no-op. ABSENT
  * (no fitted PSRAM) is terminal from init: every entry point but init is a
  * cheap refusal, and the caller's presence latch reduces the per-block cost
  * to one state load.
  *
- * PSRAM GEOMETRY. The ring is raw storage handed to init -- base 0x70000000
- * sized by external_psram_size on target, a malloc'd buffer in the native
- * suite. ring_frames = bytes / 8 (interleaved stereo s32le, 24-bit
- * LSB-aligned) and must be a power of two, which the 8/16 MB probe results
- * are. PSRAM is never zeroed, so the valid extent (frames staged since
- * arm, saturating at the ring) bounds what a reader may serve: an unwrapped
- * ring never serves power-up garbage. */
+ * PSRAM GEOMETRY. On target the first 32 KiB is staging and the ring is the
+ * largest power-of-two byte extent after that carve: 4 MiB on an 8 MiB board,
+ * 8 MiB on a 16 MiB board. Native tests use caller-owned buffers.
+ * ring_frames = bytes / 8 (interleaved stereo s32le, 24-bit LSB-aligned).
+ * PSRAM is never zeroed, so the valid extent (frames staged since arm,
+ * saturating at the ring) bounds what a reader may serve: an unwrapped ring
+ * never serves power-up garbage. */
 
 /* Post-roll default and bound, in 512-frame blocks (~10.67 ms each):
  * 188 blocks is ~2.005 s, 938 is ~10.005 s. */
@@ -82,9 +82,9 @@ extern "C" {
 /* Interleaved stereo s32 frame. */
 #define AIUS_RECORDER_FRAME_BYTES 8u
 
-/* Epochs with the ISR block counter unchanged before the epoch reclaims a
+/* Epochs with the producer block counter unchanged before the controller reclaims a
  * pending token or an open post-roll. Playback epochs run ~115/s, so this is
- * ~280 ms -- an ISR that silent for that long has provably stopped (the
+ * ~280 ms -- a producer silent for that long has stopped (the
  * stream stops in whole-block units). */
 #define AIUS_RECORDER_RECLAIM_EPOCHS 32u
 
@@ -122,7 +122,7 @@ typedef enum {
 typedef struct {
 	uint32_t trigger;       /* AiusRecorderTrigger */
 	uint32_t at_frame;      /* frames staged when the trigger latched */
-	uint32_t at_block;      /* ISR blocks staged when it latched */
+	uint32_t at_block;      /* producer blocks staged when it latched */
 	uint32_t at_ms;         /* caller's now_ms when it latched */
 } AiusRecorderTriggerInfo;
 
@@ -146,12 +146,10 @@ typedef struct {
 } AiusRecorderSnapshot;
 
 /* Caller-owned state. On target this struct lives in DTCM (never OCRAM: the
- * boot ROM scribbles it at reset); the staging planes it points at live in
- * OCRAM (the heap-carved .aius_recorder_staging section -- see defect 26 for
- * why not DMAMEM) and the ring in EXTMEM. Fields crossing the boundary are
- * volatile; 32-bit aligned loads and stores are single-copy atomic on the
- * Cortex-M7, which is why the GR threshold is stored as a 32-bit float and
- * every counter is u32. */
+ * boot ROM scribbles it at reset); the staging planes and ring it points at
+ * live in fitted PSRAM. Volatile fields preserve the portable producer /
+ * controller handoff contract; every counter is u32 and the GR threshold is a
+ * 32-bit float. */
 typedef struct {
 	volatile uint32_t state; /* AiusRecorderState */
 
@@ -165,7 +163,7 @@ typedef struct {
 	uint32_t slot_frames;
 	uint32_t *staging_frames; /* per-slot frame count, staging_slots long */
 
-	/* ISR-owned. */
+	/* Block-producer-owned. */
 	volatile uint32_t slot_write;    /* free-running */
 	volatile uint32_t frames_staged; /* free-running; ring pos = % ring */
 	volatile uint32_t blocks_staged;
@@ -178,7 +176,7 @@ typedef struct {
 	volatile uint32_t end_frame;     /* frames_staged at POSTROLL exit */
 	uint32_t overrun_base;
 	uint32_t underrun_base;
-	/* 0 after init/thaw: the ISR adopts the current counter values as
+	/* 0 after init/thaw: the producer adopts the current counter values as
 	 * baselines on its first block instead of edge-detecting against stale
 	 * ones (counters keep advancing while FROZEN). */
 	volatile uint32_t baseline_sync;
@@ -189,11 +187,11 @@ typedef struct {
 	volatile uint32_t trigger_at_block;
 	volatile uint32_t trigger_at_ms;
 
-	/* Epoch <-> ISR. */
+	/* Controller <-> block producer. */
 	volatile uint32_t freeze_token;  /* AiusRecorderTrigger; 0 = none */
 	volatile uint32_t gate_open;     /* epoch-latched tx-gate decision */
 
-	/* Epoch-owned (slot_read is volatile because the ISR reads it for the
+	/* Controller-owned (slot_read is volatile because the producer reads it for the
 	 * staging-full check). */
 	volatile uint32_t slot_read;     /* free-running */
 	uint32_t slot_read_offset;       /* frames drained of the current slot */
@@ -204,7 +202,7 @@ typedef struct {
 	uint32_t reclaim_blocks;
 	uint32_t reclaim_count;
 
-	/* Config: written cold by set_config/init, read per block by the ISR. */
+	/* Config: written cold by set_config/init, read per producer block. */
 	volatile uint32_t trigger_mask;
 	volatile float gr_threshold_gain; /* linear; 0 = disabled */
 	float gr_threshold_db;            /* as configured, for echo only */
@@ -225,24 +223,29 @@ AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
                               int32_t *staging, uint32_t *staging_frames,
                               uint32_t staging_slots, uint32_t slot_frames);
 
-/* ISR, once per committed block, after the planes are committed to the
+/* Largest power-of-two ring byte extent that fits after a caller-owned staging
+ * carve. Returns zero when no complete stereo frame fits. */
+uint32_t aius_recorder_ring_bytes_after_staging(uint32_t storage_bytes,
+                                                uint32_t staging_bytes);
+
+/* Producer, once per committed block, after the planes are committed to the
  * transmit ring. In RECORDING/POSTROLL: evaluates the block-evaluable
  * triggers (overrun/underrun edges against resync-on-decrease baselines, the
  * underrun edge qualified by the epoch-latched gate; GR hold when
  * limiter_gain_valid), acknowledges a pending freeze token, copies the planes
  * into staging (or stamps a gap when staging is full), and counts down an
  * open post-roll. In every other state: one state load, then a no-op.
- * Bounded, allocation-free, EXTMEM-free. */
-void aius_recorder_isr_block(AiusRecorder *r, const int32_t *l,
+ * Bounded and allocation-free. */
+void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
                              const int32_t *right, uint32_t frames,
                              uint32_t overruns, uint32_t underruns,
                              bool limiter_gain_valid, float limiter_gain,
                              uint32_t now_ms);
 
 /* Epoch, once per epoch BEFORE the drain: latches the tx-gate decision for
- * the ISR's underrun qualification, edge-detects the epoch triggers (carrier
+ * the producer's underrun qualification, edge-detects controller triggers (carrier
  * falling edge under the gate qualification; the underrun fallback under the
- * same latched gate, for the producer-stall case where the ISR never runs
+ * same latched gate, for the producer-stall case where no block is committed
  * again), sets the freeze token for them, and reclaims a pending token or
  * open post-roll after AIUS_RECORDER_RECLAIM_EPOCHS epochs with the block
  * counter unchanged. */
@@ -267,7 +270,7 @@ AiusStatus aius_recorder_thaw(AiusRecorder *r);
 
 /* Epoch, cold: install trigger config. gr_threshold_db <= 0 (0 disables GR
  * whatever the mask says; the linear threshold is derived here, never in the
- * ISR). Allowed in RECORDING and FROZEN only -- a capture in flight keeps
+ * producer). Allowed in RECORDING and FROZEN only -- a capture in flight keeps
  * the config it latched. postroll_blocks is clamped to
  * AIUS_RECORDER_POSTROLL_MAX_BLOCKS. */
 AiusStatus aius_recorder_set_config(AiusRecorder *r, uint32_t mask,

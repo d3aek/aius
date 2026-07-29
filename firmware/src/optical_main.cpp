@@ -28,6 +28,8 @@ extern "C" {
 	#include "aius_dsp.h"
 	#include "aius_measure.h"
 	#include "aius_recorder.h"
+	#include "aius_audio_ingress.h"
+	#include "aius_audio_service.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
 	#include "aius_usb_control.h"
@@ -137,6 +139,31 @@ static AiusRuntimeTeensy &g_runtime =
 
 DMAMEM static AiusReplayService g_replay_service;
 static char g_replay_path[96];
+
+/* The audio software ISR publishes exact 256-word engine chunks here; AUDIO
+ * consumes them. Storage is OCRAM, while cursors and diagnostics stay in DTCM
+ * because the boot ROM scribbles DMAMEM at reset. */
+DMAMEM static uint16_t
+	g_audio_ingress_words[AIUS_AUDIO_INGRESS_CAPACITY_WORDS];
+static_assert(AIUS_AUDIO_INGRESS_CAPACITY_WORDS == 8192u,
+	"target ingress must contain exactly 8192 words");
+static_assert(sizeof(g_audio_ingress_words) == 16384u,
+	"target ingress must occupy exactly 16 KiB of OCRAM");
+static AiusAudioIngress g_audio_ingress;
+static AiusAudioService g_audio_service;
+static bool g_audio_ingress_ready;
+static bool g_audio_service_ready;
+static AiusReplaySource g_audio_ingress_source =
+	AIUS_REPLAY_SOURCE_OPTICAL;
+/* Epoch-owned reset request. Replay start and a debounced carrier relock each
+ * advance it; AUDIO acknowledges the exact value through AiusAudioService. */
+static uint32_t g_audio_reset_sequence;
+/* Whole normal-epoch timing. AUDIO owns its narrower 8 ms diagnostics. */
+static uint32_t g_runtime_epoch_max_us;
+static uint32_t g_runtime_epoch_budget_overruns;
+static uint32_t g_audio_checkpoint_max_cycles;
+static uint32_t g_tx_high_water_frames;
+static constexpr uint32_t AIUS_RUNTIME_EPOCH_BUDGET_US = 25000u;
 
 /* ------------------------------------------------------------------ */
 /* Replay refill -- Phase 14c                                          */
@@ -253,7 +280,8 @@ typedef struct {
 } ReplayJobDiag;
 /* DMAMEM like the job and the service it describes: a diagnostic record has no
  * claim on the DTCM free-for-locals zone, which is the bank §Deciding principle
- * names as scarcest. Written once per epoch at most, read by the status route. */
+ * names as scarcest. Written once per epoch at most, read by the status route.
+ * .bss.dma is NOLOAD, so setup() must clear this before the first status read. */
 DMAMEM static ReplayJobDiag g_replay_diag;
 
 /* Why the current selection is not playing, so /api/replays/status can tell a
@@ -371,10 +399,10 @@ static uint32_t g_config_generation;
 
 /* Staged model awaiting a block-boundary-safe apply. Written from loop/HTTP
  * context (a validated PUT, or an SD (re)load); consumed once, at the top of
- * AiusAudioProcessor::enqueue() (audio-ISR context), which is the actual audio
+ * AiusAudioProcessor::enqueue() (AUDIO checkpoint context), the accepted
  * block boundary. g_dsp_apply_pending is the single volatile handoff flag: the
- * writer always fully populates g_pending_dsp_model BEFORE setting it, so the
- * ISR never observes a partially-written model (see docs plan "Input trim/EQ +
+ * writer always fully populates g_pending_dsp_model BEFORE setting it, so AUDIO
+ * never observes a partially-written model (see docs plan "Input trim/EQ +
  * limiter wiring done" note for the equivalent apply_config() out-of-line
  * rationale). g_dsp_upload_pending is the separate SD-job-lifecycle gate
  * (mirrors g_config_upload_pending): true only while a dsp_upload SD job is in
@@ -399,24 +427,15 @@ static volatile bool g_dsp_apply_pending;
  * DMAMEM is not zeroed at startup, so apply_config() runs aius_meter_init()
  * before the first block ever reaches enqueue().
  *
- * ONE WRITER, ONE READER, NO LOCK. The writer is AiusAudioProcessor::enqueue()
- * in audio-ISR context: it owns every accumulator, both seqlock increments and
- * the published snapshot. The reader is http_meters_json() on the main thread
- * and only ever calls aius_meter_read(). The reader never makes the audio path
- * wait -- the writer takes no lock, tests no reader state and never retries;
- * retry belongs entirely to the reader's side of the seqlock.
+ * ONE WRITER, ONE READER. The writer is AiusAudioProcessor::enqueue() in the
+ * AUDIO checkpoint: it owns every accumulator, both seqlock increments and the
+ * published snapshot. The reader is http_meters_json() at the serial HTTP
+ * checkpoint and only ever calls aius_meter_read().
  *
- * WHY THAT CANNOT TEAR HERE. The two sides are not concurrent, they are
- * nested: the audio interrupt preempts the main thread, runs a publish to
- * completion and returns. A reader whose ~4.7 kB copy is straddled by a
- * publish therefore always observes seq advanced by two across the copy, fails
- * the s1 == s2 check, and retries; it can never observe the payload half-old.
- * The converse hazard -- a compiler sinking one of the writer's payload stores
- * past the closing `seq++` -- is harmless for the same reason: the sunk store
- * still retires before the exception return, so no reader can run between the
- * two. aius_meter_read() lives in another translation unit and there is no LTO
- * in this build, so its bracketing volatile reads cannot be reordered around
- * the copy from the caller's side either. */
+ * WHY THAT CANNOT TEAR HERE. Runtime checkpoints do not overlap: a publish or
+ * read completes before the next checkpoint begins. The seqlock remains the
+ * portable snapshot contract and makes any future concurrent reader retry
+ * rather than accept a straddled copy. */
 DMAMEM static AiusMeter g_meter;
 
 /* Publish cadence, in publishes per second. Counted in FRAMES rather than
@@ -447,9 +466,8 @@ static constexpr uint32_t AIUS_METER_PUBLISH_HZ = 20u;
 /* The CONTROL state is DTCM, never DMAMEM: .bss.dma is NOLOAD and the */
 /* boot ROM scribbles OCRAM at reset -- the ring's own documented      */
 /* hazard -- and this struct must read as idle before the first arm.   */
-/* The ISR/epoch pair needs no barrier beyond the ones the nested-     */
-/* interrupt argument above g_meter already makes: the audio interrupt */
-/* preempts the epoch, runs its transition to completion and returns.  */
+/* Recorder producer and drain are serial AUDIO/epoch work; its portable */
+/* token protocol remains the ownership boundary.                      */
 /* ------------------------------------------------------------------ */
 DMAMEM static int32_t g_measure_capture_l[AIUS_MEASURE_CAPTURE_FRAMES];
 DMAMEM static int32_t g_measure_capture_r[AIUS_MEASURE_CAPTURE_FRAMES];
@@ -459,12 +477,11 @@ static AiusMeasureCapture g_measure_capture;
 /* PSRAM flight recorder (aius-optical-prototype.md §PSRAM flight      */
 /* recorder, prebuild-gated 2026-07-27)                                */
 /*                                                                     */
-/* Staging is a heap-carved OCRAM section (4 planar 512-frame slots,   */
-/* 16 KiB -- the amended contract's depth after defect 26); control    */
-/* state is DTCM for the boot-ROM-scribbles-OCRAM reason above. The    */
-/* RING is                                                             */
-/* neither: raw PSRAM at 0x70000000 sized by the boot probe, bound at  */
-/* begin_pipeline() and touched ONLY by the epoch drain. No EXTMEM     */
+/* Staging is the first 32 KiB of fitted PSRAM (8 planar 512-frame     */
+/* slots); the circular ring begins after it at a power-of-two byte    */
+/* capacity. Both producer and drain are now serial epoch work, so no  */
+/* interrupt or DMA observes this storage. Control state remains DTCM. */
+/* No EXTMEM                                                           */
 /* static exists anywhere in this firmware and the extmem heap is      */
 /* banned outright (test/recorder/test_no_extmem_heap.py) -- an        */
 /* EXTMEM array links silently wrong on an 8 MB board and the smalloc  */
@@ -474,26 +491,17 @@ static AiusMeasureCapture g_measure_capture;
 /* one bool test in enqueue() (the g_meters_active pattern), and the   */
 /* epoch service returns on the same latch.                            */
 /* ------------------------------------------------------------------ */
-/* 4 slots = 16 KiB ~= 42.7 ms of staging: 4x the measured stacked epoch
- * worst case (5.5 ms SD primitive + 2 + 2 + 1 ms budgets). NOT 16 slots:
- * OCRAM's heap must keep >= ~96 KiB for NativeEthernet's boot-time mallocs
- * (64 KiB FNET stack heap + 8 x 4 KiB socket buffers) or network bring-up
- * fails and the boot dies -- defect 26. The linker now ASSERTs a 128 KiB
- * heap floor, so an over-grown staging ring fails the BUILD, not the
- * board. */
-#define RECORDER_STAGING_SLOTS 4u
+/* AUDIO may commit eight output steps after REPLAY already drained for this
+ * epoch. Eight slots make that exact burst gap-free. Removing the prior 16 KiB
+ * OCRAM staging offsets the new 16 KiB ingress ring and preserves the linker's
+ * 128 KiB NativeEthernet heap floor. */
+#define RECORDER_STAGING_SLOTS 8u
 #define RECORDER_SLOT_FRAMES (AUDIO_BLOCK_SAMPLES * 4u)
-#define RECORDER_DRAIN_BYTES_PER_EPOCH 8192u
-/* In their own linker section rather than DMAMEM: the dedicated
- * .bss.aius_staging section (placed after every .bss.dma input, carved out
- * of the heap by link/aius_teensy41.ld) makes the recorder's OCRAM cost
- * visible to the linker's heap-floor ASSERT -- the defect 26 gate -- and
- * keeps a resize from ever moving a pre-existing DMAMEM address. Same OCRAM
- * bank, same cache behaviour; only packing and accountability differ. */
-__attribute__((section(".aius_recorder_staging"), used, aligned(32)))
-static int32_t
-	g_recorder_staging[RECORDER_STAGING_SLOTS * RECORDER_SLOT_FRAMES * 2u];
-__attribute__((section(".aius_recorder_staging"), used, aligned(32)))
+#define RECORDER_STAGING_BYTES \
+	(RECORDER_STAGING_SLOTS * RECORDER_SLOT_FRAMES * 2u * sizeof(int32_t))
+#define RECORDER_DRAIN_BYTES_PER_EPOCH RECORDER_STAGING_BYTES
+static_assert(RECORDER_STAGING_BYTES == 32768u,
+	"eight planar 512-frame recorder slots must occupy 32 KiB");
 static uint32_t g_recorder_staging_frames[RECORDER_STAGING_SLOTS];
 static AiusRecorder g_recorder;
 static bool g_recorder_present = false;
@@ -598,15 +606,27 @@ static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_CARRIER_LOSS ==
 static_assert(AIUS_OPTICAL_APP_RECORDER_MASK_LIMITER_GR ==
               AIUS_RECORDER_MASK_LIMITER_GR, "recorder mask mirror drifted");
 
-/* The pipeline classifies once and nothing on target ever called
- * aius_pipeline_reset(): a DTS-first boot followed by a PCM replay hunts for
- * an IEC preamble that never comes (zero blocks, a capture armed forever),
- * and PCM-first followed by DTS plays framed bursts as noise. Replay start
- * arms this flag and update() -- audio context, before any words are pushed
- * -- performs the reset, so every replay classifies its own stream. A start
- * against a live carrier is refused upstream, so the reset cannot land mid
- * live-input stream. */
-static volatile bool g_pipeline_reset_pending;
+/* Reset requests stay in epoch context. AUDIO flushes queued ingress and resets
+ * the pipeline before acknowledging the sequence; update() only publishes
+ * words and discontinuity generations. */
+static FLASHMEM void request_audio_reset(void)
+{
+	g_audio_reset_sequence++;
+}
+
+/* The only sample walk left in the software audio ISR. Keep it out of
+ * AiusAudioProcessor::update() so that callback remains an auditable sequence
+ * of ingress operations; noinline gives the ITCM placement gate a stable,
+ * separately pinned producer section. */
+static __attribute__((noinline)) void
+audio_ingress_publish_live(uint16_t *slot, const audio_block_t *left,
+	                       const audio_block_t *right)
+{
+	for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+		slot[2u * i] = (uint16_t)left->data[i];
+		slot[2u * i + 1u] = (uint16_t)right->data[i];
+	}
+}
 
 static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, AiusOpticalConfig &out)
 {
@@ -876,7 +896,7 @@ static FLASHMEM void record_state(void)
 /* (lib/aius_audio/src/aius_spdif_tx24.h), so this class has no         */
 /* emit_block(), allocates no pool blocks, and is connected to no       */
 /* output node. The consequence that matters here: the ring's producer  */
-/* (enqueue(), reached from the software ISR that update_all() pends)   */
+/* (enqueue(), reached from the runtime AUDIO checkpoint)               */
 /* and its consumer (the transmit DMA ISR) are now at DIFFERENT NVIC    */
 /* priorities, where both used to sit inside update(). That is why the  */
 /* ring is a stage/commit single-producer/single-consumer structure and */
@@ -902,74 +922,60 @@ public:
 
 	uint32_t block_count(void) const
 	{
-		noInterrupts();
-		uint32_t value = g_blocks;
-		interrupts();
-		return value;
+		return g_blocks;
 	}
 	uint32_t overrun_count(void) const
 	{
-		noInterrupts();
-		uint32_t value = g_overruns;
-		interrupts();
-		return value;
+		/* One aligned producer-owned u32. The atomic load avoids masking the
+		 * software audio IRQ on every committed output block. */
+		return __atomic_load_n(&g_audio_ingress.dropped_chunks,
+		                       __ATOMIC_ACQUIRE);
 	}
 	AiusStatus create_status(void) const { return g_create_status; }
-	/* Copy the pipeline's metrics snapshot for the status surface. The audio
-	 * ISR is the writer, so the copy sits under the same brief mask the
-	 * counter reads use. INVALID_ARG when the pipeline never constructed. */
+	/* Pipeline state is AUDIO-owned and HTTP runs serially in the same epoch. */
 	AiusStatus pipeline_metrics(AiusMetrics *out) const
 	{
-		noInterrupts();
-		const AiusStatus got = g_pipeline != nullptr
+		return g_pipeline != nullptr
 			? aius_pipeline_get_metrics(g_pipeline, out)
 			: AIUS_INVALID_ARG;
-		interrupts();
-		return got;
 	}
 	AiusStatus parser_diag(AiusIecDiag *out) const
 	{
-		noInterrupts();
-		const AiusStatus got = g_pipeline != nullptr
+		return g_pipeline != nullptr
 			? aius_pipeline_get_parser_diag(g_pipeline, out)
 			: AIUS_INVALID_ARG;
-		interrupts();
-		return got;
 	}
 	AiusStatus reclass_counters(uint32_t *retype, uint32_t *reclassify) const
 	{
-		noInterrupts();
-		const AiusStatus got = g_pipeline != nullptr
+		return g_pipeline != nullptr
 			? aius_pipeline_get_reclass_counters(g_pipeline, retype, reclassify)
 			: AIUS_INVALID_ARG;
-		interrupts();
-		return got;
 	}
 	/* The confirmation squelch's lifetime dropped-frame count and its LIVE
 	 * gate state -- the pair that makes "by-ear silence at the seam" a reading
-	 * rather than an inference. Same brief mask as its neighbours: the audio
-	 * ISR is the writer of both. */
+	 * rather than an inference. AUDIO is the sole writer. */
 	AiusStatus squelch_diag(uint32_t *squelched_frames, int *pcm_confirmed) const
 	{
-		noInterrupts();
-		const AiusStatus got = g_pipeline != nullptr
+		return g_pipeline != nullptr
 			? aius_pipeline_get_squelch_diag(g_pipeline, squelched_frames,
 			                                 pcm_confirmed)
 			: AIUS_INVALID_ARG;
-		interrupts();
-		return got;
 	}
 	void clear_counters(void)
 	{
-		noInterrupts();
+		NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+		aius_audio_ingress_clear_producer_diag(&g_audio_ingress);
+		NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
 		g_blocks = 0;
-		g_overruns = 0;
-		/* The peak-cycle watermark is a counter like the other two: a soak that
-		 * clears counters wants the worst block SINCE the clear, not since
-		 * boot. Inside the same critical section because its only other writer
-		 * is the audio ISR. */
 		g_dsp_cycles_max = 0;
-		interrupts();
+		g_tx_high_water_frames = aius_spdif_tx24_level(&g_aius_spdif_tx24);
+		g_runtime_epoch_max_us = 0u;
+		g_runtime_epoch_budget_overruns = 0u;
+		g_audio_checkpoint_max_cycles = 0u;
+		if (g_audio_service_ready)
+			aius_audio_service_clear_diag(&g_audio_service);
+		if (g_pipeline != nullptr)
+			aius_pipeline_clear_service_diag(g_pipeline);
 	}
 
 	/* Resolve `cfg` (either AIUS_OPTICAL_CONFIG, the const factory default in
@@ -991,44 +997,53 @@ public:
 protected:
 	void update(void) override
 	{
-		/* The replay-start pipeline reset, in audio context and before any
-		 * words are pushed: the next words classify as their own stream. See
-		 * g_pipeline_reset_pending's block comment. */
-		if (g_pipeline_reset_pending && g_pipeline != nullptr) {
-			aius_pipeline_reset(g_pipeline);
-			g_pipeline_reset_pending = false;
-		}
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
-		if (g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
-		    g_pipeline != nullptr) {
-			uint16_t words[AUDIO_BLOCK_SAMPLES * 2];
-			size_t count = aius_replay_service_pop_words(&g_replay_service, words,
-			                                             AUDIO_BLOCK_SAMPLES * 2);
-			if (count == AUDIO_BLOCK_SAMPLES * 2) {
-				AiusStatus st = aius_pipeline_push(g_pipeline, words, count);
-				if (st != AIUS_OK) g_overruns++;
+		const AiusReplaySource source =
+			g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY
+				? AIUS_REPLAY_SOURCE_REPLAY
+				: AIUS_REPLAY_SOURCE_OPTICAL;
+		if (g_audio_ingress_ready && source != g_audio_ingress_source) {
+			aius_audio_ingress_record_source_change(&g_audio_ingress);
+			g_audio_ingress_source = source;
+		}
+		if (g_audio_ingress_ready && source == AIUS_REPLAY_SOURCE_REPLAY) {
+			uint16_t *slot = nullptr;
+			if (aius_audio_ingress_reserve(&g_audio_ingress, &slot) ==
+			    AIUS_OK) {
+				const size_t count = aius_replay_service_pop_words(
+					&g_replay_service, slot,
+					AIUS_AUDIO_INGRESS_CHUNK_WORDS);
+				if (count == AIUS_AUDIO_INGRESS_CHUNK_WORDS)
+					(void)aius_audio_ingress_commit(&g_audio_ingress);
+				else
+					aius_audio_ingress_cancel_gap(
+						&g_audio_ingress,
+						AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY);
 			} else {
-				g_overruns++;
+				(void)aius_replay_service_discard_words(
+					&g_replay_service,
+					AIUS_AUDIO_INGRESS_CHUNK_WORDS);
 			}
-		} else if (left != nullptr && right != nullptr && g_pipeline != nullptr) {
-			uint16_t words[AUDIO_BLOCK_SAMPLES * 2];
-			for (unsigned i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
-				words[2 * i] = (uint16_t)left->data[i];
-				words[2 * i + 1] = (uint16_t)right->data[i];
+		} else if (g_audio_ingress_ready && left != nullptr &&
+		           right != nullptr) {
+			uint16_t *slot = nullptr;
+			if (aius_audio_ingress_reserve(&g_audio_ingress, &slot) ==
+			    AIUS_OK) {
+				audio_ingress_publish_live(slot, left, right);
+				(void)aius_audio_ingress_commit(&g_audio_ingress);
 			}
-			AiusStatus st = aius_pipeline_push(g_pipeline, words,
-			                                   AUDIO_BLOCK_SAMPLES * 2);
-			if (st != AIUS_OK)
-				g_overruns++;
+		} else if (g_audio_ingress_ready) {
+			aius_audio_ingress_record_gap(
+				&g_audio_ingress,
+				AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE);
 		}
 		if (left != nullptr)
 			release(left);
 		if (right != nullptr)
 			release(right);
 		/* No emit_block(): the transmit DMA interrupt drains the 24-bit ring
-		 * itself, so this callback's only job is to push the epoch's input
-		 * words into the pipeline. */
+		 * itself; this callback only publishes one bounded ingress chunk. */
 	}
 
 private:
@@ -1058,7 +1073,6 @@ private:
 	 * transmit ISR's read is strictly sequential so the L1 D-cache amortises the
 	 * OCRAM latency over eight words per line. */
 	uint32_t g_blocks = 0;
-	uint32_t g_overruns = 0;
 	AiusDownmixConfig g_downmix = aius_downmix_config_default();
 	AiusBiquad g_eq[2];
 	AiusBiquadState g_eq_state[4] = {};
@@ -1102,18 +1116,22 @@ private:
 	uint32_t g_dsp_cycles_last = 0;
 	uint32_t g_dsp_cycles_max = 0;
 
-	static AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
+	static __attribute__((section(".flashmem.audio_consume")))
+	AiusStatus consume_block(void *ctx, const AiusPcmBlock *block)
 	{
 		return static_cast<AiusAudioProcessor *>(ctx)->enqueue(block);
 	}
 
+	__attribute__((section(".flashmem.audio_enqueue")))
 	AiusStatus enqueue(const AiusPcmBlock *block)
 	{
-		/* Block-boundary config apply: the one point in the audio path where a
-		 * staged model (a validated PUT or an SD (re)load) becomes active. Cheap
-		 * in the common case (a single volatile bool read); apply_config() itself
-		 * is bounded but not free (biquad coefficient trig), so this only runs
-		 * once per staged change, never per block. */
+		if (block == nullptr || block->frames > DSP_STAGE_FRAMES ||
+		    block->planes[0] == nullptr)
+			return AIUS_INVALID_ARG;
+		if (block->frames > aius_spdif_tx24_free(&g_aius_spdif_tx24))
+			return AIUS_NO_SPACE;
+		/* Capacity preflight is first: a refused block applies no staged model
+		 * and advances no DSP, meter, recorder, measurement or output state. */
 		if (g_dsp_apply_pending) {
 			g_active_model = g_pending_dsp_model;
 			apply_config(g_active_model);
@@ -1121,11 +1139,6 @@ private:
 			g_config_generation++;
 			g_dsp_apply_pending = false;
 		}
-		if (block == nullptr || block->frames > DSP_STAGE_FRAMES ||
-		    block->planes[0] == nullptr)
-			return AIUS_INVALID_ARG;
-		if (block->frames > aius_spdif_tx24_free(&g_aius_spdif_tx24))
-			return AIUS_NO_SPACE;
 		int32_t processed_left[AUDIO_BLOCK_SAMPLES * 4];
 		int32_t processed_right[AUDIO_BLOCK_SAMPLES * 4];
 		AiusPcmBlock processed = {};
@@ -1203,33 +1216,38 @@ private:
 			                   ring_left, ring_right, block->frames - first);
 		}
 		aius_spdif_tx24_commit(&g_aius_spdif_tx24, block->frames);
+		const uint32_t tx_level =
+			aius_spdif_tx24_level(&g_aius_spdif_tx24);
+		if (tx_level > g_tx_high_water_frames)
+			g_tx_high_water_frames = tx_level;
+		const uint32_t dropped_chunks = overrun_count();
 		/* Item 3 capture tap. At OUTPUT_WIDTH_BITS = 24 the words just
 		 * committed ARE processed_left/right verbatim (the out stage is a
 		 * copy), so tapping the planes taps the wire. After the commit and
 		 * before anything else so the capture covers exactly the committed
 		 * frames; the latches are this block's config generation and overrun
-		 * count, read in the same interrupt that would have advanced them.
+		 * count, snapshotted from the ingress producer.
 		 * Cost when no capture is in flight: one volatile load and compare
 		 * inside the callee. */
-		aius_measure_isr_block(&g_measure_capture, processed_left,
-		                       processed_right, block->frames,
-		                       g_config_generation, g_overruns);
-		/* Flight-recorder tap: the same committed planes, into OCRAM
-		 * staging (never EXTMEM from this context). Sits beside the
+		aius_measure_producer_block(&g_measure_capture, processed_left,
+		                            processed_right, block->frames,
+		                            g_config_generation, dropped_chunks);
+		/* Flight-recorder tap: the same committed planes, into PSRAM staging.
+		 * Producer and drain are serial runtime work. Sits beside the
 		 * measure tap so both cover exactly the committed frames. The
-		 * limiter gain is read in the interrupt that just advanced it;
+		 * limiter gain is read in the call that just advanced it;
 		 * the underrun counter is the tx24 ring's own volatile u32.
 		 * Cost when no PSRAM is fitted: this one bool test. */
 		if (g_recorder_present)
-			aius_recorder_isr_block(&g_recorder, processed_left,
-			                        processed_right, block->frames,
-			                        g_overruns,
-			                        g_aius_spdif_tx24.underruns,
-			                        dsp.limiter != nullptr,
-			                        dsp.limiter != nullptr
-			                            ? (float)dsp.limiter->state.gain
-			                            : 1.0f,
-			                        millis());
+			aius_recorder_producer_block(
+				&g_recorder, processed_left, processed_right,
+				block->frames, dropped_chunks,
+				g_aius_spdif_tx24.underruns,
+				dsp.limiter != nullptr,
+				dsp.limiter != nullptr
+					? (float)dsp.limiter->state.gain
+					: 1.0f,
+				millis());
 		g_blocks++;
 		if (metering) {
 			if (g_meter.out_frames >= g_meter_window_frames) {
@@ -1263,6 +1281,21 @@ private:
 	}
 };
 
+static FLASHMEM uint32_t audio_clock_us(void *)
+{
+	return micros();
+}
+
+static FLASHMEM void audio_enter_reset_critical(void *)
+{
+	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+}
+
+static FLASHMEM void audio_exit_reset_critical(void *)
+{
+	NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
+}
+
 FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 {
 	apply_config(AIUS_OPTICAL_CONFIG);
@@ -1273,20 +1306,22 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	                                g_measure_capture_l,
 	                                g_measure_capture_r,
 	                                AIUS_MEASURE_CAPTURE_FRAMES);
-	/* Bind the flight recorder before the transmit interrupt arms
-	 * (its rule, same as the tx24 cursors). The probe ran in
-	 * ResetHandler, so external_psram_size is settled; 0 MB arms
-	 * nothing and the recorder reports absent -- a bare board must
-	 * never fault, and the MPU maps the absent region RW so only
-	 * this latch protects it. */
-	g_recorder_present = external_psram_size != 0u &&
-		aius_recorder_init(&g_recorder,
-		                   reinterpret_cast<uint8_t *>(0x70000000u),
-		                   (uint32_t)external_psram_size * 1048576u,
-		                   external_psram_size, g_recorder_staging,
-		                   g_recorder_staging_frames,
-		                   RECORDER_STAGING_SLOTS,
-		                   RECORDER_SLOT_FRAMES) == AIUS_OK;
+	/* The first 32 KiB of fitted PSRAM is eight producer staging slots. The
+	 * circular ring uses the largest power-of-two byte extent that fits after
+	 * the carve: 4 MiB on an 8 MiB board, 8 MiB on a 16 MiB board. */
+	uint8_t *const psram = reinterpret_cast<uint8_t *>(0x70000000u);
+	const uint32_t psram_bytes =
+		(uint32_t)external_psram_size * 1048576u;
+	const uint32_t recorder_ring_bytes =
+		aius_recorder_ring_bytes_after_staging(
+			psram_bytes, RECORDER_STAGING_BYTES);
+	g_recorder_present = recorder_ring_bytes >= AIUS_RECORDER_FRAME_BYTES &&
+		aius_recorder_init(
+			&g_recorder, psram + RECORDER_STAGING_BYTES,
+			recorder_ring_bytes, external_psram_size,
+			reinterpret_cast<int32_t *>(psram),
+			g_recorder_staging_frames, RECORDER_STAGING_SLOTS,
+			RECORDER_SLOT_FRAMES) == AIUS_OK;
 	if (!g_recorder_present)
 		(void)aius_recorder_init(&g_recorder, nullptr, 0u, 0u,
 		                         nullptr, nullptr, 0u, 0u);
@@ -1333,6 +1368,16 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	AiusPipelineConfig config = {AIUS_IEC61937_PACK_16, 0};
 	g_create_status = aius_pipeline_create_arena(&g_pipeline, &config,
 	                                             &sink, &g_arena);
+	if (g_create_status == AIUS_OK && g_audio_ingress_ready) {
+		g_audio_service_ready =
+			aius_audio_service_init(
+				&g_audio_service, &g_audio_ingress, g_pipeline,
+				audio_clock_us, nullptr,
+				audio_enter_reset_critical,
+				audio_exit_reset_critical, nullptr) == AIUS_OK;
+		if (!g_audio_service_ready)
+			g_create_status = AIUS_INVALID_ARG;
+	}
 }
 
 FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg)
@@ -2218,13 +2263,118 @@ static FLASHMEM bool http_net_diag_generation(char *output, size_t capacity,
  * `fault_phase` is the load-bearing one: a terminal FAILED has already moved
  * `phase` on to the cleanup arm, so without the latched copy an open failure and
  * a read failure are indistinguishable after the fact. */
+/* AUDIO checkpoint diagnostics. Producer-owned ingress fields are copied under
+ * the same brief mask used by the legacy overrun projection; service, pipeline
+ * and epoch counters are main-thread-owned. */
+static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
+	                                      size_t *length)
+{
+	AiusAudioIngressDiag ingress;
+	AiusAudioServiceDiag service;
+	AiusPipelineServiceDiag pipeline;
+
+	memset(&ingress, 0, sizeof(ingress));
+	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+	aius_audio_ingress_get_diag(&g_audio_ingress, &ingress);
+	NVIC_ENABLE_IRQ(IRQ_SOFTWARE);
+	aius_audio_service_get_diag(
+		g_audio_service_ready ? &g_audio_service : nullptr, &service);
+	aius_pipeline_get_service_diag(
+		g_audio_processor.create_status() == AIUS_OK
+			? g_audio_service.pipeline
+			: nullptr,
+		&pipeline);
+
+	return http_json_append(
+		output, capacity, length,
+		",\"audio_diag\":{"
+		"\"ingress_level_words\":%lu,"
+		"\"ingress_high_water_words\":%lu,"
+		"\"ingress_generation\":%lu,"
+		"\"ingress_dropped_chunks\":%lu,"
+		"\"ingress_dropped_words\":%lu,"
+		"\"ingress_drop_overflow\":%lu,"
+		"\"ingress_drop_missing_live\":%lu,"
+		"\"ingress_drop_short_replay\":%lu,"
+		"\"source_changes\":%lu,"
+		"\"source_flushes\":%lu,"
+		"\"source_flush_words\":%lu,"
+		"\"gap_flushes\":%lu,"
+		"\"gap_flush_words\":%lu,"
+		"\"checkpoint_calls\":%lu,"
+		"\"input_words_consumed\":%lu,"
+		"\"service_steps_attempted\":%lu,"
+		"\"service_steps_committed\":%lu,"
+		"\"service_generation_resets\":%lu,"
+		"\"service_requested_resets\":%lu,"
+		"\"service_max_us\":%lu,"
+		"\"service_max_cycles\":%lu,"
+		"\"service_budget_overruns\":%lu,"
+		"\"service_last_failure\":%d,"
+		"\"transmit_stops\":%lu,"
+		"\"decode_units\":%lu,"
+		"\"sink_attempts\":%lu,"
+		"\"committed_output_blocks\":%lu,"
+		"\"transmit_stalls\":%lu,"
+		"\"retained_retries\":%lu,"
+		"\"parse_rejects\":%lu,"
+		"\"decode_rejects\":%lu,"
+		"\"output_drops\":%lu,"
+		"\"au_abandons\":%lu,"
+		"\"pipeline_last_failure\":%d,"
+		"\"tx_level_frames\":%lu,"
+		"\"tx_high_water_frames\":%lu,"
+		"\"runtime_epoch_max_us\":%lu,"
+		"\"runtime_epoch_budget_overruns\":%lu}",
+		(unsigned long)ingress.level_words,
+		(unsigned long)ingress.high_water_words,
+		(unsigned long)ingress.generation,
+		(unsigned long)ingress.dropped_chunks,
+		(unsigned long)ingress.dropped_words,
+		(unsigned long)ingress.dropped_by_cause[
+			AIUS_AUDIO_INGRESS_GAP_OVERFLOW],
+		(unsigned long)ingress.dropped_by_cause[
+			AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE],
+		(unsigned long)ingress.dropped_by_cause[
+			AIUS_AUDIO_INGRESS_GAP_SHORT_REPLAY],
+		(unsigned long)ingress.source_changes,
+		(unsigned long)ingress.source_flushes,
+		(unsigned long)ingress.source_flush_words,
+		(unsigned long)ingress.gap_flushes,
+		(unsigned long)ingress.gap_flush_words,
+		(unsigned long)service.checkpoint_calls,
+		(unsigned long)service.input_words_consumed,
+		(unsigned long)service.service_steps_attempted,
+		(unsigned long)service.service_steps_committed,
+		(unsigned long)service.generation_resets,
+		(unsigned long)service.requested_resets,
+		(unsigned long)service.max_service_us,
+		(unsigned long)g_audio_checkpoint_max_cycles,
+		(unsigned long)service.budget_overruns,
+		(int)service.last_failure,
+		(unsigned long)service.transmit_stops,
+		(unsigned long)pipeline.decode_units,
+		(unsigned long)pipeline.sink_attempts,
+		(unsigned long)pipeline.committed_blocks,
+		(unsigned long)pipeline.transmit_stalls,
+		(unsigned long)pipeline.retained_retries,
+		(unsigned long)pipeline.parse_rejects,
+		(unsigned long)pipeline.decode_rejects,
+		(unsigned long)pipeline.output_drops,
+		(unsigned long)pipeline.au_abandons,
+		(int)pipeline.last_failure,
+		(unsigned long)aius_spdif_tx24_level(&g_aius_spdif_tx24),
+		(unsigned long)g_tx_high_water_frames,
+		(unsigned long)g_runtime_epoch_max_us,
+		(unsigned long)g_runtime_epoch_budget_overruns);
+}
+
 /* The pipeline's own record -- the classifier's verdict and the decode path's
- * swallowed faults. dts_feed() deliberately skips a faulted burst and keeps
+ * swallowed faults. Deferred service skips a faulted burst and keeps
  * streaming (a decode error must not gap the wire), which left defect 29's
  * silent decoder invisible from every surface: state 4, zero output, and
- * `last_status` trapped in RAM. Copied under a brief interrupt mask because
- * the audio ISR is the writer; `metrics_valid` is 0 only when the pipeline
- * never constructed (create_status carries why). */
+ * `last_status` trapped in RAM. AUDIO and HTTP are serial epoch work;
+ * `metrics_valid` is 0 only when the pipeline never constructed. */
 static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                                         size_t *length)
 {
@@ -2538,6 +2688,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	 * job streams in one `last_failure` would make the next fault as hard to
 	 * attribute as this one was. */
 	if (!http_replay_diag_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_audio_diag_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
 		return 0;
@@ -2965,9 +3117,10 @@ static FLASHMEM AiusOpticalAppReplayResult app_replay_start(void *,
 	replay_job_cancel();
 	if (aius_replay_service_start(&g_replay_service, id, loop) != AIUS_OK)
 		return AIUS_OPTICAL_APP_REPLAY_FAILED;
-	/* The item 3 prerequisite fix: every replay classifies its own stream.
-	 * Consumed by update() in audio context before the first words land. */
-	g_pipeline_reset_pending = true;
+	/* Every replay classifies its own stream. AUDIO consumes the request in
+	 * epoch context; the later effective-source transition is independently
+	 * generation-tagged by update(). */
+	request_audio_reset();
 	g_replay_stop_reason = REPLAY_STOP_NONE;
 	return AIUS_OPTICAL_APP_REPLAY_OK;
 }
@@ -3019,11 +3172,11 @@ static FLASHMEM void app_set_test_running(void *, bool running)
 static FLASHMEM void app_clear_counters(void *)
 {
 	g_audio_processor.clear_counters();
-	/* Clearing zeroes g_overruns, the baseline the capture's arm-time latch
+	/* Clearing zeroes the ingress-drop projection used by the capture latch
 	 * compares against by EQUALITY -- a clear during a live capture could
 	 * therefore mask a real overrun's 512-frame seam (latched 0, one overrun,
 	 * then the clear restores 0). Retire the capture instead: the epoch stall
-	 * watch or the ISR's next block completes the cancel, and GET /api/measure
+	 * watch or AUDIO's next producer block completes the cancel, and GET /api/measure
 	 * says why. A no-op in every non-live state. */
 	(void)aius_measure_cancel(&g_measure_capture);
 }
@@ -3454,7 +3607,7 @@ static FLASHMEM bool platform_reset_capture(void *,
 /*                                                                     */
 /* The portable machine owns every transition (aius_measure.h); this   */
 /* glue owns WHEN the epoch-side ones fire: the stall watch that       */
-/* cancels a capture the ISR provably is not feeding, the sliced       */
+/* cancels a capture the AUDIO producer provably is not feeding, the   */
 /* analysis pass over a captured buffer, and the parameters a start    */
 /* request supplies. All of it runs at the METRICS checkpoint inside   */
 /* its declared 1 ms budget; the overrun counter beside it is the      */
@@ -3491,8 +3644,8 @@ static MeasureSession g_measure_session;
  * /api/measure/start and POST /api/replays/start (arm-then-start is the
  * natural order; replay start includes an SD prebuffer); CAPTURING only ever
  * stalls when the replay stopped underneath the capture; CANCELLING is the
- * reclaim bound -- blocks unchanged this long after the token means the ISR
- * is provably not running (the one case the epoch may reclaim). */
+ * reclaim bound -- blocks unchanged this long after the token means the AUDIO
+ * producer is provably not running (the one case the epoch may reclaim). */
 static constexpr uint32_t MEASURE_ARM_STALL_MS = 10000u;
 static constexpr uint32_t MEASURE_CAPTURE_STALL_MS = 2000u;
 static constexpr uint32_t MEASURE_RECLAIM_MS = 1000u;
@@ -3516,8 +3669,8 @@ static FLASHMEM bool measure_start(const char *vector_id, double f0_l_hz,
 		return false;
 	/* Refuse a live capture FIRST: mid-analysis the accumulators below are in
 	 * use, and an init would corrupt the in-flight pass before the refusal.
-	 * The remaining states cannot move under this function -- the ISR acts
-	 * only in armed/capturing/cancelling, and this runs on the epoch side. */
+	 * The remaining states cannot move under this function -- the AUDIO
+	 * producer acts only in armed/capturing/cancelling. */
 	const uint32_t state = g_measure_capture.state;
 	if (state != AIUS_MEASURE_IDLE && state != AIUS_MEASURE_DONE &&
 	    state != AIUS_MEASURE_FAILED)
@@ -3566,7 +3719,7 @@ static FLASHMEM void measure_epoch_service(uint32_t now_ms)
 	case AIUS_MEASURE_CAPTURING:
 	case AIUS_MEASURE_CANCELLING: {
 		/* The stall watch. Only the epoch side can time out a capture the
-		 * ISR is not feeding -- with no replay running enqueue() never
+		 * AUDIO producer is not feeding -- with no replay running enqueue() never
 		 * executes (the race the one-writer machine exists to close). */
 		const uint32_t blocks = g_audio_processor.block_count();
 		if (blocks != s.watch_blocks) {
@@ -4679,7 +4832,7 @@ FLASHMEM void AiusSpdifOutputClock::set_master(bool master)
  * every one of them; five call sites would not, and each would be a chance to
  * leave the clock behind. It also keeps pllLocked() out of the audio ISR: this
  * runs once per epoch in thread context, and the ITCM guard's audio-block set
- * stays exactly three sections. */
+ * stays limited to the ingress producer sections. */
 static FLASHMEM void replay_clock_service(void)
 {
 	/* A carrier displaces any replay that is prebuffering or playing. The
@@ -4766,7 +4919,7 @@ static FLASHMEM void tx_gate_service(void)
 			g_carrier_unlocked_epochs++;
 	} else {
 		if (g_carrier_unlocked_epochs >= AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS)
-			g_pipeline_reset_pending = true;
+			request_audio_reset();
 		g_carrier_unlocked_epochs = 0;
 	}
 	const AiusReplaySource source = g_replay_service.source;
@@ -4829,14 +4982,26 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	return true;
 }
 
-/* Temporary Slice 2b2 bridge. Slice 2b3 replaces this no-work callback with
- * the portable audio-service drain when the ISR cutover lands. */
 static FLASHMEM bool platform_audio(void *, const AiusRuntimeBudget *budget,
                                     uint32_t now_ms)
 {
 	(void)now_ms;
-	return budget != nullptr &&
-	       budget->checkpoint == AIUS_BOOT_CHECKPOINT_AUDIO;
+	if (budget == nullptr ||
+	    budget->checkpoint != AIUS_BOOT_CHECKPOINT_AUDIO ||
+	    budget->max_calls != 1u || budget->max_rx_bytes != 0u ||
+	    budget->max_tx_bytes != 0u ||
+	    budget->service_budget_ms * 1000u !=
+		    AIUS_AUDIO_SERVICE_BUDGET_US ||
+	    !g_audio_service_ready)
+		return false;
+
+	const uint32_t cycles_started = ARM_DWT_CYCCNT;
+	const AiusStatus status =
+		aius_audio_service_run(&g_audio_service, g_audio_reset_sequence);
+	const uint32_t cycles = ARM_DWT_CYCCNT - cycles_started;
+	if (cycles > g_audio_checkpoint_max_cycles)
+		g_audio_checkpoint_max_cycles = cycles;
+	return status == AIUS_OK;
 }
 
 /* The last checkpoint is persisted before each service call, through the boot
@@ -4991,6 +5156,15 @@ FLASHMEM void setup(void)
 	(void)aius_boot_teensy_watchdog_arm(&g_boot_primitives);
 	probe_second_pad_psram();
 
+	/* Initialise both ISR-visible handoffs before AudioMemory can let the audio
+	 * graph run. DMAMEM is NOLOAD and cannot be trusted before these calls.
+	 * The replay job diagnostics share that bank and require an explicit clear. */
+	memset(&g_replay_diag, 0, sizeof(g_replay_diag));
+	aius_replay_service_init(&g_replay_service);
+	g_audio_ingress_ready =
+		aius_audio_ingress_init(
+			&g_audio_ingress, g_audio_ingress_words,
+			AIUS_AUDIO_INGRESS_CAPACITY_WORDS) == AIUS_OK;
 	AudioMemory(24);
 	g_audio_processor.begin_pipeline();
 
@@ -5011,7 +5185,6 @@ FLASHMEM void setup(void)
 	 * and writes Serial directly and uses the same DTR bool as its connected
 	 * predicate (aius_cdc_teensy.cpp serial_connected). */
 	derive_auth_token();
-	aius_replay_service_init(&g_replay_service);
 	/* Memory only, like every other construction here: the refill job's
 	 * transfer slice is registered now so checkpoint 7 can start a job
 	 * without allocating or touching the card. */
@@ -5070,10 +5243,8 @@ FLASHMEM void setup(void)
 /*                                                                     */
 /*  - Epoch-loop context only. loop() calls this once per pass, after  */
 /*    the epoch that may have advanced the counters. Nothing here runs */
-/*    in the audio ISR, and nothing new is exposed to it: the one      */
-/*    value the ISR owns (g_overruns) is read through the processor's  */
-/*    existing critical-section accessor, exactly as put_status() has  */
-/*    always read it.                                                  */
+/*    in the audio ISR. The ingress drop projection is read through    */
+/*    the processor's brief critical-section accessor.                 */
 /*                                                                     */
 /*  - One comparison per counter per epoch, against a scalar static.   */
 /*    Seven uint32_t of .bss, no bank, no array, no queue, no          */
@@ -5084,8 +5255,8 @@ FLASHMEM void setup(void)
 /*  - At most one event per counter per epoch, carrying the delta      */
 /*    rather than one event per increment, so no burst can outrun the  */
 /*    eight-entry ring. Two counters really can advance many times     */
-/*    between two passes: g_overruns, written by the audio ISR once    */
-/*    per refused block and so unbounded against an epoch that stalls, */
+/*    between two passes: ingress drops, written by the audio ISR once */
+/*    per missing chunk and unbounded against an epoch that stalls,    */
 /*    and g_config_error_count, which has one HTTP producer and two SD */
 /*    ones. The remaining five are bounded to +1 by their producers    */
 /*    (one datagram received per epoch, one budget check per epoch,    */
@@ -5126,7 +5297,8 @@ static uint32_t g_prev_watchdog_early_resets;
  * clamped to the ring's 16-bit detail field, or 0 for "nothing to report".
  *
  * The static is resynchronised on every call, including a decrease: POST
- * /api/counters clears g_overruns, and a clear must cost one missed edge rather
+ * /api/counters clears the ingress-drop interval, and a clear must cost one
+ * missed edge rather
  * than a permanent four-billion delta on the next real one. */
 static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)
 {
@@ -5296,7 +5468,15 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
 FLASHMEM void loop(void)
 {
 	const uint32_t now_ms = millis();
+	const uint32_t epoch_started_us = micros();
 	const bool completed = aius_runtime_teensy_epoch(&g_runtime, now_ms);
+	const uint32_t epoch_us = micros() - epoch_started_us;
+	if (completed && !g_runtime.recovery_safe) {
+		if (epoch_us > g_runtime_epoch_max_us)
+			g_runtime_epoch_max_us = epoch_us;
+		if (epoch_us > AIUS_RUNTIME_EPOCH_BUDGET_US)
+			g_runtime_epoch_budget_overruns++;
+	}
 
 	/* After the epoch, and unconditionally: an epoch that aborted before
 	 * EPOCH_COMPLETE is exactly the case whose counters explain the abort. */

@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-07-28
+updated: 2026-07-29
 toc: true
 ---
 
@@ -1341,8 +1341,10 @@ are follow-up work, recorded here so they are not lost.
     jobs do not depend on channel identity, and regenerating them would
     invalidate the committed dcadec reference PCM.
 
-31. **Sustained live DTS decode dies by watchdog within minutes — the
-    ISR-hang shape, not the epoch-abort shape.** Found 2026-07-28
+31. ~~**Sustained live DTS decode dies by watchdog within minutes — the
+    ISR-hang shape, not the epoch-abort shape.**~~ **FIXED 2026-07-29 by
+    moving decode/DSP/TX work out of the audio ISR and into the bounded AUDIO
+    checkpoint.** Found 2026-07-28
     within the hour of defect 29's fix: after ~10 minutes of live
     decode (including two recorder capture drains and HTTP load), the
     board took a WDOG reset (`rsrc=16`, `bgen` +1) and the retained
@@ -1377,6 +1379,20 @@ are follow-up work, recorded here so they are not lost.
     [`aius-ac3-support.md`](aius-ac3-support.md) phase 2 — is the fix
     path. The oracle stays in the suite, so a parser regression that
     CAN hang shows up named rather than as a hung run.
+
+    **Closure evidence:** a tagged clock-isolation image ran 1,857 seconds of
+    continuous live DTS across 1,831 status polls under recorder and
+    measurement/HTTP load; cumulative status reached 184,448 committed blocks.
+    AUDIO max was 2.401 ms, the normal epoch max was 3.036 ms, ingress
+    high-water was 442 words, TX high-water was 640 frames, and ingress
+    drops/resets, output drops, AU abandons,
+    stalls/retries, boot-generation changes and watchdog resets were all zero.
+    Thirty-one measurements started; state-machine evidence proves at least
+    thirty completed. Recorder generation 52 retained 45,568 frames after its
+    final thaw with zero gaps. A corrected aligned-EOF preflight closed the
+    harness bookkeeping edge, and adversarial review accepted the composite
+    proof without a redundant second soak. Defect 35 retains the distinct
+    unaligned abrupt-source-loss spike.
 
 32. ~~**Every DSP stage hard-clipped its own output, so an input-EQ boost
     on hot material distorted before the headroom pad or limiter could
@@ -1522,6 +1538,32 @@ are follow-up work, recorded here so they are not lost.
     window and refuse to leave the dark state, which costs nothing for real
     PCM but only covers streams whose window catches a preamble. Tracked in
     [`aius-ac3-support.md`](aius-ac3-support.md) §Phase 3 contract.
+
+35. **An abrupt DTS source stop can turn one cut burst into a 120 ms AUDIO
+    service and overflow ingress before the format transition recovers.**
+    Reproduced 2026-07-29 by terminating the gate's ALSA producer after twenty
+    clean measured seconds. The cut was followed by one 120.438 ms AUDIO
+    service / 120.567 ms epoch, 14 ingress overflow chunks (3,584 words), one
+    service generation reset, a recorder underrun and one disconnected HTTP
+    client. The board did not reboot, then recovered as PCM 55 ms after the
+    overflow event.
+
+    This is specifically an unaligned source-loss transition, not sustained DTS
+    load or a file boundary. The same 2,813-burst, 30.005-second source allowed
+    to reach natural EOF changed DTS to PCM cleanly: 202 status samples plus ten
+    seconds after EOF showed no new service/epoch maximum or budget overrun,
+    ingress drop/generation/high-water change, output drop, AU abandon,
+    stall/retry, HTTP fault or boot/watchdog change. A new native seam case also
+    zero-fills every cut position to the AU's declared length; all 38,835
+    seam-shaped feeds terminate and the slowest complete fuzz decode remains
+    below 2 ms on the host. Pure zero padding is therefore insufficient to
+    reproduce the target spike.
+
+    Keep the steady-state defect-31 gate aligned and let its owned source reach
+    natural EOF. The open repair is to capture the exact transition AU, add
+    target-side decode/sink substep timing, then make source discontinuity drop
+    partial compressed work before any unbounded decode. Do not hide the defect
+    by accepting arbitrary producer termination as a clean drain.
 
 #### Decisions taken, so they are not re-opened
 

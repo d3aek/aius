@@ -86,7 +86,7 @@ static void feed_blocks(AiusMeasureCapture *c, uint32_t blocks,
             l[i] = seed + (int32_t)(b * BLOCK + i);
             r[i] = -(seed + (int32_t)(b * BLOCK + i));
         }
-        aius_measure_isr_block(c, l, r, BLOCK, gen, ovr);
+        aius_measure_producer_block(c, l, r, BLOCK, gen, ovr);
     }
 }
 
@@ -108,14 +108,14 @@ static void test_capture_happy_path(void)
     assert(cap_l[0] == 1000 && cap_r[0] == -1000);
     assert(cap_l[CAP - 1] == 1000 + (int32_t)(3 * BLOCK) - 1);
 
-    /* A stale block after the ISR's terminal is a no-op. */
+    /* A stale block after the producer terminal is a no-op. */
     feed_blocks(&c, 1, 7, 3, 9);
     assert(c.state == AIUS_MEASURE_CAPTURED && c.cursor == CAP);
     assert(cap_l[0] == 1000);
 
     assert(aius_measure_begin_analysis(&c) == AIUS_OK);
     assert(c.state == AIUS_MEASURE_ANALYSING);
-    /* The ISR ignores analysing too: the frozen buffer stays frozen. */
+    /* The producer ignores analysing too: the frozen buffer stays frozen. */
     feed_blocks(&c, 1, 7, 3, 9);
     assert(cap_l[0] == 1000);
     assert(aius_measure_finish_analysis(&c) == AIUS_OK);
@@ -136,7 +136,7 @@ static void test_capture_wrong_state_calls(void)
     assert(aius_measure_begin_analysis(&c) == AIUS_INVALID_ARG);
     assert(aius_measure_finish_analysis(&c) == AIUS_INVALID_ARG);
     assert(aius_measure_release(&c) == AIUS_INVALID_ARG);
-    feed_blocks(&c, 1, 0, 0, 5); /* ISR in idle: no-op */
+    feed_blocks(&c, 1, 0, 0, 5); /* producer in idle: no-op */
     assert(c.state == AIUS_MEASURE_IDLE && c.cursor == 0);
 
     /* Double-arm refused; arm latches its parameters. */
@@ -184,7 +184,7 @@ static void test_capture_latch_failures(void)
 
 static void test_capture_cancel_isr_ack(void)
 {
-    /* Cancel from armed, ISR acknowledges. */
+    /* Cancel from armed, producer acknowledges. */
     AiusMeasureCapture c = fresh_armed(1, 1);
     assert(aius_measure_cancel(&c) == AIUS_OK);
     assert(c.state == AIUS_MEASURE_CANCELLING);
@@ -202,27 +202,26 @@ static void test_capture_cancel_isr_ack(void)
     assert(c.state == AIUS_MEASURE_FAILED);
     assert(c.fail_reason == AIUS_MEASURE_FAIL_CANCELLED);
     assert(c.cursor == BLOCK);
-    printf("ok cancel: ISR acknowledges the token at its next block\n");
+    printf("ok cancel: producer acknowledges the token at its next block\n");
 }
 
 static void test_capture_cancel_dual_terminal(void)
 {
-    /* Interleaving 1 -- the ISR's acknowledgement preempts between the
+    /* Interleaving 1 -- the producer acknowledgement lands between the
      * epoch's observation of `cancelling` and its reclaim store: reclaim
      * arrives on an already-failed capture, same terminal state, first
      * reason kept, AIUS_OK. */
     AiusMeasureCapture c = fresh_armed(1, 1);
     assert(aius_measure_cancel(&c) == AIUS_OK);
     assert(c.state == AIUS_MEASURE_CANCELLING); /* the epoch's check ... */
-    feed_blocks(&c, 1, 1, 1, 0);                /* ... the ISR preempts ... */
+    feed_blocks(&c, 1, 1, 1, 0);                /* ... producer runs ... */
     assert(c.state == AIUS_MEASURE_FAILED);
     assert(aius_measure_reclaim(&c) == AIUS_OK); /* ... the epoch's store */
     assert(c.state == AIUS_MEASURE_FAILED);
     assert(c.fail_reason == AIUS_MEASURE_FAIL_CANCELLED);
 
-    /* Interleaving 2 -- the epoch reclaims first (the ISR provably not
-     * running), and a stale ISR block lands afterwards: ignored, because the
-     * ISR does not act in failed. */
+    /* Interleaving 2 -- the controller reclaims first after a producer stall,
+     * and a stale producer block lands afterwards: ignored in failed. */
     c = fresh_armed(1, 1);
     assert(aius_measure_cancel(&c) == AIUS_OK);
     assert(aius_measure_reclaim(&c) == AIUS_OK);
@@ -454,7 +453,7 @@ static void test_end_to_end_stereo_capture(void)
                                      AIUS_MEASURE_CAPTURE_FRAMES) == AIUS_OK);
     assert(aius_measure_arm(&c, 12, 0) == AIUS_OK);
     for (uint32_t off = 0; off < AIUS_MEASURE_CAPTURE_FRAMES; off += BLOCK)
-        aius_measure_isr_block(&c, src_l + off, src_r + off, BLOCK, 12, 0);
+        aius_measure_producer_block(&c, src_l + off, src_r + off, BLOCK, 12, 0);
     assert(c.state == AIUS_MEASURE_CAPTURED);
 
     assert(aius_measure_begin_analysis(&c) == AIUS_OK);

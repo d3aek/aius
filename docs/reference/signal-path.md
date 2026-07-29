@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, dsp, signal-path, dither, limiter]
-updated: 2026-07-28
+updated: 2026-07-29
 toc: true
 ---
 
@@ -28,15 +28,16 @@ ships the change.**
 
 **Every claim carries a `path:line` citation, and every number says where it came
 from.** Firmware paths are relative to `firmware/` unless the path
-says otherwise. Line numbers are correct as of repository revision `a847df560c08`; the
-cited symbol name is the durable handle.
+says otherwise. Line numbers are correct as of this revision; the cited symbol name
+is the durable handle.
 
 **Numbers come from one of three places, and the text always says which:**
 
 - **From the linked image** — read out of
-  `.pio/build/teensy41-optical/firmware.elf` (built from the working tree at
-  `a847df560c08`) with `tools/memory/mem_report.py --elf` and `arm-none-eabi-nm -S`.
-  Function and object sizes in this document are that, not estimates.
+  `.pio/build/teensy41-optical/firmware.elf`. The historical tables name their
+  revision; the current Slice 2b3 placement figures name their 2026-07-29 target
+  link. `tools/memory/mem_report.py --elf` and the post-link verifiers are the
+  authorities, not prose copied from an earlier image.
 - **From the device** — the DWT cycle counters the audio path publishes through
   `GET /api/meters`, recorded in the roadmap against build revision `f76baa87c67d`,
   and the loopback quality figures in
@@ -60,18 +61,19 @@ first. `optical_main.cpp:637` carries the same distinction beside the code.
 
 - **128 frames — the engine block.** `AUDIO_BLOCK_SAMPLES`, the Teensy core default,
   which this build does not override. It sizes both DMA buffers, the `audio_block_t`
-  pool, `update()`'s word staging and the transmit interrupt's drain of the 24-bit
+  pool, the exact ingress chunk and the transmit interrupt's drain of the 24-bit
   ring. `AiusAudioProcessor::update()` therefore runs 48000/128 = **375 times a
-  second** (`src/optical_main.cpp:767`) and moves 256 IEC words = 512 bytes each time,
-  which is the 192,000 B/s the replay ring is sized for
+  second** (`src/optical_main.cpp:998`) and publishes 256 IEC words = 512 bytes each
+  time, which is the 192,000 B/s the replay ring is sized for
   (`lib/aius_replay/include/aius_replay.h:44`).
 - **512 frames — the decoded block, and the one the budget belongs to.** A DTS Core
   access unit with `npcmblocks = 16` reconstructs to 16 × 32 = 512 samples per channel
   (`vendor/dcadec-core/core_decoder.c:962`), and PCM passthrough stages the same 512
   (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`, `lib/aius_pipeline/include/aius_pipeline.h:45`).
-  So `enqueue()` runs once per four `update()`s, at 48000/512 = **93.75 blocks per
-  second**, and this is what the `blocks` counter counts and what the DWT bracket
-  measures (`src/optical_main.cpp:868`).
+  On a continuous stream the AUDIO service therefore reaches `enqueue()` once per
+  four published chunks, at 48000/512 = **93.75 blocks per second**. This is what the
+  `blocks` counter counts and what the DWT bracket measures
+  (`src/optical_main.cpp:1126`).
 - **`queue_frames` in the meters — neither of the above.** It is
   `aius_spdif_tx24_level()`, the transmit ring's occupancy at the publish instant
   (`src/optical_main.cpp:974`), which sits near 512 because one decode fills the ring
@@ -93,8 +95,10 @@ flowchart TD
     OPT["Optical TOSLINK in<br/>CORE_PIN15 / SPDIF_IN"]
     RX["AudioInputSPDIF3 receive DMA ISR<br/>spdif_rx_buffer, 2048 B OCRAM"]
     BLK["audio_block_t pair, int16<br/>AudioMemory(24) pool, OCRAM"]
-    UPD["AiusAudioProcessor::update<br/>375/s, 128 frames"]
+    UPD["AiusAudioProcessor::update<br/>375/s, ingress publish only"]
     RPL["Replay word ring<br/>aius_replay_service_pop_words"]
+    ING["Audio ingress SPSC<br/>8192 words / 16 KiB OCRAM"]
+    AUD["Runtime AUDIO checkpoint 9<br/>reset/flush + bounded drain/service"]
     CLS{"aius_pipeline_classify<br/>Pa/Pb preamble in 512 words?"}
     IEC["IEC 61937 de-frame<br/>aius_iec61937_push"]
     DTS["DTS Core decode<br/>aius_dts_decode_access_unit<br/>24-bit planar, up to 6 planes"]
@@ -111,9 +115,9 @@ flowchart TD
     WIRE["SPDIF_STL / SPDIF_STR<br/>CORE_PIN14, 24-bit, 48 kHz"]
     MET["AiusMeter taps<br/>accumulate + publish at 20 Hz<br/>never alters audio"]
 
-    OPT --> RX --> BLK --> UPD
+    OPT --> RX --> BLK --> UPD --> ING --> AUD
     RPL -.->|"replay selected"| UPD
-    UPD --> CLS
+    AUD --> CLS
     CLS -->|DTS| IEC --> DTS --> ENQ
     CLS -->|PCM| PCM --> ENQ
     ENQ --> IN --> DMX --> OEQ --> LIM --> OUT --> RING
@@ -133,10 +137,11 @@ the hardware does not carry, and the wire is the last stage the firmware owns.
 | # | Stage | Implementation | Arithmetic | Buffers, bank |
 |---|---|---|---|---|
 | 1 | Optical receive | `AudioInputSPDIF3::isr` | int32 subframe → int16 | `spdif_rx_buffer` 2,048 B OCRAM |
-| 2 | Engine block pass | `AiusAudioProcessor::update` | int16 → uint16 words | `words[256]` 512 B DTCM stack |
+| 2a | Engine ingress publish | `AiusAudioProcessor::update` | int16 → uint16 words | direct to `g_audio_ingress_words`, 16,384 B OCRAM |
+| 2b | Deferred audio service | `aius_audio_service_run` | integer control | bounded AUDIO checkpoint, cold service object |
 | 3 | Classify | `aius_pipeline_classify` | integer compare | `clsbuf[512]` 1,024 B, DTCM arena |
-| 4a | IEC 61937 de-frame | `aius_iec61937_push` | integer | 4,096 B payload, OCRAM heap |
-| 4b | DTS Core decode | `aius_dts_decode_access_unit` | fixed point → int32 | dcadec `ta` tree, OCRAM heap |
+| 4a | IEC 61937 de-frame | `aius_iec61937_push` | integer | 4,096 B payload, DTCM arena |
+| 4b | DTS Core decode | `aius_dts_decode_access_unit` | fixed point → int32 | dcadec `ta` tree, DTCM arena |
 | 4c | PCM passthrough | `pcm_feed` | int16 → int32, left-aligned onto 24-bit | `pcm_l`/`pcm_r` 4,096 B, DTCM arena |
 | 5 | Input trim + EQ | `aius_dsp_input_run` → `run_cascade` | int32 → double → int32 | `g_input_scratch` 12,288 B DTCM |
 | 6 | Downmix matrix | `aius_dsp_downmix` | int32 → double → int32 | writes caller planes |
@@ -172,20 +177,29 @@ The pool is `AudioMemory(24)` — 24 blocks of 260 B, 6,240 B in `DMAMEM`
 (`src/optical_main.cpp:3638`, `cores/teensy4/AudioStream.h:110`). Two blocks are taken
 and released per engine block pass.
 
-### Stage 2 — the engine block pass
+### Stage 2 — ingress publish and deferred AUDIO service
 
-`AiusAudioProcessor::update()` (`src/optical_main.cpp:767`, **192 B of ITCM**, measured)
-interleaves the two `int16` planes back into a `uint16_t words[256]` stack array (512 B,
-DTCM stack) and pushes them into the portable pipeline. It emits nothing: since the
-24-bit output path landed there is no `emit_block()`, no pool allocation on the
-transmit side, and no `AudioConnection` into `g_spdif_out` (`src/optical_main.cpp:1096`).
+`AiusAudioProcessor::update()` (`src/optical_main.cpp:998`, **280 B of ITCM** in the
+2026-07-29 target link) reserves one exact 256-word ingress slot and interleaves the
+two `int16` planes directly into it. There is no intermediate stack array and no
+classify, decode, DSP, meter, recorder or transmit-ring production in the software
+audio ISR. It releases the two pool blocks after either committing the slot or
+recording a bounded gap.
 
 **The replay source substitutes for the optical one at this stage, not later.** When
 `g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY`, `update()` pops 256 words from
-the replay word ring instead of reading the input blocks
-(`src/optical_main.cpp:771`), so a replay traverses the identical pipeline, DSP chain
-and output stage as a live carrier. A short pop counts an overrun rather than emitting
-a partial block.
+the replay word ring directly into a reserved slot instead of reading the input
+blocks (`src/optical_main.cpp:1003`). A short pop cancels the slot and records a short
+replay gap; a full ingress discards the matching 256-word replay slice so timeline
+does not pause behind backpressure.
+
+At runtime AUDIO checkpoint 9, `aius_audio_service_run()` first applies any monotonic
+reset or ingress-generation discontinuity, then drains at most 4,096 input words and
+performs at most eight pipeline output steps inside the declared 8 ms allowance
+(`lib/aius_audio_service/src/aius_audio_service.c:85`). Classification, decode,
+`enqueue()`, DSP, meter publication, transmit commit, measurement capture and recorder
+production all belong to this thread-context service. The transmit DMA ISR consumes
+the committed ring independently.
 
 ### Stage 3 — classification
 
@@ -406,7 +420,8 @@ samples — 5 ms at 48 kHz — so the process path never allocates
 sample count is always derived from the `fs` passed in, so nothing here assumes a rate.
 The interpolation history is **persistent state, not stack**: the detector needs only
 the maximum, never the interpolated values, so it materialises no oversampled buffer and
-the function's stack frame is flat — which matters because this runs in the audio ISR
+the function's stack frame is flat — which matters because this runs in the bounded
+AUDIO checkpoint
 (`lib/aius_dsp/include/aius_dsp.h:396`).
 
 **Latency added: 2 ms, or 96 samples at 48 kHz** (*derived*). Output frame count equals
@@ -481,8 +496,10 @@ so one window always covers the same set of blocks on both sides
 per `g_meter_window_frames` — `rate / AIUS_METER_PUBLISH_HZ`, so 2,400 frames at 20 Hz
 (`src/optical_main.cpp:427`, `:1065`). Measured ITCM cost of the taps:
 `aius_meter_accumulate_input` 168 B, `accumulate_output` 212 B, `decimate` 254 B,
-`publish` 344 B, `set_telemetry` 18 B, `set_limiter_gr` 8 B. `g_meter` is **1,384 B in
-OCRAM** (measured). Two design points worth carrying:
+`publish` 344 B, `set_telemetry` 18 B, `set_limiter_gr` 8 B. Those function sizes are
+pre-cutover measurements; `g_meter` is **9,584 B in OCRAM** in the 2026-07-29 link
+because its coherent snapshot now includes the 1,024-sample analysis window. Two
+design points worth carrying:
 
 - **The gain-reduction accessor is sampled once per window, not per block**, because it
   takes a `log10` and a diagnostic field does not buy a libm call in the block callback
@@ -742,81 +759,82 @@ and is not restated.
 ## Memory by bank
 
 **Measured banks**, from `tools/memory/mem_report.py --elf` over
-`.pio/build/teensy41-optical/firmware.elf` built from the working tree at
-`a847df560c08`:
+`.pio/build/teensy41-optical/firmware.elf` built from the Slice 2b3 working tree on
+2026-07-29:
 
 ```text
 BANK           USED         FREE     CAPACITY    USED%   FREE%
-FLASH        581632      7544832      8126464    7.16%   92.8%
-ITCM         172492        24116       196608   87.73%   12.3%
-DTCM         302304        25376       327680   92.26%    7.7%
-FlexRAM      498912        25376       524288   95.16%    4.8%
-OCRAM        230784       293504       524288   44.02%   56.0%
+FLASH        407552      7718912      8126464    5.02%   95.0%
+ITCM         174844        21764       196608   88.93%   11.1%
+DTCM         280128        47552       327680   85.49%   14.5%
+FlexRAM      476736        47552       524288   90.93%    9.1%
+OCRAM        392832       131456       524288   74.93%   25.1%
 ```
 
-**DTCM free-for-locals was 25,376 bytes at that revision and is 43,328 now** — the
-LFE fold-in's banks re-measured it — `_estack 0x20050000 − _ebss 0x200456c0`. That is
-the entire budget for the stack, the main loop and the audio ISR both. **OCRAM has
-293,504 bytes free.** Those two figures are the constraint every placement decision
-in this chain answers to.
+**DTCM free-for-locals is 47,552 bytes and OCRAM free is 131,456 bytes in that
+link.** The former is the entire budget for every thread and interrupt stack. The
+post-link memory gate requires at least 131,424 B of OCRAM free, so the image clears
+the committed floor by 32 B (`test/memory/verify_target.py:18`).
 
-**The figure has moved four times, and every stale copy of it is still quoted
-somewhere**: 9,280 → 17,152 → 25,376 → **43,328**. So a bare number in prose is not
+**The figure has moved repeatedly, and stale copies remain historical evidence**:
+9,280 → 17,152 → 25,376 → 43,328 → **47,552**. So a bare number in prose is not
 usable evidence — [`firmware-io.md`](firmware-io.md)'s table reports 9,280 (correct at
-*its* revision, pre-`FNET_CFG_TLS=0`), this section reported 25,376, and five source
-comments still quote pre-fix values (network-hardening open defect 18). A TLS
-feasibility assessment initially read the three live figures as a contradiction; they
-are not, they are four snapshots of a number that tripled and then nearly doubled
-again. **Take it from `tools/memory/mem_report.py` against the linked ELF, which is
-the only source that cannot go stale**, and state the revision beside any number
-copied out of it.
+*its* revision, pre-`FNET_CFG_TLS=0`), and this section previously reported 25,376
+then 43,328. They are snapshots, not contradictions. **Take the current value from
+`tools/memory/mem_report.py` against the linked ELF**, and state the revision beside
+any number copied out of it.
 
 Every audio-path object, with its measured size and bank:
 
 | Object | Size | Bank | Citation |
 |---|---|---|---|
-| `AiusAudioProcessor::g_arena_memory` | 131,072 B | DTCM `.bss` | `optical_main.cpp:803` |
-| `g_audio_processor` | 15,968 B | DTCM `.bss` | `optical_main.cpp:1076` |
-| — of which `g_input_scratch[6][512]` | 12,288 B | DTCM | `optical_main.cpp:843` |
-| — of which `g_limiter` (*derived*) | ≈2,264 B | DTCM | `aius_dsp.h:418` |
-| — of which input EQ + state (*derived*) | 864 B | DTCM | `optical_main.cpp:840` |
+| `AiusAudioProcessor::g_arena_memory` | 131,072 B | DTCM `.bss` | `optical_main.cpp:1063` |
+| — of which DSP scratch, six input + two work planes | 32,768 B | DTCM arena | `optical_main.cpp:1084` |
+| — of which pipeline, parser and decoder state | remainder | DTCM arena | `optical_main.cpp:1336` |
+| `g_audio_processor` | 5,784 B | DTCM `.bss` | `optical_main.cpp:1550` |
+| — of which `g_limiter` (*derived*) | ≈2,264 B | DTCM | `aius_dsp.h`, `AiusLimiter` |
 | `k_truepeak` | 384 B | DTCM `.data` | `aius_dsp.c:422` |
-| `words[256]` in `update()` | 512 B | DTCM stack | `optical_main.cpp:773` |
-| `processed_left`/`_right` in `enqueue()` | 4,096 B | DTCM stack | `optical_main.cpp:887` |
+| `processed_left`/`_right` in `enqueue()` | 4,096 B | DTCM stack | `optical_main.cpp:1142` |
+| `g_audio_ingress_words` | 16,384 B | OCRAM `DMAMEM` | `optical_main.cpp:147` |
 | `g_aius_spdif_tx24` | 16,396 B | OCRAM `DMAMEM` | `aius_spdif_sources.cpp:30` |
-| `g_meter` | 1,384 B | OCRAM `DMAMEM` | `optical_main.cpp:416` |
-| `g_active_model` | 648 B | OCRAM `DMAMEM` | `optical_main.cpp:365` |
-| `g_pending_dsp_model` | 648 B | OCRAM `DMAMEM` | `optical_main.cpp:383` |
+| `g_meter` | 9,584 B | OCRAM `DMAMEM` | `optical_main.cpp:438` |
+| `g_measure_capture_l`/`_r` | 131,072 B | OCRAM `DMAMEM` | `optical_main.cpp:472` |
+| `g_active_model` | 656 B | OCRAM `DMAMEM` | `optical_main.cpp:395` |
+| `g_pending_dsp_model` | 656 B | OCRAM `DMAMEM` | `optical_main.cpp:413` |
 | `spdif_rx_buffer` | 2,048 B | OCRAM `DMAMEM` | `input_spdif3.cpp:37` |
 | `SPDIF_tx_buffer` | 2,048 B | OCRAM `DMAMEM` | `output_spdif3.cpp:44` |
-| `AudioMemory(24)` pool | 6,240 B | OCRAM `DMAMEM` | `optical_main.cpp:3638` |
-| IEC parser instance | ≈4.2 kB | OCRAM heap | `aius_iec61937.h:44` |
-| dcadec `ta` tree | not measured | OCRAM heap | see [stage 4b](#stage-4b--dts-core-decode) |
-| `AIUS_OPTICAL_CONFIG` | 648 B | FLASH `PROGMEM` | generated header |
+| `AudioMemory(24)` pool | 6,240 B | OCRAM `DMAMEM` | `optical_main.cpp:5166` |
+| recorder sample staging | 32,768 B | first fitted PSRAM | `optical_main.cpp:492` |
+| `g_recorder_staging_frames` | 32 B | DTCM `.bss` | `optical_main.cpp:504` |
+| `AIUS_OPTICAL_CONFIG` | 656 B | FLASH `PROGMEM` | generated header |
 
 Measured ITCM for the audio path, by function:
 
 | Function | ITCM | Note |
 |---|---|---|
-| `aius_dsp_downmix.part.0` | 1,254 B | largest in the DSP |
-| `aius_dsp_limiter_run.part.0` | 764 B | + `truepeak_push` 156 B |
-| `AiusAudioProcessor::enqueue` | 620 B | pinned hot section |
-| `aius_dsp_process` | 392 B | |
+| `aius_dsp_downmix.part.0` | 1,338 B | largest in the DSP |
+| `aius_dsp_limiter_run.part.0` | 828 B | + `truepeak_push` 156 B |
+| `aius_pipeline_ingest.part.0` | 590 B | AUDIO checkpoint |
+| `aius_pipeline_service_one` | 578 B | AUDIO checkpoint |
+| `aius_iec61937_push` | 580 B | AUDIO checkpoint |
+| `aius_dsp_process` | 540 B | AUDIO checkpoint |
+| `aius_recorder_producer_block` | 470 B | AUDIO checkpoint |
+| `aius_dts_decode_access_unit` | 296 B | AUDIO checkpoint |
+| `AiusAudioProcessor::update` | 280 B | pinned ISR-hot section |
 | `AiusSpdifTx24Hook::isr` | 228 B | not policed by the ITCM guard |
 | `aius_out_stage_run` | 192 B | both arms linked |
-| `AiusAudioProcessor::update` | 192 B | pinned hot section |
 | `aius_out16_sample` | 188 B | linked, never executed |
-| `aius_pipeline_push` | 184 B | |
-| `run_cascade` | 154 B | shared by input stage and output EQ |
+| `aius_measure_producer_block` | 168 B | AUDIO checkpoint |
+| `run_cascade` | 152 B | shared by input stage and output EQ |
 | `aius_quantize` | 112 B | |
 | `aius_dsp_input_run` | 56 B | |
-| `AiusAudioProcessor::consume_block` | 8 B | pinned hot section |
+| `audio_ingress_publish_live` | 36 B | pinned ISR-hot section |
 
-The three pinned sections total **820 B**, and the ITCM placement guard fails the link if
-a fourth appears or one of these becomes `FLASHMEM`
-(`test/itcm-placement/verify_target.py:99`). `AiusAudioProcessor::apply_config` is 800 B
-and lives in **FLASH**, not ITCM, because it runs at bring-up and at a config apply, never
-per block (`src/optical_main.cpp:991`).
+The optical object's two pinned ISR-hot sections total **316 B**. The mixed ingress
+object contributes exactly five producer sections, also 316 B; nine declared cold
+objects contribute zero owned ITCM. `enqueue()` (808 B), `consume_block()` (8 B) and
+`aius_audio_service_run()` (534 B) link in **FLASH** and execute at AUDIO
+(`test/itcm-placement/verify_target.py:48`).
 
 ## The per-block budget
 
@@ -825,19 +843,27 @@ per block (`src/optical_main.cpp:991`).
 2,666.67 µs = 1,600,000 cycles, and only the transmit interrupt is measured against
 that.
 
-**Measured on the device**, build revision `f76baa87c67d`, 20 s of replay at 93.3–94.5
-blocks/s with zero overruns and zero underruns:
+**Measured on the device before the Slice 2b3 cutover**, build revision
+`f76baa87c67d`, 20 s of replay at 93.3–94.5 blocks/s with zero overruns and zero
+underruns:
 
 | Figure | Cycles | Share of 6,400,000 |
 |---|---|---|
 | `dsp_cycles_last` | **534,411** | 8.35 % |
 | `dsp_cycles_max` | **565,024** | 8.83 % |
 
-So the chain uses **8.4–8.8 % of the block budget and leaves about 91 % free.** The
+That pre-cutover chain used **8.4–8.8 % of the block budget and left about 91 %
+free.** The
 figures come from the DWT cycle counter, which brackets the whole per-block body of
 `enqueue()` — DSP, both meter accumulates, the ring write and any publish — and reports
 through `GET /api/meters` (`src/optical_main.cpp:911`, `:982`). Two volatile PPB loads
 per block is the entire instrumentation cost.
+
+The current image retains that decoded-block DWT bracket and adds a second timer around
+the whole AUDIO checkpoint. The service must drain/classify/decode/output inside 8 ms,
+and the complete normal epoch must stay inside 25 ms; status exposes both maxima and
+overrun counters (`src/optical_main.cpp:4985`). Those are the Slice 2b3 hardware-gate
+figures; the table above remains dated evidence, not proof of the cutover build.
 
 ### There is no per-stage breakdown, and this document will not invent one
 
@@ -955,15 +981,14 @@ words — 32 line fills at roughly 20–30 cycles is under 1,000 cycles (*estima
 a 128-frame interrupt period of 1,600,000 cycles.
 
 **Why the ring is stage/commit rather than a read/write/count triple, and this is the
-subtle one.** The producer and consumer are no longer the same context. `enqueue()` is
-reached from the software interrupt `update_all()` pends, at **NVIC priority 208**
-(`cores/teensy4/AudioStream.cpp:424`); the transmit DMA interrupt runs at the startup
-default of **128** (`cores/teensy4/startup.c:136`). Lower number wins, so
-**the consumer can preempt the producer mid-block.** The `int16` ring had both ends inside
-`update()` and could afford a plain count; that would be a race here. Instead the ring
-keeps two free-running 32-bit frame counters, each written by exactly one side, with the
-level as their unsigned difference — correct across the counters' own wrap, and
-single-copy atomic on the Cortex-M7. Staged frames become visible only at
+subtle one.** The producer and consumer are different contexts. `enqueue()` runs in
+thread context at AUDIO; the transmit DMA interrupt runs at the startup-default NVIC
+priority 128 (`cores/teensy4/startup.c:136`), so **the consumer can preempt the
+producer mid-block**. The old `int16` ring had both ends inside `update()` and could
+afford a plain count; that would be a race here. Instead the ring keeps two
+free-running 32-bit frame counters, each written by exactly one side, with the level
+as their unsigned difference — correct across the counters' own wrap, and single-copy
+atomic on the Cortex-M7. Staged frames become visible only at
 `aius_spdif_tx24_commit()`, so a preempting consumer never observes a half-written block
 (`lib/aius_audio/src/aius_spdif_tx24.h:68`).
 
@@ -1074,13 +1099,13 @@ Every number in this document that is not read from the linked image or the devi
 - **Block period, 10,666.67 µs / 6,400,000 cycles** — *derived* from 512 frames,
   48,000 Hz and 600 MHz.
 - **Block rates, 375/s and 93.75/s** — *derived* the same way.
-- **`AiusLimiter` ≈ 2,264 B, input EQ + state 864 B, `AiusPipeline` ≈ 5.2 kB, IEC parser
-  ≈ 4.2 kB** — *derived* from struct members, not symbol sizes: they are members of a
-  larger object or heap allocations, so `nm` cannot report them individually. The
-  containing object, `g_audio_processor` at 15,968 B, **is** measured.
-- **dcadec `ta` tree size on target — not measured at all.** It is a runtime heap
-  allocation; `aius_dts_get_metrics().arena_high_water` would report it but is not
-  currently surfaced on any wire field.
+- **`AiusLimiter` ≈ 2,264 B and input EQ + state 864 B** — *derived* from struct
+  members, not individual symbol sizes. The containing `g_audio_processor` is measured
+  at 5,784 B.
+- **Pipeline, IEC parser and dcadec `ta` subdivision inside the 131,072-byte arena**
+  — not measured individually. They are arena allocations, not heap objects;
+  `aius_dts_get_metrics().arena_high_water` would report decoder use but is not
+  currently surfaced on a wire field.
 - **`enqueue()`'s total stack frame** — the two output planes are 4,096 B of it,
   measured from their declared size; the frame's true depth is not measured here.
   `firmware-io.md` states 4,096 B, which is the arrays rather than the frame.

@@ -86,9 +86,10 @@ void AiusSpdifTx24Hook::isr(void)
 
 	/* Unchanged responsibility contract: this peripheral drives the graph only
 	 * while replay_clock_service() has handed it the clock. update_all() only
-	 * pends the software interrupt, so the DSP runs at a LOWER priority than
-	 * this handler -- which is why the ring is a single-producer/single-consumer
-	 * structure rather than a plain count. */
+	 * pends the ingress producer; decode, DSP and the ring producer run later
+	 * from the AUDIO checkpoint. Both can be preempted by this handler, which is
+	 * why the ring is a single-producer/single-consumer structure rather than a
+	 * plain count. */
 	if (update_responsibility)
 		update_all();
 }
