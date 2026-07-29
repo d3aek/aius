@@ -1,0 +1,8 @@
+{
+  "mounts": [
+    {
+      "url": "/sd/www/",
+      "sources": [{ "from": "www" }]
+    }
+  ]
+}

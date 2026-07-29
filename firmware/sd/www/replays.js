@@ -17,6 +17,7 @@
  * dsp-editor.js; keep the pages looking like one product.
  */
 (() => {
+  const CONTRACT_MODE = new URLSearchParams(window.location.search).has('contract');
   'use strict';
 
   const $ = (id) => document.getElementById(id);
@@ -528,10 +529,13 @@
   $('token').value = readStoredToken();
   $('token').addEventListener('input', () => storeToken(authToken()));
 
-  void guard(refreshStatus, cardSink('playback'));
-  void guard(refreshFiles, cardSink('library'));
-  void guard(refreshMeters, cardSink('playback'));
-  setInterval(() => void guard(refreshStatus, cardSink('playback')), STATUS_POLL_MS);
-  setInterval(() => void guard(refreshMeters, cardSink('playback')), METER_POLL_MS);
-  setInterval(() => void guard(refreshFiles, cardSink('library')), LIBRARY_POLL_MS);
+  if (!CONTRACT_MODE) {
+    void guard(refreshStatus, cardSink('playback'));
+    void guard(refreshFiles, cardSink('library'));
+    void guard(refreshMeters, cardSink('playback'));
+    setInterval(() => void guard(refreshStatus, cardSink('playback')), STATUS_POLL_MS);
+    setInterval(() => void guard(refreshMeters, cardSink('playback')), METER_POLL_MS);
+    setInterval(() => void guard(refreshFiles, cardSink('library')), LIBRARY_POLL_MS);
+  }
+  document.body.dataset.uiContractReady = 'aius-firmware-replays';
 })();
