@@ -58,7 +58,7 @@ typedef struct {
 	uint8_t watchdog_early_resets;
 } AiusRuntimeTeensyBootStatus;
 
-/* The platform seam: the four checkpoints the composition does not own, plus
+/* The platform seam: the five checkpoints the composition does not own, plus
  * checkpoint recording and the sole watchdog feed. Every entry is required
  * except publish_config, the one optional entry. */
 typedef struct {
@@ -77,6 +77,10 @@ typedef struct {
 		const AiusRuntimeBudget *budget,
 		uint32_t now_ms);
 	bool (*replay)(
+		void *context,
+		const AiusRuntimeBudget *budget,
+		uint32_t now_ms);
+	bool (*audio)(
 		void *context,
 		const AiusRuntimeBudget *budget,
 		uint32_t now_ms);

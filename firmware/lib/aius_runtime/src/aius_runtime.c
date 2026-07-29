@@ -53,6 +53,10 @@ static const AiusRuntimeBudget runtime_budgets[] = {
 	 * portable engine, which refuses any job whose capacity exceeds it. The
 	 * plan's rejection of a 12 KB per-primitive slice is this number. */
 	{AIUS_BOOT_CHECKPOINT_SD, 1u, 512u, 512u, 0u},
+	/* Audio's transport byte quotas are zero because its word and output-step
+	 * limits belong to the audio service seam. This row only grants one
+	 * callback and its scheduler-visible wall allowance. */
+	{AIUS_BOOT_CHECKPOINT_AUDIO, 1u, 0u, 0u, 8u},
 	{AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE, 0u, 0u, 0u, 0u},
 };
 
@@ -99,11 +103,15 @@ FLASHMEM bool aius_runtime_epoch(
 			return false;
 	} else {
 		for (checkpoint = AIUS_BOOT_CHECKPOINT_RESET_CAPTURE;
-		     checkpoint <= AIUS_BOOT_CHECKPOINT_SD;
+		     checkpoint <= AIUS_BOOT_CHECKPOINT_REPLAY;
 		     ++checkpoint) {
 			if (!runtime_service(&snapshot, checkpoint))
 				return false;
 		}
+		if (!runtime_service(&snapshot, AIUS_BOOT_CHECKPOINT_AUDIO))
+			return false;
+		if (!runtime_service(&snapshot, AIUS_BOOT_CHECKPOINT_SD))
+			return false;
 	}
 
 	snapshot.checkpoint(

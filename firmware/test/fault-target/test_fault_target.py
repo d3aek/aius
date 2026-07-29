@@ -12,8 +12,9 @@ SOURCE = FIRMWARE_ROOT / "src" / "aius_fault_teensy.cpp"
 HARNESS = Path(__file__).resolve().with_name("fault_target_harness.cpp")
 BUILD_DIR = FIRMWARE_ROOT / ".build" / "native" / "fault-target"
 INCLUDE_DIR = FIRMWARE_ROOT / "src"
-SELECTORS = tuple(range(9))
-INVALID_SELECTORS = ("-1", "9", "65535", "65536")
+BOOT_INCLUDE_DIR = FIRMWARE_ROOT / "lib" / "aius_boot" / "include"
+SELECTORS = tuple(range(10))
+INVALID_SELECTORS = ("-1", "10", "65535", "65536")
 STALL_TIMEOUT_SECONDS = 0.5
 
 
@@ -36,6 +37,7 @@ def compile_command(output, selector=None):
         "-g",
         "-fsanitize=address,undefined",
         f"-I{INCLUDE_DIR}",
+        f"-I{BOOT_INCLUDE_DIR}",
     ]
     if selector is not None:
         command.append(f"-DAIUS_FAULT_STALL_CHECKPOINT={selector}")

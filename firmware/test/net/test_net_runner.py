@@ -45,7 +45,7 @@ EXPECTED_RECOVERY_STATUS = {
     "network_state": 5,
     "recovery_safe": True,
     "network_last_fault": 10,
-    "last_checkpoint": 9,
+    "last_checkpoint": 10,
     "network_generation": 0xc1c2c3c4,
     "boot_generation": 0xd1d2d3d4,
     "reset_source": 0xe1e2e3e4,
@@ -186,7 +186,7 @@ class RunnerProtocolTests(unittest.TestCase):
             71: (6, 255),
             72: (2, 255),
             73: (11, 255),
-            74: (10, 255),
+            74: (11, 255),
         }
         for offset, values in invalid_values.items():
             for value in values:
@@ -221,7 +221,7 @@ class RunnerProtocolTests(unittest.TestCase):
         self.assertEqual(status["network_state"], 5)
         self.assertIs(status["recovery_safe"], True)
         self.assertEqual(status["network_last_fault"], 10)
-        self.assertEqual(status["last_checkpoint"], 9)
+        self.assertEqual(status["last_checkpoint"], 10)
 
     def test_recovery_extension_leaves_the_legacy_decode_identical(self):
         # The device produces the 99-byte payload by appending to the same 71
@@ -244,7 +244,7 @@ class RunnerProtocolTests(unittest.TestCase):
                 status = RUNNER.parse_status(payload)
                 self.assertEqual(status["network_mode"], expected)
                 self.assertEqual(status["recovery_safe"], True)
-                self.assertEqual(status["last_checkpoint"], 9)
+                self.assertEqual(status["last_checkpoint"], 10)
 
     def test_recovery_integer_fields_do_not_narrow(self):
         payload = bytearray(RECOVERY_STATUS)

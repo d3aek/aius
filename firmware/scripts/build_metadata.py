@@ -9,7 +9,7 @@ import subprocess
 
 
 FAULT_ENVIRONMENT = "teensy41-optical-fault"
-FAULT_SELECTOR_PATTERN = re.compile(r"[0-8]")
+FAULT_SELECTOR_PATTERN = re.compile(r"[0-9]")
 
 
 def source_revision(project_dir):
@@ -32,7 +32,7 @@ def validate_fault_selector(environment, selector):
             or FAULT_SELECTOR_PATTERN.fullmatch(selector) is None
         ):
             raise ValueError(
-                f"{FAULT_ENVIRONMENT} requires AIUS_FAULT_CHECKPOINT in 0..8"
+                f"{FAULT_ENVIRONMENT} requires AIUS_FAULT_CHECKPOINT in 0..9"
             )
         return int(selector)
 

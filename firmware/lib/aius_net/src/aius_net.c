@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "aius_boot.h"
+
 /* Cold code -> FLASH. Nothing here runs on the audio block path (this is the
  * UDP control-frame codec and the network supervisor oracle), so every
  * definition below carries FLASHMEM and lands in FLASH instead of the shared
@@ -114,7 +116,7 @@ FLASHMEM size_t aius_net_status_encode(
 	    recovery->network_state > AIUS_NET_STATE_RECOVERY_SAFE ||
 	    recovery->network_last_fault < AIUS_NET_FAULT_NONE ||
 	    recovery->network_last_fault > AIUS_NET_FAULT_DRIVER_PROTOCOL ||
-	    recovery->last_checkpoint > 9u)
+	    recovery->last_checkpoint > AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE)
 		return 0;
 
 	memcpy(encoded, legacy_status, AIUS_NET_LEGACY_STATUS_LEN);

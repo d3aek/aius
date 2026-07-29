@@ -41,7 +41,7 @@ case "${1:-}" in
 	echo "usage: build.sh [ENV]"
 	echo "       build.sh teensy41-optical-fault CHECKPOINT"
 	echo "  default ENV: teensy41-release"
-	echo "  CHECKPOINT: one digit from 0 through 8"
+	echo "  CHECKPOINT: one digit from 0 through 9"
 	echo "  cross-builds a Teensy 4.1 PlatformIO env and prints the per-bank memory report"
 	echo "  env: PIO=<pio exe> PLATFORMIO_CORE_DIR=<cache dir>"
 	exit 0
@@ -62,8 +62,8 @@ if [[ ${AIUS_FAULT_CHECKPOINT+x} ]]; then
 fi
 
 if [[ "$env_name" == "teensy41-optical-fault" ]]; then
-	if [[ $# -ne 2 || ! ${2:-} =~ ^[0-8]$ ]]; then
-		echo "error: teensy41-optical-fault requires one checkpoint digit from 0 through 8" >&2
+	if [[ $# -ne 2 || ! ${2:-} =~ ^[0-9]$ ]]; then
+		echo "error: teensy41-optical-fault requires one checkpoint digit from 0 through 9" >&2
 		exit 4
 	fi
 	fault_checkpoint="$2"

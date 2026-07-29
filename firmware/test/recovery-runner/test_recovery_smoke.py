@@ -32,7 +32,7 @@ STATUS_FIELDS = {
     "network_state": 3,
     "recovery_safe": 0,
     "network_last_fault": 0,
-    "last_checkpoint": 9,
+    "last_checkpoint": 10,
     "network_generation": 1,
     "reset_source": SOFTWARE_RESET,
     "watchdog_early_resets": 0,
@@ -258,7 +258,7 @@ class SilentThenRecoverySafeLink(FakeLink):
             raise SMOKE.LinkError("no USB answer")
         # Recovery-safe runs checkpoints 1, 2 and EPOCH_COMPLETE only, so the
         # live last_checkpoint can never be the stalled one.
-        return status(self.generation, last_checkpoint=9,
+        return status(self.generation, last_checkpoint=10,
                       reset_source=self.reset_source,
                       watchdog_early_resets=self.early,
                       recovery_safe=self.recovery_safe)
@@ -474,7 +474,7 @@ class DeviceLinkTests(unittest.TestCase):
                 return_value=({"payload": payload}, ("192.0.2.45", 4242))):
             decoded = self.link().udp_status()
         self.assertEqual(decoded["boot_generation"], 0xd1d2d3d4)
-        self.assertEqual(decoded["last_checkpoint"], 9)
+        self.assertEqual(decoded["last_checkpoint"], 10)
         self.assertIs(decoded["recovery_safe"], True)
         self.assertEqual(decoded["http_requests"], 0x81828384)
 
@@ -644,8 +644,8 @@ class StallGateTests(unittest.TestCase):
         self.assertIn("no fault image declared", result.detail)
 
     def test_unresolved_for_a_checkpoint_that_is_not_injectable(self):
-        result = SMOKE.gate_stalls(StallLink(9.0, 9),
-                                   options(allow_mutation=True, checkpoint=9))
+        result = SMOKE.gate_stalls(StallLink(9.0, 10),
+                                   options(allow_mutation=True, checkpoint=10))
         self.assertEqual(result.outcome, SMOKE.UNRESOLVED)
         self.assertIn("not injectable", result.detail)
 
@@ -904,6 +904,15 @@ class PlanOfWorkTests(unittest.TestCase):
         lines = SMOKE.plan_of_work(options(gates=("stalls",), checkpoint=6))
         self.assertEqual(len([line for line in lines if ": build " in line]), 1)
         self.assertIn("6 UDP", lines[-1])
+
+    def test_checkpoint_names_include_audio_and_epoch_complete(self):
+        self.assertEqual(SMOKE.CHECKPOINT_NAMES[8:],
+                         ("SD", "AUDIO", "EPOCH_COMPLETE"))
+        audio = SMOKE.plan_of_work(options(gates=("stalls",), checkpoint=9))
+        complete = SMOKE.plan_of_work(options(gates=("stalls",), checkpoint=10))
+        self.assertTrue(any("checkpoint 9 AUDIO" in line for line in audio))
+        self.assertTrue(any("checkpoint 10 EPOCH_COMPLETE" in line
+                            for line in complete))
 
     def test_the_plan_names_the_mutating_gates_as_mutating(self):
         lines = SMOKE.plan_of_work(options())

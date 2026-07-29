@@ -1,6 +1,8 @@
 #include "aius_fault_teensy.h"
 
-/* Cold code -> FLASH. This runs once per checkpoint, nine times per runtime
+#include "aius_boot.h"
+
+/* Cold code -> FLASH. This runs once per checkpoint, eleven times per normal
  * epoch, and never on the audio block path, so it must not occupy ITCM. In a
  * production image it compiles to a plain return; in a fault image it stalls
  * and never comes back. FLASHMEM is Teensyduino's
@@ -18,8 +20,9 @@
 
 #if defined(AIUS_FAULT_STALL_CHECKPOINT)
 static_assert(AIUS_FAULT_STALL_CHECKPOINT >= 0 &&
-	              AIUS_FAULT_STALL_CHECKPOINT <= 8,
-              "AIUS_FAULT_STALL_CHECKPOINT must be in the range 0..8");
+	              AIUS_FAULT_STALL_CHECKPOINT <=
+	                  AIUS_BOOT_CHECKPOINT_AUDIO,
+              "AIUS_FAULT_STALL_CHECKPOINT must be in the range 0..9");
 #endif
 
 FLASHMEM void aius_fault_checkpoint(uint16_t checkpoint)

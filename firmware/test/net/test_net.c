@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "aius_boot.h"
+
 enum {
 	LEGACY_STATUS_LEN = 71,
 	RECOVERY_STATUS_LEN = 99
@@ -41,7 +43,7 @@ static AiusRecoveryStatus canonical_recovery_status(void)
 		.network_state = AIUS_NET_STATE_RECOVERY_SAFE,
 		.recovery_safe = true,
 		.network_last_fault = AIUS_NET_FAULT_DRIVER_PROTOCOL,
-		.last_checkpoint = 9,
+		.last_checkpoint = AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE,
 		.network_generation = UINT32_C(0xc1c2c3c4),
 		.boot_generation = UINT32_C(0xd1d2d3d4),
 		.reset_source = UINT32_C(0xe1e2e3e4),
@@ -160,13 +162,15 @@ static void test_status_invalid_inputs_do_not_mutate_output(void)
 	recovery = canonical_recovery_status();
 
 	size_t invalid_checkpoints = 0;
-	for (uint32_t checkpoint = 10; checkpoint <= UINT16_MAX;
+	for (uint32_t checkpoint = AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE + 1u;
+	     checkpoint <= UINT16_MAX;
 	     checkpoint++) {
 		recovery.last_checkpoint = (uint16_t)checkpoint;
 		assert_status_rejected(legacy, &recovery, RECOVERY_STATUS_LEN);
 		invalid_checkpoints++;
 	}
-	assert(invalid_checkpoints == UINT16_MAX - 9u);
+	assert(invalid_checkpoints ==
+	       UINT16_MAX - AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
 }
 
 static void test_status_valid_endpoints(void)
@@ -200,7 +204,9 @@ static void test_status_valid_endpoints(void)
 	}
 
 	recovery = canonical_recovery_status();
-	for (unsigned checkpoint = 0; checkpoint <= 9; checkpoint++) {
+	for (unsigned checkpoint = 0;
+	     checkpoint <= AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE;
+	     checkpoint++) {
 		recovery.last_checkpoint = (uint16_t)checkpoint;
 		assert(aius_net_status_encode(output, sizeof(output), legacy,
 		                              &recovery) == sizeof(output));
@@ -224,7 +230,7 @@ static void test_status_valid_endpoints(void)
 	assert(output[71] == 5);
 	assert(output[72] == 1);
 	assert(output[73] == 10);
-	assert(output[74] == 9);
+	assert(output[74] == AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
 }
 
 static void test_status_uint32_max_serialization(void)

@@ -28,6 +28,7 @@ RSP_ACK = 0x80
 RSP_DISCOVERY = 0x82
 RSP_STATUS = 0x83
 RSP_EVENTS = 0x84
+RUNTIME_CHECKPOINT_EPOCH_COMPLETE = 10
 
 
 def encode(msg_type, request_id, payload=b"", flags=0):
@@ -100,7 +101,7 @@ def parse_status(payload):
             raise ValueError("invalid recovery-safe flag")
         if network_last_fault > 10:
             raise ValueError("invalid recovery network fault")
-        if last_checkpoint > 9:
+        if last_checkpoint > RUNTIME_CHECKPOINT_EPOCH_COMPLETE:
             raise ValueError("invalid runtime checkpoint")
         if any(payload[88:91]):
             raise ValueError("invalid recovery reserved bytes")

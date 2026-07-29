@@ -1539,7 +1539,12 @@ Buildable commit boundaries:
    slicing.
 2. **2b2 scheduler seam:** add AUDIO checkpoint/budget/callback and exact
    runtime tests; wire a temporary no-work target callback so both target images
-   remain buildable.
+   remain buildable. **Complete:** `boot`, `boot-target`, `fault-target`,
+   `runtime`, `runtime-target`, `net`, `net-runner`, `recovery-runner`, and
+   `build-metadata` pass; both
+   `teensy41-optical` images build with exact normal/recovery traces, the
+   COMPLETE=10 recovery-status domain, AUDIO=9 fault injection, and the
+   temporary callback in place.
 3. **2b3 cutover and evidence:** switch `update()` to ingress, implement AUDIO
    drain/service, move and rename block-writer effects, publish diagnostics,
    update structural/target proofs, flash, and run the hardware gate below.

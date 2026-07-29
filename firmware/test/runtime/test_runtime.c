@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
-#define MAX_TRACE_EVENTS 20u
+#define MAX_TRACE_EVENTS 22u
 
 static const char *current_key = "startup";
 
@@ -54,11 +54,13 @@ static const BudgetCase budget_cases[] = {
 	 1u, 2048u, 0u, 0u},
 	{"budget.sd", AIUS_BOOT_CHECKPOINT_SD,
 	 1u, 512u, 512u, 0u},
+	{"budget.audio", AIUS_BOOT_CHECKPOINT_AUDIO,
+	 1u, 0u, 0u, 8u},
 	{"budget.epoch-complete", AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE,
 	 0u, 0u, 0u, 0u},
 };
 
-static const AiusRuntimeBudget *stable_budget_pointers[10];
+static const AiusRuntimeBudget *stable_budget_pointers[11];
 
 static void validate_unique_keys(
 	const char *registry_key,
@@ -104,7 +106,7 @@ static void test_budget_registry(void)
 	for (size_t i = 0; i < ARRAY_COUNT(budget_cases); ++i)
 		keys[i] = budget_cases[i].key;
 	validate_unique_keys(
-		"registry.budgets", keys, ARRAY_COUNT(budget_cases), 10u);
+		"registry.budgets", keys, ARRAY_COUNT(budget_cases), 11u);
 
 	for (size_t i = 0; i < ARRAY_COUNT(budget_cases); ++i) {
 		const BudgetCase *expected = &budget_cases[i];
@@ -127,14 +129,14 @@ static void test_invalid_selector_registry(void)
 	size_t count = 0u;
 
 	current_key = "registry.invalid-selectors";
-	for (uint32_t selector = 10u; selector <= UINT16_MAX; ++selector) {
+	for (uint32_t selector = 11u; selector <= UINT16_MAX; ++selector) {
 		uint16_t key = (uint16_t)selector;
 		CHECK(!seen[key]);
 		seen[key] = true;
 		CHECK(aius_runtime_budget(key) == NULL);
 		count++;
 	}
-	CHECK(count == 65526u);
+	CHECK(count == 65525u);
 }
 
 typedef enum {
@@ -172,6 +174,7 @@ static const uint16_t normal_order[] = {
 	AIUS_BOOT_CHECKPOINT_HTTP,
 	AIUS_BOOT_CHECKPOINT_UDP,
 	AIUS_BOOT_CHECKPOINT_REPLAY,
+	AIUS_BOOT_CHECKPOINT_AUDIO,
 	AIUS_BOOT_CHECKPOINT_SD,
 };
 
@@ -365,7 +368,7 @@ typedef struct {
 
 static const CompleteTraceCase complete_trace_cases[] = {
 	{"trace.complete.normal", false, normal_order,
-	 ARRAY_COUNT(normal_order), 20u},
+	 ARRAY_COUNT(normal_order), 22u},
 	{"trace.complete.recovery-safe", true, recovery_safe_order,
 	 ARRAY_COUNT(recovery_safe_order), 6u},
 };
@@ -426,6 +429,8 @@ static const FailureTraceCase failure_trace_cases[] = {
 	 ARRAY_COUNT(normal_order), 8u, 16u},
 	{"trace.fail.normal.8", false, normal_order,
 	 ARRAY_COUNT(normal_order), 9u, 18u},
+	{"trace.fail.normal.9", false, normal_order,
+	 ARRAY_COUNT(normal_order), 10u, 20u},
 	{"trace.fail.recovery-safe.0", true, recovery_safe_order,
 	 ARRAY_COUNT(recovery_safe_order), 1u, 2u},
 	{"trace.fail.recovery-safe.1", true, recovery_safe_order,
@@ -439,7 +444,7 @@ static void test_failure_trace_registry(void)
 		keys[i] = failure_trace_cases[i].key;
 	validate_unique_keys(
 		"registry.failure-traces", keys,
-		ARRAY_COUNT(failure_trace_cases), 11u);
+		ARRAY_COUNT(failure_trace_cases), 12u);
 
 	for (size_t i = 0; i < ARRAY_COUNT(failure_trace_cases); ++i) {
 		const FailureTraceCase *test = &failure_trace_cases[i];
@@ -482,8 +487,8 @@ static const OpsValidityCase ops_validity_cases[] = {
 	{"ops.callbacks.100", false, true, false, false, false, false, 0u},
 	{"ops.callbacks.101", false, true, false, true, false, false, 0u},
 	{"ops.callbacks.110", false, true, true, false, false, false, 0u},
-	{"ops.callbacks.111", false, true, true, true, false, true, 20u},
-	{"ops.null-context", false, true, true, true, true, true, 20u},
+	{"ops.callbacks.111", false, true, true, true, false, true, 22u},
+	{"ops.null-context", false, true, true, true, true, true, 22u},
 };
 
 static void test_ops_validity_registry(void)
@@ -631,7 +636,7 @@ static void test_alias_mutation_registry(void)
 		CHECK(ops.service == poison_service);
 		CHECK(ops.checkpoint == poison_checkpoint);
 		CHECK(ops.feed_watchdog == poison_feed);
-		verify_complete_trace(&trace, 20u);
+		verify_complete_trace(&trace, 22u);
 	}
 	active_mutation = NULL;
 	active_trace = NULL;
@@ -649,7 +654,7 @@ static void test_sequential_calls(void)
 		0u, &context_marker);
 	active_trace = &trace;
 	CHECK(aius_runtime_epoch(&ops, false));
-	verify_complete_trace(&trace, 20u);
+	verify_complete_trace(&trace, 22u);
 
 	current_key = "calls.sequential.recovery-safe";
 	trace_init(
@@ -713,7 +718,7 @@ static void test_distinct_context_reentry(void)
 	CHECK(reentry.inner_called);
 	CHECK(reentry.inner_result);
 	verify_complete_trace(&reentry.inner, 6u);
-	verify_complete_trace(&reentry.outer, 20u);
+	verify_complete_trace(&reentry.outer, 22u);
 	active_trace = NULL;
 	active_reentry = NULL;
 }

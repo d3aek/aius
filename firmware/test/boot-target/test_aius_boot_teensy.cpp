@@ -400,7 +400,8 @@ void test_every_invalid_ledger_and_slot_crc_byte()
 	refresh_ledger_crc(&invalid[0]);
 	invalid[1].version = 2;
 	refresh_ledger_crc(&invalid[1]);
-	invalid[2].last_checkpoint = 10;
+	invalid[2].last_checkpoint =
+		AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE + 1u;
 	refresh_ledger_crc(&invalid[2]);
 	invalid[3].mode = 2;
 	refresh_ledger_crc(&invalid[3]);

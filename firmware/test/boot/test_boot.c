@@ -118,7 +118,7 @@ static void test_fixed_ledger_crc_vector(void)
 	const AiusBootLedger ledger = {
 		.magic = 0x41495542u,
 		.version = 1u,
-		.last_checkpoint = 9u,
+		.last_checkpoint = AIUS_BOOT_CHECKPOINT_AUDIO,
 		.build_id = 0x11223344u,
 		.boot_generation = 0x55667788u,
 		.reset_source = 0xaabbccddu,
@@ -134,6 +134,9 @@ static void test_integrity_and_domain_validation(void)
 {
 	CHECK(sizeof(AiusBootLedger) == 28u);
 	CHECK(AIUS_BOOT_MAGIC == 0x41495542u);
+	CHECK(AIUS_BOOT_CHECKPOINT_SD == 8u);
+	CHECK(AIUS_BOOT_CHECKPOINT_AUDIO == 9u);
+	CHECK(AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE == 10u);
 	CHECK(crc32((const uint8_t *)"123456789", 9u) == 0xcbf43926u);
 	CHECK(!aius_boot_is_valid(NULL));
 	aius_boot_record_checkpoint(NULL, AIUS_BOOT_CHECKPOINT_HTTP);
@@ -367,6 +370,7 @@ static void test_checkpoint_persistence(void)
 		AIUS_BOOT_CHECKPOINT_UDP,
 		AIUS_BOOT_CHECKPOINT_REPLAY,
 		AIUS_BOOT_CHECKPOINT_SD,
+		AIUS_BOOT_CHECKPOINT_AUDIO,
 		AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE,
 	};
 

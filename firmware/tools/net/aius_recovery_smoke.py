@@ -9,7 +9,7 @@ readable per-run summary. The four gates are steps 2-5 of the live smoke in
   reboots  about five software reboots, each reaching DHCP, USB, HTTP and UDP
            ready inside the normative deadlines, with no unexpected watchdog
            reset
-  stalls   one induced stall at an injectable checkpoint 0..8: reset inside
+  stalls   one induced stall at an injectable checkpoint 0..9: reset inside
            8-10 s, the checkpoint reported, service back without intervention
   soak     a short soak of HTTP/UDP traffic with no unexpected reset, outage or
            leaked network generation
@@ -118,9 +118,10 @@ USB_SAMPLE_INTERVAL_S = 0.05
 # status serves it. Named here so the SD-job commit basis reads as a state and
 # not as a magic number.
 SD_JOB_DONE = 15
-INJECTABLE_CHECKPOINTS = tuple(range(0, 9))
+INJECTABLE_CHECKPOINTS = tuple(range(0, 10))
 CHECKPOINT_NAMES = ("RESET_CAPTURE", "USB_RX", "USB_TX", "METRICS", "NETWORK",
-                    "HTTP", "UDP", "REPLAY", "SD", "EPOCH_COMPLETE")
+                    "HTTP", "UDP", "REPLAY", "SD", "AUDIO",
+                    "EPOCH_COMPLETE")
 
 # SRC_SRSR bits, mirroring aius_boot_teensy_reset_kind() in
 # src/aius_boot_teensy.cpp. The status carries the raw retained value, so the
@@ -755,7 +756,7 @@ def gate_stalls(link, options):
     if checkpoint is None:
         return GateResult(name, UNRESOLVED,
                           "no fault image declared",
-                          ["pass --checkpoint 0..8 naming the flashed fault image"])
+                          ["pass --checkpoint 0..9 naming the flashed fault image"])
     if checkpoint not in INJECTABLE_CHECKPOINTS:
         return GateResult(name, UNRESOLVED,
                           "checkpoint %s is not injectable" % checkpoint,
@@ -1348,7 +1349,7 @@ def build_parser():
                         help="opt in to the steps that mutate the board")
     parser.add_argument("--reboots", type=int, default=5)
     parser.add_argument("--checkpoint", type=int, default=None,
-                        help="the injectable checkpoint 0..8 the flashed fault image stalls at")
+                        help="the injectable checkpoint 0..9 the flashed fault image stalls at")
     parser.add_argument("--soak-duration", type=float, default=1800.0)
     parser.add_argument("--soak-interval", type=float, default=1.0)
     parser.add_argument("--soak-tolerated-outages", type=int, default=0)

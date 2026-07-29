@@ -17,7 +17,7 @@ FIXED_REVISION = "0123456789ab"
 PRODUCTION_IDENTITY = f"{FIXED_REVISION}+teensy41-optical"
 FAULT_IDENTITIES = [
     f"{FIXED_REVISION}+fault.cp{checkpoint}"
-    for checkpoint in range(9)
+    for checkpoint in range(10)
 ]
 KNOWN_BUILD_IDS = [
     2180687348,
@@ -30,6 +30,7 @@ KNOWN_BUILD_IDS = [
     3693711741,
     1770631961,
     3963842019,
+    613822941,
 ]
 REQUIRED_DEFINES = {
     "AIUS_BUILD_SOURCE_REV",
@@ -165,7 +166,7 @@ def test_known_sha256_little_endian_vectors_and_all_selectors():
 
     identities = {unstring(production["AIUS_BUILD_GIT_REV"])}
     build_ids = {production["AIUS_BUILD_ID"]}
-    for checkpoint in range(9):
+    for checkpoint in range(10):
         definitions = execute_metadata(
             "teensy41-optical-fault", str(checkpoint)
         )
@@ -180,8 +181,8 @@ def test_known_sha256_little_endian_vectors_and_all_selectors():
         identities.add(unstring(definitions["AIUS_BUILD_GIT_REV"]))
         build_ids.add(definitions["AIUS_BUILD_ID"])
 
-    assert len(identities) == 10
-    assert len(build_ids) == 10
+    assert len(identities) == len(FAULT_IDENTITIES) + 1
+    assert len(build_ids) == len(FAULT_IDENTITIES) + 1
 
 
 def test_nonfault_environments_omit_fault_stall_define():
@@ -229,9 +230,9 @@ def expect_metadata_error(environment, selector, exact_message):
 
 def test_metadata_rejects_missing_invalid_and_cross_environment_selectors():
     fault_error = (
-        "teensy41-optical-fault requires AIUS_FAULT_CHECKPOINT in 0..8"
+        "teensy41-optical-fault requires AIUS_FAULT_CHECKPOINT in 0..9"
     )
-    for selector in (None, "", "00", "01", "-1", "+1", " 1", "1 ", "9", "x"):
+    for selector in (None, "", "00", "01", "-1", "+1", " 1", "1 ", "10", "x"):
         expect_metadata_error(
             "teensy41-optical-fault",
             selector,
@@ -316,7 +317,7 @@ def assert_accepted_build(arguments, target, selector):
 
 
 def test_build_cli_accepts_all_fault_selectors_without_leaking_to_version_probe():
-    for checkpoint in range(9):
+    for checkpoint in range(10):
         assert_accepted_build(
             ["teensy41-optical-fault", str(checkpoint)],
             "teensy41-optical-fault",
@@ -326,7 +327,7 @@ def test_build_cli_accepts_all_fault_selectors_without_leaking_to_version_probe(
 
 def test_build_cli_rejects_invalid_missing_extra_and_cross_environment_selectors():
     fault_message = (
-        "teensy41-optical-fault requires one checkpoint digit from 0 through 8"
+        "teensy41-optical-fault requires one checkpoint digit from 0 through 9"
     )
     for arguments in (
         ["teensy41-optical-fault"],
@@ -335,7 +336,7 @@ def test_build_cli_rejects_invalid_missing_extra_and_cross_environment_selectors
         ["teensy41-optical-fault", "01"],
         ["teensy41-optical-fault", "-1"],
         ["teensy41-optical-fault", "+1"],
-        ["teensy41-optical-fault", "9"],
+        ["teensy41-optical-fault", "10"],
         ["teensy41-optical-fault", "x"],
         ["teensy41-optical-fault", "0", "extra"],
     ):

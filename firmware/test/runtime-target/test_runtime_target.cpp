@@ -678,6 +678,7 @@ struct PlatformFake {
 	bool metrics_ok;
 	bool udp_ok;
 	bool replay_ok;
+	bool audio_ok;
 	AiusRuntimeTeensyBootStatus status;
 	uint16_t checkpoints[MAX_TRACE];
 	size_t checkpoint_count;
@@ -689,6 +690,7 @@ struct PlatformFake {
 	unsigned metrics_calls;
 	unsigned udp_calls;
 	unsigned replay_calls;
+	unsigned audio_calls;
 };
 
 static PlatformFake g_platform;
@@ -755,6 +757,16 @@ static bool platform_replay(void *context, const AiusRuntimeBudget *budget,
 	return g_platform.replay_ok;
 }
 
+static bool platform_audio(void *context, const AiusRuntimeBudget *budget,
+                           uint32_t now_ms)
+{
+	(void)now_ms;
+	CHECK(context == g_platform.expected_context);
+	record_budget(budget, AIUS_BOOT_CHECKPOINT_AUDIO);
+	g_platform.audio_calls++;
+	return g_platform.audio_ok;
+}
+
 static void platform_checkpoint(void *context, uint16_t checkpoint)
 {
 	CHECK(context == g_platform.expected_context);
@@ -809,6 +821,7 @@ static AiusRuntimeTeensyPlatformOps platform_ops(void)
 	ops.metrics = platform_metrics;
 	ops.udp = platform_udp;
 	ops.replay = platform_replay;
+	ops.audio = platform_audio;
 	ops.checkpoint = platform_checkpoint;
 	ops.feed_watchdog = platform_feed;
 	ops.publish_config = publish_config;
@@ -1010,6 +1023,52 @@ static bool app_measure_start(void *context, const char *vector_id,
 	return true;
 }
 
+static size_t app_write_recorder(void *context, uint8_t *body,
+                                 size_t capacity)
+{
+	(void)context;
+	int written = snprintf((char *)body, capacity, "{\"state\":0}");
+	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
+}
+
+static bool app_recorder_freeze(void *context)
+{
+	(void)context;
+	return true;
+}
+
+static bool app_recorder_thaw(void *context)
+{
+	(void)context;
+	return true;
+}
+
+static bool app_recorder_config(void *context, uint32_t mask,
+                                float gr_threshold_db,
+                                uint32_t gr_hold_blocks,
+                                uint32_t postroll_blocks)
+{
+	(void)context;
+	(void)mask;
+	(void)gr_threshold_db;
+	(void)gr_hold_blocks;
+	(void)postroll_blocks;
+	return true;
+}
+
+static AiusOpticalAppRecorderReadResult app_recorder_read(
+	void *context, uint32_t offset_bytes, uint32_t length_bytes,
+	uint32_t generation, const uint8_t **data, uint32_t *length)
+{
+	(void)context;
+	(void)offset_bytes;
+	(void)length_bytes;
+	(void)generation;
+	(void)data;
+	(void)length;
+	return AIUS_OPTICAL_APP_RECORDER_READ_REFUSED;
+}
+
 static AiusOpticalApp app_table(void)
 {
 	AiusOpticalApp app;
@@ -1038,6 +1097,11 @@ static AiusOpticalApp app_table(void)
 	app.upload_id = app_upload_id;
 	app.write_measure = app_write_measure;
 	app.measure_start = app_measure_start;
+	app.write_recorder = app_write_recorder;
+	app.recorder_freeze = app_recorder_freeze;
+	app.recorder_thaw = app_recorder_thaw;
+	app.recorder_config = app_recorder_config;
+	app.recorder_read = app_recorder_read;
 	return app;
 }
 
@@ -1070,6 +1134,7 @@ static void reset_world(bool recovery_safe)
 	g_platform.metrics_ok = true;
 	g_platform.udp_ok = true;
 	g_platform.replay_ok = true;
+	g_platform.audio_ok = true;
 	g_platform.checkpoint_count = 0u;
 	g_platform.budget_count = 0u;
 	g_platform.feeds = 0u;
@@ -1077,6 +1142,7 @@ static void reset_world(bool recovery_safe)
 	g_platform.metrics_calls = 0u;
 	g_platform.udp_calls = 0u;
 	g_platform.replay_calls = 0u;
+	g_platform.audio_calls = 0u;
 	g_platform.status.boot_generation = 11u;
 	g_platform.status.reset_source = 0x20u;
 	g_platform.status.watchdog_early_resets = 1u;
@@ -1592,19 +1658,31 @@ static void test_service_budget_selectivity(void)
 	current_key = "budget.platform.exact";
 	reset_world(false);
 	g_platform.budget_count = 0u;
-	CHECK(run_epoch(now_ms));
+	const bool completed = run_epoch(now_ms);
+	CHECK(g_runtime.valid);
+	CHECK(completed);
+	CHECK(g_platform.reset_capture_calls == 1u);
+	CHECK(g_platform.metrics_calls == 1u);
+	CHECK(g_platform.udp_calls == 1u);
+	CHECK(g_platform.replay_calls == 1u);
+	CHECK(g_platform.audio_calls == 1u);
 	/* record_budget() asserts pointer identity with aius_runtime_budget()
 	 * for each platform checkpoint; here we pin the exact set and order. */
-	CHECK(g_platform.budget_count == 4u);
+	CHECK(g_platform.budget_count == 5u);
 	CHECK(g_platform.budget_checkpoints[0] ==
 	      AIUS_BOOT_CHECKPOINT_RESET_CAPTURE);
 	CHECK(g_platform.budget_checkpoints[1] ==
 	      AIUS_BOOT_CHECKPOINT_METRICS);
 	CHECK(g_platform.budget_checkpoints[2] == AIUS_BOOT_CHECKPOINT_UDP);
 	CHECK(g_platform.budget_checkpoints[3] == AIUS_BOOT_CHECKPOINT_REPLAY);
+	CHECK(g_platform.budget_checkpoints[4] == AIUS_BOOT_CHECKPOINT_AUDIO);
 	CHECK(g_platform.budgets[0]->service_budget_ms == 250u);
 	CHECK(g_platform.budgets[2]->max_rx_bytes == 532u);
 	CHECK(g_platform.budgets[3]->max_rx_bytes == 2048u);
+	CHECK(g_platform.budgets[4]->max_calls == 1u);
+	CHECK(g_platform.budgets[4]->max_rx_bytes == 0u);
+	CHECK(g_platform.budgets[4]->max_tx_bytes == 0u);
+	CHECK(g_platform.budgets[4]->service_budget_ms == 8u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3498,9 +3576,11 @@ static void test_epoch_traces(void)
 		"epoch.normal-trace",     "epoch.recovery-trace",
 		"epoch.failure.0",        "epoch.failure.3",
 		"epoch.failure.6",        "epoch.failure.7",
+		"epoch.failure.audio",
 		"epoch.no-partial-boot",  "epoch.completed-epochs",
 		"epoch.invalid.app",      "epoch.invalid.cdc",
-		"epoch.invalid.platform", "epoch.invalid.null",
+		"epoch.invalid.platform", "epoch.invalid.audio",
+		"epoch.invalid.null",
 		"epoch.status-snapshot"
 	};
 	AiusOpticalApp app;
@@ -3509,19 +3589,24 @@ static void test_epoch_traces(void)
 	AiusRecoveryStatus status;
 	uint32_t now_ms = 1u;
 
-	validate_unique_keys("registry.epoch", keys, ARRAY_COUNT(keys), 13u);
+	validate_unique_keys("registry.epoch", keys, ARRAY_COUNT(keys), 15u);
 
 	current_key = "epoch.normal-trace";
 	reset_world(false);
 	CHECK(run_epoch(now_ms++));
-	CHECK(g_platform.checkpoint_count == 10u);
-	for (size_t i = 0; i < 10u; ++i)
+	CHECK(g_platform.checkpoint_count == 11u);
+	for (size_t i = 0; i < 8u; ++i)
 		CHECK(g_platform.checkpoints[i] == (uint16_t)i);
+	CHECK(g_platform.checkpoints[8] == AIUS_BOOT_CHECKPOINT_AUDIO);
+	CHECK(g_platform.checkpoints[9] == AIUS_BOOT_CHECKPOINT_SD);
+	CHECK(g_platform.checkpoints[10] ==
+	      AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
 	CHECK(g_platform.feeds == 1u);
 	CHECK(g_platform.reset_capture_calls == 1u);
 	CHECK(g_platform.metrics_calls == 1u);
 	CHECK(g_platform.udp_calls == 1u);
 	CHECK(g_platform.replay_calls == 1u);
+	CHECK(g_platform.audio_calls == 1u);
 	CHECK(g_runtime.last_checkpoint ==
 	      AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
 	CHECK(g_runtime.completed_epochs == 1u);
@@ -3537,6 +3622,7 @@ static void test_epoch_traces(void)
 	CHECK(g_platform.feeds == 1u);
 	CHECK(g_platform.reset_capture_calls == 0u);
 	CHECK(g_platform.metrics_calls == 0u);
+	CHECK(g_platform.audio_calls == 0u);
 	CHECK(g_net.stack_start_calls == 0u);
 	CHECK(g_runtime.network_http.supervisor.state ==
 	      AIUS_NET_STATE_RECOVERY_SAFE);
@@ -3576,6 +3662,15 @@ static void test_epoch_traces(void)
 	CHECK(g_platform.checkpoint_count == 8u);
 	CHECK(g_platform.feeds == 0u);
 
+	current_key = "epoch.failure.audio";
+	reset_world(false);
+	g_platform.audio_ok = false;
+	CHECK(!run_epoch(now_ms++));
+	CHECK(g_platform.checkpoint_count == 9u);
+	CHECK(g_platform.checkpoints[8] == AIUS_BOOT_CHECKPOINT_AUDIO);
+	CHECK(g_platform.audio_calls == 1u);
+	CHECK(g_platform.feeds == 0u);
+
 	current_key = "epoch.completed-epochs";
 	reset_world(false);
 	CHECK(run_epoch(now_ms++));
@@ -3598,6 +3693,7 @@ static void test_epoch_traces(void)
 	current_key = "epoch.invalid.cdc";
 	app = app_table();
 	cdc = cdc_primitives();
+	platform = platform_ops();
 	cdc.write = nullptr;
 	aius_runtime_teensy_construct(&g_runtime, &app, &cdc, &platform, 0u,
 	                             false);
@@ -3605,12 +3701,22 @@ static void test_epoch_traces(void)
 	CHECK(!aius_runtime_teensy_epoch(&g_runtime, 1u));
 
 	current_key = "epoch.invalid.platform";
+	app = app_table();
 	cdc = cdc_primitives();
 	platform = platform_ops();
 	platform.feed_watchdog = nullptr;
 	aius_runtime_teensy_construct(&g_runtime, &app, &cdc, &platform, 0u,
 	                             false);
 	CHECK(!g_runtime.valid);
+
+	current_key = "epoch.invalid.audio";
+	platform = platform_ops();
+	platform.audio = nullptr;
+	aius_runtime_teensy_construct(&g_runtime, &app, &cdc, &platform, 0u,
+	                             false);
+	CHECK(!g_runtime.valid);
+	CHECK(!aius_runtime_teensy_epoch(&g_runtime, 1u));
+
 	platform = platform_ops();
 	aius_runtime_teensy_construct(&g_runtime, &app, &cdc, nullptr, 0u,
 	                             false);

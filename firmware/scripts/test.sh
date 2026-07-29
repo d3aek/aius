@@ -388,12 +388,14 @@ net)
 	# UDP codec plus the pure generation/deadline network supervisor oracle.
 	net_out="$build_dir/net"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/lib/aius_boot/include" \
 		"$fw_root/test/net/test_net.c" \
 		"$fw_root/lib/aius_net/src/aius_net.c" \
 		-o "$net_out"
 	"$net_out"
 	supervisor_out="$build_dir/net-supervisor"
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/lib/aius_boot/include" \
 		"$fw_root/test/net/test_net_supervisor.c" \
 		"$fw_root/lib/aius_net/src/aius_net.c" \
 		-o "$supervisor_out"

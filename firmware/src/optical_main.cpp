@@ -1689,7 +1689,7 @@ static FLASHMEM void put_status(uint8_t *payload, uint16_t *length)
  *   71      network_state           AiusNetState, 0..5
  *   72      recovery_safe           0 or 1
  *   73      network_last_fault      AiusNetFault, 0..10
- *   74      last_checkpoint         0..9, the last checkpoint persisted
+ *   74      last_checkpoint         0..10, the last checkpoint persisted
  *   75..78  network_generation      u32 LE
  *   79..82  boot_generation         u32 LE
  *   83..86  reset_source            u32 LE, the raw retained value
@@ -3038,7 +3038,7 @@ static FLASHMEM void app_request_reboot(void *)
  * stamps are compile-time literals, so their contribution is exact; the counters
  * are bounded by their C type; and the four small values are bounded by the
  * domains the portable status encoder validates (AiusNetState 0..5, AiusNetFault
- * 0..10, checkpoint 0..9, and two booleans). snprintf's capacity check below is
+ * 0..10, checkpoint 0..10, and two booleans). snprintf's capacity check below is
  * still the runtime backstop: an impossible value truncates, the arm returns 0,
  * and the dispatcher answers INTERNAL rather than emitting a corrupt line. */
 static constexpr size_t AIUS_ID_U32_DIGITS = 10u;   /* 4294967295 */
@@ -4829,6 +4829,16 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	return true;
 }
 
+/* Temporary Slice 2b2 bridge. Slice 2b3 replaces this no-work callback with
+ * the portable audio-service drain when the ISR cutover lands. */
+static FLASHMEM bool platform_audio(void *, const AiusRuntimeBudget *budget,
+                                    uint32_t now_ms)
+{
+	(void)now_ms;
+	return budget != nullptr &&
+	       budget->checkpoint == AIUS_BOOT_CHECKPOINT_AUDIO;
+}
+
 /* The last checkpoint is persisted before each service call, through the boot
  * adapter's double-slot retained storage. A torn write cannot be read back as
  * valid: the slot's committed marker is cleared first and restored last, and
@@ -4884,6 +4894,7 @@ static FLASHMEM AiusRuntimeTeensyPlatformOps platform_ops(void)
 	ops.metrics = platform_metrics;
 	ops.udp = platform_udp;
 	ops.replay = platform_replay;
+	ops.audio = platform_audio;
 	ops.checkpoint = platform_checkpoint;
 	ops.feed_watchdog = platform_feed_watchdog;
 	ops.publish_config = platform_publish_config;
@@ -5258,9 +5269,10 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
 
 /* Exactly one runtime epoch, then the three things the epoch itself must not do.
  *
- * The epoch runs checkpoints 0..8 in order, records EPOCH_COMPLETE and feeds
- * the watchdog once; an incomplete epoch returns false without that feed, which
- * is what makes a wedged service a bounded reset rather than a hang.
+ * The normal epoch runs checkpoints 0..7, AUDIO 9, then SD 8, records
+ * EPOCH_COMPLETE 10 and feeds the watchdog once; an incomplete epoch returns
+ * false without that feed, which is what makes a wedged service a bounded
+ * reset rather than a hang.
  *
  * request_reboot() only records (aius_optical_app.cpp), because the dispatcher
  * never resets or delays, so the reset happens here -- but NOT at the end of the
