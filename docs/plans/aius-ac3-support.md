@@ -94,9 +94,11 @@ sequenced after.
    **No block split** — 2a's 256-frame emission already fits `enqueue`.~~
    **DONE 2026-07-29** — parser scope, deferred dispatch, observability,
    target integration and UI truth are complete; live AC-3 remains phase 4.
-4. Target integration: arena measurement, cycle meters, flash, live TV
-   validation (the actual mission test: nightly content, dialogue lifted
-   via center gain).
+4. ~~Bounded target integration: arena measurement, cycle meters, exact-image
+   flash, SD replay, CM6206 optical input, and committed-wire channel
+   identity.~~ **DONE 2026-07-29.** The remaining mission test is the
+   four-hour live-TV run plus by-ear dialogue validation, deliberately
+   scheduled after the OTA investigation verdict.
 
 `doc-index --validate-outstanding-work` cannot validate this plan because
 document discovery does not yet index `src/hardware/**/docs`; it reports
@@ -112,7 +114,7 @@ is therefore recorded manually below, using the same canonical grammar.
 - `docs/plans/aius-network-hardening.md` — `coordinate`: AC-3 phase 2 owns the defect-31 decode-off-ISR fix, the new AUDIO checkpoint, and the sustained DTS proof; the hardening plan remains the defect ledger and retains defect 34. Existing one-feed watchdog and recovery-safe scheduling semantics do not change.
 - `docs/plans/aius-open-work-register.md` — `coordinate`: The register remains a projection of authoritative work and must strike defect 31 only after Slice 2b's capture-plus-HTTP hardware soak, never at code completion alone.
 - `docs/plans/aius-optical-prototype.md` — `coordinate`: Slice 2b moves the measurement and flight-recorder block producer from audio-ISR to epoch context without changing their committed-wire tap; phase 4's card replay and live-TV checks extend the existing optical validation without replacing its broader prototype gates.
-- `docs/plans/aius-ota-upgrade.md` — `unrelated`: AC-3 adds no update format, rollback state, or OTA transport surface.
+- `docs/plans/aius-ota-upgrade.md` — `coordinate`: AC-3 adds no update format, rollback state, or OTA transport surface, but the owner has deliberately scheduled its four-hour live-TV and by-ear gates after the OTA investigation verdict.
 - `docs/plans/aius-replay-manager.md` — `coordinate`: Slice 2b preserves replay's audio-ISR consumer, exact 256-word pop cadence, short-pop underrun semantics, and epoch refill ownership; only the pop destination changes from synchronous decode to the ingress ring. Phase 4 adds AC-3 IEC fixtures through the same transport.
 - `docs/plans/aius-sample-rate-following.md` — `coordinate`: AC-3 remains 48 kHz-only. Slice 2b's 96,000-word/s ingress and 187.5-block/s service arithmetic is explicitly 48 kHz-only, so later rate following must resize or derive the quotas and ring rather than inherit hidden 48 kHz constants.
 - `docs/plans/aius-sd-config-web.md` — `coordinate`: Phase 3 edits the shared status UI and must preserve the shipped dashboard and SD-served page contracts.
@@ -2156,23 +2158,26 @@ Bench first, TV second, because the bench is scriptable and the TV is not:
   by the same amount; it may not cause output drops, AU abandons, service
   overruns, ingress drops/overflow, service-generation resets, gap/source
   flushes or a watchdog reset.
-- **The four-hour TV gate is dependency-blocked by sample-rate following.**
+- **Sample-rate following is the technical clock prerequisite for the
+  four-hour TV gate.**
   The known 48,021-versus-48,000 mismatch eventually exhausts retained
   capacity and produces ingress overflow/reset behavior, so paired
   stalls/retries cannot make a four-hour run a valid AC-3 acceptance. Phase 4
   completes the clock-coherent SD bench and bounded external optical proof;
-  it explicitly defers the production-duration gate until
-  `aius-sample-rate-following.md` is delivered. A temporary clock-matched image
-  cannot satisfy it.
-- **After that dependency, run the TV for four continuous hours** on an exact
-  committed production image containing both changes: nightly AC-3 content, dialogue
-  lifted via `center_gain_linear` plus centre EQ. Poll at fixed intervals and
-  record deltas for boot/watchdog generation, carrier, `bursts_ok`, completed
-  output, codec Pc, service maxima/overruns, parse/decode rejects, output drops,
-  AU abandons, ingress drops/overflow, service-generation resets and
-  gap/source flushes. Stable boot generation, continuous carrier/decode progress
-  and zero harmful deltas are mandatory. This is the only gate that confirms
-  the mission rather than the instrument.
+  it explicitly requires `aius-sample-rate-following.md` to be delivered. A
+  temporary clock-matched image cannot satisfy it.
+- **The owner schedules that otherwise-ready gate after the OTA investigation
+  verdict** (2026-07-29). “OTA investigated” is the finite verdict gate in
+  `aius-ota-upgrade.md`; it does not mean OTA must be implemented. After both
+  prerequisites, run the TV for four continuous hours on an exact committed
+  production image containing the decoder and clock-following changes:
+  nightly AC-3 content, dialogue lifted via `center_gain_linear` plus centre
+  EQ. Poll at fixed intervals and record deltas for boot/watchdog generation,
+  carrier, `bursts_ok`, completed output, codec Pc, service maxima/overruns,
+  parse/decode rejects, output drops, AU abandons, ingress drops/overflow,
+  service-generation resets and gap/source flushes. Stable boot generation,
+  continuous carrier/decode progress and zero harmful deltas are mandatory.
+  This is the only gate that confirms the mission rather than the instrument.
 - By-ear checks already owed (squelch seam silence, layout-aware stereo
   level) fold into the same session.
 
@@ -2225,10 +2230,11 @@ and build timestamp.
   through decode, layout-aware DSP and committed transmit words without using
   the reverse optical fibre as an oracle.
 
-The bounded Phase 4 gates are complete. The four-hour TV mission gate and
-by-ear checks remain dependency-blocked by `aius-sample-rate-following.md`; this
-evidence does not substitute a temporary clock-matched run for production
-acceptance.
+The bounded Phase 4 gates are complete. Sample-rate following remains the
+technical clock prerequisite for the four-hour TV mission gate; the owner has
+additionally scheduled that gate and the by-ear checks after the OTA
+investigation verdict. This evidence does not substitute a temporary
+clock-matched run for production acceptance.
 
 ### Phase boundary and exact-image proof
 
@@ -2240,7 +2246,7 @@ only from a rebuilt and flashed copy of that exact committed production
 revision, verified through the image-reported build identity. The bench and TV
 evidence update this plan and `firmware/README.md` in audited evidence commits:
 Phase 4 records the SD and bounded CM6206 benches; the four-hour TV result lands
-only after the sample-rate-following dependency.
+only after sample-rate following and the OTA investigation verdict.
 
 ### Debt this phase must close or record
 

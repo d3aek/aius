@@ -105,6 +105,14 @@ specified here. Strike items here in the commit that closes them.
 
 ## Larger backlog
 
+- **Sample-rate following** — active production work in
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md). It is the
+  technical clock prerequisite for the AC-3 four-hour gate.
+- **OTA investigation verdict** — complete the finite investigation gate in
+  [`aius-ota-upgrade.md`](aius-ota-upgrade.md) without implying OTA
+  implementation or an OTP fuse burn. By owner decision 2026-07-29, the AC-3
+  four-hour and by-ear gates run only after this verdict as well as
+  sample-rate following.
 - **DSP roadmap item 4 — surround decorrelation.** The last item of the
   accepted audio-quality order
   ([`aius-dsp-config-api.md` §Accepted order](aius-dsp-config-api.md#accepted-order-for-the-next-level)):

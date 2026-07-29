@@ -52,12 +52,15 @@ observations do weaken the original boundary slightly, and both are worth statin
   with a reflash between each — but only after a fix for a buffered-treated-as-
   transmitted race. `POST /api/reboot` had the *same* defect class; it was fixed
   the same way on 2026-07-28 ([prerequisite 1](#prerequisites-in-order)) and
-  awaits B6 gate 2 on hardware. The boundary works; a neighbouring path built on
-  the same assumption did not, which is the point that survives the fix.
-- **Recovery-safe mode, the second half of the boundary, has never executed on
-  hardware.** Its proof is B6 gate 3, which is blocked behind gate 2, and the
-  retained-OCRAM survival that latches the mode is explicitly not to be claimed
-  until B6 confirms it. So half the stated recovery boundary is unvalidated.
+  passed B6 gate 2 on hardware 2026-07-26. The boundary works; a neighbouring
+  path built on the same assumption did not, which is the point that survives
+  the fix.
+- ~~**Recovery-safe mode, the second half of the boundary, has never executed
+  on hardware.**~~ **Resolved by B6 on 2026-07-26.** Recovery-safe mode latched
+  after two early watchdog resets and returned to service unaided across every
+  recoverable injected checkpoint. Checkpoints 1 and 2 remain structurally
+  unrecoverable because recovery-safe itself runs exactly those two USB
+  checkpoints; that is a known boundary, not an unrun gate.
 
 ## Self-flashing is possible
 
@@ -166,15 +169,16 @@ Consequences, all favourable:
 
 ### What remains genuinely unknown
 
-1. **Whether PJRC blows `0x6E0[23:16]` on Teensy 4.1.** The annotated RM covers
+1. ~~**Whether PJRC blows `0x6E0[23:16]` on Teensy 4.1.**~~ **Resolved
+   2026-07-28: the real board read `0x00000000`.** The annotated RM covers
    `BT_FUSE_SEL` and the GPIO boot pins but is silent on `BOOT_CONFIG_MISC`.
-   **This is the single gating fact for hardware A/B** and needs a runtime OCOTP
-   read on real hardware, or PJRC. ~~Note `imxrt.h` stops at `HW_OCOTP_0x6C0`, so
-   there is no macro for it.~~ **Wrong, corrected 2026-07-28:** only the
+   Hardware A/B is therefore unavailable without an irreversible burn, which
+   the owner has ruled out during investigation. ~~Note `imxrt.h` stops at
+   `HW_OCOTP_0x6C0`, so there is no macro for it.~~ **Wrong, corrected
+   2026-07-28:** only the
    *numerically named* macros stop there; `HW_OCOTP_MISC_CONF1` is fuse `0x6E0`.
    The read is built and served on `/api/status`
-   ([§The fuse read, as built](#the-fuse-read-as-built)); the board has not been
-   asked yet.
+   ([§The fuse read, as built](#the-fuse-read-as-built)).
 2. **Whether the ROM auto-fails-over primary → secondary for FlexSPI NOR.** The
    boot-flow figure shows no validity check and no fallback branch; documented
    auto-fallback covers Serial NAND (ECC) and SD/eMMC only. **Assume
@@ -284,8 +288,8 @@ Three gaps for A/B specifically:
    somewhere layout-independent. This is the concrete form of the "identifies a
    build, not a slot" gap above.
 4. **Power-cycle survival is unaddressed.** Retained OCRAM survival across a
-   *watchdog reset* is designed for and **explicitly not to be claimed until B6
-   confirms it**; survival across a power cycle is not discussed anywhere. An A/B
+   *watchdog reset* is proven by B6; survival across a power cycle is not
+   discussed anywhere. An A/B
    scheme probably needs the latter, and DTCM was rejected because startup clears
    it while flash/EEPROM was rejected because a checkpoint is written every epoch
    — so a *rarely written* non-volatile slot marker is a different question from
@@ -302,11 +306,12 @@ step — offered, staged, verified, activated, healthy, rolled back:
 | **Upload progress** | **yes, since 2026-07-28** — `sd_diag.upload_supplied`, `job_transferred`, `job_total` ([prerequisite 2](#prerequisites-in-order)) |
 | Upload failed, and why | partly — `sd_diag.last_failure` has fault, phase, driver fault and bytes, latched only on failure |
 | Image verified | no mechanism exists |
-| Activated / rebooting | **fixed 2026-07-28, unproven on hardware** — see below |
+| Activated / rebooting | **fixed 2026-07-28 and proven by B6 gate 2** — see below |
 | Healthy after boot | yes — `boot_generation`, `watchdog_early_resets`, `recovery_safe` |
 | Rolled back | no — nothing distinguishes a rollback from an ordinary recovery-safe latch |
 
-Three concrete defects, all recorded in the network-hardening plan:
+Two remaining gaps and one resolved defect, all recorded in the
+network-hardening plan:
 
 - ~~**`POST /api/reboot` resets but never answers**~~ — **fixed 2026-07-28.** The
   mechanism was pinned first: dispatch retains the response un-formatted,
@@ -314,12 +319,12 @@ Three concrete defects, all recorded in the network-hardening plan:
   reset fired at the end of the dispatching epoch. The reset is now gated on the
   transaction reaching `AIUS_HTTP_TX_IDLE` with no action outstanding, bounded at
   500 ms so a wedged peer cannot veto a requested reset. **An OTA "activate" verb
-  needed exactly this**, and it now has it — subject to B6 gate 2, which is the
-  only evidence that distinguishes "performed" from "acknowledged" on the board.
-- **The four `http_*` counters have no producer at all** — `put_status()` never
-  writes bytes 55..70 and the JSON reads them back from those same untouched
-  bytes. So the HTTP layer emits **no** per-request telemetry: no request count, no
-  rejection count, no dropped-connection count.
+  needed exactly this**, and B6 gate 2 now distinguishes "performed" from
+  "acknowledged" on the board.
+- ~~**The four `http_*` counters have no producer at all.**~~ **Resolved.**
+  The runtime now produces and publishes request, rejection and client-drop
+  counts; `http_server_rebinds` is deliberately always zero because the server
+  is bound once per network generation.
 - **No event type covers anything HTTP or upload related.** The ring's ten types
   are audio, network and config only, so an operator watching `/api/events` sees
   nothing about an upgrade.
@@ -405,10 +410,43 @@ channel is already physical.
   scoping exercise, not an implementation commitment. The path is: explore
   the staged-image design first — WITHOUT burning the fuse — and only after
   that exploration decide whether to permanently modify the board. That
-  exploration is itself deferred; it is future work in this plan, not a
-  next step. Until the owner explicitly revisits this, no work item here
+  exploration is now the owner's required verdict gate before the AC-3
+  four-hour and by-ear tests; it remains investigation, not permission to
+  implement OTA. Until the owner explicitly revisits this, no work item here
   may write OCOTP, and the read-only structural guards in
   [§The fuse read, as built](#the-fuse-read-as-built) stay load-bearing.
+
+## Investigation completion gate
+
+“OTA fully investigated” means this plan can issue a finite build/defer verdict.
+It does **not** require an OTA implementation, and it never authorizes an OTP
+fuse burn. By owner decision 2026-07-29, the AC-3 four-hour and by-ear mission
+tests wait for this verdict.
+
+The verdict requires all of the following:
+
+1. ~~B6 proves the watchdog/recovery boundary and acknowledged reboot.~~
+   **Done 2026-07-26**, with checkpoints 1 and 2 explicitly unresolved by
+   structure.
+2. ~~Read and disposition `FLASH_SEC_IMAGE_OFFSET`.~~ **Done 2026-07-28:**
+   unblown, so no hardware A/B without a prohibited fuse burn.
+3. Reproduce or disposition network-hardening defect 25, the conditional
+   flash-loader-specific reboot failure. An unattended upgrade cannot be called
+   recoverable while unattended reflash is conditionally broken.
+4. Measure erase and program stalls, including the LUT/interrupt constraints,
+   and decide whether audio must stop while staging to boot flash.
+5. Prove the HalfKay/ROM recovery path still works after the flash primitive's
+   LUT use, or state the exact recovery limitation.
+6. Choose between staged single-image recovery and A/B-with-fuse as a product
+   posture, without burning the fuse during investigation.
+7. Specify image signature/key ownership, activation, rollback, power-loss
+   state, slot/build identity, and power-cycle-persistent health state.
+8. Close or explicitly accept the operator-observability gaps for offered,
+   staged, verified, activated, healthy and rolled-back states.
+
+The outcome is one of: **build staged single-image OTA**, **seek separate
+authorization for fused A/B**, or **defer OTA with the recovery and security
+reasons recorded**.
 
 ## Prerequisites, in order
 
@@ -428,8 +466,7 @@ worthwhile:
    optical-app oracle asserts 401 with no token and with a wrong one for all
    five routes, and the optical-cutover structural guard rejects a `loop()` that
    resets directly, an unbounded wait, or a fixed-epoch delay in place of the
-   drain predicate. **Still owed: B6 gate 2** — the fix is proven natively and
-   has not been exercised on the board.
+   drain predicate. **B6 gate 2 passed on hardware 2026-07-26.**
 2. ~~**Serialize upload progress** — `transferred` and `upload_supplied` into
    `sd_diag`.~~ **Done 2026-07-28.** `sd_diag` now carries
    `upload_supplied` (bytes the transaction has handed down),
@@ -441,15 +478,15 @@ worthwhile:
    `upload_supplied` advancing while `job_transferred` stands still is a card
    that has stopped accepting writes — previously indistinguishable from an
    idle board.
-3. **Run B6.** Recovery-safe mode has never executed and retained-OCRAM survival
-   is unconfirmed. **An A/B scheme whose fallback rests on both would be building
-   on unproven ground** — this is the strongest sequencing argument in the
-   document. Unchanged, and now the largest remaining prerequisite.
+3. ~~**Run B6.**~~ **Done 2026-07-26.** Recovery-safe mode latched after two
+   early watchdog resets and returned to service unaided at all seven
+   recoverable checkpoints. Checkpoints 1 and 2 are structurally unresolved
+   because they are the only services recovery-safe mode itself runs.
 4. **Read the OTP fuse on real hardware** to settle whether hardware A/B is
-   available, and **measure a sector-erase stall** against the audio block. Those
-   are the two remaining unknowns in
-   [§Self-flashing is possible](#self-flashing-is-possible), and both need the
-   device rather than more reading.
+   available, and **measure a sector-erase stall** against the audio block.
+   These were the two device-only checks in
+   [§Self-flashing is possible](#self-flashing-is-possible); the fuse read is
+   done and the stall measurement remains.
    - ~~The fuse read.~~ **Done 2026-07-28, mechanism and reading.**
      `GET /api/status` carries
      `boot_fuse_0x6e0: {word, read, sec_image_offset, sec_image_size}` — the
@@ -460,7 +497,8 @@ worthwhile:
      hardware A/B is unavailable without an irreversible burn — which the
      owner has ruled out for scoping
      ([§Design constraints](#design-constraints-from-the-owner-2026-07-28)).
-     Any A/B continuation is therefore the staged-image design, deferred.**
+     Any investigation continuation therefore starts with the staged-image
+     design; it does not authorize implementation.**
    - **The erase stall.** No flash was written or erased in this batch. The
      measurement is designed rather than performed: see
      [§Measuring the sector-erase stall](#measuring-the-sector-erase-stall).
@@ -520,7 +558,7 @@ sec_image_size: 0}`. Unblown — the shipped value, exactly what the sentinel
 design anticipated. Hardware A/B does not exist on this board today, and per
 [§Design constraints](#design-constraints-from-the-owner-2026-07-28) no burn
 may change that during scoping; the staged-image design is the exploration
-path, deferred.
+path, now part of the investigation completion gate.
 
 ### Measuring the sector-erase stall
 
@@ -596,32 +634,32 @@ bricked. That is a much better starting position than the deferral bullet implie
 
 What still stands in the way, in descending order:
 
-- ~~**The activate verb is broken and unauthenticated.**~~ **Fixed 2026-07-28**
-  and awaiting B6 gate 2. `POST /api/reboot` answers before it resets and all
+- ~~**The activate verb is broken and unauthenticated.**~~ **Fixed 2026-07-28
+  and proven by B6 gate 2.** `POST /api/reboot` answers before it resets and all
   five mutating routes carry a credential.
-- **Half the recovery boundary has never run on hardware.** Recovery-safe mode has
-  never executed and retained-OCRAM survival is unconfirmed. An A/B fallback
-  resting on both would be building on unproven ground. **Now the largest item.**
+- ~~**Half the recovery boundary has never run on hardware.**~~ **Resolved by
+  B6 on 2026-07-26** for every recoverable checkpoint; checkpoints 1 and 2 are
+  explicitly outside the recovery-safe mechanism.
 - **The gate is computable from a MAC address**, so image signing has to be added
   rather than assumed.
-- **Two unknowns need the device**: the OTP fuse state — the read is now built
-  and served, so this is one HTTP request away once a board is up — and the erase
-  stall against the audio block, whose measurement is designed but not run.
+- ~~**The OTP fuse state needs the device.**~~ **Resolved: unblown.** The erase
+  and program stalls against the audio block remain designed but unmeasured.
 
-**Fix the prerequisites and the answer likely becomes yes.** Two of the four are
-now done, and what remains is dominated by B6 — the milestone the
-network-hardening plan exists to reach anyway.
+**Complete the investigation gate and the answer becomes finite.** B6 and the
+fuse read are done. The remaining work is the flash behavior and recovery proof,
+defect 25, the staged-image/A/B posture, image authentication, persistent
+activation/rollback state, and operator observability.
 
-The single fact that would most change the shape is **the OTP fuse turning out to
-be blown**, which would give hardware image selection and move most of the risk
-below the application. If it is unblown, A/B costs an irreversible fuse write per
-board, and a staged-image-plus-CDC-flash design becomes the better trade.
+The fact that most changed the shape is now resolved: **the OTP fuse is
+unblown**. Hardware A/B would therefore cost an irreversible fuse write per
+board, prohibited during investigation, so staged-image-plus-CDC recovery is
+the path to investigate first.
 
 **One correction to the original deferral, though, and it stands regardless of
 whether OTA is built.** §Deferred work says "HalfKay plus watchdog recovery-safe
-mode is the recovery boundary" — and recovery-safe mode has never once executed.
-That claim should be read as a design intention rather than a validated property
-until B6 gate 3 runs.
+mode is the recovery boundary". That recovery boundary is now validated by B6
+for every checkpoint it can structurally recover; checkpoints 1 and 2 remain
+outside it.
 
 ## Related documents
 

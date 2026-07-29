@@ -394,7 +394,8 @@ old evidence — watching `boot_generation` increment — is exactly what cannot
 distinguish "performed" from "acknowledged". The reset now waits for the
 transaction to drain, bounded at 500 ms, and the four control routes
 (`/api/reboot`, `/api/start`, `/api/stop`, `/api/clear`) are gated on
-`X-Aius-SD-Auth`. **Confirmation is B6 gate 2**, which has not yet run.
+`X-Aius-SD-Auth`. **B6 gate 2 passed on hardware 2026-07-26**, distinguishing
+the delivered response from the subsequent reset.
 
 The S/PDIF input has confirmed carrier plus live PCM passthrough. Live DTS
 decode passed for 1,857 seconds on the tagged +438 ppm clock-isolation image.
@@ -405,8 +406,10 @@ parse/decode rejection, AUDIO overrun, drop, abandon or watchdog reset, and
 completed-AU DWT measurements around 1.114 million cycles. The on-device
 committed-wire oracle identifies all six 5.1 channels with 100.52 dB or better
 unwanted-side rejection and centre/LFE left-right matching reported as 0.00 dB.
-The four-hour TV and by-ear mission gates remain blocked on sample-rate
-following; the bounded runs do not waive them.
+Sample-rate following remains the technical prerequisite for the four-hour TV
+and by-ear mission gates. The owner has deliberately scheduled those gates
+after the OTA investigation verdict as well; the bounded runs do not waive
+them.
 
 Three HTTP interop defects are open, all found by pointing a non-browser client
 at the board and all making the control surface work only for the exact byte
