@@ -456,7 +456,7 @@ hashes remain exact; `a52-fuzz` passes 50,000 iterations. Removing the three
 vestigial state fields lowers the current padded adapter's host arena
 high-water from 90,464 B to 90,448 B.
 
-**Step F2 — fix the idioms, drop the carve-outs.** Remove
+**Step F2 — fix the idioms, drop the carve-outs. DONE 2026-07-29.** Remove
 `-Wno-shift-negative-value`, `-fno-sanitize=shift`,
 `-Wno-implicit-fallthrough`, `-Wno-unused-parameter` from `a52_build`, and
 fix what they were hiding. **The gate compiled and ran with the carve-outs
@@ -498,6 +498,14 @@ Also delete the `config.h` `fprintf` hack by deleting the offending
 `HAVE_MEMALIGN` / `LIBA52_DOUBLE` non-definitions are what route allocation
 through the arena shim and keep `sample_t` as `float`. Update its header
 comment in the same commit.
+
+**Delivered proof:** the common `-Werror` build passes without the four
+F2 carve-outs. The source-coupled `tables.h` probe compares all 36 distinct
+quantizer constants with zero bit-level differences. With
+`UBSAN_OPTIONS=halt_on_error=1`, the `a52` suite preserves the four exact
+F0 hashes (`7d7d27ae1ae01351`, `e5ace9204e8da8bb`,
+`27ca745607a8b834`, `d549a217bb66b3c6`) and `a52-fuzz` passes 50,000
+iterations.
 
 **Steps F3a / F3b / F3c — bounded reader, then pad removal, then CRC.**
 Re-issued as three commits after the gate returned NO-GO on the single-step

@@ -121,12 +121,8 @@ dts_build() {
 # Shared build inputs for the AC-3 suites. Mirrors dts_build: the adapter and
 # the forked liba52 allocate through libc malloc/free, intercepted at LINK
 # time by aius_alloc_shim via --wrap so the no-heap arena path is provable
-# in both. The carve-outs are recorded decisions
-# (lib/aius_a52/a52/NOTICE.md): liba52's config.h seam lives in
-# lib/aius_a52/include, -Wno-unused-parameter / -Wno-implicit-fallthrough
-# cover remaining upstream 0.7.4 idioms, and -fno-sanitize=shift silences the
-# by-design current_word << 32 and signed-shift mantissa idioms UBSan would
-# flood on every frame.
+# in both. The fork compiles under the common -Werror plus ASan/UBSan flags;
+# lib/aius_a52/include is only the config.h seam and _GNU_SOURCE supplies M_PI.
 a52_build() {
 	local out="$1"
 	shift
@@ -136,8 +132,6 @@ a52_build() {
 	# The comma-separated --wrap list is one linker argument.
 	# shellcheck disable=SC2054
 	local a52_cflags=(-D_GNU_SOURCE \
-		-Wno-unused-parameter -Wno-implicit-fallthrough \
-		-Wno-shift-negative-value -fno-sanitize=shift \
 		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 	local a52="$fw_root/lib/aius_a52/a52"
 	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \
@@ -253,14 +247,15 @@ a52)
 	# + arena/metrics contract.
 	out="$build_dir/a52"
 	a52_build "$out" "$fw_root/test/a52/test_a52.c"
-	"$out" "$fw_root/tools/ac3_vectors/vectors"
+	UBSAN_OPTIONS=halt_on_error=1 "$out" "$fw_root/tools/ac3_vectors/vectors"
 	;;
 a52-fuzz)
 	# AC-3 adapter robustness under ASan/UBSan: deterministic seam hunt +
 	# random corruption, every decode under the defect-31 termination oracle.
 	out="$build_dir/a52-fuzz"
 	a52_build "$out" "$fw_root/test/a52/fuzz_a52.c"
-	"$out" "$fw_root/tools/ac3_vectors/vectors" 50000
+	UBSAN_OPTIONS=halt_on_error=1 \
+		"$out" "$fw_root/tools/ac3_vectors/vectors" 50000
 	;;
 iec61937)
 	# IEC 61937 burst parser known-answer test against the committed corpus.

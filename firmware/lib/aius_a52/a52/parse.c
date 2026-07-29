@@ -233,8 +233,10 @@ static int parse_exponents (a52_state_t * state, int expstr, int ngrps,
 	case EXP_D45:
 	    *(dest++) = exponent;
 	    *(dest++) = exponent;
+	    /* fall through */
 	case EXP_D25:
 	    *(dest++) = exponent;
+	    /* fall through */
 	case EXP_D15:
 	    *(dest++) = exponent;
 	}
@@ -247,8 +249,10 @@ static int parse_exponents (a52_state_t * state, int expstr, int ngrps,
 	case EXP_D45:
 	    *(dest++) = exponent;
 	    *(dest++) = exponent;
+	    /* fall through */
 	case EXP_D25:
 	    *(dest++) = exponent;
+	    /* fall through */
 	case EXP_D15:
 	    *(dest++) = exponent;
 	}
@@ -261,8 +265,10 @@ static int parse_exponents (a52_state_t * state, int expstr, int ngrps,
 	case EXP_D45:
 	    *(dest++) = exponent;
 	    *(dest++) = exponent;
+	    /* fall through */
 	case EXP_D25:
 	    *(dest++) = exponent;
+	    /* fall through */
 	case EXP_D15:
 	    *(dest++) = exponent;
 	}
@@ -406,8 +412,9 @@ static void coeff_get (a52_state_t * state, sample_t * coeff,
 	    continue;
 
 	default:
-	    coeff[i] = ((bitstream_get_2 (state, bapi) << (16 - bapi)) *
-			  factor[exp[i]]);
+	    coeff[i] =
+		((int32_t)((uint32_t)bitstream_get_2 (state, bapi) <<
+			   (16 - bapi)) * factor[exp[i]]);
 	}
     }
 }
@@ -513,7 +520,9 @@ static void coeff_get_coupling (a52_state_t * state, int nfchans,
 		break;
 
 	    default:
-		cplcoeff = bitstream_get_2 (state, bapi) << (16 - bapi);
+		cplcoeff =
+		    (int32_t)((uint32_t)bitstream_get_2 (state, bapi) <<
+			      (16 - bapi));
 	    }
 
 	    cplcoeff *= scale_factor[exp[i]];

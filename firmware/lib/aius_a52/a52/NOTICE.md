@@ -88,15 +88,31 @@ coding, optionally including its LFE plane. The fork reifies that contract:
 The native suite pins this reduction with four byte-exact whole-vector hashes
 and direct core checks for `A52_DOLBY` negotiation and non-identity rejection.
 
+### 4. Define bit operations and quantizer constants
+
+All formerly undefined signed left shifts now operate on unsigned values before
+an explicit cast restores the required signed result; the signed bit reader
+still performs its deliberate arithmetic sign extension. The bottom-half
+readers handle their one reachable zero-bit initial state without shifting by
+32. `swab32` widens each byte before shifting, and the two signed mantissa paths
+use the same unsigned-shift round-trip.
+
+The 36 distinct quantizer constants use multiplication by 32768 instead of
+shifting negative integers. `tools/a52_probes/tabcheck.c` reads the actual
+tables and proves their float representations unchanged. Exponent-switch
+fallthrough is explicit, and the pure-C IMDCT path no longer prints an
+unconditional diagnostic.
+
 ## Remaining external accommodations
 
 `../include/config.h` keeps `sample_t` as `float`, routes the sample-buffer
-allocation through `malloc` for the Aius arena shim, and currently suppresses
-liba52's unconditional IMDCT `fprintf`. `../../../scripts/test.sh` scopes the
-remaining upstream warning and sanitizer carve-outs to the a52 build.
+allocation through `malloc` for the Aius arena shim, and carries no behavioural
+macro override. The a52 suites build under the common `-Werror` plus
+ASan/UBSan flags with fail-fast shift checking and no fork-specific warning or
+sanitizer carve-out.
 
 The bit reader is still unbounded in this checkpoint. The adapter therefore
 copies an access unit into an owned `AIUS_A52_MAX_FRAME` plus 32 KiB padded
-scratch before calling the core. Fork steps F2 and F3 remove the sanitizer
-carve-outs, add a byte-exact reader bound, and then remove that pad; until
-those commits land, the pad remains the active containment mechanism.
+scratch before calling the core. Fork steps F3a–F3c add a byte-exact reader
+bound, remove that pad, and add CRC validation; until those commits land, the
+pad remains the active containment mechanism.

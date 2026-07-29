@@ -40,8 +40,10 @@
 #	else
 
 #	define swab32(x)\
-((((uint8_t*)&x)[0] << 24) | (((uint8_t*)&x)[1] << 16) |  \
- (((uint8_t*)&x)[2] << 8)  | (((uint8_t*)&x)[3]))
+(((uint32_t)((uint8_t *)&x)[0] << 24) | \
+ ((uint32_t)((uint8_t *)&x)[1] << 16) | \
+ ((uint32_t)((uint8_t *)&x)[2] << 8)  | \
+  (uint32_t)((uint8_t *)&x)[3])
 
 #	endif
 #endif
@@ -68,7 +70,8 @@ static inline int32_t bitstream_get_2 (a52_state_t * state, uint32_t num_bits)
     int32_t result;
 	
     if (num_bits < state->bits_left) {
-	result = (((int32_t)state->current_word) << (32 - state->bits_left)) >> (32 - num_bits);
+	result = (int32_t)(state->current_word << (32 - state->bits_left))
+		 >> (32 - num_bits);
 	state->bits_left -= num_bits;
 	return result;
     }

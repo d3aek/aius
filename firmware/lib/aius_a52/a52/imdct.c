@@ -366,6 +366,7 @@ void a52_imdct_init (uint32_t mm_accel)
 {
     int i, k;
     double sum;
+    (void)mm_accel;
 
     /* compute imdct window - kaiser-bessel derived window, alpha = 5.0 */
     sum = 0;
@@ -425,7 +426,6 @@ void a52_imdct_init (uint32_t mm_accel)
     } else
 #endif
     {
-	fprintf (stderr, "No accelerated IMDCT transform found\n");
 	ifft128 = ifft128_c;
 	ifft64 = ifft64_c;
     }
