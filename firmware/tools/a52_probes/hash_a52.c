@@ -38,13 +38,36 @@ int main(int argc, char **argv)
             int fl, sr, br;
             int len = a52_syncinfo(d + off, &fl, &sr, &br);
             if (len <= 0 || off + (size_t)len > sz) break;
-            AiusPcmBlock blk;
-            memset(&blk, 0, sizeof(blk));
-            AiusStatus st = aius_a52_decode_access_unit(dec, d + off, (size_t)len, &blk);
-            if (st != AIUS_OK) { fprintf(stderr, "%s: status %d\n", names[v], (int)st); return 1; }
-            for (uint16_t c = 0; c < blk.channels; c++)
-                for (uint32_t i = 0; i < blk.frames; i++) {
-                    uint32_t s = (uint32_t)blk.planes[c][i];
+            AiusStatus st =
+                aius_a52_begin_access_unit(dec, d + off, (size_t)len);
+            if (st != AIUS_OK) {
+                fprintf(stderr, "%s: begin status %d\n", names[v], (int)st);
+                return 1;
+            }
+            int32_t au[AIUS_MAX_CHANNELS][AIUS_A52_FRAME_SAMPLES];
+            uint16_t channels = 0;
+            for (uint32_t block = 0;
+                 block < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; block++) {
+                AiusPcmBlock blk;
+                memset(&blk, 0, sizeof(blk));
+                st = aius_a52_decode_next_block(dec, &blk);
+                if (st != AIUS_OK || blk.frames != AIUS_A52_BLOCK_SAMPLES) {
+                    fprintf(stderr, "%s: block %u status %d frames %u\n",
+                            names[v], block, (int)st, blk.frames);
+                    return 1;
+                }
+                if (block == 0)
+                    channels = blk.channels;
+                if (blk.channels != channels)
+                    return 1;
+                for (uint16_t c = 0; c < channels; c++)
+                    memcpy(&au[c][block * AIUS_A52_BLOCK_SAMPLES],
+                           blk.planes[c],
+                           AIUS_A52_BLOCK_SAMPLES * sizeof(int32_t));
+            }
+            for (uint16_t c = 0; c < channels; c++)
+                for (uint32_t i = 0; i < AIUS_A52_FRAME_SAMPLES; i++) {
+                    uint32_t s = (uint32_t)au[c][i];
                     for (int k = 0; k < 4; k++) {
                         vh ^= (uint8_t)(s >> (8 * k));
                         vh *= 1099511628211ull;

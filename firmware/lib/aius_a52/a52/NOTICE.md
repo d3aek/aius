@@ -144,13 +144,30 @@ deterministic baseline is 5,616 OK / 60,184 rejected, 3,889,955 reader fills,
 54,909 suppressions, and zero end mismatches; all four clean PCM hashes remain
 unchanged.
 
+### 7. Reset discontinuities inside the core
+
+`a52_reset_discontinuity` is the iterator's single incomplete-AU reset. It
+zeroes the 1,536-float IMDCT delay, restores `lfsr_state` to 1, and fail-closes
+the reader while retaining the exponent/BAP caches that a conformant next
+frame replaces. Probe counters remain cumulative.
+
+The adapter now begins one access unit and emits six reusable 256-frame blocks.
+Its output planes shrink from 36,864 B to 6,144 B; measured arena high-water is
+26,992 B with the reader probe and 26,976 B in the reproducible production
+configuration. The suite primes all six delay slots and dither state, then
+proves explicit abandon and live-begin preemption both reproduce a fresh
+decoder's block 0 bit-for-bit. A seventh block call fails without entering the
+core. The deterministic fuzz run exercises 11,074 core block rejections and
+proves each disarms exactly. All four PCM hashes and the F3c baseline remain
+exact.
+
 ## Remaining external accommodations
 
 `../include/config.h` keeps `sample_t` as `float`, routes the sample-buffer
 allocation through `malloc` for the Aius arena shim, and carries no behavioural
 macro override. The a52 suites build under the common `-Werror` plus
-ASan/UBSan flags with fail-fast shift checking and no fork-specific warning or
-sanitizer carve-out.
+ASan/UBSan flags with non-recovering undefined-behaviour checks, fail-fast
+shift checking, and no fork-specific warning or sanitizer carve-out.
 
 The adapter copies an access unit into one owned `AIUS_A52_MAX_FRAME` scratch.
 The core CRC gate and reader bound are the load-bearing containment mechanisms.

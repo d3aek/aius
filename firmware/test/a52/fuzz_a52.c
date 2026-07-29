@@ -10,13 +10,13 @@
  * Properties:
  *   1. Never crashes and never reads out of bounds (sanitizers are the
  *      oracle).
- *   2. Every call returns a typed AiusStatus; an OK decode yields a sane
- *      block (channels <= 6, 1536 frames, planes present).
- *   3. A non-OK status never emits fresh PCM (caller's block poisoned before
- *      each call); after any abuse a clean AU still decodes (no state rot).
- *   4. TERMINATION: every decode call runs under a wall-clock bound (1 s
- *      soft) and an alarm() hard backstop (8 s, the board's watchdog) that
- *      names the offending input — the defect-31 oracle shape.
+ *   2. Every call returns a typed AiusStatus; a complete decode yields exactly
+ *      six sane 256-frame blocks and a seventh call fails.
+ *   3. A mid-AU error leaves exactly the already-returned blocks, emits no
+ *      fresh PCM for the failing call, and disarms the iterator; after any
+ *      abuse a clean AU still decodes (no state rot).
+ *   4. TERMINATION: begin plus all block calls for one AU share one wall-clock
+ *      bound (1 s soft, 8 s alarm hard backstop) — the defect-31 oracle shape.
  *   5. COVERAGE: the shipped random stream keeps at least 16,000 CRC-valid
  *      feeds reaching a52_frame/a52_block.
  *
@@ -58,6 +58,7 @@
 #define SHIPPED_FILL_COUNT UINT32_C(3889955)
 #define SHIPPED_SUPPRESSED_FILL_COUNT UINT32_C(54909)
 #define SHIPPED_MIN_CORE_REACH 16000L
+#define SHIPPED_MID_AU_REJECT_COUNT 11074L
 
 struct seed_file {
     const char *name;
@@ -121,26 +122,7 @@ static void on_alarm(int sig)
 
 static uint64_t g_max_decode_ns;
 static char g_max_decode_ctx[sizeof(g_decode_ctx)];
-
-static AiusStatus timed_decode(AiusA52Decoder *dec, const uint8_t *buf,
-                               size_t len, AiusPcmBlock *block,
-                               uint64_t *elapsed_ns_out)
-{
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-    alarm(DECODE_HARD_BOUND_S);
-    AiusStatus st = aius_a52_decode_access_unit(dec, buf, len, block);
-    alarm(0);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    uint64_t ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull +
-                  (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
-    if (ns > g_max_decode_ns) {
-        g_max_decode_ns = ns;
-        memcpy(g_max_decode_ctx, g_decode_ctx, sizeof(g_max_decode_ctx));
-    }
-    *elapsed_ns_out = ns;
-    return st;
-}
+static long g_mid_au_reject_count;
 
 /* xorshift64*: deterministic so a failing iteration reproduces. */
 static uint64_t g_rng = 0x9E3779B97F4A7C15ull;
@@ -177,7 +159,7 @@ static int block_is_sane(const AiusPcmBlock *b)
 {
     if (b->channels == 0 || b->channels > AIUS_MAX_CHANNELS)
         return 0;
-    if (b->frames != AIUS_A52_FRAME_SAMPLES)
+    if (b->frames != AIUS_A52_BLOCK_SAMPLES)
         return 0;
     for (uint16_t c = 0; c < b->channels; c++)
         if (b->planes[c] == NULL)
@@ -190,12 +172,110 @@ static void poison_block(AiusPcmBlock *b)
     memset(b, 0xA5, sizeof(*b));
 }
 
+struct feed_result {
+    AiusStatus status;
+    uint32_t blocks;
+    uint64_t elapsed_ns;
+};
+
+static int exercise_feed(AiusA52Decoder *dec, const uint8_t *buf, size_t len,
+                         struct feed_result *result)
+{
+    struct timespec t0, t1;
+    result->status = AIUS_INVALID_ARG;
+    result->blocks = 0;
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    alarm(DECODE_HARD_BOUND_S);
+
+    AiusStatus st = aius_a52_begin_access_unit(dec, buf, len);
+    if (!status_is_typed(st)) {
+        fprintf(stderr, "FAIL: untyped begin status %d: %s\n",
+                (int)st, g_decode_ctx);
+        goto violation;
+    }
+
+    if (st == AIUS_OK) {
+        for (uint32_t call = 0;
+             call < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; call++) {
+            AiusPcmBlock block;
+            poison_block(&block);
+            AiusPcmBlock poison = block;
+            AiusStatus block_st = aius_a52_decode_next_block(dec, &block);
+            if (!status_is_typed(block_st)) {
+                fprintf(stderr,
+                        "FAIL: untyped block %u status %d: %s\n",
+                        call, (int)block_st, g_decode_ctx);
+                goto violation;
+            }
+            if (block_st != AIUS_OK) {
+                if (memcmp(&block, &poison, sizeof(block)) != 0) {
+                    fprintf(stderr,
+                            "FAIL: failing block %u emitted fresh PCM: %s\n",
+                            call, g_decode_ctx);
+                    goto violation;
+                }
+                g_mid_au_reject_count++;
+                st = block_st;
+                break;
+            }
+            if (!block_is_sane(&block)) {
+                fprintf(stderr, "FAIL: OK with insane block %u: %s\n",
+                        call, g_decode_ctx);
+                goto violation;
+            }
+            volatile int32_t sink = 0;
+            for (uint16_t c = 0; c < block.channels; c++)
+                for (uint32_t n = 0; n < block.frames; n++)
+                    sink ^= block.planes[c][n];
+            (void)sink;
+            result->blocks++;
+        }
+    }
+
+    {
+        AiusPcmBlock seventh;
+        poison_block(&seventh);
+        AiusPcmBlock poison = seventh;
+        AiusStatus post = aius_a52_decode_next_block(dec, &seventh);
+        if (post != AIUS_INVALID_ARG ||
+            memcmp(&seventh, &poison, sizeof(seventh)) != 0) {
+            fprintf(stderr,
+                    "FAIL: iterator stayed armed after %u blocks "
+                    "(post=%d): %s\n",
+                    result->blocks, (int)post, g_decode_ctx);
+            goto violation;
+        }
+    }
+
+    if (st == AIUS_OK &&
+        result->blocks != AIUS_A52_BLOCKS_PER_ACCESS_UNIT) {
+        fprintf(stderr, "FAIL: OK emitted only %u blocks: %s\n",
+                result->blocks, g_decode_ctx);
+        goto violation;
+    }
+
+    result->status = st;
+    alarm(0);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    result->elapsed_ns =
+        (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ull +
+        (uint64_t)t1.tv_nsec - (uint64_t)t0.tv_nsec;
+    if (result->elapsed_ns > g_max_decode_ns) {
+        g_max_decode_ns = result->elapsed_ns;
+        memcpy(g_max_decode_ctx, g_decode_ctx, sizeof(g_max_decode_ctx));
+    }
+    return 0;
+
+violation:
+    alarm(0);
+    return 1;
+}
+
 static int checked_feed(AiusA52Decoder *dec, const uint8_t *buf, size_t len,
                         long *ok_count, long *reject_count,
                         long *core_reach_count)
 {
-    AiusPcmBlock block;
-    poison_block(&block);
     uint32_t fills_before = 0;
     if (core_reach_count) {
         uint32_t suppressed = 0, mismatches = 0;
@@ -203,8 +283,9 @@ static int checked_feed(AiusA52Decoder *dec, const uint8_t *buf, size_t len,
                                      &mismatches) != AIUS_OK)
             return 1;
     }
-    uint64_t ns = 0;
-    AiusStatus st = timed_decode(dec, buf, len, &block, &ns);
+    struct feed_result result;
+    if (exercise_feed(dec, buf, len, &result))
+        return 1;
     if (core_reach_count) {
         uint32_t fills_after = 0, suppressed = 0, mismatches = 0;
         if (aius_a52_get_bound_probe(dec, &fills_after, &suppressed,
@@ -213,25 +294,12 @@ static int checked_feed(AiusA52Decoder *dec, const uint8_t *buf, size_t len,
         if (fills_after != fills_before)
             (*core_reach_count)++;
     }
-    if (ns > DECODE_SOFT_BOUND_NS) {
+    if (result.elapsed_ns > DECODE_SOFT_BOUND_NS) {
         fprintf(stderr, "FAIL: decode took %.1f ms (soft bound): %s\n",
-                (double)ns / 1e6, g_decode_ctx);
+                (double)result.elapsed_ns / 1e6, g_decode_ctx);
         return 1;
     }
-    if (!status_is_typed(st)) {
-        fprintf(stderr, "FAIL: untyped status %d: %s\n", (int)st, g_decode_ctx);
-        return 1;
-    }
-    if (st == AIUS_OK) {
-        if (!block_is_sane(&block)) {
-            fprintf(stderr, "FAIL: OK with insane block: %s\n", g_decode_ctx);
-            return 1;
-        }
-        volatile int32_t sink = 0;
-        for (uint16_t c = 0; c < block.channels; c++)
-            for (uint32_t n = 0; n < block.frames; n++)
-                sink ^= block.planes[c][n];
-        (void)sink;
+    if (result.status == AIUS_OK) {
         (*ok_count)++;
     } else {
         (*reject_count)++;
@@ -371,14 +439,13 @@ int main(int argc, char **argv)
     {
         AiusPcmBlock b;
         poison_block(&b);
-        if (aius_a52_decode_access_unit(dec, NULL, 16, &b) !=
-                AIUS_INVALID_ARG ||
-            aius_a52_decode_access_unit(dec, work, 0, &b) !=
-                AIUS_INVALID_ARG ||
-            aius_a52_decode_access_unit(dec, work, 8, NULL) !=
-                AIUS_INVALID_ARG ||
-            aius_a52_decode_access_unit(NULL, work, 8, &b) !=
-                AIUS_INVALID_ARG) {
+        if (aius_a52_begin_access_unit(dec, NULL, 16) != AIUS_INVALID_ARG ||
+            aius_a52_begin_access_unit(dec, work, 0) != AIUS_INVALID_ARG ||
+            aius_a52_begin_access_unit(NULL, work, 8) != AIUS_INVALID_ARG ||
+            aius_a52_decode_next_block(NULL, &b) != AIUS_INVALID_ARG ||
+            aius_a52_decode_next_block(dec, NULL) != AIUS_INVALID_ARG ||
+            aius_a52_abandon(NULL) != AIUS_INVALID_ARG ||
+            aius_a52_abandon(dec) != AIUS_OK) {
             fprintf(stderr, "FAIL: argument guards not enforced\n");
             return 1;
         }
@@ -395,17 +462,18 @@ int main(int argc, char **argv)
             fail = seam_hunt_file(dec, &seeds[i], work, WORK_CAP, &ok_count,
                                   &reject_count, &feeds);
         if (!fail) {
-            AiusPcmBlock block;
-            poison_block(&block);
             snprintf(g_decode_ctx, sizeof(g_decode_ctx),
                      "post-seam recovery decode of %s AU0", seeds[0].name);
-            uint64_t ns = 0;
-            AiusStatus st = timed_decode(dec, seeds[0].data + seeds[0].starts[0],
-                                         seeds[0].lens[0], &block, &ns);
-            if (st != AIUS_OK || !block_is_sane(&block)) {
+            struct feed_result result;
+            if (exercise_feed(dec,
+                              seeds[0].data + seeds[0].starts[0],
+                              seeds[0].lens[0], &result) ||
+                result.status != AIUS_OK ||
+                result.blocks != AIUS_A52_BLOCKS_PER_ACCESS_UNIT) {
                 fprintf(stderr,
                         "FAIL: decoder did not recover after the seam hunt "
-                        "(st=%d)\n", (int)st);
+                        "(st=%d blocks=%u)\n",
+                        (int)result.status, result.blocks);
                 fail = 1;
             }
         }
@@ -505,16 +573,16 @@ int main(int argc, char **argv)
 
     /* Recovery: after all that abuse, a clean real AU still decodes OK. */
     if (!fail) {
-        AiusPcmBlock block;
-        poison_block(&block);
         snprintf(g_decode_ctx, sizeof(g_decode_ctx),
                  "final recovery decode of %s AU0", seeds[0].name);
-        uint64_t ns = 0;
-        AiusStatus st = timed_decode(dec, seeds[0].data + seeds[0].starts[0],
-                                     seeds[0].lens[0], &block, &ns);
-        if (st != AIUS_OK || !block_is_sane(&block)) {
+        struct feed_result result;
+        if (exercise_feed(dec, seeds[0].data + seeds[0].starts[0],
+                          seeds[0].lens[0], &result) ||
+            result.status != AIUS_OK ||
+            result.blocks != AIUS_A52_BLOCKS_PER_ACCESS_UNIT) {
             fprintf(stderr, "FAIL: decoder did not recover after fuzzing "
-                            "(st=%d)\n", (int)st);
+                            "(st=%d blocks=%u)\n",
+                    (int)result.status, result.blocks);
             fail = 1;
         }
     }
@@ -552,6 +620,13 @@ int main(int argc, char **argv)
                 core_reach_count, iters, SHIPPED_MIN_CORE_REACH);
         fail = 1;
     }
+    if (!fail && iters == SHIPPED_FUZZ_ITERATIONS &&
+        g_mid_au_reject_count != SHIPPED_MID_AU_REJECT_COUNT) {
+        fprintf(stderr,
+                "FAIL: iterator block rejections %ld != expected %ld\n",
+                g_mid_au_reject_count, SHIPPED_MID_AU_REJECT_COUNT);
+        fail = 1;
+    }
 
     free(work);
     aius_a52_decoder_destroy(dec);
@@ -570,6 +645,8 @@ int main(int argc, char **argv)
     printf("  CRC-valid core reach: %ld / %ld random feeds "
            "(%ld repaired)\n",
            core_reach_count, iters, crc_repaired_count);
+    printf("  iterator block rejections: %ld, all disarmed exactly\n",
+           g_mid_au_reject_count);
     printf("  slowest decode: %.3f ms (%s)\n",
            (double)g_max_decode_ns / 1e6, g_max_decode_ctx);
     printf("RESULT: passed\n");

@@ -572,11 +572,13 @@ i.e. decoder reach collapses to ~0 again. Two acceptable mechanisms:
 segment (`[2, 5/8)` and `[5/8, end)`) is independently 0 — so a single pass
 genuinely chains CRC1 and CRC2.
 
-**F3a entry-point resolution:** `aius_a52_decode_access_unit` calls the new
-`a52_bitstream_set_end` declared in guarded `a52.h`, after `a52_syncinfo`
-validates the exact payload length and 48 kHz rate and immediately before
-`a52_frame`. `a52_bitstream_set_ptr` does not clear the end. F3c reuses this
-already validated frame length for CRC. The byte-exact bound relies on a
+**F3a entry-point resolution:** at the F3a boundary,
+`aius_a52_decode_access_unit` called the new `a52_bitstream_set_end` declared
+in guarded `a52.h`; Step 3 now makes the same call in
+`aius_a52_begin_access_unit`. It runs after `a52_syncinfo` validates the exact
+payload length and 48 kHz rate and immediately before `a52_frame`.
+`a52_bitstream_set_ptr` does not clear the end. F3c reuses this already
+validated frame length for CRC. The byte-exact bound relies on a
 **48 kHz-only
 invariant** — `set_ptr` aligns down, and 48 kHz frame sizes are always a
 multiple of 4 — so relaxing the rate guard later would make the bound off by
@@ -593,7 +595,7 @@ Its new exact baseline is 5,616 OK / 60,184 rejected, 3,889,955 fills,
 54,909 suppressions, and zero end mismatches. All four clean hashes remain
 exact.
 
-**Step F4 — REDUCES TO NOTHING; keep it only as an explicit decision.** The
+**Step F4 — REDUCES TO NOTHING; decision 2026-07-29: no dither change.** The
 gate checked all three proposed 0.8.0 fixes and none is work:
 
 - `bitstream_init` zeroing `current_word` — already covered by edit 2's
@@ -822,10 +824,11 @@ also the ISR burst defect 31 is about.
 **Slice 2a is separable, host-only, and lands first.** 2b is the target-side
 restructure.
 
-**Owned paths** (2a): `firmware/lib/aius_a52/a52/{a52.h,bitstream.c,
+**Owned paths** (2a): `firmware/lib/aius_a52/a52/{a52.h,parse.c,bitstream.c,
 bitstream.h,a52_internal.h,NOTICE.md}`, `firmware/lib/aius_a52/{include,src}`,
-`firmware/test/a52/{test_a52.c,fuzz_a52.c}`, `firmware/scripts/test.sh`,
-this plan. Relative to ``.
+`firmware/test/a52/{test_a52.c,fuzz_a52.c}`,
+`firmware/tools/a52_probes/hash_a52.c`, `firmware/scripts/test.sh`, this plan.
+Relative to ``.
 
 ### The residency question this settles (measured, not assumed)
 
@@ -911,8 +914,9 @@ and max `num_bits` is 24 so one fill always suffices. One choke point, so an
 end pointer plus zero-fill is sufficient — provided all five of these hold,
 each of which the gate found the first draft did not state:
 
-- **(a) The setter runs in `aius_a52_decode_access_unit`, BEFORE
-  `a52_frame`, and `a52_bitstream_set_ptr` must NOT clear the end.**
+- **(a) At the Step-1 boundary the setter ran in
+  `aius_a52_decode_access_unit`, BEFORE `a52_frame`, and
+  `a52_bitstream_set_ptr` must NOT clear the end.**
   `a52_frame` calls `set_ptr` itself (`parse.c:154`), so a naive "reset to
   unbounded there" drops the bound for the whole frame. Step 3 moves the
   same call into its new `begin_access_unit` entry point.
@@ -982,12 +986,16 @@ end mismatches under ASan/UBSan. Arena high-water falls from 90,448 B to
 57,680 B in the probe build. The reproducible production configuration
 (`AIUS_A52_BOUND_PROBE=0`) passes the same suite at 57,664 B.
 
-**Step 3 — iterator API + suite rewrite.** Replace whole-AU decode with
+**Step 3 — iterator API + suite rewrite. DONE 2026-07-29.** Replace
+whole-AU decode with
 `aius_a52_begin_access_unit()` (validates, runs `a52_frame`, arms the
 iterator) + `aius_a52_decode_next_block()` (decodes ONE 256-frame block into
 reusable planes). The caller decides when each block is decoded — the
 slicing 2b needs, taking worst-case work per service slice from a whole AU
-to a sixth of one.
+to a sixth of one. Retain `AIUS_A52_FRAME_SAMPLES == 1536` as the access-unit
+total, add `AIUS_A52_BLOCK_SAMPLES == 256` and
+`AIUS_A52_BLOCKS_PER_ACCESS_UNIT == 6`, and allocate adapter planes by the
+block constant.
 
 **The invariant this trades away, stated because it is not free (gate F1).**
 Today a malformed AU emits NOTHING: `a52_block` returns 1 from eight sites
@@ -1040,30 +1048,44 @@ which is what distinguishes a real overlap reset from a flag flip.
 
 - `decode_next_block` without a live `begin` → `AIUS_INVALID_ARG`.
 - A 7th call errors and never runs a 7th `a52_block`.
-- A mid-AU error disarms the iterator.
+- A mid-AU `a52_block` error invokes the shared discontinuity reset and then
+  disarms the iterator.
 - **`aius_a52_abandon(dec)` is part of the API** (added after the phase-3
   gate, N1). Implicit abandon-on-`begin` is not sufficient: a caller that
   stops mid-AU for a reason of its own — above all a FULL TRANSMIT RING,
   which is an ordinary condition, not an error — must be able to stop
   cleanly. Without it the iterator stays armed and the next
-  `begin_access_unit` abandons at a point that is not a stream
-  discontinuity, corrupting the next AU's block 0 through the IMDCT overlap.
-- **`abandon` RESETS THE OVERLAP; disarming a flag is not enough** (gate
-  R1 — the second defect this API's own introduction created). The harm is
-  the stale overlap in `state->samples[1536..3071]`, and neither clearing an
-  `armed` flag nor `a52_frame` touches it, so an implementation of
-  `dec->armed = 0; return AIUS_OK;` would satisfy a naive contract, satisfy
-  the fuzz property below, and still ship a ~5.3 ms seam artifact on every
-  ring-full. `abandon` therefore zeroes 1,536 floats at
-  `a52_samples(state) + 1536` — reachable through the public `a52.h`, and
-  consistent with phase 1's edit 2, which already zeroes all 3,072 at init.
+  `begin_access_unit` must preempt it explicitly before overwriting scratch.
+- **Every incomplete-AU exit uses one real core reset; disarming a flag is
+  not enough** (gate R1 plus Step-3 prebuild finding 1). Add
+  `a52_reset_discontinuity()` to the fork's guarded public `a52.h`, implemented
+  in `parse.c`. It zeroes the 1,536-float IMDCT delay at
+  `state->samples[1536..3071]`, resets `lfsr_state` to its fresh value 1, and
+  fail-closes the reader (`buffer_start`, `buffer_end`, `bits_left`, and
+  `current_word`; the probe's expected end is cleared while cumulative
+  counters remain). This is invoked by explicit `aius_a52_abandon`, by a
+  live `begin_access_unit` before scratch overwrite, and by an `a52_block`
+  failure before disarming. A deeper `a52_frame` failure invokes it too.
+  `aius_a52_abandon(NULL)` returns `AIUS_INVALID_ARG`; abandon on a valid idle
+  decoder is idempotent `AIUS_OK` and deliberately does not reset continuity
+  after a normally completed AU.
 - **The assertion that actually proves it**: after `abandon` + `begin` on a
   fresh AU, block 0 is **bit-identical to a fresh decoder's block 0 on the
   same AU**. A block-count-and-disarm check cannot distinguish a real reset
-  from a flag flip; this can. (Gate-verified against the vendor source: all
+  from a flag flip; this can. Resetting only the overlap is insufficient
+  because conformant dither advances `lfsr_state`. (Gate-verified against
+  the fork source: all
   six IMDCT delay slots resolve to `state->samples[1536..3071]` with or
   without LFE, so 1,536 floats is exactly the right span — no over- or
-  under-write.)
+  under-write.) The test sequence is fixed to avoid a fresh-state
+  false-green: begin `surround51_ident` AU0 and successfully decode its first
+  dither-exercising block, abandon while five blocks remain, then begin
+  `surround51_ident` AU0 again and capture block 0. A newly created decoder
+  begins the same AU and captures block 0; shape and every sample must be
+  bit-identical. That corpus path already records the strongest dither
+  contribution and exercises all six IMDCT delay slots, so this convicts both
+  a flag-only reset and an overlap-only reset that leaves `lfsr_state`
+  advanced.
 - **What `abandon` deliberately does NOT reset**: `state->fbw_expbap` /
   `lfe_expbap` still hold the truncated AU's exponents rather than a fresh
   decoder's zeros. Harmless as specified — conformant AC-3 codes new
@@ -1074,25 +1096,18 @@ which is what distinguishes a real overlap reset from a flag flip.
 - `block->planes` are valid only until the next `decode_next_block`,
   `begin_access_unit`, or `destroy`; the caller must not hold them across a
   call.
-- `begin_access_unit` while an AU is in flight ABANDONS and re-arms.
-  Recovery is correct (`a52_frame` re-arms the reader) but **lossy**: the
-  IMDCT overlap in `state->samples[1536..3071]` carries the abandoned
-  block's un-overlapped tail into the next AU's block 0 — the same hazard
-  the differential's fresh-decoder-per-vector rule already documents.
-  **Abandonment is permitted at a stream discontinuity — carrier edge,
-  squelch, re-type — OR at a caller-driven stop that has reset the overlap
-  via `aius_a52_abandon`** (gate R1b: the earlier wording listed `abandon`
-  itself among the permitted discontinuities, so the rule licensed exactly
-  what it constrained). The reason survives the withdrawal of the discard
-  policy (gate N3): truncation merely loses audio, whereas abandoning
-  mid-AU with a stale overlap POISONS the next AU's block 0. Truncate
-  freely; never leave an armed iterator behind.
+- After the basic `dec` / `data` / non-zero-size guards,
+  `begin_access_unit` on a live iterator invokes the discontinuity reset
+  before any scratch copy, then validates and re-arms. Any later
+  length/sync/rate/mode/CRC/frame failure leaves it disarmed. Preemption is
+  intentionally lossy, but cannot carry stale overlap or dither state into
+  the replacement AU.
 - **Scratch lifetime (gate F7): the next AU must NOT be copied into scratch
   until block 6 of the current AU completes**, because all six `a52_block`
   calls read from it through the bitstream state. Easy to violate in 2b's
   ring-fed service loop, and it produces plausible garbage audio rather than
-  a crash. `begin_access_unit`'s abandon-and-re-arm rule is what makes the
-  violation impossible to express accidentally.
+  a crash. `begin_access_unit`'s reset-before-copy preemption is what makes
+  the violation impossible to express accidentally.
 - The shim is armed and disarmed PER CALL, not held across the AU
   (`g_arena` is a single global and 2b runs decode beside other allocators).
 - `begin_access_unit` derives the channel mapping from the SYNCINFO flags
@@ -1113,6 +1128,11 @@ which is what distinguishes a real overlap reset from a flag flip.
   blocks; the block is poisoned before EVERY call, now 7 per AU.
 - The differential's whole-vector Goertzel needs 6144 contiguous samples per
   channel, so the 6 × 256 accumulation must be in order.
+- Preserve the FNV order exactly as AU → channel → all 1,536 samples. Hashing
+  each block immediately would silently change it to AU → block → channel →
+  256 and invalidate every clean digest despite identical PCM. The retained
+  `firmware/tools/a52_probes/hash_a52.c` consumer is ported with the same
+  six-block accumulation and channel-major hash order.
 - `ref_samples == naus × 1536` precondition and the fresh-decoder-per-vector
   rule both stay.
 - NEW: a counter for feeds that actually reached `a52_frame`/`a52_block`.
@@ -1128,11 +1148,29 @@ bucket; the figure is host LP64-derived, while dcadec's 62,560 is an
 on-target ILP32 measurement, so treat single-byte agreement between them as
 coincidence, not proof (gate F12).
 
+The A52 build also adds `-fno-sanitize-recover=undefined`; the suites already
+enable UBSan, but without non-recovering mode the claimed fail-fast proof is
+not reproducible (Step-3 prebuild finding 5).
+
 **The differential must remain byte-identical** (1906 LSB / 69.3 dB) at
 every step, and this is provable rather than hopeful: decode order and count
 are unchanged so `dither_gen`'s LFSR advances identically, the quantize is
 per-sample, and later edits retain the synthesized zeros F3a's bounded reader
 already returns for a past-end read.
+
+**Step 3 delivered proof:** `begin` plus six `next` calls preserve all four
+exact FNV hashes and the 1906 LSB / 69.3 dB differential; every seventh call
+returns `AIUS_INVALID_ARG` without changing its poisoned block. A
+`surround51_ident` block primes all six delay slots and dither state; explicit
+abandon and live-begin preemption then reproduce a fresh decoder's block 0
+bit-for-bit. Arena high-water is asserted below 28,000 B and measures 26,992 B
+with the bound probe, 26,976 B without it. The full iterator fuzz preserves
+5,616 OK / 60,184 rejected, 3,889,955 fills, 54,909 suppressions, zero end
+mismatches, 16,690/50,000 core reach, and 17,118 repaired mutations while
+bounding each complete AU as one termination unit. It also asserts the exact
+11,074 core block rejections, each with its emitted-block count and disarmed
+7th-call proof. The retained hash probe compiles against the iterator and
+reproduces the same four digests.
 
 ### Slice 2b — decode off the audio ISR (target)
 
@@ -1246,8 +1284,8 @@ error truncates the AU after the blocks already delivered.
 when 2b lands (gate F3).** Two things change under epoch-context decode:
 `AiusBurst.payload` is a single parser-owned buffer overwritten by the next
 push, so an AU cannot outlive its push without a copy; and an iterator left
-armed across service slices collides with 2a's "abandon only at a stream
-discontinuity" rule. **The abandon call sites must be named and wired** —
+armed across service slices collides with 2a's scratch-lifetime and explicit
+iterator-state rules. **The abandon call sites must be named and wired** —
 `aius_pipeline_reset`, `retype_to_dts`, and the starvation branch in
 `aius_pipeline_push` are three discontinuities, and none of them calls
 anything today.
@@ -1258,9 +1296,10 @@ immediately when the sink refuses a block, and `enqueue` returns
 `AIUS_NO_SPACE` whenever the block exceeds `aius_spdif_tx24_free()`. With
 six sink calls per AU that is a routine ring-full, and it currently returns
 out of `dts_feed` with the iterator armed at block k+1 — so the next burst's
-`begin_access_unit` abandons mid-AU and poisons its block 0. **Phase 3 must
-call `aius_a52_abandon` before `return cs`.** The API for that is added by
-phase 2a specifically because phase 3 cannot express the fix without it.
+`begin_access_unit` would have to preempt and reset an iterator that should
+not have escaped the push. **Phase 3 must call `aius_a52_abandon` before
+`return cs`.** The API for that is added by phase 2a specifically because
+phase 3 cannot express the fix without it.
 
 ### The false-green trap this creates — the finding that most needs recording
 

@@ -17,7 +17,8 @@ extern "C" {
  * AiusA52Decoder handle, mirroring the AiusDtsDecoder contract. Feeds one raw
  * AC-3 access unit at a time (the IEC 61937 parser's complete burst payload,
  * starting at the 0x0B77 sync word) and emits planar PCM in the AIUS_CH_*
- * channel convention at the AIUS_PCM_SAMPLE_BITS scale.
+ * channel convention at the AIUS_PCM_SAMPLE_BITS scale. Begin validates and
+ * arms one access unit; six next calls emit its 256-frame blocks.
  *
  * Allocation mirrors aius_dts: create routes through libc, create_arena
  * routes ALL allocation (handle, scratch, planes, and liba52's state +
@@ -28,9 +29,9 @@ extern "C" {
  * SAFETY SHAPE, unlike upstream liba52: the fork's bit reader has a byte-exact,
  * fail-closed end bound. The adapter sets it from the validated 48 kHz frame
  * length before a52_frame and copies into one AIUS_A52_MAX_FRAME scratch.
- * a52_frame validates the chained CRC1/CRC2 residue before parsing; the reader
- * substitutes zeros at the bound and never reads beyond that owned frame
- * allocation (contract + derivation: lib/aius_a52/a52/NOTICE.md).
+ * a52_frame validates CRC1, CRC2, and their chained residue before parsing;
+ * the reader substitutes zeros at the bound and never reads beyond that owned
+ * frame allocation (contract + derivation: lib/aius_a52/a52/NOTICE.md).
  *
  * Output flags always request the stream's OWN coding
  * (syncinfo & (A52_CHANNEL_MASK|A52_LFE)), level 1.0, bias 0. The fork
@@ -50,8 +51,11 @@ extern "C" {
 /* The AC-3 maximum frame size (frmsizecod ceiling: 640 kbps at 32 kHz). */
 #define AIUS_A52_MAX_FRAME 3840u
 
-/* Frames one AC-3 access unit decodes to (6 blocks x 256). */
-#define AIUS_A52_FRAME_SAMPLES 1536u
+/* AC-3 access-unit shape: six independently emitted 256-frame blocks. */
+#define AIUS_A52_BLOCK_SAMPLES 256u
+#define AIUS_A52_BLOCKS_PER_ACCESS_UNIT 6u
+#define AIUS_A52_FRAME_SAMPLES \
+    (AIUS_A52_BLOCK_SAMPLES * AIUS_A52_BLOCKS_PER_ACCESS_UNIT)
 
 typedef struct AiusA52Decoder AiusA52Decoder;
 
@@ -66,18 +70,28 @@ AiusStatus aius_a52_decoder_create(AiusA52Decoder **out);
  * aius_a52_get_metrics). Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
 AiusStatus aius_a52_decoder_create_arena(AiusA52Decoder **out, AiusArena *arena);
 
-/* Decode one AC-3 access unit. `data`/`size` need not be aligned (the adapter
- * copies into its owned frame scratch). Preconditions owned here, not by the
- * caller: size < 7 and sync/length/bsid/CRC violations return AIUS_MALFORMED
- * before liba52's unguarded paths can run; sample rate != 48 kHz and
- * unmappable channel modes return AIUS_UNSUPPORTED. On AIUS_OK, `block` holds
- * decoder-owned planes valid until the next decode or destroy, AIUS_CH_*
- * ordered, AIUS_A52_FRAME_SAMPLES frames. */
-AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
-                                       const uint8_t *data, size_t size,
-                                       AiusPcmBlock *block);
+/* Begin one AC-3 access unit. `data`/`size` need not be aligned; the adapter
+ * copies the complete AU into owned scratch that remains live through all six
+ * block calls. Size < 7 and sync/length/bsid/CRC violations return
+ * AIUS_MALFORMED; sample rate != 48 kHz and unmappable channel modes return
+ * AIUS_UNSUPPORTED. A live iterator is reset before replacement. */
+AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
+                                      const uint8_t *data, size_t size);
 
-/* Copy the measurements from the most recent decode into *out. Mirrors
+/* Decode exactly one 256-frame block from the live AU. Six calls succeed; a
+ * seventh or a call without a live begin returns AIUS_INVALID_ARG and never
+ * invokes the core. A core error resets and disarms the iterator. On AIUS_OK,
+ * `block` holds decoder-owned AIUS_CH_* ordered planes valid only until the
+ * next next/begin/destroy call. */
+AiusStatus aius_a52_decode_next_block(AiusA52Decoder *dec,
+                                      AiusPcmBlock *block);
+
+/* Stop a live AU and reset overlap, dither, and reader state. This is required
+ * when a caller stops before block six (for example, sink refusal). Valid idle
+ * decoders return AIUS_OK without disturbing completed-stream continuity. */
+AiusStatus aius_a52_abandon(AiusA52Decoder *dec);
+
+/* Copy the measurements from the most recent iterator call into *out. Mirrors
  * aius_dts_get_metrics: arena_high_water and alloc_count populated on both
  * provisioning modes; decode_cycles / stack_high_water stay 0 on the host. */
 AiusStatus aius_a52_get_metrics(const AiusA52Decoder *dec, AiusMetrics *out);

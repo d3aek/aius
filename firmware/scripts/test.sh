@@ -133,7 +133,7 @@ a52_build() {
 	# AIUS_A52_BOUND_PROBE is host-only instrumentation for the F3a positive
 	# reader-bound oracle. The comma-separated --wrap list is one linker
 	# argument.
-	local a52_cflags=(-D_GNU_SOURCE)
+	local a52_cflags=(-D_GNU_SOURCE -fno-sanitize-recover=undefined)
 	if [ "${AIUS_A52_BOUND_PROBE:-1}" != "0" ]; then
 		a52_cflags+=(-DAIUS_A52_BOUND_PROBE)
 	fi

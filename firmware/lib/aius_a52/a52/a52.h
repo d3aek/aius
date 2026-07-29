@@ -50,6 +50,8 @@ typedef struct a52_state_s a52_state_t;
 
 a52_state_t * a52_init (uint32_t mm_accel);
 sample_t * a52_samples (a52_state_t * state);
+/* AIUS fork: reset incomplete-AU overlap, dither, and reader state. */
+void a52_reset_discontinuity (a52_state_t * state);
 int a52_syncinfo (uint8_t * buf, int * flags,
 		  int * sample_rate, int * bit_rate);
 void a52_bitstream_set_end (a52_state_t * state, const uint8_t * end);

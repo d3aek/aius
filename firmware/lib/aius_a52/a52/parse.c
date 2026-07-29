@@ -92,6 +92,22 @@ sample_t * a52_samples (a52_state_t * state)
     return state->samples;
 }
 
+void a52_reset_discontinuity (a52_state_t * state)
+{
+    if (state == NULL)
+	return;
+
+    memset (state->samples + 1536, 0, 1536 * sizeof (sample_t));
+    state->lfsr_state = 1;
+    state->buffer_start = NULL;
+    state->buffer_end = NULL;
+    state->bits_left = 0;
+    state->current_word = 0;
+#ifdef AIUS_A52_BOUND_PROBE
+    state->buffer_expected_end = NULL;
+#endif
+}
+
 int a52_syncinfo (uint8_t * buf, int * flags,
 		  int * sample_rate, int * bit_rate)
 {

@@ -45,6 +45,12 @@ struct AiusA52Decoder {
     AiusArena *arena;        /* NULL on the libc path */
     uint8_t *scratch;        /* AIUS_A52_MAX_FRAME */
     int32_t *planes[AIUS_MAX_CHANNELS];
+    const struct a52_mode_map *map;
+    uint32_t channel_mask;
+    uint16_t channels;
+    uint8_t lfe;
+    uint8_t next_block;
+    uint8_t armed;
     AiusMetrics metrics;
 };
 
@@ -84,7 +90,7 @@ static AiusStatus decoder_create(AiusA52Decoder **out, AiusArena *arena)
     memset(dec->scratch, 0, AIUS_A52_MAX_FRAME);
 
     for (int c = 0; c < AIUS_MAX_CHANNELS; c++) {
-        dec->planes[c] = malloc(AIUS_A52_FRAME_SAMPLES * sizeof(int32_t));
+        dec->planes[c] = malloc(AIUS_A52_BLOCK_SAMPLES * sizeof(int32_t));
         if (!dec->planes[c])
             goto fail;
     }
@@ -135,23 +141,53 @@ static int32_t sample_quantize(float v)
     return (int32_t)scaled;
 }
 
-AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
-                                       const uint8_t *data, size_t size,
-                                       AiusPcmBlock *block)
+static void decoder_call_start(AiusA52Decoder *dec)
 {
-    if (!dec || !data || size == 0 || !block)
-        return AIUS_INVALID_ARG;
-
-    AiusStatus st;
     if (dec->arena) {
         aius_alloc_shim_set_arena(dec->arena);
         aius_alloc_shim_reset_count();
     }
+}
+
+static AiusStatus decoder_call_end(AiusA52Decoder *dec, AiusStatus st)
+{
+    if (dec->arena) {
+        dec->metrics.alloc_count = aius_alloc_shim_alloc_count();
+        dec->metrics.arena_high_water =
+            (uint32_t)aius_arena_high_water(dec->arena);
+        aius_alloc_shim_set_arena(NULL);
+    } else {
+        dec->metrics.alloc_count = 0;
+    }
+    dec->metrics.last_status = st;
+    return st;
+}
+
+static void decoder_reset_incomplete(AiusA52Decoder *dec)
+{
+    a52_reset_discontinuity(dec->state);
+    dec->armed = 0;
+    dec->next_block = 0;
+}
+
+AiusStatus aius_a52_begin_access_unit(AiusA52Decoder *dec,
+                                      const uint8_t *data, size_t size)
+{
+    if (!dec)
+        return AIUS_INVALID_ARG;
+
+    decoder_call_start(dec);
+    if (!data || size == 0)
+        return decoder_call_end(dec, AIUS_INVALID_ARG);
+
+    /* A replacement begin is an explicit lossy discontinuity. Reset before
+     * scratch overwrite so the old reader can never observe the new AU. */
+    if (dec->armed)
+        decoder_reset_incomplete(dec);
 
     /* a52_syncinfo reads buf[0..6] unconditionally: length is OUR guard. */
     if (size < 7 || size > AIUS_A52_MAX_FRAME) {
-        st = AIUS_MALFORMED;
-        goto out;
+        return decoder_call_end(dec, AIUS_MALFORMED);
     }
 
     /* The AU is parsed ONLY from the owned scratch. */
@@ -164,19 +200,14 @@ AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
         /* Bad sync/bsid/frmsizecod, or the burst payload disagrees with the
          * header's own length. a52_frame never runs on a buffer syncinfo did
          * not accept (its halfrate[] lookup is unguarded). */
-        st = AIUS_MALFORMED;
-        goto out;
+        return decoder_call_end(dec, AIUS_MALFORMED);
     }
-    if (sample_rate != 48000) {
-        st = AIUS_UNSUPPORTED;
-        goto out;
-    }
+    if (sample_rate != 48000)
+        return decoder_call_end(dec, AIUS_UNSUPPORTED);
 
     const struct a52_mode_map *map = mode_lookup(flags & A52_CHANNEL_MASK);
-    if (!map) {
-        st = AIUS_UNSUPPORTED;
-        goto out;
-    }
+    if (!map)
+        return decoder_call_end(dec, AIUS_UNSUPPORTED);
     int lfe = (flags & A52_LFE) != 0;
 
 #ifdef AIUS_A52_BOUND_PROBE
@@ -190,74 +221,94 @@ AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
     int request = (flags & (A52_CHANNEL_MASK | A52_LFE));
     sample_t level = 1.0f;
     if (a52_frame(dec->state, dec->scratch, &request, &level, 0.0f)) {
-        st = AIUS_MALFORMED;
-        goto out;
+        decoder_reset_incomplete(dec);
+        return decoder_call_end(dec, AIUS_MALFORMED);
     }
 
-    uint16_t channels = (uint16_t)(map->channels + (lfe ? 1 : 0));
+    dec->map = map;
+    dec->channels = (uint16_t)(map->channels + (lfe ? 1 : 0));
+    dec->lfe = (uint8_t)lfe;
     uint32_t mask = lfe ? AIUS_CH_LFE : 0u;
     for (uint16_t s = 0; s < map->channels; s++)
         mask |= map->aius_bits[s];
+    dec->channel_mask = mask;
+    dec->next_block = 0;
+    dec->armed = 1;
+    return decoder_call_end(dec, AIUS_OK);
+}
 
+AiusStatus aius_a52_decode_next_block(AiusA52Decoder *dec,
+                                      AiusPcmBlock *block)
+{
+    if (!dec)
+        return AIUS_INVALID_ARG;
+
+    decoder_call_start(dec);
+    if (!block || !dec->armed)
+        return decoder_call_end(dec, AIUS_INVALID_ARG);
+
+    if (a52_block(dec->state)) {
+        decoder_reset_incomplete(dec);
+        return decoder_call_end(dec, AIUS_MALFORMED);
+    }
+
+    const sample_t *samples = a52_samples(dec->state);
+    const struct a52_mode_map *map = dec->map;
+    uint32_t mask = dec->channel_mask;
     /* AIUS plane index for each liba52 slot: planes are tightly packed in
      * AIUS_CH_* bit order, liba52 blocks are LFE first then the acmod order. */
-    for (int b = 0; b < 6; b++) {
-        if (a52_block(dec->state)) {
-            st = AIUS_MALFORMED;
-            goto out;
+    int slot = 0;
+    if (dec->lfe) {
+        /* LFE is always plane index popcount(mask & (LFE-1)) — compute
+         * directly: bits below AIUS_CH_LFE present in the mask. */
+        uint32_t below = mask & (AIUS_CH_LFE - 1u);
+        int idx = 0;
+        while (below) {
+            idx += (int)(below & 1u);
+            below >>= 1;
         }
-        const sample_t *samples = a52_samples(dec->state);
-        uint32_t base = (uint32_t)b * 256u;
-
-        int slot = 0;
-        if (lfe) {
-            /* LFE is always plane index popcount(mask & (LFE-1)) — compute
-             * directly: bits below AIUS_CH_LFE present in the mask. */
-            uint32_t below = mask & (AIUS_CH_LFE - 1u);
-            int idx = 0;
-            while (below) {
-                idx += (int)(below & 1u);
-                below >>= 1;
-            }
-            for (uint32_t n = 0; n < 256; n++)
-                dec->planes[idx][base + n] =
-                    sample_quantize(samples[slot * 256 + (int)n]);
-            slot++;
+        for (uint32_t n = 0; n < AIUS_A52_BLOCK_SAMPLES; n++)
+            dec->planes[idx][n] =
+                sample_quantize(samples[slot * AIUS_A52_BLOCK_SAMPLES +
+                                        (int)n]);
+        slot++;
+    }
+    for (uint16_t s = 0; s < map->channels; s++) {
+        uint32_t below = mask & (map->aius_bits[s] - 1u);
+        int idx = 0;
+        while (below) {
+            idx += (int)(below & 1u);
+            below >>= 1;
         }
-        for (uint16_t s = 0; s < map->channels; s++) {
-            uint32_t below = mask & (map->aius_bits[s] - 1u);
-            int idx = 0;
-            while (below) {
-                idx += (int)(below & 1u);
-                below >>= 1;
-            }
-            for (uint32_t n = 0; n < 256; n++)
-                dec->planes[idx][base + n] =
-                    sample_quantize(samples[slot * 256 + (int)n]);
-            slot++;
-        }
+        for (uint32_t n = 0; n < AIUS_A52_BLOCK_SAMPLES; n++)
+            dec->planes[idx][n] =
+                sample_quantize(samples[slot * AIUS_A52_BLOCK_SAMPLES +
+                                        (int)n]);
+        slot++;
     }
 
     memset(block, 0, sizeof(*block));
-    for (uint16_t c = 0; c < channels; c++)
+    for (uint16_t c = 0; c < dec->channels; c++)
         block->planes[c] = dec->planes[c];
-    block->channels = channels;
-    block->frames = AIUS_A52_FRAME_SAMPLES;
+    block->channels = dec->channels;
+    block->frames = AIUS_A52_BLOCK_SAMPLES;
     block->sample_rate_hz = 48000;
     block->channel_mask = mask;
-    st = AIUS_OK;
+    dec->next_block++;
+    if (dec->next_block == AIUS_A52_BLOCKS_PER_ACCESS_UNIT)
+        dec->armed = 0;
+    return decoder_call_end(dec, AIUS_OK);
+}
 
-out:
-    if (dec->arena) {
-        dec->metrics.alloc_count = aius_alloc_shim_alloc_count();
-        dec->metrics.arena_high_water =
-            (uint32_t)aius_arena_high_water(dec->arena);
-        aius_alloc_shim_set_arena(NULL);
-    } else {
-        dec->metrics.alloc_count = 0;
-    }
-    dec->metrics.last_status = st;
-    return st;
+AiusStatus aius_a52_abandon(AiusA52Decoder *dec)
+{
+    if (!dec)
+        return AIUS_INVALID_ARG;
+
+    decoder_call_start(dec);
+    if (dec->armed)
+        decoder_reset_incomplete(dec);
+    return decoder_call_end(dec, AIUS_OK);
 }
 
 AiusStatus aius_a52_get_metrics(const AiusA52Decoder *dec, AiusMetrics *out)

@@ -384,6 +384,108 @@ static int test_core_identity_contract(const char *dir)
     return 0;
 }
 
+static int block_matches(const AiusPcmBlock *block,
+                         const AiusPcmBlock *shape,
+                         int32_t expected[AIUS_MAX_CHANNELS]
+                                         [AIUS_A52_BLOCK_SAMPLES])
+{
+    if (block->channels != shape->channels ||
+        block->channel_mask != shape->channel_mask ||
+        block->frames != shape->frames ||
+        block->sample_rate_hz != shape->sample_rate_hz)
+        return 0;
+    for (uint16_t c = 0; c < block->channels; c++)
+        if (memcmp(block->planes[c], expected[c],
+                   AIUS_A52_BLOCK_SAMPLES * sizeof(int32_t)) != 0)
+            return 0;
+    return 1;
+}
+
+static int test_iterator_reset_contract(const char *dir)
+{
+    size_t es_size = 0;
+    uint8_t *es = read_file(dir, "surround51_ident", "ac3", &es_size);
+    if (!es)
+        return 3;
+
+    size_t starts[MAX_FRAMES_PER_VECTOR], lens[MAX_FRAMES_PER_VECTOR];
+    size_t naus = collect_aus(es, es_size, starts, lens,
+                              MAX_FRAMES_PER_VECTOR);
+    if (naus == 0) {
+        free(es);
+        return 1;
+    }
+    const uint8_t *au = es + starts[0];
+    size_t au_size = lens[0];
+
+    AiusA52Decoder *fresh = NULL;
+    AiusA52Decoder *abandoned = NULL;
+    AiusA52Decoder *preempted = NULL;
+    if (aius_a52_decoder_create(&fresh) != AIUS_OK ||
+        aius_a52_decoder_create(&abandoned) != AIUS_OK ||
+        aius_a52_decoder_create(&preempted) != AIUS_OK) {
+        fprintf(stderr, "FAIL: iterator reset decoder create\n");
+        goto fail;
+    }
+
+    AiusPcmBlock untouched;
+    memset(&untouched, 0xA5, sizeof(untouched));
+    AiusPcmBlock poison = untouched;
+    if (aius_a52_decode_next_block(fresh, &untouched) != AIUS_INVALID_ARG ||
+        memcmp(&untouched, &poison, sizeof(untouched)) != 0 ||
+        aius_a52_abandon(NULL) != AIUS_INVALID_ARG ||
+        aius_a52_abandon(fresh) != AIUS_OK) {
+        fprintf(stderr, "FAIL: iterator idle/argument state\n");
+        goto fail;
+    }
+
+    AiusPcmBlock reference;
+    if (aius_a52_begin_access_unit(fresh, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(fresh, &reference) != AIUS_OK) {
+        fprintf(stderr, "FAIL: iterator fresh reference\n");
+        goto fail;
+    }
+    int32_t expected[AIUS_MAX_CHANNELS][AIUS_A52_BLOCK_SAMPLES] = { { 0 } };
+    for (uint16_t c = 0; c < reference.channels; c++)
+        memcpy(expected[c], reference.planes[c],
+               AIUS_A52_BLOCK_SAMPLES * sizeof(int32_t));
+
+    AiusPcmBlock priming;
+    AiusPcmBlock after_reset;
+    if (aius_a52_begin_access_unit(abandoned, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(abandoned, &priming) != AIUS_OK ||
+        aius_a52_abandon(abandoned) != AIUS_OK ||
+        aius_a52_begin_access_unit(abandoned, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(abandoned, &after_reset) != AIUS_OK ||
+        !block_matches(&after_reset, &reference, expected)) {
+        fprintf(stderr, "FAIL: explicit abandon did not restore fresh block 0\n");
+        goto fail;
+    }
+
+    if (aius_a52_begin_access_unit(preempted, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(preempted, &priming) != AIUS_OK ||
+        aius_a52_begin_access_unit(preempted, au, au_size) != AIUS_OK ||
+        aius_a52_decode_next_block(preempted, &after_reset) != AIUS_OK ||
+        !block_matches(&after_reset, &reference, expected)) {
+        fprintf(stderr, "FAIL: live begin did not restore fresh block 0\n");
+        goto fail;
+    }
+
+    aius_a52_decoder_destroy(preempted);
+    aius_a52_decoder_destroy(abandoned);
+    aius_a52_decoder_destroy(fresh);
+    free(es);
+    printf("ok iterator abandon/preempt reset overlap and dither state\n");
+    return 0;
+
+fail:
+    aius_a52_decoder_destroy(preempted);
+    aius_a52_decoder_destroy(abandoned);
+    aius_a52_decoder_destroy(fresh);
+    free(es);
+    return 1;
+}
+
 static double goertzel(const int32_t *x, uint32_t n, double freq)
 {
     double k = floor(0.5 + (double)n * freq / 48000.0);
@@ -412,6 +514,9 @@ int main(int argc, char **argv)
     int core_contract = test_core_identity_contract(dir);
     if (core_contract != 0)
         return core_contract;
+    int iterator_contract = test_iterator_reset_contract(dir);
+    if (iterator_contract != 0)
+        return iterator_contract;
 
     int32_t *decoded[AIUS_MAX_CHANNELS] = { 0 }; /* whole-vector planes */
     double worst_snr = 1e9;
@@ -472,45 +577,82 @@ int main(int argc, char **argv)
             free(decoded[c]);
             decoded[c] = malloc(naus * AIUS_A52_FRAME_SAMPLES *
                                 sizeof(int32_t));
+            if (!decoded[c]) {
+                fprintf(stderr, "FAIL: decoded plane allocation\n");
+                return 1;
+            }
         }
 
         int vec_diff = 0;
         double sig = 0.0, err = 0.0;
         uint64_t decoded_hash = FNV1A64_BASIS;
         for (size_t a = 0; a < naus; a++) {
-            AiusPcmBlock block;
-            memset(&block, 0xA5, sizeof(block));
-            AiusStatus st = aius_a52_decode_access_unit(dec, es + starts[a],
-                                                        lens[a], &block);
+            AiusStatus st =
+                aius_a52_begin_access_unit(dec, es + starts[a], lens[a]);
             if (st != AIUS_OK) {
-                fprintf(stderr, "FAIL: %s AU %zu status %d\n", vec->name, a,
-                        (int)st);
+                fprintf(stderr, "FAIL: %s AU %zu begin status %d\n",
+                        vec->name, a, (int)st);
                 return 1;
             }
-            if (block.channels != vec->channels ||
-                block.channel_mask != vec->channel_mask ||
-                block.frames != AIUS_A52_FRAME_SAMPLES) {
-                fprintf(stderr, "FAIL: %s AU %zu shape ch=%u mask=%x fr=%u\n",
-                        vec->name, a, block.channels, block.channel_mask,
-                        block.frames);
-                return 1;
-            }
-            /* Packed AIUS order FL,FR,FC,LFE,SL,SR == FFmpeg's 5.1 interleave
-             * order positionally, so plane c compares against ref channel c. */
-            for (uint16_t c = 0; c < block.channels; c++) {
-                for (uint32_t n = 0; n < block.frames; n++) {
-                    size_t fr = a * AIUS_A52_FRAME_SAMPLES + n;
-                    int32_t ours = block.planes[c][n];
-                    int32_t theirs = ref[fr * vec->channels + c] >> 8;
-                    int diff = abs(ours - theirs);
-                    if (diff > vec_diff)
-                        vec_diff = diff;
-                    sig += (double)theirs * (double)theirs;
-                    err += (double)(ours - theirs) * (double)(ours - theirs);
-                    decoded[c][fr] = ours;
-                    decoded_hash = fnv1a_sample_le(decoded_hash, ours);
+            for (uint32_t b = 0;
+                 b < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; b++) {
+                AiusPcmBlock block;
+                memset(&block, 0xA5, sizeof(block));
+                st = aius_a52_decode_next_block(dec, &block);
+                if (st != AIUS_OK) {
+                    fprintf(stderr,
+                            "FAIL: %s AU %zu block %u status %d\n",
+                            vec->name, a, b, (int)st);
+                    return 1;
+                }
+                if (block.channels != vec->channels ||
+                    block.channel_mask != vec->channel_mask ||
+                    block.frames != AIUS_A52_BLOCK_SAMPLES) {
+                    fprintf(stderr,
+                            "FAIL: %s AU %zu block %u shape "
+                            "ch=%u mask=%x fr=%u\n",
+                            vec->name, a, b, block.channels,
+                            block.channel_mask, block.frames);
+                    return 1;
+                }
+                /* Packed AIUS order FL,FR,FC,LFE,SL,SR == FFmpeg's 5.1
+                 * interleave order positionally. Copy before the next call
+                 * reuses the adapter's 256-frame planes. */
+                for (uint16_t c = 0; c < block.channels; c++) {
+                    for (uint32_t n = 0; n < block.frames; n++) {
+                        size_t au_n =
+                            b * AIUS_A52_BLOCK_SAMPLES + n;
+                        size_t fr = a * AIUS_A52_FRAME_SAMPLES + au_n;
+                        int32_t ours = block.planes[c][n];
+                        int32_t theirs = ref[fr * vec->channels + c] >> 8;
+                        int diff = abs(ours - theirs);
+                        if (diff > vec_diff)
+                            vec_diff = diff;
+                        sig += (double)theirs * (double)theirs;
+                        err +=
+                            (double)(ours - theirs) * (double)(ours - theirs);
+                        decoded[c][fr] = ours;
+                    }
                 }
             }
+
+            AiusPcmBlock seventh;
+            memset(&seventh, 0xA5, sizeof(seventh));
+            AiusPcmBlock seventh_poison = seventh;
+            if (aius_a52_decode_next_block(dec, &seventh) !=
+                    AIUS_INVALID_ARG ||
+                memcmp(&seventh, &seventh_poison, sizeof(seventh)) != 0) {
+                fprintf(stderr, "FAIL: %s AU %zu accepted/changed block 7\n",
+                        vec->name, a);
+                return 1;
+            }
+
+            /* Preserve the shipped FNV oracle's AU -> channel -> 1536 order. */
+            for (uint16_t c = 0; c < vec->channels; c++)
+                for (uint32_t n = 0; n < AIUS_A52_FRAME_SAMPLES; n++)
+                    decoded_hash = fnv1a_sample_le(
+                        decoded_hash,
+                        decoded[c][a * AIUS_A52_FRAME_SAMPLES + n]);
         }
         double snr = 10.0 * log10(sig / (err > 0.0 ? err : 1e-30));
         printf("ok %s: %zu AUs, hash %016" PRIx64
@@ -587,12 +729,15 @@ int main(int argc, char **argv)
         size_t starts[MAX_FRAMES_PER_VECTOR], lens[MAX_FRAMES_PER_VECTOR];
         size_t naus = collect_aus(es, es_size, starts, lens,
                                   MAX_FRAMES_PER_VECTOR);
-        AiusMetrics m;
+        if (naus == 0) {
+            fprintf(stderr, "FAIL: arena corpus has no complete AU\n");
+            return 1;
+        }
+        AiusMetrics m = { 0 };
         for (size_t a = 0; a < naus && a < 2; a++) {
-            AiusPcmBlock block;
-            if (aius_a52_decode_access_unit(dec, es + starts[a], lens[a],
-                                            &block) != AIUS_OK) {
-                fprintf(stderr, "FAIL: arena decode AU %zu\n", a);
+            if (aius_a52_begin_access_unit(dec, es + starts[a], lens[a]) !=
+                AIUS_OK) {
+                fprintf(stderr, "FAIL: arena begin AU %zu\n", a);
                 return 1;
             }
             if (aius_a52_get_metrics(dec, &m) != AIUS_OK) {
@@ -605,6 +750,26 @@ int main(int argc, char **argv)
                         a, m.alloc_count);
                 return 1;
             }
+            for (uint32_t b = 0;
+                 b < AIUS_A52_BLOCKS_PER_ACCESS_UNIT; b++) {
+                AiusPcmBlock block;
+                if (aius_a52_decode_next_block(dec, &block) != AIUS_OK) {
+                    fprintf(stderr, "FAIL: arena AU %zu block %u\n", a, b);
+                    return 1;
+                }
+                if (aius_a52_get_metrics(dec, &m) != AIUS_OK ||
+                    m.alloc_count != 0) {
+                    fprintf(stderr,
+                            "FAIL: arena AU %zu block %u allocated %u times\n",
+                            a, b, m.alloc_count);
+                    return 1;
+                }
+            }
+        }
+        if (m.arena_high_water > 28000) {
+            fprintf(stderr, "FAIL: arena high water %u exceeds 28000\n",
+                    m.arena_high_water);
+            return 1;
         }
         printf("ok arena: high water %u bytes, 0 allocations per decode\n",
                m.arena_high_water);
