@@ -116,6 +116,27 @@ static size_t collect_aus(uint8_t *data, size_t size,
     return count;
 }
 
+static void arm_core_bound(a52_state_t *state, uint8_t *frame, size_t size)
+{
+#ifdef AIUS_A52_BOUND_PROBE
+    a52_bitstream_probe_expect_end(state, frame, (uint32_t)size);
+#endif
+    a52_bitstream_set_end(state, frame + size);
+}
+
+static int core_bound_is_exact(const a52_state_t *state)
+{
+#ifdef AIUS_A52_BOUND_PROBE
+    uint32_t fills = 0, suppressed = 0, mismatches = 0;
+    a52_bitstream_get_probe(state, &fills, &suppressed, &mismatches);
+    (void)suppressed;
+    return fills != 0 && mismatches == 0;
+#else
+    (void)state;
+    return 1;
+#endif
+}
+
 static int test_core_identity_contract(const char *dir)
 {
     size_t es_size = 0;
@@ -164,6 +185,37 @@ static int test_core_identity_contract(const char *dir)
         return 1;
     }
 
+#ifdef AIUS_A52_BOUND_PROBE
+    /* An unset end must fail closed before the reader can leave this seven-byte
+     * header. ASan makes any fail-open load a hard failure; the probe proves
+     * every attempted fill was suppressed and convicted as unarmed. */
+    {
+        uint8_t header[7];
+        memcpy(header, frame, sizeof(header));
+        a52_state_t *unarmed = a52_init(0);
+        if (!unarmed) {
+            free(frame);
+            return 1;
+        }
+        sample_t unset_level = 1.0f;
+        int unset_flags = flags & (A52_CHANNEL_MASK | A52_LFE);
+        (void)a52_frame(unarmed, header, &unset_flags, &unset_level, 0);
+        uint32_t fills = 0, suppressed = 0, mismatches = 0;
+        a52_bitstream_get_probe(unarmed, &fills, &suppressed, &mismatches);
+        a52_free(unarmed);
+        if (fills == 0 || suppressed != fills || mismatches != fills) {
+            fprintf(stderr,
+                    "FAIL: unset bound fills=%" PRIu32
+                    " suppressed=%" PRIu32 " mismatches=%" PRIu32 "\n",
+                    fills, suppressed, mismatches);
+            free(frame);
+            return 1;
+        }
+        printf("ok unset reader bound fails closed (%" PRIu32
+               " fills suppressed)\n", suppressed);
+    }
+#endif
+
     a52_state_t *state = a52_init(0);
     if (!state) {
         free(frame);
@@ -171,10 +223,17 @@ static int test_core_identity_contract(const char *dir)
     }
     sample_t level = 1.0f;
     int frame_flags = flags & (A52_CHANNEL_MASK | A52_LFE);
+    arm_core_bound(state, frame, lens[0]);
     if (a52_frame(state, frame, &frame_flags, &level, 0) != 0 ||
         (frame_flags & A52_CHANNEL_MASK) != A52_DOLBY) {
         fprintf(stderr, "FAIL: dsurmod frame flags=0x%x (want DOLBY)\n",
                 frame_flags);
+        a52_free(state);
+        free(frame);
+        return 1;
+    }
+    if (!core_bound_is_exact(state)) {
+        fprintf(stderr, "FAIL: identity core bound was not exact\n");
         a52_free(state);
         free(frame);
         return 1;
@@ -188,8 +247,15 @@ static int test_core_identity_contract(const char *dir)
     }
     level = 1.0f;
     frame_flags = A52_STEREO;
+    arm_core_bound(state, frame, lens[0]);
     if (a52_frame(state, frame, &frame_flags, &level, 0) == 0) {
         fprintf(stderr, "FAIL: core accepted non-identity DOLBY->STEREO\n");
+        a52_free(state);
+        free(frame);
+        return 1;
+    }
+    if (!core_bound_is_exact(state)) {
+        fprintf(stderr, "FAIL: rejecting core bound was not exact\n");
         a52_free(state);
         free(frame);
         return 1;

@@ -2,10 +2,11 @@
  * (aius-ac3-support.md phase 1) — the dts-fuzz shape ported to liba52's
  * threat model.
  *
- * liba52 does not CRC-check frames and its bit reader is UNBOUNDED, so this
- * suite is load-bearing, not ceremonial: the adapter's padded, tail-zeroed
- * scratch is what turns a hostile payload's overread into a bounded, typed
- * result, and ASan watches the scratch bounds on every feed. Properties:
+ * liba52 does not CRC-check frames, so this suite is load-bearing, not
+ * ceremonial. The fork's bit reader now has a fail-closed byte end; F3a keeps
+ * the old pad filled with 0xFF as a positive oracle and counts every load the
+ * bound suppresses. ASan watches the allocation bounds on every feed.
+ * Properties:
  *   1. Never crashes and never reads out of bounds (sanitizers are the
  *      oracle).
  *   2. Every call returns a typed AiusStatus; an OK decode yields a sane
@@ -37,12 +38,19 @@
 #include "a52.h" /* a52_syncinfo only: seed AU walking */
 #include "aius_a52.h"
 
+#ifndef AIUS_A52_BOUND_PROBE
+#error "fuzz_a52 requires AIUS_A52_BOUND_PROBE"
+#endif
+
 #define MAX_SEEDS 4
 #define MAX_AUS 16
 #define WORK_CAP (16u * 1024u)
 
 #define DECODE_HARD_BOUND_S 8u
 #define DECODE_SOFT_BOUND_NS 1000000000ull
+#define SHIPPED_FUZZ_ITERATIONS 50000L
+#define SHIPPED_OK_COUNT 5617L
+#define SHIPPED_REJECT_COUNT 60183L
 
 struct seed_file {
     const char *name;
@@ -279,9 +287,10 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *dir = argv[1];
-    long iters = (argc >= 3) ? strtol(argv[2], NULL, 10) : 50000;
+    long iters = (argc >= 3) ? strtol(argv[2], NULL, 10) :
+        SHIPPED_FUZZ_ITERATIONS;
     if (iters <= 0)
-        iters = 50000;
+        iters = SHIPPED_FUZZ_ITERATIONS;
 
     static const char *names[] = {
         "stereo_tones", "stereo_impulse", "surround51_impulse",
@@ -467,6 +476,28 @@ int main(int argc, char **argv)
         }
     }
 
+    uint32_t bound_fills = 0, suppressed_fills = 0, end_mismatches = 0;
+    if (!fail &&
+        (aius_a52_get_bound_probe(dec, &bound_fills, &suppressed_fills,
+                                  &end_mismatches) != AIUS_OK ||
+         bound_fills == 0 || suppressed_fills == 0 || end_mismatches != 0)) {
+        fprintf(stderr,
+                "FAIL: reader bound fills=%" PRIu32
+                " suppressed=%" PRIu32 " end-mismatches=%" PRIu32 "\n",
+                bound_fills, suppressed_fills, end_mismatches);
+        fail = 1;
+    }
+    if (!fail && iters == SHIPPED_FUZZ_ITERATIONS &&
+        (ok_count != SHIPPED_OK_COUNT ||
+         reject_count != SHIPPED_REJECT_COUNT)) {
+        fprintf(stderr,
+                "FAIL: shipped fuzz outcome %ld ok / %ld rejected "
+                "!= %ld / %ld\n",
+                ok_count, reject_count, SHIPPED_OK_COUNT,
+                SHIPPED_REJECT_COUNT);
+        fail = 1;
+    }
+
     free(work);
     aius_a52_decoder_destroy(dec);
     for (int i = 0; i < nseeds; i++)
@@ -478,6 +509,9 @@ int main(int argc, char **argv)
     }
     printf("  %ld ok / %ld rejected, no crash / OOB / stale PCM\n",
            ok_count, reject_count);
+    printf("  reader bound: %" PRIu32 " fills, %" PRIu32
+           " suppressed, 0 end mismatches\n",
+           bound_fills, suppressed_fills);
     printf("  slowest decode: %.3f ms (%s)\n",
            (double)g_max_decode_ns / 1e6, g_max_decode_ctx);
     printf("RESULT: passed\n");

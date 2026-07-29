@@ -186,7 +186,9 @@ Investigated 2026-07-28, after phase 1 shipped, because liba52 fit less well
 than expected: two memory-safety defects in the first two fuzz runs, an
 unbounded reader costing a 32 KiB pad, no CRC validation, four compile
 carve-outs. The choice was made without a comparison; this is that
-comparison, recorded so it is not re-opened on discomfort.
+comparison, recorded so it is not re-opened on discomfort. The table preserves
+the candidates at that comparison boundary; F3a has since bounded the fork's
+reader.
 
 | Candidate | License | Maintained / fuzzed | Reader bounded | E-AC-3 | RAM working set | Effort | Per-frame alloc |
 |---|---|---|---|---|---|---|---|
@@ -517,10 +519,10 @@ the 32 KiB pad still exists, using the pad as an oracle. A single step that
 adds the bound and removes the pad together cites evidence that is
 unobtainable once the pad is gone.
 
-- **F3a — the bound.** End pointer, fail-closed, byte-derived, set before
-  `a52_frame`, pad still in place and filled `0xFF` past `frame_length`.
-  Proof is the non-zero suppressed-fill count phase 2a specifies, plus the
-  F1 checksums.
+- **F3a — the bound. DONE 2026-07-29.** End pointer, fail-closed,
+  byte-derived, set before `a52_frame`, pad still in place and filled `0xFF`
+  past `frame_length`. Proof is the non-zero suppressed-fill count phase 2a
+  specifies, plus the F1 checksums.
 - **F3b — remove the pad**, scratch falls to one frame. Suites unchanged.
 - **F3c — CRC**, with the fuzz change below, which is not optional.
 
@@ -567,11 +569,12 @@ i.e. decoder reach collapses to ~0 again. Two acceptable mechanisms:
 segment (`[2, 5/8)` and `[5/8, end)`) is independently 0 — so a single pass
 genuinely chains CRC1 and CRC2.
 
-**Open mechanic F3 must settle:** `a52_frame` takes no length and
-`a52_syncinfo` sees only 7 bytes, yet both the bound and the CRC need the
-frame length. Pick the entry point and state it; phase 2a's rules (a)–(e)
-about the setter living in `a52.h` and `set_ptr` not clearing the end apply
-verbatim. Note also that the byte-exact bound relies on a **48 kHz-only
+**F3a entry-point resolution:** `aius_a52_decode_access_unit` calls the new
+`a52_bitstream_set_end` declared in guarded `a52.h`, after `a52_syncinfo`
+validates the exact payload length and 48 kHz rate and immediately before
+`a52_frame`. `a52_bitstream_set_ptr` does not clear the end. F3c reuses this
+already validated frame length for CRC. The byte-exact bound relies on a
+**48 kHz-only
 invariant** — `set_ptr` aligns down, and 48 kHz frame sizes are always a
 multiple of 4 — so relaxing the rate guard later would make the bound off by
 up to 3 bytes.
@@ -668,8 +671,9 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
   Length mismatch → `AIUS_MALFORMED`; sample rate ≠ 48 kHz →
   `AIUS_UNSUPPORTED`. Then `a52_frame` + 6 × `a52_block` produce 1536
   frames.
-- **The decode buffer is a padded scratch, not the parser's AU** (gate F1,
-  the load-bearing finding): liba52's bit reader is UNBOUNDED — no end
+- **Phase-1 baseline, superseded by F3a: the decode buffer is a padded
+  scratch, not the parser's AU** (gate F1, the load-bearing finding):
+  liba52's bit reader was UNBOUNDED — no end
   pointer, no bits-remaining check — and worst-case syntax consumption on a
   hostile payload is ~25 KB against a 128-byte minimum frame. The wrapper
   copies each AU into a zero-filled scratch of
@@ -677,7 +681,7 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
   and its derivation recorded in NOTICE.md), so an overread parses zeros
   inside owned memory and returns a bounded, typed result (possibly a
   legal-looking OK — zero exponents parse; the guarantee is bounded and
-  typed, never OOB). The pad tail is re-zeroed on every decode so the
+  typed, never OOB). The pad tail was re-zeroed on every decode so the
   parse is deterministic, not shaped by the previous AU. This is ~36 KiB
   of arena the phase-4 sizing decision must carry.
 - **Output flags request the stream's OWN coding**:
@@ -816,7 +820,7 @@ fit. That framing was wrong: **almost none of it is liba52's.**
 
 | Item | Bytes | Owner |
 |---|---|---|
-| Parse scratch (`MAX_FRAME + 32 KiB pad`) | 36,608 | adapter, only because liba52's reader is unbounded |
+| Parse scratch (`MAX_FRAME + 32 KiB pad`) | 36,608 | adapter; pad retained only as F3a's positive oracle until F3b |
 | Output planes (6 × 1536 × 4) | 36,864 | adapter, only because it accumulates a whole AU |
 | liba52 sample buffer (256 × 12 × 4) | 12,288 | liba52 |
 | State + handle + alignment | ~4,704 | liba52 + adapter |
@@ -881,7 +885,8 @@ mantissa/exponent/bit-allocation surface unfuzzed, and that is exactly where
 both phase-1 defects lived. So the bound is proven while the pad still
 exists, and only then does the pad go.
 
-**Step 1 — fork edit 4: bound liba52's bit reader (pad still in place).**
+**Step 1 — fork edit 4: bound liba52's bit reader (pad still in place).
+DONE 2026-07-29.**
 `bitstream_fill_current` (`bitstream.c:44-50`) is the SOLE dereference of
 `buffer_start`, `a52_bitstream_get_bh`/`_bh_2` each call it exactly once, the
 inline fast paths touch only `current_word`, there are no byte-wise reads,
@@ -889,10 +894,11 @@ and max `num_bits` is 24 so one fill always suffices. One choke point, so an
 end pointer plus zero-fill is sufficient — provided all five of these hold,
 each of which the gate found the first draft did not state:
 
-- **(a) The setter runs in `begin_access_unit`, BEFORE `a52_frame`, and
-  `a52_bitstream_set_ptr` must NOT clear the end.** `a52_frame` calls
-  `set_ptr` itself (`parse.c:154`), so a naive "reset to unbounded there"
-  drops the bound for the whole frame.
+- **(a) The setter runs in `aius_a52_decode_access_unit`, BEFORE
+  `a52_frame`, and `a52_bitstream_set_ptr` must NOT clear the end.**
+  `a52_frame` calls `set_ptr` itself (`parse.c:154`), so a naive "reset to
+  unbounded there" drops the bound for the whole frame. Step 3 moves the
+  same call into its new `begin_access_unit` entry point.
 - **(b) A BYTE end pointer (`scratch + frame_length`), never a word count.**
   `set_ptr` aligns *down*, so any word-derived bound is off by one word.
 - **(c) FAIL-CLOSED.** With edit 2's `memset` an unset end is NULL and
@@ -935,6 +941,13 @@ proves instead:
   for the one commit where it is both net and instrument. (Supplementary:
   all four failure modes above are already caught independently by the
   suppressed-fill counter and the `buffer_end` identity assert.)
+
+**Delivered proof:** fail-fast `a52` preserves all four F1 hashes and the
+direct seven-byte unarmed case suppresses its only attempted fill under ASan.
+The 50,000-iteration fuzz run preserves its exact 5,617 OK / 60,183 rejected
+outcome while observing 3,889,968 fills, 54,922 non-zero suppressions, and
+zero frame-end mismatches. The retained `0xFF` pad is therefore an exercised
+oracle, not the containment mechanism.
 
 **Step 2 — remove the pad**, taking the scratch to one frame (3,840 B).
 Same suites, unchanged, must stay green: with the pad gone the bound is now
@@ -1092,8 +1105,8 @@ coincidence, not proof (gate F12).
 **The differential must remain byte-identical** (1906 LSB / 69.3 dB) at
 every step, and this is provable rather than hopeful: decode order and count
 are unchanged so `dither_gen`'s LFSR advances identically, the quantize is
-per-sample, and edit 3's synthesized zeros are exactly what the tail-zeroed
-pad already returns for a past-end read.
+per-sample, and later edits retain the synthesized zeros F3a's bounded reader
+already returns for a past-end read.
 
 ### Slice 2b — decode off the audio ISR (target)
 

@@ -25,12 +25,11 @@ extern "C" {
  * link-time wrap. liba52 allocates only at init; steady-state decode
  * allocates nothing (aius_a52_get_metrics.alloc_count proves it).
  *
- * SAFETY SHAPE, unlike dcadec: liba52's bit reader is UNBOUNDED (no end
- * pointer). The adapter therefore never hands liba52 the caller's buffer; it
- * copies each AU into an owned scratch of AIUS_A52_MAX_FRAME +
- * AIUS_A52_PARSE_PAD whose tail is re-zeroed per decode, so a hostile
- * payload's overread parses zeros inside owned memory and returns a bounded,
- * typed result — never out-of-bounds (contract + derivation:
+ * SAFETY SHAPE, unlike upstream liba52: the fork's bit reader has a byte-exact,
+ * fail-closed end bound. The adapter sets it from the validated 48 kHz frame
+ * length before a52_frame. F3a retains AIUS_A52_PARSE_PAD temporarily and
+ * fills it with 0xFF as a positive proof oracle; the reader substitutes zeros
+ * at the bound, never reading the oracle bytes (contract + derivation:
  * lib/aius_a52/a52/NOTICE.md).
  *
  * Output flags always request the stream's OWN coding
@@ -51,9 +50,9 @@ extern "C" {
 /* The AC-3 maximum frame size (frmsizecod ceiling: 640 kbps at 32 kHz). */
 #define AIUS_A52_MAX_FRAME 3840u
 
-/* Scratch padding behind the copied AU, covering liba52's worst-case
- * over-consumption on a hostile payload (~25 KiB; derivation in
- * lib/aius_a52/a52/NOTICE.md) with margin. */
+/* Temporary F3a proof pad behind the copied AU. It is filled with 0xFF so the
+ * bounded reader's zero substitution is behaviorally distinguishable from an
+ * accidental read. F3b removes this allocation. */
 #define AIUS_A52_PARSE_PAD (32u * 1024u)
 
 /* Frames one AC-3 access unit decodes to (6 blocks x 256). */
@@ -87,6 +86,16 @@ AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
  * aius_dts_get_metrics: arena_high_water and alloc_count populated on both
  * provisioning modes; decode_cycles / stack_high_water stay 0 on the host. */
 AiusStatus aius_a52_get_metrics(const AiusA52Decoder *dec, AiusMetrics *out);
+
+#ifdef AIUS_A52_BOUND_PROBE
+/* Test-only positive proof for F3a's reader bound. Counts are cumulative over
+ * the decoder lifetime. Every fill must observe the frame-derived end exactly;
+ * suppressed_fills must be non-zero over the shipped fuzz corpus. */
+AiusStatus aius_a52_get_bound_probe(const AiusA52Decoder *dec,
+                                    uint32_t *fills,
+                                    uint32_t *suppressed_fills,
+                                    uint32_t *end_mismatches);
+#endif
 
 /* Release a decoder and all of its owned memory. NULL is a no-op. An
  * arena-backed decoder's storage is reclaimed by resetting or discarding the

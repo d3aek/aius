@@ -129,9 +129,11 @@ a52_build() {
 	local a52_inc=("-I$fw_root/lib/aius_a52/include" \
 		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
 		"-I$fw_root/lib/aius_a52/a52")
-	# The comma-separated --wrap list is one linker argument.
+	# AIUS_A52_BOUND_PROBE is host-only instrumentation for the F3a positive
+	# reader-bound oracle. The comma-separated --wrap list is one linker
+	# argument.
 	# shellcheck disable=SC2054
-	local a52_cflags=(-D_GNU_SOURCE \
+	local a52_cflags=(-D_GNU_SOURCE -DAIUS_A52_BOUND_PROBE \
 		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 	local a52="$fw_root/lib/aius_a52/a52"
 	"$cc" "${cflags[@]}" "${a52_inc[@]}" "${a52_cflags[@]}" \

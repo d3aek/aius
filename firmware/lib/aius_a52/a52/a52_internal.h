@@ -65,6 +65,13 @@ struct a52_state_s {
     uint16_t bai;		/* bit allocation information */
 
     uint32_t * buffer_start;
+    const uint8_t * buffer_end;
+#ifdef AIUS_A52_BOUND_PROBE
+    const uint8_t * buffer_expected_end;
+    uint32_t bitstream_fills;
+    uint32_t bitstream_suppressed_fills;
+    uint32_t bitstream_end_mismatches;
+#endif
     uint16_t lfsr_state;	/* dither state */
     uint32_t bits_left;
     uint32_t current_word;

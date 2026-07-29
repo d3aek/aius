@@ -52,6 +52,16 @@ a52_state_t * a52_init (uint32_t mm_accel);
 sample_t * a52_samples (a52_state_t * state);
 int a52_syncinfo (uint8_t * buf, int * flags,
 		  int * sample_rate, int * bit_rate);
+void a52_bitstream_set_end (a52_state_t * state, const uint8_t * end);
+#ifdef AIUS_A52_BOUND_PROBE
+void a52_bitstream_probe_expect_end (a52_state_t * state,
+				     const uint8_t * frame,
+				     uint32_t frame_length);
+void a52_bitstream_get_probe (const a52_state_t * state,
+			      uint32_t * fills,
+			      uint32_t * suppressed_fills,
+			      uint32_t * end_mismatches);
+#endif
 int a52_frame (a52_state_t * state, uint8_t * buf, int * flags,
 	       sample_t * level, sample_t bias);
 void a52_dynrng (a52_state_t * state,

@@ -24,12 +24,44 @@
 #include "config.h"
 
 #include <inttypes.h>
+#include <stddef.h>
 
 #include "a52.h"
 #include "a52_internal.h"
 #include "bitstream.h"
 
 #define BUFFER_SIZE 4096
+
+void a52_bitstream_set_end (a52_state_t * state, const uint8_t * end)
+{
+    if (state != NULL)
+	state->buffer_end = end;
+}
+
+#ifdef AIUS_A52_BOUND_PROBE
+void a52_bitstream_probe_expect_end (a52_state_t * state,
+				     const uint8_t * frame,
+				     uint32_t frame_length)
+{
+    if (state != NULL)
+	state->buffer_expected_end = frame + frame_length;
+}
+
+void a52_bitstream_get_probe (const a52_state_t * state,
+			      uint32_t * fills,
+			      uint32_t * suppressed_fills,
+			      uint32_t * end_mismatches)
+{
+    if (state == NULL)
+	return;
+    if (fills != NULL)
+	*fills = state->bitstream_fills;
+    if (suppressed_fills != NULL)
+	*suppressed_fills = state->bitstream_suppressed_fills;
+    if (end_mismatches != NULL)
+	*end_mismatches = state->bitstream_end_mismatches;
+}
+#endif
 
 void a52_bitstream_set_ptr (a52_state_t * state, uint8_t * buf)
 {
@@ -44,6 +76,25 @@ void a52_bitstream_set_ptr (a52_state_t * state, uint8_t * buf)
 static inline void bitstream_fill_current (a52_state_t * state)
 {
     uint32_t tmp;
+
+#ifdef AIUS_A52_BOUND_PROBE
+    state->bitstream_fills++;
+    if (state->buffer_end == NULL ||
+	state->buffer_end != state->buffer_expected_end)
+	state->bitstream_end_mismatches++;
+#endif
+
+    /* The adapter accepts only 48 kHz frames, whose byte length and aligned
+     * scratch base make every reachable word start four-byte aligned. The
+     * integer comparison also makes an unset NULL end fail closed without an
+     * undefined relational comparison between unrelated pointers. */
+    if ((uintptr_t)state->buffer_start >= (uintptr_t)state->buffer_end) {
+	state->current_word = 0;
+#ifdef AIUS_A52_BOUND_PROBE
+	state->bitstream_suppressed_fills++;
+#endif
+	return;
+    }
 
     tmp = *(state->buffer_start++);
     state->current_word = swab32 (tmp);

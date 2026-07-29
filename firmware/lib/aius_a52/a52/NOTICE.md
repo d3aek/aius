@@ -103,6 +103,23 @@ tables and proves their float representations unchanged. Exponent-switch
 fallthrough is explicit, and the pure-C IMDCT path no longer prints an
 unconditional diagnostic.
 
+### 5. Bound the bit reader
+
+`a52_bitstream_set_end` stores a byte end before `a52_frame`; the internal
+`a52_bitstream_set_ptr` reset deliberately preserves it. The sole word-fill
+choke point compares integer addresses, substitutes a zero word without
+advancing at or beyond the end, and treats an unset NULL end as already
+exhausted. Accepted adapter frames are 48 kHz, so their byte lengths and the
+owned scratch base are four-byte aligned; every start below the end therefore
+has one complete word remaining.
+
+The F3a host probe derives its expected end independently from the scratch base
+and validated frame length, then checks it at every fill. The shipped fuzz run
+observes 3,889,968 fills, including 54,922 suppressed at the bound, with zero
+end mismatches and its prior 5,617/60,183 OK/reject outcome unchanged. A
+seven-byte direct-core case leaves the end unset and proves that every attempted
+fill is suppressed under ASan.
+
 ## Remaining external accommodations
 
 `../include/config.h` keeps `sample_t` as `float`, routes the sample-buffer
@@ -111,8 +128,8 @@ macro override. The a52 suites build under the common `-Werror` plus
 ASan/UBSan flags with fail-fast shift checking and no fork-specific warning or
 sanitizer carve-out.
 
-The bit reader is still unbounded in this checkpoint. The adapter therefore
-copies an access unit into an owned `AIUS_A52_MAX_FRAME` plus 32 KiB padded
-scratch before calling the core. Fork steps F3a–F3c add a byte-exact reader
-bound, remove that pad, and add CRC validation; until those commits land, the
-pad remains the active containment mechanism.
+The adapter still copies an access unit into an owned `AIUS_A52_MAX_FRAME` plus
+32 KiB scratch. The reader bound is now the containment mechanism; for F3a
+only, every byte beyond the validated frame is `0xFF`, making the retained pad
+a positive proof oracle rather than a safety net. F3b removes the pad, then F3c
+adds CRC validation.

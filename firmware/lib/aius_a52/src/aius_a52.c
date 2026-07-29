@@ -4,11 +4,12 @@
  *
  * The contract, its gate findings, and every fork divergence are
  * recorded in aius-ac3-support.md §Phase 1 contract and
- * lib/aius_a52/a52/NOTICE.md. The load-bearing shape: liba52's bit reader is
- * unbounded, so decode NEVER runs on the caller's buffer — only on the owned,
- * padded, tail-zeroed scratch. The `a52` suite's channel-identity check on the
- * `surround51_ident` vector is what pins the channel map (defect 30's lesson:
- * the map is convicted by tones, not trusted from documentation). */
+ * lib/aius_a52/a52/NOTICE.md. The load-bearing shape: the fork's bit reader
+ * has a byte-exact fail-closed bound, and decode NEVER runs on the caller's
+ * buffer. F3a retains the owned pad as a 0xFF proof oracle. The `a52` suite's
+ * channel-identity check on the `surround51_ident` vector is what pins the
+ * channel map (defect 30's lesson: the map is convicted by tones, not trusted
+ * from documentation). */
 
 #include <inttypes.h>
 #include <stdlib.h>
@@ -43,7 +44,6 @@ struct AiusA52Decoder {
     a52_state_t *state;
     AiusArena *arena;        /* NULL on the libc path */
     uint8_t *scratch;        /* AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD */
-    size_t last_copied;      /* bytes of scratch holding the previous AU */
     int32_t *planes[AIUS_MAX_CHANNELS];
     AiusMetrics metrics;
 };
@@ -82,7 +82,6 @@ static AiusStatus decoder_create(AiusA52Decoder **out, AiusArena *arena)
     if (!dec->scratch)
         goto fail;
     memset(dec->scratch, 0, AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD);
-    dec->last_copied = 0;
 
     for (int c = 0; c < AIUS_MAX_CHANNELS; c++) {
         dec->planes[c] = malloc(AIUS_A52_FRAME_SAMPLES * sizeof(int32_t));
@@ -155,13 +154,8 @@ AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
         goto out;
     }
 
-    /* The AU is parsed ONLY from the owned scratch. Re-zero whatever the
-     * previous AU left beyond this one's length so a hostile overread parses
-     * zeros deterministically, never a previous AU's tail. */
+    /* The AU is parsed ONLY from the owned scratch. */
     memcpy(dec->scratch, data, size);
-    if (dec->last_copied > size)
-        memset(dec->scratch + size, 0, dec->last_copied - size);
-    dec->last_copied = size;
 
     int flags = 0, sample_rate = 0, bit_rate = 0;
     int frame_length = a52_syncinfo(dec->scratch, &flags, &sample_rate,
@@ -184,6 +178,19 @@ AiusStatus aius_a52_decode_access_unit(AiusA52Decoder *dec,
         goto out;
     }
     int lfe = (flags & A52_LFE) != 0;
+
+    /* F3a keeps the old pad as a positive oracle. Any missing, late, cleared,
+     * or pad-derived bound now changes parse behaviour instead of silently
+     * consuming the former zero tail. The reader itself substitutes zeros at
+     * the byte-exact frame end. */
+    memset(dec->scratch + frame_length, 0xFF,
+           AIUS_A52_MAX_FRAME + AIUS_A52_PARSE_PAD -
+               (size_t)frame_length);
+#ifdef AIUS_A52_BOUND_PROBE
+    a52_bitstream_probe_expect_end(dec->state, dec->scratch,
+                                   (uint32_t)frame_length);
+#endif
+    a52_bitstream_set_end(dec->state, dec->scratch + frame_length);
 
     /* Identity request: the stream's own coding, level 1, bias 0. Never a
      * widening, never a downmix (upstream's 3F1R memcpy typo stays dormant). */
@@ -267,6 +274,20 @@ AiusStatus aius_a52_get_metrics(const AiusA52Decoder *dec, AiusMetrics *out)
     *out = dec->metrics;
     return AIUS_OK;
 }
+
+#ifdef AIUS_A52_BOUND_PROBE
+AiusStatus aius_a52_get_bound_probe(const AiusA52Decoder *dec,
+                                    uint32_t *fills,
+                                    uint32_t *suppressed_fills,
+                                    uint32_t *end_mismatches)
+{
+    if (!dec || !fills || !suppressed_fills || !end_mismatches)
+        return AIUS_INVALID_ARG;
+    a52_bitstream_get_probe(dec->state, fills, suppressed_fills,
+                            end_mismatches);
+    return AIUS_OK;
+}
+#endif
 
 void aius_a52_decoder_destroy(AiusA52Decoder *dec)
 {
