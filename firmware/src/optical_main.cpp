@@ -30,6 +30,7 @@ extern "C" {
 	#include "aius_recorder.h"
 	#include "aius_audio_ingress.h"
 	#include "aius_audio_service.h"
+	#include "aius_audio_clock.h"
 	#include "aius_clock.h"
 	#include "aius_pipeline.h"
 	#include "aius_http.h"
@@ -163,31 +164,45 @@ static uint32_t g_audio_checkpoint_max_cycles;
 static uint32_t g_tx_high_water_frames;
 static constexpr uint32_t AIUS_RUNTIME_EPOCH_BUDGET_US = 25000u;
 
-/* Portable rate truth is updated once at checkpoint 7 and consumed by AUDIO
- * and the physical-gate decision later in the epoch. Phase 1 deliberately
- * keeps the applied output plan at the boot 48 kHz value; accepted 32/44.1
- * carriers are observable but cannot open the pad until Phase 2 applies their
- * clock plan. */
+/* Portable rate truth is updated once at checkpoint 7 and consumed by AUDIO,
+ * the bounded target adapter and the physical-gate decision later in the
+ * epoch. The desired plan is checkpoint-owned; applied-plan and boundary
+ * truth come back through the adapter's race-safe snapshots. */
 static AiusRateTracker g_rate_tracker;
+static AiusSpdifClockPlan g_clock_desired_plan;
 static uint32_t g_clock_carrier_rate_millihz;
 static uint32_t g_clock_nominal_rate_hz;
 static uint32_t g_clock_stream_rate_hz;
 static uint32_t g_clock_output_rate_millihz = UINT32_C(48000000);
 static uint32_t g_pipeline_pcm_rate_hz = AIUS_OPTICAL_SAMPLE_RATE_HZ;
 static uint32_t g_clock_rate_changes;
+static uint32_t g_clock_trim_updates;
+static uint32_t g_clock_structural_replans;
+static uint32_t g_clock_invalid_windows;
+static uint32_t g_clock_faults;
+static uint32_t g_clock_last_fault;
 static uint32_t g_clock_mismatch_blocks;
 static uint32_t g_clock_unsupported_blocks;
 static uint32_t g_clock_unsupported_episodes;
+static uint32_t g_clock_tracker_noted_target_millihz;
+static uint32_t g_clock_last_apply_attempt_ms;
 static bool g_clock_carrier_ready;
+static bool g_clock_desired_plan_valid;
 static bool g_clock_plan_applied;
+static bool g_clock_dark_transition_pending;
+static bool g_clock_replay_ready;
+static bool g_clock_apply_attempted;
+static bool g_clock_fault_episode;
 static bool g_clock_live_ready;
 static bool g_clock_carrier_unsupported;
 static bool g_clock_stream_unsupported_episode;
+static uint32_t g_clock_relock_reset_nominal_hz;
 static bool g_tx_gate_open;    /* latched decision, .bss = closed */
 static bool g_tx_gate_carrier; /* latched checkpoint-7 carrier input */
 static bool g_tx_gate_replay;  /* never re-derived at request time */
 
 static FLASHMEM void tx_gate_actuate(bool open);
+static FLASHMEM bool clock_output_is_master(void);
 
 static inline bool supported_program_rate(uint32_t rate_hz)
 {
@@ -753,7 +768,12 @@ struct AiusEvent {
  *    9  DHCP_UPDATE           the adapter bound a new lease. detail: delta.
  *   10  WATCHDOG_EARLY_RESET  the retained ledger's early-reset count, reported
  *                             on the first epoch that observes it. detail: the
- *                             count, which is fixed for the life of the boot. */
+ *                             count, which is fixed for the life of the boot.
+ *   11  RATE_CHANGE            an accepted live nominal rate. detail: Hz.
+ *   12  RATE_UNSUPPORTED       one refused-rate episode. detail: measured Hz,
+ *                              or zero for an unsupported decoded block.
+ *   13  CLOCK_FAULT            one failed apply episode. detail:
+ *                              AiusClockApplyResult. */
 enum AiusEventType : uint8_t {
 	AIUS_EVENT_STATE = 1,
 	AIUS_EVENT_TEST_TONE = 2,
@@ -767,6 +787,7 @@ enum AiusEventType : uint8_t {
 	AIUS_EVENT_WATCHDOG_EARLY_RESET = 10,
 	AIUS_EVENT_RATE_CHANGE = 11,
 	AIUS_EVENT_RATE_UNSUPPORTED = 12,
+	AIUS_EVENT_CLOCK_FAULT = 13,
 };
 
 static AiusEvent g_events[8];
@@ -1021,6 +1042,11 @@ public:
 		if (g_pipeline != nullptr)
 			aius_pipeline_clear_service_diag(g_pipeline);
 		g_clock_rate_changes = 0u;
+		g_clock_trim_updates = 0u;
+		g_clock_structural_replans = 0u;
+		g_clock_invalid_windows = 0u;
+		g_clock_faults = 0u;
+		g_clock_last_fault = 0u;
 		g_clock_mismatch_blocks = 0u;
 		g_clock_unsupported_blocks = 0u;
 		g_clock_unsupported_episodes = 0u;
@@ -1201,10 +1227,13 @@ private:
 			replay ? AIUS_OPTICAL_SAMPLE_RATE_HZ
 			       : g_clock_nominal_rate_hz;
 		const bool output_plan_ready =
-			replay ? g_clock_output_rate_millihz == UINT32_C(48000000)
+			replay ? g_clock_replay_ready
 			       : g_clock_plan_applied;
-		if (!output_plan_ready ||
-		    block->sample_rate_hz != expected_rate_hz) {
+		if (!output_plan_ready) {
+			close_stream_rate_gate();
+			return AIUS_NO_SPACE;
+		}
+		if (block->sample_rate_hz != expected_rate_hz) {
 			g_clock_mismatch_blocks++;
 			close_stream_rate_gate();
 			return AIUS_UNSUPPORTED;
@@ -1424,6 +1453,7 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	 * after the static AudioOutputSPDIF3 constructor has allocated the DMA
 	 * channel. */
 	aius_spdif_tx24_begin();
+	aius_audio_clock_initialize();
 	if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 		g_create_status = AIUS_NO_SPACE;
 		return;
@@ -2467,11 +2497,22 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 	                                 size_t *length)
 {
 	AiusAudioIngressDiag ingress;
-	const bool output_master =
-		!g_tx_gate_carrier &&
-		g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY;
+	const bool output_master = clock_output_is_master();
+	const uint32_t status_nominal_rate_hz =
+		output_master ? AIUS_OPTICAL_SAMPLE_RATE_HZ
+		              : g_clock_nominal_rate_hz;
+	int32_t trim_ppm = 0;
+	if (status_nominal_rate_hz != 0u) {
+		const int64_t nominal_millihz =
+			(int64_t)status_nominal_rate_hz * INT64_C(1000);
+		trim_ppm = (int32_t)(
+			((int64_t)g_clock_output_rate_millihz -
+			 nominal_millihz) *
+			INT64_C(1000000) / nominal_millihz);
+	}
 	const char *state =
 		output_master ? "replay" :
+		g_clock_fault_episode ? "fault" :
 		!g_tx_gate_carrier ? "unlocked" :
 		g_clock_carrier_unsupported ? "unsupported" :
 		g_clock_carrier_ready
@@ -2492,15 +2533,15 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"nominal_rate_hz\":%lu,"
 		"\"stream_rate_hz\":%lu,"
 		"\"output_rate_millihz\":%lu,"
-		"\"trim_ppm\":0,"
+		"\"trim_ppm\":%ld,"
 		"\"master\":\"%s\","
 		"\"state\":\"%s\","
 		"\"rate_changes\":%lu,"
-		"\"trim_updates\":0,"
-		"\"structural_replans\":0,"
-		"\"invalid_windows\":0,"
-		"\"clock_faults\":0,"
-		"\"last_clock_fault\":0,"
+		"\"trim_updates\":%lu,"
+		"\"structural_replans\":%lu,"
+		"\"invalid_windows\":%lu,"
+		"\"clock_faults\":%lu,"
+		"\"last_clock_fault\":%lu,"
 		"\"mismatch_blocks\":%lu,"
 		"\"unsupported_blocks\":%lu,"
 		"\"unsupported_episodes\":%lu,"
@@ -2511,12 +2552,16 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		g_tx_gate_carrier ? "true" : "false",
 		g_clock_carrier_ready ? "true" : "false",
 		(unsigned long)g_clock_carrier_rate_millihz,
-		(unsigned long)(output_master ? AIUS_OPTICAL_SAMPLE_RATE_HZ
-		                             : g_clock_nominal_rate_hz),
+		(unsigned long)status_nominal_rate_hz,
 		(unsigned long)g_clock_stream_rate_hz,
 		(unsigned long)g_clock_output_rate_millihz,
-		output_master ? "output" : "input", state,
+		(long)trim_ppm, output_master ? "output" : "input", state,
 		(unsigned long)g_clock_rate_changes,
+		(unsigned long)g_clock_trim_updates,
+		(unsigned long)g_clock_structural_replans,
+		(unsigned long)g_clock_invalid_windows,
+		(unsigned long)g_clock_faults,
+		(unsigned long)g_clock_last_fault,
 		(unsigned long)g_clock_mismatch_blocks,
 		(unsigned long)g_clock_unsupported_blocks,
 		(unsigned long)g_clock_unsupported_episodes,
@@ -4996,14 +5041,19 @@ FLASHMEM bool AiusSpdifOutputClock::is_master(void)
 	return update_responsibility;
 }
 
+static FLASHMEM bool clock_output_is_master(void)
+{
+	return AiusSpdifOutputClock::is_master();
+}
+
 FLASHMEM void AiusSpdifOutputClock::set_master(bool master)
 {
 	update_responsibility = master;
 }
 
-/* Enforces one invariant: THE LIVE INPUT ALWAYS OWNS THE AUDIO PATH. Replay is
- * strictly the fallback for a board with no carrier, so a carrier and a replay
- * never contend -- the carrier wins, every time, and the replay ends.
+/* Settle source ownership before any clock decision. Replay is strictly the
+ * fallback for a board with no carrier, so a carrier and a replay never
+ * contend: the carrier wins and the replay ends.
  *
  * Called from checkpoint 7 AFTER the refill pass, because
  * aius_replay_service_deliver() -- reached through replay_job_route() inside
@@ -5011,16 +5061,10 @@ FLASHMEM void AiusSpdifOutputClock::set_master(bool master)
  * ring reaches its watermark; running after it moves the clock in the same
  * epoch the source moves, not an epoch later.
  *
- * A reconciler here rather than a pair of pokes in app_replay_start() /
- * app_replay_stop(): start only publishes PREBUFFERING, playback begins later
- * and elsewhere, and the five ways a replay ends -- an operator stop, EOF, a
- * decoder error, a cancelled job replaced by a new selection, and now a carrier
- * arriving -- all reach the same `source` field. One derived predicate covers
- * every one of them; five call sites would not, and each would be a chance to
- * leave the clock behind. It also keeps pllLocked() out of the audio ISR: this
- * runs once per epoch in thread context, and the ITCM guard's audio-block set
- * stays limited to the ingress producer sections. */
-static FLASHMEM void replay_clock_service(void)
+ * Source settlement is separate from graph-master reconciliation because the
+ * exact 48 kHz replay plan and its four-period validity hold must finish
+ * between them. */
+static FLASHMEM void replay_source_service(void)
 {
 	/* A carrier displaces any replay that is prebuffering or playing. The
 	 * refill is cancelled and the service stopped exactly as app_replay_stop()
@@ -5037,22 +5081,17 @@ static FLASHMEM void replay_clock_service(void)
 		record_event(AIUS_EVENT_REPLAY_STOP, current_state(),
 		             REPLAY_STOP_CARRIER);
 	}
-	/* Exactly the predicate AiusAudioProcessor::update() branches on, ANDed
-	 * with the absence of a carrier, so the clock owner and the audio source
-	 * cannot disagree by more than the epoch that moves them.
-	 *
-	 * The pllLocked() term is redundant after the arm above has run -- a
-	 * carrier leaves source at OPTICAL -- and it is kept because it is what
-	 * makes this one function a complete statement of the invariant: the
-	 * transmitter takes the clock only in the absence of a carrier, whatever
-	 * any other path may have done to `source`. A carrier arriving mid-replay
-	 * therefore lands the clock back on the input in the same epoch that stops
-	 * the replay, not one later; a carrier going away again does nothing until
-	 * a new replay is started, which is the fallback direction and belongs to
-	 * an operator, not to a PLL edge. */
+}
+
+/* The only graph-master writer. Called after sample_rate_service(), so output
+ * can take responsibility only after the production 48 kHz plan is applied
+ * and its exact 512-frame invalid hold has completed. A failed apply leaves
+ * the input master, the pad dark and replay data unconsumed. */
+static FLASHMEM void replay_clock_service(void)
+{
 	const bool output_drives =
 		g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&
-		!AudioInputSPDIF3::pllLocked();
+		!AudioInputSPDIF3::pllLocked() && g_clock_replay_ready;
 	if (output_drives == AiusSpdifOutputClock::is_master())
 		return;
 	/* Both flags are read from a DMA ISR -- input_spdif3.cpp's at the top of
@@ -5078,9 +5117,9 @@ static FLASHMEM void replay_clock_service(void)
 	interrupts();
 }
 
-/* Checkpoint 7, after replay_clock_service(): both inputs are this epoch's
- * settled values -- the reconciler's source transition and any carrier
- * displacement have already landed. In recovery-safe the scheduler never
+/* Checkpoint 7, after replay_source_service(): both inputs are this epoch's
+ * settled values -- refill promotion and any carrier displacement have
+ * already landed. In recovery-safe the scheduler never
  * reaches this checkpoint, so the gate stays frozen dark from setup(), which
  * also mutes live passthrough there -- intended, and recorded in the plan. */
 /* Defect 28 (C3): a debounced carrier-lock rising edge re-classifies the
@@ -5107,24 +5146,173 @@ static FLASHMEM void pipeline_pcm_rate_service(uint32_t rate_hz)
 		g_pipeline_pcm_rate_hz = rate_hz;
 }
 
+static FLASHMEM bool replay_rate_requested(AiusReplaySource source)
+{
+	return source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY ||
+	       source == AIUS_REPLAY_SOURCE_REPLAY;
+}
+
+static FLASHMEM bool clock_plan_exact_equal(
+	const AiusSpdifClockPlan &left,
+	const AiusSpdifClockPlan &right)
+{
+	return left.nominal_rate_hz == right.nominal_rate_hz &&
+	       left.target_rate_millihz == right.target_rate_millihz &&
+	       left.pll_div_select == right.pll_div_select &&
+	       left.pll_numerator == right.pll_numerator &&
+	       left.pll_denominator == right.pll_denominator &&
+	       left.root_predivider == right.root_predivider &&
+	       left.root_postdivider == right.root_postdivider &&
+	       left.tx_clock_divider == right.tx_clock_divider &&
+	       left.channel_status_rate_bits ==
+		       right.channel_status_rate_bits;
+}
+
+static FLASHMEM void clock_select_desired_plan(
+	const AiusSpdifClockPlan &plan)
+{
+	if (g_clock_desired_plan_valid &&
+	    clock_plan_exact_equal(g_clock_desired_plan, plan))
+		return;
+	g_clock_desired_plan = plan;
+	g_clock_desired_plan_valid = true;
+	g_clock_apply_attempted = false;
+}
+
+static FLASHMEM void clock_record_fault(AiusClockApplyResult fault)
+{
+	close_stream_rate_gate();
+	aius_audio_clock_begin_dark_transition();
+	if (fault == AIUS_CLOCK_APPLY_INVALID_PLAN)
+		g_clock_desired_plan_valid = false;
+	g_clock_last_fault = (uint32_t)fault;
+	g_clock_plan_applied = false;
+	g_clock_replay_ready = false;
+	g_clock_dark_transition_pending = true;
+	if (g_clock_fault_episode)
+		return;
+	g_clock_fault_episode = true;
+	g_clock_faults++;
+	record_event(AIUS_EVENT_CLOCK_FAULT, current_state(), (uint16_t)fault);
+}
+
+static FLASHMEM void clock_flush_ring_preserve_diag(void)
+{
+	/* The TX ISR is the sole cursor reader. The critical section is only two
+	 * stores and preserves its lifetime underrun diagnostic. */
+	noInterrupts();
+	aius_spdif_tx24_flush_preserve_diag(&g_aius_spdif_tx24);
+	interrupts();
+}
+
+static FLASHMEM bool clock_apply_desired_plan(
+	uint32_t now_ms,
+	bool flush_ring,
+	bool reset_audio)
+{
+	if (!g_clock_desired_plan_valid)
+		return false;
+
+	close_stream_rate_gate();
+	aius_audio_clock_begin_dark_transition();
+	g_clock_dark_transition_pending = true;
+	if (flush_ring)
+		clock_flush_ring_preserve_diag();
+	if (reset_audio)
+		request_audio_reset();
+
+	g_clock_apply_attempted = true;
+	g_clock_last_apply_attempt_ms = now_ms;
+	const AiusClockApplyResult applied =
+		aius_audio_clock_apply(&g_clock_desired_plan);
+	if (applied != AIUS_CLOCK_APPLY_OK) {
+		clock_record_fault(applied);
+		return false;
+	}
+	g_clock_invalid_windows++;
+	g_clock_fault_episode = false;
+	return true;
+}
+
+static FLASHMEM void clock_refresh_applied(
+	AiusReplaySource source,
+	uint32_t now_ms)
+{
+	AiusAudioClockBoundaryStatus boundary = {};
+	AiusSpdifClockPlan applied = {};
+	const bool have_boundary =
+		aius_audio_clock_get_boundary_status(&boundary);
+	const bool have_applied =
+		aius_audio_clock_get_applied_plan(&applied);
+
+	if (have_applied)
+		g_clock_output_rate_millihz = applied.target_rate_millihz;
+	if (g_clock_dark_transition_pending && have_boundary &&
+	    boundary.transition_complete)
+		g_clock_dark_transition_pending = false;
+
+	const bool desired_structure_applied =
+		have_applied && g_clock_desired_plan_valid &&
+		applied.nominal_rate_hz == g_clock_desired_plan.nominal_rate_hz &&
+		aius_spdif_clock_plan_structurally_equal(
+			&applied, &g_clock_desired_plan);
+	const bool replay_selected = replay_rate_requested(source);
+	g_clock_plan_applied =
+		!replay_selected && desired_structure_applied &&
+		applied.nominal_rate_hz == g_clock_nominal_rate_hz &&
+		!g_clock_dark_transition_pending;
+	g_clock_replay_ready =
+		replay_selected && desired_structure_applied &&
+		applied.nominal_rate_hz == AIUS_OPTICAL_SAMPLE_RATE_HZ &&
+		applied.target_rate_millihz == UINT32_C(48000000) &&
+		have_boundary && boundary.transition_complete &&
+		!g_clock_dark_transition_pending;
+
+	if (!replay_selected && have_applied &&
+	    applied.nominal_rate_hz == g_clock_nominal_rate_hz &&
+	    applied.target_rate_millihz !=
+		    g_clock_tracker_noted_target_millihz &&
+	    aius_rate_tracker_note_target_applied(
+		    &g_rate_tracker, applied.target_rate_millihz, now_ms)) {
+		g_clock_tracker_noted_target_millihz =
+			applied.target_rate_millihz;
+	}
+
+	/* A full apply is synchronously bounded. A transient lock miss retries at
+	 * most once per second, while one fault episode remains one counter/event. */
+	if (g_clock_dark_transition_pending && !desired_structure_applied &&
+	    (!g_clock_apply_attempted ||
+	     (uint32_t)(now_ms - g_clock_last_apply_attempt_ms) >=
+		     UINT32_C(1000)))
+		(void)clock_apply_desired_plan(now_ms, false, false);
+}
+
 static FLASHMEM void sample_rate_service(uint32_t now_ms)
 {
 	const bool carrier = AudioInputSPDIF3::pllLocked();
 	const AiusReplaySource source = g_replay_service.source;
-	const uint32_t measured_hz =
-		carrier ? AudioInputSPDIF3::sampleRate() : 0u;
+	uint32_t measured_millihz = 0u;
+	if (carrier &&
+	    !aius_spdif_input_rate_millihz(&measured_millihz))
+		measured_millihz =
+			AudioInputSPDIF3::sampleRate() * UINT32_C(1000);
 	AiusRateTrackerSample sample = {
 		carrier,
-		measured_hz * UINT32_C(1000),
-		source == AIUS_REPLAY_SOURCE_REPLAY
+		measured_millihz,
+		replay_rate_requested(source)
 			? AIUS_CLOCK_SOURCE_REPLAY
 			: AIUS_CLOCK_SOURCE_LIVE,
 		now_ms,
 	};
 	const AiusRateTrackerResult result =
 		aius_rate_tracker_step(&g_rate_tracker, &sample);
+	const uint32_t observed_nominal_hz =
+		carrier ? aius_clock_snap_nominal_rate(measured_millihz) : 0u;
+	if (g_clock_relock_reset_nominal_hz != 0u &&
+	    observed_nominal_hz != g_clock_relock_reset_nominal_hz)
+		g_clock_relock_reset_nominal_hz = 0u;
 
-	if (source == AIUS_REPLAY_SOURCE_REPLAY)
+	if (replay_rate_requested(source))
 		pipeline_pcm_rate_service(AIUS_OPTICAL_SAMPLE_RATE_HZ);
 	g_clock_carrier_rate_millihz = sample.carrier_rate_millihz;
 	g_clock_carrier_ready = result.carrier_ready;
@@ -5133,22 +5321,52 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 
 	if (result.nominal_accepted) {
 		const uint32_t old_nominal = g_clock_nominal_rate_hz;
+		const bool reset_for_acceptance =
+			g_clock_relock_reset_nominal_hz !=
+				result.nominal_rate_hz;
+		AiusSpdifClockPlan plan = {};
 		g_clock_nominal_rate_hz = result.nominal_rate_hz;
 		g_clock_stream_rate_hz = 0u;
+		g_clock_tracker_noted_target_millihz = 0u;
+		g_clock_relock_reset_nominal_hz = 0u;
 		g_clock_live_ready = false;
 		g_clock_carrier_unsupported = false;
-		g_clock_plan_applied =
-			result.nominal_rate_hz == AIUS_OPTICAL_SAMPLE_RATE_HZ;
 		pipeline_pcm_rate_service(result.nominal_rate_hz);
-		if (g_clock_plan_applied)
-			(void)aius_rate_tracker_note_target_applied(
-				&g_rate_tracker, g_clock_output_rate_millihz, now_ms);
 		if (old_nominal != result.nominal_rate_hz) {
 			g_clock_rate_changes++;
 			record_event(AIUS_EVENT_RATE_CHANGE, current_state(),
 			             (uint16_t)result.nominal_rate_hz);
-			if (old_nominal != 0u)
-				request_audio_reset();
+		}
+		if (!aius_spdif_clock_plan(
+			    result.nominal_rate_hz,
+			    result.target_rate_millihz, &plan)) {
+			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN);
+		} else {
+			clock_select_desired_plan(plan);
+			(void)clock_apply_desired_plan(
+				now_ms, true, reset_for_acceptance);
+		}
+	} else if (result.target_update) {
+		AiusSpdifClockPlan plan = {};
+		AiusSpdifClockPlan applied = {};
+		if (!aius_spdif_clock_plan(
+			    g_clock_nominal_rate_hz,
+			    result.target_rate_millihz, &plan)) {
+			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN);
+		} else if (
+			aius_audio_clock_get_applied_plan(&applied) &&
+			aius_spdif_clock_plan_structurally_equal(&applied,
+			                                         &plan)) {
+			if (aius_audio_clock_request_trim(&plan)) {
+				g_clock_desired_plan = plan;
+				g_clock_desired_plan_valid = true;
+				g_clock_trim_updates++;
+				g_clock_invalid_windows++;
+			}
+		} else {
+			clock_select_desired_plan(plan);
+			g_clock_structural_replans++;
+			(void)clock_apply_desired_plan(now_ms, false, false);
 		}
 	}
 
@@ -5156,12 +5374,39 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		g_clock_carrier_unsupported = true;
 		g_clock_unsupported_episodes++;
 		record_event(AIUS_EVENT_RATE_UNSUPPORTED, current_state(),
-		             measured_hz > UINT16_MAX
+		             measured_millihz / UINT32_C(1000) > UINT16_MAX
 			             ? UINT16_MAX
-			             : (uint16_t)measured_hz);
+			             : (uint16_t)(
+				             measured_millihz /
+				             UINT32_C(1000)));
 	}
 	if (!carrier)
 		g_clock_carrier_unsupported = false;
+
+	if (replay_rate_requested(source) && !carrier) {
+		AiusSpdifClockPlan replay_plan = {};
+		AiusSpdifClockPlan applied = {};
+		if (aius_spdif_clock_plan(
+			    AIUS_OPTICAL_SAMPLE_RATE_HZ,
+			    UINT32_C(48000000), &replay_plan)) {
+			const bool already_applied =
+				aius_audio_clock_get_applied_plan(&applied) &&
+				clock_plan_exact_equal(applied, replay_plan);
+			clock_select_desired_plan(replay_plan);
+			if (!already_applied && !g_clock_apply_attempted) {
+				const bool rate_changed =
+					applied.nominal_rate_hz != 0u &&
+					applied.nominal_rate_hz !=
+						AIUS_OPTICAL_SAMPLE_RATE_HZ;
+				(void)clock_apply_desired_plan(
+					now_ms, rate_changed, rate_changed);
+			}
+		} else {
+			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN);
+		}
+	}
+
+	clock_refresh_applied(source, now_ms);
 }
 
 static FLASHMEM void tx_gate_service(void)
@@ -5171,18 +5416,26 @@ static FLASHMEM void tx_gate_service(void)
 		if (g_carrier_unlocked_epochs < UINT8_MAX)
 			g_carrier_unlocked_epochs++;
 	} else {
-		if (g_carrier_unlocked_epochs >= AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS)
+		if (g_carrier_unlocked_epochs >=
+		    AIUS_CARRIER_RESET_DEBOUNCE_EPOCHS) {
 			request_audio_reset();
+			g_clock_relock_reset_nominal_hz =
+				aius_clock_snap_nominal_rate(
+					g_clock_carrier_rate_millihz);
+		}
 		g_carrier_unlocked_epochs = 0;
 	}
 	const AiusReplaySource source = g_replay_service.source;
 	const bool open =
-		aius_tx_gate_permitted(carrier, g_clock_live_ready, source);
+		aius_tx_gate_permitted(carrier, g_clock_live_ready,
+		                       g_clock_replay_ready, source);
 	if (open != g_tx_gate_open)
 		tx_gate_actuate(open);
 	g_tx_gate_open = open;
 	g_tx_gate_carrier = carrier;
-	g_tx_gate_replay = aius_tx_gate_permitted(false, false, source);
+	g_tx_gate_replay =
+		aius_tx_gate_permitted(false, false, g_clock_replay_ready,
+		                       source);
 }
 
 /* Checkpoint 7: the SD lifecycle and the replay refill, in that order, with the
@@ -5210,11 +5463,14 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 		return false;
 	sd_lifecycle_service(now_ms);
 	replay_refill_service(now_ms);
-	/* Last, so it sees this epoch's source transition rather than the previous
-	 * one's. Memory only -- two byte stores under one critical section -- so it
-	 * spends none of the epoch's single SD primitive. */
-	replay_clock_service();
+	/* Settle carrier displacement before selecting a target clock. */
+	replay_source_service();
+	/* Apply or verify the settled source's live plan or exact 48 kHz replay
+	 * plan before graph ownership can move. */
 	sample_rate_service(now_ms);
+	/* Memory only -- two byte stores under one critical section. Output takes
+	 * graph ownership only after replay plan/hold acknowledgement. */
+	replay_clock_service();
 	/* After the clock reconciler for the same reason it runs last: the gate
 	 * must judge this epoch's settled source and carrier, not the previous
 	 * one's. A boolean and at most three register stores; no budget row. */

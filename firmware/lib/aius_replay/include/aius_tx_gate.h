@@ -27,6 +27,9 @@ extern "C" {
  * - `live_ready` proves the accepted carrier rate, applied output clock and
  *   decoded stream agree. A locked but unaccepted or mismatched carrier stays
  *   physically dark.
+ * - `replay_ready` proves the exact 48 kHz replay plan is applied and its
+ *   transition hold is complete. A selected replay cannot leak the last live
+ *   clock or open after a failed apply.
  * - `SWITCHING_TO_REPLAY` counts as running ON PURPOSE: the prebuffer phase
  *   is the sink's lock lead time. Opening the gate only at SOURCE_REPLAY
  *   would hand the sink audio in the same instant it first sees a carrier,
@@ -44,12 +47,14 @@ extern "C" {
  */
 static inline bool aius_tx_gate_permitted(bool carrier_locked,
                                           bool live_ready,
+                                          bool replay_ready,
                                           AiusReplaySource source)
 {
 	if (carrier_locked)
 		return live_ready;
-	return source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY ||
-	       source == AIUS_REPLAY_SOURCE_REPLAY;
+	return replay_ready &&
+	       (source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY ||
+	        source == AIUS_REPLAY_SOURCE_REPLAY);
 }
 
 #ifdef __cplusplus

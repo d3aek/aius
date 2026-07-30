@@ -864,6 +864,7 @@ def assert_replay_sizing_matches_the_sd_engine(text):
 # state the invariant exists to make unreachable; it would also report itself as
 # a still-`playing` replay that produces nothing, which is where this began.
 CLOCK_SERVICE_MARKER = "static FLASHMEM void replay_clock_service(void)"
+SOURCE_SERVICE_MARKER = "static FLASHMEM void replay_source_service(void)"
 REPLAY_CHECKPOINT_MARKER = (
     "static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,"
 )
@@ -879,6 +880,8 @@ CLOCK_MASTER_SETTERS = (
 def assert_replay_clock_handover_is_bounded(text):
     body = function_body(text, CLOCK_SERVICE_MARKER)
     clean = without_comments_and_literals(body)
+    source_body = function_body(text, SOURCE_SERVICE_MARKER)
+    source_clean = without_comments_and_literals(source_body)
     assert "AIUS_REPLAY_SOURCE_REPLAY" in clean, (
         "the clock handover is not bounded to the replay path: "
         "replay_clock_service() never reads AIUS_REPLAY_SOURCE_REPLAY, so its "
@@ -889,14 +892,24 @@ def assert_replay_clock_handover_is_bounded(text):
         "a replay could take the clock away from a LIVE carrier -- the input's "
         "recovered clock is the correct master for passthrough"
     )
-    assert "aius_replay_service_stop(" in clean, (
-        "replay_clock_service() takes the clock back from a carrier but never "
+    assert "g_clock_replay_ready" in clean, (
+        "replay_clock_service() can give output graph ownership to a replay "
+        "whose exact 48 kHz clock plan and invalid hold are not acknowledged"
+    )
+    assert "AIUS_REPLAY_SOURCE_REPLAY" in source_clean, (
+        "replay_source_service() does not bound carrier displacement to replay"
+    )
+    assert "pllLocked(" in source_clean, (
+        "replay_source_service() does not consult the live carrier lock"
+    )
+    assert "aius_replay_service_stop(" in source_clean, (
+        "replay_source_service() observes a carrier but never "
         "stops the replay, so a live input and a replay both hold the audio "
         "path; the live input must win outright"
     )
-    assert "record_event(" in clean, (
+    assert "record_event(" in source_clean, (
         "a carrier displacing a replay is a transition, not a counter, and "
-        "replay_clock_service() puts nothing in the event ring -- so the one "
+        "replay_source_service() puts nothing in the event ring -- so the one "
         "channel that could explain a replay ending by itself stays silent"
     )
 
@@ -928,6 +941,13 @@ def assert_replay_clock_handover_is_bounded(text):
 
     driver = without_comments_and_literals(
         function_body(text, REPLAY_CHECKPOINT_MARKER)
+    )
+    source_call = driver.find("replay_source_service(")
+    clock_call = driver.find("replay_clock_service(")
+    assert source_call >= 0 and clock_call > source_call, (
+        "platform_replay() must call replay_source_service() before "
+        "replay_clock_service(); otherwise source settlement is dead or the "
+        "clock reconciles stale ownership"
     )
     assert "replay_clock_service(" in driver, (
         "platform_replay() never calls replay_clock_service(), so the handover "
@@ -982,6 +1002,7 @@ EVENT_TYPE_VALUES = {
     "AIUS_EVENT_WATCHDOG_EARLY_RESET": 10,
     "AIUS_EVENT_RATE_CHANGE": 11,
     "AIUS_EVENT_RATE_UNSUPPORTED": 12,
+    "AIUS_EVENT_CLOCK_FAULT": 13,
 }
 # Values 4..10 are the fixed counter-edge range; later episode events are not.
 COUNTER_EDGE_TYPES = tuple(
@@ -1486,23 +1507,70 @@ def assert_rate_service_orders_safe_gate(text):
         function_body(text, "static FLASHMEM bool platform_replay(")
     )
     order = [
-        replay.find("replay_clock_service();"),
+        replay.find("replay_source_service();"),
         replay.find("sample_rate_service(now_ms);"),
+        replay.find("replay_clock_service();"),
         replay.find("tx_gate_service();"),
     ]
-    assert min(order) >= 0 and order == sorted(order) and len(set(order)) == 3, (
-        "checkpoint 7 must settle replay, update rate truth, then evaluate the "
-        "physical gate"
+    assert min(order) >= 0 and order == sorted(order) and len(set(order)) == 4, (
+        "checkpoint 7 must settle the source, update/apply rate truth, reconcile "
+        "graph ownership, then evaluate the physical gate"
     )
     service = without_comments_and_literals(
         function_body(text, "static FLASHMEM void sample_rate_service(")
     )
     for call in (
+        "aius_spdif_input_rate_millihz(",
         "aius_rate_tracker_step(",
         "pipeline_pcm_rate_service(",
-        "aius_rate_tracker_note_target_applied(",
+        "aius_spdif_clock_plan(",
+        "clock_refresh_applied(",
     ):
         assert call in service, f"sample_rate_service() never calls {call}"
+    assert re.search(
+        r"reset_for_acceptance\s*=\s*"
+        r"g_clock_relock_reset_nominal_hz\s*!=\s*"
+        r"result\.nominal_rate_hz",
+        service,
+    ), (
+        "nominal acceptance does not reset partial state whenever its relock "
+        "reset credit is absent or bound to a different nominal rate"
+    )
+    assert re.search(
+        r"observed_nominal_hz\s*!=\s*g_clock_relock_reset_nominal_hz\)\s*"
+        r"g_clock_relock_reset_nominal_hz\s*=\s*0u;",
+        service,
+    ), (
+        "a changed or unsupported acquisition candidate can inherit a relock "
+        "reset credit issued for a different nominal rate"
+    )
+    assert service.count(
+        "g_clock_relock_reset_nominal_hz = 0u;"
+    ) >= 2, (
+        "nominal acceptance does not consume its rate-bound relock-reset credit"
+    )
+    refresh = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void clock_refresh_applied(")
+    )
+    for call in (
+        "aius_audio_clock_get_boundary_status(",
+        "aius_audio_clock_get_applied_plan(",
+        "aius_rate_tracker_note_target_applied(",
+    ):
+        assert call in refresh, f"clock_refresh_applied() never calls {call}"
+    apply = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool clock_apply_desired_plan(")
+    )
+    order = [
+        apply.find("close_stream_rate_gate();"),
+        apply.find("aius_audio_clock_begin_dark_transition();"),
+        apply.find("clock_flush_ring_preserve_diag();"),
+        apply.find("aius_audio_clock_apply("),
+    ]
+    assert min(order) >= 0 and order == sorted(order) and len(set(order)) == 4, (
+        "a whole-rate apply must close the pad, begin the invalid transition, "
+        "flush stale words, then touch the clock"
+    )
     pipeline_rate = without_comments_and_literals(
         function_body(text, "static FLASHMEM void pipeline_pcm_rate_service(")
     )
@@ -1512,8 +1580,25 @@ def assert_rate_service_orders_safe_gate(text):
     gate = without_comments_and_literals(
         function_body(text, "static FLASHMEM void tx_gate_service(")
     )
-    assert "aius_tx_gate_permitted(carrier, g_clock_live_ready, source)" in gate, (
+    assert (
+        "aius_tx_gate_permitted(carrier, g_clock_live_ready,"
+        in gate
+        and "g_clock_replay_ready, source)" in gate
+    ), (
         "a locked but unaccepted/mismatched live carrier can still open the pad"
+    )
+    reset = gate.find("request_audio_reset();")
+    credit = gate.find("g_clock_relock_reset_nominal_hz =")
+    assert 0 <= reset < credit, (
+        "the relock reset does not publish the credit that prevents a second "
+        "reset at nominal acceptance"
+    )
+    replay_clock = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void replay_clock_service(")
+    )
+    assert "&& g_clock_replay_ready" in replay_clock, (
+        "replay can take graph ownership before its exact 48 kHz plan and "
+        "four-period invalid hold are acknowledged"
     )
 
 
@@ -1535,11 +1620,27 @@ def assert_enqueue_refuses_rate_before_dsp(text):
     assert body.count("return AIUS_UNSUPPORTED;") >= 2, (
         "enqueue() does not have distinct unsupported and mismatch refusal arms"
     )
+    plan_wait = without_comments_and_literals(
+        conditional_body(body, "if (!output_plan_ready)")
+    )
+    assert "close_stream_rate_gate();" in plan_wait, (
+        "a block can wait for a clock transition while the physical pad stays open"
+    )
+    assert "return AIUS_NO_SPACE;" in plan_wait, (
+        "an intentional clock transition drops/abandons decoded output instead "
+        "of retaining it until the four-period hold is acknowledged"
+    )
+    assert "g_clock_mismatch_blocks++;" not in plan_wait, (
+        "an intentional clock transition is misreported as a stream-rate mismatch"
+    )
     assert body.count("close_stream_rate_gate();") >= 2, (
         "a refused stream waits until the next epoch to close the physical pad"
     )
     assert "replay ? AIUS_OPTICAL_SAMPLE_RATE_HZ" in body, (
         "replay is not reconciled against its fixed 48 kHz rate contract"
+    )
+    assert "replay ? g_clock_replay_ready" in body, (
+        "replay blocks can enter DSP before the exact 48 kHz output plan is ready"
     )
 
 
@@ -1570,6 +1671,11 @@ CLOCK_JSON_KEYS = (
 )
 CLOCK_COUNTERS = (
     "g_clock_rate_changes",
+    "g_clock_trim_updates",
+    "g_clock_structural_replans",
+    "g_clock_invalid_windows",
+    "g_clock_faults",
+    "g_clock_last_fault",
     "g_clock_mismatch_blocks",
     "g_clock_unsupported_blocks",
     "g_clock_unsupported_episodes",
@@ -1596,9 +1702,21 @@ def assert_clock_status_clear_and_episode_contract(text):
         f"{CLOCK_JSON_KEYS}, found {keys}"
     )
     for counter in CLOCK_COUNTERS:
-        assert clock_json.count(counter) == 1, (
+        rendered = f"(unsigned long){counter}"
+        assert clock_json.count(rendered) == 1, (
             f"clock status does not publish {counter} exactly once"
         )
+    assert "g_clock_fault_episode ? " in clock_json, (
+        "clock.state derives active fault truth from clearable fault history; "
+        "clearing counters can hide a still-bypassed failed apply"
+    )
+    assert (
+        clock_json.find("g_clock_fault_episode ? ") <
+        clock_json.find("!g_tx_gate_carrier ? ")
+    ), (
+        "clock.state reports an unlocked input instead of an active replay "
+        "clock-apply fault"
+    )
 
     clear = without_comments_and_literals(
         function_body(text, "void clear_counters(void)")
@@ -1656,6 +1774,22 @@ def assert_clock_status_clear_and_episode_contract(text):
     assert clean.count(RATE_UNSUPPORTED_EVENT) == 2, (
         "rate-unsupported events must have exactly two producers: one guarded "
         "stream episode and one tracker-accepted carrier episode"
+    )
+    select_plan = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void clock_select_desired_plan(")
+    )
+    assert "g_clock_fault_episode" not in select_plan, (
+        "selecting a new target clears an unresolved clock-fault episode, so "
+        "continued lock failures can emit one event every target cadence"
+    )
+    apply_plan = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool clock_apply_desired_plan(")
+    )
+    failure = apply_plan.find("if (applied != AIUS_CLOCK_APPLY_OK)")
+    recovered = apply_plan.find("g_clock_fault_episode = false;")
+    assert 0 <= failure < recovered, (
+        "a successful apply is not the only operation that clears the active "
+        "clock-fault episode"
     )
 
 
@@ -2239,6 +2373,49 @@ def run_audio_cutover_self_test():
         "clock-status/not-cleared",
         "does not reset g_clock_unsupported_episodes",
     )
+    trim_counter_not_cleared = text.replace(
+        "\t\tg_clock_trim_updates = 0u;\n", "", 1
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        trim_counter_not_cleared,
+        "clock-status/trim-not-cleared",
+        "does not reset g_clock_trim_updates",
+    )
+    trim_counter_not_published = text.replace(
+        "(unsigned long)g_clock_trim_updates,",
+        "UINT32_C(0),",
+        1,
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        trim_counter_not_published,
+        "clock-status/trim-not-published",
+        "does not publish g_clock_trim_updates",
+    )
+    fault_state_from_history = text.replace(
+        "g_clock_fault_episode ? \"fault\" :",
+        "g_clock_last_fault != 0u ? \"fault\" :",
+        1,
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        fault_state_from_history,
+        "clock-status/fault-from-clearable-history",
+        "derives active fault truth from clearable fault history",
+    )
+    fault_cleared_by_target = text.replace(
+        "\tg_clock_apply_attempted = false;\n",
+        "\tg_clock_apply_attempted = false;\n"
+        "\tg_clock_fault_episode = false;\n",
+        1,
+    )
+    _expect_fail(
+        assert_clock_status_clear_and_episode_contract,
+        fault_cleared_by_target,
+        "clock-status/fault-cleared-by-target",
+        "selecting a new target clears",
+    )
     stream_event_unguarded = text.replace(
         "if (!g_clock_stream_unsupported_episode)", "if (true)", 1
     )
@@ -2300,7 +2477,61 @@ def run_audio_cutover_self_test():
         assert_rate_service_orders_safe_gate,
         no_rate_service,
         "audio-cutover/rate-service-after-gate",
-        "settle replay",
+        "settle the source",
+    )
+    source_after_rate = text.replace(
+        "\treplay_source_service();\n"
+        "\t/* Apply or verify the settled source's live plan or exact 48 kHz replay\n"
+        "\t * plan before graph ownership can move. */\n"
+        "\tsample_rate_service(now_ms);",
+        "\tsample_rate_service(now_ms);\n"
+        "\t/* Apply or verify the settled source's live plan or exact 48 kHz replay\n"
+        "\t * plan before graph ownership can move. */\n"
+        "\treplay_source_service();",
+        1,
+    )
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        source_after_rate,
+        "audio-cutover/source-after-rate",
+        "settle the source",
+    )
+    replay_without_ready = text.replace(
+        "!AudioInputSPDIF3::pllLocked() && g_clock_replay_ready;",
+        "!AudioInputSPDIF3::pllLocked();",
+        1,
+    )
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        replay_without_ready,
+        "audio-cutover/replay-without-ready",
+        "before its exact 48 kHz plan",
+    )
+    duplicate_rate_reset = text.replace(
+        "g_clock_relock_reset_nominal_hz !=\n"
+        "\t\t\t\tresult.nominal_rate_hz;",
+        "g_clock_relock_reset_nominal_hz == 0u;",
+        1,
+    )
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        duplicate_rate_reset,
+        "audio-cutover/double-rate-reset",
+        "absent or bound to a different nominal",
+    )
+    first_acquisition_without_credit_reset = text.replace(
+        "g_clock_relock_reset_nominal_hz !=\n"
+        "\t\t\t\tresult.nominal_rate_hz;",
+        "old_nominal != 0u &&\n"
+        "\t\t\tg_clock_relock_reset_nominal_hz !=\n"
+        "\t\t\t\tresult.nominal_rate_hz;",
+        1,
+    )
+    _expect_fail(
+        assert_rate_service_orders_safe_gate,
+        first_acquisition_without_credit_reset,
+        "audio-cutover/first-acquisition-reset-credit",
+        "absent or bound to a different nominal",
     )
     no_applied_gate = text.replace("!output_plan_ready", "false", 1)
     _expect_fail(
@@ -2371,6 +2602,7 @@ def _synthetic_counter_edges():
           "{\n"
           "\trecord_event(AIUS_EVENT_RATE_CHANGE, current_state(), 48000u);\n"
           "\trecord_event(AIUS_EVENT_RATE_UNSUPPORTED, current_state(), 0u);\n"
+          "\trecord_event(AIUS_EVENT_CLOCK_FAULT, current_state(), 1u);\n"
           "}\n"
           "static FLASHMEM uint16_t counter_edge(uint32_t current, uint32_t *previous)\n"
           "{\n"
@@ -2984,7 +3216,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "{\n\tupdate_responsibility = master;\n}\n"
         "FLASHMEM void AiusSpdifOutputClock::set_master(bool master)\n"
         "{\n\tupdate_responsibility = master;\n}\n"
-        "static FLASHMEM void replay_clock_service(void)\n"
+        "static FLASHMEM void replay_source_service(void)\n"
         "{\n"
         "\tif ((g_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY ||\n"
         "\t     g_replay_service.source == AIUS_REPLAY_SOURCE_SWITCHING_TO_REPLAY) &&\n"
@@ -2994,9 +3226,12 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "\t\tg_replay_stop_reason = REPLAY_STOP_CARRIER;\n"
         "\t\trecord_event(3, current_state(), REPLAY_STOP_CARRIER);\n"
         "\t}\n"
+        "}\n"
+        "static FLASHMEM void replay_clock_service(void)\n"
+        "{\n"
         "\tconst bool output_drives =\n"
         "\t\tg_replay_service.source == AIUS_REPLAY_SOURCE_REPLAY &&\n"
-        "\t\t!AudioInputSPDIF3::pllLocked();\n"
+        "\t\t!AudioInputSPDIF3::pllLocked() && g_clock_replay_ready;\n"
         "\tif (output_drives == AiusSpdifOutputClock::is_master())\n"
         "\t\treturn;\n"
         "\tnoInterrupts();\n"
@@ -3008,6 +3243,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
         "                                     uint32_t now_ms)\n"
         "{\n"
         "\treplay_refill_service(budget->max_rx_bytes, now_ms);\n"
+        "\treplay_source_service();\n"
         "\treplay_clock_service();\n"
         "\treturn true;\n"
         "}\n"
@@ -3079,7 +3315,7 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
     clock_unreached = good_clock.replace("\treplay_clock_service();\n", "", 1)
     _expect_fail(
         assert_replay_clock_handover_is_bounded, clock_unreached,
-        "clock/never-called", "never calls replay_clock_service()",
+        "clock/never-called", "before replay_clock_service()",
     )
 
     # counter edges: allocated types, epoch-loop emission, one per epoch.

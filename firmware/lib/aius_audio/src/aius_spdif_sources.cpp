@@ -1,7 +1,11 @@
 /* Build only the PJRC Teensy 4 S/PDIF source units required by Aius.
  * The retained source snapshots are the upstream implementation boundary. */
+#include "aius_audio_clock_internal.h"
+
+#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 #include "../../../../evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp"
 #include "../../../../evidence/source-snapshots/PJRC-SPDIF-RX-SOURCE/input_spdif3.cpp"
+#endif
 
 /* ...and, BELOW those includes and in the same translation unit, the 24-bit
  * transmit path that replaces the snapshot's 16-bit one without editing it.
@@ -14,10 +18,15 @@
  * AiusSpdifOutputClock reaches `update_responsibility` in optical_main.cpp.
  * Nothing in evidence/source-snapshots/ changes. The full rationale, the memory
  * decision and the concurrency contract are in aius_spdif_tx24.h. */
+#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 #include "aius_spdif_tx24.h"
+#endif
 
-#if defined(__IMXRT1062__)
+#if defined(__IMXRT1062__) || defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 
+volatile AiusAudioClockSharedState g_aius_audio_clock_state;
+
+#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 /* DMAMEM, not DTCM: 16 KiB is the one large buffer in this path and OCRAM is
  * where large buffers live.
  *
@@ -34,9 +43,131 @@
  * D-cache, so they are coherent. SPDIF_tx_buffer is the buffer the DMA reads,
  * and that one is flushed below. */
 DMAMEM AiusSpdifTx24Ring g_aius_spdif_tx24;
+#endif
 
 namespace {
 
+#if defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
+static inline uint32_t clock_register_read(AiusAudioClockRegister reg)
+{
+	return aius_audio_clock_fake_register_read(reg);
+}
+
+static inline void clock_register_write(
+	AiusAudioClockRegister reg,
+	uint32_t value)
+{
+	aius_audio_clock_fake_register_write(reg, value);
+}
+#else
+static inline uint32_t clock_register_read(AiusAudioClockRegister reg)
+{
+	switch (reg) {
+	case AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR:
+		return CCM_ANALOG_PLL_AUDIO_NUM;
+	case AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL:
+		return SPDIF_SCR;
+	default:
+		return 0u;
+	}
+}
+
+static inline void clock_register_write(
+	AiusAudioClockRegister reg,
+	uint32_t value)
+{
+	switch (reg) {
+	case AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR:
+		CCM_ANALOG_PLL_AUDIO_NUM = value;
+		break;
+	case AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL:
+		SPDIF_SCR = value;
+		break;
+	default:
+		break;
+	}
+}
+#endif
+
+static inline void clock_memory_barrier(void)
+{
+	__asm__ volatile("" ::: "memory");
+}
+
+/* The exact TX-period boundary contract. This remains in the mixed source
+ * object and deliberately stays hot:
+ *
+ *  1. acknowledge a period completed by an existing hold;
+ *  2. consume a newly queued request;
+ *  3. make validity invalid before a queued NUM write; and
+ *  4. arm four periods without decrementing at that same boundary.
+ *
+ * There are no checkpoint helpers in this translation unit. */
+static inline void aius_audio_clock_tx_boundary(void)
+{
+	if (g_aius_audio_clock_state.invalid_periods_remaining == 0u &&
+	    g_aius_audio_clock_state.request ==
+		    AIUS_AUDIO_CLOCK_BOUNDARY_NONE)
+		return;
+
+	g_aius_audio_clock_state.boundary_sequence++;
+	clock_memory_barrier();
+
+	if (g_aius_audio_clock_state.invalid_periods_remaining != 0u) {
+		g_aius_audio_clock_state.invalid_periods_remaining--;
+		if (g_aius_audio_clock_state.invalid_periods_remaining == 0u) {
+			const uint32_t control = clock_register_read(
+				AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
+			clock_register_write(
+				AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
+				control &
+					~AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
+			g_aius_audio_clock_state.invalid_active = 0u;
+		}
+	}
+
+	const uint32_t request = g_aius_audio_clock_state.request;
+	if (request != AIUS_AUDIO_CLOCK_BOUNDARY_NONE) {
+		const uint32_t control = clock_register_read(
+			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL);
+		clock_register_write(
+			AIUS_AUDIO_CLOCK_REG_SPDIF_CONTROL,
+			control | AIUS_AUDIO_CLOCK_VALIDITY_INVALID_BIT);
+		g_aius_audio_clock_state.invalid_active = 1u;
+
+		if (request == AIUS_AUDIO_CLOCK_BOUNDARY_TRIM) {
+			/* Validity is already invalid. Only then may NUM change. */
+			clock_register_write(
+				AIUS_AUDIO_CLOCK_REG_PLL_NUMERATOR,
+				g_aius_audio_clock_state
+					.queued_plan.pll_numerator);
+
+			g_aius_audio_clock_state.applied_sequence++;
+			clock_memory_barrier();
+			g_aius_audio_clock_state
+				.applied_plan.target_rate_millihz =
+				g_aius_audio_clock_state
+					.queued_plan.target_rate_millihz;
+			g_aius_audio_clock_state
+				.applied_plan.pll_numerator =
+				g_aius_audio_clock_state
+					.queued_plan.pll_numerator;
+			g_aius_audio_clock_state.has_applied_plan = 1u;
+			clock_memory_barrier();
+			g_aius_audio_clock_state.applied_sequence++;
+		}
+
+		g_aius_audio_clock_state.request =
+			AIUS_AUDIO_CLOCK_BOUNDARY_NONE;
+		g_aius_audio_clock_state.invalid_periods_remaining =
+			AIUS_AUDIO_CLOCK_INVALID_PERIODS;
+	}
+
+	clock_memory_barrier();
+	g_aius_audio_clock_state.boundary_sequence++;
+}
+
+#if !defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
 /* An ACCESS SHIM, never an audio node: private inheritance and a deleted
  * constructor, because constructing one would run AudioOutputSPDIF3::begin() a
  * second time and re-run config_spdif3(). [class.protected]'s "through an
@@ -62,6 +193,9 @@ public:
  * exactly the three sections it pins. */
 void AiusSpdifTx24Hook::isr(void)
 {
+	/* This is the period boundary, before any work on the inactive half. */
+	aius_audio_clock_tx_boundary();
+
 	/* Which half to fill: the one the DMA is NOT reading. Identical test to
 	 * the snapshot's (output_spdif3.cpp:110), against the same buffer. */
 	const uint32_t saddr = (uint32_t)(dma.TCD->SADDR);
@@ -111,9 +245,16 @@ FLASHMEM void AiusSpdifTx24Hook::install(void)
 	dma.attachInterrupt(AiusSpdifTx24Hook::isr);
 	__enable_irq();
 }
+#endif
 
 } /* namespace */
 
+#if defined(AIUS_AUDIO_CLOCK_FAKE_TARGET)
+void aius_audio_clock_test_tx_boundary(void)
+{
+	aius_audio_clock_tx_boundary();
+}
+#else
 FLASHMEM void aius_spdif_tx24_begin(void)
 {
 	AiusSpdifTx24Hook::install();
@@ -130,5 +271,6 @@ FLASHMEM void aius_spdif_tx24_begin(void)
 	SPDIF_STCSCH = UINT32_C(0x00200000);
 	SPDIF_STCSCL = UINT32_C(0x00400000);
 }
+#endif
 
-#endif /* __IMXRT1062__ */
+#endif /* __IMXRT1062__ || AIUS_AUDIO_CLOCK_FAKE_TARGET */

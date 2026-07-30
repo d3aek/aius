@@ -422,54 +422,64 @@ selection, and a carrier arriving), all of which reach the same `source` field. 
 derived reconciler covers every one; five call sites would each be a chance to leave
 the clock behind (`src/optical_main.cpp:2899`).
 
-**The transmit clock is 48 kHz, and it is pinned by a build flag.** `config_spdif3()`
-derives the entire transmit clock tree from `AUDIO_SAMPLE_RATE_EXACT`
-(`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:229`), which
-`AudioStream.h` defaults to `44100.0f` behind an `#ifndef`. Left at that default the
-board clocked 48 kHz material out 8.1 % slow — about 1.4 semitones flat — while
-`GET /api/meters`, `GET /api/dsp/config` and the decoded blocks themselves all
-reported 48,000. `teensy41-optical` therefore builds with
-`-DAUDIO_SAMPLE_RATE_EXACT=48000.0f`, and `optical_main.cpp` `static_assert`s it equal
-to `AIUS_OPTICAL_SAMPLE_RATE_HZ` so the flag and `config/optical_dsp.json` cannot
-drift apart again.
+**Boot and replay are 48 kHz; live output follows the source at 32, 44.1 or
+48 kHz.** `AUDIO_SAMPLE_RATE_EXACT=48000.0f` remains the bootstrap value used
+by `config_spdif3()` and the exact replay/config default. The `static_assert`
+against `AIUS_OPTICAL_SAMPLE_RATE_HZ` keeps those two 48 kHz roles coherent.
+Once a live carrier is accepted, checkpoint 7 plans PLL4 from the receiver's
+`SPDIF_SRFM` millihertz measurement and applies the whole nominal rate before
+opening the pad. Later same-structure corrections queue only
+`CCM_ANALOG_PLL_AUDIO_NUM` for the next 128-frame TX boundary. Replay restores
+the exact 48,000,000 millihertz plan before output becomes graph master
+(`lib/aius_audio/src/aius_audio_clock.cpp`,
+`src/optical_main.cpp`, `lib/aius_clock/src/aius_clock.c`).
 
-48 kHz divides the clock tree exactly, so there is no fractional-divider residue:
-PLL4 is 24 MHz × 28.672 = 688.128 MHz (`NUM`/`DENOM` = 6720/10000, an exact
-fraction), `SPDIF0_CLK_ROOT` is that ÷ 8 = 86.016 MHz, and `TXCLK_DF` = 27 gives
-86.016 MHz ÷ 28 = 3.072 MHz = 64 × 48,000 with zero remainder.
+The pure planner uses a 1,000,000 denominator, a root predivider of 8 and TX
+dividers 42, 30 and 28 for 32, 44.1 and 48 kHz respectively. A nominal change
+closes the physical pad, marks validity invalid, flushes stale transmit words
+without clearing lifetime underruns and waits for four complete 128-frame TX
+periods after lock. A same-nominal integer-divider replan also closes the pad
+and waits for the hold, but preserves the ring and decoder generation. A
+same-nominal NUM trim keeps pin 14 and the ring running; only IEC validity is
+invalid for those exact 512 frames.
 
-**The channel-status message agrees with that clock.** The retained snapshot
+**The channel-status message agrees with the active nominal clock.** The retained snapshot
 initializes neither `SPDIF_STCSCH` nor `SPDIF_STCSCL`, so their reset-zero message
 advertised 44.1 kHz with copyright asserted while the generated carrier ran at
 48 kHz. Permissive DACs ignored the contradiction; a CM6206 receiving the same
 real payload substituted exact digital silence. `aius_spdif_tx24_begin()` now writes
-`0x00200000` / `0x00400000`: consumer PCM, copyright not asserted, 48 kHz. The
+`0x00200000` / `0x00400000`: consumer PCM, copyright not asserted, bootstrap
+48 kHz. A live whole-rate apply preserves the copyright word and maps
+`STCSCL[23:22]` to `0x00000000`, `0x00400000` or `0x00c00000` for 44.1, 48 or
+32 kHz. The
 packing follows the i.MX RT1060 reference manual §40.3.2.2.1: chronological channel
 status starts at register bit 23, so consumer byte 0 bit 2 maps to `STCSCH[21]` and
-byte 3's 48 kHz code `0x02` maps to `STCSCL[22]`. The
+byte 3's sample-frequency code maps to `STCSCL[23:22]`. The
 `optical-cutover` suite pins both register words, and a 2026-07-29 physical
 CM6206 → Teensy → CM6206 glass loop captured the 997 Hz stimulus on both channels at
 `−41.06 dBFS` peak, matching the Teensy input/output meters.
 
 **Nothing in this path resamples.** The receiver DMAs words into audio blocks at the
 incoming carrier's rate and the transmitter clocks them out at
-`AUDIO_SAMPLE_RATE_EXACT`; the retained receive snapshot predates the upstream
-asynchronous rate converter and the framework copy is byte-identical to it. No code
-compares `block->sample_rate_hz` against the engine rate either, so a rate
-disagreement is neither absorbed nor counted — the queue stays level, `overruns`
-stays honestly zero, and the only symptom is pitch. That is why the equality is a
-`static_assert` rather than a runtime check.
+the applied carrier-following target. The retained receive snapshot predates
+the upstream asynchronous rate converter and the framework copy is
+byte-identical to it. `enqueue()` compares every PCM/decoder block's nominal
+rate with the accepted carrier and applied plan before staged config or DSP
+advances. A real mismatch is counted, refused and holds the physical pad dark;
+an intentional four-period clock transition returns backpressure so decoded
+output is retained rather than dropped.
 
 **Two block sizes, and every per-block figure names one of them.**
 `AUDIO_BLOCK_SAMPLES` is 128 frames — the Teensy core default, which this build does
 not override — and is the *engine* block: it sizes both DMA buffers, the
 `audio_block_t` pool, the ingress chunk and the transmit interrupt's drain of the
-24-bit ring, so `update()` runs 48000/128 = 375 times a second and publishes 512
-bytes each time (the 192,000 B/s the replay ring is sized for). 512 frames is the
+24-bit ring, so `update()` runs at the active rate divided by 128 (375 times/s
+for 48 kHz replay) and publishes 512 bytes each time. 512 frames is the
 *decoded* block and is what `blocks` counts: a DTS Core access unit reconstructs to
 512 samples per channel and PCM passthrough stages the same 512
 (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`), so AUDIO reaches `enqueue()` once per four
-published chunks on a continuous stream, at 48000/512 = 93.75 blocks per second.
+published chunks on a continuous stream, at the active rate divided by 512
+(93.75 blocks/s at 48 kHz).
 `enqueue()`'s `AUDIO_BLOCK_SAMPLES * 4` cap is exactly that 512, which couples the
 two constants: changing the engine block changes the decoder block this file accepts.
 

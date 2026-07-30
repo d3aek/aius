@@ -367,6 +367,7 @@ cannot cross the change.
   "clock_faults": 0,
   "last_clock_fault": 0,
   "mismatch_blocks": 0,
+  "unsupported_blocks": 0,
   "unsupported_episodes": 0,
   "tx_level_frames": 512,
   "tx_underrun_frames": 0,
@@ -453,7 +454,10 @@ The prebuild review attacks:
 ```yaml
 phase: 2
 title: Whole-rate PLL following and live trim
-status: pending
+status: device-acceptance-pending
+implementation: complete
+delivery-audit: complete
+clean-room-audit: complete
 unit: component-behind-interface
 seams:
   - AiusSpdifClockPlan target apply
@@ -472,8 +476,8 @@ fan-out:
       - firmware/test/rate-runner/**
 review-intensity: active
 commit-checkpoint:
-  green: [clock, clock-target, rate-runner, pipeline, a52, dsp, optical-cutover, memory, itcm-placement, registry]
-  buildable: [teensy41-optical]
+  green: [clock, clock-target, rate-runner, tx-gate, pipeline, a52, dsp, optical-cutover, memory, itcm-placement, registry, fault-target]
+  buildable: [teensy41-optical, teensy41-optical-fault-checkpoint-9]
   parent-commit: "feat(aius): follow the optical source clock"
 ```
 
@@ -485,6 +489,10 @@ runtime PLL/graph-master behavior and 32/44.1/48 channel-status mapping, while
 retaining 48 kHz only as the replay default and generated-config/static-assert
 role. Phase 2 is software completion. The optional recovered-clock board trace
 below is not a completion dependency.
+
+The implementation, host proof, production build and checkpoint-9 fault build
+are complete. Phase status remains `device-acceptance-pending` until the exact
+committed production image clears the seven device gates in [§Acceptance](#acceptance).
 
 The full-PLL target apply and checkpoint-side request functions live in
 `lib/aius_audio/src/aius_audio_clock.cpp`, carry `FLASHMEM`, and that exact

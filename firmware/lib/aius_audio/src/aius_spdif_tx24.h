@@ -140,6 +140,16 @@ static inline void aius_spdif_tx24_reset(AiusSpdifTx24Ring *ring)
     ring->underruns = 0u;
 }
 
+/* Empty the transition ring without erasing its lifetime underrun diagnostic.
+ * The checkpoint caller masks the TX DMA interrupt across this one cursor
+ * rebase, so fill() cannot observe a half-transitioned pair. Boot-only reset()
+ * above remains the only operation that clears all three counters. */
+static inline void aius_spdif_tx24_flush_preserve_diag(
+    AiusSpdifTx24Ring *ring)
+{
+    ring->consumed = ring->written;
+}
+
 /* Committed frames not yet transmitted. This is the transmit queue occupancy
  * the meter reports; there is no other queue behind it. */
 static inline uint32_t aius_spdif_tx24_level(const AiusSpdifTx24Ring *ring)

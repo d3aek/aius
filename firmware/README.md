@@ -119,15 +119,18 @@ generated model/replay contract, which
 **Nothing in the audio path resamples.** The portable clock tracker recognizes
 32, 44.1 and 48 kHz carriers; PCM, DTS and AC-3 blocks retain their nominal
 rate; and rate-dependent DSP coefficients and meters use that block rate.
-Phase 1 intentionally keeps the physical output at its boot 48 kHz plan:
-accepted non-48 input and any block/clock mismatch are counted, refused before
-DSP/output state advances, and hold the physical pad dark. The `clock` object
-on `GET /api/status` reports carrier, stream and applied-output truth
-separately. Whole-rate PLL following is the next phase.
+For live input, checkpoint 7 applies a whole-rate PLL4 plan and then follows the
+source oscillator with boundary-queued numerator trims. The input remains graph
+master. Replay restores the exact 48,000,000 millihertz plan before output takes
+graph ownership. A nominal change closes the physical pad and flushes stale
+output; a same-nominal trim keeps the carrier and ring continuous while marking
+exactly four 128-frame transmit periods invalid. A block/clock mismatch is
+counted and refused before DSP/output state advances. The `clock` object on
+`GET /api/status` reports carrier, stream and applied-output truth separately.
 
 **The engine and codec work units have different sizes.**
 `AUDIO_BLOCK_SAMPLES` is the core default 128 frames and is the *engine* block, so
-`update()` runs 375 times a second. A DTS access unit and
+`update()` runs at the active rate divided by 128 (375 times/s for replay). A DTS access unit and
 `AIUS_PIPELINE_PCM_BLOCK_FRAMES` passthrough block are 512 frames. An AC-3 access
 unit is six 256-frame decode units; its DWT metric is their completed-AU
 aggregate, while partial or abandoned AUs publish no timing result.
@@ -279,6 +282,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `audio-ingress` | Exact 256-word SPSC publish, wrap, gaps, flush and diagnostics. |
 | `audio-service` | Deferred ingress/service quotas, suffix retry, resets and backpressure. |
 | `clock` | Stable 32/44.1/48 kHz acquisition, quiescence, target cadence and PLL-plan arithmetic. |
+| `clock-target` | Fake-register target adapter: bounded full apply, exact four-period invalid hold, queued NUM trim, timeout fail-dark behavior, and SRFM millihertz measurement. |
 | `dts` | DTS Core decode differential vs FFmpeg (committed corpus). |
 | `dts-arena` | No-heap arena decode path + allocation metrics. |
 | `dts-fuzz` | DTS decoder robustness fuzz. |
@@ -295,6 +299,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |
 | `json` | The one JSON read cursor those two parsers and the replay body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
+| `rate-runner` | The read-only sample-rate bench collector and pure analyzer, including drift, transition, mismatch, encoded and waveform evidence gates. |
 | `recovery-runner` | The live recovery smoke's host runner: every gate on all three result paths against a scripted device on a virtual clock. |
 | `flash` | The button-free flash path: HalfKay entry judged by the port going away rather than by an acknowledgement, the image-identity oracle over synthesised Intel HEX, and every fail-closed arm. |
 | `http` | Request parser + the bounded server transaction. |

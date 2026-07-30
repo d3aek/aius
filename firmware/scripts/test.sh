@@ -7,9 +7,9 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, audio-ingress, audio-service, auth, clock, codec-api-contract, config, dsp-config, json, dts, dts-arena,
+# Suites: arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
-#         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner,
+#         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner, rate-runner,
 #         recovery-runner, flash, http,
 #         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
@@ -379,6 +379,18 @@ clock)
 		"$fw_root/test/clock/test_clock.c" \
 		"$fw_root/lib/aius_clock/src/aius_clock.c"
 	;;
+clock-target)
+	clock_target_out="$build_dir/clock-target"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -O1 -g \
+		-fsanitize=address,undefined -DAIUS_AUDIO_CLOCK_FAKE_TARGET \
+		"-I$fw_root/lib/aius_audio/include" \
+		"-I$fw_root/lib/aius_clock/include" \
+		"$fw_root/test/clock-target/test_clock_target.cpp" \
+		"$fw_root/lib/aius_audio/src/aius_audio_clock.cpp" \
+		"$fw_root/lib/aius_audio/src/aius_spdif_sources.cpp" \
+		-o "$clock_target_out"
+	"$clock_target_out"
+	;;
 pipeline)
 	# S/PDIF pipeline: classifier + IEC 61937 parser chained into both resident
 	# decoders, end-to-end over the committed IEC corpus.
@@ -455,6 +467,9 @@ net)
 net-runner)
 	python3 "$fw_root/test/net/test_net_runner.py"
 	python3 "$fw_root/test/net/test_aius_http_runner.py"
+	;;
+rate-runner)
+	python3 "$fw_root/test/rate-runner/test_rate_bench.py"
 	;;
 flash)
 	# The button-free flash path, driven against a scripted CDC transport and

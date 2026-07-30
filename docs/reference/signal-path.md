@@ -35,8 +35,8 @@ is the durable handle.
 
 - **From the linked image** — read out of
   `.pio/build/teensy41-optical/firmware.elf`. The historical tables name their
-  revision; the current Slice 2b3 placement figures name their 2026-07-29 target
-  link. `tools/memory/mem_report.py --elf` and the post-link verifiers are the
+  revision; the current sample-rate-following placement figures name their
+  2026-07-29 target link. `tools/memory/mem_report.py --elf` and the post-link verifiers are the
   authorities, not prose copied from an earlier image.
 - **From the device** — the DWT cycle counters the audio path publishes through
   `GET /api/meters`, recorded in the roadmap against build revision `f76baa87c67d`,
@@ -62,16 +62,17 @@ first. `optical_main.cpp:637` carries the same distinction beside the code.
 - **128 frames — the engine block.** `AUDIO_BLOCK_SAMPLES`, the Teensy core default,
   which this build does not override. It sizes both DMA buffers, the `audio_block_t`
   pool, the exact ingress chunk and the transmit interrupt's drain of the 24-bit
-  ring. `AiusAudioProcessor::update()` therefore runs 48000/128 = **375 times a
-  second** (`src/optical_main.cpp:998`) and publishes 256 IEC words = 512 bytes each
-  time, which is the 192,000 B/s the replay ring is sized for
+  ring. `AiusAudioProcessor::update()` therefore runs at the active rate divided
+  by 128, **375 times a second at 48 kHz** (`src/optical_main.cpp:998`), and
+  publishes 256 IEC words = 512 bytes each time
   (`lib/aius_replay/include/aius_replay.h:44`).
 - **512 frames — the decoded block, and the one the budget belongs to.** A DTS Core
   access unit with `npcmblocks = 16` reconstructs to 16 × 32 = 512 samples per channel
   (`vendor/dcadec-core/core_decoder.c:962`), and PCM passthrough stages the same 512
   (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`, `lib/aius_pipeline/include/aius_pipeline.h:45`).
   On a continuous stream the AUDIO service therefore reaches `enqueue()` once per
-  four published chunks, at 48000/512 = **93.75 blocks per second**. This is what the
+  four published chunks, at the active rate divided by 512 (**93.75 blocks per
+  second at 48 kHz**). This is what the
   `blocks` counter counts and what the DWT bracket measures
   (`src/optical_main.cpp:1126`).
 - **`queue_frames` in the meters — neither of the above.** It is
@@ -82,7 +83,7 @@ first. `optical_main.cpp:637` carries the same distinction beside the code.
 **Only IEC 61937 burst type I is supported end to end.** `enqueue()` rejects
 `block->frames > AUDIO_BLOCK_SAMPLES * 4` with `AIUS_INVALID_ARG`
 (`src/optical_main.cpp:882`), and that cap is exactly 512. The parser accepts DTS Core
-data types 11/12/13 — burst types I/II/III at 48 kHz — and hands all three back as
+data types 11/12/13 — burst types I/II/III — and hands all three back as
 `AIUS_OK` (`lib/aius_iec61937/include/aius_iec61937.h:33`), but a type II or III burst
 decodes to 1,024 or 2,048 samples per channel and is therefore refused one stage
 later. The two constants are coupled: changing the engine block changes the decoder
@@ -95,7 +96,7 @@ flowchart TD
     OPT["Optical TOSLINK in<br/>CORE_PIN15 / SPDIF_IN"]
     RX["AudioInputSPDIF3 receive DMA ISR<br/>spdif_rx_buffer, 2048 B OCRAM"]
     BLK["audio_block_t pair, int16<br/>AudioMemory(24) pool, OCRAM"]
-    UPD["AiusAudioProcessor::update<br/>375/s, ingress publish only"]
+    UPD["AiusAudioProcessor::update<br/>fs/128, ingress publish only"]
     RPL["Replay word ring<br/>aius_replay_service_pop_words"]
     ING["Audio ingress SPSC<br/>8192 words / 16 KiB OCRAM"]
     AUD["Runtime AUDIO checkpoint 9<br/>reset/flush + bounded drain/service"]
@@ -103,16 +104,16 @@ flowchart TD
     IEC["IEC 61937 de-frame<br/>aius_iec61937_push"]
     DTS["DTS Core decode<br/>aius_dts_decode_access_unit<br/>24-bit planar, up to 6 planes"]
     PCM["PCM passthrough<br/>pcm_feed, 16 left-aligned onto 24-bit"]
-    ENQ["AiusAudioProcessor::enqueue<br/>93.75/s, 512 frames<br/>DWT bracket opens"]
+    ENQ["AiusAudioProcessor::enqueue<br/>fs/512, 512 frames<br/>DWT bracket opens"]
     IN["Input stage: trim + EQ per channel<br/>aius_dsp_input_run"]
     DMX["Downmix matrix, 6 to 2<br/>aius_dsp_downmix<br/>headroom 0.5 on summing layouts,<br/>1.0 on mono and FL|FR"]
     OEQ["Output EQ cascade, L and R<br/>aius_dsp_eq_run"]
     LIM["True-peak safety limiter<br/>aius_dsp_limiter_run<br/>4x oversampled, 2 ms lookahead"]
     OUT["Output word width<br/>aius_out_stage_run<br/>24-bit: copy. 16-bit: TPDF dither"]
     RING["g_aius_spdif_tx24<br/>2 x 2048 int32, 16396 B DMAMEM"]
-    TXI["AiusSpdifTx24Hook::isr<br/>transmit DMA, 375/s"]
+    TXI["AiusSpdifTx24Hook::isr<br/>transmit DMA, fs/128"]
     TXB["SPDIF_tx_buffer, int32<br/>2048 B OCRAM, double-buffered"]
-    WIRE["SPDIF_STL / SPDIF_STR<br/>CORE_PIN14, 24-bit, 48 kHz"]
+    WIRE["SPDIF_STL / SPDIF_STR<br/>CORE_PIN14, 24-bit<br/>live 32/44.1/48 kHz; replay 48 kHz"]
     MET["AiusMeter taps<br/>accumulate + publish at 20 Hz<br/>never alters audio"]
 
     OPT --> RX --> BLK --> UPD --> ING --> AUD
@@ -729,57 +730,53 @@ flag is missing (`lib/aius_dsp/include/aius_dsp.h:58`) — see
 
 ## The clock
 
-**48 kHz, pinned by a build flag and enforced by a `static_assert`.**
-`config_spdif3()` derives the entire S/PDIF transmit clock tree from
-`AUDIO_SAMPLE_RATE_EXACT`
-(`evidence/source-snapshots/PJRC-SPDIF-TX-SOURCE/output_spdif3.cpp:229`), which
-`AudioStream.h` defaults to `44100.0f` behind an `#ifndef`
-(`cores/teensy4/AudioStream.h:57`). Left at that default the board clocked 48 kHz
-material out **8.1 % slow — about 1.4 semitones flat** — while `GET /api/meters`,
-`GET /api/dsp/config` and the decoded blocks all honestly reported 48,000. Producer and
-consumer ran off the same wrong clock, so the queue stayed level and `overruns` stayed
-zero: nothing counted it, and the only symptom was pitch.
+**Boot and replay are exactly 48 kHz; live output follows 32, 44.1 or 48 kHz
+input, including its oscillator error.** `AUDIO_SAMPLE_RATE_EXACT=48000.0f`
+still supplies the bootstrap clock and the generated replay/config default.
+The `static_assert` keeps those two roles coherent; it no longer defines the
+live output rate.
 
-`teensy41-optical` now builds with `-DAUDIO_SAMPLE_RATE_EXACT=48000.0f`
-(`platformio.ini:182`) and `optical_main.cpp:95` `static_assert`s it equal to
-`AIUS_OPTICAL_SAMPLE_RATE_HZ`, which `scripts/build_config.py` generates from
-`config/optical_dsp.json`. **The flag and the config can no longer move apart
-silently** — a compile-time equality is the fix for the class of defect, not just this
-instance.
+At checkpoint 7, the tracker reads the receiver's `SPDIF_SRFM` measurement in
+millihertz, accepts one of the three nominal rates after eight consistent
+locked samples, and asks the pure planner for PLL4 integer/fractional fields,
+root dividers, TX divider and IEC channel status. A whole-rate or structural
+change closes the pad and applies the complete plan with a 1,000 microsecond
+lock deadline. A same-structure correction queues only
+`CCM_ANALOG_PLL_AUDIO_NUM` for the next TX boundary. That trim keeps the
+carrier and ring continuous while IEC validity is invalid for the next four
+complete 128-frame periods. There is no resampler or intermediate
+requantisation (`lib/aius_clock/src/aius_clock.c`,
+`lib/aius_audio/src/aius_audio_clock.cpp`).
 
-**48 kHz divides the tree exactly, so there is no fractional-divider residue.** PLL4 is
-24 MHz × 28.672 = 688.128 MHz (`NUM`/`DENOM` = 6720/10000, an exact fraction),
-`SPDIF0_CLK_ROOT` is that ÷ 8 = 86.016 MHz, and `TXCLK_DF` = 27 gives 86.016 MHz ÷ 28 =
-3.072 MHz = 64 × 48,000 with **zero remainder**.
-
-Clock responsibility moves between the two peripherals rather than being fixed: the
-receiver claims `update_responsibility` first and the transmitter takes it while a
-replay plays against no carrier. That mechanism belongs to
+Clock responsibility moves between the two peripherals: the receiver remains
+graph master for a live carrier, and the transmitter takes responsibility only
+after a carrier-free replay has restored and acknowledged the exact
+48,000,000 millihertz plan. That mechanism belongs to
 [`firmware-io.md` §S/PDIF output](firmware-io.md#spdif-output--the-transmit-half-of-the-hot-path)
 and is not restated.
 
 ## Memory by bank
 
 **Measured banks**, from `tools/memory/mem_report.py --elf` over
-`.pio/build/teensy41-optical/firmware.elf` built from the Slice 2b3 working tree on
-2026-07-29:
+`.pio/build/teensy41-optical/firmware.elf` built from the sample-rate-following
+Phase 2 working tree on 2026-07-29:
 
 ```text
 BANK           USED         FREE     CAPACITY    USED%   FREE%
-FLASH        407552      7718912      8126464    5.02%   95.0%
-ITCM         174844        21764       196608   88.93%   11.1%
-DTCM         280128        47552       327680   85.49%   14.5%
-FlexRAM      476736        47552       524288   90.93%    9.1%
+FLASH        439296      7687168      8126464    5.41%   94.6%
+ITCM         191548         5060       196608   97.43%    2.6%
+DTCM         291072        36608       327680   88.83%   11.2%
+FlexRAM      487680        36608       524288   93.02%    7.0%
 OCRAM        392832       131456       524288   74.93%   25.1%
 ```
 
-**DTCM free-for-locals is 47,552 bytes and OCRAM free is 131,456 bytes in that
+**DTCM free-for-locals is 36,608 bytes and OCRAM free is 131,456 bytes in that
 link.** The former is the entire budget for every thread and interrupt stack. The
 post-link memory gate requires at least 131,424 B of OCRAM free, so the image clears
 the committed floor by 32 B (`test/memory/verify_target.py:18`).
 
 **The figure has moved repeatedly, and stale copies remain historical evidence**:
-9,280 → 17,152 → 25,376 → 43,328 → **47,552**. So a bare number in prose is not
+9,280 → 17,152 → 25,376 → 43,328 → 47,552 → **36,608**. So a bare number in prose is not
 usable evidence — [`firmware-io.md`](firmware-io.md)'s table reports 9,280 (correct at
 *its* revision, pre-`FNET_CFG_TLS=0`), and this section previously reported 25,376
 then 43,328. They are snapshots, not contradictions. **Take the current value from
@@ -1036,19 +1033,6 @@ the same thing on both. Retained here for the two lessons rather than the defect
 **Do not fix it by widening the limiter threshold** — recorded because that remains the
 tempting wrong answer if the symptom ever recurs on the input side.
 
-**Nothing in the audio path resamples, and nothing counts a rate mismatch.** Neither
-peripheral converts rate: the receiver DMAs words into audio blocks at the incoming
-carrier's rate and the transmitter clocks frames out at `AUDIO_SAMPLE_RATE_EXACT`. No
-code compares `block->sample_rate_hz` against the engine rate. Because the input
-peripheral owns `update_responsibility` while a carrier is present, a mismatch is
-silently absorbed by the vendor unit dropping or repeating blocks with **nothing counting
-it** — the queue stays level, `overruns` stays honestly zero, and the only symptom is
-pitch. That is why the equality is a `static_assert` rather than a runtime check. The
-design that replaces the assert with real rate following is
-[`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md); its
-[§Interaction with the 24-bit output path](../plans/aius-sample-rate-following.md#interaction-with-the-24-bit-output-path)
-is the section that has to account for this chain, and it is not restated here.
-
 **The DTS decoder uses the DTCM arena the image reserves for it — since
 2026-07-28.** 131,072 B (40 % of DTCM) is set aside, and the `--wrap` shim that routes
 dcadec's allocation into it is live (`platformio.ini:102`; the wrap set was
@@ -1221,8 +1205,8 @@ came from; leaving it stale is what turns this document from a record into a rum
   why none of them can disturb this path. The companion, not a duplicate.
 - [`aius-dsp-config-api.md`](../plans/aius-dsp-config-api.md) — the config surface,
   bounds, meter schema, and the audio-quality roadmap this document is the record for.
-- [`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md) — the design
-  that replaces the 48 kHz `static_assert` with real rate following.
+- [`aius-sample-rate-following.md`](../plans/aius-sample-rate-following.md) — the
+  delivered runtime-rate, PLL-following and hardware-acceptance contract.
 - [`aius-network-hardening.md`](../plans/aius-network-hardening.md) — the phase sequence
   this document lands in, and the live-hardware session that will re-measure it.
 - [`aius-replay-manager.md`](../plans/aius-replay-manager.md) — the replay source that

@@ -50,6 +50,7 @@ from typing import Iterable, Mapping
 # defined in these translation units carries FLASHMEM.
 COLD_OBJECTS = (
     "lib/aius_clock/src/aius_clock.c.o",
+    "lib/aius_audio/src/aius_audio_clock.cpp.o",
     "lib/aius_audio_service/src/aius_audio_service.c.o",
     "lib/aius_boot/src/aius_boot.c.o",
     "lib/aius_http/src/aius_http.c.o",
