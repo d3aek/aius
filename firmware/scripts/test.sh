@@ -9,7 +9,7 @@
 #
 # Suites: arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
-#         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner, rate-runner,
+#         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner, rate-runner, latency-runner,
 #         recovery-runner, flash, http,
 #         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
@@ -470,6 +470,9 @@ net-runner)
 	;;
 rate-runner)
 	python3 "$fw_root/test/rate-runner/test_rate_bench.py"
+	;;
+latency-runner)
+	python3 "$fw_root/test/latency-runner/test_latency_runner.py"
 	;;
 flash)
 	# The button-free flash path, driven against a scripted CDC transport and
