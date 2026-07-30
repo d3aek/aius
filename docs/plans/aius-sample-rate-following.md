@@ -638,6 +638,26 @@ live optical transmit or channel status is fixed at 48 kHz.
   sample-rate following and transmit from this corruption class. It does not
   distinguish CM playback/transmit, CM capture, the optical jumper, USB
   transport, the Icron/Renesas path, virtualization or their interaction.
+- After the hypervisor restart, the same direct 44.1 kHz CM6206 optical
+  output-to-input loop reproduced the corruption before any other diagnostic.
+  The 124.891-second active return contained seven isolated impulses and 14
+  greater-than-1,000 edges; the source contained none. Playback and capture
+  both exited cleanly with no ALSA error or xrun. Raw artifacts are under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/cm6206-direct-loop-post-reboot-44k1-125s/`.
+  The reboot therefore did not eliminate the corruption class. This deliberate
+  repeat does not replace the external-source capture discriminator below.
+- The post-restart capture-side discriminator then passed with an external Mac
+  optical source configured at 44.1 kHz. A three-second preflight proved the
+  expected approximately ±410 identical-stereo tone before the 125.000-second
+  capture. The return contained zero isolated impulses, zero
+  greater-than-1,000 edges, no zero run longer than one frame, no clipping and
+  zero unequal stereo frames. Both channels retained the exact 44/45-frame
+  crossing cadence at 996.99996 Hz, and ALSA reported no error or xrun. Raw
+  artifacts are under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/cm6206-external-mac-44k1-600s/`.
+  This clean capture-only path localizes the direct-loop corruption to CM6206
+  USB playback/S/PDIF transmit or full-duplex interaction. It does not yet
+  distinguish those two cases.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
@@ -657,6 +677,9 @@ Raw artifacts remain under
 
 The hypervisor restart is an explicit investigation boundary. Resume in this
 order:
+
+Steps 1 and 2 are complete. The clean external-source capture means step 3 was
+not triggered. Resume at step 4.
 
 1. Confirm the Renesas controller remains exclusively passed through, the
    CM6206 enumerates as `0d8c:0102`, ALSA exposes one playback/capture device,
