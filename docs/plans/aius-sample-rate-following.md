@@ -599,7 +599,10 @@ live optical transmit or channel status is fixed at 48 kHz.
 
 - Exact image `0a6f3a6f3480+teensy41-optical` passed the 48 kHz asynchronous
   gate for 600.000 seconds: ingress slope 0.005207 words/s, maximum follow error
-  122 millihertz, and every harmful counter delta zero.
+  122 millihertz, and every harmful counter delta zero. That evidence remains
+  valid for its observed CM carrier state, but the active-playback discriminator
+  below prevents treating it as proof of the CM's current active USB-output
+  clock.
 - Its first 44.1 kHz run failed: the initially accepted physical estimate was
   44,477,836 millihertz before settling to 44,105,350, so the ten-second trim
   delay drained 640 TX frames. The returned capture contained 29 128-frame zero
@@ -738,6 +741,34 @@ live optical transmit or channel status is fixed at 48 kHz.
   while retaining hard failures for the open-gate underrun and event overflow.
   Raw evidence is under
   `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/rate-transition-48-441-48/`.
+- An authenticated application reboot then provided boot generation 3 with an
+  empty event-overflow history on the same exact image. A 660-second 48 kHz PCM
+  file kept CM USB playback active across a fresh 600.000-second bracket. The
+  audio path itself was clean: 53,431 committed blocks, ingress slope
+  0.055937 words/s, bounded 256-word/512-frame rings and every harmful counter
+  delta zero, including TX underruns. The formal clock gate failed. There were
+  53 post-settle trims, 123 samples outside the 1,000-millihertz follow bound
+  and a maximum error of 4,069 millihertz. The CM physical estimate changed
+  318 times among ten values spanning 48,015,593–48,021,879 millihertz; the
+  old passing run had only two values 139 millihertz apart. Once active USB
+  playback stopped, the CM returned to 48,012,799 millihertz, exactly one value
+  from the old passing family. Steady accepted-rate tracking code is unchanged
+  between the two images, so this is evidence of a different CM source-clock
+  state rather than a demonstrated firmware regression. It remains an
+  inference, not proof that the earlier source process was idle. Raw evidence
+  is under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/pcm-48k-current-10m/`.
+- On that fresh boot, a concurrent three-second preflight moved the CM to
+  44.1 kHz with PCM classification, an open gate, 17-millihertz follow error
+  and no event overflow. The following 120.000-second firmware bracket
+  committed 9,466 blocks with maximum follow error 123 millihertz and every
+  harmful counter delta zero. Its external observation deliberately remains
+  failed: the simultaneous 130-second CM return was non-silent with no silent
+  ten-millisecond window after onset, but contained six isolated one-frame
+  impulses. Three resemble the characterized source fault; three approximately
+  ±29.6k excursions have not been proven to fit the high-byte fingerprint and
+  cannot be waived. Raw evidence, source and returned capture are under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/pcm-44100-current-120s/`.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
