@@ -917,12 +917,11 @@ static FLASHMEM void record_state(void)
 /* converts rate: AudioInputSPDIF3 DMAs receiver words straight into    */
 /* audio blocks at the incoming carrier's rate (the retained snapshot   */
 /* predates the upstream asynchronous converter, and the framework copy */
-/* is byte-identical to it). Phase 1 still clocks transmit at 48 kHz,    */
-/* but the tracker accepts 32/44.1/48 kHz as runtime data. enqueue()     */
-/* compares every decoded/passthrough block rate with the accepted       */
-/* carrier and the applied output plan before config, DSP or output; a   */
-/* mismatch is muted and counted. Non-48 output remains dark until the   */
-/* target clock adapter applies its plan in Phase 2.                      */
+/* is byte-identical to it). The tracker accepts 32/44.1/48 kHz as       */
+/* runtime data and the target adapter follows the accepted live clock.  */
+/* enqueue() compares every decoded/passthrough block rate with that     */
+/* accepted carrier and applied output plan before config, DSP or output;*/
+/* a mismatch is muted and counted.                                      */
 /*                                                                     */
 /* THREE BLOCK SIZES, and every per-block figure names one of them:     */
 /*                                                                     */

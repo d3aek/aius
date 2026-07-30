@@ -20,7 +20,6 @@ constexpr uint32_t PLL_POWERDOWN = UINT32_C(1) << 12;
 constexpr uint32_t PLL_POST_DIVIDE_4 = UINT32_C(2) << 19;
 constexpr uint32_t PLL_MISC_DIV_MASK =
 	(UINT32_C(1) << 23) | (UINT32_C(1) << 15);
-constexpr uint32_t CLOCK_GATE_SPDIF_MASK = UINT32_C(3) << 14;
 constexpr uint32_t SPDIF_ROOT_MASK =
 	(UINT32_C(7) << 25) |
 	(UINT32_C(7) << 22) |
@@ -269,7 +268,7 @@ static void test_immediate_lock_and_register_order(void)
 	assert(
 		aius_audio_clock_apply_with_backend(&plan, &backend) ==
 		AIUS_CLOCK_APPLY_OK);
-	assert(target.trace_count == 12u);
+	assert(target.trace_count == 10u);
 	assert_write(
 		target,
 		0u,
@@ -306,32 +305,29 @@ static void test_immediate_lock_and_register_order(void)
 	assert_write(
 		target,
 		7u,
-		AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5,
-		initial_gate & ~CLOCK_GATE_SPDIF_MASK);
-	assert_write(
-		target,
-		8u,
 		AIUS_AUDIO_CLOCK_REG_SPDIF_ROOT,
 		(initial_root & ~SPDIF_ROOT_MASK) |
 			(UINT32_C(7) << 25));
 	assert_write(
 		target,
-		9u,
-		AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5,
-		initial_gate | CLOCK_GATE_SPDIF_MASK);
-	assert_write(
-		target,
-		10u,
+		8u,
 		AIUS_AUDIO_CLOCK_REG_SPDIF_TX_CLOCK,
 		(initial_tx & ~SPDIF_TX_CLOCK_MASK) |
 			(UINT32_C(1) << 8) |
 			(plan.tx_clock_divider - 1u));
 	assert_write(
 		target,
-		11u,
+		9u,
 		AIUS_AUDIO_CLOCK_REG_SPDIF_CHANNEL_STATUS_LOW,
 		(initial_status & ~CHANNEL_RATE_MASK) |
 			plan.channel_status_rate_bits);
+	assert(
+		target.registers[register_index(
+			AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5)] == initial_gate);
+	for (size_t index = 0; index < target.trace_count; index++)
+		assert(
+			target.trace[index].reg !=
+			AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5);
 
 	AiusSpdifClockPlan applied = {};
 	assert(aius_audio_clock_get_applied_plan(&applied));
@@ -443,12 +439,12 @@ static void test_all_nominal_mappings_and_four_period_hold(void)
 				&plan, &backend) ==
 			AIUS_CLOCK_APPLY_OK);
 		assert(
-			target.trace[10].value ==
+			target.trace[8].value ==
 			(UINT32_C(0x80) |
 			 (UINT32_C(1) << 8) |
 			 (plan.tx_clock_divider - 1u)));
 		assert(
-			(target.trace[11].value & CHANNEL_RATE_MASK) ==
+			(target.trace[9].value & CHANNEL_RATE_MASK) ==
 			plan.channel_status_rate_bits);
 
 		clear_trace(&target);

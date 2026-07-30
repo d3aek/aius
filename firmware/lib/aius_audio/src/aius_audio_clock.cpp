@@ -22,8 +22,6 @@ constexpr uint32_t PLL_DIV_SELECT_MASK = UINT32_C(0x3f);
 constexpr uint32_t PLL_FRACTION_MASK = UINT32_C(0x1fffffff);
 constexpr uint32_t PLL_MISC_DIV_MASK =
 	(UINT32_C(1) << 23) | (UINT32_C(1) << 15);
-constexpr uint32_t CLOCK_GATE_SPDIF_MASK = UINT32_C(3) << 14;
-constexpr uint32_t CLOCK_GATE_SPDIF_ON = UINT32_C(3) << 14;
 constexpr uint32_t SPDIF_ROOT_PRED_MASK = UINT32_C(7) << 25;
 constexpr uint32_t SPDIF_ROOT_PODF_MASK = UINT32_C(7) << 22;
 constexpr uint32_t SPDIF_ROOT_SELECT_MASK = UINT32_C(3) << 20;
@@ -57,9 +55,6 @@ static_assert(
 	(CCM_ANALOG_MISC2_DIV_MSB | CCM_ANALOG_MISC2_DIV_LSB) ==
 		PLL_MISC_DIV_MASK,
 	"PLL post-divider encoding drifted from the Teensy core");
-static_assert(
-	CCM_CCGR5_SPDIF(CCM_CCGR_ON) == CLOCK_GATE_SPDIF_ON,
-	"S/PDIF clock-gate encoding drifted from the Teensy core");
 static_assert(
 	(CCM_CDCDR_SPDIF0_CLK_PRED_MASK |
 	 CCM_CDCDR_SPDIF0_CLK_PODF_MASK |
@@ -491,12 +486,10 @@ FLASHMEM AiusClockApplyResult aius_audio_clock_apply_with_backend(
 		AIUS_AUDIO_CLOCK_REG_PLL_CONTROL,
 		pll_control & ~PLL_BYPASS);
 
-	backend_write(
-		backend,
-		AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5,
-		backend_read(
-			backend, AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5) &
-			~CLOCK_GATE_SPDIF_MASK);
+	/* Do not gate CCM_CCGR5_SPDIF here. That gate stops the receiver and its
+	 * live DMA as well as the transmitter. Boot-time config_spdif3() may gate
+	 * it before RX DMA is enabled; a runtime output replan must instead keep
+	 * RX continuous while the physical TX pad and IEC validity are dark. */
 	root = backend_read(backend, AIUS_AUDIO_CLOCK_REG_SPDIF_ROOT);
 	root &= ~(SPDIF_ROOT_PRED_MASK |
 	          SPDIF_ROOT_PODF_MASK |
@@ -505,12 +498,6 @@ FLASHMEM AiusClockApplyResult aius_audio_clock_apply_with_backend(
 	        (static_cast<uint32_t>(plan->root_postdivider - 1u) << 22);
 	backend_write(
 		backend, AIUS_AUDIO_CLOCK_REG_SPDIF_ROOT, root);
-	backend_write(
-		backend,
-		AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5,
-		backend_read(
-			backend, AIUS_AUDIO_CLOCK_REG_CLOCK_GATE_5) |
-			CLOCK_GATE_SPDIF_ON);
 
 	tx_clock = backend_read(
 		backend, AIUS_AUDIO_CLOCK_REG_SPDIF_TX_CLOCK);

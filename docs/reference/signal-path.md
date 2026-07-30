@@ -748,6 +748,12 @@ complete 128-frame periods. There is no resampler or intermediate
 requantisation (`lib/aius_clock/src/aius_clock.c`,
 `lib/aius_audio/src/aius_audio_clock.cpp`).
 
+Runtime replans deliberately leave `CCM_CCGR5_SPDIF` enabled. That gate stops
+the live receiver DMA as well as the transmitter; it is safe in
+`config_spdif3()` before RX starts, but gating it after boot caused persistent
+missing-live gaps and transmit starvation. The closed physical pad and invalid
+IEC status are the runtime quiescence boundary while PLL4 and the TX root move.
+
 Clock responsibility moves between the two peripherals: the receiver remains
 graph master for a live carrier, and the transmitter takes responsibility only
 after a carrier-free replay has restored and acknowledged the exact
