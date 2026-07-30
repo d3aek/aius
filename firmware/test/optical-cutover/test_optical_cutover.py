@@ -1617,7 +1617,7 @@ def assert_enqueue_refuses_rate_before_dsp(text):
         "enqueue() advances staged config or DSP before refusing an unsupported "
         "or unapplied stream rate"
     )
-    assert body.count("return AIUS_UNSUPPORTED;") >= 2, (
+    assert body.count("return AIUS_REFUSED;") >= 2, (
         "enqueue() does not have distinct unsupported and mismatch refusal arms"
     )
     plan_wait = without_comments_and_literals(

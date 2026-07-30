@@ -1230,7 +1230,7 @@ private:
 				record_event(AIUS_EVENT_RATE_UNSUPPORTED,
 				             current_state(), 0u);
 			}
-			return AIUS_UNSUPPORTED;
+			return AIUS_REFUSED;
 		}
 		g_clock_stream_unsupported_episode = false;
 		const bool replay =
@@ -1248,7 +1248,7 @@ private:
 		if (block->sample_rate_hz != expected_rate_hz) {
 			g_clock_mismatch_blocks++;
 			close_stream_rate_gate();
-			return AIUS_UNSUPPORTED;
+			return AIUS_REFUSED;
 		}
 		g_clock_live_ready = !replay && g_clock_carrier_ready;
 		const bool model_pending = g_dsp_apply_pending;

@@ -1392,6 +1392,7 @@ struct deferred_sink {
 	uint32_t calls;
 	uint32_t commits;
 	int block_once;
+	int refuse_all;
 	uint32_t fail_on_call;
 	AiusStatus fail_status;
 	const AiusPcmBlock *first;
@@ -1434,6 +1435,8 @@ static AiusStatus deferred_consume(void *ctx, const AiusPcmBlock *block)
 		sink->block_once = 0;
 		return AIUS_NO_SPACE;
 	}
+	if (sink->refuse_all)
+		return AIUS_REFUSED;
 	if (sink->fail_on_call == sink->calls)
 		return sink->fail_status;
 	sink->commits++;
@@ -1561,6 +1564,25 @@ static void test_deferred_ac3(const char *dir)
 	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK &&
 	          aius_pipeline_codec_pc(p) == 1u,
 	      "defer-ac3-fatal: clean restart");
+	aius_pipeline_destroy(p);
+
+	/* An intentional sink refusal consumes every decoded block without
+	 * committing output, resetting classification, or reporting a failure. */
+	memset(&sink_state, 0, sizeof(sink_state));
+	sink_state.refuse_all = 1;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "defer-ac3-refused: create");
+	CHECK(aius_pipeline_push(p, wire, n) == AIUS_OK,
+	      "defer-ac3-refused: consume");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.decode_units == 12u && diag.sink_attempts == 12u &&
+	          diag.committed_blocks == 0u &&
+	          diag.output_drops == 0u && diag.au_abandons == 0u &&
+	          sink_state.commits == 0u &&
+	          aius_pipeline_codec_pc(p) == 1u &&
+	          aius_pipeline_classification(p) == AIUS_PIPELINE_DTS &&
+	          !aius_pipeline_has_pending(p),
+	      "defer-ac3-refused: intentional mute accounting/state");
 	aius_pipeline_destroy(p);
 
 	/* Legacy push cannot retain its caller-owned suffix: it abandons, then a

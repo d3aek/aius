@@ -30,7 +30,8 @@ typedef enum {
 	AIUS_MALFORMED,   /* sync, length, or CRC violation */
 	AIUS_TRUNCATED,   /* stream ended inside a unit */
 	AIUS_NO_SPACE,    /* arena or output capacity exhausted */
-	AIUS_INVALID_ARG
+	AIUS_INVALID_ARG,
+	AIUS_REFUSED      /* valid output consumed but intentionally not committed */
 } AiusStatus;
 
 /* Canonical channel bits for AiusPcmBlock.channel_mask. popcount(mask) == channels. */
@@ -113,7 +114,9 @@ typedef struct {
 typedef struct AiusIec61937Parser AiusIec61937Parser;
 typedef struct AiusDtsDecoder AiusDtsDecoder;
 
-/* Destination for decoded blocks, decoupled from Arduino audio objects. */
+/* Destination for decoded blocks, decoupled from Arduino audio objects.
+ * AIUS_OK commits a block, AIUS_NO_SPACE retains it for retry, AIUS_REFUSED
+ * consumes it without a commit, and any other status is a fatal sink error. */
 typedef struct {
 	void *ctx;
 	AiusStatus (*consume)(void *ctx, const AiusPcmBlock *block);

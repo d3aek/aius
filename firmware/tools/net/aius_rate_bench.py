@@ -347,11 +347,16 @@ def stable_phase_labels(samples, minimum_samples, max_follow_error_millihz):
 
 
 def check_common(samples, failures, metrics, allow_clock_mismatch=False,
-                 allow_generation_change=False):
+                 allow_generation_change=False,
+                 allow_dark_tx_underrun=False):
     deltas = {}
     for path in COMMON_HARMFUL_COUNTERS:
         deltas[path] = accumulated_delta(samples, path)
-        if deltas[path] != 0:
+        allowed = (
+            allow_dark_tx_underrun and
+            path == "clock.tx_underrun_frames"
+        )
+        if deltas[path] != 0 and not allowed:
             add_failure(failures, "harmful-counter",
                         f"{path} advanced by {deltas[path]}")
     if not allow_generation_change:
@@ -538,7 +543,8 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
 
     allow_mismatch = scenario == "negative"
     allow_generation = scenario == "transitions"
-    check_common(samples, failures, metrics, allow_mismatch, allow_generation)
+    check_common(samples, failures, metrics, allow_mismatch, allow_generation,
+                 allow_dark_tx_underrun=allow_mismatch)
     trim_delta = accumulated_delta(samples, "clock.trim_updates")
     invalid_delta = accumulated_delta(samples, "clock.invalid_windows")
     metrics["trim_updates_delta"] = trim_delta

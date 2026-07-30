@@ -206,6 +206,8 @@ class AnalyzerTests(unittest.TestCase):
             entry["status"]["clock"]["stream_rate_hz"] = 44100
             entry["status"]["clock"]["state"] = "refused"
             entry["status"]["tx_gate"]["open"] = 0
+        samples[1]["status"]["clock"]["tx_underrun_frames"] = 128
+        samples[2]["status"]["clock"]["tx_underrun_frames"] = 512
         samples[1]["status"]["clock"]["mismatch_blocks"] = 2
         samples[2]["status"]["clock"]["mismatch_blocks"] = 4
         result = BENCH.analyze_samples(samples, [], "negative", {
@@ -216,6 +218,10 @@ class AnalyzerTests(unittest.TestCase):
         })
         self.assertEqual(result["verdict"], "pass")
         self.assertEqual(result["metrics"]["mismatch_blocks_after_settle"], 4)
+        self.assertEqual(
+            result["metrics"]["counter_deltas"]["clock.tx_underrun_frames"],
+            512,
+        )
 
     def test_pcm_and_encoded_non_48k_gates(self):
         pcm_samples = [

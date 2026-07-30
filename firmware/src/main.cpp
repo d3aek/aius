@@ -47,6 +47,7 @@ static const char *status_name(AiusStatus s)
     case AIUS_TRUNCATED:   return "AIUS_TRUNCATED";
     case AIUS_NO_SPACE:    return "AIUS_NO_SPACE";
     case AIUS_INVALID_ARG: return "AIUS_INVALID_ARG";
+    case AIUS_REFUSED:     return "AIUS_REFUSED";
     default:               return "AIUS_?";
     }
 }

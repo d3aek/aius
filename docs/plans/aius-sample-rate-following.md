@@ -683,6 +683,25 @@ live optical transmit or channel status is fixed at 48 kHz.
   required. The remaining fault surface is the CM6206 USB playback/S/PDIF
   transmit path or the upstream USB OUT transport through
   snd-usb-audio/xHCI, Renesas, Icron and virtualization.
+- A 20-second 44.1 kHz AC-3 preflight on exact image
+  `d009092556a3+teensy41-optical` classified and decoded valid type-1 bursts,
+  but CM6206 word corruption also caused 38 decode rejects, two parse rejects
+  and consequent transmit underruns. This source-sensitive gate remains
+  pending: an encoded-word error cannot be waived as a known one-frame PCM
+  impulse without raw-word correlation.
+- The independent 48 kHz carrier/44.1 kHz AC-3 header negative control then
+  exposed a firmware refusal-bookkeeping defect. Its 30-second window counted
+  469 mismatched blocks and committed zero output blocks, but every deliberate
+  refusal was treated as a fatal sink error, producing 469 output drops, 469 AU
+  abandons and repeated classification events. The repair adds an explicit
+  `AIUS_REFUSED` sink result: the pipeline consumes and mutes the decoded block
+  without committing output, resetting classification or reporting a failure.
+  The negative analyzer separately permits TX underruns while the documented
+  pad-mux gate is intentionally dark. Pipeline, audio-service, codec-contract,
+  rate-runner and optical-cutover host proof and the production cross-build
+  pass; exact-image device proof remains pending. Raw pre-repair evidence is
+  under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/ac3-negative-48-carrier-441-header/`.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
@@ -705,10 +724,13 @@ order:
 
 Steps 1, 2 and 4 are complete. The clean external-source capture means step 3
 was not triggered. The one-fibre playback-only test also reproduced corruption,
-excluding the physical return and simultaneous USB capture. Before step 5,
-repeat the same CM6206-output-to-Teensy recorder window with the CM6206 attached
-to a direct, non-Icron USB host path. That decides the remaining CM6206
-playback/transmit versus upstream USB OUT transport boundary.
+excluding the physical return and simultaneous USB capture. The direct,
+non-Icron host discriminator is deferred; it remains the next CM6206 diagnostic
+but no longer blocks firmware tests. Continue step 5 with strict firmware
+counters. A known isolated one-frame PCM source impulse may be counted and
+quarantined only when recorder evidence shows no gap, counter delta, lock/rate
+transition or multi-frame corruption. Encoded and exact-waveform gates remain
+pending when source corruption cannot be correlated at the raw input plane.
 
 1. Confirm the Renesas controller remains exclusively passed through, the
    CM6206 enumerates as `0d8c:0102`, ALSA exposes one playback/capture device,

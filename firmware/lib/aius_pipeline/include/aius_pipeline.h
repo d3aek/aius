@@ -220,8 +220,9 @@ AiusStatus aius_pipeline_set_pcm_sample_rate(AiusPipeline *p,
  *
  *   AIUS_OK          input processed; any produced blocks were delivered.
  *   AIUS_INVALID_ARG p is NULL, or words is NULL with count > 0.
- *   <sink status>    the sink returned non-OK for a block; processing stops and
- *                    the sink's status is returned (e.g. AIUS_NO_SPACE).
+ *   <sink status>    the sink returned a fatal status for a block; processing
+ *                    stops and that status is returned (e.g. AIUS_NO_SPACE).
+ *                    AIUS_REFUSED is an intentional consume and returns OK.
  *
  * A per-burst parse/decode fault (UNSUPPORTED / MALFORMED / NO_SPACE / a DTS
  * decode error) is non-fatal: that burst is skipped, the stream re-locks, and the
@@ -238,7 +239,8 @@ AiusStatus aius_pipeline_ingest(AiusPipeline *p, const uint16_t *words,
 
 /* Perform at most one output work unit. AIUS_NO_SPACE is reported as
  * TRANSMIT_BLOCKED and retains the identical PCM descriptor for retry without
- * another decode. Other sink failures reset pending stream state. */
+ * another decode. AIUS_REFUSED advances the decoded item without counting a
+ * commit or failure. Other sink failures reset pending stream state. */
 AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	                                 AiusPipelineServiceResult *result);
 

@@ -649,7 +649,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 		*result = AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED;
 		return AIUS_NO_SPACE;
 	}
-	if (st != AIUS_OK) {
+	const int refused = st == AIUS_REFUSED;
+	if (st != AIUS_OK && !refused) {
 		p->service_diag.output_drops++;
 		if (p->pending == PENDING_DTS_OUTPUT ||
 		    p->pending == PENDING_A52_OUTPUT)
@@ -661,7 +662,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 		return st;
 	}
 
-	p->service_diag.committed_blocks++;
+	if (!refused)
+		p->service_diag.committed_blocks++;
 	if (p->pending == PENDING_PCM) {
 		p->pcm_frames = 0u;
 		p->pending = PENDING_NONE;
