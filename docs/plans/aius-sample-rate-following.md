@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-07-29
+updated: 2026-07-30
 toc: true
 ---
 
@@ -601,9 +601,91 @@ live optical transmit or channel status is fixed at 48 kHz.
   runs, one 372-frame zero run and 16 discontinuity events. This is the
   reproduced reason supported acquisition now requires a stable one-second
   physical-rate interval and quiesces producer ingress while waiting.
-- The 44.1 kHz gate remains failed until the corrected exact image passes a new
-  120-second run and returned-capture validation. The failed evidence is
-  retained under the session scratch directory and is not acceptance evidence.
+- Corrected exact image `d009092556a3+teensy41-optical` then passed the 44.1 kHz
+  firmware bracket for 120.000 seconds: accepted nominal 44,100 Hz, 9,468
+  committed output blocks, maximum follow error 115 millihertz, ingress and TX
+  high-water marks 256 words and 512 frames, and every harmful counter delta
+  zero. The returned 121-second capture had no in-band zero run longer than one
+  frame, but contained 12 isolated one-frame impulses.
+- A simultaneous authenticated flight-recorder comparison reproduced two
+  impulses and aligned 970,200 stereo frames between the committed post-DSP
+  plane and the CM6206 return. Every aligned sample was bit-exact after 24-to-16
+  scaling. The impulses therefore existed before Teensy transmit; the transmit
+  ring, Teensy optical output, return fibre, CM capture and ALSA capture did not
+  create them. The recorder download header incorrectly remained at 48,000 Hz
+  while live status and the bit-exact timeline were 44.1 kHz; resume tooling
+  must use the accepted live nominal rate rather than that static field.
+- Repeating that comparison with input EQ, matrix, output EQ and limiter
+  bypassed reproduced four impulses in 22 seconds. The configurable DSP stages
+  are not required. The original SD configuration was restored and verified
+  semantically at generation 9; two setup-only round trips account for the
+  preceding generation changes.
+- A direct CM6206 optical-output-to-input loop then reproduced the same class
+  with the Teensy absent:
+
+  | Run | Active duration | Isolated impulses | `>1000` edges | In-band zero runs ≥2 frames | ALSA errors/xruns |
+  |---|---:|---:|---:|---:|---:|
+  | 44.1 kHz, stereo playback altset 2 | 124.900 s | 9 | 18 | 0 | 0 |
+  | 48 kHz, stereo playback altset 2 | 124.906 s | 1 | 2 | 0 | 0 |
+  | 44.1 kHz, eight-channel playback altset 1 | 124.887 s | 15 | 30 | 0 | 0 |
+
+  Each source file had zero qualifying impulses, no multi-frame zero runs and
+  no clipping. Each return also had sub-threshold cadence anomalies; the 48 kHz
+  return began with its right channel one sample behind the left. The
+  eight-channel USB alternate setting is not a cleaner workaround, and latency
+  tooling must not assume this interface returns a sample-identical stereo
+  timeline. The direct-loop reproduction excludes Teensy receive, DSP,
+  sample-rate following and transmit from this corruption class. It does not
+  distinguish CM playback/transmit, CM capture, the optical jumper, USB
+  transport, the Icron/Renesas path, virtualization or their interaction.
+- The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
+  waveform and trim-boundary evidence remain pending because the measurement
+  path itself reproduces isolated corrupt samples without the Teensy. Do not
+  weaken gate 7 or attribute a component fault from the direct-loop result.
+
+Raw artifacts remain under
+`.scratch/019fad89-9c0a-7b51-9c04-c11431d981d1/`, especially:
+
+- `rate-44100-120s-d009.jsonl`;
+- `impulse-diagnostic/attempt-1/`;
+- `impulse-transparent-dsp-v2/`;
+- `cm6206-direct-loop-125s/`;
+- `cm6206-direct-loop-48k-125s/`; and
+- `cm6206-direct-loop-44k1-altset1-8ch-125s/`.
+
+### Resume checkpoint after the hypervisor restart
+
+The hypervisor restart is an explicit investigation boundary. Resume in this
+order:
+
+1. Confirm the Renesas controller remains exclusively passed through, the
+   CM6206 enumerates as `0d8c:0102`, ALSA exposes one playback/capture device,
+   and `PCM Capture Source` remains `IEC958 In`. Do not infer controller,
+   extender or device fault from enumeration alone.
+2. Leave CM optical output disconnected. Feed the CM optical input from an
+   external 44.1 kHz PCM source with a continuous identical stereo tone and run
+   the same at-least-120-second capture analyzer.
+
+   - Clean capture localizes the corruption to CM USB playback/transmit or its
+     full-duplex interaction.
+   - Reproduced corruption localizes it to CM capture/USB transport, the
+     Icron/Renesas/virtualization path or their interaction.
+3. If capture-side corruption remains, collect the guest and hypervisor xHCI/
+   USB diagnostics over the exact capture bracket before changing hardware or
+   passthrough policy. Elevated commands are run by the user; this guest never
+   has `sudo`.
+4. Restore the CM6206→Teensy→CM6206 loop only after the capture-side
+   discriminator. Reconfirm exact image
+   `d009092556a3+teensy41-optical` before continuing acceptance.
+5. Finish device gates in dependency order: 44.1 kHz encoded AC-3, deliberate
+   carrier/header mismatch, external 32 kHz PCM, the
+   48→44.1→32→48 plus loss→replay transitions, then the exact trim-boundary
+   waveform. Gate 7 must use a measurement path that the discriminator has
+   shown does not independently create discontinuities.
+6. Once all seven sample-rate gates pass, update this plan and the authoritative
+   signal-path references, commit that device-evidence boundary, then begin
+   `aius-e2e-latency.md`. The four-hour AC-3 gate remains deferred until the OTA
+   investigation is complete.
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same
