@@ -12,7 +12,6 @@
 #endif
 #endif
 
-#define AIUS_CLOCK_ACCEPT_SAMPLES UINT32_C(8)
 #define AIUS_CLOCK_NOMINAL_INTERVAL_MS UINT32_C(1000)
 #define AIUS_CLOCK_WINDOW_MS UINT32_C(1000)
 #define AIUS_CLOCK_TARGET_INTERVAL_MS UINT32_C(10000)
@@ -77,6 +76,9 @@ static FLASHMEM void reset_candidate(AiusRateTracker *tracker)
 	tracker->candidate_nominal_hz = 0u;
 	tracker->candidate_count = 0u;
 	tracker->candidate_sum_millihz = 0u;
+	tracker->candidate_start_ms = 0u;
+	tracker->candidate_min_millihz = 0u;
+	tracker->candidate_max_millihz = 0u;
 	tracker->unsupported_candidate = false;
 }
 
@@ -122,9 +124,12 @@ FLASHMEM uint32_t aius_clock_snap_nominal_rate(
 static FLASHMEM void observe_candidate(
 	AiusRateTracker *tracker,
 	uint32_t nominal_hz,
-	uint32_t carrier_rate_millihz)
+	uint32_t carrier_rate_millihz,
+	uint32_t now_ms)
 {
 	bool unsupported = nominal_hz == 0u;
+	uint32_t candidate_min;
+	uint32_t candidate_max;
 
 	if (tracker->candidate_count == 0u ||
 	    tracker->candidate_nominal_hz != nominal_hz ||
@@ -132,6 +137,37 @@ static FLASHMEM void observe_candidate(
 		reset_candidate(tracker);
 		tracker->candidate_nominal_hz = nominal_hz;
 		tracker->unsupported_candidate = unsupported;
+	}
+	if (tracker->candidate_count != 0u && !unsupported) {
+		candidate_min =
+			carrier_rate_millihz < tracker->candidate_min_millihz
+				? carrier_rate_millihz
+				: tracker->candidate_min_millihz;
+		candidate_max =
+			carrier_rate_millihz > tracker->candidate_max_millihz
+				? carrier_rate_millihz
+				: tracker->candidate_max_millihz;
+		/* The receiver DPLL can report the right nominal band while its
+		 * physical-rate estimate is still settling by hundreds of hertz.
+		 * Applying that transient estimate drains the small TX ring before
+		 * the ten-second trim cadence can correct it. Restart the supported
+		 * candidate at the newest sample until a complete stable interval is
+		 * available. Unsupported detection retains its count-only debounce. */
+		if (candidate_max - candidate_min >
+		    AIUS_CLOCK_ACCEPT_SPAN_MILLIHZ) {
+			reset_candidate(tracker);
+			tracker->candidate_nominal_hz = nominal_hz;
+		}
+	}
+	if (tracker->candidate_count == 0u) {
+		tracker->candidate_start_ms = now_ms;
+		tracker->candidate_min_millihz = carrier_rate_millihz;
+		tracker->candidate_max_millihz = carrier_rate_millihz;
+	} else {
+		if (carrier_rate_millihz < tracker->candidate_min_millihz)
+			tracker->candidate_min_millihz = carrier_rate_millihz;
+		if (carrier_rate_millihz > tracker->candidate_max_millihz)
+			tracker->candidate_max_millihz = carrier_rate_millihz;
 	}
 	if (tracker->candidate_count != UINT32_MAX)
 		tracker->candidate_count++;
@@ -250,7 +286,8 @@ FLASHMEM AiusRateTrackerResult aius_rate_tracker_step(
 		if (nominal_hz != 0u)
 			tracker->unsupported_episode_reported = false;
 		observe_candidate(tracker, nominal_hz,
-		                  sample->carrier_rate_millihz);
+		                  sample->carrier_rate_millihz,
+		                  sample->now_ms);
 		if (tracker->candidate_count < AIUS_CLOCK_ACCEPT_SAMPLES)
 			return result;
 		if (nominal_hz == 0u) {
@@ -260,6 +297,10 @@ FLASHMEM AiusRateTrackerResult aius_rate_tracker_step(
 			}
 			return result;
 		}
+		if (!elapsed_at_least(sample->now_ms,
+		                      tracker->candidate_start_ms,
+		                      AIUS_CLOCK_ACCEPT_STABLE_MS))
+			return result;
 		if (nominal_accept_is_rate_limited(tracker, nominal_hz,
 		                                  sample->now_ms))
 			return result;

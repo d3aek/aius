@@ -1793,6 +1793,128 @@ def assert_clock_status_clear_and_episode_contract(text):
     )
 
 
+def assert_rate_acquisition_quiesces_ingress(text):
+    update = without_comments_and_literals(
+        function_body(text, "void update(void) override")
+    )
+    closed = update.find("!g_clock_live_ingress_open")
+    live_publish = update.find("audio_ingress_publish_live(")
+    missing_gap = update.find("aius_audio_ingress_record_gap(")
+    assert 0 <= closed < live_publish and closed < missing_gap, (
+        "AUDIO does not discard live blocks without gap accounting while the "
+        "physical-rate candidate is unaccepted"
+    )
+
+    close_gate = without_comments_and_literals(
+        function_body(text, "static inline void close_stream_rate_gate(")
+    )
+    assert "g_clock_live_ingress_open" not in close_gate, (
+        "the general stream-rate gate also closes producer ingress, breaking "
+        "same-nominal structural replans that preserve decoder generation"
+    )
+    fault = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void clock_record_fault(")
+    )
+    assert "g_clock_live_ingress_open = false;" in fault, (
+        "a persistent clock fault leaves producer ingress filling while no "
+        "plan can consume it"
+    )
+    episode = fault.find("if (g_clock_fault_episode)")
+    conditional_reset = fault.find("if (!reset_already_requested)", episode)
+    reset = fault.find("request_audio_reset();", conditional_reset)
+    assert 0 <= episode < conditional_reset < reset, (
+        "the first clock-fault episode does not own one coalesced audio reset "
+        "before producer admission can recover"
+    )
+    apply_plan = without_comments_and_literals(
+        function_body(text, "static FLASHMEM bool clock_apply_desired_plan(")
+    )
+    assert re.search(
+        r"clock_record_fault\s*\(\s*applied\s*,\s*"
+        r"reset_audio\s*\|\|\s*fault_reset_owned\s*\)",
+        apply_plan,
+    ), (
+        "a failed apply ignores reset ownership established before the current "
+        "apply call"
+    )
+
+    service = without_comments_and_literals(
+        function_body(text, "static FLASHMEM void sample_rate_service(")
+    )
+    for call, owner in (
+        (
+            r"clock_apply_desired_plan\s*\(\s*now_ms\s*,\s*true\s*,\s*"
+            r"reset_for_acceptance\s*,\s*true\s*\)",
+            "nominal acceptance",
+        ),
+        (
+            r"clock_apply_desired_plan\s*\(\s*now_ms\s*,\s*false\s*,\s*"
+            r"false\s*,\s*false\s*\)",
+            "same-nominal structural replan",
+        ),
+        (
+            r"clock_apply_desired_plan\s*\(\s*now_ms\s*,\s*rate_changed\s*,\s*"
+            r"rate_changed\s*,\s*true\s*\)",
+            "replay acquisition",
+        ),
+    ):
+        assert re.search(call, service), (
+            owner + " does not declare its fault-reset ownership"
+        )
+    invalid_plan_owners = re.findall(
+        r"clock_record_fault\s*\(\s*AIUS_CLOCK_APPLY_INVALID_PLAN\s*,\s*"
+        r"(true|false)\s*\)",
+        service,
+    )
+    assert invalid_plan_owners == ["true", "false", "true"], (
+        "invalid-plan reset ownership must be nominal-acquisition=true, "
+        "same-nominal-target=false, replay-acquisition=true"
+    )
+    quiesce = service.find(
+        "if (result.quiesce_requested && carrier &&"
+    )
+    live_only = service.find("!replay_rate_requested(source)", quiesce)
+    producer_close = service.find(
+        "g_clock_live_ingress_open = false;", live_only
+    )
+    close = service.find("close_stream_rate_gate();", quiesce)
+    reset = service.find("request_audio_reset();", quiesce)
+    credit = service.find(
+        "g_clock_relock_reset_nominal_hz = observed_nominal_hz;", quiesce
+    )
+    accepted = service.find("if (result.nominal_accepted)")
+    assert (
+        0
+        <= quiesce
+        < live_only
+        < producer_close
+        < close
+        < reset
+        < credit
+        < accepted
+    ), (
+        "the first locked live changed-rate sample does not close ingress and "
+        "issue one nominal-bound reset credit before acceptance"
+    )
+    refresh = service.find("clock_refresh_applied(source, now_ms);")
+    close_episode = service.find(
+        "if (replay_rate_requested(source) || !g_clock_carrier_ready)",
+        refresh,
+    )
+    close_store = service.find(
+        "g_clock_live_ingress_open = false;", close_episode
+    )
+    applied = service.find("else if (g_clock_plan_applied)", close_store)
+    open_store = service.find("g_clock_live_ingress_open = true;", applied)
+    assert 0 <= refresh < close_episode < close_store < applied < open_store, (
+        "producer admission is not episode-owned after clock boundary refresh"
+    )
+    assert "g_clock_live_ingress_open = g_clock_plan_applied" not in service, (
+        "a same-nominal structural hold closes producer admission even though "
+        "it preserves decoder generation"
+    )
+
+
 def assert_audio_update_is_ingress_only(text):
     body = function_body(text, "void update(void) override")
     clean = without_comments_and_literals(body)
@@ -2025,6 +2147,10 @@ POSITIVE_CHECKS = (
     (
         "checkpoint 7 updates rate truth before evaluating the gate",
         assert_rate_service_orders_safe_gate,
+    ),
+    (
+        "rate acquisition quiesces producer ingress until the plan is applied",
+        assert_rate_acquisition_quiesces_ingress,
     ),
     (
         "enqueue refuses unsupported and unapplied rates before DSP",
@@ -2478,6 +2604,17 @@ def run_audio_cutover_self_test():
         no_rate_service,
         "audio-cutover/rate-service-after-gate",
         "settle the source",
+    )
+    ingress_gate_removed = text.replace(
+        "!g_clock_live_ingress_open",
+        "false",
+        1,
+    )
+    _expect_fail(
+        assert_rate_acquisition_quiesces_ingress,
+        ingress_gate_removed,
+        "audio-cutover/acquisition-ingress-left-open",
+        "discard live blocks",
     )
     source_after_rate = text.replace(
         "\treplay_source_service();\n"

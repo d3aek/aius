@@ -194,6 +194,12 @@ static bool g_clock_replay_ready;
 static bool g_clock_apply_attempted;
 static bool g_clock_fault_episode;
 static bool g_clock_live_ready;
+/* AUDIO's producer-side admission latch. A supported nominal can be known
+ * while the receiver's physical-rate estimate is still settling; publishing
+ * that interval would overflow ingress or run new-rate words through the old
+ * plan. Main closes this before reset and reopens only after the accepted plan
+ * and dark transition are complete. */
+static volatile bool g_clock_live_ingress_open;
 static bool g_clock_carrier_unsupported;
 static bool g_clock_stream_unsupported_episode;
 static uint32_t g_clock_relock_reset_nominal_hz;
@@ -1099,6 +1105,13 @@ protected:
 					&g_replay_service,
 					AIUS_AUDIO_INGRESS_CHUNK_WORDS);
 			}
+		} else if (g_audio_ingress_ready &&
+		           !g_clock_live_ingress_open) {
+			/* Deliberate acquisition quiescence: release the AudioStream
+			 * blocks without publishing and without recording a gap. The
+			 * pending reset owns discontinuity accounting once, while the
+			 * one-second physical-rate stability gate may safely outlive
+			 * every bounded audio ring. */
 		} else if (g_audio_ingress_ready && left != nullptr &&
 		           right != nullptr) {
 			uint16_t *slot = nullptr;
@@ -5178,8 +5191,11 @@ static FLASHMEM void clock_select_desired_plan(
 	g_clock_apply_attempted = false;
 }
 
-static FLASHMEM void clock_record_fault(AiusClockApplyResult fault)
+static FLASHMEM void clock_record_fault(
+	AiusClockApplyResult fault,
+	bool reset_already_requested)
 {
+	g_clock_live_ingress_open = false;
 	close_stream_rate_gate();
 	aius_audio_clock_begin_dark_transition();
 	if (fault == AIUS_CLOCK_APPLY_INVALID_PLAN)
@@ -5190,6 +5206,8 @@ static FLASHMEM void clock_record_fault(AiusClockApplyResult fault)
 	g_clock_dark_transition_pending = true;
 	if (g_clock_fault_episode)
 		return;
+	if (!reset_already_requested)
+		request_audio_reset();
 	g_clock_fault_episode = true;
 	g_clock_faults++;
 	record_event(AIUS_EVENT_CLOCK_FAULT, current_state(), (uint16_t)fault);
@@ -5207,7 +5225,8 @@ static FLASHMEM void clock_flush_ring_preserve_diag(void)
 static FLASHMEM bool clock_apply_desired_plan(
 	uint32_t now_ms,
 	bool flush_ring,
-	bool reset_audio)
+	bool reset_audio,
+	bool fault_reset_owned)
 {
 	if (!g_clock_desired_plan_valid)
 		return false;
@@ -5219,13 +5238,19 @@ static FLASHMEM bool clock_apply_desired_plan(
 		clock_flush_ring_preserve_diag();
 	if (reset_audio)
 		request_audio_reset();
+	/* fault_reset_owned covers resets established earlier in the same
+	 * acquisition episode: locked-rate quiescence/relock credit and replay
+	 * start. It is distinct from reset_audio, which describes only this call.
+	 * A same-nominal structural replan passes false for both and lets the first
+	 * fault own the one reset needed before producer admission recovers. */
 
 	g_clock_apply_attempted = true;
 	g_clock_last_apply_attempt_ms = now_ms;
 	const AiusClockApplyResult applied =
 		aius_audio_clock_apply(&g_clock_desired_plan);
 	if (applied != AIUS_CLOCK_APPLY_OK) {
-		clock_record_fault(applied);
+		clock_record_fault(
+			applied, reset_audio || fault_reset_owned);
 		return false;
 	}
 	g_clock_invalid_windows++;
@@ -5283,7 +5308,7 @@ static FLASHMEM void clock_refresh_applied(
 	    (!g_clock_apply_attempted ||
 	     (uint32_t)(now_ms - g_clock_last_apply_attempt_ms) >=
 		     UINT32_C(1000)))
-		(void)clock_apply_desired_plan(now_ms, false, false);
+		(void)clock_apply_desired_plan(now_ms, false, false, true);
 }
 
 static FLASHMEM void sample_rate_service(uint32_t now_ms)
@@ -5315,8 +5340,22 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		pipeline_pcm_rate_service(AIUS_OPTICAL_SAMPLE_RATE_HZ);
 	g_clock_carrier_rate_millihz = sample.carrier_rate_millihz;
 	g_clock_carrier_ready = result.carrier_ready;
-	if (!result.carrier_ready)
+	if (!result.carrier_ready) {
+		g_clock_live_ingress_open = false;
 		g_clock_live_ready = false;
+	}
+	if (result.quiesce_requested && carrier &&
+	    !replay_rate_requested(source)) {
+		/* Close the physical and producer gates on the first changed sample,
+		 * then flush/reset the old-rate software state at the next AUDIO
+		 * checkpoint. Matching acceptance consumes this reset marker instead
+		 * of issuing a second classification reset. Carrier loss remains
+		 * owned by the existing debounced relock/replay reset paths. */
+		g_clock_live_ingress_open = false;
+		close_stream_rate_gate();
+		request_audio_reset();
+		g_clock_relock_reset_nominal_hz = observed_nominal_hz;
+	}
 
 	if (result.nominal_accepted) {
 		const uint32_t old_nominal = g_clock_nominal_rate_hz;
@@ -5339,11 +5378,11 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		if (!aius_spdif_clock_plan(
 			    result.nominal_rate_hz,
 			    result.target_rate_millihz, &plan)) {
-			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN);
+			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, true);
 		} else {
 			clock_select_desired_plan(plan);
 			(void)clock_apply_desired_plan(
-				now_ms, true, reset_for_acceptance);
+				now_ms, true, reset_for_acceptance, true);
 		}
 	} else if (result.target_update) {
 		AiusSpdifClockPlan plan = {};
@@ -5351,7 +5390,7 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		if (!aius_spdif_clock_plan(
 			    g_clock_nominal_rate_hz,
 			    result.target_rate_millihz, &plan)) {
-			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN);
+			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, false);
 		} else if (
 			aius_audio_clock_get_applied_plan(&applied) &&
 			aius_spdif_clock_plan_structurally_equal(&applied,
@@ -5365,7 +5404,8 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 		} else {
 			clock_select_desired_plan(plan);
 			g_clock_structural_replans++;
-			(void)clock_apply_desired_plan(now_ms, false, false);
+			(void)clock_apply_desired_plan(
+				now_ms, false, false, false);
 		}
 	}
 
@@ -5398,14 +5438,21 @@ static FLASHMEM void sample_rate_service(uint32_t now_ms)
 					applied.nominal_rate_hz !=
 						AIUS_OPTICAL_SAMPLE_RATE_HZ;
 				(void)clock_apply_desired_plan(
-					now_ms, rate_changed, rate_changed);
+					now_ms, rate_changed, rate_changed, true);
 			}
 		} else {
-			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN);
+			clock_record_fault(AIUS_CLOCK_APPLY_INVALID_PLAN, true);
 		}
 	}
 
 	clock_refresh_applied(source, now_ms);
+	if (replay_rate_requested(source) || !g_clock_carrier_ready)
+		g_clock_live_ingress_open = false;
+	else if (g_clock_plan_applied)
+		/* Monotonic within one accepted live episode: a same-nominal
+		 * structural hold makes plan_applied temporarily false but must keep
+		 * buffering because it deliberately preserves decoder generation. */
+		g_clock_live_ingress_open = true;
 }
 
 static FLASHMEM void tx_gate_service(void)

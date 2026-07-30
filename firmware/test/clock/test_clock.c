@@ -43,9 +43,9 @@ static AiusRateTrackerResult accept(
 	AiusRateTrackerResult result;
 	uint32_t i;
 
-	for (i = 0u; i < 8u; ++i)
+	for (i = 0u; i < AIUS_CLOCK_ACCEPT_SAMPLES; ++i)
 		result = step(tracker, true, rate_millihz,
-		              AIUS_CLOCK_SOURCE_LIVE, start_ms + i);
+		              AIUS_CLOCK_SOURCE_LIVE, start_ms + i * 150u);
 	return result;
 }
 
@@ -85,14 +85,15 @@ static void test_tracker_accepts_all_rates(void)
 
 		current_key = "tracker.accept-rates";
 		aius_rate_tracker_init(&tracker);
-		for (sample = 0u; sample < 7u; ++sample) {
+		for (sample = 0u; sample < AIUS_CLOCK_ACCEPT_SAMPLES - 1u;
+		     ++sample) {
 			result = step(&tracker, true, rates[i],
-			              AIUS_CLOCK_SOURCE_LIVE, sample);
+			              AIUS_CLOCK_SOURCE_LIVE, sample * 150u);
 			CHECK(!result.carrier_ready);
 			CHECK(!result.nominal_accepted);
 		}
 		result = step(&tracker, true, rates[i],
-		              AIUS_CLOCK_SOURCE_LIVE, 7u);
+		              AIUS_CLOCK_SOURCE_LIVE, 1050u);
 		CHECK(result.carrier_ready);
 		CHECK(result.nominal_accepted);
 		CHECK(result.nominal_changed);
@@ -109,21 +110,52 @@ static void test_tracker_requires_consecutive_locked_samples(void)
 
 	current_key = "tracker.lock-flap";
 	aius_rate_tracker_init(&tracker);
-	for (i = 0u; i < 7u; ++i)
+	for (i = 0u; i < AIUS_CLOCK_ACCEPT_SAMPLES - 1u; ++i)
 		result = step(&tracker, true, 48000000u,
-		              AIUS_CLOCK_SOURCE_LIVE, i);
+		              AIUS_CLOCK_SOURCE_LIVE, i * 150u);
 	CHECK(!result.carrier_ready);
 	result = step(&tracker, false, 48000000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 7u);
+	              AIUS_CLOCK_SOURCE_LIVE, 1000u);
 	CHECK(!result.carrier_ready);
-	for (i = 0u; i < 7u; ++i)
+	for (i = 0u; i < AIUS_CLOCK_ACCEPT_SAMPLES - 1u; ++i)
 		result = step(&tracker, true, 48000000u,
-		              AIUS_CLOCK_SOURCE_LIVE, 8u + i);
+		              AIUS_CLOCK_SOURCE_LIVE, 1100u + i * 150u);
 	CHECK(!result.carrier_ready);
 	result = step(&tracker, true, 48000000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 15u);
+	              AIUS_CLOCK_SOURCE_LIVE, 2150u);
 	CHECK(result.carrier_ready);
 	CHECK(result.nominal_accepted);
+}
+
+static void test_tracker_rejects_settling_physical_rate(void)
+{
+	AiusRateTracker tracker;
+	AiusRateTrackerResult result;
+	uint32_t i;
+
+	current_key = "tracker.settling-rate";
+	aius_rate_tracker_init(&tracker);
+	/* Reproduce the CM6206 transition: the receiver is locked and every sample
+	 * already snaps to 44.1 kHz, but the DPLL estimate walks down by hundreds
+	 * of hertz. The old eight-sample debounce applied that transient target and
+	 * drained 640 TX frames before the ten-second trim. */
+	for (i = 0u; i < 80u; ++i) {
+		result = step(&tracker, true, 44800000u - i * 8750u,
+		              AIUS_CLOCK_SOURCE_LIVE, i * 100u);
+		CHECK(!result.carrier_ready);
+		CHECK(!result.nominal_accepted);
+	}
+	for (i = 0u; i <= 10u; ++i) {
+		result = step(&tracker, true, 44105350u,
+		              AIUS_CLOCK_SOURCE_LIVE, 8000u + i * 100u);
+		if (i < 10u) {
+			CHECK(!result.carrier_ready);
+			CHECK(!result.nominal_accepted);
+		}
+	}
+	CHECK(result.carrier_ready);
+	CHECK(result.nominal_accepted);
+	CHECK(result.target_rate_millihz == 44105350u);
 }
 
 static void test_tracker_quiesces_on_first_changed_sample(void)
@@ -138,33 +170,33 @@ static void test_tracker_quiesces_on_first_changed_sample(void)
 	CHECK(result.carrier_ready);
 
 	result = step(&tracker, true, 44100000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 1000u);
+	              AIUS_CLOCK_SOURCE_LIVE, 2000u);
 	CHECK(!result.carrier_ready);
 	CHECK(result.quiesce_requested);
 	CHECK(!result.nominal_accepted);
-	for (i = 1u; i < 7u; ++i) {
+	for (i = 1u; i < AIUS_CLOCK_ACCEPT_SAMPLES - 1u; ++i) {
 		result = step(&tracker, true, 44100000u,
-		              AIUS_CLOCK_SOURCE_LIVE, 1000u + i);
+		              AIUS_CLOCK_SOURCE_LIVE, 2000u + i * 150u);
 		CHECK(!result.carrier_ready);
 	}
 	result = step(&tracker, true, 44100000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 1007u);
+	              AIUS_CLOCK_SOURCE_LIVE, 3050u);
 	CHECK(result.carrier_ready);
 	CHECK(result.nominal_accepted);
 	CHECK(result.nominal_changed);
 
 	result = step(&tracker, true, 60000000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 2000u);
+	              AIUS_CLOCK_SOURCE_LIVE, 4000u);
 	CHECK(!result.carrier_ready);
 	CHECK(result.quiesce_requested);
 	CHECK(!result.unsupported_accepted);
-	for (i = 1u; i < 8u; ++i)
+	for (i = 1u; i < AIUS_CLOCK_ACCEPT_SAMPLES; ++i)
 		result = step(&tracker, true, 60000000u,
-		              AIUS_CLOCK_SOURCE_LIVE, 2000u + i);
+		              AIUS_CLOCK_SOURCE_LIVE, 4000u + i);
 	CHECK(result.unsupported_accepted);
 	CHECK(!result.carrier_ready);
 	result = step(&tracker, true, 60000000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 2008u);
+	              AIUS_CLOCK_SOURCE_LIVE, 4008u);
 	CHECK(!result.unsupported_accepted);
 }
 
@@ -176,23 +208,23 @@ static void test_tracker_lock_source_and_rate_limit(void)
 
 	current_key = "tracker.lock-source-rate-limit";
 	aius_rate_tracker_init(&tracker);
-	result = accept(&tracker, 48000000u, UINT32_MAX - 10u);
+	result = accept(&tracker, 48000000u, UINT32_MAX - 500u);
 	CHECK(result.carrier_ready);
 	result = step(&tracker, false, 48000000u,
-	              AIUS_CLOCK_SOURCE_LIVE, UINT32_MAX - 2u);
+	              AIUS_CLOCK_SOURCE_LIVE, 600u);
 	CHECK(result.quiesce_requested);
 	CHECK(!result.carrier_ready);
 	result = step(&tracker, true, 48000000u,
-	              AIUS_CLOCK_SOURCE_REPLAY, UINT32_MAX - 1u);
+	              AIUS_CLOCK_SOURCE_REPLAY, 601u);
 	CHECK(!result.carrier_ready);
 
-	for (i = 0u; i < 8u; ++i)
+	for (i = 0u; i < AIUS_CLOCK_ACCEPT_SAMPLES - 1u; ++i)
 		result = step(&tracker, true, 44100000u,
-		              AIUS_CLOCK_SOURCE_LIVE, 100u + i);
+		              AIUS_CLOCK_SOURCE_LIVE, 700u + i * 150u);
 	CHECK(!result.carrier_ready);
 	CHECK(!result.nominal_accepted);
 	result = step(&tracker, true, 44100000u,
-	              AIUS_CLOCK_SOURCE_LIVE, 996u);
+	              AIUS_CLOCK_SOURCE_LIVE, 1750u);
 	CHECK(result.carrier_ready);
 	CHECK(result.nominal_accepted);
 	CHECK(result.nominal_rate_hz == 44100u);
@@ -222,25 +254,25 @@ static void test_tracker_average_hysteresis_and_cadence(void)
 	aius_rate_tracker_init(&tracker);
 	result = accept(&tracker, 48000000u, 0u);
 	CHECK(aius_rate_tracker_note_target_applied(
-		&tracker, 48000000u, 7u));
+		&tracker, 48000000u, 1050u));
 	CHECK(!aius_rate_tracker_note_target_applied(
-		&tracker, 44100000u, 7u));
+		&tracker, 44100000u, 1050u));
 
-	for (second = 1u; second < 10u; ++second) {
+	for (second = 2u; second < 11u; ++second) {
 		run_window(&tracker, 48000100u, 47999900u,
 		           second * 1000u, &result);
 		CHECK(!result.target_update);
 	}
-	run_window(&tracker, 48000049u, 48000049u, 10000u, &result);
+	run_window(&tracker, 48000049u, 48000049u, 11000u, &result);
 	CHECK(!result.target_update);
-	run_window(&tracker, 48000050u, 48000050u, 11001u, &result);
+	run_window(&tracker, 48000050u, 48000050u, 12001u, &result);
 	CHECK(result.target_update);
 	CHECK(result.target_rate_millihz == 48000050u);
 	CHECK(aius_rate_tracker_note_target_applied(
-		&tracker, result.target_rate_millihz, 12001u));
-	run_window(&tracker, 48000150u, 48000150u, 12002u, &result);
+		&tracker, result.target_rate_millihz, 13001u));
+	run_window(&tracker, 48000150u, 48000150u, 13002u, &result);
 	CHECK(!result.target_update);
-	run_window(&tracker, 48000150u, 48000150u, 21002u, &result);
+	run_window(&tracker, 48000150u, 48000150u, 23002u, &result);
 	CHECK(result.target_update);
 }
 
@@ -361,6 +393,7 @@ int main(void)
 	test_snap_boundaries();
 	test_tracker_accepts_all_rates();
 	test_tracker_requires_consecutive_locked_samples();
+	test_tracker_rejects_settling_physical_rate();
 	test_tracker_quiesces_on_first_changed_sample();
 	test_tracker_lock_source_and_rate_limit();
 	test_tracker_average_hysteresis_and_cadence();

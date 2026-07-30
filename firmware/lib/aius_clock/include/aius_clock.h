@@ -9,6 +9,12 @@ extern "C" {
 #endif
 
 #define AIUS_CLOCK_PLL_DENOMINATOR UINT32_C(1000000)
+/* Nominal membership can settle before the receiver's physical-rate estimate.
+ * A supported candidate needs both the count and this bounded one-second span
+ * before its target is safe to apply to the 512-frame transmit ring. */
+#define AIUS_CLOCK_ACCEPT_SAMPLES UINT32_C(8)
+#define AIUS_CLOCK_ACCEPT_STABLE_MS UINT32_C(1000)
+#define AIUS_CLOCK_ACCEPT_SPAN_MILLIHZ UINT32_C(1000)
 #define AIUS_CLOCK_STCSCL_RATE_44100 UINT32_C(0x00000000)
 #define AIUS_CLOCK_STCSCL_RATE_48000 UINT32_C(0x00400000)
 #define AIUS_CLOCK_STCSCL_RATE_32000 UINT32_C(0x00c00000)
@@ -43,6 +49,9 @@ typedef struct {
 	uint32_t candidate_nominal_hz;
 	uint32_t candidate_count;
 	uint64_t candidate_sum_millihz;
+	uint32_t candidate_start_ms;
+	uint32_t candidate_min_millihz;
+	uint32_t candidate_max_millihz;
 	uint32_t last_nominal_accept_ms;
 	uint32_t last_target_request_ms;
 	uint32_t window_start_ms;

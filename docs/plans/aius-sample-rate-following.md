@@ -168,8 +168,11 @@ millihertz preserves that information instead of rounding it to the existing
 ### Detection
 
 - Snap to the nearest of `{32000, 44100, 48000}` within ±2%.
-- Require eight consecutive locked samples with the same nominal result.
-  At the current approximately 115 epoch/s this is about 70 ms.
+- Require at least eight consecutive locked samples with the same nominal
+  result and, for a supported rate, a complete 1,000 ms interval whose physical
+  measurements span no more than 1,000 millihertz. A wider span restarts the
+  supported candidate at the newest sample. Count-only debounce remains for an
+  unsupported episode.
 - On the **first** locked sample that snaps to a different nominal rate, or
   cannot snap to a supported rate, immediately set `carrier_ready = false` and
   request physical quiescence. Debounce delays acceptance and apply; it never
@@ -183,12 +186,28 @@ millihertz preserves that information instead of rounding it to the existing
 - Unsupported locked samples form their own debounced episode and never open
   the transmit gate.
 
+Candidate stability may outlive every bounded audio ring. While a live
+supported candidate is unaccepted, the AUDIO producer releases incoming
+`AudioStream` blocks without publishing them and without recording a gap. The
+first locked changed/unsupported-rate sample closes the physical and producer
+gates and requests one audio reset; acceptance of that same nominal consumes the
+reset credit instead of resetting classification twice. Carrier loss does not
+claim that credit: the existing debounced relock/replay paths remain its sole
+reset owners. Producer ingress reopens only after the desired plan and its
+dark-transition boundary are complete. A same-nominal structural replan closes
+only the physical gate and continues buffering live input, because it preserves
+decoder generation. A persistent clock-apply fault also closes producer
+admission and owns one coalesced audio reset for the fault episode (or consumes
+the reset already requested by nominal acceptance) before recovery can reopen
+it. Replay ingress is independent of this live-only latch.
+
 The tracker returns decisions; it never writes a register. Golden tests cover
 lock flap, unsupported input, all three rates, the ±2% boundary, integer wrap,
 one-second rate limiting, millihertz averaging and trim hysteresis.
 The in-lock 48→44.1 and supported→unsupported goldens prove readiness falls on
-sample 1 and cannot return before sample 8 plus successful plan apply/reset and
-new stream-rate agreement.
+sample 1. A supported rate cannot return before the one-second stable interval
+plus successful plan apply/reset and new stream-rate agreement; unsupported
+reporting retains the eight-sample boundary.
 
 Every definition in `lib/aius_clock/src` is `FLASHMEM` on the Teensy build and
 empty-annotated on the host, following the existing portable-C cold-library
@@ -570,6 +589,21 @@ live optical transmit or channel status is fixed at 48 kHz.
    affected run to be bounded by the exact 512-frame hold. Correlate the capture with
    `trim_updates` and `invalid_windows`; do not infer mute behavior from
    `VALCTRL` alone.
+
+### Device evidence in progress
+
+- Exact image `0a6f3a6f3480+teensy41-optical` passed the 48 kHz asynchronous
+  gate for 600.000 seconds: ingress slope 0.005207 words/s, maximum follow error
+  122 millihertz, and every harmful counter delta zero.
+- Its first 44.1 kHz run failed: the initially accepted physical estimate was
+  44,477,836 millihertz before settling to 44,105,350, so the ten-second trim
+  delay drained 640 TX frames. The returned capture contained 29 128-frame zero
+  runs, one 372-frame zero run and 16 discontinuity events. This is the
+  reproduced reason supported acquisition now requires a stable one-second
+  physical-rate interval and quiesces producer ingress while waiting.
+- The 44.1 kHz gate remains failed until the corrected exact image passes a new
+  120-second run and returned-capture validation. The failed evidence is
+  retained under the session scratch directory and is not acceptance evidence.
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same
