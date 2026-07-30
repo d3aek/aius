@@ -671,6 +671,18 @@ live optical transmit or channel status is fixed at 48 kHz.
   return remained connected, so this window does not yet distinguish CM6206
   USB playback/S/PDIF transmit or upstream USB OUT transport from an internal
   interaction with its locked S/PDIF input.
+- Repeating that playback-only recorder window with the Teensy optical output
+  physically disconnected from the CM6206 input reproduced one right-channel
+  impulse, `-54 → -8188 → 62`, at 21.628 seconds. CM USB capture remained
+  closed; the exact image again recorded 972,288 frames with transparent DSP,
+  zero recorder gaps and every tracked harmful counter delta zero. DSP semantic
+  configuration was restored and the recorder was left running. Raw artifacts
+  are under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/cm6206-playback-one-fibre/`.
+  Neither USB full-duplex operation nor a locked physical S/PDIF return is
+  required. The remaining fault surface is the CM6206 USB playback/S/PDIF
+  transmit path or the upstream USB OUT transport through
+  snd-usb-audio/xHCI, Renesas, Icron and virtualization.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
@@ -692,10 +704,11 @@ The hypervisor restart is an explicit investigation boundary. Resume in this
 order:
 
 Steps 1, 2 and 4 are complete. The clean external-source capture means step 3
-was not triggered. Before step 5, disconnect the Teensy optical output from the
-CM6206 input while leaving CM6206 output connected to Teensy input, then repeat
-the playback-only recorder window. That one-fibre test decides whether the
-locked physical return is part of the corruption mechanism.
+was not triggered. The one-fibre playback-only test also reproduced corruption,
+excluding the physical return and simultaneous USB capture. Before step 5,
+repeat the same CM6206-output-to-Teensy recorder window with the CM6206 attached
+to a direct, non-Icron USB host path. That decides the remaining CM6206
+playback/transmit versus upstream USB OUT transport boundary.
 
 1. Confirm the Renesas controller remains exclusively passed through, the
    CM6206 enumerates as `0d8c:0102`, ALSA exposes one playback/capture device,
