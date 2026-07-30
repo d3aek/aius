@@ -575,7 +575,12 @@ live optical transmit or channel status is fixed at 48 kHz.
 4. **Rate transitions.** Exercise 48→44.1→32→48 and carrier loss→48 kHz replay.
    Each accepted transition emits one event, increments one rate change, resets
    classification once, crosses no old-rate output and returns to continuous
-   progress without a reset.
+   progress without a device reset. A transient unsupported physical estimate
+   and TX-ring drain are permitted only inside the corresponding closed-gate
+   transition window. Every unsupported-episode increment must match one
+   rate-unsupported event whose measured-rate detail is outside every supported
+   ±2% band. An open-gate underrun, an unsupported episode outside a live-rate
+   transition or any event overflow still fails the gate.
 5. **Encoded non-48 input.** Exercise at least one 44.1 kHz DTS or AC-3 fixture
    through the CM6206. Require carrier, decoder and output nominal rates agree
    and no mismatch/refusal count.
@@ -709,6 +714,30 @@ live optical transmit or channel status is fixed at 48 kHz.
   `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/ac3-negative-48-carrier-441-header/`.
   Passing exact-image evidence is under
   `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/ac3-negative-refusal-014777559/`.
+- Exact image `01477755955b+teensy41-optical` then completed a 120.000-second
+  44.1 kHz AC-3 firmware bracket with maximum carrier/output follow error of
+  one millihertz, 15,774 committed output blocks and zero ingress drop, output
+  drop, AU abandon, reset, service/runtime overrun, clock fault, allocation or
+  watchdog delta. It does not pass the encoded gate: CM6206 source corruption
+  caused 12 parse rejects, 271 decode rejects and 880,000 consequent TX
+  underrun frames. Raw evidence is under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/ac3-44100-current-120s/`.
+- A fixed-wiring transition subset on that same long-lived boot observed the
+  accepted sequence 48→44.1→48 kHz. Both live transitions emitted exactly one
+  rate-change event and requested exactly one classification reset. Each
+  closed the physical gate, reported three transient unsupported physical
+  estimates outside the supported bands, then reopened at the new rate.
+  Of 127,616 TX underrun frames, 127,488 occurred in those dark windows; one
+  separate 128-frame underrun occurred at 11.719 seconds between two open-gate
+  48 kHz samples after the TX level had reached zero. No ingress/drop/abandon,
+  parser/decoder, service/runtime, clock-fault, reset or watchdog counter
+  advanced. The run remains diagnostic rather than acceptance evidence: it
+  omitted 32 kHz and replay, had no external old-rate waveform observation and
+  its already-full lifetime event ring recorded eight overwrites. The
+  transition analyzer now attributes the deliberately dark effects explicitly
+  while retaining hard failures for the open-gate underrun and event overflow.
+  Raw evidence is under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/rate-transition-48-441-48/`.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
@@ -775,11 +804,13 @@ pending when source corruption cannot be correlated at the raw input plane.
 4. Restore the CM6206→Teensy→CM6206 loop only after the capture-side
    discriminator. Reconfirm exact image
    `d009092556a3+teensy41-optical` before continuing acceptance.
-5. Finish device gates in dependency order: 44.1 kHz encoded AC-3, deliberate
-   carrier/header mismatch, external 32 kHz PCM, the
-   48→44.1→32→48 plus loss→replay transitions, then the exact trim-boundary
-   waveform. Gate 7 must use a measurement path that the discriminator has
-   shown does not independently create discontinuities.
+5. The deliberate carrier/header mismatch gate passes. The 44.1 kHz encoded
+   AC-3 run is firmware-stable but remains failed by characterized CM6206 source
+   corruption. Finish external 32 kHz PCM, the 48→44.1→32→48 plus loss→replay
+   transitions on a fresh event ring, then the exact trim-boundary waveform.
+   Repeat encoded AC-3 with a source path that does not corrupt words. Gate 7
+   must use a measurement path that the discriminator has shown does not
+   independently create discontinuities.
 6. Once all seven sample-rate gates pass, update this plan and the authoritative
    signal-path references, commit that device-evidence boundary, then begin
    `aius-e2e-latency.md`. The four-hour AC-3 gate remains deferred until the OTA

@@ -74,6 +74,84 @@ def sample(elapsed, **status_args):
     return {"elapsed_s": elapsed, "status": make_status(**status_args)}
 
 
+def transition_fixture():
+    samples = []
+    events = []
+    output_blocks = 0
+    changes = 0
+    resets = 0
+    unsupported = 0
+    underruns = 0
+    elapsed = 0
+    phases = [
+        (48000, False),
+        (44100, False),
+        (32000, False),
+        (48000, False),
+        (48000, True),
+    ]
+    unsupported_details = (40000, 42000, 46000)
+    for phase_index, (rate, replay) in enumerate(phases):
+        if phase_index:
+            if phase_index <= 3:
+                unsupported += 1
+                events.append({
+                    "sequence": len(events) + 1,
+                    "uptime_ms": elapsed * 1000,
+                    "type": 12,
+                    "state": 3,
+                    "detail": unsupported_details[phase_index - 1],
+                })
+            underruns += 128
+            dark = sample(
+                elapsed, rate=phases[phase_index - 1][0],
+                output_blocks=output_blocks)
+            dark["status"]["tx_gate"]["open"] = 0
+            dark["status"]["clock"].update({
+                "carrier_ready": False,
+                "state": "unsupported" if phase_index <= 3 else "unlocked",
+                "unsupported_episodes": unsupported,
+                "tx_underrun_frames": underruns,
+                "rate_changes": changes,
+            })
+            dark["status"]["audio_diag"][
+                "service_requested_resets"] = resets
+            samples.append(dark)
+            elapsed += 1
+            resets += 1
+            if phase_index <= 3:
+                changes += 1
+                events.append({
+                    "sequence": len(events) + 1,
+                    "uptime_ms": elapsed * 1000,
+                    "type": 11,
+                    "state": 3,
+                    "detail": rate,
+                })
+        for _ in range(2):
+            output_blocks += 1
+            entry = sample(
+                elapsed, rate=rate, output_blocks=output_blocks)
+            entry["status"]["clock"].update({
+                "rate_changes": changes,
+                "unsupported_episodes": unsupported,
+                "tx_underrun_frames": underruns,
+            })
+            entry["status"]["audio_diag"][
+                "service_requested_resets"] = resets
+            if replay:
+                entry["status"]["clock"].update({
+                    "carrier_locked": False,
+                    "carrier_ready": False,
+                    "output_rate_millihz": 48000000,
+                    "master": "output",
+                    "state": "replay",
+                })
+            samples.append(entry)
+            elapsed += 1
+    return samples, events
+
+
 def analyze_48(samples, **options):
     configured = {
         "minimum_duration_s": 0,
@@ -258,38 +336,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(encoded["verdict"], "pass")
 
     def test_transition_sequence_events_resets_and_progress(self):
-        samples = []
-        output_blocks = 0
-        phases = [
-            (48000, 0, 0, False),
-            (44100, 1, 1, False),
-            (32000, 2, 2, False),
-            (48000, 3, 3, False),
-            (48000, 3, 4, True),
-        ]
-        elapsed = 0
-        for rate, changes, resets, replay in phases:
-            for _ in range(2):
-                output_blocks += 1
-                entry = sample(
-                    elapsed, rate=rate, output_blocks=output_blocks)
-                entry["status"]["clock"]["rate_changes"] = changes
-                entry["status"]["audio_diag"]["service_requested_resets"] = resets
-                if replay:
-                    entry["status"]["clock"].update({
-                        "carrier_locked": False,
-                        "carrier_ready": False,
-                        "output_rate_millihz": 48000000,
-                        "master": "output",
-                        "state": "replay",
-                    })
-                samples.append(entry)
-                elapsed += 1
-        events = [
-            {"sequence": index + 1, "uptime_ms": index * 1000,
-             "type": 11, "state": 3, "detail": detail}
-            for index, detail in enumerate((44100, 32000, 48000))
-        ]
+        samples, events = transition_fixture()
         result = BENCH.analyze_samples(samples, events, "transitions", {
             "minimum_duration_s": 0,
             "settle_s": 0,
@@ -299,6 +346,89 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "pass")
         self.assertEqual(
             result["metrics"]["transition_reset_deltas"], [1, 1, 1, 1])
+        self.assertEqual(
+            result["metrics"]["counter_deltas"][
+                "clock.tx_underrun_frames"], 512)
+        self.assertEqual(
+            result["metrics"]["counter_deltas"][
+                "clock.unsupported_episodes"], 3)
+
+    def test_transition_rejects_open_gate_underrun(self):
+        samples, events = transition_fixture()
+        for entry in samples[4:]:
+            entry["status"]["clock"]["tx_underrun_frames"] += 64
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": 0})
+        self.assertIn(
+            "transition-open-gate-underrun",
+            {failure["code"] for failure in result["failures"]})
+
+    def test_transition_rejects_open_gate_unsupported_episode(self):
+        samples, events = transition_fixture()
+        for entry in samples[4:]:
+            entry["status"]["clock"]["unsupported_episodes"] += 1
+        events.append({
+            "sequence": len(events) + 1,
+            "uptime_ms": 4000,
+            "type": 12,
+            "state": 3,
+            "detail": 40000,
+        })
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": 0})
+        self.assertIn(
+            "transition-open-gate-unsupported",
+            {failure["code"] for failure in result["failures"]})
+
+    def test_transition_rejects_unsupported_event_mismatch(self):
+        samples, events = transition_fixture()
+        events = [
+            event for event in events
+            if not (event["type"] == 12 and event["detail"] == 42000)
+        ]
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": 0})
+        self.assertIn(
+            "unsupported-event-count",
+            {failure["code"] for failure in result["failures"]})
+
+    def test_transition_rejects_supported_unsupported_event_detail(self):
+        samples, events = transition_fixture()
+        next(event for event in events if event["type"] == 12)[
+            "detail"] = 44100
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": 0})
+        self.assertIn(
+            "unsupported-event-detail",
+            {failure["code"] for failure in result["failures"]})
+
+    def test_transition_rejects_unmeasured_external_capture(self):
+        samples, events = transition_fixture()
+        result = BENCH.analyze_samples(samples, events, "transitions", {
+            "minimum_duration_s": 0,
+            "settle_s": 0,
+            "phase_samples": 2,
+            "max_follow_error_millihz": 1000,
+        }, {"old_rate_output_frames": None})
+        codes = {failure["code"] for failure in result["failures"]}
+        self.assertIn("external-observation", codes)
+        self.assertNotIn("old-rate-output", codes)
 
     def test_waveform_requires_exact_capture_correlation(self):
         samples = [

@@ -348,7 +348,8 @@ def stable_phase_labels(samples, minimum_samples, max_follow_error_millihz):
 
 def check_common(samples, failures, metrics, allow_clock_mismatch=False,
                  allow_generation_change=False,
-                 allow_dark_tx_underrun=False):
+                 allow_dark_tx_underrun=False,
+                 allow_unsupported_episodes=False):
     deltas = {}
     for path in COMMON_HARMFUL_COUNTERS:
         deltas[path] = accumulated_delta(samples, path)
@@ -371,7 +372,9 @@ def check_common(samples, failures, metrics, allow_clock_mismatch=False,
             "clock.unsupported_episodes"):
         deltas[path] = accumulated_delta(samples, path)
         if deltas[path] and not (allow_clock_mismatch and
-                                 path == "clock.mismatch_blocks"):
+                                 path == "clock.mismatch_blocks") and not (
+                                     allow_unsupported_episodes and
+                                     path == "clock.unsupported_episodes"):
             add_failure(failures, "clock-refusal",
                         f"{path} advanced by {deltas[path]}")
     if samples[0]["status"]["boot_generation"] != \
@@ -384,6 +387,98 @@ def check_common(samples, failures, metrics, allow_clock_mismatch=False,
         add_failure(failures, "watchdog-reset",
                     f"watchdog_early_resets advanced by {early}")
     metrics["counter_deltas"] = deltas
+
+
+def counter_advance_intervals(samples, path):
+    intervals = []
+    for index in range(1, len(samples)):
+        before = dotted_get(samples[index - 1]["status"], path)
+        after = dotted_get(samples[index]["status"], path)
+        delta = unsigned_delta(before, after)
+        if delta:
+            intervals.append({
+                "from_index": index - 1,
+                "to_index": index,
+                "from_elapsed_s": samples[index - 1]["elapsed_s"],
+                "to_elapsed_s": samples[index]["elapsed_s"],
+                "delta": delta,
+                "from_gate_open": bool(
+                    samples[index - 1]["status"]["tx_gate"]["open"]),
+                "to_gate_open": bool(
+                    samples[index]["status"]["tx_gate"]["open"]),
+            })
+    return intervals
+
+
+def interval_in_transition_window(interval, windows):
+    return any(
+        start <= interval["from_index"] and interval["to_index"] <= end
+        for start, end in windows
+    )
+
+
+def check_transition_dark_effects(samples, events, indexes, failures, metrics):
+    transition_windows = [
+        (indexes[index - 1][1], indexes[index][0])
+        for index in range(1, len(indexes))
+    ]
+    live_windows = transition_windows[:3]
+    metrics["transition_windows"] = transition_windows
+
+    underruns = counter_advance_intervals(
+        samples, "clock.tx_underrun_frames")
+    metrics["transition_tx_underrun_intervals"] = underruns
+    for interval in underruns:
+        if interval["from_gate_open"] and interval["to_gate_open"]:
+            add_failure(
+                failures, "transition-open-gate-underrun",
+                "tx_underrun_frames advanced between two open-gate samples")
+        elif not interval_in_transition_window(interval, transition_windows):
+            add_failure(
+                failures, "transition-unattributed-underrun",
+                "tx_underrun_frames advanced outside an observed transition")
+
+    unsupported = counter_advance_intervals(
+        samples, "clock.unsupported_episodes")
+    metrics["transition_unsupported_intervals"] = unsupported
+    for interval in unsupported:
+        if interval["from_gate_open"] and interval["to_gate_open"]:
+            add_failure(
+                failures, "transition-open-gate-unsupported",
+                "unsupported_episodes advanced between two open-gate samples")
+        elif not interval_in_transition_window(interval, live_windows):
+            add_failure(
+                failures, "transition-unattributed-unsupported",
+                "unsupported_episodes advanced outside a live-rate transition")
+
+    unsupported_delta = accumulated_delta(
+        samples, "clock.unsupported_episodes")
+    unsupported_events = [
+        event for event in events if event["type"] == 12
+    ]
+    details = [event["detail"] for event in unsupported_events]
+    metrics["unsupported_event_details"] = details
+    if len(unsupported_events) != unsupported_delta:
+        add_failure(
+            failures, "unsupported-event-count",
+            f"unsupported event count {len(unsupported_events)} does not match "
+            f"unsupported_episodes delta {unsupported_delta}")
+    supported_details = [
+        detail for detail in details
+        if any(
+            lower <= detail * 1000 <= upper
+            for lower, upper in (
+                (31360000, 32640000),
+                (43218000, 44982000),
+                (47040000, 48960000),
+            )
+        )
+    ]
+    if supported_details:
+        add_failure(
+            failures, "unsupported-event-detail",
+            f"unsupported events reported supported-rate details "
+            f"{supported_details}")
 
 
 def check_live_rate(samples, rate_hz, settle_s, max_follow_error_millihz,
@@ -543,8 +638,11 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
 
     allow_mismatch = scenario == "negative"
     allow_generation = scenario == "transitions"
+    allow_transition_effects = scenario == "transitions"
     check_common(samples, failures, metrics, allow_mismatch, allow_generation,
-                 allow_dark_tx_underrun=allow_mismatch)
+                 allow_dark_tx_underrun=(
+                     allow_mismatch or allow_transition_effects),
+                 allow_unsupported_episodes=allow_transition_effects)
     trim_delta = accumulated_delta(samples, "clock.trim_updates")
     invalid_delta = accumulated_delta(samples, "clock.invalid_windows")
     metrics["trim_updates_delta"] = trim_delta
@@ -653,6 +751,8 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
             samples, minimum_samples, follow_bound)
         metrics["observed_phase_sequence"] = labels
         expected = ["48000", "44100", "32000", "48000", "replay"]
+        check_transition_dark_effects(
+            samples, events, indexes, failures, metrics)
         if labels != expected:
             add_failure(failures, "transition-sequence",
                         f"observed {labels}, expected {expected}")
@@ -706,9 +806,17 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
             add_failure(failures, "rate-change-events",
                         f"rate events {event_details}, expected {live_transitions}")
         if isinstance(external, dict):
-            if external.get("old_rate_output_frames") != 0:
+            old_rate_frames = external.get("old_rate_output_frames")
+            if (isinstance(old_rate_frames, bool) or
+                    not isinstance(old_rate_frames, int) or
+                    old_rate_frames < 0):
+                add_failure(
+                    failures, "external-observation",
+                    "old_rate_output_frames must be an unsigned integer")
+            elif old_rate_frames != 0:
                 add_failure(failures, "old-rate-output",
-                            "external capture observed old-rate output")
+                            f"external capture observed {old_rate_frames} "
+                            "old-rate output frames")
         else:
             add_failure(failures, "external-observation",
                         "transitions requires old_rate_output_frames capture evidence")
