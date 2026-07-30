@@ -699,9 +699,16 @@ live optical transmit or channel status is fixed at 48 kHz.
   The negative analyzer separately permits TX underruns while the documented
   pad-mux gate is intentionally dark. Pipeline, audio-service, codec-contract,
   rate-runner and optical-cutover host proof and the production cross-build
-  pass; exact-image device proof remains pending. Raw pre-repair evidence is
-  under
+  pass. Exact image `01477755955b+teensy41-optical` then passed the repeated
+  30-second negative control: all 31 samples remained encoded AC-3 type 1 with
+  the physical gate closed; 5,628 mismatched blocks were counted, zero output
+  blocks committed, and output drops, AU abandons, parser/decode rejects,
+  ingress resets, service/runtime faults, event overflows and watchdog resets
+  all had zero deltas. The declared dark-pad TX drain advanced 1,440,512
+  frames. Raw pre-repair evidence is under
   `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/ac3-negative-48-carrier-441-header/`.
+  Passing exact-image evidence is under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/ac3-negative-refusal-014777559/`.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
