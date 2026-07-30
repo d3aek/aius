@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
-updated: 2026-07-29
+updated: 2026-07-30
 toc: true
 ---
 
@@ -76,11 +76,48 @@ sequenced after.
   grow the arena or swap to a single resident decoder at class time.~~
   **RESOLVED by the phase 2 contract, and the answer reversed: they DO
   fit.** The 90,464 B measurement was almost entirely adapter overhead, not
-  liba52; phase 2a takes AC-3 to ~27 KB, giving ~127,504 against 131,072
+  liba52; current HEAD measures AC-3 at 27,024 B, giving ~127,552 against
+  131,072
   (including the ~5.2 KB pipeline instance) with both decoders resident. Neither growing the arena nor swapping is
   needed — and both were investigated and rejected on their own merits.
   See [§Phase 2 contract](#phase-2-contract-2026-07-28--decode-off-the-isr-and-the-footprint-that-makes-it-fit).
-  This risk is closed.
+  The design branch is closed. A 2026-07-30 audit found that the target
+  evidence had exercised each codec on different images rather than forcing
+  both lazy decoder allocations in one boot. The same-boot check below now
+  closes that residual gate at 122,448 / 131,072 B.
+
+## Current HEAD contract (2026-07-30)
+
+This section supersedes contrary phase-local statements retained below as
+historical implementation evidence:
+
+- AC-3 accepts **32,000, 44,100 and 48,000 Hz**. The access-unit rate is
+  retained across all six emitted blocks; other decoder rates return
+  `AIUS_UNSUPPORTED`. A valid supported-rate block may separately be refused
+  by the sink when its current output plan cannot accept that rate.
+- The native oracle retains the original four exact hashes and adds
+  `stereo_tones_44100 = 6c4d818cf8d0b821` and
+  `stereo_tones_32000 = d82ce8a9bbabf841`.
+- The bounded reader consumes the exact validated byte span. A final partial
+  reader word is zero-padded, so correctness no longer depends on an AC-3
+  frame length being divisible by four.
+- Current host AC-3 arena high-water is **27,024 B**. The conservative
+  pre-target combined-residency prediction was **127,552 / 131,072 B**,
+  leaving **3,520 B**:
+  27,024 AC-3 + 62,560 DTS + 32,768 DSP staging + about 5,200 for the
+  pipeline instance. The current target image has now exercised both codecs
+  in one boot and measured **122,448 / 131,072 B**, leaving **8,624 B**,
+  with both steady-state allocation counts zero.
+- The 2026-07-30 shared-enum regression in both decoder fuzz arms is repaired:
+  `AIUS_REFUSED` remains invalid at the decoder-facing seam, and `a52-fuzz`
+  plus `dts-fuzz` each pass 50,000 iterations at current HEAD.
+- Current e2e work runs image `01477755955b+teensy41-optical`, not phase 4's
+  `bc05232880a5+teensy41-optical`; its evidence is recorded separately in
+  `aius-e2e-latency.md`. It does not retroactively reconfirm the older image.
+- The four-hour live-TV gate still waits for the sample-rate-following plan's
+  own delivery evidence and the OTA verdict. During that gate the TV must
+  remain on AC-3 / Dolby Digital output: E-AC-3 type 21 is still refused and
+  defect 34 remains a full-scale-noise hazard.
 
 ## Phases (each gated per house protocol)
 
@@ -97,8 +134,9 @@ sequenced after.
 4. ~~Bounded target integration: arena measurement, cycle meters, exact-image
    flash, SD replay, CM6206 optical input, and committed-wire channel
    identity.~~ **DONE 2026-07-29.** The remaining mission test is the
-   four-hour live-TV run plus by-ear dialogue validation, deliberately
-   scheduled after the OTA investigation verdict.
+   four-hour live-TV run plus by-ear dialogue validation after the OTA
+   investigation verdict. The audit-discovered same-boot mixed-codec
+   residency gap was closed on 2026-07-30.
 
 `doc-index --validate-outstanding-work` cannot validate this plan because
 document discovery does not yet index `src/hardware/**/docs`; it reports
@@ -116,7 +154,7 @@ is therefore recorded manually below, using the same canonical grammar.
 - `docs/plans/aius-optical-prototype.md` — `coordinate`: Slice 2b moves the measurement and flight-recorder block producer from audio-ISR to epoch context without changing their committed-wire tap; phase 4's card replay and live-TV checks extend the existing optical validation without replacing its broader prototype gates.
 - `docs/plans/aius-ota-upgrade.md` — `coordinate`: AC-3 adds no update format, rollback state, or OTA transport surface, but the owner has deliberately scheduled its four-hour live-TV and by-ear gates after the OTA investigation verdict.
 - `docs/plans/aius-replay-manager.md` — `coordinate`: Slice 2b preserves replay's audio-ISR consumer, exact 256-word pop cadence, short-pop underrun semantics, and epoch refill ownership; only the pop destination changes from synchronous decode to the ingress ring. Phase 4 adds AC-3 IEC fixtures through the same transport.
-- `docs/plans/aius-sample-rate-following.md` — `coordinate`: AC-3 remains 48 kHz-only. Slice 2b's 96,000-word/s ingress and 187.5-block/s service arithmetic is explicitly 48 kHz-only, so later rate following must resize or derive the quotas and ring rather than inherit hidden 48 kHz constants.
+- `docs/plans/aius-sample-rate-following.md` — `coordinate`: The later rate-following work widened AC-3 to 32/44.1/48 kHz and owns transition and sink-refusal behaviour. Slice 2b's 96,000-word/s ingress and 187.5-block/s service arithmetic is retained below as the 48 kHz worst-case sizing proof, not as a current rate restriction.
 - `docs/plans/aius-sd-config-web.md` — `coordinate`: Phase 3 edits the shared status UI and must preserve the shipped dashboard and SD-served page contracts.
 - `docs/plans/aius-tls-termination.md` — `coordinate`: TLS is parked, but its future epoch-latency budget must consume phase 4's measured decode cost rather than its current DTS-only assumption.
 
@@ -580,13 +618,14 @@ genuinely chains CRC1 and CRC2.
 `aius_a52_decode_access_unit` called the new `a52_bitstream_set_end` declared
 in guarded `a52.h`; Step 3 now makes the same call in
 `aius_a52_begin_access_unit`. It runs after `a52_syncinfo` validates the exact
-payload length and 48 kHz rate and immediately before `a52_frame`.
+payload length and a supported 32/44.1/48 kHz rate and immediately before
+`a52_frame`.
 `a52_bitstream_set_ptr` does not clear the end. F3c reuses this already
-validated frame length for CRC. The byte-exact bound relies on a
-**48 kHz-only
-invariant** — `set_ptr` aligns down, and 48 kHz frame sizes are always a
-multiple of 4 — so relaxing the rate guard later would make the bound off by
-up to 3 bytes.
+validated frame length for CRC. **Historical F3a premise, superseded by the
+current HEAD contract:** this initially relied on 48 kHz frame sizes being
+divisible by four. The rate-following work made the reader's final partial
+word explicit and zero-padded, so the exact byte end remains sound at
+32/44.1/48 kHz without stale-tail exposure.
 
 **F3c delivered proof:** `a52_frame` validates CRC1, CRC2, and their chained
 zero-residue before header or bitstream parsing, after rejecting NULL,
@@ -688,9 +727,11 @@ Host-only; no target build changes. Owned paths: `firmware/vendor/a52-core/`,
   on a syncinfo-accepted buffer — `a52_frame` re-derives header fields with
   no bsid guard (`halfrate[buf[5] >> 3]` indexes out of bounds for
   bsid ≥ 12), so syncinfo's acceptance is the bounds check (gate F7).
-  Length mismatch → `AIUS_MALFORMED`; sample rate ≠ 48 kHz →
-  `AIUS_UNSUPPORTED`. Then `a52_frame` + 6 × `a52_block` produce 1536
-  frames.
+  Length mismatch → `AIUS_MALFORMED`; 32/44.1/48 kHz are accepted and
+  retained across all six blocks; any other decoder rate returns
+  `AIUS_UNSUPPORTED`. A valid block can separately receive `AIUS_REFUSED`
+  from the sink without advancing DSP state. Then `a52_frame` + 6 ×
+  `a52_block` produce 1536 frames.
 - **Phase-1 baseline, superseded by F3a: the decode buffer is a padded
   scratch, not the parser's AU** (gate F1, the load-bearing finding):
   liba52's bit reader was UNBOUNDED — no end
@@ -1432,8 +1473,10 @@ the real `aius_runtime_teensy_epoch`; `runtime_epoch_max_us` and
 any overrun during steady state.
 
 At the derived 40 epochs/s floor, ingress capacity is 163,840 words/s, 70.7%
-over the 96,000-word/s source, and eight output steps supply 320 blocks/s against
-AC-3's 187.5. The controller may stop early on its 8 ms wall budget, so the AC-3
+over the worst-case supported 48 kHz source's 96,000 words/s, and eight output
+steps supply 320 blocks/s against AC-3's worst-case 187.5 blocks/s. Lower
+supported rates consume less ingress and service capacity. The controller may
+stop early on its 8 ms wall budget, so the AC-3
 target gate must additionally prove at least six service steps fit in 8 ms and
 that long-run committed output stays at 187.5 blocks/s without ingress growth;
 the numeric maximum alone is not credited as throughput. `begin` plus block 0
@@ -1742,16 +1785,16 @@ assume:
   `frmsizecod`), so `payload_bytes = (length_bits + 7) / 8` is already
   correct.
 - **The payload cap holds with room**: `AIUS_IEC61937_MAX_PAYLOAD` is 4,096
-  and AC-3's maximum at 48 kHz is 2,560 B (640 kbps × 32 ms). Note the
-  asymmetry with `AIUS_A52_MAX_FRAME` = 3,840, which is the spec maximum
-  across ALL sample rates; the adapter rejects non-48 kHz before decode, so
-  2,560 is the operative bound and 3,840 is the scratch's safety size.
+  and AC-3's maximum across the supported rates is 3,840 B at 32 kHz;
+  the 48 kHz maximum remains 2,560 B (640 kbps × 32 ms).
+  `AIUS_A52_MAX_FRAME` = 3,840 therefore covers the operative supported-rate
+  maximum as well as the decoder scratch safety bound.
 - **`in_scope` gates more than the return code (gate F4)**, and both effects
   must be stated rather than discovered: the `length_bits == 0` MALFORMED
   check at `aius_iec61937.c:204` is in-scope-only, so a zero-Pd AC-3 burst
   flips from UNSUPPORTED to MALFORMED; and the burst now tallies `bursts_ok`
   instead of `rejects_unsupported`. The second is the dangerous one — **an
-  AC-3 stream the ADAPTER refuses (non-48 kHz, unmappable mode) would show
+  AC-3 stream the ADAPTER refuses (unsupported rate or unmappable mode) would show
   `bursts_ok` climbing while the box sits silent, with no reject counter
   anywhere.** Phase 3 therefore adds a decode-reject tally to
   `pipeline_diag` beside the codec field below.
@@ -1759,9 +1802,9 @@ assume:
 ### Dispatch
 
 The pipeline holds both decoders, created together at
-`aius_pipeline_create_arena` (this is where phase 2a's residency arithmetic
-lands: 62,560 + 32,768 + ~26,976 + the ~5,200 B pipeline instance ≈ 127,504
-of 131,072). The deferred ingress burst completion routes on
+`aius_pipeline_create_arena` (the current residency arithmetic is
+62,560 + 32,768 + 27,024 + the ~5,200 B pipeline instance ≈ 127,552 of
+131,072). The deferred ingress burst completion routes on
 `AiusBurst.data_type`:
 11/12/13 to `aius_dts`, **1 to `aius_a52`**, everything else skipped exactly
 as today. The class stays `AIUS_PIPELINE_DTS` — "non-linear bitstream" — with
@@ -2229,6 +2272,29 @@ and build timestamp.
   and centre/LFE matching is inside 0.5 dB. This proves all six AC-3 identities
   through decode, layout-aware DSP and committed transmit words without using
   the reverse optical fibre as an oracle.
+
+### Post-phase audit closure (2026-07-30)
+
+An audit of current HEAD found two gaps that did not invalidate the historical
+phase evidence but did block calling the current image gated:
+
+- Both decoder fuzz arms failed to compile after `AIUS_REFUSED` joined the
+  shared status enum. Their exhaustive switches now handle the value while
+  deliberately keeping it invalid at the decoder-facing seam. `a52-fuzz` and
+  `dts-fuzz` each pass 50,000 iterations.
+- Production image `01477755955b+teensy41-optical`, boot generation 2, decoded
+  AC-3 throughout the long latency work and then decoded the existing
+  `channel_id_51.iec` DTS fixture for 30 seconds through the CM6206 optical
+  input without rebooting. The CM6206's persistent carrier correctly prevented
+  an SD-replay start, but transport does not affect the same arena-backed lazy
+  decoder allocations this gate measures. DTS added 2,812 accepted bursts and
+  2,812 decode units. Shared arena high-water rose from 77,688 B to
+  **122,448 / 131,072 B**, leaving **8,624 B**. `create_status == AIUS_OK`,
+  both codec cycle meters were nonzero, both codec allocation counts remained
+  zero, and decode rejects, parser rejects and resyncs did not advance.
+
+The target result is lower than the conservative 127,552 B host sum and closes
+the mixed-codec residency stop condition with 6.6% measured arena headroom.
 
 The bounded Phase 4 gates are complete. Sample-rate following remains the
 technical clock prerequisite for the four-hour TV mission gate; the owner has

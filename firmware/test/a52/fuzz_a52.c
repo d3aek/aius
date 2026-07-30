@@ -151,6 +151,9 @@ static int status_is_typed(AiusStatus st)
     case AIUS_NO_SPACE:
     case AIUS_INVALID_ARG:
         return 1;
+    case AIUS_REFUSED:
+        /* Sink-side rate refusal must never escape the decoder API. */
+        return 0;
     }
     return 0;
 }
