@@ -658,6 +658,19 @@ live optical transmit or channel status is fixed at 48 kHz.
   This clean capture-only path localizes the direct-loop corruption to CM6206
   USB playback/S/PDIF transmit or full-duplex interaction. It does not yet
   distinguish those two cases.
+- The existing Teensy PSRAM flight recorder then reproduced the same corruption
+  with **CM6206 USB playback active and its USB capture endpoint closed**. The
+  exact `d009092556a3+teensy41-optical` image recorded 972,288 frames through
+  transparent DSP during one 22-second playback window. It found two isolated
+  one-frame impulses: left `14 → 16852 → -101` at 13.459 seconds and right
+  `-2 → -8136 → 113` at 14.971 seconds. Recorder gaps and every tracked harmful
+  counter delta were zero. The diagnostic restored DSP semantic configuration
+  and left the recorder running. Raw artifacts are under
+  `.scratch/019fb103-d707-7e01-adee-0ad1238d3115/cm6206-playback-duplex-ab/`.
+  Simultaneous USB capture is therefore not required. The physical optical
+  return remained connected, so this window does not yet distinguish CM6206
+  USB playback/S/PDIF transmit or upstream USB OUT transport from an internal
+  interaction with its locked S/PDIF input.
 - The 44.1 kHz **firmware bracket** is accepted. The overall 44.1 kHz physical
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
@@ -678,8 +691,11 @@ Raw artifacts remain under
 The hypervisor restart is an explicit investigation boundary. Resume in this
 order:
 
-Steps 1 and 2 are complete. The clean external-source capture means step 3 was
-not triggered. Resume at step 4.
+Steps 1, 2 and 4 are complete. The clean external-source capture means step 3
+was not triggered. Before step 5, disconnect the Teensy optical output from the
+CM6206 input while leaving CM6206 output connected to Teensy input, then repeat
+the playback-only recorder window. That one-fibre test decides whether the
+locked physical return is part of the corruption mechanism.
 
 1. Confirm the Renesas controller remains exclusively passed through, the
    CM6206 enumerates as `0d8c:0102`, ALSA exposes one playback/capture device,
