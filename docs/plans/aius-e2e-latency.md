@@ -130,6 +130,32 @@ that small PCM offset into latency drift; it should be handled with the
 characterized sample-rate-following symptom rather than hidden in the latency
 distribution.
 
+Matched 600.8-second production-path soaks then extended the measured code span
+to 560.832 seconds:
+
+- PCM held all 24 occurrences at exactly **842 frames / 17.542 ms** on both
+  channels. The affine ratio was 1 within floating error, residual was below
+  `1.2e-8` frame, channel skew and unequal-stereo frames were zero across the
+  complete 28.8-million-frame capture, and correlation was 1.0. It crossed 54
+  trim/invalid windows; every other harmful counter delta was zero. The
+  initial/final output-minus-carrier errors were -871 and -65 millihertz, both
+  inside the eventual follow gate.
+- AC-3 held all 24 occurrences at exactly **803 frames / 16.729 ms** on both
+  channels and every projected AU tail at **2,338 frames / 48.708 ms**.
+  The affine ratio was 1 within floating error, residual was below `1.5e-8`
+  frame, channel skew was zero and minimum per-channel correlation was
+  0.999956. It crossed 55 trim/invalid windows; every other harmful counter
+  delta, including all parser/decoder/resync counters, was zero. Its
+  initial/final output-minus-carrier errors were +51 and -1,015 millihertz,
+  with the latter missing the eventual follow gate by 15 millihertz.
+
+These remain diagnostic rather than formal acceptance because clock
+trim/invalid counters advanced and no direct-loop subtraction exists. They are
+nevertheless the strongest current lip-sync result: neither codec path showed
+one frame of latency walk, step, drift or L/R skew over more than nine minutes.
+The 39-frame difference between their fixed offsets is not attributed to codec
+cost because the runs began at different transmit-queue phases.
+
 The later
 [CM6206 playback-corruption characterization](../reference/cm6206-playback-corruption.md)
 localizes the known impulses and L/R word-phase slips to the adapter playback
@@ -416,6 +442,7 @@ delivered:
   - deterministic PCM and AC-3 exploratory generators
   - counter-clean aggregation, per-channel skew and queue-phase context
   - provisional PCM and AC-3 raw-loop distributions
+  - matched 600.8-second PCM and AC-3 drift soaks
 deferred-to-phase-1:
   - native production reference renderer
   - full manifest and signal-quality acceptance contract
