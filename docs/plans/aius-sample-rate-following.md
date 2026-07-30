@@ -713,6 +713,21 @@ live optical transmit or channel status is fixed at 48 kHz.
   waveform and trim-boundary evidence remain pending because the measurement
   path itself reproduces isolated corrupt samples without the Teensy. Do not
   weaken gate 7 or attribute a component fault from the direct-loop result.
+- A bit-structure analysis of every recorded impulse then decoded the
+  corruption class. All 35 events (the four direct-loop captures across both
+  days, both altsets and both rates, plus the three flight-recorder events)
+  damage only the high byte of one 16-bit sample: the low byte equals the
+  neighbour interpolation exactly, every event sits on a full 0x00↔0xFF
+  high-byte transition, and the flip masks are structured, top-bit-weighted
+  and repeat across runs and receivers. That is parallel-datapath corruption,
+  which excludes host software, the USB wire, the fibre and both capture
+  paths; the remaining surface is the CM6206's internal playback FIFO/clock
+  crossing (primary; the ~6.3% one-sample L/R misalignment episodes in the
+  loop returns implicate the same block) or the Icron remote buffer
+  (residual — the deferred non-Icron test still discriminates, with
+  reproduction predicted). Full characterization, evidence table, quarantine
+  fingerprint and single-unit-versus-systemic assessment:
+  [CM6206 playback corruption characterization](../reference/cm6206-playback-corruption.md).
 
 Raw artifacts remain under
 `.scratch/019fad89-9c0a-7b51-9c04-c11431d981d1/`, especially:
@@ -736,7 +751,9 @@ non-Icron host discriminator is deferred; it remains the next CM6206 diagnostic
 but no longer blocks firmware tests. Continue step 5 with strict firmware
 counters. A known isolated one-frame PCM source impulse may be counted and
 quarantined only when recorder evidence shows no gap, counter delta, lock/rate
-transition or multi-frame corruption. Encoded and exact-waveform gates remain
+transition or multi-frame corruption, and the corrupt sample fits the
+byte-lane fingerprint in
+[the CM6206 characterization](../reference/cm6206-playback-corruption.md). Encoded and exact-waveform gates remain
 pending when source corruption cannot be correlated at the raw input plane.
 
 1. Confirm the Renesas controller remains exclusively passed through, the
@@ -819,6 +836,7 @@ required component-wide disposition is recorded manually:
 
 - [Aius firmware I/O reference](../reference/firmware-io.md)
 - [Aius signal path](../reference/signal-path.md)
+- [CM6206 playback corruption characterization](../reference/cm6206-playback-corruption.md)
 - [Aius AC-3 support](aius-ac3-support.md)
 - [Aius OTA firmware upgrade](aius-ota-upgrade.md)
 - [Aius hardware specification](aius-hardware-spec.md)
