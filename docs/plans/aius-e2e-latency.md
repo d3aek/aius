@@ -808,21 +808,42 @@ status: production-rows-complete-baselines-blocked
 unit: parent-only
 depends-on: [phase-1]
 blockers:
-  - authoritative /sd/aius/dsp.json restoration artifact absent
+  - direct-loop rows await the temporary fibre rewire (operator)
 matrix:
   direct-loop-pcm: pending-temporary-rewire
   direct-loop-dts-carrier: pending-temporary-rewire
   direct-loop-ac3-carrier: pending-temporary-rewire
-  pcm-bypass: blocked-restoration-artifact
+  pcm-bypass: runner-ready-row-pending
   pcm-production: complete
   dts-production: deferred-by-priority
   ac3-production: complete
 remaining-diagnostics:
-  ac3-to-pcm-transition-latched-malformed: pending
+  ac3-to-pcm-transition-latched-malformed: clear-op-shipped-device-check-pending
 commit-checkpoint:
   evidence: [raw-captures, manifests, latency-summary]
   parent-commit: "docs(aius): record optical latency"
 ```
+
+The 2026-07-31 firmware batch (`fecc4a0a2473+teensy41-optical`, flashed and
+CDC-verified) shipped the four ledgered observability fixes: the
+`/sd/aius/dsp.json` read route, the `model_origin` split, the recorder
+stamped-rate header and the clear-op latch coverage. The restoration
+artifact the bypass row required now exists: the 676-byte card model was
+retained over the new route with SHA-256
+`9bf1e0a5b7a52ee3556f1089221fbc93c0d33b27565fd2f453f4cf98e13f20f5`, and a
+fresh boot reports `model_origin:"sd"`, confirming the card file loads.
+Image re-acceptance followed the ingress-health standard used for the
+`6f6bfa9bd651` pin advance: two independent 120-second brackets on the new
+image committed continuous output with every harmful audio counter delta
+zero and bounded 256-word/512-frame rings. The strict `pcm-48k-smoke`
+composite failed twice on the characterized CM active-clock wander (11
+trims per 120 seconds; maximum follow errors 1,107 and 3,911 millihertz,
+the latter exactly the documented idle/active family step), with 30- and
+90-second settles. No clock code changed in this delivery and the prior
+image failed the same composite in the same shape, so this is recorded as
+the standing source condition (the gate-1 decision in the register), not
+an image regression. The observed-edge preflight remains the arbiter for
+formal collection on this source.
 
 The three direct-loop calibrations share one temporary fibre rewire and run as
 one uninterrupted topology slice. The four Teensy rows use the normal full loop.
