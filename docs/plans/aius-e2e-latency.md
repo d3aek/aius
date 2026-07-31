@@ -472,7 +472,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: runtime-repair-smoke-green-clock-follow-blocked
+status: complete
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -488,8 +488,7 @@ completed-slices:
   - synchronized collector acceptance hardening
   - shared runtime adapter target-placement repair and link guard
   - exact-commit post-repair 120-second live PCM ingress smoke
-remaining-slices:
-  - exact-image sample-rate follow and invalid-window acceptance
+  - exact-image synchronized PCM and AC-3 acceptance
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -511,9 +510,8 @@ through `aius_dsp_runtime_config`, and the adapter owns all five feature bypass
 flags, accepted-rate coefficient design, state resets and meter cadence.
 Native differential tests perturb every field category, assert reset/bind
 semantics, and run two retained DSP consumers across consecutive blocks with
-byte-identical output. The Teensy target builds with zero memory delta. This
-does not close Phase 1 until the exact committed image clears the 120-second
-device smoke.
+byte-identical output. The Teensy target builds with zero memory delta. The
+exact-image smoke and synchronized acceptance rows below close the device gate.
 
 The native renderer core is delivered. It scans the exact carrier with the
 public IEC parser, then retains one production pipeline, resident decoder and
@@ -665,32 +663,52 @@ enumerated. The latency runner's independent image pin advances from the
 rejected `fb10b3cf9a3d` image to this accepted ingress-repair revision; its
 clock and counter gates remain unchanged.
 
-That closes the runtime-config ingress regression but not the plan's separate
-clock gate. The terminal carrier/output difference was -1,105 millihertz and a
-30-second settled snapshot was -1,099 millihertz, outside the 1,000-millihertz
-bound by 99 millihertz. Trim updates and invalid windows also advanced during
-that interval. This is the already-characterized sample-rate-following plateau,
-not a renewed ingress failure; Phase 1 stays open on that coordinated gate.
+That closes the runtime-config ingress regression. The smoke's terminal
+carrier/output difference was -1,105 millihertz and a 30-second settled
+snapshot was -1,099 millihertz, outside the 1,000-millihertz bound by 99
+millihertz. Trim updates and invalid windows also advanced during that long
+diagnostic interval. The synchronized runner's shorter settled brackets then
+cleared the same gate without weakening it.
+
+The formal production rows used exact firmware
+`6f6bfa9bd651+teensy41-optical` and harness
+`e44881e93d2b12e9e7688ba8add05ea0aec3b185`. Both manifests were accepted with
+24 of 24 occurrences, zero exclusions, exact 48 kHz linked ALSA geometry, both
+streams `RUNNING`, linked trigger skew below one frame and no XRUN recovery.
+
+| Production row | Raw first output | Raw AU tail | Affine residual | Minimum correlation | Minimum guard SNR | Maximum follow error |
+|---|---:|---:|---:|---:|---:|---:|
+| PCM | 971 frames / 20.229 ms | n/a | < `1.5e-11` frame | 1.0 | 71.37 dB | 594 mHz |
+| AC-3 | 831 frames / 17.313 ms | 2,366 frames / 49.292 ms | < `3.0e-11` frame | 0.9999929 | 32.47 dB | 528 mHz |
+
+Each distribution had identical min, median, p95 and max, affine ratio 1.0,
+zero channel skew and zero unequal PCM stereo frames. PCM advanced 371 output
+blocks; AC-3 advanced 720 decoded output blocks and 120 accepted IEC bursts.
+Every required audio, clock, ingress, service, parser, decoder, allocation and
+resynchronization delta was zero, including `clock.trim_updates` and
+`clock.invalid_windows`. The accepted evidence is under
+`.scratch/019fb103-d707-7e01-adee-0ad1238d3115/latency/repair-image-{pcm,ac3}-e448/`.
+These independent raw offsets must not be subtracted from each other or reported
+as decoder cost: the matching direct-loop transport baselines and controlled
+queue-phase correction remain outstanding.
 
 ### Phase 2: physical matrix and durable result
 
 ```yaml
 phase: 2
-status: pending-preflight-blocked
+status: production-rows-complete-baselines-blocked
 unit: parent-only
-depends-on: [phase-1, sample-rate-following-device-acceptance]
-preflight-blockers:
-  - exact repair image plateaus 99 millihertz outside the clock-follow bound
-  - trim and invalid-window counters still advance after the ingress repair
+depends-on: [phase-1]
+blockers:
   - authoritative /sd/aius/dsp.json restoration artifact absent
 matrix:
-  - direct-loop-pcm
-  - direct-loop-dts-carrier
-  - direct-loop-ac3-carrier
-  - pcm-bypass
-  - pcm-production
-  - dts-production
-  - ac3-production
+  direct-loop-pcm: pending-temporary-rewire
+  direct-loop-dts-carrier: pending-temporary-rewire
+  direct-loop-ac3-carrier: pending-temporary-rewire
+  pcm-bypass: blocked-restoration-artifact
+  pcm-production: complete
+  dts-production: deferred-by-priority
+  ac3-production: complete
 commit-checkpoint:
   evidence: [raw-captures, manifests, latency-summary]
   parent-commit: "docs(aius): record optical latency"
