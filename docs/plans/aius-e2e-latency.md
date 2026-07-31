@@ -461,7 +461,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: implementation-complete-device-smoke-failed
+status: implementation-complete-regression-isolated
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -476,7 +476,8 @@ completed-slices:
   - formal probe analyzer and evidence manifest
   - synchronized collector acceptance hardening
 remaining-slices:
-  - clean post-refactor 120-second 48 kHz optical device smoke
+  - repair the 30eeed071 runtime-config regression
+  - clean post-repair 120-second 48 kHz optical device smoke
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -591,11 +592,37 @@ The last sustained green physical PCM image was
 `01477755955b+teensy41-optical`. Between that revision and the failing Phase 1
 image, only `30eeed071` changes production firmware; it replaces the optical
 processor's embedded DSP state with the shared `AiusDspRuntimeConfig` adapter.
-The other five commits change host tools, tests or documentation only. This
-makes `30eeed071` the sole source-level candidate, not proof of causation. A
-historical-image A/B run of `01477755955b` and `30eeed071` on the current direct
-Renesas topology is the minimum discriminator; no historical image has been
-flashed during this investigation.
+The other five commits change host tools, tests or documentation only.
+
+An exact-image A/B on the direct Renesas topology proves that boundary. Both
+images were built from isolated detached archives, identity-checked before
+flash and observed with the same continuous 997 Hz, S16_LE, 48 kHz stereo
+source and UDP-only 120-second status protocol. The pre-refactor
+`01477755955b+teensy41-optical` image remained `pcm-active`, advanced committed
+blocks from 3,229 to 14,311, and retained zero pipeline overruns and event
+overflows. Its terminal full status reported 16,714 committed blocks and zero
+missing-live ingress drops, dropped words, gap flushes or service-generation
+resets.
+
+The exact `30eeed071d19+teensy41-optical` image started with confirmed PCM but
+lost the stream before the first soak sample at 142 seconds of boot uptime.
+Committed progress stopped at 214 blocks while the status fell to
+`waiting-for-carrier`; UDP observations alternated with timeouts as pipeline
+overruns rose from 232 to 616 and event overflows from 227 to 611. The terminal
+HTTP response was truncated by the failing device, but its received diagnostic
+fields carried the exact build identity and reported 679 missing-live ingress
+drops, 173,824 dropped words, 675 gap flushes and 675 service-generation
+resets. No HTTP request occurred during the measured window. The source was
+still continuously playing and the CM6206 remained enumerated.
+
+The accepted `fb10b3cf9a3d+teensy41-optical` image was restored and verified
+after the A/B. Interrupting the final playback after the test also left the
+directly attached CM6206 enumerated, unlike the earlier Icron-chain teardown
+failure. The regression is therefore introduced by production change
+`30eeed071`, within the embedded-to-shared DSP runtime-config refactor. The A/B
+does not yet distinguish which hunk in that refactor blocks the live
+AudioStream service; Phase 1 remains open until that implementation is repaired
+and the exact replacement image passes the smoke.
 
 ### Phase 2: physical matrix and durable result
 
@@ -605,7 +632,7 @@ status: pending-preflight-blocked
 unit: parent-only
 depends-on: [phase-1, sample-rate-following-device-acceptance]
 preflight-blockers:
-  - Phase 1 optical smoke loses PCM classification after repeated ingress resets
+  - 30eeed071 runtime-config regression loses live PCM ingress service
   - authoritative /sd/aius/dsp.json restoration artifact absent
 matrix:
   - direct-loop-pcm
