@@ -790,13 +790,28 @@ one uninterrupted topology slice. The four Teensy rows use the normal full loop.
 Each physical topology is confirmed before collection and left unchanged until
 its slice finishes.
 
+Every row measures at nominal 48 kHz. Non-48 kHz rows (44.1/32 kHz live modes,
+whose transmit-ring residence and DSP coefficients are rate-dependent, so their
+lip-sync figures are distinct) are deliberately out of scope until the
+sample-rate device gates pass; the deferral is tracked in
+[`aius-open-work-register.md`](aius-open-work-register.md).
+
 Authenticated read-only preflight on 2026-07-31 found
-`GET /sd/aius/dsp.json` returning `404 {"error":"sd_path"}`. The effective
-runtime endpoint still returned a `source:"sd"` model, while status reported
-`config_valid:0` and `config_error:"not loaded"`. No PUT or SD write was issued.
-The bypass row remains fail-closed until an explicit preparation decision
-creates an authoritative restorable SD artifact; the runtime model alone is not
-treated as proof of original-file identity.
+`GET /sd/aius/dsp.json` returning `404 {"error":"sd_path"}` while the
+effective runtime endpoint returned a `source:"sd"` model and status reported
+`config_valid:0` / `config_error:"not loaded"`. A source reading later that
+day reconciled those observations with no device self-contradiction: the 404
+is the `/sd/` download route's deliberate `/aius/www/`-only path gate, not
+evidence about the file; `config_valid`/`config_error` serialize the
+`/aius/config.json` system config, unrelated to the DSP model; and the
+enqueue-side block-boundary swap sets `source:"sd"` for any applied override
+including an HTTP PUT, so after this plan's own restoration PUTs the label
+proves nothing about `/aius/dsp.json` identity. No PUT or SD write was
+issued. The bypass row remains fail-closed until an authoritative restorable
+artifact exists. The two remediation options (a read-only authenticated
+route carve-out for `/aius/dsp.json`, or an operator-provided copy of the
+card file) and the misleading `source` label are tracked in
+[`aius-open-work-register.md`](aius-open-work-register.md).
 
 ## Outstanding-work audit
 
@@ -805,6 +820,6 @@ treated as proof of original-file identity.
 - `docs/plans/aius-eac3-support.md` — `unrelated`: The physical matrix covers PCM, AC-3 and DTS Core, not the separate E-AC-3 decoder work.
 - `docs/plans/aius-network-hardening.md` — `coordinate`: Reuse its exact-image, counter-delta and committed-wire evidence conventions without changing network behavior.
 - `docs/plans/aius-ota-upgrade.md` — `coordinate`: Preserve the deferred AC-3 four-hour gate until OTA is investigated; latency neither closes nor supersedes it.
-- `docs/plans/aius-sample-rate-following.md` — `coordinate`: Use only the exact image after all sample-rate device gates pass and consume its clock/status evidence.
+- `docs/plans/aius-sample-rate-following.md` — `coordinate`: The production rows deliberately ran ahead of the remaining sample-rate device gates by owner priority, consuming interim clock evidence through settled brackets; final acceptance still re-consumes clock/status evidence from the exact image that clears all seven gates.
 - `docs/plans/aius-sd-config-web.md` — `coordinate`: Obey its persistent DSP-file semantics and refuse mutation when exact restoration is impossible.
 - `docs/plans/aius-tls-termination.md` — `unrelated`: Latency reads existing device status over the current LAN transport and does not change TLS termination.

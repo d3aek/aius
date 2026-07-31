@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-07-29
+updated: 2026-07-31
 toc: true
 ---
 
@@ -108,7 +108,12 @@ specified here. Strike items here in the commit that closes them.
 
 - **Sample-rate following** — active production work in
   [`aius-sample-rate-following.md`](aius-sample-rate-following.md). It is the
-  technical clock prerequisite for the AC-3 four-hour gate.
+  technical clock prerequisite for the AC-3 four-hour gate. Four device gates
+  remain (external 32 kHz PCM, the full transition sequence including
+  loss→replay, the trim-boundary waveform, clean-source encoded AC-3), and
+  final acceptance re-runs all seven on one exact image;
+  [`aius-e2e-latency.md`](aius-e2e-latency.md) was deliberately interleaved
+  ahead of them by owner priority.
 - **OTA investigation verdict** — complete the finite investigation gate in
   [`aius-ota-upgrade.md`](aius-ota-upgrade.md) without implying OTA
   implementation or an OTP fuse burn. By owner decision 2026-07-29, the AC-3
@@ -208,3 +213,77 @@ specified here. Strike items here in the commit that closes them.
   AP214 STEP models), gate recorded in
   [`aius-h1-schematic.md`](aius-h1-schematic.md). Activates with the H2
   layout phase.
+
+## Open defects — sample-rate and latency delivery
+
+Recorded 2026-07-31 while taking over the sample-rate-following and
+e2e-latency delivery. Authoritative homes are the two plans and the CM6206
+characterization; gists plus links where a home exists, full specification
+where the only prior record was a plan aside.
+
+- **CM6206 playback corruption** — characterized parallel-datapath high-byte
+  corruption in the adapter playback path, leaning systemic. Deferred
+  discriminators: the direct non-Icron host test and the second-unit bracket.
+  Waveform-critical gates (sample-rate gate 7, encoded AC-3) require a source
+  the discriminator has shown clean. Authority:
+  [CM6206 characterization](../reference/cm6206-playback-corruption.md).
+- **Flight-recorder download header pins 48 kHz.** The recorder download
+  header stays at the static 48,000 Hz while live status and the bit-exact
+  timeline run at the accepted nominal (observed at 44.1 kHz,
+  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
+  evidence). Tooling workaround in place: resume tooling reads the accepted
+  live nominal. Firmware fix owed: stamp the header from the accepted
+  nominal rate.
+- **AC-3→PCM transition latches `AIUS_MALFORMED`.** Ending an AC-3 stream and
+  starting PCM recovers to confirmed PCM but latches one decoder rejection in
+  `pipeline_diag.last_status` / `audio_diag.pipeline_last_failure`; an
+  application reboot clears it. Pending diagnostic in
+  [`aius-e2e-latency.md`](aius-e2e-latency.md) Phase 2; the latency runner's
+  bracket gates reject the latch rather than waiving it.
+- **Open-gate 128-frame TX underrun, unexplained.** In the 48→44.1→48
+  transition run on `01477755955b`, one isolated 128-frame underrun occurred
+  at 11.719 s between two open-gate 48 kHz status samples after the TX level
+  reached zero; the other 127,488 underrun frames were attributed to dark
+  transition windows, this one was not, and no other harmful counter moved.
+  Not root-caused; the transition analyzer keeps it a hard failure.
+- **DSP model `source` label conflates SD and PUT.** The enqueue-side
+  block-boundary swap in `src/optical_main.cpp` sets `source:"sd"` for any
+  applied override, including an HTTP PUT, so after the diagnostics'
+  restoration PUTs the label proves nothing about `/aius/dsp.json` identity.
+  This misled the latency bypass preflight into reading "SD-backed model"
+  from a device whose card-file state is unknown. Fix owed: a distinct
+  `"put"` label or separate `model_origin` field; tooling must never infer
+  file identity from the label.
+- **No authenticated read path for `/aius/dsp.json`.** The `/sd/` download
+  route deliberately admits only the `/aius/www/` subtree
+  (`src/aius_optical_app.cpp` path gate), so exact-byte retention of the
+  persistent DSP model is impossible over the API. This keeps the latency
+  PCM-bypass row fail-closed. Options: a read-only authenticated route
+  carve-out for `/aius/dsp.json`, or an operator-provided copy of the card
+  file as the restoration artifact.
+- **Three ±29.6k capture impulses match no fingerprint.** The 44.1 kHz PCM
+  external observation contained six impulses; three fit the characterized
+  CM6206 high-byte fingerprint, three near ±29.6k do not and cannot be
+  waived. Raw-input-plane correlation or recurrence data is needed before
+  any gate consumes that window.
+- **48 kHz gate 1 is unpassable under active CM playback; decision needed.**
+  The gate's trim-cadence bound (at most two post-settle trims) assumed a
+  stable source; with USB playback active this CM wanders across ten values
+  spanning 6.3 Hz and produced 53 post-settle trims in 600 s while the audio
+  path stayed clean. Options: run gate 1 from the external optical source,
+  add the ingress-slope correction term, or revise the bound with owner
+  sign-off. The bound is not weakened unilaterally
+  ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
+  §Acceptance).
+- **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
+  convicted the DSP-runtime adapter's default ITCM placement empirically, but
+  no mechanism explains how 144 B of resident cold code starves the live
+  producer, and both A/B legs also perturbed global code layout. Flash
+  placement is the proven-safe configuration, enforced by the itcm-placement
+  guard. Residual risk: a layout-sensitive latent defect elsewhere in the
+  ingress path.
+- **Non-48 kHz latency rows unmeasured.** Every latency acceptance row pins
+  `nominal_rate_hz == 48000` while sample-rate following makes 44.1/32 kHz
+  first-class live modes with rate-dependent transmit-ring residence and DSP
+  coefficients. Deferred until the sample-rate device gates pass; recorded in
+  [`aius-e2e-latency.md`](aius-e2e-latency.md).

@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-07-30
+updated: 2026-07-31
 toc: true
 ---
 
@@ -842,10 +842,27 @@ pending when source corruption cannot be correlated at the raw input plane.
    Repeat encoded AC-3 with a source path that does not corrupt words. Gate 7
    must use a measurement path that the discriminator has shown does not
    independently create discontinuities.
-6. Once all seven sample-rate gates pass, update this plan and the authoritative
-   signal-path references, commit that device-evidence boundary, then begin
-   `aius-e2e-latency.md`. The four-hour AC-3 gate remains deferred until the OTA
-   investigation is complete.
+6. Sequencing was deliberately re-scoped on 2026-07-30/31: the e2e-latency
+   preliminary and Phase 1 work, including its PCM and AC-3 production rows,
+   ran ahead of the remaining device gates by owner priority (PCM and AC-3
+   first). Those rows consume interim clock evidence through their own
+   settled brackets; final consumption of this plan's clock/status evidence
+   still requires all seven gates. Once they pass, update this plan, commit
+   that device-evidence boundary, and continue `aius-e2e-latency.md` Phase 2.
+   The four-hour AC-3 gate remains deferred until the OTA investigation is
+   complete.
+
+Two acceptance realities are recorded rather than implied. First, the seven
+gates must clear on one exact committed image: the passes so far are split
+across `0a6f3a6f3480`, `d009092556a3` and `01477755955b`, and the flashed
+lineage has since advanced to the latency repair image, so every
+already-passed gate re-runs on the final candidate image. Second, gate 1's
+trim-cadence bound (no more than two post-settle trims) is unpassable under
+this CM6206's active-playback clock wander (ten values spanning 6.3 Hz, 53
+post-settle trims in 600 s with a clean audio path). The bound is not
+weakened here; the open decision (external source for gate 1, the
+ingress-slope correction term, or an owner-approved bound revision) is
+tracked in [`aius-open-work-register.md`](aius-open-work-register.md).
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same
