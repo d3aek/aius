@@ -440,9 +440,19 @@ injected and covers a header-binding digest (magic through
 `payload_digest`), so a valid signature also authenticates `target_id` and
 build identity, not just the payload bytes; the crypto implementation and
 scheme choice are the next reviewed slice. Remaining slices, in order:
-signature vendoring, transport/route wiring behind the compile-time
-option, and the device-gated activation/flash-primitive slice, which waits
-for verdict items 4 and 5 (stall measurement, LUT/recovery proof).
+signature vendoring (slice 2, in flight); transport/route wiring behind
+the compile-time option (slice 3), which also delivers the SD web
+interface's manual upgrade page (owner request 2026-07-31): a page in the
+existing nav strip with a step-by-step progress log narrated from the
+state machine — chunked upload with byte offsets from the resumable
+protocol's `next_offset`, staged/verified/armed transitions from the OTA
+records and an `ota_diag` status object, the activate step rendered but
+visibly disabled until the activation slice ships its verb, and a
+graceful disabled state when OTA is compiled out or disarmed; then the
+device-gated activation/flash-primitive slice, which waits only for
+verdict item 5 (the post-LUT HalfKay/ROM recovery proof) and afterwards
+lights up the page's activate step and reboot-to-new-identity
+monitoring.
 
 ## Investigation completion gate
 
