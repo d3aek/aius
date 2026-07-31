@@ -12,11 +12,15 @@
 
 #if defined(ARDUINO_TEENSY41)
 #define AIUS_DSP_RUNTIME_COLD __attribute__((section(".flashmem")))
+#define AIUS_DSP_RUNTIME_AUDIO \
+	__attribute__((section(".flashmem.audio_enqueue")))
 #else
 #define AIUS_DSP_RUNTIME_COLD
+#define AIUS_DSP_RUNTIME_AUDIO
 #endif
 
-static AiusBiquad resolve_eq(const AiusDspModelEq *section, uint32_t rate)
+static AiusBiquad AIUS_DSP_RUNTIME_COLD
+resolve_eq(const AiusDspModelEq *section, uint32_t rate)
 {
 	if (section->type == 0u)
 		return aius_biquad_bypass();
@@ -126,6 +130,11 @@ AiusStatus aius_dsp_runtime_config_apply(
 	return AIUS_OK;
 }
 
+/* This is per-block work, but it belongs to the serial AUDIO epoch rather than
+ * the bounded AudioStream ingress producer. Keep it beside enqueue() in flash:
+ * a target historical-image A/B proved that default ITCM placement starves the
+ * live producer even though the binding itself is bounded and allocation-free. */
+AIUS_DSP_RUNTIME_AUDIO
 void aius_dsp_runtime_config_bind(
 	AiusDspRuntimeConfig *runtime,
 	AiusDspConfig *process)

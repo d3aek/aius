@@ -3,12 +3,13 @@
 
 On Teensy 4.1 a function with no FLASHMEM attribute lands in ITCM, and ITCM
 shares the 512 KB FlexRAM with DTCM -- so cold code in ITCM is taken straight
-out of the audio path's headroom. The deciding principle (see
-docs/plans/aius-network-hardening.md) is: ITCM belongs to code that genuinely
-runs per audio block; everything else is FLASHMEM.
+out of the audio path's headroom. ITCM is reserved for the bounded producer code
+that must preempt the serial AUDIO epoch. Epoch processing remains FLASHMEM even
+when it runs per block; a physical A/B proved that putting the new DSP binder in
+ITCM starves the producer rather than helping it.
 
-Four checks cover the cold, mixed ingress-producer, mixed recorder and optical
-composition translation-unit shapes.
+Five checks cover the cold, mixed ingress-producer, DSP runtime adapter, mixed
+recorder and optical composition translation-unit shapes.
 
 Wholly-cold objects: this reads the per-object section table of every object
 named in COLD_OBJECTS and fails the link if any of them still emits executable
@@ -27,6 +28,12 @@ Initialisation, consumption, flush and diagnostics are epoch work in FLASH.
 
 The mixed recorder object must keep its new PSRAM-geometry helper out of ITCM.
 The rest of that pre-existing object is outside this phase's placement contract.
+
+The DSP runtime adapter contributes zero ITCM. Its resolver is cold config-apply
+work, while its binder runs inside the serial AUDIO epoch rather than the
+bounded AudioStream ingress producer. A physical historical-image A/B proved
+that letting the binder default into ITCM starves live ingress; its flash
+placement is therefore a target behavior contract, not a memory preference.
 
 The optical hot object: `src/optical_main.cpp` defines the audio processor, so it
 cannot join COLD_OBJECTS -- some of its ITCM is exactly what ITCM is for. Its
@@ -113,6 +120,10 @@ INGRESS_HOT_SECTIONS = (
 RECORDER_OBJECT_GLOB = "lib*/aius_recorder/aius_recorder.c.o"
 RECORDER_COLD_SECTIONS = (
     ".text.aius_recorder_ring_bytes_after_staging",
+)
+
+DSP_RUNTIME_OBJECT_GLOB = (
+    "lib*/aius_dsp_runtime_config/aius_dsp_runtime_config.c.o"
 )
 
 # 2. The dynamic-initialization thunk GCC emits for the file's statics. It has
@@ -383,6 +394,30 @@ def verify_recorder_cold_helper(build_dir: Path, readelf: str) -> int:
     return len(RECORDER_COLD_SECTIONS)
 
 
+def verify_dsp_runtime_cold_object(build_dir: Path, readelf: str) -> int:
+    """The serial AUDIO-epoch runtime adapter must contribute zero ITCM."""
+    objects = list(build_dir.glob(DSP_RUNTIME_OBJECT_GLOB))
+    if len(objects) != 1:
+        raise VerificationError(
+            "expected one linked DSP runtime object matching "
+            f"{DSP_RUNTIME_OBJECT_GLOB!r}, found {objects}"
+        )
+    sections, comdat, clones = inspect_object(objects[0], readelf)
+    if comdat or clones:
+        raise VerificationError(
+            "DSP runtime adapter unexpectedly emits COMDAT/clone code"
+        )
+    if sections:
+        detail = ", ".join(
+            f"{name}: {size} bytes"
+            for name, size in sorted(sections.items())
+        )
+        raise VerificationError(
+            "DSP runtime adapter still emits ITCM code: " + detail
+        )
+    return 1
+
+
 def _summary(count: int, comdat: int, clones: int) -> str:
     return (
         f"cold-object ITCM placement: PASS ({count} objects, 0 owned ITCM bytes, "
@@ -413,6 +448,13 @@ def _recorder_cold_summary(checked: int) -> str:
     )
 
 
+def _dsp_runtime_cold_summary(checked: int) -> str:
+    return (
+        "DSP-runtime ITCM placement: PASS "
+        f"({checked} adapter object, 0 ITCM bytes)"
+    )
+
+
 def _resolve_readelf(env) -> str:
     readelf = env.WhereIs("arm-none-eabi-readelf")
     if not readelf:
@@ -434,6 +476,9 @@ def verify_cold_placement(source, target, env) -> None:
     print(_summary(*verify_placement(build_dir, linked, readelf)))
     print(_hot_summary(*verify_hot_object(build_dir, readelf)))
     print(_ingress_hot_summary(verify_ingress_hot_object(build_dir, readelf)))
+    print(_dsp_runtime_cold_summary(
+        verify_dsp_runtime_cold_object(build_dir, readelf)
+    ))
     print(_recorder_cold_summary(
         verify_recorder_cold_helper(build_dir, readelf)
     ))
@@ -471,6 +516,12 @@ def _main(argv: list[str]) -> int:
         print(f"ingress-object ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
     print(_ingress_hot_summary(ingress))
+    try:
+        dsp_runtime = verify_dsp_runtime_cold_object(build_dir, args.readelf)
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"DSP-runtime ITCM placement: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_dsp_runtime_cold_summary(dsp_runtime))
     try:
         recorder = verify_recorder_cold_helper(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:

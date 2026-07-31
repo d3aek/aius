@@ -461,7 +461,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: implementation-complete-regression-isolated
+status: runtime-repair-built-device-smoke-pending
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -475,9 +475,9 @@ completed-slices:
   - native renderer per-unit payload hashing and evidence completion
   - formal probe analyzer and evidence manifest
   - synchronized collector acceptance hardening
+  - shared runtime adapter target-placement repair and link guard
 remaining-slices:
-  - repair the 30eeed071 runtime-config regression
-  - clean post-repair 120-second 48 kHz optical device smoke
+  - clean exact-commit post-repair 120-second 48 kHz optical device smoke
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -620,9 +620,25 @@ after the A/B. Interrupting the final playback after the test also left the
 directly attached CM6206 enumerated, unlike the earlier Icron-chain teardown
 failure. The regression is therefore introduced by production change
 `30eeed071`, within the embedded-to-shared DSP runtime-config refactor. The A/B
-does not yet distinguish which hunk in that refactor blocks the live
-AudioStream service; Phase 1 remains open until that implementation is repaired
-and the exact replacement image passes the smoke.
+was then narrowed with two single-variable images. Replacing only the external
+per-block bind call with its six equivalent assignments remained `pcm-active`
+for 60 of 60 UDP observations, advanced blocks from 3,030 to 14,112 and ended
+with zero ingress/drop/reset faults. Keeping the external call but placing its
+unchanged body in `.flashmem.audio_enqueue` independently passed the same gate,
+advancing from 2,941 to 14,024 with zero faults. Reflashing the unmodified
+candidate between those runs reproduced its abnormal progress rate before any
+counter overflow.
+
+The causal hunk is therefore the target placement omission in the new adapter
+object. `aius_dsp_runtime_config_bind` defaulted to 88 bytes of ITCM even though
+it executes in the serial AUDIO epoch, not the bounded AudioStream producer;
+the cold `resolve_eq` helper also leaked 56 bytes into ITCM. The target's
+placement checker did not cover the newly introduced library object. The repair
+places the binder beside `enqueue` in flash, places the resolver in cold flash,
+and makes the link fail if the adapter contributes any executable ITCM code.
+Portable DSP and optical-integration suites plus the complete Teensy target
+build pass. Phase 1 remains open only until the exact committed replacement
+image passes the physical smoke.
 
 ### Phase 2: physical matrix and durable result
 
@@ -632,7 +648,7 @@ status: pending-preflight-blocked
 unit: parent-only
 depends-on: [phase-1, sample-rate-following-device-acceptance]
 preflight-blockers:
-  - 30eeed071 runtime-config regression loses live PCM ingress service
+  - exact committed runtime-placement repair has not passed the physical smoke
   - authoritative /sd/aius/dsp.json restoration artifact absent
 matrix:
   - direct-loop-pcm
