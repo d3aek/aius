@@ -25,6 +25,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_clock/` | Portable supported-rate tracker and pure S/PDIF PLL4 planner. |
 | `lib/aius_pipeline/` | PCM/DTS/AC-3 classifier + parser→decoder end-to-end chaining. |
 | `lib/aius_dsp/` | 5.1→stereo downmix + biquad EQ output DSP. |
+| `lib/aius_dsp_runtime_config/` | Shared production-model resolver for firmware and native renderers: feature bypass, coefficient design, state reset and meter cadence. |
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
 | `lib/aius_replay/` | Replay service over a caller-supplied `AiusReplayReader`. |
 | `lib/aius_boot/` | Retained boot ledger: generation, checkpoint, reset kind, recovery mode. |
@@ -295,7 +296,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser. |
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
-| `dsp`, `dsp-vectors` | Downmix + EQ known-answer, and the same through the public DSP interface over the DTS corpus. |
+| `dsp`, `dsp-vectors` | Downmix + EQ known-answer, shared production-model runtime resolution, and the public DSP interface over the DTS corpus. |
 | `measure` | The measurement loopback's portable core: every capture state-machine edge (both dual-terminal cancel interleavings included) and the sliced sine-fit + Goertzel analysis known answers, with the pure-sine leakage canary whose tolerance is never widened. |
 | `auth` | The SD maintenance token's derivation, firmware side and the host generator together. |
 | `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |

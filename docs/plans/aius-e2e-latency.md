@@ -459,7 +459,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: pending
+status: in-progress
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -467,6 +467,12 @@ seams:
   - native decoder/DSP reference renderer
   - affine probe analyzer
   - evidence manifest
+completed-slices:
+  - shared production DSP runtime-config adapter
+remaining-slices:
+  - native decoder/DSP reference renderer
+  - formal probe analyzer and evidence manifest
+  - synchronized collector acceptance hardening
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -481,6 +487,16 @@ commit-checkpoint:
   buildable: [teensy41-optical]
   parent-commit: "feat(aius): add optical latency bench"
 ```
+
+The shared runtime-config slice is delivered: the generated factory default and
+runtime parser now expose one canonical `AiusDspModel`; firmware resolves it
+through `aius_dsp_runtime_config`, and the adapter owns all five feature bypass
+flags, accepted-rate coefficient design, state resets and meter cadence.
+Native differential tests perturb every field category, assert reset/bind
+semantics, and run two retained DSP consumers across consecutive blocks with
+byte-identical output. The Teensy target builds with zero memory delta. This
+does not close Phase 1: the renderer, formal analyzer/manifest and synchronized
+collector gates remain.
 
 Native tests cover known integer and fractional lags, affine clock error,
 periodic ambiguity, silence, clipping, missing/swapped/duplicate/false codes,

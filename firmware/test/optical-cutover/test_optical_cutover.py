@@ -37,6 +37,13 @@ from pathlib import Path
 
 FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 OPTICAL_MAIN = FIRMWARE_ROOT / "src" / "optical_main.cpp"
+DSP_RUNTIME_CONFIG = (
+    FIRMWARE_ROOT
+    / "lib"
+    / "aius_dsp_runtime_config"
+    / "src"
+    / "aius_dsp_runtime_config.c"
+)
 
 # The replay refill's sizing is spread across three libraries that NOTHING
 # compiles together: the portable SD engine caps a job's transfer slice, the
@@ -1419,9 +1426,8 @@ TRANSMIT_MODULE_CHECKS = (
 )
 
 
-APPLY_CONFIG_MARKER = (
-    "void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg,"
-)
+APPLY_CONFIG_MARKER = "void AiusAudioProcessor::apply_config("
+RUNTIME_CONFIG_APPLY_MARKER = "AiusStatus aius_dsp_runtime_config_apply("
 
 FEATURE_FLAGS = ("input_eq", "matrix", "output_eq", "limiter", "meters")
 
@@ -1439,11 +1445,23 @@ def assert_apply_config_reads_every_feature_flag(text):
     at length and now discusses both flags at some length too; a check satisfied
     by prose would pass against a firmware that only talked about the flag.
     """
-    body = without_comments_and_literals(function_body(text, APPLY_CONFIG_MARKER))
-    missing = [flag for flag in FEATURE_FLAGS if f"features.{flag}" not in body]
+    wrapper = without_comments_and_literals(
+        function_body(text, APPLY_CONFIG_MARKER)
+    )
+    assert "aius_dsp_runtime_config_apply(" in wrapper, (
+        "firmware bypasses the shared production-model resolver"
+    )
+    runtime_text = DSP_RUNTIME_CONFIG.read_text()
+    body = without_comments_and_literals(
+        function_body(runtime_text, RUNTIME_CONFIG_APPLY_MARKER)
+    )
+    missing = [
+        flag for flag in FEATURE_FLAGS
+        if f"features.{flag}" not in body
+    ]
     if missing:
         raise AssertionError(
-            "apply_config() never reads features."
+            "the shared runtime resolver never reads features."
             + ", features.".join(missing)
             + " -- a bypass flag the config accepts and the audio path ignores "
             "is a promise the device does not keep"
@@ -1462,17 +1480,17 @@ def assert_input_stage_skips_an_exact_identity(text):
     survives the guard being written any reasonable way but still fails if
     activation goes back to reading the flag alone.
     """
-    body = without_comments_and_literals(function_body(text, APPLY_CONFIG_MARKER))
-    assignment = [
-        line for line in body.splitlines()
-        if "g_input_stage_active" in line and "=" in line
-    ]
-    if not assignment:
-        raise AssertionError("apply_config() never assigns g_input_stage_active")
-    joined = " ".join(assignment)
-    if "&&" not in joined:
+    runtime_text = DSP_RUNTIME_CONFIG.read_text()
+    body = without_comments_and_literals(
+        function_body(runtime_text, RUNTIME_CONFIG_APPLY_MARKER)
+    )
+    if "input_stage_active" not in body:
         raise AssertionError(
-            "g_input_stage_active is set from features.input_eq alone, so the "
+            "the shared runtime resolver never assigns input_stage_active"
+        )
+    if "model->features.input_eq && input_changes_audio" not in body:
+        raise AssertionError(
+            "input_stage_active is set from features.input_eq alone, so the "
             "default identity config still pays 3,072 quantizes per block"
         )
     if "gain_linear" not in body or "eq_sections" not in body:
@@ -1483,22 +1501,32 @@ def assert_input_stage_skips_an_exact_identity(text):
 
 
 def assert_apply_config_uses_stream_rate(text):
-    body = without_comments_and_literals(function_body(text, APPLY_CONFIG_MARKER))
-    assert "stream_rate_hz" in body, (
-        "apply_config() does not consume the accepted stream rate"
+    wrapper = without_comments_and_literals(
+        function_body(text, APPLY_CONFIG_MARKER)
     )
-    assert "cfg.sample_rate_hz" not in body, (
-        "apply_config() still designs a rate-dependent stage from the model's "
+    assert (
+        "&g_dsp_runtime, &cfg, stream_rate_hz, &g_meter" in wrapper
+    ), "apply_config() does not pass the accepted stream rate to the resolver"
+    assert "cfg.sample_rate_hz" not in wrapper, (
+        "apply_config() passes the model's generated/default rate instead of "
+        "the accepted stream rate"
+    )
+    runtime_text = DSP_RUNTIME_CONFIG.read_text()
+    body = without_comments_and_literals(
+        function_body(runtime_text, RUNTIME_CONFIG_APPLY_MARKER)
+    )
+    assert "model->sample_rate_hz" not in body, (
+        "the shared runtime resolver designs a rate-dependent stage from the model's "
         "generated/default rate"
     )
     for call in (
-        "aius_biquad_highpass(rate,",
-        "aius_biquad_peaking(rate,",
-        "aius_lfe_fold_init(&g_lfe_fold, (double)rate,",
-        "aius_meter_init(&g_meter, rate)",
+        "resolve_eq(&model->output_eq[section], stream_rate_hz)",
+        "&runtime->lfe_fold, (double)stream_rate_hz,",
+        "resolve_eq(&input->eq[section], stream_rate_hz)",
+        "aius_meter_init(meter, stream_rate_hz)",
     ):
         assert call in body, (
-            f"apply_config() does not bind {call} to the accepted stream rate"
+            f"the shared runtime resolver does not bind {call} to the accepted stream rate"
         )
 
 
@@ -2588,8 +2616,8 @@ def run_audio_cutover_self_test():
         "must validate",
     )
     model_rate = text.replace(
-        "const uint32_t rate = stream_rate_hz != 0u ? stream_rate_hz",
-        "const uint32_t rate = cfg.sample_rate_hz != 0u ? cfg.sample_rate_hz",
+        "&g_dsp_runtime, &cfg, stream_rate_hz, &g_meter",
+        "&g_dsp_runtime, &cfg, cfg.sample_rate_hz, &g_meter",
         1,
     )
     _expect_fail(

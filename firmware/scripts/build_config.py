@@ -2,7 +2,7 @@
 
 The old select-a-preset model (profiles[]/mixes[]) is gone: there is exactly one
 effective config, baked here into a `const` `PROGMEM` (FLASH-resident, read only on
-a config change) `AiusOpticalConfig`. `source` and `config_generation` are runtime-reported
+a config change) `AiusDspModel`. `source` and `config_generation` are runtime-reported
 fields — the baked default is always `source == "default"`, generation 0 — so they
 are validated here but emitted by the firmware serializer, not stored in the struct.
 """
@@ -204,26 +204,19 @@ def generate_header(config):
     lines = [
         "#pragma once",
         "#include <stdint.h>",
+        '#include "aius_dsp_config.h"',
         "#ifndef FLASHMEM",
         "#define FLASHMEM",
         "#endif",
         "#ifndef PROGMEM",
         "#define PROGMEM",
         "#endif",
-        "typedef struct { uint8_t type; double frequency_hz; double q; double gain_db; } AiusOpticalEqConfig;",
-        "typedef struct { double gain_db; uint8_t eq_count; AiusOpticalEqConfig eq[2]; } AiusOpticalInputChannelConfig;",
-        "typedef struct { uint8_t input_eq; uint8_t matrix; uint8_t output_eq; uint8_t limiter; uint8_t meters; } AiusOpticalFeaturesConfig;",
-        "typedef struct { double center_gain_linear; double surround_gain_linear; double lfe_gain_linear; double lfe_crossover_hz; double headroom_linear; uint8_t clipfree; uint8_t layout_aware; } AiusOpticalMatrixConfig;",
-        "typedef struct { uint8_t enabled; double threshold_dbfs; double attack_ms; double release_ms; double lookahead_ms; } AiusOpticalLimiterConfig;",
-        "typedef struct {",
-        "\tuint32_t sample_rate_hz;",
-        "\tAiusOpticalFeaturesConfig features;",
-        "\tAiusOpticalInputChannelConfig input_channels[6];",
-        "\tuint8_t output_eq_count;",
-        "\tAiusOpticalEqConfig output_eq[2];",
-        "\tAiusOpticalMatrixConfig matrix;",
-        "\tAiusOpticalLimiterConfig limiter;",
-        "} AiusOpticalConfig;",
+        "typedef AiusDspModelEq AiusOpticalEqConfig;",
+        "typedef AiusDspModelInputChannel AiusOpticalInputChannelConfig;",
+        "typedef AiusDspModelFeatures AiusOpticalFeaturesConfig;",
+        "typedef AiusDspModelMatrix AiusOpticalMatrixConfig;",
+        "typedef AiusDspModelLimiter AiusOpticalLimiterConfig;",
+        "typedef AiusDspModel AiusOpticalConfig;",
         f"static const uint32_t AIUS_OPTICAL_SAMPLE_RATE_HZ = {int(config['sample_rate_hz'])}u;",
         f"static const uint8_t AIUS_OPTICAL_INPUT_CHANNEL_COUNT = {len(INPUT_CHANNELS)}u;",
         f"static const uint32_t AIUS_OPTICAL_MODEL_MAX_JSON_BYTES = {MAX_MODEL_JSON_BYTES}u;",
@@ -258,6 +251,7 @@ def generate_header(config):
             limiter["release_ms"],
             limiter["lookahead_ms"],
         ),
+        "\t0u,",
         "};",
     ]
     return "\n".join(lines) + "\n"

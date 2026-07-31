@@ -33,6 +33,8 @@ def test_valid_fixture_and_model_bound():
     assert "AIUS_OPTICAL_MODEL_MAX_JSON_BYTES = 12288u" in header
     assert "AIUS_OPTICAL_CONFIG PROGMEM = {" in header
     assert "static const AiusOpticalConfig AIUS_OPTICAL_CONFIG PROGMEM" in header
+    assert '#include "aius_dsp_config.h"' in header
+    assert "typedef AiusDspModel AiusOpticalConfig;" in header
     # The default carries the standard-mix downmix coefficients verbatim:
     # center/surround 1/sqrt(2), lfe -10 dB through a 120 Hz crossover,
     # headroom 0.5.
@@ -59,10 +61,9 @@ def test_valid_fixture_and_model_bound():
         "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 1}"
         in header
     )
-    # The generated struct grew the crossover field alongside it, and the
-    # layout-aware flag after that.
-    assert "double lfe_crossover_hz;" in header
-    assert "uint8_t layout_aware;" in header
+    # The generated header reuses the parser's canonical production model
+    # instead of carrying a second field-shape definition.
+    assert "typedef struct" not in header
     # Six identity input channels (unity trim, no EQ) and no output EQ sections.
     assert "{0, 0, {{0, 0, 0, 0}, {0, 0, 0, 0}}}" in header
     # profiles[]/mixes[] machinery is gone.

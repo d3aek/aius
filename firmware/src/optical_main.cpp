@@ -26,6 +26,7 @@
 extern "C" {
 #include "aius_net.h"
 	#include "aius_dsp.h"
+	#include "aius_dsp_runtime_config.h"
 	#include "aius_measure.h"
 	#include "aius_recorder.h"
 	#include "aius_audio_ingress.h"
@@ -496,17 +497,6 @@ static volatile bool g_dsp_apply_pending;
  * rather than accept a straddled copy. */
 DMAMEM static AiusMeter g_meter;
 
-/* Publish cadence, in publishes per second. Counted in FRAMES rather than
- * blocks so the decoder's framing cannot move it: a 128-frame PCM block and a
- * 512-frame decoded block yield the same 20 Hz. Chosen against the two
- * consumers, which both poll at 10 Hz -- every poll then sees a snapshot at
- * most one window old -- and against metering quality: RMS integrated over
- * ~50 ms is a usable meter, whereas a per-block window is 2.7 ms of noise
- * sampled at random by the client. It also keeps the one non-trivial cost in
- * the tap (aius_meter_publish's 8 sqrt + 128-point copy) off 18 blocks in
- * every 19 at 48 kHz with 128-frame blocks. */
-static constexpr uint32_t AIUS_METER_PUBLISH_HZ = 20u;
-
 /* ------------------------------------------------------------------ */
 /* Measurement loopback capture -- item 3 slice 3                      */
 /* (aius-dsp-config-api.md §Item 3 design; the portable machine and    */
@@ -546,7 +536,7 @@ static AiusMeasureCapture g_measure_capture;
 /* pool spans the same storage the ring claims.                        */
 /*                                                                     */
 /* g_recorder_present is the whole per-block cost on a bare board:     */
-/* one bool test in enqueue() (the g_meters_active pattern), and the   */
+/* one bool test in enqueue() (the runtime meters_active field), and  */
 /* epoch service returns on the same latch.                            */
 /* ------------------------------------------------------------------ */
 /* AUDIO may commit eight output steps after REPLAY already drained for this
@@ -684,48 +674,6 @@ audio_ingress_publish_live(uint16_t *slot, const audio_block_t *left,
 		slot[2u * i] = (uint16_t)left->data[i];
 		slot[2u * i + 1u] = (uint16_t)right->data[i];
 	}
-}
-
-static FLASHMEM void dsp_model_to_optical_config(const AiusDspModel &model, AiusOpticalConfig &out)
-{
-	out.sample_rate_hz = model.sample_rate_hz;
-	out.features.input_eq = model.features.input_eq;
-	out.features.matrix = model.features.matrix;
-	out.features.output_eq = model.features.output_eq;
-	out.features.limiter = model.features.limiter;
-	out.features.meters = model.features.meters;
-	for (size_t c = 0; c < AIUS_DSP_MODEL_INPUT_CHANNELS; c++) {
-		out.input_channels[c].gain_db = model.input_channels[c].gain_db;
-		out.input_channels[c].eq_count = model.input_channels[c].eq_count;
-		for (size_t i = 0; i < AIUS_DSP_MODEL_EQ_MAX; i++) {
-			out.input_channels[c].eq[i].type = model.input_channels[c].eq[i].type;
-			out.input_channels[c].eq[i].frequency_hz = model.input_channels[c].eq[i].frequency_hz;
-			out.input_channels[c].eq[i].q = model.input_channels[c].eq[i].q;
-			out.input_channels[c].eq[i].gain_db = model.input_channels[c].eq[i].gain_db;
-		}
-	}
-	out.output_eq_count = model.output_eq_count;
-	for (size_t i = 0; i < AIUS_DSP_MODEL_EQ_MAX; i++) {
-		out.output_eq[i].type = model.output_eq[i].type;
-		out.output_eq[i].frequency_hz = model.output_eq[i].frequency_hz;
-		out.output_eq[i].q = model.output_eq[i].q;
-		out.output_eq[i].gain_db = model.output_eq[i].gain_db;
-	}
-	out.matrix.center_gain_linear = model.matrix.center_gain_linear;
-	out.matrix.surround_gain_linear = model.matrix.surround_gain_linear;
-	out.matrix.lfe_gain_linear = model.matrix.lfe_gain_linear;
-	out.matrix.lfe_crossover_hz = model.matrix.lfe_crossover_hz;
-	out.matrix.headroom_linear = model.matrix.headroom_linear;
-	out.matrix.clipfree = model.matrix.clipfree;
-	/* A FIELD-BY-FIELD COPY SILENTLY PINS ANYTHING IT FORGETS: a matrix key the
-	 * parser accepts and this line omits reaches the model, round-trips through
-	 * GET, and never reaches the audio path. layout_aware is the newest one. */
-	out.matrix.layout_aware = model.matrix.layout_aware;
-	out.limiter.enabled = model.limiter.enabled;
-	out.limiter.threshold_dbfs = model.limiter.threshold_dbfs;
-	out.limiter.attack_ms = model.limiter.attack_ms;
-	out.limiter.release_ms = model.limiter.release_ms;
-	out.limiter.lookahead_ms = model.limiter.lookahead_ms;
 }
 
 /* The SD-hosted DSP override used to be read here, a byte at a time into a
@@ -1057,20 +1005,9 @@ public:
 		g_clock_unsupported_episodes = 0u;
 	}
 
-	/* Resolve `cfg` (either AIUS_OPTICAL_CONFIG, the const factory default in
-	 * FLASH, or a RAM-resident parsed SD override with the same field shape)
-	 * into the runtime output-EQ biquads, downmix matrix, input-channel
-	 * trim/EQ, and limiter. Cold path -- called at bring-up and, later, at a
-	 * block-boundary config apply -- so it is FLASHMEM. The default config
-	 * resolves to a bypass output EQ, the standard downmix, unity input trim
-	 * with no EQ, and a disabled limiter, i.e. the audio path is bit-identical
-	 * to the old flat-profile + standard-mix default.
-	 *
-	 * Defined out-of-line (below the class) rather than in-body: an in-body
-	 * definition is implicitly inline (vague linkage / comdat), which conflicts
-	 * at compile time with the plain FLASHMEM free functions already sharing the
-	 * .flashmem section ("section type conflict") once the function is too large
-	 * to fully inline away. Out-of-line gives it ordinary linkage instead. */
+	/* Cold wrapper over the public production-model resolver. The implementation
+	 * is shared with the native latency renderer; this class owns only placement
+	 * of the meter and process scratch. */
 	FLASHMEM void apply_config(const AiusOpticalConfig &cfg,
 	                           uint32_t stream_rate_hz);
 
@@ -1160,20 +1097,10 @@ private:
 	 * transmit ISR's read is strictly sequential so the L1 D-cache amortises the
 	 * OCRAM latency over eight words per line. */
 	uint32_t g_blocks = 0;
-	AiusDownmixConfig g_downmix = aius_downmix_config_default();
-	AiusBiquad g_eq[2];
-	AiusBiquadState g_eq_state[4] = {};
-	size_t g_eq_count = 0;
-	/* Input stage: per-channel trim + up to two EQ sections, wired from
-	 * AIUS_OPTICAL_CONFIG.input_channels[]. The double staging scratch the
-	 * single-quantize chain runs in is NOT embedded here: the 32,768 B of
-	 * planes are carved from g_arena in begin_pipeline() (see the placement
-	 * rationale there -- OCRAM was vetoed by the defect-26 heap floor) and
-	 * only the POINTERS live below, wired into the per-block AiusDspConfig. */
-	AiusInputStage g_input_stage = aius_input_stage_default();
-	AiusBiquad g_input_eq[AIUS_DSP_INPUT_CHANNELS][AIUS_DSP_INPUT_EQ_MAX] = {};
-	AiusBiquadState g_input_eq_state[AIUS_DSP_INPUT_CHANNELS][AIUS_DSP_INPUT_EQ_MAX] = {};
-	bool g_input_stage_active = false;
+	/* Production model resolution lives in the public adapter so firmware and
+	 * the native latency renderer cannot diverge on bypass, coefficient or
+	 * state-reset semantics. */
+	AiusDspRuntimeConfig g_dsp_runtime = {};
 	/* The double staging planes, carved from g_arena in begin_pipeline() (see
 	 * the placement rationale there). Pointer members only: the storage is
 	 * arena DTCM, sized to the largest block enqueue() accepts. */
@@ -1181,12 +1108,6 @@ private:
 	double *g_dsp_scratch_d[AIUS_MAX_CHANNELS] = {};
 	double *g_dsp_work_l = nullptr;
 	double *g_dsp_work_r = nullptr;
-	AiusLimiter g_limiter = {};
-	/* The LFE fold's LR4 low-pass state, 160 B. Beside g_limiter so it lands in
-	 * the same DTCM .bss as the other DSP state rather than the free-for-locals
-	 * zone, and adds no stack local to the audio path. */
-	AiusLfeFold g_lfe_fold = {};
-	bool g_limiter_active = false;
 	/* The output stage's dither streams, seeded ONCE in begin_pipeline() and
 	 * deliberately not in apply_config(): re-seeding on every staged config change
 	 * would restart the noise sequence and make the output a function of
@@ -1194,12 +1115,6 @@ private:
 	 * §DETERMINISM). Seeded even though OUTPUT_WIDTH_BITS bypasses dither, so that
 	 * flipping the width is a one-line change and not also a bring-up change. */
 	AiusOut16Stage g_out16 = {};
-	/* Meter tap state, all resolved by apply_config() so the audio path never
-	 * divides and never reads the config model. g_meters_active is the whole
-	 * cost of the tap when features.meters is false: one bool test per block. */
-	bool g_meters_active = false;
-	uint32_t g_meter_window_frames = 0;    /* frames per publish (~1/20 s) */
-	uint32_t g_meter_us_per_frame_q16 = 0; /* 1e6 / fs in Q16.16, hoisted */
 	uint32_t g_dsp_cycles_last = 0;
 	uint32_t g_dsp_cycles_max = 0;
 	uint32_t g_applied_stream_rate_hz = AIUS_OPTICAL_SAMPLE_RATE_HZ;
@@ -1272,14 +1187,7 @@ private:
 		processed.planes[0] = processed_left;
 		processed.planes[1] = processed_right;
 		AiusDspConfig dsp = {};
-		dsp.downmix = g_downmix;
-		dsp.eq = g_eq;
-		dsp.eq_sections = g_eq_count;
-		dsp.eq_state = g_eq_state;
-		/* Trim/EQ gate only: the double staging below is unconditional inside
-		 * aius_dsp_process (it is the chain's int32->double boundary). */
-		dsp.input = g_input_stage_active ? &g_input_stage : nullptr;
-		dsp.limiter = g_limiter_active ? &g_limiter : nullptr;
+		aius_dsp_runtime_config_bind(&g_dsp_runtime, &dsp);
 		for (size_t p = 0; p < AIUS_MAX_CHANNELS; p++)
 			dsp.scratch[p] = g_dsp_scratch_d[p];
 		dsp.work_l = g_dsp_work_l;
@@ -1295,7 +1203,7 @@ private:
 		 * its own worst-case block cost through the snapshot it is already
 		 * publishing, rather than the figure being an off-target estimate. Two
 		 * volatile PPB loads per block. */
-		const bool metering = g_meters_active;
+		const bool metering = g_dsp_runtime.meters_active;
 		const uint32_t cycles_begin = metering ? ARM_DWT_CYCCNT : 0u;
 		AiusStatus dsp_status = aius_dsp_process(&dsp, block, &processed);
 		if (dsp_status != AIUS_OK)
@@ -1377,7 +1285,8 @@ private:
 				millis());
 		g_blocks++;
 		if (metering) {
-			if (g_meter.out_frames >= g_meter_window_frames) {
+			if (g_meter.out_frames >=
+			    g_dsp_runtime.meter_window_frames) {
 				/* Sampled once per window, not per block: the accessor takes a
 				 * libm log10, and a diagnostic field does not buy a log10 in
 				 * the block callback (§Deciding principle). The reported value
@@ -1395,7 +1304,7 @@ private:
 					aius_spdif_tx24_level(&g_aius_spdif_tx24);
 				aius_meter_set_telemetry(&g_meter, queued,
 					(uint32_t)(((uint64_t)queued *
-					            g_meter_us_per_frame_q16) >> 16),
+					            g_dsp_runtime.meter_us_per_frame_q16) >> 16),
 					g_dsp_cycles_last, g_dsp_cycles_max);
 				aius_meter_publish(&g_meter);
 			}
@@ -1520,166 +1429,8 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 FLASHMEM void AiusAudioProcessor::apply_config(const AiusOpticalConfig &cfg,
 	                                            uint32_t stream_rate_hz)
 {
-	const uint32_t rate = stream_rate_hz != 0u ? stream_rate_hz
-	                                           : AIUS_OPTICAL_SAMPLE_RATE_HZ;
-	/* features.output_eq, the other flag that was stored and never read. Zero
-	 * sections IS the bypass -- aius_dsp_process() runs no cascade for an empty
-	 * table -- which is why this stage appeared to work: a config that happened
-	 * to carry no sections bypassed by accident, and one that carried sections
-	 * ran them whatever the flag said. */
-	g_eq_count = cfg.features.output_eq ? cfg.output_eq_count : 0u;
-	for (size_t i = 0; i < g_eq_count && i < 2; i++) {
-		const AiusOpticalEqConfig &section = cfg.output_eq[i];
-		if (section.type == 0)
-			g_eq[i] = aius_biquad_bypass();
-		else if (section.type == 1)
-			g_eq[i] = aius_biquad_highpass(rate,
-				section.frequency_hz, section.q);
-		else
-			g_eq[i] = aius_biquad_peaking(rate,
-				section.frequency_hz, section.q, section.gain_db);
-	}
-	memset(g_eq_state, 0, sizeof(g_eq_state));
-	/* Hoisted above the matrix block so the LFE crossover can be designed here,
-	 * cold: aius_lfe_fold_init() evaluates two cos/sin pairs, which belongs
-	 * beside the biquad trig below rather than in the audio ISR. The downmix
-	 * would design lazily on the first block otherwise. */
-	g_downmix = aius_downmix_config_default();
-	/* features.matrix, which was parsed, stored, round-tripped and then never
-	 * read -- the contract promises all five flags bypass their stage and this
-	 * one had no mechanism at all.
-	 *
-	 * BYPASS HERE MEANS FL->L, FR->R AT UNITY, not "use the default matrix".
-	 * The downmix is structurally unavoidable (six planes have to become two),
-	 * so the question is what a bypassed matrix should sound like, and the
-	 * editor states the purpose: unchecking a stage bypasses it "for latency
-	 * and diagnostic comparisons". The comparison worth hearing is the stereo
-	 * pair with nothing folded into it, which is what zero centre, zero
-	 * surround, zero LFE and unity headroom reduce aius_dsp_process()'s
-	 * accumulate loop to exactly -- no new machinery, no second code path, and
-	 * the existing struct expresses it.
-	 *
-	 * Substituting the DEFAULT matrix instead was the other reading and is
-	 * rejected: it would make the flag mean "ignore my settings" rather than
-	 * "remove this stage", and there would then be no way to hear the input
-	 * without the fold. */
-	if (cfg.features.matrix) {
-		g_downmix.center = cfg.matrix.center_gain_linear;
-		g_downmix.surround = cfg.matrix.surround_gain_linear;
-		g_downmix.lfe = cfg.matrix.lfe_gain_linear;
-	} else {
-		g_downmix.center = 0.0;
-		g_downmix.surround = 0.0;
-		g_downmix.lfe = 0.0;
-	}
-	/* The LFE fold's low-pass. The DTS core does not band-limit its LFE plane to
-	 * the crossover -- it carries LFE decimated by 64 or 128, so up to 375 Hz of
-	 * reconstruction imaging survives -- which is why this is LR4 rather than one
-	 * section. If the live stream's rate differs from the config's, the downmix
-	 * redesigns from the block's real rate, which is the intended behaviour. */
-	g_downmix.lfe_crossover_hz = cfg.matrix.lfe_crossover_hz;
-	g_downmix.lfe_fold = &g_lfe_fold;
-	(void)aius_lfe_fold_init(&g_lfe_fold, (double)rate,
-	                         cfg.matrix.lfe_crossover_hz);
-	/* WHICH LAYOUTS THE PAD APPLIES TO, as opposed to what it is worth. Set (the
-	 * default, and what a config omitting the key parses to) the downmix scales
-	 * only layouts that SUM and passes mono and stereo FL|FR at unity; clear
-	 * restores the uniform pad on every layout. Assigned unconditionally and
-	 * ahead of the bypass branch below because it is a property of the matrix
-	 * stage's rule, not of its value -- with the stage bypassed the headroom is
-	 * 1.0 and the rule cannot be observed either way. The seed at the top of this
-	 * function is aius_downmix_config_default(), i.e. ON, so omitting this line
-	 * would make a hand-set false apply as true and look like it had worked. */
-	g_downmix.layout_aware = cfg.matrix.layout_aware;
-	if (!cfg.features.matrix)
-		/* Unity, completing the bypass: a headroom scale is part of the matrix
-		 * stage, so a bypassed matrix must not attenuate either. Note
-		 * clipfree_headroom() would return 1.0 here anyway now that the three
-		 * gains are zero, but stating it is what stops a later change to that
-		 * function quietly putting a gain back into the bypass path. */
-		g_downmix.headroom = 1.0;
-	else if (cfg.matrix.clipfree)
-		g_downmix.headroom = aius_downmix_clipfree_headroom(&g_downmix);
-	else
-		g_downmix.headroom = cfg.matrix.headroom_linear;
-
-	for (size_t c = 0; c < AIUS_DSP_INPUT_CHANNELS; c++) {
-		const AiusOpticalInputChannelConfig &ic = cfg.input_channels[c];
-		AiusInputChannelConfig &channel = g_input_stage.channels[c];
-		channel.gain_linear = aius_db_to_linear(ic.gain_db);
-		channel.eq_sections = ic.eq_count;
-		for (size_t i = 0; i < ic.eq_count && i < AIUS_DSP_INPUT_EQ_MAX; i++) {
-			const AiusOpticalEqConfig &section = ic.eq[i];
-			if (section.type == 0)
-				g_input_eq[c][i] = aius_biquad_bypass();
-			else if (section.type == 1)
-				g_input_eq[c][i] = aius_biquad_highpass(rate,
-					section.frequency_hz, section.q);
-			else
-				g_input_eq[c][i] = aius_biquad_peaking(rate,
-					section.frequency_hz, section.q, section.gain_db);
-		}
-		channel.eq = g_input_eq[c];
-		channel.eq_state = g_input_eq_state[c];
-	}
-	memset(g_input_eq_state, 0, sizeof(g_input_eq_state));
-	/* The trim/EQ runs only when it would change a sample.
-	 *
-	 * RE-SCOPED with the single-quantize chain: the staging convert-copy into
-	 * double scratch is UNCONDITIONAL inside aius_dsp_process now (it is the
-	 * chain's int32->double boundary), so this gate no longer skips staging --
-	 * it skips only the per-channel trim/EQ cascades over the staged planes.
-	 * The old gate's 3,072 saved quantizes per block are gone from the path
-	 * entirely (nothing between the stages quantizes any more); what the gate
-	 * still saves on an identity config is six run_cascade calls of pure
-	 * multiply-by-1.0.
-	 *
-	 * Unity is tested exactly, and that is safe because it is the value the
-	 * conversion produces rather than a tolerance: aius_db_to_linear(0.0) is
-	 * pow(10, 0) == 1.0 exactly, on the host and on the target. A channel with a
-	 * present-but-bypassed EQ section is deliberately NOT treated as identity --
-	 * eq_sections counts what the cascade will walk, and the config distinguishes
-	 * "no section" from "a bypass section" on purpose. */
-	bool input_stage_changes_audio = false;
-	for (size_t c = 0; c < AIUS_DSP_INPUT_CHANNELS; c++) {
-		const AiusInputChannelConfig &channel = g_input_stage.channels[c];
-		if (channel.gain_linear != 1.0 || channel.eq_sections != 0) {
-			input_stage_changes_audio = true;
-			break;
-		}
-	}
-	g_input_stage_active = cfg.features.input_eq != 0 && input_stage_changes_audio;
-
-	g_limiter.cfg.enabled = cfg.limiter.enabled;
-	g_limiter.cfg.threshold_dbfs = cfg.limiter.threshold_dbfs;
-	g_limiter.cfg.attack_ms = cfg.limiter.attack_ms;
-	g_limiter.cfg.release_ms = cfg.limiter.release_ms;
-	g_limiter.cfg.lookahead_ms = cfg.limiter.lookahead_ms;
-	memset(&g_limiter.state, 0, sizeof(g_limiter.state));
-	g_limiter_active = cfg.features.limiter != 0;
-
-	/* Meter tap, resolved here for the same reason the biquads are: this is the
-	 * one cold place that already knows the model, so the audio path reads
-	 * plain scalars and never divides, never reads cfg and never branches on a
-	 * feature struct.
-	 *
-	 * aius_meter_init() also re-zeroes the published snapshot, which is what
-	 * makes the three interesting transitions honest. Turning metering off
-	 * takes sequence back to 0 ("never published") instead of freezing a stale
-	 * window on the wire; turning it on starts a fresh window; and a sample-rate
-	 * change re-bases both the reported rate and the publish cadence. It is a
-	 * ~1.4 kB memset, run at a block boundary alongside the biquad trig that
-	 * already dominates this function, and never per block.
-	 *
-	 * A reader racing that memset is safe for the same reason a reader racing a
-	 * publish is: seq changes value across the copy, so the s1 == s2 check
-	 * fails and the reader retries. */
-	g_meter_window_frames = rate / AIUS_METER_PUBLISH_HZ;
-	if (g_meter_window_frames == 0u)
-		g_meter_window_frames = 1u;
-	g_meter_us_per_frame_q16 = (uint32_t)((1000000ull << 16) / rate);
-	g_meters_active = cfg.features.meters != 0;
-	aius_meter_init(&g_meter, rate);
+	(void)aius_dsp_runtime_config_apply(
+		&g_dsp_runtime, &cfg, stream_rate_hz, &g_meter);
 }
 
 uint8_t AiusAudioProcessor::g_arena_memory[AiusAudioProcessor::ARENA_BYTES]
@@ -3311,7 +3062,7 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 		return AIUS_OPTICAL_APP_STORE_STALE;
 	if (sd_job_active())
 		return AIUS_OPTICAL_APP_STORE_BUSY;
-	dsp_model_to_optical_config(parsed, g_pending_dsp_model);
+	g_pending_dsp_model = parsed;
 	g_dsp_upload_pending = true;
 	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
 	g_sd_commit_writing = false;
@@ -4654,7 +4405,7 @@ static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
 		if (aius_dsp_config_parse_put(data, length, &parsed) !=
 		    AIUS_DSP_CONFIG_OK)
 			return true;
-		dsp_model_to_optical_config(parsed, g_pending_dsp_model);
+		g_pending_dsp_model = parsed;
 		/* Staged, not applied: the block-boundary swap in
 		 * AiusAudioProcessor::enqueue() remains the only place the
 		 * active model changes, where config_generation increments and

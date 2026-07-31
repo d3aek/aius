@@ -415,6 +415,19 @@ dsp)
 		"$src/aius_arena.c" \
 		-lm -o "$dsp_out"
 	"$dsp_out"
+	# The model-to-runtime adapter is the one coefficient/bypass/state-reset
+	# authority shared by firmware and the native latency renderer.
+	dsp_runtime_config_out="$build_dir/dsp-runtime-config"
+	"$cc" "${cflags[@]}" -D_GNU_SOURCE -ffp-contract=off \
+		"-I$fw_root/lib/aius_dsp/include" \
+		"-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_dsp_runtime_config/include" \
+		"$fw_root/test/dsp/test_dsp_runtime_config.c" \
+		"$fw_root/lib/aius_dsp_runtime_config/src/aius_dsp_runtime_config.c" \
+		"$fw_root/lib/aius_dsp/src/aius_dsp.c" \
+		"$src/aius_arena.c" \
+		-lm -o "$dsp_runtime_config_out"
+	"$dsp_runtime_config_out"
 	;;
 dsp-vectors)
 	# Decode each committed DTS vector through the portable DTS interface, then
