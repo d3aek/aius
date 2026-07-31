@@ -649,7 +649,9 @@ zero missing-live drops, dropped chunks/words, gap flushes,
 service-generation resets, service-budget overruns or pipeline/service
 failures. Maximum service time was 682 microseconds. The exact image remains
 flashed, and interrupting the source after the bracket left the CM6206
-enumerated.
+enumerated. The latency runner's independent image pin advances from the
+rejected `fb10b3cf9a3d` image to this accepted ingress-repair revision; its
+clock and counter gates remain unchanged.
 
 That closes the runtime-config ingress regression but not the plan's separate
 clock gate. The terminal carrier/output difference was -1,105 millihertz and a
