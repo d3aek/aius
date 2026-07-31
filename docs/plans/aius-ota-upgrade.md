@@ -476,6 +476,48 @@ The outcome is one of: **build staged single-image OTA**, **seek separate
 authorization for fused A/B**, or **defer OTA with the recovery and security
 reasons recorded**.
 
+### Investigation verdict, 2026-07-31: build staged single-image OTA
+
+The owner directed OTA as the next key feature (2026-07-31), which issues
+the build verdict; the fuse prohibition stands untouched. Item-by-item:
+
+- **Item 3, defect 25 — dispositioned for OTA, still open for the bench.**
+  The instrumented `fa=` latch has ridden four flashes since landing
+  (including `fecc4a0a2473` and `5adde600f880` on 2026-07-31), all booting
+  clean: 0/4 against the pre-instrument 4/4. More decisively for THIS
+  verdict, the defect implicates the loader CDC session, a path OTA never
+  uses: self-flash activates via `SYSRESETREQ` through the ROM, not
+  HalfKay. Unattended bench reflash remains conditionally unproven; OTA
+  activation is not gated on it.
+- **Items 4 and 5 — repositioned, not waived.** Erase/program stall
+  measurement (with the LUT/interrupt constraints and the audio-stop
+  decision) and the post-LUT HalfKay/ROM recovery proof are the entry
+  gates of the activation slice specifically; slices 2 and 3 do not touch
+  the flash and proceed without them.
+- **Item 6 — posture chosen: staged single-image.** Stage to SD through
+  the existing resumable chunked upload machinery, verify from SD, program
+  the boot flash inside a dark window, `SYSRESETREQ`; recovery remains the
+  proven HalfKay + watchdog recovery-safe boundary. No fuse, no slot-B
+  linker script.
+- **Item 7 — specified.** Container, staging, power-loss records and
+  image-health/trial rules: slice 1 (delivered). Signature: Ed25519 over
+  the header-binding digest (scheme tag 1), vendored TweetNaCl verify-only,
+  compiled-in public key, operator-held private key, host signer tool:
+  slice 2 (in flight). Activation, dark-window policy and the health
+  record's rollback semantics (trial budget 2, matching the watchdog
+  rule; a failed trial latches recovery-safe and the record names the
+  fallback identity): activation slice, after items 4/5.
+- **Item 8 — closed where cheap, accepted where not.** Upload progress and
+  failure diagnosis exist (`sd_diag`); staged/verified/armed states are
+  slice-1 record fields the wiring slice serializes; OTA event types ride
+  the wiring slice. Accepted gap, stated: "rolled back" is distinguishable
+  only through the health record, not a dedicated event, until the
+  activation slice lands.
+
+By the 2026-07-29 decision, the AC-3 four-hour and by-ear gates are
+unblocked by this verdict (they still also wait on sample-rate
+acceptance).
+
 ## Prerequisites, in order
 
 Nothing about OTA should be built before these, and each is independently
