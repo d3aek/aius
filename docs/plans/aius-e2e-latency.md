@@ -575,6 +575,28 @@ the failure. Evidence is retained under
 This does not distinguish CM6206 optical transmit discontinuity from a firmware
 ingress/service defect, and Phase 2 cannot consume this window as acceptance.
 
+Removing the Icron extender did not remediate the failure. After both devices
+were power-cycled, `lsusb -t` showed the CM6206 and Teensy directly on separate
+Renesas ports with no intermediate hub. The idle CM carrier immediately
+reproduced the same loss, and active continuous PCM did not recover it. An
+application-only Teensy reboot while the CM remained in uninterrupted playback
+temporarily restored confirmed PCM with clean ingress, but classification and
+progress were lost again within the next observation interval. The producer
+diagnostic attributes every drop to `AIUS_AUDIO_INGRESS_GAP_MISSING_LIVE`: the
+Teensy AudioStream callback received a missing left or right input block before
+the parser, DSP or output path. Natural playback EOF left the directly attached
+CM6206 enumerated.
+
+The last sustained green physical PCM image was
+`01477755955b+teensy41-optical`. Between that revision and the failing Phase 1
+image, only `30eeed071` changes production firmware; it replaces the optical
+processor's embedded DSP state with the shared `AiusDspRuntimeConfig` adapter.
+The other five commits change host tools, tests or documentation only. This
+makes `30eeed071` the sole source-level candidate, not proof of causation. A
+historical-image A/B run of `01477755955b` and `30eeed071` on the current direct
+Renesas topology is the minimum discriminator; no historical image has been
+flashed during this investigation.
+
 ### Phase 2: physical matrix and durable result
 
 ```yaml
