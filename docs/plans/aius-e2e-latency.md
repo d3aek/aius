@@ -873,6 +873,12 @@ the standing source condition (the gate-1 decision in the register), not
 an image regression. The observed-edge preflight remains the arbiter for
 formal collection on this source.
 
+The runner pin advanced again on 2026-07-31 to `5adde600f880` (the
+defect-35/34 pipeline batch) under the same ingress-health standard: a
+300-second 48 kHz bracket committed 16,904 blocks with every harmful
+counter delta zero on one boot generation, after the truncation-composite
+and type-21 device verifications recorded in the hardening ledger.
+
 The three direct-loop calibrations share one temporary fibre rewire and run as
 one uninterrupted topology slice. The four Teensy rows use the normal full loop.
 Each physical topology is confirmed before collection and left unchanged until

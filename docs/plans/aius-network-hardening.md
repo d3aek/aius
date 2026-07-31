@@ -1601,7 +1601,14 @@ are follow-up work, recorded here so they are not lost.
     byte-indistinguishable from a silent PCM source and closable only by
     growing the confirmation mute this fix exists to avoid. The harm named
     here — full-scale burst noise — is closed outright at every phase.
-    Hardware reproduction still awaits an E-AC-3-capable source.
+    **Device-verified same day on exact image `5adde600f880`** with a
+    synthetic carrier (the committed type-21 burst stuffed to its
+    12,288-word period, 60 s over the CM6206 loop): every burst framed and
+    refused (`rejects_unsupported` climbing, zero decoder units), the
+    predicted silence-commit cycle in the zero stuffing, and an 8-second
+    capture of the CM return measuring **peak 0 across 384,000 frames** —
+    pure digital silence where the defect predicted full-scale noise. A
+    real E-AC-3 source would still be a welcome cross-check.
 
 35. **An abrupt DTS source stop can turn one cut burst into a 120 ms AUDIO
     service and overflow ingress before the format transition recovers.**
@@ -1651,7 +1658,14 @@ are follow-up work, recorded here so they are not lost.
     timing remains the recorded next step; (2) with no discontinuity signal
     at all, a completed dead burst still reaches a decoder once (pinned at
     one AU by test; full closure needs AC-3 payload CRC validation in
-    `lib/aius_a52` or prompter carrier-loss ingress wiring).
+    `lib/aius_a52` or prompter carrier-loss ingress wiring). Device
+    observation on exact image `5adde600f880`, 2026-07-31: the
+    truncated-AC-3-then-PCM composite over the CM6206 loop ran with
+    service max 4,300 microseconds, zero ingress drops, one decode reject
+    with the MALFORMED observation latched, and clean PCM recovery — this
+    cut position takes the reject path; the CRC-less garbage-grind
+    positions are host-pinned. The 120 ms unit did not fire in this
+    window, consistent with it living outside these libs.
 
 #### Decisions taken, so they are not re-opened
 
