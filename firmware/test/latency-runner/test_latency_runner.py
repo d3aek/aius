@@ -389,6 +389,7 @@ class AnalyzerTests(unittest.TestCase):
             period=256,
             buffer_size=4096,
             warmup_frames=48000,
+            status_delay_seconds=0.5,
             probe_gap_frames=BENCH.PCM_PROBE_GAP_FRAMES,
             tail_frames=12000,
             command_argv=["bench.py", "--mode", "pcm"],
@@ -417,6 +418,22 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(
             manifest["stimulus"]["probe_gap_frames"],
             BENCH.PCM_PROBE_GAP_FRAMES,
+        )
+        self.assertEqual(
+            manifest["collection"]["status_delay_seconds"], 0.5
+        )
+
+    def test_formal_warmup_covers_active_source_clock_settle(self):
+        self.assertEqual(BENCH.FORMAL_WARMUP_FRAMES % 1536, 0)
+        self.assertGreaterEqual(
+            BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE, 50.0
+        )
+        self.assertGreaterEqual(
+            BENCH.FORMAL_STATUS_DELAY_SECONDS, 49.0
+        )
+        self.assertLess(
+            BENCH.FORMAL_STATUS_DELAY_SECONDS,
+            BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE,
         )
 
     def test_repository_identity_proves_sample_rate_ancestor(self):
@@ -448,6 +465,7 @@ class AnalyzerTests(unittest.TestCase):
             period=256,
             buffer_size=4096,
             warmup_frames=48000,
+            status_delay_seconds=0.5,
             probe_gap_frames=BENCH.PCM_PROBE_GAP_FRAMES,
             tail_frames=12000,
             command_argv=["bench.py"],

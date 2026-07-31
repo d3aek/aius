@@ -489,6 +489,7 @@ completed-slices:
   - shared runtime adapter target-placement repair and link guard
   - exact-commit post-repair 120-second live PCM ingress smoke
   - exact-image synchronized PCM and AC-3 acceptance
+  - active-output clock-settle preflight and repeat-run acceptance
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -692,6 +693,41 @@ These independent raw offsets must not be subtracted from each other or reported
 as decoder cost: the matching direct-loop transport baselines and controlled
 queue-phase correction remain outstanding.
 
+Repeat collection exposed a source-mode preflight defect rather than a latency
+failure. This CM6206 emits a 48,016.850 Hz optical carrier while ALSA playback
+is idle and 48,020.761 Hz while playback is active, a 3.911 Hz edge. The
+firmware follows that edge through same-nominal trims rate-limited to one per 10
+seconds. After a clean application reboot, the runner's old 1.5-second status
+delay bracketed output/carrier error at -3,559 millihertz. A 35-second
+diagnostic converged from -1,102 to 0 millihertz but correctly rejected the one
+trim/invalid window crossed inside its bracket.
+
+The formal CLI default now holds the active source for 2,400,768 frames / 50.016
+seconds, an exact AC-3 access-unit multiple, and takes the initial status at
+49.5 seconds. That leaves only the short probe span after the status bracket
+opens. Equivalent explicit-argument repeats then accepted:
+
+| Production row | Repeat raw first output | Repeat raw AU tail | Follow error | Linked trigger skew |
+|---|---:|---:|---:|---:|
+| PCM | 872 frames / 18.167 ms | n/a | 0 mHz | 0.046 frame |
+| AC-3 | 942 frames / 19.625 ms | 2,477 frames / 51.604 ms | 944 mHz | 0.057 frame |
+
+Both repeats again accepted 24 of 24 occurrences with identical min, median,
+p95 and max, affine ratio 1 within floating error, zero channel skew and zero
+harmful counter deltas. Across the two accepted starts per mode, raw PCM onset
+spans 872–971 frames / 18.167–20.229 ms and raw AC-3 onset spans 831–942 frames
+/ 17.313–19.625 ms. The 99-frame PCM and 111-frame AC-3 run-to-run ranges
+confirm that queue/start phase, about 2.1–2.3 ms here, must remain separate from
+within-run jitter, which stayed exactly zero.
+
+Ending an AC-3 run and starting PCM without reboot also exposed a separate
+transition diagnostic: the pipeline recovered to confirmed PCM but latched one
+`AIUS_MALFORMED` decoder rejection in both `pipeline_diag.last_status` and
+`audio_diag.pipeline_last_failure`. The runner rejected that bracket and a
+supported application reboot cleared it. Independent latency rows remain
+valid; seamless AC-3-to-PCM transition handling remains a firmware diagnostic,
+not a counter to waive in this plan.
+
 ### Phase 2: physical matrix and durable result
 
 ```yaml
@@ -709,6 +745,8 @@ matrix:
   pcm-production: complete
   dts-production: deferred-by-priority
   ac3-production: complete
+remaining-diagnostics:
+  ac3-to-pcm-transition-latched-malformed: pending
 commit-checkpoint:
   evidence: [raw-captures, manifests, latency-summary]
   parent-commit: "docs(aius): record optical latency"

@@ -36,6 +36,12 @@ AC3_PROBE_GAP_FRAMES = 5120
 # FFmpeg's measured AC-3 decode alignment places the first reference code at
 # frame 256 within its access unit, leaving the whole 1,024-frame code inside.
 WARMUP_FRAMES = 98304
+# The CM6206 emits a measurably different optical rate while ALSA playback is
+# active. Firmware can need four rate-limited ten-second trims after that edge,
+# so formal physical runs keep the carrier active before opening the evidence
+# bracket. This value is also an exact AC-3 access-unit multiple.
+FORMAL_WARMUP_FRAMES = 1563 * 1536
+FORMAL_STATUS_DELAY_SECONDS = 49.5
 TAIL_FRAMES = RATE // 4
 MAX_LAG_FRAMES = RATE // 4
 MAX_DSP_CONFIG_BYTES = 12288
@@ -252,6 +258,7 @@ def make_preflight(
     period: int,
     buffer_size: int,
     warmup_frames: int,
+    status_delay_seconds: float,
     probe_gap_frames: int,
     tail_frames: int,
     command_argv: list[str],
@@ -287,6 +294,9 @@ def make_preflight(
             "warmup_frames": warmup_frames,
             "probe_gap_frames": probe_gap_frames,
             "tail_frames": tail_frames,
+        },
+        "collection": {
+            "status_delay_seconds": status_delay_seconds,
         },
     }
 
@@ -1269,7 +1279,9 @@ def main() -> int:
     )
     parser.add_argument("--period", type=int, default=256)
     parser.add_argument("--buffer", type=int, default=4096)
-    parser.add_argument("--warmup-frames", type=int, default=WARMUP_FRAMES)
+    parser.add_argument(
+        "--warmup-frames", type=int, default=FORMAL_WARMUP_FRAMES
+    )
     parser.add_argument(
         "--probe-gap-frames",
         "--guard-frames",
@@ -1277,7 +1289,11 @@ def main() -> int:
         type=int,
     )
     parser.add_argument("--tail-frames", type=int, default=TAIL_FRAMES)
-    parser.add_argument("--status-delay", type=float, default=1.5)
+    parser.add_argument(
+        "--status-delay",
+        type=float,
+        default=FORMAL_STATUS_DELAY_SECONDS,
+    )
     parser.add_argument(
         "--reuse-existing",
         action="store_true",
@@ -1366,6 +1382,7 @@ def main() -> int:
         period=args.period,
         buffer_size=args.buffer,
         warmup_frames=args.warmup_frames,
+        status_delay_seconds=args.status_delay,
         probe_gap_frames=args.guard_frames,
         tail_frames=args.tail_frames,
         command_argv=[sys.executable, *sys.argv],
