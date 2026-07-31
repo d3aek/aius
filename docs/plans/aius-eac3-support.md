@@ -17,7 +17,11 @@ third large decoder forces: decoder residency stops being affordable and the
 justified design becomes swapping decoder state in and out of the arena at class
 time. Pre-decision capture, not a commitment; the standing recommendation from
 [`aius-ac3-support.md`](aius-ac3-support.md) §The format space is unchanged —
-**stay dark unless a real DD+ source appears on this bench**.
+**stay dark unless a real DD+ source appears on this bench**. Owner decision
+2026-07-31: OTA ([`aius-ota-upgrade.md`](aius-ota-upgrade.md)) is the next
+key feature; E-AC-3 implementation is considered only after OTA lands.
+Defect 34 below remains a standalone prerequisite independent of that
+sequencing.
 
 ## Entry condition and the prerequisite that stands alone
 

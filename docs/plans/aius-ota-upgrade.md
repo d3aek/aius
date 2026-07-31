@@ -17,6 +17,14 @@ with watchdog fallback would look like on this part, and whether the network
 surface is observable enough to make that safe. Investigated 2026-07-26 at the
 owner's request.
 
+**Owner decision 2026-07-31: OTA is the next key feature.** Complete this
+plan's investigation verdict, then implementation; E-AC-3 decode is
+considered only after OTA lands
+([`aius-eac3-support.md`](aius-eac3-support.md)). Sequencing rider from the
+same decision: the easy-to-prove open-defect set closes first, and
+hard-to-prove defects wait for the incoming ESI U24 XL bench session
+([`aius-open-work-register.md`](aius-open-work-register.md)).
+
 **The feasibility question is answered: yes, and the gating unknown is now
 resolved.** The part can self-program its own flash using routines Teensyduino
 already ships, and hardware A/B image selection genuinely exists on the

@@ -116,11 +116,19 @@ specified here. Strike items here in the commit that closes them.
   in-scope gates on one exact image;
   [`aius-e2e-latency.md`](aius-e2e-latency.md) was deliberately interleaved
   ahead of them by owner priority.
-- **OTA investigation verdict** — complete the finite investigation gate in
-  [`aius-ota-upgrade.md`](aius-ota-upgrade.md) without implying OTA
-  implementation or an OTP fuse burn. By owner decision 2026-07-29, the AC-3
-  four-hour and by-ear gates run only after this verdict as well as
-  sample-rate following.
+- **OTA investigation verdict, then implementation** — **owner decision
+  2026-07-31: OTA is the next key feature**, ahead of E-AC-3, which is
+  considered only after OTA lands. Complete the finite investigation gate in
+  [`aius-ota-upgrade.md`](aius-ota-upgrade.md) first (no OTP fuse burn
+  implied). By owner decision 2026-07-29, the AC-3 four-hour and by-ear
+  gates run only after this verdict as well as sample-rate following.
+  Sequencing rider, same 2026-07-31 decision: close the easy-to-prove open
+  defects first (30, 18, 10, 19, 20, 35, 2 and 34 dispatched or queued
+  2026-07-31, plus B9); anything hard to prove or diagnose waits for the ESI
+  U24 XL bench session — the open-gate TX underrun, the ±29.6k impulses,
+  both CM6206 discriminators, gate 1, the ITCM mechanism question, and
+  hardening defects 25 (conditional rider) and 27 (needs the loopback rig).
+  Defects 22 and 23 stay parked as recorded design calls.
 - **DSP roadmap item 4 — surround decorrelation.** The last item of the
   accepted audio-quality order
   ([`aius-dsp-config-api.md` §Accepted order](aius-dsp-config-api.md#accepted-order-for-the-next-level)):
