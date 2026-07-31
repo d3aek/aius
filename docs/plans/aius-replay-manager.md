@@ -1,6 +1,9 @@
 ---
 title: Aius SD replay manager
-status: in_progress
+type: plans
+scope: component
+component: aius
+status: in-progress
 ---
 
 # Aius SD replay manager

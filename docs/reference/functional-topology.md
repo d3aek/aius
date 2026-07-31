@@ -1,3 +1,14 @@
+---
+title: Aius functional topology
+type: reference
+scope: component
+component: aius
+status: current
+tags: [aius, hardware, topology, signal-path]
+updated: 2026-07-31
+toc: true
+---
+
 # Aius functional topology
 
 The operating modes, blocks, data/control/power flows, clock domains, DMA

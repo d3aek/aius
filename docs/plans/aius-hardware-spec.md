@@ -1,7 +1,8 @@
 ---
 title: Aius hardware spec
 type: plans
-scope: aius
+scope: component
+component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, teensy, spdif, pcb, kicad]

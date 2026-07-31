@@ -1,9 +1,10 @@
 ---
 title: Aius optical-only prototype and remote validation
 type: plans
-scope: aius
+scope: component
+component: aius
 subtype: experiment
-status: proposed
+status: draft
 tags: [aius, optical-spdif, prototype, ethernet, validation]
 updated: 2026-07-27
 toc: true

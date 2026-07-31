@@ -1,3 +1,14 @@
+---
+title: Aius interfaces and states
+type: reference
+scope: component
+component: aius
+status: current
+tags: [aius, hardware, interfaces, states]
+updated: 2026-07-31
+toc: true
+---
+
 # Aius interfaces and states
 
 The connectors, controls, power domains, operating states, fault scenarios, and

@@ -1,6 +1,9 @@
 ---
 title: AIUS USB application control protocol
-status: active
+type: reference
+scope: component
+component: aius
+status: current
 ---
 
 # AIUS USB application control protocol

@@ -1,6 +1,9 @@
 ---
 title: AIUS USB control protocol
-status: complete
+type: plans
+scope: component
+component: aius
+status: shipped
 owner: aius
 ---
 

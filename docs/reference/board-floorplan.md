@@ -1,7 +1,8 @@
 ---
 title: Aius board floorplan
 type: reference
-scope: aius
+scope: component
+component: aius
 status: draft
 tags: [aius, hardware, pcb, placement, mechanical]
 updated: 2026-07-18

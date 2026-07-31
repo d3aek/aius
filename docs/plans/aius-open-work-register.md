@@ -1,7 +1,8 @@
 ---
 title: Aius open-work register
 type: plans
-scope: aius
+scope: component
+component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]

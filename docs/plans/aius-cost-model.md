@@ -1,7 +1,8 @@
 ---
 title: Aius prototype cost model
 type: plans
-scope: aius
+scope: component
+component: aius
 status: draft
 tags: [aius, hardware, pcb, cost, prototype]
 updated: 2026-07-15

@@ -1,7 +1,8 @@
 ---
 title: Aius DTS capability gate
 type: plans
-scope: aius
+scope: component
+component: aius
 status: in-progress
 tags: [aius, hardware, teensy, dts, spdif, platformio]
 updated: 2026-07-18

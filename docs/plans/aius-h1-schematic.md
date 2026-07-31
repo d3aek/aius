@@ -1,7 +1,8 @@
 ---
 title: Aius H1 schematic capture
 type: plans
-scope: aius
+scope: component
+component: aius
 subtype: design
 status: shipped
 tags: [aius, hardware, kicad, schematic, erc]
