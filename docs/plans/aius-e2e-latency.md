@@ -728,11 +728,30 @@ explicit-argument repeats from an already partly settled device accepted:
 
 Both repeats again accepted 24 of 24 occurrences with identical min, median,
 p95 and max, affine ratio 1 within floating error, zero channel skew and zero
-harmful counter deltas. Across the two accepted starts per mode, raw PCM onset
-spans 872–971 frames / 18.167–20.229 ms and raw AC-3 onset spans 831–942 frames
-/ 17.313–19.625 ms. The 99-frame PCM and 111-frame AC-3 run-to-run ranges
-confirm that queue/start phase, about 2.1–2.3 ms here, must remain separate from
-within-run jitter, which stayed exactly zero.
+harmful counter deltas. Across the first two accepted starts per mode, raw PCM
+onset spans 872–971 frames / 18.167–20.229 ms and raw AC-3 onset spans 831–942
+frames / 17.313–19.625 ms. The 99-frame PCM and 111-frame AC-3 run-to-run
+ranges confirm that queue/start phase, about 2.1–2.3 ms here, must remain
+separate from within-run jitter, which stayed exactly zero.
+
+Exact committed harness `0e4090f345598a535109ff0792f1523533696f59`
+then validated the observed-edge default against the same firmware. The PCM row
+started from application reboot generation 19; its edge arrived after 11.937
+seconds with exact carrier match, and the AC-3 row's edge arrived after 11.969
+seconds with the same result. Both formal brackets retained zero follow error
+and zero trim/invalid-window delta.
+
+| Exact observed-edge row | Raw first output | Raw AU tail | Linked trigger skew |
+|---|---:|---:|---:|
+| PCM | 851 frames / 17.729 ms | n/a | 0.087 frame |
+| AC-3 | 898 frames / 18.708 ms | 2,433 frames / 50.688 ms | 0.106 frame |
+
+Both rows accepted all 24 codes with identical min, median, p95 and max, affine
+ratio 1 within floating error, zero channel skew and every harmful delta zero.
+Adding these provenance-valid starts expands the observed raw PCM onset envelope
+to 851–971 frames / 17.729–20.229 ms; the AC-3 envelope remains 831–942 frames /
+17.313–19.625 ms. Evidence is under
+`.scratch/019fb103-d707-7e01-adee-0ad1238d3115/latency/0e4-default-{pcm-clean-reboot,ac3}/`.
 
 Ending an AC-3 run and starting PCM without reboot also exposed a separate
 transition diagnostic: the pipeline recovered to confirmed PCM but latched one
