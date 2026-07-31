@@ -1,5 +1,8 @@
 import importlib.util
+import json
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +31,8 @@ REPEAT_SPEC = importlib.util.spec_from_file_location(
 )
 REPEAT = importlib.util.module_from_spec(REPEAT_SPEC)
 REPEAT_SPEC.loader.exec_module(REPEAT)
+
+NATIVE_RENDERER = os.environ.get("AIUS_LATENCY_RENDERER")
 
 
 class GeneratorTests(unittest.TestCase):
@@ -58,22 +63,62 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(np.all(carrier[:BENCH.WARMUP_FRAMES] == 0))
         self.assertTrue(np.all(carrier[-BENCH.TAIL_FRAMES:] == 0))
 
-    def test_ac3_codes_remain_inside_access_units(self):
+    def test_ac3_carrier_has_fixed_access_unit_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            _, decoded, source_positions, pa_positions = BENCH.make_ac3(
+            _, source_positions, pa_positions = BENCH.make_ac3(
                 root, BENCH.codes()
-            )
-            reference_positions = BENCH.locate_reference_codes(
-                decoded, BENCH.codes(), source_positions
             )
 
         self.assertGreater(len(pa_positions), BENCH.CODE_COUNT)
         self.assertTrue(np.all(np.diff(pa_positions) == 1536))
-        self.assertTrue(all(
-            position % 1536 + BENCH.CODE_FRAMES <= 1536
-            for position in reference_positions
+        self.assertEqual(len(source_positions), BENCH.CODE_COUNT)
+
+    def test_effective_config_normalization_changes_only_wire_fields(self):
+        model = json.loads(
+            (ROOT / "config" / "optical_dsp.json").read_text()
+        )
+        model["config_generation"] = 37
+        normalized = json.loads(BENCH.normalize_effective_config(
+            json.dumps(model).encode()
         ))
+
+        self.assertEqual(normalized["source"], "sd")
+        self.assertEqual(normalized["base_generation"], 37)
+        for key, value in model.items():
+            if key != "source":
+                self.assertEqual(normalized[key], value)
+
+    def test_effective_config_normalization_is_bounded(self):
+        for raw in (b"", b" " * (BENCH.MAX_DSP_CONFIG_BYTES + 1)):
+            with self.subTest(length=len(raw)):
+                with self.assertRaisesRegex(RuntimeError, "invalid size"):
+                    BENCH.normalize_effective_config(raw)
+
+    def test_encoded_positions_use_native_unit_timing_oracles(self):
+        manifest = {
+            "units": [
+                {
+                    "index": 4,
+                    "pa_index": 2000,
+                    "post_frame_zero": 120,
+                    "post_frame_last": 1655,
+                },
+                {
+                    "index": 5,
+                    "pa_index": 5072,
+                    "post_frame_zero": 1656,
+                    "post_frame_last": 3191,
+                },
+            ]
+        }
+
+        positions, units = BENCH.map_encoded_input_positions(
+            [256, 1800], manifest
+        )
+
+        self.assertEqual(positions, [1136, 2680])
+        self.assertEqual(units, [4, 5])
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -238,6 +283,193 @@ class AnalyzerTests(unittest.TestCase):
                 "ac3_alloc_count": 0,
             },
         }
+
+
+@unittest.skipUnless(NATIVE_RENDERER, "native renderer not built")
+class NativeRendererTests(unittest.TestCase):
+    def normalized_config(self, root):
+        model = json.loads(
+            (ROOT / "config" / "optical_dsp.json").read_text()
+        )
+        model["source"] = "sd"
+        model["base_generation"] = 0
+        path = root / "normalized-dsp.json"
+        path.write_text(json.dumps(model, separators=(",", ":")))
+        return path
+
+    def render(self, root, vector, label):
+        pcm = root / f"{label}.s24le32"
+        manifest = root / f"{label}.json"
+        command = [
+            NATIVE_RENDERER,
+            "--carrier", str(vector),
+            "--config", str(self.normalized_config(root)),
+            "--pcm", str(pcm),
+            "--manifest", str(manifest),
+        ]
+        completed = subprocess.run(
+            command, check=False, text=True, capture_output=True
+        )
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"{completed.stdout}\n{completed.stderr}",
+        )
+        return pcm, manifest, json.loads(manifest.read_text())
+
+    def test_exact_ac3_and_dts_carriers_render_continuously(self):
+        vectors = ROOT / "tools" / "iec_corpus" / "vectors"
+        cases = (
+            (
+                "ac3",
+                vectors / "ac3_surround51_ident.iec",
+                1,
+                1536,
+                6,
+                "big-endian",
+            ),
+            (
+                "dts-be",
+                vectors / "dts_be16.iec",
+                13,
+                512,
+                1,
+                "big-endian",
+            ),
+            (
+                "dts-le",
+                vectors / "dts_le16.iec",
+                13,
+                512,
+                1,
+                "little-endian",
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for label, vector, pc, frames, calls, byte_order in cases:
+                with self.subTest(label=label):
+                    pcm, _, result = self.render(
+                        root, vector, label
+                    )
+                    units = result["units"]
+                    self.assertGreater(len(units), 0)
+                    self.assertEqual(
+                        {unit["pc"] for unit in units}, {pc}
+                    )
+                    self.assertEqual(
+                        result["pipeline"]["parse_rejects"], 0
+                    )
+                    self.assertEqual(
+                        result["pipeline"]["decode_rejects"], 0
+                    )
+                    self.assertEqual(
+                        result["parser"]["scan_malformed"], 0
+                    )
+                    self.assertEqual(
+                        result["parser"]["pipeline_malformed"], 0
+                    )
+                    self.assertEqual(
+                        pcm.stat().st_size,
+                        result["rendered_frames"] * 2 * 4,
+                    )
+                    previous_pa = -1
+                    previous_end = 0
+                    for unit in units:
+                        self.assertEqual(unit["byte_order"], byte_order)
+                        self.assertGreater(unit["pa_index"], previous_pa)
+                        self.assertGreater(unit["period_words"], 0)
+                        self.assertEqual(unit["decoded_frames"], frames)
+                        self.assertEqual(unit["decoder_calls"], calls)
+                        self.assertGreater(unit["channel_mask"], 0)
+                        self.assertEqual(unit["sample_rate_hz"], 48000)
+                        self.assertEqual(
+                            unit["pre_end"] - unit["pre_start"],
+                            frames,
+                        )
+                        self.assertEqual(
+                            unit["post_frame_last"]
+                            - unit["post_frame_zero"] + 1,
+                            frames,
+                        )
+                        self.assertEqual(
+                            unit["pre_start"], previous_end
+                        )
+                        previous_pa = unit["pa_index"]
+                        previous_end = unit["pre_end"]
+
+    def test_native_render_is_byte_deterministic(self):
+        vector = (
+            ROOT
+            / "tools"
+            / "iec_corpus"
+            / "vectors"
+            / "ac3_surround51_ident.iec"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            first_pcm, first_manifest, _ = self.render(
+                root, vector, "first"
+            )
+            second_pcm, second_manifest, _ = self.render(
+                root, vector, "second"
+            )
+            self.assertEqual(
+                first_pcm.read_bytes(), second_pcm.read_bytes()
+            )
+            self.assertEqual(
+                first_manifest.read_bytes(),
+                second_manifest.read_bytes(),
+            )
+
+    def test_pcm_carrier_uses_native_pipeline_and_dsp_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            carrier = root / "pcm.s16le"
+            source_positions = BENCH.make_pcm(carrier, BENCH.codes())
+            reference, manifest = BENCH.render_native(
+                pathlib.Path(NATIVE_RENDERER),
+                carrier,
+                self.normalized_config(root),
+                root,
+            )
+            reference_positions = BENCH.locate_reference_codes(
+                reference, BENCH.codes(), source_positions
+            )
+
+        self.assertEqual(manifest["pipeline"]["class"], 1)
+        self.assertEqual(manifest["units"], [])
+        self.assertEqual(len(reference_positions), BENCH.CODE_COUNT)
+        self.assertTrue(np.all(np.diff(reference_positions) > 0))
+
+    def test_generated_ac3_codes_map_through_native_unit_oracles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            carrier, source_positions, pa_positions = BENCH.make_ac3(
+                root, BENCH.codes()
+            )
+            reference, manifest = BENCH.render_native(
+                pathlib.Path(NATIVE_RENDERER),
+                carrier,
+                self.normalized_config(root),
+                root,
+            )
+            reference_positions = BENCH.locate_reference_codes(
+                reference, BENCH.codes(), source_positions
+            )
+            input_positions, unit_indices = (
+                BENCH.map_encoded_input_positions(
+                    reference_positions, manifest
+                )
+            )
+
+        self.assertEqual(manifest["pipeline"]["codec_pc"], 1)
+        self.assertEqual(len(input_positions), BENCH.CODE_COUNT)
+        self.assertEqual(len(set(unit_indices)), BENCH.CODE_COUNT)
+        self.assertEqual(
+            [unit["pa_index"] // 2 for unit in manifest["units"]],
+            pa_positions,
+        )
 
 
 class CollectorContractTests(unittest.TestCase):

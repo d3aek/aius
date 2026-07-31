@@ -469,8 +469,9 @@ seams:
   - evidence manifest
 completed-slices:
   - shared production DSP runtime-config adapter
+  - native exact-carrier parser/decoder/DSP renderer core and runner switchover
 remaining-slices:
-  - native decoder/DSP reference renderer
+  - native renderer per-unit payload hashing and evidence completion
   - formal probe analyzer and evidence manifest
   - synchronized collector acceptance hardening
 owned-paths:
@@ -495,8 +496,19 @@ flags, accepted-rate coefficient design, state resets and meter cadence.
 Native differential tests perturb every field category, assert reset/bind
 semantics, and run two retained DSP consumers across consecutive blocks with
 byte-identical output. The Teensy target builds with zero memory delta. This
-does not close Phase 1: the renderer, formal analyzer/manifest and synchronized
-collector gates remain.
+does not close Phase 1: renderer evidence completion, the formal
+analyzer/manifest and synchronized collector gates remain.
+
+The native renderer core is delivered. It scans the exact carrier with the
+public IEC parser, then retains one production pipeline, resident decoder and
+shared DSP runtime across the whole carrier. It records each unit's actual
+byte order, `Pc`, `Pd`, period, decoder result and continuous pre/post-DSP timing
+oracles. The live PCM/AC-3 runner now hashes the board's exact effective config
+response and its concurrency-normalized parser input, uses the native stereo
+reference for correlation, and maps every AC-3 code back through the renderer's
+unit oracle. FFmpeg remains the pinned encoder/wrapper but is no longer the
+decode authority. Per-unit payload hashes, the formal evidence schema and the
+full acceptance analyzer remain open.
 
 Native tests cover known integer and fractional lags, affine clock error,
 periodic ambiguity, silence, clipping, missing/swapped/duplicate/false codes,

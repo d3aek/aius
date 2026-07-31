@@ -485,7 +485,25 @@ rate-runner)
 	python3 "$fw_root/test/rate-runner/test_rate_bench.py"
 	;;
 latency-runner)
-	python3 "$fw_root/test/latency-runner/test_latency_runner.py"
+	# Exact-carrier native reference: public IEC parser -> resident production
+	# pipeline/decoders -> shared runtime-config adapter -> public DSP.
+	latency_renderer_out="$build_dir/latency-native-renderer"
+	pipeline_build "$latency_renderer_out" -ffp-contract=off \
+		"-I$fw_root/lib/aius_pipeline/include" \
+		"-I$fw_root/lib/aius_iec61937/include" \
+		"-I$fw_root/lib/aius_dsp/include" \
+		"-I$fw_root/lib/aius_dsp_config/include" \
+		"-I$fw_root/lib/aius_dsp_runtime_config/include" \
+		"-I$fw_root/lib/aius_json/include" \
+		"$fw_root/tools/latency/native_renderer.c" \
+		"$fw_root/lib/aius_pipeline/src/aius_pipeline.c" \
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
+		"$fw_root/lib/aius_dsp/src/aius_dsp.c" \
+		"$fw_root/lib/aius_dsp_config/src/aius_dsp_config.c" \
+		"$fw_root/lib/aius_dsp_runtime_config/src/aius_dsp_runtime_config.c" \
+		"$fw_root/lib/aius_json/src/aius_json.c"
+	AIUS_LATENCY_RENDERER="$latency_renderer_out" \
+		python3 "$fw_root/test/latency-runner/test_latency_runner.py"
 	;;
 flash)
 	# The button-free flash path, driven against a scripted CDC transport and

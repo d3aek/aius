@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
+import urllib.request
 
 import numpy as np
 
@@ -24,6 +26,7 @@ GUARD_FRAMES = 3584
 WARMUP_FRAMES = 98304
 TAIL_FRAMES = RATE // 4
 MAX_LAG_FRAMES = RATE // 4
+MAX_DSP_CONFIG_BYTES = 12288
 SEED = bytes.fromhex(
     "f7cbe4302535d7f633b30578057935e554ae17896ba9c2b4d49f977dd1d8a9ea"
 )
@@ -103,13 +106,91 @@ def run_command(argv: list[str], log_path: Path) -> None:
         )
 
 
+def normalize_effective_config(raw: bytes) -> bytes:
+    if not raw or len(raw) > MAX_DSP_CONFIG_BYTES:
+        raise RuntimeError("effective DSP config has invalid size")
+    model = json.loads(raw)
+    if not isinstance(model, dict):
+        raise RuntimeError("effective DSP config is not an object")
+    generation = model.get("config_generation")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 0
+    ):
+        raise RuntimeError(
+            "effective DSP config has invalid config_generation"
+        )
+    normalized = dict(model)
+    # These are wire/concurrency fields, not signal-processing choices.
+    # A successful PUT is SD-backed, and the parser requires a fresh-token
+    # base_generation even when used read-only by the native renderer.
+    normalized["source"] = "sd"
+    normalized["base_generation"] = generation
+    return (
+        json.dumps(normalized, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
+
+
+def capture_effective_config(url: str, root: Path) -> tuple[Path, Path]:
+    with urllib.request.urlopen(url, timeout=5.0) as response:
+        raw = response.read(MAX_DSP_CONFIG_BYTES + 1)
+    effective_path = root / "dsp-config-effective.json"
+    normalized_path = root / "dsp-config-renderer.json"
+    effective_path.write_bytes(raw)
+    normalized_path.write_bytes(normalize_effective_config(raw))
+    return effective_path, normalized_path
+
+
+def render_native(
+    renderer: Path,
+    carrier_path: Path,
+    config_path: Path,
+    root: Path,
+) -> tuple[np.ndarray, dict]:
+    if not renderer.is_file():
+        raise RuntimeError(
+            f"native renderer not found: {renderer}; run "
+            "scripts/test.sh --environment native --suite latency-runner"
+        )
+    reference_path = root / "native-reference.s32le"
+    render_manifest_path = root / "native-render-manifest.json"
+    run_command([
+        str(renderer),
+        "--carrier", str(carrier_path),
+        "--config", str(config_path),
+        "--pcm", str(reference_path),
+        "--manifest", str(render_manifest_path),
+        "--rate", str(RATE),
+    ], root / "native-render.log")
+    manifest = json.loads(render_manifest_path.read_text(encoding="utf-8"))
+    rendered = np.fromfile(reference_path, dtype="<i4")
+    if len(rendered) % CHANNELS:
+        raise RuntimeError("native reference has a partial stereo frame")
+    reference = rendered.reshape(-1, CHANNELS)
+    if manifest.get("rendered_frames") != len(reference):
+        raise RuntimeError("native reference length disagrees with manifest")
+    pipeline = manifest.get("pipeline", {})
+    if any(
+        pipeline.get(key) != 0
+        for key in (
+            "parse_rejects",
+            "decode_rejects",
+            "output_drops",
+            "last_failure",
+        )
+    ):
+        raise RuntimeError("native renderer reported a pipeline failure")
+    return reference, manifest
+
+
 def make_ac3(
     root: Path,
     probe_codes: list[np.ndarray],
     warmup_frames: int = WARMUP_FRAMES,
     guard_frames: int = GUARD_FRAMES,
     tail_frames: int = TAIL_FRAMES,
-) -> tuple[Path, np.ndarray, list[int], list[int]]:
+) -> tuple[Path, list[int], list[int]]:
     total = (
         warmup_frames
         + CODE_COUNT * (CODE_FRAMES + guard_frames)
@@ -127,7 +208,6 @@ def make_ac3(
     source.tofile(source_path)
     ac3_path = root / "carrier.ac3"
     carrier_path = root / "carrier.s16le"
-    decoded_path = root / "decoded-5.1.s32le"
 
     run_command([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -141,12 +221,6 @@ def make_ac3(
         "-i", str(ac3_path), "-map", "0:a", "-c:a", "copy",
         "-f", "spdif", str(carrier_path),
     ], root / "ffmpeg-wrap.log")
-    run_command([
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", str(ac3_path), "-map", "0:a", "-ac", "6",
-        "-channel_layout", "5.1", "-c:a", "pcm_s32le",
-        "-f", "s32le", str(decoded_path),
-    ], root / "ffmpeg-decode.log")
 
     carrier = np.fromfile(carrier_path, dtype="<u2")
     if len(carrier) % 2:
@@ -163,11 +237,7 @@ def make_ac3(
             f"unexpected AC-3 IEC periods: {np.unique(periods).tolist()}"
         )
 
-    decoded = np.fromfile(decoded_path, dtype="<i4")
-    if len(decoded) % 6:
-        raise RuntimeError("decoded AC-3 has a partial 5.1 frame")
-    decoded = decoded.reshape(-1, 6)
-    return carrier_path, decoded, source_positions, pa_positions
+    return carrier_path, source_positions, pa_positions
 
 
 def correlation_peak(
@@ -237,6 +307,46 @@ def locate_reference_codes(
             )
         positions.append(position)
     return positions
+
+
+def map_encoded_input_positions(
+    reference_positions: list[int],
+    render_manifest: dict,
+) -> tuple[list[int], list[int]]:
+    units = render_manifest.get("units")
+    if not isinstance(units, list) or not units:
+        raise RuntimeError("native render manifest has no encoded units")
+    input_positions = []
+    unit_indices = []
+    for reference_position in reference_positions:
+        matches = [
+            unit for unit in units
+            if (
+                unit["post_frame_zero"] <= reference_position
+                and reference_position + CODE_FRAMES - 1
+                <= unit["post_frame_last"]
+            )
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "reference code does not belong to exactly one decoded unit"
+            )
+        unit = matches[0]
+        pa_word_index = unit["pa_index"]
+        if pa_word_index % CHANNELS:
+            raise RuntimeError("encoded Pa is not stereo-frame aligned")
+        frame_in_unit = reference_position - unit["post_frame_zero"]
+        input_positions.append(
+            pa_word_index // CHANNELS + frame_in_unit
+        )
+        unit_indices.append(unit["index"])
+    if any(
+        right <= left for left, right in zip(
+            input_positions, input_positions[1:]
+        )
+    ):
+        raise RuntimeError("encoded input associations are not monotonic")
+    return input_positions, unit_indices
 
 
 def analyze(
@@ -461,6 +571,18 @@ def main() -> int:
     parser.add_argument(
         "--status-url", default="http://192.0.2.66/api/status"
     )
+    parser.add_argument(
+        "--config-url", default="http://192.0.2.66/api/dsp/config"
+    )
+    parser.add_argument(
+        "--native-renderer",
+        type=Path,
+        default=Path(os.environ.get(
+            "AIUS_LATENCY_RENDERER",
+            Path(__file__).resolve().parents[2]
+            / ".build/native/latency-native-renderer",
+        )),
+    )
     parser.add_argument("--period", type=int, default=256)
     parser.add_argument("--buffer", type=int, default=4096)
     parser.add_argument("--warmup-frames", type=int, default=WARMUP_FRAMES)
@@ -499,35 +621,41 @@ def main() -> int:
             "reference_positions", generation.get("input_positions")
         )
         if args.mode == "pcm":
+            reference_artifact = manifest["artifacts"].get(
+                "native_reference",
+                manifest["artifacts"]["carrier"],
+            )
+            reference_dtype = (
+                "<i4" if "native_reference" in manifest["artifacts"]
+                else "<i2"
+            )
             reference = np.fromfile(
-                args.output / manifest["artifacts"]["carrier"]["path"],
-                dtype="<i2",
+                args.output / reference_artifact["path"],
+                dtype=reference_dtype,
             ).reshape(-1, CHANNELS)
             input_positions = generation["input_positions"]
         else:
-            decoded_path = args.output / "decoded-5.1.s32le"
-            reference = np.fromfile(
-                decoded_path, dtype="<i4"
-            ).reshape(-1, 6)[:, :2]
-            for key, artifact_path in (
-                ("source", args.output / "source-5.1.s16le"),
-                ("elementary_stream", args.output / "carrier.ac3"),
-                ("decoded_reference", decoded_path),
-            ):
-                manifest["artifacts"].setdefault(
-                    key,
-                    {
-                        "path": artifact_path.name,
-                        "sha256": sha256(artifact_path),
-                    },
+            if "native_reference" in manifest["artifacts"]:
+                reference_path = (
+                    args.output
+                    / manifest["artifacts"]["native_reference"]["path"]
                 )
-            input_positions = []
-            for reference_position in reference_positions:
-                access_unit = reference_position // 1536
-                input_positions.append(
-                    generation["pa_positions"][access_unit]
-                    + reference_position % 1536
-                )
+                reference = np.fromfile(
+                    reference_path, dtype="<i4"
+                ).reshape(-1, CHANNELS)
+                input_positions = generation["input_positions"]
+            else:
+                decoded_path = args.output / "decoded-5.1.s32le"
+                reference = np.fromfile(
+                    decoded_path, dtype="<i4"
+                ).reshape(-1, 6)[:, :2]
+                input_positions = []
+                for reference_position in reference_positions:
+                    access_unit = reference_position // 1536
+                    input_positions.append(
+                        generation["pa_positions"][access_unit]
+                        + reference_position % 1536
+                    )
         summary = analyze(
             args.mode,
             capture,
@@ -554,18 +682,34 @@ def main() -> int:
     if args.status_delay >= args.warmup_frames / RATE:
         raise ValueError("status bracket must begin before the first code")
 
+    effective_config_path, renderer_config_path = capture_effective_config(
+        args.config_url, args.output
+    )
     probe_codes = codes()
     if args.mode == "pcm":
         carrier_path = args.output / "carrier.s16le"
-        input_positions = make_pcm(
+        source_positions = make_pcm(
             carrier_path,
             probe_codes,
             args.warmup_frames,
             args.guard_frames,
             args.tail_frames,
         )
-        reference = np.fromfile(carrier_path, dtype="<i2").reshape(-1, 2)
-        reference_positions = input_positions
+        reference, render_manifest = render_native(
+            args.native_renderer,
+            carrier_path,
+            renderer_config_path,
+            args.output,
+        )
+        if (
+            render_manifest["pipeline"]["class"] != 1
+            or render_manifest["units"]
+        ):
+            raise RuntimeError("native renderer did not classify PCM")
+        reference_positions = locate_reference_codes(
+            reference, probe_codes, source_positions
+        )
+        input_positions = source_positions
         generation = {
             "seed_sha256": hashlib.sha256(SEED).hexdigest(),
             "code_count": CODE_COUNT,
@@ -574,11 +718,11 @@ def main() -> int:
             "warmup_frames": args.warmup_frames,
             "tail_frames": args.tail_frames,
             "input_positions": input_positions,
+            "reference_positions": reference_positions,
         }
     else:
         (
             carrier_path,
-            decoded,
             source_positions,
             pa_positions,
         ) = make_ac3(
@@ -588,41 +732,31 @@ def main() -> int:
             args.guard_frames,
             args.tail_frames,
         )
-        reference_positions = locate_reference_codes(
-            decoded, probe_codes, source_positions
+        reference, render_manifest = render_native(
+            args.native_renderer,
+            carrier_path,
+            renderer_config_path,
+            args.output,
         )
-        if any(
-            position % 1536 + CODE_FRAMES > 1536
-            for position in reference_positions
+        if (
+            render_manifest["pipeline"]["class"] != 2
+            or render_manifest["pipeline"]["codec_pc"] != 1
         ):
-            offsets = sorted({
-                position % 1536 for position in reference_positions
-            })
+            raise RuntimeError("native renderer did not classify AC-3 Pc=1")
+        reference_positions = locate_reference_codes(
+            reference, probe_codes, source_positions
+        )
+        input_positions, unit_indices = map_encoded_input_positions(
+            reference_positions, render_manifest
+        )
+        native_pa_positions = [
+            unit["pa_index"] // CHANNELS
+            for unit in render_manifest["units"]
+        ]
+        if native_pa_positions != pa_positions:
             raise RuntimeError(
-                "an AC-3 reference code crosses an access-unit boundary: "
-                f"offsets={offsets}"
+                "native IEC unit positions disagree with generated carrier"
             )
-        if any(
-            right - left - CODE_FRAMES < 2 * 1536
-            for left, right in zip(
-                reference_positions, reference_positions[1:]
-            )
-        ):
-            raise RuntimeError(
-                "AC-3 reference codes have fewer than two quiet access units"
-            )
-        input_positions = []
-        for reference_position in reference_positions:
-            access_unit = reference_position // 1536
-            frame_in_unit = reference_position % 1536
-            if access_unit >= len(pa_positions):
-                raise RuntimeError(
-                    "decoded reference extends beyond IEC burst map"
-                )
-            input_positions.append(
-                pa_positions[access_unit] + frame_in_unit
-            )
-        reference = decoded[:, :2]
         generation = {
             "seed_sha256": hashlib.sha256(SEED).hexdigest(),
             "code_count": CODE_COUNT,
@@ -632,6 +766,8 @@ def main() -> int:
             "tail_frames": args.tail_frames,
             "source_positions": source_positions,
             "reference_positions": reference_positions,
+            "input_positions": input_positions,
+            "reference_unit_indices": unit_indices,
             "pa_positions": pa_positions,
         }
 
@@ -659,12 +795,31 @@ def main() -> int:
             "path": capture_path.name,
             "sha256": sha256(capture_path),
         },
+        "effective_dsp_config": {
+            "path": effective_config_path.name,
+            "sha256": sha256(effective_config_path),
+        },
+        "renderer_dsp_config": {
+            "path": renderer_config_path.name,
+            "sha256": sha256(renderer_config_path),
+        },
+        "native_reference": {
+            "path": "native-reference.s32le",
+            "sha256": sha256(args.output / "native-reference.s32le"),
+        },
+        "native_render_manifest": {
+            "path": "native-render-manifest.json",
+            "sha256": sha256(args.output / "native-render-manifest.json"),
+        },
+        "native_render_log": {
+            "path": "native-render.log",
+            "sha256": sha256(args.output / "native-render.log"),
+        },
     }
     if args.mode == "ac3":
         for key, artifact_path in (
             ("source", args.output / "source-5.1.s16le"),
             ("elementary_stream", args.output / "carrier.ac3"),
-            ("decoded_reference", args.output / "decoded-5.1.s32le"),
         ):
             manifest["artifacts"][key] = {
                 "path": artifact_path.name,

@@ -275,8 +275,10 @@ an existing build.
 ## Running host tests
 
 Requires `gcc`. From anywhere, `scripts/test.sh --environment native --suite <name>`.
-`latency-runner` additionally requires Python NumPy and `ffmpeg`; live
-collection requires `libasound.so.2`.
+`latency-runner` additionally requires Python NumPy and `ffmpeg`; it builds the
+native production-pipeline reference renderer at
+`.build/native/latency-native-renderer`. Live collection requires
+`libasound.so.2` and readable board status and DSP-config endpoints.
 Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 
 | Suite | Covers |
@@ -303,7 +305,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `json` | The one JSON read cursor those two parsers and the replay body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
 | `rate-runner` | The read-only sample-rate bench collector and pure analyzer, including drift, transition, mismatch, encoded and waveform evidence gates. |
-| `latency-runner` | The exploratory linked ALSA latency probe generator and analyzer, including deterministic code geometry, AC-3 access-unit placement, per-channel lag/skew recovery, counter wrap and input-shape rejection. |
+| `latency-runner` | The linked ALSA latency probe, exact-carrier native parser/decoder/DSP renderer, captured-config normalization, AC-3 unit timing-oracle mapping, deterministic code geometry, per-channel lag/skew recovery, counter wrap and input-shape rejection. |
 | `recovery-runner` | The live recovery smoke's host runner: every gate on all three result paths against a scripted device on a virtual clock. |
 | `flash` | The button-free flash path: HalfKay entry judged by the port going away rather than by an acknowledgement, the image-identity oracle over synthesised Intel HEX, and every fail-closed arm. |
 | `http` | Request parser + the bounded server transaction. |
