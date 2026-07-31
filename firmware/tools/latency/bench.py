@@ -18,7 +18,11 @@ import wave
 import numpy as np
 
 from linked_probe import (
+    ACTIVE_SOURCE_ACCEPTED_MODES,
     MAX_LINKED_TRIGGER_SKEW_FRAMES,
+    MAX_PREFLIGHT_XRUN_RECOVERIES,
+    SETTLED_WINDOW_SECONDS,
+    TRIM_RATE_LIMIT_SECONDS,
     collect,
     preflight_active_source,
 )
@@ -40,12 +44,32 @@ AC3_PROBE_GAP_FRAMES = 5120
 # FFmpeg's measured AC-3 decode alignment places the first reference code at
 # frame 256 within its access unit, leaving the whole 1,024-frame code inside.
 WARMUP_FRAMES = 98304
+AC3_IEC_PERIOD_FRAMES = 1536
 ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS = 3.0
+# A post-reboot device needed five to seven rate-limited trims to converge
+# (docs/plans/aius-e2e-latency.md), so the budget covers seven trim gaps plus
+# the minimum hold before acceptance is even considered.
 ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS = 75.0
 ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS = 0.25
 MAXIMUM_FOLLOW_ERROR_MILLIHZ = 1000
 FORMAL_WARMUP_FRAMES = WARMUP_FRAMES
 FORMAL_STATUS_DELAY_SECONDS = 1.5
+# Formal-bracket allowances, each measured against the code path that spends it.
+# `linked_probe.collect` opens, configures, prepares, links and prefills both
+# streams before the trigger, after the preflight stream is dropped and its
+# artifact hashed; one GET /api/status is spent before the trigger and one
+# after the last frame drains. The 5 s urlopen timeout in `get_json` bounds a
+# failure, not a healthy LAN fetch, so it is not the budget here.
+FORMAL_ALSA_SETUP_ALLOWANCE_SECONDS = 0.5
+FORMAL_STATUS_FETCH_ALLOWANCE_SECONDS = 0.5
+# The device samples its clock counters asynchronously from the HTTP response,
+# so an accepted edge may already be this stale when the preflight sees it.
+STATUS_STALENESS_ALLOWANCE_SECONDS = 0.5
+ACCEPTANCE_CONTRACT_VERSION = 2
+HARNESS_PATHS = (
+    "firmware/tools/latency",
+    "firmware/test/latency-runner",
+)
 TAIL_FRAMES = RATE // 4
 MAX_LAG_FRAMES = RATE // 4
 MAX_DSP_CONFIG_BYTES = 12288
@@ -148,9 +172,24 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def active_source_contract() -> dict:
+    return {
+        "minimum_seconds": ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
+        "timeout_seconds": ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
+        "poll_seconds": ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
+        "settled_window_seconds": SETTLED_WINDOW_SECONDS,
+        "trim_rate_limit_seconds": TRIM_RATE_LIMIT_SECONDS,
+        "maximum_follow_error_millihz": MAXIMUM_FOLLOW_ERROR_MILLIHZ,
+        "maximum_xrun_recoveries": MAX_PREFLIGHT_XRUN_RECOVERIES,
+        "accepted_modes": list(ACTIVE_SOURCE_ACCEPTED_MODES),
+    }
+
+
 def acceptance_contract(mode: str) -> dict:
     code_frames, guard_frames = mode_geometry(mode)
     return {
+        "contract_version": ACCEPTANCE_CONTRACT_VERSION,
+        "active_source_preflight": active_source_contract(),
         "expected_codes": CODE_COUNT,
         "minimum_accepted_codes": MIN_ACCEPTED_CODES,
         "code_frames": code_frames,
@@ -170,6 +209,94 @@ def acceptance_contract(mode: str) -> dict:
         "maximum_lag_frames": MAX_LAG_FRAMES,
         "clipping_values_s16": [-32768, 32767],
     }
+
+
+def stimulus_frames(
+    mode: str,
+    warmup_frames: int,
+    probe_gap_frames: int,
+    tail_frames: int,
+) -> int:
+    """Frames the device plays for one formal collection."""
+    code_frames, _ = mode_geometry(mode)
+    frames = (
+        warmup_frames
+        + CODE_COUNT * (code_frames + probe_gap_frames)
+        + tail_frames
+    )
+    if mode == "ac3":
+        # The IEC carrier the device actually plays is padded out to whole
+        # 1,536-frame access units, so round up rather than under-count.
+        periods = -(-frames // AC3_IEC_PERIOD_FRAMES)
+        frames = periods * AC3_IEC_PERIOD_FRAMES
+    return frames
+
+
+def formal_bracket_projection(
+    mode: str,
+    warmup_frames: int,
+    probe_gap_frames: int,
+    tail_frames: int,
+) -> dict:
+    """Worst-case wall clock from the accepted edge to the final status read.
+
+    Every term is a named allowance over an actual code path, so a CLI knob that
+    pushes the bracket across a rate-limited trim is visible before the run
+    touches the device.
+    """
+    frames = stimulus_frames(
+        mode, warmup_frames, probe_gap_frames, tail_frames
+    )
+    playback_seconds = frames / RATE
+    bracket_seconds = (
+        FORMAL_ALSA_SETUP_ALLOWANCE_SECONDS
+        + FORMAL_STATUS_FETCH_ALLOWANCE_SECONDS
+        + playback_seconds
+        + FORMAL_STATUS_FETCH_ALLOWANCE_SECONDS
+    )
+    budget_seconds = (
+        TRIM_RATE_LIMIT_SECONDS
+        - ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS
+        - STATUS_STALENESS_ALLOWANCE_SECONDS
+    )
+    return {
+        "stimulus_frames": frames,
+        "playback_seconds": playback_seconds,
+        "setup_allowance_seconds": FORMAL_ALSA_SETUP_ALLOWANCE_SECONDS,
+        "status_fetch_allowance_seconds": (
+            FORMAL_STATUS_FETCH_ALLOWANCE_SECONDS
+        ),
+        "status_fetches": 2,
+        "poll_allowance_seconds": ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
+        "status_staleness_allowance_seconds": (
+            STATUS_STALENESS_ALLOWANCE_SECONDS
+        ),
+        "trim_rate_limit_seconds": TRIM_RATE_LIMIT_SECONDS,
+        "bracket_seconds": bracket_seconds,
+        "budget_seconds": budget_seconds,
+        "fits": bracket_seconds <= budget_seconds,
+    }
+
+
+def validate_formal_bracket(
+    mode: str,
+    warmup_frames: int,
+    probe_gap_frames: int,
+    tail_frames: int,
+) -> dict:
+    projection = formal_bracket_projection(
+        mode, warmup_frames, probe_gap_frames, tail_frames
+    )
+    if not projection["fits"]:
+        raise ValueError(
+            "formal collection bracket of "
+            f"{projection['bracket_seconds']:.3f} s exceeds the "
+            f"{projection['budget_seconds']:.3f} s that fit inside the "
+            f"{TRIM_RATE_LIMIT_SECONDS:.1f} s device trim rate limit "
+            f"({projection['stimulus_frames']} stimulus frames); reduce "
+            "--warmup-frames or --tail-frames"
+        )
+    return projection
 
 
 def tool_versions(mode: str) -> dict:
@@ -217,7 +344,8 @@ def repository_identity() -> dict:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if phase1_ancestor.returncode != 0:
+    phase1_is_ancestor = phase1_ancestor.returncode == 0
+    if not phase1_is_ancestor:
         raise RuntimeError(
             "accepted Phase 1 image is not an ancestor"
         )
@@ -234,22 +362,57 @@ def repository_identity() -> dict:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if evidence_ancestor.returncode != 0:
+    evidence_is_ancestor = evidence_ancestor.returncode == 0
+    if not evidence_is_ancestor:
         raise RuntimeError(
             "accepted sample-rate evidence is not an image ancestor"
         )
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain", "--", *HARNESS_PATHS],
+        cwd=root,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if dirty.returncode != 0:
+        raise RuntimeError("cannot inspect the latency harness working tree")
+    dirty_files = [
+        line[3:].strip()
+        for line in dirty.stdout.splitlines()
+        if line.strip()
+    ]
     return {
         "harness_revision": revision,
         "expected_build_revision": (
             f"{PHASE1_IMAGE_REVISION[:12]}+teensy41-optical"
         ),
         "phase1_image_revision": PHASE1_IMAGE_REVISION,
-        "phase1_image_is_ancestor": True,
+        "phase1_image_is_ancestor": phase1_is_ancestor,
         "sample_rate_evidence_revision": (
             SAMPLE_RATE_EVIDENCE_REVISION
         ),
-        "sample_rate_evidence_is_ancestor": True,
+        "sample_rate_evidence_is_ancestor": evidence_is_ancestor,
+        "harness_paths": list(HARNESS_PATHS),
+        "harness_dirty": bool(dirty_files),
+        "harness_dirty_files": dirty_files,
     }
+
+
+def require_clean_harness(repository: dict) -> None:
+    """Refuse formal collection from an uncommitted harness.
+
+    The manifest claims a harness revision; an edited working tree makes that
+    claim false, and the evidence is unreproducible from the recorded revision.
+    """
+    if not repository.get("harness_dirty"):
+        return
+    raise RuntimeError(
+        "refusing formal collection: the latency harness working tree is "
+        "dirty at "
+        + ", ".join(repository.get("harness_dirty_files", []))
+        + "; commit or stash it, or reanalyze with --reuse-existing"
+    )
 
 
 def make_preflight(
@@ -301,27 +464,53 @@ def make_preflight(
         },
         "collection": {
             "status_delay_seconds": status_delay_seconds,
-            "active_source_preflight": {
-                "minimum_seconds": ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
-                "timeout_seconds": ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
-                "poll_seconds": ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
-                "maximum_follow_error_millihz": (
-                    MAXIMUM_FOLLOW_ERROR_MILLIHZ
-                ),
-            },
+            "formal_bracket": formal_bracket_projection(
+                mode, warmup_frames, probe_gap_frames, tail_frames
+            ),
+            "active_source_preflight": active_source_contract(),
         },
     }
 
 
-def validate_evidence_manifest(manifest: dict, mode: str) -> None:
+def validate_evidence_manifest(
+    manifest: dict,
+    mode: str,
+    allow_legacy: bool = False,
+) -> None:
     if manifest.get("schema") != "aius-e2e-latency-evidence-v1":
         raise RuntimeError("unsupported latency evidence schema")
     if manifest.get("state") != "accepted":
         raise RuntimeError("latency evidence is not in the accepted state")
     if manifest.get("mode") != mode:
         raise RuntimeError("latency evidence mode does not match")
-    if manifest.get("acceptance") != acceptance_contract(mode):
-        raise RuntimeError("latency evidence acceptance contract drifted")
+    contract = manifest.get("acceptance")
+    version = (
+        contract.get("contract_version")
+        if isinstance(contract, dict)
+        else None
+    )
+    legacy = version != ACCEPTANCE_CONTRACT_VERSION
+    if legacy and not allow_legacy:
+        raise RuntimeError(
+            f"latency evidence acceptance contract is version {version!r}, "
+            f"expected {ACCEPTANCE_CONTRACT_VERSION}; the active-source "
+            "preflight is not part of that evidence. Re-collect it, or pass "
+            "--allow-legacy-evidence to reanalyze it as-is"
+        )
+    if not legacy:
+        if contract != acceptance_contract(mode):
+            raise RuntimeError(
+                "latency evidence acceptance contract drifted"
+            )
+        preflight = manifest.get("active_source_preflight")
+        if (
+            not isinstance(preflight, dict)
+            or preflight.get("accepted") is not True
+            or preflight.get("mode") not in ACTIVE_SOURCE_ACCEPTED_MODES
+        ):
+            raise RuntimeError(
+                "latency evidence has no accepted active-source preflight"
+            )
     generation = manifest.get("generation")
     code_frames, _ = mode_geometry(mode)
     if (
@@ -343,6 +532,8 @@ def validate_evidence_manifest(manifest: dict, mode: str) -> None:
         "native_render_manifest",
         "summary",
     }
+    if not legacy:
+        required.add("active_source_preflight")
     if not isinstance(artifacts, dict) or not required <= artifacts.keys():
         raise RuntimeError("latency evidence artifact set is incomplete")
     for name, artifact in artifacts.items():
@@ -622,7 +813,7 @@ def make_ac3(
     if len(pa_positions) < 2:
         raise RuntimeError("IEC carrier contains fewer than two AC-3 bursts")
     periods = np.diff(pa_positions)
-    if np.any(periods != 1536):
+    if np.any(periods != AC3_IEC_PERIOD_FRAMES):
         raise RuntimeError(
             f"unexpected AC-3 IEC periods: {np.unique(periods).tolist()}"
         )
@@ -1269,7 +1460,7 @@ def validate_status_bracket(
     }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("pcm", "ac3"), required=True)
     parser.add_argument("--output", required=True, type=Path)
@@ -1311,8 +1502,52 @@ def main() -> int:
         action="store_true",
         help="reanalyze an existing carrier, capture, and manifest",
     )
-    args = parser.parse_args()
-    code_frames, required_guard_frames = mode_geometry(args.mode)
+    parser.add_argument(
+        "--allow-legacy-evidence",
+        action="store_true",
+        help=(
+            "reanalyze evidence collected under an older acceptance "
+            "contract version (requires --reuse-existing)"
+        ),
+    )
+    return parser
+
+
+def validate_arguments(args: argparse.Namespace) -> dict:
+    """Reject CLI knobs that cannot produce valid evidence.
+
+    Runs before the harness touches the device, and returns the formal-bracket
+    derivation so the evidence records what was proven here.
+    """
+    _, required_guard_frames = mode_geometry(args.mode)
+    default_probe_gap_frames = mode_probe_gap(args.mode)
+    guard_frames = (
+        default_probe_gap_frames
+        if args.guard_frames is None
+        else args.guard_frames
+    )
+    if args.allow_legacy_evidence and not args.reuse_existing:
+        raise ValueError(
+            "--allow-legacy-evidence only applies to --reuse-existing"
+        )
+    if args.warmup_frames < RATE:
+        raise ValueError("warm-up must be at least one second")
+    if guard_frames < 0 or args.tail_frames < 0:
+        raise ValueError("guard and tail frames must be non-negative")
+    if guard_frames != default_probe_gap_frames:
+        raise ValueError("probe gap must match the formal mode geometry")
+    if args.tail_frames < required_guard_frames:
+        raise ValueError("tail must retain one complete probe guard")
+    if args.status_delay >= args.warmup_frames / RATE:
+        raise ValueError("status bracket must begin before the first code")
+    return validate_formal_bracket(
+        args.mode, args.warmup_frames, guard_frames, args.tail_frames
+    )
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    code_frames, _ = mode_geometry(args.mode)
     default_probe_gap_frames = mode_probe_gap(args.mode)
     if args.guard_frames is None:
         args.guard_frames = default_probe_gap_frames
@@ -1320,7 +1555,10 @@ def main() -> int:
     if args.reuse_existing:
         manifest_path = args.output / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        validate_evidence_manifest(manifest, args.mode)
+        validate_evidence_manifest(
+            manifest, args.mode, args.allow_legacy_evidence
+        )
+        manifest["legacy_evidence_allowed"] = args.allow_legacy_evidence
         previous_summary = json.loads(
             (args.output / "summary.json").read_text(encoding="utf-8")
         )
@@ -1363,6 +1601,7 @@ def main() -> int:
         ]
         summary["counter_deltas"] = manifest["counter_deltas"]
         summary["reused_existing_artifacts"] = True
+        summary["legacy_evidence_allowed"] = args.allow_legacy_evidence
         write_json(args.output / "summary.json", summary)
         if "schema" in manifest:
             manifest["state"] = "accepted"
@@ -1374,16 +1613,9 @@ def main() -> int:
             write_json(manifest_path, manifest)
         print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
         return 0
-    if args.warmup_frames < RATE:
-        raise ValueError("warm-up must be at least one second")
-    if args.guard_frames < 0 or args.tail_frames < 0:
-        raise ValueError("guard and tail frames must be non-negative")
-    if args.guard_frames != default_probe_gap_frames:
-        raise ValueError("probe gap must match the formal mode geometry")
-    if args.tail_frames < required_guard_frames:
-        raise ValueError("tail must retain one complete probe guard")
-    if args.status_delay >= args.warmup_frames / RATE:
-        raise ValueError("status bracket must begin before the first code")
+    validate_arguments(args)
+    repository = repository_identity()
+    require_clean_harness(repository)
 
     preflight = make_preflight(
         mode=args.mode,
@@ -1399,7 +1631,7 @@ def main() -> int:
         tail_frames=args.tail_frames,
         command_argv=[sys.executable, *sys.argv],
         versions=tool_versions(args.mode),
-        repository=repository_identity(),
+        repository=repository,
         started_utc=utc_now(),
     )
     preflight_path = args.output / "preflight.json"
@@ -1544,11 +1776,21 @@ def main() -> int:
             ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
             ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
             MAXIMUM_FOLLOW_ERROR_MILLIHZ,
+            artifact_path=active_source_preflight_path,
         )
         write_json(active_source_preflight_path, active_source)
         artifacts["active_source_preflight"] = artifact_record(
             active_source_preflight_path
         )
+        if (
+            active_source.get("state") != "accepted"
+            or active_source.get("mode") not in ACTIVE_SOURCE_ACCEPTED_MODES
+        ):
+            raise RuntimeError(
+                "active-source preflight did not accept the source: "
+                f"state={active_source.get('state')!r}, "
+                f"mode={active_source.get('mode')!r}"
+            )
         capture, manifest = collect(
             args.device,
             playback,
@@ -1580,8 +1822,10 @@ def main() -> int:
         write_json(args.output / "manifest.json", failed)
         raise
     manifest["active_source_preflight"] = {
-        "accepted": True,
+        "accepted": active_source["state"] == "accepted",
+        "mode": active_source["mode"],
         "elapsed_seconds": active_source["elapsed_seconds"],
+        "xrun_recoveries": active_source["xrun_recoveries"],
         "accepted_status": active_source["accepted_status"],
     }
     capture_path = args.output / "capture.s16le"

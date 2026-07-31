@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import wave
 
 import numpy as np
@@ -35,6 +36,229 @@ REPEAT = importlib.util.module_from_spec(REPEAT_SPEC)
 REPEAT_SPEC.loader.exec_module(REPEAT)
 
 NATIVE_RENDERER = os.environ.get("AIUS_LATENCY_RENDERER")
+
+
+def device_status():
+    """A healthy `GET /api/status` frame: every gate the harness reads."""
+    return {
+        "build_revision": "revision",
+        "build_utc": "2026-07-31T00:00:00Z",
+        "boot_generation": 1,
+        "reset_source": 1,
+        "watchdog_early_resets": 0,
+        "carrier": 1,
+        "overruns": 0,
+        "event_overflows": 0,
+        "audio_diag": {
+            "ingress_dropped_chunks": 0,
+            "ingress_dropped_words": 0,
+            "source_changes": 0,
+            "source_flushes": 0,
+            "gap_flushes": 0,
+            "service_generation_resets": 0,
+            "service_requested_resets": 0,
+            "service_budget_overruns": 0,
+            "runtime_epoch_budget_overruns": 0,
+            "transmit_stops": 0,
+            "transmit_stalls": 0,
+            "parse_rejects": 0,
+            "decode_rejects": 0,
+            "output_drops": 0,
+            "au_abandons": 0,
+            "input_words_consumed": 0,
+            "service_steps_committed": 0,
+            "committed_output_blocks": 0,
+            "decode_units": 0,
+            "service_last_failure": 0,
+            "pipeline_last_failure": 0,
+        },
+        "clock": {
+            "carrier_locked": True,
+            "carrier_ready": True,
+            "carrier_rate_millihz": 48000000,
+            "nominal_rate_hz": 48000,
+            "stream_rate_hz": 48000,
+            "output_rate_millihz": 48000000,
+            "master": "input",
+            "state": "tracking",
+            "tx_underrun_frames": 0,
+            "rate_changes": 0,
+            "structural_replans": 0,
+            "trim_updates": 0,
+            "invalid_windows": 0,
+            "clock_faults": 0,
+            "mismatch_blocks": 0,
+            "unsupported_blocks": 0,
+            "unsupported_episodes": 0,
+            "last_clock_fault": 0,
+        },
+        "pipeline_diag": {
+            "class": 1,
+            "codec_pc": 0,
+            "pcm_confirmed": 1,
+            "last_status": 0,
+            "decode_rejects": 0,
+            "rejects_no_space": 0,
+            "rejects_malformed": 0,
+            "rejects_unsupported": 0,
+            "resyncs": 0,
+            "alloc_count": 0,
+            "dts_alloc_count": 0,
+            "ac3_alloc_count": 0,
+            "bursts_ok": 0,
+        },
+    }
+
+
+def active_source_status(trim=0, invalid=0, follow_millihz=0, **clock):
+    """A healthy status with the counters and follow error under test control."""
+    status = device_status()
+    status["clock"]["trim_updates"] = trim
+    status["clock"]["invalid_windows"] = invalid
+    status["clock"]["output_rate_millihz"] = (
+        status["clock"]["carrier_rate_millihz"] + follow_millihz
+    )
+    status["clock"].update(clock)
+    return status
+
+
+class VirtualClock:
+    """Monotonic seconds the tests advance instead of sleeping."""
+
+    def __init__(self, start=0.0):
+        self.seconds = start
+
+    def monotonic(self):
+        return self.seconds
+
+    def advance(self, seconds):
+        self.seconds += seconds
+
+
+class FakeAlsa:
+    """Enough of the libasound wrapper to run the preflight with no device.
+
+    `lib` is the fake itself, so the ctypes-level entry points the preflight
+    calls (`alsa.lib.snd_pcm_writei`) and the wrapper-level ones (`alsa.open`,
+    `alsa.configure`, `alsa.status`) share one recorder. Every feed write
+    advances the virtual clock by its own duration, which is what makes the
+    deadline and settled-window behaviour observable.
+    """
+
+    def __init__(
+        self,
+        clock,
+        rate=48000,
+        granted_period=256,
+        granted_buffer=48000,
+        xrun_faults=0,
+        state=None,
+    ):
+        self.clock = clock
+        self.rate = rate
+        self.granted_period = granted_period
+        self.granted_buffer = granted_buffer
+        self.pending_xruns = xrun_faults
+        self.state = (
+            LINKED.SND_PCM_STATE_RUNNING if state is None else state
+        )
+        self.lib = self
+        self.configured = []
+        self.opened = []
+        self.prepared = 0
+        self.starts = 0
+        self.drops = 0
+        self.closes = 0
+        self.prefills = 0
+        self.feeds = 0
+
+    def check(self, result, operation):
+        if result < 0:
+            raise LINKED.AlsaError(f"{operation}: fake failure ({result})")
+        return result
+
+    def open(self, device, stream):
+        self.opened.append((device, stream))
+        return object()
+
+    def configure(self, handle, rate, period, buffer_size, playback,
+                  exact=True):
+        self.configured.append({
+            "rate": rate,
+            "period": period,
+            "buffer_size": buffer_size,
+            "playback": playback,
+            "exact": exact,
+        })
+        return {
+            "rate_hz": rate,
+            "period_frames": self.granted_period,
+            "buffer_frames": self.granted_buffer,
+            "start_threshold_frames": self.granted_buffer,
+            "timestamp_type": "monotonic",
+        }
+
+    def status(self, handle):
+        return {
+            "state": self.state,
+            "trigger_timestamp_ns": 1,
+            "observed_timestamp_ns": 2,
+            "delay_frames": 0,
+            "available_frames": 0,
+            "available_max_frames": 0,
+            "overrange_frames": 0,
+        }
+
+    def snd_pcm_prepare(self, handle):
+        self.prepared += 1
+        return 0
+
+    def snd_pcm_start(self, handle):
+        self.starts += 1
+        return 0
+
+    def snd_pcm_drop(self, handle):
+        self.drops += 1
+        return 0
+
+    def snd_pcm_close(self, handle):
+        self.closes += 1
+        return 0
+
+    def snd_pcm_writei(self, handle, pointer, frames):
+        if frames != self.granted_period:
+            self.prefills += 1
+            return frames
+        self.feeds += 1
+        self.clock.advance(frames / self.rate)
+        if self.pending_xruns:
+            self.pending_xruns -= 1
+            return LINKED.ALSA_EPIPE
+        return frames
+
+
+class FakeStatusFeed:
+    """Scripted `GET /api/status` responses on the virtual clock.
+
+    `statuses` is either a callable of elapsed seconds or a list whose last
+    entry repeats once exhausted -- a device that keeps reporting the same
+    thing, which is exactly the settled and timeout cases.
+    """
+
+    def __init__(self, clock, statuses, fetch_seconds=0.01):
+        self.clock = clock
+        self.statuses = statuses
+        self.fetch_seconds = fetch_seconds
+        self.started = clock.monotonic()
+        self.urls = []
+
+    def __call__(self, url):
+        self.urls.append(url)
+        self.clock.advance(self.fetch_seconds)
+        if callable(self.statuses):
+            return self.statuses(self.clock.monotonic() - self.started)
+        index = min(len(self.urls) - 1, len(self.statuses) - 1)
+        return json.loads(json.dumps(self.statuses[index]))
 
 
 class GeneratorTests(unittest.TestCase):
@@ -379,6 +603,76 @@ class AnalyzerTests(unittest.TestCase):
             contract["maximum_affine_residual_frames"], 128.0
         )
 
+    def test_acceptance_contract_pins_the_active_source_preflight(self):
+        contract = BENCH.acceptance_contract("pcm")
+        preflight = contract["active_source_preflight"]
+
+        self.assertEqual(
+            contract["contract_version"], BENCH.ACCEPTANCE_CONTRACT_VERSION
+        )
+        self.assertEqual(BENCH.ACCEPTANCE_CONTRACT_VERSION, 2)
+        self.assertEqual(
+            preflight["minimum_seconds"],
+            BENCH.ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
+        )
+        self.assertEqual(
+            preflight["timeout_seconds"],
+            BENCH.ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(
+            preflight["poll_seconds"],
+            BENCH.ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
+        )
+        self.assertEqual(
+            preflight["settled_window_seconds"],
+            LINKED.SETTLED_WINDOW_SECONDS,
+        )
+        self.assertEqual(
+            preflight["trim_rate_limit_seconds"],
+            LINKED.TRIM_RATE_LIMIT_SECONDS,
+        )
+        self.assertEqual(
+            preflight["maximum_follow_error_millihz"],
+            BENCH.MAXIMUM_FOLLOW_ERROR_MILLIHZ,
+        )
+        self.assertEqual(
+            preflight["maximum_xrun_recoveries"],
+            LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES,
+        )
+        self.assertEqual(preflight["accepted_modes"], ["edge", "settled"])
+
+    def test_reuse_refuses_a_legacy_contract_without_the_explicit_flag(self):
+        legacy = self.accepted_manifest()
+        legacy["acceptance"]["contract_version"] = 1
+        legacy["acceptance"].pop("active_source_preflight")
+        legacy.pop("active_source_preflight")
+        legacy["artifacts"].pop("active_source_preflight")
+
+        with self.assertRaisesRegex(
+            RuntimeError, "--allow-legacy-evidence"
+        ):
+            BENCH.validate_evidence_manifest(legacy, "pcm")
+
+        BENCH.validate_evidence_manifest(legacy, "pcm", True)
+
+    def test_allow_legacy_evidence_still_enforces_the_current_contract(self):
+        current = self.accepted_manifest()
+        current["acceptance"]["minimum_correlation"] = 0.34
+
+        with self.assertRaisesRegex(RuntimeError, "contract drifted"):
+            BENCH.validate_evidence_manifest(current, "pcm", True)
+
+    def test_allow_legacy_evidence_requires_reuse_existing(self):
+        args = BENCH.build_parser().parse_args([
+            "--mode", "pcm", "--output", "out", "--allow-legacy-evidence",
+        ])
+
+        self.assertTrue(args.allow_legacy_evidence)
+        with self.assertRaisesRegex(
+            ValueError, "only applies to --reuse-existing"
+        ):
+            BENCH.validate_arguments(args)
+
     def test_preflight_manifest_serializes_contract_before_collection(self):
         manifest = BENCH.make_preflight(
             mode="pcm",
@@ -434,70 +728,102 @@ class AnalyzerTests(unittest.TestCase):
             BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE,
         )
 
-    def test_active_source_gate_requires_clean_trim_edge(self):
-        previous = {
-            "clock": {"trim_updates": 5, "invalid_windows": 6}
-        }
-        current = {
-            "carrier": 1,
-            "clock": {
-                "carrier_locked": True,
-                "carrier_ready": True,
-                "master": "input",
-                "state": "tracking",
-                "nominal_rate_hz": 48000,
-                "stream_rate_hz": 48000,
-                "carrier_rate_millihz": 48020761,
-                "output_rate_millihz": 48019956,
-                "trim_updates": 6,
-                "invalid_windows": 7,
-            },
-            "pipeline_diag": {
-                "class": 1,
-                "pcm_confirmed": 1,
-                "last_status": 0,
-            },
-            "audio_diag": {
-                "pipeline_last_failure": 0,
-                "service_last_failure": 0,
-            },
-        }
-
-        self.assertTrue(LINKED.active_source_trim_edge_ready(
-            previous, current, 3.0, 3.0, 1000
-        ))
-        current["clock"]["trim_updates"] = 5
-        self.assertFalse(LINKED.active_source_trim_edge_ready(
-            previous, current, 3.0, 3.0, 1000
-        ))
-        current["clock"]["trim_updates"] = 7
-        current["clock"]["invalid_windows"] = 8
-        self.assertFalse(LINKED.active_source_trim_edge_ready(
-            previous, current, 3.0, 3.0, 1000
-        ))
-
-    def test_repository_identity_proves_sample_rate_ancestor(self):
-        identity = BENCH.repository_identity()
-
-        self.assertTrue(identity["phase1_image_is_ancestor"])
-        self.assertEqual(
-            identity["phase1_image_revision"],
-            BENCH.PHASE1_IMAGE_REVISION,
+    def test_preflight_timeout_covers_seven_rate_limited_trims(self):
+        # A post-reboot device needed five to seven rate-limited trims to
+        # converge, and no acceptance is possible before the minimum hold.
+        self.assertGreaterEqual(
+            BENCH.ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
+            7 * LINKED.TRIM_RATE_LIMIT_SECONDS
+            + BENCH.ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
         )
-        self.assertTrue(identity["sample_rate_evidence_is_ancestor"])
-        self.assertEqual(
-            identity["sample_rate_evidence_revision"],
-            BENCH.SAMPLE_RATE_EVIDENCE_REVISION,
+        self.assertEqual(LINKED.TRIM_RATE_LIMIT_SECONDS, 10.0)
+        self.assertGreater(
+            LINKED.SETTLED_WINDOW_SECONDS, LINKED.TRIM_RATE_LIMIT_SECONDS
         )
-        self.assertEqual(
-            identity["expected_build_revision"],
-            f"{BENCH.PHASE1_IMAGE_REVISION[:12]}"
-            "+teensy41-optical",
+        self.assertGreater(
+            BENCH.ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
+            LINKED.SETTLED_WINDOW_SECONDS,
         )
 
-    def test_evidence_manifest_rejects_schema_contract_and_paths(self):
+    def test_formal_bracket_fits_inside_one_trim_gap(self):
+        for mode in ("pcm", "ac3"):
+            with self.subTest(mode=mode):
+                projection = BENCH.formal_bracket_projection(
+                    mode,
+                    BENCH.FORMAL_WARMUP_FRAMES,
+                    BENCH.mode_probe_gap(mode),
+                    BENCH.TAIL_FRAMES,
+                )
+
+                self.assertTrue(projection["fits"])
+                self.assertLess(
+                    projection["bracket_seconds"],
+                    LINKED.TRIM_RATE_LIMIT_SECONDS,
+                )
+                self.assertEqual(
+                    projection["budget_seconds"],
+                    LINKED.TRIM_RATE_LIMIT_SECONDS
+                    - BENCH.ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS
+                    - BENCH.STATUS_STALENESS_ALLOWANCE_SECONDS,
+                )
+                self.assertAlmostEqual(
+                    projection["bracket_seconds"],
+                    BENCH.FORMAL_ALSA_SETUP_ALLOWANCE_SECONDS
+                    + 2 * BENCH.FORMAL_STATUS_FETCH_ALLOWANCE_SECONDS
+                    + projection["stimulus_frames"] / BENCH.RATE,
+                )
+
+    def test_oversized_warmup_is_rejected_before_touching_the_device(self):
+        args = BENCH.build_parser().parse_args([
+            "--mode", "pcm", "--output", "out",
+            "--warmup-frames", str(10 * BENCH.RATE),
+        ])
+
+        with self.assertRaisesRegex(ValueError, "trim rate limit"):
+            BENCH.validate_arguments(args)
+
+    def test_oversized_tail_is_rejected_before_touching_the_device(self):
+        args = BENCH.build_parser().parse_args([
+            "--mode", "ac3", "--output", "out",
+            "--tail-frames", str(8 * BENCH.RATE),
+        ])
+
+        with self.assertRaisesRegex(ValueError, "trim rate limit"):
+            BENCH.validate_arguments(args)
+
+    def test_default_arguments_pass_validation_for_both_modes(self):
+        for mode in ("pcm", "ac3"):
+            with self.subTest(mode=mode):
+                args = BENCH.build_parser().parse_args(
+                    ["--mode", mode, "--output", "out"]
+                )
+
+                projection = BENCH.validate_arguments(args)
+
+                self.assertTrue(projection["fits"])
+
+    def test_ac3_bracket_counts_whole_iec_access_units(self):
+        frames = BENCH.stimulus_frames(
+            "ac3",
+            BENCH.FORMAL_WARMUP_FRAMES,
+            BENCH.AC3_PROBE_GAP_FRAMES,
+            BENCH.TAIL_FRAMES,
+        )
+
+        self.assertEqual(frames % BENCH.AC3_IEC_PERIOD_FRAMES, 0)
+        self.assertGreaterEqual(
+            frames,
+            BENCH.FORMAL_WARMUP_FRAMES
+            + BENCH.CODE_COUNT
+            * (BENCH.AC3_CODE_FRAMES + BENCH.AC3_PROBE_GAP_FRAMES)
+            + BENCH.TAIL_FRAMES,
+        )
+
+    @staticmethod
+    def accepted_manifest(mode="pcm"):
+        """An accepted evidence manifest at the current contract version."""
         manifest = BENCH.make_preflight(
-            mode="pcm",
+            mode=mode,
             device="hw:test,0",
             status_url="http://device/api/status",
             config_url="http://device/api/dsp/config",
@@ -506,7 +832,7 @@ class AnalyzerTests(unittest.TestCase):
             buffer_size=4096,
             warmup_frames=48000,
             status_delay_seconds=0.5,
-            probe_gap_frames=BENCH.PCM_PROBE_GAP_FRAMES,
+            probe_gap_frames=BENCH.mode_probe_gap(mode),
             tail_frames=12000,
             command_argv=["bench.py"],
             versions={"python": "test", "numpy": "test"},
@@ -517,13 +843,16 @@ class AnalyzerTests(unittest.TestCase):
                 ),
                 "sample_rate_evidence_revision": "b" * 40,
                 "sample_rate_evidence_is_ancestor": True,
+                "harness_dirty": False,
+                "harness_dirty_files": [],
             },
             started_utc="2026-07-31T00:00:00Z",
         )
+        code_frames, _ = BENCH.mode_geometry(mode)
         manifest["state"] = "accepted"
         manifest["generation"] = {
             "code_count": 24,
-            "code_frames": 2048,
+            "code_frames": code_frames,
             "input_positions": list(range(24)),
             "reference_positions": list(range(24)),
         }
@@ -537,12 +866,24 @@ class AnalyzerTests(unittest.TestCase):
                 "native_reference",
                 "native_decoded",
                 "native_render_manifest",
+                "active_source_preflight",
                 "summary",
             )
+        }
+        manifest["active_source_preflight"] = {
+            "accepted": True,
+            "mode": "edge",
+            "elapsed_seconds": 11.937,
+            "xrun_recoveries": 0,
+            "accepted_status": {},
         }
         manifest["status_initial"] = {}
         manifest["status_final"] = {}
         manifest["collector_acceptance"] = {}
+        return manifest
+
+    def test_evidence_manifest_rejects_schema_contract_and_paths(self):
+        manifest = self.accepted_manifest()
         BENCH.validate_evidence_manifest(manifest, "pcm")
 
         mutations = {
@@ -552,6 +893,15 @@ class AnalyzerTests(unittest.TestCase):
             ),
             "path": lambda value: value["artifacts"]["carrier"].update(
                 path="../carrier.bin"
+            ),
+            "preflight-missing": lambda value: value.pop(
+                "active_source_preflight"
+            ),
+            "preflight-mode": lambda value: value[
+                "active_source_preflight"
+            ].update(mode="guessed"),
+            "preflight-artifact": lambda value: value["artifacts"].pop(
+                "active_source_preflight"
             ),
         }
         for label, mutate in mutations.items():
@@ -674,74 +1024,601 @@ class AnalyzerTests(unittest.TestCase):
 
     @staticmethod
     def status():
-        return {
-            "build_revision": "revision",
-            "build_utc": "2026-07-31T00:00:00Z",
-            "boot_generation": 1,
-            "reset_source": 1,
-            "watchdog_early_resets": 0,
-            "carrier": 1,
-            "overruns": 0,
-            "event_overflows": 0,
-            "audio_diag": {
-                "ingress_dropped_chunks": 0,
-                "ingress_dropped_words": 0,
-                "source_changes": 0,
-                "source_flushes": 0,
-                "gap_flushes": 0,
-                "service_generation_resets": 0,
-                "service_requested_resets": 0,
-                "service_budget_overruns": 0,
-                "runtime_epoch_budget_overruns": 0,
-                "transmit_stops": 0,
-                "transmit_stalls": 0,
-                "parse_rejects": 0,
-                "decode_rejects": 0,
-                "output_drops": 0,
-                "au_abandons": 0,
-                "input_words_consumed": 0,
-                "service_steps_committed": 0,
-                "committed_output_blocks": 0,
-                "decode_units": 0,
-                "service_last_failure": 0,
-                "pipeline_last_failure": 0,
-            },
-            "clock": {
-                "carrier_locked": True,
-                "carrier_ready": True,
-                "carrier_rate_millihz": 48000000,
-                "nominal_rate_hz": 48000,
-                "stream_rate_hz": 48000,
-                "output_rate_millihz": 48000000,
-                "master": "input",
-                "state": "tracking",
-                "tx_underrun_frames": 0,
-                "rate_changes": 0,
-                "structural_replans": 0,
-                "trim_updates": 0,
-                "invalid_windows": 0,
-                "clock_faults": 0,
-                "mismatch_blocks": 0,
-                "unsupported_blocks": 0,
-                "unsupported_episodes": 0,
-                "last_clock_fault": 0,
-            },
-            "pipeline_diag": {
-                "class": 1,
-                "codec_pc": 0,
-                "pcm_confirmed": 1,
-                "last_status": 0,
-                "decode_rejects": 0,
-                "rejects_no_space": 0,
-                "rejects_malformed": 0,
-                "rejects_unsupported": 0,
-                "resyncs": 0,
-                "alloc_count": 0,
-                "dts_alloc_count": 0,
-                "ac3_alloc_count": 0,
-                "bursts_ok": 0,
-            },
+        return device_status()
+
+
+class RepositoryIdentityTests(unittest.TestCase):
+    """The manifest's provenance claims, driven against a scripted git.
+
+    Never invokes real git: the checks must be provable from their exit codes
+    on a tree the test controls, including the dirty one that refuses
+    collection.
+    """
+
+    HEAD = "c" * 40
+
+    def git(self, phase1=0, evidence=0, dirty="", head=0):
+        def run(argv, **kwargs):
+            if argv[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(
+                    argv, head, stdout=f"{self.HEAD}\n", stderr=""
+                )
+            if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+                if argv[3] == BENCH.PHASE1_IMAGE_REVISION:
+                    return subprocess.CompletedProcess(argv, phase1)
+                if argv[3] == BENCH.SAMPLE_RATE_EVIDENCE_REVISION:
+                    return subprocess.CompletedProcess(argv, evidence)
+            if argv[:3] == ["git", "status", "--porcelain"]:
+                self.assertEqual(argv[3], "--")
+                self.assertEqual(argv[4:], list(BENCH.HARNESS_PATHS))
+                return subprocess.CompletedProcess(
+                    argv, 0, stdout=dirty, stderr=""
+                )
+            raise AssertionError(f"unexpected git command: {argv}")
+
+        return mock.patch.object(BENCH.subprocess, "run", run)
+
+    def test_identity_derives_every_claim_from_a_check_result(self):
+        with self.git():
+            identity = BENCH.repository_identity()
+
+        self.assertEqual(identity["harness_revision"], self.HEAD)
+        self.assertTrue(identity["phase1_image_is_ancestor"])
+        self.assertTrue(identity["sample_rate_evidence_is_ancestor"])
+        self.assertFalse(identity["harness_dirty"])
+        self.assertEqual(identity["harness_dirty_files"], [])
+        self.assertEqual(
+            identity["harness_paths"], list(BENCH.HARNESS_PATHS)
+        )
+        self.assertEqual(
+            identity["expected_build_revision"],
+            f"{BENCH.PHASE1_IMAGE_REVISION[:12]}+teensy41-optical",
+        )
+        BENCH.require_clean_harness(identity)
+
+    def test_identity_fails_closed_on_every_failing_check(self):
+        cases = {
+            "head": ({"head": 128}, "harness revision"),
+            "phase1": ({"phase1": 1}, "Phase 1 image"),
+            "evidence": ({"evidence": 1}, "sample-rate evidence"),
         }
+        for label, (kwargs, needle) in cases.items():
+            with self.subTest(label=label):
+                with self.git(**kwargs):
+                    with self.assertRaisesRegex(RuntimeError, needle):
+                        BENCH.repository_identity()
+
+    def test_dirty_harness_is_recorded_and_refuses_collection(self):
+        porcelain = (
+            " M firmware/tools/latency/bench.py\n"
+            "?? firmware/test/latency-runner/extra.py\n"
+        )
+        with self.git(dirty=porcelain):
+            identity = BENCH.repository_identity()
+
+        self.assertTrue(identity["harness_dirty"])
+        self.assertEqual(
+            identity["harness_dirty_files"],
+            [
+                "firmware/tools/latency/bench.py",
+                "firmware/test/latency-runner/extra.py",
+            ],
+        )
+        with self.assertRaisesRegex(RuntimeError, "refusing formal"):
+            BENCH.require_clean_harness(identity)
+
+
+class ActiveSourceGateTests(unittest.TestCase):
+    """Preflight acceptance: cumulative trim edge, or a settled window."""
+
+    def gate(self, minimum_seconds=3.0, follow_millihz=1000):
+        return LINKED.ActiveSourceGate(
+            minimum_seconds,
+            follow_millihz,
+            LINKED.SETTLED_WINDOW_SECONDS,
+        )
+
+    def test_straddled_edge_accepts_across_separate_polls(self):
+        gate = self.gate()
+
+        self.assertEqual(
+            gate.observe(active_source_status(5, 6), 3.0),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
+        )
+        self.assertEqual(
+            gate.observe(active_source_status(6, 6), 3.25),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
+        )
+        self.assertEqual(
+            gate.observe(active_source_status(6, 7), 3.5),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+        self.assertTrue(
+            gate.confirm(active_source_status(6, 7), 3.75)
+        )
+
+    def test_edge_is_not_accepted_before_the_minimum_hold(self):
+        gate = self.gate()
+        gate.observe(active_source_status(5, 6), 0.0)
+
+        self.assertEqual(
+            gate.observe(active_source_status(6, 7), 1.0),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
+        )
+        self.assertEqual(
+            gate.observe(active_source_status(6, 7), 3.0),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+
+    def test_trim_burst_rebaselines_and_a_later_edge_accepts(self):
+        gate = self.gate()
+        gate.observe(active_source_status(5, 5), 3.0)
+
+        self.assertEqual(
+            gate.observe(active_source_status(7, 7), 3.25),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
+        )
+        self.assertEqual(gate.baseline, (7, 7))
+        self.assertEqual(
+            gate.observe(active_source_status(8, 8), 3.5),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+        self.assertTrue(gate.confirm(active_source_status(8, 8), 3.75))
+
+    def test_counter_wrap_is_read_as_a_single_step(self):
+        gate = self.gate()
+        gate.observe(
+            active_source_status(0xFFFFFFFF, 0xFFFFFFFF), 3.0
+        )
+
+        self.assertEqual(
+            gate.observe(active_source_status(0, 0), 3.25),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+
+    def test_confirm_snapshot_rejects_then_a_later_edge_accepts(self):
+        gate = self.gate()
+        gate.observe(active_source_status(5, 5), 3.0)
+        self.assertEqual(
+            gate.observe(active_source_status(6, 6), 3.25),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+
+        # Clean edge, but the follow error has not converged yet: keep the
+        # confirmed counters as the baseline and wait for the next trim.
+        self.assertFalse(
+            gate.confirm(active_source_status(6, 6, 3500), 3.5)
+        )
+        self.assertEqual(gate.baseline, (6, 6))
+        self.assertEqual(
+            gate.observe(active_source_status(7, 7), 13.5),
+            LINKED.ACTIVE_SOURCE_CONFIRM,
+        )
+        self.assertTrue(gate.confirm(active_source_status(7, 7), 13.75))
+
+    def test_confirm_snapshot_rebaselines_when_the_counters_move_again(self):
+        gate = self.gate()
+        gate.observe(active_source_status(5, 5), 3.0)
+        gate.observe(active_source_status(6, 6), 3.25)
+
+        self.assertFalse(gate.confirm(active_source_status(7, 6), 3.5))
+        self.assertEqual(gate.baseline, (7, 6))
+
+    def test_confirm_snapshot_rejects_an_unhealthy_device(self):
+        gate = self.gate()
+        gate.observe(active_source_status(5, 5), 3.0)
+        gate.observe(active_source_status(6, 6), 3.25)
+        unhealthy = active_source_status(6, 6)
+        unhealthy["carrier"] = 0
+
+        self.assertFalse(gate.confirm(unhealthy, 3.5))
+
+    def test_settled_window_accepts_a_converged_device(self):
+        gate = self.gate()
+        elapsed = 0.0
+        while elapsed < LINKED.SETTLED_WINDOW_SECONDS:
+            self.assertEqual(
+                gate.observe(active_source_status(4, 4), elapsed),
+                LINKED.ACTIVE_SOURCE_CONTINUE,
+            )
+            elapsed += 0.25
+
+        self.assertEqual(
+            gate.observe(active_source_status(4, 4), elapsed),
+            LINKED.ACTIVE_SOURCE_MODE_SETTLED,
+        )
+
+    def test_settled_window_restarts_on_an_out_of_band_follow_error(self):
+        gate = self.gate()
+        elapsed = 0.0
+        while elapsed < 10.0:
+            gate.observe(active_source_status(4, 4), elapsed)
+            elapsed += 0.25
+        gate.observe(active_source_status(4, 4, 3500), elapsed)
+        elapsed += 0.25
+        restarted = elapsed
+
+        while elapsed < restarted + LINKED.SETTLED_WINDOW_SECONDS:
+            self.assertEqual(
+                gate.observe(active_source_status(4, 4), elapsed),
+                LINKED.ACTIVE_SOURCE_CONTINUE,
+                f"accepted {elapsed - restarted:.2f}s into the window",
+            )
+            elapsed += 0.25
+
+        self.assertEqual(
+            gate.observe(active_source_status(4, 4), elapsed),
+            LINKED.ACTIVE_SOURCE_MODE_SETTLED,
+        )
+
+    def test_settled_window_restarts_on_counter_movement(self):
+        gate = self.gate()
+        elapsed = 0.0
+        while elapsed < 14.0:
+            gate.observe(active_source_status(4, 4), elapsed)
+            elapsed += 0.25
+        gate.observe(active_source_status(4, 5), elapsed)
+        elapsed += 0.25
+
+        self.assertEqual(
+            gate.observe(active_source_status(4, 5), elapsed + 5.0),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
+        )
+
+    def test_settled_window_ignores_an_unhealthy_poll(self):
+        gate = self.gate()
+        unhealthy = active_source_status(4, 4)
+        unhealthy["pipeline_diag"]["last_status"] = 3
+        elapsed = 0.0
+        while elapsed < 14.0:
+            gate.observe(active_source_status(4, 4), elapsed)
+            elapsed += 0.25
+        gate.observe(unhealthy, elapsed)
+
+        self.assertEqual(
+            gate.observe(active_source_status(4, 4), elapsed + 1.0),
+            LINKED.ACTIVE_SOURCE_CONTINUE,
+        )
+
+    def test_health_predicate_names_every_required_condition(self):
+        self.assertTrue(
+            LINKED.active_source_required_health(active_source_status())
+        )
+        mutations = {
+            "carrier": lambda status: status.update(carrier=0),
+            "locked": lambda status: status["clock"].update(
+                carrier_locked=False
+            ),
+            "ready": lambda status: status["clock"].update(
+                carrier_ready=False
+            ),
+            "master": lambda status: status["clock"].update(
+                master="internal"
+            ),
+            "state": lambda status: status["clock"].update(
+                state="acquiring"
+            ),
+            "nominal": lambda status: status["clock"].update(
+                nominal_rate_hz=44100
+            ),
+            "stream": lambda status: status["clock"].update(
+                stream_rate_hz=44100
+            ),
+            "class": lambda status: status["pipeline_diag"].update(
+                **{"class": 2}
+            ),
+            "pcm": lambda status: status["pipeline_diag"].update(
+                pcm_confirmed=0
+            ),
+            "last-status": lambda status: status["pipeline_diag"].update(
+                last_status=3
+            ),
+            "pipeline-failure": lambda status: status["audio_diag"].update(
+                pipeline_last_failure=1
+            ),
+            "service-failure": lambda status: status["audio_diag"].update(
+                service_last_failure=1
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                status = active_source_status()
+                mutate(status)
+                self.assertFalse(
+                    LINKED.active_source_required_health(status)
+                )
+
+    def test_projection_records_every_field_acceptance_reads(self):
+        status = active_source_status(11, 12, -750)
+        status["pipeline_diag"]["last_status"] = 3
+
+        projection = LINKED.active_source_projection(status, 4.5)
+
+        self.assertEqual(projection["phase"], "poll")
+        self.assertEqual(projection["elapsed_seconds"], 4.5)
+        self.assertFalse(projection["healthy"])
+        self.assertEqual(projection["trim_updates"], 11)
+        self.assertEqual(projection["invalid_windows"], 12)
+        self.assertEqual(projection["follow_error_millihz"], 750)
+        self.assertEqual(projection["pipeline_last_status"], 3)
+        self.assertGreater(projection["poll_unix_seconds"], 0)
+        for field, expected in (
+            ("carrier", 1),
+            ("carrier_locked", True),
+            ("carrier_ready", True),
+            ("master", "input"),
+            ("state", "tracking"),
+            ("nominal_rate_hz", 48000),
+            ("stream_rate_hz", 48000),
+            ("class", 1),
+            ("pcm_confirmed", 1),
+            ("pipeline_last_failure", 0),
+            ("service_last_failure", 0),
+            ("carrier_rate_millihz", 48000000),
+            ("output_rate_millihz", 47999250),
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(projection[field], expected)
+
+    def test_projection_survives_a_truncated_status(self):
+        projection = LINKED.active_source_projection({}, 1.0)
+
+        self.assertFalse(projection["healthy"])
+        self.assertIsNone(projection["trim_updates"])
+        self.assertIsNone(projection["follow_error_millihz"])
+
+
+class ActiveSourcePreflightTests(unittest.TestCase):
+    """The preflight loop itself, on a virtual clock with no libasound."""
+
+    def preflight(
+        self,
+        statuses,
+        clock=None,
+        alsa=None,
+        timeout_seconds=75.0,
+        minimum_seconds=3.0,
+        fetch_seconds=0.01,
+        artifact_path="/evidence/active-source-preflight.json",
+        **kwargs,
+    ):
+        clock = VirtualClock() if clock is None else clock
+        alsa = FakeAlsa(clock) if alsa is None else alsa
+        feed = FakeStatusFeed(clock, statuses, fetch_seconds)
+        manifest = LINKED.preflight_active_source(
+            "hw:test,0",
+            48000,
+            256,
+            4096,
+            "http://device/api/status",
+            minimum_seconds,
+            timeout_seconds,
+            0.25,
+            1000,
+            artifact_path=artifact_path,
+            alsa=alsa,
+            fetch_status=feed,
+            monotonic=clock.monotonic,
+            **kwargs,
+        )
+        return manifest, alsa, feed
+
+    def test_straddled_edge_is_accepted_and_records_its_mode(self):
+        manifest, alsa, _ = self.preflight([
+            active_source_status(5, 5),
+            active_source_status(6, 5),
+            active_source_status(6, 6),
+        ])
+
+        self.assertEqual(manifest["state"], "accepted")
+        self.assertEqual(manifest["mode"], "edge")
+        self.assertGreaterEqual(manifest["elapsed_seconds"], 3.0)
+        self.assertEqual(manifest["xrun_recoveries"], 0)
+        self.assertEqual(
+            manifest["accepted_status"]["clock"]["trim_updates"], 6
+        )
+        self.assertEqual(
+            [
+                observation["phase"]
+                for observation in manifest["observations"][-2:]
+            ],
+            ["poll", "confirm"],
+        )
+        self.assertEqual(alsa.drops, 1)
+        self.assertEqual(alsa.closes, 1)
+
+    def test_settled_device_is_accepted_without_any_edge(self):
+        manifest, _, feed = self.preflight(
+            [active_source_status(4, 4)], timeout_seconds=40.0
+        )
+
+        self.assertEqual(manifest["mode"], "settled")
+        self.assertGreaterEqual(
+            manifest["elapsed_seconds"], LINKED.SETTLED_WINDOW_SECONDS
+        )
+        self.assertLess(
+            manifest["elapsed_seconds"],
+            LINKED.SETTLED_WINDOW_SECONDS + 1.0,
+        )
+        self.assertEqual(
+            manifest["settled_window_seconds"],
+            LINKED.SETTLED_WINDOW_SECONDS,
+        )
+        self.assertTrue(
+            all(url.endswith("/api/status") for url in feed.urls)
+        )
+
+    def test_out_of_band_follow_error_times_out_with_the_artifact_path(self):
+        with self.assertRaises(LINKED.AlsaError) as raised:
+            self.preflight(
+                [active_source_status(4, 4, 5000)],
+                timeout_seconds=20.0,
+                artifact_path="/evidence/run/active-source-preflight.json",
+            )
+
+        message = str(raised.exception)
+        self.assertIn(
+            "/evidence/run/active-source-preflight.json", message
+        )
+        self.assertIn("timed out", message)
+        manifest = raised.exception.aius_active_source_manifest
+        self.assertEqual(manifest["state"], "rejected")
+        self.assertTrue(manifest["observations"])
+        for observation in manifest["observations"]:
+            self.assertTrue(observation["healthy"])
+            self.assertEqual(observation["follow_error_millihz"], 5000)
+
+    def test_unhealthy_device_times_out_and_names_the_blocking_field(self):
+        blocked = active_source_status(4, 4)
+        blocked["clock"]["state"] = "acquiring"
+
+        with self.assertRaises(LINKED.AlsaError) as raised:
+            self.preflight([blocked], timeout_seconds=20.0)
+
+        manifest = raised.exception.aius_active_source_manifest
+        self.assertFalse(manifest["observations"][-1]["healthy"])
+        self.assertEqual(manifest["observations"][-1]["state"], "acquiring")
+
+    def test_deadline_is_rechecked_after_every_blocking_fetch(self):
+        # get_json blocks for up to its 5 s timeout. The deadline is crossed
+        # inside the second fetch, so no third fetch and no further feed may
+        # run: one blocking call is the whole overshoot.
+        clock = VirtualClock()
+        alsa = FakeAlsa(clock)
+        feed = FakeStatusFeed(clock, [active_source_status(4, 4)], 5.0)
+
+        with self.assertRaisesRegex(LINKED.AlsaError, "timed out"):
+            LINKED.preflight_active_source(
+                "hw:test,0",
+                48000,
+                256,
+                4096,
+                "http://device/api/status",
+                3.0,
+                6.0,
+                0.25,
+                1000,
+                artifact_path="/evidence/active-source-preflight.json",
+                alsa=alsa,
+                fetch_status=feed,
+                monotonic=clock.monotonic,
+            )
+
+        self.assertEqual(len(feed.urls), 2)
+        self.assertLess(clock.monotonic(), 6.0 + 5.0 + 0.25)
+
+    def test_preflight_requires_a_status_url(self):
+        clock = VirtualClock()
+        with self.assertRaisesRegex(LINKED.AlsaError, "requires a status"):
+            LINKED.preflight_active_source(
+                "hw:test,0",
+                48000,
+                256,
+                4096,
+                None,
+                3.0,
+                75.0,
+                0.25,
+                1000,
+                alsa=FakeAlsa(clock),
+                monotonic=clock.monotonic,
+            )
+
+    def test_preflight_asks_for_a_second_of_ring_and_keeps_what_is_granted(
+        self
+    ):
+        clock = VirtualClock()
+        alsa = FakeAlsa(clock, granted_period=512, granted_buffer=16384)
+
+        manifest, _, _ = self.preflight(
+            [active_source_status(4, 4)],
+            clock=clock,
+            alsa=alsa,
+            timeout_seconds=40.0,
+        )
+
+        request = alsa.configured[0]
+        self.assertEqual(request["buffer_size"], 48000)
+        self.assertFalse(request["exact"])
+        self.assertEqual(manifest["requested_buffer_frames"], 48000)
+        self.assertEqual(manifest["playback"]["buffer_frames"], 16384)
+        self.assertEqual(manifest["playback"]["period_frames"], 512)
+
+    def test_xrun_is_recovered_counted_and_bounded(self):
+        clock = VirtualClock()
+        alsa = FakeAlsa(
+            clock,
+            xrun_faults=LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES,
+        )
+
+        manifest, _, _ = self.preflight(
+            [active_source_status(4, 4)],
+            clock=clock,
+            alsa=alsa,
+            timeout_seconds=40.0,
+        )
+
+        self.assertEqual(
+            manifest["xrun_recoveries"],
+            LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES,
+        )
+        self.assertEqual(
+            manifest["maximum_xrun_recoveries"],
+            LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES,
+        )
+        self.assertEqual(
+            alsa.prepared, LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES + 1
+        )
+        self.assertEqual(
+            alsa.starts, LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES + 1
+        )
+        self.assertEqual(manifest["mode"], "settled")
+
+    def test_xrun_recoveries_above_the_bound_fail_the_preflight(self):
+        clock = VirtualClock()
+        alsa = FakeAlsa(
+            clock,
+            xrun_faults=LINKED.MAX_PREFLIGHT_XRUN_RECOVERIES + 1,
+        )
+
+        with self.assertRaisesRegex(LINKED.AlsaError, "underran"):
+            self.preflight(
+                [active_source_status(4, 4)],
+                clock=clock,
+                alsa=alsa,
+                timeout_seconds=40.0,
+            )
+
+        self.assertEqual(alsa.drops, 1)
+        self.assertEqual(alsa.closes, 1)
+
+    def test_short_transfer_still_fails_the_preflight(self):
+        class ShortFeedAlsa(FakeAlsa):
+            def snd_pcm_writei(self, handle, pointer, frames):
+                if frames == self.granted_period:
+                    self.clock.advance(frames / self.rate)
+                    return frames - 1
+                return frames
+
+        clock = VirtualClock()
+        with self.assertRaisesRegex(LINKED.AlsaError, "short active-source"):
+            self.preflight(
+                [active_source_status(4, 4)],
+                clock=clock,
+                alsa=ShortFeedAlsa(clock),
+            )
+
+    def test_playback_must_still_be_running_at_acceptance(self):
+        clock = VirtualClock()
+        alsa = FakeAlsa(clock, state=LINKED.SND_PCM_STATE_RUNNING + 1)
+
+        with self.assertRaisesRegex(LINKED.AlsaError, "not running"):
+            self.preflight(
+                [active_source_status(4, 4)],
+                clock=clock,
+                alsa=alsa,
+                timeout_seconds=40.0,
+            )
 
 
 @unittest.skipUnless(NATIVE_RENDERER, "native renderer not built")
