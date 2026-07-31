@@ -468,6 +468,15 @@ on the ITCM `.text` collector plus an explicit `.text.code` placement,
 with `test/boot-target/test_ldscript_drift.py` updated to match. That
 lands with slice 3's target wiring.
 
+Owner decision 2026-07-31: the committed test-only keypair serves as the
+device key for now (private bench; its seed is published, so it provides
+no authenticity against repo readers and must rotate before the repo goes
+public or the device leaves the bench). Slice 3 keeps that state visible:
+the compiled-in public key is one swap point, `ota_diag` reports the
+active key's fingerprint plus an explicit test-key flag when it matches
+the published dev key, and the upgrade page banners TEST KEY in that
+state. Rotation is keygen + rebuild + one signed upgrade.
+
 ## Investigation completion gate
 
 “OTA fully investigated” means this plan can issue a finite build/defer verdict.
