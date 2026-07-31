@@ -1823,7 +1823,7 @@ throughout. Track B is serialized because every phase in it touches
 | B6 | ~~Phase 16a — live recovery smoke on the deployed board~~ **DONE 2026-07-26** on `3576c3e3560f` | gates 2, 4, 5 PASS; gate 3 PASS on all seven recoverable checkpoints; 1 and 2 UNRESOLVED, structurally |
 | B7 | ~~Phase 15 — button-free flash tooling~~ **DONE 2026-07-26** (`7670c5e03`) | `flash` + `usb-control` suites |
 | B8 | ~~Phase 16b — the zero-button-press flash gate, re-run once B7 exists~~ **DONE 2026-07-26**: flash `cff77ab4641b`→`8623061c2fa7` and restore, both runner-verified, zero presses | one clean button-free flash and restore |
-| B9 | Retire the the app dashboard, keeping `swagger.json` and its contract suite | `ui-contract` and Vitest suites green after removal |
+| B9 | ~~Retire the the app dashboard, keeping `swagger.json` and its contract suite~~ **DONE 2026-07-31**: dashboard app surface, `control-shell.json` scenario and the ui-contract row removed; `the companion dashboard app` slimmed to `swagger.json` + its vitest suite + a two-file-mount `web.json` (the old `sources:` form never actually served the document); `AIUS.APP.SHELL/CONTROL/TELEMETRY` requirement IDs retired. One reconciliation remains with the UI-kit rollout owner: move `web.json` to the compliance catalogue's non-consumer exemptions and delete the retired `aius` consumer rows (the catalogue file was foreign-dirty at retirement time; exact recipe in the B9 commit message) | `ui-contract` and Vitest suites green after removal |
 
 Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
 delivered and are not re-reviewed. Each remaining phase's gate is its green
