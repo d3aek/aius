@@ -254,6 +254,12 @@ int aius_pipeline_has_pending(const AiusPipeline *p);
 int aius_pipeline_has_buffered_input(const AiusPipeline *p);
 void aius_pipeline_get_service_diag(const AiusPipeline *p,
 	                                AiusPipelineServiceDiag *out);
+
+/* Operator clear. Zeroes the service counters AND the `last_status` observation
+ * latch (see aius_pipeline_get_metrics): the operator invoking a clear is the
+ * one event entitled to drop an observation, so a deliberate source teardown no
+ * longer reads as a live fault forever. Automatic transitions -- re-type,
+ * re-classify, parser re-lock -- deliberately leave both alone. */
 void aius_pipeline_clear_service_diag(AiusPipeline *p);
 
 /* Signal end of input: flush a partial PCM block, and finalize the parser
@@ -285,7 +291,9 @@ AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
                                            AiusMetrics *out);
 
 /* Compatibility projection for the last successfully decoded codec.
- * `last_status` is always the last parse/decode result the pipeline observed.
+ * `last_status` is the last parse/decode result the pipeline observed: an
+ * observation latch that survives every automatic transition and is reset only
+ * by aius_pipeline_reset() or the operator's aius_pipeline_clear_service_diag().
  * Before a codec succeeds, operation fields are zero and arena_high_water is
  * the maximum of both resident decoder readings. */
 AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out);

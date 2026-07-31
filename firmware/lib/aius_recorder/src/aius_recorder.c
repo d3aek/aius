@@ -53,6 +53,10 @@ static void reset_capture(AiusRecorder *r)
 	r->wrapped = 0u;
 	r->gap_count = 0u;
 	r->last_gap_frame = 0u;
+	/* A fresh capture has staged no frame, so it reports the configured
+	 * nominal until one arrives and has nothing yet to have changed from. */
+	r->sample_rate_hz = r->default_sample_rate_hz;
+	r->rate_changes = 0u;
 	r->suppressed_triggers = 0u;
 	r->postroll_remaining = 0u;
 	r->postroll_captured = 0u;
@@ -71,14 +75,18 @@ static void reset_capture(AiusRecorder *r)
 AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
                               uint32_t ring_bytes, uint32_t fitted_mb,
                               int32_t *staging, uint32_t *staging_frames,
-                              uint32_t staging_slots, uint32_t slot_frames)
+                              uint32_t staging_slots, uint32_t slot_frames,
+                              uint32_t default_sample_rate_hz)
 {
 	if (r == NULL)
 		return AIUS_INVALID_ARG;
 	memset(r, 0, sizeof(*r));
 	r->state = AIUS_RECORDER_ABSENT;
 	/* Config defaults are installed even on an absent board so the status
-	 * surface reports them honestly. */
+	 * surface reports them honestly. The rate default is stored before any
+	 * reset_capture() below can read it back out. */
+	r->default_sample_rate_hz = default_sample_rate_hz;
+	r->sample_rate_hz = default_sample_rate_hz;
 	r->trigger_mask = AIUS_RECORDER_MASK_DEFAULT;
 	r->gr_threshold_gain = 0.0f;
 	r->gr_threshold_db = 0.0f;
@@ -129,6 +137,7 @@ static void producer_latch_trigger(AiusRecorder *r, uint32_t which,
 
 void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
                              const int32_t *right, uint32_t frames,
+                             uint32_t sample_rate_hz,
                              uint32_t overruns, uint32_t underruns,
                              bool limiter_gain_valid, float limiter_gain,
                              uint32_t now_ms)
@@ -208,6 +217,17 @@ void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
 		memcpy(dst, l, frames * sizeof(int32_t));
 		memcpy(dst + r->slot_frames, right, frames * sizeof(int32_t));
 		r->staging_frames[slot] = frames;
+		/* Rate stamp, on the frames that actually enter staging and before
+		 * the publishing store. The FIRST staged frame of a capture adopts
+		 * its rate without counting a change -- the field was reporting the
+		 * configured default, which is a placeholder, not a predecessor.
+		 * Every later disagreement counts, and a nonzero rate_changes is
+		 * what lets a downloader reject a mixed-rate ring. */
+		if (sample_rate_hz != r->sample_rate_hz) {
+			if (r->frames_staged != 0u)
+				r->rate_changes = r->rate_changes + 1u;
+			r->sample_rate_hz = sample_rate_hz;
+		}
 		/* The slot_write store publishes the slot (stage/commit). */
 		r->slot_write = r->slot_write + 1u;
 		r->frames_staged = r->frames_staged + frames;
@@ -438,6 +458,8 @@ void aius_recorder_snapshot(const AiusRecorder *r, AiusRecorderSnapshot *out)
 	memset(out, 0, sizeof(*out));
 	out->state = r->state;
 	out->fitted_mb = r->fitted_mb;
+	out->sample_rate_hz = r->sample_rate_hz;
+	out->rate_changes = r->rate_changes;
 	out->ring_frames = r->ring_frames;
 	out->valid_frames = r->wrapped ? r->ring_frames : r->frames_drained;
 	out->oldest_frame = r->wrapped ? (r->frames_drained & r->ring_mask) : 0u;

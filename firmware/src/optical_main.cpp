@@ -453,7 +453,19 @@ static FLASHMEM AiusOpticalConfig make_default_active_model(void)
 // -- keeps this ~700-byte-each pair out of the tight shared
 // FlexRAM/ITCM+DTCM+stack pool.
 DMAMEM static AiusOpticalConfig g_active_model = make_default_active_model();
-static bool g_dsp_source_sd;
+/* WHERE the running model came from, and the only state behind both reported
+ * spellings. `source` stays a two-value field -- "default", or "sd" meaning an
+ * override is applied -- because it is a shipped wire vocabulary and a client
+ * that has never heard of a third value must not start seeing one; the honest
+ * fact rides beside it as `model_origin`. This replaces a single bool that the
+ * block-boundary swap set true for ANY staged model, so a model that arrived by
+ * HTTP PUT reported itself as having come off the card. */
+typedef enum {
+	DSP_ORIGIN_DEFAULT,
+	DSP_ORIGIN_SD,
+	DSP_ORIGIN_PUT
+} DspModelOrigin;
+static DspModelOrigin g_dsp_model_origin = DSP_ORIGIN_DEFAULT;
 static uint32_t g_config_generation;
 
 /* Staged model awaiting a block-boundary-safe apply. Written from loop/HTTP
@@ -469,8 +481,14 @@ static uint32_t g_config_generation;
  * arms g_dsp_apply_pending. As with the public config above, the arm on commit
  * went with the legacy job and slice S3 restores it. DMAMEM for the same reason
  * as g_active_model: written from epoch/HTTP context, read once (a plain struct
- * copy) at the block boundary, never touched per-block. */
+ * copy) at the block boundary, never touched per-block.
+ *
+ * g_pending_dsp_origin rides the SAME handoff and under the same rule: every
+ * stager writes it before the volatile flag is set, and the swap reads it only
+ * after observing the flag, so it can never be read ahead of the model it
+ * describes. It is part of the staged payload, not a second protocol. */
 DMAMEM static AiusOpticalConfig g_pending_dsp_model;
+static DspModelOrigin g_pending_dsp_origin = DSP_ORIGIN_DEFAULT;
 static bool g_dsp_upload_pending;
 static volatile bool g_dsp_apply_pending;
 
@@ -1177,7 +1195,13 @@ private:
 				g_config_generation++;
 		}
 		if (model_pending) {
-			g_dsp_source_sd = true;
+			/* The staged origin was written before the flag this arm
+			 * observed, so it belongs to the model just copied.
+			 * Adopting it verbatim is what makes the reported origin
+			 * the stager's fact rather than a guess made here: the
+			 * bool this replaced read "sd" for every applied model,
+			 * PUT-staged ones included. */
+			g_dsp_model_origin = g_pending_dsp_origin;
 			g_config_generation++;
 			g_dsp_apply_pending = false;
 		}
@@ -1272,11 +1296,17 @@ private:
 		 * measure tap so both cover exactly the committed frames. The
 		 * limiter gain is read in the call that just advanced it;
 		 * the underrun counter is the tx24 ring's own volatile u32.
+		 * The block's OWN rate goes with it: the accepted live nominal may
+		 * be 44.1 kHz while AIUS_OPTICAL_SAMPLE_RATE_HZ says 48 kHz, and a
+		 * capture header built from the constant plays the recording back
+		 * at the wrong speed. The rate is already checked against the
+		 * applied plan above, so what is stamped is what the wire carried.
 		 * Cost when no PSRAM is fitted: this one bool test. */
 		if (g_recorder_present)
 			aius_recorder_producer_block(
 				&g_recorder, processed_left, processed_right,
-				block->frames, dropped_chunks,
+				block->frames, block->sample_rate_hz,
+				dropped_chunks,
 				g_aius_spdif_tx24.underruns,
 				dsp.limiter != nullptr,
 				dsp.limiter != nullptr
@@ -1356,16 +1386,20 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	const uint32_t recorder_ring_bytes =
 		aius_recorder_ring_bytes_after_staging(
 			psram_bytes, RECORDER_STAGING_BYTES);
+	/* The build's nominal is the rate the capture reports until a block
+	 * stamps its own; both arms pass it so a bare board still echoes it. */
 	g_recorder_present = recorder_ring_bytes >= AIUS_RECORDER_FRAME_BYTES &&
 		aius_recorder_init(
 			&g_recorder, psram + RECORDER_STAGING_BYTES,
 			recorder_ring_bytes, external_psram_size,
 			reinterpret_cast<int32_t *>(psram),
 			g_recorder_staging_frames, RECORDER_STAGING_SLOTS,
-			RECORDER_SLOT_FRAMES) == AIUS_OK;
+			RECORDER_SLOT_FRAMES,
+			AIUS_OPTICAL_SAMPLE_RATE_HZ) == AIUS_OK;
 	if (!g_recorder_present)
 		(void)aius_recorder_init(&g_recorder, nullptr, 0u, 0u,
-		                         nullptr, nullptr, 0u, 0u);
+		                         nullptr, nullptr, 0u, 0u,
+		                         AIUS_OPTICAL_SAMPLE_RATE_HZ);
 	/* Take the S/PDIF transmit DMA interrupt from the retained snapshot's
 	 * 16-bit filler. After this the wire carries our 24-bit ring verbatim;
 	 * before it, the vendor ISR transmits block_silent, which is the same
@@ -1696,6 +1730,29 @@ static FLASHMEM bool http_dsp_eq_array(char *output, size_t capacity, size_t *le
 	return http_json_append(output, capacity, length, "]");
 }
 
+/* The two renderings of one fact, both cold (status/config reads only).
+ *
+ * `source` is the SHIPPED vocabulary and stays exactly two words: "default", or
+ * "sd" meaning an override is applied. Widening it in place would hand every
+ * existing client a value it has no arm for, and on GET /api/dsp/config it would
+ * additionally have to survive the PUT validator, which accepts only those two.
+ * `model_origin` is the new field that says which stager actually produced the
+ * running model. */
+static FLASHMEM const char *dsp_source_name(DspModelOrigin origin)
+{
+	return origin == DSP_ORIGIN_DEFAULT ? "default" : "sd";
+}
+
+static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)
+{
+	switch (origin) {
+	case DSP_ORIGIN_SD: return "sd";
+	case DSP_ORIGIN_PUT: return "put";
+	case DSP_ORIGIN_DEFAULT:
+	default: return "default";
+	}
+}
+
 /* Serialize the single effective DSP config: g_active_model, kept in sync with
  * whatever is actually running (the const factory default at boot, or the last
  * model applied at an audio block boundary). Cold path, fixed buffer,
@@ -1712,7 +1769,7 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	size_t length = 0;
 	if (!http_json_append(output, capacity, &length,
 	                      "{\"source\":\"%s\",\"config_generation\":%lu,\"sample_rate_hz\":%lu,",
-	                      g_dsp_source_sd ? "sd" : "default",
+	                      dsp_source_name(g_dsp_model_origin),
 	                      (unsigned long)g_config_generation,
 	                      (unsigned long)cfg.sample_rate_hz))
 		return 0;
@@ -1754,7 +1811,15 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	 * layout_aware is the mirror hazard and the reason it is emitted even though
 	 * the validator would accept its absence: parse-without-emit makes every
 	 * GET-modify-PUT silently reset a hand-set false back to true, because absent
-	 * reads ON. The rule for this endpoint is that the two key sets match. */
+	 * reads ON. The rule for this endpoint is that the two key sets match.
+	 *
+	 * THAT RULE IS WHY `model_origin` IS NOT SERVED HERE, only on /api/status.
+	 * aius_dsp_config_parse_put() answers UNKNOWN_KEY for any top-level key
+	 * outside its nine, so emitting a tenth would 400 every GET-modify-PUT that
+	 * echoes the document back -- including tools/latency/bench.py's
+	 * normalize_effective_config(), which copies every key it reads. Adding it
+	 * here is a two-file change: accept-and-ignore `model_origin` in
+	 * lib/aius_dsp_config alongside `source`, THEN emit it. */
 	if (!http_json_append(output, capacity, &length,
 	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s,\"layout_aware\":%s},",
 	                      cfg.matrix.center_gain_linear, cfg.matrix.surround_gain_linear,
@@ -2580,7 +2645,13 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
  * recovery_safe is served as 0/1 like the other booleans on this route. The
  * body grows by at most ~200 bytes against a 12,288-byte buffer
  * (AIUS_RUNTIME_TEENSY_APP_BODY), and the capacity check below is unchanged:
- * a body that does not fit is 0, which the dispatcher turns into a 500. */
+ * a body that does not fit is 0, which the dispatcher turns into a 500.
+ *
+ * model_origin joins them for at most 25 more bytes (",\"model_origin\":" plus
+ * the longest value, "default", quoted). It sits beside `source` rather than at
+ * the end because the two are one fact at two resolutions and no key's VALUE
+ * moves -- only positions in the literal, which no reader of this document can
+ * observe. */
 static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 {
 	uint8_t status[71];
@@ -2593,15 +2664,21 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	const AiusNetworkTeensy *network = &g_runtime.network_http.target;
 	const char *network_mode = status[1] == 1u ? "dhcp" : "offline";
 	int written = snprintf((char *)body, capacity,
-		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
+		"{\"version\":%u,\"state\":%u,\"carrier\":%u,\"format\":%u,\"sample_rate\":%lu,\"blocks\":%lu,\"overruns\":%lu,\"source\":\"%s\",\"model_origin\":\"%s\",\"sd_present\":%u,\"sd_filesystem\":\"%s\",\"sd_total_bytes\":%llu,\"sd_used_bytes\":%llu,\"sd_free_bytes\":%llu,\"config_valid\":%u,\"config_error_code\":%u,\"config_error\":\"%s\",\"config_error_count\":%lu,\"network_mode\":\"%s\",\"ip\":\"%u.%u.%u.%u\",\"link\":%u,\"network_restarts\":%lu,\"dhcp_pending\":%u,\"dhcp_discovers\":%lu,\"dhcp_updates\":%lu,\"reset_source\":%lu,\"http_server_rebinds\":%lu,\"cpu_temp_c\":%.2f,\"cpu_temp_valid\":%u,\"cpu_temp_max_c\":%.2f,\"cpu_temp_age_ms\":%lu,\"build_revision\":\"%s\",\"build_utc\":\"%s\",\"event_sequence\":%lu,\"event_overflows\":%lu,\"network_drops\":%lu,\"network_budget_overruns\":%lu,\"http_requests\":%lu,\"http_rejections\":%lu,\"http_client_drops\":%lu,\"http_service_overruns\":%lu,\"network_state\":%u,\"recovery_safe\":%u,\"network_last_fault\":%u,\"last_checkpoint\":%u,\"network_generation\":%lu,\"boot_generation\":%lu,\"watchdog_early_resets\":%u,\"loop_epoch\":%lu,\"psram_mb\":%u,\"psram_pad2_mb\":%u,\"tx_gate\":{\"open\":%u,\"carrier_locked\":%u,\"replay_running\":%u}}",
 		status[0], status[2], status[3] & 1u, status[23],
 		(unsigned long)aius_net_get_u32(status + 25),
 		(unsigned long)aius_net_get_u32(status + 29),
 		(unsigned long)aius_net_get_u32(status + 33),
 		/* The effective DSP model's source, the same fact and the same
 		 * spelling GET /api/dsp/config serves (http_dsp_config_json) -- not
-		 * the audio source, which is `state`. */
-		g_dsp_source_sd ? "sd" : "default",
+		 * the audio source, which is `state`. `model_origin` beside it says
+		 * WHICH stager produced that model: `source` cannot, because its
+		 * vocabulary is two words and "an override is applied" is all it has
+		 * ever meant. A model uploaded by PUT /api/dsp/config reports
+		 * source "sd" (it is durable on the card by the time it applies) and
+		 * model_origin "put". */
+		dsp_source_name(g_dsp_model_origin),
+		dsp_origin_name(g_dsp_model_origin),
 		g_sd_ready ? 1u : 0u, sd_filesystem(),
 		(unsigned long long)g_sd_total_bytes,
 		(unsigned long long)g_sd_used_bytes,
@@ -3051,7 +3128,11 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_public_config(
  * handoff keeps its single-writer/single-reader shape -- g_pending_dsp_model is
  * fully populated, then g_dsp_upload_pending gates it for the job lifecycle;
  * g_dsp_apply_pending is armed only once the write commits, never here, so a
- * failed write can never reach the audio block boundary. */
+ * failed write can never reach the audio block boundary.
+ *
+ * The staged origin is written here, with the model and well before
+ * sd_settle_http_write() arms the volatile flag -- this is the stager, so this
+ * is where the fact is known. */
 static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 	void *, const uint8_t *body, size_t length)
 {
@@ -3063,6 +3144,7 @@ static FLASHMEM AiusOpticalAppStoreResult app_store_dsp_config(
 	if (sd_job_active())
 		return AIUS_OPTICAL_APP_STORE_BUSY;
 	g_pending_dsp_model = parsed;
+	g_pending_dsp_origin = DSP_ORIGIN_PUT;
 	g_dsp_upload_pending = true;
 	g_sd_commit_target = SD_COMMIT_DSP_MODEL;
 	g_sd_commit_writing = false;
@@ -3930,7 +4012,18 @@ static FLASHMEM const char *recorder_trigger_name(uint32_t trigger)
  * contract's WAV-sufficient field list (encoding, geometry, valid extent and
  * oldest position, trigger metadata, gaps, generations, the armed config and
  * the chunk cap). Served from a coherent epoch-context snapshot, never
- * re-derived mid-serialize. */
+ * re-derived mid-serialize.
+ *
+ * sample_rate_hz is the SNAPSHOT's rate -- the rate of the frames actually in
+ * the ring -- and not AIUS_OPTICAL_SAMPLE_RATE_HZ, which this route used to
+ * serve. The constant is the build's nominal, so on an accepted 44.1 kHz live
+ * stream it stated 48000 and every pulled WAV played ~8.8% fast. rate_changes
+ * joins it because one scalar cannot describe a ring that spans a transition:
+ * nonzero means the header is true of only the newest frames, which is a
+ * capture a downloader should reject rather than mislabel. The pair adds at
+ * most 31 bytes ("rate_changes" plus a u32) to a body that already fits
+ * AIUS_RUNTIME_TEENSY_APP_BODY with kilobytes to spare, and the snprintf
+ * capacity check below still turns any overflow into a deterministic 0. */
 static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
                                           size_t capacity)
 {
@@ -3938,7 +4031,7 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 	aius_recorder_snapshot(&g_recorder, &s);
 	int length = snprintf((char *)body, capacity,
 		"{\"state\":\"%s\",\"fitted_mb\":%lu,"
-		"\"sample_rate_hz\":%lu,"
+		"\"sample_rate_hz\":%lu,\"rate_changes\":%lu,"
 		"\"encoding\":\"s32le\",\"significant_bits\":24,"
 		"\"interleave\":\"lr\",\"frame_bytes\":%u,"
 		"\"ring_frames\":%lu,\"valid_frames\":%lu,"
@@ -3955,7 +4048,7 @@ static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,
 		"\"gr_threshold_db\":%.1f,\"gr_hold_blocks\":%lu,"
 		"\"postroll_blocks\":%lu}}",
 		recorder_state_name(s.state), (unsigned long)s.fitted_mb,
-		(unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ,
+		(unsigned long)s.sample_rate_hz, (unsigned long)s.rate_changes,
 		(unsigned)AIUS_RECORDER_FRAME_BYTES,
 		(unsigned long)s.ring_frames, (unsigned long)s.valid_frames,
 		(unsigned long)s.oldest_frame,
@@ -4406,10 +4499,13 @@ static FLASHMEM bool platform_publish_config(void *, const uint8_t *data,
 		    AIUS_DSP_CONFIG_OK)
 			return true;
 		g_pending_dsp_model = parsed;
+		/* The origin goes with the model and BEFORE the volatile flag
+		 * below, which is the whole handoff rule. */
+		g_pending_dsp_origin = DSP_ORIGIN_SD;
 		/* Staged, not applied: the block-boundary swap in
 		 * AiusAudioProcessor::enqueue() remains the only place the
 		 * active model changes, where config_generation increments and
-		 * source becomes "sd". */
+		 * the active origin adopts the staged one. */
 		g_dsp_apply_pending = true;
 		return true;
 	}

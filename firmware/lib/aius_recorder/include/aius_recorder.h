@@ -130,6 +130,15 @@ typedef struct {
 typedef struct {
 	uint32_t state;              /* AiusRecorderState */
 	uint32_t fitted_mb;          /* as probed; 0 when absent */
+	/* Rate of the most recently STAGED frame, and how many times the staged
+	 * rate disagreed with its predecessor since the capture armed. Before any
+	 * frame is staged the rate reports the caller's configured default and
+	 * rate_changes is 0. A nonzero rate_changes means the ring spans a rate
+	 * transition, so sample_rate_hz is true of only its newest frames and a
+	 * downloader should reject the capture rather than write one WAV header
+	 * over all of it. */
+	uint32_t sample_rate_hz;
+	uint32_t rate_changes;
 	uint32_t ring_frames;        /* capacity */
 	uint32_t valid_frames;       /* extent a reader may serve */
 	uint32_t oldest_frame;       /* physical ring index of the oldest frame */
@@ -170,6 +179,13 @@ typedef struct {
 	volatile uint32_t wrapped;       /* sticky: frames_staged reached ring */
 	volatile uint32_t gap_count;
 	volatile uint32_t last_gap_frame;
+	/* Rate truth for the frames actually in staging/ring. Stamped by the
+	 * producer on the block it stages, never from a build-time nominal: the
+	 * accepted live rate may be 44.1 kHz while the compile-time constant says
+	 * 48 kHz, and a WAV header built from the latter plays the capture at the
+	 * wrong speed. */
+	volatile uint32_t sample_rate_hz;
+	volatile uint32_t rate_changes;
 	volatile uint32_t suppressed_triggers;
 	volatile uint32_t postroll_remaining;
 	volatile uint32_t postroll_captured;
@@ -203,6 +219,7 @@ typedef struct {
 	uint32_t reclaim_count;
 
 	/* Config: written cold by set_config/init, read per producer block. */
+	uint32_t default_sample_rate_hz;  /* reported until a frame is staged */
 	volatile uint32_t trigger_mask;
 	volatile float gr_threshold_gain; /* linear; 0 = disabled */
 	float gr_threshold_db;            /* as configured, for echo only */
@@ -217,11 +234,20 @@ typedef struct {
  * satisfies this); staging_slots a power of two; slot_frames nonzero.
  * Installs the default trigger config. Call once, cold, before the transmit
  * interrupt arms. AIUS_INVALID_ARG refuses into ABSENT with no storage
- * bound. */
+ * bound.
+ *
+ * default_sample_rate_hz is the caller's configured nominal, reported by the
+ * snapshot until the first frame is staged and re-adopted on every thaw. It is
+ * a parameter rather than a constant here so the one honest source of that
+ * fact stays with the caller that owns it (the firmware's build config), with
+ * no second copy in this library to drift from it. Not validated: an absent
+ * board still echoes it, and a wrong nominal is a caller defect this library
+ * cannot adjudicate. */
 AiusStatus aius_recorder_init(AiusRecorder *r, uint8_t *ring,
                               uint32_t ring_bytes, uint32_t fitted_mb,
                               int32_t *staging, uint32_t *staging_frames,
-                              uint32_t staging_slots, uint32_t slot_frames);
+                              uint32_t staging_slots, uint32_t slot_frames,
+                              uint32_t default_sample_rate_hz);
 
 /* Largest power-of-two ring byte extent that fits after a caller-owned staging
  * carve. Returns zero when no complete stereo frame fits. */
@@ -233,11 +259,17 @@ uint32_t aius_recorder_ring_bytes_after_staging(uint32_t storage_bytes,
  * triggers (overrun/underrun edges against resync-on-decrease baselines, the
  * underrun edge qualified by the epoch-latched gate; GR hold when
  * limiter_gain_valid), acknowledges a pending freeze token, copies the planes
- * into staging (or stamps a gap when staging is full), and counts down an
- * open post-roll. In every other state: one state load, then a no-op.
- * Bounded and allocation-free. */
+ * into staging (or stamps a gap when staging is full), stamps that block's
+ * sample_rate_hz on the capture, and counts down an open post-roll. In every
+ * other state: one state load, then a no-op. Bounded and allocation-free.
+ *
+ * sample_rate_hz is THIS block's accepted rate. Only a block that actually
+ * enters staging stamps it -- a dropped (gapped) block contributes no frame,
+ * so it may not move the rate the ring reports. Costs one compare per block
+ * and two stores on the rare edge. */
 void aius_recorder_producer_block(AiusRecorder *r, const int32_t *l,
                              const int32_t *right, uint32_t frames,
+                             uint32_t sample_rate_hz,
                              uint32_t overruns, uint32_t underruns,
                              bool limiter_gain_valid, float limiter_gain,
                              uint32_t now_ms);

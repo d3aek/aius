@@ -24,6 +24,10 @@
 #define AUDIO_BURST_RING_BYTES \
 	(AUDIO_BURST_RING_FRAMES * AIUS_RECORDER_FRAME_BYTES)
 #define MIB (1024u * 1024u)
+/* The caller's configured nominal, and the alternate the accepted live rate
+ * may actually be -- the pair the rate stamp exists to tell apart. */
+#define DEFAULT_RATE_HZ 48000u
+#define ALT_RATE_HZ 44100u
 
 typedef struct {
 	AiusRecorder r;
@@ -36,15 +40,16 @@ static void fixture_init(Fixture *f)
 {
 	memset(f, 0, sizeof(*f));
 	assert(aius_recorder_init(&f->r, f->ring, RING_BYTES, 16u, f->staging,
-	                          f->staging_frames, SLOTS,
-	                          SLOT_FRAMES) == AIUS_OK);
+	                          f->staging_frames, SLOTS, SLOT_FRAMES,
+	                          DEFAULT_RATE_HZ) == AIUS_OK);
 	assert(f->r.state == AIUS_RECORDER_RECORDING);
 }
 
-/* One committed block whose samples encode (base + index) per channel so the
- * drain's interleave is checkable sample-exactly. */
-static void feed_block(Fixture *f, uint32_t frames, int32_t base,
-                       uint32_t overruns, uint32_t underruns)
+/* One committed block at an explicit rate, whose samples encode (base + index)
+ * per channel so the drain's interleave is checkable sample-exactly. */
+static void feed_block_at(Fixture *f, uint32_t frames, int32_t base,
+                          uint32_t sample_rate_hz, uint32_t overruns,
+                          uint32_t underruns)
 {
 	int32_t l[SLOT_FRAMES];
 	int32_t r[SLOT_FRAMES];
@@ -53,8 +58,16 @@ static void feed_block(Fixture *f, uint32_t frames, int32_t base,
 		l[i] = base + (int32_t)i;
 		r[i] = -(base + (int32_t)i);
 	}
-	aius_recorder_producer_block(&f->r, l, r, frames, overruns, underruns,
-	                        false, 0.0f, 1000u);
+	aius_recorder_producer_block(&f->r, l, r, frames, sample_rate_hz,
+	                        overruns, underruns, false, 0.0f, 1000u);
+}
+
+/* The steady case every non-rate test wants: a block at the configured
+ * nominal, so the rate stamp is a no-op and those tests read as before. */
+static void feed_block(Fixture *f, uint32_t frames, int32_t base,
+                       uint32_t overruns, uint32_t underruns)
+{
+	feed_block_at(f, frames, base, DEFAULT_RATE_HZ, overruns, underruns);
 }
 
 static void drain_all(Fixture *f)
@@ -67,8 +80,8 @@ static void test_absent_is_first_class(void)
 {
 	AiusRecorder r;
 	/* ring_bytes 0 is the bare board: OK, ABSENT, every op refuses. */
-	assert(aius_recorder_init(&r, NULL, 0u, 0u, NULL, NULL, 0u, 0u) ==
-	       AIUS_OK);
+	assert(aius_recorder_init(&r, NULL, 0u, 0u, NULL, NULL, 0u, 0u,
+	                          DEFAULT_RATE_HZ) == AIUS_OK);
 	assert(r.state == AIUS_RECORDER_ABSENT);
 	assert(aius_recorder_freeze(&r) == AIUS_INVALID_ARG);
 	assert(aius_recorder_thaw(&r) == AIUS_INVALID_ARG);
@@ -77,8 +90,13 @@ static void test_absent_is_first_class(void)
 	assert(aius_recorder_read(&r, 0u, 8u, 0u, &p, &n) == AIUS_INVALID_ARG);
 	assert(aius_recorder_drain(&r, 65536u) == 0u);
 	int32_t plane[4] = { 0, 0, 0, 0 };
-	aius_recorder_producer_block(&r, plane, plane, 4u, 0u, 0u, false, 0.0f, 0u);
+	aius_recorder_producer_block(&r, plane, plane, 4u, ALT_RATE_HZ, 0u, 0u,
+	                        false, 0.0f, 0u);
 	assert(r.frames_staged == 0u);
+	/* An absent board stages nothing, so the refused block's rate never
+	 * reaches the report: the configured nominal stands. */
+	assert(r.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(r.rate_changes == 0u);
 	/* Config is reportable and settable on an absent board (the status
 	 * surface echoes it; there is just nothing to arm). */
 	assert(aius_recorder_set_config(&r, AIUS_RECORDER_MASK_ALL, -6.0f, 2u,
@@ -88,6 +106,8 @@ static void test_absent_is_first_class(void)
 	assert(s.state == AIUS_RECORDER_ABSENT);
 	assert(s.fitted_mb == 0u);
 	assert(s.ring_frames == 0u);
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 0u);
 }
 
 static void test_init_geometry(void)
@@ -99,16 +119,17 @@ static void test_init_geometry(void)
 	/* Non-power-of-two ring frames refuse (the probe never produces one;
 	 * a refusal beats silently wrong masking). */
 	assert(aius_recorder_init(&r, ring, 24u, 16u, staging, staging_frames,
-	                          SLOTS, SLOT_FRAMES) == AIUS_INVALID_ARG);
+	                          SLOTS, SLOT_FRAMES,
+	                          DEFAULT_RATE_HZ) == AIUS_INVALID_ARG);
 	assert(r.state == AIUS_RECORDER_ABSENT);
 	/* Unaligned byte size refuses. */
 	assert(aius_recorder_init(&r, ring, RING_BYTES - 1u, 16u, staging,
-	                          staging_frames, SLOTS,
-	                          SLOT_FRAMES) == AIUS_INVALID_ARG);
+	                          staging_frames, SLOTS, SLOT_FRAMES,
+	                          DEFAULT_RATE_HZ) == AIUS_INVALID_ARG);
 	/* Contract formula: ring_frames = psram_bytes / 8. */
 	assert(aius_recorder_init(&r, ring, RING_BYTES, 16u, staging,
-	                          staging_frames, SLOTS,
-	                          SLOT_FRAMES) == AIUS_OK);
+	                          staging_frames, SLOTS, SLOT_FRAMES,
+	                          DEFAULT_RATE_HZ) == AIUS_OK);
 	assert(r.ring_frames == RING_FRAMES);
 	AiusRecorderSnapshot s;
 	aius_recorder_snapshot(&r, &s);
@@ -116,6 +137,16 @@ static void test_init_geometry(void)
 	assert(s.oldest_frame == 0u);
 	assert(s.trigger_mask == AIUS_RECORDER_MASK_DEFAULT);
 	assert(s.postroll_blocks == AIUS_RECORDER_POSTROLL_DEFAULT_BLOCKS);
+	/* Before any frame exists the report is the caller's configured
+	 * nominal, and the init parameter is the ONLY source of it -- a second
+	 * init at a different rate reports that one. */
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+	assert(aius_recorder_init(&r, ring, RING_BYTES, 16u, staging,
+	                          staging_frames, SLOTS, SLOT_FRAMES,
+	                          ALT_RATE_HZ) == AIUS_OK);
+	aius_recorder_snapshot(&r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
 }
 
 static void test_target_psram_geometry(void)
@@ -148,7 +179,8 @@ static void test_eight_step_audio_burst_is_gap_free(void)
 	memset(ring, 0, sizeof(ring));
 	assert(aius_recorder_init(&r, ring, sizeof(ring), 8u, staging,
 	                          staging_frames, AUDIO_BURST_SLOTS,
-	                          AUDIO_BURST_SLOT_FRAMES) == AIUS_OK);
+	                          AUDIO_BURST_SLOT_FRAMES,
+	                          DEFAULT_RATE_HZ) == AIUS_OK);
 	for (uint32_t frame = 0; frame < AUDIO_BURST_SLOT_FRAMES; frame++) {
 		left[frame] = (int32_t)frame;
 		right[frame] = -(int32_t)frame;
@@ -156,14 +188,14 @@ static void test_eight_step_audio_burst_is_gap_free(void)
 	for (uint32_t step = 0; step < AUDIO_BURST_SLOTS; step++)
 		aius_recorder_producer_block(
 			&r, left, right, AUDIO_BURST_SLOT_FRAMES,
-			0u, 0u, false, 0.0f,
+			DEFAULT_RATE_HZ, 0u, 0u, false, 0.0f,
 			1000u + step);
 	assert(r.slot_write == AUDIO_BURST_SLOTS);
 	assert(r.frames_staged == AUDIO_BURST_RING_FRAMES);
 	assert(r.gap_count == 0u);
 	aius_recorder_producer_block(
-		&r, left, right, AUDIO_BURST_SLOT_FRAMES, 0u, 0u,
-		false, 0.0f, 2000u);
+		&r, left, right, AUDIO_BURST_SLOT_FRAMES, DEFAULT_RATE_HZ, 0u,
+		0u, false, 0.0f, 2000u);
 	assert(r.gap_count == 1u);
 	assert(r.frames_staged == AUDIO_BURST_RING_FRAMES);
 	assert(aius_recorder_drain(&r, AUDIO_BURST_RING_BYTES) ==
@@ -408,14 +440,20 @@ static void test_gr_hold(void)
 	                                3u, 2u) == AIUS_OK);
 	int32_t plane[8] = { 0 };
 	/* Two held blocks then a recovery: the hold count resets. */
-	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.9f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, DEFAULT_RATE_HZ, 0u,
+	                        0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, DEFAULT_RATE_HZ, 0u,
+	                        0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, DEFAULT_RATE_HZ, 0u,
+	                        0u, true, 0.9f, 0u);
 	assert(f.r.state == AIUS_RECORDER_RECORDING);
 	/* Three consecutive held blocks fire. */
-	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
-	aius_recorder_producer_block(&f.r, plane, plane, 8u, 0u, 0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, DEFAULT_RATE_HZ, 0u,
+	                        0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, DEFAULT_RATE_HZ, 0u,
+	                        0u, true, 0.4f, 0u);
+	aius_recorder_producer_block(&f.r, plane, plane, 8u, DEFAULT_RATE_HZ, 0u,
+	                        0u, true, 0.4f, 0u);
 	assert(f.r.state == AIUS_RECORDER_POSTROLL);
 	assert(f.r.trigger == AIUS_RECORDER_TRIGGER_LIMITER_GR);
 	/* GR disabled (0 dB) never fires whatever the mask. */
@@ -424,8 +462,9 @@ static void test_gr_hold(void)
 	assert(aius_recorder_set_config(&g.r, AIUS_RECORDER_MASK_ALL, 0.0f, 1u,
 	                                2u) == AIUS_OK);
 	for (uint32_t i = 0; i < 10u; i++)
-		aius_recorder_producer_block(&g.r, plane, plane, 8u, 0u, 0u, true,
-		                        0.01f, 0u);
+		aius_recorder_producer_block(&g.r, plane, plane, 8u,
+		                        DEFAULT_RATE_HZ, 0u, 0u, true, 0.01f,
+		                        0u);
 	assert(g.r.state == AIUS_RECORDER_RECORDING);
 }
 
@@ -532,6 +571,113 @@ static void test_read_bounds(void)
 	assert(n == RING_BYTES);
 }
 
+/* The rate the ring actually carries, which is the whole point: the status
+ * route used to serve a compile-time nominal, so an accepted 44.1 kHz stream
+ * produced a WAV header saying 48000 and a capture that played ~8.8% fast. */
+static void test_rate_stamp_and_changes(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	AiusRecorderSnapshot s;
+
+	/* Before any frame: the configured default, and nothing has changed. */
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+
+	/* The FIRST staged block adopts its own rate. Adopting the accepted
+	 * live rate is not a change -- the default was a placeholder, not a
+	 * predecessor -- so a single-rate 44.1 kHz capture stays rejection-free
+	 * for a downloader that keys on rate_changes. */
+	feed_block_at(&f, 8u, 100, ALT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+
+	/* Same rate again: no change, whatever the block count. */
+	feed_block_at(&f, 8u, 200, ALT_RATE_HZ, 0u, 0u);
+	feed_block_at(&f, 8u, 300, ALT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+
+	/* A real transition mid-capture: the ring is now mixed. The reported
+	 * rate follows the newest frames and the counter says so. */
+	drain_all(&f);
+	feed_block_at(&f, 8u, 400, DEFAULT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 1u);
+	/* Back again counts a second time: the count is transitions, not
+	 * distinct rates. */
+	feed_block_at(&f, 8u, 500, ALT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
+	assert(s.rate_changes == 2u);
+}
+
+/* Only frames that reach staging may move the reported rate: a dropped block
+ * contributes nothing to the ring, so it cannot relabel it. */
+static void test_rate_stamp_ignores_dropped_blocks(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	feed_block_at(&f, 8u, 0, DEFAULT_RATE_HZ, 0u, 0u);
+	/* Fill the remaining slots without draining, then overflow at the other
+	 * rate: the overflowing block is dropped and stamped as a gap. */
+	for (uint32_t b = 1u; b < SLOTS; b++)
+		feed_block_at(&f, 8u, (int32_t)(b * 1000u), DEFAULT_RATE_HZ, 0u,
+		              0u);
+	feed_block_at(&f, 8u, 9000, ALT_RATE_HZ, 0u, 0u);
+	assert(f.r.gap_count == 1u);
+	AiusRecorderSnapshot s;
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+	/* Drained, the same rate now stages and is adopted as a change against
+	 * the frames already in the ring. */
+	drain_all(&f);
+	feed_block_at(&f, 8u, 9100, ALT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
+	assert(s.rate_changes == 1u);
+
+	/* A zero-frame block is not a commit either. */
+	feed_block_at(&f, 0u, 0, DEFAULT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
+	assert(s.rate_changes == 1u);
+}
+
+/* A thawed recorder is a fresh capture: it has staged no frame, so it reports
+ * the configured default again and re-adopts without counting a change. */
+static void test_rate_resets_on_thaw(void)
+{
+	Fixture f;
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, 1u) == AIUS_OK);
+	feed_block_at(&f, 8u, 0, ALT_RATE_HZ, 0u, 0u);
+	feed_block_at(&f, 8u, 1, DEFAULT_RATE_HZ, 0u, 0u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block_at(&f, 8u, 2, DEFAULT_RATE_HZ, 0u, 0u);
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+	AiusRecorderSnapshot s;
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 1u);
+	/* The frozen capture keeps its verdict until it is thawed. */
+	assert(aius_recorder_thaw(&f.r) == AIUS_OK);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == DEFAULT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+	feed_block_at(&f, 8u, 3, ALT_RATE_HZ, 0u, 0u);
+	aius_recorder_snapshot(&f.r, &s);
+	assert(s.sample_rate_hz == ALT_RATE_HZ);
+	assert(s.rate_changes == 0u);
+}
+
 static void test_config_validation(void)
 {
 	Fixture f;
@@ -574,6 +720,9 @@ int main(void)
 	test_second_trigger_first_wins();
 	test_thaw_and_generation();
 	test_read_bounds();
+	test_rate_stamp_and_changes();
+	test_rate_stamp_ignores_dropped_blocks();
+	test_rate_resets_on_thaw();
 	test_config_validation();
 	return 0;
 }

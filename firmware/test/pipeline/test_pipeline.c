@@ -1697,6 +1697,103 @@ static void test_codec_lifecycle(const char *dir)
 	printf("  codec-lifecycle preserve reject; clear reset/starvation/reclass\n");
 }
 
+/* The operator clear owns the observation latches.
+ *
+ * `last_status` survives every AUTOMATIC transition on purpose -- a fault the
+ * pipeline swallowed to keep the wire streaming must stay visible, which is the
+ * whole reason the field exists. The cost was that the documented AC-3-to-PCM
+ * diagnostic (pull the source, watch it re-type) left AIUS_MALFORMED sitting in
+ * pipeline_diag.last_status with nothing but a reboot able to move it, because
+ * the PCM route never writes the field. The clear the operator invokes is the
+ * one event entitled to drop it. */
+static void test_clear_drops_observation_latches(const char *dir)
+{
+	size_t ac3_n = 0u;
+	size_t malformed_n = 0u;
+	uint16_t *ac3 = load_wire(dir, "ac3_surround51_ident", &ac3_n);
+	uint16_t *malformed = load_wire(dir, "zero_len_ac3", &malformed_n);
+	CHECK(ac3 && malformed, "clear-latch: corpus load");
+	if (!ac3 || !malformed) {
+		free(ac3);
+		free(malformed);
+		return;
+	}
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+	      "clear-latch: create");
+
+	AiusMetrics metrics;
+	AiusPipelineServiceDiag diag;
+
+	/* A clean AC-3 run, then an aborted encoded unit: the reject latches on
+	 * BOTH surfaces -- pipeline_diag.last_status and the service diag's
+	 * last_failure, which is what audio_diag.pipeline_last_failure serves. */
+	CHECK(aius_pipeline_push(p, ac3, ac3_n) == AIUS_OK,
+	      "clear-latch: clean AC-3");
+	CHECK(aius_pipeline_push(p, malformed, malformed_n) == AIUS_OK,
+	      "clear-latch: aborted unit is non-fatal to the push");
+	CHECK(aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+	          metrics.last_status == AIUS_MALFORMED,
+	      "clear-latch: last_status did not latch the reject");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.last_failure == AIUS_MALFORMED && diag.parse_rejects > 0u,
+	      "clear-latch: service diag did not record the reject");
+
+	/* The teardown itself: the source goes away, the bitstream class starves
+	 * out and the stream re-types to confirmed PCM. None of that moves the
+	 * latch -- the PCM route never writes it -- which is why a reboot used to
+	 * be the only way out. Long enough to cross the starve bound AND the
+	 * confirmation window, so the re-type is complete rather than pending. */
+	const size_t ramp_words = AIUS_PIPELINE_DTS_STARVE_WORDS +
+	                          AIUS_PIPELINE_PCM_CONFIRM_WORDS +
+	                          2u * AIUS_PIPELINE_PCM_BLOCK_FRAMES;
+	uint16_t *ramp = make_ramp(ramp_words);
+	push_chunked(p, ramp, ramp_words, 256, "clear-latch-pcm");
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_PCM,
+	      "clear-latch: teardown did not re-type to PCM");
+	CHECK(aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+	          metrics.last_status == AIUS_MALFORMED,
+	      "clear-latch: an automatic re-type erased the latch");
+
+	/* The operator's clear takes both to zero. AIUS_OK is 0, which is what
+	 * the two JSON fields serve. */
+	aius_pipeline_clear_service_diag(p);
+	CHECK(aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+	          metrics.last_status == AIUS_OK && (int)metrics.last_status == 0,
+	      "clear-latch: pipeline_diag.last_status survived the clear");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.last_failure == AIUS_OK && (int)diag.last_failure == 0 &&
+	          diag.parse_rejects == 0u && diag.decode_rejects == 0u &&
+	          diag.au_abandons == 0u && diag.committed_blocks == 0u,
+	      "clear-latch: audio_diag.pipeline_last_failure or a counter "
+	      "survived the clear");
+
+	/* A clear is not a mute: the next real failure latches again. */
+	CHECK(aius_pipeline_push(p, ac3, ac3_n) == AIUS_OK,
+	      "clear-latch: clean AC-3 after the clear");
+	CHECK(aius_pipeline_push(p, malformed, malformed_n) == AIUS_OK,
+	      "clear-latch: second aborted unit");
+	CHECK(aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+	          metrics.last_status == AIUS_MALFORMED,
+	      "clear-latch: a post-clear failure did not re-latch last_status");
+	aius_pipeline_get_service_diag(p, &diag);
+	CHECK(diag.last_failure == AIUS_MALFORMED,
+	      "clear-latch: a post-clear failure did not re-latch last_failure");
+
+	aius_pipeline_clear_service_diag(NULL); /* NULL stays a no-op */
+	aius_pipeline_destroy(p);
+	capture_free(&cap);
+	free(ramp);
+	free(ac3);
+	free(malformed);
+	printf("  clear-latch    operator clear drops last_status + last_failure; "
+	       "re-types do not\n");
+}
+
 static void test_deferred_dts(const char *dir)
 {
 	size_t n = 0u;
@@ -1902,6 +1999,7 @@ int main(int argc, char **argv)
 	test_deferred_dts(dir);
 	test_deferred_ac3(dir);
 	test_codec_lifecycle(dir);
+	test_clear_drops_observation_latches(dir);
 	test_output_slicing();
 	test_deferred_pcm_and_legacy_loss();
 

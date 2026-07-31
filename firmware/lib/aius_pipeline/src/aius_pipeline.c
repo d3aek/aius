@@ -841,6 +841,16 @@ void aius_pipeline_clear_service_diag(AiusPipeline *p)
 		return;
 	memset(&p->service_diag, 0, sizeof(p->service_diag));
 	p->service_diag.last_failure = AIUS_OK;
+	/* last_status is an OBSERVATION LATCH, and the operator-invoked clear owns
+	 * resetting observation latches; automatic transitions deliberately do not.
+	 * A swallowed fault must outlive every re-classification that follows it,
+	 * or the surface that exists to make a silent decoder visible would erase
+	 * its own evidence -- which is why neither a re-type nor a re-lock touches
+	 * this. But a DELIBERATE teardown (pulling the AC-3 source to watch the
+	 * PCM re-type, the documented AC-3-to-PCM diagnostic) leaves AIUS_MALFORMED
+	 * latched, and without this the operator's clear left it reading as a live
+	 * fault in pipeline_diag.last_status until the next reboot. */
+	p->last_status = AIUS_OK;
 }
 
 AiusStatus aius_pipeline_get_parser_diag(const AiusPipeline *p,

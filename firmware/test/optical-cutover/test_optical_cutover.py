@@ -2157,6 +2157,233 @@ def assert_noload_diagnostics_are_initialized(text):
     )
 
 
+DSP_ORIGIN_VALUES = ("DSP_ORIGIN_DEFAULT", "DSP_ORIGIN_SD", "DSP_ORIGIN_PUT")
+DSP_SOURCE_NAME_MARKER = (
+    "static FLASHMEM const char *dsp_source_name(DspModelOrigin origin)"
+)
+DSP_ORIGIN_NAME_MARKER = (
+    "static FLASHMEM const char *dsp_origin_name(DspModelOrigin origin)"
+)
+DSP_CONFIG_JSON_MARKER = (
+    "static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)"
+)
+
+
+def assert_dsp_model_origin_is_staged_not_assumed(text):
+    """WHICH stager produced the running DSP model is the stager's fact, carried
+    across the existing block-boundary handoff -- never a constant the swap
+    assumes.
+
+    The defect: a single `g_dsp_source_sd` bool that the swap set true for ANY
+    applied model, so a model uploaded by PUT /api/dsp/config reported itself as
+    having come off the card. One bool cannot carry three origins, so the swap
+    had nothing to report but the one it was hard-coded to.
+
+    The wire half is a compatibility rule, not decoration. `source` is a shipped
+    two-word vocabulary ("default", or "sd" meaning an override is applied) and
+    stays that way, because widening it in place hands every existing client a
+    value it has no arm for. And `model_origin` is served on /api/status ONLY:
+    aius_dsp_config_parse_put() rejects any top-level key outside its nine, so a
+    tenth key on GET /api/dsp/config would 400 every GET-modify-PUT that echoes
+    the document back."""
+    clean = without_comments_and_literals(text)
+    assert not identifier_present(text, "g_dsp_source_sd"), (
+        "the g_dsp_source_sd bool is still present -- it cannot distinguish an "
+        "SD-staged model from a PUT-staged one, which is the whole defect"
+    )
+    for name in DSP_ORIGIN_VALUES:
+        assert identifier_present(text, name), (
+            f"the staged-origin vocabulary is missing {name!r}"
+        )
+
+    # Staged beside the model it describes, ahead of the volatile flag that
+    # publishes both. The handoff rule is positional, so the declaration is too.
+    declarations = (
+        clean.find("g_pending_dsp_model;"),
+        clean.find("DspModelOrigin g_pending_dsp_origin"),
+        clean.find("volatile bool g_dsp_apply_pending"),
+    )
+    assert all(position >= 0 for position in declarations), (
+        "the staged model, its origin, or the volatile apply flag is missing"
+    )
+    assert tuple(sorted(declarations)) == declarations, (
+        "g_pending_dsp_origin must be declared with the staged payload, ahead "
+        "of the volatile g_dsp_apply_pending flag that publishes it"
+    )
+
+    # The swap: observe the flag, copy the model, ADOPT the staged origin, then
+    # release the flag.
+    enqueue = without_comments_and_literals(function_body(text, ENQUEUE_MARKER))
+    # Checked before the ordering below, because a hard-coded origin IS the
+    # original defect and deserves to be named as one rather than reported as a
+    # missing statement.
+    for value in DSP_ORIGIN_VALUES:
+        assert f"g_dsp_model_origin = {value}" not in enqueue, (
+            "the block-boundary swap assigns a CONSTANT origin; that is the "
+            "g_dsp_source_sd defect with a wider type"
+        )
+    order = (
+        enqueue.find("const bool model_pending = g_dsp_apply_pending;"),
+        enqueue.find("g_active_model = g_pending_dsp_model;"),
+        enqueue.find("g_dsp_model_origin = g_pending_dsp_origin;"),
+        enqueue.find("g_dsp_apply_pending = false;"),
+    )
+    assert all(position >= 0 for position in order), (
+        "the block-boundary swap does not read the flag, copy the model, adopt "
+        "the staged origin and release the flag"
+    )
+    assert tuple(sorted(order)) == order, (
+        "the swap must adopt the staged origin after copying the model it "
+        "describes and before releasing the handoff flag"
+    )
+
+    # Both stagers, each writing the origin with the model and before any flag.
+    definitions = function_definitions(text)
+    for name in ("app_store_dsp_config", "platform_publish_config"):
+        assert name in definitions, f"missing DSP model stager {name!r}"
+    put_body = without_comments_and_literals(definitions["app_store_dsp_config"])
+    put_order = (
+        put_body.find("g_pending_dsp_model = parsed;"),
+        put_body.find("g_pending_dsp_origin = DSP_ORIGIN_PUT;"),
+    )
+    assert all(position >= 0 for position in put_order), (
+        "the PUT stager does not stage the model and DSP_ORIGIN_PUT beside it"
+    )
+    assert tuple(sorted(put_order)) == put_order, (
+        "the PUT stager must stage its origin with the model"
+    )
+    assert "g_dsp_apply_pending" not in put_body, (
+        "the PUT stager arms the apply flag itself, so a failed SD write could "
+        "reach the audio block boundary and the staged origin's "
+        "before-the-flag ordering is no longer the commit arm's to keep"
+    )
+    sd_body = without_comments_and_literals(
+        definitions["platform_publish_config"]
+    )
+    sd_order = (
+        sd_body.find("g_pending_dsp_model = parsed;"),
+        sd_body.find("g_pending_dsp_origin = DSP_ORIGIN_SD;"),
+        sd_body.find("g_dsp_apply_pending = true;"),
+    )
+    assert all(position >= 0 for position in sd_order), (
+        "the SD stager does not stage the model, its origin and the apply flag"
+    )
+    assert tuple(sorted(sd_order)) == sd_order, (
+        "the SD stager must write the staged origin BEFORE the volatile apply "
+        "flag publishes the staged model, or AUDIO can read an origin that "
+        "belongs to the previous model"
+    )
+
+    # The two renderings, and the vocabulary each is allowed.
+    source_name = without_comments(function_body(text, DSP_SOURCE_NAME_MARKER))
+    assert '"default"' in source_name and '"sd"' in source_name, (
+        "the `source` rendering no longer emits both shipped values"
+    )
+    assert '"put"' not in source_name, (
+        "the shipped two-value `source` vocabulary grew a third value; an "
+        "existing client has no arm for it"
+    )
+    origin_name = without_comments(function_body(text, DSP_ORIGIN_NAME_MARKER))
+    for value in ('"default"', '"sd"', '"put"'):
+        assert value in origin_name, (
+            f"the `model_origin` rendering is missing {value}"
+        )
+
+    status = without_comments(function_body(text, STATUS_JSON_MARKER))
+    assert '\\"source\\":\\"%s\\"' in status, (
+        "GET /api/status dropped or retyped its `source` field"
+    )
+    assert '\\"model_origin\\":\\"%s\\"' in status, (
+        "GET /api/status does not carry `model_origin`, so nothing on the "
+        "device says whether the running model arrived by PUT or off the card"
+    )
+    assert status.count("dsp_source_name(g_dsp_model_origin)") == 1, (
+        "the status `source` value is not derived from the active origin"
+    )
+    assert status.count("dsp_origin_name(g_dsp_model_origin)") == 1, (
+        "the status `model_origin` value is not the active origin verbatim"
+    )
+
+    dsp_config = without_comments(function_body(text, DSP_CONFIG_JSON_MARKER))
+    assert '\\"source\\":\\"%s\\"' in dsp_config, (
+        "GET /api/dsp/config dropped or retyped its `source` field"
+    )
+    assert "dsp_source_name(g_dsp_model_origin)" in dsp_config, (
+        "the config `source` value is not derived from the active origin"
+    )
+    # The KEY, not the substring: `g_dsp_model_origin` is read here legitimately
+    # to derive `source`, and it contains this name.
+    assert '\\"model_origin\\"' not in dsp_config, (
+        "GET /api/dsp/config emits `model_origin`, but this document's key set "
+        "is a round-trip contract: aius_dsp_config_parse_put() answers "
+        "UNKNOWN_KEY for a tenth top-level key, so every GET-modify-PUT that "
+        "echoes the document back would 400. Accept-and-ignore it in "
+        "lib/aius_dsp_config first"
+    )
+
+
+RECORDER_JSON_MARKER = (
+    "static FLASHMEM size_t app_write_recorder(void *, uint8_t *body,"
+)
+BEGIN_PIPELINE_MARKER = (
+    "FLASHMEM void AiusAudioProcessor::begin_pipeline(void)"
+)
+
+
+def assert_recorder_reports_the_streams_rate(text):
+    """GET /api/recorder reports the rate of the frames actually in the ring,
+    not the build's compile-time nominal.
+
+    AIUS_OPTICAL_SAMPLE_RATE_HZ is what the build was configured for; the
+    accepted live nominal may be 44.1 kHz. Serving the constant made every
+    pulled WAV of a 44.1 kHz capture play ~8.8% fast, and no field on the route
+    contradicted it. The producer tap is where the block's own rate is in
+    scope, so that is where the capture learns it."""
+    enqueue = without_comments_and_literals(function_body(text, ENQUEUE_MARKER))
+    opening = enqueue.find("aius_recorder_producer_block(")
+    assert opening >= 0, "the enqueue flight-recorder tap is missing"
+    arguments = enqueue[
+        enqueue.find("(", opening) + 1:
+        matching_delimiter(enqueue, enqueue.find("(", opening), "(", ")")
+    ]
+    assert "block->sample_rate_hz" in arguments, (
+        "the flight-recorder producer tap does not pass the block's own sample "
+        "rate, so the capture cannot know which rate its frames carry"
+    )
+
+    begin = without_comments_and_literals(
+        function_body(text, BEGIN_PIPELINE_MARKER)
+    )
+    arms = []
+    for match in re.finditer(r"aius_recorder_init\s*\(", begin):
+        arm_open = begin.find("(", match.start())
+        arms.append(
+            begin[arm_open + 1: matching_delimiter(begin, arm_open, "(", ")")]
+        )
+    assert len(arms) == 2, (
+        "expected the fitted-PSRAM and bare-board recorder init arms, found "
+        f"{len(arms)}"
+    )
+    for index, arm in enumerate(arms):
+        assert "AIUS_OPTICAL_SAMPLE_RATE_HZ" in arm, (
+            f"recorder init arm {index} does not pass the build's configured "
+            "nominal, so its pre-capture reported rate is not the device's"
+        )
+
+    body = without_comments(function_body(text, RECORDER_JSON_MARKER))
+    assert "AIUS_OPTICAL_SAMPLE_RATE_HZ" not in body, (
+        "GET /api/recorder still serves the compile-time nominal; the "
+        "snapshot's observed rate is the only honest one"
+    )
+    assert '\\"sample_rate_hz\\":' in body and "s.sample_rate_hz" in body, (
+        "GET /api/recorder does not serve the snapshot's observed rate"
+    )
+    assert '\\"rate_changes\\":' in body and "s.rate_changes" in body, (
+        "GET /api/recorder does not report rate_changes, so a downloader "
+        "cannot tell a single-rate ring from a mixed-rate one it must reject"
+    )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -2259,6 +2486,14 @@ POSITIVE_CHECKS = (
     (
         "NOLOAD diagnostics are initialized before runtime startup",
         assert_noload_diagnostics_are_initialized,
+    ),
+    (
+        "the DSP model's origin is the stager's staged fact, not the swap's",
+        assert_dsp_model_origin_is_staged_not_assumed,
+    ),
+    (
+        "the flight recorder reports the rate its frames carry",
+        assert_recorder_reports_the_streams_rate,
     ),
 )
 
@@ -2471,6 +2706,8 @@ def run_audio_cutover_self_test():
         assert_rate_service_orders_safe_gate,
         assert_enqueue_refuses_rate_before_dsp,
         assert_clock_status_clear_and_episode_contract,
+        assert_dsp_model_origin_is_staged_not_assumed,
+        assert_recorder_reports_the_streams_rate,
     )
     for check in checks:
         _expect_pass(check, text, "audio-cutover/current")
@@ -2726,6 +2963,95 @@ def run_audio_cutover_self_test():
         uncleared_diag,
         "audio-cutover/uncleared-noload-diag",
         "must clear",
+    )
+    # The regression itself: the swap deciding the origin instead of adopting
+    # the one the stager staged.
+    origin_assumed = text.replace(
+        "\t\t\tg_dsp_model_origin = g_pending_dsp_origin;",
+        "\t\t\tg_dsp_model_origin = DSP_ORIGIN_SD;",
+        1,
+    )
+    _expect_fail(
+        assert_dsp_model_origin_is_staged_not_assumed,
+        origin_assumed,
+        "dsp-origin/swap-assumes",
+        "CONSTANT origin",
+    )
+    origin_after_flag = text.replace(
+        "\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;\n"
+        "\t\t/* Staged, not applied: the block-boundary swap in\n"
+        "\t\t * AiusAudioProcessor::enqueue() remains the only place the\n"
+        "\t\t * active model changes, where config_generation increments and\n"
+        "\t\t * the active origin adopts the staged one. */\n"
+        "\t\tg_dsp_apply_pending = true;",
+        "\t\tg_dsp_apply_pending = true;\n"
+        "\t\tg_pending_dsp_origin = DSP_ORIGIN_SD;",
+        1,
+    )
+    _expect_fail(
+        assert_dsp_model_origin_is_staged_not_assumed,
+        origin_after_flag,
+        "dsp-origin/staged-after-flag",
+        "BEFORE the volatile apply",
+    )
+    # Both shipped values kept, a third bolted on: the plausible mistake, and
+    # the one a bare presence check would miss.
+    source_widened = text.replace(
+        '\treturn origin == DSP_ORIGIN_DEFAULT ? "default" : "sd";',
+        '\treturn origin == DSP_ORIGIN_DEFAULT ? "default"\n'
+        '\t     : origin == DSP_ORIGIN_PUT ? "put" : "sd";',
+        1,
+    )
+    _expect_fail(
+        assert_dsp_model_origin_is_staged_not_assumed,
+        source_widened,
+        "dsp-origin/source-vocabulary-widened",
+        "grew a third value",
+    )
+    origin_on_config_route = text.replace(
+        '\t                      "{\\"source\\":\\"%s\\",'
+        '\\"config_generation\\":%lu,',
+        '\t                      "{\\"source\\":\\"%s\\",'
+        '\\"model_origin\\":\\"put\\",\\"config_generation\\":%lu,',
+        1,
+    )
+    _expect_fail(
+        assert_dsp_model_origin_is_staged_not_assumed,
+        origin_on_config_route,
+        "dsp-origin/config-route-round-trip",
+        "round-trip contract",
+    )
+    status_origin_dropped = text.replace(
+        '\\"source\\":\\"%s\\",\\"model_origin\\":\\"%s\\",', '\\"source\\":\\"%s\\",', 1
+    )
+    _expect_fail(
+        assert_dsp_model_origin_is_staged_not_assumed,
+        status_origin_dropped,
+        "dsp-origin/status-field-dropped",
+        "does not carry `model_origin`",
+    )
+    recorder_nominal_rate = text.replace(
+        "\t\t(unsigned long)s.sample_rate_hz, (unsigned long)s.rate_changes,",
+        "\t\t(unsigned long)AIUS_OPTICAL_SAMPLE_RATE_HZ,\n"
+        "\t\t(unsigned long)s.rate_changes,",
+        1,
+    )
+    _expect_fail(
+        assert_recorder_reports_the_streams_rate,
+        recorder_nominal_rate,
+        "recorder-rate/compile-time-nominal",
+        "compile-time nominal",
+    )
+    recorder_tap_unstamped = text.replace(
+        "\t\t\t\tblock->frames, block->sample_rate_hz,",
+        "\t\t\t\tblock->frames,",
+        1,
+    )
+    _expect_fail(
+        assert_recorder_reports_the_streams_rate,
+        recorder_tap_unstamped,
+        "recorder-rate/tap-unstamped",
+        "does not pass the block's own sample rate",
     )
 
 
