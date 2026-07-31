@@ -200,9 +200,20 @@ capture concurrently from the trigger until the final guard has returned.
 
 The manifest records negotiated hardware/software parameters, prefill frames,
 ALSA status trigger timestamps, `snd_pcm_delay` samples and device positions at
-start/end. A failed link, non-identical trigger, implicit playback start, wrong
-exact format/rate/channel count, short transfer, XRUN or recovery is a hard
-failure rather than an unsynchronized fallback.
+start/end. Both post-trigger streams must be `RUNNING`, both trigger timestamps
+must be nonzero, and their absolute difference must be strictly below one frame
+at the negotiated rate. A failed link, larger trigger skew, implicit playback
+start, wrong exact format/rate/channel count, short transfer, XRUN or recovery
+is a hard failure rather than an unsynchronized fallback.
+
+Exact nanosecond equality is not an ALSA linked-start contract. The kernel's
+[PCM timestamping documentation](https://www.kernel.org/doc/html/v4.19/sound/designs/timestamping.html)
+defines `trigger_tstamp` as the time each low-level `.trigger` callback is
+invoked unless the driver or hardware supplies a shared/refined timestamp. The
+direct CM6206 produced repeatable playback/capture differences of 1,280, 1,616
+and 1,839 ns while both streams entered `RUNNING`; these are at most 0.089 of a
+48 kHz frame. The sub-frame gate retains frame-zero precision while refusing a
+USB packet, period or independently triggered start.
 
 The helper has no compile-time ALSA-header dependency. It
 `dlopen("libasound.so.2")`, checks every required `snd_pcm_*` symbol through a
@@ -523,7 +534,8 @@ at least 20; it fails on ambiguous second peaks, less than 30 dB guard SNR,
 clipping, non-monotonic association, clock ratio outside `0.9995..1.0005` or
 more than 128 frames of robust/least-squares residual. The linked collector
 requires exact format/rate/period/buffer and start thresholds, monotonic ALSA
-status timestamps with one nonzero trigger for both streams, zero XRUN
+status timestamps with both streams running and nonzero trigger skew below one
+frame, zero XRUN
 recovery/short transfer/overrange, the exact harness build, the accepted
 sample-rate ancestor, continuous mode-specific progress and zero harmful
 counter deltas. Failed collection or analysis leaves a rejected manifest

@@ -17,7 +17,7 @@ import wave
 
 import numpy as np
 
-from linked_probe import collect
+from linked_probe import MAX_LINKED_TRIGGER_SKEW_FRAMES, collect
 
 
 RATE = 48000
@@ -154,6 +154,9 @@ def acceptance_contract(mode: str) -> dict:
         "minimum_clock_ratio": MIN_CLOCK_RATIO,
         "maximum_clock_ratio": MAX_CLOCK_RATIO,
         "maximum_affine_residual_frames": MAX_AFFINE_RESIDUAL_FRAMES,
+        "maximum_linked_trigger_skew_frames": (
+            MAX_LINKED_TRIGGER_SKEW_FRAMES
+        ),
         "maximum_lag_frames": MAX_LAG_FRAMES,
         "clipping_values_s16": [-32768, 32767],
     }

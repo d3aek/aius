@@ -26,6 +26,8 @@ SND_PCM_ACCESS_RW_INTERLEAVED = 3
 SND_PCM_FORMAT_S16_LE = 2
 SND_PCM_TSTAMP_ENABLE = 1
 SND_PCM_TSTAMP_TYPE_MONOTONIC = 1
+SND_PCM_STATE_RUNNING = 3
+MAX_LINKED_TRIGGER_SKEW_FRAMES = 1.0
 
 
 class AlsaError(RuntimeError):
@@ -366,18 +368,44 @@ def get_json(url: str) -> dict:
         return json.load(response)
 
 
-def validate_linked_trigger(playback: dict, capture: dict) -> int:
+def validate_linked_trigger(
+    playback: dict,
+    capture: dict,
+    rate: int,
+) -> dict:
     playback_trigger = playback.get("trigger_timestamp_ns")
     capture_trigger = capture.get("trigger_timestamp_ns")
     if (
         not isinstance(playback_trigger, int)
         or playback_trigger == 0
-        or playback_trigger != capture_trigger
+        or not isinstance(capture_trigger, int)
+        or capture_trigger == 0
     ):
         raise AlsaError(
-            "linked streams do not report one trigger timestamp"
+            "linked streams do not report nonzero trigger timestamps"
         )
-    return playback_trigger
+    if (
+        playback.get("state") != SND_PCM_STATE_RUNNING
+        or capture.get("state") != SND_PCM_STATE_RUNNING
+    ):
+        raise AlsaError("linked streams are not both running after trigger")
+    skew_ns = abs(capture_trigger - playback_trigger)
+    if rate <= 0 or skew_ns * rate >= 1_000_000_000:
+        raise AlsaError(
+            "linked trigger timestamp skew is not sub-frame"
+        )
+    return {
+        "linked_trigger_timestamp_ns": playback_trigger,
+        "linked_playback_trigger_timestamp_ns": playback_trigger,
+        "linked_capture_trigger_timestamp_ns": capture_trigger,
+        "linked_trigger_skew_ns": skew_ns,
+        "linked_trigger_skew_frames": (
+            skew_ns * rate / 1_000_000_000
+        ),
+        "maximum_linked_trigger_skew_frames": (
+            MAX_LINKED_TRIGGER_SKEW_FRAMES
+        ),
+    }
 
 
 def validate_collection_manifest(
@@ -405,9 +433,10 @@ def validate_collection_manifest(
     if manifest.get("linked") is not True:
         failures.append("streams are not linked")
     post = manifest.get("alsa_status_post_trigger", {})
+    trigger_evidence = {}
     try:
-        validate_linked_trigger(
-            post.get("playback", {}), post.get("capture", {})
+        trigger_evidence = validate_linked_trigger(
+            post.get("playback", {}), post.get("capture", {}), rate
         )
     except AlsaError as error:
         failures.append(str(error))
@@ -434,9 +463,7 @@ def validate_collection_manifest(
         )
     return {
         "accepted": True,
-        "linked_trigger_timestamp_ns": (
-            post["playback"]["trigger_timestamp_ns"]
-        ),
+        **trigger_evidence,
         "rate_hz": rate,
         "period_frames": period,
         "buffer_frames": buffer_size,
@@ -616,6 +643,7 @@ def collect(
             validate_linked_trigger(
                 manifest["alsa_status_post_trigger"]["playback"],
                 manifest["alsa_status_post_trigger"]["capture"],
+                rate,
             )
         except BaseException:
             abort_workers.set()

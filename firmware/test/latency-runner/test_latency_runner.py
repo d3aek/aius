@@ -373,6 +373,9 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(contract["minimum_clock_ratio"], 0.9995)
         self.assertEqual(contract["maximum_clock_ratio"], 1.0005)
         self.assertEqual(
+            contract["maximum_linked_trigger_skew_frames"], 1.0
+        )
+        self.assertEqual(
             contract["maximum_affine_residual_frames"], 128.0
         )
 
@@ -978,7 +981,7 @@ class CollectorContractTests(unittest.TestCase):
             },
         }
 
-    def test_collector_manifest_requires_exact_linked_trigger(self):
+    def test_collector_manifest_accepts_exact_linked_trigger(self):
         result = LINKED.validate_collection_manifest(
             self.manifest(), 48000, 256, 4096
         )
@@ -986,6 +989,24 @@ class CollectorContractTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(
             result["linked_trigger_timestamp_ns"], 123456
+        )
+        self.assertEqual(result["linked_trigger_skew_ns"], 0)
+        self.assertEqual(result["linked_trigger_skew_frames"], 0.0)
+
+    def test_collector_manifest_accepts_only_subframe_trigger_skew(self):
+        manifest = self.manifest()
+        manifest["alsa_status_post_trigger"]["capture"][
+            "trigger_timestamp_ns"
+        ] += 1839
+
+        result = LINKED.validate_collection_manifest(
+            manifest, 48000, 256, 4096
+        )
+
+        self.assertEqual(result["linked_trigger_skew_ns"], 1839)
+        self.assertAlmostEqual(
+            result["linked_trigger_skew_frames"],
+            1839 * 48000 / 1_000_000_000,
         )
 
     def test_alsa_status_abi_symbols_resolve(self):
@@ -1012,7 +1033,10 @@ class CollectorContractTests(unittest.TestCase):
             ),
             "trigger": lambda manifest: manifest[
                 "alsa_status_post_trigger"
-            ]["capture"].update(trigger_timestamp_ns=123457),
+            ]["capture"].update(trigger_timestamp_ns=144290),
+            "not-running": lambda manifest: manifest[
+                "alsa_status_post_trigger"
+            ]["capture"].update(state=2),
             "overrange": lambda manifest: manifest[
                 "alsa_status_end"
             ]["capture"].update(overrange_frames=1),
