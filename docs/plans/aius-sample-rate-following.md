@@ -511,7 +511,9 @@ below is not a completion dependency.
 
 The implementation, host proof, production build and checkpoint-9 fault build
 are complete. Phase status remains `device-acceptance-pending` until the exact
-committed production image clears the seven device gates in [§Acceptance](#acceptance).
+committed production image clears the in-scope device gates in
+[§Acceptance](#acceptance) (gate 3 and gate 4's 32 kHz leg deferred
+2026-07-31 to the 32 kHz long tail by owner decision).
 
 The full-PLL target apply and checkpoint-side request functions live in
 `lib/aius_audio/src/aius_audio_clock.cpp`, carry `FLASHMEM`, and that exact
@@ -570,9 +572,15 @@ live optical transmit or channel status is fixed at 48 kHz.
 2. **44.1 kHz PCM, at least 120 seconds.** Require accepted nominal 44,100,
    output target following the measured carrier, continuous output, correct
    channel-status rate, bounded ring levels and zero harmful deltas.
-3. **32 kHz PCM, at least 120 seconds.** Same gates, using the external optical
+3. **32 kHz PCM, at least 120 seconds.** Same gates, using an external optical
    PCM source because this CM6206 USB profile exposes only 44.1/48 kHz.
-4. **Rate transitions.** Exercise 48→44.1→32→48 and carrier loss→48 kHz replay.
+   **Deferred 2026-07-31 by owner decision:** 32 kHz is long-tail scope with
+   no real source in the estate; the implementation stays host-proven
+   (tracker snap, `k = 21` clock plan, DSP coefficients, ±2% goldens) and
+   device acceptance covers 44.1/48. Runs when a 32 kHz-capable source is on
+   the bench; the incoming ESI U24 XL lists 32/44.1/48 kHz support.
+4. **Rate transitions.** Exercise 48→44.1→48 (the 32 kHz leg is deferred with
+   gate 3) and carrier loss→48 kHz replay.
    Each accepted transition emits one event, increments one rate change, resets
    classification once, crosses no old-rate output and returns to continuous
    progress without a device reset. A transient unsupported physical estimate
@@ -850,22 +858,28 @@ pending when source corruption cannot be correlated at the raw input plane.
    ran ahead of the remaining device gates by owner priority (PCM and AC-3
    first). Those rows consume interim clock evidence through their own
    settled brackets; final consumption of this plan's clock/status evidence
-   still requires all seven gates. Once they pass, update this plan, commit
+   still requires the six in-scope gates (gate 3 deferred to the 32 kHz
+   long tail). Once they pass, update this plan, commit
    that device-evidence boundary, and continue `aius-e2e-latency.md` Phase 2.
    The four-hour AC-3 gate remains deferred until the OTA investigation is
    complete.
 
-Two acceptance realities are recorded rather than implied. First, the seven
-gates must clear on one exact committed image: the passes so far are split
-across `0a6f3a6f3480`, `d009092556a3` and `01477755955b`, and the flashed
-lineage has since advanced to the latency repair image, so every
+Two acceptance realities are recorded rather than implied. First, the
+in-scope gates must clear on one exact committed image: the passes so far
+are split across `0a6f3a6f3480`, `d009092556a3` and `01477755955b`, and the
+flashed lineage has since advanced to the observability image, so every
 already-passed gate re-runs on the final candidate image. Second, gate 1's
 trim-cadence bound (no more than two post-settle trims) is unpassable under
 this CM6206's active-playback clock wander (ten values spanning 6.3 Hz, 53
 post-settle trims in 600 s with a clean audio path). The bound is not
-weakened here; the open decision (external source for gate 1, the
-ingress-slope correction term, or an owner-approved bound revision) is
-tracked in [`aius-open-work-register.md`](aius-open-work-register.md).
+weakened here. The designated resolution path is the external-source
+option: the incoming ESI U24 XL (32/44.1/48 kHz, optical S/PDIF, internal
+clock master) runs a ten-minute carrier observation on arrival; a steady
+single-value carrier makes it the gate-1 source and a candidate clean
+source for gate 7 and encoded AC-3, while a CM-style multi-value hop
+reopens the decision (ingress-slope correction term or an owner-approved
+bound revision), tracked in
+[`aius-open-work-register.md`](aius-open-work-register.md).
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same

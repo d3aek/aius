@@ -908,6 +908,6 @@ card file) and the misleading `source` label are tracked in
 - `docs/plans/aius-eac3-support.md` — `unrelated`: The physical matrix covers PCM, AC-3 and DTS Core, not the separate E-AC-3 decoder work.
 - `docs/plans/aius-network-hardening.md` — `coordinate`: Reuse its exact-image, counter-delta and committed-wire evidence conventions without changing network behavior.
 - `docs/plans/aius-ota-upgrade.md` — `coordinate`: Preserve the deferred AC-3 four-hour gate until OTA is investigated; latency neither closes nor supersedes it.
-- `docs/plans/aius-sample-rate-following.md` — `coordinate`: The production rows deliberately ran ahead of the remaining sample-rate device gates by owner priority, consuming interim clock evidence through settled brackets; final acceptance still re-consumes clock/status evidence from the exact image that clears all seven gates.
+- `docs/plans/aius-sample-rate-following.md` — `coordinate`: The production rows deliberately ran ahead of the remaining sample-rate device gates by owner priority, consuming interim clock evidence through settled brackets; final acceptance still re-consumes clock/status evidence from the exact image that clears the in-scope sample-rate device gates (32 kHz deferred to the long tail, 2026-07-31).
 - `docs/plans/aius-sd-config-web.md` — `coordinate`: Obey its persistent DSP-file semantics and refuse mutation when exact restoration is impossible.
 - `docs/plans/aius-tls-termination.md` — `unrelated`: Latency reads existing device status over the current LAN transport and does not change TLS termination.

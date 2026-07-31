@@ -108,10 +108,12 @@ specified here. Strike items here in the commit that closes them.
 
 - **Sample-rate following** — active production work in
   [`aius-sample-rate-following.md`](aius-sample-rate-following.md). It is the
-  technical clock prerequisite for the AC-3 four-hour gate. Four device gates
-  remain (external 32 kHz PCM, the full transition sequence including
-  loss→replay, the trim-boundary waveform, clean-source encoded AC-3), and
-  final acceptance re-runs all seven on one exact image;
+  technical clock prerequisite for the AC-3 four-hour gate. Three device
+  gates remain in scope (the 48→44.1→48 plus loss→replay transitions, the
+  trim-boundary waveform, clean-source encoded AC-3) plus the gate-1 rerun;
+  32 kHz was deferred to the long tail by owner decision 2026-07-31 (kept
+  host-proven, no real source in the estate). Final acceptance re-runs the
+  in-scope gates on one exact image;
   [`aius-e2e-latency.md`](aius-e2e-latency.md) was deliberately interleaved
   ahead of them by owner priority.
 - **OTA investigation verdict** — complete the finite investigation gate in
@@ -263,13 +265,18 @@ where the only prior record was a plan aside.
   CM6206 high-byte fingerprint, three near ±29.6k do not and cannot be
   waived. Raw-input-plane correlation or recurrence data is needed before
   any gate consumes that window.
-- **48 kHz gate 1 is unpassable under active CM playback; decision needed.**
+- **48 kHz gate 1 is unpassable under active CM playback; source inbound.**
   The gate's trim-cadence bound (at most two post-settle trims) assumed a
   stable source; with USB playback active this CM wanders across ten values
   spanning 6.3 Hz and produced 53 post-settle trims in 600 s while the audio
-  path stayed clean. Options: run gate 1 from the external optical source,
-  add the ingress-slope correction term, or revise the bound with owner
-  sign-off. The bound is not weakened unilaterally
+  path stayed clean (reconfirmed twice on 2026-07-31: 11 trims/120 s, max
+  follow errors 1,107 and 3,911 millihertz). Designated path, decided
+  2026-07-31: the incoming ESI U24 XL (32/44.1/48 kHz, optical S/PDIF,
+  internal clock master) gets a ten-minute carrier observation on arrival;
+  steady carrier makes it the gate-1 source and a candidate clean source
+  for gate 7 and encoded AC-3. If it wanders too, the fallback decision
+  (ingress-slope correction term or an owner-approved bound revision)
+  reopens. The bound is not weakened unilaterally
   ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
   §Acceptance).
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
