@@ -875,17 +875,27 @@ def parse_dsp_model(raw: bytes, label: str) -> dict:
 
 
 def canonical_model(model: dict) -> dict:
-    """The semantic model with every number widened to a double.
+    """The semantic model with every number widened and parser-noise removed.
 
     JSON round-trips write `0` and `0.0` differently while the device parses
     both to the same double, so the comparison form must not depend on which
-    spelling a card file or serializer happened to use.
+    spelling a card file or serializer happened to use. Floats additionally
+    quantize to 12 significant digits: the device's embedded JSON number
+    parser is not correctly rounded (observed on hardware as a 1-ULP
+    `lfe_gain_linear` divergence between the card text and the effective
+    serialization of its own parse), so exact-double equality across the two
+    parser implementations is unattainable while a restore PUT of the same
+    digits still reproduces the identical board state. Twelve digits absorb
+    that rounding by three orders of magnitude and still expose any genuine
+    parameter difference, which lives in the leading digits.
     """
     def widen(value: object) -> object:
         if isinstance(value, bool):
             return value
         if isinstance(value, int):
             return float(value)
+        if isinstance(value, float):
+            return float(f"{value:.12g}")
         if isinstance(value, dict):
             return {key: widen(item) for key, item in value.items()}
         if isinstance(value, list):

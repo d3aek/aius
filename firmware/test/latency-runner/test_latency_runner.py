@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import math
 import os
 import pathlib
 import signal
@@ -1812,6 +1813,33 @@ class DspBypassModelTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "outside the documented"):
             BENCH.bypass_switch_evidence(production, drifted)
+
+    def test_comparable_hash_absorbs_embedded_parser_ulp_noise(self):
+        # Observed on hardware: the device's embedded JSON number parser is
+        # not correctly rounded, so the effective serialization of its own
+        # card parse sat 1 ULP from the card text's correctly-rounded value
+        # (lfe_gain_linear 0.3162277660168384 vs 0.31622776601683844). The
+        # comparable form must treat those as the same model, and must still
+        # reject a genuine parameter difference.
+        card = BENCH.parse_dsp_model(
+            card_bytes(PRODUCTION_MODEL), "card DSP model"
+        )
+        effective = BENCH.parse_dsp_model(
+            card_bytes(PRODUCTION_MODEL), "effective DSP config"
+        )
+        exact = card["matrix"]["lfe_gain_linear"]
+        one_ulp_up = math.nextafter(exact, math.inf)
+        self.assertNotEqual(exact, one_ulp_up)
+        effective["matrix"]["lfe_gain_linear"] = one_ulp_up
+
+        self.assertEqual(
+            BENCH.comparable_hash(card), BENCH.comparable_hash(effective)
+        )
+
+        effective["matrix"]["lfe_gain_linear"] = exact * (1.0 + 1e-6)
+        self.assertNotEqual(
+            BENCH.comparable_hash(card), BENCH.comparable_hash(effective)
+        )
 
     def test_put_body_carries_every_key_the_device_parser_requires(self):
         production = BENCH.parse_dsp_model(
