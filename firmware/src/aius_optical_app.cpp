@@ -30,6 +30,21 @@
 #define AIUS_OPTICAL_APP_CONFIG_NAME "config.json"
 #define AIUS_OPTICAL_APP_DSP_NAME "dsp.json"
 
+/* The one /sd/ resource served from outside www/: a GET-only carve-out for the
+ * persistent DSP model, so the card's authoritative bytes can be retrieved
+ * before a restorable PUT (aius-e2e-latency.md fails its bypass row closed
+ * without them; no other route returns the file rather than the effective
+ * runtime model). config.json gets no such carve-out -- it is still write-only
+ * over the wire, and /api/status already serializes what it configures.
+ *
+ * It is an ALIAS for AIUS_OPTICAL_APP_DSP_NAME under the root above, not a path
+ * composed through it. /sd/ is rooted at /aius/, so this resource read as an
+ * ordinary tree path would name /aius/aius/dsp.json, which is not a file the
+ * board ever writes; the spelling is fixed by the URL the latency runner
+ * preflights. Matching is therefore exact-literal (resource_is_dsp_model), and
+ * the target is built from the name rather than from the request bytes. */
+#define AIUS_OPTICAL_APP_DSP_RESOURCE "aius/" AIUS_OPTICAL_APP_DSP_NAME
+
 static const char *const kContentJson = "application/json";
 static const char *const kContentHtml = "text/html; charset=utf-8";
 static const char *const kContentBinary = "application/octet-stream";
@@ -154,6 +169,19 @@ static FLASHMEM bool resource_is_config(const AiusHttpRequest *request)
 	              AIUS_OPTICAL_APP_CONFIG_NAME, name_length) == 0;
 }
 
+/* The read carve-out's whole gate: one exact-length, exact-byte comparison
+ * against AIUS_OPTICAL_APP_DSP_RESOURCE. No prefix test and no component walk,
+ * so no other spelling reaches the root through it -- a traversal, a trailing
+ * slash, a case change or an extra byte is simply a different literal, and falls
+ * through to the www/-only rules below. */
+static FLASHMEM bool resource_is_dsp_model(const AiusHttpRequest *request)
+{
+	size_t length = sizeof(AIUS_OPTICAL_APP_DSP_RESOURCE) - 1u;
+	return request->resource != NULL && request->resource_length == length &&
+	       memcmp(request->resource, AIUS_OPTICAL_APP_DSP_RESOURCE,
+	              length) == 0;
+}
+
 static FLASHMEM bool resource_suffix_is(const AiusHttpRequest *request,
                                         const char *suffix)
 {
@@ -196,7 +224,13 @@ static FLASHMEM uint32_t resource_cache_max_age(const AiusHttpRequest *request)
  * components, and anything outside the /aius/www/ subtree -- the same rules the
  * pre-cutover http_sd_path() enforces. Takes the resource slice rather than the
  * request so the directory form below can validate its body by handing over the
- * same bytes with the trailing slash removed. */
+ * same bytes with the trailing slash removed.
+ *
+ * Still www/-only, carve-out included: AIUS_OPTICAL_APP_DSP_RESOURCE is matched
+ * before this runs and never passes through it, so this stays the sole rule for
+ * every path the route composes from request bytes -- which is every upload,
+ * every delete and every listing. The carve-out widens reads by exactly one
+ * file and widens writes not at all. */
 static FLASHMEM bool resource_path_valid(const uint8_t *resource, size_t length)
 {
 	size_t component_length = 0u;
@@ -245,7 +279,13 @@ static FLASHMEM bool resource_is_directory(const AiusHttpRequest *request)
 
 /* "www/" is the subtree root and has no body to check; anything deeper must be
  * a resource the download route would also accept, so the index and /sd/ admit
- * exactly the same paths. */
+ * exactly the same TREE.
+ *
+ * The download route's single-file carve-out is the one thing they no longer
+ * agree on, and deliberately: it is not a directory, it is not under www/, and
+ * no listing links to it -- "/sd/aius/" and "/sd/aius/dsp.json/" are both
+ * ordinary 404 sd_path here. A reader reaches the model by knowing its URL, not
+ * by browsing to it. */
 static FLASHMEM bool resource_directory_valid(const uint8_t *resource,
                                               size_t length)
 {
@@ -1131,6 +1171,25 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_sd(
 		                       ".iec"))
 			return http_error(dispatcher, 404, "sd_path");
 		content_type = kContentBinary;
+	} else if (request->method == AIUS_HTTP_GET &&
+	           resource_is_dsp_model(request)) {
+		/* GET-only by construction, which is what keeps the carve-out a read:
+		 * a PUT never arrives here (it left for dispatch_sd_upload above, and
+		 * is refused there by the www/-only path rule), and a DELETE falls
+		 * through to the same rule below. The target is built from the name,
+		 * never from the request bytes -- the resource is an alias, not a path.
+		 *
+		 * Content type and caching come from the shared suffix policy rather
+		 * than from constants here, so ".json" answers application/json
+		 * uncached exactly as a .json download under www/ does, and a later
+		 * change to that policy cannot leave this one row behind. */
+		if (!build_root_path(dispatcher->target_path,
+		                     sizeof(dispatcher->target_path),
+		                     AIUS_OPTICAL_APP_DSP_NAME,
+		                     sizeof(AIUS_OPTICAL_APP_DSP_NAME) - 1u))
+			return http_error(dispatcher, 404, "sd_path");
+		content_type = resource_content_type(request);
+		cache_max_age_s = resource_cache_max_age(request);
 	} else {
 		if (!resource_path_valid(request->resource, request->resource_length) ||
 		    !build_root_path(dispatcher->target_path,

@@ -899,6 +899,123 @@ static void test_sd_media_and_paths(void)
 	fixture.fake.sd_busy = false;
 }
 
+/* The one resource the download route serves from outside www/.
+ *
+ * Every row is a negative control against the version before the carve-out: it
+ * answered 404 sd_path to "GET /sd/aius/dsp.json" as well, which is exactly what
+ * fails the latency plan's bypass row closed -- the card's authoritative DSP
+ * model could not be retrieved over the API at all, so no restorable artifact
+ * existed to bracket a mutating PUT with.
+ *
+ * The carve-out is one exact literal and a read. The refusal rows below are the
+ * property that matters: the model is reachable by its own URL and by nothing
+ * else, and no write of any kind leaves www/. */
+static void test_sd_dsp_model_carveout(void)
+{
+	Fixture fixture;
+	const AiusHttpApplicationResponse *response;
+	char carveout_target[AIUS_SD_PATH_STORAGE];
+	AiusHttpApplicationResponse carveout;
+	/* Neither the carve-out's sibling on the card, nor the model under any
+	 * spelling but the exact literal: a traversal that resolves to it, a
+	 * trailing slash, a doubled separator, a case change, a percent escape,
+	 * an extra or a missing byte, and the two directory forms around it. */
+	static const char *const rejected[] = {
+		"GET /sd/aius/config.json",
+		"GET /sd/config.json",
+		"GET /sd/dsp.json",
+		"GET /sd/aius/../aius/dsp.json",
+		"GET /sd/www/../aius/dsp.json",
+		"GET /sd/aius//dsp.json",
+		"GET /sd/AIUS/dsp.json",
+		"GET /sd/aius/dsp%2ejson",
+		"GET /sd/aius/dsp.jsonx",
+		"GET /sd/aius/dsp.jso",
+		"GET /sd/aius/replays/take1.iec",
+		"GET /sd/aius/dsp.json/",
+		"GET /sd/aius/"
+	};
+	/* A download reads the card and takes no credential, so the whole call
+	 * sequence is the media gate and the volume gate. No auth_matches. */
+	static const char *const download_calls[] = { "sd_ready", "sd_busy" };
+	fixture_init(&fixture);
+
+	for (size_t i = 0; i < ARRAY_LENGTH(rejected); ++i)
+		expect_immediate(dispatch_get(&fixture, rejected[i]), 404,
+		                 "{\"ok\":false,\"error\":\"sd_path\"}");
+
+	/* The carve-out itself: the pre-cutover /aius/dsp.json, verbatim, as live
+	 * JSON the browser must not cache. */
+	response = dispatch_get(&fixture, "GET /sd/aius/dsp.json");
+	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
+	                NULL);
+	assert(response->sd_job.kind == AIUS_SD_JOB_DOWNLOAD);
+	assert(strcmp(response->sd_job.target_path, "/aius/dsp.json") == 0);
+	assert(response->sd_job.content_type != NULL);
+	assert(strcmp(response->sd_job.content_type, "application/json") == 0);
+	assert(response->cache_max_age_s == 0u);
+	/* A download installs nothing: no scratch pair, no publish, no length the
+	 * dispatcher claims to know. */
+	assert(response->sd_job.temp_path == NULL);
+	assert(response->sd_job.backup_path == NULL);
+	assert(!response->sd_job.publish);
+	assert(!response->sd_job.require_existing);
+	assert(response->sd_job.total == 0u);
+	expect_log(&fixture, download_calls, ARRAY_LENGTH(download_calls));
+
+	/* Field for field the job a .json download under www/ produces, target
+	 * aside.
+	 * That equivalence is how the absent-file answer is proved here: this seam
+	 * never sees the card, and the transaction maps a DOWNLOAD that cannot be
+	 * opened to 404 sd_not_found (aius_http_transaction.c select_sd_error), so
+	 * an identical job necessarily gets an identical answer. The target string
+	 * is copied first -- it borrows the dispatcher's path buffer, which the
+	 * next dispatch overwrites. */
+	carveout = *response;
+	snprintf(carveout_target, sizeof(carveout_target), "%s",
+	         response->sd_job.target_path);
+	response = dispatch_get(&fixture, "GET /sd/www/model.json");
+	assert(strcmp(carveout_target, "/aius/dsp.json") == 0);
+	assert(strcmp(response->sd_job.target_path, "/aius/www/model.json") == 0);
+	assert(carveout.kind == response->kind);
+	assert(carveout.status == response->status);
+	assert(carveout.cache_max_age_s == response->cache_max_age_s);
+	assert(strcmp(carveout.content_type, response->content_type) == 0);
+	assert(carveout.sd_job.kind == response->sd_job.kind);
+	assert(carveout.sd_job.install_mode == response->sd_job.install_mode);
+	assert(carveout.sd_job.require_existing == response->sd_job.require_existing);
+	assert(carveout.sd_job.publish == response->sd_job.publish);
+	assert(carveout.sd_job.total == response->sd_job.total);
+
+	/* Same volume gates as every other download -- an absent card is not a
+	 * path failure, and nothing reads the card while a job owns it. */
+	fixture.fake.sd_busy = true;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/aius/dsp.json"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_busy\"}");
+	fixture.fake.sd_busy = false;
+	fixture.fake.sd_ready = false;
+	expect_immediate(dispatch_get(&fixture, "GET /sd/aius/dsp.json"), 503,
+	                 "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+	fixture.fake.sd_ready = true;
+
+	/* Write and delete are untouched by the carve-out. The PUT keeps the
+	 * streamed path's order of refusal (auth, then the www/-only rule) and the
+	 * DELETE never gets past that rule, with or without a good token -- the
+	 * same two bodies "/sd/etc/passwd" already gets. */
+	expect_immediate(dispatch_request(&fixture, "PUT /sd/aius/dsp.json",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, 16),
+	                 507, "{\"ok\":false,\"error\":\"sd_upload\"}");
+	expect_immediate(dispatch_request(&fixture, "PUT /sd/aius/dsp.json", NULL,
+	                                  NULL, 16),
+	                 401, "{\"ok\":false,\"error\":\"sd_auth\"}");
+	expect_immediate(dispatch_request(&fixture, "DELETE /sd/aius/dsp.json",
+	                                  "X-Aius-SD-Auth: token\r\n", NULL, -1),
+	                 404, "{\"ok\":false,\"error\":\"sd_path\"}");
+	expect_immediate(dispatch_request(&fixture, "DELETE /sd/aius/dsp.json",
+	                                  NULL, NULL, -1),
+	                 404, "{\"ok\":false,\"error\":\"sd_path\"}");
+}
+
 /* ------------------------------------------------------------------ */
 /* directory index                                                      */
 /* ------------------------------------------------------------------ */
@@ -2298,6 +2415,7 @@ int main(void)
 	RUN_TEST(test_control_routes_are_authenticated);
 	RUN_TEST(test_serializer_exhaustion);
 	RUN_TEST(test_sd_media_and_paths);
+	RUN_TEST(test_sd_dsp_model_carveout);
 	RUN_TEST(test_sd_index_listing);
 	RUN_TEST(test_sd_index_hidden_entries);
 	RUN_TEST(test_sd_index_bounds);
