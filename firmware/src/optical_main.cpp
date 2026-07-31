@@ -111,7 +111,7 @@ static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
 /* The composed runtime, in OCRAM because aius_runtime_teensy.h requires it: the
  * object is roughly 35 kB, dominated by the HTTP request/response buffers
  * (13,312 + 8,192 B) and the model-sized application body buffer (12,288 B),
- * against a 24,412-byte DTCM free-for-locals zone. A DTCM instance could not
+ * against a 25,376-byte DTCM free-for-locals zone. A DTCM instance could not
  * fit, and a stack one could not exist at all. aius_runtime_teensy_construct()
  * initializes every member it reads, so OCRAM's lack of startup zeroing is
  * harmless.
@@ -258,7 +258,7 @@ static inline void close_stream_rate_gate(void)
 /* The refill job and its own transfer slice. The storage service's buffer
  * belongs to the storage service's job; sharing it would couple two jobs that
  * are deliberately only serialized, not merged. DMAMEM for the same reason the
- * runtime is there: ~1.2 kB has no business in the 22 kB DTCM locals zone. */
+ * runtime is there: ~1.2 kB has no business in the 25 kB DTCM locals zone. */
 DMAMEM static AiusSdJob g_replay_job;
 /* 512 BYTES BECAUSE THE ENGINE SAYS SO, and this is the sentence that cost a
  * flash. aius_sd_job_init() takes this capacity as the job's per-primitive read
@@ -498,7 +498,7 @@ static volatile bool g_dsp_apply_pending;
  *
  * OCRAM, exactly as the AiusMeter contract asks ("on target the adapter places
  * this in OCRAM"). At ~9.5 kB (the analysis ring and its published window are
- * most of it) it is far too big to spend on the ~48 kB DTCM
+ * most of it) it is far too big to spend on the 25,376-byte DTCM
  * free-for-locals zone when OCRAM has ~128 kB spare -- §Deciding principle's
  * "memory that is genuinely free is not an argument" points the same way.
  * DMAMEM is not zeroed at startup, so apply_config() runs aius_meter_init()
@@ -1994,7 +1994,7 @@ static FLASHMEM bool meter_append_sample(char *body, size_t capacity,
 static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 {
 	/* STATIC, not automatic: the snapshot is ~4.7 kB now that it carries the
-	 * analysis window, and the DTCM free-for-locals zone is ~48 kB. Safe
+	 * analysis window, and the DTCM free-for-locals zone is 25,376 bytes. Safe
 	 * because this runs only from app_write_meters() on the main thread, one
 	 * request at a time and never reentrantly; DMAMEM keeps it off DTCM for
 	 * the reason g_meter is there, and it needs no startup zeroing because
@@ -3530,7 +3530,7 @@ static bool g_boot_marked_healthy;
 
 /* UDP scratch in OCRAM rather than on the epoch stack. The epoch call chain
  * (scheduler -> service -> HTTP transaction -> dispatcher) is deeper than the
- * legacy loop's, and these three buffers are 1,576 B of the 22,684-byte DTCM
+ * legacy loop's, and these three buffers are 1,576 B of the 25,376-byte DTCM
  * free-for-locals zone. Every byte sent is written before it is read: the
  * receive buffer by the receive itself, the status payload by
  * put_recovery_status() up to the length it returns, the events payload up to

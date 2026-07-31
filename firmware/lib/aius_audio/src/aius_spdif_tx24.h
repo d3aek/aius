@@ -53,8 +53,10 @@ extern "C" {
  *
  * MEMORY. The ring is 2 x 2048 int32 = 16 KiB and lives in DMAMEM (OCRAM), not
  * DTCM. It is the one large buffer here and the standing rule puts those in
- * OCRAM; keeping it in DTCM would spend the whole 17,152-byte free-for-locals
- * zone that the int16 ring had just freed. The consumer reads it from a DMA
+ * OCRAM; keeping it in DTCM would have spent the whole free-for-locals zone as
+ * it stood at this decision -- 17,152 B, what the int16 ring had just freed --
+ * and moving it to OCRAM instead returned another 8,224 B, taking the zone to
+ * its current 25,376. The consumer reads it from a DMA
  * ISR, which is the reason to think twice -- and the reason it is still fine:
  * the read is strictly sequential, 256 words per interrupt, so the L1 D-cache
  * amortises each OCRAM line fill over eight words. See

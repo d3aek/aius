@@ -708,12 +708,19 @@ are follow-up work, recorded here so they are not lost.
     substitution rather than leaking the samples still in the buffer. Negative
     control observed at exit 134. A `memset`-first test is worth distrusting anywhere
     the object under test lives in `.bss.dma`.
-18. **Five source comments still quote the pre-fix DTCM free figure** —
+18. ~~**Five source comments still quote the pre-fix DTCM free figure** —
    `aius_runtime_teensy.h:17` ("~22 kB"), `optical_main.cpp:77` ("24,412-byte"),
    `:140` ("22 kB"), `:292` ("23 kB"), `:2109` ("22,684-byte"). Measured is 9,280.
    `firmware/README.md` was corrected with the gate fix; the source was not. Every
    placement decision those comments justify is still correct — more so — but the
-   arithmetic in them is wrong.
+   arithmetic in them is wrong.~~ **CLOSED 2026-07-31**: six comments corrected
+   to the current measured 25,376 bytes (item-1 delivery figures in
+   `aius-dsp-config-api.md`). Count discrepancy surfaced rather than silently
+   reconciled: four of the five cited lines mapped through drift, the `:292`
+   "23 kB" quote matched nothing in the tree, and two `~48 kB` comments stood
+   at the drifted position — both corrected, having understated the scarcity by
+   about 2x. A seventh decision-era figure in `aius_spdif_tx24.h` was clarified
+   in place rather than rewritten.
 19. **`read_once()` has the same latch-substitution hole the send path just had, and
     a committed row asserts the misclassification.** Found fixing defect 9.
     `_fnet_tcp_rcv()` itself fails only with `NOTCONN`/`CONNCLOSED`, so a *latched*

@@ -14,8 +14,8 @@
  *
  *     DMAMEM static AiusRuntimeTeensy g_runtime;
  *
- * DTCM has ~22 kB free for locals on this image and shares FlexRAM with ITCM;
- * a DTCM instance would not fit. optical_main.cpp already keeps the HTTP
+ * DTCM has 25,376 bytes free for locals on this image and shares FlexRAM with
+ * ITCM; a DTCM instance would not fit. optical_main.cpp already keeps the HTTP
  * buffers in DMAMEM for the same reason.
  *
  * Phase 12 lands the composition and its `runtime-target` suite only. Nothing in

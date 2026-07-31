@@ -306,6 +306,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `pipeline` | Classifier + parser→decoder end-to-end. |
 | `capability-protocol`, `capability` | USB protocol goldens + sim device round-trip. |
 | `dsp`, `dsp-vectors` | Downmix + EQ known-answer, shared production-model runtime resolution, and the public DSP interface over the DTS corpus. |
+| `downmix-identity` | Decode → downmix composed channel identity: each source channel's own tone reaching the stereo slot its route names, at that route's coefficient, for DTS and AC-3, with a rotated-front-three negative control. |
 | `measure` | The measurement loopback's portable core: every capture state-machine edge (both dual-terminal cancel interleavings included) and the sliced sine-fit + Goertzel analysis known answers, with the pure-sine leakage canary whose tolerance is never widened. |
 | `auth` | The SD maintenance token's derivation, firmware side and the host generator together. |
 | `config`, `dsp-config` | The optical DSP config header generator and the runtime feature-flag parser; plus the `PUT /api/dsp/config` validator. |
@@ -330,7 +331,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
 | `memory` | The per-bank release gate plus the optical post-link ingress/arena/staging/headroom proof; the native suite is driven over a committed ELF reduction of a real optical image. |
 | `itcm-placement` | The six post-link ITCM guards, re-run over an existing optical build, plus the host-only tests of the LDF-library gate and the `-flto` precondition. |
-| `fake-fidelity` | Every host fake's constants against the real framework headers, both directions: a listed constant must exist upstream with the same value, and a fake must not invent one. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
+| `fake-fidelity` | Every host fake's constants against the real framework headers, three ways: a listed constant must exist upstream with the same value, *every* enum member `fake/fnet.h` declares must match FNET's own (no name list, so a positional renumber cannot hide), and a fake must not invent a constant. Each kind is then re-run over a mutated copy of the fake, so the suite proves it can still see the defects it was written for. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 
 The `dts`/`dts-lfe` suites run against committed reference PCM, so `ffmpeg` /

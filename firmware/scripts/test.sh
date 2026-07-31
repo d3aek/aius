@@ -9,7 +9,8 @@
 #
 # Suites: arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
-#         capability, pipeline, dsp, dsp-vectors, measure, net, net-runner, rate-runner, latency-runner,
+#         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
+#         rate-runner, latency-runner,
 #         recovery-runner, flash, http,
 #         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
@@ -442,6 +443,25 @@ dsp-vectors)
 		"$fw_root/test/dsp/test_dsp_vectors.c" \
 		"$fw_root/lib/aius_dsp/src/aius_dsp.c"
 	"$out" "$fw_root/tools/dts_vectors/vectors" "$fw_root/tools/dts_vectors/golden"
+	;;
+downmix-identity)
+	# The COMPOSED half of defect 30's chase: one real per-channel tone
+	# programme per codec, through the real decoder and the real downmix, read
+	# at the two stereo outputs. `dts`/`a52` convict the decode side only and
+	# `dsp-vectors` the matrix side only, on synthetic isolated blocks; neither
+	# composes, and the hardware capture that raised the defect was a statement
+	# about the composition. Both resident decoders, so pipeline_build; the DSP
+	# module and liba52's syncinfo header are the extra inputs.
+	# -ffp-contract=off keeps the downmix bit-identical to the Cortex-M7, as the
+	# other dsp suites.
+	out="$build_dir/downmix-identity"
+	pipeline_build "$out" -ffp-contract=off \
+		"-I$fw_root/lib/aius_dsp/include" \
+		"-I$fw_root/lib/aius_a52/a52" \
+		"$fw_root/test/dsp/test_downmix_identity.c" \
+		"$fw_root/lib/aius_dsp/src/aius_dsp.c"
+	"$out" "$fw_root/tools/dts_vectors/vectors" \
+		"$fw_root/tools/ac3_vectors/vectors"
 	;;
 measure)
 	# The measurement loopback's portable core (lib/aius_dsp/src/aius_measure.c):

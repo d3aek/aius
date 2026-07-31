@@ -156,8 +156,11 @@ specified here. Strike items here in the commit that closes them.
     `build_unflags` stripped the wrap set; restored, the arena now
     serves every decode (62.5 KB peak, steady-state no-heap proven
     on hardware).
-  - **18**: five source comments still quote the pre-fix DTCM free
-    figure.
+  - ~~**18**: five source comments still quote the pre-fix DTCM free
+    figure.~~ CLOSED 2026-07-31: six comments corrected to the measured
+    25,376 bytes (the ledger's five had drifted; its `:292` citation
+    matched nothing and two `~48 kB` comments stood there instead), plus
+    one decision-era figure clarified rather than rewritten.
   - ~~**19**: `read_once()` carries the latch-substitution hole the send
     path had.~~ CLOSED: fixed 2026-07-26 via the shared
     `send_error_is_closure()` predicate, inverted rows pinned; ledger
@@ -193,11 +196,14 @@ specified here. Strike items here in the commit that closes them.
     unit died AIUS_NO_SPACE, silently. First live 5.1 decode ever on
     this hardware followed within minutes of the fix. Full chase +
     the permanent diagnostics it left: hardening doc entry 29.
-  - **30**: decoded 5.1 plane order vs downmix slot order disagree — a
-    pure spatial permutation, found by tone-identity DFT the same
-    hour (left carries FR's 600 Hz strong; right carries C's 900).
-    Chase is a table diff plus a native per-channel tone test; no
-    hardware needed.
+  - ~~**30**: decoded 5.1 plane order vs downmix slot order disagree — a
+    pure spatial permutation.~~ CLOSED 2026-07-28 in the hardening ledger
+    as NOT A FIRMWARE DEFECT (the tone programme was rotated by `ffmpeg
+    join` without `map=` before it was ever encoded); this gist was a
+    dated pre-chase snapshot. 2026-07-31: both channel maps independently
+    re-verified against the shared mask rule, and the composed
+    decode→downmix `downmix-identity` suite now pins every route for both
+    codecs with a rotated-front negative control.
   - ~~**31**: sustained live DTS decode watchdog-crashes within ~10 min
     under capture/HTTP load.~~ FIXED 2026-07-29: decode/DSP/TX moved
     out of the ISR; a 1,857-second live DTS soak under recorder and
