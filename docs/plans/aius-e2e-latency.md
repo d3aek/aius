@@ -564,9 +564,12 @@ was available and the Phase 1 smoke remains pending.
 
 ```yaml
 phase: 2
-status: pending
+status: pending-preflight-blocked
 unit: parent-only
 depends-on: [phase-1, sample-rate-following-device-acceptance]
+preflight-blockers:
+  - CM6206 absent from USB and ALSA enumeration
+  - authoritative /sd/aius/dsp.json restoration artifact absent
 matrix:
   - direct-loop-pcm
   - direct-loop-dts-carrier
@@ -584,6 +587,14 @@ The three direct-loop calibrations share one temporary fibre rewire and run as
 one uninterrupted topology slice. The four Teensy rows use the normal full loop.
 Each physical topology is confirmed before collection and left unchanged until
 its slice finishes.
+
+Authenticated read-only preflight on 2026-07-31 found
+`GET /sd/aius/dsp.json` returning `404 {"error":"sd_path"}`. The effective
+runtime endpoint still returned a `source:"sd"` model, while status reported
+`config_valid:0` and `config_error:"not loaded"`. No PUT or SD write was issued.
+The bypass row remains fail-closed until an explicit preparation decision
+creates an authoritative restorable SD artifact; the runtime model alone is not
+treated as proof of original-file identity.
 
 ## Outstanding-work audit
 
