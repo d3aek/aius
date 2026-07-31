@@ -764,6 +764,35 @@ static uint16_t *make_ramp(size_t n)
 	return w;
 }
 
+/* Plant a four-word preamble at `at` -- Pa, Pb, and a burst_info naming a
+ * DECODABLE data type (DTS type III), which the defect-34 single-header rule
+ * deliberately ignores.
+ *
+ * The word after Pb stopped being inert when a well-formed UNSUPPORTED burst
+ * header became a single-pair exit from PCM. Every leg below plants its pairs
+ * into a ramp and used to inherit whatever ramp value followed; two of those
+ * inherited values (a type-21 header at fp-far-pairs, a type-31 one at
+ * reset-sem) happen to be valid unsupported headers, so the legs would have
+ * been testing the new rule instead of the two-pair rule they are named for.
+ * Their assertions are unchanged -- only the stimulus is now fully stated. That
+ * two arbitrary ramp words landed on valid headers is itself worth knowing: it
+ * is why the single-header rule is confined to types no decoder claims, where
+ * acting wrongly costs silence rather than a flipped live stream. */
+static void plant_pair(uint16_t *w, size_t at, int le)
+{
+	if (le) {
+		w[at] = 0x72F8u;     /* Pa, byte-swapped wire form */
+		w[at + 1] = 0x1F4Eu; /* Pb */
+		w[at + 2] = 0x0D00u; /* Pc: data type 13, error flag clear */
+		w[at + 3] = 0x0010u; /* Pd: 4096 bits */
+	} else {
+		w[at] = RAMP_PA;
+		w[at + 1] = RAMP_PB;
+		w[at + 2] = 0x000Du;
+		w[at + 3] = 0x1000u;
+	}
+}
+
 static void push_chunked(AiusPipeline *p, const uint16_t *w, size_t n,
                          size_t chunk, const char *label)
 {
@@ -956,8 +985,7 @@ static void test_retype_false_positive_immunity(void)
 			EMIT_FRAMES = (WORDS - CONFIRM) / 2
 		};
 		uint16_t *w = make_ramp(WORDS);
-		w[PAIR] = RAMP_PA;
-		w[PAIR + 1] = RAMP_PB;
+		plant_pair(w, PAIR, 0);
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
 		struct reclass_diag d;
@@ -989,8 +1017,7 @@ static void test_retype_false_positive_immunity(void)
 			EMIT_FRAMES = (WORDS - CONFIRM) / 2
 		};
 		uint16_t *w = make_ramp(WORDS);
-		w[PAIR] = RAMP_PA;
-		w[PAIR + 1] = RAMP_PB;
+		plant_pair(w, PAIR, 0);
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
 		struct reclass_diag d;
@@ -1022,10 +1049,8 @@ static void test_retype_false_positive_immunity(void)
 	{
 		enum { WORDS = 4000 };
 		uint16_t *w = make_ramp(WORDS);
-		w[1000] = RAMP_PA;
-		w[1001] = RAMP_PB;
-		w[1100] = RAMP_PA;
-		w[1101] = RAMP_PB;
+		plant_pair(w, 1000, 0);
+		plant_pair(w, 1100, 0);
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
 		struct reclass_diag d;
@@ -1041,10 +1066,8 @@ static void test_retype_false_positive_immunity(void)
 	{
 		enum { WORDS = 17000 };
 		uint16_t *w = make_ramp(WORDS);
-		w[600] = RAMP_PA;
-		w[601] = RAMP_PB;
-		w[16600] = RAMP_PA;
-		w[16601] = RAMP_PB;
+		plant_pair(w, 600, 0);
+		plant_pair(w, 16600, 0);
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
 		struct reclass_diag d;
@@ -1063,12 +1086,9 @@ static void test_retype_false_positive_immunity(void)
 	{
 		enum { WORDS = 4000 };
 		uint16_t *w = make_ramp(WORDS);
-		w[1000] = RAMP_PA;
-		w[1001] = RAMP_PB;
-		w[2000] = 0x72F8u; /* LE Pa */
-		w[2001] = 0x1F4Eu; /* LE Pb */
-		w[2600] = 0x72F8u;
-		w[2601] = 0x1F4Eu;
+		plant_pair(w, 1000, 0);
+		plant_pair(w, 2000, 1); /* LE */
+		plant_pair(w, 2600, 1);
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
 		struct reclass_diag d;
@@ -1107,10 +1127,8 @@ static void test_worst_phase_confirm_bound(void)
 		WORDS = 10240
 	};
 	uint16_t *w = make_ramp(WORDS);
-	w[FIRST_PA] = RAMP_PA;
-	w[FIRST_PA + 1] = RAMP_PB;
-	w[FIRST_PA + SPACING] = RAMP_PA;
-	w[FIRST_PA + SPACING + 1] = RAMP_PB;
+	plant_pair(w, FIRST_PA, 0);
+	plant_pair(w, FIRST_PA + SPACING, 0);
 
 	struct capture cap;
 	memset(&cap, 0, sizeof(cap));
@@ -1324,13 +1342,11 @@ static void test_reset_semantics(const char *dir)
 	 * run's pair at 1550 (delta 1000 from the first if state leaked) becomes
 	 * a fresh candidate instead of validating. */
 	uint16_t *r1 = make_ramp(700);
-	r1[550] = RAMP_PA;
-	r1[551] = RAMP_PB;
+	plant_pair(r1, 550, 0);
 	push_chunked(p, r1, 700, 256, "reset-sem-b1");
 	aius_pipeline_reset(p);
 	uint16_t *r2 = make_ramp(2000);
-	r2[1550] = RAMP_PA;
-	r2[1551] = RAMP_PB;
+	plant_pair(r2, 1550, 0);
 	push_chunked(p, r2, 2000, 256, "reset-sem-b2");
 	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_PCM,
 	      "reset-sem: class %d != PCM after leaked-candidate probe",
@@ -1971,6 +1987,455 @@ static void test_deferred_pcm_and_legacy_loss(void)
 	printf("  deferred-pcm   retained retry; legacy NO_SPACE drops suffix cleanly\n");
 }
 
+/* ---- defect 35: a source teardown mid-burst drops the partial AU ----------
+ *
+ * Terminating a live encoded source mid-burst leaves the parser inside a
+ * payload it will never be given the rest of. Left alone the NEXT words --
+ * which belong to whatever the source became -- complete that burst to its
+ * declared length and a dead access unit reaches a decoder: one rejected DTS
+ * decode, or a whole six-block AC-3 grind (liba52 validates no payload CRC) of
+ * which every block is full-scale garbage on the wire.
+ *
+ * The fix makes the discontinuity kill it first. These legs assert the
+ * observable: across the teardown the dead AU gets ZERO decode attempts, the
+ * staged input is dropped exactly ONCE with one au_abandon, and PCM then
+ * recovers on its own confirmation schedule. */
+
+/* Drive `w` through the DEFERRED target path -- 256-word ingests, one service
+ * unit at a time -- which is exactly the shape of the AUDIO checkpoint. */
+static void drive_deferred(AiusPipeline *p, const uint16_t *w, size_t n)
+{
+	size_t off = 0u;
+	while (off < n || aius_pipeline_has_pending(p) ||
+	       aius_pipeline_has_buffered_input(p)) {
+		if (aius_pipeline_has_pending(p)) {
+			AiusPipelineServiceResult result;
+			(void)aius_pipeline_service_one(p, &result);
+			continue;
+		}
+		size_t take = n - off;
+		if (take > 256u)
+			take = 256u;
+		size_t consumed = 0u;
+		(void)aius_pipeline_ingest(p, off < n ? w + off : NULL, take,
+		                           &consumed);
+		off += consumed;
+		if (consumed == 0u && !aius_pipeline_has_pending(p) &&
+		    !aius_pipeline_has_buffered_input(p))
+			break;
+	}
+}
+
+/* `cut` truncates the vector inside its first burst's payload; `au_units` is
+ * how many decode units one whole vector produces (1 per DTS AU, 6 per AC-3
+ * block sequence x the vector's AUs). */
+static void test_teardown_drops_partial_burst(const char *dir, const char *name,
+                                              size_t cut, uint32_t au_units,
+                                              uint32_t au_blocks)
+{
+	enum {
+		CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS,
+		BLOCK_WORDS = 2 * (int)AIUS_PIPELINE_PCM_BLOCK_FRAMES,
+		RAMP_WORDS = CONFIRM + 2 * BLOCK_WORDS,
+		/* The control and residual legs get NO discontinuity, so their PCM
+		 * has to wait out the starvation bound before it can re-classify at
+		 * all; the teardown leg's reset re-classifies immediately. */
+		LONG_RAMP_WORDS = (int)AIUS_PIPELINE_DTS_STARVE_WORDS + 2048 +
+		                  CONFIRM + 4 * BLOCK_WORDS
+	};
+	size_t n = 0u;
+	uint16_t *wire = load_wire(dir, name, &n);
+	if (!wire) {
+		CHECK(0, "teardown %s: corpus load", name);
+		return;
+	}
+	uint16_t *ramp = make_ramp(RAMP_WORDS);
+	uint16_t *long_ramp = make_ramp(LONG_RAMP_WORDS);
+	AiusPipelineServiceDiag before;
+	AiusPipelineServiceDiag after;
+	AiusPipelineServiceDiag final;
+	AiusMetrics metrics;
+	uint32_t squelched = 0u;
+	int confirmed = 0;
+
+	/* (a) CONTROL -- the natural, complete-burst end of the same stream,
+	 * followed by the same PCM. Nothing is abandoned, nothing is rejected. */
+	{
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "teardown %s: control create", name);
+		if (p) {
+			drive_deferred(p, wire, n);
+			drive_deferred(p, long_ramp, LONG_RAMP_WORDS);
+			aius_pipeline_get_service_diag(p, &final);
+			CHECK(aius_pipeline_get_squelch_diag(p, &squelched,
+			                                     &confirmed) == AIUS_OK &&
+			              confirmed == 1,
+			      "teardown %s: control did not recover to confirmed PCM",
+			      name);
+			CHECK(final.decode_units == au_units &&
+			              final.decode_rejects == 0u &&
+			              final.au_abandons == 0u &&
+			              final.parse_rejects == 0u &&
+			              final.last_failure == AIUS_OK,
+			      "teardown %s: natural EOF is not clean "
+			      "(units=%u rejects=%u abandons=%u parse=%u last=%d)",
+			      name, final.decode_units, final.decode_rejects,
+			      final.au_abandons, final.parse_rejects,
+			      (int)final.last_failure);
+			CHECK(cap.n > (int)au_blocks,
+			      "teardown %s: control emitted %d blocks, not the %u "
+			      "decoded ones plus a recovered PCM run", name, cap.n,
+			      au_blocks);
+			capture_free(&cap);
+			aius_pipeline_destroy(p);
+		}
+	}
+
+	/* (b) THE DEFECT -- the source is cut mid-payload and torn down. */
+	{
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "teardown %s: create", name);
+		if (!p) {
+			free(ramp);
+			free(wire);
+			return;
+		}
+		drive_deferred(p, wire, n);
+		drive_deferred(p, wire, cut); /* the burst the source cut short */
+		aius_pipeline_get_service_diag(p, &before);
+		const int blocks_before = cap.n;
+		CHECK(before.decode_units == au_units && before.au_abandons == 0u,
+		      "teardown %s: the truncated prefix decoded something (units=%u)",
+		      name, before.decode_units);
+
+		/* The teardown itself. */
+		aius_pipeline_reset(p);
+		aius_pipeline_get_service_diag(p, &after);
+		CHECK(after.au_abandons == 1u,
+		      "teardown %s: staged partial compressed input was dropped "
+		      "with %u abandons, not 1", name, after.au_abandons);
+		CHECK(after.last_failure == AIUS_MALFORMED,
+		      "teardown %s: the drop left no observation (last_failure=%d)",
+		      name, (int)after.last_failure);
+		CHECK(after.decode_units == before.decode_units,
+		      "teardown %s: the discontinuity itself decoded something", name);
+		/* Dropped ONCE: a second discontinuity over nothing counts nothing. */
+		aius_pipeline_reset(p);
+		aius_pipeline_get_service_diag(p, &after);
+		CHECK(after.au_abandons == 1u,
+		      "teardown %s: a second reset re-counted the same drop (%u)",
+		      name, after.au_abandons);
+
+		/* PCM after the teardown, on its ordinary confirmation schedule. */
+		drive_deferred(p, ramp, RAMP_WORDS);
+		aius_pipeline_get_service_diag(p, &final);
+		CHECK(final.decode_units == before.decode_units,
+		      "teardown %s: the dead AU was decoded %u times after the "
+		      "discontinuity -- it must be decoded none", name,
+		      final.decode_units - before.decode_units);
+		CHECK(final.decode_rejects == 0u,
+		      "teardown %s: %u decode rejects -- a dead AU still reached a "
+		      "decoder", name, final.decode_rejects);
+		CHECK(final.au_abandons == 1u,
+		      "teardown %s: au_abandons %u != 1", name, final.au_abandons);
+		CHECK(cap.n == blocks_before + 2,
+		      "teardown %s: %d blocks after the teardown != 2 (the PCM "
+		      "recovery alone)", name, cap.n - blocks_before);
+		if (cap.n == blocks_before + 2)
+			CHECK(cap.blocks[blocks_before].channels == 2u &&
+			              cap.blocks[blocks_before].planes[0][0] ==
+			                      pcm_expected_sample(ramp[CONFIRM]),
+			      "teardown %s: the recovered PCM does not start at the "
+			      "confirm boundary word", name);
+		CHECK(aius_pipeline_get_squelch_diag(p, &squelched, &confirmed) ==
+		                      AIUS_OK &&
+		              confirmed == 1,
+		      "teardown %s: PCM did not recover", name);
+		/* The operator-owned latch is untouched by this change:
+		 * aius_pipeline_reset clears last_status by contract, and the
+		 * observation the drop leaves rides last_failure instead. */
+		CHECK(aius_pipeline_get_metrics(p, &metrics) == AIUS_OK &&
+		              metrics.last_status == AIUS_OK,
+		      "teardown %s: reset stopped clearing the observation latch",
+		      name);
+		CHECK(final.last_failure == AIUS_MALFORMED,
+		      "teardown %s: the drop's observation was erased by recovery",
+		      name);
+		capture_free(&cap);
+		aius_pipeline_destroy(p);
+	}
+
+	/* (c) THE RESIDUAL, pinned so it cannot grow. With NO teardown signal the
+	 * words after the cut still complete the dead burst to its declared
+	 * length, and it reaches a decoder exactly once as an access unit. That
+	 * remaining exposure is a target-wiring question (how promptly carrier
+	 * loss bumps the ingress source generation), not a pipeline one -- but it
+	 * is bounded here so a regression that turns one attempt into a grind
+	 * fails. */
+	{
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+		AiusPipeline *p = NULL;
+		CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK,
+		      "teardown %s: bare create", name);
+		if (p) {
+			drive_deferred(p, wire, n);
+			drive_deferred(p, wire, cut);
+			aius_pipeline_get_service_diag(p, &before);
+			drive_deferred(p, long_ramp, LONG_RAMP_WORDS);
+			aius_pipeline_get_service_diag(p, &final);
+			CHECK(final.decode_units - before.decode_units <= au_blocks,
+			      "teardown %s: the dead AU took %u decode units without a "
+			      "teardown -- more than one access unit's worth", name,
+			      final.decode_units - before.decode_units);
+			CHECK(final.au_abandons + final.decode_rejects >= 1u ||
+			              final.decode_units == before.decode_units,
+			      "teardown %s: the dead AU was neither rejected nor "
+			      "abandoned", name);
+			capture_free(&cap);
+			aius_pipeline_destroy(p);
+		}
+	}
+
+	printf("  teardown-%-6s mid-burst teardown drops the partial AU once "
+	       "(1 abandon, 0 decode attempts)\n",
+	       name[0] == 'a' ? "ac3" : "dts");
+	free(long_ramp);
+	free(ramp);
+	free(wire);
+}
+
+/* ---- defect 34: a type-21 carrier entered at any phase stays dark ----------
+ *
+ * E-AC-3's IEC 61937 repetition period is 12,288 words, wider than
+ * AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (8,192): the first candidate pair
+ * always expires before the second arrives, so the two-pair rule can NEVER
+ * re-type a DD+ link. Every entry phase outside the 512-word classify window --
+ * ~96% of them -- typed PCM, cleared the 8,192-word confirmation squelch, and
+ * played compressed burst data as full-scale noise.
+ *
+ * The fix leaves PCM on the FIRST pair whose Pc completes a well-formed header
+ * for an undecodable data type. What that buys, and its exact limit:
+ *
+ *   - NO BURST PAYLOAD EVER REACHES THE SINK, at any entry phase. That is the
+ *     harm, and it is closed outright.
+ *   - The stream never ENDS in a confirmed PCM class at any phase.
+ *   - For every phase whose first preamble lands at or before the confirmation
+ *     boundary -- two thirds of the period -- not one block is emitted.
+ *   - The remaining third emits up to four blocks of the carrier's inter-burst
+ *     STUFFING (digital silence) before the preamble arrives. That residual is
+ *     not removable while genuine PCM must still confirm at run word 8,192
+ *     unchanged: over those phases the carrier's first 8,192 words are literal
+ *     zeros, so the two streams are indistinguishable at the boundary. Raising
+ *     the confirmation would fix it and lengthen every real PCM source's mute,
+ *     which is the trade this fix exists to avoid.
+ */
+
+#define EAC3_PERIOD_WORDS 12288u
+
+/* One repetition period of a type-21 carrier: the committed unsupported_eac3
+ * burst, then IEC 61937 stuffing (zeros) out to the 12,288-word period. */
+static uint16_t *make_eac3_carrier(const char *dir, size_t periods,
+                                   size_t *out_n, size_t *out_burst_words)
+{
+	size_t n = 0u;
+	uint16_t *burst = load_wire(dir, "unsupported_eac3", &n);
+	if (!burst)
+		return NULL;
+	CHECK(n < EAC3_PERIOD_WORDS,
+	      "eac3-entry: burst is %zu words, wider than the 12,288-word period",
+	      n);
+	const size_t total = EAC3_PERIOD_WORDS * periods;
+	uint16_t *s = calloc(total, sizeof(uint16_t));
+	for (size_t r = 0; r < periods; r++)
+		memcpy(s + r * EAC3_PERIOD_WORDS, burst, n * sizeof(uint16_t));
+	free(burst);
+	*out_n = total;
+	*out_burst_words = n;
+	return s;
+}
+
+/* Push without finish(): the target never calls finish, and a phase that ends
+ * mid-burst would report a truncation that says nothing about entry. */
+static AiusPipeline *run_entry(const uint16_t *w, size_t n, struct capture *cap,
+                               struct reclass_diag *d, const char *label)
+{
+	AiusPcmSink sink = { .ctx = cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	memset(d, 0, sizeof(*d));
+	if (aius_pipeline_create(&p, NULL, &sink) != AIUS_OK) {
+		CHECK(0, "%s: create", label);
+		return NULL;
+	}
+	push_chunked(p, w, n, 256, label);
+	CHECK(aius_pipeline_get_reclass_counters(p, &d->retype, &d->reclassify) ==
+	              AIUS_OK,
+	      "%s: counters", label);
+	CHECK(aius_pipeline_get_squelch_diag(p, &d->squelched_frames,
+	                                     &d->pcm_confirmed) == AIUS_OK,
+	      "%s: squelch diag", label);
+	return p;
+}
+
+static void test_unsupported_entry_phase_sweep(const char *dir)
+{
+	enum { CONFIRM = (int)AIUS_PIPELINE_PCM_CONFIRM_WORDS, PERIODS = 4 };
+	size_t carrier_n = 0u;
+	size_t burst_words = 0u;
+	uint16_t *carrier = make_eac3_carrier(dir, PERIODS, &carrier_n,
+	                                      &burst_words);
+	if (!carrier) {
+		CHECK(0, "eac3-entry: carrier build");
+		return;
+	}
+	/* A ramp long enough that every swept offset still has the whole
+	 * confirmation window plus two blocks behind it. */
+	const size_t ramp_n = carrier_n;
+	uint16_t *ramp = make_ramp(ramp_n);
+
+	/* The preamble words are the only non-stuffing words the pass-through can
+	 * ever stage before the dark exit consumes the Pc; anything else emitted
+	 * would be burst payload. */
+	const int32_t pa_sample = pcm_expected_sample(0xF872u);
+	const int32_t pb_sample = pcm_expected_sample(0x4E1Fu);
+
+	/* Stride across the full period, plus every phase where the geometry
+	 * changes: the classify window's edges, the confirmation boundary, and
+	 * the period's own ends. */
+	static const size_t explicit_phases[] = {
+		0, 1, 2, 511, 512, 513, 1024, 3072, 4094, 4095, 4096, 4097,
+		8191, 8192, 11775, 11776, 11777, 12286, 12287
+	};
+	size_t phases[256];
+	size_t phase_count = 0u;
+	for (size_t i = 0; i < sizeof(explicit_phases) / sizeof(explicit_phases[0]);
+	     i++)
+		phases[phase_count++] = explicit_phases[i];
+	for (size_t phi = 0; phi < EAC3_PERIOD_WORDS; phi += 128u)
+		phases[phase_count++] = phi;
+
+	int dark_at_every_phase = 1;
+	int payload_reached_sink = 0;
+	int silent_entry_phases = 0;
+	int worst_blocks = 0;
+	int pcm_timing_ok = 1;
+
+	for (size_t k = 0; k < phase_count; k++) {
+		const size_t phi = phases[k];
+		/* The run word at which this entry phase first meets a preamble. */
+		const size_t first_sync =
+			phi == 0u ? 0u : (EAC3_PERIOD_WORDS - phi);
+
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		struct reclass_diag d;
+		AiusPipeline *p = run_entry(carrier + phi, carrier_n - phi, &cap, &d,
+		                            "eac3-entry");
+		if (!p)
+			break;
+		const AiusPipelineClass klass = aius_pipeline_classification(p);
+		AiusIecDiag parser;
+		CHECK(aius_pipeline_get_parser_diag(p, &parser) == AIUS_OK,
+		      "eac3-entry: parser diag");
+
+		if (klass == AIUS_PIPELINE_PCM || d.pcm_confirmed != 0) {
+			CHECK(0,
+			      "eac3-entry phase %zu: ended class %d confirmed %d -- a "
+			      "type-21 carrier confirmed as PCM", phi, (int)klass,
+			      d.pcm_confirmed);
+			dark_at_every_phase = 0;
+		}
+		/* The parser must be framing the carrier's bursts and refusing
+		 * them, which is what holds the class dark without starving. */
+		CHECK(parser.rejects_unsupported >= (uint32_t)(PERIODS - 2) &&
+		              parser.bursts_ok == 0u,
+		      "eac3-entry phase %zu: parser framed %u unsupported / %u ok "
+		      "bursts", phi, parser.rejects_unsupported, parser.bursts_ok);
+		CHECK(d.reclassify == 0u,
+		      "eac3-entry phase %zu: the dark class starved back out (%u)",
+		      phi, d.reclassify);
+
+		for (int b = 0; b < cap.n; b++) {
+			for (uint32_t f = 0; f < cap.blocks[b].frames; f++) {
+				for (int ch = 0; ch < cap.blocks[b].channels; ch++) {
+					const int32_t s = cap.blocks[b].planes[ch][f];
+					if (s != 0 && s != pa_sample && s != pb_sample)
+						payload_reached_sink = 1;
+				}
+			}
+		}
+		if (cap.n > worst_blocks)
+			worst_blocks = cap.n;
+		if (first_sync <= (size_t)CONFIRM) {
+			CHECK(cap.n == 0,
+			      "eac3-entry phase %zu: %d blocks emitted although the "
+			      "first preamble (run word %zu) lands inside the "
+			      "confirmation window", phi, cap.n, first_sync);
+			if (cap.n == 0)
+				silent_entry_phases++;
+		} else {
+			CHECK(cap.n <= 4,
+			      "eac3-entry phase %zu: %d stuffing blocks emitted before "
+			      "the preamble at run word %zu", phi, cap.n, first_sync);
+		}
+		capture_free(&cap);
+		aius_pipeline_destroy(p);
+
+		/* The control that makes the fix's cost explicit: genuine PCM
+		 * entered at the SAME offset still confirms at run word CONFIRM
+		 * exactly, first frame the boundary word pair, L-first. */
+		struct capture pcm_cap;
+		memset(&pcm_cap, 0, sizeof(pcm_cap));
+		struct reclass_diag pd;
+		const size_t pcm_words =
+			(size_t)CONFIRM + 2u * 2u * AIUS_PIPELINE_PCM_BLOCK_FRAMES;
+		AiusPipeline *q = run_entry(ramp + phi, pcm_words, &pcm_cap, &pd,
+		                            "eac3-entry-pcm");
+		if (q) {
+			if (aius_pipeline_classification(q) != AIUS_PIPELINE_PCM ||
+			    pd.pcm_confirmed != 1 || pcm_cap.n != 2 ||
+			    pcm_cap.blocks[0].planes[0][0] !=
+			            pcm_expected_sample(ramp[phi + CONFIRM]) ||
+			    pcm_cap.blocks[0].planes[1][0] !=
+			            pcm_expected_sample(ramp[phi + CONFIRM + 1]) ||
+			    pd.squelched_frames != (uint32_t)CONFIRM / 2u) {
+				CHECK(0,
+				      "eac3-entry phase %zu: genuine PCM entry changed "
+				      "(class %d confirmed %d blocks %d squelched %u)",
+				      phi, (int)aius_pipeline_classification(q),
+				      pd.pcm_confirmed, pcm_cap.n, pd.squelched_frames);
+				pcm_timing_ok = 0;
+			}
+			capture_free(&pcm_cap);
+			aius_pipeline_destroy(q);
+		}
+	}
+
+	CHECK(!payload_reached_sink,
+	      "eac3-entry: burst payload reached the sink -- the full-scale noise "
+	      "defect 34 describes is still reachable");
+	CHECK(dark_at_every_phase,
+	      "eac3-entry: at least one entry phase confirmed PCM on a type-21 "
+	      "carrier");
+	CHECK(pcm_timing_ok,
+	      "eac3-entry: genuine PCM confirmation timing changed");
+	printf("  eac3-entry     %zu entry phases over the 12,288-word period: no "
+	       "burst payload emitted, none confirms PCM (%d fully silent, worst "
+	       "%d stuffing blocks)\n",
+	       phase_count, silent_entry_phases, worst_blocks);
+	free(ramp);
+	free(carrier);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -1995,6 +2460,10 @@ int main(int argc, char **argv)
 	test_retype_boundary_pair(dir);
 	test_starve_and_recover(dir);
 	test_unsupported_never_starves(dir);
+	test_unsupported_entry_phase_sweep(dir);
+	test_teardown_drops_partial_burst(dir, "dts_be16", 500u, 1u, 1u);
+	test_teardown_drops_partial_burst(dir, "ac3_surround51_ident", 700u, 12u,
+	                                  12u);
 	test_reset_semantics(dir);
 	test_deferred_dts(dir);
 	test_deferred_ac3(dir);

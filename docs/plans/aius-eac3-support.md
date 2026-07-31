@@ -25,10 +25,14 @@ sequencing.
 
 ## Entry condition and the prerequisite that stands alone
 
-- **Defect 34 first, regardless of any decode decision.** A type-21 link today
-  types as PCM in ~96% of entry phases (12,288-word burst period exceeds
-  `AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS` = 8,192) and plays burst data as
-  full-scale noise. Candidate fixes recorded in
+- **Defect 34 first, regardless of any decode decision.** ~~A type-21 link
+  today types as PCM in ~96% of entry phases (12,288-word burst period
+  exceeds `AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS` = 8,192) and plays burst
+  data as full-scale noise.~~ **Fixed 2026-07-31** with the generalised
+  stay-dark rule (single validated Pa/Pb/Pc pair exits PCM at any phase;
+  constants untouched; 115-phase sweep proves no payload reaches the sink);
+  hardware reproduction still awaits a DD+-capable source. Full record: the
+  hardening ledger entry 34. Candidate fixes recorded in
   [`aius-network-hardening.md`](aius-network-hardening.md) defect 34: raise the
   re-type spacing to cover 12,288 (lengthens every genuine PCM confirmation mute,
   since `PCM_CONFIRM_WORDS` must stay >= MAX), or detect type 21 in the classify

@@ -48,6 +48,17 @@ extern "C" {
  *                the parser is reset and fed from the validated pair onward.
  *                One pair is never enough -- a random 16-bit-word pair match
  *                in real audio must not flip a live stream.
+ *                ONE EXCEPTION, and it is a safety exception (defect 34): a
+ *                pair whose following Pc completes a well-formed burst header
+ *                naming a data type this pipeline cannot decode re-types on
+ *                that single pair. A 12,288-word E-AC-3 period is wider than
+ *                the maximum re-type spacing, so the two-pair rule can never
+ *                fire on a DD+ link and ~96% of entry phases played its burst
+ *                data as full-scale PCM noise. Acting on the single header
+ *                fails SAFE (it goes dark; a false positive costs the ordinary
+ *                starvation recovery), which is why it is confined to the
+ *                types no decoder claims. See aius_pipeline.c
+ *                §unsupported_burst_header.
  *   DTS -> PCM   words consumed by the DTS route with NO parser burst outcome
  *                (completed OR rejected -- either is framing evidence) starve
  *                the class back to UNKNOWN after
@@ -170,6 +181,13 @@ typedef enum {
 	AIUS_PIPELINE_SERVICE_TRANSMIT_BLOCKED
 } AiusPipelineServiceResult;
 
+/* Service-side tallies. `au_abandons` counts every access unit's worth of work
+ * thrown away: one already emitting blocks when a decode or sink failure killed
+ * it, AND (since defect 35) staged partial compressed input dropped at a source
+ * discontinuity before any decode was attempted. Exactly one of the two counts
+ * per abandoned unit -- the live event that raised defect 35 read zero abandons
+ * from end to end while a whole access unit was discarded, which is precisely
+ * what made it unattributable. */
 typedef struct {
 	uint32_t decode_units;
 	uint32_t sink_attempts;
@@ -268,7 +286,16 @@ void aius_pipeline_clear_service_diag(AiusPipeline *p);
 AiusStatus aius_pipeline_finish(AiusPipeline *p);
 
 /* Drop all in-progress state and return to the UNKNOWN (unclassified) state.
- * NULL is a no-op. */
+ * NULL is a no-op.
+ *
+ * THIS IS THE SOURCE-DISCONTINUITY ENTRY POINT (defect 35). The audio service
+ * calls it on every ingress source/gap generation change. Staged partial
+ * compressed input -- a burst the parser is inside, or a de-framed AU nothing
+ * has decoded yet -- is dropped HERE, before any decoder can be handed a unit
+ * that was completed from post-discontinuity words, and the drop counts ONE
+ * au_abandon with AIUS_MALFORMED in the service diag's last_failure. An AU that
+ * is already emitting blocks is not counted here; the caller that observed its
+ * failure counts it. */
 void aius_pipeline_reset(AiusPipeline *p);
 
 /* Release a libc-created pipeline and its owned parser/decoder. NULL is a no-op.

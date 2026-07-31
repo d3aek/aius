@@ -1585,6 +1585,24 @@ are follow-up work, recorded here so they are not lost.
     PCM but only covers streams whose window catches a preamble. Tracked in
     [`aius-ac3-support.md`](aius-ac3-support.md) §Phase 3 contract.
 
+    **CLOSED 2026-07-31 with a generalisation of the stay-dark candidate
+    that removes its own stated limitation.** A validated Pa/Pb pair now
+    arms a one-word Pc look-ahead anywhere in a confirmed-or-confirming PCM
+    stream, not just inside the classification window; a header whose data
+    type no decoder claims (outside {1, 11, 12, 13}, error flag clear)
+    leaves PCM on that single pair into the dark bitstream class. The
+    spacing and confirmation constants are untouched, so genuine PCM
+    timing is pinned unchanged. A 115-phase entry sweep over a real
+    type-21 carrier (every geometry edge plus stride-128 coverage) shows
+    no burst payload ever reaching the sink and no phase ever confirming
+    PCM; disabling the rule fails 326 assertions. Honest residual, not
+    papered over: entry phases landing inside the carrier's leading 8,192
+    literal-zero words emit at most 4 blocks of digital silence, which is
+    byte-indistinguishable from a silent PCM source and closable only by
+    growing the confirmation mute this fix exists to avoid. The harm named
+    here — full-scale burst noise — is closed outright at every phase.
+    Hardware reproduction still awaits an E-AC-3-capable source.
+
 35. **An abrupt DTS source stop can turn one cut burst into a 120 ms AUDIO
     service and overflow ingress before the format transition recovers.**
     Reproduced 2026-07-29 by terminating the gate's ALSA producer after twenty
@@ -1610,6 +1628,30 @@ are follow-up work, recorded here so they are not lost.
     target-side decode/sink substep timing, then make source discontinuity drop
     partial compressed work before any unbounded decode. Do not hide the defect
     by accepting arbitrary producer termination as a clean drain.
+
+    **NARROWED 2026-07-31: the library half is fixed and the libs are
+    exonerated for the wall clock.** Host reproduction at 5 cut positions x
+    2 tails x 2 codecs through the real ingress + service measured the worst
+    single `aius_pipeline_service_one` at 0.316 ms and the worst whole
+    transition at 2.6 ms — no 112 ms unit exists in `aius_pipeline`,
+    `aius_audio_service` or `aius_audio_ingress`, whose loop is structurally
+    bounded at budget + one work unit. The 14 overflow chunks are the
+    effect: 11,776 words is 122.7 ms of ISR real time while the main loop
+    was blocked elsewhere. What the reproduction did convict is fixed: a
+    dead AC-3 AU decoded six blocks of full-scale garbage across six
+    service steps (liba52 validates no payload CRC), and a signalled
+    teardown dropped partial work silently. Discontinuity now kills staged
+    partial compressed input before any decode, counted once in
+    `au_abandons` (widened, documented) with a
+    `service_diag.last_failure = AIUS_MALFORMED` observation; the
+    `last_status` latch semantics are untouched. STILL OPEN, two halves:
+    (1) the 120 ms wall-clock unit itself — candidates are the sink path
+    (`enqueue` -> apply_config/DSP/recorder/measure taps), ISR preemption
+    counted into `micros()`, or flash/cache stalls; target-side substep
+    timing remains the recorded next step; (2) with no discontinuity signal
+    at all, a completed dead burst still reaches a decoder once (pinned at
+    one AU by test; full closure needs AC-3 payload CRC validation in
+    `lib/aius_a52` or prompter carrier-loss ingress wiring).
 
 #### Decisions taken, so they are not re-opened
 

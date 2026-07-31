@@ -46,6 +46,13 @@ extern "C" {
  * provision more; the 16-bit Pd can express lengths beyond this buffer. */
 #define AIUS_IEC61937_MAX_PAYLOAD 4096u
 
+/* Pc (burst_info) field layout, in the NORMALIZED (big-endian) word. The one
+ * statement of this wire format: the parser reads it to type and validate each
+ * burst, and the pipeline reads it to recognise a burst header for a data type
+ * no decoder claims from inside a PCM run (see aius_pipeline.h, defect 34). */
+#define AIUS_IEC61937_PC_DATA_TYPE_MASK 0x001Fu /* bits 0-4: data type */
+#define AIUS_IEC61937_PC_ERROR_FLAG     0x0080u /* bit 7: upstream error flag */
+
 /* How the burst payload words encode payload bytes on the wire. */
 typedef enum {
 	AIUS_IEC61937_PACK_16 = 0, /* two payload bytes per 16-bit wire word */
@@ -99,6 +106,19 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
  * preamble), else AIUS_OK. Either way the parser is reset to search for a fresh
  * preamble. */
 AiusStatus aius_iec61937_finish(AiusIec61937Parser *p);
+
+/* Non-zero while the parser holds STAGED PARTIAL COMPRESSED INPUT: it is past a
+ * confirmed Pa/Pb preamble with the rest of the burst header or the payload
+ * still outstanding.
+ *
+ * A lone Pa awaiting its Pb is deliberately NOT partial work -- it is one word
+ * of an unresolved sync that the next word either confirms or discards, and
+ * counting it would report an abandon on every false Pa in linear PCM.
+ *
+ * The pipeline reads this at a source discontinuity so the partial burst is
+ * DROPPED rather than completed from post-discontinuity words and ground
+ * through a decode (defect 35). NULL reads 0. */
+int aius_iec61937_partial_burst(const AiusIec61937Parser *p);
 
 /* Fill `out` with the most-recently completed burst (valid after AIUS_OK or
  * AIUS_UNSUPPORTED). `out->payload` points into the parser and stays valid until

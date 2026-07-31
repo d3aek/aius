@@ -20,9 +20,10 @@
 /* Pa with its two bytes swapped: the little-endian wire representation. */
 #define IEC_PA_SWAPPED 0x72F8u
 
-/* Pc (burst_info) field layout. */
-#define PC_DATA_TYPE_MASK 0x001Fu /* bits 0-4: data type */
-#define PC_ERROR_FLAG     0x0080u /* bit 7: upstream error flag */
+/* Pc (burst_info) field layout lives in the header: the pipeline reads the same
+ * fields to recognise an undecodable burst header (defect 34). */
+#define PC_DATA_TYPE_MASK AIUS_IEC61937_PC_DATA_TYPE_MASK
+#define PC_ERROR_FLAG     AIUS_IEC61937_PC_ERROR_FLAG
 
 /* Parser lifecycle states. */
 enum {
@@ -285,6 +286,16 @@ AiusStatus aius_iec61937_finish(AiusIec61937Parser *p)
 	int mid_burst = (p->state != ST_SEARCH_PA);
 	begin_search(p);
 	return mid_burst ? AIUS_TRUNCATED : AIUS_OK;
+}
+
+int aius_iec61937_partial_burst(const AiusIec61937Parser *p)
+{
+	if (!p)
+		return 0;
+	/* ST_EXPECT_PB is excluded on purpose: a lone Pa is an unresolved sync,
+	 * not committed burst work. See the header. */
+	return p->state == ST_EXPECT_PC || p->state == ST_EXPECT_PD ||
+	       p->state == ST_PAYLOAD;
 }
 
 AiusStatus aius_iec61937_get_diag(const AiusIec61937Parser *p, AiusIecDiag *out)

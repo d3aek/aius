@@ -77,6 +77,15 @@ struct AiusPipeline {
 	uint32_t rt_pos;           /* stream position of the NEXT word */
 	uint32_t rt_cand_pos;      /* candidate pair's Pa position */
 
+	/* Defect 34: the word after a Pa/Pb pair is the burst_info Pc, and a Pc
+	 * naming a data type this box cannot decode is a SINGLE-PAIR exit from
+	 * PCM (see unsupported_burst_header). The pair may end a push, so the
+	 * look-ahead is carried in the instance like the prev-word carry is. */
+	uint16_t rt_sync_pa;
+	uint16_t rt_sync_pb;
+	uint8_t rt_sync_form;
+	uint8_t rt_await_pc;
+
 	/* DTS starvation: words consumed by the DTS route since the last parser
 	 * burst outcome (completed or rejected). Zeroed on EVERY entry to the DTS
 	 * class and when starvation fires -- stale residue across a class
@@ -145,6 +154,42 @@ static int is_preamble_pair(uint16_t a, uint16_t b)
 	return pair_form(a, b) != 0;
 }
 
+/* Defect 34: does `pc_word`, read in the pair's own wire byte order, complete a
+ * well-formed IEC 61937 burst header for a data type this pipeline cannot
+ * decode?
+ *
+ * WHY THIS EXISTS. E-AC-3 (type 21) repeats every 12,288 words, which is wider
+ * than AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (8,192): the first candidate pair
+ * always expires before the second arrives, so the two-pair rule can NEVER
+ * re-type a DD+ link. ~96% of entry phases therefore typed PCM, cleared the
+ * confirmation squelch and played compressed burst data as full-scale noise --
+ * the exact harm the squelch exists to prevent. Raising the spacing was the
+ * other candidate and was rejected: PCM_CONFIRM_WORDS must stay >= MAX, so it
+ * would lengthen the confirmation mute of every genuine PCM source.
+ *
+ * WHY ONE PAIR IS ENOUGH HERE, when two are needed for a decodable type. A bare
+ * pair is 32 bits of evidence and the two-pair rule buys the rest. A pair
+ * FOLLOWED BY a burst_info that clears the error flag and names an undecodable
+ * data type is stronger evidence AND it fails safe: acting on it goes DARK. A
+ * false positive costs the existing starvation recovery (the bitstream class
+ * finds no further burst outcome and re-classifies), which is silence, not
+ * noise -- whereas failing to act plays the burst. That asymmetry is the whole
+ * argument, and it is why this rule is deliberately NOT extended to the
+ * decodable types: for those, acting wrongly would flip a live stream.
+ *
+ * Types 1/11/12/13 return 0 and fall through to the unchanged two-pair rule. */
+static int unsupported_burst_header(int form, uint16_t pc_word)
+{
+	const uint16_t pc =
+		(form == 2) ? (uint16_t)((pc_word >> 8) | (pc_word << 8)) : pc_word;
+	if ((pc & AIUS_IEC61937_PC_ERROR_FLAG) != 0u)
+		return 0; /* the parser rejects this header; it is not a sync */
+	const uint16_t data_type =
+		(uint16_t)(pc & AIUS_IEC61937_PC_DATA_TYPE_MASK);
+	return !(data_type == 1u || data_type == 11u || data_type == 12u ||
+	         data_type == 13u);
+}
+
 AiusPipelineClass aius_pipeline_classify(const uint16_t *words, size_t count,
                                          size_t window)
 {
@@ -194,28 +239,34 @@ static inline int32_t pcm_wire_to_sample(uint16_t word)
 	return (int32_t)((uint32_t)wire << PCM_WIRE_SHIFT);
 }
 
-/* Complete a validated PCM->DTS re-type (defect 28): drop the staged
- * pass-through tail (at a genuine format switch it is burst data misread as
- * PCM -- its Pa is in there too), start the parser clean from the validated
- * pair, and route the remainder of the caller's chunk after it. */
-static AiusStatus retype_to_dts(AiusPipeline *p, uint16_t pa, uint16_t pb,
-	                            const uint16_t *rest, size_t n,
-	                            size_t *consumed)
+/* Leave PCM for the bitstream (dark) class: drop the staged pass-through tail
+ * (at a genuine format switch it is burst data misread as PCM -- its Pa is in
+ * there too), start the parser clean from `lead` (the sync words the detector
+ * consumed and must not lose), and route the remainder of the caller's chunk
+ * after it.
+ *
+ * Two callers, one transition, one counter: the defect-28 two-pair re-type
+ * (lead = Pa,Pb) and the defect-34 unsupported-burst-header exit (lead =
+ * Pa,Pb,Pc). Both are PCM->bitstream re-types, so both count into
+ * retype_count. */
+static AiusStatus enter_bitstream(AiusPipeline *p, const uint16_t *lead,
+	                              size_t lead_n, const uint16_t *rest,
+	                              size_t n, size_t *consumed)
 {
 	p->pcm_frames = 0;
 	p->pcm_have_half = 0;
 	p->pcm_pending_l = 0;
 	p->rt_have_prev = 0;
 	p->rt_cand_valid = 0;
+	p->rt_await_pc = 0;
 	aius_iec61937_parser_reset(p->parser);
 	p->klass = AIUS_PIPELINE_DTS;
 	p->codec_pc = 0u;
 	p->dts_starve_words = 0;
 	p->retype_count++;
 
-	const uint16_t pair[2] = { pa, pb };
-	size_t pair_consumed = 0u;
-	AiusStatus st = dts_ingest(p, pair, 2u, &pair_consumed);
+	size_t lead_consumed = 0u;
+	AiusStatus st = dts_ingest(p, lead, lead_n, &lead_consumed);
 	if (st != AIUS_OK)
 		return st;
 	if (p->pending != PENDING_NONE) {
@@ -237,6 +288,9 @@ static void pcm_enter(AiusPipeline *p)
 	p->pcm_frames = 0;
 	p->pcm_have_half = 0;
 	p->pcm_pending_l = 0;
+	/* A fresh run has no pair awaiting its Pc; a stale look-ahead would test
+	 * an unrelated word against a long-gone sync. */
+	p->rt_await_pc = 0;
 }
 
 static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
@@ -245,6 +299,26 @@ static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 	*consumed = 0u;
 	for (size_t i = 0; i < n; i++) {
 		const uint16_t word = w[i];
+
+		/* Defect 34, ahead of everything: this word is the burst_info Pc of
+		 * the pair the previous iteration saw. A Pc that completes a
+		 * well-formed header for an undecodable data type leaves PCM on this
+		 * ONE pair -- the widest supported re-type spacing cannot reach a
+		 * 12,288-word E-AC-3 period, so waiting for a second pair means
+		 * waiting forever. The sync words go to the parser with the rest. */
+		if (p->rt_await_pc) {
+			p->rt_await_pc = 0u;
+			if (unsupported_burst_header((int)p->rt_sync_form, word)) {
+				const uint16_t lead[3] = { p->rt_sync_pa, p->rt_sync_pb,
+				                           word };
+				size_t rest_consumed = 0u;
+				AiusStatus st =
+					enter_bitstream(p, lead, 3u, w + i + 1, n - i - 1,
+					                &rest_consumed);
+				*consumed = i + 1u + rest_consumed;
+				return st;
+			}
+		}
 
 		/* Re-type detector, ahead of staging: on a validated second pair the
 		 * staged tail (which holds its Pa) drops and Pb never stages. The
@@ -258,11 +332,12 @@ static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 					if (delta >= AIUS_PIPELINE_RETYPE_MIN_SPACING_WORDS &&
 					    delta <= AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS &&
 					    form == (int)p->rt_cand_form) {
+						const uint16_t lead[2] = { p->rt_prev_word,
+						                           word };
 						size_t rest_consumed = 0u;
 						AiusStatus st =
-							retype_to_dts(p, p->rt_prev_word, word,
-							              w + i + 1, n - i - 1,
-							              &rest_consumed);
+							enter_bitstream(p, lead, 2u, w + i + 1,
+							                n - i - 1, &rest_consumed);
 						*consumed = i + 1u + rest_consumed;
 						return st;
 					}
@@ -280,6 +355,13 @@ static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 					p->rt_cand_pos = pa_pos;
 					p->rt_cand_form = (uint8_t)form;
 				}
+				/* Arm the Pc look-ahead whatever the two-pair rule made of
+				 * this pair: the candidate machinery and the defect-34
+				 * header test are independent readings of the same sync. */
+				p->rt_sync_pa = p->rt_prev_word;
+				p->rt_sync_pb = word;
+				p->rt_sync_form = (uint8_t)form;
+				p->rt_await_pc = 1u;
 			}
 		}
 		p->rt_prev_word = word;
@@ -400,12 +482,78 @@ static void cleanup_pending(AiusPipeline *p)
 	p->pcm_pending_l = 0;
 }
 
+/* Defect 35: a source discontinuity kills staged partial compressed input
+ * BEFORE anything decodes it.
+ *
+ * An encoded source terminated mid-burst leaves the parser inside a payload it
+ * will never be given the rest of. Left alone, the next words -- which belong to
+ * whatever the source became, PCM included -- complete that burst to its
+ * DECLARED length, and a dead access unit is then handed to a decoder: one
+ * rejected DTS decode, or (liba52 validates no payload CRC) a whole six-block
+ * AC-3 grind whose every block is full-scale garbage on the wire.
+ *
+ * So every discontinuity funnels through here: the partial burst is dropped
+ * ONCE, and the drop is COUNTED. `au_abandons` therefore now also covers staged
+ * compressed input that never reached a decoder -- which is the honest reading,
+ * and the reason the live event could not be attributed: it read zero abandons
+ * from end to end while a whole access unit was thrown away. `last_failure`
+ * carries the observation across the reset that follows; `last_status` is left
+ * to aius_pipeline_reset's documented clear, so the operator-owned latch keeps
+ * its existing semantics exactly.
+ *
+ * A completed-but-unserviced AU counts too (it is staged compressed work with no
+ * decode attempt). An AU already emitting blocks does NOT: aius_pipeline_push's
+ * output-drop path and the service failure paths already count that abandon,
+ * and counting it here would double it. */
+static void drop_staged_compressed_input(AiusPipeline *p)
+{
+	const int staged = aius_iec61937_partial_burst(p->parser) ||
+	                   p->pending == PENDING_DTS_AU ||
+	                   p->pending == PENDING_A52_AU;
+	aius_iec61937_parser_reset(p->parser);
+	cleanup_pending(p);
+	if (staged) {
+		p->service_diag.au_abandons++;
+		p->service_diag.last_failure = AIUS_MALFORMED;
+	}
+}
+
+/* The stream-state half of a reset, shared by the counted (public) and the
+ * already-counted (internal) entry points. */
+static void pipeline_reset_state(AiusPipeline *p)
+{
+	p->klass = AIUS_PIPELINE_UNKNOWN;
+	p->codec_pc = 0u;
+	p->cls_n = 0;
+	p->cls_off = 0;
+	p->pcm_run_words = 0; /* the next PCM run re-earns its confirmation */
+	p->last_status = AIUS_OK;
+	/* Detector/starvation STATE clears; the lifetime counters do not --
+	 * they are the live proof that a re-type (not a reboot) happened. */
+	p->rt_have_prev = 0;
+	p->rt_cand_valid = 0;
+	p->rt_await_pc = 0;
+	p->rt_pos = 0;
+	p->dts_starve_words = 0;
+}
+
+/* Discontinuity for the service/push failure paths, which have ALREADY counted
+ * the abandon they are recovering from. Counting again here would double it --
+ * that is the whole reason this is separate from aius_pipeline_reset. */
+static void pipeline_reset_serviced(AiusPipeline *p)
+{
+	aius_iec61937_parser_reset(p->parser);
+	cleanup_pending(p);
+	pipeline_reset_state(p);
+}
+
 static void begin_ingest_call(AiusPipeline *p)
 {
 	if (p->klass == AIUS_PIPELINE_DTS &&
 	    p->dts_starve_words > AIUS_PIPELINE_DTS_STARVE_WORDS) {
-		aius_iec61937_parser_reset(p->parser);
-		cleanup_pending(p);
+		/* Starvation IS the classification discontinuity: the source
+		 * stopped supplying bursts, so anything half-parsed is dead. */
+		drop_staged_compressed_input(p);
 		p->klass = AIUS_PIPELINE_UNKNOWN;
 		p->codec_pc = 0u;
 		p->cls_n = 0;
@@ -539,7 +687,7 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 		AiusBurst b;
 		if (aius_iec61937_current_burst(p->parser, &b) != AIUS_OK) {
 			p->service_diag.au_abandons++;
-			aius_pipeline_reset(p);
+			pipeline_reset_serviced(p);
 			p->last_status = AIUS_MALFORMED;
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_MALFORMED;
@@ -572,7 +720,7 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 			p->service_diag.last_failure = ds;
 			if (p->a52_inflight) {
 				p->service_diag.au_abandons++;
-				aius_pipeline_reset(p);
+				pipeline_reset_serviced(p);
 				p->last_status = ds;
 			} else {
 				p->pending = PENDING_NONE;
@@ -609,7 +757,7 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 			p->service_diag.decode_rejects++;
 			p->service_diag.au_abandons++;
 			p->service_diag.last_failure = ds;
-			aius_pipeline_reset(p);
+			pipeline_reset_serviced(p);
 			p->last_status = ds;
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_OK;
@@ -632,7 +780,7 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 			p->service_diag.decode_rejects++;
 			p->service_diag.last_failure = slice_status;
 			p->service_diag.au_abandons++;
-			aius_pipeline_reset(p);
+			pipeline_reset_serviced(p);
 			p->last_status = slice_status;
 			*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
 			return AIUS_OK;
@@ -657,7 +805,7 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 			p->service_diag.au_abandons++;
 		p->service_diag.last_failure = st;
 		*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
-		aius_pipeline_reset(p);
+		pipeline_reset_serviced(p);
 		p->last_status = st;
 		return st;
 	}
@@ -720,7 +868,7 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 					if (p->pending == PENDING_DTS_OUTPUT ||
 					    p->pending == PENDING_A52_OUTPUT)
 						p->service_diag.au_abandons++;
-					aius_pipeline_reset(p);
+					pipeline_reset_serviced(p);
 				}
 				return st;
 			}
@@ -799,20 +947,12 @@ void aius_pipeline_reset(AiusPipeline *p)
 {
 	if (!p)
 		return;
-	aius_iec61937_parser_reset(p->parser);
-	p->klass = AIUS_PIPELINE_UNKNOWN;
-	p->codec_pc = 0u;
-	p->cls_n = 0;
-	p->cls_off = 0;
-	cleanup_pending(p);
-	p->pcm_run_words = 0; /* the next PCM run re-earns its confirmation */
-	p->last_status = AIUS_OK;
-	/* Detector/starvation STATE clears; the two lifetime counters do not --
-	 * they are the live proof that a re-type (not a reboot) happened. */
-	p->rt_have_prev = 0;
-	p->rt_cand_valid = 0;
-	p->rt_pos = 0;
-	p->dts_starve_words = 0;
+	/* The source-teardown entry point: the audio service calls this on every
+	 * ingress source/gap generation change, and the operator's clear path
+	 * calls it too. Partial compressed input dies here, once and counted,
+	 * before any decode can be attempted on it (defect 35). */
+	drop_staged_compressed_input(p);
+	pipeline_reset_state(p);
 }
 
 AiusStatus aius_pipeline_set_pcm_sample_rate(AiusPipeline *p,

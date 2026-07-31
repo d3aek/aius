@@ -42,6 +42,10 @@ static int valid_status(AiusStatus s)
 	case AIUS_NO_SPACE:
 	case AIUS_INVALID_ARG:
 		return 1;
+	case AIUS_REFUSED:
+		/* A sink verdict (rate refusal), never a parser return; reaching
+		 * here means the parser leaked a pipeline-layer status. */
+		return 0;
 	}
 	return 0;
 }
