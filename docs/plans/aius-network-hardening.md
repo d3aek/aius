@@ -160,6 +160,23 @@ are follow-up work, recorded here so they are not lost.
    **not applied**, because it would look like a resolution while possibly leaving
    the real defect. Flash, reproduce, then read `sd_diag.last_failure`; the
    convicting values for each hypothesis are tabulated there.
+
+   **DISPOSITIONED 2026-07-31: not reproducible on the current image and
+   topology.** With the diagnostics long since flashed, exact image
+   `fecc4a0a2473+teensy41-optical` on the direct Renesas attach took 100 of
+   100 authenticated uploads without one failure: 40 at the characterized
+   29,566 bytes, then 60 at 131,072 bytes, the last 40 with a concurrent
+   4 Hz status poller recreating dashboard-era connection pressure (the
+   single-socket design serialized it to ~one poll per upload, which is
+   itself part of why overlap pressure no longer materializes). The
+   historical rate predicts ~7 failures in that sample. Likely resolvers,
+   consistent with the record: defect 6's replay-epoch gate ("makes an
+   upload/listing overlap impossible", deliberately unclaimed then) and the
+   Icron chain's removal. The one-epoch yield hole remains real-but-
+   unconvicted and the one-line fix stays unapplied per this entry's own
+   reasoning. The in-image diagnostics make any natural recurrence
+   self-documenting; reopen on the first `sd_diag.last_failure` capture.
+   Evidence: session scratch `defect2-upload-soak{,-concurrent}.jsonl`.
 3. ~~**`"source":"default"` is a hardcoded literal** in the status JSON format
    string.~~ **Fixed.** It now serves `g_dsp_source_sd ? "sd" : "default"` — the
    same fact, from the same variable, as `GET /api/dsp/config`, so the two can no
