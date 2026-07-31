@@ -24,10 +24,19 @@ SND_PCM_STREAM_PLAYBACK = 0
 SND_PCM_STREAM_CAPTURE = 1
 SND_PCM_ACCESS_RW_INTERLEAVED = 3
 SND_PCM_FORMAT_S16_LE = 2
+SND_PCM_TSTAMP_ENABLE = 1
+SND_PCM_TSTAMP_TYPE_MONOTONIC = 1
 
 
 class AlsaError(RuntimeError):
     """A libasound call failed."""
+
+
+class AlsaTimespec(ctypes.Structure):
+    _fields_ = [
+        ("seconds", ctypes.c_long),
+        ("nanoseconds", ctypes.c_long),
+    ]
 
 
 class Alsa:
@@ -100,6 +109,14 @@ class Alsa:
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong
         ]
         lib.snd_pcm_sw_params_set_start_threshold.restype = ctypes.c_int
+        lib.snd_pcm_sw_params_set_tstamp_mode.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int
+        ]
+        lib.snd_pcm_sw_params_set_tstamp_mode.restype = ctypes.c_int
+        lib.snd_pcm_sw_params_set_tstamp_type.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int
+        ]
+        lib.snd_pcm_sw_params_set_tstamp_type.restype = ctypes.c_int
         lib.snd_pcm_sw_params.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p
         ]
@@ -126,6 +143,32 @@ class Alsa:
             ctypes.c_void_p, ctypes.POINTER(ctypes.c_long)
         ]
         lib.snd_pcm_delay.restype = ctypes.c_int
+        lib.snd_pcm_status_malloc.argtypes = [void_pp]
+        lib.snd_pcm_status_malloc.restype = ctypes.c_int
+        lib.snd_pcm_status_free.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_status_free.restype = None
+        lib.snd_pcm_status.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p
+        ]
+        lib.snd_pcm_status.restype = ctypes.c_int
+        lib.snd_pcm_status_get_state.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_status_get_state.restype = ctypes.c_int
+        lib.snd_pcm_status_get_trigger_htstamp.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(AlsaTimespec)
+        ]
+        lib.snd_pcm_status_get_trigger_htstamp.restype = None
+        lib.snd_pcm_status_get_htstamp.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(AlsaTimespec)
+        ]
+        lib.snd_pcm_status_get_htstamp.restype = None
+        lib.snd_pcm_status_get_delay.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_status_get_delay.restype = ctypes.c_long
+        lib.snd_pcm_status_get_avail.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_status_get_avail.restype = ctypes.c_ulong
+        lib.snd_pcm_status_get_avail_max.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_status_get_avail_max.restype = ctypes.c_ulong
+        lib.snd_pcm_status_get_overrange.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_status_get_overrange.restype = ctypes.c_ulong
 
     def check(self, result: int, operation: str) -> int:
         if result < 0:
@@ -248,6 +291,18 @@ class Alsa:
                 "snd_pcm_sw_params_set_start_threshold",
             )
             self.check(
+                self.lib.snd_pcm_sw_params_set_tstamp_mode(
+                    handle, sw, SND_PCM_TSTAMP_ENABLE
+                ),
+                "snd_pcm_sw_params_set_tstamp_mode",
+            )
+            self.check(
+                self.lib.snd_pcm_sw_params_set_tstamp_type(
+                    handle, sw, SND_PCM_TSTAMP_TYPE_MONOTONIC
+                ),
+                "snd_pcm_sw_params_set_tstamp_type",
+            )
+            self.check(
                 self.lib.snd_pcm_sw_params(handle, sw),
                 "snd_pcm_sw_params",
             )
@@ -259,12 +314,134 @@ class Alsa:
             "period_frames": actual_period.value,
             "buffer_frames": actual_buffer.value,
             "start_threshold_frames": threshold,
+            "timestamp_type": "monotonic",
         }
+
+    def status(self, handle: ctypes.c_void_p) -> dict:
+        status = ctypes.c_void_p()
+        self.check(
+            self.lib.snd_pcm_status_malloc(ctypes.byref(status)),
+            "snd_pcm_status_malloc",
+        )
+        try:
+            self.check(
+                self.lib.snd_pcm_status(handle, status),
+                "snd_pcm_status",
+            )
+            trigger = AlsaTimespec()
+            observed = AlsaTimespec()
+            self.lib.snd_pcm_status_get_trigger_htstamp(
+                status, ctypes.byref(trigger)
+            )
+            self.lib.snd_pcm_status_get_htstamp(
+                status, ctypes.byref(observed)
+            )
+            return {
+                "state": self.lib.snd_pcm_status_get_state(status),
+                "trigger_timestamp_ns": (
+                    trigger.seconds * 1_000_000_000
+                    + trigger.nanoseconds
+                ),
+                "observed_timestamp_ns": (
+                    observed.seconds * 1_000_000_000
+                    + observed.nanoseconds
+                ),
+                "delay_frames": self.lib.snd_pcm_status_get_delay(status),
+                "available_frames": (
+                    self.lib.snd_pcm_status_get_avail(status)
+                ),
+                "available_max_frames": (
+                    self.lib.snd_pcm_status_get_avail_max(status)
+                ),
+                "overrange_frames": (
+                    self.lib.snd_pcm_status_get_overrange(status)
+                ),
+            }
+        finally:
+            self.lib.snd_pcm_status_free(status)
 
 
 def get_json(url: str) -> dict:
     with urllib.request.urlopen(url, timeout=5.0) as response:
         return json.load(response)
+
+
+def validate_linked_trigger(playback: dict, capture: dict) -> int:
+    playback_trigger = playback.get("trigger_timestamp_ns")
+    capture_trigger = capture.get("trigger_timestamp_ns")
+    if (
+        not isinstance(playback_trigger, int)
+        or playback_trigger == 0
+        or playback_trigger != capture_trigger
+    ):
+        raise AlsaError(
+            "linked streams do not report one trigger timestamp"
+        )
+    return playback_trigger
+
+
+def validate_collection_manifest(
+    manifest: dict,
+    rate: int,
+    period: int,
+    buffer_size: int,
+) -> dict:
+    expected = {
+        "rate_hz": rate,
+        "period_frames": period,
+        "buffer_frames": buffer_size,
+    }
+    failures = []
+    for stream in ("playback", "capture"):
+        geometry = manifest.get(stream, {})
+        for field, value in expected.items():
+            if geometry.get(field) != value:
+                failures.append(f"{stream}.{field} is inexact")
+        threshold = buffer_size if stream == "playback" else period
+        if geometry.get("start_threshold_frames") != threshold:
+            failures.append(f"{stream}.start_threshold_frames is wrong")
+        if geometry.get("timestamp_type") != "monotonic":
+            failures.append(f"{stream}.timestamp_type is not monotonic")
+    if manifest.get("linked") is not True:
+        failures.append("streams are not linked")
+    post = manifest.get("alsa_status_post_trigger", {})
+    try:
+        validate_linked_trigger(
+            post.get("playback", {}), post.get("capture", {})
+        )
+    except AlsaError as error:
+        failures.append(str(error))
+    if manifest.get("xrun_recoveries") != 0:
+        failures.append("XRUN recovery occurred")
+    if manifest.get("short_transfers") != 0:
+        failures.append("short transfer occurred")
+    for phase in (
+        "alsa_status_pre_trigger",
+        "alsa_status_post_trigger",
+        "alsa_status_end",
+    ):
+        snapshot = manifest.get(phase)
+        if not isinstance(snapshot, dict):
+            failures.append(f"{phase} is missing")
+    end = manifest.get("alsa_status_end", {})
+    for stream in ("playback", "capture"):
+        status = end.get(stream, {}) if isinstance(end, dict) else {}
+        if status.get("overrange_frames") != 0:
+            failures.append(f"{stream} reported overrange")
+    if failures:
+        raise AlsaError(
+            "collector evidence rejected: " + "; ".join(failures)
+        )
+    return {
+        "accepted": True,
+        "linked_trigger_timestamp_ns": (
+            post["playback"]["trigger_timestamp_ns"]
+        ),
+        "rate_hz": rate,
+        "period_frames": period,
+        "buffer_frames": buffer_size,
+        "xrun_recoveries": 0,
+    }
 
 
 def write_all(
@@ -288,6 +465,10 @@ def write_all(
         )
         if written == 0:
             raise AlsaError("snd_pcm_writei returned zero")
+        if written != requested:
+            raise AlsaError(
+                f"short playback transfer: {written}/{requested}"
+            )
         position += written
 
 
@@ -309,6 +490,10 @@ def read_all(
         )
         if read == 0:
             raise AlsaError("snd_pcm_readi returned zero")
+        if read != requested:
+            raise AlsaError(
+                f"short capture transfer: {read}/{requested}"
+            )
         position += read
 
 
@@ -329,10 +514,6 @@ def collect(
     ):
         raise ValueError("playback must be contiguous stereo <i2")
 
-    alsa = Alsa()
-    playback = alsa.open(device, SND_PCM_STREAM_PLAYBACK)
-    capture = alsa.open(device, SND_PCM_STREAM_CAPTURE)
-    linked = False
     tail_reserve = buffer_size // 2
     if len(playback_samples) <= tail_reserve:
         raise ValueError("playback is shorter than the capture tail reserve")
@@ -347,8 +528,16 @@ def collect(
         "playback_frames": len(playback_samples),
         "capture_frames": len(capture_samples),
         "capture_tail_reserve_frames": tail_reserve,
+        "xrun_recoveries": 0,
+        "short_transfers": 0,
     }
+    alsa = Alsa()
+    playback: ctypes.c_void_p | None = None
+    capture: ctypes.c_void_p | None = None
+    linked = False
     try:
+        playback = alsa.open(device, SND_PCM_STREAM_PLAYBACK)
+        capture = alsa.open(device, SND_PCM_STREAM_CAPTURE)
         manifest["playback"] = alsa.configure(
             playback, rate, period, buffer_size, True
         )
@@ -373,6 +562,10 @@ def collect(
             raise AlsaError(
                 f"short playback prefill: {prefilled}/{prefill}"
             )
+        manifest["alsa_status_pre_trigger"] = {
+            "playback": alsa.status(playback),
+            "capture": alsa.status(capture),
+        }
 
         start_workers = threading.Event()
         abort_workers = threading.Event()
@@ -415,6 +608,23 @@ def collect(
             writer.join()
             raise
         manifest["trigger_monotonic_ns"] = started_ns
+        try:
+            manifest["alsa_status_post_trigger"] = {
+                "playback": alsa.status(playback),
+                "capture": alsa.status(capture),
+            }
+            validate_linked_trigger(
+                manifest["alsa_status_post_trigger"]["playback"],
+                manifest["alsa_status_post_trigger"]["capture"],
+            )
+        except BaseException:
+            abort_workers.set()
+            start_workers.set()
+            reader.join()
+            writer.join()
+            raise
+        manifest["linked"] = True
+        manifest["trigger_stream"] = "capture"
         start_workers.set()
 
         status_error: BaseException | None = None
@@ -437,19 +647,37 @@ def collect(
         if status_url is not None:
             manifest["status_final"] = get_json(status_url)
 
+        manifest["alsa_status_end"] = {
+            "playback": alsa.status(playback),
+            "capture": alsa.status(capture),
+        }
         delay = ctypes.c_long()
         if alsa.lib.snd_pcm_delay(playback, ctypes.byref(delay)) >= 0:
             manifest["playback_delay_at_end_frames"] = delay.value
         if alsa.lib.snd_pcm_delay(capture, ctypes.byref(delay)) >= 0:
             manifest["capture_delay_at_end_frames"] = delay.value
+    except BaseException as error:
+        manifest["collection_failure"] = str(error)
+        setattr(error, "aius_collection_manifest", manifest)
+        raise
     finally:
-        if linked:
+        if linked and capture is not None:
             alsa.lib.snd_pcm_unlink(capture)
-        alsa.lib.snd_pcm_drop(capture)
-        alsa.lib.snd_pcm_drop(playback)
-        alsa.lib.snd_pcm_close(capture)
-        alsa.lib.snd_pcm_close(playback)
+        if capture is not None:
+            alsa.lib.snd_pcm_drop(capture)
+            alsa.lib.snd_pcm_close(capture)
+        if playback is not None:
+            alsa.lib.snd_pcm_drop(playback)
+            alsa.lib.snd_pcm_close(playback)
 
+    try:
+        manifest["collector_acceptance"] = validate_collection_manifest(
+            manifest, rate, period, buffer_size
+        )
+    except BaseException as error:
+        manifest["collection_failure"] = str(error)
+        setattr(error, "aius_collection_manifest", manifest)
+        raise
     return capture_samples, manifest
 
 

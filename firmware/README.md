@@ -305,7 +305,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `json` | The one JSON read cursor those two parsers and the replay body reader share: bounded by length, allocation-free, and strict about the value terminators (`,` `}` `]` or end of input) that keep `1 2` and `truex` out. |
 | `net`, `net-runner` | UDP codec + network supervisor oracle; the host-side runner tools. |
 | `rate-runner` | The read-only sample-rate bench collector and pure analyzer, including drift, transition, mismatch, encoded and waveform evidence gates. |
-| `latency-runner` | The linked ALSA latency probe, exact-carrier native parser/decoder/DSP renderer, captured-config normalization, AC-3 unit timing-oracle mapping, deterministic code geometry, per-channel lag/skew recovery, counter wrap and input-shape rejection. |
+| `latency-runner` | The formal linked-ALSA latency harness: exact carrier/config/build identity, retained native decoded and rendered streams, AC-3 unit and payload-hash oracles, unique mode-specific probes, ambiguity/SNR/clipping/affine gates, exact linked-trigger evidence, runtime status acceptance and fail-closed manifests. |
 | `recovery-runner` | The live recovery smoke's host runner: every gate on all three result paths against a scripted device on a virtual clock. |
 | `flash` | The button-free flash path: HalfKay entry judged by the port going away rather than by an acknowledgement, the image-identity oracle over synthesised Intel HEX, and every fail-closed arm. |
 | `http` | Request parser + the bounded server transaction. |

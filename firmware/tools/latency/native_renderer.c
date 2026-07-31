@@ -51,6 +51,7 @@ typedef struct {
 
 typedef struct {
 	FILE *pcm;
+	FILE *decoded;
 	AiusDspRuntimeConfig runtime;
 	AiusDspConfig process;
 	double scratch[AIUS_MAX_CHANNELS][RENDER_FRAMES];
@@ -59,15 +60,21 @@ typedef struct {
 	int32_t output_l[RENDER_FRAMES];
 	int32_t output_r[RENDER_FRAMES];
 	int32_t interleaved[2u * RENDER_FRAMES];
+	int32_t decoded_interleaved[AIUS_MAX_CHANNELS * RENDER_FRAMES];
 	uint64_t rendered_frames;
+	uint64_t decoded_frames;
+	uint32_t decoded_channels;
+	uint32_t decoded_channel_mask;
 	RenderUnit *current;
 	int write_failed;
+	int flushing;
 } RenderContext;
 
 typedef struct {
 	const char *carrier_path;
 	const char *config_path;
 	const char *pcm_path;
+	const char *decoded_path;
 	const char *manifest_path;
 	uint32_t sample_rate_hz;
 } Options;
@@ -261,11 +268,40 @@ static AiusStatus consume_pcm(void *opaque, const AiusPcmBlock *input)
 	AiusPcmBlock output;
 	uint64_t start;
 	uint32_t frame;
+	uint32_t channel;
 	AiusStatus status;
 
 	if (context == NULL || input == NULL ||
-	    input->frames > RENDER_FRAMES)
+	    input->frames > RENDER_FRAMES ||
+	    input->channels == 0u ||
+	    input->channels > AIUS_MAX_CHANNELS)
 		return AIUS_INVALID_ARG;
+	if (!context->flushing) {
+		if (context->decoded_channels == 0u) {
+			context->decoded_channels = input->channels;
+			context->decoded_channel_mask = input->channel_mask;
+		} else if (context->decoded_channels != input->channels ||
+		           context->decoded_channel_mask != input->channel_mask) {
+			return AIUS_INVALID_ARG;
+		}
+		for (frame = 0u; frame < input->frames; frame++) {
+			for (channel = 0u; channel < input->channels; channel++) {
+				if (input->planes[channel] == NULL)
+					return AIUS_INVALID_ARG;
+				context->decoded_interleaved[
+					frame * input->channels + channel] =
+					input->planes[channel][frame];
+			}
+		}
+		if (fwrite(
+			    context->decoded_interleaved, sizeof(int32_t),
+			    input->frames * input->channels, context->decoded) !=
+		    input->frames * input->channels) {
+			context->write_failed = 1;
+			return AIUS_INVALID_ARG;
+		}
+		context->decoded_frames += input->frames;
+	}
 	memset(&output, 0, sizeof(output));
 	output.planes[0] = context->output_l;
 	output.planes[1] = context->output_r;
@@ -347,6 +383,7 @@ static int flush_dsp_tail(RenderContext *context)
 		? context->runtime.limiter.state.delay
 		: 0u;
 	context->current = NULL;
+	context->flushing = 1;
 	while (remaining > 0u) {
 		memset(&block, 0, sizeof(block));
 		block.planes[0] = zeros_l;
@@ -361,6 +398,7 @@ static int flush_dsp_tail(RenderContext *context)
 			return 0;
 		remaining -= block.frames;
 	}
+	context->flushing = 0;
 	return 1;
 }
 
@@ -406,7 +444,10 @@ static int render(
 	AiusIecDiag *pipeline_parser_diag,
 	AiusPipelineClass *classification,
 	uint16_t *codec_pc,
-	uint64_t *rendered_frames)
+	uint64_t *rendered_frames,
+	uint64_t *decoded_frames,
+	uint32_t *decoded_channels,
+	uint32_t *decoded_channel_mask)
 {
 	FILE *carrier = NULL;
 	RenderContext *context = NULL;
@@ -433,6 +474,9 @@ static int render(
 		goto done;
 	context->pcm = fopen(options->pcm_path, "wb");
 	if (context->pcm == NULL)
+		goto done;
+	context->decoded = fopen(options->decoded_path, "wb");
+	if (context->decoded == NULL)
 		goto done;
 	if (aius_dsp_runtime_config_apply(
 		    &context->runtime, &model, options->sample_rate_hz,
@@ -503,6 +547,9 @@ static int render(
 	*classification = aius_pipeline_classification(pipeline);
 	*codec_pc = aius_pipeline_codec_pc(pipeline);
 	*rendered_frames = context->rendered_frames;
+	*decoded_frames = context->decoded_frames;
+	*decoded_channels = context->decoded_channels;
+	*decoded_channel_mask = context->decoded_channel_mask;
 	ok = 1;
 
 done:
@@ -512,6 +559,8 @@ done:
 	if (context != NULL) {
 		if (context->pcm != NULL)
 			fclose(context->pcm);
+		if (context->decoded != NULL)
+			fclose(context->decoded);
 		free(context);
 	}
 	return ok;
@@ -522,6 +571,9 @@ static int write_manifest(
 	const UnitList *units,
 	uint64_t carrier_words,
 	uint64_t rendered_frames,
+	uint64_t decoded_frames,
+	uint32_t decoded_channels,
+	uint32_t decoded_channel_mask,
 	const AiusIecDiag *scan_diag,
 	const AiusIecDiag *pipeline_diag,
 	const AiusPipelineServiceDiag *service,
@@ -540,6 +592,9 @@ static int write_manifest(
 	        "  \"sample_rate_hz\":%u,\n"
 	        "  \"carrier_words\":%" PRIu64 ",\n"
 	        "  \"rendered_frames\":%" PRIu64 ",\n"
+	        "  \"decoded\":{\"format\":\"interleaved-s32le\","
+	        "\"frames\":%" PRIu64 ",\"channels\":%u,"
+	        "\"channel_mask\":%u},\n"
 	        "  \"pipeline\":{\"class\":%d,\"codec_pc\":%u,"
 	        "\"decode_units\":%u,\"committed_blocks\":%u,"
 	        "\"parse_rejects\":%u,\"decode_rejects\":%u,"
@@ -552,6 +607,9 @@ static int write_manifest(
 	        options->sample_rate_hz,
 	        carrier_words,
 	        rendered_frames,
+	        decoded_frames,
+	        decoded_channels,
+	        decoded_channel_mask,
 	        (int)classification,
 	        codec_pc,
 	        service->decode_units,
@@ -624,6 +682,8 @@ static int parse_options(int argc, char **argv, Options *options)
 			options->config_path = argv[i + 1];
 		else if (strcmp(argv[i], "--pcm") == 0)
 			options->pcm_path = argv[i + 1];
+		else if (strcmp(argv[i], "--decoded") == 0)
+			options->decoded_path = argv[i + 1];
 		else if (strcmp(argv[i], "--manifest") == 0)
 			options->manifest_path = argv[i + 1];
 		else if (strcmp(argv[i], "--rate") == 0) {
@@ -641,6 +701,7 @@ static int parse_options(int argc, char **argv, Options *options)
 	return options->carrier_path != NULL &&
 		options->config_path != NULL &&
 		options->pcm_path != NULL &&
+		options->decoded_path != NULL &&
 		options->manifest_path != NULL;
 }
 
@@ -650,6 +711,9 @@ int main(int argc, char **argv)
 	UnitList units = {0};
 	uint64_t carrier_words = 0u;
 	uint64_t rendered_frames = 0u;
+	uint64_t decoded_frames = 0u;
+	uint32_t decoded_channels = 0u;
+	uint32_t decoded_channel_mask = 0u;
 	AiusIecDiag scan_diag;
 	AiusIecDiag pipeline_diag;
 	AiusPipelineServiceDiag service;
@@ -660,7 +724,8 @@ int main(int argc, char **argv)
 	if (!parse_options(argc, argv, &options)) {
 		fprintf(stderr,
 		        "usage: native-renderer --carrier FILE --config FILE "
-		        "--pcm FILE --manifest FILE [--rate HZ]\n");
+		        "--pcm FILE --decoded FILE --manifest FILE "
+		        "[--rate HZ]\n");
 		goto done;
 	}
 	memset(&scan_diag, 0, sizeof(scan_diag));
@@ -671,9 +736,11 @@ int main(int argc, char **argv)
 	    !render(
 		    &options, &units, carrier_words, &service,
 		    &pipeline_diag, &classification, &codec_pc,
-		    &rendered_frames) ||
+		    &rendered_frames, &decoded_frames, &decoded_channels,
+		    &decoded_channel_mask) ||
 	    !write_manifest(
 		    &options, &units, carrier_words, rendered_frames,
+		    decoded_frames, decoded_channels, decoded_channel_mask,
 		    &scan_diag, &pipeline_diag, &service, classification,
 		    codec_pc)) {
 		fprintf(stderr, "native-renderer: failed\n");

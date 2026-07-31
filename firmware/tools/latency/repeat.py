@@ -66,6 +66,10 @@ def main() -> int:
     parser.add_argument(
         "--status-url", default="http://192.0.2.66/api/status"
     )
+    parser.add_argument(
+        "--config-url", default="http://192.0.2.66/api/dsp/config"
+    )
+    parser.add_argument("--native-renderer", type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     bench = Path(__file__).with_name("bench.py")
@@ -84,7 +88,12 @@ def main() -> int:
                 "--buffer", str(args.buffer),
                 "--device", args.device,
                 "--status-url", args.status_url,
+                "--config-url", args.config_url,
             ]
+            if args.native_renderer is not None:
+                command.extend([
+                    "--native-renderer", str(args.native_renderer)
+                ])
             result = subprocess.run(
                 command,
                 stdout=subprocess.PIPE,

@@ -459,7 +459,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: in-progress
+status: implementation-complete-device-smoke-pending
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -470,10 +470,11 @@ seams:
 completed-slices:
   - shared production DSP runtime-config adapter
   - native exact-carrier parser/decoder/DSP renderer core and runner switchover
-remaining-slices:
   - native renderer per-unit payload hashing and evidence completion
   - formal probe analyzer and evidence manifest
   - synchronized collector acceptance hardening
+remaining-slices:
+  - post-refactor 120-second 48 kHz optical device smoke
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -496,8 +497,8 @@ flags, accepted-rate coefficient design, state resets and meter cadence.
 Native differential tests perturb every field category, assert reset/bind
 semantics, and run two retained DSP consumers across consecutive blocks with
 byte-identical output. The Teensy target builds with zero memory delta. This
-does not close Phase 1: renderer evidence completion, the formal
-analyzer/manifest and synchronized collector gates remain.
+does not close Phase 1 until the exact committed image clears the 120-second
+device smoke.
 
 The native renderer core is delivered. It scans the exact carrier with the
 public IEC parser, then retains one production pipeline, resident decoder and
@@ -507,14 +508,29 @@ oracles. The live PCM/AC-3 runner now hashes the board's exact effective config
 response and its concurrency-normalized parser input, uses the native stereo
 reference for correlation, and maps every AC-3 code back through the renderer's
 unit oracle. FFmpeg remains the pinned encoder/wrapper but is no longer the
-decode authority. Per-unit payload hashes, the formal evidence schema and the
-full acceptance analyzer remain open.
+decode authority.
+
+The remaining host implementation is delivered. The versioned preflight
+serializes exact mode geometry and every numeric threshold before collection.
+The native evidence retains normalized per-unit elementary hashes, continuous
+decoded multichannel PCM and rendered stereo separately. The analyzer requires
+24 unique index-bearing probes unless explicit invalid-window exclusions leave
+at least 20; it fails on ambiguous second peaks, less than 30 dB guard SNR,
+clipping, non-monotonic association, clock ratio outside `0.9995..1.0005` or
+more than 128 frames of robust/least-squares residual. The linked collector
+requires exact format/rate/period/buffer and start thresholds, monotonic ALSA
+status timestamps with one nonzero trigger for both streams, zero XRUN
+recovery/short transfer/overrange, the exact harness build, the accepted
+sample-rate ancestor, continuous mode-specific progress and zero harmful
+counter deltas. Failed collection or analysis leaves a rejected manifest
+rather than losing the raw evidence.
 
 Native tests cover known integer and fractional lags, affine clock error,
 periodic ambiguity, silence, clipping, missing/swapped/duplicate/false codes,
 encoded `Pa` matching, AU frame-zero/tail projection, XRUN evidence, counter
-wrap/reset semantics, config preflight/cleanup and malformed manifests. Fixture
-proof runs the same public parser/decoder/pipeline/DSP renderer for DTS and AC-3.
+wrap/reset semantics, config normalization/build identity and malformed
+manifests. Fixture proof runs the same public parser/decoder/pipeline/DSP
+renderer for DTS and AC-3.
 `alsabat --roundtriplatency` is a physical cross-check, not the evidence
 authority.
 
@@ -525,6 +541,12 @@ ancestor, meet the 1,000 millihertz follow bound, make continuous PCM progress,
 and show zero harmful clock/audio deltas. This smoke proves the new exact
 latency-harness identity without pretending it is byte-identical to the earlier
 sample-rate image.
+
+The 2026-07-31 implementation boundary cannot run that smoke: the host
+currently reports no cards in `/proc/asound/cards` and no `/dev/snd` entries,
+while the Teensy remains reachable at its HTTP endpoint. No replug is permitted
+during the remote window. This records only an unavailable ALSA path; it does
+not attribute a new adapter, controller or extender fault.
 
 ### Phase 2: physical matrix and durable result
 
