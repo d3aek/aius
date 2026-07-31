@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, audio, latency, spdif, cm6206]
-updated: 2026-07-30
+updated: 2026-07-31
 toc: true
 ---
 
@@ -525,32 +525,11 @@ its slice finishes.
 
 ## Outstanding-work audit
 
-- `aius-sample-rate-following.md` — `coordinate`: latency uses only the exact
-  image after all sample-rate device gates pass and consumes its clock/status
-  evidence.
-- `aius-ac3-support.md` — `extend`: add physical first-output and AU-tail
-  latency to the decoder's completed functional/cycle evidence; the deferred
-  four-hour gate remains deferred pending OTA work.
-- `aius-dsp-config-api.md` — `extend`: measure the bypass and production feature
-  combinations for which that plan exposed comparison flags.
-- `aius-optical-prototype.md` — `extend`: close its remaining real-board
-  end-to-end latency item.
-- `aius-capability-gate.md` — `extend`: turn the unmeasured latency capability
-  into physical evidence without changing its functional decoder decision.
-- `aius-open-work-register.md` — `extend`: track the harness and physical matrix
-  until the result commit lands.
-- `aius-network-hardening.md` — `coordinate`: reuse its exact-image, counter
-  delta and committed-wire evidence conventions; no network behavior changes.
-- `aius-ota-upgrade.md` — `coordinate`: the user deferred the AC-3 four-hour
-  gate until OTA is investigated; latency collection neither closes nor
-  supersedes that work.
-- `aius-hardware-spec.md` — `extend`: replace its unmeasured end-to-end latency
-  item with the physical optical matrix and corrected distributions.
-- `aius-sd-config-web.md` — `coordinate`: obey its persistent DSP-file semantics
-  and refuse mutation when exact restoration is not possible.
-
-`the repo tooling tool doc-index -- --revision HEAD --validate-outstanding-work`
-currently returns `2` with `outstanding.snapshot.plan-absent` for this
-component-local plan because `src/hardware/**/docs` is outside the plan index.
-The dispositions above are therefore also manually reviewed against every
-unfinished Aius plan before build and delivery.
+- `docs/plans/aius-ac3-support.md` — `extend`: Add physical first-output and AU-tail latency to the completed decoder evidence while its deferred four-hour gate remains pending OTA work.
+- `docs/plans/aius-dsp-config-api.md` — `extend`: Measure the bypass and production feature combinations for which that plan exposed comparison flags.
+- `docs/plans/aius-eac3-support.md` — `unrelated`: The physical matrix covers PCM, AC-3 and DTS Core, not the separate E-AC-3 decoder work.
+- `docs/plans/aius-network-hardening.md` — `coordinate`: Reuse its exact-image, counter-delta and committed-wire evidence conventions without changing network behavior.
+- `docs/plans/aius-ota-upgrade.md` — `coordinate`: Preserve the deferred AC-3 four-hour gate until OTA is investigated; latency neither closes nor supersedes it.
+- `docs/plans/aius-sample-rate-following.md` — `coordinate`: Use only the exact image after all sample-rate device gates pass and consume its clock/status evidence.
+- `docs/plans/aius-sd-config-web.md` — `coordinate`: Obey its persistent DSP-file semantics and refuse mutation when exact restoration is impossible.
+- `docs/plans/aius-tls-termination.md` — `unrelated`: Latency reads existing device status over the current LAN transport and does not change TLS termination.
