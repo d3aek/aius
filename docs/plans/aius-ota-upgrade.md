@@ -424,6 +424,26 @@ channel is already physical.
   may write OCOTP, and the read-only structural guards in
   [§The fuse read, as built](#the-fuse-read-as-built) stay load-bearing.
 
+## Implementation slice 1 — portable core (delivered 2026-07-31)
+
+`lib/aius_ota` plus the host `ota` suite (21 tests, mutation negative
+controls) deliver the transport- and flash-free half: a 256-byte
+fixed-offset image container with its own CRC and published field offsets;
+the staged-upgrade state machine (strict APPEND_PART-shaped chunk
+sequencing, incremental SHA-256 with midstate-carrying power-loss records,
+canonical serialization, fail-closed restore); a feature latch separate
+from image readiness (constructed disarmed, never persisted); and
+slot-independent image-health records keyed on payload digest with a
+non-refillable trial budget matching `aius_boot`'s two-reset rule,
+answering §rollback-substrate gaps 1-4 structurally. The signature seam is
+injected and covers a header-binding digest (magic through
+`payload_digest`), so a valid signature also authenticates `target_id` and
+build identity, not just the payload bytes; the crypto implementation and
+scheme choice are the next reviewed slice. Remaining slices, in order:
+signature vendoring, transport/route wiring behind the compile-time
+option, and the device-gated activation/flash-primitive slice, which waits
+for verdict items 4 and 5 (stall measurement, LUT/recovery proof).
+
 ## Investigation completion gate
 
 “OTA fully investigated” means this plan can issue a finite build/defer verdict.

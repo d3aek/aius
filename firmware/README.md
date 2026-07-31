@@ -29,6 +29,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
 | `lib/aius_replay/` | Replay service over a caller-supplied `AiusReplayReader`. |
 | `lib/aius_boot/` | Retained boot ledger: generation, checkpoint, reset kind, recovery mode. |
+| `lib/aius_ota/` | Portable OTA image container, staged-upgrade state machine and image-health records. |
 | `lib/aius_runtime/` | Epoch scheduler + the per-checkpoint budget table. |
 | `lib/aius_net/` | UDP frame codec + the network generation supervisor. |
 | `lib/aius_http/` | HTTP request parser + the one bounded server transaction. |
@@ -326,6 +327,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |
 | `network-transport` | NativeEthernet behaviour + the vendor-header source contract. |
 | `optical-app` | One bounded dispatch decision per HTTP route and USB command. |
+| `ota` | The OTA image container's per-field validation, the staged-upgrade state machine (strict chunk offsets, resume, incremental digest, injected verifier seam), the power-loss record and the slot-independent image-health rules. |
 | `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, ingress-only audio callback, deferred AUDIO ownership/preflight, one watchdog feed, exact storage/diagnostics, and the absence of the legacy path. |
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |

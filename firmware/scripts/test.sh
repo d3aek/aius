@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target,
+#         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry.
@@ -779,6 +779,20 @@ optical-app)
 		-o "$optical_app_out"
 	"$optical_app_out"
 	python3 "$fw_root/test/optical-app/test_bitstream_ui.py"
+	;;
+ota)
+	# Portable OTA core: the image container's field validation, the staged
+	# upgrade state machine (strict APPEND_PART-shaped chunk contract,
+	# incremental SHA-256, injected signature seam), the power-loss record
+	# and the slot-independent image-health rules. Pure logic: no flash, no
+	# transport, no firmware wiring, so it is host-only and self-contained.
+	ota_out="$build_dir/ota"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
+		"$fw_root/test/ota/test_ota.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota.c" \
+		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
+		-o "$ota_out"
+	"$ota_out"
 	;;
 runtime-target)
 	# Composed Teensy runtime: the composition root, the three bounded target
