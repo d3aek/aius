@@ -146,10 +146,11 @@ specified here. Strike items here in the commit that closes them.
     recorded one-line fix is deliberately unapplied until convicted.
   - **4**: `record_event` has two call sites; everything else is a
     counter — prerequisite to any push observability.
-  - **10**: the network-transport fake still diverges from real FNET in
-    five characterized places (void `close`, `MSG_PEEK` ignored, `int8`
-    error type, no `AGAIN` on empty accept, `SO_SNDNUM` hard-wired 0);
-    the two UDP mappings are fixed, the rest stands.
+  - ~~**10**: the network-transport fake still diverges from real FNET in
+    five characterized places.~~ CLOSED: fixes landed 2026-07-26, ledger
+    verified stale 2026-07-31; all five have discriminating tests and
+    `fake-fidelity` now covers `fake/fnet.h` positionally with mutation
+    self-checks.
   - ~~**14**: the 128 KB DTCM DTS arena is reserved and never used.~~
     RESOLVED 2026-07-28 with defect 29: the optical env's
     `build_unflags` stripped the wrap set; restored, the arena now
@@ -157,10 +158,15 @@ specified here. Strike items here in the commit that closes them.
     on hardware).
   - **18**: five source comments still quote the pre-fix DTCM free
     figure.
-  - **19**: `read_once()` carries the latch-substitution hole the send
-    path had.
-  - **20**: the network fake gets `_fnet_socket_addr_check_len(addr, 0)`
-    backwards and the suite passes anyway.
+  - ~~**19**: `read_once()` carries the latch-substitution hole the send
+    path had.~~ CLOSED: fixed 2026-07-26 via the shared
+    `send_error_is_closure()` predicate, inverted rows pinned; ledger
+    verified stale 2026-07-31.
+  - ~~**20**: the network fake gets `_fnet_socket_addr_check_len(addr, 0)`
+    backwards and the suite passes anyway.~~ CLOSED for the fake and test
+    row (fixed 2026-07-26, queue-unchanged discriminator); the vendor's
+    uninitialised `fromlen` accept half remains recorded in the hardening
+    ledger, deliberately unpatched.
   - **21**: the boot-to-online timing gap is real and board-side: USB
     ready ~4 s against a 2 s deadline, DHCP/UDP/HTTP ~9–10.6 s against
     7–8 s, bimodal at exactly 8.90/10.56 s (one discrete retry's step);

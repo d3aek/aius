@@ -405,6 +405,21 @@ are follow-up work, recorded here so they are not lost.
     and the ICMP-latched rows are *provably* unreachable because this socket is
     never `connect()`ed — which is what makes the new `MSGSIZE` arm unambiguous.
 
+    **All five "still divergent" items CLOSED; the fixes landed 2026-07-26 and
+    this list went stale.** Verified against code 2026-07-31, each with a
+    discriminating test: `fnet_socket_close()` returns `fnet_return_t`
+    (`fake/fnet.h:472-477`), `MSG_PEEK` is honoured and counted, `fnet_error_get()`
+    returns the enum, empty accept sets `FNET_ERR_AGAIN`, and `SO_SNDNUM` answers
+    the fake's send account (the row concealing defect 9). `close_once()`
+    ignoring the close result is a checked property, not an oversight
+    (`test_nativeethernet_behavior.cpp:1696-1709` pins zero close failures on the
+    adapter path). The same 2026-07-31 sweep extended `fake-fidelity` to
+    `fake/fnet.h` itself: every declared enum member compared positionally
+    against FNET's own headers with no name list, config macros resolved per
+    override, and six synthetic mutations of historical defect shapes that the
+    suite must report — the self-agreeing-fake loop this entry describes now has
+    an external reference on both sides (140 constants across 10 pairings).
+
     **Four further findings, reported not fixed.** `DESTADDRREQ` is remotely
     triggerable and still faults: FNET performs no source-address validation, so a
     datagram from **0.0.0.0** is accepted and latched as the reply peer, and the
@@ -710,6 +725,13 @@ are follow-up work, recorded here so they are not lost.
     (`force_recv_error = FNET_ERR_NOPROTOOPT` → `FAULT`), so this is a committed
     contract row to invert, not a gap to fill. Left deliberately — the same shape as
     the two write rows just flipped, but outside that fix's brief.
+
+    **CLOSED; the fix landed 2026-07-26 and this entry went stale against the
+    tree.** Verified against code 2026-07-31: the receive arm reuses
+    `send_error_is_closure()` (`aius_network_teensy.cpp:402-408`, one shared
+    enumeration for both directions), the once-wrong row now pins
+    `NOPROTOOPT` → `CLOSED` with `MSGSIZE` beside it and `INVAL` → `FAULT` as
+    the negative control (`test_nativeethernet_behavior.cpp:1297-1329`).
 20. **The fake gets `_fnet_socket_addr_check_len(addr, 0)` backwards, and the suite
     asserts the wrong answer — and the real behaviour implicates the vendor's
     accept path.** `test_nativeethernet_behavior.cpp:871-877` claims a zero length
