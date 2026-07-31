@@ -813,12 +813,12 @@ matrix:
   direct-loop-pcm: pending-temporary-rewire
   direct-loop-dts-carrier: pending-temporary-rewire
   direct-loop-ac3-carrier: pending-temporary-rewire
-  pcm-bypass: runner-ready-row-pending
+  pcm-bypass: complete
   pcm-production: complete
   dts-production: deferred-by-priority
   ac3-production: complete
 remaining-diagnostics:
-  ac3-to-pcm-transition-latched-malformed: clear-op-shipped-device-check-pending
+  ac3-to-pcm-transition-latched-malformed: resolved-clear-op-device-verified
 commit-checkpoint:
   evidence: [raw-captures, manifests, latency-summary]
   parent-commit: "docs(aius): record optical latency"
@@ -827,7 +827,35 @@ commit-checkpoint:
 The 2026-07-31 firmware batch (`fecc4a0a2473+teensy41-optical`, flashed and
 CDC-verified) shipped the four ledgered observability fixes: the
 `/sd/aius/dsp.json` read route, the `model_origin` split, the recorder
-stamped-rate header and the clear-op latch coverage. The restoration
+stamped-rate header and the clear-op latch coverage. All four are
+device-verified: the route serves the card model while siblings still 404;
+`model_origin` was observed in all three states (`sd` on a fresh boot,
+`put` after this session's restore PUT, with `source` unchanged); the
+recorder header reported its frozen capture's 48 kHz stamp and then 44,100
+while recording a live 44.1 kHz stream after a thaw; and a deliberately
+truncated AC-3 burst followed immediately by PCM words reproduced the
+latched `AIUS_MALFORMED` (`last_status`/`pipeline_last_failure` both 3),
+which one authenticated `POST /api/clear` took to zero with no reboot.
+That truncation composite also showed why a plain mid-stream stop never
+latches: post-stop silence is legal IEC pause stuffing, so the staged tail
+drops through the clean re-type path.
+
+The PCM-bypass row is complete. Exact image `fecc4a0a2473+teensy41-optical`
+with harness `4f55f7e9d` accepted 24 of 24 occurrences at exactly
+**906 frames / 18.875 ms** raw first output on both channels: zero channel
+skew, zero unequal stereo frames, minimum correlation within `3e-14` of
+one, 71.37 dB guard SNR, edge-mode preflight, and zero trim/invalid-window
+delta inside the bracket. The bypass PUT applied at generation `n+1` and
+the restoration PUT returned 200, settled in 0.25 seconds and verified
+semantically against the retained card bytes. The first attempt aborted
+before mutation on a false mismatch: the device's embedded JSON number
+parser is not correctly rounded, so exact-double comparison across parser
+implementations failed on a 1-ULP `lfe_gain_linear` divergence; the
+comparable form now quantizes to 12 significant digits. The 906-frame
+bypass figure sits inside the 851-971-frame production start-phase
+envelope, so the DSP incremental cost still cannot be derived from raw
+rows: it needs the direct-loop baselines and queue-phase correction, as
+already recorded. The restoration
 artifact the bypass row required now exists: the 676-byte card model was
 retained over the new route with SHA-256
 `9bf1e0a5b7a52ee3556f1089221fbc93c0d33b27565fd2f453f4cf98e13f20f5`, and a

@@ -227,40 +227,37 @@ where the only prior record was a plan aside.
   Waveform-critical gates (sample-rate gate 7, encoded AC-3) require a source
   the discriminator has shown clean. Authority:
   [CM6206 characterization](../reference/cm6206-playback-corruption.md).
-- **Flight-recorder download header pins 48 kHz.** The recorder download
-  header stays at the static 48,000 Hz while live status and the bit-exact
-  timeline run at the accepted nominal (observed at 44.1 kHz,
-  [`aius-sample-rate-following.md`](aius-sample-rate-following.md) §Device
-  evidence). Tooling workaround in place: resume tooling reads the accepted
-  live nominal. Firmware fix owed: stamp the header from the accepted
-  nominal rate.
-- **AC-3→PCM transition latches `AIUS_MALFORMED`.** Ending an AC-3 stream and
-  starting PCM recovers to confirmed PCM but latches one decoder rejection in
-  `pipeline_diag.last_status` / `audio_diag.pipeline_last_failure`; an
-  application reboot clears it. Pending diagnostic in
-  [`aius-e2e-latency.md`](aius-e2e-latency.md) Phase 2; the latency runner's
-  bracket gates reject the latch rather than waiving it.
+- ~~**Flight-recorder download header pins 48 kHz.**~~ **FIXED 2026-07-31**
+  (`fecc4a0a2473`): the producer tap stamps each committed block's rate into
+  the recorder, the header serves the stamped rate plus a `rate_changes`
+  counter, and a frozen capture keeps its own capture-time stamp.
+  Device-verified: 48,000 on the frozen pre-change capture, 44,100 while
+  recording a live 44.1 kHz stream after a thaw.
+- ~~**AC-3→PCM transition latches `AIUS_MALFORMED`.**~~ **FIXED 2026-07-31**
+  (`fecc4a0a2473`): the operator clear operation now owns observation
+  latches; automatic transitions deliberately still do not clear them.
+  Device-verified: a truncated burst followed by PCM words latched 3/3, one
+  authenticated `POST /api/clear` took both fields to zero with no reboot.
+  Post-stop silence never latches (legal pause stuffing), which is why only
+  the immediate-PCM adjacency ever showed it.
 - **Open-gate 128-frame TX underrun, unexplained.** In the 48→44.1→48
   transition run on `01477755955b`, one isolated 128-frame underrun occurred
   at 11.719 s between two open-gate 48 kHz status samples after the TX level
   reached zero; the other 127,488 underrun frames were attributed to dark
   transition windows, this one was not, and no other harmful counter moved.
   Not root-caused; the transition analyzer keeps it a hard failure.
-- **DSP model `source` label conflates SD and PUT.** The enqueue-side
-  block-boundary swap in `src/optical_main.cpp` sets `source:"sd"` for any
-  applied override, including an HTTP PUT, so after the diagnostics'
-  restoration PUTs the label proves nothing about `/aius/dsp.json` identity.
-  This misled the latency bypass preflight into reading "SD-backed model"
-  from a device whose card-file state is unknown. Fix owed: a distinct
-  `"put"` label or separate `model_origin` field; tooling must never infer
-  file identity from the label.
-- **No authenticated read path for `/aius/dsp.json`.** The `/sd/` download
-  route deliberately admits only the `/aius/www/` subtree
-  (`src/aius_optical_app.cpp` path gate), so exact-byte retention of the
-  persistent DSP model is impossible over the API. This keeps the latency
-  PCM-bypass row fail-closed. Options: a read-only authenticated route
-  carve-out for `/aius/dsp.json`, or an operator-provided copy of the card
-  file as the restoration artifact.
+- ~~**DSP model `source` label conflates SD and PUT.**~~ **FIXED 2026-07-31**
+  (`fecc4a0a2473`): one staged origin enum replaces the bool; status gains
+  `model_origin` (`default|sd|put`) while `source` stays byte-compatible.
+  Device-verified in all three states. Deliberately absent from
+  `GET /api/dsp/config` (the strict nine-key round-trip would 400); the
+  two-file remedy is recorded in-source if it is ever wanted there.
+- ~~**No authenticated read path for `/aius/dsp.json`.**~~ **FIXED
+  2026-07-31** (`fecc4a0a2473`): exact-literal read-only GET carve-out for
+  `/sd/aius/dsp.json`; uploads, deletes and the listing stay www-only.
+  Device-verified (200 with the 676-byte card model, siblings still 404),
+  and consumed the same day as the latency bypass row's restoration
+  artifact.
 - **Three ±29.6k capture impulses match no fingerprint.** The 44.1 kHz PCM
   external observation contained six impulses; three fit the characterized
   CM6206 high-byte fingerprint, three near ±29.6k do not and cannot be

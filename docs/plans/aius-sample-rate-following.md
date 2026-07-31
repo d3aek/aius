@@ -623,6 +623,9 @@ live optical transmit or channel status is fixed at 48 kHz.
   create them. The recorder download header incorrectly remained at 48,000 Hz
   while live status and the bit-exact timeline were 44.1 kHz; resume tooling
   must use the accepted live nominal rate rather than that static field.
+  (Fixed 2026-07-31 in `fecc4a0a2473`: the header now serves the
+  capture-time stamped rate plus a `rate_changes` counter; device-verified
+  at 44.1 kHz.)
 - Repeating that comparison with input EQ, matrix, output EQ and limiter
   bypassed reproduced four impulses in 22 seconds. The configurable DSP stages
   are not required. The original SD configuration was restored and verified
