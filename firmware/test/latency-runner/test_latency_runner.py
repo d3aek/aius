@@ -426,10 +426,10 @@ class AnalyzerTests(unittest.TestCase):
     def test_formal_warmup_covers_active_source_clock_settle(self):
         self.assertEqual(BENCH.FORMAL_WARMUP_FRAMES % 1536, 0)
         self.assertGreaterEqual(
-            BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE, 50.0
+            BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE, 65.0
         )
         self.assertGreaterEqual(
-            BENCH.FORMAL_STATUS_DELAY_SECONDS, 49.0
+            BENCH.FORMAL_STATUS_DELAY_SECONDS, 64.0
         )
         self.assertLess(
             BENCH.FORMAL_STATUS_DELAY_SECONDS,

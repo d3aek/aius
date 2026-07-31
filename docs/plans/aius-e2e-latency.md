@@ -702,10 +702,14 @@ delay bracketed output/carrier error at -3,559 millihertz. A 35-second
 diagnostic converged from -1,102 to 0 millihertz but correctly rejected the one
 trim/invalid window crossed inside its bracket.
 
-The formal CLI default now holds the active source for 2,400,768 frames / 50.016
+The first committed preflight attempt held the active source for 2,400,768
+frames / 50.016 seconds and took the initial status at 49.5 seconds. After a
+clean reboot it still found -1,097 millihertz with five trims applied. The
+formal CLI default therefore holds the source for 3,121,152 frames / 65.024
 seconds, an exact AC-3 access-unit multiple, and takes the initial status at
-49.5 seconds. That leaves only the short probe span after the status bracket
-opens. Equivalent explicit-argument repeats then accepted:
+64.5 seconds. This covers the sixth rate-limited trim while leaving the short
+probe span before the next possible update. Equivalent 50-second
+explicit-argument repeats from an already partly settled device accepted:
 
 | Production row | Repeat raw first output | Repeat raw AU tail | Follow error | Linked trigger skew |
 |---|---:|---:|---:|---:|

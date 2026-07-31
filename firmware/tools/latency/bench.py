@@ -37,11 +37,11 @@ AC3_PROBE_GAP_FRAMES = 5120
 # frame 256 within its access unit, leaving the whole 1,024-frame code inside.
 WARMUP_FRAMES = 98304
 # The CM6206 emits a measurably different optical rate while ALSA playback is
-# active. Firmware can need four rate-limited ten-second trims after that edge,
+# active. Firmware can need six rate-limited ten-second trims after that edge,
 # so formal physical runs keep the carrier active before opening the evidence
 # bracket. This value is also an exact AC-3 access-unit multiple.
-FORMAL_WARMUP_FRAMES = 1563 * 1536
-FORMAL_STATUS_DELAY_SECONDS = 49.5
+FORMAL_WARMUP_FRAMES = 2032 * 1536
+FORMAL_STATUS_DELAY_SECONDS = 64.5
 TAIL_FRAMES = RATE // 4
 MAX_LAG_FRAMES = RATE // 4
 MAX_DSP_CONFIG_BYTES = 12288
