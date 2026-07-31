@@ -489,11 +489,19 @@ the build verdict; the fuse prohibition stands untouched. Item-by-item:
   uses: self-flash activates via `SYSRESETREQ` through the ROM, not
   HalfKay. Unattended bench reflash remains conditionally unproven; OTA
   activation is not gated on it.
-- **Items 4 and 5 — repositioned, not waived.** Erase/program stall
-  measurement (with the LUT/interrupt constraints and the audio-stop
-  decision) and the post-LUT HalfKay/ROM recovery proof are the entry
-  gates of the activation slice specifically; slices 2 and 3 do not touch
-  the flash and proceed without them.
+- **Item 4 — resolved by owner decision, 2026-07-31: audio stops during
+  flashing.** OTA does not need to run with the device in use, so the
+  activation slice designs a deliberate quiesce (gate closed, audio
+  service stopped, ISR sources parked) around the erase/program window,
+  which also discharges RM note 3's no-flash-access-from-any-master
+  obligation structurally instead of by timing analysis. The dedicated
+  stall measurement is dropped: no other feature consumes flash-stall
+  timing (nothing else writes boot flash at runtime), and the dark-window
+  duration falls out of the activation slice's own bring-up evidence for
+  operator expectations. **Item 5 remains the single device gate before
+  activation**: prove HalfKay/ROM recovery still works after the flash
+  driver rewrites LUT sequence 15, or state the exact limitation. Slices
+  2 and 3 do not touch the flash and proceed regardless.
 - **Item 6 — posture chosen: staged single-image.** Stage to SD through
   the existing resumable chunked upload machinery, verify from SD, program
   the boot flash inside a dark window, `SYSRESETREQ`; recovery remains the
