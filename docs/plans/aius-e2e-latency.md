@@ -461,7 +461,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: runtime-repair-built-device-smoke-pending
+status: runtime-repair-smoke-green-clock-follow-blocked
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -476,8 +476,9 @@ completed-slices:
   - formal probe analyzer and evidence manifest
   - synchronized collector acceptance hardening
   - shared runtime adapter target-placement repair and link guard
+  - exact-commit post-repair 120-second live PCM ingress smoke
 remaining-slices:
-  - clean exact-commit post-repair 120-second 48 kHz optical device smoke
+  - exact-image sample-rate follow and invalid-window acceptance
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -637,8 +638,25 @@ placement checker did not cover the newly introduced library object. The repair
 places the binder beside `enqueue` in flash, places the resolver in cold flash,
 and makes the link fail if the adapter contributes any executable ITCM code.
 Portable DSP and optical-integration suites plus the complete Teensy target
-build pass. Phase 1 remains open only until the exact committed replacement
-image passes the physical smoke.
+build pass.
+
+Exact committed repair image `6f6bfa9bd651+teensy41-optical`, built
+`2026-07-31T13:27:42Z`, then passed the original physical repro. All 60 UDP
+observations over 120 seconds remained `pcm-active`; committed blocks advanced
+from 3,059 to 14,141 while pipeline overruns, event overflows and HTTP requests
+remained zero. The terminal full status reported 16,194 committed blocks and
+zero missing-live drops, dropped chunks/words, gap flushes,
+service-generation resets, service-budget overruns or pipeline/service
+failures. Maximum service time was 682 microseconds. The exact image remains
+flashed, and interrupting the source after the bracket left the CM6206
+enumerated.
+
+That closes the runtime-config ingress regression but not the plan's separate
+clock gate. The terminal carrier/output difference was -1,105 millihertz and a
+30-second settled snapshot was -1,099 millihertz, outside the 1,000-millihertz
+bound by 99 millihertz. Trim updates and invalid windows also advanced during
+that interval. This is the already-characterized sample-rate-following plateau,
+not a renewed ingress failure; Phase 1 stays open on that coordinated gate.
 
 ### Phase 2: physical matrix and durable result
 
@@ -648,7 +666,8 @@ status: pending-preflight-blocked
 unit: parent-only
 depends-on: [phase-1, sample-rate-following-device-acceptance]
 preflight-blockers:
-  - exact committed runtime-placement repair has not passed the physical smoke
+  - exact repair image plateaus 99 millihertz outside the clock-follow bound
+  - trim and invalid-window counters still advance after the ingress repair
   - authoritative /sd/aius/dsp.json restoration artifact absent
 matrix:
   - direct-loop-pcm
