@@ -50,6 +50,9 @@ MAX_CLOCK_RATIO = 1.0005
 SAMPLE_RATE_EVIDENCE_REVISION = (
     "01477755955b509eb0f55b10282156f6a0a771cf"
 )
+PHASE1_IMAGE_REVISION = (
+    "fb10b3cf9a3d4517a18342e0e506f71e054278ee"
+)
 ZERO_DELTA_PATHS = (
     ("overruns",),
     ("event_overflows",),
@@ -188,12 +191,12 @@ def repository_identity() -> dict:
     if head.returncode != 0:
         raise RuntimeError("cannot resolve latency harness revision")
     revision = head.stdout.strip()
-    ancestor = subprocess.run(
+    phase1_ancestor = subprocess.run(
         [
             "git",
             "merge-base",
             "--is-ancestor",
-            SAMPLE_RATE_EVIDENCE_REVISION,
+            PHASE1_IMAGE_REVISION,
             revision,
         ],
         cwd=root,
@@ -201,15 +204,34 @@ def repository_identity() -> dict:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if ancestor.returncode != 0:
+    if phase1_ancestor.returncode != 0:
         raise RuntimeError(
-            "accepted sample-rate evidence is not an ancestor"
+            "accepted Phase 1 image is not an ancestor"
+        )
+    evidence_ancestor = subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            SAMPLE_RATE_EVIDENCE_REVISION,
+            PHASE1_IMAGE_REVISION,
+        ],
+        cwd=root,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if evidence_ancestor.returncode != 0:
+        raise RuntimeError(
+            "accepted sample-rate evidence is not an image ancestor"
         )
     return {
         "harness_revision": revision,
         "expected_build_revision": (
-            f"{revision[:12]}+teensy41-optical"
+            f"{PHASE1_IMAGE_REVISION[:12]}+teensy41-optical"
         ),
+        "phase1_image_revision": PHASE1_IMAGE_REVISION,
+        "phase1_image_is_ancestor": True,
         "sample_rate_evidence_revision": (
             SAMPLE_RATE_EVIDENCE_REVISION
         ),

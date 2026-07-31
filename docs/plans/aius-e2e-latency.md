@@ -376,9 +376,11 @@ tuples. It reports transport min/median/p95/max, affine residuals and bootstrap
 Every Teensy row additionally requires:
 
 - exact committed latency-harness Phase 1 `build_revision` and captured
-  `build_utc`, identical in both status snapshots; the accepted
-  sample-rate-following evidence commit must be a proved Git ancestor of that
-  revision;
+  `build_utc`, identical in both status snapshots; the harness pins the accepted
+  image revision independently of its own revision so documentation-only
+  descendants do not invalidate flashed evidence. The accepted
+  sample-rate-following evidence commit must be a proved Git ancestor of the
+  pinned image revision, and that image must be an ancestor of the harness;
 - unchanged `boot_generation`, `reset_source` and `watchdog_early_resets`;
 - `carrier == 1`, `clock.carrier_locked == true`,
   `clock.carrier_ready == true`, `clock.nominal_rate_hz == 48000`,
@@ -547,6 +549,16 @@ currently reports no cards in `/proc/asound/cards` and no `/dev/snd` entries,
 while the Teensy remains reachable at its HTTP endpoint. No replug is permitted
 during the remote window. This records only an unavailable ALSA path; it does
 not attribute a new adapter, controller or extender fault.
+
+Exact image `fb10b3cf9a3d+teensy41-optical`, built
+`2026-07-31T10:24:09Z`, passed every target bank/placement guard, flashed
+through CDC/HalfKay and verified over both CDC and HTTP. A diagnostic loop of
+the resident `channel_id_51_ac3` replay then classified Pc=1, parsed five
+bursts, committed 30 decoder output blocks and reported zero parser, decoder,
+resync, drop, arena-allocation or replay faults. This proves the refactored
+image's internal AC-3 pipeline/DSP path, not the optical clock or physical
+latency path. `lsusb` still omitted the CM6206 `0d8c:0102`, so no optical input
+was available and the Phase 1 smoke remains pending.
 
 ### Phase 2: physical matrix and durable result
 

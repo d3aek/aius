@@ -419,15 +419,20 @@ class AnalyzerTests(unittest.TestCase):
     def test_repository_identity_proves_sample_rate_ancestor(self):
         identity = BENCH.repository_identity()
 
+        self.assertTrue(identity["phase1_image_is_ancestor"])
+        self.assertEqual(
+            identity["phase1_image_revision"],
+            BENCH.PHASE1_IMAGE_REVISION,
+        )
         self.assertTrue(identity["sample_rate_evidence_is_ancestor"])
         self.assertEqual(
             identity["sample_rate_evidence_revision"],
             BENCH.SAMPLE_RATE_EVIDENCE_REVISION,
         )
-        self.assertTrue(
-            identity["expected_build_revision"].endswith(
-                "+teensy41-optical"
-            )
+        self.assertEqual(
+            identity["expected_build_revision"],
+            f"{BENCH.PHASE1_IMAGE_REVISION[:12]}"
+            "+teensy41-optical",
         )
 
     def test_evidence_manifest_rejects_schema_contract_and_paths(self):
