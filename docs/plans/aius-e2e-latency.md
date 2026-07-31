@@ -461,7 +461,7 @@ be used to subtract an adapter baseline or claim Teensy-only latency.
 
 ```yaml
 phase: 1
-status: implementation-complete-device-smoke-pending
+status: implementation-complete-device-smoke-failed
 unit: component-behind-interface
 seams:
   - linked ALSA duplex capture
@@ -476,7 +476,7 @@ completed-slices:
   - formal probe analyzer and evidence manifest
   - synchronized collector acceptance hardening
 remaining-slices:
-  - post-refactor 120-second 48 kHz optical device smoke
+  - clean post-refactor 120-second 48 kHz optical device smoke
 owned-paths:
   - firmware/lib/aius_dsp_runtime_config/**
   - firmware/src/optical_main.cpp
@@ -544,12 +544,6 @@ and show zero harmful clock/audio deltas. This smoke proves the new exact
 latency-harness identity without pretending it is byte-identical to the earlier
 sample-rate image.
 
-The 2026-07-31 implementation boundary cannot run that smoke: the host
-currently reports no cards in `/proc/asound/cards` and no `/dev/snd` entries,
-while the Teensy remains reachable at its HTTP endpoint. No replug is permitted
-during the remote window. This records only an unavailable ALSA path; it does
-not attribute a new adapter, controller or extender fault.
-
 Exact image `fb10b3cf9a3d+teensy41-optical`, built
 `2026-07-31T10:24:09Z`, passed every target bank/placement guard, flashed
 through CDC/HalfKay and verified over both CDC and HTTP. A diagnostic loop of
@@ -557,8 +551,29 @@ the resident `channel_id_51_ac3` replay then classified Pc=1, parsed five
 bursts, committed 30 decoder output blocks and reported zero parser, decoder,
 resync, drop, arena-allocation or replay faults. This proves the refactored
 image's internal AC-3 pipeline/DSP path, not the optical clock or physical
-latency path. `lsusb` still omitted the CM6206 `0d8c:0102`, so no optical input
-was available and the Phase 1 smoke remains pending.
+latency path.
+
+The missing CM6206 was recovered by rebinding guest Renesas xHCI function
+`0000:08:00.0`; USB then exposed `0d8c:0102` and ALSA restored
+`hw:ICUSBAUDIO7D,0`. The controller also carries the Teensy, so rebinding it
+power-cycles both devices. Interrupting `aplay` reproduced a hub-port `-71`
+reset failure and another CM6206 disappearance; natural playback EOF did not.
+
+The exact image nevertheless failed the post-refactor optical smoke. A clean
+controller rebind followed by a dedicated 300-second continuous 997 Hz S16_LE
+source began with PCM confirmed, an open input-master gate, 135 millihertz
+follow error and zero ingress/drop/reset faults. A two-snapshot 120-second
+window with no intervening HTTP traffic ended with stable carrier and
+`-105` millihertz follow error, but PCM classification was lost. Deltas were
+317 ingress drops, 81,152 dropped words, 313 service-generation resets,
+314 event overflows, 80 runtime-epoch overruns and 84,480 TX-underrun frames;
+only 24 additional output blocks committed. Host ALSA simultaneously remained
+`RUNNING` with advancing hardware/application pointers. The preceding polled
+run failed in the same shape, so HTTP status traffic is not required to trigger
+the failure. Evidence is retained under
+`.scratch/019fb103-d707-7e01-adee-0ad1238d3115/latency/phase1-fb10-optical-smoke-*`.
+This does not distinguish CM6206 optical transmit discontinuity from a firmware
+ingress/service defect, and Phase 2 cannot consume this window as acceptance.
 
 ### Phase 2: physical matrix and durable result
 
@@ -568,7 +583,7 @@ status: pending-preflight-blocked
 unit: parent-only
 depends-on: [phase-1, sample-rate-following-device-acceptance]
 preflight-blockers:
-  - CM6206 absent from USB and ALSA enumeration
+  - Phase 1 optical smoke loses PCM classification after repeated ingress resets
   - authoritative /sd/aius/dsp.json restoration artifact absent
 matrix:
   - direct-loop-pcm

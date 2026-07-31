@@ -27,6 +27,7 @@ SUPPORTED_RATES = (32000, 44100, 48000)
 
 SCENARIOS = {
     "48k-10m": {"duration": 600.0, "minimum": 600.0, "settle": 30.0},
+    "pcm-48k-smoke": {"duration": 120.0, "minimum": 120.0, "settle": 30.0},
     "pcm-120s": {"duration": 120.0, "minimum": 120.0, "settle": 10.0},
     "transitions": {"duration": 300.0, "minimum": 0.0, "settle": 0.0},
     "negative": {"duration": 30.0, "minimum": 0.0, "settle": 5.0},
@@ -648,7 +649,20 @@ def analyze_samples(samples, events, scenario, options=None, external=None):
     metrics["trim_updates_delta"] = trim_delta
     metrics["invalid_windows_delta"] = invalid_delta
 
-    if scenario == "48k-10m":
+    if scenario == "pcm-48k-smoke":
+        stable = check_live_rate(samples, 48000, settle_s, follow_bound,
+                                 failures, metrics)
+        if any(sample["status"]["format"] != 1 or
+               sample["status"]["pipeline_diag"]["class"] != 1 or
+               sample["status"]["pipeline_diag"].get("pcm_confirmed") != 1
+               for sample in stable):
+            add_failure(failures, "format",
+                        "a settled sample did not confirm 48 kHz PCM")
+        if accumulated_delta(stable, "clock.rate_changes") != 0:
+            add_failure(failures, "rate-stability",
+                        "nominal rate changed after settling")
+
+    elif scenario == "48k-10m":
         stable = check_live_rate(samples, 48000, settle_s, follow_bound,
                                  failures, metrics)
         if len(stable) >= 2:

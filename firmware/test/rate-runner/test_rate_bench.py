@@ -335,6 +335,31 @@ class AnalyzerTests(unittest.TestCase):
         })
         self.assertEqual(encoded["verdict"], "pass")
 
+    def test_pcm_48k_smoke_requires_confirmed_progress(self):
+        samples = [
+            sample(0, rate=48000, output_blocks=1),
+            sample(60, rate=48000, output_blocks=2),
+            sample(120, rate=48000, output_blocks=3),
+        ]
+        for entry in samples:
+            entry["status"]["pipeline_diag"]["pcm_confirmed"] = 1
+
+        result = BENCH.analyze_samples(samples, [], "pcm-48k-smoke", {
+            "minimum_duration_s": 120,
+            "settle_s": 30,
+            "max_follow_error_millihz": 1000,
+        })
+
+        self.assertEqual(result["verdict"], "pass")
+
+        samples[-1]["status"]["pipeline_diag"]["pcm_confirmed"] = 0
+        rejected = BENCH.analyze_samples(samples, [], "pcm-48k-smoke", {
+            "minimum_duration_s": 120,
+            "settle_s": 30,
+            "max_follow_error_millihz": 1000,
+        })
+        self.assertEqual(rejected["failures"][0]["code"], "format")
+
     def test_transition_sequence_events_resets_and_progress(self):
         samples, events = transition_fixture()
         result = BENCH.analyze_samples(samples, events, "transitions", {
