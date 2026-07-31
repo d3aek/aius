@@ -74,14 +74,17 @@ specified here. Strike items here in the commit that closes them.
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
   about them. (Recorded since the item 3 era.)
-- **Swagger `Status` schema incompleteness.** Served but unlisted:
-  `sd_diag`, `replay_diag`, `dhcp_pending`, `cpu_temp_c` /
-  `cpu_temp_valid` / `cpu_temp_max_c` / `cpu_temp_age_ms`, the event and
-  HTTP counters, and `pipeline_diag`'s `codec_pc`, `dts_decode_cycles`,
-  `dts_alloc_count`, `ac3_decode_cycles`, `ac3_alloc_count`, and
-  `decode_rejects`. The TYPE lies were fixed and pinned 2026-07-27
-  (`4eb3744ce`); the absences remain. No `additionalProperties:false`, so
-  nothing breaks — but a schema-coded client cannot discover these fields.
+- ~~**Swagger `Status` schema incompleteness.**~~ **CLOSED 2026-07-31**:
+  every served field of the status, recorder and DSP-config documents is
+  now documented (~145 fields across six new sub-schemas incl. `sd_diag`,
+  `replay_diag`, `audio_diag`, `clock`, `pipeline_diag`, `boot_fuse`), and
+  a drift gate in the swagger contract suite extracts the served key tree
+  from the firmware's own serializer format strings and fails on
+  divergence in either direction, with type checks and negative-control
+  proof. The gate found and closed further drift beyond this entry
+  (`NetDiagGeneration` keys, recorder `rate_changes`). Scope note: the
+  `/api/replays*` documents are still outside the gate — the sibling debt
+  entry above remains open.
 - ~~**DSP editor does not surface the live source type / channel count /
   rate.**~~ **CLOSED 2026-07-28** (operator-directed UI batch): the
   editor's input line now names the encoding and rate from `status.state`
