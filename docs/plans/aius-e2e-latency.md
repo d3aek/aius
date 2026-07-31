@@ -339,8 +339,18 @@ Every run captures:
 - tool versions and UTC timestamps.
 
 The PCM-bypass configuration disables input EQ, matrix customization, output
-EQ, limiter and dither-affecting width changes while retaining the normal
-stereo unity route. PCM production uses the identical stereo programme and block
+EQ and limiter while retaining the normal stereo unity route. The listed
+fifth switch, dither-affecting width changes, is not expressible in the wire
+model: the transmit width is the compile-time 24-bit path and its dither
+never engages, so the runner asserts and records that invariant
+(`output_width_expressible_in_model: false`) instead of flipping a switch
+that does not exist. The bypass runner (2026-07-31, acceptance-contract
+version 3) retains the exact card bytes over the new read-only
+`/sd/aius/dsp.json` route before any PUT, aborts before mutation on a 404,
+parse failure, `source:"default"` or semantic mismatch, restores the
+production model under try/finally plus signal handlers, and requires the
+effective-config hash to equal the bypass model's hash at both bracket
+snapshots. PCM production uses the identical stereo programme and block
 geometry with the exact production config. DTS/AC-3 use the same six-channel
 programme through the same production matrix and DSP. Their corrected results
 are combined decoder-plus-multichannel-pipeline end-to-end latency. No physical
@@ -744,7 +754,7 @@ validation (about 7.0 seconds for the default PCM geometry against a
 9.25-second budget) and oversized CLI geometry is rejected before any device
 contact. Acceptance mode, poll projections, XRUN recoveries and ALSA state
 are retained as a hashed evidence artifact. The acceptance contract is
-versioned (2) and now includes the preflight; reusing pre-preflight evidence
+versioned and now includes the preflight; reusing pre-preflight evidence
 requires an explicit `--allow-legacy-evidence`, manifest ancestry booleans
 are derived from the actual checks rather than asserted, and formal
 collection refuses to run from a dirty harness tree. Equivalent 50-second

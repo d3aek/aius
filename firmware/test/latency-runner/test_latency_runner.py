@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import tempfile
@@ -610,7 +611,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(
             contract["contract_version"], BENCH.ACCEPTANCE_CONTRACT_VERSION
         )
-        self.assertEqual(BENCH.ACCEPTANCE_CONTRACT_VERSION, 2)
+        self.assertEqual(BENCH.ACCEPTANCE_CONTRACT_VERSION, 3)
         self.assertEqual(
             preflight["minimum_seconds"],
             BENCH.ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
@@ -1106,6 +1107,970 @@ class RepositoryIdentityTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "refusing formal"):
             BENCH.require_clean_harness(identity)
+
+
+PRODUCTION_MODEL = json.loads(
+    (ROOT / "config" / "optical_dsp.json").read_text()
+)
+CONFIG_URL = "http://device/api/dsp/config"
+SD_URL = "http://device/sd/aius/dsp.json"
+SD_TOKEN = "0123456789abcdef"
+
+
+def wire_model(model, source="sd", generation=0, base_generation=None):
+    """One DSP model on the wire, in the device's own key set."""
+    body = {key: model[key] for key in BENCH.MODEL_SEMANTIC_KEYS}
+    body["source"] = source
+    body["config_generation"] = generation
+    if base_generation is not None:
+        body["base_generation"] = base_generation
+    return body
+
+
+def effective_bytes(model, generation, source="sd"):
+    return json.dumps(wire_model(model, source, generation)).encode()
+
+
+def card_bytes(model, base_generation=0):
+    """The card file: pretty-printed, with its own stale wire fields."""
+    return json.dumps(
+        wire_model(model, "sd", 0, base_generation), indent=2
+    ).encode()
+
+
+class FakeDspDevice:
+    """`GET /api/dsp/config`, the SD read route and `PUT`, with no HTTP.
+
+    Models the parts of the device this state machine depends on: the
+    authenticated card download, the optimistic-concurrency token, and the
+    block-boundary swap that only republishes a staged model after some polls
+    -- and that rewrites `/aius/dsp.json` with the PUT body, which is why an
+    exact restoration artifact has to exist before anything is written.
+    """
+
+    def __init__(
+        self,
+        model=None,
+        *,
+        generation=7,
+        sd_status=200,
+        sd_body=None,
+        apply_polls=1,
+        put_status=200,
+        restore_put_status=None,
+        apply_pending=True,
+        effective_source="sd",
+    ):
+        self.model = json.loads(json.dumps(model or PRODUCTION_MODEL))
+        self.generation = generation
+        self.sd_status = sd_status
+        self.sd_body = (
+            card_bytes(self.model) if sd_body is None else sd_body
+        )
+        self.apply_polls = apply_polls
+        self.put_status = put_status
+        self.restore_put_status = restore_put_status
+        self.apply_pending = apply_pending
+        self.effective_source = effective_source
+        self.pending = None
+        self.pending_body = None
+        self.polls_left = 0
+        self.gets = []
+        self.puts = []
+
+    # -- transport seams the session is constructed with -------------------
+
+    def get(self, url, token=None):
+        self.gets.append((url, token))
+        if url == SD_URL:
+            if token != SD_TOKEN:
+                return 401, b'{"error":"auth"}'
+            return self.sd_status, self.sd_body
+        if url != CONFIG_URL:
+            raise AssertionError(f"unexpected GET: {url}")
+        self._tick()
+        return 200, effective_bytes(
+            self.model, self.generation, self.effective_source
+        )
+
+    def put(self, url, body, token):
+        self.puts.append({"url": url, "body": body, "token": token})
+        if url != CONFIG_URL:
+            raise AssertionError(f"unexpected PUT: {url}")
+        if token != SD_TOKEN:
+            return 401, b'{"error":"auth"}'
+        parsed = json.loads(body)
+        if parsed["base_generation"] != self.generation:
+            return 409, b'{"error":"base_generation"}'
+        status = self.put_status
+        if len(self.puts) > 1 and self.restore_put_status is not None:
+            status = self.restore_put_status
+        if status not in (200, 204):
+            return status, b'{"error":"rejected"}'
+        self.pending = parsed
+        self.pending_body = body
+        self.polls_left = self.apply_polls
+        return status, b""
+
+    # -- the block-boundary swap -------------------------------------------
+
+    def _tick(self):
+        if self.pending is None or not self.apply_pending:
+            return
+        if self.polls_left > 0:
+            self.polls_left -= 1
+            return
+        self.model = {
+            key: self.pending[key] for key in BENCH.MODEL_SEMANTIC_KEYS
+        }
+        self.generation += 1
+        # A successful PUT writes /aius/dsp.json verbatim, so the card file no
+        # longer holds the production model once the bypass row starts.
+        self.sd_body = self.pending_body
+        self.pending = None
+
+    def semantic(self):
+        return BENCH.model_hash(self.model)
+
+
+class DspBypassSessionTests(unittest.TestCase):
+    """Capture, verify, apply, bracket and restore, on a scripted device."""
+
+    def session(self, device, root, effective_raw=None, **kwargs):
+        if effective_raw is None:
+            effective_raw = effective_bytes(device.model, device.generation)
+        clock = VirtualClock()
+        return BENCH.DspBypassSession(
+            config_url=CONFIG_URL,
+            sd_url=SD_URL,
+            token=SD_TOKEN,
+            root=pathlib.Path(root),
+            effective_raw=effective_raw,
+            get=device.get,
+            put=device.put,
+            sleep=clock.advance,
+            monotonic=clock.monotonic,
+            **kwargs,
+        )
+
+    def test_capture_verify_apply_bracket_and_restore(self):
+        device = FakeDspDevice(generation=41)
+        production = device.semantic()
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+            session.prepare()
+
+            self.assertEqual(device.puts, [])
+            self.assertEqual(
+                session.evidence()["sd_download"]["status"], 200
+            )
+
+            with session:
+                session.apply()
+                applied = json.loads(device.puts[0]["body"])
+
+                self.assertEqual(applied["base_generation"], 41)
+                self.assertEqual(applied["source"], "sd")
+                self.assertEqual(
+                    device.model["features"],
+                    {
+                        "input_eq": False,
+                        "matrix": False,
+                        "output_eq": False,
+                        "limiter": False,
+                        "meters": True,
+                    },
+                )
+                self.assertEqual(
+                    session.bracket_hash("initial"),
+                    session.bracket_hash("final"),
+                )
+
+            session.write_evidence()
+            evidence = session.evidence()
+            summary = {
+                "dsp_bypass": evidence,
+                "artifacts": session.artifact_records(),
+            }
+
+        self.assertTrue(evidence["restoration"]["verified"])
+        self.assertEqual(device.semantic(), production)
+        self.assertEqual(len(device.puts), 2)
+        session.restore()
+        self.assertEqual(len(device.puts), 2, "restore must be idempotent")
+        restoration = json.loads(device.puts[1]["body"])
+        # The bypass apply advanced the generation, so the restoration must
+        # carry the fresh token rather than the captured one.
+        self.assertEqual(restoration["base_generation"], 42)
+        self.assertEqual(evidence["restoration"]["active_source"], "sd")
+        self.assertIsNone(evidence["board_state"])
+        BENCH.validate_bypass_evidence(summary)
+        self.assertLessEqual(
+            BENCH.BYPASS_ARTIFACT_NAMES - {"bypass_effective_dsp_config"},
+            summary["artifacts"].keys(),
+        )
+
+    def test_bracket_hashes_are_the_applied_bypass_model(self):
+        device = FakeDspDevice()
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+            session.prepare()
+            with session:
+                session.apply()
+                digest = session.bracket_hash("initial")
+                expected = BENCH.comparable_hash(session.bypass)
+
+                self.assertEqual(digest, expected)
+
+                # Anything that moves the effective model inside the bracket
+                # rejects the row rather than measuring an unknown DSP.
+                device.model["limiter"]["threshold_dbfs"] = -2.0
+                with self.assertRaisesRegex(
+                    RuntimeError, "bracket final is not the bypass model"
+                ):
+                    session.bracket_hash("final")
+
+    def test_absent_card_file_aborts_before_any_mutation(self):
+        device = FakeDspDevice(sd_status=404, sd_body=b'{"error":"sd_path"}')
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+
+            with self.assertRaisesRegex(RuntimeError, "returned 404"):
+                session.prepare()
+
+            self.assertEqual(device.puts, [])
+            self.assertFalse(session.mutation_possible)
+            self.assertEqual(
+                session.evidence()["sd_download"]["status"], 404
+            )
+            self.assertTrue(
+                (pathlib.Path(directory) / "sd-dsp-config.json").is_file()
+            )
+
+    def test_unparseable_card_file_aborts_before_any_mutation(self):
+        cases = {
+            "not-json": b"{ this is not json",
+            "unknown-key": json.dumps(
+                dict(wire_model(PRODUCTION_MODEL), extra=1)
+            ).encode(),
+            "out-of-range": json.dumps(
+                {
+                    **wire_model(PRODUCTION_MODEL),
+                    "limiter": {
+                        **PRODUCTION_MODEL["limiter"],
+                        "threshold_dbfs": 12.0,
+                    },
+                }
+            ).encode(),
+            "empty": b"",
+        }
+        for label, body in cases.items():
+            with self.subTest(label=label):
+                device = FakeDspDevice(sd_body=body)
+                with tempfile.TemporaryDirectory() as directory:
+                    session = self.session(device, directory)
+
+                    with self.assertRaisesRegex(
+                        RuntimeError, "card DSP model"
+                    ):
+                        session.prepare()
+
+                    self.assertEqual(device.puts, [])
+                    self.assertFalse(session.mutation_possible)
+
+    def test_semantic_mismatch_aborts_before_any_mutation(self):
+        stale = json.loads(json.dumps(PRODUCTION_MODEL))
+        stale["input_channels"]["fl"]["gain_db"] = -3.0
+        device = FakeDspDevice(sd_body=card_bytes(stale))
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+
+            with self.assertRaisesRegex(
+                RuntimeError, "does not match the board's effective model"
+            ):
+                session.prepare()
+
+            self.assertEqual(device.puts, [])
+            self.assertFalse(session.mutation_possible)
+
+    def test_default_source_aborts_before_any_mutation(self):
+        device = FakeDspDevice(effective_source="default")
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(
+                device,
+                directory,
+                effective_raw=effective_bytes(
+                    device.model, device.generation, "default"
+                ),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "not 'sd'"):
+                session.prepare()
+
+            self.assertEqual(device.puts, [])
+            self.assertFalse(session.mutation_possible)
+
+    def test_card_match_tolerates_the_device_derived_clipfree_headroom(self):
+        clipfree = json.loads(json.dumps(PRODUCTION_MODEL))
+        clipfree["matrix"]["clipfree"] = True
+        clipfree["matrix"]["headroom_linear"] = 0.5
+        published = json.loads(json.dumps(clipfree))
+        # GET /api/dsp/config serializes the RESOLVED headroom, so the stored
+        # value is not observable while clipfree is on.
+        published["matrix"]["headroom_linear"] = 0.2928932188134524
+        device = FakeDspDevice(published, sd_body=card_bytes(clipfree))
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+            session.prepare()
+
+            self.assertNotEqual(
+                BENCH.model_hash(clipfree), BENCH.model_hash(published)
+            )
+            self.assertEqual(
+                BENCH.comparable_hash(clipfree),
+                BENCH.comparable_hash(published),
+            )
+            # The restoration body carries the STORED value, not the echo.
+            body = BENCH.dsp_put_body(session.production_model, 1)
+            self.assertEqual(
+                json.loads(body)["matrix"]["headroom_linear"], 0.5
+            )
+
+    def test_restore_runs_when_the_collection_fails(self):
+        device = FakeDspDevice()
+        production = device.semantic()
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+            session.prepare()
+
+            with self.assertRaisesRegex(RuntimeError, "collection failed"):
+                with session:
+                    session.apply()
+                    raise RuntimeError("collection failed")
+
+        self.assertTrue(session.restoration["verified"])
+        self.assertEqual(device.semantic(), production)
+        self.assertEqual(len(device.puts), 2)
+
+    def test_restore_runs_on_a_signal(self):
+        device = FakeDspDevice()
+        production = device.semantic()
+        previous = signal.getsignal(signal.SIGTERM)
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory)
+            session.prepare()
+
+            with self.assertRaises(KeyboardInterrupt):
+                with session:
+                    session.apply()
+                    self.assertIsNot(
+                        signal.getsignal(signal.SIGTERM), previous
+                    )
+                    signal.raise_signal(signal.SIGTERM)
+
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous)
+        self.assertEqual(session.interrupted_signal, int(signal.SIGTERM))
+        self.assertTrue(session.restoration["verified"])
+        self.assertEqual(device.semantic(), production)
+
+    def test_stale_token_is_refused_without_mutating(self):
+        device = FakeDspDevice(generation=41)
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(
+                device,
+                directory,
+                effective_raw=effective_bytes(device.model, 40),
+            )
+            session.prepare()
+
+            with self.assertRaisesRegex(RuntimeError, "HTTP 409"):
+                with session:
+                    session.apply()
+
+            self.assertEqual(json.loads(
+                device.puts[0]["body"]
+            )["base_generation"], 40)
+
+        self.assertFalse(session.applied)
+        # A 409 is refused before the SD job, so the exit path issues no
+        # restoration PUT against a board it never changed.
+        self.assertEqual(len(device.puts), 1)
+        self.assertFalse(session.restoration["attempted"])
+        self.assertIsNone(session.board_state())
+
+    def test_a_failed_restore_names_the_board_state(self):
+        device = FakeDspDevice(restore_put_status=503)
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory, timeout_seconds=1.0)
+            session.prepare()
+            with session:
+                session.apply()
+                session.bracket_hash("initial")
+                session.bracket_hash("final")
+
+            state = session.board_state()
+            evidence = session.evidence()
+
+        self.assertFalse(evidence["restoration"]["verified"])
+        self.assertIn("DSP NOT RESTORED", state)
+        self.assertIn("running the bypass model", state)
+        self.assertIn("/aius/dsp.json", state)
+        self.assertIn("sd-dsp-config.json", state)
+        self.assertIn("dsp-restoration-put-body.json", state)
+        self.assertIn(
+            session.evidence()["bypass"]["semantic_sha256"], state
+        )
+        self.assertIn("HTTP 503", session.restore_rejection())
+        with self.assertRaisesRegex(RuntimeError, "verified restoration"):
+            BENCH.validate_bypass_evidence({"dsp_bypass": evidence})
+
+    def test_an_unconfirmed_apply_names_both_possible_models(self):
+        device = FakeDspDevice(apply_pending=False)
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.session(device, directory, timeout_seconds=1.0)
+            session.prepare()
+
+            with self.assertRaisesRegex(RuntimeError, "did not settle"):
+                with session:
+                    session.apply()
+
+            state = session.board_state()
+
+        self.assertTrue(session.mutation_possible)
+        self.assertFalse(session.applied)
+        self.assertIn("either the production or the bypass model", state)
+
+
+class BypassRowFlowTests(unittest.TestCase):
+    """`run_formal_collection`'s wiring: mutate, measure, restore, record.
+
+    The collection itself is stubbed -- no ALSA, no renderer, no git -- so
+    what is under test is the order the row imposes on the device: nothing is
+    PUT before the card file is proven, the renderer consumes the applied
+    bypass model, and the restore runs on every exit path.
+    """
+
+    def arguments(self, root, **overrides):
+        argv = [
+            "--mode", "pcm",
+            "--output", str(root),
+            "--status-url", "http://device/api/status",
+            "--config-url", CONFIG_URL,
+            "--sd-config-url", SD_URL,
+            "--auth", SD_TOKEN,
+            "--dsp", overrides.pop("dsp", "bypass"),
+        ]
+        args = BENCH.build_parser().parse_args(argv)
+        args.guard_frames = BENCH.PCM_PROBE_GAP_FRAMES
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def run_row(self, device, root, collect_row):
+        args = self.arguments(root)
+        repository = {
+            "harness_revision": "a" * 40,
+            "expected_build_revision": "aaaaaaaaaaaa+teensy41-optical",
+            "harness_dirty": False,
+            "harness_dirty_files": [],
+        }
+
+        def capture(url, output):
+            status, raw = device.get(url)
+            return BENCH.write_effective_config(raw, output)
+
+        with mock.patch.object(BENCH, "http_get", device.get), \
+                mock.patch.object(BENCH, "http_put", device.put), \
+                mock.patch.object(
+                    BENCH, "capture_effective_config", capture
+                ), \
+                mock.patch.object(BENCH, "collect_row", collect_row):
+            return BENCH.run_formal_collection(args, repository)
+
+    def test_row_applies_measures_and_restores_in_order(self):
+        device = FakeDspDevice(generation=41)
+        production = device.semantic()
+        seen = {}
+
+        def collect_row(args, preflight, preflight_path, config_paths,
+                        effective_model, session):
+            seen["config_paths"] = dict(config_paths)
+            seen["features"] = effective_model["features"]
+            seen["puts"] = len(device.puts)
+            session.bracket_hash("initial")
+            session.bracket_hash("final")
+            BENCH.write_json(args.output / "manifest.json", {
+                "state": "accepted",
+                "artifacts": {"capture": {"path": "capture.s16le",
+                                          "sha256": "0" * 64}},
+            })
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+
+            self.assertEqual(self.run_row(device, root, collect_row), 0)
+
+            manifest = json.loads(
+                (root / "manifest.json").read_text(encoding="utf-8")
+            )
+            names = sorted(path.name for path in root.iterdir())
+
+        # The bypass PUT landed before collection and the renderer consumed
+        # the applied model, not the production capture.
+        self.assertEqual(seen["puts"], 1)
+        self.assertFalse(seen["features"]["limiter"])
+        self.assertEqual(
+            seen["config_paths"]["renderer"].name,
+            "dsp-config-bypass-renderer.json",
+        )
+        self.assertEqual(
+            seen["config_paths"]["production_effective"].name,
+            "dsp-config-effective.json",
+        )
+        self.assertEqual(manifest["state"], "accepted")
+        self.assertTrue(manifest["dsp_bypass"]["restoration"]["verified"])
+        self.assertEqual(device.semantic(), production)
+        for name in (
+            "sd-dsp-config.json",
+            "dsp-bypass-put-body.json",
+            "dsp-restoration-put-body.json",
+            "dsp-bypass-session.json",
+            "dsp-config-bypass-effective.json",
+            "dsp-config-effective.json",
+        ):
+            self.assertIn(name, names)
+        # `bypass_effective_dsp_config` is collect_row's record of the file it
+        # rendered from, and collect_row is stubbed here.
+        self.assertLessEqual(
+            BENCH.BYPASS_ARTIFACT_NAMES - {"bypass_effective_dsp_config"},
+            manifest["artifacts"].keys(),
+        )
+
+    def test_absent_card_file_rejects_the_row_without_collecting(self):
+        device = FakeDspDevice(sd_status=404, sd_body=b'{"error":"sd_path"}')
+        collect_row = mock.Mock()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+
+            with self.assertRaisesRegex(RuntimeError, "returned 404"):
+                self.run_row(device, root, collect_row)
+
+            manifest = json.loads(
+                (root / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        collect_row.assert_not_called()
+        self.assertEqual(device.puts, [])
+        self.assertEqual(manifest["state"], "rejected")
+        self.assertIn("404", manifest["rejection"])
+        self.assertEqual(manifest["dsp"], "bypass")
+        self.assertIn("sd_dsp_config", manifest["artifacts"])
+
+    def test_failed_collection_still_restores_and_rejects(self):
+        device = FakeDspDevice()
+        production = device.semantic()
+
+        def collect_row(*_):
+            raise RuntimeError("collector evidence rejected")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+
+            with self.assertRaisesRegex(RuntimeError, "collector evidence"):
+                self.run_row(device, root, collect_row)
+
+            manifest = json.loads(
+                (root / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(device.semantic(), production)
+        self.assertTrue(manifest["dsp_bypass"]["restoration"]["verified"])
+        self.assertEqual(len(device.puts), 2)
+
+    def test_failed_restore_rejects_an_otherwise_clean_row(self):
+        device = FakeDspDevice(restore_put_status=503)
+
+        def collect_row(args, *_):
+            BENCH.write_json(args.output / "manifest.json", {
+                "state": "accepted", "artifacts": {},
+            })
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            self.run_row(device, root, collect_row)
+            manifest = json.loads(
+                (root / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(manifest["state"], "rejected")
+        self.assertIn("DSP NOT RESTORED", manifest["board_state"])
+        self.assertIn("HTTP 503", manifest["rejection"])
+        self.assertFalse(manifest["dsp_bypass"]["restoration"]["verified"])
+
+    def test_an_unapplied_bypass_rejects_and_names_the_board_state(self):
+        device = FakeDspDevice(apply_pending=False)
+        collect_row = mock.Mock()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+
+            with mock.patch.object(
+                BENCH, "DSP_APPLY_TIMEOUT_SECONDS", 0.0
+            ), mock.patch.object(BENCH, "DSP_APPLY_POLL_SECONDS", 0.0):
+                with self.assertRaisesRegex(RuntimeError, "did not settle"):
+                    self.run_row(device, root, collect_row)
+
+            manifest = json.loads(
+                (root / "manifest.json").read_text(encoding="utf-8")
+            )
+
+        collect_row.assert_not_called()
+        self.assertEqual(manifest["state"], "rejected")
+        self.assertIn(
+            "either the production or the bypass model",
+            manifest["board_state"],
+        )
+
+    def test_production_row_never_touches_the_card_or_puts(self):
+        device = FakeDspDevice()
+        seen = {}
+
+        def collect_row(args, preflight, preflight_path, config_paths,
+                        effective_model, session):
+            seen["session"] = session
+            seen["config_paths"] = dict(config_paths)
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            args = self.arguments(root, dsp="production")
+
+            def capture(url, output):
+                _, raw = device.get(url)
+                return BENCH.write_effective_config(raw, output)
+
+            with mock.patch.object(BENCH, "http_get", device.get), \
+                    mock.patch.object(BENCH, "http_put", device.put), \
+                    mock.patch.object(
+                        BENCH, "capture_effective_config", capture
+                    ), \
+                    mock.patch.object(BENCH, "collect_row", collect_row):
+                BENCH.run_formal_collection(args, {
+                    "harness_revision": "a" * 40,
+                    "expected_build_revision": (
+                        "aaaaaaaaaaaa+teensy41-optical"
+                    ),
+                })
+            names = sorted(path.name for path in root.iterdir())
+
+        self.assertIsNone(seen["session"])
+        self.assertEqual(device.puts, [])
+        self.assertEqual([url for url, *_ in device.gets], [CONFIG_URL])
+        self.assertNotIn("sd-dsp-config.json", names)
+        self.assertEqual(
+            seen["config_paths"]["renderer"].name, "dsp-config-renderer.json"
+        )
+
+
+class DspBypassModelTests(unittest.TestCase):
+    """The model representation the runner parses, flips and hashes."""
+
+    def test_bypass_flips_exactly_the_documented_switches(self):
+        production = BENCH.parse_dsp_model(
+            card_bytes(PRODUCTION_MODEL), "card DSP model"
+        )
+        bypass = BENCH.bypass_model(production)
+
+        self.assertEqual(
+            BENCH.BYPASS_FEATURE_SWITCHES,
+            ("input_eq", "matrix", "output_eq", "limiter"),
+        )
+        for switch in BENCH.BYPASS_FEATURE_SWITCHES:
+            self.assertFalse(bypass["features"][switch])
+        self.assertEqual(
+            bypass["features"]["meters"], production["features"]["meters"]
+        )
+        for key in ("input_channels", "output_eq", "matrix", "limiter"):
+            self.assertEqual(bypass[key], production[key])
+        evidence = BENCH.bypass_switch_evidence(production, bypass)
+        self.assertFalse(
+            evidence["dither_affecting_width"]["expressible_in_model"]
+        )
+        self.assertEqual(
+            evidence["dither_affecting_width"]["output_width_bits"], 24
+        )
+
+    def test_bypass_switch_evidence_rejects_any_other_difference(self):
+        production = BENCH.parse_dsp_model(
+            card_bytes(PRODUCTION_MODEL), "card DSP model"
+        )
+        drifted = BENCH.bypass_model(production)
+        drifted["matrix"]["headroom_linear"] = 0.25
+
+        with self.assertRaisesRegex(RuntimeError, "outside the documented"):
+            BENCH.bypass_switch_evidence(production, drifted)
+
+    def test_put_body_carries_every_key_the_device_parser_requires(self):
+        production = BENCH.parse_dsp_model(
+            card_bytes(PRODUCTION_MODEL), "card DSP model"
+        )
+
+        body = BENCH.dsp_put_body(production, 12)
+        parsed = json.loads(body)
+
+        self.assertEqual(
+            sorted(parsed), sorted(BENCH.MODEL_ALL_KEYS)
+        )
+        self.assertEqual(parsed["source"], "sd")
+        self.assertEqual(parsed["base_generation"], 12)
+        self.assertEqual(parsed["config_generation"], 12)
+        self.assertEqual(body, json.dumps(
+            parsed, separators=(",", ":"), sort_keys=True
+        ).encode())
+        BENCH.parse_dsp_model(body, "restoration PUT body")
+
+    def test_layout_aware_absence_reads_on(self):
+        legacy = json.loads(json.dumps(PRODUCTION_MODEL))
+        legacy["matrix"].pop("layout_aware")
+
+        parsed = BENCH.parse_dsp_model(
+            json.dumps(wire_model(legacy)).encode(), "card DSP model"
+        )
+
+        self.assertIs(parsed["matrix"]["layout_aware"], True)
+
+    def test_semantic_hash_ignores_wire_fields_and_number_spelling(self):
+        left = BENCH.parse_dsp_model(
+            effective_bytes(PRODUCTION_MODEL, 3), "effective DSP config"
+        )
+        spelled = json.loads(json.dumps(PRODUCTION_MODEL))
+        spelled["limiter"]["threshold_dbfs"] = -1.0
+        spelled["matrix"]["lfe_crossover_hz"] = 120.0
+        right = BENCH.parse_dsp_model(
+            card_bytes(spelled, base_generation=99), "card DSP model"
+        )
+
+        self.assertEqual(BENCH.model_hash(left), BENCH.model_hash(right))
+
+    def test_bypass_render_level_holds_the_six_db_headroom(self):
+        production = BENCH.parse_dsp_model(
+            card_bytes(PRODUCTION_MODEL), "card DSP model"
+        )
+        bypass = BENCH.bypass_model(production)
+        # The exact stimulus peak the generator emits, in the renderer's
+        # 24-bit scale.
+        reference = np.full((16, 2), 6000 * 256, dtype="<i4")
+
+        level = BENCH.validate_render_level(reference, bypass)
+
+        self.assertFalse(level["limiter_active"])
+        self.assertEqual(level["maximum_true_peak_dbfs"], -6.0)
+        self.assertGreater(level["margin_db"], 0.0)
+        louder = np.full((16, 2), 6000 * 256 * 4, dtype="<i4")
+        with self.assertRaisesRegex(RuntimeError, "6 dB limiter/headroom"):
+            BENCH.validate_render_level(louder, bypass)
+
+
+class DspRowContractTests(unittest.TestCase):
+    """Contract version 3, the bypass gates, and legacy production reuse."""
+
+    def test_contract_records_the_dsp_row(self):
+        production = BENCH.acceptance_contract("pcm")
+        bypass = BENCH.acceptance_contract("pcm", "bypass")
+
+        self.assertEqual(production["contract_version"], 3)
+        self.assertEqual(production["dsp"], "production")
+        self.assertNotIn("bypass", production)
+        self.assertEqual(bypass["dsp"], "bypass")
+        self.assertEqual(
+            bypass["bypass"]["feature_switches"],
+            list(BENCH.BYPASS_FEATURE_SWITCHES),
+        )
+        self.assertFalse(
+            bypass["bypass"]["output_width_expressible_in_model"]
+        )
+        self.assertTrue(bypass["bypass"]["restoration_verified_required"])
+        del production["dsp"], bypass["dsp"], bypass["bypass"]
+        self.assertEqual(production, bypass)
+
+    def test_production_preflight_records_only_the_mode(self):
+        manifest = AnalyzerTests.accepted_manifest()
+
+        self.assertEqual(manifest["dsp"], "production")
+        self.assertEqual(
+            sorted(manifest["endpoints"]),
+            ["effective_dsp_config", "status"],
+        )
+        self.assertNotIn(
+            "config_fetches", manifest["collection"]["formal_bracket"]
+        )
+        self.assertNotIn("bypass", manifest["acceptance"])
+
+    def test_bypass_bracket_pays_for_both_config_fetches(self):
+        production = BENCH.formal_bracket_projection(
+            "pcm",
+            BENCH.FORMAL_WARMUP_FRAMES,
+            BENCH.PCM_PROBE_GAP_FRAMES,
+            BENCH.TAIL_FRAMES,
+        )
+        bypass = BENCH.formal_bracket_projection(
+            "pcm",
+            BENCH.FORMAL_WARMUP_FRAMES,
+            BENCH.PCM_PROBE_GAP_FRAMES,
+            BENCH.TAIL_FRAMES,
+            "bypass",
+        )
+
+        self.assertTrue(bypass["fits"])
+        self.assertEqual(bypass["config_fetches"], 2)
+        self.assertAlmostEqual(
+            bypass["bracket_seconds"] - production["bracket_seconds"],
+            2 * BENCH.FORMAL_CONFIG_FETCH_ALLOWANCE_SECONDS,
+        )
+
+    def test_bypass_is_a_pcm_only_row(self):
+        args = BENCH.build_parser().parse_args([
+            "--mode", "ac3", "--output", "out",
+            "--dsp", "bypass", "--auth", SD_TOKEN,
+        ])
+
+        with self.assertRaisesRegex(ValueError, "PCM-only row"):
+            BENCH.validate_arguments(args)
+
+    def test_bypass_requires_an_authenticated_device(self):
+        args = BENCH.build_parser().parse_args([
+            "--mode", "pcm", "--output", "out", "--dsp", "bypass",
+        ])
+        args.auth = None
+
+        with self.assertRaisesRegex(ValueError, "AIUS_SD_AUTH"):
+            BENCH.validate_arguments(args)
+
+    def test_default_row_is_production_and_needs_no_token(self):
+        args = BENCH.build_parser().parse_args(
+            ["--mode", "pcm", "--output", "out"]
+        )
+        args.auth = None
+
+        self.assertEqual(args.dsp, "production")
+        self.assertTrue(BENCH.validate_arguments(args)["fits"])
+
+    def test_legacy_production_evidence_stays_reusable(self):
+        legacy = AnalyzerTests.accepted_manifest()
+        legacy["acceptance"]["contract_version"] = 2
+        legacy["acceptance"].pop("dsp")
+        legacy.pop("dsp")
+
+        with self.assertRaisesRegex(
+            RuntimeError, "--allow-legacy-evidence"
+        ):
+            BENCH.validate_evidence_manifest(legacy, "pcm")
+
+        BENCH.validate_evidence_manifest(legacy, "pcm", True)
+
+    def test_legacy_evidence_can_never_be_a_bypass_row(self):
+        legacy = AnalyzerTests.accepted_manifest()
+        legacy["acceptance"]["contract_version"] = 2
+        legacy["acceptance"].pop("dsp")
+        legacy.pop("dsp")
+
+        with self.assertRaisesRegex(RuntimeError, "has no bypass row"):
+            BENCH.validate_evidence_manifest(legacy, "pcm", True, "bypass")
+
+        args = BENCH.build_parser().parse_args([
+            "--mode", "pcm", "--output", "out", "--dsp", "bypass",
+            "--auth", SD_TOKEN, "--reuse-existing",
+            "--allow-legacy-evidence",
+        ])
+        with self.assertRaisesRegex(
+            ValueError, "only applies to production evidence"
+        ):
+            BENCH.validate_arguments(args)
+
+    def test_row_mode_must_match_the_evidence(self):
+        manifest = AnalyzerTests.accepted_manifest()
+
+        with self.assertRaisesRegex(RuntimeError, "row mode does not match"):
+            BENCH.validate_evidence_manifest(manifest, "pcm", False, "bypass")
+
+    def test_bypass_manifest_requires_every_new_artifact_and_claim(self):
+        manifest = self.bypass_manifest()
+        BENCH.validate_evidence_manifest(manifest, "pcm", False, "bypass")
+
+        mutations = {
+            "sd-artifact": lambda value: value["artifacts"].pop(
+                "sd_dsp_config"
+            ),
+            "session-artifact": lambda value: value["artifacts"].pop(
+                "dsp_bypass_session"
+            ),
+            "bypass-effective-artifact": lambda value: value[
+                "artifacts"
+            ].pop("bypass_effective_dsp_config"),
+            "put-body-artifact": lambda value: value["artifacts"].pop(
+                "dsp_bypass_put_body"
+            ),
+            "restoration-body-artifact": lambda value: value[
+                "artifacts"
+            ].pop("dsp_restoration_put_body"),
+            "evidence": lambda value: value.pop("dsp_bypass"),
+            "card-download": lambda value: value["dsp_bypass"][
+                "sd_download"
+            ].update(status=404),
+            "not-applied": lambda value: value["dsp_bypass"][
+                "bypass"
+            ].update(applied=False),
+            "bracket": lambda value: value["dsp_bypass"][
+                "bracket_config_hashes"
+            ].update(final="f" * 64),
+            "restoration": lambda value: value["dsp_bypass"][
+                "restoration"
+            ].update(verified=False),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                malformed = json.loads(json.dumps(manifest))
+                mutate(malformed)
+                with self.assertRaises(RuntimeError):
+                    BENCH.validate_evidence_manifest(
+                        malformed, "pcm", False, "bypass"
+                    )
+
+    @staticmethod
+    def bypass_manifest():
+        """An accepted bypass manifest at the current contract version."""
+        manifest = AnalyzerTests.accepted_manifest()
+        manifest["dsp"] = "bypass"
+        manifest["acceptance"] = BENCH.acceptance_contract("pcm", "bypass")
+        manifest["endpoints"]["sd_dsp_config"] = SD_URL
+        for name in sorted(BENCH.BYPASS_ARTIFACT_NAMES):
+            manifest["artifacts"][name] = {
+                "path": f"{name}.json",
+                "sha256": "0" * 64,
+            }
+        manifest["artifacts"]["bypass_effective_dsp_config"] = {
+            "path": "dsp-config-bypass-effective.json",
+            "sha256": "0" * 64,
+        }
+        manifest["dsp_bypass"] = {
+            "sd_download": {"status": 200, "sha256": "1" * 64},
+            "production": {"semantic_sha256": "2" * 64},
+            "bypass": {
+                "semantic_sha256": "3" * 64,
+                "comparable_sha256": "3" * 64,
+                "applied": True,
+            },
+            "bracket_config_hashes": {
+                "initial": "3" * 64,
+                "final": "3" * 64,
+            },
+            "restoration": {"attempted": True, "verified": True},
+            "board_state": None,
+        }
+        return manifest
 
 
 class ActiveSourceGateTests(unittest.TestCase):
