@@ -132,8 +132,11 @@ AiusStatus aius_dsp_runtime_config_apply(
 
 /* This is per-block work, but it belongs to the serial AUDIO epoch rather than
  * the bounded AudioStream ingress producer. Keep it beside enqueue() in flash:
- * a target historical-image A/B proved that default ITCM placement starves the
- * live producer even though the binding itself is bounded and allocation-free. */
+ * an exact-image A/B tied the live-ingress regression to this object's default
+ * ITCM placement. The mechanism is NOT established -- both legs perturbed code
+ * layout, so the legs are confounded -- and flash placement is retained because
+ * it is the configuration measured safe, not because the cause is understood.
+ * test/itcm-placement/verify_target.py enforces it. */
 AIUS_DSP_RUNTIME_AUDIO
 void aius_dsp_runtime_config_bind(
 	AiusDspRuntimeConfig *runtime,

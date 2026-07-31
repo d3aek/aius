@@ -5,11 +5,19 @@ On Teensy 4.1 a function with no FLASHMEM attribute lands in ITCM, and ITCM
 shares the 512 KB FlexRAM with DTCM -- so cold code in ITCM is taken straight
 out of the audio path's headroom. ITCM is reserved for the bounded producer code
 that must preempt the serial AUDIO epoch. Epoch processing remains FLASHMEM even
-when it runs per block; a physical A/B proved that putting the new DSP binder in
-ITCM starves the producer rather than helping it.
+when it runs per block.
 
-Five checks cover the cold, mixed ingress-producer, DSP runtime adapter, mixed
-recorder and optical composition translation-unit shapes.
+Six checks: the no-LTO precondition, then the cold, optical composition, mixed
+ingress-producer, mixed recorder and LDF-library translation-unit shapes.
+
+The no-LTO precondition. Every other check reads ONE OBJECT FILE at a time, so
+it sees only placement the compiler has already committed to. Link-time
+optimisation moves that decision past the last point this file can observe and
+every object would look innocent, so `-flto` is not a style question here: it
+blinds the guard. The check parses platformio.ini for the environment under
+inspection, walks its `extends` chain, expands `${section.key}` references and
+refuses the build if any resulting flag is `-flto`. It reads platformio.ini
+only; a platform default outside that file is beyond its reach.
 
 Wholly-cold objects: this reads the per-object section table of every object
 named in COLD_OBJECTS and fails the link if any of them still emits executable
@@ -21,19 +29,32 @@ file can move them.
 
 COLD_TREES makes the list non-optional: a new object compiled out of a cold
 engine tree that nobody added to COLD_OBJECTS fails the build, so an unannotated
-engine cannot land silently.
+engine cannot land silently. It matches `build_src_filter` source paths by
+prefix, so it reaches exactly what platformio.ini compiles into the src tree and
+nothing else.
+
+LDF-resolved libraries are the other half of the link and structurally outside
+COLD_TREES' reach: PlatformIO lands their objects at
+$BUILD_DIR/lib<hash>/<libname>/<file>.o, under a directory name no source path
+predicts. The LDF gate closes that half by default instead of by enumeration --
+every object matching that shape is grouped by <libname>, and a library that
+emits any `.text` at all must be named in ITCM_ALLOWED_LDF_LIBS. A brand new
+library, or a second source file inside a library that used to be wholly cold,
+fails the build until somebody records the claim there. EXPECTED_LDF_LIBS is the
+other direction: a library that stops appearing under that shape fails loudly
+rather than quietly taking its coverage with it. aius_dsp_runtime_config -- the
+library whose binder defaulting into ITCM regressed live ingress, and which used
+to have a check naming its one object -- is held by this gate now, so a second
+source file added beside it is covered too.
 
 The mixed ingress object keeps only its five producer entry points in ITCM.
 Initialisation, consumption, flush and diagnostics are epoch work in FLASH.
 
 The mixed recorder object must keep its new PSRAM-geometry helper out of ITCM.
-The rest of that pre-existing object is outside this phase's placement contract.
-
-The DSP runtime adapter contributes zero ITCM. Its resolver is cold config-apply
-work, while its binder runs inside the serial AUDIO epoch rather than the
-bounded AudioStream ingress producer. A physical historical-image A/B proved
-that letting the binder default into ITCM starves live ingress; its flash
-placement is therefore a target behavior contract, not a memory preference.
+aius_recorder is an allowlisted LDF library -- its producer path is legitimately
+hot -- so the generic gate cannot speak for that one helper and this named-section
+check still can. The rest of that pre-existing object is outside this phase's
+placement contract.
 
 The optical hot object: `src/optical_main.cpp` defines the audio processor, so it
 cannot join COLD_OBJECTS -- some of its ITCM is exactly what ITCM is for. Its
@@ -122,9 +143,78 @@ RECORDER_COLD_SECTIONS = (
     ".text.aius_recorder_ring_bytes_after_staging",
 )
 
-DSP_RUNTIME_OBJECT_GLOB = (
-    "lib*/aius_dsp_runtime_config/aius_dsp_runtime_config.c.o"
-)
+# An object PlatformIO's library dependency finder compiled, by the only thing
+# that identifies one: the `lib<hash>/<libname>/` prefix the LDF gives each
+# resolved library's build directory. The hash is derived from the library's
+# path, so it is neither stable nor predictable from any source path -- which is
+# exactly why COLD_TREES cannot see these objects.
+LDF_OBJECT = re.compile(r"^lib[0-9a-fA-F]{3,}/([^/]+)/.+\.o$")
+
+# Every LDF library the two optical environments resolve. This is a presence
+# assertion, not a permission: a name that disappears from the link (renamed
+# library, dropped lib_deps entry, a lib_ignore addition) fails the build instead
+# of silently removing whatever coverage the entry carried. Adding a library here
+# without also deciding its ITCM_ALLOWED_LDF_LIBS status is not possible -- the
+# gate below is the default-deny half.
+EXPECTED_LDF_LIBS = frozenset({
+    "FNET",
+    "NativeEthernet",
+    "SD",
+    "SPI",
+    "SdFat",
+    "aius_a52",
+    "aius_auth",
+    "aius_boot",
+    "aius_codec_api",
+    "aius_config",
+    "aius_dsp",
+    "aius_dsp_config",
+    "aius_dsp_runtime_config",
+    "aius_dts",
+    "aius_iec61937",
+    "aius_json",
+    "aius_pipeline",
+    "aius_recorder",
+    "aius_replay",
+    "aius_usb_control",
+})
+
+# LDF libraries permitted to emit `.text`. ADDING AN ENTRY HERE REMOVES THE WHOLE
+# LIBRARY FROM THE GATE, present sources and future ones alike -- it is not a
+# per-object or per-function exemption, and nothing else in this file will notice
+# a new hot function inside an allowlisted library. Prefer FLASHMEM on the
+# definitions; reach for this table only when the library's ITCM is a fact about
+# the build rather than a choice the source can make, and say which of the three
+# kinds below it is.
+ITCM_ALLOWED_LDF_LIBS = {
+    # 1. Third-party code. Not ours to annotate, and its ITCM is the standing
+    #    cost of depending on it rather than a regression this guard can price.
+    "FNET": "vendored network stack; no FLASHMEM annotation to give",
+    "NativeEthernet": "vendored Ethernet driver; same",
+    "SD": "framework library",
+    "SPI": "framework library",
+    "SdFat": "framework library",
+    # 2. An LDF copy of a source platformio.ini ALSO compiles through
+    #    build_src_filter. The archive member loses to the src-tree object at
+    #    link time, so its `.text` never reaches the image; the copy that does is
+    #    covered by COLD_OBJECTS or by one of the pinned hot-object checks.
+    "aius_a52": "duplicate of the build_src_filter aius_a52 objects",
+    "aius_iec61937": "duplicate of the build_src_filter aius_iec61937 object",
+    "aius_pipeline": "duplicate of the build_src_filter aius_pipeline object",
+    "aius_replay": "duplicate of the build_src_filter aius_replay object",
+    # 3. Linked out of the archive and genuinely emitting ITCM today. These
+    #    predate the placement contract and were never under any check; the entry
+    #    records that, and removing one is the unit of work that brings a library
+    #    under the gate.
+    "aius_auth": "SD maintenance token derivation; unannotated",
+    "aius_codec_api": "arena allocator; unannotated",
+    "aius_config": "SD config parser; unannotated",
+    "aius_dsp": "aius_measure.c is live here and its producer block is hot",
+    "aius_dts": "DTS adapter; unannotated",
+    "aius_recorder": "flight-recorder producer path is legitimately hot; its one "
+                     "bring-up-only helper is pinned cold separately below",
+    "aius_usb_control": "USB control parser; unannotated",
+}
 
 # 2. The dynamic-initialization thunk GCC emits for the file's statics. It has
 #    no declaration to annotate and GCC emits it into `.text.startup.*`
@@ -162,6 +252,14 @@ SECTION_LINE = re.compile(
     r"[0-9a-fA-F]+\s+"         # entry size
     r"(\S+)\s"                 # flags
 )
+
+# platformio.ini, read only to prove the flag that would blind every per-object
+# check above is absent. `${section.key}` is PlatformIO's interpolation syntax;
+# INI_REF finds one occurrence of it.
+INI_SECTION = re.compile(r"^\[([^\]]+)\]$")
+INI_REF = re.compile(r"\$\{([^}]+)\}")
+INI_REF_DEPTH = 8
+LTO_FLAG_PREFIX = "-flto"
 
 
 class VerificationError(RuntimeError):
@@ -394,28 +492,195 @@ def verify_recorder_cold_helper(build_dir: Path, readelf: str) -> int:
     return len(RECORDER_COLD_SECTIONS)
 
 
-def verify_dsp_runtime_cold_object(build_dir: Path, readelf: str) -> int:
-    """The serial AUDIO-epoch runtime adapter must contribute zero ITCM."""
-    objects = list(build_dir.glob(DSP_RUNTIME_OBJECT_GLOB))
-    if len(objects) != 1:
+def group_ldf_objects(paths: Iterable[str]) -> dict[str, list[str]]:
+    """LDF-shaped object paths grouped by library name.
+
+    Paths are relative to $BUILD_DIR. Anything that is not
+    `lib<hash>/<libname>/<file>.o` -- the src tree, the vendored core, the
+    framework -- is not an LDF object and is left to the other checks.
+    """
+    groups: dict[str, list[str]] = {}
+    for path in paths:
+        match = LDF_OBJECT.match(path)
+        if match:
+            groups.setdefault(match.group(1), []).append(path)
+    return {name: sorted(groups[name]) for name in sorted(groups)}
+
+
+def verify_ldf_libraries(paths: Iterable[str], read) -> tuple[int, int]:
+    """Default-deny gate over every LDF-resolved library in the link.
+
+    `read` maps a $BUILD_DIR-relative object path to that object's `readelf -SW`
+    output. A library outside ITCM_ALLOWED_LDF_LIBS must emit no `.text` at all:
+    COMDAT and IPA-SRA clones are offenders here rather than exclusions, because
+    an unreviewed library has no annotated definitions for them to be copies of.
+    """
+    groups = group_ldf_objects(paths)
+    missing = sorted(EXPECTED_LDF_LIBS - set(groups))
+    if missing:
         raise VerificationError(
-            "expected one linked DSP runtime object matching "
-            f"{DSP_RUNTIME_OBJECT_GLOB!r}, found {objects}"
+            f"expected LDF libraries are absent from the link: {missing}; a "
+            "renamed, ignored or dropped library takes its ITCM coverage with "
+            "it. Update EXPECTED_LDF_LIBS in "
+            "test/itcm-placement/verify_target.py to match the build"
         )
-    sections, comdat, clones = inspect_object(objects[0], readelf)
-    if comdat or clones:
+    offenders: dict[str, dict[str, int]] = {}
+    for name, objects in groups.items():
+        if name in ITCM_ALLOWED_LDF_LIBS:
+            continue
+        for path in objects:
+            sections = {
+                section: size
+                for section, (size, _comdat) in parse_text_sections(
+                    read(path)
+                ).items()
+            }
+            if sections:
+                offenders[path] = sections
+    if offenders:
+        detail = "; ".join(
+            f"{path}: {sum(sections.values())} bytes in {sorted(sections)}"
+            for path, sections in sorted(offenders.items())
+        )
         raise VerificationError(
-            "DSP runtime adapter unexpectedly emits COMDAT/clone code"
+            f"LDF libraries emit ITCM code: {detail}. ITCM belongs to code that "
+            "runs per audio block; put FLASHMEM on the definition (not a "
+            "prototype -- GCC does not merge a `section` attribute from a "
+            "forward declaration) of every function listed. If the library's "
+            "ITCM is a fact about the build rather than a choice its source can "
+            "make, add it to ITCM_ALLOWED_LDF_LIBS in "
+            "test/itcm-placement/verify_target.py with that reason -- which "
+            "exempts the WHOLE library, now and in future"
         )
-    if sections:
-        detail = ", ".join(
-            f"{name}: {size} bytes"
-            for name, size in sorted(sections.items())
+    gated = sum(1 for name in groups if name not in ITCM_ALLOWED_LDF_LIBS)
+    return len(groups), gated
+
+
+def verify_ldf_libraries_in_build(
+    build_dir: Path,
+    readelf: str,
+) -> tuple[int, int]:
+    paths = [
+        path.relative_to(build_dir).as_posix()
+        for path in sorted(build_dir.glob("lib*/*/**/*.o"))
+    ]
+    return verify_ldf_libraries(
+        paths, lambda path: read_sections(build_dir / path, readelf)
+    )
+
+
+def parse_ini_sections(text: str) -> dict[str, dict[str, str]]:
+    """platformio.ini as {section: {key: value}}, continuation lines folded.
+
+    Comment lines are dropped wherever they appear, including inside a folded
+    multi-line value -- platformio.ini carries long `;` rationale blocks between
+    build_flags entries, and a flag scan must not read them as flags.
+    """
+    sections: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    key: str | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith((";", "#")):
+            continue
+        header = INI_SECTION.match(stripped)
+        if header:
+            current = sections.setdefault(header.group(1), {})
+            key = None
+            continue
+        if current is None:
+            continue
+        if raw[:1].isspace() and key is not None:
+            current[key] += " " + stripped
+            continue
+        if "=" in stripped:
+            name, _, value = stripped.partition("=")
+            key = name.strip()
+            current[key] = value.strip()
+    return sections
+
+
+def expand_ini_value(
+    value: str,
+    sections: Mapping[str, Mapping[str, str]],
+    depth: int = 0,
+) -> str:
+    """Resolve `${section.key}` references. An unknown reference expands empty,
+    which is what PlatformIO does with one this file cannot see."""
+    if depth >= INI_REF_DEPTH:
+        return value
+
+    def resolve(match: re.Match[str]) -> str:
+        section, _, key = match.group(1).rpartition(".")
+        return expand_ini_value(
+            sections.get(section, {}).get(key, ""), sections, depth + 1
         )
+
+    return INI_REF.sub(resolve, value)
+
+
+def environment_build_flags(
+    sections: Mapping[str, Mapping[str, str]],
+    environment: str,
+) -> list[str]:
+    """Every build flag `[env:<environment>]` inherits, in `extends` order."""
+    name = f"env:{environment}"
+    if name not in sections:
         raise VerificationError(
-            "DSP runtime adapter still emits ITCM code: " + detail
+            f"platformio.ini has no [{name}] section, so the flags of the "
+            "environment under inspection cannot be read"
         )
-    return 1
+    chain: list[str] = []
+    seen: set[str] = set()
+    while name and name not in seen:
+        seen.add(name)
+        chain.append(name)
+        parent = sections[name].get("extends", "").strip()
+        if not parent:
+            break
+        name = parent if parent in sections else f"env:{parent}"
+        if name not in sections:
+            raise VerificationError(
+                f"platformio.ini section [{chain[-1]}] extends {parent!r}, "
+                "which does not exist"
+            )
+    flags: list[str] = []
+    for section in chain:
+        value = sections[section].get("build_flags")
+        if value:
+            flags.extend(expand_ini_value(value, sections).split())
+    return flags
+
+
+def verify_no_lto(ini_text: str, environment: str) -> int:
+    """Link-time optimisation would defer placement past every per-object check
+    in this file, so the guard refuses to certify a build that enables it."""
+    flags = environment_build_flags(parse_ini_sections(ini_text), environment)
+    found = [
+        flag
+        for flag in flags
+        if flag == LTO_FLAG_PREFIX or flag.startswith(LTO_FLAG_PREFIX + "=")
+    ]
+    if found:
+        raise VerificationError(
+            f"environment {environment} builds with {found}. Every check in "
+            "test/itcm-placement/verify_target.py reads one object file at a "
+            "time, and link-time optimisation moves the ITCM/FLASHMEM decision "
+            "past the last point an object file records it -- so every object "
+            "would read as innocent while ITCM grew. Drop the flag, or replace "
+            "these checks with ones that read the linked image"
+        )
+    return len(flags)
+
+
+def read_platformio_ini(project_dir: Path) -> str:
+    ini = project_dir / "platformio.ini"
+    try:
+        return ini.read_text()
+    except OSError as error:
+        raise VerificationError(
+            f"cannot read {ini}, so -flto cannot be ruled out: {error}"
+        ) from error
 
 
 def _summary(count: int, comdat: int, clones: int) -> str:
@@ -448,10 +713,18 @@ def _recorder_cold_summary(checked: int) -> str:
     )
 
 
-def _dsp_runtime_cold_summary(checked: int) -> str:
+def _ldf_summary(libraries: int, gated: int) -> str:
     return (
-        "DSP-runtime ITCM placement: PASS "
-        f"({checked} adapter object, 0 ITCM bytes)"
+        "LDF-library ITCM placement: PASS "
+        f"({libraries} libraries, {gated} gated to 0 ITCM bytes, "
+        f"{libraries - gated} allowlisted)"
+    )
+
+
+def _lto_summary(environment: str, flags: int) -> str:
+    return (
+        f"per-object visibility: PASS ({environment}, no -flto in "
+        f"{flags} build flags)"
     )
 
 
@@ -472,13 +745,17 @@ def verify_cold_placement(source, target, env) -> None:
             linked.append(path.relative_to(build_dir).as_posix())
         except ValueError:
             continue
+    environment = env.subst("$PIOENV")
+    project_dir = Path(env.subst("$PROJECT_DIR")).resolve()
+    print(_lto_summary(
+        environment,
+        verify_no_lto(read_platformio_ini(project_dir), environment),
+    ))
     readelf = _resolve_readelf(env)
     print(_summary(*verify_placement(build_dir, linked, readelf)))
     print(_hot_summary(*verify_hot_object(build_dir, readelf)))
     print(_ingress_hot_summary(verify_ingress_hot_object(build_dir, readelf)))
-    print(_dsp_runtime_cold_summary(
-        verify_dsp_runtime_cold_object(build_dir, readelf)
-    ))
+    print(_ldf_summary(*verify_ldf_libraries_in_build(build_dir, readelf)))
     print(_recorder_cold_summary(
         verify_recorder_cold_helper(build_dir, readelf)
     ))
@@ -492,8 +769,28 @@ def _main(argv: list[str]) -> int:
         default="arm-none-eabi-readelf",
         help="readelf-compatible executable",
     )
+    parser.add_argument(
+        "--environment",
+        help="PlatformIO environment (default: the build directory's name)",
+    )
+    parser.add_argument(
+        "--project-dir",
+        type=Path,
+        help="directory holding platformio.ini (default: derived from build_dir)",
+    )
     args = parser.parse_args(argv)
     build_dir = args.build_dir.resolve()
+    # $BUILD_DIR is <project>/.pio/build/<environment> unless somebody moved it.
+    environment = args.environment or build_dir.name
+    project_dir = (
+        args.project_dir.resolve() if args.project_dir else build_dir.parents[2]
+    )
+    try:
+        flags = verify_no_lto(read_platformio_ini(project_dir), environment)
+    except (OSError, VerificationError) as error:
+        print(f"per-object visibility: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_lto_summary(environment, flags))
     linked = [
         path.relative_to(build_dir).as_posix()
         for path in sorted(build_dir.glob("**/*.o"))
@@ -517,11 +814,11 @@ def _main(argv: list[str]) -> int:
         return 1
     print(_ingress_hot_summary(ingress))
     try:
-        dsp_runtime = verify_dsp_runtime_cold_object(build_dir, args.readelf)
+        ldf = verify_ldf_libraries_in_build(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:
-        print(f"DSP-runtime ITCM placement: FAIL: {error}", file=sys.stderr)
+        print(f"LDF-library ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
-    print(_dsp_runtime_cold_summary(dsp_runtime))
+    print(_ldf_summary(*ldf))
     try:
         recorder = verify_recorder_cold_helper(build_dir, args.readelf)
     except (OSError, subprocess.CalledProcessError, VerificationError) as error:

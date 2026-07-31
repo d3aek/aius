@@ -252,14 +252,21 @@ straight out of the audio path's headroom. Three rules, all enforced:
   placed the same way. That zone is the whole stack for both the main loop and
   audio ISR. `enqueue()` uses about 4 kB of frame at the bounded AUDIO
   checkpoint; the ISR now only publishes ingress.
-- **Four post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
+- **Six post-link ITCM guards**, in `test/itcm-placement/verify_target.py` and
   run by every optical build. They reject executable `.text` from declared cold
   objects, pin the mixed ingress library to its five producer entry points, and
   pin `optical_main.cpp` to its two ingress-producer functions plus the 12-byte
   per-decode DWT reader. New objects under a cold engine tree must be declared,
   so "this is legitimately hot" remains a reviewable claim rather than an
-  opinion. The fourth keeps the recorder's bring-up-only PSRAM geometry helper
-  out of ITCM.
+  opinion. A fourth keeps the recorder's bring-up-only PSRAM geometry helper out
+  of ITCM. The fifth closes the half `build_src_filter` paths cannot reach:
+  PlatformIO's LDF lands each resolved library at `lib<hash>/<libname>/`, so
+  every object of that shape is grouped by library and a library emitting any
+  `.text` must be named in `ITCM_ALLOWED_LDF_LIBS` — a new library, or a second
+  source inside a library that was cold, fails the build by default. The sixth
+  is the precondition for the other five: all of them read one object file at a
+  time, so the guard refuses an environment whose `platformio.ini` flags contain
+  `-flto`.
 - **A six-block ITCM link ceiling.** The linker rejects
   `_itcm_block_count > 6`; otherwise a small code increase could silently take a
   seventh 32 KiB FlexRAM block and remove the same amount from the shared
@@ -269,7 +276,7 @@ straight out of the audio path's headroom. Three rules, all enforced:
   staging, and the committed 131,424-byte OCRAM free floor.
 
 `scripts/build.sh` prints the per-bank report and fails when a bank is over
-capacity; `scripts/test.sh --suite itcm-placement` re-runs the four guards over
+capacity; `scripts/test.sh --suite itcm-placement` re-runs the six guards over
 an existing build.
 
 ## Running host tests
@@ -322,7 +329,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
 | `memory` | The per-bank release gate plus the optical post-link ingress/arena/staging/headroom proof; the native suite is driven over a committed ELF reduction of a real optical image. |
-| `itcm-placement` | The four post-link ITCM guards, re-run over an existing optical build. |
+| `itcm-placement` | The six post-link ITCM guards, re-run over an existing optical build, plus the host-only tests of the LDF-library gate and the `-flto` precondition. |
 | `fake-fidelity` | Every host fake's constants against the real framework headers, both directions: a listed constant must exist upstream with the same value, and a fake must not invent one. A fake with a wrong constant agrees with itself and with the tests asserting the same macro, so only an external reference catches it. |
 | `registry` | The guard on this table: fails when it, the `# Suites:` header in `scripts/test.sh` and that script's `case` arms disagree with the directories under `test/`. |
 
@@ -339,7 +346,7 @@ to run when no image is present, and reads
 
 Cross-build for the Teensy with `scripts/build.sh` (needs PlatformIO; see its
 header for the pinned-venv recipe). Both optical images must build with every
-bank fitting and both ITCM guards passing:
+bank fitting and all six ITCM guards passing:
 
 ```bash
 scripts/build.sh teensy41-optical

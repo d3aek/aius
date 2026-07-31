@@ -651,6 +651,19 @@ and makes the link fail if the adapter contributes any executable ITCM code.
 Portable DSP and optical-integration suites plus the complete Teensy target
 build pass.
 
+A takeover review on 2026-07-31 qualified that conviction. Both A/B legs also
+perturbed global code layout, so the placement conviction is empirical and the
+starvation mechanism remains unestablished: 144 bytes cannot claim a seventh
+FlexRAM bank, and flash execution is slower than ITCM, so neither a capacity
+nor a speed model explains the failure. Flash placement is retained as the
+configuration measured safe, and the guard is no longer bespoke: the
+itcm-placement verifier now default-denies executable ITCM code from every
+LDF-resolved library outside an explicit per-entry-reasoned allowlist, asserts
+the expected library set, rejects `-flto` (which would blind per-object
+attribution), and carries a host self-test. The residual risk, a
+layout-sensitive latent defect elsewhere in the ingress path, is tracked in
+[`aius-open-work-register.md`](aius-open-work-register.md).
+
 Exact committed repair image `6f6bfa9bd651+teensy41-optical`, built
 `2026-07-31T13:27:42Z`, then passed the original physical repro. All 60 UDP
 observations over 120 seconds remained `pcm-active`; committed blocks advanced

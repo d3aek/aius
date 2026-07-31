@@ -835,16 +835,21 @@ memory)
 	python3 "$fw_root/test/memory/test_target_memory.py"
 	;;
 itcm-placement)
-	# The post-link ITCM placement guard: four checks, cold objects emit no
-	# ITCM while the optical and mixed-ingress objects emit exactly their
-	# pinned producer allowlists, and recorder bring-up geometry stays cold.
-	# Named here so it is reachable like its siblings --
-	# boot-target runs the mutation tests for its own post-link verifier, and
-	# network-transport runs the vendor-header source contract, while this
-	# guard was reachable only through platformio.ini's post-link hook.
+	# The post-link ITCM placement guard: six checks -- the environment carries
+	# no -flto, cold objects emit no ITCM, the optical and mixed-ingress objects
+	# emit exactly their pinned producer allowlists, every LDF-resolved library
+	# is either gated to zero ITCM or named in the allowlist, and recorder
+	# bring-up geometry stays cold. Named here so it is reachable like its
+	# siblings -- boot-target runs the mutation tests for its own post-link
+	# verifier, and network-transport runs the vendor-header source contract,
+	# while this guard was reachable only through platformio.ini's post-link
+	# hook.
 	#
-	# This re-runs the guard over the objects a build already left behind; it
-	# does not build, and it cannot substitute for a build. A green result is
+	# The guard's own tests are host-only and run first, so this suite is never
+	# a complete no-op; only the target half below needs a cross-build.
+	python3 "$fw_root/test/itcm-placement/test_verify_target.py"
+	# The rest re-runs the guard over the objects a build already left behind;
+	# it does not build, and it cannot substitute for a build. A green result is
 	# only as current as .pio/build/$AIUS_ITCM_ENV.
 	itcm_env="${AIUS_ITCM_ENV:-teensy41-optical}"
 	itcm_build="$fw_root/.pio/build/$itcm_env"
