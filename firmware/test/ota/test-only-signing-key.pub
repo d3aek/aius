@@ -1,0 +1,16 @@
+# TEST-ONLY aius-ota Ed25519 PUBLIC key (32 bytes, hex).
+#
+# signature_scheme tag 1: Ed25519 over the image authentication digest.
+#
+# This keypair exists so the host suites can sign and verify with real
+# Ed25519 instead of a fake. It is generated from a PUBLISHED seed, so its
+# secret half is public knowledge and it must never appear in a firmware
+# image or sign anything an operator would install. Production keys are an
+# operator step: tools/ota/aius_ota_sign.py --help prints the command.
+#
+# Regenerate (identical hex line, seed = ASCII "aius-ota-test-only-key-notsecret"):
+#   tools/ota/aius_ota_sign.py keygen \
+#       --public test/ota/test-only-signing-key.pub \
+#       --secret test/ota/test-only-signing-key.sec \
+#       --seed-hex 616975732d6f74612d746573742d6f6e6c792d6b65792d6e6f74736563726574
+f36fb0b8312403ee37b965b64dce113eca79d401dc684190c2a02caca0604d30

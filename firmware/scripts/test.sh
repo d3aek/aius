@@ -793,6 +793,44 @@ ota)
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
 		-o "$ota_out"
 	"$ota_out"
+	# The Ed25519 verifier adapter behind that seam, over vendored TweetNaCl.
+	# The vendored file is compiled to its OWN object so its two
+	# accommodations stay scoped to it and the adapter, the OTA core and the
+	# suite keep full strictness -- the same shape the dts and a52 arms use:
+	#   -Wno-sign-compare      its FOR(i,n) macro compares a signed counter
+	#                          against an unsigned bound throughout.
+	#   -fno-sanitize=shift-base  its carry propagation left-shifts negative
+	#                          i64 intermediates (tweetnacl.c:281, :685),
+	#                          which is UB by the letter of C11 and exactly
+	#                          what the algorithm's radix-2^16 representation
+	#                          does on every two's-complement target. The
+	#                          file is verbatim (vendor/tweetnacl/NOTICE.md),
+	#                          so the carve-out lives here rather than in it,
+	#                          and it is the narrowest UBSan check that
+	#                          covers it -- every other check still applies.
+	ota_tweetnacl="$build_dir/ota-tweetnacl.o"
+	"$cc" "${cflags[@]}" -Wno-sign-compare -fno-sanitize=shift-base \
+		"-I$fw_root/vendor/tweetnacl" \
+		-c "$fw_root/vendor/tweetnacl/tweetnacl.c" \
+		-o "$ota_tweetnacl"
+	ota_ed25519_out="$build_dir/ota-ed25519"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
+		"-I$fw_root/vendor/tweetnacl" \
+		"$fw_root/test/ota/test_ota_ed25519.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota.c" \
+		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota_ed25519.c" \
+		"$ota_tweetnacl" \
+		-o "$ota_ed25519_out"
+	# The committed TEST-ONLY keypair lives beside the suite; the argument
+	# is the directory holding it, so the C suite, the host signer and the
+	# round-trip test below all sign with the same bytes.
+	"$ota_ed25519_out" "$fw_root/test/ota"
+	# The host signer end to end: keygen, sign, and verify by driving the
+	# firmware's own offer/absorb/verify/arm sequence over the container.
+	# It builds its own native helpers on demand (tools/ota/*.c), so it is
+	# runnable by an operator without this script.
+	python3 "$fw_root/test/ota/test_ota_signer.py"
 	;;
 runtime-target)
 	# Composed Teensy runtime: the composition root, the three bounded target

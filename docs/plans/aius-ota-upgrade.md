@@ -454,6 +454,20 @@ verdict item 5 (the post-LUT HalfKay/ROM recovery proof) and afterwards
 lights up the page's activate step and reboot-to-new-identity
 monitoring.
 
+Slice 2 is delivered: the Ed25519 adapter (scheme tag 1, faults latched
+distinctly, entropy trap on the never-used sign path) and the host signer
+(keygen/sign/verify driving the firmware's own header serializer and
+session, never a re-implementation; committed test-only keypair from a
+published seed). Placement finding for the target build, measured with
+the pinned toolchain: TweetNaCl's `crypto_sign_open` call graph is
+~4.5 KB `.text` plus ~1.9 KB `.rodata`, and the dcadec-style
+`build_src_filter` route would land those in ITCM and DTCM invisibly —
+against ~5 KB of ITCM headroom, that is not acceptable unpriced, so the
+selected mechanism is the linker-script pin: `EXCLUDE_FILE(*tweetnacl.c.o)`
+on the ITCM `.text` collector plus an explicit `.text.code` placement,
+with `test/boot-target/test_ldscript_drift.py` updated to match. That
+lands with slice 3's target wiring.
+
 ## Investigation completion gate
 
 “OTA fully investigated” means this plan can issue a finite build/defer verdict.

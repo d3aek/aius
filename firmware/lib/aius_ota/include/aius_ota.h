@@ -137,10 +137,35 @@ typedef enum {
  * 512 bytes (AIUS_SD_MAX_TRANSFER), so the live path stays far under this. */
 #define AIUS_OTA_MAX_CHUNK_BYTES 4096u
 
-/* The signature slot is a fixed 64 bytes. Ed25519 signatures are exactly 64,
- * which is why 64 was chosen; a scheme needing more is a format-version bump,
- * not a variable-length field. NONE exists only so an unsigned image has a
- * spelling the validator can reject by name. */
+/* THE SIGNATURE SCHEME TAG REGISTRY -- the wire values of the `signature_scheme`
+ * field at AIUS_OTA_HEADER_OFFSET_SIGNATURE_SCHEME, and the only place a tag is
+ * allocated.
+ *
+ *   0  NONE     No scheme. Not a value an image may carry: header rule 8
+ *                refuses it as MALFORMED. It exists only so an unsigned image
+ *                has a spelling the validator can reject by name rather than
+ *                falling through the "unknown tag" arm as if it were a scheme
+ *                from the future.
+ *   1  ED25519  Ed25519 (RFC 8032 PureEdDSA, Curve25519, SHA-512) over the
+ *                image's 32-byte AUTHENTICATION DIGEST -- i.e. over
+ *                aius_ota_header_auth_digest() of the header, NOT over the
+ *                payload and NOT over the header's own SHA-512. The device
+ *                side is lib/aius_ota/src/aius_ota_ed25519.c over vendored
+ *                TweetNaCl; the host side is tools/ota/aius_ota_sign.py.
+ *                Public key 32 bytes, signature 64 -- which is why the
+ *                container's signature slot is 64.
+ *
+ * A TAG NAMES THE WHOLE RECIPE, not just the algorithm: the curve, the hash and
+ * WHAT IS SIGNED are one indivisible claim, because a verifier that agrees on
+ * the algorithm but not on the message accepts a signature over something else.
+ * Changing any of the three is a new tag, never a re-reading of an old one.
+ *
+ * Allocating a tag: append the next integer, never renumber and never reuse a
+ * retired one. A device that does not know a tag refuses the image with
+ * UNSUPPORTED (header rule 9), which is what lets a fleet carrying mixed
+ * firmware reject rather than misinterpret. The signature slot is a fixed 64
+ * bytes, so a scheme whose signature does not fit is a format-version bump
+ * rather than a variable-length field. */
 typedef enum {
 	AIUS_OTA_SIGSCHEME_NONE = 0,
 	AIUS_OTA_SIGSCHEME_ED25519 = 1

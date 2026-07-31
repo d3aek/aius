@@ -29,7 +29,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_capability/` | USB capability wire protocol + arena-driven device handler. |
 | `lib/aius_replay/` | Replay service over a caller-supplied `AiusReplayReader`. |
 | `lib/aius_boot/` | Retained boot ledger: generation, checkpoint, reset kind, recovery mode. |
-| `lib/aius_ota/` | Portable OTA image container, staged-upgrade state machine and image-health records. |
+| `lib/aius_ota/` | Portable OTA image container, staged-upgrade state machine and image-health records, plus the Ed25519 verifier adapter (`aius_ota_ed25519.c`, signature scheme tag 1) behind the injected signature seam, over the verbatim TweetNaCl in `vendor/tweetnacl/`. |
 | `lib/aius_runtime/` | Epoch scheduler + the per-checkpoint budget table. |
 | `lib/aius_net/` | UDP frame codec + the network generation supervisor. |
 | `lib/aius_http/` | HTTP request parser + the one bounded server transaction. |
@@ -40,6 +40,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `lib/aius_audio/` | Subset build of the PJRC S/PDIF3 input/output units + the audio clock, from the retained source snapshots (the framework `Audio` library is `lib_ignore`d). |
 | `vendor/dcadec-core/` | Minimal `dcadec` fixed-point DTS Core (LGPL 2.1, verbatim; see its `NOTICE.md`). |
 | `vendor/NativeEthernet/` | Pinned Ethernet stack; the framework copy is `lib_ignore`d and the pin is proved post-link. |
+| `vendor/tweetnacl/` | TweetNaCl 20140427 verbatim (public domain; see its `NOTICE.md`): `crypto_sign_open` only, behind the OTA Ed25519 adapter. |
 | `src/` | Teensy entry points (`main.cpp`, `capability_main.cpp`, `optical_main.cpp`) + the Teensy adapters. |
 | `tools/device/` | Simulated device + host runner, including the P6 hidraw transport. |
 | `tools/net/` | HTTP and UDP exercisers for a running optical board. |
@@ -48,6 +49,7 @@ dependency, so the identical source runs in host tests and on the Teensy.
 | `tools/dcadec_ref/` | dcadec-reference generator for the LFE bit-exactness suite. |
 | `tools/measure_vectors/` | Committed PCM stimulus vectors for the measurement loopback + their generator/validator (preamble-free and loop-coherence obligations asserted at generation, revalidated by the `measure` suite). |
 | `tools/memory/` | Linker-map → per-bank memory report. |
+| `tools/ota/` | Host OTA image signer: Ed25519 keygen, container signing and verification through the firmware's own state machine. Compiles its two native helpers on demand from `lib/aius_ota` + `vendor/tweetnacl`; `--help` prints the operator key-generation command. |
 | `test/` | Host test suites (one directory per suite). |
 | `scripts/test.sh` | Native (host, gcc) test runner — the firmware's test entry point. |
 | `scripts/build.sh` | Teensy 4.1 cross-build (`pio run`) + per-bank memory report. |
@@ -327,7 +329,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |
 | `network-transport` | NativeEthernet behaviour + the vendor-header source contract. |
 | `optical-app` | One bounded dispatch decision per HTTP route and USB command. |
-| `ota` | The OTA image container's per-field validation, the staged-upgrade state machine (strict chunk offsets, resume, incremental digest, injected verifier seam), the power-loss record and the slot-independent image-health rules. |
+| `ota` | The OTA image container's per-field validation, the staged-upgrade state machine (strict chunk offsets, resume, incremental digest, injected verifier seam), the power-loss record and the slot-independent image-health rules; then the real Ed25519 behind that seam — RFC 8032 vectors 1 and 2 through the vendored library, accept plus every single-bit refusal in the signature, digest and public key, the entropy trap firing in a forked child, and the host signer's containers driven end to end to `ARMED`. |
 | `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, ingress-only audio callback, deferred AUDIO ownership/preflight, one watchdog feed, exact storage/diagnostics, and the absence of the legacy path. |
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
