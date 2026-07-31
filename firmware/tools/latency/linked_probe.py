@@ -368,6 +368,176 @@ def get_json(url: str) -> dict:
         return json.load(response)
 
 
+def active_source_trim_edge_ready(
+    previous: dict | None,
+    current: dict,
+    elapsed_seconds: float,
+    minimum_seconds: float,
+    maximum_follow_error_millihz: int,
+) -> bool:
+    if previous is None or elapsed_seconds < minimum_seconds:
+        return False
+    clock = current.get("clock", {})
+    pipeline = current.get("pipeline_diag", {})
+    audio = current.get("audio_diag", {})
+    previous_clock = previous.get("clock", {})
+    required = (
+        current.get("carrier") == 1
+        and clock.get("carrier_locked") is True
+        and clock.get("carrier_ready") is True
+        and clock.get("master") == "input"
+        and clock.get("state") == "tracking"
+        and clock.get("nominal_rate_hz") == 48000
+        and clock.get("stream_rate_hz") == 48000
+        and pipeline.get("class") == 1
+        and pipeline.get("pcm_confirmed") == 1
+        and pipeline.get("last_status") == 0
+        and audio.get("pipeline_last_failure") == 0
+        and audio.get("service_last_failure") == 0
+    )
+    carrier = clock.get("carrier_rate_millihz")
+    output = clock.get("output_rate_millihz")
+    if (
+        not required
+        or not isinstance(carrier, int)
+        or not isinstance(output, int)
+        or abs(output - carrier) > maximum_follow_error_millihz
+    ):
+        return False
+    for field in ("trim_updates", "invalid_windows"):
+        before = previous_clock.get(field)
+        after = clock.get(field)
+        if (
+            not isinstance(before, int)
+            or not isinstance(after, int)
+            or ((after - before) & 0xFFFFFFFF) != 1
+        ):
+            return False
+    return True
+
+
+def active_source_projection(status: dict, elapsed_seconds: float) -> dict:
+    clock = status.get("clock", {})
+    return {
+        "elapsed_seconds": elapsed_seconds,
+        "carrier": status.get("carrier"),
+        "class": status.get("pipeline_diag", {}).get("class"),
+        "pcm_confirmed": status.get("pipeline_diag", {}).get(
+            "pcm_confirmed"
+        ),
+        "pipeline_last_failure": status.get("audio_diag", {}).get(
+            "pipeline_last_failure"
+        ),
+        "carrier_rate_millihz": clock.get("carrier_rate_millihz"),
+        "output_rate_millihz": clock.get("output_rate_millihz"),
+        "trim_updates": clock.get("trim_updates"),
+        "invalid_windows": clock.get("invalid_windows"),
+    }
+
+
+def preflight_active_source(
+    device: str,
+    rate: int,
+    period: int,
+    buffer_size: int,
+    status_url: str,
+    minimum_seconds: float,
+    timeout_seconds: float,
+    poll_seconds: float,
+    maximum_follow_error_millihz: int,
+) -> dict:
+    manifest: dict = {
+        "state": "running",
+        "device": device,
+        "format": "S16_LE",
+        "channels": 2,
+        "minimum_seconds": minimum_seconds,
+        "timeout_seconds": timeout_seconds,
+        "poll_seconds": poll_seconds,
+        "maximum_follow_error_millihz": (
+            maximum_follow_error_millihz
+        ),
+        "observations": [],
+    }
+    alsa = Alsa()
+    playback: ctypes.c_void_p | None = None
+    try:
+        playback = alsa.open(device, SND_PCM_STREAM_PLAYBACK)
+        manifest["playback"] = alsa.configure(
+            playback, rate, period, buffer_size, True
+        )
+        alsa.check(alsa.lib.snd_pcm_prepare(playback), "prepare playback")
+        zeros = np.zeros((buffer_size - period, 2), dtype="<i2")
+        prefilled = alsa.check(
+            alsa.lib.snd_pcm_writei(
+                playback, ctypes.c_void_p(zeros.ctypes.data), len(zeros)
+            ),
+            "prefill active-source playback",
+        )
+        if prefilled != len(zeros):
+            raise AlsaError(
+                f"short active-source prefill: {prefilled}/{len(zeros)}"
+            )
+        alsa.check(alsa.lib.snd_pcm_start(playback), "start playback")
+        started = time.monotonic()
+        next_poll = started
+        previous: dict | None = None
+        block = np.zeros((period, 2), dtype="<i2")
+        while True:
+            written = alsa.check(
+                alsa.lib.snd_pcm_writei(
+                    playback,
+                    ctypes.c_void_p(block.ctypes.data),
+                    len(block),
+                ),
+                "active-source playback",
+            )
+            if written != len(block):
+                raise AlsaError(
+                    f"short active-source transfer: {written}/{len(block)}"
+                )
+            now = time.monotonic()
+            elapsed = now - started
+            if now >= next_poll:
+                current = get_json(status_url)
+                manifest["observations"].append(
+                    active_source_projection(current, elapsed)
+                )
+                if active_source_trim_edge_ready(
+                    previous,
+                    current,
+                    elapsed,
+                    minimum_seconds,
+                    maximum_follow_error_millihz,
+                ):
+                    manifest["state"] = "accepted"
+                    manifest["accepted_status"] = current
+                    manifest["elapsed_seconds"] = elapsed
+                    manifest["alsa_status_end"] = alsa.status(playback)
+                    if manifest["alsa_status_end"].get("state") != (
+                        SND_PCM_STATE_RUNNING
+                    ):
+                        raise AlsaError(
+                            "active-source playback is not running"
+                        )
+                    return manifest
+                previous = current
+                next_poll = now + poll_seconds
+            if elapsed >= timeout_seconds:
+                raise AlsaError(
+                    "active-source preflight timed out before a clean trim edge"
+                )
+    except BaseException as error:
+        manifest["state"] = "rejected"
+        manifest["failure"] = str(error)
+        setattr(error, "aius_active_source_manifest", manifest)
+        raise
+    finally:
+        if playback is not None:
+            alsa.lib.snd_pcm_drop(playback)
+            alsa.lib.snd_pcm_close(playback)
+
+
 def validate_linked_trigger(
     playback: dict,
     capture: dict,

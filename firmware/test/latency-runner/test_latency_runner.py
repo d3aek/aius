@@ -424,17 +424,57 @@ class AnalyzerTests(unittest.TestCase):
         )
 
     def test_formal_warmup_covers_active_source_clock_settle(self):
-        self.assertEqual(BENCH.FORMAL_WARMUP_FRAMES % 1536, 0)
+        self.assertEqual(BENCH.FORMAL_WARMUP_FRAMES, BENCH.WARMUP_FRAMES)
+        self.assertGreaterEqual(BENCH.ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS, 3.0)
         self.assertGreaterEqual(
-            BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE, 65.0
-        )
-        self.assertGreaterEqual(
-            BENCH.FORMAL_STATUS_DELAY_SECONDS, 64.0
+            BENCH.ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS, 60.0
         )
         self.assertLess(
             BENCH.FORMAL_STATUS_DELAY_SECONDS,
             BENCH.FORMAL_WARMUP_FRAMES / BENCH.RATE,
         )
+
+    def test_active_source_gate_requires_clean_trim_edge(self):
+        previous = {
+            "clock": {"trim_updates": 5, "invalid_windows": 6}
+        }
+        current = {
+            "carrier": 1,
+            "clock": {
+                "carrier_locked": True,
+                "carrier_ready": True,
+                "master": "input",
+                "state": "tracking",
+                "nominal_rate_hz": 48000,
+                "stream_rate_hz": 48000,
+                "carrier_rate_millihz": 48020761,
+                "output_rate_millihz": 48019956,
+                "trim_updates": 6,
+                "invalid_windows": 7,
+            },
+            "pipeline_diag": {
+                "class": 1,
+                "pcm_confirmed": 1,
+                "last_status": 0,
+            },
+            "audio_diag": {
+                "pipeline_last_failure": 0,
+                "service_last_failure": 0,
+            },
+        }
+
+        self.assertTrue(LINKED.active_source_trim_edge_ready(
+            previous, current, 3.0, 3.0, 1000
+        ))
+        current["clock"]["trim_updates"] = 5
+        self.assertFalse(LINKED.active_source_trim_edge_ready(
+            previous, current, 3.0, 3.0, 1000
+        ))
+        current["clock"]["trim_updates"] = 7
+        current["clock"]["invalid_windows"] = 8
+        self.assertFalse(LINKED.active_source_trim_edge_ready(
+            previous, current, 3.0, 3.0, 1000
+        ))
 
     def test_repository_identity_proves_sample_rate_ancestor(self):
         identity = BENCH.repository_identity()

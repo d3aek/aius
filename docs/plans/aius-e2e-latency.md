@@ -704,11 +704,21 @@ trim/invalid window crossed inside its bracket.
 
 The first committed preflight attempt held the active source for 2,400,768
 frames / 50.016 seconds and took the initial status at 49.5 seconds. After a
-clean reboot it still found -1,097 millihertz with five trims applied. The
-formal CLI default therefore holds the source for 3,121,152 frames / 65.024
-seconds, an exact AC-3 access-unit multiple, and takes the initial status at
-64.5 seconds. This covers the sixth rate-limited trim while leaving the short
-probe span before the next possible update. Equivalent 50-second
+clean reboot it still found -1,097 millihertz with five trims applied. Extending
+that fixed delay to 65.024 seconds reached exact carrier match at the initial
+snapshot, but a seventh trim landed inside the probe bracket and moved the
+final error to -805 millihertz. Both attempts prove that an absolute delay is
+phase-sensitive even when it is long enough to converge.
+
+The formal runner therefore uses an observed-edge preflight. It opens PCM
+playback, keeps zero samples flowing, and polls status for at least three and at
+most 75 seconds. It proceeds only on a simultaneous `trim_updates` and
+`invalid_windows` edge whose resulting follow error is within 1,000 millihertz,
+with carrier, PCM classification and latched service status all healthy. It
+then immediately reopens the linked formal stream, whose normal 2.048-second
+warm-up and 1.5-second initial snapshot leave the complete probe bracket before
+the next rate-limited update. The edge observations, acceptance status and ALSA
+state are retained as a hashed evidence artifact. Equivalent 50-second
 explicit-argument repeats from an already partly settled device accepted:
 
 | Production row | Repeat raw first output | Repeat raw AU tail | Follow error | Linked trigger skew |

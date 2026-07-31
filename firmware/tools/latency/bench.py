@@ -17,7 +17,11 @@ import wave
 
 import numpy as np
 
-from linked_probe import MAX_LINKED_TRIGGER_SKEW_FRAMES, collect
+from linked_probe import (
+    MAX_LINKED_TRIGGER_SKEW_FRAMES,
+    collect,
+    preflight_active_source,
+)
 
 
 RATE = 48000
@@ -36,12 +40,12 @@ AC3_PROBE_GAP_FRAMES = 5120
 # FFmpeg's measured AC-3 decode alignment places the first reference code at
 # frame 256 within its access unit, leaving the whole 1,024-frame code inside.
 WARMUP_FRAMES = 98304
-# The CM6206 emits a measurably different optical rate while ALSA playback is
-# active. Firmware can need six rate-limited ten-second trims after that edge,
-# so formal physical runs keep the carrier active before opening the evidence
-# bracket. This value is also an exact AC-3 access-unit multiple.
-FORMAL_WARMUP_FRAMES = 2032 * 1536
-FORMAL_STATUS_DELAY_SECONDS = 64.5
+ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS = 3.0
+ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS = 75.0
+ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS = 0.25
+MAXIMUM_FOLLOW_ERROR_MILLIHZ = 1000
+FORMAL_WARMUP_FRAMES = WARMUP_FRAMES
+FORMAL_STATUS_DELAY_SECONDS = 1.5
 TAIL_FRAMES = RATE // 4
 MAX_LAG_FRAMES = RATE // 4
 MAX_DSP_CONFIG_BYTES = 12288
@@ -297,6 +301,14 @@ def make_preflight(
         },
         "collection": {
             "status_delay_seconds": status_delay_seconds,
+            "active_source_preflight": {
+                "minimum_seconds": ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
+                "timeout_seconds": ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
+                "poll_seconds": ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
+                "maximum_follow_error_millihz": (
+                    MAXIMUM_FOLLOW_ERROR_MILLIHZ
+                ),
+            },
         },
     }
 
@@ -1518,7 +1530,25 @@ def main() -> int:
             ("ffmpeg_wrap_log", args.output / "ffmpeg-wrap.log"),
         ):
             artifacts[key] = artifact_record(artifact_path)
+    active_source_preflight_path = (
+        args.output / "active-source-preflight.json"
+    )
     try:
+        active_source = preflight_active_source(
+            args.device,
+            RATE,
+            args.period,
+            args.buffer,
+            args.status_url,
+            ACTIVE_SOURCE_PREFLIGHT_MIN_SECONDS,
+            ACTIVE_SOURCE_PREFLIGHT_TIMEOUT_SECONDS,
+            ACTIVE_SOURCE_PREFLIGHT_POLL_SECONDS,
+            MAXIMUM_FOLLOW_ERROR_MILLIHZ,
+        )
+        write_json(active_source_preflight_path, active_source)
+        artifacts["active_source_preflight"] = artifact_record(
+            active_source_preflight_path
+        )
         capture, manifest = collect(
             args.device,
             playback,
@@ -1532,6 +1562,15 @@ def main() -> int:
         failed = getattr(error, "aius_collection_manifest", {})
         if not isinstance(failed, dict):
             failed = {}
+        active_failure = getattr(
+            error, "aius_active_source_manifest", None
+        )
+        if isinstance(active_failure, dict):
+            write_json(active_source_preflight_path, active_failure)
+            artifacts["active_source_preflight"] = artifact_record(
+                active_source_preflight_path
+            )
+            failed["active_source_preflight"] = active_failure
         failed.update(preflight)
         failed["state"] = "rejected"
         failed["completed_utc"] = utc_now()
@@ -1540,6 +1579,11 @@ def main() -> int:
         failed["generation"] = generation
         write_json(args.output / "manifest.json", failed)
         raise
+    manifest["active_source_preflight"] = {
+        "accepted": True,
+        "elapsed_seconds": active_source["elapsed_seconds"],
+        "accepted_status": active_source["accepted_status"],
+    }
     capture_path = args.output / "capture.s16le"
     capture.tofile(capture_path)
     artifacts["capture"] = artifact_record(capture_path)
