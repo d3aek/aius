@@ -18,8 +18,8 @@ FLASHMEM size_t aius_http_home_page(char *body, size_t capacity, const char *git
 {
 	int length = snprintf(body, capacity,
 		"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Aius</title>"
-		"<style>:root{color-scheme:dark}body{max-width:72rem;margin:0 auto;padding:1rem;background:#101217;color:#e8edf2;font:1rem/1.5 ui-monospace,monospace;overflow-wrap:anywhere}code{font:inherit}input,button{min-height:2.75rem;font:inherit}button,a:focus-visible,input:focus-visible{outline:3px solid #f4c95d;outline-offset:2px}a{color:#8bc5ff}pre{max-width:100%%;overflow:auto;white-space:pre-wrap}</style></head>"
-		"<body data-mr-ui-contract=\"accessible-2026\"><h1>Aius optical firmware</h1><p>Git revision: %s<br>Build UTC: %s</p>"
+		"<style>:root{color-scheme:dark}body{max-width:72rem;margin:0 auto;padding:1rem;background:Canvas;color:CanvasText;font:1rem/1.5 ui-monospace,monospace;overflow-wrap:anywhere}code{font:inherit}input,button{min-height:2.75rem;font:inherit}button,a:focus-visible,input:focus-visible{outline:3px solid Highlight;outline-offset:2px}a{color:LinkText}pre{max-width:100%%;overflow:auto;white-space:pre-wrap}</style></head>"
+		"<body><h1>Aius optical firmware</h1><p>Git revision: %s<br>Build UTC: %s</p>"
 		"<h2>Control surface</h2><p>The user interface is served from the SD card. This page is the fallback for when the card is absent.</p>"
 		"<ul><li><a href=\"/sd/www/index.html\">DSP editor</a> - input trim and EQ, downmix, output EQ, limiter, live meters</li>"
 		"<li><a href=\"/sd/www/replays.html\">Replay manager</a></li><li><a href=\"/sd/www/status.html\">Device status</a></li>"
