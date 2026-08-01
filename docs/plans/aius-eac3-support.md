@@ -99,11 +99,17 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    squelch/re-type constants re-derived for the 12,288-word burst period
    against the shipped defect-34 stay-dark rule, T6's
    framed-but-unsupported vector moves to a genuinely refused type.
-4. **Target integration** — FLASH-cold code placement (the subset cannot
-   join the six-block ITCM budget), decode cycle cost measured against
-   the 8 ms AUDIO budget, arena/slot gates on target, SD-replay E-AC-3
-   IEC fixtures played on the box. **Scope revision (2026-08-01, from the
-   Phase-2 measurements):** the slot needs 207,776 B as measured
+4. **Target integration** — **GATED (owner decision 2026-08-01): no
+   E-AC-3 flash stages until the boot-lottery defect is fixed**
+   ([`aius-open-work-register.md`](aius-open-work-register.md) §Open
+   defects — runtime): every flash re-rolls the boot lottery, and this
+   phase's deployment cadence is unsafe until boots are
+   deterministically healthy. Host-side work (Phase 3's native proof,
+   the memory-plan design) stays unblocked. Content: FLASH-cold code
+   placement (the subset cannot join the six-block ITCM budget), decode
+   cycle cost measured against the 8 ms AUDIO budget, arena/slot gates
+   on target, SD-replay E-AC-3 IEC fixtures played on the box. **Scope
+   revision (2026-08-01, from the Phase-2 measurements):** the slot needs 207,776 B as measured
    (~179 KB after the `input_buffer` rung), so the 131,072 DTCM arena
    must GROW, not merely re-partition. Ground truth from the current
    build: RAM1 = 287,684 B variables + 6 ITCM banks, **39,996 B DTCM

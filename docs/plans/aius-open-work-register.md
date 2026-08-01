@@ -166,6 +166,28 @@ specified here. Strike items here in the commit that closes them.
     The on-demand reproducer stays: build `e6417b428`'s firmware
     out-of-tree, flash, first boot degrades.
 
+  **GATE (owner decision 2026-08-01): this defect now blocks every
+  E-AC-3 flash stage** ([`aius-eac3-support.md`](aius-eac3-support.md)
+  Phase 4 and beyond). Every flash re-rolls the boot lottery, so the
+  deployment cadence the E-AC-3 target work needs is unsafe until boots
+  are deterministically healthy. Host-side E-AC-3 work (Phase 3 native
+  proof, plan work) stays unblocked.
+
+  - Hypothesis candidate for path (2), recorded 2026-08-01 from the
+    signature arithmetic: a one-block slip every 168 blocks is a
+    ~0.595 % (1/168) rate mismatch — a BEAT between two clocks that
+    should be locked, pointing at a boot-latched bad state in the
+    SPDIF-RX clock recovery / audio PLL chain (per-boot: a lock race;
+    layout-sensitive: boot-path timing shifts the race; warm-reboot
+    flip: a re-lock). Discriminating experiment: a clock-domain
+    register dump (SPDIF SRPC/clock-recovery state, CCM audio PLL,
+    SAI/SPDIF dividers) served over HTTP, captured on a DEGRADED boot
+    and again after the warm-reboot flip of the SAME image — the diff
+    convicts or acquits the clock chain. Adding the dump to the
+    reproducer is one more roll against the in-image-instrumentation
+    wall; if manifestation survives, this is the cheapest remaining
+    conviction path, ahead of the hardware-debugger rider.
+
 ## Recorded debt — small, none blocking
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
