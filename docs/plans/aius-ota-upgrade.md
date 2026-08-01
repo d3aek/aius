@@ -3,7 +3,7 @@ title: Aius OTA firmware upgrade
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 subtype: design
 tags: [aius, firmware, teensy, ota, http, security, recovery]
 updated: 2026-08-01
@@ -596,6 +596,29 @@ healthy boot the same card takes the same writes in 50 ms. The open
 defect and its shipped detector are in
 [`aius-open-work-register.md`](aius-open-work-register.md) §Open
 defects — runtime; the end-to-end proceeds on a healthy boot.
+
+**THE SIGNED END-TO-END UPGRADE COMPLETED 2026-08-01 ~11:23, closing
+the activation slice.** On a healthy boot of `b51f694b585c` (the
+detector commit's build): the 463,104-byte signed container of
+`44425d6e6d1c` staged over the resumable transport in **3.1 s with zero
+restarts** — the same card, the same protocol that burned 25 restarts
+during the degraded-boot period — then device-verified (SHA-256),
+armed (Ed25519), and activated: 200 acknowledged, response drained,
+SD→PSRAM copy plus full re-verify pre-window, every interrupt source
+parked, the body erased/programmed/byte-compared with the FCB last,
+`SYSRESETREQ`, and the board booted the NEW image clean —
+`revision=44425d6e6d1c build=2026-08-01T11:20:10Z`, `recovery_safe` 0,
+`watchdog_early_resets` 0, `reset_source` 2 (the activation's own
+deliberate reset), healthy epoch rate, OTA session fresh and re-armed.
+The running firmware was replaced over Ethernet for the first time,
+with the recovery boundary never needed.
+
+**What remains open after this slice:** the boot-lottery defect (the
+register owns it, detector shipped); key rotation off the published
+dev pair before the repo goes public or the device leaves the bench
+(owner decision 2026-07-31 stands); and the upgrade page's activate
+step, which lights whenever the operator enables activation —
+`activation_available` correctly gates it boot-by-boot.
 
 **Also fixed on the way to the re-proof (found live, 2026-08-01): a
 fresh staging could never start over the previous one.** The staged file
