@@ -339,6 +339,13 @@ typedef struct {
 #define AIUS_OPTICAL_APP_OTA_TEXT_MAX 32u
 #define AIUS_OPTICAL_APP_OTA_TEXT_STORAGE (AIUS_OPTICAL_APP_OTA_TEXT_MAX + 1u)
 
+/* The on-card staging file, under the /aius/ root the SD engine installs to. The
+ * chunk route durably stages the whole container here (header + payload) at the
+ * container file offset; the composition's activation reads it back, skipping
+ * the 256-byte header. A fixed name because staging is single-image: a new offer
+ * overwrites it. */
+#define AIUS_OPTICAL_APP_OTA_STAGED_NAME "ota-staged.img"
+
 /* The five verbs, in the dispatcher's own vocabulary.
  *
  * Route identity normally arrives as an AiusHttpRoute, but lib/aius_http does
@@ -347,16 +354,22 @@ typedef struct {
  * slice adds AIUS_HTTP_ROUTE_OTA_* and five case labels that forward, and this
  * enum stays the dispatcher-side name either way.
  *
- * There is deliberately NO activate verb. Activation ships with the flash slice
- * (device gate: verdict item 5), and the status document's
- * "activation_available": false is how a page knows not to offer the step. */
+ * The activation-wiring slice adds three POST verbs. activate runs the flash
+ * programmer; enable-activation flips the runtime latch that keeps activation
+ * refused until the operator has proven the scratch-sector recovery check on
+ * the bench; self-test-flash runs that proof. activation_available in the
+ * status document (driven by the latch) is how a page knows whether to offer
+ * the activate step. */
 typedef enum {
 	AIUS_OPTICAL_APP_OTA_ROUTE_NONE = 0, /* not an OTA request */
 	AIUS_OPTICAL_APP_OTA_ROUTE_STATUS,   /* GET  /api/ota          (open read) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE,    /* PUT  /api/ota/image    (auth) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_ARM,      /* POST /api/ota/arm      (auth) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY,   /* POST /api/ota/verify   (auth) */
-	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT     /* POST /api/ota/abort    (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT,    /* POST /api/ota/abort    (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,          /* POST /api/ota/activate          (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION, /* POST /api/ota/enable-activation (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST          /* POST /api/ota/self-test-flash   (auth) */
 } AiusOpticalAppOtaRoute;
 
 /* The upgrade lifecycle, value-for-value the AiusOtaState the core publishes.
@@ -406,7 +419,16 @@ typedef enum {
 	AIUS_OPTICAL_APP_OTA_SIGNATURE,
 	/* The staging medium refused: busy, full, or a failed write. 507, the
 	 * same answer a card that will not take an upload already produces. */
-	AIUS_OPTICAL_APP_OTA_STORAGE
+	AIUS_OPTICAL_APP_OTA_STORAGE,
+	/* Activation is not enabled on this device: the runtime latch is off. 409.
+	 * The operator flips it (POST /api/ota/enable-activation) only after the
+	 * scratch-sector recovery check passes on the bench, so activation cannot
+	 * run before that proof and cannot be reached casually. */
+	AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED,
+	/* The scratch-sector self-test ran and the flash read-back did not match
+	 * the programmed pattern: the driver's LUT use is not safe on this board.
+	 * 500 -- the device could not complete the operation it was asked to prove. */
+	AIUS_OPTICAL_APP_OTA_SELF_TEST_FAILED
 } AiusOpticalAppOtaResult;
 
 /* Everything GET /api/ota publishes, filled by the application in one call.
@@ -445,6 +467,13 @@ typedef struct {
 	 * stay visible: the flag is what lets a page banner TEST KEY. */
 	char key_fingerprint[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
 	bool test_key;
+	/* The runtime activation latch: whether POST /api/ota/activate will run the
+	 * flash programmer rather than answer 409. It starts false at every boot and
+	 * is flipped only by the deliberate operator act (POST
+	 * /api/ota/enable-activation), which the operator performs after proving the
+	 * scratch-sector recovery check on the bench. A page reads this to decide
+	 * whether to offer the activate step. */
+	bool activation_available;
 	/* The verdict that failed, AIUS_OPTICAL_APP_OTA_OK when none, plus the
 	 * injected verifier's own return value (a live diagnostic: it says WHY
 	 * the verifier said no, and is not persisted). */
@@ -453,7 +482,7 @@ typedef struct {
 } AiusOpticalAppOtaStatus;
 
 /* The OTA seam. Every entry is required as a SET: aius_optical_app_set_ota()
- * takes all six or none, so a half-wired table is refused at registration
+ * takes all nine or none, so a half-wired table is refused at registration
  * rather than discovered as a null call at dispatch.
  *
  * `context` is the OTA adapter's own, not AiusOpticalApp's: the session, its
@@ -499,6 +528,25 @@ typedef struct {
 	AiusOpticalAppOtaResult (*verify)(void *context);
 	/* Back to IDLE, discarding the staged image. */
 	AiusOpticalAppOtaResult (*abort)(void *context);
+
+	/* Runs the staged image's flash activation. Gated on the runtime
+	 * activation latch (ACTIVATION_DISABLED when off) and on ARMED state
+	 * (STATE_REFUSED otherwise). On acceptance the device commits to quiesce +
+	 * program + SYSRESETREQ, so the 200 the dispatcher returns here is the LAST
+	 * thing the client sees before the board resets into the new image -- the
+	 * reset is deferred past the response drain, exactly as POST /api/reboot. */
+	AiusOpticalAppOtaResult (*activate)(void *context);
+	/* Flips the runtime activation latch true: the deliberate operator act that
+	 * makes activate and the self-test reachable. Nothing else toggles it and a
+	 * reboot always comes up with it false. */
+	AiusOpticalAppOtaResult (*enable_activation)(void *context);
+	/* Runs the item-5 scratch-sector recovery proof with the REAL flash
+	 * primitives against one sector far above the image (erase + program a
+	 * known pattern + read-back verify), so the board must keep serving HTTP
+	 * after it. Gated behind the activation latch so it cannot be hit casually.
+	 * OK == pass, SELF_TEST_FAILED == the read-back mismatched,
+	 * ACTIVATION_DISABLED == the latch is off. */
+	AiusOpticalAppOtaResult (*self_test_flash)(void *context);
 } AiusOpticalAppOta;
 
 /* Caller-owned dispatcher state.

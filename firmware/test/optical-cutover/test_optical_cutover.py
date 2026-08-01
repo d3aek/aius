@@ -356,12 +356,91 @@ def assert_requested_reset_waits_for_the_drained_transaction(text):
         "peer cannot prevent a requested reset"
     )
     occurrences = call_count(text, "reset_application")
-    assert occurrences == 2, (
-        "expected exactly two reset_application() occurrences -- its definition "
-        f"and the one gated call site -- found {occurrences}"
+    assert occurrences == 3, (
+        "expected exactly three reset_application() occurrences -- its "
+        "definition and the TWO gated call sites -- found "
+        f"{occurrences}. The invariant is deliberately two gated resets now, not "
+        "one: the reboot drain gate above AND OTA activation, whose RAM-resident "
+        "run-to-completion finalizer resets into the new image only after the "
+        "sequencer reaches READY_TO_RESET (ota_activate_run_and_finalize)"
     )
     assert "reset_application(" in gate, (
-        "the single reset_application() call site must be the gated one"
+        "the reboot reset must stay the drained-transaction gated call site"
+    )
+    finalizer = "ota_activate_run_and_finalize"
+    assert finalizer in definitions, (
+        f"missing {finalizer}() -- the activation reset must live in the "
+        "RAM-resident finalizer, not loop(), because after the head is "
+        "programmed the old image's flash is gone and a FLASHMEM reset would "
+        "execute new-image bytes"
+    )
+    assert "reset_application(" in without_comments_and_literals(
+        definitions[finalizer]
+    ), (
+        f"{finalizer}() must be the activation reset site, reached only after "
+        "the sequencer reaches READY_TO_RESET"
+    )
+
+
+OTA_QUIESCE_FUNCTION = "ota_quiesce"
+OTA_ACTIVATION_SERVICE = "service_ota_activation"
+OTA_RESIDENT_RUN = "ota_activate_run_and_finalize"
+# The quiesce steps, in the order that leaves no master touching flash during the
+# erase window (plan §Item 4: gate closed, audio service stopped, ISR parked).
+# The order is load-bearing -- the carrier must go dark before the audio path is
+# torn down, and the audio service must stop before the source ISR is parked --
+# and no native suite compiles optical_main.cpp, so this is a text property.
+OTA_QUIESCE_STEPS = (
+    "tx_gate_actuate",        # 1. transmit gate closed (pad 14 low)
+    "g_audio_service_ready",  # 2. epoch-driven audio service stopped
+    "NVIC_DISABLE_IRQ",       # 3. audio update ISR source parked
+)
+
+
+def assert_activation_quiesce_is_ordered(text):
+    """OTA activation quiesces before the dark window, in the exact order the
+    plan requires, and does so BEFORE it runs the RAM-resident sequencer to
+    completion. RM p.279 note 3 ("no FLASH access from any master during
+    erase/program") is discharged structurally by this quiesce plus the
+    per-primitive PRIMASK mask, not by timing analysis, so the ordering is the
+    proof and it is checked here."""
+    definitions = function_definitions(text)
+    assert OTA_QUIESCE_FUNCTION in definitions, (
+        f"missing {OTA_QUIESCE_FUNCTION}() -- activation must quiesce the board "
+        "before it erases flash, or a live master touches flash mid-erase"
+    )
+    body = without_comments_and_literals(definitions[OTA_QUIESCE_FUNCTION])
+    positions = []
+    for step in OTA_QUIESCE_STEPS:
+        index = body.find(step)
+        assert index >= 0, (
+            f"{OTA_QUIESCE_FUNCTION}() is missing the {step!r} quiesce step"
+        )
+        positions.append(index)
+    assert positions == sorted(positions), (
+        f"{OTA_QUIESCE_FUNCTION}() runs its steps out of order "
+        f"{list(zip(OTA_QUIESCE_STEPS, positions))}: the gate must close, then "
+        "the audio service stop, then the ISR park"
+    )
+    assert OTA_ACTIVATION_SERVICE in definitions, (
+        f"missing {OTA_ACTIVATION_SERVICE}() -- the deferred activation the "
+        "activate 200 acknowledges before the board goes dark"
+    )
+    service = without_comments_and_literals(definitions[OTA_ACTIVATION_SERVICE])
+    quiesce_at = service.find(OTA_QUIESCE_FUNCTION + "(")
+    run_at = service.find(OTA_RESIDENT_RUN + "(")
+    assert quiesce_at >= 0 and run_at > quiesce_at, (
+        f"{OTA_ACTIVATION_SERVICE}() must call {OTA_QUIESCE_FUNCTION}() BEFORE "
+        f"{OTA_RESIDENT_RUN}(): the dark window runs to completion, so a master "
+        "left live before it would touch flash during the erase"
+    )
+    # begin() validates preconditions with the flash still coherent, so a
+    # pre-dark refusal must come before the quiesce -- otherwise a refused
+    # activation would have needlessly darkened the board.
+    begin_at = service.find("aius_ota_activate_begin(")
+    assert 0 <= begin_at < quiesce_at, (
+        f"{OTA_ACTIVATION_SERVICE}() must run aius_ota_activate_begin() before "
+        f"{OTA_QUIESCE_FUNCTION}(), so a pre-dark refusal leaves the board serving"
     )
 
 
@@ -2458,6 +2537,10 @@ POSITIVE_CHECKS = (
         assert_requested_reset_waits_for_the_drained_transaction,
     ),
     (
+        "OTA activation quiesces (gate, audio, ISR) in order before the dark window",
+        assert_activation_quiesce_is_ordered,
+    ),
+    (
         "watchdog armed once at 8 s, fed exactly once per epoch",
         assert_watchdog_armed_once_fed_once_per_epoch,
     ),
@@ -2619,9 +2702,19 @@ def assert_no_extra_watchdog_feed(text):
     assert re.search(r"\bwatchdog_init\s*\(", clean) is None, (
         "the legacy local watchdog_init() is still present"
     )
-    assert "WDOG1_WSR" not in clean, (
-        "a raw WDOG1_WSR register write is present; the feed must go "
-        "through the boot adapter, not reimplement it here"
+    # The ONE legitimate raw WDOG1_WSR writer is ota_wdt_feed(), the OTA
+    # activation's RAM-resident watchdog feed: aius_boot_teensy_watchdog_feed() is
+    # FLASHMEM and cannot run in the flash-erase dark window (its code is in the
+    # flash being overwritten), and there is no epoch loop there to reach it, so
+    # the sequencer feeds per primitive through this distinct RAM-resident writer.
+    # Every OTHER raw WDOG1_WSR write must go through the boot adapter.
+    ota_feed = without_comments_and_literals(
+        function_definitions(text).get("ota_wdt_feed", "")
+    )
+    outside = clean.replace(ota_feed, "", 1) if ota_feed else clean
+    assert "WDOG1_WSR" not in outside, (
+        "a raw WDOG1_WSR register write is present outside ota_wdt_feed(); the "
+        "feed must go through the boot adapter, not reimplement it here"
     )
     # Lives here, not in the positive group: a file-wide absence assertion is
     # only satisfiable once the legacy arming is deleted, which is S2b's job.
@@ -3208,7 +3301,7 @@ def run_self_test():
     # client-side, because the reset landed at the end of the epoch that
     # dispatched -- before format_response() had run.
     good_reboot = (
-        "static FLASHMEM void reset_application(void)\n{\n"
+        "static FASTRUN void reset_application(void)\n{\n"
         "\tSCB_AIRCR = 0x05FA0004;\n}\n"
         "static FLASHMEM bool reboot_drain_complete(void)\n{\n"
         "\treturn http->state == AIUS_HTTP_TX_IDLE &&\n"
@@ -3222,6 +3315,10 @@ def run_self_test():
         "\tif (reboot_drain_complete() ||\n"
         "\t    (int32_t)(now_ms - g_reboot_deadline_ms) >= 0)\n"
         "\t\treset_application();\n}\n"
+        "static void ota_activate_run_and_finalize(void)\n{\n"
+        "\tif (phase == AIUS_OTA_ACTIVATE_READY_TO_RESET)\n"
+        "\t\treset_application();\n"
+        "\tfor (;;)\n\t\t;\n}\n"
         "void loop(void)\n{\n"
         "\tconst uint32_t now_ms = millis();\n"
         "\tif (g_reboot_requested)\n"
@@ -4085,6 +4182,20 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
     _expect_fail(
         assert_no_extra_watchdog_feed, bad_raw_interval,
         "extra-feed/raw-interval", "WDOG_WCR_WT",
+    )
+    # The OTA activation's RAM-resident feed is the one legitimate raw WDOG1_WSR
+    # writer; the same write outside ota_wdt_feed() is not.
+    good_ota_feed = good_no_extra_feed + (
+        "FASTRUN static void ota_wdt_feed(void *)\n{\n"
+        "\tWDOG1_WSR = 0x5555;\n\tWDOG1_WSR = 0xAAAA;\n}\n"
+    )
+    _expect_pass(assert_no_extra_watchdog_feed, good_ota_feed, "extra-feed/ota-resident")
+    bad_raw_wsr_elsewhere = good_ota_feed + (
+        "static void sneaky(void) { WDOG1_WSR = 0x5555; }\n"
+    )
+    _expect_fail(
+        assert_no_extra_watchdog_feed, bad_raw_wsr_elsewhere,
+        "extra-feed/raw-wsr-elsewhere", "outside ota_wdt_feed",
     )
 
     # the 24-bit output path.

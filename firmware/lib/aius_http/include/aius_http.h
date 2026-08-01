@@ -80,7 +80,21 @@ typedef enum {
 	AIUS_HTTP_ROUTE_OTA_IMAGE,
 	AIUS_HTTP_ROUTE_OTA_ARM,
 	AIUS_HTTP_ROUTE_OTA_VERIFY,
-	AIUS_HTTP_ROUTE_OTA_ABORT
+	AIUS_HTTP_ROUTE_OTA_ABORT,
+	/* The activation-wiring slice's three POST verbs (all auth-gated at
+	 * dispatch, same as the four verbs above). POST /api/ota/activate runs the
+	 * flash programmer; POST /api/ota/enable-activation flips the runtime latch
+	 * that keeps activation refused (409) until the operator has proven the
+	 * scratch-sector recovery check on the bench; POST /api/ota/self-test-flash
+	 * runs the real erase/program/read-back proof against one scratch sector.
+	 * Like the five ids above these are UNCONDITIONAL here -- the enum value and
+	 * its route_for()/method stub cost no image bytes; the composition root's
+	 * #if AIUS_OTA owns the real cost. enable-activation and self-test are
+	 * deliberately absent from the OpenAPI contract (bench/operator surfaces);
+	 * only /api/ota/activate is documented. */
+	AIUS_HTTP_ROUTE_OTA_ACTIVATE,
+	AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION,
+	AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH
 } AiusHttpRoute;
 
 typedef enum {

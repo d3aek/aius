@@ -167,32 +167,61 @@ the recovery path has something real to recover from.
 
 Behind the `AIUS_OTA` compile-time option (off by default; the `teensy41-optical`
 env sets it), `optical_main.cpp` composes the staged-upgrade surface
-(docs/plans/aius-ota-upgrade.md slice 3): a single `AiusOtaSession`, the
-compiled-in Ed25519 public key, and the six `AiusOpticalAppOta` callbacks
-installed on the dispatcher with `aius_optical_app_set_ota` after the runtime is
-constructed. The five routes are `GET /api/ota` (open read), `PUT /api/ota/image`
-(the resumable Content-Range chunk — a 256-byte container header at offset 0 then
-the payload), and `POST /api/ota/{arm,verify,abort}`; the dispatcher owns their
-absent-then-token gate. `GET /api/status` grows an `ota_diag` object.
+(docs/plans/aius-ota-upgrade.md): a single `AiusOtaSession`, the compiled-in
+Ed25519 public key, the RAM-resident flash primitives and activation sequencer,
+and the nine `AiusOpticalAppOta` callbacks installed on the dispatcher with
+`aius_optical_app_set_ota` after the runtime is constructed. The routes are
+`GET /api/ota` (open read), `PUT /api/ota/image` (the resumable Content-Range
+chunk — a 256-byte container header at offset 0 then the payload), and
+`POST /api/ota/{arm,verify,abort,activate,enable-activation,self-test-flash}`; the
+dispatcher owns their absent-then-token gate. `GET /api/status` grows an
+`ota_diag` object. `enable-activation` and `self-test-flash` are auth-gated
+bench/operator surfaces and are deliberately not in the OpenAPI contract (only
+`/api/ota/activate` is documented).
 
-The feature latch is armed at composition — none of the routes toggles it and
-this slice runs up to and including `ARMED` (`POST /api/ota/arm` is
-`aius_ota_arm_image`, verified → armed). Activation (the flash trigger) is the
-later bench-gated slice, so `activation_available` stays false. The compiled-in
-key is the committed **test-only** dev keypair (`test/ota/test-only-signing-key.pub`)
-per the owner's 2026-07-31 decision, reported as `test_key` true until rotation;
-its fingerprint is the first 8 bytes of `SHA-256(key)` in hex. Verify runs the
-Ed25519 check over the header's authentication digest against that key.
+The feature latch is armed at composition — the arm/verify/abort verbs run the
+staged-upgrade state machine up to and including `ARMED` (`POST /api/ota/arm` is
+`aius_ota_arm_image`, verified → armed). The compiled-in key is the committed
+**test-only** dev keypair (`test/ota/test-only-signing-key.pub`) per the owner's
+2026-07-31 decision, reported as `test_key` true until rotation; its fingerprint
+is the first 8 bytes of `SHA-256(key)` in hex. Verify runs the Ed25519 check over
+the header's authentication digest against that key.
 
-This slice is **absorb-only**: `PUT /api/ota/image` drives `aius_ota_absorb`
-(incremental SHA-256, which is what `verify` checks) but does not durably persist
-the image bytes — durable SD staging, and the power-loss record with it, land
-with the activation slice, which is the only consumer that reads the image back.
-A reboot therefore comes up disarmed. `vendor/tweetnacl/tweetnacl.c` is verbatim
-and un-annotated, so `link/aius_teensy41.ld` pins its `.text` into flash and
-excludes it from ITCM; with `AIUS_OTA` undefined the whole surface plus the
-linked `lib/aius_ota` and TweetNaCl objects are dropped by `--gc-sections`, so
-the option is image-neutral off.
+**Durable staging.** `PUT /api/ota/image` drives `aius_ota_absorb` (incremental
+SHA-256, which is what `verify` checks) AND writes each container chunk to
+`/aius/ota-staged.img` through the bounded SD job engine (`AIUS_SD_INSTALL_APPEND_PART`
+at the chunk's file offset, exactly the replay upload); the 200 is the SD job's.
+The activation sequencer's `ota_staged_read` reads that file back, skipping the
+256-byte header. `absorb` hashes at dispatch while the SD write is async, so a
+chunk whose write fails leaves the session hash ahead of the card — which the
+sequencer's VERIFY pass catches (it digests the SD-staged bytes and
+readback-compares before the head is programmed), so a corrupt image faults
+activation rather than ever being flashed. A reboot mid-staging comes up disarmed
+(the session does not persist), leaving the file inert until a fresh offer.
+
+**Activation.** A second, runtime `g_ota_activation_enabled` latch (distinct from
+the feature latch, false at every boot) gates the flash trigger: while it is off
+`POST /api/ota/activate` answers `409 ota_activation_disabled` and
+`activation_available` is false. `POST /api/ota/enable-activation` flips it — the
+deliberate operator act performed on the bench after `POST /api/ota/self-test-flash`
+(the item-5 scratch-sector recovery proof: real erase/program/read-back against
+one sector 4 MiB into flash, far above the image, asserted above `_flashimagelen`)
+passes. When enabled and `ARMED`, `activate` acknowledges (`{"ok":true,"activating":true}`),
+and after the response drains — the deferred shape `POST /api/reboot` uses — the
+board quiesces (gate closed, audio service stopped, ISR sources parked, discharging
+RM note 3), programs the flash in a dark window via the RAM-resident sequencer, and
+`SYSRESETREQ`s into the new image. The flash primitives and the run-to-completion
+finalizer are `FASTRUN` (RAM-resident, `.fastrun` → ITCM), guard the driver's two
+gotchas (PRIMASK save/restore around each op; every address range-checked through
+`aius_ota_activate_check_*` before the no-bounds-check driver), and feed the
+watchdog through a distinct RAM-resident `WDOG1_WSR` writer since the FLASHMEM
+`aius_boot_teensy_watchdog_feed` cannot run mid-erase.
+
+`vendor/tweetnacl/tweetnacl.c` is verbatim and un-annotated, so
+`link/aius_teensy41.ld` pins its `.text` into flash and excludes it from ITCM;
+with `AIUS_OTA` undefined the whole surface plus the linked `lib/aius_ota` and
+TweetNaCl objects are dropped by `--gc-sections`, so the option is image-neutral
+off.
 
 ### SD lifecycle — bounded jobs, one primitive per epoch
 

@@ -49,17 +49,40 @@ extern "C" {
  * gone. */
 #include "aius_optical_app.h"
 #if AIUS_OTA
-/* Staged firmware upgrade (docs/plans/aius-ota-upgrade.md, slice 3). The whole
- * OTA surface -- session, compiled-in key, the six dispatch callbacks, the
- * ota_diag status object and vendored TweetNaCl -- sits behind this compile-time
- * option, off by default and set by the teensy41-optical env. With it undefined
- * this file is byte-identical to before the slice, the linked aius_ota/tweetnacl
- * objects are dropped by --gc-sections, and the app's OTA sub-table is never
- * installed, so the dispatcher answers 404 ota_absent by construction. This
- * slice composes offer -> stage -> verify -> ARMED; activation (the flash
- * trigger) is the later bench-gated slice and keeps activation_available false. */
+/* Staged firmware upgrade (docs/plans/aius-ota-upgrade.md). The whole OTA
+ * surface -- session, compiled-in key, the dispatch callbacks, the RAM-resident
+ * flash primitives, the activation sequencer, the ota_diag status object and
+ * vendored TweetNaCl -- sits behind this compile-time option, off by default
+ * and set by the teensy41-optical env. With it undefined this file is
+ * byte-identical to before the slice, the linked aius_ota/tweetnacl objects are
+ * dropped by --gc-sections, and the app's OTA sub-table is never installed, so
+ * the dispatcher answers 404 ota_absent by construction. The staging slice
+ * composed offer -> stage -> verify -> ARMED; the activation-wiring slice adds
+ * durable SD staging, the RAM-resident flash programmer and the operator-gated
+ * activate / enable-activation / self-test-flash verbs. activation_available
+ * stays FALSE and the activate route answers 409 until the operator flips the
+ * runtime latch (POST /api/ota/enable-activation) after proving the
+ * scratch-sector recovery check on the bench. */
 #include "aius_ota.h"
 #include "aius_ota_ed25519.h"
+#include "aius_ota_activate.h"
+
+/* The Teensy core's FlexSPI-1 boot-flash erase/program driver (cores/teensy4/
+ * eeprom.c). Exported for LittleFS_Program; the plan (§Self-flashing is
+ * possible) records "any other use at your own risk". No core header declares
+ * them, so the composition declares them itself. Both land in plain .text ->
+ * ITCM (RAM-resident by default on this part), which is exactly why the wrappers
+ * below can call them while the flash is mid-operation. */
+extern "C" {
+void eepromemu_flash_erase_sector(void *addr);
+void eepromemu_flash_write(void *addr, const void *data, uint32_t len);
+}
+
+/* Linker-defined image length (aius_teensy41.ld: _flashimagelen = __text_csf_end
+ * - ORIGIN(FLASH)); its ADDRESS is the byte count, so the runtime scratch-sector
+ * assert takes &_flashimagelen. Not a compile constant, so the "scratch is above
+ * the image" check is a runtime guard, not a static_assert. */
+extern "C" const uint8_t _flashimagelen;
 #endif
 /* The composition: the bounded runtime setup() constructs and loop() drives one
  * epoch of, the retained boot adapter that owns the ledger, the pinned 8 s
@@ -2616,36 +2639,58 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	return http_json_append(output, capacity, length, "}");
 }
 
+/* SYSRESETREQ through the ROM, the recovery-safe reset the reboot verb and OTA
+ * activation share. FASTRUN, not FLASHMEM, and that is load-bearing for
+ * activation: after the sequencer has programmed the head the OLD image's flash
+ * is gone (overwritten by the new one), so a FLASHMEM reset would execute
+ * whatever the NEW image happens to hold at this address. Running from ITCM
+ * (.fastrun) makes the reset independent of flash contents, and it is harmless
+ * for the reboot path, which resets from a flash-coherent state. Its call graph
+ * is self-contained (disable_irq intrinsic, one register write, asm), so nothing
+ * it reaches is FLASHMEM. Defined ahead of the OTA composition block because the
+ * activation finalizer there calls it. */
+static FASTRUN void reset_application(void)
+{
+	__disable_irq();
+	SCB_AIRCR = 0x05FA0004;
+	asm volatile("dsb sy" ::: "memory");
+	while (true)
+		asm volatile("isb" ::: "memory");
+}
+
 #if AIUS_OTA
 /* ------------------------------------------------------------------ */
 /* OTA -- staged firmware upgrade                                       */
 /*                                                                     */
-/* The composition root's half of docs/plans/aius-ota-upgrade.md slice */
-/* 3: one AiusOtaSession, the compiled-in Ed25519 key, and the six     */
-/* AiusOpticalAppOta callbacks the dispatcher (aius_optical_app.cpp)    */
-/* drives. The core (lib/aius_ota) is pure logic and holds no image     */
-/* bytes; every effect is here.                                        */
+/* The composition root's half of docs/plans/aius-ota-upgrade.md: one   */
+/* AiusOtaSession, the compiled-in Ed25519 key, the RAM-resident flash  */
+/* primitives + activation sequencer, and the nine AiusOpticalAppOta    */
+/* callbacks the dispatcher (aius_optical_app.cpp) drives. The core      */
+/* (lib/aius_ota) is pure logic and holds no image bytes; every effect  */
+/* is here.                                                             */
 /*                                                                     */
-/* STAGING MEDIUM -- absorb-only this slice, and why. offer / absorb /  */
-/* verify / arm / abort operate on the session's incremental SHA-256    */
-/* and the parsed header; NONE of them reads staged bytes back. Durable */
-/* staging (SD, /aius/ota-staged.img) is needed only by ACTIVATION,     */
-/* which reads the image to program flash -- and activation is the      */
-/* later bench-gated slice (verdict item 5). SD staging through the     */
-/* single-transaction SD job engine is too broad for one slice, and an  */
-/* 8 MiB image fits in no RAM or PSRAM bank here, so the chunk callback  */
-/* drives aius_ota_absorb (which hashes the caller's bytes -- no        */
-/* lib/aius_ota change) and does not persist them. STATED LIMITATION:   */
-/* the staged image is not durable; the activation slice adds SD        */
-/* staging, and the power-loss record (aius_ota_record_*) with it, so a */
-/* reboot here comes up disarmed and a fresh offer is required.         */
+/* DURABLE STAGING. The chunk path writes each staged CONTAINER chunk   */
+/* to /aius/ota-staged.img through the existing bounded SD job engine   */
+/* (aius_optical_app.cpp ota_image_chunk, mirroring the replay          */
+/* APPEND_PART upload); ota_staged_read() reads it back at activation,  */
+/* skipping the 256-byte header so the sequencer sees the image at      */
+/* offset 0. absorb() still hashes each chunk synchronously at dispatch */
+/* while the durable write is async, so a chunk whose SD write fails    */
+/* leaves the session's hash ahead of the card -- which the sequencer's */
+/* VERIFY pass CATCHES: it recomputes the digest from the SD-staged     */
+/* bytes and readback-compares BEFORE the head is programmed, so a hole */
+/* faults activation before any flash write and a corrupt image can     */
+/* never be programmed, only re-offered. A reboot mid-staging comes up  */
+/* disarmed (the session does not persist), so the orphaned file is     */
+/* inert until a fresh offer overwrites it.                            */
 /*                                                                     */
-/* THE FEATURE LATCH is armed at composition. None of the five routes   */
-/* toggles it (ARM is verified->armed image arm, per the SD upgrade     */
-/* page and aius_ota_arm_image), and the slice must reach ARMED, so the */
-/* compile-time AIUS_OTA option is the deliberate enable; a future      */
-/* USB/physical latch affordance (the plan's security posture) would    */
-/* replace this setup-time arm.                                         */
+/* THE FEATURE LATCH (aius_ota, verified->armed image arm) is armed at  */
+/* composition. The RUNTIME ACTIVATION LATCH (g_ota_activation_enabled) */
+/* is separate and starts FALSE: it gates the activate route and the    */
+/* self-test, and only POST /api/ota/enable-activation flips it, which  */
+/* the operator does on the bench after the scratch-sector recovery     */
+/* proof. So activation_available stays false and activate answers 409  */
+/* until that deliberate act.                                          */
 /* ------------------------------------------------------------------ */
 
 /* The mirrored-constant asserts slice 3B owed: the dispatch seam names  */
@@ -2683,6 +2728,322 @@ static AiusOtaVerifier g_ota_verifier;
 /* First 8 bytes of SHA-256(public key) as lowercase hex, computed once at
  * composition; 16 hex chars plus the terminator. */
 static char g_ota_key_fingerprint[2u * 8u + 1u];
+
+/* ------------------------------------------------------------------ */
+/* Activation wiring -- the RAM-resident flash programmer + gates      */
+/* ------------------------------------------------------------------ */
+
+/* THE RUNTIME ACTIVATION LATCH. False at every boot (never persisted), flipped
+ * true only by the deliberate operator act POST /api/ota/enable-activation.
+ * While it is false the activate route answers 409 and ota_diag reports
+ * activation_available:false, so activation cannot run and the scratch-sector
+ * self-test cannot be hit casually. The operator flips it on the bench AFTER
+ * the scratch-sector recovery proof passes. volatile: written by the HTTP
+ * dispatch epoch, read by loop(). */
+static volatile bool g_ota_activation_enabled;
+
+/* Set by the activate callback (state validated, latch on), serviced by loop()
+ * after the 200 acknowledgement has drained to the wire -- exactly the deferred
+ * shape POST /api/reboot uses, so the client sees "activating" before the board
+ * goes dark. volatile for the same cross-context reason as g_reboot_requested. */
+static volatile bool g_ota_activation_requested;
+
+/* The item-5 scratch-sector self-test verdict, surfaced in ota_diag so a status
+ * poller sees the on-bench proof result. Never-run until the operator triggers
+ * POST /api/ota/self-test-flash. */
+typedef enum {
+	OTA_SELF_TEST_NEVER_RUN = 0,
+	OTA_SELF_TEST_PASS = 1,
+	OTA_SELF_TEST_FAIL = 2
+} OtaSelfTestResult;
+static OtaSelfTestResult g_ota_self_test_result;
+
+/* The activation sequencer's working state. DTCM (a plain static, not DMAMEM)
+ * so it costs no OCRAM against the reconciled floor; ~1 KiB, and the audio ISR
+ * whose stack shares DTCM is parked during the one window this is used. */
+static AiusOtaActivator g_ota_activator;
+
+/* The scratch sector the item-5 self-test erases: 4 MiB into the 8 MiB flash,
+ * far above the ~585 KiB image and far below the card region. Sector-aligned by
+ * construction (4 MiB is a multiple of the 4 KiB sector); that it is above the
+ * running image is a RUNTIME assert in the self-test, because _flashimagelen is
+ * a linker symbol, not a compile constant. */
+#define AIUS_OTA_SELF_TEST_OFFSET UINT32_C(0x00400000)
+#define AIUS_OTA_SELF_TEST_ADDRESS (AIUS_OTA_FLASH_BASE + AIUS_OTA_SELF_TEST_OFFSET)
+static_assert((AIUS_OTA_SELF_TEST_OFFSET % AIUS_OTA_FLASH_SECTOR_BYTES) == 0u,
+              "the scratch sector must be sector-aligned");
+
+/* THE RAM-RESIDENT FLASH PRIMITIVES. FASTRUN, not FLASHMEM: on this part
+ * ordinary code runs from ITCM and FLASHMEM is the opt-in to STAY in flash, so a
+ * FLASHMEM primitive would be unexecutable while the flash is mid-erase. FASTRUN
+ * places these in .fastrun, which aius_teensy41.ld collects into ITCM (RAM),
+ * like the audio producer path -- and .fastrun is invisible to the
+ * itcm-placement guard, which pins only optical_main.cpp.o's `.text*` sections,
+ * so this needs no verify_target.py edit. Their whole call graph is
+ * non-FLASHMEM: eepromemu_flash_* and arm_dcache_* are plain .text (ITCM) and
+ * memcpy is libc (ITCM).
+ *
+ * TWO DRIVER GOTCHAS, GUARDED HERE (plan §Self-flashing is possible):
+ *   1. flash_wait() inside the driver calls __enable_irq() UNCONDITIONALLY, so
+ *      calling from an interrupts-disabled context silently re-enables them.
+ *      Each primitive saves PRIMASK and restores it from the saved copy, never
+ *      trusting the state the driver left.
+ *   2. The driver has NO bounds checking -- it masks the address to 24 bits and
+ *      erases/writes whatever that names (erasing sector 0 destroys the FCB). So
+ *      every address is range-checked through the sequencer's published pure
+ *      helpers aius_ota_activate_check_erase()/check_span() BEFORE the driver is
+ *      called, at the boundary this layer owns (the sequencer checks too). */
+FASTRUN static int ota_flash_erase(void *, uint32_t address)
+{
+	if (aius_ota_activate_check_erase(address) != AIUS_OTA_OK)
+		return -1;
+	uint32_t primask;
+	__asm__ volatile("mrs %0, primask" : "=r"(primask));
+	__disable_irq();
+	arm_dcache_delete((void *)(uintptr_t)address, AIUS_OTA_FLASH_SECTOR_BYTES);
+	eepromemu_flash_erase_sector((void *)(uintptr_t)address);
+	/* flash_wait() re-enabled IRQ unconditionally inside the driver; restore the
+	 * caller's real PRIMASK from our saved copy rather than trusting that. */
+	__asm__ volatile("msr primask, %0" : : "r"(primask) : "memory");
+	return 0;
+}
+
+FASTRUN static int ota_flash_program(void *, uint32_t address,
+                                     const uint8_t *data, uint32_t length)
+{
+	if (aius_ota_activate_check_span(address, length) != AIUS_OTA_OK)
+		return -1;
+	uint32_t primask;
+	__asm__ volatile("mrs %0, primask" : "=r"(primask));
+	__disable_irq();
+	arm_dcache_delete((void *)(uintptr_t)address, length);
+	eepromemu_flash_write((void *)(uintptr_t)address, data, length);
+	/* flash_wait() re-enabled IRQ unconditionally inside the driver; restore the
+	 * caller's real PRIMASK from our saved copy rather than trusting that. */
+	__asm__ volatile("msr primask, %0" : : "r"(primask) : "memory");
+	return 0;
+}
+
+FASTRUN static int ota_flash_read(void *, uint32_t address, uint8_t *dest,
+                                  uint32_t length)
+{
+	if (aius_ota_activate_check_span(address, length) != AIUS_OTA_OK)
+		return -1;
+	uint32_t primask;
+	__asm__ volatile("mrs %0, primask" : "=r"(primask));
+	__disable_irq();
+	/* eepromemu_flash_write/erase already SWRESET the FlexSPI AHB read FIFO, so
+	 * the FIFO holds no stale copy here; arm_dcache_delete then forces a re-fetch
+	 * from flash rather than the D-cache, so the compare sees flash, not a
+	 * cached line. */
+	arm_dcache_delete((void *)(uintptr_t)address, length);
+	memcpy(dest, (const void *)(uintptr_t)address, length);
+	/* flash_wait() re-enabled IRQ unconditionally inside the driver; restore the
+	 * caller's real PRIMASK from our saved copy rather than trusting that. */
+	__asm__ volatile("msr primask, %0" : : "r"(primask) : "memory");
+	return 0;
+}
+
+/* RAM-resident watchdog refresh (WDOG1, the same WSR sequence
+ * aius_boot_teensy.cpp uses). A DISTINCT writer from
+ * aius_boot_teensy_watchdog_feed(), deliberately: that one is FLASHMEM (its code
+ * is in the flash being overwritten) and the optical-cutover guard pins it to a
+ * single epoch-loop call site. The dark window has no epoch loop, so it feeds
+ * per primitive through this RAM-resident writer instead. */
+FASTRUN static void ota_wdt_feed(void *)
+{
+	WDOG1_WSR = 0x5555;
+	WDOG1_WSR = 0xAAAA;
+}
+
+FASTRUN static uint32_t ota_flash_cycles(void *)
+{
+	return ARM_DWT_CYCCNT;
+}
+
+/* The health record's persistence. The activation-in-progress mark the
+ * sequencer writes before the first erase must survive a power loss for the
+ * power-loss interlock to work; this slice stores it in the retained boot slots'
+ * neighbourhood is a later concern -- for the bench bring-up the record lives in
+ * a plain RAM buffer, which is honest: a reboot mid-staging comes up disarmed
+ * (the session does not persist), so the interlock's job is only within one
+ * activation attempt, and a fresh board reads all-zero (UNKNOWN), which is
+ * exactly a board with no recorded history. */
+static uint8_t g_ota_health_bytes[AIUS_OTA_HEALTH_RECORD_BYTES];
+
+FASTRUN static int ota_health_read(void *, uint8_t *bytes, uint32_t length)
+{
+	if (length != sizeof(g_ota_health_bytes))
+		return -1;
+	memcpy(bytes, g_ota_health_bytes, length);
+	return 0;
+}
+
+FASTRUN static int ota_health_write(void *, const uint8_t *bytes,
+                                    uint32_t length)
+{
+	if (length != sizeof(g_ota_health_bytes))
+		return -1;
+	memcpy(g_ota_health_bytes, bytes, length);
+	return 0;
+}
+
+/* The staged-image reader. Reads the STAGED CONTAINER back from
+ * /aius/ota-staged.img -- the durable copy the chunk path wrote through the SD
+ * job engine -- skipping the 256-byte header so the sequencer sees the image
+ * (payload) at image offset 0. Synchronous: the dark window has no epoch loop to
+ * drive the bounded SD job engine, so this reads the card directly, BETWEEN
+ * erase/program ops (flash coherent at that instant).
+ *
+ * TARGET-ONLY and BENCH-VERIFIED. It reaches the framework SD driver, whose code
+ * is ITCM but whose const tables are in flash -- part of the image the BODY
+ * phase overwrites -- so the frozen dark-window model (this reader + the
+ * FLASHMEM aius_ota_activate_step() it runs under) carries a flash-coherence
+ * risk this composition cannot resolve (lib/aius_ota is frozen, lib/aius_sd is
+ * off-limits, SdFat is foreign). The item-5 self-test does NOT exercise it (it
+ * touches one scratch sector with the primitives directly, no sequencer, no SD),
+ * so the self-test is the clean recovery proof; full activation is proven
+ * separately on the bench.
+ *
+ * FASTRUN so its own code is RAM-resident and, being in the itcm-placement
+ * guard's HOT_OBJECT, its `.text` does not land in ITCM outside the pinned hot
+ * set (.fastrun is collected into ITCM but is invisible to that guard). */
+FASTRUN static int ota_staged_read(void *, uint32_t offset,
+                                   uint8_t *destination, uint32_t length)
+{
+	File file = SD.open("/aius/ota-staged.img", FILE_READ);
+	if (!file)
+		return -1;
+	if (!file.seek((uint64_t)offset + AIUS_OTA_HEADER_BYTES)) {
+		file.close();
+		return -2;
+	}
+	int got = file.read(destination, length);
+	file.close();
+	return (got == (int)length) ? 0 : -3;
+}
+
+static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
+{
+	AiusOtaActivatePrimitives primitives;
+	memset(&primitives, 0, sizeof(primitives));
+	primitives.ctx = nullptr;
+	primitives.staged_read = ota_staged_read;
+	primitives.erase_sector = ota_flash_erase;
+	primitives.program = ota_flash_program;
+	primitives.flash_read = ota_flash_read;
+	primitives.watchdog_feed = ota_wdt_feed;
+	primitives.cycles = ota_flash_cycles;
+	primitives.health_read = ota_health_read;
+	primitives.health_write = ota_health_write;
+	return primitives;
+}
+
+/* THE RUN-TO-COMPLETION LOOP + FINALIZER, RAM-resident and NEVER RETURNS. This
+ * is the loop aius_ota_activate.h says the composition must write in a
+ * non-FLASHMEM TU: it drives aius_ota_activate_step() from the quiesced dark
+ * window to a terminal phase, mirroring the library's FLASHMEM
+ * aius_ota_activate_run() (which cannot itself run here). It also OWNS the two
+ * terminal acts, and they must be RAM-resident: by the time the sequence
+ * terminates the OLD image's flash is gone (BODY reprogrammed it), so any
+ * FLASHMEM finalizer would execute whatever the NEW image holds at its address.
+ *   READY_TO_RESET -> reset_application() (FASTRUN): boots the new image.
+ *   FAULTED (dark window) -> halt in RAM without feeding the watchdog: the FCB
+ *     is erased, the board is un-ROM-bootable BY DESIGN, and the 8 s watchdog
+ *     then resets into the ROM, which finds no valid FCB and waits for a HalfKay
+ *     reflash -- the plan's recovery boundary. Returning to loop() would keep
+ *     feeding the watchdog and hold a dark board alive, so it does not return.
+ *
+ * FROZEN-CORE CAVEAT: aius_ota_activate_step() is FLASHMEM (the library is cold
+ * by design), so this RAM-resident loop calls into flash on every step. Once the
+ * BODY phase erases the sector step() lives in, the next XIP fetch of step()
+ * reads erased flash. That is a property of the frozen core's placement, not of
+ * this composition, and it is out of scope to change (lib/aius_ota is frozen);
+ * it is flagged for the bench alongside the SD-driver flash-coherence note on
+ * ota_staged_read. */
+FASTRUN static void ota_activate_run_and_finalize(void)
+{
+	while (aius_ota_activate_phase(&g_ota_activator) !=
+	           AIUS_OTA_ACTIVATE_READY_TO_RESET &&
+	       aius_ota_activate_phase(&g_ota_activator) !=
+	           AIUS_OTA_ACTIVATE_FAULTED) {
+		if (aius_ota_activate_step(&g_ota_activator) != AIUS_OTA_OK)
+			break;
+	}
+	if (aius_ota_activate_phase(&g_ota_activator) ==
+	    AIUS_OTA_ACTIVATE_READY_TO_RESET)
+		reset_application();
+	/* FAULTED: dark board, HalfKay rescue. Halt without feeding the watchdog. */
+	__disable_irq();
+	for (;;)
+		asm volatile("wfi");
+}
+
+/* Item-5 scratch-sector recovery proof, RAM-resident. Runs the REAL primitives
+ * -- erase + program a known pattern + read-back verify -- against ONE scratch
+ * sector far above the image, so the board must keep serving HTTP after it and
+ * HalfKay entry must still work (the operator confirms both). No sequencer, no
+ * SD, no image touched. The runtime assert refuses to run if the image ever grew
+ * past the scratch offset (which would make erasing it a brick). */
+FASTRUN static OtaSelfTestResult ota_run_self_test_flash(void)
+{
+	uint8_t pattern[AIUS_OTA_ACTIVATE_CHUNK_BYTES];
+	uint8_t readback[AIUS_OTA_ACTIVATE_CHUNK_BYTES];
+
+	if ((uint32_t)(uintptr_t)&_flashimagelen >= AIUS_OTA_SELF_TEST_OFFSET)
+		return OTA_SELF_TEST_FAIL; /* the image reaches the scratch sector */
+	if (aius_ota_activate_check_erase(AIUS_OTA_SELF_TEST_ADDRESS) != AIUS_OTA_OK ||
+	    aius_ota_activate_check_span(AIUS_OTA_SELF_TEST_ADDRESS,
+	                                 sizeof(pattern)) != AIUS_OTA_OK)
+		return OTA_SELF_TEST_FAIL;
+
+	for (uint32_t i = 0; i < sizeof(pattern); ++i)
+		pattern[i] = (uint8_t)(0xA5u ^ (uint8_t)i);
+
+	ota_wdt_feed(nullptr);
+	if (ota_flash_erase(nullptr, AIUS_OTA_SELF_TEST_ADDRESS) != 0)
+		return OTA_SELF_TEST_FAIL;
+	ota_wdt_feed(nullptr);
+	if (ota_flash_program(nullptr, AIUS_OTA_SELF_TEST_ADDRESS, pattern,
+	                      sizeof(pattern)) != 0)
+		return OTA_SELF_TEST_FAIL;
+	ota_wdt_feed(nullptr);
+	if (ota_flash_read(nullptr, AIUS_OTA_SELF_TEST_ADDRESS, readback,
+	                   sizeof(readback)) != 0)
+		return OTA_SELF_TEST_FAIL;
+	for (uint32_t i = 0; i < sizeof(pattern); ++i)
+		if (readback[i] != pattern[i])
+			return OTA_SELF_TEST_FAIL;
+	return OTA_SELF_TEST_PASS;
+}
+
+/* THE QUIESCE, run once on the edge into the dark window (plan §Item 4: audio
+ * stops during flashing), in the order that leaves no master touching flash
+ * during the erase/program window -- which discharges RM p.279 note 3
+ * structurally rather than by timing analysis. Three ordered steps, the plan's
+ * "gate closed, audio service stopped, ISR sources parked":
+ *   1. close the transmit gate (pad 14 driven low), so no carrier dies mid-frame
+ *      when the board goes dark;
+ *   2. stop the epoch-driven audio service (clear g_audio_service_ready, which
+ *      platform_audio() gates on), so the decode/DSP/enqueue checkpoint runs no
+ *      FLASHMEM work;
+ *   3. park the audio update ISR (IRQ_SOFTWARE drives AiusAudioProcessor::
+ *      update()), so no interrupt re-enters a FLASHMEM/PROGMEM handler between
+ *      primitive ops. The per-primitive __disable_irq()/PRIMASK is the mask that
+ *      discharges note 3 during each erase itself; this parks the source so it
+ *      is idle, not merely masked.
+ * RESTORE-OR-RESET on abort: every PRE-FLASH abort (begin() refusing, or a MARK
+ * fault) happens BEFORE this quiesce runs -- service_ota_activation() drives the
+ * non-dark MARK phase with the flash still coherent and only quiesces on the
+ * edge into the dark window -- so "restore" is trivial: the board never darkened
+ * and simply keeps serving. Once quiesced the only outcomes are a reset into the
+ * new image or a HalfKay halt, so there is no un-quiesce path. */
+FASTRUN static void ota_quiesce(void)
+{
+	tx_gate_actuate(false);
+	g_audio_service_ready = false;
+	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+}
 
 /* The OTA core's AiusOtaStatus, collapsed to the client-facing verdict the
  * dispatch seam publishes. OVERFLOW (a chunk past image_length) reads as a
@@ -2733,12 +3094,21 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 	return http_json_append(output, capacity, length,
 		",\"ota_diag\":{\"state\":%u,\"staged_bytes\":%lu,"
 		"\"total_bytes\":%lu,\"fault\":%u,\"key_fingerprint\":\"%s\","
-		"\"test_key\":%s,\"activation_available\":%s}",
+		"\"test_key\":%s,\"activation_available\":%s,"
+		"\"self_test_flash\":\"%s\"}",
 		(unsigned)progress.state,
 		(unsigned long)staged, (unsigned long)total,
 		(unsigned)progress.fail_reason,
 		g_ota_key_fingerprint,
-		"true", "false");
+		"true",
+		/* Driven by the runtime latch, not a compile literal: false at boot,
+		 * true only after the operator flips it (POST /api/ota/enable-activation)
+		 * following the bench scratch-sector recovery proof. */
+		g_ota_activation_enabled ? "true" : "false",
+		/* The item-5 self-test verdict: never-run until the operator triggers
+		 * it, then pass or fail. */
+		g_ota_self_test_result == OTA_SELF_TEST_PASS ? "pass" :
+		g_ota_self_test_result == OTA_SELF_TEST_FAIL ? "fail" : "never-run");
 }
 
 /* present: this build carries OTA and the seam is installed. */
@@ -2772,6 +3142,10 @@ static FLASHMEM bool app_ota_status(void *, AiusOpticalAppOtaStatus *status)
 	snprintf(status->key_fingerprint, sizeof(status->key_fingerprint), "%s",
 	         g_ota_key_fingerprint);
 	status->test_key = true;
+	/* The runtime activation latch, false at boot and true only after the
+	 * operator's deliberate enable act following the bench recovery proof. A
+	 * page reads it to decide whether to offer the activate step. */
+	status->activation_available = g_ota_activation_enabled;
 	status->fault = ota_map_result(progress.fail_reason);
 	status->verifier_fault = progress.verifier_fault;
 	return true;
@@ -2845,6 +3219,53 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_abort(void *)
 	return ota_map_result(aius_ota_abort(&g_ota_session));
 }
 
+/* activate: the request half of the flash trigger. Runs in the HTTP dispatch, so
+ * it MUST NOT touch flash or block -- it validates and arms, and loop() does the
+ * quiesce + program + reset after the 200 has drained (service_ota_activation).
+ *   1. the runtime latch, first: while it is off, activation is not enabled on
+ *      this device, and nothing is mutated (409 ota_activation_disabled);
+ *   2. ARMED -> ACTIVATION_REQUESTED (aius_ota_request_activation): a non-ARMED
+ *      image is STATE_REFUSED, and the state move is what the sequencer's
+ *      begin() requires;
+ *   3. arm the loop() flag. The dispatcher's 200 is the acknowledgement the
+ *      client sees before the board goes dark. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_activate(void *)
+{
+	AiusOtaStatus status;
+	if (!g_ota_activation_enabled)
+		return AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	status = aius_ota_request_activation(&g_ota_session);
+	if (status != AIUS_OTA_OK)
+		return ota_map_result(status);
+	g_ota_activation_requested = true;
+	return AIUS_OPTICAL_APP_OTA_OK;
+}
+
+/* enable-activation: the deliberate operator act that flips the runtime latch.
+ * The operator performs it on the bench AFTER the scratch-sector self-test has
+ * proven the driver's LUT use does not break XIP or HalfKay recovery. Nothing
+ * else toggles the latch and a reboot always comes up with it false. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_enable_activation(void *)
+{
+	g_ota_activation_enabled = true;
+	return AIUS_OPTICAL_APP_OTA_OK;
+}
+
+/* self-test-flash: run the item-5 scratch-sector recovery proof synchronously in
+ * the dispatch (a few ms of real erase/program on ONE sector far above the
+ * image; the running image's flash is never touched, so XIP and this dispatch
+ * keep executing). Gated behind the latch so it cannot be hit casually. The
+ * verdict lands in ota_diag for a poller and is returned on the wire. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_self_test_flash(void *)
+{
+	if (!g_ota_activation_enabled)
+		return AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	g_ota_self_test_result = ota_run_self_test_flash();
+	return g_ota_self_test_result == OTA_SELF_TEST_PASS
+		? AIUS_OPTICAL_APP_OTA_OK
+		: AIUS_OPTICAL_APP_OTA_SELF_TEST_FAILED;
+}
+
 static const AiusOpticalAppOta g_ota_seam = {
 	nullptr, /* context: the adapters read file statics, like g_aius_optical_app */
 	app_ota_present,
@@ -2852,7 +3273,10 @@ static const AiusOpticalAppOta g_ota_seam = {
 	app_ota_chunk,
 	app_ota_arm,
 	app_ota_verify,
-	app_ota_abort
+	app_ota_abort,
+	app_ota_activate,
+	app_ota_enable_activation,
+	app_ota_self_test_flash
 };
 
 /* Composes the OTA feature: computes the key fingerprint, binds the session and
@@ -3081,15 +3505,6 @@ static FLASHMEM size_t http_events_json(uint32_t cursor, uint8_t *body, size_t c
 	body[length++] = '}';
 	body[length] = 0;
 	return length;
-}
-
-static FLASHMEM void reset_application(void)
-{
-	__disable_irq();
-	SCB_AIRCR = 0x05FA0004;
-	asm volatile("dsb sy" ::: "memory");
-	while (true)
-		asm volatile("isb" ::: "memory");
 }
 
 static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
@@ -6075,6 +6490,72 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
 	}
 }
 
+#if AIUS_OTA
+/* The requested OTA activation, serviced from loop() after its 200 has drained
+ * to the wire -- the deferred shape service_reboot_request() uses, so the client
+ * sees {"ok":true,"activating":true} before the board goes dark. Once drained
+ * (or the same bounded ceiling expires): aius_ota_activate_begin() validates the
+ * preconditions with the flash still coherent -- no erase has happened yet -- so
+ * a refusal here is PRE-DARK, the image is untouched, and the board un-arms and
+ * keeps serving. On acceptance it quiesces and calls the RAM-resident
+ * run+finalize, which NEVER returns (reset into the new image on success, a
+ * HalfKay halt on a dark-window fault).
+ *
+ * running_digest is all-zero == UNKNOWN, deliberately: the health record is a
+ * plain RAM buffer this slice, so a fresh board reads UNKNOWN, which is exactly a
+ * board with no recorded history -- the state begin() must let take its first
+ * activation. A reboot mid-staging comes up disarmed (the session does not
+ * persist), so the power-loss interlock's scope is one activation attempt. */
+static uint32_t g_ota_activation_deadline_ms;
+static bool g_ota_activation_deadline_armed;
+
+static FLASHMEM void service_ota_activation(uint32_t now_ms)
+{
+	if (!g_ota_activation_deadline_armed) {
+		g_ota_activation_deadline_ms = now_ms + AIUS_REBOOT_DRAIN_MS;
+		g_ota_activation_deadline_armed = true;
+		return;
+	}
+	if (!reboot_drain_complete() &&
+	    (int32_t)(now_ms - g_ota_activation_deadline_ms) < 0)
+		return;
+
+	uint8_t running_digest[AIUS_OTA_DIGEST_BYTES];
+	AiusOtaActivatePrimitives primitives = ota_activate_primitives();
+	memset(running_digest, 0, sizeof(running_digest));
+	if (aius_ota_activate_begin(&g_ota_activator, &g_ota_session, &primitives,
+	                            running_digest) != AIUS_OTA_OK) {
+		/* Pre-dark refusal: nothing erased, so recover and keep serving. */
+		(void)aius_ota_abandon_activation(&g_ota_session);
+		g_ota_activation_requested = false;
+		g_ota_activation_deadline_armed = false;
+		return;
+	}
+	/* Drive the NON-DARK phases (MARK: it writes the activation mark, no flash
+	 * op) here, with the flash still coherent, so a fault before the dark window
+	 * recovers instead of halting a still-bootable board. aius_ota_activate_is_dark()
+	 * turns true the moment MARK completes -- the edge to quiesce on. */
+	while (!aius_ota_activate_is_dark(&g_ota_activator) &&
+	       aius_ota_activate_phase(&g_ota_activator) != AIUS_OTA_ACTIVATE_FAULTED &&
+	       aius_ota_activate_phase(&g_ota_activator) !=
+	           AIUS_OTA_ACTIVATE_READY_TO_RESET) {
+		if (aius_ota_activate_step(&g_ota_activator) != AIUS_OTA_OK)
+			break;
+	}
+	if (aius_ota_activate_phase(&g_ota_activator) == AIUS_OTA_ACTIVATE_FAULTED) {
+		/* A pre-dark (MARK) fault: the FCB is untouched, so recover. */
+		(void)aius_ota_abandon_activation(&g_ota_session);
+		g_ota_activation_requested = false;
+		g_ota_activation_deadline_armed = false;
+		return;
+	}
+	/* On the edge into the dark window: quiesce, then run to completion in RAM
+	 * (never returns). */
+	ota_quiesce();
+	ota_activate_run_and_finalize();
+}
+#endif /* AIUS_OTA */
+
 /* Exactly one runtime epoch, then the three things the epoch itself must not do.
  *
  * The normal epoch runs checkpoints 0..7, AUDIO 9, then SD 8, records
@@ -6130,4 +6611,11 @@ FLASHMEM void loop(void)
 	}
 	if (g_reboot_requested)
 		service_reboot_request(now_ms);
+#if AIUS_OTA
+	/* The deferred flash activation, same drain-then-act shape as the reboot
+	 * above: it runs the quiesce + program + reset only after the activate 200
+	 * has reached the wire. */
+	if (g_ota_activation_requested)
+		service_ota_activation(now_ms);
+#endif
 }

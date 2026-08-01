@@ -100,6 +100,9 @@ typedef struct {
 	AiusOpticalAppOtaResult ota_arm_result;
 	AiusOpticalAppOtaResult ota_verify_result;
 	AiusOpticalAppOtaResult ota_abort_result;
+	AiusOpticalAppOtaResult ota_activate_result;
+	AiusOpticalAppOtaResult ota_enable_activation_result;
+	AiusOpticalAppOtaResult ota_self_test_result;
 	uint32_t ota_next_offset;
 	uint32_t last_ota_offset;
 	size_t last_ota_length;
@@ -452,6 +455,27 @@ static AiusOpticalAppOtaResult fake_ota_abort(void *context)
 	return fake->ota_abort_result;
 }
 
+static AiusOpticalAppOtaResult fake_ota_activate(void *context)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "ota_activate");
+	return fake->ota_activate_result;
+}
+
+static AiusOpticalAppOtaResult fake_ota_enable_activation(void *context)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "ota_enable_activation");
+	return fake->ota_enable_activation_result;
+}
+
+static AiusOpticalAppOtaResult fake_ota_self_test_flash(void *context)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "ota_self_test_flash");
+	return fake->ota_self_test_result;
+}
+
 static AiusOpticalAppOta fake_ota(Fake *fake)
 {
 	AiusOpticalAppOta ota;
@@ -463,6 +487,9 @@ static AiusOpticalAppOta fake_ota(Fake *fake)
 	ota.arm = fake_ota_arm;
 	ota.verify = fake_ota_verify;
 	ota.abort = fake_ota_abort;
+	ota.activate = fake_ota_activate;
+	ota.enable_activation = fake_ota_enable_activation;
+	ota.self_test_flash = fake_ota_self_test_flash;
 	return ota;
 }
 
@@ -527,6 +554,11 @@ static void fixture_init_ota_document(Fake *fake)
 	snprintf(document->key_fingerprint, sizeof(document->key_fingerprint),
 	         "9f86d081884c7d65");
 	document->test_key = true;
+	/* The runtime activation latch: false at every boot, and this document is a
+	 * board that has NOT yet had it flipped -- the default the activate route
+	 * answers 409 from. test_ota_status_document_activation_available drives it
+	 * true to prove the field tracks the latch. */
+	document->activation_available = false;
 	document->fault = AIUS_OPTICAL_APP_OTA_OK;
 	document->verifier_fault = 0;
 }
@@ -569,6 +601,9 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.ota_arm_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_verify_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_abort_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture->fake.ota_activate_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture->fake.ota_enable_activation_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture->fake.ota_self_test_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture_init_ota_document(&fixture->fake);
 	app = fake_app(&fixture->fake);
 	assert(aius_optical_app_init(&fixture->dispatcher, &app, fixture->body,
@@ -2542,7 +2577,9 @@ static const AiusHttpApplicationResponse *dispatch_ota_chunk(
 static const AiusOpticalAppOtaRoute kOtaRoutes[] = {
 	AIUS_OPTICAL_APP_OTA_ROUTE_STATUS, AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE,
 	AIUS_OPTICAL_APP_OTA_ROUTE_ARM, AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY,
-	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT, AIUS_OPTICAL_APP_OTA_ROUTE_NONE
+	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
+	AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
+	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST, AIUS_OPTICAL_APP_OTA_ROUTE_NONE
 };
 
 /* OTA is a compile-time option that defaults OFF, so "this build has no OTA" is
@@ -2600,14 +2637,16 @@ static void test_ota_table_registration(void)
 	fixture_init(&fixture);
 	ota = fake_ota(&fixture.fake);
 
-	for (size_t i = 0; i < 6u; ++i) {
+	for (size_t i = 0; i < 9u; ++i) {
 		AiusOpticalAppOta holed = fake_ota(&fixture.fake);
 		void **slots[] = {
 			(void **)&holed.present, (void **)&holed.status,
 			(void **)&holed.chunk, (void **)&holed.arm,
-			(void **)&holed.verify, (void **)&holed.abort
+			(void **)&holed.verify, (void **)&holed.abort,
+			(void **)&holed.activate, (void **)&holed.enable_activation,
+			(void **)&holed.self_test_flash
 		};
-		assert(ARRAY_LENGTH(slots) == 6u);
+		assert(ARRAY_LENGTH(slots) == 9u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_set_ota(&fixture.dispatcher, &holed));
 		/* Refused AND left absent -- fail-closed, not half-wired. */
@@ -2648,7 +2687,10 @@ static void test_ota_routes_are_authenticated(void)
 	Fixture fixture;
 	static const AiusOpticalAppOtaRoute mutating[] = {
 		AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE, AIUS_OPTICAL_APP_OTA_ROUTE_ARM,
-		AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY, AIUS_OPTICAL_APP_OTA_ROUTE_ABORT
+		AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY, AIUS_OPTICAL_APP_OTA_ROUTE_ABORT,
+		AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
+		AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
+		AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST
 	};
 	static const char *const refused_calls[] = {
 		"ota_present", "auth_matches"
@@ -2690,25 +2732,48 @@ static void test_ota_routes_are_authenticated(void)
  * requests, next_offset answers, a resumable refusal -- and four bounded
  * request-shape rules the route owns before the application is asked anything.
  */
+/* An accepted OTA chunk is now durably staged: the 200 is the SD job's, writing
+ * the chunk's bytes to /aius/ota-staged.img at its container file offset through
+ * the bounded engine (APPEND_PART), its body the next_offset ack. total is the
+ * chunk's own byte count, exactly the replay APPEND_PART shape. */
+static void expect_ota_stage(const AiusHttpApplicationResponse *response,
+                             unsigned long next_offset, uint64_t total,
+                             uint64_t initial_offset)
+{
+	char body[64];
+	snprintf(body, sizeof(body), "{\"ok\":true,\"next_offset\":%lu}",
+	         next_offset);
+	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
+	                body);
+	assert(response->sd_job.kind == AIUS_SD_JOB_UPLOAD);
+	assert(response->sd_job.install_mode == AIUS_SD_INSTALL_APPEND_PART);
+	assert(strcmp(response->sd_job.target_path, "/aius/ota-staged.img") == 0);
+	assert(response->sd_job.temp_path == NULL);
+	assert(response->sd_job.backup_path == NULL);
+	assert(response->sd_job.total == total);
+	assert(response->sd_job.initial_offset == initial_offset);
+}
+
 static void test_ota_image_chunks(void)
 {
 	Fixture fixture;
 	char scratch[AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES + 2u];
 	const AiusHttpApplicationResponse *response;
 	static const char *const chunk_calls[] = {
-		"ota_present", "auth_matches", "ota_chunk"
+		"ota_present", "auth_matches", "sd_ready", "sd_busy", "ota_chunk"
 	};
 	static const char *const refused_calls[] = {
 		"ota_present", "auth_matches"
 	};
 	fixture_init(&fixture);
 
-	/* In order. The first chunk carries the 256-byte container header, and
-	 * the answer is the transport's own: where the next chunk starts. */
+	/* In order. The first chunk carries the 256-byte container header, and the
+	 * answer is the transport's own next offset -- but the 200 is now the SD
+	 * job's, because the chunk is durably staged to /aius/ota-staged.img. */
 	fixture.fake.ota_next_offset = 512u;
 	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u, 512u,
 	                              585728u, "token");
-	expect_immediate(response, 200, "{\"ok\":true,\"next_offset\":512}");
+	expect_ota_stage(response, 512u, 512u, 0u);
 	expect_log(&fixture, chunk_calls, ARRAY_LENGTH(chunk_calls));
 	assert(fixture.fake.last_ota_offset == 0u);
 	assert(fixture.fake.last_ota_length == 512u);
@@ -2717,11 +2782,12 @@ static void test_ota_image_chunks(void)
 	assert(fixture.fake.last_ota_data == fixture.request.body);
 
 	/* Resume. A later chunk states its own offset, so a connection lost
-	 * between chunks costs one request and nothing else. */
+	 * between chunks costs one request and nothing else. The staged write seeks
+	 * to that container offset. */
 	fixture.fake.ota_next_offset = 1536u;
-	expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
-	                                    1024u, 512u, 585728u, "token"),
-	                 200, "{\"ok\":true,\"next_offset\":1536}");
+	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
+	                             1024u, 512u, 585728u, "token");
+	expect_ota_stage(response, 1536u, 512u, 1024u);
 	assert(fixture.fake.last_ota_offset == 1024u);
 
 	/* A bad offset is the one refusal that carries an instruction rather
@@ -2750,16 +2816,17 @@ static void test_ota_image_chunks(void)
 	assert(fixture.fake.last_ota_length == 0u);
 
 	/* Exactly one header is enough, and the rule is offset-zero only: a
-	 * one-byte chunk further in is ordinary payload. */
+	 * one-byte chunk further in is ordinary payload. Both stage. */
 	fixture.fake.ota_next_offset = AIUS_OPTICAL_APP_OTA_HEADER_BYTES;
-	expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u,
-	                                    AIUS_OPTICAL_APP_OTA_HEADER_BYTES,
-	                                    585728u, "token"),
-	                 200, "{\"ok\":true,\"next_offset\":256}");
+	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u,
+	                             AIUS_OPTICAL_APP_OTA_HEADER_BYTES,
+	                             585728u, "token");
+	expect_ota_stage(response, AIUS_OPTICAL_APP_OTA_HEADER_BYTES,
+	                 AIUS_OPTICAL_APP_OTA_HEADER_BYTES, 0u);
 	fixture.fake.ota_next_offset = 257u;
-	expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
-	                                    256u, 1u, 585728u, "token"),
-	                 200, "{\"ok\":true,\"next_offset\":257}");
+	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
+	                             256u, 1u, 585728u, "token");
+	expect_ota_stage(response, 257u, 1u, 256u);
 	assert(fixture.fake.last_ota_length == 1u);
 
 	/* One chunk is one bounded epoch's worth of hashing. The cap is
@@ -2767,10 +2834,11 @@ static void test_ota_image_chunks(void)
 	 * clamped -- a truncated chunk would break the contiguous contract the
 	 * next offset rests on. */
 	fixture.fake.ota_next_offset = AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES;
-	expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u,
-	                                    AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES,
-	                                    585728u, "token"),
-	                 200, "{\"ok\":true,\"next_offset\":4096}");
+	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u,
+	                             AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES,
+	                             585728u, "token");
+	expect_ota_stage(response, AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES,
+	                 AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES, 0u);
 	assert(fixture.fake.last_ota_length ==
 	       AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES);
 	fixture.fake.last_ota_length = 0u;
@@ -2803,6 +2871,34 @@ static void test_ota_image_chunks(void)
 	                 400, OTA_CHUNK_BODY);
 	expect_log(&fixture, refused_calls, ARRAY_LENGTH(refused_calls));
 	assert(fixture.fake.last_ota_length == 0u);
+
+	/* Durable staging needs the card, so the chunk route now checks it -- after
+	 * the request-shape rules (a malformed chunk is still 400, above) but BEFORE
+	 * the application hashes, so a chunk the card cannot take never advances the
+	 * session offset. A missing card is 503 sd_unavailable, a busy one 507
+	 * ota_storage, and neither reaches ota_chunk. */
+	{
+		static const char *const sd_refused[] = {
+			"ota_present", "auth_matches", "sd_ready"
+		};
+		static const char *const sd_busy_refused[] = {
+			"ota_present", "auth_matches", "sd_ready", "sd_busy"
+		};
+		fixture.fake.last_ota_length = 0u;
+		fixture.fake.sd_ready = false;
+		expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
+		                                    0u, 512u, 585728u, "token"),
+		                 503, "{\"ok\":false,\"error\":\"sd_unavailable\"}");
+		expect_log(&fixture, sd_refused, ARRAY_LENGTH(sd_refused));
+		fixture.fake.sd_ready = true;
+		fixture.fake.sd_busy = true;
+		expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
+		                                    0u, 512u, 585728u, "token"),
+		                 507, "{\"ok\":false,\"error\":\"ota_storage\"}");
+		expect_log(&fixture, sd_busy_refused, ARRAY_LENGTH(sd_busy_refused));
+		fixture.fake.sd_busy = false;
+		assert(fixture.fake.last_ota_length == 0u);
+	}
 }
 
 /* Every verdict the seam can answer, mapped to exactly one status and one
@@ -2905,12 +3001,101 @@ static void test_ota_verbs(void)
 	                 409, "{\"ok\":false,\"error\":\"ota_state\"}");
 
 	/* A request that names no verb answers deterministically and touches
-	 * nothing -- there is no activate verb in this slice, and asking for one
-	 * is not a way to find a half-built route. */
+	 * nothing -- ROUTE_NONE is not a parsed route, so asking for one is not a
+	 * way to find a half-built route. */
 	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_NONE,
 	                              OTA_AUTH, NULL, -1),
 	                 405, "{\"ok\":false,\"error\":\"ota_method\"}");
 	expect_log(&fixture, refused_calls, ARRAY_LENGTH(refused_calls));
+}
+
+/* The activation-wiring slice's three verbs at the dispatch seam: each forwards
+ * to its callback, maps the verdict through the one map, and answers its own
+ * accepted body. The composition owns the runtime latch and the real flash
+ * work; here the fake supplies the verdict, so this proves the seam plumbing
+ * (which callback, which body, which status) and nothing about flash. */
+static void test_ota_activation_verbs(void)
+{
+	Fixture fixture;
+	static const char *const activate_calls[] = {
+		"ota_present", "auth_matches", "ota_activate"
+	};
+	static const char *const enable_calls[] = {
+		"ota_present", "auth_matches", "ota_enable_activation"
+	};
+	static const char *const self_test_calls[] = {
+		"ota_present", "auth_matches", "ota_self_test_flash"
+	};
+	fixture_init(&fixture);
+
+	/* Accepted answers. activate acknowledges before the deferred reset;
+	 * enable-activation reports the latch flipped; self-test reports the pass
+	 * the composition read back from the scratch sector. */
+	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
+	                              OTA_AUTH, NULL, -1),
+	                 200, "{\"ok\":true,\"activating\":true}");
+	expect_log(&fixture, activate_calls, ARRAY_LENGTH(activate_calls));
+
+	expect_immediate(dispatch_ota(&fixture,
+	                              AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
+	                              OTA_AUTH, NULL, -1),
+	                 200, "{\"ok\":true,\"activation_enabled\":true}");
+	expect_log(&fixture, enable_calls, ARRAY_LENGTH(enable_calls));
+
+	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
+	                              OTA_AUTH, NULL, -1),
+	                 200, "{\"ok\":true,\"self_test_flash\":\"pass\"}");
+	expect_log(&fixture, self_test_calls, ARRAY_LENGTH(self_test_calls));
+
+	/* The latch-off refusal: activation is not enabled on this device until the
+	 * operator flips it after the bench recovery proof. Both the gated verbs
+	 * answer 409 ota_activation_disabled. */
+	fixture.fake.ota_activate_result = AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
+	                              OTA_AUTH, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"ota_activation_disabled\"}");
+	fixture.fake.ota_self_test_result =
+		AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
+	                              OTA_AUTH, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"ota_activation_disabled\"}");
+
+	/* activate refuses a non-ARMED image with the generic state refusal (the
+	 * composition maps request_activation's STATE there). */
+	fixture.fake.ota_activate_result = AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
+	                              OTA_AUTH, NULL, -1),
+	                 409, "{\"ok\":false,\"error\":\"ota_state\"}");
+
+	/* A self-test whose read-back mismatched is a device fault, not a client
+	 * error: 500 ota_self_test_failed, distinct from the pass and the latch-off
+	 * refusal so the bench operator can tell the three apart. */
+	fixture.fake.ota_self_test_result = AIUS_OPTICAL_APP_OTA_SELF_TEST_FAILED;
+	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
+	                              OTA_AUTH, NULL, -1),
+	                 500, "{\"ok\":false,\"error\":\"ota_self_test_failed\"}");
+}
+
+/* activation_available in GET /api/ota tracks the runtime latch the application
+ * supplies, so a page offers the activate step exactly when the device will run
+ * it. The fixture default is a board with the latch off (409 on activate); this
+ * flips the document's field and proves the wire follows. */
+static void test_ota_status_document_activation_available(void)
+{
+	Fixture fixture;
+	char body[AIUS_HTTP_MAX_RESPONSE + 1u];
+	fixture_init(&fixture);
+
+	copy_body(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_STATUS,
+	                       NULL, NULL, -1),
+	          body, sizeof(body));
+	assert(strstr(body, "\"activation_available\":false") != NULL);
+
+	fixture.fake.ota_document.activation_available = true;
+	copy_body(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_STATUS,
+	                       NULL, NULL, -1),
+	          body, sizeof(body));
+	assert(strstr(body, "\"activation_available\":true") != NULL);
 }
 
 /* GET /api/ota -- the document a page narrates the whole upgrade from. */
@@ -3136,7 +3321,9 @@ int main(void)
 	RUN_TEST(test_ota_image_chunks);
 	RUN_TEST(test_ota_verdict_map);
 	RUN_TEST(test_ota_verbs);
+	RUN_TEST(test_ota_activation_verbs);
 	RUN_TEST(test_ota_status_document);
+	RUN_TEST(test_ota_status_document_activation_available);
 	RUN_TEST(test_route_coverage);
 	fprintf(stderr, "optical-app oracle: all tests passed\n");
 	return 0;

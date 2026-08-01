@@ -1429,7 +1429,9 @@ static const struct {
 	{ 400u, "ota_unsupported" }, /* UNSUPPORTED */
 	{ 409u, "ota_digest" },      /* DIGEST */
 	{ 409u, "ota_signature" },   /* SIGNATURE */
-	{ 507u, "ota_storage" }      /* STORAGE */
+	{ 507u, "ota_storage" },     /* STORAGE */
+	{ 409u, "ota_activation_disabled" }, /* ACTIVATION_DISABLED */
+	{ 500u, "ota_self_test_failed" }     /* SELF_TEST_FAILED */
 };
 
 #define AIUS_OPTICAL_APP_OTA_VERDICTS \
@@ -1528,9 +1530,11 @@ static FLASHMEM void ota_text_copy(char *out, size_t capacity, const char *in)
  * TEST KEY state the plan requires it to show. It discloses that this build
  * carries OTA, which the 404 on an absent build discloses anyway.
  *
- * "activation_available" is a literal false, not a field the application
- * supplies: whether an activate verb exists is this file's own knowledge, and
- * the activation slice flips it here when it adds the verb. */
+ * "activation_available" is the runtime latch the application supplies through
+ * the status struct: it is false at every boot and true only after the operator
+ * has flipped it (POST /api/ota/enable-activation) following the bench
+ * scratch-sector recovery proof. A page reads it to decide whether to offer the
+ * activate step. */
 static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
 	AiusOpticalAppDispatcher *dispatcher)
 {
@@ -1554,7 +1558,7 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
 		         "\"image\":{\"target_id\":\"%s\",\"build_revision\":\"%s\","
 		         "\"build_utc\":%llu},"
 		         "\"key\":{\"fingerprint\":\"%s\",\"test_key\":%s},"
-		         "\"activation_available\":false,"
+		         "\"activation_available\":%s,"
 		         "\"fault\":\"%s\",\"verifier_fault\":%d}",
 		         status.latch_armed ? "true" : "false",
 		         ota_state_name(status.state),
@@ -1564,6 +1568,7 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
 		         target_id, build_revision,
 		         (unsigned long long)status.build_utc,
 		         fingerprint, status.test_key ? "true" : "false",
+		         status.activation_available ? "true" : "false",
 		         kOtaVerdicts[ota_verdict_row(status.fault)].token,
 		         status.verifier_fault));
 }
@@ -1577,15 +1582,27 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
  * socket needs, and the reason this mirrors the replay upload rather than
  * inventing a session.
  *
- * The route owns four bounded facts and nothing else. It never touches the
- * card, never holds OTA state, and hands (offset, bytes) down exactly once. */
+ * DURABLE STAGING. On an accepted chunk the route additionally writes the
+ * chunk's bytes to the fixed staging file /aius/ota-staged.img through the
+ * existing bounded SD job engine (AIUS_SD_INSTALL_APPEND_PART at the chunk's
+ * file offset, exactly the replay APPEND_PART upload), so the container survives
+ * to activation. The 200 is therefore the SD job's -- withheld until the write
+ * commits -- not an immediate one; the application's absorb() has already hashed
+ * the chunk synchronously, so a chunk whose async write later fails leaves the
+ * session hash ahead of the card, which the ACTIVATION verify pass catches
+ * before any flash write (it digests the SD-staged bytes and readback-compares).
+ * The card is checked before absorb so a chunk the card cannot take does not
+ * advance the session's offset. The route still never holds OTA state and hands
+ * (offset, bytes) down exactly once. */
 static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
 {
 	const AiusOpticalAppOta *ota = &dispatcher->ota;
+	const AiusOpticalApp *app = &dispatcher->app;
 	uint32_t next_offset = 0u;
 	uint64_t span;
 	AiusOpticalAppOtaResult result;
+	int written;
 
 	/* 1. A range and a body. Without the range the chunk has no offset to be
 	 * at, which is the same refusal a Content-Range-less replay PUT gets. */
@@ -1614,32 +1631,52 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	if (request->content_range_start == 0u &&
 	    request->body_length < AIUS_OPTICAL_APP_OTA_HEADER_BYTES)
 		return http_error(dispatcher, 400, "ota_header");
+	/* 5. The card, before hashing: durable staging needs it, and a chunk it
+	 * cannot take must not advance the session's offset. */
+	if (!app->sd_ready(app->context))
+		return http_error(dispatcher, 503, "sd_unavailable");
+	if (app->sd_busy(app->context))
+		return http_error(dispatcher, 507, "ota_storage");
 	result = ota->chunk(ota->context, request->content_range_start,
 	                    request->body, request->body_length, &next_offset);
-	if (result == AIUS_OPTICAL_APP_OTA_OK)
-		return http_body_text(dispatcher, 200,
-			snprintf((char *)dispatcher->body, dispatcher->body_capacity,
-			         "{\"ok\":true,\"next_offset\":%lu}",
-			         (unsigned long)next_offset));
 	/* A range refusal is the one that carries an instruction rather than an
 	 * apology, so it answers with next_offset beside the error: the client
 	 * seeks there and continues instead of restarting a multi-megabyte
 	 * upload. It does NOT fail the session -- that is the transport's
-	 * contract and the core keeps it. */
+	 * contract and the core keeps it. And it reaches the card not at all. */
 	if (result == AIUS_OPTICAL_APP_OTA_RANGE)
 		return http_body_text(dispatcher, 409,
 			snprintf((char *)dispatcher->body, dispatcher->body_capacity,
 			         "{\"ok\":false,\"error\":\"ota_range\","
 			         "\"next_offset\":%lu}",
 			         (unsigned long)next_offset));
-	return ota_refusal(dispatcher, result);
+	if (result != AIUS_OPTICAL_APP_OTA_OK)
+		return ota_refusal(dispatcher, result);
+	/* Accepted: stage this chunk durably. The 200 becomes the SD job's, its
+	 * body the next_offset ack pre-formatted here. APPEND_PART writes
+	 * body_length bytes at the container file offset, so a dropped connection
+	 * still costs one chunk. */
+	if (!build_root_path(dispatcher->target_path,
+	                     sizeof(dispatcher->target_path),
+	                     AIUS_OPTICAL_APP_OTA_STAGED_NAME,
+	                     sizeof(AIUS_OPTICAL_APP_OTA_STAGED_NAME) - 1u))
+		return http_error(dispatcher, 507, "ota_storage");
+	written = snprintf((char *)dispatcher->body, dispatcher->body_capacity,
+	                   "{\"ok\":true,\"next_offset\":%lu}",
+	                   (unsigned long)next_offset);
+	if (written <= 0 || (size_t)written >= dispatcher->body_capacity)
+		return http_too_large(dispatcher);
+	return sd_upload(dispatcher, AIUS_SD_INSTALL_APPEND_PART,
+	                 request->content_length, request->content_range_start,
+	                 dispatcher->body, (size_t)written);
 }
 
 static FLASHMEM bool ota_wired(const AiusOpticalAppOta *ota)
 {
 	return ota->present != NULL && ota->status != NULL &&
 	       ota->chunk != NULL && ota->arm != NULL && ota->verify != NULL &&
-	       ota->abort != NULL;
+	       ota->abort != NULL && ota->activate != NULL &&
+	       ota->enable_activation != NULL && ota->self_test_flash != NULL;
 }
 
 /* Both gates run BEFORE the switch, for the reason route_is_control()'s gate
@@ -1687,6 +1724,24 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_ota(
 	case AIUS_OPTICAL_APP_OTA_ROUTE_ABORT:
 		return ota_verdict_answer(dispatcher, ota->abort(ota->context),
 		                          "{\"ok\":true,\"state\":\"idle\"}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE:
+		/* The composition gates this on the runtime latch and ARMED state and,
+		 * on acceptance, commits to quiesce + program + SYSRESETREQ. The 200 is
+		 * the acknowledgement the client sees before the board resets into the
+		 * new image; the reset is deferred past the response drain, as reboot. */
+		return ota_verdict_answer(dispatcher, ota->activate(ota->context),
+		                          "{\"ok\":true,\"activating\":true}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION:
+		return ota_verdict_answer(dispatcher,
+		                          ota->enable_activation(ota->context),
+		                          "{\"ok\":true,\"activation_enabled\":true}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST:
+		/* OK is the pass verdict; a mismatch is 500 ota_self_test_failed and a
+		 * latch-off is 409 ota_activation_disabled, both through the verdict
+		 * map. The pass/fail also lands in ota_diag for a status poller. */
+		return ota_verdict_answer(dispatcher,
+		                          ota->self_test_flash(ota->context),
+		                          "{\"ok\":true,\"self_test_flash\":\"pass\"}");
 	case AIUS_OPTICAL_APP_OTA_ROUTE_NONE:
 	default:
 		break;
@@ -1891,6 +1946,13 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY, request);
 	case AIUS_HTTP_ROUTE_OTA_ABORT:
 		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_ABORT, request);
+	case AIUS_HTTP_ROUTE_OTA_ACTIVATE:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE, request);
+	case AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
+		                    request);
+	case AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST, request);
 	case AIUS_HTTP_ROUTE_UNKNOWN:
 	default:
 		break;

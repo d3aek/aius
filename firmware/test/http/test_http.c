@@ -68,10 +68,12 @@ static void test_measure_routes(void)
 	                       &request) == AIUS_HTTP_ERR_ROUTE);
 }
 
-/* The five OTA routes (docs/plans/aius-ota-upgrade.md slice 3). GET /api/ota is
- * the open read, PUT /api/ota/image the resumable buffered chunk (admitted into
- * the PUT allow-list and carrying a body + Content-Range), and the three verbs
- * POST-only. The ids and their matching are unconditional here, so the parser
+/* The OTA routes (docs/plans/aius-ota-upgrade.md slice 3 + the activation
+ * slice). GET /api/ota is the open read, PUT /api/ota/image the resumable
+ * buffered chunk (admitted into the PUT allow-list and carrying a body +
+ * Content-Range), and the six verbs (arm / verify / abort / activate /
+ * enable-activation / self-test-flash) POST-only. The ids and their matching
+ * are unconditional here, so the parser
  * recognises them in this suite even though it is compiled without AIUS_OTA. The
  * dispatcher, not the parser, owns the absent-then-token gate. */
 static void test_ota_routes(void)
@@ -82,6 +84,7 @@ static void test_ota_routes(void)
 	const char *put_arm =
 		"PUT /api/ota/arm HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}";
 	const char *get_arm = "GET /api/ota/arm HTTP/1.0\r\n\r\n";
+	const char *get_activate = "GET /api/ota/activate HTTP/1.0\r\n\r\n";
 	const char *near_miss = "GET /api/otax HTTP/1.0\r\n\r\n";
 	const char *bare = "GET /api/ot HTTP/1.0\r\n\r\n";
 
@@ -91,6 +94,13 @@ static void test_ota_routes(void)
 	         AIUS_HTTP_ROUTE_OTA_VERIFY);
 	parse_ok("POST /api/ota/abort HTTP/1.0\r\n\r\n",
 	         AIUS_HTTP_ROUTE_OTA_ABORT);
+	/* The activation-wiring slice's three POST verbs. */
+	parse_ok("POST /api/ota/activate HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_ACTIVATE);
+	parse_ok("POST /api/ota/enable-activation HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION);
+	parse_ok("POST /api/ota/self-test-flash HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH);
 
 	/* PUT /api/ota/image carries a body and a Content-Range and is admitted
 	 * into the PUT allow-list -- the resumable-chunk shape. */
@@ -114,6 +124,10 @@ static void test_ota_routes(void)
 	assert(aius_http_parse((const uint8_t *)put_arm, strlen(put_arm),
 	                       &request) == AIUS_HTTP_ERR_METHOD);
 	assert(aius_http_parse((const uint8_t *)get_arm, strlen(get_arm),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	/* activate is POST-only too (enable-activation and self-test-flash share
+	 * the arm above). */
+	assert(aius_http_parse((const uint8_t *)get_activate, strlen(get_activate),
 	                       &request) == AIUS_HTTP_ERR_METHOD);
 
 	/* No shadow of a neighbouring route, and no prefix match. */
