@@ -63,7 +63,24 @@ typedef enum {
 	AIUS_HTTP_ROUTE_RECORDER_FREEZE,
 	AIUS_HTTP_ROUTE_RECORDER_THAW,
 	AIUS_HTTP_ROUTE_RECORDER_CONFIG,
-	AIUS_HTTP_ROUTE_RECORDER_DATA
+	AIUS_HTTP_ROUTE_RECORDER_DATA,
+	/* OTA staged firmware upgrade (docs/plans/aius-ota-upgrade.md, slice 3).
+	 * GET /api/ota is the open read; PUT /api/ota/image the resumable chunk
+	 * (APPEND_PART-shaped, Content-Range, buffered); POST /api/ota/{arm,verify,
+	 * abort} the auth-gated verbs. These ids and their route_for()/method rules
+	 * are UNCONDITIONAL -- an enum value costs no image bytes, and the small
+	 * matching stubs keep one AiusHttpRoute the optical dispatcher and every host
+	 * suite agree on (the `http` suite compiles aius_http.c without the OTA build
+	 * option, so gating the matching would leave it target-only and untested).
+	 * The OTA feature's real cost -- the session, key, callbacks, ota_diag and
+	 * TweetNaCl -- lives behind #if AIUS_OTA in the composition root, not here.
+	 * The dispatcher owns the absent-then-token gate for these routes, so none of
+	 * them belongs in aius_optical_app.cpp's route_is_control(). */
+	AIUS_HTTP_ROUTE_OTA,
+	AIUS_HTTP_ROUTE_OTA_IMAGE,
+	AIUS_HTTP_ROUTE_OTA_ARM,
+	AIUS_HTTP_ROUTE_OTA_VERIFY,
+	AIUS_HTTP_ROUTE_OTA_ABORT
 } AiusHttpRoute;
 
 typedef enum {

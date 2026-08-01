@@ -72,6 +72,9 @@ SECTIONS
 	.text.code : {
 		KEEP(*(.startup))
 		*(.flashmem*)
+		/* AIUS ADDITION — TweetNaCl pinned to flash; see the EXCLUDE_FILE on
+		 * .text.itcm and aius_ota_ed25519.c's placement note. */
+		*tweetnacl.c.o(.text*)
 		. = ALIGN(4);
 		KEEP(*(.init))
 		__preinit_array_start = .;
@@ -91,7 +94,7 @@ SECTIONS
 	.text.itcm : {
 		. = . + 32; /* MPU to trap NULL pointer deref */
 		*(.fastrun)
-		*(.text*)
+		*(EXCLUDE_FILE(*tweetnacl.c.o) .text*) /* AIUS: TweetNaCl -> flash */
 		. = ALIGN(16);
 	} > ITCM  AT> FLASH
 

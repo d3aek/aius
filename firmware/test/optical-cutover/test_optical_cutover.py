@@ -2384,6 +2384,44 @@ def assert_recorder_reports_the_streams_rate(text):
     )
 
 
+def assert_ota_seam_composed_under_option(text):
+    """The OTA composition root's contract (docs/plans/aius-ota-upgrade.md slice
+    3): the whole staged-upgrade surface sits behind the AIUS_OTA compile-time
+    option; the six-callback seam is installed on the runtime's own dispatcher
+    AFTER it is constructed (aius_optical_app_init zeroes the OTA slot); the
+    feature latch is armed at composition because none of the five routes toggles
+    it and the slice must reach ARMED; the ARM verb arms the IMAGE
+    (aius_ota_arm_image, verified -> armed) rather than the latch; and ota_diag
+    rides GET /api/status. The routes themselves and the dispatcher's
+    absent-then-token gate live outside this file."""
+    assert "#if AIUS_OTA" in text, (
+        "the OTA surface must sit behind the AIUS_OTA compile-time option"
+    )
+    assert "aius_optical_app_set_ota(&g_runtime.app" in text, (
+        "the OTA seam must be installed on the runtime's constructed dispatcher"
+    )
+    assert "aius_ota_latch_arm(" in text, (
+        "the composition must arm the OTA feature latch: no route toggles it "
+        "and this slice must reach ARMED"
+    )
+    assert "aius_ota_arm_image(" in text, (
+        "the ARM verb must arm the image (verified -> armed), not the latch"
+    )
+    assert "http_ota_diag_json" in text, (
+        "ota_diag must ride GET /api/status"
+    )
+    construct = text.find(
+        "aius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app"
+    )
+    compose = text.find("ota_compose();")
+    assert construct >= 0, "the runtime must be constructed in setup()"
+    assert compose >= 0, "setup() must call ota_compose()"
+    assert compose > construct, (
+        "ota_compose() must run AFTER aius_runtime_teensy_construct(): the "
+        "runtime zeroes the OTA slot as it builds the dispatcher"
+    )
+
+
 POSITIVE_CHECKS = (
     ("setup() is construction-only", assert_setup_is_construction_only),
     ("loop() delegates exactly one epoch", assert_loop_delegates_one_epoch),
@@ -2438,6 +2476,10 @@ POSITIVE_CHECKS = (
     (
         "boot fuse 0x6E0 is served on /api/status and never written",
         assert_boot_fuse_is_read_only_and_served,
+    ),
+    (
+        "the OTA seam is composed under the option, after construction",
+        assert_ota_seam_composed_under_option,
     ),
     (
         "the replay path performs no direct SD primitive",
@@ -3300,6 +3342,59 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
     _expect_fail(
         assert_boot_fuse_is_read_only_and_served, bad_fuse_decoded_only,
         "boot-fuse/no-raw-word", "missing keys",
+    )
+
+    # OTA seam composed under the option, after construction.
+    good_ota = (
+        "#if AIUS_OTA\n"
+        "static FLASHMEM AiusOpticalAppOtaResult app_ota_arm(void *)\n{\n"
+        "\treturn ota_map_result(aius_ota_arm_image(&g_ota_session));\n}\n"
+        "static FLASHMEM bool http_ota_diag_json(char *o, size_t c, size_t *l)\n"
+        "{\n\treturn http_json_append(o, c, l, \"ota_diag\");\n}\n"
+        "static FLASHMEM void ota_compose(void)\n{\n"
+        "\taius_ota_latch_arm(&g_ota_session);\n"
+        "\taius_optical_app_set_ota(&g_runtime.app, &g_ota_seam);\n}\n"
+        "#endif\n"
+        "void setup(void)\n{\n"
+        "\taius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, &cdc,\n"
+        "\t                              &platform, millis(), g_recovery_safe);\n"
+        "#if AIUS_OTA\n\tota_compose();\n#endif\n}\n"
+    )
+    _expect_pass(assert_ota_seam_composed_under_option, good_ota, "ota/good")
+    _expect_fail(
+        assert_ota_seam_composed_under_option,
+        good_ota.replace("\taius_ota_latch_arm(&g_ota_session);\n", "", 1),
+        "ota/no-latch-arm", "feature latch",
+    )
+    _expect_fail(
+        assert_ota_seam_composed_under_option,
+        good_ota.replace(
+            "aius_ota_arm_image(&g_ota_session)",
+            "aius_ota_latch_arm(&g_ota_session)", 1,
+        ),
+        "ota/arm-is-latch", "arm the image",
+    )
+    _expect_fail(
+        assert_ota_seam_composed_under_option,
+        good_ota.replace("#if AIUS_OTA\n\tota_compose();\n#endif\n", "", 1),
+        "ota/no-compose-call", "call ota_compose()",
+    )
+    _expect_fail(
+        assert_ota_seam_composed_under_option,
+        good_ota.replace(
+            "\taius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, "
+            "&cdc,\n"
+            "\t                              &platform, millis(), "
+            "g_recovery_safe);\n"
+            "#if AIUS_OTA\n\tota_compose();\n#endif\n",
+            "#if AIUS_OTA\n\tota_compose();\n#endif\n"
+            "\taius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, "
+            "&cdc,\n"
+            "\t                              &platform, millis(), "
+            "g_recovery_safe);\n",
+            1,
+        ),
+        "ota/compose-before-construct", "AFTER",
     )
 
     # watchdog arm-once / feed-once-per-epoch.

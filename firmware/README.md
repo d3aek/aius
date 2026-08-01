@@ -163,6 +163,37 @@ one bounded decision per HTTP route and USB command, over the twenty callbacks
 `teensy41-optical-fault` build it stalls forever at the selected checkpoint, so
 the recovery path has something real to recover from.
 
+### Staged firmware upgrade (OTA)
+
+Behind the `AIUS_OTA` compile-time option (off by default; the `teensy41-optical`
+env sets it), `optical_main.cpp` composes the staged-upgrade surface
+(docs/plans/aius-ota-upgrade.md slice 3): a single `AiusOtaSession`, the
+compiled-in Ed25519 public key, and the six `AiusOpticalAppOta` callbacks
+installed on the dispatcher with `aius_optical_app_set_ota` after the runtime is
+constructed. The five routes are `GET /api/ota` (open read), `PUT /api/ota/image`
+(the resumable Content-Range chunk — a 256-byte container header at offset 0 then
+the payload), and `POST /api/ota/{arm,verify,abort}`; the dispatcher owns their
+absent-then-token gate. `GET /api/status` grows an `ota_diag` object.
+
+The feature latch is armed at composition — none of the routes toggles it and
+this slice runs up to and including `ARMED` (`POST /api/ota/arm` is
+`aius_ota_arm_image`, verified → armed). Activation (the flash trigger) is the
+later bench-gated slice, so `activation_available` stays false. The compiled-in
+key is the committed **test-only** dev keypair (`test/ota/test-only-signing-key.pub`)
+per the owner's 2026-07-31 decision, reported as `test_key` true until rotation;
+its fingerprint is the first 8 bytes of `SHA-256(key)` in hex. Verify runs the
+Ed25519 check over the header's authentication digest against that key.
+
+This slice is **absorb-only**: `PUT /api/ota/image` drives `aius_ota_absorb`
+(incremental SHA-256, which is what `verify` checks) but does not durably persist
+the image bytes — durable SD staging, and the power-loss record with it, land
+with the activation slice, which is the only consumer that reads the image back.
+A reboot therefore comes up disarmed. `vendor/tweetnacl/tweetnacl.c` is verbatim
+and un-annotated, so `link/aius_teensy41.ld` pins its `.text` into flash and
+excludes it from ITCM; with `AIUS_OTA` undefined the whole surface plus the
+linked `lib/aius_ota` and TweetNaCl objects are dropped by `--gc-sections`, so
+the option is image-neutral off.
+
 ### SD lifecycle — bounded jobs, one primitive per epoch
 
 The Teensy SD library is synchronous and offers no cancellable call, so a

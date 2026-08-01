@@ -455,6 +455,29 @@ resolved 2026-08-01; the recovery channel is proven healthy this session)
 and afterwards lights up the page's activate step and
 reboot-to-new-identity monitoring.
 
+The composition (up to ARMED) is delivered and live on hardware. The five
+route ids parse in `lib/aius_http` (unconditional, so host suites cover
+them without the option); the six real callbacks over one `AiusOtaSession`,
+the health-record store and the compiled-in dev public key are installed
+under `#if AIUS_OTA`; `ota_diag` joins `GET /api/status`; TweetNaCl is
+pinned to flash by the linker script (readelf confirms every symbol above
+`0x60000000`, zero ITCM); and swagger documents the whole surface so the
+drift gate passes. The `AIUS_OTA` option gates every heavy cost — with it
+off the `lib/aius_ota` + TweetNaCl objects are `--gc-sections`-dropped
+(~14.4 KB flash+DTCM, zero ITCM). One always-present cost remains: the
+`AiusOpticalAppOta` dispatcher seam is 32 B of OCRAM, consistent with the
+recorder/replay/measure seams beside it; the memory ratchet was reconciled
+to 131392 B and the real defect-26 guard (the 128 KiB linker `ASSERT`)
+retains 320 B of margin. Exact image `66fc5a069d31+teensy41-optical`, built
+with the option on, flashed and booted clean: IP assigned, link up, HTTP
+serving, `recovery_safe` 0 and `watchdog_early_resets` 0 on boot generation
+22 — direct proof NativeEthernet's ~96 KiB boot mallocs succeeded at the
+reconciled free value. `GET /api/ota` returns the live status document
+(armed, idle, key fingerprint `78cafee9c572...`, `test_key` true,
+`activation_available` false). What remains is the activation-wiring slice
+(RAM-resident flash primitives + the activate verb, gated on item 5's
+scratch-sector bring-up check) and the signed end-to-end upgrade.
+
 Slice 3B is delivered: the auth-gated `/api/ota/*` route layer behind app
 callback seams, absent-by-construction until composition wires it. Slice
 3A is delivered: the SD upgrade page with the step-by-step log. The

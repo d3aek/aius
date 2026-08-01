@@ -48,6 +48,19 @@ extern "C" {
  * unconditionally; the legacy SD symbols that used to collide with it are
  * gone. */
 #include "aius_optical_app.h"
+#if AIUS_OTA
+/* Staged firmware upgrade (docs/plans/aius-ota-upgrade.md, slice 3). The whole
+ * OTA surface -- session, compiled-in key, the six dispatch callbacks, the
+ * ota_diag status object and vendored TweetNaCl -- sits behind this compile-time
+ * option, off by default and set by the teensy41-optical env. With it undefined
+ * this file is byte-identical to before the slice, the linked aius_ota/tweetnacl
+ * objects are dropped by --gc-sections, and the app's OTA sub-table is never
+ * installed, so the dispatcher answers 404 ota_absent by construction. This
+ * slice composes offer -> stage -> verify -> ARMED; activation (the flash
+ * trigger) is the later bench-gated slice and keeps activation_available false. */
+#include "aius_ota.h"
+#include "aius_ota_ed25519.h"
+#endif
 /* The composition: the bounded runtime setup() constructs and loop() drives one
  * epoch of, the retained boot adapter that owns the ledger, the pinned 8 s
  * watchdog interval and the sole per-epoch feed, the fault adapter the
@@ -2603,6 +2616,265 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	return http_json_append(output, capacity, length, "}");
 }
 
+#if AIUS_OTA
+/* ------------------------------------------------------------------ */
+/* OTA -- staged firmware upgrade                                       */
+/*                                                                     */
+/* The composition root's half of docs/plans/aius-ota-upgrade.md slice */
+/* 3: one AiusOtaSession, the compiled-in Ed25519 key, and the six     */
+/* AiusOpticalAppOta callbacks the dispatcher (aius_optical_app.cpp)    */
+/* drives. The core (lib/aius_ota) is pure logic and holds no image     */
+/* bytes; every effect is here.                                        */
+/*                                                                     */
+/* STAGING MEDIUM -- absorb-only this slice, and why. offer / absorb /  */
+/* verify / arm / abort operate on the session's incremental SHA-256    */
+/* and the parsed header; NONE of them reads staged bytes back. Durable */
+/* staging (SD, /aius/ota-staged.img) is needed only by ACTIVATION,     */
+/* which reads the image to program flash -- and activation is the      */
+/* later bench-gated slice (verdict item 5). SD staging through the     */
+/* single-transaction SD job engine is too broad for one slice, and an  */
+/* 8 MiB image fits in no RAM or PSRAM bank here, so the chunk callback  */
+/* drives aius_ota_absorb (which hashes the caller's bytes -- no        */
+/* lib/aius_ota change) and does not persist them. STATED LIMITATION:   */
+/* the staged image is not durable; the activation slice adds SD        */
+/* staging, and the power-loss record (aius_ota_record_*) with it, so a */
+/* reboot here comes up disarmed and a fresh offer is required.         */
+/*                                                                     */
+/* THE FEATURE LATCH is armed at composition. None of the five routes   */
+/* toggles it (ARM is verified->armed image arm, per the SD upgrade     */
+/* page and aius_ota_arm_image), and the slice must reach ARMED, so the */
+/* compile-time AIUS_OTA option is the deliberate enable; a future      */
+/* USB/physical latch affordance (the plan's security posture) would    */
+/* replace this setup-time arm.                                         */
+/* ------------------------------------------------------------------ */
+
+/* The mirrored-constant asserts slice 3B owed: the dispatch seam names  */
+/* these without depending on the OTA core, so pin them equal here so a  */
+/* format change on either side fails the build. */
+static_assert(AIUS_OPTICAL_APP_OTA_HEADER_BYTES == AIUS_OTA_HEADER_BYTES,
+              "the dispatch seam's container-header size mirrors aius_ota.h's");
+static_assert(AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES == AIUS_OTA_MAX_CHUNK_BYTES,
+              "the dispatch seam's per-chunk cap mirrors aius_ota.h's");
+static_assert((int)AIUS_OPTICAL_APP_OTA_STATE_ARMED == (int)AIUS_OTA_STATE_ARMED,
+              "the dispatch seam's state enum mirrors aius_ota.h's, value-for-value");
+
+/* The board identity an offered image's target_id must match: the same
+ * string the teensy41-optical env is, and the host signer signs against. */
+static const char g_ota_target_id[] = "teensy41-optical";
+
+/* THE COMPILED-IN Ed25519 PUBLIC KEY. Owner decision 2026-07-31: the committed
+ * TEST-ONLY dev keypair (firmware/test/ota/test-only-signing-key.pub) is the
+ * device key for now. It is generated from a PUBLISHED seed, so its secret half
+ * is public knowledge -- it provides NO authenticity against a repo reader and
+ * MUST rotate before this repo goes public or the board leaves the bench.
+ * ROTATION: tools/ota/aius_ota_sign.py keygen -> replace these 32 bytes ->
+ * rebuild -> one signed upgrade. While this stays the published key, ota_diag
+ * and GET /api/ota report test_key true so the upgrade page banners TEST KEY. */
+static const uint8_t g_ota_public_key[AIUS_OTA_ED25519_PUBLIC_KEY_BYTES] = {
+	0xf3, 0x6f, 0xb0, 0xb8, 0x31, 0x24, 0x03, 0xee,
+	0x37, 0xb9, 0x65, 0xb6, 0x4d, 0xce, 0x11, 0x3e,
+	0xca, 0x79, 0xd4, 0x01, 0xdc, 0x68, 0x41, 0x90,
+	0xc2, 0xa0, 0x2c, 0xac, 0xa0, 0x60, 0x4d, 0x30
+};
+
+static AiusOtaSession g_ota_session;
+static AiusOtaEd25519Key g_ota_key;
+static AiusOtaVerifier g_ota_verifier;
+/* First 8 bytes of SHA-256(public key) as lowercase hex, computed once at
+ * composition; 16 hex chars plus the terminator. */
+static char g_ota_key_fingerprint[2u * 8u + 1u];
+
+/* The OTA core's AiusOtaStatus, collapsed to the client-facing verdict the
+ * dispatch seam publishes. OVERFLOW (a chunk past image_length) reads as a
+ * malformed upload; INVALID_ARG / NO_SPACE are programming errors the dispatcher
+ * bounds out before the seam, and CORRUPT plus the activation-only faults cannot
+ * arise on the offer/stage/verify/arm path this slice drives -- all fall through
+ * to the generic state refusal rather than inventing a client name. */
+static FLASHMEM AiusOpticalAppOtaResult ota_map_result(AiusOtaStatus status)
+{
+	switch (status) {
+	case AIUS_OTA_OK:          return AIUS_OPTICAL_APP_OTA_OK;
+	case AIUS_OTA_DISARMED:    return AIUS_OPTICAL_APP_OTA_DISARMED;
+	case AIUS_OTA_STATE:       return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	case AIUS_OTA_RANGE:       return AIUS_OPTICAL_APP_OTA_RANGE;
+	case AIUS_OTA_OVERFLOW:    return AIUS_OPTICAL_APP_OTA_MALFORMED;
+	case AIUS_OTA_MALFORMED:   return AIUS_OPTICAL_APP_OTA_MALFORMED;
+	case AIUS_OTA_UNSUPPORTED:  return AIUS_OPTICAL_APP_OTA_UNSUPPORTED;
+	case AIUS_OTA_DIGEST:      return AIUS_OPTICAL_APP_OTA_DIGEST;
+	case AIUS_OTA_SIGNATURE:   return AIUS_OPTICAL_APP_OTA_SIGNATURE;
+	default:                   return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	}
+}
+
+/* Once a container has been offered the session speaks in PAYLOAD offsets, while
+ * the client streams the whole FILE (256-byte header then the payload), so every
+ * number a resuming client reads is +AIUS_OTA_HEADER_BYTES. Before an offer the
+ * file offset is a plain 0. */
+static FLASHMEM bool ota_offered(AiusOtaState state)
+{
+	return state != AIUS_OTA_STATE_IDLE && state != AIUS_OTA_STATE_FAILED;
+}
+
+/* The ota_diag object on GET /api/status: the same snapshot the dedicated
+ * GET /api/ota document carries, folded beside the other diag objects so a
+ * status poller sees the upgrade state without a second route. Absent when OTA
+ * is compiled out. */
+static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
+	                                    size_t *length)
+{
+	AiusOtaProgress progress;
+	uint32_t staged = 0u;
+	uint32_t total = 0u;
+	(void)aius_ota_progress(&g_ota_session, &progress);
+	if (ota_offered(progress.state)) {
+		staged = progress.staged_length + AIUS_OTA_HEADER_BYTES;
+		total = progress.image_length + AIUS_OTA_HEADER_BYTES;
+	}
+	return http_json_append(output, capacity, length,
+		",\"ota_diag\":{\"state\":%u,\"staged_bytes\":%lu,"
+		"\"total_bytes\":%lu,\"fault\":%u,\"key_fingerprint\":\"%s\","
+		"\"test_key\":%s,\"activation_available\":%s}",
+		(unsigned)progress.state,
+		(unsigned long)staged, (unsigned long)total,
+		(unsigned)progress.fail_reason,
+		g_ota_key_fingerprint,
+		"true", "false");
+}
+
+/* present: this build carries OTA and the seam is installed. */
+static FLASHMEM bool app_ota_present(void *)
+{
+	return true;
+}
+
+/* status: fill the document from the session (progress + parsed header) and the
+ * compiled-in key. File-relative bytes/offset for the streaming client. */
+static FLASHMEM bool app_ota_status(void *, AiusOpticalAppOtaStatus *status)
+{
+	AiusOtaProgress progress;
+	if (aius_ota_progress(&g_ota_session, &progress) != AIUS_OTA_OK)
+		return false;
+	status->state = (AiusOpticalAppOtaState)progress.state;
+	status->latch_armed = progress.latch_armed;
+	if (ota_offered(progress.state)) {
+		status->staged_bytes = progress.staged_length + AIUS_OTA_HEADER_BYTES;
+		status->total_bytes = progress.image_length + AIUS_OTA_HEADER_BYTES;
+		status->next_offset = progress.next_offset + AIUS_OTA_HEADER_BYTES;
+	}
+	/* The offered image's identity, from the parsed header; empty/zero before
+	 * an offer (the session's header is zeroed at init). The dispatcher's
+	 * ota_text_copy publishes only printable ASCII, so a copy here is safe. */
+	snprintf(status->target_id, sizeof(status->target_id), "%s",
+	         g_ota_session.header.target_id);
+	snprintf(status->build_revision, sizeof(status->build_revision), "%s",
+	         g_ota_session.header.build_revision);
+	status->build_utc = g_ota_session.header.build_utc;
+	snprintf(status->key_fingerprint, sizeof(status->key_fingerprint), "%s",
+	         g_ota_key_fingerprint);
+	status->test_key = true;
+	status->fault = ota_map_result(progress.fail_reason);
+	status->verifier_fault = progress.verifier_fault;
+	return true;
+}
+
+/* chunk: one self-contained container chunk at file `offset`. File offset 0 is
+ * the 256-byte header, offered before the payload is absorbed; every later
+ * offset is payload at (offset - header). next_offset is always the file offset
+ * a resuming client seeks to. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_chunk(void *, uint32_t offset,
+	const uint8_t *data, size_t length, uint32_t *next_offset)
+{
+	AiusOtaStatus status;
+
+	if (offset == 0u) {
+		/* A fresh container. A re-send of offset 0 mid-staging is a deliberate
+		 * restart: abort back to IDLE first (the latch and target_id survive),
+		 * then re-offer. The dispatcher guarantees length >= header bytes here,
+		 * so the header is whole in this one chunk. */
+		if (ota_offered(aius_ota_state(&g_ota_session))) {
+			status = aius_ota_abort(&g_ota_session);
+			if (status != AIUS_OTA_OK)
+				return ota_map_result(status);
+		}
+		status = aius_ota_offer(&g_ota_session, data, AIUS_OTA_HEADER_BYTES);
+		if (status != AIUS_OTA_OK)
+			return ota_map_result(status);
+		if (length > AIUS_OTA_HEADER_BYTES) {
+			status = aius_ota_absorb(&g_ota_session, 0u,
+			                         data + AIUS_OTA_HEADER_BYTES,
+			                         length - AIUS_OTA_HEADER_BYTES);
+			if (status != AIUS_OTA_OK)
+				return ota_map_result(status);
+		}
+		*next_offset = aius_ota_next_offset(&g_ota_session) +
+		               AIUS_OTA_HEADER_BYTES;
+		return AIUS_OPTICAL_APP_OTA_OK;
+	}
+
+	/* Payload only. A file offset inside the header region (after the header
+	 * was offered) is out of order: refuse with the resume offset, exactly as a
+	 * core RANGE would. */
+	if (offset < AIUS_OTA_HEADER_BYTES) {
+		*next_offset = aius_ota_next_offset(&g_ota_session) +
+		               AIUS_OTA_HEADER_BYTES;
+		return AIUS_OPTICAL_APP_OTA_RANGE;
+	}
+	status = aius_ota_absorb(&g_ota_session, offset - AIUS_OTA_HEADER_BYTES,
+	                         data, length);
+	*next_offset = aius_ota_next_offset(&g_ota_session) + AIUS_OTA_HEADER_BYTES;
+	return ota_map_result(status);
+}
+
+/* arm: verified -> armed (aius_ota_arm_image), the "arm the image for
+ * activation" step the SD upgrade page's POST /api/ota/arm drives. NOT the
+ * feature latch, which the composition arms once at setup. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_arm(void *)
+{
+	return ota_map_result(aius_ota_arm_image(&g_ota_session));
+}
+
+/* verify: digest then signature, over what was staged, against the dev key. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_verify(void *)
+{
+	return ota_map_result(aius_ota_verify(&g_ota_session, &g_ota_verifier));
+}
+
+/* abort: any state except activation-requested -> idle, discarding the image. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_abort(void *)
+{
+	return ota_map_result(aius_ota_abort(&g_ota_session));
+}
+
+static const AiusOpticalAppOta g_ota_seam = {
+	nullptr, /* context: the adapters read file statics, like g_aius_optical_app */
+	app_ota_present,
+	app_ota_status,
+	app_ota_chunk,
+	app_ota_arm,
+	app_ota_verify,
+	app_ota_abort
+};
+
+/* Composes the OTA feature: computes the key fingerprint, binds the session and
+ * Ed25519 verifier, arms the feature latch, and installs the seam on the
+ * dispatcher the runtime just constructed. Called once from setup(). */
+static FLASHMEM void ota_compose(void)
+{
+	uint8_t digest[AIUS_SHA256_DIGEST_BYTES];
+	aius_sha256(g_ota_public_key, sizeof(g_ota_public_key), digest);
+	for (size_t i = 0; i < 8u; ++i)
+		snprintf(&g_ota_key_fingerprint[i * 2u], 3u, "%02x",
+		         (unsigned)digest[i]);
+	(void)aius_ota_init(&g_ota_session, g_ota_target_id,
+	                    sizeof(g_ota_target_id) - 1u);
+	(void)aius_ota_ed25519_key_init(&g_ota_key, g_ota_public_key,
+	                                sizeof(g_ota_public_key));
+	(void)aius_ota_ed25519_verifier(&g_ota_verifier, &g_ota_key);
+	(void)aius_ota_latch_arm(&g_ota_session);
+	(void)aius_optical_app_set_ota(&g_runtime.app, &g_ota_seam);
+}
+#endif /* AIUS_OTA */
+
 /* GET /api/status. Every field keeps its key, position and type; the sources
  * that moved at slice S2b are the network ones, and they are the only lines
  * that changed:
@@ -2770,6 +3042,14 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	 * body the way a re-derived live value could. */
 	if (!http_boot_fuse_json((char *)body, capacity, &length))
 		return 0;
+#if AIUS_OTA
+	/* The staged-upgrade snapshot, beside the other diag objects rather than on
+	 * a second route: it is read alongside boot_generation and recovery_safe,
+	 * and a separate route would be a second snapshot that moves between
+	 * requests. Absent when OTA is compiled out. */
+	if (!http_ota_diag_json((char *)body, capacity, &length))
+		return 0;
+#endif
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
 }
 
@@ -5546,6 +5826,13 @@ FLASHMEM void setup(void)
 	const AiusRuntimeTeensyPlatformOps platform = platform_ops();
 	aius_runtime_teensy_construct(&g_runtime, &g_aius_optical_app, &cdc,
 	                              &platform, millis(), g_recovery_safe);
+#if AIUS_OTA
+	/* Install the OTA seam AFTER the dispatcher is constructed: the runtime's
+	 * aius_optical_app_init() zeroes the OTA slot, and ota_compose() then binds
+	 * the session, key and verifier, arms the feature latch and registers the
+	 * six callbacks on g_runtime.app. */
+	ota_compose();
+#endif
 	/* The retained boot facts are published HERE, before the first epoch, and
 	 * not only from checkpoint 0.
 	 *

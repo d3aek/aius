@@ -68,6 +68,61 @@ static void test_measure_routes(void)
 	                       &request) == AIUS_HTTP_ERR_ROUTE);
 }
 
+/* The five OTA routes (docs/plans/aius-ota-upgrade.md slice 3). GET /api/ota is
+ * the open read, PUT /api/ota/image the resumable buffered chunk (admitted into
+ * the PUT allow-list and carrying a body + Content-Range), and the three verbs
+ * POST-only. The ids and their matching are unconditional here, so the parser
+ * recognises them in this suite even though it is compiled without AIUS_OTA. The
+ * dispatcher, not the parser, owns the absent-then-token gate. */
+static void test_ota_routes(void)
+{
+	AiusHttpRequest request;
+	const char *post_ota = "POST /api/ota HTTP/1.0\r\n\r\n";
+	const char *get_image = "GET /api/ota/image HTTP/1.0\r\n\r\n";
+	const char *put_arm =
+		"PUT /api/ota/arm HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}";
+	const char *get_arm = "GET /api/ota/arm HTTP/1.0\r\n\r\n";
+	const char *near_miss = "GET /api/otax HTTP/1.0\r\n\r\n";
+	const char *bare = "GET /api/ot HTTP/1.0\r\n\r\n";
+
+	parse_ok("GET /api/ota HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_OTA);
+	parse_ok("POST /api/ota/arm HTTP/1.0\r\n\r\n", AIUS_HTTP_ROUTE_OTA_ARM);
+	parse_ok("POST /api/ota/verify HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_VERIFY);
+	parse_ok("POST /api/ota/abort HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_ABORT);
+
+	/* PUT /api/ota/image carries a body and a Content-Range and is admitted
+	 * into the PUT allow-list -- the resumable-chunk shape. */
+	{
+		const char *image =
+			"PUT /api/ota/image HTTP/1.0\r\nContent-Length: 4\r\n"
+			"Content-Range: bytes 0-3/1024\r\n\r\nABCD";
+		assert(aius_http_parse((const uint8_t *)image, strlen(image),
+		                       &request) == AIUS_HTTP_OK);
+		assert(request.route == AIUS_HTTP_ROUTE_OTA_IMAGE);
+		assert(request.has_content_range == 1u);
+		assert(request.body_length == 4u);
+	}
+
+	/* Method rules: the read is GET-only, the image PUT-only, the verbs
+	 * POST-only. */
+	assert(aius_http_parse((const uint8_t *)post_ota, strlen(post_ota),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)get_image, strlen(get_image),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)put_arm, strlen(put_arm),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+	assert(aius_http_parse((const uint8_t *)get_arm, strlen(get_arm),
+	                       &request) == AIUS_HTTP_ERR_METHOD);
+
+	/* No shadow of a neighbouring route, and no prefix match. */
+	assert(aius_http_parse((const uint8_t *)near_miss, strlen(near_miss),
+	                       &request) == AIUS_HTTP_ERR_ROUTE);
+	assert(aius_http_parse((const uint8_t *)bare, strlen(bare),
+	                       &request) == AIUS_HTTP_ERR_ROUTE);
+}
+
 /* The directory index rides the existing /sd/ parse: a resource ending in a
  * slash is an ordinary AIUS_HTTP_ROUTE_SD_FILE resource, and the trailing slash
  * survives into `resource` for the dispatcher to read. That is why the listing
@@ -583,6 +638,7 @@ int main(void)
 	test_sd_directory_resource();
 	test_dsp_config_route();
 	test_measure_routes();
+	test_ota_routes();
 	test_replay_routes();
 	test_framing();
 	test_response_headers();

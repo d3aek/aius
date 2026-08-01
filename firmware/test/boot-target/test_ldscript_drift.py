@@ -59,6 +59,23 @@ STAGING_BLOCK = """\t/* AIUS ADDITION — flight-recorder staging, deliberately 
 
 """
 
+# The TweetNaCl flash pin (aius_ota_ed25519.c placement note): the vendored
+# object's .text is collected in .text.code (flash) and excluded from the ITCM
+# collector, so verify-only crypto that runs once per staged image never takes
+# ~4.5 KB of ITCM. Both edits sit inside the framework body rather than in a
+# standalone block, so they are normalised back to the framework form here
+# before the byte-for-byte compare -- and their absence is a drift too, because
+# the optical envs link TweetNaCl (AIUS_OTA) and it must not land in ITCM.
+TWEETNACL_CODE_BLOCK = (
+    "\t\t/* AIUS ADDITION — TweetNaCl pinned to flash; see the EXCLUDE_FILE on\n"
+    "\t\t * .text.itcm and aius_ota_ed25519.c's placement note. */\n"
+    "\t\t*tweetnacl.c.o(.text*)\n"
+)
+TWEETNACL_ITCM_PINNED = (
+    "\t\t*(EXCLUDE_FILE(*tweetnacl.c.o) .text*) /* AIUS: TweetNaCl -> flash */\n"
+)
+TWEETNACL_ITCM_FRAMEWORK = "\t\t*(.text*)\n"
+
 FOOTER_START = "\n/* AIUS ADDITION — the enforcement."
 
 REQUIRED_ASSERTS = (
@@ -116,6 +133,20 @@ def strip_additions(text: str) -> str:
         )
     body = body.replace(STAGING_BLOCK, "", 1)
 
+    # The TweetNaCl flash pin: revert both edits to the framework form. Missing
+    # either is a drift, because the linked crypto would then take ITCM.
+    if body.count(TWEETNACL_CODE_BLOCK) != 1:
+        raise DriftError(
+            "the TweetNaCl .text.code flash pin is missing or edited"
+        )
+    body = body.replace(TWEETNACL_CODE_BLOCK, "", 1)
+    if body.count(TWEETNACL_ITCM_PINNED) != 1:
+        raise DriftError(
+            "the TweetNaCl EXCLUDE_FILE on .text.itcm's *(.text*) is missing "
+            "or edited"
+        )
+    body = body.replace(TWEETNACL_ITCM_PINNED, TWEETNACL_ITCM_FRAMEWORK, 1)
+
     footer_at = body.find(FOOTER_START)
     if footer_at < 0:
         raise DriftError("the Aius ASSERT block is missing")
@@ -172,6 +203,12 @@ def self_test(ours: Path) -> None:
             "SIZEOF(.bss.aius_staging);\n",
             "",
             1,
+        ),
+        "drop the TweetNaCl .text.code pin": text.replace(
+            TWEETNACL_CODE_BLOCK, "", 1
+        ),
+        "drop the TweetNaCl ITCM exclusion": text.replace(
+            TWEETNACL_ITCM_PINNED, TWEETNACL_ITCM_FRAMEWORK, 1
         ),
         "weaken the origin ASSERT": text.replace(
             "ADDR(.bss.aius_retained) == ORIGIN(RAM)",

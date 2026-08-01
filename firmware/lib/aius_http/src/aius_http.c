@@ -148,6 +148,16 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_MEASURE;
 	if (token_equals(path, length, "/api/measure/start"))
 		return AIUS_HTTP_ROUTE_MEASURE_START;
+	if (token_equals(path, length, "/api/ota"))
+		return AIUS_HTTP_ROUTE_OTA;
+	if (token_equals(path, length, "/api/ota/image"))
+		return AIUS_HTTP_ROUTE_OTA_IMAGE;
+	if (token_equals(path, length, "/api/ota/arm"))
+		return AIUS_HTTP_ROUTE_OTA_ARM;
+	if (token_equals(path, length, "/api/ota/verify"))
+		return AIUS_HTTP_ROUTE_OTA_VERIFY;
+	if (token_equals(path, length, "/api/ota/abort"))
+		return AIUS_HTTP_ROUTE_OTA_ABORT;
 	if (token_equals(path, length, "/api/recorder"))
 		return AIUS_HTTP_ROUTE_RECORDER;
 	if (token_equals(path, length, "/api/recorder/freeze"))
@@ -408,7 +418,8 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	    request->route != AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->route != AIUS_HTTP_ROUTE_REPLAYS &&
 	    request->route != AIUS_HTTP_ROUTE_DSP_CONFIG &&
-	    request->route != AIUS_HTTP_ROUTE_RECORDER_CONFIG)
+	    request->route != AIUS_HTTP_ROUTE_RECORDER_CONFIG &&
+	    request->route != AIUS_HTTP_ROUTE_OTA_IMAGE)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_CONFIG_PUBLIC &&
 	    request->method != AIUS_HTTP_PUT)
@@ -439,6 +450,21 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_RECORDER_CONFIG &&
 	    request->method != AIUS_HTTP_PUT)
+		return AIUS_HTTP_ERR_METHOD;
+	/* OTA method rules. GET /api/ota (open read), PUT /api/ota/image (the
+	 * resumable buffered chunk -- admitted into the PUT allow-list above), and
+	 * POST for the three verbs. The dispatcher owns the absent-then-token gate,
+	 * so the parser only shapes method here. */
+	if (request->route == AIUS_HTTP_ROUTE_OTA &&
+	    request->method != AIUS_HTTP_GET)
+		return AIUS_HTTP_ERR_METHOD;
+	if (request->route == AIUS_HTTP_ROUTE_OTA_IMAGE &&
+	    request->method != AIUS_HTTP_PUT)
+		return AIUS_HTTP_ERR_METHOD;
+	if ((request->route == AIUS_HTTP_ROUTE_OTA_ARM ||
+	     request->route == AIUS_HTTP_ROUTE_OTA_VERIFY ||
+	     request->route == AIUS_HTTP_ROUTE_OTA_ABORT) &&
+	    request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS &&
 	    request->method != AIUS_HTTP_GET && request->method != AIUS_HTTP_DELETE)

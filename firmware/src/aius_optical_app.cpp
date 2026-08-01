@@ -1874,6 +1874,23 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		 * optical_main.cpp reboot_drain_complete(). */
 		app->request_reboot(app->context);
 		return http_json(dispatcher, 200, "{\"ok\":true,\"rebooting\":true}");
+	/* The OTA verbs route through the internal dispatch_ota (NOT the counted
+	 * public entry point), which owns its own absent-then-token gate ahead of
+	 * its switch -- so these routes are deliberately absent from
+	 * route_is_control() above, and an OTA-less build answers one 404
+	 * ota_absent rather than a 401 that would advertise the surface. The route
+	 * ids are unconditional; when AIUS_OTA is off the sub-table is never
+	 * installed and ota_wired() is false. */
+	case AIUS_HTTP_ROUTE_OTA:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_STATUS, request);
+	case AIUS_HTTP_ROUTE_OTA_IMAGE:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE, request);
+	case AIUS_HTTP_ROUTE_OTA_ARM:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_ARM, request);
+	case AIUS_HTTP_ROUTE_OTA_VERIFY:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY, request);
+	case AIUS_HTTP_ROUTE_OTA_ABORT:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_ABORT, request);
 	case AIUS_HTTP_ROUTE_UNKNOWN:
 	default:
 		break;
