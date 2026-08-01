@@ -135,12 +135,36 @@ specified here. Strike items here in the commit that closes them.
     race whose odds image layout shifts through boot-path timing;
     the 168-block period points at a buffer/window wrap in that chain
     re-arming the burst.
-  - Next steps: (1) audio-update ISR invocation + cycle counters
+  - ~~Next steps: (1) audio-update ISR invocation + cycle counters
     served beside the checkpoint vectors; (2) padding-sweep builds of
     the instrumented tree, boot-looped until one lands on bad odds;
     (3) one degraded boot of that image then convicts or acquits the
     ISR by calls/s and lets `checkpoint_cumulative_ms` attribute the
-    remainder.
+    remainder.~~ **Steps 1–2 executed same day; the sweep hit a
+    wall worth recording.** The ISR counters shipped
+    (`audio_update_calls` / `audio_update_max_us`, healthy baseline
+    ~410 calls/s and 6 µs at 48 kHz) with an `AIUS_LAYOUT_NUDGE`
+    compile knob padding flash CODE per variant. Three sweep
+    campaigns — 8 rodata-nudged variants, 8 code-nudged variants of
+    the current tree, and 6 code-nudged variants of the KNOWN-BAD
+    tree carrying only an eight-line counter — totalled 44
+    instrumented variant-boots with ZERO reproductions, while the
+    pristine bad layout reproduces on its FIRST boot every time. The
+    manifestation window is razor thin: any in-image instrumentation
+    observed so far destroys it, so the defect currently cannot be
+    convicted from inside the image. The code-nudge does modulate the
+    healthy epoch rate continuously (7,300–8,000/s across variants,
+    one partial-degradation outlier at 2,077/s), confirming a real
+    layout-timing interaction. Remaining viable paths, in order:
+    (1) a hardware-debugger session (attach on a degraded boot of the
+    pristine reproducer and sample the PC / NVIC state directly —
+    a candidate rider for the ESI U24 XL bench session);
+    (2) offline differential analysis of the pristine-bad vs healthy
+    ELF pair focused on the SPDIF-RX/ingress/clock ISR chain, guided
+    by the 168-block (1,791.7 ms) period; (3) an external logic/scope
+    probe on the S/PDIF and ENET activity during a degraded boot.
+    The on-demand reproducer stays: build `e6417b428`'s firmware
+    out-of-tree, flash, first boot degrades.
 
 ## Recorded debt — small, none blocking
 
