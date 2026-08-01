@@ -66,6 +66,7 @@ extern "C" {
 #include "aius_fault_teensy.h"
 #include "aius_network_teensy.h"
 #include "aius_runtime_teensy.h"
+#include "http_home_page.h"
 
 #ifndef AIUS_BUILD_GIT_REV
 #define AIUS_BUILD_GIT_REV "unknown"
@@ -2813,64 +2814,7 @@ static FLASHMEM void reset_application(void)
 
 static FLASHMEM size_t http_home_page(uint8_t *body, size_t capacity)
 {
-	int length = snprintf((char *)body, capacity,
-		"<!doctype html><html><head><meta charset=\"utf-8\"><title>Aius</title>"
-		"<style>body{font-family:monospace;white-space:pre-wrap}code{font-family:inherit}</style></head>"
-		"<body><h1>Aius optical firmware</h1><p>Git revision: %s<br>Build UTC: %s</p>"
-		/* THE CONTROL SURFACE IS THE SD-HOSTED TREE, NOT THIS PAGE, and until
-		 * this section existed nothing said so. Both SD pages already link back
-		 * here ("Device status"), so the relationship was one-way: a browser
-		 * that landed on / had no route to the editor at all, and the only
-		 * SD-shaped link on the page was /api/sd, which serves {"ready":true}
-		 * and lists nothing. That is the whole defect -- the files were served
-		 * correctly the entire time and simply could not be reached.
-		 *
-		 * The subtree root is named explicitly because /sd/ is NOT a route: the
-		 * dispatcher serves /sd/<dir>/, so /sd/ alone is a 404 and a link to it
-		 * would look like the same bug from the other side. */
-		"<h2>Control surface</h2>"
-		"<p>The user interface is served from the SD card. This page is the "
-		"fallback for when the card is absent.</p>"
-		"<ul><li><a href=\"/sd/www/index.html\">DSP editor</a> - input trim and "
-		"EQ, downmix, output EQ, limiter, live meters</li>"
-		"<li><a href=\"/sd/www/replays.html\">Replay manager</a></li>"
-		"<li><a href=\"/sd/www/status.html\">Device status</a></li>"
-		"<li><a href=\"/sd/www/\">Browse /sd/www/</a> - the served SD web tree</li></ul>"
-		"<p id=sd></p>"
-		"<h2>API</h2><ul><li><a href=\"/api/status\">GET /api/status</a></li>"
-		"<li><a href=\"/api/events\">GET /api/events</a></li>"
-		"<li><code>POST /api/start {}</code></li>"
-		"<li><code>POST /api/stop {}</code></li>"
-		"<li><code>POST /api/clear {}</code></li>"
-		"<li><code>POST /api/reboot {}</code></li>"
-		"<li>Those four POST routes require <code>X-Aius-SD-Auth</code>.</li>"
-		"<li><a href=\"/api/sd\">GET /api/sd</a></li>"
-		"<li><code>PUT /sd/www/{path}</code> raw body with Content-Length and X-Aius-SD-Auth</li>"
-		"<li><code>DELETE /sd/www/{path}</code> with X-Aius-SD-Auth</li>"
-		"<li><code>PUT /api/config/public</code> JSON feature flags, no auth</li></ul>"
-		"<h2>DSP configuration</h2><p><a href=\"/api/dsp/config\">GET /api/dsp/config</a> "
-		"reports the single effective config: source, sample_rate_hz, features, input channels, output EQ, matrix, and limiter.</p>"
-		"<pre id=dsp>Loading DSP configuration...</pre>"
-		"<h2>SD web upload</h2><p>Get the token over USB with <code>AIUS AUTH</code>. "
-		"The picker preserves relative paths and sends authenticated standard HTTP PUT requests.</p>"
-		"<label>SD auth token <input id=t size=16 maxlength=16 autocomplete=off></label> "
-		"<input id=f type=file multiple webkitdirectory directory><button onclick=upload()>Upload selected files</button>"
-		"<pre id=u></pre>"
-		"<h2>Control</h2><p>These four send the token from the field above.</p><p>"
-		"<button title=\"Enable test processing state\" onclick=go('/api/start')>Start</button> "
-		"<button title=\"Disable test processing state\" onclick=go('/api/stop')>Stop</button> "
-		"<button title=\"Clear audio and event counters\" onclick=go('/api/clear')>Clear counters</button> "
-		"<button title=\"Restart the application without entering HalfKay\" onclick=reboot()>Reboot</button></p>"
-		"<pre id=s>Loading status...</pre><p id=e></p></body><script>"
-		"const s=document.getElementById('s'),e=document.getElementById('e'),u=document.getElementById('u'),d=document.getElementById('dsp');"
-		"async function get(){try{const j=await (await fetch('/api/status')).json();s.textContent=JSON.stringify(j,null,2);document.getElementById('sd').textContent=j.sd_present?'':'No SD card is mounted, so the three links above will not resolve.';e.textContent=''}catch(a){e.textContent=a}}"
-		"async function getDsp(){try{const r=await fetch('/api/dsp/config');if(!r.ok)throw Error('HTTP '+r.status);d.textContent=JSON.stringify(await r.json(),null,2)}catch(a){d.textContent='DSP model unavailable: '+a}}"
-		"async function go(a,b){try{await fetch(a,{method:'POST',headers:{'Content-Type':'application/json','X-Aius-SD-Auth':document.getElementById('t').value||'-'},body:JSON.stringify(b||{})});get()}catch(c){e.textContent=c}}"
-		"async function reboot(){e.textContent='Rebooting...';try{await go('/api/reboot');setTimeout(get,2000)}catch(a){}}"
-		"async function upload(){u.textContent='';const token=document.getElementById('t').value;const files=[...(document.getElementById('f').files||[])];for(const file of files){const rel=file.webkitRelativePath||file.name;const path=rel.split('/').slice(1).join('/')||rel;if(path.split('/').pop()==='config.json'){u.textContent+='refused '+path+'\\n';continue}try{const r=await fetch('/sd/www/'+path.split('/').map(encodeURIComponent).join('/'),{method:'PUT',headers:{'X-Aius-SD-Auth':token,'Content-Type':'application/octet-stream'},body:file});u.textContent+=r.status+' '+path+'\\n'}catch(a){u.textContent+='error '+path+' '+a+'\\n'}}}"
-		"get();getDsp();setInterval(get,2000);setInterval(getDsp,2000)</script></html>",
-		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
-	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
+	return aius_http_home_page((char *)body, capacity, AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC);
 }
 
 static FLASHMEM size_t http_replay_status_json(uint8_t *body, size_t capacity)

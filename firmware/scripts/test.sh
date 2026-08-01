@@ -561,6 +561,20 @@ http)
 		"$fw_root/lib/aius_sd/src/aius_sd.c" \
 		-o "$http_transaction_out"
 	"$http_transaction_out"
+	# The home-page emitter proves the extracted generator on the host: it must
+	# produce a non-empty document whose skeleton and dynamic fields render.
+	http_home_out="$build_dir/http-home-page"
+	"$cxx" -std=c++17 -Wall -Wextra -Werror -O1 -g \
+		-fsanitize=address,undefined \
+		"$fw_root/test/http/emit_home_page.cpp" \
+		"$fw_root/src/http_home_page.cpp" \
+		-o "$http_home_out"
+	http_home_doc="$build_dir/http-home-page.html"
+	"$http_home_out" > "$http_home_doc"
+	grep -q "<!doctype html>" "$http_home_doc"
+	grep -q "test-revision" "$http_home_doc"
+	grep -q "getElementById('dsp')" "$http_home_doc"
+	echo "http home page: emitted $(wc -c < "$http_home_doc") bytes"
 	;;
 usb-control)
 	usb_out="$build_dir/usb-control"
