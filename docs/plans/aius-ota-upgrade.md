@@ -615,7 +615,15 @@ the build verdict; the fuse prohibition stands untouched. Item-by-item:
   confirming XIP and HalfKay both survive — folds into the activation
   slice's own bench bring-up (it needs a firmware test hook that only that
   slice ships) and must pass there before the first real activation. Slices
-  2 and 3 do not touch the flash and proceed regardless.
+  2 and 3 do not touch the flash and proceed regardless. **Empirically
+  closed 2026-08-01** on exact image `a01b3f8f2c0e+teensy41-optical`:
+  `POST /api/ota/self-test-flash` ran the real FASTRUN primitives (erase +
+  program + readback) on the scratch sector at `0x60400000` and returned
+  `pass`; the board kept serving HTTP on the same boot generation with
+  `recovery_safe` 0, `watchdog_early_resets` 0 and zero overruns (XIP
+  survived the LUT-sequence-15 rewrite), and `AIUS ID` over CDC answered
+  immediately afterward (the HalfKay/CDC recovery plane is intact). The
+  driver's LUT use breaks neither execution-in-place nor recovery.
 - **Item 6 — posture chosen: staged single-image.** Stage to SD through
   the existing resumable chunked upload machinery, verify from SD, program
   the boot flash inside a dark window, `SYSRESETREQ`; recovery remains the
