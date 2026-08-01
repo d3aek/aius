@@ -14,26 +14,49 @@ extern "C" {
 #endif
 
 /* The activation sequencer: the portable half of the flash-programming slice.
- * It decides WHAT to erase, program, read back and record, in WHAT order, and
- * it refuses everything the published flash geometry does not admit. It does
- * none of it. Every effect -- the staged image's bytes, the three flash
- * primitives, the watchdog, the cycle counter and the health record's storage
- * -- is an injected callback, so the whole sequence is proven host-side against
- * a fake flash device before a board is asked.
+ * It decides WHAT to erase, program and compare, in WHAT order, and it refuses
+ * everything the published flash geometry does not admit. It does none of it.
+ * Every effect -- the three flash primitives, the watchdog, the cycle counter
+ * and the health record's storage -- is an injected callback, and the staged
+ * image is a caller-provided linear byte view, so the whole sequence is proven
+ * host-side against a fake flash device before a board is asked.
  *
- * READ THIS BEFORE COMPOSING IT. Nothing in this library, including this file,
- * may execute during the erase/program window it orchestrates.
- * aius-ota-upgrade.md §The Teensy 4 memory model records why: on this part
- * ordinary code runs from ITCM and FLASHMEM is the opt-in to stay in flash, so
- * a FLASHMEM function becomes unexecutable while the flash is mid-operation --
- * and every definition in this library is FLASHMEM, deliberately, because it is
- * cold. THE SEQUENCER IS NOT THE PROGRAMMER. The composition slice owns:
+ * VERIFY-BEFORE-WINDOW, BYTE-COMPARE-WITHIN. This is the reworked architecture
+ * of aius-ota-upgrade.md's final slice, and it is why the dark window is now
+ * minimal instead of moving a multi-KB SHA-256 graph into ITCM:
+ *
+ *   - aius_ota_activate_begin() runs the WHOLE verification BEFORE the dark
+ *     window, while flash still executes: it re-hashes the caller-staged RAM
+ *     copy of the image (SHA-256) and checks it against the armed header's
+ *     payload_digest, and re-runs the injected signature verifier over the
+ *     header's authentication digest. A mismatch aborts with NOTHING flashed.
+ *     It then writes the health-record in-progress mark, still pre-window, and
+ *     leaves the sequencer poised at ERASE_HEAD.
+ *   - aius_ota_activate_step() then does ONLY erase -> program-from-staged ->
+ *     byte-compare-readback (an inlined compare, NOT a digest). No SHA-256, no
+ *     chunked medium read: the step path reaches nothing but the FASTRUN
+ *     primitives and this file's own RAM-resident helpers.
+ *
+ * READ THIS BEFORE COMPOSING IT. The IN-WINDOW step path of this library --
+ * aius_ota_activate_step() and everything it reaches -- is RAM-RESIDENT
+ * (FASTRUN on the target) precisely so it keeps executing while the boot flash
+ * is mid-erase. aius-ota-upgrade.md §The Teensy 4 memory model records why: on
+ * this part ordinary code runs from ITCM and FLASHMEM is the opt-in to stay in
+ * flash, so a FLASHMEM function becomes unexecutable the moment a sector erase
+ * starts. The PRE-window entry points (begin, step_bound, the geometry and
+ * progress queries) stay FLASHMEM: they run before quiesce, and keeping them in
+ * flash is what leaves ITCM budget for the step path. THE SEQUENCER IS NOT THE
+ * PROGRAMMER. The composition slice still owns:
  *
  *   - the run-to-completion caller (see aius_ota_activate_run()), which must
  *     itself be RAM-resident,
  *   - the RAM-resident primitive implementations wrapping
  *     eepromemu_flash_erase_sector() / eepromemu_flash_write(), whose whole
  *     call graph -- memcpy included -- must be verified non-FLASHMEM post-link,
+ *   - the SD->PSRAM staging copy AND the linear byte view over it, both done
+ *     pre-window; the staged bytes live in PSRAM (FlexSPI2), independent of the
+ *     boot flash (FlexSPI1), so a RAM-resident reader reads them throughout the
+ *     erase,
  *   - the quiesce (owner decision 2026-07-31: audio stops during flashing;
  *     gate closed, audio service stopped, ISR sources parked), which is what
  *     discharges RM p.279 note 3's "no FLASH access from ANY master"
@@ -42,7 +65,7 @@ extern "C" {
  *     AIUS_OTA_ACTIVATE_READY_TO_RESET and stops, and SYSRESETREQ through the
  *     runtime's existing reset path is the caller's next act.
  *
- * A caller that drives this sequencer with the flash primitives resident in
+ * A caller that drives the step path with the flash primitives resident in
  * flash will hang the part mid-erase. That is the one way to misuse it and no
  * signature can prevent it, so it is stated here, at the top, in the file a
  * composer reads first.
@@ -52,8 +75,8 @@ extern "C" {
  * address is masked to 24 bits and passed straight through, and erasing sector
  * 0 destroys the FCB. This layer is where the bounds live: every address this
  * sequencer hands a primitive has passed aius_ota_activate_check_erase() or
- * aius_ota_activate_check_span(), and both are published so the composition's
- * primitive wrapper can re-check at the boundary it owns. */
+ * aius_ota_activate_check_span(), and both are published (and RAM-resident) so
+ * the composition's primitive wrapper can re-check at the boundary it owns. */
 
 /* --------------------------------------------------------------------------
  * Flash geometry
@@ -103,44 +126,35 @@ extern "C" {
 /* The unit of every program and every readback compare. 256 is the part's page
  * program granule; it also divides the sector, which is what makes "every
  * program lies within one sector" true by arithmetic rather than by a runtime
- * clamp, and it is half the SD transport's own 512-byte slice
- * (AIUS_SD_MAX_TRANSFER), so a composition reading the staged image from the
- * card serves one chunk per SD read with nothing left over. */
+ * clamp. */
 #define AIUS_OTA_ACTIVATE_CHUNK_BYTES 256u
 
 /* The watchdog cadence this sequencer promises, in primitive calls per feed.
- * ONE: every erase, every program, every readback and every staged read is
- * immediately preceded by a watchdog_feed(), so no two primitive calls are ever
- * adjacent. A sector erase on this part is specified as a range and the plan's
- * §Measuring the sector-erase stall could not bound it locally, so the cadence
- * is stated in operations -- which the operation trace can check -- rather than
- * in time, which it cannot. */
+ * ONE: every erase, every program and every readback is immediately preceded by
+ * a watchdog_feed(), so no two primitive calls are ever adjacent. A sector
+ * erase on this part is specified as a range and the plan's §Measuring the
+ * sector-erase stall could not bound it locally, so the cadence is stated in
+ * operations -- which the operation trace can check -- rather than in time,
+ * which it cannot. */
 #define AIUS_OTA_ACTIVATE_MAX_OPS_PER_FEED 1u
 
 /* --------------------------------------------------------------------------
  * Injected primitives
- * ------------------------------------------------------------------------ */
-
-/* Reads `length` bytes of the STAGED image at `offset` (an offset into the
- * image, not a flash address) into `destination`. Returns 0 on success; any
- * non-zero value halts the sequencer and is latched verbatim, so an operator
- * sees the medium's own fault code.
  *
- * Chunked with an offset and a length because that is how the composition will
- * read it: from the SD card, whose job engine is bounded at 512 bytes a
- * transfer. The sequencer reads the staged image THREE times -- once to
- * program the body, once to verify and digest the whole of it, once to program
- * the head -- and never holds more than one chunk. */
-typedef int (*AiusOtaActivateStagedReadFn)(void *ctx, uint32_t offset,
-	                                   uint8_t *destination,
-	                                   uint32_t length);
+ * The staged image is NOT among them: it is a linear byte view (a base pointer
+ * plus a length) passed to begin(), because that is what the composition holds
+ * -- a fully-staged PSRAM copy of the image at offset 0. The sequencer reads it
+ * with plain loads, which is exactly what makes the in-window read path
+ * RAM-resident: there is no chunked medium callback to reach into flash.
+ * ------------------------------------------------------------------------ */
 
 /* Erases the 4096-byte sector at `address` (an absolute flash address, always
  * sector-aligned and always inside the usable region -- checked before the
  * call). Returns 0 on success. */
 typedef int (*AiusOtaActivateEraseFn)(void *ctx, uint32_t address);
 
-/* Programs `length` bytes at `address`. The sequencer guarantees
+/* Programs `length` bytes at `address` from `data`, which points into the
+ * caller's staged image view. The sequencer guarantees
  * 0 < length <= AIUS_OTA_ACTIVATE_CHUNK_BYTES, that the whole span lies inside
  * one sector, and that the sector was erased earlier in this same activation.
  * Returns 0 on success. */
@@ -186,7 +200,6 @@ typedef int (*AiusOtaActivateHealthWriteFn)(void *ctx, const uint8_t *bytes,
 
 typedef struct {
 	void *ctx;
-	AiusOtaActivateStagedReadFn staged_read;
 	AiusOtaActivateEraseFn erase_sector;
 	AiusOtaActivateProgramFn program;
 	AiusOtaActivateFlashReadFn flash_read;
@@ -200,44 +213,41 @@ typedef struct {
  * Sequence
  * ------------------------------------------------------------------------ */
 
-/* The phases, in the order they run. Each is driven by
- * aius_ota_activate_step(), which does BOUNDED work per call -- one erase, one
- * programmed chunk, one verified chunk -- so the phase is a position in the
- * sequence, not a blocking routine.
+/* The phases, in the order they run. begin() does the pre-window verify and the
+ * health mark and leaves the sequencer at ERASE_HEAD; every phase from there is
+ * driven by aius_ota_activate_step(), which does BOUNDED work per call -- one
+ * erase, or one programmed-and-compared chunk -- so a phase is a position in
+ * the sequence, not a blocking routine.
  *
- * IDLE and the two terminals are outside the sequence proper. Everything from
- * ERASE_HEAD to VERIFY_HEAD is the DARK WINDOW: the FCB is erased, the board
- * cannot boot, and the caller must be quiesced and running to completion.
- * aius_ota_activate_is_dark() answers "is the next step inside it". */
+ * EVERYTHING FROM ERASE_HEAD TO PROGRAM_HEAD IS THE DARK WINDOW: the FCB is
+ * erased, the board cannot boot, and the caller must be quiesced and running to
+ * completion. Every aius_ota_activate_step() call is therefore inside it.
+ * aius_ota_activate_is_dark() answers "is the sequence inside the dark window". */
 typedef enum {
-	AIUS_OTA_ACTIVATE_IDLE = 0,       /* begin() not called, or it refused */
-	AIUS_OTA_ACTIVATE_MARK = 1,       /* write the activation mark; no flash */
-	AIUS_OTA_ACTIVATE_ERASE_HEAD = 2, /* erase sector 0: the FCB goes first */
-	AIUS_OTA_ACTIVATE_BODY = 3,       /* erase+program sectors 1..N-1 */
-	AIUS_OTA_ACTIVATE_VERIFY = 4,     /* readback compare + digest recompute */
-	AIUS_OTA_ACTIVATE_PROGRAM_HEAD = 5, /* program sector 0, LAST */
-	AIUS_OTA_ACTIVATE_VERIFY_HEAD = 6,  /* final head readback */
-	AIUS_OTA_ACTIVATE_READY_TO_RESET = 7, /* terminal: the caller resets */
-	AIUS_OTA_ACTIVATE_FAULTED = 8         /* terminal: halted, honestly */
+	AIUS_OTA_ACTIVATE_IDLE = 0,         /* begin() not called, or it refused */
+	AIUS_OTA_ACTIVATE_ERASE_HEAD = 1,   /* erase sector 0: the FCB goes first */
+	AIUS_OTA_ACTIVATE_BODY = 2,         /* erase+program+compare sectors 1..N-1 */
+	AIUS_OTA_ACTIVATE_PROGRAM_HEAD = 3, /* program+compare sector 0, LAST */
+	AIUS_OTA_ACTIVATE_READY_TO_RESET = 4, /* terminal: the caller resets */
+	AIUS_OTA_ACTIVATE_FAULTED = 5         /* terminal: halted, honestly */
 } AiusOtaActivatePhase;
 
 /* Why the halt is typed rather than a bare status: an operator standing at a
- * board that will not boot needs to know which of the six primitives said no,
- * and a status alone cannot carry that. The primitive's OWN return value is
+ * board that will not boot needs to know which check or primitive said no, and
+ * a status alone cannot carry that. A refusing primitive's OWN return value is
  * latched beside it (`primitive_fault`), the same shape the session latches
  * `verifier_fault`. */
 typedef enum {
 	AIUS_OTA_ACTIVATE_FAULT_NONE = 0,
-	AIUS_OTA_ACTIVATE_FAULT_STAGED_READ,   /* the staged image would not read */
 	AIUS_OTA_ACTIVATE_FAULT_ERASE,         /* erase_sector() refused */
 	AIUS_OTA_ACTIVATE_FAULT_PROGRAM,       /* program() refused */
 	AIUS_OTA_ACTIVATE_FAULT_FLASH_READ,    /* flash_read() refused */
 	AIUS_OTA_ACTIVATE_FAULT_HEALTH_READ,   /* the health record would not read */
 	AIUS_OTA_ACTIVATE_FAULT_HEALTH_WRITE,  /* the health record would not write */
 	AIUS_OTA_ACTIVATE_FAULT_HEALTH_RULE,   /* the health record refused the mark */
-	AIUS_OTA_ACTIVATE_FAULT_VERIFY,        /* flash readback != the staged image */
-	AIUS_OTA_ACTIVATE_FAULT_DIGEST,        /* staged image != the armed digest */
-	AIUS_OTA_ACTIVATE_FAULT_HEAD_VERIFY,   /* the head readback != what verify saw */
+	AIUS_OTA_ACTIVATE_FAULT_VERIFY,        /* in-window: flash readback != staged */
+	AIUS_OTA_ACTIVATE_FAULT_DIGEST,        /* pre-window: staged != the armed digest */
+	AIUS_OTA_ACTIVATE_FAULT_SIGNATURE,     /* pre-window: the verifier refused */
 	AIUS_OTA_ACTIVATE_FAULT_GEOMETRY,      /* an address/length the geometry forbids */
 	AIUS_OTA_ACTIVATE_FAULT_INTERRUPTED,   /* a prior activation is in progress */
 	AIUS_OTA_ACTIVATE_FAULT_SESSION,       /* the session moved under the sequencer */
@@ -256,12 +266,12 @@ typedef struct {
 	AiusOtaActivatePhase phase;
 	AiusOtaActivateFault fault;
 	int primitive_fault;
-	bool dark; /* the NEXT step must run quiesced, to completion */
+	bool dark; /* the sequence is inside the dark window */
 	uint32_t image_length;
 	/* Both count flash operations, not staged reads, and both land on
 	 * image_length exactly once the sequence completes: every byte is
 	 * programmed once (body during BODY, head during PROGRAM_HEAD) and read
-	 * back once (body during VERIFY, head during VERIFY_HEAD). */
+	 * back and compared once, inline, immediately after it is programmed. */
 	uint32_t programmed_bytes;
 	uint32_t verified_bytes;
 	uint32_t steps_taken;
@@ -285,63 +295,69 @@ typedef struct {
 	AiusOtaSession *session;
 	AiusOtaActivatePrimitives primitives;
 	AiusOtaHealth health;
+	/* The staged image, a linear byte view the caller owns (a PSRAM copy on
+	 * the target). Borrowed for the life of the activation; read with plain
+	 * loads, which is what keeps the in-window read path RAM-resident. */
+	const uint8_t *staged;
 	uint32_t image_length;
 	uint8_t image_digest[AIUS_OTA_DIGEST_BYTES];
-	/* Position within the current phase: a byte offset for BODY, VERIFY,
-	 * PROGRAM_HEAD and VERIFY_HEAD. */
+	/* Position within the current phase: a byte offset for BODY and
+	 * PROGRAM_HEAD. */
 	uint32_t cursor;
 	bool erase_pending; /* BODY: the next step erases rather than programs */
 	uint32_t programmed_bytes;
 	uint32_t verified_bytes;
 	uint32_t steps_taken;
 	uint32_t steps_total;
-	AiusSha256 image_hash;
-	AiusSha256 head_hash;
-	/* The head region's digest as the VERIFY pass read it from the staged
-	 * image, checked against a readback of the programmed head. This is what
-	 * lets the head be verified without buffering 4 KiB: the reference is 32
-	 * bytes and it was captured before the head was written. */
-	uint8_t head_digest[AIUS_OTA_DIGEST_BYTES];
 	uint64_t dark_window_cycles;
 	uint32_t max_step_cycles;
-	uint8_t staged[AIUS_OTA_ACTIVATE_CHUNK_BYTES];
+	/* One chunk of flash readback, compared against the staged source in
+	 * place. The staged side needs no buffer -- it is the caller's linear
+	 * view -- so this is the only image-sized scratch the activator holds. */
 	uint8_t readback[AIUS_OTA_ACTIVATE_CHUNK_BYTES];
 } AiusOtaActivator;
 
-/* Checks every precondition and arms the sequence. Nothing is erased,
- * programmed or written here.
+/* Checks every precondition, RUNS THE WHOLE VERIFICATION, writes the in-progress
+ * mark, and arms the sequence at ERASE_HEAD. Nothing is erased or programmed
+ * here -- but this is where the digest and signature are proven, before the
+ * dark window, so a bad image aborts with the board still bootable.
  *
- * `running_digest` is the payload digest of the image CURRENTLY RUNNING -- the
- * same 32 bytes the composition already hands aius_ota_health_note_boot() at
- * every boot, so this asks for nothing new. All-zero spells "unknown", which is
- * fail-closed for the resume refusal below.
+ * `staged` / `staged_length` are the linear byte view of the fully-staged image
+ * (the composition's PSRAM copy, payload at offset 0). `verifier` is the same
+ * injected signature seam aius_ota_verify() used. `running_digest` is the
+ * payload digest of the image CURRENTLY RUNNING -- the same 32 bytes the
+ * composition already hands aius_ota_health_note_boot() at every boot, so this
+ * asks for nothing new. All-zero spells "unknown", which is fail-closed for the
+ * resume refusal below.
  *
  * The rules, in the order applied:
  *
- *   1. activator/session/primitives/running_digest non-null, and every one of
- *      the eight callbacks present ......................... INVALID_ARG
+ *   1. activator/session/primitives/verifier/verify/staged/running_digest
+ *      non-null, and every one of the seven callbacks present ...... INVALID_ARG
  *   2. the feature latch is armed .............................. DISARMED
  *   3. session state == ACTIVATION_REQUESTED ...................... STATE
- *   4. staged_length == image_length .............................. STATE
+ *   4. session staged_length == image_length, and the caller's
+ *      staged_length equals it too .............................. STATE
  *   5. image_length in [MIN_IMAGE_BYTES, FLASH_USABLE_BYTES] ... GEOMETRY
  *   6. the armed header's payload_digest is not all-zero ...... MALFORMED
  *   7. health_read() succeeds ................................. PRIMITIVE
  *   8. no prior activation of THIS image is recorded in
  *      progress ............................................. INTERRUPTED
+ *   9. SHA-256(staged) == the armed payload_digest ............... DIGEST
+ *  10. the verifier accepts the header's authentication digest . SIGNATURE
  *
  * Rules 1-4 leave the activator IDLE: they are the caller's error or the
- * session's, nothing about this image was judged. Rules 5-8 leave it FAULTED
+ * session's, nothing about this image was judged. Rules 5-10 leave it FAULTED
  * with a typed fault: this image cannot be activated on this board, and that
- * is a verdict worth latching.
+ * is a verdict worth latching. Only after rule 10 passes is the health mark
+ * written and the phase advanced to ERASE_HEAD.
  *
  * RULE 8 IS THE POWER-LOSS INTERLOCK, and it is why `running_digest` is
- * required. The health record is marked before the first erase (see
- * AIUS_OTA_ACTIVATE_MARK), so a record reading TRIAL for the image about to be
- * activated, while some OTHER image is running, can only mean one thing: an
- * activation of it started and did not finish. The flash may hold half an
- * image. The sequencer refuses -- INTERRUPTED -- rather than resuming into a
- * state nobody can vouch for; aius_ota_health_note_activation()'s idempotence
- * would have permitted a silent retry, and this declines it deliberately. The
+ * required. The health record is marked before the first erase, so a record
+ * reading TRIAL for the image about to be activated, while some OTHER image is
+ * running, can only mean one thing: an activation of it started and did not
+ * finish. The flash may hold half an image. The sequencer refuses --
+ * INTERRUPTED -- rather than resuming into a state nobody can vouch for. The
  * remedies are the plan's: HalfKay if the board is dark, otherwise
  * aius_ota_abandon_activation() and a fresh staged image. The one case this
  * does NOT refuse is re-activating the image that is already running its trial,
@@ -353,18 +369,19 @@ typedef struct {
 AiusOtaStatus aius_ota_activate_begin(
 	AiusOtaActivator *activator, AiusOtaSession *session,
 	const AiusOtaActivatePrimitives *primitives,
+	const AiusOtaVerifier *verifier,
+	const uint8_t *staged, uint32_t staged_length,
 	const uint8_t running_digest[AIUS_OTA_DIGEST_BYTES]);
 
 /* Runs ONE bounded step and returns. AIUS_OTA_OK means the step ran and the
  * sequence continues or has reached READY_TO_RESET; any other status means the
  * sequencer has halted in FAULTED and named why.
  *
- * The bound per call is one primitive operation plus at most one staged read:
- * one sector erase, or one 256-byte program, or one 256-byte readback compare.
- * That is what lets the pre-dark phases be driven from the epoch loop. It is
- * NOT a claim about time -- a sector erase on this part is a millisecond-scale
- * operation with no local upper bound -- which is why the caller must be in the
- * dark window before it steps into ERASE_HEAD.
+ * The bound per call is one primitive operation, or one chunk's
+ * program+readback+compare: one sector erase, or one 256-byte program followed
+ * by its 256-byte readback compare. EVERY call is inside the dark window, so
+ * this function AND EVERYTHING IT REACHES is RAM-resident on the target; the
+ * caller must be quiesced and running it to completion.
  *
  * Every step re-checks that the session is still ACTIVATION_REQUESTED. A
  * session moved out from under a live sequence (aius_ota_abandon_activation()
@@ -380,19 +397,17 @@ AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator);
 /* Steps until a terminal phase: the RUN-TO-COMPLETION mode. Returns
  * AIUS_OTA_OK only at READY_TO_RESET.
  *
- * THIS is the entry point the composition calls once the device is quiesced,
- * and THIS is the function that must be RAM-resident along with everything it
- * reaches -- which this library, being FLASHMEM throughout, is not. The caller
- * therefore does not call this one either: it writes its own loop over
- * aius_ota_activate_step() in a non-FLASHMEM translation unit, and this
+ * THIS is the entry point the composition mirrors once the device is quiesced,
+ * and everything it reaches (aius_ota_activate_step() and its call graph) is
+ * RAM-resident. The composition does NOT call this one: it writes its own loop
+ * over aius_ota_activate_step() in a non-FLASHMEM translation unit, and this
  * function stands as the executable specification of that loop (and is what the
  * host suite drives). See the file header. */
 AiusOtaStatus aius_ota_activate_run(AiusOtaActivator *activator);
 
-/* True when the NEXT step must run with the device quiesced and driven to
- * completion: the phase is between ERASE_HEAD and VERIFY_HEAD inclusive. The
- * transition to true happens the moment MARK completes, so the composition
- * polls this each epoch and quiesces on the edge. */
+/* True when the sequence is inside the dark window: the phase is between
+ * ERASE_HEAD and PROGRAM_HEAD inclusive. A successful begin() leaves it true;
+ * READY_TO_RESET and FAULTED leave it false. */
 bool aius_ota_activate_is_dark(const AiusOtaActivator *activator);
 
 AiusOtaActivatePhase aius_ota_activate_phase(const AiusOtaActivator *activator);
@@ -405,15 +420,18 @@ AiusOtaStatus aius_ota_activate_progress(const AiusOtaActivator *activator,
  * sequence that exceeds it has stopped making progress and halts with
  * FAULT_INTERNAL), the caller uses it as the denominator of a progress
  * fraction, and the host suite asserts the happy path lands on it exactly, so
- * the formula and the step machine cannot drift apart silently.
+ * the formula and the step machine cannot drift apart silently. The mark and
+ * the verification are begin()'s work, not steps, so they are not counted.
  *
  * Zero for a length the geometry refuses. */
 uint32_t aius_ota_activate_step_bound(uint32_t image_length);
 
-/* THE BOUNDS THE SHIPPED DRIVER DOES NOT HAVE. Both are pure and published: the
- * sequencer routes every primitive call through them, and the composition's
- * RAM-resident wrapper should re-check at its own boundary, because the driver
- * behind it masks the address to 24 bits and erases whatever that names.
+/* THE BOUNDS THE SHIPPED DRIVER DOES NOT HAVE. Both are pure, published and
+ * RAM-resident: the sequencer routes every primitive call through them, and the
+ * composition's RAM-resident wrapper should re-check at its own boundary,
+ * because the driver behind it masks the address to 24 bits and erases whatever
+ * that names. They are FASTRUN precisely so that boundary re-check is itself
+ * executable while the flash is mid-erase.
  *
  * check_erase: sector-aligned, and inside [BASE, BASE + USABLE).
  * check_span:  0 < length <= CHUNK_BYTES, the whole span inside ONE sector, and

@@ -444,6 +444,73 @@ def assert_activation_quiesce_is_ordered(text):
     )
 
 
+def assert_activation_gates_on_psram_presence(text):
+    """Activation stages the image into PSRAM and is REFUSED without it, per
+    aius-ota-upgrade.md's final-slice architecture: the reworked sequencer reads
+    the staged image from a linear PSRAM view during the FlexSPI1 erase (FlexSPI2
+    is independent), so a board with no PSRAM cannot do it and the presence gate
+    REFUSES (ota_no_psram) rather than darkening the board. The PSRAM staging
+    region is PARTITIONED from the flight-recorder ring, never aliased, and the
+    disjointness is asserted rather than assumed. No native suite compiles
+    optical_main.cpp, so this is a text property."""
+    definitions = function_definitions(text)
+
+    assert "ota_psram_present" in definitions, (
+        "missing ota_psram_present() -- the activation PSRAM presence gate"
+    )
+    present = without_comments_and_literals(definitions["ota_psram_present"])
+    for signal in ("external_psram_size", "g_psram_pad2_mb"):
+        assert signal in present, (
+            f"ota_psram_present() must read {signal!r}: BOTH PSRAM signals gate "
+            "activation, so a pad-2-only board is not falsely refused"
+        )
+
+    assert "ota_psram_staging" in definitions, (
+        "missing ota_psram_staging() -- the disjoint PSRAM region resolver"
+    )
+    staging = without_comments_and_literals(definitions["ota_psram_staging"])
+    assert "aius_recorder_ring_bytes_after_staging" in staging, (
+        "ota_psram_staging() must size the recorder carve with the SAME formula "
+        "begin_pipeline() uses, or the OTA region can overlap the ring"
+    )
+    assert "RECORDER_STAGING_BYTES" in staging, (
+        "ota_psram_staging() must account for the recorder's staging carve"
+    )
+    assert "recorder_end" in staging, (
+        "ota_psram_staging() must prove disjointness at runtime: the OTA base "
+        "is the recorder region's end, so the two cannot alias"
+    )
+    clean = without_comments_and_literals(text)
+    assert "static_assert(RECORDER_STAGING_BYTES" in clean, (
+        "missing the static_assert pinning the recorder staging carve -- the "
+        "constant half of the OTA/recorder disjointness proof"
+    )
+
+    assert "app_ota_activate" in definitions, "missing app_ota_activate()"
+    activate = without_comments_and_literals(definitions["app_ota_activate"])
+    present_at = activate.find("ota_psram_present(")
+    request_at = activate.find("aius_ota_request_activation(")
+    assert 0 <= present_at < request_at, (
+        "app_ota_activate() must gate on ota_psram_present() BEFORE requesting "
+        "activation, so a no-PSRAM board is refused and no flash is attempted"
+    )
+
+    assert OTA_ACTIVATION_SERVICE in definitions, (
+        f"missing {OTA_ACTIVATION_SERVICE}()"
+    )
+    service = without_comments_and_literals(definitions[OTA_ACTIVATION_SERVICE])
+    staging_at = service.find("ota_psram_staging(")
+    copy_at = service.find("ota_copy_staged_to_psram(")
+    begin_at = service.find("aius_ota_activate_begin(")
+    quiesce_at = service.find(OTA_QUIESCE_FUNCTION + "(")
+    assert 0 <= staging_at < copy_at < begin_at < quiesce_at, (
+        f"{OTA_ACTIVATION_SERVICE}() must resolve the PSRAM region, copy "
+        "SD->PSRAM, and verify (aius_ota_activate_begin) -- in that order -- "
+        "BEFORE the quiesce, so every pre-window refusal leaves the board "
+        "bootable and serving"
+    )
+
+
 def assert_watchdog_armed_once_fed_once_per_epoch(text):
     clean = without_comments_and_literals(text)
     arm_count = clean.count("aius_boot_teensy_watchdog_arm(")
@@ -2539,6 +2606,10 @@ POSITIVE_CHECKS = (
     (
         "OTA activation quiesces (gate, audio, ISR) in order before the dark window",
         assert_activation_quiesce_is_ordered,
+    ),
+    (
+        "OTA activation gates on PSRAM presence and stages disjoint from the recorder ring",
+        assert_activation_gates_on_psram_presence,
     ),
     (
         "watchdog armed once at 8 s, fed exactly once per epoch",

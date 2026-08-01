@@ -3,27 +3,38 @@
 #include <stddef.h>
 #include <string.h>
 
-/* Cold code -> FLASH, the same rule and the same self-defined attribute the
- * rest of lib/aius_ota uses (see aius_ota.c for why the attribute sits on each
- * DEFINITION and not on a prototype).
+/* TWO PLACEMENTS, DELIBERATELY, because this file's work spans the dark window
+ * that the rest of lib/aius_ota is cold enough to sit out.
  *
- * AND THE STANDING WARNING, because this file is the one where the rule and the
- * subject matter point in opposite directions: THIS LIBRARY NEVER RUNS DURING
- * THE ERASE WINDOW IT ORCHESTRATES. On Teensy 4 ordinary code is copied to ITCM
- * at boot and FLASHMEM is the opt-in to stay in flash, so every function here
- * becomes unexecutable the moment a sector erase starts
- * (aius-ota-upgrade.md §The Teensy 4 memory model, and RM p.279 note 3: no
- * FLASH access from ANY master during erase/program). That is correct and
- * deliberate: the sequencer DECIDES, it does not PROGRAM. The run-to-completion
- * caller and the primitive implementations it calls are the composition slice's
- * responsibility and must be RAM-resident with their whole call graph --
- * memcpy included -- verified non-FLASHMEM post-link. The two existing ITCM
- * guards check the opposite direction and will not catch a violation. */
+ * FLASHMEM (cold -> FLASH) is the library's default and stays it for everything
+ * that runs BEFORE quiesce: begin() (which now does the whole SHA-256 +
+ * signature verification and the health mark), step_bound(), and the progress
+ * queries. Keeping them in flash is what leaves ITCM budget for the step path.
+ *
+ * FASTRUN (RAM-resident, .fastrun -> ITCM on the target) is the opt-in for the
+ * IN-WINDOW step path: aius_ota_activate_step() and everything it reaches. On
+ * Teensy 4 ordinary code is copied to ITCM at boot and FLASHMEM is the opt-in to
+ * STAY in flash, so a FLASHMEM function becomes unexecutable the moment a sector
+ * erase starts (aius-ota-upgrade.md §The Teensy 4 memory model, and RM p.279
+ * note 3: no FLASH access from ANY master during erase/program). The step path
+ * must keep executing while the boot flash is mid-erase, so it is FASTRUN, and
+ * it reaches nothing FLASHMEM -- not even aius_ota_state(): the session's state
+ * is read as a plain struct field, because the accessor is cold and would fault.
+ * On the host both attributes expand to nothing, so the identical object is what
+ * the ota suite proves. */
 #ifndef FLASHMEM
 #if defined(__IMXRT1062__)
 #define FLASHMEM __attribute__((section(".flashmem")))
 #else
 #define FLASHMEM
+#endif
+#endif
+
+#ifndef FASTRUN
+#if defined(__IMXRT1062__)
+#define FASTRUN __attribute__((section(".fastrun")))
+#else
+#define FASTRUN
 #endif
 #endif
 
@@ -39,6 +50,9 @@ _Static_assert(AIUS_OTA_FLASH_HEAD_BYTES == AIUS_OTA_FLASH_SECTOR_BYTES,
 _Static_assert(AIUS_OTA_FLASH_SECTOR_BYTES % AIUS_OTA_ACTIVATE_CHUNK_BYTES ==
 	               0u,
                "the chunk divides the sector, so no program crosses one");
+_Static_assert(AIUS_OTA_FLASH_HEAD_BYTES % AIUS_OTA_ACTIVATE_CHUNK_BYTES == 0u,
+               "the head is a whole number of chunks, so PROGRAM_HEAD never "
+               "programs a partial chunk");
 _Static_assert(AIUS_OTA_FLASH_USABLE_BYTES % AIUS_OTA_FLASH_SECTOR_BYTES == 0u,
                "the usable region is a whole number of sectors");
 _Static_assert(AIUS_OTA_ACTIVATE_MIN_IMAGE_BYTES > AIUS_OTA_FLASH_HEAD_BYTES,
@@ -56,14 +70,16 @@ _Static_assert(AIUS_OTA_MAX_IMAGE_BYTES <= AIUS_OTA_FLASH_USABLE_BYTES,
 /* --------------------------------------------------------------------------
  * Byte primitives
  *
- * Local, as every portable engine in this tree keeps its own twenty lines
- * rather than acquiring a dependency. `blocks_differ` visits every position
- * with no early return, the shape lib/aius_auth's token comparison and
- * aius_ota.c's digest comparison both use.
+ * `blocks_differ` is FASTRUN because it is the in-window byte-compare: it reads
+ * the flash readback and the staged PSRAM source while the boot flash is
+ * mid-erase, so it cannot live in flash. It visits every position with no early
+ * return, the shape lib/aius_auth's token comparison and aius_ota.c's digest
+ * comparison both use, and it doubles as the pre-window digest compare -- a
+ * FASTRUN leaf is callable from a FLASHMEM caller, only not the reverse.
  * ------------------------------------------------------------------------ */
 
-static FLASHMEM bool blocks_differ(const uint8_t *left, const uint8_t *right,
-	                           uint32_t length)
+static FASTRUN bool blocks_differ(const uint8_t *left, const uint8_t *right,
+	                          uint32_t length)
 {
 	uint8_t accumulator = 0u;
 	uint32_t index;
@@ -91,6 +107,11 @@ static FLASHMEM uint32_t chunks_of(uint32_t bytes)
 
 /* --------------------------------------------------------------------------
  * Geometry
+ *
+ * check_erase / check_span are FASTRUN: the step path calls them before every
+ * primitive, and the composition's RAM-resident wrapper re-checks through them
+ * too, so they must execute while the flash is mid-erase. check_image_length is
+ * pre-window only (begin and step_bound), so it stays FLASHMEM.
  * ------------------------------------------------------------------------ */
 
 FLASHMEM AiusOtaStatus aius_ota_activate_check_image_length(
@@ -103,7 +124,7 @@ FLASHMEM AiusOtaStatus aius_ota_activate_check_image_length(
 	return AIUS_OTA_OK;
 }
 
-FLASHMEM AiusOtaStatus aius_ota_activate_check_erase(uint32_t address)
+FASTRUN AiusOtaStatus aius_ota_activate_check_erase(uint32_t address)
 {
 	uint32_t offset;
 
@@ -117,8 +138,8 @@ FLASHMEM AiusOtaStatus aius_ota_activate_check_erase(uint32_t address)
 	return AIUS_OTA_OK;
 }
 
-FLASHMEM AiusOtaStatus aius_ota_activate_check_span(uint32_t address,
-	                                            uint32_t length)
+FASTRUN AiusOtaStatus aius_ota_activate_check_span(uint32_t address,
+	                                           uint32_t length)
 {
 	uint32_t offset;
 
@@ -148,67 +169,40 @@ FLASHMEM uint32_t aius_ota_activate_step_bound(uint32_t image_length)
 
 	sectors = (image_length + AIUS_OTA_FLASH_SECTOR_BYTES - 1u) /
 		  AIUS_OTA_FLASH_SECTOR_BYTES;
-	steps = 1u;                 /* MARK: one health-record write */
-	steps += 1u;                /* ERASE_HEAD: sector 0 */
+	steps = 1u;                 /* ERASE_HEAD: sector 0 */
 	steps += sectors - 1u;      /* BODY: one erase per body sector */
+	/* BODY: one program+readback+compare per body chunk. */
 	steps += chunks_of(image_length - AIUS_OTA_FLASH_HEAD_BYTES);
-	steps += chunks_of(image_length); /* VERIFY: every byte, once */
-	steps += AIUS_OTA_FLASH_HEAD_BYTES / AIUS_OTA_ACTIVATE_CHUNK_BYTES;
+	/* PROGRAM_HEAD: one program+readback+compare per head chunk. */
 	steps += AIUS_OTA_FLASH_HEAD_BYTES / AIUS_OTA_ACTIVATE_CHUNK_BYTES;
 	return steps;
 }
 
 /* --------------------------------------------------------------------------
- * Primitive calls
+ * Primitive calls (FASTRUN: the in-window path)
  *
- * Every one of them goes through a wrapper that (a) feeds the watchdog first
- * and (b) checks the geometry first, so the cadence promise
+ * Every one goes through a wrapper that (a) feeds the watchdog first and (b)
+ * checks the geometry first, so the cadence promise
  * (AIUS_OTA_ACTIVATE_MAX_OPS_PER_FEED) and the bounds promise are properties of
  * the ONE place a primitive can be reached from, not of each call site.
  * ------------------------------------------------------------------------ */
 
-static FLASHMEM AiusOtaStatus halt(AiusOtaActivator *activator,
-	                           AiusOtaActivateFault fault,
-	                           AiusOtaStatus status)
+static FASTRUN AiusOtaStatus halt(AiusOtaActivator *activator,
+	                          AiusOtaActivateFault fault,
+	                          AiusOtaStatus status)
 {
 	activator->phase = AIUS_OTA_ACTIVATE_FAULTED;
 	activator->fault = fault;
 	return status;
 }
 
-static FLASHMEM void feed(AiusOtaActivator *activator)
+static FASTRUN void feed(AiusOtaActivator *activator)
 {
 	activator->primitives.watchdog_feed(activator->primitives.ctx);
 }
 
-static FLASHMEM AiusOtaStatus do_staged_read(AiusOtaActivator *activator,
-	                                     uint32_t offset, uint32_t length)
-{
-	int fault;
-
-	/* An internal invariant, not a caller's argument: the cursor arithmetic
-	 * is this file's own. It is checked anyway because the alternative is a
-	 * read past the staged image on a future edit. */
-	if (length == 0u || length > AIUS_OTA_ACTIVATE_CHUNK_BYTES ||
-	    offset > activator->image_length ||
-	    length > activator->image_length - offset)
-		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_GEOMETRY,
-		            AIUS_OTA_GEOMETRY);
-
-	feed(activator);
-	fault = activator->primitives.staged_read(activator->primitives.ctx,
-	                                          offset, activator->staged,
-	                                          length);
-	if (fault != 0) {
-		activator->primitive_fault = fault;
-		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_STAGED_READ,
-		            AIUS_OTA_PRIMITIVE);
-	}
-	return AIUS_OTA_OK;
-}
-
-static FLASHMEM AiusOtaStatus do_erase(AiusOtaActivator *activator,
-	                               uint32_t address)
+static FASTRUN AiusOtaStatus do_erase(AiusOtaActivator *activator,
+	                              uint32_t address)
 {
 	AiusOtaStatus status = aius_ota_activate_check_erase(address);
 	int fault;
@@ -228,8 +222,9 @@ static FLASHMEM AiusOtaStatus do_erase(AiusOtaActivator *activator,
 	return AIUS_OTA_OK;
 }
 
-static FLASHMEM AiusOtaStatus do_program(AiusOtaActivator *activator,
-	                                 uint32_t address, uint32_t length)
+static FASTRUN AiusOtaStatus do_program(AiusOtaActivator *activator,
+	                                uint32_t address, const uint8_t *data,
+	                                uint32_t length)
 {
 	AiusOtaStatus status = aius_ota_activate_check_span(address, length);
 	int fault;
@@ -240,8 +235,7 @@ static FLASHMEM AiusOtaStatus do_program(AiusOtaActivator *activator,
 
 	feed(activator);
 	fault = activator->primitives.program(activator->primitives.ctx,
-	                                      address, activator->staged,
-	                                      length);
+	                                      address, data, length);
 	if (fault != 0) {
 		activator->primitive_fault = fault;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_PROGRAM,
@@ -250,8 +244,8 @@ static FLASHMEM AiusOtaStatus do_program(AiusOtaActivator *activator,
 	return AIUS_OTA_OK;
 }
 
-static FLASHMEM AiusOtaStatus do_flash_read(AiusOtaActivator *activator,
-	                                    uint32_t address, uint32_t length)
+static FASTRUN AiusOtaStatus do_flash_read(AiusOtaActivator *activator,
+	                                   uint32_t address, uint32_t length)
 {
 	AiusOtaStatus status = aius_ota_activate_check_span(address, length);
 	int fault;
@@ -273,11 +267,11 @@ static FLASHMEM AiusOtaStatus do_flash_read(AiusOtaActivator *activator,
 }
 
 /* --------------------------------------------------------------------------
- * The phases
+ * The dark-window phases (FASTRUN)
  * ------------------------------------------------------------------------ */
 
-static FLASHMEM uint32_t chunk_at(const AiusOtaActivator *activator,
-	                          uint32_t cursor)
+static FASTRUN uint32_t chunk_at(const AiusOtaActivator *activator,
+	                         uint32_t cursor)
 {
 	uint32_t remaining = activator->image_length - cursor;
 
@@ -286,7 +280,165 @@ static FLASHMEM uint32_t chunk_at(const AiusOtaActivator *activator,
 		: AIUS_OTA_ACTIVATE_CHUNK_BYTES;
 }
 
-/* MARK -- the only step outside the dark window that touches persistent state,
+/* Program one chunk from the staged source, read it back, and byte-compare the
+ * readback against the SAME staged bytes. No digest: the whole image was
+ * digested and signature-checked before the dark window (see
+ * aius_ota_activate_begin()), so the in-window job is only to prove that what
+ * the flash now holds equals what was verified. The compare is an inlined
+ * blocks_differ over the caller's linear staged view, so it reaches no medium
+ * and no hash while the flash is erased. Returns OK, or halts VERIFY. */
+static FASTRUN AiusOtaStatus program_and_compare(AiusOtaActivator *activator,
+	                                         uint32_t offset,
+	                                         uint32_t length)
+{
+	const uint8_t *source = activator->staged + offset;
+	AiusOtaStatus status;
+
+	status = do_program(activator, AIUS_OTA_FLASH_BASE + offset, source,
+	                    length);
+	if (status != AIUS_OTA_OK)
+		return status;
+	status = do_flash_read(activator, AIUS_OTA_FLASH_BASE + offset, length);
+	if (status != AIUS_OTA_OK)
+		return status;
+	if (blocks_differ(source, activator->readback, length))
+		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_VERIFY,
+		            AIUS_OTA_VERIFY);
+
+	activator->programmed_bytes += length;
+	activator->verified_bytes += length;
+	return AIUS_OTA_OK;
+}
+
+/* ERASE_HEAD -- sector 0, the FCB, erased FIRST and reprogrammed LAST.
+ *
+ * The ordering is the whole safety argument, so it is worth stating in full.
+ * The IVT is at base + 0x1000, which is the first byte of SECTOR 1, so the body
+ * pass reprograms the NEW image's IVT early -- long before the new image is
+ * complete. If sector 0 still held the old, valid FCB at that moment, a reset
+ * would find a bootable-looking image: valid FCB, valid IVT, half a program
+ * behind it. Erasing the FCB first removes that window entirely. From here
+ * until PROGRAM_HEAD completes, the ROM cannot configure FlexSPI, so it never
+ * reaches the IVT and cannot boot anything, whole or half.
+ *
+ * aius-ota-upgrade.md accepts exactly this outcome: erasing the FCB at
+ * 0x60000000 or the IVT at 0x60001000 makes the board un-ROM-bootable, and
+ * HalfKay -- a physically separate chip that occupies none of this flash and
+ * cannot be damaged by application code -- survives to reflash it. An
+ * interrupted activation is therefore a HalfKay rescue by DESIGN, not by
+ * accident. */
+static FASTRUN AiusOtaStatus step_erase_head(AiusOtaActivator *activator)
+{
+	AiusOtaStatus status = do_erase(activator, AIUS_OTA_FLASH_BASE);
+
+	if (status != AIUS_OTA_OK)
+		return status;
+
+	activator->phase = AIUS_OTA_ACTIVATE_BODY;
+	activator->cursor = AIUS_OTA_FLASH_HEAD_BYTES;
+	activator->erase_pending = true;
+	return AIUS_OTA_OK;
+}
+
+/* BODY -- sectors 1..N-1, erase then program-and-compare, one operation-unit
+ * per step. Each body chunk is programmed from the staged image and immediately
+ * read back and compared, so a flash cell that reported success and did not
+ * take is caught here, mid-body, while the FCB is still erased. */
+static FASTRUN AiusOtaStatus step_body(AiusOtaActivator *activator)
+{
+	AiusOtaStatus status;
+	uint32_t take;
+
+	if (activator->erase_pending) {
+		status = do_erase(activator,
+		                  AIUS_OTA_FLASH_BASE + activator->cursor);
+		if (status != AIUS_OTA_OK)
+			return status;
+		activator->erase_pending = false;
+		return AIUS_OTA_OK;
+	}
+
+	take = chunk_at(activator, activator->cursor);
+	status = program_and_compare(activator, activator->cursor, take);
+	if (status != AIUS_OTA_OK)
+		return status;
+
+	activator->cursor += take;
+	if (activator->cursor == activator->image_length) {
+		activator->phase = AIUS_OTA_ACTIVATE_PROGRAM_HEAD;
+		activator->cursor = 0u;
+	} else if (activator->cursor % AIUS_OTA_FLASH_SECTOR_BYTES == 0u) {
+		activator->erase_pending = true;
+	}
+	return AIUS_OTA_OK;
+}
+
+/* PROGRAM_HEAD -- sector 0 LAST, from the staged image, one full chunk per step
+ * (the head is a whole number of chunks). The same program-then-readback-compare
+ * as the body, so a bad FCB byte is caught the instant it is written -- which is
+ * the last thing that can go wrong before the caller may reset. */
+static FASTRUN AiusOtaStatus step_program_head(AiusOtaActivator *activator)
+{
+	AiusOtaStatus status =
+		program_and_compare(activator, activator->cursor,
+		                    AIUS_OTA_ACTIVATE_CHUNK_BYTES);
+
+	if (status != AIUS_OTA_OK)
+		return status;
+
+	activator->cursor += AIUS_OTA_ACTIVATE_CHUNK_BYTES;
+	if (activator->cursor == AIUS_OTA_FLASH_HEAD_BYTES)
+		activator->phase = AIUS_OTA_ACTIVATE_READY_TO_RESET;
+	return AIUS_OTA_OK;
+}
+
+/* --------------------------------------------------------------------------
+ * Pre-window verification and mark (FLASHMEM)
+ * ------------------------------------------------------------------------ */
+
+/* The WHOLE verification, run before the dark window, over the caller's staged
+ * RAM copy against the armed header. Two independent checks, neither subsuming
+ * the other:
+ *
+ *   1. Digest recompute: SHA-256 over every staged byte, compared against the
+ *      armed header's payload_digest. This is what the staging record
+ *      explicitly does not attest -- "it cannot say that the staging medium
+ *      still holds those bytes; re-reading and re-digesting before programming
+ *      is the activation slice's obligation". A card that decayed between
+ *      staging and activation fails HERE, before anything is flashed.
+ *   2. Signature: the injected verifier over the header's authentication
+ *      digest, the same message and seam aius_ota_verify() checked at staging
+ *      time, re-run so activation stands on its own authority rather than on a
+ *      verdict a prior boot reached.
+ *
+ * A failure of either halts FAULTED with nothing flashed and no mark written.
+ * This is the move that lets the dark window drop SHA-256 entirely. */
+static FLASHMEM AiusOtaStatus verify_staged(AiusOtaActivator *activator,
+	                                    const AiusOtaVerifier *verifier)
+{
+	uint8_t digest[AIUS_OTA_DIGEST_BYTES];
+	uint8_t auth[AIUS_OTA_DIGEST_BYTES];
+	int fault;
+
+	aius_sha256(activator->staged, activator->image_length, digest);
+	if (blocks_differ(digest, activator->image_digest,
+	                  AIUS_OTA_DIGEST_BYTES))
+		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_DIGEST,
+		            AIUS_OTA_DIGEST);
+
+	aius_sha256(activator->session->header_bytes,
+		    AIUS_OTA_HEADER_AUTH_BYTES, auth);
+	fault = verifier->verify(auth, activator->session->header.signature,
+	                         verifier->ctx);
+	if (fault != 0) {
+		activator->primitive_fault = fault;
+		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_SIGNATURE,
+		            AIUS_OTA_SIGNATURE);
+	}
+	return AIUS_OTA_OK;
+}
+
+/* MARK -- the health record's in-progress mark, written before the first erase,
  * and the whole reason power-loss forensics can tell "never started" from
  * "interrupted".
  *
@@ -296,12 +448,7 @@ static FLASHMEM uint32_t chunk_at(const AiusOtaActivator *activator,
  * refreshing the budget, because "a power loss between the activation write and
  * the reboot must not hand a boot-looping image an unlimited supply of fresh
  * trials". So the in-progress mark and the new-image-trial transition are the
- * SAME WRITE, made here, before the first erase, rather than two writes with
- * the second on success. That is a deviation from a literal reading of the
- * sequencing contract ("on success: transition to new-image-trial") and it is
- * the honest one: a second write on success would either be a no-op or would
- * need a record state the slice-1 layout does not have, and inventing one means
- * restructuring a record another image has to read back.
+ * SAME WRITE, made here, before the first erase.
  *
  * HOW A READER TELLS THE THREE CASES APART, which is all the forensics needs:
  *
@@ -310,16 +457,10 @@ static FLASHMEM uint32_t chunk_at(const AiusOtaActivator *activator,
  *   TRIAL(new) and it is NOT running        -> started and interrupted.
  *
  * The third case is exactly aius_ota_activate_begin()'s rule 8, and on the next
- * boot aius_ota_health_note_boot() resolves it without help: the fallback
- * booting while the record says TRIAL is already ROLLED_BACK with the count
- * incremented.
- *
- * WHICH IS ALSO WHY A FAULT WRITES NOTHING HERE. A halted activation leaves the
- * mark standing, because the mark is the true statement -- an activation of
- * this image was begun and did not complete. Rewriting it to anything else
- * would be a claim the sequencer cannot support: nothing has rolled back, the
- * new image is not running, and the flash may be half-programmed. */
-static FLASHMEM AiusOtaStatus step_mark(AiusOtaActivator *activator)
+ * boot aius_ota_health_note_boot() resolves it without help. A halted
+ * activation leaves the mark standing, because the mark is the true statement --
+ * an activation of this image was begun and did not complete. */
+static FLASHMEM AiusOtaStatus mark_in_progress(AiusOtaActivator *activator)
 {
 	uint8_t bytes[AIUS_OTA_HEALTH_RECORD_BYTES];
 	AiusOtaStatus status;
@@ -344,197 +485,6 @@ static FLASHMEM AiusOtaStatus step_mark(AiusOtaActivator *activator)
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_HEALTH_WRITE,
 		            AIUS_OTA_PRIMITIVE);
 	}
-
-	activator->phase = AIUS_OTA_ACTIVATE_ERASE_HEAD;
-	return AIUS_OTA_OK;
-}
-
-/* ERASE_HEAD -- sector 0, the FCB, erased FIRST and reprogrammed LAST.
- *
- * The ordering is the whole safety argument, so it is worth stating in full.
- * The IVT is at base + 0x1000, which is the first byte of SECTOR 1, so the body
- * pass reprograms the NEW image's IVT early -- long before the new image is
- * complete. If sector 0 still held the old, valid FCB at that moment, a reset
- * would find a bootable-looking image: valid FCB, valid IVT, half a program
- * behind it. Erasing the FCB first removes that window entirely. From here
- * until PROGRAM_HEAD completes, the ROM cannot configure FlexSPI, so it never
- * reaches the IVT and cannot boot anything, whole or half.
- *
- * aius-ota-upgrade.md accepts exactly this outcome: erasing the FCB at
- * 0x60000000 or the IVT at 0x60001000 makes the board un-ROM-bootable, and
- * HalfKay -- a physically separate chip that occupies none of this flash and
- * cannot be damaged by application code -- survives to reflash it. An
- * interrupted activation is therefore a HalfKay rescue by DESIGN, not by
- * accident. */
-static FLASHMEM AiusOtaStatus step_erase_head(AiusOtaActivator *activator)
-{
-	AiusOtaStatus status = do_erase(activator, AIUS_OTA_FLASH_BASE);
-
-	if (status != AIUS_OTA_OK)
-		return status;
-
-	activator->phase = AIUS_OTA_ACTIVATE_BODY;
-	activator->cursor = AIUS_OTA_FLASH_HEAD_BYTES;
-	activator->erase_pending = true;
-	return AIUS_OTA_OK;
-}
-
-/* BODY -- sectors 1..N-1, erase then program, one operation per step. */
-static FLASHMEM AiusOtaStatus step_body(AiusOtaActivator *activator)
-{
-	AiusOtaStatus status;
-	uint32_t take;
-
-	if (activator->erase_pending) {
-		status = do_erase(activator,
-		                  AIUS_OTA_FLASH_BASE + activator->cursor);
-		if (status != AIUS_OTA_OK)
-			return status;
-		activator->erase_pending = false;
-		return AIUS_OTA_OK;
-	}
-
-	take = chunk_at(activator, activator->cursor);
-	status = do_staged_read(activator, activator->cursor, take);
-	if (status != AIUS_OTA_OK)
-		return status;
-	status = do_program(activator, AIUS_OTA_FLASH_BASE + activator->cursor,
-	                    take);
-	if (status != AIUS_OTA_OK)
-		return status;
-
-	activator->cursor += take;
-	activator->programmed_bytes += take;
-	if (activator->cursor == activator->image_length) {
-		activator->phase = AIUS_OTA_ACTIVATE_VERIFY;
-		activator->cursor = 0u;
-		aius_sha256_init(&activator->image_hash);
-		aius_sha256_init(&activator->head_hash);
-	} else if (activator->cursor % AIUS_OTA_FLASH_SECTOR_BYTES == 0u) {
-		activator->erase_pending = true;
-	}
-	return AIUS_OTA_OK;
-}
-
-/* VERIFY -- one pass over the whole image, doing two independent jobs, and it
- * runs BEFORE the head is programmed so that a failure here still leaves the
- * board in the erased-FCB state rather than a bootable wrong image.
- *
- *   1. Readback compare, for every body byte: what the flash now holds against
- *      what the staged image says it should. This is what catches a program
- *      that reported success and did not take.
- *   2. Digest recompute, over every byte INCLUDING the head, compared against
- *      the armed header's payload_digest. This is what the staging record
- *      explicitly does not attest -- "it cannot say that the staging medium
- *      still holds those bytes; re-reading and re-digesting before programming
- *      is the activation slice's obligation". This is that obligation.
- *
- * Neither subsumes the other. The compare catches flash that disagrees with the
- * medium; the digest catches a medium that disagrees with what was verified and
- * signed. A card that decayed between staging and activation passes the compare
- * (both sides read the same wrong bytes) and fails the digest.
- *
- * The head's bytes cannot be compared here -- sector 0 is erased -- so they are
- * hashed into a second context instead, and that 32-byte digest is the
- * reference VERIFY_HEAD checks the programmed head against. */
-static FLASHMEM AiusOtaStatus step_verify(AiusOtaActivator *activator)
-{
-	uint8_t digest[AIUS_OTA_DIGEST_BYTES];
-	AiusOtaStatus status;
-	uint32_t take;
-
-	take = chunk_at(activator, activator->cursor);
-	status = do_staged_read(activator, activator->cursor, take);
-	if (status != AIUS_OTA_OK)
-		return status;
-	aius_sha256_update(&activator->image_hash, activator->staged, take);
-
-	if (activator->cursor < AIUS_OTA_FLASH_HEAD_BYTES) {
-		aius_sha256_update(&activator->head_hash, activator->staged,
-		                   take);
-	} else {
-		status = do_flash_read(activator,
-		                       AIUS_OTA_FLASH_BASE + activator->cursor,
-		                       take);
-		if (status != AIUS_OTA_OK)
-			return status;
-		if (blocks_differ(activator->staged, activator->readback, take))
-			return halt(activator, AIUS_OTA_ACTIVATE_FAULT_VERIFY,
-			            AIUS_OTA_VERIFY);
-		activator->verified_bytes += take;
-	}
-
-	activator->cursor += take;
-	if (activator->cursor != activator->image_length)
-		return AIUS_OTA_OK;
-
-	aius_sha256_final(&activator->image_hash, digest);
-	if (blocks_differ(digest, activator->image_digest,
-	                  AIUS_OTA_DIGEST_BYTES))
-		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_DIGEST,
-		            AIUS_OTA_DIGEST);
-	aius_sha256_final(&activator->head_hash, activator->head_digest);
-
-	activator->phase = AIUS_OTA_ACTIVATE_PROGRAM_HEAD;
-	activator->cursor = 0u;
-	return AIUS_OTA_OK;
-}
-
-/* PROGRAM_HEAD -- sector 0 LAST, from the staged image again (this library
- * holds no image bytes, by the same rule the staging machine follows). A third
- * read of the medium is not a risk taken blindly: VERIFY_HEAD hashes the
- * programmed result and checks it against the digest VERIFY captured, so a
- * medium that changed between the two reads cannot slip a different FCB in. */
-static FLASHMEM AiusOtaStatus step_program_head(AiusOtaActivator *activator)
-{
-	AiusOtaStatus status;
-
-	status = do_staged_read(activator, activator->cursor,
-	                        AIUS_OTA_ACTIVATE_CHUNK_BYTES);
-	if (status != AIUS_OTA_OK)
-		return status;
-	status = do_program(activator, AIUS_OTA_FLASH_BASE + activator->cursor,
-	                    AIUS_OTA_ACTIVATE_CHUNK_BYTES);
-	if (status != AIUS_OTA_OK)
-		return status;
-
-	activator->cursor += AIUS_OTA_ACTIVATE_CHUNK_BYTES;
-	activator->programmed_bytes += AIUS_OTA_ACTIVATE_CHUNK_BYTES;
-	if (activator->cursor == AIUS_OTA_FLASH_HEAD_BYTES) {
-		activator->phase = AIUS_OTA_ACTIVATE_VERIFY_HEAD;
-		activator->cursor = 0u;
-		aius_sha256_init(&activator->head_hash);
-	}
-	return AIUS_OTA_OK;
-}
-
-/* VERIFY_HEAD -- the last thing that happens before the caller may reset: read
- * the FCB back out of flash and prove it is the one VERIFY digested. */
-static FLASHMEM AiusOtaStatus step_verify_head(AiusOtaActivator *activator)
-{
-	uint8_t digest[AIUS_OTA_DIGEST_BYTES];
-	AiusOtaStatus status;
-
-	status = do_flash_read(activator,
-	                       AIUS_OTA_FLASH_BASE + activator->cursor,
-	                       AIUS_OTA_ACTIVATE_CHUNK_BYTES);
-	if (status != AIUS_OTA_OK)
-		return status;
-	aius_sha256_update(&activator->head_hash, activator->readback,
-	                   AIUS_OTA_ACTIVATE_CHUNK_BYTES);
-
-	activator->cursor += AIUS_OTA_ACTIVATE_CHUNK_BYTES;
-	activator->verified_bytes += AIUS_OTA_ACTIVATE_CHUNK_BYTES;
-	if (activator->cursor != AIUS_OTA_FLASH_HEAD_BYTES)
-		return AIUS_OTA_OK;
-
-	aius_sha256_final(&activator->head_hash, digest);
-	if (blocks_differ(digest, activator->head_digest,
-	                  AIUS_OTA_DIGEST_BYTES))
-		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_HEAD_VERIFY,
-		            AIUS_OTA_VERIFY);
-
-	activator->phase = AIUS_OTA_ACTIVATE_READY_TO_RESET;
 	return AIUS_OTA_OK;
 }
 
@@ -545,6 +495,8 @@ static FLASHMEM AiusOtaStatus step_verify_head(AiusOtaActivator *activator)
 FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	AiusOtaActivator *activator, AiusOtaSession *session,
 	const AiusOtaActivatePrimitives *primitives,
+	const AiusOtaVerifier *verifier,
+	const uint8_t *staged, uint32_t staged_length,
 	const uint8_t running_digest[AIUS_OTA_DIGEST_BYTES])
 {
 	uint8_t bytes[AIUS_OTA_HEALTH_RECORD_BYTES];
@@ -560,12 +512,13 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	memset(activator, 0, sizeof(*activator));
 	aius_ota_health_init(&activator->health);
 
-	if (session == NULL || primitives == NULL || running_digest == NULL)
+	if (session == NULL || primitives == NULL || verifier == NULL ||
+	    verifier->verify == NULL || staged == NULL || running_digest == NULL)
 		return AIUS_OTA_INVALID_ARG;
-	if (primitives->staged_read == NULL || primitives->erase_sector == NULL ||
-	    primitives->program == NULL || primitives->flash_read == NULL ||
-	    primitives->watchdog_feed == NULL || primitives->cycles == NULL ||
-	    primitives->health_read == NULL || primitives->health_write == NULL)
+	if (primitives->erase_sector == NULL || primitives->program == NULL ||
+	    primitives->flash_read == NULL || primitives->watchdog_feed == NULL ||
+	    primitives->cycles == NULL || primitives->health_read == NULL ||
+	    primitives->health_write == NULL)
 		return AIUS_OTA_INVALID_ARG;
 	if (!aius_ota_latch_is_armed(session))
 		return AIUS_OTA_DISARMED;
@@ -575,13 +528,17 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	status = aius_ota_progress(session, &progress);
 	if (status != AIUS_OTA_OK)
 		return status;
-	if (progress.staged_length != progress.image_length)
+	/* The session must be fully staged, and the caller's linear view must be
+	 * exactly that image -- a short PSRAM copy would program past its end. */
+	if (progress.staged_length != progress.image_length ||
+	    staged_length != progress.image_length)
 		return AIUS_OTA_STATE;
 
 	/* From here the refusals are verdicts about this image on this board, so
 	 * they latch a typed fault rather than just returning. */
 	activator->session = session;
 	activator->primitives = *primitives;
+	activator->staged = staged;
 	activator->image_length = progress.image_length;
 	activator->steps_total =
 		aius_ota_activate_step_bound(progress.image_length);
@@ -606,11 +563,12 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	}
 	/* CORRUPT is not a refusal. The loader fails closed to UNKNOWN, which is
 	 * precisely the state of a board that has never recorded an image, and a
-	 * fresh board must be able to take its first upgrade. What is lost is the
-	 * fallback identity, and that is the honest consequence of an unreadable
-	 * record rather than something to paper over. */
+	 * fresh board must be able to take its first upgrade. */
 	(void)aius_ota_health_load(&activator->health, bytes, sizeof(bytes));
 
+	/* RULE 8, the power-loss interlock, BEFORE the verify: a half-written
+	 * flash is a refusal that outranks any digest verdict, and a resume must
+	 * not spend a SHA-256 over the staged image to reach the same "no". */
 	if (aius_ota_health_is_trialing(&activator->health) &&
 	    !blocks_differ(activator->health.image_digest,
 	                   activator->image_digest, AIUS_OTA_DIGEST_BYTES) &&
@@ -619,11 +577,24 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_INTERRUPTED,
 		            AIUS_OTA_INTERRUPTED);
 
-	activator->phase = AIUS_OTA_ACTIVATE_MARK;
+	/* THE PRE-WINDOW VERIFICATION. If it fails, nothing is flashed and no
+	 * mark is written -- the board keeps serving. */
+	status = verify_staged(activator, verifier);
+	if (status != AIUS_OTA_OK)
+		return status;
+
+	/* The mark is the last pre-window act; a fault here still leaves a
+	 * bootable board (nothing erased), with the mark either standing (the
+	 * write took) or absent (it did not). */
+	status = mark_in_progress(activator);
+	if (status != AIUS_OTA_OK)
+		return status;
+
+	activator->phase = AIUS_OTA_ACTIVATE_ERASE_HEAD;
 	return AIUS_OTA_OK;
 }
 
-FLASHMEM AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
+FASTRUN AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
 {
 	AiusOtaStatus status;
 	uint32_t started;
@@ -638,9 +609,11 @@ FLASHMEM AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
 		return AIUS_OTA_STATE;
 
 	/* The authorization is re-read, not remembered: a session moved out of
-	 * ACTIVATION_REQUESTED mid-sequence has withdrawn it. */
-	if (aius_ota_state(activator->session) !=
-	    AIUS_OTA_STATE_ACTIVATION_REQUESTED)
+	 * ACTIVATION_REQUESTED mid-sequence has withdrawn it. Read as a plain
+	 * struct field, NOT through aius_ota_state(), which is FLASHMEM and would
+	 * fault while the flash is erased. */
+	if (activator->session == NULL ||
+	    activator->session->state != AIUS_OTA_STATE_ACTIVATION_REQUESTED)
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_SESSION,
 		            AIUS_OTA_STATE);
 	/* Unreachable while the step machine and step_bound() agree, which the
@@ -655,23 +628,14 @@ FLASHMEM AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
 	started = activator->primitives.cycles(activator->primitives.ctx);
 
 	switch (activator->phase) {
-	case AIUS_OTA_ACTIVATE_MARK:
-		status = step_mark(activator);
-		break;
 	case AIUS_OTA_ACTIVATE_ERASE_HEAD:
 		status = step_erase_head(activator);
 		break;
 	case AIUS_OTA_ACTIVATE_BODY:
 		status = step_body(activator);
 		break;
-	case AIUS_OTA_ACTIVATE_VERIFY:
-		status = step_verify(activator);
-		break;
 	case AIUS_OTA_ACTIVATE_PROGRAM_HEAD:
 		status = step_program_head(activator);
-		break;
-	case AIUS_OTA_ACTIVATE_VERIFY_HEAD:
-		status = step_verify_head(activator);
 		break;
 	case AIUS_OTA_ACTIVATE_IDLE:
 	case AIUS_OTA_ACTIVATE_READY_TO_RESET:
@@ -714,14 +678,14 @@ FLASHMEM AiusOtaStatus aius_ota_activate_run(AiusOtaActivator *activator)
 		: AIUS_OTA_STATE;
 }
 
-FLASHMEM bool aius_ota_activate_is_dark(const AiusOtaActivator *activator)
+FASTRUN bool aius_ota_activate_is_dark(const AiusOtaActivator *activator)
 {
 	return activator != NULL &&
 	       activator->phase >= AIUS_OTA_ACTIVATE_ERASE_HEAD &&
-	       activator->phase <= AIUS_OTA_ACTIVATE_VERIFY_HEAD;
+	       activator->phase <= AIUS_OTA_ACTIVATE_PROGRAM_HEAD;
 }
 
-FLASHMEM AiusOtaActivatePhase aius_ota_activate_phase(
+FASTRUN AiusOtaActivatePhase aius_ota_activate_phase(
 	const AiusOtaActivator *activator)
 {
 	return activator == NULL ? AIUS_OTA_ACTIVATE_IDLE : activator->phase;

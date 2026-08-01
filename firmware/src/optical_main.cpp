@@ -2672,17 +2672,19 @@ static FASTRUN void reset_application(void)
 /* DURABLE STAGING. The chunk path writes each staged CONTAINER chunk   */
 /* to /aius/ota-staged.img through the existing bounded SD job engine   */
 /* (aius_optical_app.cpp ota_image_chunk, mirroring the replay          */
-/* APPEND_PART upload); ota_staged_read() reads it back at activation,  */
-/* skipping the 256-byte header so the sequencer sees the image at      */
-/* offset 0. absorb() still hashes each chunk synchronously at dispatch */
-/* while the durable write is async, so a chunk whose SD write fails    */
-/* leaves the session's hash ahead of the card -- which the sequencer's */
-/* VERIFY pass CATCHES: it recomputes the digest from the SD-staged     */
-/* bytes and readback-compares BEFORE the head is programmed, so a hole */
-/* faults activation before any flash write and a corrupt image can     */
-/* never be programmed, only re-offered. A reboot mid-staging comes up  */
-/* disarmed (the session does not persist), so the orphaned file is     */
-/* inert until a fresh offer overwrites it.                            */
+/* APPEND_PART upload). At activation, BEFORE the dark window,          */
+/* service_ota_activation() copies the whole image SD->PSRAM            */
+/* (ota_copy_staged_to_psram, skipping the 256-byte header) and         */
+/* aius_ota_activate_begin() re-runs SHA-256 + Ed25519 over that PSRAM  */
+/* copy. absorb() hashes each chunk synchronously at dispatch while the */
+/* durable write is async, so a chunk whose SD write fails leaves the   */
+/* session's hash ahead of the card -- which the pre-window re-digest   */
+/* CATCHES, so a hole faults activation before any flash write and a    */
+/* corrupt image can never be programmed, only re-offered. The dark     */
+/* window then reads the staged bytes from PSRAM (FlexSPI2, independent */
+/* of the boot flash on FlexSPI1) via the RAM-resident sequencer. A     */
+/* reboot mid-staging comes up disarmed (the session does not persist), */
+/* so the orphaned file is inert until a fresh offer overwrites it.     */
 /*                                                                     */
 /* THE FEATURE LATCH (aius_ota, verified->armed image arm) is armed at  */
 /* composition. The RUNTIME ACTIVATION LATCH (g_ota_activation_enabled) */
@@ -2757,6 +2759,40 @@ typedef enum {
 	OTA_SELF_TEST_FAIL = 2
 } OtaSelfTestResult;
 static OtaSelfTestResult g_ota_self_test_result;
+
+/* The last activation refusal, surfaced in ota_diag so an operator sees WHY an
+ * activation did not proceed -- above all the PSRAM presence gate ("ota_no_psram"):
+ * activation stages the image into PSRAM (FlexSPI2, read during the FlexSPI1
+ * erase), and a board with no PSRAM fitted anywhere must be REFUSED, never
+ * attempted. NONE until an activation is refused; cleared when a fresh activate
+ * is accepted. */
+typedef enum {
+	OTA_ACTIVATION_FAULT_NONE = 0,
+	OTA_ACTIVATION_FAULT_NO_PSRAM,   /* no PSRAM fitted: cannot stage */
+	OTA_ACTIVATION_FAULT_STAGE_COPY, /* the SD->PSRAM copy failed */
+	OTA_ACTIVATION_FAULT_VERIFY      /* begin() refused (digest/signature/geometry) */
+} OtaActivationFault;
+static volatile OtaActivationFault g_ota_activation_fault;
+
+/* True iff PSRAM is fitted somewhere the composition can stage into: the pad-1
+ * chip the core mapped (external_psram_size) OR the pad-2 chip the probe found
+ * (g_psram_pad2_mb). The presence gate; ota_psram_staging() derives the actual
+ * region from the same two signals. */
+static FLASHMEM bool ota_psram_present(void)
+{
+	return external_psram_size != 0u || g_psram_pad2_mb != 0u;
+}
+
+static FLASHMEM const char *ota_activation_fault_name(OtaActivationFault fault)
+{
+	switch (fault) {
+	case OTA_ACTIVATION_FAULT_NO_PSRAM:   return "ota_no_psram";
+	case OTA_ACTIVATION_FAULT_STAGE_COPY: return "ota_stage_copy";
+	case OTA_ACTIVATION_FAULT_VERIFY:     return "ota_verify";
+	case OTA_ACTIVATION_FAULT_NONE:
+	default:                              return "none";
+	}
+}
 
 /* The activation sequencer's working state. DTCM (a plain static, not DMAMEM)
  * so it costs no OCRAM against the reconciled floor; ~1 KiB, and the audio ISR
@@ -2888,39 +2924,97 @@ FASTRUN static int ota_health_write(void *, const uint8_t *bytes,
 	return 0;
 }
 
-/* The staged-image reader. Reads the STAGED CONTAINER back from
- * /aius/ota-staged.img -- the durable copy the chunk path wrote through the SD
- * job engine -- skipping the 256-byte header so the sequencer sees the image
- * (payload) at image offset 0. Synchronous: the dark window has no epoch loop to
- * drive the bounded SD job engine, so this reads the card directly, BETWEEN
- * erase/program ops (flash coherent at that instant).
+/* THE PSRAM STAGING REGION -- disjoint from the recorder ring by construction.
  *
- * TARGET-ONLY and BENCH-VERIFIED. It reaches the framework SD driver, whose code
- * is ITCM but whose const tables are in flash -- part of the image the BODY
- * phase overwrites -- so the frozen dark-window model (this reader + the
- * FLASHMEM aius_ota_activate_step() it runs under) carries a flash-coherence
- * risk this composition cannot resolve (lib/aius_ota is frozen, lib/aius_sd is
- * off-limits, SdFat is foreign). The item-5 self-test does NOT exercise it (it
- * touches one scratch sector with the primitives directly, no sequencer, no SD),
- * so the self-test is the clean recovery proof; full activation is proven
- * separately on the bench.
+ * The reworked sequencer reads the staged image from a caller-provided LINEAR
+ * byte view (aius_ota_activate.h), not a chunked SD reader, and the composition
+ * puts that view in PSRAM: FlexSPI2 is independent of the boot flash on
+ * FlexSPI1, so a RAM-resident reader reads it throughout the erase. The region
+ * must never overlap the flight recorder's ring. The recorder claims the first
+ * RECORDER_STAGING_BYTES (32 KiB producer slots) plus the largest power-of-two
+ * ring that fits after it (begin_pipeline(); the ring formula is the same
+ * aius_recorder_ring_bytes_after_staging()), so OTA staging begins where the
+ * recorder ends and runs to the top of PSRAM. DISJOINTNESS CHOICE: partition,
+ * do not alias -- quiesce stops the recorder, but the SD->PSRAM copy runs
+ * BEFORE quiesce while the recorder is live, so the regions must not overlap at
+ * copy time either, and beginning at the recorder's end guarantees that. The
+ * runtime asserts in ota_psram_staging() prove it; the static_asserts below pin
+ * the constant part.
  *
- * FASTRUN so its own code is RAM-resident and, being in the itcm-placement
- * guard's HOT_OBJECT, its `.text` does not land in ITCM outside the pinned hot
- * set (.fastrun is collected into ITCM but is invisible to that guard). */
-FASTRUN static int ota_staged_read(void *, uint32_t offset,
-                                   uint8_t *destination, uint32_t length)
+ * When no pad-1 PSRAM is fitted (external_psram_size == 0) but a chip sits on
+ * the silkscreened-FLASH pad-2 socket (g_psram_pad2_mb != 0, the 2026-07-27
+ * bench state), that chip is XIP-mapped at pad 2's window (64 MiB into the
+ * FlexSPI2 space) and no recorder ring lives there, so the whole chip is OTA
+ * staging. With neither, activation is refused (ota_no_psram) and this returns
+ * false. */
+static_assert(RECORDER_STAGING_BYTES < 8u * 1048576u,
+              "the recorder staging carve must leave room in an 8 MiB PSRAM");
+/* The pad-2 XIP window base: FlexSPI2's AMBA space begins at 0x70000000 and,
+ * with no pad-1 chip, chip-select A1 holds its 64 MiB reset default, so A2
+ * (pad 2) begins 64 MiB in. Same derivation as AIUS_PSRAM_PAD2_PROBE_BASE. */
+#define AIUS_OTA_PSRAM_PAD2_XIP_BASE 0x74000000u
+
+static FLASHMEM bool ota_psram_staging(uint8_t **base, uint32_t *capacity)
+{
+	uint8_t *const psram = reinterpret_cast<uint8_t *>(0x70000000u);
+
+	if (external_psram_size != 0u) {
+		const uint32_t psram_bytes =
+			(uint32_t)external_psram_size * 1048576u;
+		const uint32_t ring = aius_recorder_ring_bytes_after_staging(
+			psram_bytes, RECORDER_STAGING_BYTES);
+		const uint32_t reserved = RECORDER_STAGING_BYTES + ring;
+		if (reserved >= psram_bytes)
+			return false;
+		/* DISJOINTNESS, proven at runtime: OTA staging begins exactly at
+		 * the recorder region's end, so [base, base+capacity) cannot
+		 * alias [psram, psram+reserved). */
+		uint8_t *const recorder_end = psram + reserved;
+		uint8_t *const ota_base = recorder_end;
+		if (ota_base < recorder_end)
+			return false; /* address arithmetic overflow: refuse */
+		*base = ota_base;
+		*capacity = psram_bytes - reserved;
+		return true;
+	}
+	if (g_psram_pad2_mb != 0u) {
+		*base = reinterpret_cast<uint8_t *>(AIUS_OTA_PSRAM_PAD2_XIP_BASE);
+		*capacity = (uint32_t)g_psram_pad2_mb * 1048576u;
+		return true;
+	}
+	return false; /* no PSRAM fitted anywhere: ota_no_psram */
+}
+
+/* Copies the whole staged image from /aius/ota-staged.img into `dest`, skipping
+ * the 256-byte container header so the sequencer sees the payload at offset 0.
+ * PRE-WINDOW: the framework SD driver is still valid (flash coherent, epoch loop
+ * stopped but the card responds), so this reads synchronously in bounded chunks,
+ * feeding the watchdog between reads. Returns 0 on success, negative on any SD
+ * fault or a short read. FLASHMEM: it never runs inside the dark window. */
+static FLASHMEM int ota_copy_staged_to_psram(uint8_t *dest, uint32_t length)
 {
 	File file = SD.open("/aius/ota-staged.img", FILE_READ);
 	if (!file)
 		return -1;
-	if (!file.seek((uint64_t)offset + AIUS_OTA_HEADER_BYTES)) {
+	if (!file.seek((uint64_t)AIUS_OTA_HEADER_BYTES)) {
 		file.close();
 		return -2;
 	}
-	int got = file.read(destination, length);
+	uint32_t done = 0u;
+	while (done < length) {
+		uint32_t take = length - done;
+		if (take > 4096u)
+			take = 4096u;
+		ota_wdt_feed(nullptr);
+		int got = file.read(dest + done, take);
+		if (got != (int)take) {
+			file.close();
+			return -3;
+		}
+		done += take;
+	}
 	file.close();
-	return (got == (int)length) ? 0 : -3;
+	return 0;
 }
 
 static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
@@ -2928,7 +3022,6 @@ static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
 	AiusOtaActivatePrimitives primitives;
 	memset(&primitives, 0, sizeof(primitives));
 	primitives.ctx = nullptr;
-	primitives.staged_read = ota_staged_read;
 	primitives.erase_sector = ota_flash_erase;
 	primitives.program = ota_flash_program;
 	primitives.flash_read = ota_flash_read;
@@ -2954,13 +3047,13 @@ static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
  *     reflash -- the plan's recovery boundary. Returning to loop() would keep
  *     feeding the watchdog and hold a dark board alive, so it does not return.
  *
- * FROZEN-CORE CAVEAT: aius_ota_activate_step() is FLASHMEM (the library is cold
- * by design), so this RAM-resident loop calls into flash on every step. Once the
- * BODY phase erases the sector step() lives in, the next XIP fetch of step()
- * reads erased flash. That is a property of the frozen core's placement, not of
- * this composition, and it is out of scope to change (lib/aius_ota is frozen);
- * it is flagged for the bench alongside the SD-driver flash-coherence note on
- * ota_staged_read. */
+ * RAM-RESIDENT END TO END. The reworked aius_ota_activate_step() and its whole
+ * in-window call graph are FASTRUN (aius_ota_activate.h): the step path only
+ * erases, programs from the PSRAM staged view, and byte-compares the readback,
+ * reaching no FLASHMEM code and no SD driver while the boot flash is erased. The
+ * SHA-256 + signature verification and the SD->PSRAM copy that would have needed
+ * flash and SD all ran in service_ota_activation() BEFORE the quiesce, so this
+ * loop calls nothing that lives in the region it is overwriting. */
 FASTRUN static void ota_activate_run_and_finalize(void)
 {
 	while (aius_ota_activate_phase(&g_ota_activator) !=
@@ -3095,7 +3188,8 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		",\"ota_diag\":{\"state\":%u,\"staged_bytes\":%lu,"
 		"\"total_bytes\":%lu,\"fault\":%u,\"key_fingerprint\":\"%s\","
 		"\"test_key\":%s,\"activation_available\":%s,"
-		"\"self_test_flash\":\"%s\"}",
+		"\"self_test_flash\":\"%s\",\"psram\":%s,"
+		"\"activation_fault\":\"%s\"}",
 		(unsigned)progress.state,
 		(unsigned long)staged, (unsigned long)total,
 		(unsigned)progress.fail_reason,
@@ -3108,7 +3202,13 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		/* The item-5 self-test verdict: never-run until the operator triggers
 		 * it, then pass or fail. */
 		g_ota_self_test_result == OTA_SELF_TEST_PASS ? "pass" :
-		g_ota_self_test_result == OTA_SELF_TEST_FAIL ? "fail" : "never-run");
+		g_ota_self_test_result == OTA_SELF_TEST_FAIL ? "fail" : "never-run",
+		/* Whether PSRAM is fitted at all: activation stages into it and is
+		 * refused (ota_no_psram) without it. */
+		ota_psram_present() ? "true" : "false",
+		/* The last activation refusal reason -- above all the no-PSRAM
+		 * gate -- so a status poller sees why an activation did not run. */
+		ota_activation_fault_name(g_ota_activation_fault));
 }
 
 /* present: this build carries OTA and the seam is installed. */
@@ -3234,9 +3334,19 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_activate(void *)
 	AiusOtaStatus status;
 	if (!g_ota_activation_enabled)
 		return AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	/* THE PSRAM PRESENCE GATE, refused synchronously so the client learns
+	 * immediately and no deferred flag is armed: activation stages the image
+	 * into PSRAM (FlexSPI2, read during the FlexSPI1 erase), and a board with
+	 * no PSRAM fitted anywhere cannot do that. Reported in ota_diag as
+	 * ota_no_psram; STORAGE is the staging-medium refusal (507). */
+	if (!ota_psram_present()) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
+		return AIUS_OPTICAL_APP_OTA_STORAGE;
+	}
 	status = aius_ota_request_activation(&g_ota_session);
 	if (status != AIUS_OTA_OK)
 		return ota_map_result(status);
+	g_ota_activation_fault = OTA_ACTIVATION_FAULT_NONE;
 	g_ota_activation_requested = true;
 	return AIUS_OPTICAL_APP_OTA_OK;
 }
@@ -6505,9 +6615,27 @@ static FLASHMEM void service_reboot_request(uint32_t now_ms)
  * plain RAM buffer this slice, so a fresh board reads UNKNOWN, which is exactly a
  * board with no recorded history -- the state begin() must let take its first
  * activation. A reboot mid-staging comes up disarmed (the session does not
- * persist), so the power-loss interlock's scope is one activation attempt. */
+ * persist), so the power-loss interlock's scope is one activation attempt.
+ *
+ * THE PRE-WINDOW WORK, in the reworked verify-before-window architecture, all
+ * happens here with the flash and SD still executing, so a refusal at any step
+ * leaves the board untouched and serving:
+ *   1. resolve the PSRAM staging region (disjoint from the recorder ring) and
+ *      refuse if no PSRAM is fitted or the image will not fit;
+ *   2. copy the whole staged image SD->PSRAM through the framework SD reader;
+ *   3. aius_ota_activate_begin() runs the SHA-256 + signature verification over
+ *      that PSRAM copy against the armed header, then writes the in-progress
+ *      mark and poises at ERASE_HEAD. Nothing is flashed if any of it fails.
+ * Only then does it quiesce and run the RAM-resident sequencer to completion. */
 static uint32_t g_ota_activation_deadline_ms;
 static bool g_ota_activation_deadline_armed;
+
+static FLASHMEM void ota_activation_recover(void)
+{
+	(void)aius_ota_abandon_activation(&g_ota_session);
+	g_ota_activation_requested = false;
+	g_ota_activation_deadline_armed = false;
+}
 
 static FLASHMEM void service_ota_activation(uint32_t now_ms)
 {
@@ -6522,33 +6650,52 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 
 	uint8_t running_digest[AIUS_OTA_DIGEST_BYTES];
 	AiusOtaActivatePrimitives primitives = ota_activate_primitives();
+	AiusOtaProgress ota_progress;
+	uint8_t *psram_base = nullptr;
+	uint32_t psram_capacity = 0u;
+	uint32_t image_length;
 	memset(running_digest, 0, sizeof(running_digest));
-	if (aius_ota_activate_begin(&g_ota_activator, &g_ota_session, &primitives,
-	                            running_digest) != AIUS_OTA_OK) {
-		/* Pre-dark refusal: nothing erased, so recover and keep serving. */
-		(void)aius_ota_abandon_activation(&g_ota_session);
-		g_ota_activation_requested = false;
-		g_ota_activation_deadline_armed = false;
+
+	/* 1. The PSRAM region, disjoint from the recorder ring. No PSRAM ->
+	 * ota_no_psram (the same gate app_ota_activate() applies synchronously;
+	 * re-checked here so this path never touches flash without it). */
+	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
+		ota_activation_recover();
 		return;
 	}
-	/* Drive the NON-DARK phases (MARK: it writes the activation mark, no flash
-	 * op) here, with the flash still coherent, so a fault before the dark window
-	 * recovers instead of halting a still-bootable board. aius_ota_activate_is_dark()
-	 * turns true the moment MARK completes -- the edge to quiesce on. */
-	while (!aius_ota_activate_is_dark(&g_ota_activator) &&
-	       aius_ota_activate_phase(&g_ota_activator) != AIUS_OTA_ACTIVATE_FAULTED &&
-	       aius_ota_activate_phase(&g_ota_activator) !=
-	           AIUS_OTA_ACTIVATE_READY_TO_RESET) {
-		if (aius_ota_activate_step(&g_ota_activator) != AIUS_OTA_OK)
-			break;
-	}
-	if (aius_ota_activate_phase(&g_ota_activator) == AIUS_OTA_ACTIVATE_FAULTED) {
-		/* A pre-dark (MARK) fault: the FCB is untouched, so recover. */
-		(void)aius_ota_abandon_activation(&g_ota_session);
-		g_ota_activation_requested = false;
-		g_ota_activation_deadline_armed = false;
+	if (aius_ota_progress(&g_ota_session, &ota_progress) != AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
+		ota_activation_recover();
 		return;
 	}
+	image_length = ota_progress.image_length;
+	if (image_length == 0u || image_length > psram_capacity) {
+		/* The staged image will not fit the PSRAM region: refuse rather
+		 * than overrun it into the recorder ring or off the chip. */
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
+		ota_activation_recover();
+		return;
+	}
+
+	/* 2. Copy SD -> PSRAM, pre-window, feeding the watchdog. */
+	if (ota_copy_staged_to_psram(psram_base, image_length) != 0) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_STAGE_COPY;
+		ota_activation_recover();
+		return;
+	}
+
+	/* 3. The whole verification runs here, over the PSRAM copy, BEFORE the
+	 * dark window. A refusal leaves nothing flashed and the board serving. */
+	if (aius_ota_activate_begin(&g_ota_activator, &g_ota_session,
+	                            &primitives, &g_ota_verifier, psram_base,
+	                            image_length, running_digest) !=
+	    AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
+		ota_activation_recover();
+		return;
+	}
+
 	/* On the edge into the dark window: quiesce, then run to completion in RAM
 	 * (never returns). */
 	ota_quiesce();

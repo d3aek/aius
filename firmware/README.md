@@ -191,31 +191,41 @@ the header's authentication digest against that key.
 SHA-256, which is what `verify` checks) AND writes each container chunk to
 `/aius/ota-staged.img` through the bounded SD job engine (`AIUS_SD_INSTALL_APPEND_PART`
 at the chunk's file offset, exactly the replay upload); the 200 is the SD job's.
-The activation sequencer's `ota_staged_read` reads that file back, skipping the
-256-byte header. `absorb` hashes at dispatch while the SD write is async, so a
-chunk whose write fails leaves the session hash ahead of the card — which the
-sequencer's VERIFY pass catches (it digests the SD-staged bytes and
-readback-compares before the head is programmed), so a corrupt image faults
-activation rather than ever being flashed. A reboot mid-staging comes up disarmed
-(the session does not persist), leaving the file inert until a fresh offer.
+`absorb` hashes at dispatch while the SD write is async, so a chunk whose write
+fails leaves the session hash ahead of the card — which the activation's
+pre-window re-digest catches (below), so a corrupt image faults activation rather
+than ever being flashed. A reboot mid-staging comes up disarmed (the session does
+not persist), leaving the file inert until a fresh offer.
 
-**Activation.** A second, runtime `g_ota_activation_enabled` latch (distinct from
-the feature latch, false at every boot) gates the flash trigger: while it is off
-`POST /api/ota/activate` answers `409 ota_activation_disabled` and
-`activation_available` is false. `POST /api/ota/enable-activation` flips it — the
-deliberate operator act performed on the bench after `POST /api/ota/self-test-flash`
-(the item-5 scratch-sector recovery proof: real erase/program/read-back against
-one sector 4 MiB into flash, far above the image, asserted above `_flashimagelen`)
-passes. When enabled and `ARMED`, `activate` acknowledges (`{"ok":true,"activating":true}`),
-and after the response drains — the deferred shape `POST /api/reboot` uses — the
-board quiesces (gate closed, audio service stopped, ISR sources parked, discharging
-RM note 3), programs the flash in a dark window via the RAM-resident sequencer, and
-`SYSRESETREQ`s into the new image. The flash primitives and the run-to-completion
-finalizer are `FASTRUN` (RAM-resident, `.fastrun` → ITCM), guard the driver's two
-gotchas (PRIMASK save/restore around each op; every address range-checked through
-`aius_ota_activate_check_*` before the no-bounds-check driver), and feed the
-watchdog through a distinct RAM-resident `WDOG1_WSR` writer since the FLASHMEM
-`aius_boot_teensy_watchdog_feed` cannot run mid-erase.
+**Activation — verify before the window, byte-compare within it.** A second,
+runtime `g_ota_activation_enabled` latch (distinct from the feature latch, false
+at every boot) gates the flash trigger: while it is off `POST /api/ota/activate`
+answers `409 ota_activation_disabled` and `activation_available` is false.
+`POST /api/ota/enable-activation` flips it — the deliberate operator act performed
+on the bench after `POST /api/ota/self-test-flash` (the item-5 scratch-sector
+recovery proof: real erase/program/read-back against one sector 4 MiB into flash,
+far above the image, asserted above `_flashimagelen`) passes. The activate verb
+also refuses synchronously with `ota_no_psram` when no PSRAM is fitted
+(`external_psram_size == 0` AND the pad-2 probe `g_psram_pad2_mb == 0`), reported
+in `ota_diag`. When enabled and `ARMED`, `activate` acknowledges
+(`{"ok":true,"activating":true}`), and after the response drains — the deferred
+shape `POST /api/reboot` uses — `service_ota_activation` does the whole
+verification while flash and SD still run: it copies the staged image SD→PSRAM
+into a region disjoint from the flight-recorder ring (`ota_psram_staging`, above
+the ring, runtime-asserted), then `aius_ota_activate_begin` re-runs SHA-256 +
+Ed25519 over that PSRAM copy against the armed header and writes the health
+in-progress mark — aborting with nothing flashed on any mismatch. Only then does
+the board quiesce (gate closed, audio service stopped, ISR sources parked,
+discharging RM note 3) and run the dark window, which erases → programs from the
+PSRAM view → byte-compares the readback against it (an inlined compare, no digest,
+no SD), FCB erased first and programmed last, then `SYSRESETREQ`s into the new
+image. The flash primitives, the run-to-completion finalizer AND the reworked
+in-window sequencer step path are all `FASTRUN` (RAM-resident, `.fastrun` → ITCM;
+`aius_ota_activate.c`'s pre-window `begin`/verify stays `FLASHMEM`), guard the
+driver's two gotchas (PRIMASK save/restore around each op; every address
+range-checked through `aius_ota_activate_check_*` before the no-bounds-check
+driver), and feed the watchdog through a distinct RAM-resident `WDOG1_WSR` writer
+since the FLASHMEM `aius_boot_teensy_watchdog_feed` cannot run mid-erase.
 
 `vendor/tweetnacl/tweetnacl.c` is verbatim and un-annotated, so
 `link/aius_teensy41.ld` pins its `.text` into flash and excludes it from ITCM;
@@ -389,7 +399,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `runtime`, `runtime-target` | Epoch scheduler; the composed runtime against fake primitives. |
 | `network-transport` | NativeEthernet behaviour + the vendor-header source contract. |
 | `optical-app` | One bounded dispatch decision per HTTP route and USB command. |
-| `ota` | The OTA image container's per-field validation, the staged-upgrade state machine (strict chunk offsets, resume, incremental digest, injected verifier seam), the power-loss record and the slot-independent image-health rules; then the real Ed25519 behind that seam — RFC 8032 vectors 1 and 2 through the vendored library, accept plus every single-bit refusal in the signature, digest and public key, the entropy trap firing in a forked child, and the host signer's containers driven end to end to `ARMED`; and the flash-activation sequencer over injected primitives — FCB-erased-first / programmed-last proven by operation trace, verify-before-head-commit, watchdog cadence, and power-loss truncation at every step. |
+| `ota` | The OTA image container's per-field validation, the staged-upgrade state machine (strict chunk offsets, resume, incremental digest, injected verifier seam), the power-loss record and the slot-independent image-health rules; then the real Ed25519 behind that seam — RFC 8032 vectors 1 and 2 through the vendored library, accept plus every single-bit refusal in the signature, digest and public key, the entropy trap firing in a forked child, and the host signer's containers driven end to end to `ARMED`; and the flash-activation sequencer over injected primitives and a linear staged view — verify-before-window (SHA-256 + signature in `begin`, digest/signature refusals before anything is flashed), in-window byte-compare catching a mis-programmed sector, FCB-erased-first / programmed-last proven by operation trace, watchdog cadence, and power-loss truncation at every step. |
 | `optical-cutover` | Structural guard on `optical_main.cpp`: construction-only `setup()`, one-epoch `loop()`, ingress-only audio callback, deferred AUDIO ownership/preflight, one watchdog feed, exact storage/diagnostics, and the absence of the legacy path. |
 | `fault-target` | Fault-image source guard + checkpoint selection. |
 | `build-metadata` | Compile-time build id, revision and fault-selector derivation. |
