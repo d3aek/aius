@@ -1,25 +1,103 @@
 ---
-title: Aius E-AC-3 (DD+) decode — scoping and the residency-vs-swap question
+title: Aius E-AC-3 (DD+) decode
 type: plans
 scope: component
 component: aius
-status: draft
-subtype: brain-dump
+status: in-progress
+subtype: design
 tags: [aius, firmware, eac3, ddplus, dolby, decode, arena, iec61937]
-updated: 2026-07-30
+updated: 2026-08-01
+toc: true
 ---
 
-# Aius E-AC-3 (DD+) decode — scoping and the residency-vs-swap question
+# Aius E-AC-3 (DD+) decode
+
+Dolby Digital Plus decode — the last decoder
+([`aius-ac3-support.md`](aius-ac3-support.md) §The format space records why
+the roadmap ends here). Originally a pre-decision scoping capture;
+**promoted to an implementation plan by owner decision 2026-08-01
+("let's implement the last decoder")**, which supplies the entry decision
+the scoping draft was parked on. The OTA sequencing gate cleared the same
+day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
+
+**Decisions adopted from the scoping record, now binding for this plan:**
+
+- **Decoder: the FFmpeg `ac3dec` subset** (LGPL-2.1, OSS-Fuzz'd) — the one
+  candidate that decodes E-AC-3; bespoke was ruled out of reach and liba52
+  is architecturally AC-3-only. Driven without `AVCodecContext` (the
+  decoder touches nine context fields), accepting the calling-convention
+  fork and treating upstream resync as manual — the same posture the a52
+  fork already took deliberately.
+- **Scope: 5.1 only.** Decode the independent substream; skip dependent
+  (7.1) substreams. `AIUS_MAX_CHANNELS` stays 6; the 18-site channel-mask
+  surface is untouched. The operator's speakers are 5.1.
+- **Arena: the codec-slot swap restructure** (below) rather than growing
+  the arena — three resident decoders are dead on arrival (~221 KB vs
+  131,072) and the swap brings DD+ to marginal-but-plausible inside the
+  existing arena, pending the real trim measurement, while freeing ~27 KB
+  on day one even before the new decoder lands.
+- **Live hardware evidence remains gated on a real DD+ source** on the
+  bench (phase 5); everything before it is host- and replay-provable.
+
+## Phases
+
+1. **Codec-slot arena restructure** — **done 2026-08-01.** Decoders are
+   no longer co-resident: `aius_pipeline` carves one fixed
+   `AIUS_PIPELINE_CODEC_SLOT_BYTES` (64 KiB) sub-arena at create and
+   lazily creates the ONE decoder the stream needs into it at its Pc
+   family's first completed burst; a family change destroys the
+   resident, resets the slot (high-water retained), and creates the
+   other decoder (`ensure_codec_resident`, hooked at burst routing in
+   `dts_ingest`). Heap-path pipelines swap by plain libc create/destroy
+   -- arming a per-instance malloc'd slot would poison the alloc shim's
+   single owned address range. New surfaces:
+   `aius_pipeline_resident_codec()` and a `codec_swaps` service-diag
+   counter; a non-resident codec's metrics read all-zero with `AIUS_OK`;
+   the compatibility projection's `arena_high_water` is now the slot's
+   cumulative high-water. Delivered evidence: swap oracle -- 64 pushes
+   (16 strict alternations + 48 seeded-fuzz family picks), 41 swaps,
+   every residency-opening decode bit-identical to a fresh arena
+   pipeline's, repeat pushes structure-checked (in-residency
+   synthesis/overlap history legitimately carries across AUs); capacity
+   oracle -- cumulative slot high-water 60,880/65,536 B (margin 4,656)
+   across both families' tallest committed vectors; pipeline,
+   audio-service, a52, dts, arena suites green; target builds; memory +
+   ITCM gates green. The freed headroom vs the old eager pair lands in
+   the parent arena for Phase 2's slot re-derivation.
+2. **FFmpeg E-AC-3 subset + `aius_eac3` adapter + native proof** —
+   vendoring (Debian source pool route, verified reachable 2026-08-01),
+   the trim ladder to the real footprint number (the stop-condition gate:
+   materially over the slot capacity ends the plan with the measurement
+   recorded), the two-level reset (slot reset + per-AU watermark rewind
+   absorbing the 15 malloc/free-per-frame churn), ffmpeg-encoded corpus,
+   differential + independent second oracle, fuzz with E-AC-3 CRC
+   semantics, termination oracle.
+3. **Dispatch + classification constants** — type 21 joins `in_scope`,
+   third dispatch route, `codec_pc == 21` metrics/UI decoration,
+   squelch/re-type constants re-derived for the 12,288-word burst period
+   against the shipped defect-34 stay-dark rule, T6's
+   framed-but-unsupported vector moves to a genuinely refused type.
+4. **Target integration** — FLASH-cold code placement (the subset cannot
+   join the six-block ITCM budget), decode cycle cost measured against
+   the 8 ms AUDIO budget, arena/slot gates on target, SD-replay E-AC-3
+   IEC fixtures played on the box.
+5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
+   or the incoming bench interface if it can emit it); the four-hour and
+   by-ear mission gates extend to type 21. Blocked on hardware until
+   then.
+
+## Historical scoping record (2026-07-30)
 
 What adding Dolby Digital Plus decode would involve, recorded 2026-07-30 in answer
 to "what is involved in adding DD support", plus the arena-architecture question a
 third large decoder forces: decoder residency stops being affordable and the
 justified design becomes swapping decoder state in and out of the arena at class
-time. Pre-decision capture, not a commitment; the standing recommendation from
-[`aius-ac3-support.md`](aius-ac3-support.md) §The format space is unchanged —
-**stay dark unless a real DD+ source appears on this bench**. Owner decision
+time. The standing recommendation at capture time was
+**stay dark unless a real DD+ source appears on this bench** — superseded by
+the 2026-08-01 owner decision above. Owner decision
 2026-07-31: OTA ([`aius-ota-upgrade.md`](aius-ota-upgrade.md)) is the next
-key feature; E-AC-3 implementation is considered only after OTA lands.
+key feature; E-AC-3 implementation is considered only after OTA lands —
+**that gate cleared 2026-08-01**.
 Defect 34 below remains a standalone prerequisite independent of that
 sequencing.
 

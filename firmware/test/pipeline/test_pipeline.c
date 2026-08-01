@@ -671,11 +671,13 @@ static void test_no_heap_steady_state(const char *dir)
 	AiusMetrics ac3_m;
 
 	CHECK(aius_pipeline_codec_pc(p) == 0u, "ss: initial codec Pc is nonzero");
+	CHECK(aius_pipeline_resident_codec(p) == 0u,
+	      "ss: a decoder is resident before any burst");
 	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
 	          m.decode_cycles == 0u && m.stack_high_water == 0u &&
-	          m.alloc_count == 0u && m.arena_high_water > 0u &&
+	          m.alloc_count == 0u && m.arena_high_water == 0u &&
 	          m.last_status == AIUS_OK,
-	      "ss: unknown compatibility metrics are not zero-operation");
+	      "ss: metrics before any residency are not all-zero");
 	CHECK(aius_pipeline_get_codec_metrics(p, 21u, &m) == AIUS_INVALID_ARG,
 	      "ss: unsupported codec metrics Pc accepted");
 
@@ -704,9 +706,27 @@ static void test_no_heap_steady_state(const char *dir)
 	          dts_m.alloc_count == 0u &&
 	          dts_m.decode_cycles == fake_clock.step,
 	      "ss: separately-addressed DTS metrics");
+	CHECK(aius_pipeline_resident_codec(p) == 11u,
+	      "ss: DTS residency %u != 11", aius_pipeline_resident_codec(p));
 
 	CHECK(aius_pipeline_push(p, ac3, ac3_n) == AIUS_OK, "ss: AC-3 push");
 	CHECK(aius_pipeline_codec_pc(p) == 1u, "ss: AC-3 codec Pc not selected");
+	CHECK(aius_pipeline_resident_codec(p) == 1u,
+	      "ss: AC-3 residency %u != 1", aius_pipeline_resident_codec(p));
+	{
+		/* The family change swapped the slot: one swap counted, and the
+		 * departed DTS decoder's metrics read zero (its state left with
+		 * the slot). */
+		AiusPipelineServiceDiag sd;
+		AiusMetrics gone;
+		aius_pipeline_get_service_diag(p, &sd);
+		CHECK(sd.codec_swaps == 1u, "ss: codec_swaps %u != 1",
+		      sd.codec_swaps);
+		CHECK(aius_pipeline_get_codec_metrics(p, 13u, &gone) == AIUS_OK &&
+		          gone.decode_cycles == 0u && gone.alloc_count == 0u &&
+		          gone.arena_high_water == 0u,
+		      "ss: departed DTS metrics are not zero");
+	}
 	CHECK(aius_pipeline_get_codec_metrics(p, 1u, &ac3_m) == AIUS_OK &&
 	          ac3_m.alloc_count == 0u &&
 	          ac3_m.decode_cycles == 7u * (uint64_t)fake_clock.step,
@@ -729,6 +749,161 @@ static void test_no_heap_steady_state(const char *dir)
 	capture_free(&cap);
 	free(ac3);
 	free(w);
+}
+
+/* ---- codec-slot swap oracles ----------------------------------------------
+ *
+ * The slot discipline's whole risk is state bleeding across a swap: a decoder
+ * created into storage another decoder just vacated must decode EXACTLY like
+ * one created into fresh memory, every time, under any family sequence. Two
+ * phases over one arena-backed pipeline: a deterministic 8-cycle DTS/AC-3
+ * alternation, then a seeded-xorshift fuzz over the family sequence (repeats
+ * included, which exercise the no-swap path between swaps). Every push's
+ * emitted blocks must be bit-identical to a fresh arena pipeline's decode of
+ * the same vector, and the slot's cumulative high-water must respect
+ * AIUS_PIPELINE_CODEC_SLOT_BYTES -- the capacity oracle that makes
+ * create-into-slot infallible on the target. */
+
+static int captures_equal(const struct capture *got, const struct capture *ref)
+{
+	if (got->n != ref->n || got->overflow)
+		return 0;
+	for (int i = 0; i < got->n; i++)
+		if (!blocks_equal(&got->blocks[i], &ref->blocks[i]))
+			return 0;
+	return 1;
+}
+
+/* Decode one wire vector through a fresh arena-backed pipeline into *ref.
+ * Returns 0 on success. Reuses g_pipe_arena; callers sequence pipelines. */
+static int slot_reference_decode(const uint16_t *w, size_t n, struct capture *ref)
+{
+	AiusArena arena;
+	if (aius_arena_init(&arena, g_pipe_arena, sizeof(g_pipe_arena)) != 0)
+		return -1;
+	memset(ref, 0, sizeof(*ref));
+	AiusPcmSink sink = { .ctx = ref, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	if (aius_pipeline_create_arena(&p, NULL, &sink, &arena) != AIUS_OK)
+		return -1;
+	AiusStatus st = aius_pipeline_push(p, w, n);
+	aius_pipeline_destroy(p);
+	return (st == AIUS_OK && ref->n > 0) ? 0 : -1;
+}
+
+static void test_codec_slot_swap(const char *dir)
+{
+	size_t dts_n = 0u;
+	size_t ac3_n = 0u;
+	uint16_t *dts = load_wire(dir, "dts51_be16", &dts_n);
+	uint16_t *ac3 = load_wire(dir, "ac3_surround51_ident", &ac3_n);
+	if (!dts || !ac3) {
+		CHECK(0, "slot-swap: corpus load failed");
+		free(ac3);
+		free(dts);
+		return;
+	}
+
+	/* References: the tallest committed vector of each family, decoded by a
+	 * fresh arena pipeline (first residency, virgin slot). */
+	struct capture ref_dts;
+	struct capture ref_ac3;
+	CHECK(slot_reference_decode(dts, dts_n, &ref_dts) == 0,
+	      "slot-swap: DTS reference decode");
+	CHECK(slot_reference_decode(ac3, ac3_n, &ref_ac3) == 0,
+	      "slot-swap: AC-3 reference decode");
+
+	AiusArena arena;
+	CHECK(aius_arena_init(&arena, g_pipe_arena, sizeof(g_pipe_arena)) == 0,
+	      "slot-swap: churn arena init");
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create_arena(&p, NULL, &sink, &arena) == AIUS_OK,
+	      "slot-swap: churn create");
+	if (!p) {
+		capture_free(&ref_dts);
+		capture_free(&ref_ac3);
+		free(ac3);
+		free(dts);
+		return;
+	}
+
+	uint32_t expected_swaps = 0u;
+	uint16_t resident = 0u;
+	int identity_ok = 1;
+
+	/* Phase 1: strict alternation -- every push but the first swaps. */
+	for (int cycle = 0; cycle < 16 && identity_ok; cycle++) {
+		const int is_ac3 = cycle & 1;
+		const uint16_t family = is_ac3 ? 1u : 11u;
+		if (resident != 0u && resident != family)
+			expected_swaps++;
+		resident = family;
+		identity_ok =
+			aius_pipeline_push(p, is_ac3 ? ac3 : dts,
+			                   is_ac3 ? ac3_n : dts_n) == AIUS_OK &&
+			aius_pipeline_resident_codec(p) == family &&
+			captures_equal(&cap, is_ac3 ? &ref_ac3 : &ref_dts);
+		capture_free(&cap);
+	}
+	CHECK(identity_ok, "slot-swap: alternation identity broke");
+
+	/* Phase 2: fuzz the family sequence (deterministic xorshift32). Repeats
+	 * hit the same-family fast path between swaps. Fresh-decode identity is
+	 * only the contract for the push that BEGINS a residency: within one, the
+	 * decoder's synthesis/overlap history legitimately carries across AUs, so
+	 * a repeat push checks structure (block count/shape), not sample bits. */
+	uint32_t rng = 0x1dbabe5u;
+	for (int i = 0; i < 48 && identity_ok; i++) {
+		rng ^= rng << 13;
+		rng ^= rng >> 17;
+		rng ^= rng << 5;
+		const int is_ac3 = (int)(rng & 1u);
+		const uint16_t family = is_ac3 ? 1u : 11u;
+		const struct capture *ref = is_ac3 ? &ref_ac3 : &ref_dts;
+		const int fresh = resident != family;
+		if (resident != 0u && fresh)
+			expected_swaps++;
+		resident = family;
+		identity_ok =
+			aius_pipeline_push(p, is_ac3 ? ac3 : dts,
+			                   is_ac3 ? ac3_n : dts_n) == AIUS_OK &&
+			aius_pipeline_resident_codec(p) == family &&
+			(fresh ? captures_equal(&cap, ref)
+			       : cap.n == ref->n && !cap.overflow);
+		capture_free(&cap);
+	}
+	CHECK(identity_ok, "slot-swap: fuzz identity broke");
+
+	AiusPipelineServiceDiag sd;
+	aius_pipeline_get_service_diag(p, &sd);
+	CHECK(sd.codec_swaps == expected_swaps, "slot-swap: swaps %u != %u",
+	      sd.codec_swaps, expected_swaps);
+	CHECK(sd.decode_rejects == 0u,
+	      "slot-swap: %u decode rejects (slot create failed?)",
+	      sd.decode_rejects);
+
+	/* Capacity oracle: the cumulative slot high-water across every residency
+	 * of BOTH families' tallest vectors fits the committed slot size. */
+	AiusMetrics m;
+	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
+	          m.arena_high_water > 0u &&
+	          m.arena_high_water <= AIUS_PIPELINE_CODEC_SLOT_BYTES,
+	      "slot-swap: slot high-water %u vs capacity %u",
+	      m.arena_high_water, AIUS_PIPELINE_CODEC_SLOT_BYTES);
+	printf("  slot-swap      64 pushes, %u swaps, bit-identical; slot high-water "
+	       "%u/%u (margin %u)\n",
+	       sd.codec_swaps, m.arena_high_water, AIUS_PIPELINE_CODEC_SLOT_BYTES,
+	       AIUS_PIPELINE_CODEC_SLOT_BYTES - m.arena_high_water);
+
+	aius_pipeline_destroy(p);
+	capture_free(&cap);
+	capture_free(&ref_dts);
+	capture_free(&ref_ac3);
+	free(ac3);
+	free(dts);
 }
 
 /* ---- defect-28: mid-stream re-classification ------------------------------
@@ -2453,6 +2628,7 @@ int main(int argc, char **argv)
 	test_pcm_sample_scale();
 	test_classifier(dir);
 	test_no_heap_steady_state(dir);
+	test_codec_slot_swap(dir);
 	test_retype_mid_burst_entry(dir);
 	test_retype_mid_stream_switch(dir);
 	test_retype_false_positive_immunity();

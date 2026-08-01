@@ -82,7 +82,10 @@ extern "C" {
  * Every decoded or passed-through block is delivered to the caller's AiusPcmSink.
  * The steady-state push path performs no allocation beyond the decoders' own
  * arena/heap (classify buffer and PCM staging live in the fixed instance).
- * Only create allocates: the instance, parser, and both resident decoders.
+ * Create allocates the instance, parser, and the codec slot; the ONE decoder
+ * the stream needs is created into the slot at its family's first completed
+ * burst and swapped for the other on a family change (see
+ * aius_pipeline_create_arena and AIUS_PIPELINE_CODEC_SLOT_BYTES).
  */
 
 /* Words scanned for a preamble before a stream is declared linear PCM. Also the
@@ -119,6 +122,17 @@ extern "C" {
 /* Frames per emitted PCM pass-through block (staged in the fixed instance). */
 #define AIUS_PIPELINE_PCM_BLOCK_FRAMES 512u
 #define AIUS_PIPELINE_MAX_OUTPUT_FRAMES 512u
+
+/* Fixed capacity of the codec slot: the sub-arena the arena-backed pipeline
+ * carves at create and lends to whichever ONE decoder the stream currently
+ * needs. Exactly one decoder is resident at a time; a Pc family change resets
+ * the slot and creates the other decoder into it (see
+ * aius_pipeline_resident_codec). Sized to hold the largest single decoder --
+ * DTS 5.1 core measures 62,560 B arena high-water, AC-3 27,024 B -- with the
+ * remainder as margin; the pipeline suite proves each decoder fits by creating
+ * it into a slot-sized arena and decoding the tallest committed corpus vector.
+ * E-AC-3 re-derives this constant when its real high-water is measured. */
+#define AIUS_PIPELINE_CODEC_SLOT_BYTES 65536u
 
 /* Words of a PCM run that pass in silence before the pass-through is allowed to
  * reach the sink -- the confirmation squelch.
@@ -198,26 +212,44 @@ typedef struct {
 	uint32_t decode_rejects;
 	uint32_t output_drops;
 	uint32_t au_abandons;
+	/* Lifetime count of codec-slot swaps: a completed burst whose Pc family
+	 * differs from the resident decoder's destroyed it and created the other
+	 * decoder into the slot. The first residency is not a swap. A climbing
+	 * count under a stable source means Pc thrash -- every swap costs a
+	 * decoder warmup and abandons nothing (ingest never swaps mid-AU). */
+	uint32_t codec_swaps;
 	AiusStatus last_failure;
 } AiusPipelineServiceDiag;
 
 /* Create a pipeline whose decoders allocate through libc (host convenience).
  * `cfg` may be NULL for defaults; `sink` (with a non-NULL consume) is required
  * and copied. On success *out holds a heap-owned handle; destroy with
- * aius_pipeline_destroy. Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
+ * aius_pipeline_destroy. NO decoder exists at create: the first completed
+ * burst of a Pc family creates that family's decoder, and a later burst of
+ * the other family destroys it and creates the other (the codec-slot
+ * discipline; on this path the slot is libc-backed rather than a sub-arena).
+ * Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
 AiusStatus aius_pipeline_create(AiusPipeline **out,
                                 const AiusPipelineConfig *cfg,
                                 const AiusPcmSink *sink);
 
-/* Create a pipeline whose instance and both decoders come from `arena` (the target-
- * shaped no-libc-heap path for the decode side; the IEC parser has no arena
+/* Create a pipeline whose instance and decode-side allocations come from
+ * `arena` (the target-shaped no-libc-heap path; the IEC parser has no arena
  * provisioning and is libc-allocated at create in both modes). `arena` must
  * outlive the pipeline. The owner MAY carve its own long-lived allocations from
  * the arena BEFORE this call (the target carves the DSP chain's double staging
  * there -- see optical_main begin_pipeline); after create the remaining arena
- * belongs to the pipeline alone, and nothing may ever reset it. Size it from
- * the decoders' arena high-water (see aius_pipeline_get_metrics) plus the instance
- * plus any owner carve. Returns AIUS_OK, AIUS_NO_SPACE, or AIUS_INVALID_ARG. */
+ * belongs to the pipeline alone, and nothing may ever reset it.
+ *
+ * DECODERS ARE NOT CO-RESIDENT. Create carves one fixed
+ * AIUS_PIPELINE_CODEC_SLOT_BYTES codec slot from `arena` and creates NO
+ * decoder into it. The first completed burst of a Pc family creates that
+ * family's decoder in the slot; a completed burst of the OTHER family
+ * destroys the resident decoder, resets the slot, and creates the other
+ * decoder into the reclaimed storage (aius_pipeline_resident_codec reports
+ * which). Size the arena as instance + owner carve +
+ * AIUS_PIPELINE_CODEC_SLOT_BYTES. Returns AIUS_OK, AIUS_NO_SPACE, or
+ * AIUS_INVALID_ARG. */
 AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
                                       const AiusPipelineConfig *cfg,
                                       const AiusPcmSink *sink, AiusArena *arena);
@@ -311,8 +343,18 @@ AiusPipelineClass aius_pipeline_classification(const AiusPipeline *p);
  * a later malformed burst alone does not. NULL returns 0. */
 uint16_t aius_pipeline_codec_pc(const AiusPipeline *p);
 
-/* Copy one resident codec's most-recent measurements into *out. Pc 1 selects
- * AC-3; Pc 11/12/13 select DTS. Other values are invalid. */
+/* The codec currently occupying the slot, as a canonical Pc: 1 for AC-3, 11
+ * for DTS (whatever its exact 11/12/13 subtype), 0 while no decoder exists
+ * (before the first completed compressed burst, only). Distinct from
+ * aius_pipeline_codec_pc: residency changes at the completed burst that
+ * triggers the swap, codec_pc only at the next successful decode. NULL
+ * returns 0. */
+uint16_t aius_pipeline_resident_codec(const AiusPipeline *p);
+
+/* Copy one codec's most-recent measurements into *out. Pc 1 selects AC-3;
+ * Pc 11/12/13 select DTS. Other values are invalid. A codec that is NOT
+ * resident reads as all-zero metrics with AIUS_OK: its state left with the
+ * slot, and zero is the honest reading of a decoder that does not exist. */
 AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
                                            uint16_t codec_pc,
                                            AiusMetrics *out);
@@ -321,8 +363,11 @@ AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
  * `last_status` is the last parse/decode result the pipeline observed: an
  * observation latch that survives every automatic transition and is reset only
  * by aius_pipeline_reset() or the operator's aius_pipeline_clear_service_diag().
- * Before a codec succeeds, operation fields are zero and arena_high_water is
- * the maximum of both resident decoder readings. */
+ * Before a codec succeeds, operation fields are zero. On the arena path
+ * `arena_high_water` is the codec SLOT's cumulative high-water -- the peak
+ * decoder memory across every residency so far (the slot's reset retains its
+ * high-water), which is the number that sizes the slot. Heap-path decoders
+ * have no arena and read 0 here, as before. */
 AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out);
 
 #ifdef AIUS_PIPELINE_TEST_HOOKS

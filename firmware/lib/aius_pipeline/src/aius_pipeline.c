@@ -35,14 +35,26 @@ typedef enum {
 
 struct AiusPipeline {
 	AiusIec61937Parser *parser;
-	AiusDtsDecoder *dts_decoder;
-	AiusA52Decoder *a52_decoder;
+	AiusDtsDecoder *dts_decoder;   /* resident iff resident_family == 11 */
+	AiusA52Decoder *a52_decoder;   /* resident iff resident_family == 1 */
 	AiusPcmSink sink;
 
 	AiusPipelineClass klass;
 	size_t window;             /* classification window in words (<= MAX) */
 	int arena_backed;          /* instance/decoder from an arena: do not free() */
 	AiusStatus last_status;    /* last parse/decode result observed */
+
+	/* The codec slot: exactly one decoder exists at a time, created lazily at
+	 * its Pc family's first completed burst and swapped on a family change
+	 * (see ensure_codec_resident). On the arena path the slot is a fixed
+	 * AIUS_PIPELINE_CODEC_SLOT_BYTES sub-arena carved at create, reset (its
+	 * high-water retained) at every swap; on the heap path decoders are plain
+	 * libc create/destroy and codec_slot stays zeroed -- arming a per-instance
+	 * malloc'd slot would poison the alloc shim's single owned address range
+	 * (see aius_alloc_shim.h). */
+	AiusArena codec_slot;
+	uint16_t resident_family;  /* 0 none; else canonical Pc: 1 AC-3, 11 DTS */
+	AiusCycleClock cycle_clock; /* applied to each lazily created decoder */
 
 	/* Classification staging: raw words held until the stream is typed. */
 	uint16_t clsbuf[AIUS_PIPELINE_CLASSIFY_MAX_WORDS];
@@ -403,6 +415,86 @@ static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 	return AIUS_OK;
 }
 
+/* ---- codec slot ----------------------------------------------------------- */
+
+/* Canonical Pc of the decoder family that handles `pc`: the three DTS
+ * subtypes share one decoder (and one residency). */
+static uint16_t pc_family(uint16_t pc)
+{
+	return (pc == 11u || pc == 12u || pc == 13u) ? 11u : pc;
+}
+
+/* Destroy whatever decoder holds the slot and reclaim its storage. The
+ * decoder destroys are NULL-safe; the a52 abandon is defensive -- ingest
+ * never swaps while an AU is in flight (it does not run with a work item
+ * pending), but a defensive path that skipped the abandon would leak
+ * liba52's discontinuity state into the next residency. */
+static void destroy_resident(AiusPipeline *p)
+{
+	if (p->a52_inflight && p->a52_decoder)
+		(void)aius_a52_abandon(p->a52_decoder);
+	p->a52_inflight = 0u;
+	if (p->dts_decoder) {
+		aius_dts_decoder_destroy(p->dts_decoder);
+		p->dts_decoder = NULL;
+	}
+	if (p->a52_decoder) {
+		aius_a52_decoder_destroy(p->a52_decoder);
+		p->a52_decoder = NULL;
+	}
+	p->resident_family = 0u;
+	if (p->arena_backed)
+		aius_arena_reset(&p->codec_slot);
+}
+
+/* Create `family`'s decoder into the (already reclaimed) slot and apply the
+ * pipeline's cycle clock. On the arena path a failure here means the slot
+ * capacity is wrong -- a sizing bug the suite's capacity oracle exists to
+ * catch, not a runtime condition to recover; the caller refuses the burst. */
+static AiusStatus create_resident(AiusPipeline *p, uint16_t family)
+{
+	AiusStatus st;
+	if (family == 1u) {
+		st = p->arena_backed
+			? aius_a52_decoder_create_arena(&p->a52_decoder,
+			                                &p->codec_slot)
+			: aius_a52_decoder_create(&p->a52_decoder);
+		if (st == AIUS_OK)
+			st = aius_a52_set_cycle_clock(p->a52_decoder,
+			                              &p->cycle_clock);
+	} else if (family == 11u) {
+		st = p->arena_backed
+			? aius_dts_decoder_create_arena(&p->dts_decoder,
+			                                &p->codec_slot)
+			: aius_dts_decoder_create(&p->dts_decoder);
+		if (st == AIUS_OK)
+			st = aius_dts_set_cycle_clock(p->dts_decoder,
+			                              &p->cycle_clock);
+	} else {
+		return AIUS_UNSUPPORTED;
+	}
+	if (st != AIUS_OK) {
+		destroy_resident(p);
+		return st;
+	}
+	p->resident_family = family;
+	return AIUS_OK;
+}
+
+/* Make `family`'s decoder the slot's resident, swapping out the other
+ * family's if it holds the slot. Same-family calls are free. */
+static AiusStatus ensure_codec_resident(AiusPipeline *p, uint16_t family)
+{
+	if (p->resident_family == family)
+		return AIUS_OK;
+	const int swapping = p->resident_family != 0u;
+	destroy_resident(p);
+	AiusStatus st = create_resident(p, family);
+	if (st == AIUS_OK && swapping)
+		p->service_diag.codec_swaps++;
+	return st;
+}
+
 /* ---- DTS de-frame -> decode ---------------------------------------------- */
 
 static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
@@ -427,13 +519,23 @@ static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 		if (st == AIUS_OK) {
 			AiusBurst b;
 			if (aius_iec61937_current_burst(p->parser, &b) == AIUS_OK) {
-				if (b.data_type == 1u)
-					p->pending = PENDING_A52_AU;
-				else if (b.data_type == 11u || b.data_type == 12u ||
-				         b.data_type == 13u)
-					p->pending = PENDING_DTS_AU;
+				uint16_t family;
+				if (b.data_type == 1u || b.data_type == 11u ||
+				    b.data_type == 12u || b.data_type == 13u)
+					family = pc_family(b.data_type);
 				else
 					continue; /* parser owns the unsupported-code policy */
+				AiusStatus cs = ensure_codec_resident(p, family);
+				if (cs != AIUS_OK) {
+					/* Slot-capacity/create failure: refuse this
+					 * burst and re-lock, the decode-reject shape. */
+					p->last_status = cs;
+					p->service_diag.decode_rejects++;
+					p->service_diag.last_failure = cs;
+					continue;
+				}
+				p->pending = (family == 1u) ? PENDING_A52_AU
+				                            : PENDING_DTS_AU;
 				p->pending_pc = b.data_type;
 				*consumed_out = pos;
 				return AIUS_OK;
@@ -467,7 +569,7 @@ static AiusStatus route_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 
 static void cleanup_pending(AiusPipeline *p)
 {
-	if (p->a52_inflight)
+	if (p->a52_inflight && p->a52_decoder)
 		(void)aius_a52_abandon(p->a52_decoder);
 	p->a52_inflight = 0u;
 	p->a52_blocks_decoded = 0u;
@@ -1037,12 +1139,6 @@ AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out)
 {
 	if (!p || !out)
 		return AIUS_INVALID_ARG;
-	AiusMetrics dts;
-	AiusMetrics a52;
-	AiusStatus ds = aius_dts_get_metrics(p->dts_decoder, &dts);
-	AiusStatus as = aius_a52_get_metrics(p->a52_decoder, &a52);
-	if (ds != AIUS_OK || as != AIUS_OK)
-		return ds != AIUS_OK ? ds : as;
 	if (p->codec_pc != 0u) {
 		AiusStatus st =
 			aius_pipeline_get_codec_metrics(p, p->codec_pc, out);
@@ -1051,10 +1147,12 @@ AiusStatus aius_pipeline_get_metrics(const AiusPipeline *p, AiusMetrics *out)
 	} else {
 		memset(out, 0, sizeof(*out));
 	}
-	if (a52.arena_high_water > dts.arena_high_water)
-		out->arena_high_water = a52.arena_high_water;
-	else
-		out->arena_high_water = dts.arena_high_water;
+	/* The slot's cumulative high-water (reset retains it) is the peak decoder
+	 * memory across every residency -- the number that sizes the slot. Heap
+	 * decoders have no arena and keep the projected codec's 0. */
+	if (p->arena_backed)
+		out->arena_high_water =
+			(uint32_t)aius_arena_high_water(&p->codec_slot);
 	out->last_status = p->last_status;
 	return AIUS_OK;
 }
@@ -1064,17 +1162,28 @@ uint16_t aius_pipeline_codec_pc(const AiusPipeline *p)
 	return p ? p->codec_pc : 0u;
 }
 
+uint16_t aius_pipeline_resident_codec(const AiusPipeline *p)
+{
+	return p ? p->resident_family : 0u;
+}
+
 AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
                                            uint16_t codec_pc,
                                            AiusMetrics *out)
 {
 	if (!p || !out)
 		return AIUS_INVALID_ARG;
+	if (codec_pc != 1u && codec_pc != 11u && codec_pc != 12u &&
+	    codec_pc != 13u)
+		return AIUS_INVALID_ARG;
+	if (pc_family(codec_pc) != p->resident_family) {
+		/* Not resident: its state left with the slot. */
+		memset(out, 0, sizeof(*out));
+		return AIUS_OK;
+	}
 	if (codec_pc == 1u)
 		return aius_a52_get_metrics(p->a52_decoder, out);
-	if (codec_pc == 11u || codec_pc == 12u || codec_pc == 13u)
-		return aius_dts_get_metrics(p->dts_decoder, out);
-	return AIUS_INVALID_ARG;
+	return aius_dts_get_metrics(p->dts_decoder, out);
 }
 
 #ifdef AIUS_PIPELINE_TEST_HOOKS
@@ -1114,6 +1223,8 @@ static AiusStatus init_fields(AiusPipeline *p, const AiusPipelineConfig *cfg,
 	p->klass = AIUS_PIPELINE_UNKNOWN;
 	p->last_status = AIUS_OK;
 	p->pcm_sample_rate_hz = PCM_DEFAULT_SAMPLE_RATE_HZ;
+	if (cfg)
+		p->cycle_clock = cfg->cycle_clock;
 
 	AiusIec61937Config pcfg = { .packing = packing };
 	return aius_iec61937_parser_create(&p->parser, &pcfg);
@@ -1136,32 +1247,8 @@ AiusStatus aius_pipeline_create(AiusPipeline **out, const AiusPipelineConfig *cf
 		free(p);
 		return st;
 	}
-	st = aius_dts_decoder_create(&p->dts_decoder);
-	if (st != AIUS_OK) {
-		aius_iec61937_parser_destroy(p->parser);
-		free(p);
-		return st;
-	}
-	st = aius_a52_decoder_create(&p->a52_decoder);
-	if (st != AIUS_OK) {
-		aius_dts_decoder_destroy(p->dts_decoder);
-		aius_iec61937_parser_destroy(p->parser);
-		free(p);
-		return st;
-	}
-	AiusCycleClock cycle_clock = {0};
-	if (cfg)
-		cycle_clock = cfg->cycle_clock;
-	st = aius_dts_set_cycle_clock(p->dts_decoder, &cycle_clock);
-	if (st == AIUS_OK)
-		st = aius_a52_set_cycle_clock(p->a52_decoder, &cycle_clock);
-	if (st != AIUS_OK) {
-		aius_a52_decoder_destroy(p->a52_decoder);
-		aius_dts_decoder_destroy(p->dts_decoder);
-		aius_iec61937_parser_destroy(p->parser);
-		free(p);
-		return st;
-	}
+	/* No decoder yet: the slot is filled lazily by ensure_codec_resident at
+	 * the first completed compressed burst. */
 	*out = p;
 	return AIUS_OK;
 }
@@ -1185,28 +1272,18 @@ AiusStatus aius_pipeline_create_arena(AiusPipeline **out,
 	AiusStatus st = init_fields(p, cfg, sink);
 	if (st != AIUS_OK)
 		return st; /* arena storage reclaimed by the caller discarding the arena */
-	st = aius_dts_decoder_create_arena(&p->dts_decoder, arena);
-	if (st != AIUS_OK) {
+	/* Carve the fixed codec slot; the decoder the stream needs is created
+	 * into it lazily by ensure_codec_resident. Carving up front keeps the
+	 * capacity a create-time guarantee rather than a first-burst surprise. */
+	void *slot = aius_arena_alloc(arena, AIUS_PIPELINE_CODEC_SLOT_BYTES, 16);
+	if (!slot) {
 		aius_iec61937_parser_destroy(p->parser);
-		return st;
+		return AIUS_NO_SPACE;
 	}
-	st = aius_a52_decoder_create_arena(&p->a52_decoder, arena);
-	if (st != AIUS_OK) {
-		aius_dts_decoder_destroy(p->dts_decoder);
+	if (aius_arena_init(&p->codec_slot, slot,
+	                    AIUS_PIPELINE_CODEC_SLOT_BYTES) != 0) {
 		aius_iec61937_parser_destroy(p->parser);
-		return st;
-	}
-	AiusCycleClock cycle_clock = {0};
-	if (cfg)
-		cycle_clock = cfg->cycle_clock;
-	st = aius_dts_set_cycle_clock(p->dts_decoder, &cycle_clock);
-	if (st == AIUS_OK)
-		st = aius_a52_set_cycle_clock(p->a52_decoder, &cycle_clock);
-	if (st != AIUS_OK) {
-		aius_a52_decoder_destroy(p->a52_decoder);
-		aius_dts_decoder_destroy(p->dts_decoder);
-		aius_iec61937_parser_destroy(p->parser);
-		return st;
+		return AIUS_INVALID_ARG;
 	}
 	*out = p;
 	return AIUS_OK;
@@ -1217,9 +1294,8 @@ void aius_pipeline_destroy(AiusPipeline *p)
 	if (!p)
 		return;
 	cleanup_pending(p);
+	destroy_resident(p);
 	aius_iec61937_parser_destroy(p->parser);
-	aius_a52_decoder_destroy(p->a52_decoder);
-	aius_dts_decoder_destroy(p->dts_decoder);
 	if (!p->arena_backed)
 		free(p);
 }
