@@ -1404,6 +1404,300 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_replays(
 }
 
 /* ------------------------------------------------------------------ */
+/* OTA -- staged firmware upgrade                                      */
+/* ------------------------------------------------------------------ */
+
+/* The verdict map: one row per AiusOpticalAppOtaResult, in enum order, holding
+ * the refusal's HTTP status AND its wire token together. They are allocated in
+ * one place because they are one decision -- a verdict that answered 409
+ * ota_state on a refusal and printed a different name in the status document
+ * would describe two different failures to the same operator.
+ *
+ * Indexed rather than switched precisely so the two stay paired: a new verdict
+ * is one row rather than two arms in two separate switches that could disagree.
+ * A verdict with no row at all -- an application built against a longer enum --
+ * is bounded below rather than read off the end. */
+static const struct {
+	unsigned status;
+	const char *token;
+} kOtaVerdicts[] = {
+	{ 200u, "none" },            /* OK */
+	{ 409u, "ota_disarmed" },    /* DISARMED */
+	{ 409u, "ota_state" },       /* STATE_REFUSED */
+	{ 409u, "ota_range" },       /* RANGE */
+	{ 400u, "ota_malformed" },   /* MALFORMED */
+	{ 400u, "ota_unsupported" }, /* UNSUPPORTED */
+	{ 409u, "ota_digest" },      /* DIGEST */
+	{ 409u, "ota_signature" },   /* SIGNATURE */
+	{ 507u, "ota_storage" }      /* STORAGE */
+};
+
+#define AIUS_OPTICAL_APP_OTA_VERDICTS \
+	(sizeof(kOtaVerdicts) / sizeof(kOtaVerdicts[0]))
+
+/* An index outside the table is a verdict from a build this dispatcher was not
+ * compiled against; it becomes the generic state refusal rather than a read off
+ * the end. */
+static FLASHMEM size_t ota_verdict_row(AiusOpticalAppOtaResult result)
+{
+	size_t row = (size_t)result;
+	return row < AIUS_OPTICAL_APP_OTA_VERDICTS
+		? row : (size_t)AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+}
+
+static FLASHMEM const AiusHttpApplicationResponse *ota_refusal(
+	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppOtaResult result)
+{
+	size_t row = ota_verdict_row(result);
+	return http_error(dispatcher, kOtaVerdicts[row].status,
+	                  kOtaVerdicts[row].token);
+}
+
+/* The three verdict-only verbs: an accepted call answers its own constant, and
+ * every refusal goes through the one map. */
+static FLASHMEM const AiusHttpApplicationResponse *ota_verdict_answer(
+	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppOtaResult result,
+	const char *accepted)
+{
+	if (result == AIUS_OPTICAL_APP_OTA_OK)
+		return http_json(dispatcher, 200, accepted);
+	return ota_refusal(dispatcher, result);
+}
+
+static FLASHMEM const char *ota_state_name(AiusOpticalAppOtaState state)
+{
+	switch (state) {
+	case AIUS_OPTICAL_APP_OTA_STATE_IDLE:
+		return "idle";
+	case AIUS_OPTICAL_APP_OTA_STATE_OFFERED:
+		return "offered";
+	case AIUS_OPTICAL_APP_OTA_STATE_STAGING:
+		return "staging";
+	case AIUS_OPTICAL_APP_OTA_STATE_STAGED:
+		return "staged";
+	case AIUS_OPTICAL_APP_OTA_STATE_VERIFIED:
+		return "verified";
+	case AIUS_OPTICAL_APP_OTA_STATE_ARMED:
+		return "armed";
+	case AIUS_OPTICAL_APP_OTA_STATE_ACTIVATION_REQUESTED:
+		return "activation_requested";
+	case AIUS_OPTICAL_APP_OTA_STATE_FAILED:
+		return "failed";
+	default:
+		break;
+	}
+	/* A state this build has no name for. Named rather than printed as a
+	 * number, so a page renders something a human can read instead of a
+	 * bare integer it would have to decode. */
+	return "unknown";
+}
+
+/* Copies one identity field into the document's storage, or leaves it EMPTY.
+ *
+ * The document draws these straight into JSON, so it publishes only what it can
+ * draw: any byte outside printable ASCII, and either of the two characters that
+ * would close or escape a JSON string, empties the WHOLE field. Escaping was
+ * rejected for the reason the /sd/ index rejects it -- there is no escaper here
+ * and adding one to make a hostile identity representable buys nothing, because
+ * an identity is a claim and a partially rewritten claim is a different claim.
+ * An over-long field (an application that filled its storage without a
+ * terminator, say) empties for the same reason rather than truncating.
+ *
+ * `in` and `out` are both AIUS_OPTICAL_APP_OTA_TEXT_STORAGE wide, so the walk
+ * is bounded by `capacity` and never reads past the status struct's field. */
+static FLASHMEM void ota_text_copy(char *out, size_t capacity, const char *in)
+{
+	size_t length = 0u;
+	out[0] = '\0';
+	while (length + 1u < capacity && in[length] != '\0') {
+		unsigned char ch = (unsigned char)in[length];
+		if (ch < 0x20u || ch > 0x7eu || ch == '"' || ch == '\\')
+			return;
+		length++;
+	}
+	if (in[length] != '\0')
+		return; /* no terminator inside the field: publish nothing */
+	memcpy(out, in, length);
+	out[length] = '\0';
+}
+
+/* GET /api/ota -- the open read, and the only OTA route that takes no token.
+ *
+ * It stays open for the reason /api/status and /api/events do: it mutates
+ * nothing, and a page that cannot read it cannot render the disabled or
+ * TEST KEY state the plan requires it to show. It discloses that this build
+ * carries OTA, which the 404 on an absent build discloses anyway.
+ *
+ * "activation_available" is a literal false, not a field the application
+ * supplies: whether an activate verb exists is this file's own knowledge, and
+ * the activation slice flips it here when it adds the verb. */
+static FLASHMEM const AiusHttpApplicationResponse *ota_status_document(
+	AiusOpticalAppDispatcher *dispatcher)
+{
+	const AiusOpticalAppOta *ota = &dispatcher->ota;
+	AiusOpticalAppOtaStatus status;
+	char target_id[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
+	char build_revision[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
+	char fingerprint[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
+
+	memset(&status, 0, sizeof(status));
+	if (!ota->status(ota->context, &status))
+		return http_error(dispatcher, 503, "ota_status");
+	ota_text_copy(target_id, sizeof(target_id), status.target_id);
+	ota_text_copy(build_revision, sizeof(build_revision),
+	              status.build_revision);
+	ota_text_copy(fingerprint, sizeof(fingerprint), status.key_fingerprint);
+	return http_body_text(dispatcher, 200,
+		snprintf((char *)dispatcher->body, dispatcher->body_capacity,
+		         "{\"armed\":%s,\"state\":\"%s\",\"staged_bytes\":%lu,"
+		         "\"total_bytes\":%lu,\"next_offset\":%lu,"
+		         "\"image\":{\"target_id\":\"%s\",\"build_revision\":\"%s\","
+		         "\"build_utc\":%llu},"
+		         "\"key\":{\"fingerprint\":\"%s\",\"test_key\":%s},"
+		         "\"activation_available\":false,"
+		         "\"fault\":\"%s\",\"verifier_fault\":%d}",
+		         status.latch_armed ? "true" : "false",
+		         ota_state_name(status.state),
+		         (unsigned long)status.staged_bytes,
+		         (unsigned long)status.total_bytes,
+		         (unsigned long)status.next_offset,
+		         target_id, build_revision,
+		         (unsigned long long)status.build_utc,
+		         fingerprint, status.test_key ? "true" : "false",
+		         kOtaVerdicts[ota_verdict_row(status.fault)].token,
+		         status.verifier_fault));
+}
+
+/* PUT /api/ota/image -- the APPEND_PART protocol, verb for verb.
+ *
+ * Every request is self-contained: Content-Range says where these bytes belong,
+ * the body carries them whole, and the answer states the next offset. So a
+ * dropped connection costs one chunk and the client resumes from what it was
+ * last told -- which is the property a multi-megabyte firmware push over one
+ * socket needs, and the reason this mirrors the replay upload rather than
+ * inventing a session.
+ *
+ * The route owns four bounded facts and nothing else. It never touches the
+ * card, never holds OTA state, and hands (offset, bytes) down exactly once. */
+static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
+	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request)
+{
+	const AiusOpticalAppOta *ota = &dispatcher->ota;
+	uint32_t next_offset = 0u;
+	uint64_t span;
+	AiusOpticalAppOtaResult result;
+
+	/* 1. A range and a body. Without the range the chunk has no offset to be
+	 * at, which is the same refusal a Content-Range-less replay PUT gets. */
+	if (!request->has_content_range || request->body == NULL ||
+	    request->body_length == 0u)
+		return http_error(dispatcher, 400, "ota_chunk");
+	/* 2. The range describes THESE bytes. The parser has already checked
+	 * start <= end < total; that the span equals what arrived is this
+	 * route's check, and it is what stops a client from claiming an offset
+	 * range it did not send. */
+	span = (uint64_t)request->content_range_end -
+	       (uint64_t)request->content_range_start + 1u;
+	if (span != (uint64_t)request->body_length)
+		return http_error(dispatcher, 400, "ota_chunk");
+	/* 3. One chunk is one bounded epoch's worth of hashing. Refused here
+	 * rather than clamped: a truncated chunk would break the strict
+	 * contiguous contract the core enforces on the next offset. */
+	if (request->body_length > AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES)
+		return http_error(dispatcher, 400, "ota_chunk");
+	/* 4. HEADER FIRST. The container header is a fixed 256 bytes at offset
+	 * 0, and the core validates it whole -- magic, CRC, identity, digest and
+	 * signature slot together -- so half a header is not an early fragment
+	 * of a valid offer, it is an offer nothing can validate. Refusing it at
+	 * the route keeps that a request-shape error (400) instead of a
+	 * state-machine failure the operator would have to abort out of. */
+	if (request->content_range_start == 0u &&
+	    request->body_length < AIUS_OPTICAL_APP_OTA_HEADER_BYTES)
+		return http_error(dispatcher, 400, "ota_header");
+	result = ota->chunk(ota->context, request->content_range_start,
+	                    request->body, request->body_length, &next_offset);
+	if (result == AIUS_OPTICAL_APP_OTA_OK)
+		return http_body_text(dispatcher, 200,
+			snprintf((char *)dispatcher->body, dispatcher->body_capacity,
+			         "{\"ok\":true,\"next_offset\":%lu}",
+			         (unsigned long)next_offset));
+	/* A range refusal is the one that carries an instruction rather than an
+	 * apology, so it answers with next_offset beside the error: the client
+	 * seeks there and continues instead of restarting a multi-megabyte
+	 * upload. It does NOT fail the session -- that is the transport's
+	 * contract and the core keeps it. */
+	if (result == AIUS_OPTICAL_APP_OTA_RANGE)
+		return http_body_text(dispatcher, 409,
+			snprintf((char *)dispatcher->body, dispatcher->body_capacity,
+			         "{\"ok\":false,\"error\":\"ota_range\","
+			         "\"next_offset\":%lu}",
+			         (unsigned long)next_offset));
+	return ota_refusal(dispatcher, result);
+}
+
+static FLASHMEM bool ota_wired(const AiusOpticalAppOta *ota)
+{
+	return ota->present != NULL && ota->status != NULL &&
+	       ota->chunk != NULL && ota->arm != NULL && ota->verify != NULL &&
+	       ota->abort != NULL;
+}
+
+/* Both gates run BEFORE the switch, for the reason route_is_control()'s gate
+ * does: a sixth verb added later cannot forget them.
+ *
+ * Absent first. A build without OTA -- compiled out, or wired but reporting
+ * itself unavailable -- answers one 404 for every verb, so no route can be the
+ * one that leaks a half-built surface, and the page gets a single fact to
+ * render its disabled state from.
+ *
+ * Then the token, for everything except the open read. Firmware replacement is
+ * the most dangerous surface this device has (the plan's §Security), so the
+ * four mutating verbs carry the same credential the control routes do. What
+ * that is worth is stated exactly where route_is_control() states it: the token
+ * is FNV-1a-64 over the public MAC, a physical-access bootstrap credential that
+ * stops a stale tab or a scanner. THE IMAGE SIGNATURE, not this gate, is what
+ * makes remote replacement defensible -- which is why nothing here can activate
+ * an image, and why verify() runs the signature through the core. */
+static FLASHMEM const AiusHttpApplicationResponse *dispatch_ota(
+	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppOtaRoute route,
+	const AiusHttpRequest *request)
+{
+	const AiusOpticalAppOta *ota = &dispatcher->ota;
+	const AiusOpticalApp *app = &dispatcher->app;
+
+	if (!ota_wired(ota) || !ota->present(ota->context))
+		return http_error(dispatcher, 404, "ota_absent");
+	if (route != AIUS_OPTICAL_APP_OTA_ROUTE_STATUS &&
+	    !app->auth_matches(app->context, request->sd_auth,
+	                       request->sd_auth_length))
+		return http_error(dispatcher, 401, "sd_auth");
+	switch (route) {
+	case AIUS_OPTICAL_APP_OTA_ROUTE_STATUS:
+		return ota_status_document(dispatcher);
+	case AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE:
+		return ota_image_chunk(dispatcher, request);
+	case AIUS_OPTICAL_APP_OTA_ROUTE_ARM:
+		/* The feature latch, not the image: arming makes an upgrade
+		 * possible, it does not start one. */
+		return ota_verdict_answer(dispatcher, ota->arm(ota->context),
+		                          "{\"ok\":true,\"armed\":true}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY:
+		return ota_verdict_answer(dispatcher, ota->verify(ota->context),
+		                          "{\"ok\":true,\"state\":\"verified\"}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_ABORT:
+		return ota_verdict_answer(dispatcher, ota->abort(ota->context),
+		                          "{\"ok\":true,\"state\":\"idle\"}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_NONE:
+	default:
+		break;
+	}
+	/* Not an OTA verb. Unreachable from a parsed request once the routes are
+	 * wired -- the parser owns method rules per path -- so this is the
+	 * deterministic answer to a caller that named no verb. */
+	return http_error(dispatcher, 405, "ota_method");
+}
+
+/* ------------------------------------------------------------------ */
 /* public entry points                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -1443,6 +1737,32 @@ FLASHMEM bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
 	dispatcher->body_capacity = body_capacity;
 	dispatcher->valid = true;
 	return true;
+}
+
+/* Fail-closed on a half-wired table: OTA stays absent (404 on every verb)
+ * rather than dispatching into whichever callback happened to be supplied. */
+FLASHMEM bool aius_optical_app_set_ota(AiusOpticalAppDispatcher *dispatcher,
+                                       const AiusOpticalAppOta *ota)
+{
+	if (dispatcher == NULL || !dispatcher->valid)
+		return false;
+	memset(&dispatcher->ota, 0, sizeof(dispatcher->ota));
+	if (ota == NULL)
+		return true; /* deliberate removal, not a failure */
+	if (!ota_wired(ota))
+		return false;
+	dispatcher->ota = *ota;
+	return true;
+}
+
+FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_ota_dispatch(
+	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppOtaRoute route,
+	const AiusHttpRequest *request)
+{
+	if (dispatcher == NULL || !dispatcher->valid || request == NULL)
+		return NULL;
+	dispatcher->http_dispatches++;
+	return dispatch_ota(dispatcher, route, request);
 }
 
 /* The four control routes -- every route that mutates the running system

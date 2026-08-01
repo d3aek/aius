@@ -90,8 +90,13 @@ typedef enum {
 #define AIUS_OPTICAL_APP_INDEX_SCAN_MAX 128u
 
 /* Smallest response-body buffer a dispatcher accepts. Every dynamically
- * formatted body the dispatcher writes itself fits well inside this; the
- * serializer callbacks receive whatever the caller supplied. */
+ * formatted body the dispatcher writes itself fits inside this except the OTA
+ * status document, whose worst case (two 32-byte identity strings, a 32-byte
+ * fingerprint and a 20-digit build_utc) is ~370 bytes; on a dispatcher this
+ * small that document becomes the same deterministic 500 response_too_large any
+ * other over-long body does, and the composed runtime hands over
+ * AIUS_HTTP_MAX_RESPONSE. The serializer callbacks receive whatever the caller
+ * supplied. */
 #define AIUS_OPTICAL_APP_MIN_BODY 256u
 
 /* Result of handing a request body to the application for storage. Acceptance
@@ -285,6 +290,217 @@ typedef struct {
 		uint32_t generation, const uint8_t **data, uint32_t *length);
 } AiusOpticalApp;
 
+/* --------------------------------------------------------------------------
+ * OTA -- staged firmware upgrade (docs/plans/aius-ota-upgrade.md, slice 3)
+ * ------------------------------------------------------------------------ */
+
+/* A SECOND, SEPARATE TABLE, and that is the design rather than an oversight.
+ *
+ * Two facts force it. First, AiusOpticalApp is a POSITIONAL AGGREGATE
+ * INITIALIZER in optical_main.cpp, so appending a member there is not additive
+ * the way the entries above claim: -Wextra makes -Wmissing-field-initializers
+ * an error in every build that composes that table, so a runtime which has not
+ * wired OTA would stop compiling rather than value-initialize the new slots to
+ * null. Second, OTA is a COMPILE-TIME option that defaults OFF (the plan's
+ * §Design constraints from the owner), so "this build has no OTA" must be a
+ * state the dispatcher can HOLD, not a table it cannot construct.
+ *
+ * One optional sub-table, installed after init, answers both: a dispatcher
+ * nobody wired is absent by construction (aius_optical_app_init zeroes it), and
+ * wiring it costs the composition root one aius_optical_app_set_ota() call
+ * inside its own #if. The table is all-or-nothing -- a partially filled one is
+ * refused rather than dispatched into a null call.
+ *
+ * The dispatcher holds NO OTA state. It bounds and shapes each request, hands
+ * the decision to this table and publishes the typed verdict; the session, the
+ * staging medium, the digest and the key all live behind it. */
+
+/* Container header bytes, mirrored from AIUS_OTA_HEADER_BYTES rather than
+ * included: the dispatch seam has no OTA-core dependency, exactly as it has no
+ * DSP or recorder dependency (see AIUS_OPTICAL_APP_MEASURE_PROBES_MAX above).
+ * The composition slice static_asserts the two are equal.
+ *
+ * It is a ROUTE-LEVEL constant here because of the header-first rule: the first
+ * chunk of an image carries the fixed-size container header, and a first chunk
+ * shorter than one whole header is refused before the application is asked. */
+#define AIUS_OPTICAL_APP_OTA_HEADER_BYTES 256u
+
+/* Per-request chunk cap, mirrored from AIUS_OTA_MAX_CHUNK_BYTES (one flash
+ * sector, ~80 us of SHA-256 on this part against the audio block's 10,667 us).
+ * It is what keeps PUT /api/ota/image an ORDINARY BUFFERED ROUTE: 4096 is well
+ * under AIUS_HTTP_MAX_BODY, so the transport needs no streaming carve-out and
+ * every chunk arrives whole, self-contained and resumable -- the APPEND_PART
+ * shape the replay upload already answers with next_offset. */
+#define AIUS_OPTICAL_APP_OTA_MAX_CHUNK_BYTES 4096u
+
+/* Width of every text field the status document publishes: target_id and
+ * build_revision (AIUS_OTA_TARGET_ID_BYTES and AIUS_OTA_BUILD_REVISION_BYTES
+ * are both 32) and the compiled-in key's fingerprint. */
+#define AIUS_OPTICAL_APP_OTA_TEXT_MAX 32u
+#define AIUS_OPTICAL_APP_OTA_TEXT_STORAGE (AIUS_OPTICAL_APP_OTA_TEXT_MAX + 1u)
+
+/* The five verbs, in the dispatcher's own vocabulary.
+ *
+ * Route identity normally arrives as an AiusHttpRoute, but lib/aius_http does
+ * not allocate the five /api/ota paths yet and this slice does not own that
+ * library. So the verb is named here and passed in explicitly; the composition
+ * slice adds AIUS_HTTP_ROUTE_OTA_* and five case labels that forward, and this
+ * enum stays the dispatcher-side name either way.
+ *
+ * There is deliberately NO activate verb. Activation ships with the flash slice
+ * (device gate: verdict item 5), and the status document's
+ * "activation_available": false is how a page knows not to offer the step. */
+typedef enum {
+	AIUS_OPTICAL_APP_OTA_ROUTE_NONE = 0, /* not an OTA request */
+	AIUS_OPTICAL_APP_OTA_ROUTE_STATUS,   /* GET  /api/ota          (open read) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_IMAGE,    /* PUT  /api/ota/image    (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_ARM,      /* POST /api/ota/arm      (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY,   /* POST /api/ota/verify   (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT     /* POST /api/ota/abort    (auth) */
+} AiusOpticalAppOtaRoute;
+
+/* The upgrade lifecycle, value-for-value the AiusOtaState the core publishes.
+ * Mirrored for the same reason the constants above are: the seam names the
+ * states it prints without depending on the library that owns them. */
+typedef enum {
+	AIUS_OPTICAL_APP_OTA_STATE_IDLE = 0,
+	AIUS_OPTICAL_APP_OTA_STATE_OFFERED = 1,
+	AIUS_OPTICAL_APP_OTA_STATE_STAGING = 2,
+	AIUS_OPTICAL_APP_OTA_STATE_STAGED = 3,
+	AIUS_OPTICAL_APP_OTA_STATE_VERIFIED = 4,
+	AIUS_OPTICAL_APP_OTA_STATE_ARMED = 5,
+	AIUS_OPTICAL_APP_OTA_STATE_ACTIVATION_REQUESTED = 6,
+	AIUS_OPTICAL_APP_OTA_STATE_FAILED = 7
+} AiusOpticalAppOtaState;
+
+/* The typed verdict every mutating OTA callback returns, and the ONE place a
+ * refusal's HTTP status and wire token are allocated -- the dispatcher maps
+ * each value to exactly one (status, token) pair, and the status document
+ * reports a latched fault through the same map, so a verdict cannot answer one
+ * name on a refusal and a different one in the document.
+ *
+ * The vocabulary is the OTA core's AiusOtaStatus, collapsed to what a client
+ * can act on: INVALID_ARG and NO_SPACE are programming errors the seam cannot
+ * receive, and CORRUPT is a persisted-record fault the application resolves
+ * before it answers. RANGE keeps its own value because it is the one refusal
+ * that carries a resume instruction rather than an apology. */
+typedef enum {
+	AIUS_OPTICAL_APP_OTA_OK = 0,
+	/* The feature latch is off; nothing was mutated. 409. */
+	AIUS_OPTICAL_APP_OTA_DISARMED,
+	/* A legal call, illegal from the current state. 409. */
+	AIUS_OPTICAL_APP_OTA_STATE_REFUSED,
+	/* The chunk's offset is not the next expected offset. 409, and the body
+	 * carries next_offset -- the client resumes from there, exactly as the
+	 * APPEND_PART transport already teaches it to. */
+	AIUS_OPTICAL_APP_OTA_RANGE,
+	/* A container field, or the chunk itself, failed a validation rule. 400:
+	 * resending the same bytes can never succeed. */
+	AIUS_OPTICAL_APP_OTA_MALFORMED,
+	/* Well-formed, but not for this build or this board (target_id mismatch,
+	 * unknown signature scheme, an image this part cannot hold). 400. */
+	AIUS_OPTICAL_APP_OTA_UNSUPPORTED,
+	/* Staged payload digest != the header's digest. 409. */
+	AIUS_OPTICAL_APP_OTA_DIGEST,
+	/* The signature verifier refused the image. 409. */
+	AIUS_OPTICAL_APP_OTA_SIGNATURE,
+	/* The staging medium refused: busy, full, or a failed write. 507, the
+	 * same answer a card that will not take an upload already produces. */
+	AIUS_OPTICAL_APP_OTA_STORAGE
+} AiusOpticalAppOtaResult;
+
+/* Everything GET /api/ota publishes, filled by the application in one call.
+ *
+ * The DISPATCHER serializes this, rather than taking a ready-made body from a
+ * write_*() serializer like the other GET documents, because two of its fields
+ * are the route layer's own knowledge and not the application's: whether an
+ * activate verb exists at all, and what a latched fault is called on the wire.
+ * The application answers what the upgrade IS; the route answers what this
+ * firmware can DO with it.
+ *
+ * The three text fields are NUL-terminated and are drawn straight into JSON, so
+ * the document lists only what it can draw: a field carrying a byte outside
+ * printable ASCII, a quote or a backslash is published EMPTY rather than
+ * escaped or truncated -- the /sd/ index's list-only-what-you-can-link rule,
+ * applied to a scalar. Half an identity with a quote deleted from the middle is
+ * a different identity. */
+typedef struct {
+	AiusOpticalAppOtaState state;
+	/* The FEATURE LATCH, not the ARMED state: "may this device do OTA at
+	 * all" against "how far has this upgrade got". A reboot always comes up
+	 * disarmed. */
+	bool latch_armed;
+	uint32_t staged_bytes;
+	uint32_t total_bytes;
+	/* The offset the next chunk must carry -- the same number an accepted
+	 * chunk answers with, so a resuming client can read it here instead of
+	 * replaying a chunk to discover it. */
+	uint32_t next_offset;
+	char target_id[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
+	char build_revision[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
+	uint64_t build_utc;
+	/* The compiled-in public key's fingerprint, and whether it is the
+	 * PUBLISHED dev keypair. The plan (owner decision 2026-07-31) ships the
+	 * test-only key as the device key for now, and requires that state to
+	 * stay visible: the flag is what lets a page banner TEST KEY. */
+	char key_fingerprint[AIUS_OPTICAL_APP_OTA_TEXT_STORAGE];
+	bool test_key;
+	/* The verdict that failed, AIUS_OPTICAL_APP_OTA_OK when none, plus the
+	 * injected verifier's own return value (a live diagnostic: it says WHY
+	 * the verifier said no, and is not persisted). */
+	AiusOpticalAppOtaResult fault;
+	int verifier_fault;
+} AiusOpticalAppOtaStatus;
+
+/* The OTA seam. Every entry is required as a SET: aius_optical_app_set_ota()
+ * takes all six or none, so a half-wired table is refused at registration
+ * rather than discovered as a null call at dispatch.
+ *
+ * `context` is the OTA adapter's own, not AiusOpticalApp's: the session, its
+ * staging backend and its key are this feature's state, and a build that
+ * compiles OTA out has no reason to hold a pointer to them. */
+typedef struct {
+	void *context;
+
+	/* The absent gate. False compiles out the whole surface at runtime --
+	 * every verb, including a verb added later, answers 404 ota_absent
+	 * before any other decision runs. A table that was never installed is
+	 * absent by the same gate, so "compiled out" and "present but
+	 * unavailable" reach the client identically. */
+	bool (*present)(void *context);
+
+	/* Fills the status document. False answers 503 ota_status; the struct
+	 * is zeroed before the call, so a partial fill publishes zeros rather
+	 * than stack. */
+	bool (*status)(void *context, AiusOpticalAppOtaStatus *status);
+
+	/* One self-contained chunk of the staged image at `offset`, where
+	 * offset 0 begins with the container header. `data`/`length` borrow the
+	 * request body for the duration of the call only -- the application
+	 * must consume them synchronously.
+	 *
+	 * `next_offset` is written on OK and on RANGE (on RANGE it is the
+	 * resume instruction the refusal carries), and ignored otherwise; it is
+	 * zeroed before the call so a callback that leaves it alone still
+	 * produces a defined body.
+	 *
+	 * The declared TOTAL is deliberately not passed: the container header
+	 * states the image length and the application has already parsed it, so
+	 * handing the transport's number down would create a second source of
+	 * truth for the one fact the signature covers. */
+	AiusOpticalAppOtaResult (*chunk)(void *context, uint32_t offset,
+	                                 const uint8_t *data, size_t length,
+	                                 uint32_t *next_offset);
+
+	/* The deliberate act: arm the FEATURE LATCH. Arming does not start an
+	 * upgrade, it makes one possible. */
+	AiusOpticalAppOtaResult (*arm)(void *context);
+	/* Digest, then signature, over what was staged. */
+	AiusOpticalAppOtaResult (*verify)(void *context);
+	/* Back to IDLE, discarding the staged image. */
+	AiusOpticalAppOtaResult (*abort)(void *context);
+} AiusOpticalAppOta;
+
 /* Caller-owned dispatcher state.
  *
  * Borrow invariant: the returned response borrows this object's storage --
@@ -307,6 +523,11 @@ typedef struct {
  * an interleaved USB command cannot disturb an in-flight HTTP response. */
 typedef struct {
 	AiusOpticalApp app;
+	/* Zeroed by init, so a dispatcher nobody wired refuses OTA rather than
+	 * dispatching into a null call. It adds nothing to the borrow set above:
+	 * every OTA response is either a string literal or formatted into
+	 * `body`, and the status document is assembled in call-local storage. */
+	AiusOpticalAppOta ota;
 	uint8_t *body;
 	size_t body_capacity;
 	char target_path[AIUS_SD_PATH_STORAGE];
@@ -336,11 +557,42 @@ bool aius_optical_app_init(AiusOpticalAppDispatcher *dispatcher,
                            const AiusOpticalApp *app,
                            uint8_t *body, size_t body_capacity);
 
+/* Installs the OTA seam on an initialized dispatcher, or removes it when `ota`
+ * is NULL. Call it AFTER aius_optical_app_init(), which zeroes the slot.
+ *
+ * Returns false -- leaving OTA ABSENT rather than half-wired -- for a null or
+ * invalid dispatcher and for a table with some but not all six callbacks. A
+ * build that compiles OTA out simply never calls this. */
+bool aius_optical_app_set_ota(AiusOpticalAppDispatcher *dispatcher,
+                              const AiusOpticalAppOta *ota);
+
 /* One bounded decision for one parsed request. Returns NULL only for an
  * invalid dispatcher or a null request -- every reachable route, method and
  * failure produces a response. */
 const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 	AiusOpticalAppDispatcher *dispatcher, const AiusHttpRequest *request);
+
+/* One bounded decision for one OTA request, with the verb supplied explicitly.
+ *
+ * This is the entry point ONLY because lib/aius_http does not allocate the
+ * five /api/ota paths yet: aius_http_parse() refuses an unknown path outright, so
+ * no byte sequence reaches aius_optical_app_http_dispatch() as an OTA route
+ * today. Everything else about the request is the ordinary parsed one --
+ * method, headers, Content-Range and body all arrive through the real parser.
+ *
+ * WHAT THE COMPOSITION SLICE ADDS, in order: five AIUS_HTTP_ROUTE_OTA_ values
+ * plus their path/method rules in lib/aius_http, then five case labels in
+ * aius_optical_app_http_dispatch() that call the same internal handler this
+ * does. Two things those labels must NOT do. They must not re-enter this
+ * function -- `http_dispatches` is counted here, so that would count twice --
+ * and they must not join route_is_control()'s pre-switch credential gate: the
+ * OTA gate order is ABSENT then TOKEN, so that an OTA-less build answers one
+ * 404 for every verb instead of a 401 that says a surface exists.
+ *
+ * Returns NULL only for an invalid dispatcher or a null request. */
+const AiusHttpApplicationResponse *aius_optical_app_ota_dispatch(
+	AiusOpticalAppDispatcher *dispatcher, AiusOpticalAppOtaRoute route,
+	const AiusHttpRequest *request);
 
 /* One bounded decision for one parsed USB command. Returns NULL only for an
  * invalid dispatcher or a null request. */
