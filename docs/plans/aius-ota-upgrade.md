@@ -466,18 +466,32 @@ HTTP routes (`/api/ota/activate`, `/api/ota/enable-activation`,
 raised the gated-`reset_application` invariant from one site to two (reboot
 + activation). The OCRAM floor held at +0 (the ~1 KiB activator is DTCM).
 
-**Two frozen-core caveats block enabling the real activation (not the
-self-test), and are the last correctness work before the end-to-end
-upgrade:** (1) `aius_ota_activate_step()` is FLASHMEM, so the RAM-resident
-run loop calls into flash each step — once BODY erases the sector holding
-`step()`, the next XIP fetch reads erased flash. Fix: make the dark-window
-step graph FASTRUN (a `lib/aius_ota` change). (2) `ota_staged_read` reaches
-the framework SD driver, whose code lives in the image being erased. Fix:
-copy the staged image SD→PSRAM before the dark window and program from
-PSRAM (the FlasherX pattern), so no flash-resident SD code runs mid-erase.
-The item-5 scratch-sector self-test exercises neither (one sector,
-primitives only), so it is the safe on-bench recovery proof and the
-activate route stays gated until both are fixed.
+**Two frozen-core caveats block enabling the real dark-window activation
+(not the self-test):** (1) `aius_ota_activate_step()` and its verify graph
+(including `aius_sha256`) are FLASHMEM, so they execute from the image
+region being erased. (2) `ota_staged_read` reaches the framework SD driver,
+whose code is likewise in that region. Both fault once BODY erase begins.
+
+**The final slice's architecture (analysis 2026-08-01), which makes the
+dark window minimal instead of moving a multi-KB graph into the ~4.7 KB-free
+ITCM.** Split verification out of the window: BEFORE quiesce, while flash
+and SD still execute, copy the whole staged image SD→PSRAM and run the
+SHA-256 + Ed25519 verify over the PSRAM copy against the armed header
+(abort with nothing flashed on any mismatch). The dark window then needs
+no SHA-256 and no SD — only erase → program-from-PSRAM →
+byte-compare-against-PSRAM (an inlined `memcmp`, not a digest), so the
+RAM-resident set shrinks to the small step loop plus the already-FASTRUN
+primitives, which fits ITCM. PSRAM is on FlexSPI2, independent of the boot
+flash on FlexSPI1, so a RAM-resident reader reads it throughout the erase.
+Constraints this must honor: PSRAM presence is runtime (`external_psram_size`
+/ the pad-2 probe) — with no PSRAM fitted, activation is refused, not
+attempted; and the staging buffer must not overlap the recorder ring
+(quiesce stops the recorder, but the address regions must still be
+partitioned, not aliased). This reworks the activation sequencer in
+`lib/aius_ota` (verify-before-window, byte-compare-within) and its 15 test
+groups. Until it lands and is bench-proven, `activation_available` stays
+false; the item-5 self-test (one scratch sector, primitives only, no
+sequencer/SD/PSRAM) is the safe standing recovery proof.
 
 The composition (up to ARMED) is delivered and live on hardware. The five
 route ids parse in `lib/aius_http` (unconditional, so host suites cover
