@@ -163,6 +163,40 @@ int av_get_cpu_flags(void)
     return 0; /* pure C codelets only */
 }
 
+/* ---- parser-registry link stubs -------------------------------------------
+ *
+ * ac3_parser.c is vendored for ff_ac3_parse_header/ff_ac3_find_syncword, but
+ * compiling it also emits the AVCodecParser registry struct, whose callback
+ * slots name the framework's ff_aac_ac3_parse/ff_parse_close. Nothing ever
+ * invokes that struct here (no parser registry exists), and ASan's global
+ * registration keeps it alive past --gc-sections, so the two externs are
+ * satisfied with unreachable abort stubs -- the same shape the dcadec vendor
+ * uses for its dead float-interpolation branches (see its NOTICE.md). */
+
+#include <stdlib.h>
+
+#include "libavcodec/aac_ac3_parser.h"
+#include "libavcodec/parser.h"
+
+int ff_aac_ac3_parse(AVCodecParserContext *s1, AVCodecContext *avctx,
+                     const uint8_t **poutbuf, int *poutbuf_size,
+                     const uint8_t *buf, int buf_size)
+{
+    (void)s1;
+    (void)avctx;
+    (void)poutbuf;
+    (void)poutbuf_size;
+    (void)buf;
+    (void)buf_size;
+    abort(); /* unreachable: no parser registry in the fork */
+}
+
+void ff_parse_close(AVCodecParserContext *s)
+{
+    (void)s;
+    abort(); /* unreachable: no parser registry in the fork */
+}
+
 /* ---- side data: deliberate no-ops ----------------------------------------- */
 
 AVDownmixInfo *av_downmix_info_update_side_data(AVFrame *frame)

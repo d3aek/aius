@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
-#         dts-fuzz, dts-lfe, a52, a52-fuzz, iec61937, iec61937-fuzz, capability-protocol,
+#         dts-fuzz, dts-lfe, a52, a52-fuzz, eac3, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, latency-runner,
 #         recovery-runner, flash, http,
@@ -185,6 +185,64 @@ a52_build() {
 		-lm -o "$out"
 }
 
+# Shared build inputs for the E-AC-3 suite: the aius_eac3 adapter over the
+# vendored FFmpeg fork (vendor/ffmpeg-eac3), allocator-wrapped like the DTS
+# and AC-3 suites so the no-heap arena path is provable. The fork compiles
+# under the same strict sanitized flags as first-party code with three
+# accommodations scoped here so the vendored files stay verbatim-plus-tagged:
+# _GNU_SOURCE (M_PI under -std=c11), HAVE_AV_CONFIG_H (FFmpeg's own
+# internal-build switch selecting config.h/internal.h), and the -Wno-* set
+# below (style nits -Wall/-Wextra raises in verbatim upstream sources).
+eac3_build() {
+	local out="$1"
+	shift
+	local v="$fw_root/vendor/ffmpeg-eac3"
+	local eac3_inc=("-I$fw_root/lib/aius_eac3/include" \
+		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
+		"-I$v/shim" "-I$v" "-I$v/libavcodec")
+	# The comma-separated --wrap list is one linker argument.
+	# shellcheck disable=SC2054
+	# -Wno-unused-function: ac3dec.h carries static prototypes for the
+	# fork's internal eac3dec.c/ac3dec.c split; the adapter includes it for
+	# the context type and would otherwise trip on the undefined statics.
+	# --gc-sections drops the two upstream corners nothing here references
+	# (ac3_parser.c's AVCodecParser registration struct and mathematics.c's
+	# av_add_stable) instead of stubbing their framework externs.
+	local eac3_cflags=(-D_GNU_SOURCE -DHAVE_AV_CONFIG_H \
+		-fno-sanitize-recover=undefined \
+		-ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-Wno-unused-parameter -Wno-sign-compare \
+		-Wno-implicit-fallthrough -Wno-pointer-sign -Wno-parentheses \
+		-Wno-unused-function \
+		-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+	"$cc" "${cflags[@]}" "${eac3_inc[@]}" "${eac3_cflags[@]}" \
+		"$@" \
+		"$fw_root/lib/aius_eac3/src/aius_eac3.c" \
+		"$fw_root/lib/aius_dts/src/aius_alloc_shim.c" \
+		"$src/aius_arena.c" \
+		"$v/shim/aius_avshim.c" \
+		"$v/libavcodec/aius_eac3_core.c" \
+		"$v/libavcodec/ac3.c" \
+		"$v/libavcodec/ac3tab.c" \
+		"$v/libavcodec/ac3dec_data.c" \
+		"$v/libavcodec/eac3_data.c" \
+		"$v/libavcodec/ac3dsp.c" \
+		"$v/libavcodec/ac3_parser.c" \
+		"$v/libavcodec/ac3_channel_layout_tab.c" \
+		"$v/libavcodec/kbdwin.c" \
+		"$v/libavcodec/fmtconvert.c" \
+		"$v/libavcodec/bswapdsp.c" \
+		"$v/libavutil/float_dsp.c" \
+		"$v/libavutil/crc.c" \
+		"$v/libavutil/lfg.c" \
+		"$v/libavutil/tx.c" \
+		"$v/libavutil/tx_float.c" \
+		"$v/libavutil/mem.c" \
+		"$v/libavutil/mathematics.c" \
+		"$v/libavutil/md5.c" \
+		-lm -o "$out"
+}
+
 # Pipeline-bearing suites link both resident decoders. A52 stays in dedicated
 # objects while dts_build retains the established dcadec build and allocator
 # wrapping.
@@ -307,6 +365,13 @@ a52-fuzz)
 	a52_build "$out" "$fw_root/test/a52/fuzz_a52.c"
 	UBSAN_OPTIONS=halt_on_error=1 \
 		"$out" "$fw_root/tools/ac3_vectors/vectors" 50000
+	;;
+eac3)
+	# E-AC-3 decode differential vs FFmpeg (committed corpus) + regression
+	# hash + arena/no-alloc steady state + malformed family.
+	out="$build_dir/eac3"
+	eac3_build "$out" "$fw_root/test/eac3/test_eac3.c"
+	UBSAN_OPTIONS=halt_on_error=1 "$out" "$fw_root/tools/eac3_vectors/vectors"
 	;;
 iec61937)
 	# IEC 61937 burst parser known-answer test against the committed corpus.

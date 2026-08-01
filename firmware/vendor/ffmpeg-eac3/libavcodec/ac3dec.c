@@ -1527,7 +1527,11 @@ static int ac3_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         av_lfg_init_from_data(&s->dith_state, s->input_buffer, FFMIN(buf_size, AC3_FRAME_BUFFER_SIZE));
 
     buf = s->input_buffer;
+#if !AIUS_EAC3_51_ONLY
+    /* AIUS FORK EDIT [eac3-51-only]: the only goto targeting this label was
+     * the dependent-substream decode, which this fork skips. */
 dependent_frame:
+#endif
     /* initialize the GetBitContext with the start of valid AC-3 Frame */
     if ((ret = init_get_bits8(&s->gbc, buf, buf_size)) < 0)
         return ret;

@@ -374,6 +374,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 | `dts-lfe` | LFE bit-exactness vs a full dcadec build. |
 | `a52` | AC-3 decode differential vs FFmpeg (committed corpus), channel identity by Goertzel, arena/metrics contract. |
 | `a52-fuzz` | AC-3 adapter robustness fuzz: seam hunt + random corruption under the termination oracle, including the fork's CRC and bounded bit-reader guards. |
+| `eac3` | E-AC-3 decode differential vs FFmpeg (committed corpus), regression hash, arena/no-alloc steady state, malformed family. |
 | `iec61937`, `iec61937-fuzz` | IEC 61937 parser known-answer + fuzz. |
 | `replay-samples` | Generate additive DTS/AC-3 replay packs, validate AC-3 IEC periods and payloads, and consume them through the production IEC parser. |
 | `pipeline` | Classifier + parser→decoder end-to-end. |
