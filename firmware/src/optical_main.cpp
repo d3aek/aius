@@ -826,6 +826,12 @@ static volatile uint32_t g_network_budget_overruns;
 static uint32_t g_ckpt_prev_cycles;
 static uint16_t g_ckpt_prev_id = 15u;
 static uint32_t g_ckpt_max_us[16];
+/* Cumulative µs beside the maxima: divided by loop_epoch this attributes a
+ * STEADY per-epoch cost to one checkpoint, which lifetime maxima cannot do
+ * once boot spikes dominate them -- the attribution the boot-lottery defect
+ * (open-work register §Open defects — runtime) needs from a degraded boot.
+ * u64 so it cannot wrap within any bench session. */
+static uint64_t g_ckpt_total_us[16];
 
 /* The HTTP checkpoint's wall-clock overruns, measured by platform_checkpoint()
  * between the HTTP stamp and the UDP checkpoint's arrival -- the scheduler
@@ -3883,6 +3889,24 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	                      (unsigned long)g_ckpt_max_us[9],
 	                      (unsigned long)g_ckpt_max_us[10]))
 		return 0;
+	/* Cumulative milliseconds per checkpoint: divided by loop_epoch this is
+	 * the steady per-epoch cost -- the attribution a degraded boot needs,
+	 * because the maxima above saturate on boot-time spikes. */
+	if (!http_json_append((char *)body, capacity, &length,
+	                      ",\"checkpoint_cumulative_ms\":[%lu,%lu,%lu,%lu,"
+	                      "%lu,%lu,%lu,%lu,%lu,%lu,%lu]",
+	                      (unsigned long)(g_ckpt_total_us[0] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[1] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[2] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[3] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[4] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[5] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[6] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[7] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[8] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[9] / 1000u),
+	                      (unsigned long)(g_ckpt_total_us[10] / 1000u)))
+		return 0;
 #if AIUS_OTA
 	/* The staged-upgrade snapshot, beside the other diag objects rather than on
 	 * a second route: it is read alongside boot_generation and recovery_safe,
@@ -6497,8 +6521,11 @@ static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)
 		const uint32_t now_cycles = ARM_DWT_CYCCNT;
 		const uint32_t us = (now_cycles - g_ckpt_prev_cycles) /
 			(F_CPU_ACTUAL / 1000000u);
-		if (g_ckpt_prev_id < 16u && us > g_ckpt_max_us[g_ckpt_prev_id])
-			g_ckpt_max_us[g_ckpt_prev_id] = us;
+		if (g_ckpt_prev_id < 16u) {
+			if (us > g_ckpt_max_us[g_ckpt_prev_id])
+				g_ckpt_max_us[g_ckpt_prev_id] = us;
+			g_ckpt_total_us[g_ckpt_prev_id] += us;
+		}
 		g_ckpt_prev_cycles = now_cycles;
 		g_ckpt_prev_id = checkpoint < 16u ? checkpoint : 15u;
 	}
