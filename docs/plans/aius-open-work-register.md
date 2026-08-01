@@ -103,6 +103,45 @@ specified here. Strike items here in the commit that closes them.
   service in a degraded steady state; instrument via the new vector on
   a degraded boot.
 
+  **Afternoon findings, same day — the odds are a property of the
+  image layout, and the degraded state is characterized live:**
+
+  - Reproduction: 50 consecutive boots of the current image (30 clean
+    reboots + 20 reset-mid-SD-write) were ALL healthy, while the
+    e6417b428-content image degraded on its first boot — as it did on
+    ~every boot this morning. An out-of-tree build of e6417b428's
+    firmware is a durable ON-DEMAND REPRODUCER (two independent builds
+    of that content behaved identically); each source perturbation
+    re-rolls the odds, which is what made the morning's bisect chase
+    its own tail. `checkpoint_cumulative_ms` (shipped) rides only
+    post-detector images, so a bad-odds instrumented layout must be
+    found by a padding sweep before the vector can attribute a
+    degraded boot directly.
+  - Live degraded capture (bad-odds image, first boot): audio ingress
+    delivered 29 chunks total against ~15,000 expected (99.8 %
+    absent) while the audio service itself stayed fast
+    (`service_max_us` 41); pipeline starved (`blocks` 0, meters all
+    silence, `stream_rate_hz` 0) with the clock happily `tracking`;
+    epochs BIMODAL — most normal, rare multi-second stalls
+    (`runtime_epoch_max_us` 5,520,770 against only 13 budget
+    overruns), HTTP dead windows ≥2 s; network started once cleanly
+    (no restart loop); SD clean on this boot. The morning's "5.9 s SD
+    primitive" was main-line wall time inflated by the same stalls.
+  - The defect has a CLOCK: audio-overrun event edges tick at
+    1,791.7±3 ms — exactly 168 blocks at 93.75 blocks/s — through the
+    whole degraded lifetime.
+  - Working hypothesis: interrupt-context CPU theft in bursts (an ISR
+    storm) in the SPDIF-RX/audio-ingress chain, armed by a boot-time
+    race whose odds image layout shifts through boot-path timing;
+    the 168-block period points at a buffer/window wrap in that chain
+    re-arming the burst.
+  - Next steps: (1) audio-update ISR invocation + cycle counters
+    served beside the checkpoint vectors; (2) padding-sweep builds of
+    the instrumented tree, boot-looped until one lands on bad odds;
+    (3) one degraded boot of that image then convicts or acquits the
+    ISR by calls/s and lets `checkpoint_cumulative_ms` attribute the
+    remainder.
+
 ## Recorded debt — small, none blocking
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
