@@ -988,6 +988,27 @@ static FLASHMEM void record_state(void)
 /* not the plain read/write/count triple the int16 ring could afford.   */
 /* ------------------------------------------------------------------ */
 
+/* Boot-lottery conviction counters (register §Open defects — runtime): the
+ * audio update ISR's invocation count and its longest single run. Normal is
+ * ~93.75 calls/s and a sub-millisecond maximum; a storm shows as calls far
+ * above the block rate, a stall inside the callback as a huge maximum.
+ * Written in ISR context, read by the status route -- volatile u32. */
+static volatile uint32_t g_audio_update_calls;
+static volatile uint32_t g_audio_update_max_cycles;
+
+/* The boot-lottery padding-sweep knob: the degraded mode's per-boot odds are
+ * a function of the image's exact layout, so hunting a reproducing layout of
+ * an INSTRUMENTED build means nudging flash placement by N bytes per variant
+ * (`-DAIUS_LAYOUT_NUDGE=<n>`). Zero-cost at the default; setup() reads one
+ * byte through a volatile sink so the linker keeps the pad. */
+#ifndef AIUS_LAYOUT_NUDGE
+#define AIUS_LAYOUT_NUDGE 0
+#endif
+#if AIUS_LAYOUT_NUDGE > 0
+static const uint8_t g_layout_nudge[AIUS_LAYOUT_NUDGE] = {1};
+static volatile uint8_t g_layout_nudge_sink;
+#endif
+
 class AiusAudioProcessor : public AudioStream
 {
 public:
@@ -1096,6 +1117,12 @@ public:
 protected:
 	void update(void) override
 	{
+		/* Boot-lottery conviction counters (register §Open defects —
+		 * runtime): a storm on this ISR shows as calls far above the
+		 * 93.75 Hz block rate; a stall inside one call shows in the
+		 * cycle maximum. DWT differences, wrap-correct. */
+		const uint32_t entered_cycles = ARM_DWT_CYCCNT;
+		g_audio_update_calls++;
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
 		const AiusReplaySource source =
@@ -1150,6 +1177,12 @@ protected:
 			release(right);
 		/* No emit_block(): the transmit DMA interrupt drains the 24-bit ring
 		 * itself; this callback only publishes one bounded ingress chunk. */
+		{
+			const uint32_t spent =
+				ARM_DWT_CYCCNT - entered_cycles;
+			if (spent > g_audio_update_max_cycles)
+				g_audio_update_max_cycles = spent;
+		}
 	}
 
 private:
@@ -3907,6 +3940,15 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	                      (unsigned long)(g_ckpt_total_us[9] / 1000u),
 	                      (unsigned long)(g_ckpt_total_us[10] / 1000u)))
 		return 0;
+	/* The audio update ISR's conviction pair: calls (normal ~93.75/s
+	 * against uptime) and the longest single run in µs. */
+	if (!http_json_append((char *)body, capacity, &length,
+	                      ",\"audio_update_calls\":%lu"
+	                      ",\"audio_update_max_us\":%lu",
+	                      (unsigned long)g_audio_update_calls,
+	                      (unsigned long)(g_audio_update_max_cycles /
+	                                      (F_CPU_ACTUAL / 1000000u))))
+		return 0;
 #if AIUS_OTA
 	/* The staged-upgrade snapshot, beside the other diag objects rather than on
 	 * a second route: it is read alongside boot_generation and recovery_safe,
@@ -6653,6 +6695,10 @@ static FLASHMEM void derive_auth_token(void)
  * file. */
 FLASHMEM void setup(void)
 {
+#if AIUS_LAYOUT_NUDGE > 0
+	/* Keep the padding-sweep nudge linked (see g_layout_nudge). */
+	g_layout_nudge_sink = g_layout_nudge[0];
+#endif
 	/* FIRST: end the static-construction carrier blip. g_spdif_out's
 	 * constructor ran begin() ~300 ms after reset with DMA already streaming
 	 * zeroed buffers; this dark-set is the earliest firmware-controlled
