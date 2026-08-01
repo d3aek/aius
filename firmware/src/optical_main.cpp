@@ -999,14 +999,23 @@ static volatile uint32_t g_audio_update_max_cycles;
 /* The boot-lottery padding-sweep knob: the degraded mode's per-boot odds are
  * a function of the image's exact layout, so hunting a reproducing layout of
  * an INSTRUMENTED build means nudging flash placement by N bytes per variant
- * (`-DAIUS_LAYOUT_NUDGE=<n>`). Zero-cost at the default; setup() reads one
- * byte through a volatile sink so the linker keeps the pad. */
+ * (`-DAIUS_LAYOUT_NUDGE=<n>`). The pad is CODE (2-byte nops in a FLASHMEM
+ * function), not rodata: code precedes rodata in the flash section, so only a
+ * code pad shifts the flash-resident functions whose placement the odds have
+ * empirically tracked. Zero-cost at the default; setup() calls the pad
+ * through a volatile gate that is never true, so the linker keeps it. */
 #ifndef AIUS_LAYOUT_NUDGE
 #define AIUS_LAYOUT_NUDGE 0
 #endif
 #if AIUS_LAYOUT_NUDGE > 0
-static const uint8_t g_layout_nudge[AIUS_LAYOUT_NUDGE] = {1};
-static volatile uint8_t g_layout_nudge_sink;
+#define AIUS_NUDGE_STR2(x) #x
+#define AIUS_NUDGE_STR(x) AIUS_NUDGE_STR2(x)
+static volatile bool g_layout_nudge_gate;
+FLASHMEM __attribute__((noinline)) static void aius_layout_nudge(void)
+{
+	__asm__ volatile(".rept " AIUS_NUDGE_STR(AIUS_LAYOUT_NUDGE)
+	                 "\n\tnop\n\t.endr");
+}
 #endif
 
 class AiusAudioProcessor : public AudioStream
@@ -6696,8 +6705,9 @@ static FLASHMEM void derive_auth_token(void)
 FLASHMEM void setup(void)
 {
 #if AIUS_LAYOUT_NUDGE > 0
-	/* Keep the padding-sweep nudge linked (see g_layout_nudge). */
-	g_layout_nudge_sink = g_layout_nudge[0];
+	/* Keep the padding-sweep nudge linked (see aius_layout_nudge). */
+	if (g_layout_nudge_gate)
+		aius_layout_nudge();
 #endif
 	/* FIRST: end the static-construction carrier blip. g_spdif_out's
 	 * constructor ran begin() ~300 ms after reset with DMA already streaming
