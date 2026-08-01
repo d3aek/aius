@@ -64,14 +64,29 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    audio-service, a52, dts, arena suites green; target builds; memory +
    ITCM gates green. The freed headroom vs the old eager pair lands in
    the parent arena for Phase 2's slot re-derivation.
-2. **FFmpeg E-AC-3 subset + `aius_eac3` adapter + native proof** —
-   vendoring (Debian source pool route, verified reachable 2026-08-01),
-   the trim ladder to the real footprint number (the stop-condition gate:
-   materially over the slot capacity ends the plan with the measurement
-   recorded), the two-level reset (slot reset + per-AU watermark rewind
-   absorbing the 15 malloc/free-per-frame churn), ffmpeg-encoded corpus,
-   differential + independent second oracle, fuzz with E-AC-3 CRC
-   semantics, termination oracle.
+2. **FFmpeg E-AC-3 subset + `aius_eac3` adapter + native proof** — **in
+   progress; fork landed 2026-08-01** at `firmware/vendor/ffmpeg-eac3/`
+   (FFmpeg 7.1.5, Debian orig tarball; 93 av* files of which 87
+   byte-for-byte, 5 edited under tagged `AIUS FORK EDIT` markers, plus the
+   fork-owned core TU and framework shim — see its `NOTICE.md`). The
+   calling-convention fork stands alone (no codec registry, no AVOption,
+   no threading) and decodes a 29-frame 5.1 E-AC-3 vector **bit-identically
+   to upstream's own minimal build** (FNV-1a-64 `47b3267c5d527165` both
+   sides). Measured (host, -O2): ~87 KB text + ~33 KB rodata; BSS 16.8 MB
+   → ~38 KB via the tx table/codelet ladder trims; context 235,232 →
+   **161,504 B** via `EAC3_MAX_CHANNELS` 16→7 (5.1-only: dependent
+   substreams consumed, never decoded); +8,672 B one-time init allocs;
+   **zero per-frame heap churn** (20 allocs total over 29 frames — the
+   scoping's 15-per-frame estimate refuted, so the per-AU watermark rewind
+   is unnecessary; a plain create-time slot fill suffices). Revised slot
+   arithmetic: ~170 KB now, ~142 KB after the `input_buffer` rung
+   (32,832 → ~4.2 KB, superframe-consume check pending) — the 64 KiB
+   Phase-1 slot constant must grow to ~145–175 KB, and the target arena
+   with it (see Phase 4). Remaining: `aius_eac3` adapter (arena-backed via
+   the alloc shim, `AiusPcmBlock` out, int32 quantize at the aius sample
+   scale), input_buffer rung, ffmpeg-encoded corpus through `iec_corpus`,
+   differential vs host-ffmpeg + independent second oracle, fuzz with
+   E-AC-3 CRC semantics, termination oracle.
 3. **Dispatch + classification constants** — type 21 joins `in_scope`,
    third dispatch route, `codec_pc == 21` metrics/UI decoration,
    squelch/re-type constants re-derived for the 12,288-word burst period
@@ -80,7 +95,16 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
 4. **Target integration** — FLASH-cold code placement (the subset cannot
    join the six-block ITCM budget), decode cycle cost measured against
    the 8 ms AUDIO budget, arena/slot gates on target, SD-replay E-AC-3
-   IEC fixtures played on the box.
+   IEC fixtures played on the box. **Scope revision (2026-08-01, from the
+   Phase-2 measurements):** the slot needs ~142–170 KB, so the 131,072
+   DTCM arena must GROW, not merely re-partition. Ground truth from the
+   current build: RAM1 = 287,684 B variables + 6 ITCM banks, **39,996 B
+   DTCM free**; OCRAM has 131,488 B free. The funded route is relocating
+   ~50–80 KB of non-audio-path DTCM buffers to OCRAM (defect 26 vetoed
+   OCRAM for *audio-path* state; HTTP/network/scratch buffers are not
+   that) and growing `ARENA_BYTES` to ~185–200 KB. The CRC tables
+   (32,800 B BSS, lazily generated) are a further flash-const rung if
+   DTCM stays tight.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until
