@@ -2763,12 +2763,26 @@ static void expect_ota_stage(const AiusHttpApplicationResponse *response,
 	expect_response(response, AIUS_HTTP_APP_SD_JOB, 200, "application/json",
 	                body);
 	assert(response->sd_job.kind == AIUS_SD_JOB_UPLOAD);
-	assert(response->sd_job.install_mode == AIUS_SD_INSTALL_APPEND_PART);
 	assert(strcmp(response->sd_job.target_path, "/aius/ota-staged.img") == 0);
-	assert(response->sd_job.temp_path == NULL);
-	assert(response->sd_job.backup_path == NULL);
 	assert(response->sd_job.total == total);
 	assert(response->sd_job.initial_offset == initial_offset);
+	if (initial_offset == 0u) {
+		/* The first chunk RESTARTS the persistent staged file through the
+		 * atomic REPLACE pair; strict append against last upgrade's file
+		 * would refuse offset 0 forever (416 sd_range, no delete route). */
+		assert(response->sd_job.install_mode == AIUS_SD_INSTALL_REPLACE);
+		assert(response->sd_job.temp_path != NULL);
+		assert(strncmp(response->sd_job.temp_path, "/aius/.upload-",
+		               sizeof("/aius/.upload-") - 1u) == 0);
+		assert(response->sd_job.backup_path != NULL);
+		assert(strncmp(response->sd_job.backup_path, "/aius/.backup-",
+		               sizeof("/aius/.backup-") - 1u) == 0);
+	} else {
+		assert(response->sd_job.install_mode ==
+		       AIUS_SD_INSTALL_APPEND_PART);
+		assert(response->sd_job.temp_path == NULL);
+		assert(response->sd_job.backup_path == NULL);
+	}
 }
 
 static void test_ota_image_chunks(void)
@@ -2778,6 +2792,12 @@ static void test_ota_image_chunks(void)
 	const AiusHttpApplicationResponse *response;
 	static const char *const chunk_calls[] = {
 		"ota_present", "auth_matches", "sd_ready", "sd_busy", "ota_chunk"
+	};
+	/* The first chunk also names the REPLACE scratch pair, whose entropy is
+	 * the application's. */
+	static const char *const chunk0_calls[] = {
+		"ota_present", "auth_matches", "sd_ready", "sd_busy", "ota_chunk",
+		"upload_id"
 	};
 	static const char *const refused_calls[] = {
 		"ota_present", "auth_matches"
@@ -2791,7 +2811,7 @@ static void test_ota_image_chunks(void)
 	response = dispatch_ota_chunk(&fixture, scratch, sizeof(scratch), 0u, 512u,
 	                              585728u, "token");
 	expect_ota_stage(response, 512u, 512u, 0u);
-	expect_log(&fixture, chunk_calls, ARRAY_LENGTH(chunk_calls));
+	expect_log(&fixture, chunk0_calls, ARRAY_LENGTH(chunk0_calls));
 	assert(fixture.fake.last_ota_offset == 0u);
 	assert(fixture.fake.last_ota_length == 512u);
 	/* The slice handed down IS the parsed request body: borrowed in place

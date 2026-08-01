@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-07-31
+updated: 2026-08-01
 toc: true
 ---
 
@@ -68,6 +68,21 @@ specified here. Strike items here in the commit that closes them.
   (`tx_gate` on `/api/status`). Runs when the jacks are soldered. Its step
   5 (glass loopback re-running item 3 across real fibre) also owns the
   clock/content-ratio residue recorded in `signal-path.md` §Open.
+- **The bench SD card needs service (check on a PC, reformat, or swap)
+  before the full-size OTA end-to-end (2026-08-01).** The card (4 GB
+  FAT32, only 19 MB used) degraded across the day's OTA staging traffic
+  into repeated multi-second write stalls — longest single 512-byte
+  primitive 5.9 s — with driver faults, remounts, and at least two
+  silent WDOG resets (`reset_source` 16: an SD stall outlived the 8 s
+  watchdog and took the whole board with it, wiping the RAM session and
+  the activation latch). Reads stayed healthy throughout. Staging the
+  463 KiB signed container failed after 25 offset-0 restarts across two
+  attempts; a 64 KiB container took 5 min and 4 restarts. Everything
+  downstream of staging is proven (verify, arm, rehearsal); the full
+  signed end-to-end activation
+  ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) §Incident) is blocked on
+  a card that can absorb 463 KiB of writes without stalling past the
+  watchdog.
 
 ## Recorded debt — small, none blocking
 

@@ -1666,6 +1666,21 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	                   (unsigned long)next_offset);
 	if (written <= 0 || (size_t)written >= dispatcher->body_capacity)
 		return http_too_large(dispatcher);
+	/* THE FIRST CHUNK RESTARTS THE FILE. The staged image persists across
+	 * upgrades (and across an interrupted one), and APPEND_PART's
+	 * strict-append contract would refuse offset 0 against it forever --
+	 * 416 sd_range with no route that can remove the file. So offset 0
+	 * stages through the atomic REPLACE pair (truncate by rename, the same
+	 * scratch/backup dance every web-tree PUT uses), mirroring the
+	 * session-level rule above where a re-sent offset 0 is a deliberate
+	 * restart; every later chunk appends. */
+	if (request->content_range_start == 0u) {
+		if (!build_upload_scratch(dispatcher, true))
+			return http_error(dispatcher, 507, "ota_storage");
+		return sd_upload(dispatcher, AIUS_SD_INSTALL_REPLACE,
+		                 request->content_length, 0u,
+		                 dispatcher->body, (size_t)written);
+	}
 	return sd_upload(dispatcher, AIUS_SD_INSTALL_APPEND_PART,
 	                 request->content_length, request->content_range_start,
 	                 dispatcher->body, (size_t)written);

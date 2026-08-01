@@ -560,6 +560,65 @@ deliberately absent from the OpenAPI path contract like the self-test.
 **Gate to lift the incident hold: both rehearsal arms pass on the bench;
 only then is a real activation attempted again.**
 
+**Rehearsal evidence, 2026-08-01, image `f228f06890e1+teensy41-optical`
+(the fixed build), 64 KiB signed rehearsal container.** The POSITIVE arm
+PASSED: the full sequence — SD→PSRAM copy, SHA-256 + Ed25519 re-verify,
+quiesce with every interrupt source parked, head erased first, 15 body
+sectors erased/programmed/byte-compared, head programmed last and
+compared, emulated reset — ran against the scratch window and the board
+came back serving 4.4 s after the accept, session still ARMED.
+`rehearsal_dark_us` 668,814 (0.67 s of dark window for 272 steps over
+16 sectors — extrapolating linearly, ≈4.7 s for the real 452 KiB
+image); `rehearsal_max_step_us` 40,095 — the longest single operation,
+a sector erase, wildly over the 10,667 µs audio-block budget (§Item 4's
+audio-stops-during-flashing decision was necessary, not merely
+convenient) and comfortably inside the one-feed-per-operation watchdog
+cadence. The container was deliberately small: the per-operation
+numbers are size-independent, and the bench SD card was by then failing
+multi-chunk writes (see below) — the full-size container never staged.
+
+The FAULT-INJECTED arm also PASSED, on a minimum-geometry (4,097-byte)
+container after the card degraded further: the injected one-bit fault
+in the first head-chunk readback was convicted by the in-window
+byte-compare — `rehearsal_fault` 7 (`FAULT_VERIFY`), phase FAULTED, no
+reset taken — and the board returned to service 3.7 s after the accept
+(`rehearsal_dark_us` 76,633; `rehearsal_max_step_us` 41,230, consistent
+with the positive arm's erase ceiling). That is the incident's demanded
+"assert the head-compare fault actually halts", on the real driver
+against real flash. **Both arms pass: the incident hold is lifted
+mechanically.** What still blocks the full-size signed end-to-end is
+the bench SD card itself — it degraded across the day into multi-second
+write stalls, driver faults, remounts and two watchdog resets
+(`reset_source` 16) that each wiped the RAM session and the activation
+latch; the 463 KiB container failed to stage across 25 restarts while a
+2-chunk container needed rest pauses to land. Card service (check /
+reformat / swap) is on the operator list in
+[`aius-open-work-register.md`](aius-open-work-register.md) §Waiting on
+the operator; the end-to-end runs when staging can survive.
+
+**Also fixed on the way to the re-proof (found live, 2026-08-01): a
+fresh staging could never start over the previous one.** The staged file
+persists across upgrades, and APPEND_PART's strict-append contract
+refused offset 0 against it forever (416 `sd_range`, and no route can
+delete `/aius/ota-staged.img`). The first chunk now stages through the
+atomic REPLACE pair — truncate by rename, the same scratch/backup dance
+every web-tree PUT uses — mirroring the session rule that a re-sent
+offset 0 is a deliberate restart; every later chunk appends as before.
+
+**Known wart, recorded not fixed: a failed staging job diverges the
+session from the file.** The route absorbs a chunk into the session
+(offset + running digest) BEFORE the SD job writes it, so a job that
+fails after absorption leaves the session one chunk ahead of the file —
+every session-guided resume then 416s, and the only recovery is a
+deliberate offset-0 restart (which the fix above makes cheap and which
+the bench uploader now performs automatically). Re-ordering
+write-then-absorb would need the digest midstate rolled back on job
+failure; not worth it while a restart costs a minute. The bench card is
+also the operational risk to watch: staging this container surfaced
+repeated multi-second SD write stalls (longest primitive 5.9 s) with
+driver faults and remounts, far beyond the single transient spike the
+incident session's staging saw.
+
 Recovery needs the physical program button (the board is in RT1062 ROM
 SDP, not HalfKay/CDC, so no software path from here without NXP SDP
 flashloader tooling this bench lacks): press the Teensy program button
