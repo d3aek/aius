@@ -455,6 +455,38 @@ resolved 2026-08-01; the recovery channel is proven healthy this session)
 and afterwards lights up the page's activate step and
 reboot-to-new-identity monitoring.
 
+## Incident 2026-08-01: first real end-to-end activation left the board in ROM SDP
+
+The staging path was proven end to end on hardware first: a dev-key-signed
+container of the exact running image (`0b080d465330`, `objcopy -O binary`
+of the ELF — verified to carry a valid FCB at offset 0 and IVT at 0x1000)
+uploaded resumably (461,056 B; one transient SD-append spike resolved on
+resume), the device recomputed SHA-256 to `verified`, and the Ed25519
+check reached `armed`. That half works.
+
+The activation then flashed a non-bootable image: after
+`POST /api/ota/activate` the board reset into the RT1062 ROM serial
+downloader (`1fc9:0135`, "SE Blank RT Family") — the ROM's fallback when
+the FlexSPI boot image is invalid. Not a brick; the recoverable state the
+design anticipated. **Root cause is a firmware bug in the dark-window
+sequence, not the payload:** the signed payload carried a correct FCB, yet
+the board came up with an unbootable boot region, so sector 0 (the FCB,
+programmed LAST) ended blank/wrong while the sequence still issued
+`SYSRESETREQ`. The dark-window byte-compare that must fault-and-halt on a
+bad head instead let the reset proceed — a path the host fakes and the
+scratch-sector self-test (one sector, no FCB-last-then-reset) do not
+cover. **The activate route must stay disabled until this is fixed and
+re-proven by a method that does not risk the boot region — e.g. a
+full-sequence rehearsal against a scratch flash region with an emulated
+reset, asserting the head-compare fault actually halts.**
+
+Recovery needs the physical program button (the board is in RT1062 ROM
+SDP, not HalfKay/CDC, so no software path from here without NXP SDP
+flashloader tooling this bench lacks): press the Teensy program button
+once to enter HalfKay, then `scripts/flash_optical.sh` restores a known
+image. Raw incident artifacts and the signed container are in the session
+scratch.
+
 The activation-wiring slice is delivered and gated: the FASTRUN
 RAM-resident flash primitives (PRIMASK-guarded, range-checked, a distinct
 `WDOG1_WSR` watchdog writer), durable SD staging to `/aius/ota-staged.img`,
