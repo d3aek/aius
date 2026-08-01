@@ -6686,10 +6686,11 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	}
 
 	/* 3. The whole verification runs here, over the PSRAM copy, BEFORE the
-	 * dark window. A refusal leaves nothing flashed and the board serving. */
+	 * dark window. A refusal leaves nothing flashed and the board serving.
+	 * NULL window: the boot window -- this is the real activation. */
 	if (aius_ota_activate_begin(&g_ota_activator, &g_ota_session,
-	                            &primitives, &g_ota_verifier, psram_base,
-	                            image_length, running_digest) !=
+	                            &primitives, &g_ota_verifier, NULL,
+	                            psram_base, image_length, running_digest) !=
 	    AIUS_OTA_OK) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
 		ota_activation_recover();

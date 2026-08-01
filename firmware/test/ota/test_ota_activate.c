@@ -96,6 +96,13 @@ typedef struct {
 	uint8_t flash[FAKE_FLASH_BYTES];
 	uint8_t health[AIUS_OTA_HEALTH_RECORD_BYTES];
 
+	/* Where this device's FAKE_FLASH_BYTES sit in the address space:
+	 * AIUS_OTA_FLASH_BASE for the boot-window groups, a scratch base for the
+	 * windowed ones -- the same array either way, so every existing oracle
+	 * (trace ordering, erase-state modelling, corruption) applies verbatim
+	 * to a rehearsal-shaped run. */
+	uint32_t base;
+
 	Op trace[TRACE_CAPACITY];
 	uint32_t ops;
 
@@ -168,9 +175,9 @@ static int fake_erase(void *ctx, uint32_t address)
 	dev->erases++;
 	if (dev->fail_erase_at == dev->erases)
 		return -6;
-	if (address < AIUS_OTA_FLASH_BASE)
+	if (address < dev->base)
 		return -1;
-	offset = address - AIUS_OTA_FLASH_BASE;
+	offset = address - dev->base;
 	if (offset % AIUS_OTA_FLASH_SECTOR_BYTES != 0u ||
 	    offset >= FAKE_FLASH_BYTES)
 		return -1;
@@ -190,9 +197,9 @@ static int fake_program(void *ctx, uint32_t address, const uint8_t *data,
 	dev->programs++;
 	if (dev->fail_program_at == dev->programs)
 		return -7;
-	if (address < AIUS_OTA_FLASH_BASE)
+	if (address < dev->base)
 		return -1;
-	offset = address - AIUS_OTA_FLASH_BASE;
+	offset = address - dev->base;
 	if (length == 0u || offset >= FAKE_FLASH_BYTES ||
 	    length > FAKE_FLASH_BYTES - offset)
 		return -1;
@@ -227,9 +234,9 @@ static int fake_flash_read(void *ctx, uint32_t address, uint8_t *destination,
 	dev->flash_reads++;
 	if (dev->fail_flash_read_at == dev->flash_reads)
 		return -8;
-	if (address < AIUS_OTA_FLASH_BASE)
+	if (address < dev->base)
 		return -1;
-	offset = address - AIUS_OTA_FLASH_BASE;
+	offset = address - dev->base;
 	if (length == 0u || offset >= FAKE_FLASH_BYTES ||
 	    length > FAKE_FLASH_BYTES - offset)
 		return -1;
@@ -320,15 +327,26 @@ static int rejecting_verify(const uint8_t digest[AIUS_OTA_DIGEST_BYTES],
 
 static AiusOtaVerifier g_accept = { NULL, accepting_verify };
 
-/* The common begin(): the accepting verifier over the staged copy. */
+/* The common begin(): the accepting verifier over the staged copy, and the
+ * window the device was reset with -- the boot window when the device sits at
+ * AIUS_OTA_FLASH_BASE (NULL, exercising the default the composition's real
+ * activation passes), the device's own scratch window otherwise. */
 static AiusOtaStatus begin_over(AiusOtaActivator *activator,
 	                        AiusOtaSession *session,
 	                        const AiusOtaActivatePrimitives *primitives,
 	                        uint32_t image_length,
 	                        const uint8_t *running_digest)
 {
+	AiusOtaActivateWindow window;
+
+	window.base = g_dev.base;
+	window.usable_bytes = FAKE_FLASH_BYTES;
 	return aius_ota_activate_begin(activator, session, primitives,
-	                               &g_accept, g_staged, image_length,
+	                               &g_accept,
+	                               g_dev.base == AIUS_OTA_FLASH_BASE
+	                                       ? NULL
+	                                       : &window,
+	                               g_staged, image_length,
 	                               running_digest);
 }
 
@@ -342,6 +360,7 @@ static void device_reset(FakeDevice *dev, const uint8_t *image,
 	memset(dev, 0, sizeof(*dev));
 	memcpy(dev->flash, g_old_image, FAKE_FLASH_BYTES);
 	memcpy(g_staged, image, image_length);
+	dev->base = AIUS_OTA_FLASH_BASE;
 	dev->cycles = TEST_CYCLES_START;
 	dev->strict_program = true;
 
@@ -670,10 +689,9 @@ static void assert_flash_holds_image(const FakeDevice *dev,
 
 static void assert_head_programmed_last(const FakeDevice *dev)
 {
-	const uint32_t head_low = AIUS_OTA_FLASH_BASE;
-	const uint32_t head_high =
-		AIUS_OTA_FLASH_BASE + AIUS_OTA_FLASH_HEAD_BYTES;
-	const uint32_t body_high = AIUS_OTA_FLASH_BASE + FAKE_FLASH_BYTES;
+	const uint32_t head_low = dev->base;
+	const uint32_t head_high = dev->base + AIUS_OTA_FLASH_HEAD_BYTES;
+	const uint32_t body_high = dev->base + FAKE_FLASH_BYTES;
 	uint32_t first_head_program;
 	uint32_t index;
 	uint32_t head_programs = 0u;
@@ -719,7 +737,7 @@ static void assert_erase_order(const FakeDevice *dev, uint32_t sectors)
 			continue;
 		/* Sector 0 first, then ascending, each exactly once. */
 		CHECK(op->address ==
-		      AIUS_OTA_FLASH_BASE + seen * AIUS_OTA_FLASH_SECTOR_BYTES);
+		      dev->base + seen * AIUS_OTA_FLASH_SECTOR_BYTES);
 		seen++;
 	}
 	CHECK(seen == sectors);
@@ -1223,7 +1241,8 @@ static void test_signature_refusal_aborts_before_any_flash(void)
 	 * begin(), so this too aborts before the dark window with nothing
 	 * flashed, and latches the verifier's own return value. */
 	CHECK(aius_ota_activate_begin(&activator, &session, &primitives,
-	                              &reject, g_staged, TEST_IMAGE_BYTES,
+	                              &reject, NULL, g_staged,
+	                              TEST_IMAGE_BYTES,
 	                              g_old_digest) == AIUS_OTA_SIGNATURE);
 	CHECK(aius_ota_activate_progress(&activator, &progress) == AIUS_OTA_OK);
 	CHECK(progress.fault == AIUS_OTA_ACTIVATE_FAULT_SIGNATURE);
@@ -1252,24 +1271,25 @@ static void test_begin_preconditions(void)
 	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
 
 	CHECK(aius_ota_activate_begin(NULL, &session, &primitives, &g_accept,
-	                              g_staged, TEST_IMAGE_BYTES,
+	                              NULL, g_staged, TEST_IMAGE_BYTES,
 	                              g_old_digest) == AIUS_OTA_INVALID_ARG);
 	CHECK(aius_ota_activate_begin(&activator, NULL, &primitives, &g_accept,
-	                              g_staged, TEST_IMAGE_BYTES,
+	                              NULL, g_staged, TEST_IMAGE_BYTES,
 	                              g_old_digest) == AIUS_OTA_INVALID_ARG);
 	CHECK(aius_ota_activate_begin(&activator, &session, NULL, &g_accept,
-	                              g_staged, TEST_IMAGE_BYTES,
+	                              NULL, g_staged, TEST_IMAGE_BYTES,
 	                              g_old_digest) == AIUS_OTA_INVALID_ARG);
 	/* No verifier is never treated as an accepting one. */
 	CHECK(aius_ota_activate_begin(&activator, &session, &primitives, NULL,
-	                              g_staged, TEST_IMAGE_BYTES,
+	                              NULL, g_staged, TEST_IMAGE_BYTES,
 	                              g_old_digest) == AIUS_OTA_INVALID_ARG);
 	/* No staged view: there is nothing to program from or verify. */
 	CHECK(aius_ota_activate_begin(&activator, &session, &primitives,
-	                              &g_accept, NULL, TEST_IMAGE_BYTES,
+	                              &g_accept, NULL, NULL, TEST_IMAGE_BYTES,
 	                              g_old_digest) == AIUS_OTA_INVALID_ARG);
 	CHECK(aius_ota_activate_begin(&activator, &session, &primitives,
-	                              &g_accept, g_staged, TEST_IMAGE_BYTES,
+	                              &g_accept, NULL, g_staged,
+	                              TEST_IMAGE_BYTES,
 	                              NULL) == AIUS_OTA_INVALID_ARG);
 	/* A refused begin leaves an activator that refuses everything. */
 	CHECK(aius_ota_activate_phase(&activator) == AIUS_OTA_ACTIVATE_IDLE);
@@ -1299,7 +1319,7 @@ static void test_begin_preconditions(void)
 	/* A caller-declared staged length that is not the image length would
 	 * program past the staged view or leave the image short: STATE. */
 	CHECK(aius_ota_activate_begin(&activator, &session, &primitives,
-	                              &g_accept, g_staged,
+	                              &g_accept, NULL, g_staged,
 	                              TEST_IMAGE_BYTES - 1u,
 	                              g_old_digest) == AIUS_OTA_STATE);
 	CHECK(g_dev.ops == 0u);
@@ -1413,6 +1433,218 @@ static void test_abandon_activation_is_the_only_exit(void)
 	CHECK(aius_ota_offer(&session, wire, sizeof(wire)) == AIUS_OTA_OK);
 }
 
+/* -------------------------------------------------------------------------
+ * The rehearsal window
+ *
+ * The 2026-08-01 incident's re-proof runs the FULL sequence against a scratch
+ * flash window with the real primitives and an emulated reset
+ * (aius-ota-upgrade.md §Incident 2026-08-01). These groups prove the window
+ * mechanics that rehearsal stands on: a shifted window runs the identical
+ * ordering contract at its own base, never emits an address below that base,
+ * and a bad head STILL halts -- while a malformed window never begins at all.
+ * ---------------------------------------------------------------------- */
+
+/* The same relation the composition uses: the scratch region 4 MiB into the
+ * flash, far above any plausible image. */
+#define TEST_SCRATCH_BASE (AIUS_OTA_FLASH_BASE + UINT32_C(0x00400000))
+
+static void test_window_validity(void)
+{
+	AiusOtaActivateWindow window;
+
+	current_key = "window.validity";
+	CHECK(aius_ota_activate_check_window(NULL) == AIUS_OTA_OK);
+	window.base = AIUS_OTA_FLASH_BASE;
+	window.usable_bytes = AIUS_OTA_FLASH_USABLE_BYTES;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_OK);
+	window.base = TEST_SCRATCH_BASE;
+	window.usable_bytes = FAKE_FLASH_BYTES;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_OK);
+
+	/* Off the physical sector grid: check_span's one-sector rule would no
+	 * longer be congruent with the part's real boundaries. */
+	window.base = TEST_SCRATCH_BASE + 1u;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_GEOMETRY);
+	window.base = AIUS_OTA_FLASH_BASE - AIUS_OTA_FLASH_SECTOR_BYTES;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_GEOMETRY);
+	window.base = TEST_SCRATCH_BASE;
+	window.usable_bytes = 0u;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_GEOMETRY);
+	window.usable_bytes = FAKE_FLASH_BYTES + 1u;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_GEOMETRY);
+	/* A window that would run past the physical usable region. */
+	window.usable_bytes = AIUS_OTA_FLASH_USABLE_BYTES;
+	CHECK(aius_ota_activate_check_window(&window) == AIUS_OTA_GEOMETRY);
+
+	current_key = "window.image-length";
+	window.usable_bytes = FAKE_FLASH_BYTES;
+	CHECK(aius_ota_activate_check_image_length_in(&window,
+	                                              TEST_IMAGE_BYTES) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_activate_check_image_length_in(&window,
+	                                              FAKE_FLASH_BYTES) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_activate_check_image_length_in(
+		      &window, FAKE_FLASH_BYTES + 1u) == AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_check_image_length_in(NULL,
+	                                              FAKE_FLASH_BYTES + 1u) ==
+	      AIUS_OTA_OK); /* NULL is the boot window, not the scratch one */
+}
+
+static void test_window_bounds_exclude_everything_below_base(void)
+{
+	AiusOtaActivateWindow window;
+
+	current_key = "window.bounds";
+	window.base = TEST_SCRATCH_BASE;
+	window.usable_bytes = FAKE_FLASH_BYTES;
+
+	CHECK(aius_ota_activate_check_erase_in(&window, TEST_SCRATCH_BASE) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_activate_check_span_in(&window, TEST_SCRATCH_BASE,
+	                                      AIUS_OTA_ACTIVATE_CHUNK_BYTES) ==
+	      AIUS_OTA_OK);
+
+	/* THE PROPERTY REHEARSAL STANDS ON: the boot region -- every one of its
+	 * sectors a perfectly valid boot-window address -- is GEOMETRY through a
+	 * scratch window, so a rehearsal structurally cannot touch it. */
+	CHECK(aius_ota_activate_check_erase_in(&window, AIUS_OTA_FLASH_BASE) ==
+	      AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_check_erase_in(
+		      &window,
+		      TEST_SCRATCH_BASE - AIUS_OTA_FLASH_SECTOR_BYTES) ==
+	      AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_check_span_in(&window, AIUS_OTA_FLASH_BASE,
+	                                      1u) == AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_check_span_in(&window, TEST_SCRATCH_BASE - 1u,
+	                                      1u) == AIUS_OTA_GEOMETRY);
+
+	/* And nothing past its top, either. */
+	CHECK(aius_ota_activate_check_erase_in(
+		      &window, TEST_SCRATCH_BASE + FAKE_FLASH_BYTES) ==
+	      AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_check_span_in(
+		      &window, TEST_SCRATCH_BASE + FAKE_FLASH_BYTES - 128u,
+		      256u) == AIUS_OTA_GEOMETRY);
+	/* One sector, still: the rule holds at the shifted base. */
+	CHECK(aius_ota_activate_check_span_in(
+		      &window, TEST_SCRATCH_BASE + 3840u, 256u) == AIUS_OTA_OK);
+	CHECK(aius_ota_activate_check_span_in(
+		      &window, TEST_SCRATCH_BASE + 3841u, 256u) ==
+	      AIUS_OTA_GEOMETRY);
+}
+
+static void test_windowed_run_is_the_same_sequence_shifted(void)
+{
+	AiusOtaSession session;
+	AiusOtaActivator activator;
+	AiusOtaActivatePrimitives primitives;
+	AiusOtaActivateProgress progress;
+	uint32_t index;
+
+	current_key = "window.run";
+	device_reset(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+	g_dev.base = TEST_SCRATCH_BASE;
+	primitives = primitives_over(&g_dev);
+	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
+
+	CHECK(begin_over(&activator, &session, &primitives, TEST_IMAGE_BYTES,
+	                 g_old_digest) == AIUS_OTA_OK);
+	CHECK(aius_ota_activate_run(&activator) == AIUS_OTA_OK);
+	CHECK(aius_ota_activate_phase(&activator) ==
+	      AIUS_OTA_ACTIVATE_READY_TO_RESET);
+
+	/* The identical contract, shifted: contents, erase order, head last,
+	 * feed cadence, exact step count. */
+	CHECK(aius_ota_activate_progress(&activator, &progress) == AIUS_OTA_OK);
+	CHECK(progress.steps_total == 55u);
+	CHECK(progress.steps_taken == 55u);
+	CHECK(progress.programmed_bytes == TEST_IMAGE_BYTES);
+	CHECK(progress.verified_bytes == TEST_IMAGE_BYTES);
+	assert_flash_holds_image(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+	assert_erase_order(&g_dev, 4u);
+	assert_head_programmed_last(&g_dev);
+	assert_feed_cadence(&g_dev);
+
+	/* No operation in the whole trace names an address below the window
+	 * base: the boot region was never spoken to, which is the rehearsal's
+	 * entire safety argument. */
+	for (index = 0u; index < g_dev.ops; index++) {
+		const Op *op = &g_dev.trace[index];
+		if (op->kind != OP_ERASE && op->kind != OP_PROGRAM &&
+		    op->kind != OP_FLASH_READ)
+			continue;
+		CHECK(op->address >= TEST_SCRATCH_BASE);
+	}
+}
+
+static void test_windowed_head_compare_still_halts(void)
+{
+	AiusOtaSession session;
+	AiusOtaActivator activator;
+	AiusOtaActivatePrimitives primitives;
+	AiusOtaActivateProgress progress;
+	uint32_t ops_at_halt;
+
+	current_key = "window.head-compare-halts";
+	device_reset(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+	g_dev.base = TEST_SCRATCH_BASE;
+	g_dev.strict_program = false;
+	g_dev.corrupt_enabled = true;
+	g_dev.corrupt_offset = 100u; /* inside the head, programmed last */
+	primitives = primitives_over(&g_dev);
+	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
+
+	CHECK(begin_over(&activator, &session, &primitives, TEST_IMAGE_BYTES,
+	                 g_old_digest) == AIUS_OTA_OK);
+	/* The incident's demanded assertion, host-side: a head that reads back
+	 * wrong HALTS -- run() reports the fault and the phase is FAULTED, never
+	 * READY_TO_RESET, and not one further primitive runs. */
+	CHECK(aius_ota_activate_run(&activator) == AIUS_OTA_VERIFY);
+	ops_at_halt = g_dev.ops;
+	CHECK(aius_ota_activate_phase(&activator) == AIUS_OTA_ACTIVATE_FAULTED);
+	CHECK(aius_ota_activate_progress(&activator, &progress) == AIUS_OTA_OK);
+	CHECK(progress.fault == AIUS_OTA_ACTIVATE_FAULT_VERIFY);
+	CHECK(aius_ota_activate_step(&activator) == AIUS_OTA_STATE);
+	CHECK(aius_ota_activate_run(&activator) == AIUS_OTA_STATE);
+	CHECK(g_dev.ops == ops_at_halt);
+}
+
+static void test_windowed_begin_refuses_a_malformed_window(void)
+{
+	AiusOtaSession session;
+	AiusOtaActivator activator;
+	AiusOtaActivatePrimitives primitives;
+	AiusOtaActivateWindow window;
+
+	current_key = "window.malformed-refusals";
+	device_reset(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+	primitives = primitives_over(&g_dev);
+	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
+
+	/* Rule 4b: the caller's configuration error leaves the activator IDLE
+	 * -- no verdict about the image was reached, no device op ran. */
+	window.base = TEST_SCRATCH_BASE + 1u;
+	window.usable_bytes = FAKE_FLASH_BYTES;
+	CHECK(aius_ota_activate_begin(&activator, &session, &primitives,
+	                              &g_accept, &window, g_staged,
+	                              TEST_IMAGE_BYTES,
+	                              g_old_digest) == AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_phase(&activator) == AIUS_OTA_ACTIVATE_IDLE);
+	CHECK(g_dev.ops == 0u);
+
+	/* An image longer than the window's usable region is rule 5's verdict:
+	 * FAULTED, latched, still nothing run. */
+	window.base = TEST_SCRATCH_BASE;
+	window.usable_bytes = AIUS_OTA_FLASH_SECTOR_BYTES * 2u;
+	CHECK(aius_ota_activate_begin(&activator, &session, &primitives,
+	                              &g_accept, &window, g_staged,
+	                              TEST_IMAGE_BYTES,
+	                              g_old_digest) == AIUS_OTA_GEOMETRY);
+	CHECK(aius_ota_activate_phase(&activator) == AIUS_OTA_ACTIVATE_FAULTED);
+	CHECK(g_dev.ops == 0u);
+}
+
 int main(void)
 {
 	fill_pattern(g_new_image, TEST_IMAGE_BYTES, 0x11u);
@@ -1436,6 +1668,11 @@ int main(void)
 	test_begin_refuses_an_image_the_geometry_forbids();
 	test_session_withdrawn_mid_window();
 	test_abandon_activation_is_the_only_exit();
+	test_window_validity();
+	test_window_bounds_exclude_everything_below_base();
+	test_windowed_run_is_the_same_sequence_shifted();
+	test_windowed_head_compare_still_halts();
+	test_windowed_begin_refuses_a_malformed_window();
 	puts("ota activation tests passed");
 	return 0;
 }

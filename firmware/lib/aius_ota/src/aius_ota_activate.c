@@ -108,32 +108,110 @@ static FLASHMEM uint32_t chunks_of(uint32_t bytes)
 /* --------------------------------------------------------------------------
  * Geometry
  *
- * check_erase / check_span are FASTRUN: the step path calls them before every
- * primitive, and the composition's RAM-resident wrapper re-checks through them
- * too, so they must execute while the flash is mid-erase. check_image_length is
- * pre-window only (begin and step_bound), so it stays FLASHMEM.
+ * check_erase_in / check_span_in are FASTRUN: the step path calls them before
+ * every primitive, and the composition's RAM-resident wrapper re-checks
+ * through them too, so they must execute while the flash is mid-erase. The
+ * NULL-window resolution is a FASTRUN leaf for the same reason. The window
+ * and image-length checks are pre-window only (begin and step_bound), so they
+ * stay FLASHMEM.
  * ------------------------------------------------------------------------ */
+
+/* NULL spells the boot window. A static const would be a FLASH read from a
+ * FASTRUN path on the target, so the constants are materialized by value. */
+static FASTRUN AiusOtaActivateWindow resolve_window(
+	const AiusOtaActivateWindow *window)
+{
+	AiusOtaActivateWindow resolved;
+
+	if (window != NULL)
+		return *window;
+	resolved.base = AIUS_OTA_FLASH_BASE;
+	resolved.usable_bytes = AIUS_OTA_FLASH_USABLE_BYTES;
+	return resolved;
+}
+
+FLASHMEM AiusOtaStatus aius_ota_activate_check_window(
+	const AiusOtaActivateWindow *window)
+{
+	uint32_t offset;
+
+	if (window == NULL)
+		return AIUS_OTA_OK;
+	if (window->base < AIUS_OTA_FLASH_BASE)
+		return AIUS_OTA_GEOMETRY;
+	offset = window->base - AIUS_OTA_FLASH_BASE;
+	/* The physical sector grid, not merely internal alignment: check_span's
+	 * one-sector rule divides from the window base, and only a grid-pinned
+	 * base keeps that congruent with the part's real sector boundaries. */
+	if (offset % AIUS_OTA_FLASH_SECTOR_BYTES != 0u)
+		return AIUS_OTA_GEOMETRY;
+	if (window->usable_bytes == 0u ||
+	    window->usable_bytes % AIUS_OTA_FLASH_SECTOR_BYTES != 0u)
+		return AIUS_OTA_GEOMETRY;
+	if (offset >= AIUS_OTA_FLASH_USABLE_BYTES ||
+	    window->usable_bytes > AIUS_OTA_FLASH_USABLE_BYTES - offset)
+		return AIUS_OTA_GEOMETRY;
+	return AIUS_OTA_OK;
+}
+
+FLASHMEM AiusOtaStatus aius_ota_activate_check_image_length_in(
+	const AiusOtaActivateWindow *window, uint32_t image_length)
+{
+	AiusOtaActivateWindow resolved = resolve_window(window);
+
+	if (image_length < AIUS_OTA_ACTIVATE_MIN_IMAGE_BYTES)
+		return AIUS_OTA_GEOMETRY;
+	if (image_length > resolved.usable_bytes)
+		return AIUS_OTA_GEOMETRY;
+	return AIUS_OTA_OK;
+}
 
 FLASHMEM AiusOtaStatus aius_ota_activate_check_image_length(
 	uint32_t image_length)
 {
-	if (image_length < AIUS_OTA_ACTIVATE_MIN_IMAGE_BYTES)
+	return aius_ota_activate_check_image_length_in(NULL, image_length);
+}
+
+FASTRUN AiusOtaStatus aius_ota_activate_check_erase_in(
+	const AiusOtaActivateWindow *window, uint32_t address)
+{
+	AiusOtaActivateWindow resolved = resolve_window(window);
+	uint32_t offset;
+
+	if (address < resolved.base)
 		return AIUS_OTA_GEOMETRY;
-	if (image_length > AIUS_OTA_FLASH_USABLE_BYTES)
+	offset = address - resolved.base;
+	if (offset % AIUS_OTA_FLASH_SECTOR_BYTES != 0u)
+		return AIUS_OTA_GEOMETRY;
+	if (offset >= resolved.usable_bytes)
 		return AIUS_OTA_GEOMETRY;
 	return AIUS_OTA_OK;
 }
 
 FASTRUN AiusOtaStatus aius_ota_activate_check_erase(uint32_t address)
 {
+	return aius_ota_activate_check_erase_in(NULL, address);
+}
+
+FASTRUN AiusOtaStatus aius_ota_activate_check_span_in(
+	const AiusOtaActivateWindow *window, uint32_t address, uint32_t length)
+{
+	AiusOtaActivateWindow resolved = resolve_window(window);
 	uint32_t offset;
 
-	if (address < AIUS_OTA_FLASH_BASE)
+	if (length == 0u || length > AIUS_OTA_ACTIVATE_CHUNK_BYTES)
+		return AIUS_OTA_INVALID_ARG;
+	if (address < resolved.base)
 		return AIUS_OTA_GEOMETRY;
-	offset = address - AIUS_OTA_FLASH_BASE;
-	if (offset % AIUS_OTA_FLASH_SECTOR_BYTES != 0u)
+	offset = address - resolved.base;
+	if (offset >= resolved.usable_bytes ||
+	    length > resolved.usable_bytes - offset)
 		return AIUS_OTA_GEOMETRY;
-	if (offset >= AIUS_OTA_FLASH_USABLE_BYTES)
+	/* One sector, always. The driver behind this would happily straddle two
+	 * and the part would wrap the write inside a page. Congruent with the
+	 * physical grid because check_window pins the base to it. */
+	if ((offset % AIUS_OTA_FLASH_SECTOR_BYTES) + length >
+	    AIUS_OTA_FLASH_SECTOR_BYTES)
 		return AIUS_OTA_GEOMETRY;
 	return AIUS_OTA_OK;
 }
@@ -141,22 +219,7 @@ FASTRUN AiusOtaStatus aius_ota_activate_check_erase(uint32_t address)
 FASTRUN AiusOtaStatus aius_ota_activate_check_span(uint32_t address,
 	                                           uint32_t length)
 {
-	uint32_t offset;
-
-	if (length == 0u || length > AIUS_OTA_ACTIVATE_CHUNK_BYTES)
-		return AIUS_OTA_INVALID_ARG;
-	if (address < AIUS_OTA_FLASH_BASE)
-		return AIUS_OTA_GEOMETRY;
-	offset = address - AIUS_OTA_FLASH_BASE;
-	if (offset >= AIUS_OTA_FLASH_USABLE_BYTES ||
-	    length > AIUS_OTA_FLASH_USABLE_BYTES - offset)
-		return AIUS_OTA_GEOMETRY;
-	/* One sector, always. The driver behind this would happily straddle two
-	 * and the part would wrap the write inside a page. */
-	if ((offset % AIUS_OTA_FLASH_SECTOR_BYTES) + length >
-	    AIUS_OTA_FLASH_SECTOR_BYTES)
-		return AIUS_OTA_GEOMETRY;
-	return AIUS_OTA_OK;
+	return aius_ota_activate_check_span_in(NULL, address, length);
 }
 
 FLASHMEM uint32_t aius_ota_activate_step_bound(uint32_t image_length)
@@ -204,7 +267,8 @@ static FASTRUN void feed(AiusOtaActivator *activator)
 static FASTRUN AiusOtaStatus do_erase(AiusOtaActivator *activator,
 	                              uint32_t address)
 {
-	AiusOtaStatus status = aius_ota_activate_check_erase(address);
+	AiusOtaStatus status =
+		aius_ota_activate_check_erase_in(&activator->window, address);
 	int fault;
 
 	if (status != AIUS_OTA_OK)
@@ -226,7 +290,8 @@ static FASTRUN AiusOtaStatus do_program(AiusOtaActivator *activator,
 	                                uint32_t address, const uint8_t *data,
 	                                uint32_t length)
 {
-	AiusOtaStatus status = aius_ota_activate_check_span(address, length);
+	AiusOtaStatus status = aius_ota_activate_check_span_in(
+		&activator->window, address, length);
 	int fault;
 
 	if (status != AIUS_OTA_OK)
@@ -247,7 +312,8 @@ static FASTRUN AiusOtaStatus do_program(AiusOtaActivator *activator,
 static FASTRUN AiusOtaStatus do_flash_read(AiusOtaActivator *activator,
 	                                   uint32_t address, uint32_t length)
 {
-	AiusOtaStatus status = aius_ota_activate_check_span(address, length);
+	AiusOtaStatus status = aius_ota_activate_check_span_in(
+		&activator->window, address, length);
 	int fault;
 
 	if (status != AIUS_OTA_OK)
@@ -294,11 +360,12 @@ static FASTRUN AiusOtaStatus program_and_compare(AiusOtaActivator *activator,
 	const uint8_t *source = activator->staged + offset;
 	AiusOtaStatus status;
 
-	status = do_program(activator, AIUS_OTA_FLASH_BASE + offset, source,
+	status = do_program(activator, activator->window.base + offset, source,
 	                    length);
 	if (status != AIUS_OTA_OK)
 		return status;
-	status = do_flash_read(activator, AIUS_OTA_FLASH_BASE + offset, length);
+	status = do_flash_read(activator, activator->window.base + offset,
+	                       length);
 	if (status != AIUS_OTA_OK)
 		return status;
 	if (blocks_differ(source, activator->readback, length))
@@ -329,7 +396,7 @@ static FASTRUN AiusOtaStatus program_and_compare(AiusOtaActivator *activator,
  * accident. */
 static FASTRUN AiusOtaStatus step_erase_head(AiusOtaActivator *activator)
 {
-	AiusOtaStatus status = do_erase(activator, AIUS_OTA_FLASH_BASE);
+	AiusOtaStatus status = do_erase(activator, activator->window.base);
 
 	if (status != AIUS_OTA_OK)
 		return status;
@@ -351,7 +418,7 @@ static FASTRUN AiusOtaStatus step_body(AiusOtaActivator *activator)
 
 	if (activator->erase_pending) {
 		status = do_erase(activator,
-		                  AIUS_OTA_FLASH_BASE + activator->cursor);
+		                  activator->window.base + activator->cursor);
 		if (status != AIUS_OTA_OK)
 			return status;
 		activator->erase_pending = false;
@@ -496,6 +563,7 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	AiusOtaActivator *activator, AiusOtaSession *session,
 	const AiusOtaActivatePrimitives *primitives,
 	const AiusOtaVerifier *verifier,
+	const AiusOtaActivateWindow *window,
 	const uint8_t *staged, uint32_t staged_length,
 	const uint8_t running_digest[AIUS_OTA_DIGEST_BYTES])
 {
@@ -534,10 +602,17 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	    staged_length != progress.image_length)
 		return AIUS_OTA_STATE;
 
+	/* Rule 4b: a malformed window is the caller's configuration error, not
+	 * a verdict about the image -- the activator stays IDLE. */
+	status = aius_ota_activate_check_window(window);
+	if (status != AIUS_OTA_OK)
+		return status;
+
 	/* From here the refusals are verdicts about this image on this board, so
 	 * they latch a typed fault rather than just returning. */
 	activator->session = session;
 	activator->primitives = *primitives;
+	activator->window = resolve_window(window);
 	activator->staged = staged;
 	activator->image_length = progress.image_length;
 	activator->steps_total =
@@ -545,7 +620,8 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	memcpy(activator->image_digest, session->header.payload_digest,
 	       AIUS_OTA_DIGEST_BYTES);
 
-	status = aius_ota_activate_check_image_length(progress.image_length);
+	status = aius_ota_activate_check_image_length_in(
+		&activator->window, progress.image_length);
 	if (status != AIUS_OTA_OK)
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_GEOMETRY,
 		            status);

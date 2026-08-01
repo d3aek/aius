@@ -139,6 +139,32 @@ extern "C" {
 #define AIUS_OTA_ACTIVATE_MAX_OPS_PER_FEED 1u
 
 /* --------------------------------------------------------------------------
+ * The flash window
+ *
+ * WHERE this activation programs. The boot window -- base AIUS_OTA_FLASH_BASE,
+ * usable AIUS_OTA_FLASH_USABLE_BYTES -- is what a real activation uses, and a
+ * NULL window everywhere below means exactly it. A REHEARSAL window points the
+ * SAME sequence -- head erased first, body erase+program+compare, head
+ * programmed last -- at a scratch region far above the running image, so the
+ * full order can run on hardware with the real primitives and an emulated
+ * reset without risking the boot region. That rehearsal is the re-proof the
+ * 2026-08-01 incident demands (aius-ota-upgrade.md §Incident 2026-08-01)
+ * before the activate route may be re-enabled.
+ *
+ * A window is only ever a SUB-RANGE of the physical usable region, pinned to
+ * the same physical sector grid: base sector-aligned relative to
+ * AIUS_OTA_FLASH_BASE, usable_bytes a non-zero whole number of sectors, the
+ * whole span inside [AIUS_OTA_FLASH_BASE, +AIUS_OTA_FLASH_USABLE_BYTES). That
+ * grid pinning is what keeps check_span's one-sector rule meaningful under a
+ * shifted base. aius_ota_activate_check_window() is the arbiter.
+ * ------------------------------------------------------------------------ */
+
+typedef struct {
+	uint32_t base;         /* absolute flash address, sector-aligned */
+	uint32_t usable_bytes; /* non-zero whole sectors, inside the physical region */
+} AiusOtaActivateWindow;
+
+/* --------------------------------------------------------------------------
  * Injected primitives
  *
  * The staged image is NOT among them: it is a linear byte view (a base pointer
@@ -294,6 +320,11 @@ typedef struct {
 	 * is still the one that authorized this activation. */
 	AiusOtaSession *session;
 	AiusOtaActivatePrimitives primitives;
+	/* The window begin() resolved: the boot window for a real activation, a
+	 * scratch window for a rehearsal. Every address this activation erases,
+	 * programs or reads back lies inside it -- the in-window checks bound
+	 * against THIS, not the compile constants. */
+	AiusOtaActivateWindow window;
 	AiusOtaHealth health;
 	/* The staged image, a linear byte view the caller owns (a PSRAM copy on
 	 * the target). Borrowed for the life of the activation; read with plain
@@ -330,6 +361,10 @@ typedef struct {
  * asks for nothing new. All-zero spells "unknown", which is fail-closed for the
  * resume refusal below.
  *
+ * `window` names WHERE this activation programs: NULL is the boot window (a
+ * real activation), a rehearsal passes its scratch window. See
+ * AiusOtaActivateWindow above.
+ *
  * The rules, in the order applied:
  *
  *   1. activator/session/primitives/verifier/verify/staged/running_digest
@@ -338,7 +373,8 @@ typedef struct {
  *   3. session state == ACTIVATION_REQUESTED ...................... STATE
  *   4. session staged_length == image_length, and the caller's
  *      staged_length equals it too .............................. STATE
- *   5. image_length in [MIN_IMAGE_BYTES, FLASH_USABLE_BYTES] ... GEOMETRY
+ *   4b. the window (when given) passes check_window() .......... GEOMETRY
+ *   5. image_length in [MIN_IMAGE_BYTES, window usable_bytes] .. GEOMETRY
  *   6. the armed header's payload_digest is not all-zero ...... MALFORMED
  *   7. health_read() succeeds ................................. PRIMITIVE
  *   8. no prior activation of THIS image is recorded in
@@ -346,11 +382,12 @@ typedef struct {
  *   9. SHA-256(staged) == the armed payload_digest ............... DIGEST
  *  10. the verifier accepts the header's authentication digest . SIGNATURE
  *
- * Rules 1-4 leave the activator IDLE: they are the caller's error or the
- * session's, nothing about this image was judged. Rules 5-10 leave it FAULTED
- * with a typed fault: this image cannot be activated on this board, and that
- * is a verdict worth latching. Only after rule 10 passes is the health mark
- * written and the phase advanced to ERASE_HEAD.
+ * Rules 1-4b leave the activator IDLE: they are the caller's error or the
+ * session's, nothing about this image was judged -- a malformed window is the
+ * caller's configuration, not a verdict about the image. Rules 5-10 leave it
+ * FAULTED with a typed fault: this image cannot be activated on this board,
+ * and that is a verdict worth latching. Only after rule 10 passes is the
+ * health mark written and the phase advanced to ERASE_HEAD.
  *
  * RULE 8 IS THE POWER-LOSS INTERLOCK, and it is why `running_digest` is
  * required. The health record is marked before the first erase, so a record
@@ -370,6 +407,7 @@ AiusOtaStatus aius_ota_activate_begin(
 	AiusOtaActivator *activator, AiusOtaSession *session,
 	const AiusOtaActivatePrimitives *primitives,
 	const AiusOtaVerifier *verifier,
+	const AiusOtaActivateWindow *window,
 	const uint8_t *staged, uint32_t staged_length,
 	const uint8_t running_digest[AIUS_OTA_DIGEST_BYTES]);
 
@@ -426,25 +464,46 @@ AiusOtaStatus aius_ota_activate_progress(const AiusOtaActivator *activator,
  * Zero for a length the geometry refuses. */
 uint32_t aius_ota_activate_step_bound(uint32_t image_length);
 
-/* THE BOUNDS THE SHIPPED DRIVER DOES NOT HAVE. Both are pure, published and
- * RAM-resident: the sequencer routes every primitive call through them, and the
- * composition's RAM-resident wrapper should re-check at its own boundary,
- * because the driver behind it masks the address to 24 bits and erases whatever
- * that names. They are FASTRUN precisely so that boundary re-check is itself
- * executable while the flash is mid-erase.
+/* THE BOUNDS THE SHIPPED DRIVER DOES NOT HAVE. All pure, published and
+ * RAM-resident: the sequencer routes every primitive call through the windowed
+ * forms, and the composition's RAM-resident wrapper should re-check at its own
+ * boundary, because the driver behind it masks the address to 24 bits and
+ * erases whatever that names. They are FASTRUN precisely so that boundary
+ * re-check is itself executable while the flash is mid-erase.
  *
- * check_erase: sector-aligned, and inside [BASE, BASE + USABLE).
+ * The `_in` forms bound against `window` (NULL = the boot window); the
+ * unsuffixed forms are the boot window, verbatim -- they exist so a real
+ * activation's primitive wrapper and every pre-window caller need not spell
+ * the default. A REHEARSAL primitive wrapper re-checks through the `_in` form
+ * with its scratch window, which is what makes an address below the scratch
+ * base structurally unreachable from a rehearsal.
+ *
+ * check_erase: sector-aligned, and inside [base, base + usable_bytes).
  * check_span:  0 < length <= CHUNK_BYTES, the whole span inside ONE sector, and
- *              inside [BASE, BASE + USABLE).
+ *              inside [base, base + usable_bytes).
  *
  * GEOMETRY names an address the flash does not have or an alignment it cannot
  * accept; INVALID_ARG names a length this interface forbids. */
 AiusOtaStatus aius_ota_activate_check_erase(uint32_t address);
 AiusOtaStatus aius_ota_activate_check_span(uint32_t address, uint32_t length);
+AiusOtaStatus aius_ota_activate_check_erase_in(
+	const AiusOtaActivateWindow *window, uint32_t address);
+AiusOtaStatus aius_ota_activate_check_span_in(
+	const AiusOtaActivateWindow *window, uint32_t address, uint32_t length);
+
+/* Whether `window` is a well-formed sub-range of the physical usable region on
+ * the physical sector grid (NULL, the boot window, always is). GEOMETRY on
+ * refusal. FLASHMEM-safe concern only -- a window is judged before the dark
+ * window, never inside it. */
+AiusOtaStatus aius_ota_activate_check_window(
+	const AiusOtaActivateWindow *window);
 
 /* The image-length rule of rule 5 above, separately callable so a caller can
- * refuse an image before staging megabytes of it. */
+ * refuse an image before staging megabytes of it. The `_in` form bounds
+ * against the window's usable_bytes (NULL = the boot window). */
 AiusOtaStatus aius_ota_activate_check_image_length(uint32_t image_length);
+AiusOtaStatus aius_ota_activate_check_image_length_in(
+	const AiusOtaActivateWindow *window, uint32_t image_length);
 
 #ifdef __cplusplus
 }
