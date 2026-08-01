@@ -42,6 +42,13 @@
  * SD_STARTED. Matches AIUS_HTTP_SD_CAPACITY_MAX. */
 #define AIUS_RUNTIME_STORAGE_TRANSFER 512u
 
+/* The transfer buffer is DMA- and cache-maintenance-touched (see its alignas
+ * in AiusRuntimeStorage): its length must span whole 32-byte cache lines, or
+ * its tail shares a line with the field below and every straddled
+ * invalidation discards that neighbour's cached writes. */
+static_assert(AIUS_RUNTIME_STORAGE_TRANSFER % 32u == 0u,
+              "the SD transfer buffer must span whole cache lines");
+
 /* SD_STARTED reports this as sd_capacity, and the transaction rejects anything
  * above AIUS_HTTP_SD_CAPACITY_MAX. Keep the two in lockstep at compile time
  * rather than in a comment. */
@@ -157,7 +164,20 @@ typedef struct {
 typedef struct {
 	AiusSdJob job;
 	AiusSdTeensy target;
-	uint8_t sd_transfer[AIUS_RUNTIME_STORAGE_TRANSFER];
+	/* CACHE-LINE ISOLATED, NOT MERELY PLACED. This is the buffer every SD
+	 * action reads into and writes from, and on the target the driver's DMA
+	 * cache maintenance operates on WHOLE 32-byte lines: invalidating a
+	 * buffer whose head is not line-aligned rounds DOWN into the adapter
+	 * struct directly above -- discarding its cached (newer) field values,
+	 * which is precisely the 2026-08-01 regression: adding one pointer to
+	 * the embedded OTA seam shifted this buffer's interior offset by 8, the
+	 * straddled invalidation began eating `target`'s bookkeeping, and every
+	 * SD write turned into corrupted state, protocol faults, card retries
+	 * measured in seconds, and watchdog resets. alignas(32) pins the head
+	 * to a line boundary and 512 is a whole number of lines, so neither
+	 * neighbour ever shares a line with DMA'd bytes -- robust against any
+	 * future upstream struct growth instead of lucky about it. */
+	alignas(32) uint8_t sd_transfer[AIUS_RUNTIME_STORAGE_TRANSFER];
 	/* Accumulates a publishing job's bytes across its many bounded reads, so
 	 * one AIUS_SD_ACTION_PUBLISH_CONFIG can carry a whole model-sized file. */
 	uint8_t sd_publish[AIUS_RUNTIME_STORAGE_PUBLISH_CAPACITY];

@@ -18,14 +18,19 @@ DECODER_ARENA_BYTES = 131072
 # Regression ratchet, not the safety line. The real defect-26 guard is the
 # link-time ASSERT `_heap_end - _heap_start >= 0x20000` (128 KiB = NativeEthernet's
 # measured ~96 KiB boot mallocs plus a third headroom) in link/aius_teensy41.ld;
-# it retains 320 B of margin at this value. This ratchet only trips on a static
+# it retains 256 B of margin at this value. This ratchet only trips on a static
 # OCRAM regression below the committed baseline. Lowered from 131424 to 131392 on
 # 2026-08-01: the OTA app-dispatcher seam (`AiusOpticalAppOta ota;` in the DMAMEM
 # AiusOpticalAppDispatcher, added with the OTA route layer) costs 32 B of OCRAM,
 # consistent with the always-present recorder/replay/measure seams beside it. The
 # OTA-on image was hardware-verified to boot NativeEthernet (DHCP + HTTP) at this
-# free value, which directly proves the boot mallocs still succeed.
-COMMITTED_OCRAM_FREE_BYTES = 131392
+# free value, which directly proves the boot mallocs still succeed. Lowered again
+# to 131328 on 2026-08-01 (+64 B of deliberate alignment padding): the
+# SD-corruption regression fix pins g_runtime_storage and its interior
+# sd_transfer DMA buffer to 32-byte cache lines (aius_runtime_storage.h), so the
+# driver's cache maintenance can never straddle a neighbouring field again --
+# 64 B of padding is the price of making that placement robust instead of lucky.
+COMMITTED_OCRAM_FREE_BYTES = 131328
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"

@@ -68,21 +68,40 @@ specified here. Strike items here in the commit that closes them.
   (`tx_gate` on `/api/status`). Runs when the jacks are soldered. Its step
   5 (glass loopback re-running item 3 across real fibre) also owns the
   clock/content-ratio residue recorded in `signal-path.md` §Open.
-- **The bench SD card needs service (check on a PC, reformat, or swap)
-  before the full-size OTA end-to-end (2026-08-01).** The card (4 GB
-  FAT32, only 19 MB used) degraded across the day's OTA staging traffic
-  into repeated multi-second write stalls — longest single 512-byte
-  primitive 5.9 s — with driver faults, remounts, and at least two
-  silent WDOG resets (`reset_source` 16: an SD stall outlived the 8 s
-  watchdog and took the whole board with it, wiping the RAM session and
-  the activation latch). Reads stayed healthy throughout. Staging the
-  463 KiB signed container failed after 25 offset-0 restarts across two
-  attempts; a 64 KiB container took 5 min and 4 restarts. Everything
-  downstream of staging is proven (verify, arm, rehearsal); the full
-  signed end-to-end activation
-  ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) §Incident) is blocked on
-  a card that can absorb 463 KiB of writes without stalling past the
-  watchdog.
+- ~~**The bench SD card needs service (check on a PC, reformat, or swap)
+  before the full-size OTA end-to-end (2026-08-01).**~~ **RETRACTED the
+  same day — the card was innocent** (owner challenged the verdict;
+  the controlled A/B convicted the board's own runtime state, below).
+  Keep the card.
+
+## Open defects — runtime
+
+- **Boot-lottery epoch crawl (2026-08-01, defect open; detector shipped,
+  mechanism unpinned).** Some boots enter a degraded mode in which the
+  epoch loop runs orders of magnitude slow (measured 14–130 epochs/s
+  against the healthy ~7,800/s), which cascades into everything the
+  epoch paces: SD write "primitives" stretching to seconds (the
+  misdiagnosed "card failure": 5.9 s longest 512-byte write, driver
+  faults, remounts), HTTP crawling, audio overrun events every ~1.8 s,
+  and occasional WDOG resets (`reset_source` 16) when a stretched
+  primitive outlives the 8 s watchdog — each reset wiping the RAM OTA
+  session and activation latch. Other boots of the byte-identical image
+  are fully healthy (50 ms SD writes over the same card, same minute).
+  Evidence trail: the pre-change image A/B first misread as a firmware
+  regression, a 7-step content bisect whose every increment was healthy,
+  and finally the same image flipping healthy→degraded across a single
+  warm reboot. What is ruled out: the card (A/B clean), capacity (4 GB /
+  19 MB used), CPU temp (54 °C), any specific code change (bisect), and
+  pure flash-layout shifts (probe builds). Detector shipped with the
+  activation-fix commit: `checkpoint_walltime_us` on `/api/status` (11
+  per-checkpoint wall-time maxima) and `cw=<id>:<µs>` on `AIUS ID`, so
+  a crawling board names its stall over CDC even with HTTP collapsed.
+  **Bench protocol until pinned: after any boot, read the epoch rate
+  (two `AIUS ID` samples) before timing-sensitive work; a degraded boot
+  is cured by rebooting until healthy.** Suspects for the real
+  investigation: a boot-time race in network/audio bring-up leaving a
+  service in a degraded steady state; instrument via the new vector on
+  a degraded boot.
 
 ## Recorded debt — small, none blocking
 

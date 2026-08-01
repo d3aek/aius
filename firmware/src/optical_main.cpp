@@ -168,9 +168,17 @@ static byte g_mac[] = {0x02, 0x41, 0x49, 0x55, 0x01, 0x01};
  * exactly as the plain declaration did (File's constructor runs, the rest is
  * left to aius_runtime_teensy_construct(), which initializes every member it
  * reads) and registers nothing. */
-DMAMEM static uint8_t g_runtime_storage[sizeof(AiusRuntimeTeensy)];
+/* alignas(32) ON THE ARRAY, because the old comment's premise was false:
+ * DMAMEM aligns the SECTION, not each object in it, and this array measured
+ * 24 mod 32 on the linked image -- so the runtime's interior DMA buffer
+ * (AiusRuntimeStorage.sd_transfer, itself alignas(32) since the 2026-08-01
+ * SD-corruption regression) would land off-line again without this. The
+ * static_assert direction flips to match: the storage must satisfy the
+ * type's alignment, which the interior alignas now raises to 32. */
+alignas(32) DMAMEM static uint8_t g_runtime_storage[sizeof(AiusRuntimeTeensy)];
 static_assert(alignof(AiusRuntimeTeensy) <= 32u,
-	"DMAMEM aligns to 32 bytes; a stricter runtime alignment needs its own");
+	"g_runtime_storage is aligned to 32; a stricter runtime alignment "
+	"needs the array's alignas raised with it");
 static AiusRuntimeTeensy &g_runtime =
 	*::new (static_cast<void *>(g_runtime_storage)) AiusRuntimeTeensy;
 
@@ -806,6 +814,19 @@ static uint8_t g_last_state;
 static bool g_test_running;
 static volatile uint32_t g_network_drops;
 static volatile uint32_t g_network_budget_overruns;
+/* Per-checkpoint wall-time maxima, µs, served as `cw=` on AIUS ID. cw[i] is
+ * the longest interval ever observed from checkpoint i's ledger commit to the
+ * next checkpoint's -- i.e. the worst case of the service that runs AFTER
+ * checkpoint i. Lifetime maxima, deliberately: the reader is a bench operator
+ * asking "which service stalls", and the 2026-08-01 layout investigation is
+ * the motivating incident -- an image whose epoch loop crawled ~500x slower
+ * purely as a function of its exact flash layout, invisible to every existing
+ * counter until this probe named the stall. CDC-served so a board whose HTTP
+ * has collapsed under the crawl still answers. */
+static uint32_t g_ckpt_prev_cycles;
+static uint16_t g_ckpt_prev_id = 15u;
+static uint32_t g_ckpt_max_us[16];
+
 /* The HTTP checkpoint's wall-clock overruns, measured by platform_checkpoint()
  * between the HTTP stamp and the UDP checkpoint's arrival -- the scheduler
  * calls the checkpoint hook immediately before each service, so that interval
@@ -3845,6 +3866,23 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	 * body the way a re-derived live value could. */
 	if (!http_boot_fuse_json((char *)body, capacity, &length))
 		return 0;
+	/* The full per-checkpoint wall-time maxima vector (µs); CDC's `cw=`
+	 * carries only the worst pair on its bounded budget. */
+	if (!http_json_append((char *)body, capacity, &length,
+	                      ",\"checkpoint_walltime_us\":[%lu,%lu,%lu,%lu,"
+	                      "%lu,%lu,%lu,%lu,%lu,%lu,%lu]",
+	                      (unsigned long)g_ckpt_max_us[0],
+	                      (unsigned long)g_ckpt_max_us[1],
+	                      (unsigned long)g_ckpt_max_us[2],
+	                      (unsigned long)g_ckpt_max_us[3],
+	                      (unsigned long)g_ckpt_max_us[4],
+	                      (unsigned long)g_ckpt_max_us[5],
+	                      (unsigned long)g_ckpt_max_us[6],
+	                      (unsigned long)g_ckpt_max_us[7],
+	                      (unsigned long)g_ckpt_max_us[8],
+	                      (unsigned long)g_ckpt_max_us[9],
+	                      (unsigned long)g_ckpt_max_us[10]))
+		return 0;
 #if AIUS_OTA
 	/* The staged-upgrade snapshot, beside the other diag objects rather than on
 	 * a second route: it is read alongside boot_generation and recovery_safe,
@@ -4365,8 +4403,18 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 	 * PREVIOUS boot's FIRST aborting checkpoint (254 = none, 255 = latch
 	 * invalid) -- the fields a recovery-safe board most needs to explain
 	 * itself. */
+	/* `cw=` carries only the WORST offender on the bounded USB budget --
+	 * the full vector rides /api/status, but the one question a crawling
+	 * board must still answer over CDC is "which checkpoint stalls". */
+	uint16_t worst_id = 0u;
+	uint32_t worst_us = 0u;
+	for (uint16_t i = 0u; i < 11u; ++i)
+		if (g_ckpt_max_us[i] > worst_us) {
+			worst_us = g_ckpt_max_us[i];
+			worst_id = i;
+		}
 	int written = snprintf(payload, capacity,
-		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu ps=%u pv=%u fa=%u",
+		"protocol=1 revision=%s build=%s mode=optical ip=%u.%u.%u.%u rsafe=%u nstate=%u nfault=%u ckpt=%u early=%u ngen=%lu bgen=%lu rsrc=%lu epoch=%lu nrst=%lu ps=%u pv=%u fa=%u cw=%u:%lu",
 		AIUS_BUILD_GIT_REV, AIUS_BUILD_UTC,
 		address[0], address[1], address[2], address[3],
 		recovery.recovery_safe ? 1u : 0u,
@@ -4381,7 +4429,8 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 		(unsigned long)recovery.network_restarts,
 		(unsigned)external_psram_size,
 		(unsigned)g_prev_boot_checkpoint,
-		(unsigned)g_prev_first_abort);
+		(unsigned)g_prev_first_abort,
+		(unsigned)worst_id, (unsigned long)worst_us);
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
 }
 
@@ -6441,6 +6490,18 @@ static FLASHMEM bool platform_audio(void *, const AiusRuntimeBudget *budget,
  * would be incapable of failing and that proof would be vacuous. */
 static FLASHMEM void platform_checkpoint(void *, uint16_t checkpoint)
 {
+	/* The `cw=` probe: attribute the just-finished interval to the
+	 * checkpoint that opened it. DWT differences, so a wrap is arithmetic
+	 * rather than a lie. */
+	{
+		const uint32_t now_cycles = ARM_DWT_CYCCNT;
+		const uint32_t us = (now_cycles - g_ckpt_prev_cycles) /
+			(F_CPU_ACTUAL / 1000000u);
+		if (g_ckpt_prev_id < 16u && us > g_ckpt_max_us[g_ckpt_prev_id])
+			g_ckpt_max_us[g_ckpt_prev_id] = us;
+		g_ckpt_prev_cycles = now_cycles;
+		g_ckpt_prev_id = checkpoint < 16u ? checkpoint : 15u;
+	}
 	/* Close the HTTP measurement before this checkpoint's own ledger
 	 * commit joins the interval; open it after the HTTP commit for the
 	 * same reason. Recovery-safe epochs run neither checkpoint, and an

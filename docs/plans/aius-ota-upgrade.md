@@ -586,15 +586,16 @@ reset taken — and the board returned to service 3.7 s after the accept
 with the positive arm's erase ceiling). That is the incident's demanded
 "assert the head-compare fault actually halts", on the real driver
 against real flash. **Both arms pass: the incident hold is lifted
-mechanically.** What still blocks the full-size signed end-to-end is
-the bench SD card itself — it degraded across the day into multi-second
-write stalls, driver faults, remounts and two watchdog resets
-(`reset_source` 16) that each wiped the RAM session and the activation
-latch; the 463 KiB container failed to stage across 25 restarts while a
-2-chunk container needed rest pauses to land. Card service (check /
-reformat / swap) is on the operator list in
-[`aius-open-work-register.md`](aius-open-work-register.md) §Waiting on
-the operator; the end-to-end runs when staging can survive.
+mechanically.** ~~What still blocks the full-size signed end-to-end is
+the bench SD card itself~~ — **corrected the same day: the staging
+chaos (multi-second write stalls, driver faults, remounts, watchdog
+resets wiping the session and latch, 25 failed offset-0 restarts) was
+the board's own boot-lottery epoch crawl, not the card**, which an A/B
+against the pre-change image exonerated on the owner's challenge. On a
+healthy boot the same card takes the same writes in 50 ms. The open
+defect and its shipped detector are in
+[`aius-open-work-register.md`](aius-open-work-register.md) §Open
+defects — runtime; the end-to-end proceeds on a healthy boot.
 
 **Also fixed on the way to the re-proof (found live, 2026-08-01): a
 fresh staging could never start over the previous one.** The staged file
@@ -613,11 +614,18 @@ every session-guided resume then 416s, and the only recovery is a
 deliberate offset-0 restart (which the fix above makes cheap and which
 the bench uploader now performs automatically). Re-ordering
 write-then-absorb would need the digest midstate rolled back on job
-failure; not worth it while a restart costs a minute. The bench card is
-also the operational risk to watch: staging this container surfaced
-repeated multi-second SD write stalls (longest primitive 5.9 s) with
-driver faults and remounts, far beyond the single transient spike the
-incident session's staging saw.
+failure; not worth it while a restart costs a minute. ~~The bench card
+is also the operational risk to watch~~ — **corrected the same day: the
+"failing card" was the board itself in a degraded boot state.** The
+multi-second SD write stalls, driver faults, remounts and watchdog
+resets that wrecked staging were all downstream of a boot-lottery epoch
+crawl (the byte-identical image runs healthy on other boots, 50 ms
+writes over the same card); the card was exonerated by a controlled
+A/B after the owner challenged the verdict. The open defect, its
+evidence and the shipped detector (`checkpoint_walltime_us` /
+`cw=`) live in
+[`aius-open-work-register.md`](aius-open-work-register.md) §Open
+defects — runtime.
 
 Recovery needs the physical program button (the board is in RT1062 ROM
 SDP, not HalfKay/CDC, so no software path from here without NXP SDP
