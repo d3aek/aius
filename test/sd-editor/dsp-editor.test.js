@@ -1795,9 +1795,19 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
   });
 
   it('names a DTS carrier by its decode state', async () => {
-    await boot({ status: carrierStatus({ state: 4, format: 2, sample_rate: 44100 }) });
+    // The editor names the codec from pipeline_diag.codec_pc (0x0b = DTS),
+    // not the legacy top-level `format`, since 3a73b1155. The fixture carries
+    // both so this stays honest against a snapshot the device really serves.
+    await boot({
+      status: carrierStatus({
+        state: 4,
+        format: 2,
+        sample_rate: 44100,
+        pipeline_diag: { codec_pc: 11 },
+      }),
+    });
 
-    expect(el('input-source').textContent).toBe('input: optical carrier · DTS · 44100 Hz');
+    expect(el('input-source').textContent).toBe('input: optical carrier · bitstream (DTS) · 44100 Hz');
   });
 
   it('leaves off a term the snapshot cannot support instead of printing "unknown"', async () => {

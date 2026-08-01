@@ -1,0 +1,155 @@
+/* ---- page layer for upgrade.html ------------------------------------------
+   replays.css carries the shared chrome (main, header, .card, .pill,
+   .status-grid, .controls, .error-summary); this sheet adds only what the
+   upgrade page has that no other SD page has: the two banners, the wrapping
+   container-identity values, the step log and the OTA state words the shared
+   pill tone map does not know yet.
+
+   COLOURS: each rule names the shared sheet's token first and the committed
+   palette's literal as the var() fallback. The shared sheet is mid-restyle
+   (system colours replacing hex); this page renders correctly against either,
+   and the accessibility rollout restyles it with the rest. */
+
+/* The banner is a page-level alert, above the first card, so it is read before
+   any control is touched. Space is reserved by the flow, not by a fixed
+   height: the banner is absent for the whole life of a production-keyed
+   device. */
+.ota-banner {
+  border-radius: 9px;
+  padding: 12px 16px;
+  margin: 14px 0;
+  font-size: .8rem;
+  line-height: 1.5;
+  border: 1px solid var(--aius-accent-warning, #e8c46a);
+  color: var(--aius-text-warning, #e8dcc0);
+  background: var(--aius-surface-warning, #241f14);
+}
+
+.ota-banner--test-key { letter-spacing: .02em; }
+.ota-banner[hidden] { display: none; }
+
+/* The compiled-out / disarmed answer. Stated as a paragraph inside the state
+   card rather than as an empty grid: "no OTA here" is information, and the
+   grid beside it reads "unavailable" in every cell. */
+.ota-absent {
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 14px;
+  font-size: .8rem;
+  line-height: 1.5;
+  border: 1px solid var(--aius-border-emphasis, #5d6b78);
+  color: var(--aius-text-secondary, #aab4c0);
+  background: var(--aius-surface-recessed, #11151b);
+}
+
+.ota-absent[hidden] { display: none; }
+
+/* A 64-character signature and a 64-character digest are the point of this
+   grid, so its values wrap instead of inheriting the shared sheet's
+   single-line ellipsis. */
+.ota-identity .ota-identity__value {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- the step log ---------------------------------------------------------
+   One row per step: timestamp, narration, and the fault name when a step went
+   red. The list is an <ol> because the order IS the contract -- parsed,
+   uploading, staged, digest, signature, armed, activate. */
+
+.ota-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  min-height: 44px;
+}
+
+.ota-log__entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 5px;
+  border-left: 3px solid var(--aius-border-emphasis, #5d6b78);
+  background: var(--aius-surface-recessed, #11151b);
+  font-size: .8rem;
+  line-height: 1.45;
+}
+
+.ota-log__time {
+  color: var(--aius-text-muted, #9aa8b5);
+  font-size: .72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: var(--aius-white-space-atomic, nowrap);
+}
+
+.ota-log__text { flex: 1; min-width: 12ch; }
+
+.ota-log__detail {
+  color: var(--aius-text-danger, #f2a0a0);
+  font-size: .72rem;
+  letter-spacing: .04em;
+}
+
+.ota-log__caption {
+  flex-basis: 100%;
+  color: var(--aius-text-muted, #9aa8b5);
+  font-size: .72rem;
+}
+
+.ota-log__action { padding: 5px 10px; font-size: .75rem; }
+.ota-log__action:disabled { cursor: not-allowed; color: var(--aius-text-disabled, #7d8a97); }
+
+/* Tone is the whole point of the log: pending is neutral, ok is the accent the
+   rest of the chrome uses for a healthy state, fail is the danger tier. */
+.ota-log__entry[data-tone="ok"] { border-left-color: var(--aius-accent-primary, #53b57e); }
+.ota-log__entry[data-tone="fail"] { border-left-color: var(--aius-accent-danger, #d16a6a); }
+.ota-log__entry[data-tone="fail"] .ota-log__text { color: var(--aius-text-danger, #f2a0a0); }
+.ota-log__entry[data-tone="note"] { border-left-color: var(--aius-accent-info, #74d7ff); }
+
+/* Every interactive element owns its own focus ring; the log's button sits on
+   a recessed row where the UA default is easy to lose. */
+.ota-log__action:focus-visible {
+  outline: 3px solid var(--aius-accent-info, #74d7ff);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .ota-log__action:focus-visible { outline: 3px solid Highlight; }
+}
+
+/* The OTA state words this page adds to the shared pill vocabulary
+   (AiusOtaState, plus the compiled-out answer). Unlisted words stay neutral
+   grey on purpose, exactly as the shared tone map intends. */
+.pill[data-state="staged"],
+.pill[data-state="verified"],
+.pill[data-state="armed"],
+.pill[data-state="activation_requested"] {
+  border-color: var(--aius-accent-primary, #53b57e);
+  color: var(--aius-accent-primary, #73e6a0);
+}
+
+.pill[data-state="offered"],
+.pill[data-state="staging"] {
+  border-color: var(--aius-accent-info, #74d7ff);
+  color: var(--aius-accent-info, #74d7ff);
+}
+
+.pill[data-state="unavailable"],
+.pill[data-state="no image"] {
+  border-color: var(--aius-accent-warning, #e8c46a);
+  color: var(--aius-text-warning, #e8dcc0);
+}
+
+/* The state grid's `Last fault` cell borrows the shared sheet's
+   strong[data-tone="warn"] rule; nothing is repeated here for it. */
+
+@media (max-width: 650px) {
+  .ota-log__entry { align-items: flex-start; }
+  .ota-log__time { flex-basis: 100%; }
+}

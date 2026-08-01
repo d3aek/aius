@@ -384,6 +384,7 @@ describe('Aius SD device status — polling', () => {
     await boot();
 
     const hrefs = Array.from(document.querySelectorAll('nav a')).map((anchor) => anchor.getAttribute('href'));
-    expect(hrefs).toEqual(['index.html', 'replays.html']);
+    /* The firmware upgrade page joined the strip with OTA slice 3A. */
+    expect(hrefs).toEqual(['index.html', 'replays.html', 'upgrade.html']);
   });
 });

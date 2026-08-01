@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aius firmware upgrade</title>
+  <!-- replays.css carries the shared chrome for every SD page; upgrade.css adds
+       only the two banners, the container-identity grid and the step log. -->
+  <link rel="stylesheet" href="replays.css">
+  <link rel="stylesheet" href="upgrade.css">
+</head>
+<body data-mr-ui-contract="accessible-2026">
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">AIUS / SD CARD</p>
+        <h1>Firmware upgrade</h1>
+        <p class="lede">Stage a signed firmware container and walk it through the device's own upgrade machine: parsed, uploaded, staged, digest verified, signature verified, armed. Nothing on this page programs flash — activation is a separate, device-gated step.</p>
+      </div>
+      <nav><a href="index.html">DSP editor</a><a href="replays.html">Replay manager</a><a href="status.html">Device status</a></nav>
+    </header>
+
+    <!-- The device is trusting the published development signing key: anyone
+         holding the repository can sign an image it will accept. -->
+    <p id="test-key" class="ota-banner ota-banner--test-key" role="alert" hidden></p>
+
+    <section class="card status-card">
+      <div class="section-title"><h2>Device OTA</h2><span id="ota-pill" class="pill">loading</span></div>
+      <!-- The compiled-out / disarmed answer. When this shows, every control on
+           the page is disabled: a half-working upgrade button is worse than no
+           button. -->
+      <p id="absent" class="ota-absent" role="status" hidden></p>
+      <div id="ota-grid" class="status-grid">
+        <div><span>Upgrade state</span><strong id="ota-state">--</strong></div>
+        <div><span>Feature latch</span><strong id="ota-latch">--</strong></div>
+        <div><span>Staged</span><strong id="ota-staged">--</strong></div>
+        <div><span>Next offset</span><strong id="ota-next">--</strong></div>
+        <div><span>Last fault</span><strong id="ota-fault">--</strong></div>
+        <div><span>Signing key</span><strong id="ota-key">--</strong></div>
+        <div><span>Activation</span><strong id="ota-activation">--</strong></div>
+        <div><span>Device identity</span><strong id="ota-target">--</strong></div>
+      </div>
+      <p id="ota-status" class="hint" role="status">Reading OTA status...</p>
+      <p id="ota-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Signed container</h2><span id="image-pill" class="pill">no image</span></div>
+      <p class="hint">The 256-byte container header is parsed in this browser before a byte is sent, so an image for another board, another format version or another signature scheme is refused here rather than after a multi-megabyte upload.</p>
+      <div class="controls">
+        <label>Container file <input id="image-file" type="file" accept=".aiuo,application/octet-stream"></label>
+        <label>SD auth token <input id="token" type="password" autocomplete="off" placeholder="from AIUS AUTH"></label>
+        <button id="start" type="button" disabled>Upload and stage</button>
+        <button id="abort" type="button" class="danger">Abort staged upgrade</button>
+      </div>
+      <p class="hint">The token rides every upload chunk, verify, arm and abort; the status poll is public and carries none.</p>
+      <div id="image-grid" class="status-grid ota-identity">
+        <div><span>Target</span><strong id="hdr-target" class="ota-identity__value">--</strong></div>
+        <div><span>Build revision</span><strong id="hdr-revision" class="ota-identity__value">--</strong></div>
+        <div><span>Built (UTC)</span><strong id="hdr-built" class="ota-identity__value">--</strong></div>
+        <div><span>Payload length</span><strong id="hdr-image-length" class="ota-identity__value">--</strong></div>
+        <div><span>Container length</span><strong id="hdr-container" class="ota-identity__value">--</strong></div>
+        <div><span>Signature scheme</span><strong id="hdr-scheme" class="ota-identity__value">--</strong></div>
+        <div><span>Payload digest</span><strong id="hdr-digest" class="ota-identity__value">--</strong></div>
+        <div><span>Signature</span><strong id="hdr-signature" class="ota-identity__value">--</strong></div>
+        <div><span>Header CRC-32</span><strong id="hdr-crc" class="ota-identity__value">--</strong></div>
+      </div>
+      <p id="image-status" class="hint" role="status">No container selected.</p>
+      <p id="image-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+
+    <section class="card">
+      <div class="section-title"><h2>Progress log</h2><span id="log-pill" class="pill">idle</span></div>
+      <p class="hint">One line per step, in the order the device performs them. A step turns green from the route's own answer plus a read of <code>/api/ota</code>; a failure names the fault and stops the run where it stands. Uploading the same container again resumes from the offset the device reports.</p>
+      <ol id="log" class="ota-log"></ol>
+      <p id="log-status" class="hint" role="status">Nothing attempted yet.</p>
+      <p id="log-errors" class="error-summary" role="alert" hidden></p>
+    </section>
+  </main>
+  <script src="sd-shared.js"></script>
+  <script src="upgrade.js"></script>
+</body>
+</html>

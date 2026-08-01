@@ -23,6 +23,7 @@ FLASHMEM size_t aius_http_home_page(char *body, size_t capacity, const char *git
 		"<h2>Control surface</h2><p>The user interface is served from the SD card. This page is the fallback for when the card is absent.</p>"
 		"<ul><li><a href=\"/sd/www/index.html\">DSP editor</a> - input trim and EQ, downmix, output EQ, limiter, live meters</li>"
 		"<li><a href=\"/sd/www/replays.html\">Replay manager</a></li><li><a href=\"/sd/www/status.html\">Device status</a></li>"
+		"<li><a href=\"/sd/www/upgrade.html\">Firmware upgrade</a> - staged, signed OTA</li>"
 		"<li><a href=\"/sd/www/\">Browse /sd/www/</a> - the served SD web tree</li></ul><p id=sd></p>"
 		"<h2>API</h2><ul><li><a href=\"/api/status\">GET /api/status</a></li><li><a href=\"/api/events\">GET /api/events</a></li>"
 		"<li><code>POST /api/start {}</code></li><li><code>POST /api/stop {}</code></li><li><code>POST /api/clear {}</code></li><li><code>POST /api/reboot {}</code></li>"
