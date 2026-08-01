@@ -454,6 +454,24 @@ verdict item 5 (the post-LUT HalfKay/ROM recovery proof) and afterwards
 lights up the page's activate step and reboot-to-new-identity
 monitoring.
 
+Slice 3B is delivered: the auth-gated `/api/ota/*` route layer behind app
+callback seams, absent-by-construction until composition wires it. Slice
+3A is delivered: the SD upgrade page with the step-by-step log. The
+activation sequencer core is delivered too: `aius_ota_activate` programs
+the staged image over injected flash primitives with the FCB erased first
+and programmed last (so an interrupted activation is a designed HalfKay
+rescue, never a half-booted image), a verify pass that both reads back
+against the staged bytes and recomputes the digest against the armed
+header before the head is touched, one watchdog feed per primitive, and a
+health-record activation-in-progress mark written before the first erase
+so power-loss forensics distinguish never-started from interrupted. It
+serves the dark-window-evidence bullet via
+`AiusOtaActivateProgress.dark_window_cycles`. What remains is composition
+(HTTP route ids in `lib/aius_http`, the six real callbacks, session and
+records and `ota_diag` in `optical_main.cpp`, the TweetNaCl linker pin,
+swagger), then verdict item 5 on the bench, then the signed end-to-end
+upgrade.
+
 Slice 2 is delivered: the Ed25519 adapter (scheme tag 1, faults latched
 distinctly, entropy trap on the never-used sign path) and the host signer
 (keygen/sign/verify driving the firmware's own header serializer and

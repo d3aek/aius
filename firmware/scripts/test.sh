@@ -807,6 +807,20 @@ ota)
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
 		-o "$ota_out"
 	"$ota_out"
+	# The activation sequencer over a fake flash device: the erase/program
+	# ordering (FCB erased first, reprogrammed last), the verify-then-head
+	# rule, power loss truncated at every step boundary, each primitive's
+	# fault path and the bounds the shipped driver does not have. Its own
+	# binary because it drives a different seam -- injected flash/staging
+	# primitives -- than the container and state-machine suite above.
+	ota_activate_out="$build_dir/ota-activate"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
+		"$fw_root/test/ota/test_ota_activate.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota_activate.c" \
+		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
+		-o "$ota_activate_out"
+	"$ota_activate_out"
 	# The Ed25519 verifier adapter behind that seam, over vendored TweetNaCl.
 	# The vendored file is compiled to its OWN object so its two
 	# accommodations stay scoped to it and the adapter, the OTA core and the

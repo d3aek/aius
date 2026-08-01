@@ -534,6 +534,18 @@ FLASHMEM AiusOtaStatus aius_ota_abort(AiusOtaSession *session)
 	return AIUS_OTA_OK;
 }
 
+FLASHMEM AiusOtaStatus aius_ota_abandon_activation(AiusOtaSession *session)
+{
+	if (session == NULL)
+		return AIUS_OTA_INVALID_ARG;
+	if (session->latch != AIUS_OTA_LATCH_ARMED)
+		return AIUS_OTA_DISARMED;
+	if (session->state != AIUS_OTA_STATE_ACTIVATION_REQUESTED)
+		return AIUS_OTA_STATE;
+	session_clear(session);
+	return AIUS_OTA_OK;
+}
+
 FLASHMEM AiusOtaState aius_ota_state(const AiusOtaSession *session)
 {
 	return session == NULL ? AIUS_OTA_STATE_IDLE : session->state;

@@ -81,6 +81,14 @@ static const char *status_name(AiusOtaStatus status)
 		return "CORRUPT";
 	case AIUS_OTA_NO_SPACE:
 		return "NO_SPACE";
+	case AIUS_OTA_GEOMETRY:
+		return "GEOMETRY";
+	case AIUS_OTA_PRIMITIVE:
+		return "PRIMITIVE";
+	case AIUS_OTA_VERIFY:
+		return "VERIFY";
+	case AIUS_OTA_INTERRUPTED:
+		return "INTERRUPTED";
 	}
 	return "UNKNOWN";
 }

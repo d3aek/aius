@@ -62,7 +62,15 @@ typedef enum {
 	AIUS_OTA_DIGEST,      /* staged payload digest != the header's digest */
 	AIUS_OTA_SIGNATURE,   /* the injected verifier refused the image */
 	AIUS_OTA_CORRUPT,     /* a persisted record failed magic/length/CRC */
-	AIUS_OTA_NO_SPACE     /* caller buffer smaller than the fixed record */
+	AIUS_OTA_NO_SPACE,    /* caller buffer smaller than the fixed record */
+	/* The activation sequencer's own refusals (aius_ota_activate.h). Appended
+	 * rather than grouped, because the staging record persists `fail_reason`
+	 * as a byte: renumbering an existing value would re-read every record
+	 * already written as a different reason. */
+	AIUS_OTA_GEOMETRY,    /* an address or length the flash geometry forbids */
+	AIUS_OTA_PRIMITIVE,   /* an injected activation primitive refused */
+	AIUS_OTA_VERIFY,      /* a flash readback did not match the staged image */
+	AIUS_OTA_INTERRUPTED  /* a prior activation is recorded in progress */
 } AiusOtaStatus;
 
 /* --------------------------------------------------------------------------
@@ -440,6 +448,24 @@ AiusOtaStatus aius_ota_request_activation(AiusOtaSession *session);
 
 /* Any state except ACTIVATION_REQUESTED -> IDLE. */
 AiusOtaStatus aius_ota_abort(AiusOtaSession *session);
+
+/* ACTIVATION_REQUESTED -> IDLE: the exit aius_ota_abort() reserved for the
+ * activation slice, and the only transition out of that state (a reset is the
+ * other way out, and a restore replaces the session rather than moving it).
+ *
+ * It gives up on a requested activation. It does not, and cannot, undo flash:
+ * whether anything was erased is the ACTIVATION SEQUENCER's knowledge, not the
+ * session's, so this entry point does not pretend to judge it. The interlock
+ * lives where the knowledge is -- aius_ota_activate_step() re-checks the
+ * session on every step and halts with FAULT_SESSION if this was called
+ * mid-window, rather than programming flash on a withdrawn authorization.
+ *
+ * The image is cleared, so the next upgrade is a fresh offer. That is the
+ * deliberate half: the plan's rule for a failed activation is HalfKay plus an
+ * honest state, never a silent retry of the same staged bytes. STATE from any
+ * state other than ACTIVATION_REQUESTED -- aius_ota_abort() already covers
+ * those, and two spellings of one transition would be one too many. */
+AiusOtaStatus aius_ota_abandon_activation(AiusOtaSession *session);
 
 AiusOtaState aius_ota_state(const AiusOtaSession *session);
 
