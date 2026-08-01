@@ -8,7 +8,7 @@
 #   scripts/test.sh --environment native --suite <suite>
 #
 # Suites: arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
-#         dts-fuzz, dts-lfe, a52, a52-fuzz, eac3, iec61937, iec61937-fuzz, capability-protocol,
+#         dts-fuzz, dts-lfe, a52, a52-fuzz, eac3, eac3-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, latency-runner,
 #         recovery-runner, flash, http,
@@ -372,6 +372,14 @@ eac3)
 	out="$build_dir/eac3"
 	eac3_build "$out" "$fw_root/test/eac3/test_eac3.c"
 	UBSAN_OPTIONS=halt_on_error=1 "$out" "$fw_root/tools/eac3_vectors/vectors"
+	;;
+eac3-fuzz)
+	# E-AC-3 adapter robustness under ASan/UBSan: deterministic seam hunt +
+	# random corruption, every decode under the defect-31 termination oracle.
+	out="$build_dir/eac3-fuzz"
+	eac3_build "$out" "$fw_root/test/eac3/fuzz_eac3.c"
+	UBSAN_OPTIONS=halt_on_error=1 \
+		"$out" "$fw_root/tools/eac3_vectors/vectors" 20000
 	;;
 iec61937)
 	# IEC 61937 burst parser known-answer test against the committed corpus.
