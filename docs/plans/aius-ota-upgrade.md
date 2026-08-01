@@ -450,9 +450,10 @@ records and an `ota_diag` status object, the activate step rendered but
 visibly disabled until the activation slice ships its verb, and a
 graceful disabled state when OTA is compiled out or disarmed; then the
 device-gated activation/flash-primitive slice, which waits only for
-verdict item 5 (the post-LUT HalfKay/ROM recovery proof) and afterwards
-lights up the page's activate step and reboot-to-new-identity
-monitoring.
+verdict item 5's remaining empirical scratch-sector check (analytically
+resolved 2026-08-01; the recovery channel is proven healthy this session)
+and afterwards lights up the page's activate step and
+reboot-to-new-identity monitoring.
 
 Slice 3B is delivered: the auth-gated `/api/ota/*` route layer behind app
 callback seams, absent-by-construction until composition wires it. Slice
@@ -549,9 +550,24 @@ the build verdict; the fuse prohibition stands untouched. Item-by-item:
   stall measurement is dropped: no other feature consumes flash-stall
   timing (nothing else writes boot flash at runtime), and the dark-window
   duration falls out of the activation slice's own bring-up evidence for
-  operator expectations. **Item 5 remains the single device gate before
-  activation**: prove HalfKay/ROM recovery still works after the flash
-  driver rewrites LUT sequence 15, or state the exact limitation. Slices
+  operator expectations. **Item 5 — analytically resolved 2026-08-01;
+  recovery is not compromised by the driver's LUT use.** Read against
+  Teensyduino's `eepromemu_flash_*` (the exact driver OTA would call):
+  every erase/program rewrites only LUT **sequence 15** (`FLEXSPI_LUT60`
+  through `LUT63`, the IP-command sequence) and leaves **sequence 0**, the
+  AHB read sequence XIP executes from, untouched — so code keeps running
+  from flash after an erase, and `bkpt #251`/HalfKay entry needs no FlexSPI
+  sequence at all (HalfKay is a separate chip on the debug port). The
+  activation `SYSRESETREQ` then resets the FlexSPI controller and the boot
+  ROM reloads the whole LUT from the FCB, so sequence 15's residual opcode
+  cannot outlive the reset. The load-bearing recovery channel is proven
+  healthy on this exact board: CDC→HalfKay entry and reflash succeeded
+  repeatedly across this session's flashes, and `AIUS ID` over CDC answered
+  immediately after the latest. The remaining empirical step — running the
+  real driver against a scratch flash sector far above the image, then
+  confirming XIP and HalfKay both survive — folds into the activation
+  slice's own bench bring-up (it needs a firmware test hook that only that
+  slice ships) and must pass there before the first real activation. Slices
   2 and 3 do not touch the flash and proceed regardless.
 - **Item 6 — posture chosen: staged single-image.** Stage to SD through
   the existing resumable chunked upload machinery, verify from SD, program
