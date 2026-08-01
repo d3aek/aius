@@ -394,7 +394,82 @@ OTA_QUIESCE_STEPS = (
     "tx_gate_actuate",        # 1. transmit gate closed (pad 14 low)
     "g_audio_service_ready",  # 2. epoch-driven audio service stopped
     "NVIC_DISABLE_IRQ",       # 3. audio update ISR source parked
+    "ota_park_interrupt_sources",  # 4. EVERY remaining source parked (2026-08-01)
 )
+
+OTA_PARK_FUNCTION = "ota_park_interrupt_sources"
+OTA_RESTORE_FUNCTION = "ota_restore_interrupt_sources"
+# Every interrupt SOURCE parked, in order: PRIMASK first so nothing sneaks in
+# mid-park, then the whole NVIC bank, then SysTick's TICKINT, then the pended
+# system exceptions. The 2026-08-01 incident's mechanism: the core driver's
+# flash_wait() ends every erase/program with an unconditional __enable_irq(),
+# so PRIMASK alone leaves a taken-interrupt gap inside every primitive -- an
+# ISR reading flash-resident .rodata from the currently-erased sector faults
+# into the core handler's SYSRESETREQ and the board lands in ROM SDP. With no
+# source enabled, the driver's enable takes nothing. The TICKINT and PENDSV
+# tokens are the distinctive ones (the save block reads SYST_CSR earlier, so
+# the bare register name would false-order).
+OTA_PARK_STEPS = (
+    "__disable_irq",
+    "NVIC_ICER0",
+    "NVIC_ICER1",
+    "NVIC_ICER2",
+    "NVIC_ICER3",
+    "NVIC_ICER4",
+    "~SYST_CSR_TICKINT",
+    "SCB_ICSR_PENDSVCLR",
+)
+# Restore is membership, not order: re-enable exactly the saved set, then
+# SysTick, then PRIMASK.
+OTA_RESTORE_TOKENS = (
+    "NVIC_ISER0",
+    "NVIC_ISER1",
+    "NVIC_ISER2",
+    "NVIC_ISER3",
+    "NVIC_ISER4",
+    "SYST_CSR",
+    "__enable_irq",
+)
+
+
+def assert_dark_window_parks_every_interrupt_source(text):
+    """The dark window runs with every interrupt SOURCE parked, not merely
+    PRIMASK-masked, and the park is restorable for the rehearsal path. The
+    per-primitive PRIMASK mask cannot carry this alone: eeprom.c's
+    flash_wait() unconditionally __enable_irq()s inside every erase/program,
+    which is how the 2026-08-01 activation faulted into the core handler's
+    SYSRESETREQ with the FCB erased. No native suite compiles
+    optical_main.cpp, so this is a text property."""
+    definitions = function_definitions(text)
+    assert OTA_PARK_FUNCTION in definitions, (
+        f"missing {OTA_PARK_FUNCTION}() -- the dark window must park every "
+        "interrupt source, or flash_wait()'s unconditional __enable_irq() "
+        "takes a pending ISR mid-window (the 2026-08-01 incident)"
+    )
+    body = without_comments_and_literals(definitions[OTA_PARK_FUNCTION])
+    positions = []
+    for step in OTA_PARK_STEPS:
+        index = body.find(step)
+        assert index >= 0, (
+            f"{OTA_PARK_FUNCTION}() is missing the {step!r} park step"
+        )
+        positions.append(index)
+    assert positions == sorted(positions), (
+        f"{OTA_PARK_FUNCTION}() runs its steps out of order "
+        f"{list(zip(OTA_PARK_STEPS, positions))}: PRIMASK first so nothing "
+        "sneaks in mid-park, then the whole NVIC bank, then SysTick, then "
+        "the pended system exceptions"
+    )
+    assert OTA_RESTORE_FUNCTION in definitions, (
+        f"missing {OTA_RESTORE_FUNCTION}() -- the rehearsal must hand the "
+        "board back to service, so the park needs its restoring inverse"
+    )
+    restore = without_comments_and_literals(definitions[OTA_RESTORE_FUNCTION])
+    for token in OTA_RESTORE_TOKENS:
+        assert token in restore, (
+            f"{OTA_RESTORE_FUNCTION}() is missing {token!r}: restore "
+            "re-enables exactly the saved NVIC set, then SysTick, then PRIMASK"
+        )
 
 
 def assert_activation_quiesce_is_ordered(text):
@@ -2608,6 +2683,10 @@ POSITIVE_CHECKS = (
         assert_activation_quiesce_is_ordered,
     ),
     (
+        "the dark window parks every interrupt source, restorably for rehearsal",
+        assert_dark_window_parks_every_interrupt_source,
+    ),
+    (
         "OTA activation gates on PSRAM presence and stages disjoint from the recorder ring",
         assert_activation_gates_on_psram_presence,
     ),
@@ -3330,6 +3409,81 @@ def _synthetic_counter_edges():
 
 
 def run_self_test():
+    # The dark-window interrupt-source park (2026-08-01 root-cause fix).
+    good_park = (
+        "FASTRUN static void ota_park_interrupt_sources(OtaIrqSnapshot *saved)\n"
+        "{\n"
+        "\tuint32_t primask;\n"
+        '\t__asm__ volatile("mrs %0, primask" : "=r"(primask));\n'
+        "\t__disable_irq();\n"
+        "\tif (saved != NULL) {\n"
+        "\t\tsaved->primask = primask;\n"
+        "\t\tsaved->syst_csr = SYST_CSR;\n"
+        "\t\tsaved->iser[0] = NVIC_ISER0;\n"
+        "\t\tsaved->iser[1] = NVIC_ISER1;\n"
+        "\t\tsaved->iser[2] = NVIC_ISER2;\n"
+        "\t\tsaved->iser[3] = NVIC_ISER3;\n"
+        "\t\tsaved->iser[4] = NVIC_ISER4;\n"
+        "\t}\n"
+        "\tNVIC_ICER0 = 0xFFFFFFFFu;\n"
+        "\tNVIC_ICER1 = 0xFFFFFFFFu;\n"
+        "\tNVIC_ICER2 = 0xFFFFFFFFu;\n"
+        "\tNVIC_ICER3 = 0xFFFFFFFFu;\n"
+        "\tNVIC_ICER4 = 0xFFFFFFFFu;\n"
+        "\tSYST_CSR &= ~SYST_CSR_TICKINT;\n"
+        "\tSCB_ICSR = SCB_ICSR_PENDSVCLR | SCB_ICSR_PENDSTCLR;\n"
+        "}\n"
+        "FASTRUN static void ota_restore_interrupt_sources(const OtaIrqSnapshot *saved)\n"
+        "{\n"
+        "\tNVIC_ISER0 = saved->iser[0];\n"
+        "\tNVIC_ISER1 = saved->iser[1];\n"
+        "\tNVIC_ISER2 = saved->iser[2];\n"
+        "\tNVIC_ISER3 = saved->iser[3];\n"
+        "\tNVIC_ISER4 = saved->iser[4];\n"
+        "\tSYST_CSR = saved->syst_csr;\n"
+        "\tif ((saved->primask & 1u) == 0u)\n"
+        "\t\t__enable_irq();\n"
+        "}\n"
+    )
+    _expect_pass(
+        assert_dark_window_parks_every_interrupt_source, good_park, "park/good"
+    )
+    # One NVIC bank left live is one live source bank: the exact defect class.
+    _expect_fail(
+        assert_dark_window_parks_every_interrupt_source,
+        good_park.replace("\tNVIC_ICER3 = 0xFFFFFFFFu;\n", "", 1),
+        "park/missing-bank", "NVIC_ICER3",
+    )
+    # PRIMASK set after the bank writes leaves a taken-interrupt gap mid-park.
+    _expect_fail(
+        assert_dark_window_parks_every_interrupt_source,
+        good_park.replace("\t__disable_irq();\n", "", 1).replace(
+            "\tSCB_ICSR = SCB_ICSR_PENDSVCLR | SCB_ICSR_PENDSTCLR;\n",
+            "\tSCB_ICSR = SCB_ICSR_PENDSVCLR | SCB_ICSR_PENDSTCLR;\n"
+            "\t__disable_irq();\n",
+            1,
+        ),
+        "park/primask-last", "out of order",
+    )
+    # SysTick is not NVIC: forgetting TICKINT leaves the 1 kHz source live.
+    _expect_fail(
+        assert_dark_window_parks_every_interrupt_source,
+        good_park.replace("\tSYST_CSR &= ~SYST_CSR_TICKINT;\n", "", 1),
+        "park/systick-live", "~SYST_CSR_TICKINT",
+    )
+    # A restore that forgets a bank strands the rehearsal's board half-deaf.
+    _expect_fail(
+        assert_dark_window_parks_every_interrupt_source,
+        good_park.replace("\tNVIC_ISER2 = saved->iser[2];\n", "", 1),
+        "park/restore-missing-bank", "NVIC_ISER2",
+    )
+    # No restore at all: the park would be one-way and rehearsal impossible.
+    _expect_fail(
+        assert_dark_window_parks_every_interrupt_source,
+        good_park[: good_park.index("FASTRUN static void ota_restore")],
+        "park/no-restore", "ota_restore_interrupt_sources",
+    )
+
     # setup() construction-only.
     good_setup = (
         "void setup(void)\n{\n"

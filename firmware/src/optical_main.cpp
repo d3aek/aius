@@ -2770,9 +2770,29 @@ typedef enum {
 	OTA_ACTIVATION_FAULT_NONE = 0,
 	OTA_ACTIVATION_FAULT_NO_PSRAM,   /* no PSRAM fitted: cannot stage */
 	OTA_ACTIVATION_FAULT_STAGE_COPY, /* the SD->PSRAM copy failed */
-	OTA_ACTIVATION_FAULT_VERIFY      /* begin() refused (digest/signature/geometry) */
+	OTA_ACTIVATION_FAULT_VERIFY,     /* begin() refused (digest/signature/geometry) */
+	OTA_ACTIVATION_FAULT_GEOMETRY    /* the flash geometry refused (rehearsal:
+	                                  * the image reaches the scratch window) */
 } OtaActivationFault;
 static volatile OtaActivationFault g_ota_activation_fault;
+
+/* The 2026-08-01 re-proof's verdict, surfaced in ota_diag beside the self-test's.
+ * Never-run until the operator triggers POST /api/ota/rehearse (or its
+ * fault-injected arm); pass means the rehearsal reached ITS arm's expected
+ * terminal -- READY_TO_RESET (the emulated reset) for the positive arm,
+ * FAULTED with the head-compare's VERIFY fault for the injected one. */
+typedef enum {
+	OTA_REHEARSAL_NEVER_RUN = 0,
+	OTA_REHEARSAL_PASS = 1,
+	OTA_REHEARSAL_FAIL = 2
+} OtaRehearsalResult;
+static volatile bool g_ota_rehearsal_requested;
+static bool g_ota_rehearsal_inject_fault;
+static OtaRehearsalResult g_ota_rehearsal_result;
+static uint8_t g_ota_rehearsal_terminal_fault; /* AiusOtaActivateFault */
+static bool g_ota_rehearsal_ran_injected;      /* which arm the verdict is for */
+static uint32_t g_ota_rehearsal_dark_us;       /* the plan's dark-window evidence */
+static uint32_t g_ota_rehearsal_max_step_us;
 
 /* True iff PSRAM is fitted somewhere the composition can stage into: the pad-1
  * chip the core mapped (external_psram_size) OR the pad-2 chip the probe found
@@ -2789,8 +2809,19 @@ static FLASHMEM const char *ota_activation_fault_name(OtaActivationFault fault)
 	case OTA_ACTIVATION_FAULT_NO_PSRAM:   return "ota_no_psram";
 	case OTA_ACTIVATION_FAULT_STAGE_COPY: return "ota_stage_copy";
 	case OTA_ACTIVATION_FAULT_VERIFY:     return "ota_verify";
+	case OTA_ACTIVATION_FAULT_GEOMETRY:   return "ota_geometry";
 	case OTA_ACTIVATION_FAULT_NONE:
 	default:                              return "none";
+	}
+}
+
+static FLASHMEM const char *ota_rehearsal_result_name(OtaRehearsalResult result)
+{
+	switch (result) {
+	case OTA_REHEARSAL_PASS: return "pass";
+	case OTA_REHEARSAL_FAIL: return "fail";
+	case OTA_REHEARSAL_NEVER_RUN:
+	default:                 return "never-run";
 	}
 }
 
@@ -2823,15 +2854,24 @@ static_assert((AIUS_OTA_SELF_TEST_OFFSET % AIUS_OTA_FLASH_SECTOR_BYTES) == 0u,
  *   1. flash_wait() inside the driver calls __enable_irq() UNCONDITIONALLY, so
  *      calling from an interrupts-disabled context silently re-enables them.
  *      Each primitive saves PRIMASK and restores it from the saved copy, never
- *      trusting the state the driver left.
+ *      trusting the state the driver left. THAT RESTORE IS NOT SUFFICIENT
+ *      ALONE: between the driver's enable and the restore, a pending NVIC
+ *      source is TAKEN -- the 2026-08-01 incident -- which is why the quiesce
+ *      parks every source before the first primitive runs
+ *      (ota_park_interrupt_sources).
  *   2. The driver has NO bounds checking -- it masks the address to 24 bits and
  *      erases/writes whatever that names (erasing sector 0 destroys the FCB). So
  *      every address is range-checked through the sequencer's published pure
- *      helpers aius_ota_activate_check_erase()/check_span() BEFORE the driver is
- *      called, at the boundary this layer owns (the sequencer checks too). */
-FASTRUN static int ota_flash_erase(void *, uint32_t address)
+ *      helpers BEFORE the driver is called, at the boundary this layer owns
+ *      (the sequencer checks too). `ctx` names the window the check bounds
+ *      against: NULL is the boot window (the real activation), the REHEARSAL
+ *      passes its scratch window -- which is what makes an address below the
+ *      scratch base structurally unreachable from a rehearsal, boot region
+ *      included. */
+FASTRUN static int ota_flash_erase(void *ctx, uint32_t address)
 {
-	if (aius_ota_activate_check_erase(address) != AIUS_OTA_OK)
+	if (aius_ota_activate_check_erase_in(
+		    (const AiusOtaActivateWindow *)ctx, address) != AIUS_OTA_OK)
 		return -1;
 	uint32_t primask;
 	__asm__ volatile("mrs %0, primask" : "=r"(primask));
@@ -2844,10 +2884,12 @@ FASTRUN static int ota_flash_erase(void *, uint32_t address)
 	return 0;
 }
 
-FASTRUN static int ota_flash_program(void *, uint32_t address,
+FASTRUN static int ota_flash_program(void *ctx, uint32_t address,
                                      const uint8_t *data, uint32_t length)
 {
-	if (aius_ota_activate_check_span(address, length) != AIUS_OTA_OK)
+	if (aius_ota_activate_check_span_in(
+		    (const AiusOtaActivateWindow *)ctx, address, length) !=
+	    AIUS_OTA_OK)
 		return -1;
 	uint32_t primask;
 	__asm__ volatile("mrs %0, primask" : "=r"(primask));
@@ -2860,10 +2902,12 @@ FASTRUN static int ota_flash_program(void *, uint32_t address,
 	return 0;
 }
 
-FASTRUN static int ota_flash_read(void *, uint32_t address, uint8_t *dest,
+FASTRUN static int ota_flash_read(void *ctx, uint32_t address, uint8_t *dest,
                                   uint32_t length)
 {
-	if (aius_ota_activate_check_span(address, length) != AIUS_OTA_OK)
+	if (aius_ota_activate_check_span_in(
+		    (const AiusOtaActivateWindow *)ctx, address, length) !=
+	    AIUS_OTA_OK)
 		return -1;
 	uint32_t primask;
 	__asm__ volatile("mrs %0, primask" : "=r"(primask));
@@ -2890,6 +2934,86 @@ FASTRUN static void ota_wdt_feed(void *)
 {
 	WDOG1_WSR = 0x5555;
 	WDOG1_WSR = 0xAAAA;
+}
+
+/* THE INTERRUPT-SOURCE PARK -- the 2026-08-01 incident's root-cause fix.
+ *
+ * PRIMASK alone cannot keep the dark window dark: the core driver's
+ * flash_wait() ends EVERY erase/program with an unconditional __enable_irq()
+ * (cores/teensy4/eeprom.c), so each primitive call contains a gap in which
+ * pending interrupts are taken -- and between steps the run loop used to
+ * execute with interrupts enabled outright. On this part all .rodata lives in
+ * flash, so an ISR taken while its const data (or FLASHMEM callee) sits in the
+ * currently-erased-not-yet-reprogrammed sector reads blank flash, faults, and
+ * the core's unused_interrupt_vector() ends in SCB_AIRCR SYSRESETREQ
+ * (startup.c) -- resetting through the ROM with the FCB erased, which is
+ * exactly the ROM-SDP state the incident found the board in. The self-test
+ * never sees this because one scratch sector mutates no ISR-reachable content.
+ *
+ * So the window parks every SOURCE, the same move the core's fault handler
+ * makes ("disable all NVIC interrupts, as usb_isr() might use __enable_irq()"):
+ * with no NVIC source enabled, the driver's enable takes nothing. SysTick and
+ * PendSV are system exceptions ICER cannot reach, so TICKINT is cleared and
+ * both pendings are wiped -- TICKINT off means neither re-pends. PRIMASK is
+ * still set first so nothing sneaks in mid-park, and stays set; the terminal
+ * acts (reset, or the unfed-watchdog halt) need no interrupt.
+ *
+ * `saved` non-NULL makes the park restorable -- the REHEARSAL path, which must
+ * hand the board back to service afterwards. NULL is the one-way real
+ * activation. Restore re-enables exactly the set that was enabled, then
+ * SysTick, then PRIMASK; pended sources fire late rather than lost. */
+typedef struct {
+	uint32_t iser[5];
+	uint32_t syst_csr;
+	uint32_t primask;
+} OtaIrqSnapshot;
+
+/* NOINLINE IS LOAD-BEARING ON EVERY DARK-WINDOW FUNCTION BELOW, and it is the
+ * incident's second finding: this core's FASTRUN is section-placement ONLY
+ * (`__attribute__((section(".fastrun")))`, no noinline), so GCC inlined the
+ * single-caller FASTRUN run-to-completion loop into its FLASHMEM caller and
+ * the incident image executed the dark window FROM FLASH -- the body pass
+ * erased the sector holding its own loop code (~94 KiB in), the fetch after
+ * that erase returned blanks, and the board died mid-window with the FCB
+ * erased, exactly the ROM-SDP state observed. `noinline` makes each of these
+ * a real ITCM symbol; the itcm-placement suite's dark-window check pins them
+ * there post-link, so a compiler mood cannot silently fold them back. */
+#define AIUS_OTA_DARK_WINDOW_FN FASTRUN __attribute__((noinline)) static
+
+AIUS_OTA_DARK_WINDOW_FN void ota_park_interrupt_sources(OtaIrqSnapshot *saved)
+{
+	uint32_t primask;
+	__asm__ volatile("mrs %0, primask" : "=r"(primask));
+	__disable_irq();
+	if (saved != NULL) {
+		saved->primask = primask;
+		saved->syst_csr = SYST_CSR;
+		saved->iser[0] = NVIC_ISER0;
+		saved->iser[1] = NVIC_ISER1;
+		saved->iser[2] = NVIC_ISER2;
+		saved->iser[3] = NVIC_ISER3;
+		saved->iser[4] = NVIC_ISER4;
+	}
+	NVIC_ICER0 = 0xFFFFFFFFu;
+	NVIC_ICER1 = 0xFFFFFFFFu;
+	NVIC_ICER2 = 0xFFFFFFFFu;
+	NVIC_ICER3 = 0xFFFFFFFFu;
+	NVIC_ICER4 = 0xFFFFFFFFu;
+	SYST_CSR &= ~SYST_CSR_TICKINT;
+	SCB_ICSR = SCB_ICSR_PENDSVCLR | SCB_ICSR_PENDSTCLR;
+}
+
+AIUS_OTA_DARK_WINDOW_FN void ota_restore_interrupt_sources(
+	const OtaIrqSnapshot *saved)
+{
+	NVIC_ISER0 = saved->iser[0];
+	NVIC_ISER1 = saved->iser[1];
+	NVIC_ISER2 = saved->iser[2];
+	NVIC_ISER3 = saved->iser[3];
+	NVIC_ISER4 = saved->iser[4];
+	SYST_CSR = saved->syst_csr;
+	if ((saved->primask & 1u) == 0u)
+		__enable_irq();
 }
 
 FASTRUN static uint32_t ota_flash_cycles(void *)
@@ -2922,6 +3046,59 @@ FASTRUN static int ota_health_write(void *, const uint8_t *bytes,
 		return -1;
 	memcpy(g_ota_health_bytes, bytes, length);
 	return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * The rehearsal (the 2026-08-01 re-proof): the FULL activation sequence
+ * against the scratch window above the image, real primitives, emulated reset.
+ * -------------------------------------------------------------------------- */
+
+/* The rehearsal's own session copy, window, and health record. The session is
+ * a self-contained value type, so a struct copy is an independent session: the
+ * rehearsal authorizes and consumes the COPY (ARMED -> ACTIVATION_REQUESTED),
+ * and the REAL session never moves -- after the rehearsal the staged image is
+ * still ARMED for the actual upgrade, with no re-upload. The health scratch
+ * keeps the rehearsal's TRIAL mark out of the real record, so a rehearsal
+ * never spends the real image's trial budget. */
+static AiusOtaSession g_ota_rehearsal_session;
+static AiusOtaActivateWindow g_ota_rehearsal_window;
+static uint8_t g_ota_rehearsal_health[AIUS_OTA_HEALTH_RECORD_BYTES];
+
+FASTRUN static int ota_rehearsal_health_read(void *, uint8_t *bytes,
+                                             uint32_t length)
+{
+	if (length != sizeof(g_ota_rehearsal_health))
+		return -1;
+	memcpy(bytes, g_ota_rehearsal_health, length);
+	return 0;
+}
+
+FASTRUN static int ota_rehearsal_health_write(void *, const uint8_t *bytes,
+                                              uint32_t length)
+{
+	if (length != sizeof(g_ota_rehearsal_health))
+		return -1;
+	memcpy(g_ota_rehearsal_health, bytes, length);
+	return 0;
+}
+
+/* The negative arm's injected defect: the FIRST head-chunk readback comes back
+ * with one bit flipped, exactly the "flash cell reported success and did not
+ * take" failure the in-window byte-compare exists to convict -- on the REAL
+ * driver, at the scratch head, where a missed conviction costs nothing. The
+ * address compare is exact: only PROGRAM_HEAD reads at the window base (BODY
+ * starts a sector up), so the body pass runs genuine and the fault lands on
+ * the last-programmed sector, mirroring the incident's postulated miss. */
+FASTRUN static int ota_flash_read_inject_head_fault(void *ctx, uint32_t address,
+                                                    uint8_t *dest,
+                                                    uint32_t length)
+{
+	const int fault = ota_flash_read(ctx, address, dest, length);
+
+	if (fault == 0 &&
+	    address == ((const AiusOtaActivateWindow *)ctx)->base)
+		dest[0] ^= 0x40u;
+	return fault;
 }
 
 /* THE PSRAM STAGING REGION -- disjoint from the recorder ring by construction.
@@ -3021,6 +3198,7 @@ static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
 {
 	AiusOtaActivatePrimitives primitives;
 	memset(&primitives, 0, sizeof(primitives));
+	/* NULL ctx: the flash primitives bound against the BOOT window. */
 	primitives.ctx = nullptr;
 	primitives.erase_sector = ota_flash_erase;
 	primitives.program = ota_flash_program;
@@ -3029,6 +3207,23 @@ static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
 	primitives.cycles = ota_flash_cycles;
 	primitives.health_read = ota_health_read;
 	primitives.health_write = ota_health_write;
+	return primitives;
+}
+
+/* The rehearsal's primitive set: the SAME flash primitives, re-bounded to the
+ * scratch window through ctx (an address below the scratch base is refused at
+ * this layer AND inside the sequencer), the health callbacks swapped to the
+ * rehearsal scratch record, and -- on the negative arm -- the readback wrapped
+ * with the head-fault injector. */
+static FLASHMEM AiusOtaActivatePrimitives ota_rehearsal_primitives(
+	bool inject_fault)
+{
+	AiusOtaActivatePrimitives primitives = ota_activate_primitives();
+	primitives.ctx = &g_ota_rehearsal_window;
+	if (inject_fault)
+		primitives.flash_read = ota_flash_read_inject_head_fault;
+	primitives.health_read = ota_rehearsal_health_read;
+	primitives.health_write = ota_rehearsal_health_write;
 	return primitives;
 }
 
@@ -3054,7 +3249,7 @@ static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
  * SHA-256 + signature verification and the SD->PSRAM copy that would have needed
  * flash and SD all ran in service_ota_activation() BEFORE the quiesce, so this
  * loop calls nothing that lives in the region it is overwriting. */
-FASTRUN static void ota_activate_run_and_finalize(void)
+AIUS_OTA_DARK_WINDOW_FN void ota_activate_run_and_finalize(void)
 {
 	while (aius_ota_activate_phase(&g_ota_activator) !=
 	           AIUS_OTA_ACTIVATE_READY_TO_RESET &&
@@ -3070,6 +3265,27 @@ FASTRUN static void ota_activate_run_and_finalize(void)
 	__disable_irq();
 	for (;;)
 		asm volatile("wfi");
+}
+
+/* The REHEARSAL's run-to-completion loop: the same step drive as
+ * ota_activate_run_and_finalize, WITHOUT the terminal acts. READY_TO_RESET is
+ * the EMULATED reset -- the sequence has proven it would have reset, and that
+ * proof is the verdict -- and FAULTED is what the negative arm asserts. It
+ * RETURNS, because the rehearsal's whole point is that the board comes back.
+ * RAM-resident for the same reason as the real loop: while a scratch-window
+ * erase or program is in flight, no master may touch flash, this loop
+ * included. The scratch window holds no code, so between operations XIP is
+ * untouched -- but this loop cannot know where an operation boundary falls,
+ * so it stays out of flash entirely. */
+AIUS_OTA_DARK_WINDOW_FN void ota_rehearse_run(void)
+{
+	while (aius_ota_activate_phase(&g_ota_activator) !=
+	           AIUS_OTA_ACTIVATE_READY_TO_RESET &&
+	       aius_ota_activate_phase(&g_ota_activator) !=
+	           AIUS_OTA_ACTIVATE_FAULTED) {
+		if (aius_ota_activate_step(&g_ota_activator) != AIUS_OTA_OK)
+			break;
+	}
 }
 
 /* Item-5 scratch-sector recovery proof, RAM-resident. Runs the REAL primitives
@@ -3122,20 +3338,32 @@ FASTRUN static OtaSelfTestResult ota_run_self_test_flash(void)
  *      FLASHMEM work;
  *   3. park the audio update ISR (IRQ_SOFTWARE drives AiusAudioProcessor::
  *      update()), so no interrupt re-enters a FLASHMEM/PROGMEM handler between
- *      primitive ops. The per-primitive __disable_irq()/PRIMASK is the mask that
- *      discharges note 3 during each erase itself; this parks the source so it
- *      is idle, not merely masked.
+ *      primitive ops;
+ *   4. park EVERY remaining interrupt source (ota_park_interrupt_sources): the
+ *      2026-08-01 incident proved steps 1-3 insufficient -- ENET/USB/SysTick
+ *      stayed live, the driver's flash_wait() re-enables IRQs inside every
+ *      primitive, and one ISR reading flash-resident .rodata from the
+ *      currently-erased sector faulted into the core handler's SYSRESETREQ.
+ *      With every source parked, the per-primitive PRIMASK mask AND the
+ *      driver's internal enable gaps both take nothing, which discharges RM
+ *      p.279 note 3 for the M7 across the WHOLE window, not just inside each
+ *      primitive.
  * RESTORE-OR-RESET on abort: every PRE-FLASH abort (begin() refusing, or a MARK
  * fault) happens BEFORE this quiesce runs -- service_ota_activation() drives the
  * non-dark MARK phase with the flash still coherent and only quiesces on the
  * edge into the dark window -- so "restore" is trivial: the board never darkened
  * and simply keeps serving. Once quiesced the only outcomes are a reset into the
- * new image or a HalfKay halt, so there is no un-quiesce path. */
-FASTRUN static void ota_quiesce(void)
+ * new image or a HalfKay halt, so there is no un-quiesce path for a REAL
+ * activation (`saved` NULL, the park is one-way). The REHEARSAL passes a
+ * snapshot: it darkens only its scratch window and must hand the board back,
+ * so interrupts are restored afterwards -- audio stays down (steps 1-3 are
+ * one-way) until the operator reboots, which the rehearsal's verdict reports. */
+AIUS_OTA_DARK_WINDOW_FN void ota_quiesce(OtaIrqSnapshot *saved)
 {
 	tx_gate_actuate(false);
 	g_audio_service_ready = false;
 	NVIC_DISABLE_IRQ(IRQ_SOFTWARE);
+	ota_park_interrupt_sources(saved);
 }
 
 /* The OTA core's AiusOtaStatus, collapsed to the client-facing verdict the
@@ -3189,7 +3417,10 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		"\"total_bytes\":%lu,\"fault\":%u,\"key_fingerprint\":\"%s\","
 		"\"test_key\":%s,\"activation_available\":%s,"
 		"\"self_test_flash\":\"%s\",\"psram\":%s,"
-		"\"activation_fault\":\"%s\"}",
+		"\"activation_fault\":\"%s\","
+		"\"rehearsal\":\"%s\",\"rehearsal_fault\":%u,"
+		"\"rehearsal_fault_injected\":%s,\"rehearsal_dark_us\":%lu,"
+		"\"rehearsal_max_step_us\":%lu}",
 		(unsigned)progress.state,
 		(unsigned long)staged, (unsigned long)total,
 		(unsigned)progress.fail_reason,
@@ -3208,7 +3439,17 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		ota_psram_present() ? "true" : "false",
 		/* The last activation refusal reason -- above all the no-PSRAM
 		 * gate -- so a status poller sees why an activation did not run. */
-		ota_activation_fault_name(g_ota_activation_fault));
+		ota_activation_fault_name(g_ota_activation_fault),
+		/* The 2026-08-01 re-proof's verdict and its dark-window evidence:
+		 * pass means the last run reached ITS arm's expected terminal --
+		 * the emulated reset, or the injected head-fault's halt. The µs
+		 * pair is the operator-expectation data the plan's item 4 deferred
+		 * to bring-up. */
+		ota_rehearsal_result_name(g_ota_rehearsal_result),
+		(unsigned)g_ota_rehearsal_terminal_fault,
+		g_ota_rehearsal_ran_injected ? "true" : "false",
+		(unsigned long)g_ota_rehearsal_dark_us,
+		(unsigned long)g_ota_rehearsal_max_step_us);
 }
 
 /* present: this build carries OTA and the seam is installed. */
@@ -3376,6 +3617,33 @@ static FLASHMEM AiusOpticalAppOtaResult app_ota_self_test_flash(void *)
 		: AIUS_OPTICAL_APP_OTA_SELF_TEST_FAILED;
 }
 
+/* rehearse: the request half of the 2026-08-01 re-proof. Runs in the HTTP
+ * dispatch, so it MUST NOT touch flash or block -- it validates and arms the
+ * loop() flag, and service_ota_rehearsal() does the copy + verify + quiet
+ * window after the 200 has drained. Gated like the self-test (the latch is
+ * the deliberate act that admits ANY flash mutation on this device), on PSRAM
+ * (the rehearsal stages exactly as activation does), on the REAL session
+ * being ARMED (read-only here: the service consumes a COPY), and on no other
+ * deferred flash act being pending. */
+static FLASHMEM AiusOpticalAppOtaResult app_ota_rehearse(void *,
+                                                         bool inject_fault)
+{
+	if (!g_ota_activation_enabled)
+		return AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+	if (!ota_psram_present()) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
+		return AIUS_OPTICAL_APP_OTA_STORAGE;
+	}
+	if (g_ota_activation_requested || g_ota_rehearsal_requested)
+		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	if (aius_ota_state(&g_ota_session) != AIUS_OTA_STATE_ARMED)
+		return AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+	g_ota_rehearsal_inject_fault = inject_fault;
+	g_ota_activation_fault = OTA_ACTIVATION_FAULT_NONE;
+	g_ota_rehearsal_requested = true;
+	return AIUS_OPTICAL_APP_OTA_OK;
+}
+
 static const AiusOpticalAppOta g_ota_seam = {
 	nullptr, /* context: the adapters read file statics, like g_aius_optical_app */
 	app_ota_present,
@@ -3386,7 +3654,8 @@ static const AiusOpticalAppOta g_ota_seam = {
 	app_ota_abort,
 	app_ota_activate,
 	app_ota_enable_activation,
-	app_ota_self_test_flash
+	app_ota_self_test_flash,
+	app_ota_rehearse
 };
 
 /* Composes the OTA feature: computes the key fingerprint, binds the session and
@@ -6697,10 +6966,155 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 		return;
 	}
 
-	/* On the edge into the dark window: quiesce, then run to completion in RAM
-	 * (never returns). */
-	ota_quiesce();
+	/* On the edge into the dark window: quiesce (one-way -- NULL snapshot),
+	 * then run to completion in RAM (never returns). */
+	ota_quiesce(NULL);
 	ota_activate_run_and_finalize();
+}
+
+/* The requested rehearsal, serviced from loop() after its 200 has drained --
+ * the same deferred shape as the activation above, because the board goes
+ * quiet (every interrupt source parked) for the run's duration. The
+ * differences from service_ota_activation are exactly the rehearsal's
+ * definition:
+ *   - the sequencer is begun against the SCRATCH window, with the windowed
+ *     primitives, so the boot region is structurally unreachable;
+ *   - the session is a COPY, so the real one stays ARMED with the staged
+ *     image intact for the actual upgrade;
+ *   - the health record is a zeroed scratch, so no trial budget is spent;
+ *   - the quiesce takes a SNAPSHOT and interrupts are RESTORED after -- the
+ *     board hands back an epoch loop that keeps serving HTTP (audio stays
+ *     down: quiesce steps 1-3 are one-way; a reboot restores it, and the
+ *     verdict in ota_diag is what the operator came for);
+ *   - READY_TO_RESET is EMULATED: recorded, not performed. */
+static uint32_t g_ota_rehearsal_deadline_ms;
+static bool g_ota_rehearsal_deadline_armed;
+
+static FLASHMEM void ota_rehearsal_finish(OtaRehearsalResult result)
+{
+	g_ota_rehearsal_result = result;
+	g_ota_rehearsal_requested = false;
+	g_ota_rehearsal_deadline_armed = false;
+}
+
+static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
+{
+	if (!g_ota_rehearsal_deadline_armed) {
+		g_ota_rehearsal_deadline_ms = now_ms + AIUS_REBOOT_DRAIN_MS;
+		g_ota_rehearsal_deadline_armed = true;
+		return;
+	}
+	if (!reboot_drain_complete() &&
+	    (int32_t)(now_ms - g_ota_rehearsal_deadline_ms) < 0)
+		return;
+
+	uint8_t running_digest[AIUS_OTA_DIGEST_BYTES];
+	AiusOtaActivatePrimitives primitives =
+		ota_rehearsal_primitives(g_ota_rehearsal_inject_fault);
+	AiusOtaActivateProgress progress;
+	AiusOtaProgress ota_progress;
+	OtaIrqSnapshot snapshot;
+	const uint32_t cycles_per_us = F_CPU_ACTUAL / 1000000u;
+	uint8_t *psram_base = nullptr;
+	uint32_t psram_capacity = 0u;
+	uint32_t image_length;
+	memset(running_digest, 0, sizeof(running_digest));
+
+	g_ota_rehearsal_ran_injected = g_ota_rehearsal_inject_fault;
+	g_ota_rehearsal_terminal_fault = 0u;
+	g_ota_rehearsal_dark_us = 0u;
+	g_ota_rehearsal_max_step_us = 0u;
+
+	/* The scratch window: the self-test's offset to the top of the usable
+	 * region. The image must end BELOW the scratch base -- the same runtime
+	 * guard the self-test applies, because _flashimagelen is a linker
+	 * symbol, and erasing over the running image would be the one thing a
+	 * rehearsal must never do. */
+	if ((uint32_t)(uintptr_t)&_flashimagelen >= AIUS_OTA_SELF_TEST_OFFSET) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_GEOMETRY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+	g_ota_rehearsal_window.base = AIUS_OTA_SELF_TEST_ADDRESS;
+	g_ota_rehearsal_window.usable_bytes =
+		AIUS_OTA_FLASH_USABLE_BYTES - AIUS_OTA_SELF_TEST_OFFSET;
+	if (aius_ota_activate_check_window(&g_ota_rehearsal_window) !=
+	    AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_GEOMETRY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+
+	/* 1-2. PSRAM region and the SD->PSRAM copy: identical to activation --
+	 * the rehearsal proves the real pre-window path, not a stand-in. */
+	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+	if (aius_ota_progress(&g_ota_session, &ota_progress) != AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+	image_length = ota_progress.image_length;
+	if (image_length == 0u || image_length > psram_capacity ||
+	    aius_ota_activate_check_image_length_in(&g_ota_rehearsal_window,
+	                                            image_length) !=
+		    AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_GEOMETRY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+	if (ota_copy_staged_to_psram(psram_base, image_length) != 0) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_STAGE_COPY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+
+	/* 3. The session COPY authorizes ITS OWN activation; the real session
+	 * never moves. A zeroed health scratch reads as a fresh board, so rule
+	 * 8 admits the run and no real trial budget is spent. */
+	g_ota_rehearsal_session = g_ota_session;
+	if (aius_ota_request_activation(&g_ota_rehearsal_session) !=
+	    AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+	memset(g_ota_rehearsal_health, 0, sizeof(g_ota_rehearsal_health));
+	if (aius_ota_activate_begin(&g_ota_activator, &g_ota_rehearsal_session,
+	                            &primitives, &g_ota_verifier,
+	                            &g_ota_rehearsal_window, psram_base,
+	                            image_length, running_digest) !=
+	    AIUS_OTA_OK) {
+		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
+		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);
+		return;
+	}
+
+	/* The quiet window: quiesce with a snapshot, run in RAM, restore. */
+	ota_quiesce(&snapshot);
+	ota_rehearse_run();
+	ota_restore_interrupt_sources(&snapshot);
+
+	(void)aius_ota_activate_progress(&g_ota_activator, &progress);
+	g_ota_rehearsal_terminal_fault = (uint8_t)progress.fault;
+	g_ota_rehearsal_dark_us =
+		(uint32_t)(progress.dark_window_cycles / cycles_per_us);
+	g_ota_rehearsal_max_step_us = progress.max_step_cycles / cycles_per_us;
+	if (g_ota_rehearsal_ran_injected)
+		ota_rehearsal_finish(
+			progress.phase == AIUS_OTA_ACTIVATE_FAULTED &&
+					progress.fault ==
+						AIUS_OTA_ACTIVATE_FAULT_VERIFY
+				? OTA_REHEARSAL_PASS
+				: OTA_REHEARSAL_FAIL);
+	else
+		ota_rehearsal_finish(
+			progress.phase == AIUS_OTA_ACTIVATE_READY_TO_RESET
+				? OTA_REHEARSAL_PASS
+				: OTA_REHEARSAL_FAIL);
 }
 #endif /* AIUS_OTA */
 
@@ -6765,5 +7179,9 @@ FLASHMEM void loop(void)
 	 * has reached the wire. */
 	if (g_ota_activation_requested)
 		service_ota_activation(now_ms);
+	/* The deferred rehearsal: the same quiet window against the scratch
+	 * region, reset emulated, interrupts restored, verdict into ota_diag. */
+	if (g_ota_rehearsal_requested)
+		service_ota_rehearsal(now_ms);
 #endif
 }

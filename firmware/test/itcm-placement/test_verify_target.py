@@ -303,5 +303,91 @@ class LtoTests(unittest.TestCase):
                 self.assertGreater(VERIFY.verify_no_lto(ini, environment), 0)
 
 
+def symbol_table(*rows: tuple[str, int]) -> dict[str, int]:
+    """A parsed symbol table holding every dark-window symbol in ITCM, with
+    the given (name, address) rows overriding or extending it. C++ statics
+    appear in their real _ZL mangling; the two C symbols stay plain -- the
+    same mix `readelf -sW` on the linked image produces."""
+    table: dict[str, int] = {}
+    address = 0x100
+    for name in VERIFY.DARK_WINDOW_SYMBOLS:
+        if name.startswith("aius_"):
+            table[name] = address
+        else:
+            table[f"_ZL{len(name)}{name}Pv"] = address
+        address += 0x40
+    for name, value in rows:
+        table[name] = value
+    return table
+
+
+class DarkWindowTests(unittest.TestCase):
+    """The linked-image residency gate: a dark-window function that was
+    inlined away (no symbol) or landed outside ITCM must fail, because both
+    spell 'the dark window executes from wherever the caller lives' -- the
+    2026-08-01 incident's mechanism."""
+
+    def test_parses_func_symbols_only(self) -> None:
+        output = (
+            "Symbol table '.symtab' contains 4 entries:\n"
+            "   Num:    Value  Size Type    Bind   Vis      Ndx Name\n"
+            "     1: 00000239   200 FUNC    LOCAL  DEFAULT    1 "
+            "_ZL11ota_quiesceP14OtaIrqSnapshot\n"
+            "     2: 20046c38    64 OBJECT  LOCAL  DEFAULT    4 "
+            "_ZL22g_ota_rehearsal_health\n"
+            "     3: 00000169    76 FUNC    GLOBAL DEFAULT    1 "
+            "aius_ota_activate_check_erase_in\n"
+        )
+        parsed = VERIFY.parse_function_symbols(output)
+        self.assertEqual(
+            parsed,
+            {
+                "_ZL11ota_quiesceP14OtaIrqSnapshot": 0x239,
+                "aius_ota_activate_check_erase_in": 0x169,
+            },
+        )
+
+    def test_a_complete_itcm_table_passes(self) -> None:
+        self.assertEqual(
+            VERIFY.verify_dark_window_symbols(symbol_table()),
+            len(VERIFY.DARK_WINDOW_SYMBOLS),
+        )
+
+    def test_an_inlined_run_loop_fails_as_missing(self) -> None:
+        table = symbol_table()
+        del table["_ZL29ota_activate_run_and_finalizePv"]
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"inlined away.*run_and_finalize"
+        ):
+            VERIFY.verify_dark_window_symbols(table)
+
+    def test_a_flash_resident_symbol_fails_as_misplaced(self) -> None:
+        # Same key the fixture generates, so the row OVERRIDES the ITCM entry
+        # with a flash address -- the folded-into-loop() shape that shipped.
+        table = symbol_table(("_ZL16ota_rehearse_runPv", 0x60017000))
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"outside ITCM.*0x60017000"
+        ):
+            VERIFY.verify_dark_window_symbols(table)
+
+    def test_the_length_prefix_is_exact_name_matching(self) -> None:
+        """The inject wrapper's symbol must NOT satisfy ota_flash_read's
+        entry: _ZL14 cannot match a 32-character name."""
+        table = symbol_table()
+        del table["_ZL14ota_flash_readPv"]
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError,
+            r"inlined away(?!.*inject).*ota_flash_read",
+        ):
+            VERIFY.verify_dark_window_symbols(table)
+
+    def test_dtcm_counts_as_outside_itcm(self) -> None:
+        table = symbol_table(("_ZL12ota_wdt_feedPv", 0x20001000))
+        with self.assertRaisesRegex(
+            VERIFY.VerificationError, r"outside ITCM.*ota_wdt_feed"
+        ):
+            VERIFY.verify_dark_window_symbols(table)
+
+
 if __name__ == "__main__":
     unittest.main()

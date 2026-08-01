@@ -103,6 +103,8 @@ typedef struct {
 	AiusOpticalAppOtaResult ota_activate_result;
 	AiusOpticalAppOtaResult ota_enable_activation_result;
 	AiusOpticalAppOtaResult ota_self_test_result;
+	AiusOpticalAppOtaResult ota_rehearse_result;
+	bool last_ota_rehearse_injected;
 	uint32_t ota_next_offset;
 	uint32_t last_ota_offset;
 	size_t last_ota_length;
@@ -476,6 +478,15 @@ static AiusOpticalAppOtaResult fake_ota_self_test_flash(void *context)
 	return fake->ota_self_test_result;
 }
 
+static AiusOpticalAppOtaResult fake_ota_rehearse(void *context,
+                                                 bool inject_fault)
+{
+	Fake *fake = (Fake *)context;
+	record(fake, "ota_rehearse");
+	fake->last_ota_rehearse_injected = inject_fault;
+	return fake->ota_rehearse_result;
+}
+
 static AiusOpticalAppOta fake_ota(Fake *fake)
 {
 	AiusOpticalAppOta ota;
@@ -490,6 +501,7 @@ static AiusOpticalAppOta fake_ota(Fake *fake)
 	ota.activate = fake_ota_activate;
 	ota.enable_activation = fake_ota_enable_activation;
 	ota.self_test_flash = fake_ota_self_test_flash;
+	ota.rehearse = fake_ota_rehearse;
 	return ota;
 }
 
@@ -604,6 +616,7 @@ static void fixture_init(Fixture *fixture)
 	fixture->fake.ota_activate_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_enable_activation_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture->fake.ota_self_test_result = AIUS_OPTICAL_APP_OTA_OK;
+	fixture->fake.ota_rehearse_result = AIUS_OPTICAL_APP_OTA_OK;
 	fixture_init_ota_document(&fixture->fake);
 	app = fake_app(&fixture->fake);
 	assert(aius_optical_app_init(&fixture->dispatcher, &app, fixture->body,
@@ -2579,7 +2592,9 @@ static const AiusOpticalAppOtaRoute kOtaRoutes[] = {
 	AIUS_OPTICAL_APP_OTA_ROUTE_ARM, AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY,
 	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT, AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
 	AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
-	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST, AIUS_OPTICAL_APP_OTA_ROUTE_NONE
+	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
+	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
+	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT, AIUS_OPTICAL_APP_OTA_ROUTE_NONE
 };
 
 /* OTA is a compile-time option that defaults OFF, so "this build has no OTA" is
@@ -2637,16 +2652,16 @@ static void test_ota_table_registration(void)
 	fixture_init(&fixture);
 	ota = fake_ota(&fixture.fake);
 
-	for (size_t i = 0; i < 9u; ++i) {
+	for (size_t i = 0; i < 10u; ++i) {
 		AiusOpticalAppOta holed = fake_ota(&fixture.fake);
 		void **slots[] = {
 			(void **)&holed.present, (void **)&holed.status,
 			(void **)&holed.chunk, (void **)&holed.arm,
 			(void **)&holed.verify, (void **)&holed.abort,
 			(void **)&holed.activate, (void **)&holed.enable_activation,
-			(void **)&holed.self_test_flash
+			(void **)&holed.self_test_flash, (void **)&holed.rehearse
 		};
-		assert(ARRAY_LENGTH(slots) == 9u);
+		assert(ARRAY_LENGTH(slots) == 10u);
 		*slots[i] = NULL;
 		assert(!aius_optical_app_set_ota(&fixture.dispatcher, &holed));
 		/* Refused AND left absent -- fail-closed, not half-wired. */
@@ -2690,7 +2705,9 @@ static void test_ota_routes_are_authenticated(void)
 		AIUS_OPTICAL_APP_OTA_ROUTE_VERIFY, AIUS_OPTICAL_APP_OTA_ROUTE_ABORT,
 		AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,
 		AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION,
-		AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST
+		AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
+		AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
+		AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT
 	};
 	static const char *const refused_calls[] = {
 		"ota_present", "auth_matches"
@@ -3074,6 +3091,51 @@ static void test_ota_activation_verbs(void)
 	expect_immediate(dispatch_ota(&fixture, AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,
 	                              OTA_AUTH, NULL, -1),
 	                 500, "{\"ok\":false,\"error\":\"ota_self_test_failed\"}");
+
+	/* The rehearsal pair: both routes reach the ONE callback with the arm
+	 * flag that names them, and both acknowledge accepted-and-deferred --
+	 * the verdict arrives later in ota_diag, not in this body. */
+	{
+		static const char *const rehearse_calls[] = {
+			"ota_present", "auth_matches", "ota_rehearse"
+		};
+		expect_immediate(dispatch_ota(&fixture,
+		                              AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
+		                              OTA_AUTH, NULL, -1),
+		                 200, "{\"ok\":true,\"rehearsing\":true}");
+		expect_log(&fixture, rehearse_calls,
+		           ARRAY_LENGTH(rehearse_calls));
+		assert(!fixture.fake.last_ota_rehearse_injected);
+
+		expect_immediate(
+			dispatch_ota(&fixture,
+			             AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,
+			             OTA_AUTH, NULL, -1),
+			200,
+			"{\"ok\":true,\"rehearsing\":true,"
+			"\"fault_injection\":true}");
+		expect_log(&fixture, rehearse_calls,
+		           ARRAY_LENGTH(rehearse_calls));
+		assert(fixture.fake.last_ota_rehearse_injected);
+
+		/* The latch-off and busy refusals ride the same verdict map as
+		 * every OTA verb. */
+		fixture.fake.ota_rehearse_result =
+			AIUS_OPTICAL_APP_OTA_ACTIVATION_DISABLED;
+		expect_immediate(
+			dispatch_ota(&fixture,
+			             AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,
+			             OTA_AUTH, NULL, -1),
+			409,
+			"{\"ok\":false,\"error\":\"ota_activation_disabled\"}");
+		fixture.fake.ota_rehearse_result =
+			AIUS_OPTICAL_APP_OTA_STATE_REFUSED;
+		expect_immediate(
+			dispatch_ota(&fixture,
+			             AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,
+			             OTA_AUTH, NULL, -1),
+			409, "{\"ok\":false,\"error\":\"ota_state\"}");
+	}
 }
 
 /* activation_available in GET /api/ota tracks the runtime latch the application

@@ -253,6 +253,45 @@ SECTION_LINE = re.compile(
     r"(\S+)\s"                 # flags
 )
 
+# The OTA dark-window call graph, pinned in the LINKED image. The 2026-08-01
+# incident's second finding (aius-ota-upgrade.md §Incident): this core's
+# FASTRUN is section placement ONLY -- no noinline -- so GCC folded the
+# single-caller FASTRUN run-to-completion loop into its FLASHMEM caller and
+# the dark window executed FROM THE FLASH BEING ERASED. Section-table checks
+# on the .o cannot see that (the inlined copy has no section of its own), so
+# this check reads the linked ELF's symbol table: every name below must EXIST
+# as a FUNC and its address must be ITCM. A symbol that vanished was inlined
+# into some caller -- wherever that caller lives, the guarantee is gone.
+# C++ file-statics are matched through their _ZL<len><name> mangling, length
+# prefix included, so `ota_flash_read` cannot swallow
+# `ota_flash_read_inject_head_fault`.
+DARK_WINDOW_SYMBOLS = (
+    # optical_main.cpp: the window drivers and both run loops.
+    "ota_park_interrupt_sources",
+    "ota_restore_interrupt_sources",
+    "ota_quiesce",
+    "ota_activate_run_and_finalize",
+    "ota_rehearse_run",
+    # optical_main.cpp: the primitives the sequencer calls through pointers.
+    "ota_flash_erase",
+    "ota_flash_program",
+    "ota_flash_read",
+    "ota_flash_read_inject_head_fault",
+    "ota_wdt_feed",
+    "ota_flash_cycles",
+    "ota_health_read",
+    "ota_health_write",
+    "ota_rehearsal_health_read",
+    "ota_rehearsal_health_write",
+    # lib/aius_ota: the in-window step entry and the published bounds.
+    "aius_ota_activate_step",
+    "aius_ota_activate_check_erase_in",
+    "aius_ota_activate_check_span_in",
+)
+# ITCM occupies the bottom of the address map; DTCM starts at 0x20000000 and
+# flash at 0x60000000, so anything at or above this bound is not ITCM code.
+ITCM_ADDRESS_LIMIT = 0x00080000
+
 # platformio.ini, read only to prove the flag that would blind every per-object
 # check above is absent. `${section.key}` is PlatformIO's interpolation syntax;
 # INI_REF finds one occurrence of it.
@@ -492,6 +531,80 @@ def verify_recorder_cold_helper(build_dir: Path, readelf: str) -> int:
     return len(RECORDER_COLD_SECTIONS)
 
 
+def parse_function_symbols(output: str) -> dict[str, int]:
+    """FUNC symbols from `readelf -sW` on the linked ELF: name -> st_value.
+    The Thumb bit rides in the value and is irrelevant to a bank compare."""
+    symbols: dict[str, int] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 8 or parts[3] != "FUNC":
+            continue
+        try:
+            value = int(parts[1], 16)
+        except ValueError:
+            continue
+        symbols.setdefault(parts[7], value)
+    return symbols
+
+
+def dark_window_symbol_address(symbols: dict[str, int], name: str):
+    """The address of `name` -- a plain C symbol, or a C++ file-static through
+    its _ZL<len><name> mangling. The length prefix is the disambiguator: it
+    makes the match exact-name, never prefix (ota_flash_read's 14 cannot match
+    the inject wrapper's 32). None when the symbol does not exist at all."""
+    if name in symbols:
+        return symbols[name]
+    mangled = f"_ZL{len(name)}{name}"
+    for symbol, value in symbols.items():
+        if symbol.startswith(mangled):
+            return value
+    return None
+
+
+def verify_dark_window_symbols(symbols: dict[str, int]) -> int:
+    """Every dark-window function exists as its own FUNC symbol AND lives in
+    ITCM. Pure half, driven by the suite over fabricated symbol tables."""
+    missing = []
+    misplaced = []
+    for name in DARK_WINDOW_SYMBOLS:
+        value = dark_window_symbol_address(symbols, name)
+        if value is None:
+            missing.append(name)
+        elif value >= ITCM_ADDRESS_LIMIT:
+            misplaced.append(f"{name} at 0x{value:08x}")
+    if missing or misplaced:
+        details = []
+        if missing:
+            details.append(
+                "inlined away (no symbol): " + ", ".join(sorted(missing))
+            )
+        if misplaced:
+            details.append("outside ITCM: " + ", ".join(sorted(misplaced)))
+        raise VerificationError(
+            "dark-window residency: " + "; ".join(details) + ". FASTRUN on "
+            "this core is section-only (no noinline); a vanished symbol was "
+            "folded into its caller and executes from wherever THAT lives -- "
+            "for a FLASHMEM caller, from the flash being erased "
+            "(aius-ota-upgrade.md §Incident 2026-08-01). Restore "
+            "AIUS_OTA_DARK_WINDOW_FN (FASTRUN + noinline) on the named "
+            "function."
+        )
+    return len(DARK_WINDOW_SYMBOLS)
+
+
+def verify_dark_window_residency(build_dir: Path, readelf: str) -> int:
+    elf = build_dir / "firmware.elf"
+    if not elf.exists():
+        raise VerificationError(f"linked image not found: {elf}")
+    result = subprocess.run(
+        [readelf, "-sW", str(elf)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return verify_dark_window_symbols(parse_function_symbols(result.stdout))
+
+
 def group_ldf_objects(paths: Iterable[str]) -> dict[str, list[str]]:
     """LDF-shaped object paths grouped by library name.
 
@@ -713,6 +826,13 @@ def _recorder_cold_summary(checked: int) -> str:
     )
 
 
+def _dark_window_summary(checked: int) -> str:
+    return (
+        "dark-window ITCM residency: PASS "
+        f"({checked} OTA symbols present in the linked image, all ITCM)"
+    )
+
+
 def _ldf_summary(libraries: int, gated: int) -> str:
     return (
         "LDF-library ITCM placement: PASS "
@@ -758,6 +878,9 @@ def verify_cold_placement(source, target, env) -> None:
     print(_ldf_summary(*verify_ldf_libraries_in_build(build_dir, readelf)))
     print(_recorder_cold_summary(
         verify_recorder_cold_helper(build_dir, readelf)
+    ))
+    print(_dark_window_summary(
+        verify_dark_window_residency(build_dir, readelf)
     ))
 
 
@@ -825,6 +948,12 @@ def _main(argv: list[str]) -> int:
         print(f"recorder-object ITCM placement: FAIL: {error}", file=sys.stderr)
         return 1
     print(_recorder_cold_summary(recorder))
+    try:
+        dark = verify_dark_window_residency(build_dir, args.readelf)
+    except (OSError, subprocess.CalledProcessError, VerificationError) as error:
+        print(f"dark-window ITCM residency: FAIL: {error}", file=sys.stderr)
+        return 1
+    print(_dark_window_summary(dark))
     return 0
 
 

@@ -1676,7 +1676,8 @@ static FLASHMEM bool ota_wired(const AiusOpticalAppOta *ota)
 	return ota->present != NULL && ota->status != NULL &&
 	       ota->chunk != NULL && ota->arm != NULL && ota->verify != NULL &&
 	       ota->abort != NULL && ota->activate != NULL &&
-	       ota->enable_activation != NULL && ota->self_test_flash != NULL;
+	       ota->enable_activation != NULL && ota->self_test_flash != NULL &&
+	       ota->rehearse != NULL;
 }
 
 /* Both gates run BEFORE the switch, for the reason route_is_control()'s gate
@@ -1742,6 +1743,17 @@ static FLASHMEM const AiusHttpApplicationResponse *dispatch_ota(
 		return ota_verdict_answer(dispatcher,
 		                          ota->self_test_flash(ota->context),
 		                          "{\"ok\":true,\"self_test_flash\":\"pass\"}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE:
+		/* Accepted-and-deferred, like activate: the 200 drains, then loop()
+		 * runs the full sequence against the scratch window with the reset
+		 * emulated. The verdict lands in ota_diag when the board resumes. */
+		return ota_verdict_answer(dispatcher,
+		                          ota->rehearse(ota->context, false),
+		                          "{\"ok\":true,\"rehearsing\":true}");
+	case AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT:
+		return ota_verdict_answer(
+			dispatcher, ota->rehearse(ota->context, true),
+			"{\"ok\":true,\"rehearsing\":true,\"fault_injection\":true}");
 	case AIUS_OPTICAL_APP_OTA_ROUTE_NONE:
 	default:
 		break;
@@ -1953,6 +1965,11 @@ FLASHMEM const AiusHttpApplicationResponse *aius_optical_app_http_dispatch(
 		                    request);
 	case AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH:
 		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST, request);
+	case AIUS_HTTP_ROUTE_OTA_REHEARSE:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE, request);
+	case AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT:
+		return dispatch_ota(dispatcher, AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT,
+		                    request);
 	case AIUS_HTTP_ROUTE_UNKNOWN:
 	default:
 		break;

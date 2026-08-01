@@ -94,7 +94,19 @@ typedef enum {
 	 * only /api/ota/activate is documented. */
 	AIUS_HTTP_ROUTE_OTA_ACTIVATE,
 	AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION,
-	AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH
+	AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH,
+	/* The 2026-08-01 incident's re-proof verbs (bench/operator surface, same
+	 * class as enable-activation/self-test: auth-gated at dispatch, absent
+	 * from the OpenAPI contract). POST /api/ota/rehearse runs the FULL
+	 * activation sequence -- verify, quiesce with every interrupt source
+	 * parked, erase-head-first/program-head-last, byte-compare per chunk --
+	 * against a scratch flash window far above the image, with the reset
+	 * EMULATED (a verdict instead of SYSRESETREQ) and interrupts restored
+	 * after. POST /api/ota/rehearse-fault is the negative arm: an injected
+	 * readback fault on the scratch head asserts the head-compare halt on
+	 * REAL primitives. Unconditional ids, like every OTA id above. */
+	AIUS_HTTP_ROUTE_OTA_REHEARSE,
+	AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT
 } AiusHttpRoute;
 
 typedef enum {

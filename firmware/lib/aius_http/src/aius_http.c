@@ -164,6 +164,10 @@ static FLASHMEM AiusHttpRoute route_for(const uint8_t *path, size_t length,
 		return AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION;
 	if (token_equals(path, length, "/api/ota/self-test-flash"))
 		return AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH;
+	if (token_equals(path, length, "/api/ota/rehearse"))
+		return AIUS_HTTP_ROUTE_OTA_REHEARSE;
+	if (token_equals(path, length, "/api/ota/rehearse-fault"))
+		return AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT;
 	if (token_equals(path, length, "/api/recorder"))
 		return AIUS_HTTP_ROUTE_RECORDER;
 	if (token_equals(path, length, "/api/recorder/freeze"))
@@ -472,7 +476,9 @@ FLASHMEM AiusHttpResult aius_http_parse(const uint8_t *data, size_t length,
 	     request->route == AIUS_HTTP_ROUTE_OTA_ABORT ||
 	     request->route == AIUS_HTTP_ROUTE_OTA_ACTIVATE ||
 	     request->route == AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION ||
-	     request->route == AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH) &&
+	     request->route == AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH ||
+	     request->route == AIUS_HTTP_ROUTE_OTA_REHEARSE ||
+	     request->route == AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT) &&
 	    request->method != AIUS_HTTP_POST)
 		return AIUS_HTTP_ERR_METHOD;
 	if (request->route == AIUS_HTTP_ROUTE_REPLAYS &&

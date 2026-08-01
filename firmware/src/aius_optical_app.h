@@ -369,7 +369,9 @@ typedef enum {
 	AIUS_OPTICAL_APP_OTA_ROUTE_ABORT,    /* POST /api/ota/abort    (auth) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_ACTIVATE,          /* POST /api/ota/activate          (auth) */
 	AIUS_OPTICAL_APP_OTA_ROUTE_ENABLE_ACTIVATION, /* POST /api/ota/enable-activation (auth) */
-	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST          /* POST /api/ota/self-test-flash   (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_SELF_TEST,         /* POST /api/ota/self-test-flash   (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE,          /* POST /api/ota/rehearse          (auth) */
+	AIUS_OPTICAL_APP_OTA_ROUTE_REHEARSE_FAULT     /* POST /api/ota/rehearse-fault    (auth) */
 } AiusOpticalAppOtaRoute;
 
 /* The upgrade lifecycle, value-for-value the AiusOtaState the core publishes.
@@ -482,7 +484,7 @@ typedef struct {
 } AiusOpticalAppOtaStatus;
 
 /* The OTA seam. Every entry is required as a SET: aius_optical_app_set_ota()
- * takes all nine or none, so a half-wired table is refused at registration
+ * takes all ten or none, so a half-wired table is refused at registration
  * rather than discovered as a null call at dispatch.
  *
  * `context` is the OTA adapter's own, not AiusOpticalApp's: the session, its
@@ -547,6 +549,21 @@ typedef struct {
 	 * OK == pass, SELF_TEST_FAILED == the read-back mismatched,
 	 * ACTIVATION_DISABLED == the latch is off. */
 	AiusOpticalAppOtaResult (*self_test_flash)(void *context);
+
+	/* Requests the 2026-08-01 incident's re-proof: the FULL activation
+	 * sequence (verify, quiesce with every interrupt source parked, head
+	 * erased first / programmed last, byte-compare per chunk) against a
+	 * scratch flash window, with the reset EMULATED and interrupts restored
+	 * -- the windowed primitives make an address below the scratch base
+	 * structurally unreachable, so the boot region cannot be touched.
+	 * `inject_fault` true is the negative arm: a readback fault injected on
+	 * the scratch head, asserting the head-compare halt on real primitives.
+	 * Deferred like activate -- the 200 drains, then loop() runs the
+	 * rehearsal (the board goes quiet for its duration and resumes after);
+	 * the verdict lands in ota_diag. Gated behind the activation latch like
+	 * the self-test, and refused while a real activation or another
+	 * rehearsal is pending. OK == the rehearsal was accepted and deferred. */
+	AiusOpticalAppOtaResult (*rehearse)(void *context, bool inject_fault);
 } AiusOpticalAppOta;
 
 /* Caller-owned dispatcher state.

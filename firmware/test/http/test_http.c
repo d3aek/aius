@@ -101,6 +101,12 @@ static void test_ota_routes(void)
 	         AIUS_HTTP_ROUTE_OTA_ENABLE_ACTIVATION);
 	parse_ok("POST /api/ota/self-test-flash HTTP/1.0\r\n\r\n",
 	         AIUS_HTTP_ROUTE_OTA_SELF_TEST_FLASH);
+	/* The 2026-08-01 re-proof's two verbs: the scratch-window rehearsal and
+	 * its fault-injected negative arm. POST-only like every OTA verb. */
+	parse_ok("POST /api/ota/rehearse HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_REHEARSE);
+	parse_ok("POST /api/ota/rehearse-fault HTTP/1.0\r\n\r\n",
+	         AIUS_HTTP_ROUTE_OTA_REHEARSE_FAULT);
 
 	/* PUT /api/ota/image carries a body and a Content-Range and is admitted
 	 * into the PUT allow-list -- the resumable-chunk shape. */
@@ -129,6 +135,19 @@ static void test_ota_routes(void)
 	 * the arm above). */
 	assert(aius_http_parse((const uint8_t *)get_activate, strlen(get_activate),
 	                       &request) == AIUS_HTTP_ERR_METHOD);
+	/* And the rehearsal pair. */
+	{
+		const char *get_rehearse =
+			"GET /api/ota/rehearse HTTP/1.0\r\n\r\n";
+		const char *get_rehearse_fault =
+			"GET /api/ota/rehearse-fault HTTP/1.0\r\n\r\n";
+		assert(aius_http_parse((const uint8_t *)get_rehearse,
+		                       strlen(get_rehearse),
+		                       &request) == AIUS_HTTP_ERR_METHOD);
+		assert(aius_http_parse((const uint8_t *)get_rehearse_fault,
+		                       strlen(get_rehearse_fault),
+		                       &request) == AIUS_HTTP_ERR_METHOD);
+	}
 
 	/* No shadow of a neighbouring route, and no prefix match. */
 	assert(aius_http_parse((const uint8_t *)near_miss, strlen(near_miss),

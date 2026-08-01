@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, teensy, ota, http, security, recovery]
-updated: 2026-07-28
+updated: 2026-08-01
 toc: true
 ---
 
@@ -468,17 +468,97 @@ The activation then flashed a non-bootable image: after
 `POST /api/ota/activate` the board reset into the RT1062 ROM serial
 downloader (`1fc9:0135`, "SE Blank RT Family") — the ROM's fallback when
 the FlexSPI boot image is invalid. Not a brick; the recoverable state the
-design anticipated. **Root cause is a firmware bug in the dark-window
+design anticipated. ~~**Root cause is a firmware bug in the dark-window
 sequence, not the payload:** the signed payload carried a correct FCB, yet
 the board came up with an unbootable boot region, so sector 0 (the FCB,
 programmed LAST) ended blank/wrong while the sequence still issued
 `SYSRESETREQ`. The dark-window byte-compare that must fault-and-halt on a
-bad head instead let the reset proceed — a path the host fakes and the
+bad head instead let the reset proceed~~ — a path the host fakes and the
 scratch-sector self-test (one sector, no FCB-last-then-reset) do not
 cover. **The activate route must stay disabled until this is fixed and
 re-proven by a method that does not risk the boot region — e.g. a
 full-sequence rehearsal against a scratch flash region with an emulated
 reset, asserting the head-compare fault actually halts.**
+
+**Root cause corrected 2026-08-01, from code, after recovery. Two
+defects, one deterministic and one intermittent, both of the same class:
+something other than the RAM-resident step path executed from the flash
+being rewritten.** The struck-through inference was wrong: the head
+byte-compare never got the chance to lie, because the sequence died
+mid-BODY, long before PROGRAM_HEAD — which is also why sector 0 was blank
+(erased first, never reprogrammed).
+
+**Finding 1, the deterministic killer: the dark-window run loop itself
+executed from flash.** This core's `FASTRUN` is section placement ONLY
+(`pgmspace.h`: `__attribute__((section(".fastrun")))`, no `noinline`), so
+GCC inlined the single-caller FASTRUN `ota_activate_run_and_finalize()`
+through FLASHMEM `service_ota_activation()` into FLASHMEM `loop()` — the
+linked incident-image shape (no `run_and_finalize` symbol; the loop's
+code inside `loop()` at a flash address ~94 KiB into the image). The
+BODY pass erases ascending; the moment `do_erase()` returned from
+erasing the sector holding `loop()`'s own code, the next instruction
+fetch came from a blank sector → fault. Per-object ITCM guards could not
+see it: an inlined copy has no section of its own.
+
+**Finding 2, the intermittent class: every interrupt source stayed live
+through the window.** `ota_quiesce()` parked only the audio ISR; the run
+loop executed with interrupts ENABLED between primitives; and even
+inside each primitive the mask did not hold — the core driver's
+`flash_wait()` ends every erase/program with an unconditional
+`__enable_irq()` (`cores/teensy4/eeprom.c`), so with USB SOF at 1 kHz
+and ENET frames pending, an ISR was taken inside virtually every one of
+the ~1,900 primitive calls. On this part all `.rodata` lives in flash:
+an ISR whose const data (or FLASHMEM callee) sat in the
+currently-erased sector read blanks and faulted.
+
+Either fault lands in the core's `unused_interrupt_vector()`, which ends
+in `SCB_AIRCR = 0x05FA0004` (`startup.c`): **the SYSRESETREQ was the
+crash handler's**, issued after its 8-second spin, with the FCB still
+erased → ROM SDP. The observed sequence (a client-visible 200, then the
+board in SDP) matches, and the self-test could not have caught either
+finding: one scratch sector mutates no ISR-reachable or loop-resident
+content.
+
+**Fix 1 (this commit): `noinline` restored on the whole dark-window
+surface.** `AIUS_OTA_DARK_WINDOW_FN` (FASTRUN + `noinline`) on the run
+loops, the quiesce and the interrupt park/restore, so each is a real
+ITCM symbol; and a new post-link gate in the itcm-placement suite
+(`dark-window ITCM residency`) reads the LINKED image's symbol table and
+fails if any of the 18 dark-window symbols is missing (inlined away) or
+outside ITCM — the check per-object section tables structurally cannot
+perform, with mutation tests for both failure spellings.
+
+**Fix 2 (this commit): the dark window now parks every interrupt
+source, not merely PRIMASK.** `ota_quiesce()` gained a fourth step,
+`ota_park_interrupt_sources()`: `__disable_irq()`, all five `NVIC_ICER`
+banks cleared, SysTick's `TICKINT` off, PendSV/SysTick pendings wiped —
+the same move the core's own fault handler makes ("disable all NVIC
+interrupts, as usb_isr() might use `__enable_irq()`"). With no source
+enabled, the driver's internal enable takes nothing, which discharges RM
+note 3 for the M7 across the whole window instead of only inside each
+primitive. The park is snapshot-restorable for the rehearsal below;
+one-way for a real activation. An optical-cutover guard pins the park's
+step order and the restore's completeness, with mutation self-tests.
+
+**The re-proof surface (this commit): `POST /api/ota/rehearse` and
+`/api/ota/rehearse-fault`** — the full activation sequence (pre-window
+verify over the PSRAM copy, quiesce with everything parked, head erased
+first / programmed last, byte-compare per chunk) against a scratch flash
+window at `0x60400000`, with the reset EMULATED and interrupts restored
+after. The sequencer's begin() now takes an injectable flash window, the
+composition's primitives re-bound against it through their ctx, so an
+address below the scratch base is structurally unreachable from a
+rehearsal (host-proven with a whole-trace address sweep). The rehearsal
+runs on a COPY of the session (the real one stays ARMED; no re-upload
+between rehearsal and activation) and a scratch health record (no trial
+budget spent). The negative arm injects a one-bit fault into the first
+head-chunk readback and must land FAULTED with the VERIFY fault — the
+incident's demanded "assert the head-compare fault actually halts", on
+the real driver. Verdict plus `rehearsal_dark_us` / `rehearsal_max_step_us`
+land in `ota_diag`; both routes are auth- and latch-gated bench surface,
+deliberately absent from the OpenAPI path contract like the self-test.
+**Gate to lift the incident hold: both rehearsal arms pass on the bench;
+only then is a real activation attempted again.**
 
 Recovery needs the physical program button (the board is in RT1062 ROM
 SDP, not HalfKay/CDC, so no software path from here without NXP SDP
