@@ -72,6 +72,12 @@ deliberately not vendored.
   decode -- the scoping estimate of 15 malloc/free per frame does not hold
   on this path). Measured adapter slot need (`eac3` suite arena pass,
   context + handle/planes + init allocs): 179,232 B high-water.
+- CRC tables are HARDCODED (`CONFIG_HARDCODED_TABLES 1` in
+  `shim/config.h`, a fork-owned knob rather than a source edit): crc.c
+  compiles its 257-entry const tables (8,224 B rodata) instead of lazily
+  generating 8 x 1024-entry tables into 32,800 B of BSS -- BSS the target
+  would pay in DTCM. Marginally slower byte-wise CRC; decode
+  bit-identity unaffected.
 
 ## Consumers
 

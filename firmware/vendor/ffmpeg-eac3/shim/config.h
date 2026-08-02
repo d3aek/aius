@@ -58,6 +58,17 @@
 #define CONFIG_FTRAPV 0
 #define CONFIG_FASTDIV 0
 
+/* Hardcoded CRC tables (E-AC-3 plan phase 4, the DTCM flash-const rung):
+ * with this off, av_crc_get_table() lazily generates 8 x 1024-entry
+ * tables into 32,800 B of BSS -- which lands in the target's scarcest
+ * bank. With it on, crc.c compiles its own 257-entry const tables
+ * (8,224 B of rodata, flash-pinned on target) and the lazy path is
+ * never taken. The byte-wise av_crc walk over 257-entry tables is
+ * marginally slower per byte; the decode-cycle budget measurement in
+ * phase 4 covers it. Values are arithmetic constants -- bit-identity
+ * of the decode is untouched (host suite hashes re-prove). */
+#define CONFIG_HARDCODED_TABLES 1
+
 /* Fork policy: decode the independent (5.1) substream only; dependent
  * substreams are consumed, never decoded. See the [eac3-51-only] edits in
  * ac3defs.h / ac3dec.c / eac3dec.c. */
