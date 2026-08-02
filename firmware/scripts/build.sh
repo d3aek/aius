@@ -117,15 +117,19 @@ if [[ -x "$tc_bin/arm-none-eabi-gcc" ]]; then
 	echo "==> Toolchain: $("$tc_bin/arm-none-eabi-gcc" --version | head -1)"
 fi
 
-# The decoder's static arena is an uninitialised .bss symbol (g_arena_mem), so its
-# size comes straight from the ELF; feed it to the report for the DTCM annotation.
+# The decoder's static arena is an uninitialised .bss symbol (g_arena_memory),
+# so its size comes straight from the ELF; feed it to the report for the DTCM
+# annotation. (The pattern read `g_arena_mem$` for a while and silently never
+# matched -- the annotation was absent, not zero.)
 elf="$fw_root/.pio/build/$env_name/firmware.elf"
 report_args=(--size-log "$build_log")
 nm="$tc_bin/arm-none-eabi-nm"
 if [[ -x "$nm" && -f "$elf" ]]; then
-	# g_arena_mem is a file-static in a .cpp, so nm shows it name-mangled; -C
-	# demangles it back to the plain symbol the awk pattern matches.
-	arena_hex="$("$nm" -SC "$elf" | awk '/ g_arena_mem$/ {print $2; exit}')"
+	# g_arena_memory is a class-static in a .cpp, so nm shows it name-mangled;
+	# -C demangles it back to the qualified name the awk pattern matches.
+	# No early `exit` in the awk: under pipefail it would SIGPIPE nm (141)
+	# the moment the pattern actually matches.
+	arena_hex="$("$nm" -SC "$elf" | awk '/::g_arena_memory$/ && !found { print $2; found = 1 }')"
 	if [[ -n "$arena_hex" ]]; then
 		report_args+=(--arena-bytes "$((16#$arena_hex))")
 	fi

@@ -91,6 +91,25 @@ SECTIONS
 		. = ALIGN(4);
 	} > FLASH
 
+	/* AIUS ADDITION — read-only data pinned to flash (E-AC-3 phase 4 DTCM
+	 * funding). The framework script copies ALL .rodata into DTCM .data;
+	 * these claims keep it in flash instead, read through the cached XIP
+	 * path. The vendored decoder tables (dcadec ~79 KiB dominated by the
+	 * two cold VQ tables, liba52 ~4 KiB) and two string/table-heavy
+	 * first-party objects fund the decoder arena's growth to the E-AC-3
+	 * slot; the decode-cycle cost of the hot-table subset is re-measured
+	 * against the 8 ms budget as part of this phase's target acceptance.
+	 * Claimed here, BEFORE .data, because input sections bind to the
+	 * first output section that names them — the framework's .data line
+	 * below stays byte-identical. */
+	.text.aius_flashro : {
+		*vendor/dcadec-core/*.o(.rodata*)
+		*lib/aius_a52/a52/*.o(.rodata*)
+		*src/aius_optical_app.cpp.o(.rodata*)
+		*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
+		. = ALIGN(4);
+	} > FLASH
+
 	.text.itcm : {
 		. = . + 32; /* MPU to trap NULL pointer deref */
 		*(.fastrun)
@@ -227,3 +246,11 @@ ASSERT(_heap_end - _heap_start >= 0x20000,
  * this an upper bound rather than equality so code shrinkage remains legal. */
 ASSERT(_itcm_block_count <= 6,
 	"aius: ITCM growth would claim a seventh FlexRAM block and remove 32 KiB from the DTCM stack/locals zone")
+/* The DTCM stack/locals floor. Nothing in the framework script bounds DTCM
+ * statics: the bank is declared 512K, so an over-claim links clean and hands
+ * the stack a sliver. E-AC-3 phase 4 grows the decoder arena into this bank;
+ * this ASSERT turns an unfunded growth into a link error. 24,352 B is the
+ * smallest zone this board has demonstrably run with (the pre-TLS-fix
+ * figure recorded in platformio.ini). */
+ASSERT(_estack - _ebss >= 24352,
+	"aius: DTCM stack/locals zone below the 24,352 B proven floor (fund arena growth by pinning more cold rodata to flash)")

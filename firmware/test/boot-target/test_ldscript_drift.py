@@ -44,6 +44,27 @@ SECTION_BLOCK = """\t/* AIUS ADDITION — retained across reset, pinned to ORIGI
 
 """
 
+FLASHRO_BLOCK = """\t/* AIUS ADDITION — read-only data pinned to flash (E-AC-3 phase 4 DTCM
+\t * funding). The framework script copies ALL .rodata into DTCM .data;
+\t * these claims keep it in flash instead, read through the cached XIP
+\t * path. The vendored decoder tables (dcadec ~79 KiB dominated by the
+\t * two cold VQ tables, liba52 ~4 KiB) and two string/table-heavy
+\t * first-party objects fund the decoder arena's growth to the E-AC-3
+\t * slot; the decode-cycle cost of the hot-table subset is re-measured
+\t * against the 8 ms budget as part of this phase's target acceptance.
+\t * Claimed here, BEFORE .data, because input sections bind to the
+\t * first output section that names them — the framework's .data line
+\t * below stays byte-identical. */
+\t.text.aius_flashro : {
+\t\t*vendor/dcadec-core/*.o(.rodata*)
+\t\t*lib/aius_a52/a52/*.o(.rodata*)
+\t\t*src/aius_optical_app.cpp.o(.rodata*)
+\t\t*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
+\t\t. = ALIGN(4);
+\t} > FLASH
+
+"""
+
 STAGING_BLOCK = """\t/* AIUS ADDITION — flight-recorder staging, deliberately AFTER every
 \t * .bss.dma input so adding or resizing it can never move a pre-existing
 \t * DMAMEM object. 2026-07-27: declaring the 64 KiB staging ring DMAMEM
@@ -86,6 +107,7 @@ REQUIRED_ASSERTS = (
     "_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
     "_heap_end - _heap_start >= 0x20000",
     "_itcm_block_count <= 6",
+    "_estack - _ebss >= 24352",
 )
 
 # The heap must be re-based past the staging carve-out, or malloc grows into
@@ -119,6 +141,20 @@ def strip_additions(text: str) -> str:
             "the retained section must sit immediately before .bss.dma"
         )
     body = body.replace(SECTION_BLOCK, "", 1)
+
+    if body.count(FLASHRO_BLOCK) != 1:
+        raise DriftError(
+            "the .text.aius_flashro output section block is missing or edited"
+        )
+    # It must sit BEFORE the .data collector, or the claims are dead text and
+    # every claimed table silently returns to DTCM -- a link that succeeds
+    # while un-funding the decoder arena. Adjacency to .text.itcm pins it in
+    # the flash-section run, ahead of .data by construction.
+    if FLASHRO_BLOCK + "\t.text.itcm : {\n" not in body:
+        raise DriftError(
+            "the flashro section must sit immediately before .text.itcm"
+        )
+    body = body.replace(FLASHRO_BLOCK, "", 1)
 
     if body.count(STAGING_BLOCK) != 1:
         raise DriftError(
@@ -191,6 +227,17 @@ def self_test(ours: Path) -> None:
             "\t.bss.extram (NOLOAD) : {\n", SECTION_BLOCK + "\t.bss.extram (NOLOAD) : {\n", 1
         ),
         "drop the staging section": text.replace(STAGING_BLOCK, "", 1),
+        "drop the flashro section": text.replace(FLASHRO_BLOCK, "", 1),
+        "move the flashro section after .data": text.replace(
+            FLASHRO_BLOCK, "", 1
+        ).replace(
+            "\t.bss ALIGN(4) : {\n",
+            FLASHRO_BLOCK + "\t.bss ALIGN(4) : {\n",
+            1,
+        ),
+        "drop the DTCM stack floor": re.sub(
+            r'ASSERT\(_estack - _ebss >= 24352,\n\t"[^"]*"\)\n?', "", text
+        ),
         "move the staging section before .bss.dma": text.replace(
             STAGING_BLOCK, "", 1
         ).replace(
