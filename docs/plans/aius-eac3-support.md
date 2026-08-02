@@ -184,6 +184,21 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    playback is impossible and tx underruns are an artifact of the
    source, not a defect. DTS/AC-3 decode cycles are re-measured beside
    it (their tables moved to flash-cached reads).
+   **On-box, flashed 2026-08-02:** the E-AC-3 image boots and stands
+   the 218,688 B arena up on hardware — `create_status` 0, 9/10
+   flash-boot campaign healthy (the outlier was a single 1.84 s
+   interrupts-masked stall, registered as its own observation in the
+   open-work register — flash/EEPROM-compaction-shaped, not the fixed
+   DPLL defect; boot gate `relocks` 0 throughout). The 3 s replay
+   fixture (93 whole burst periods, 2,285,568 B) is generated,
+   validated (`F872 4E1F 0015`, byte-count Pd, exact 12,288-word Pa
+   spacing) and uploaded to the card as `eac3_id51_3s`. **The
+   structural decode run is blocked on the bench loopback:** the glass
+   TX→RX loop presents a permanent live carrier and replay start
+   refuses against a carrier by design (409 `replay_carrier_present`;
+   confirmed replay-global with an AC-3 control and unwinnable by
+   timing across a reboot). The open-work register §Waiting on the
+   operator carries the unplug ask and the exact resume recipe.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until

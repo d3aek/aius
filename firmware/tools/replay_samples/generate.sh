@@ -42,7 +42,7 @@ mkdir -p "$out"
 encode() {
 	local name="$1"
 	local filter="$2"
-	echo "==> $name (${duration}s 5.1 WAV, DTS Core, AC-3, IEC 61937)"
+	echo "==> $name (${duration}s 5.1 WAV, DTS Core, AC-3, E-AC-3, IEC 61937)"
 	"$ffmpeg" -hide_banner -loglevel error -y \
 		-filter_complex "$filter" \
 		-map "[mix]" -t "$duration" -ar "$sr" -c:a pcm_s24le "$out/$name.wav"
@@ -57,6 +57,19 @@ encode() {
 	"$ffmpeg" -hide_banner -loglevel error -y \
 		-i "$out/$name.ac3" -map 0:a -c:a copy -f spdif \
 		"$out/${name}_ac3.iec"
+	# E-AC-3 (E-AC-3 plan phase 4): 384k 5.1 matches the committed
+	# tools/eac3_vectors corpus. FFmpeg's spdif muxer emits the type-21
+	# IEC framing (12,288-word burst period) natively. NOTE the replay
+	# seam drains 96,000 words/s against that period's 4x-rate link
+	# framing, so on the box this replays at ~1/4 real time: a structural
+	# decode proof (codec_pc 21, counters, cycle cost), never gapless
+	# playback -- the plan's Phase-4 acceptance note records this.
+	"$ffmpeg" -hide_banner -loglevel error -y \
+		-i "$out/$name.wav" -map 0:a -ar "$sr" -c:a eac3 -b:a 384k \
+		"$out/$name.eac3"
+	"$ffmpeg" -hide_banner -loglevel error -y \
+		-i "$out/$name.eac3" -map 0:a -c:a copy -f spdif \
+		"$out/${name}_eac3.iec"
 }
 
 encode channel_id_51 \

@@ -73,6 +73,28 @@ specified here. Strike items here in the commit that closes them.
   same day — the card was innocent** (owner challenged the verdict;
   the controlled A/B convicted the board's own runtime state, below).
   Keep the card.
+- **Unplug the glass loopback for the E-AC-3 replay acceptance run
+  (2026-08-02).** The loop (locked since 2026-07-28) presents a
+  permanent live carrier, and a replay start refuses against a carrier
+  by design (`replay_carrier_present`, guard `79a881f59` 2026-07-25).
+  Confirmed replay-global on the E-AC-3 image: the AC-3 control
+  (`channel_id_51_ac3`) refuses identically, and the refusal is
+  unwinnable by timing — 303 start attempts raced across a reboot all
+  409'd, SRPC LOCK pinned from +7.8 s (before HTTP rises), SRPC/SRFM
+  byte-stable across polls. Mid-run is also fatal on a loop: a started
+  replay lights the TX, the loop lights the RX, and replay
+  self-terminates on lock (defect 27's policy note). **With the loop
+  dark:** `POST /api/replays/start` body
+  `{"id":"eac3_id51_3s","loop":true}` (`X-Aius-SD-Auth`), sample
+  `/api/status` for `pipeline_diag.codec_pc` 21, decode counters and
+  `eac3_decode_cycles` against the 8 ms budget, re-measure DTS/AC-3
+  cycles beside it (`channel_id_51`, `channel_id_51_ac3` — their
+  tables moved to flash-cached reads), then `POST /api/replays/stop`
+  and re-plug. **Residual worth one probe:** if start still refuses
+  with the loop dark, raw `pllLocked()` is asserting without light
+  (the boot-lottery fossil family) and the start guard needs the
+  runtime's debounced carrier signal instead of the raw SRPC bit —
+  register that as a runtime defect.
 
 ## Open defects — runtime
 
@@ -295,8 +317,20 @@ specified here. Strike items here in the commit that closes them.
     owner LIFTED the gate 2026-08-02 — E-AC-3 Phase 4 (target
     integration) is cleared to flash
     ([`aius-eac3-support.md`](aius-eac3-support.md) Phase 4).
-
-## Recorded debt — small, none blocking
+- **Boot-adjacent interrupts-masked stall, ~1.84 s (observation,
+  2026-08-02).** One boot of the E-AC-3-image flash campaign (boot 6
+  of 10) recorded `runtime_epoch_max_us` 1,840,681 — a single stall
+  with interrupts masked, arithmetic-consistent with the epoch deficit
+  it left (375 epochs/s × 1.84 s ≈ 341 lost ≈ measured 341.7); every
+  other counter healthy before and after, and the other nine boots
+  clean. Shape says flash-wait with interrupts off (EEPROM-emulation
+  compaction is the standing suspect), NOT the fixed DPLL boot-lottery
+  defect (`relocks` 0, engines verified, rates nominal outside the one
+  window). Impact: a campaign classifier window that straddles the
+  stall reads a healthy boot as degraded — `boot_campaign.py`
+  classifications near a boot's first seconds should re-sample before
+  convicting. No fix owed until it recurs; a recurrence wants a DWT
+  timestamp + caller tag on the longest masked section.
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing

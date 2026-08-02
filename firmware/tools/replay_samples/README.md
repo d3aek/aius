@@ -14,7 +14,13 @@ Each generated item has a WAV reference and two encoded forms:
 
 - raw DTS Core (`<name>.dts`) and its IEC 61937 stream (`<name>.iec`);
 - raw 48 kHz, 5.1, 448-kbit/s AC-3 (`<name>.ac3`) and its IEC 61937 stream
-  (`<name>_ac3.iec`).
+  (`<name>_ac3.iec`);
+- raw 48 kHz, 5.1, 384-kbit/s E-AC-3 (`<name>.eac3`) and its type-21 IEC
+  61937 stream (`<name>_eac3.iec`). The type-21 burst period rides a
+  4x-rate link the replay seam does not model, so an E-AC-3 replay runs at
+  ~1/4 real time on the box: use it as a structural decode proof
+  (`pipeline_diag.codec_pc` 21, decode counters, `eac3_decode_cycles`),
+  never as gapless playback (E-AC-3 plan Phase 4 acceptance note).
 
 The IEC outputs are produced by FFmpeg's `spdif` muxer and are the files to
 upload to the Aius replay manager. The legacy DTS names stay unchanged.
