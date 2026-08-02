@@ -73,25 +73,36 @@ specified here. Strike items here in the commit that closes them.
   same day — the card was innocent** (owner challenged the verdict;
   the controlled A/B convicted the board's own runtime state, below).
   Keep the card.
-- **Unplug the glass loopback for the E-AC-3 replay acceptance run
-  (2026-08-02).** The loop (locked since 2026-07-28) presents a
-  permanent live carrier, and a replay start refuses against a carrier
-  by design (`replay_carrier_present`, guard `79a881f59` 2026-07-25).
-  Confirmed replay-global on the E-AC-3 image: the AC-3 control
-  (`channel_id_51_ac3`) refuses identically, and the refusal is
-  unwinnable by timing — 303 start attempts raced across a reboot all
-  409'd, SRPC LOCK pinned from +7.8 s (before HTTP rises), SRPC/SRFM
-  byte-stable across polls. Mid-run is also fatal on a loop: a started
-  replay lights the TX, the loop lights the RX, and replay
-  self-terminates on lock (defect 27's policy note). **With the loop
-  dark:** `POST /api/replays/start` body
-  `{"id":"eac3_id51_3s","loop":true}` (`X-Aius-SD-Auth`), sample
-  `/api/status` for `pipeline_diag.codec_pc` 21, decode counters and
-  `eac3_decode_cycles` against the 8 ms budget, re-measure DTS/AC-3
-  cycles beside it (`channel_id_51`, `channel_id_51_ac3` — their
-  tables moved to flash-cached reads), then `POST /api/replays/stop`
-  and re-plug. **Residual worth one probe:** if start still refuses
-  with the loop dark, raw `pllLocked()` is asserting without light
+- **Darken the CM6206 optical feed for the E-AC-3 replay acceptance
+  run (2026-08-02).** A replay start refuses against a live carrier by
+  design (`replay_carrier_present`, guard `79a881f59` 2026-07-25), and
+  the bench RX carrier is permanent. Confirmed replay-global on the
+  E-AC-3 image: the AC-3 control (`channel_id_51_ac3`) refuses
+  identically, and the refusal is unwinnable by timing — 303 start
+  attempts raced across a reboot all 409'd, SRPC LOCK pinned from
+  +7.8 s (before HTTP rises), SRPC/SRFM byte-stable across polls.
+  **The carrier source is the CM6206 dongle's optical out, not the TX
+  loop:** the measured carrier is 48,016.85 Hz = +351 ppm off nominal,
+  an external crystal (an own-TX loop would read ~0 ppm against the
+  Teensy's own clock). It is `usb 3-1` on the dev host (0d8c:0102,
+  ALSA card `ICUSBAUDIO7D`). **Software disable — needs root; the
+  agent's guards forbid sudo, so the operator runs it** (the ALSA
+  mixer exposes no S/PDIF-out switch and the USB node is root-only,
+  so no unprivileged path exists; owner authorized the disable
+  2026-08-02):
+  `echo 0 | sudo tee /sys/bus/usb/devices/3-1/authorized` then
+  `echo auto | sudo tee /sys/bus/usb/devices/3-1/power/control` —
+  suspend caps the device at 2.5 mA, which kills the optical LED;
+  deauthorize alone may leave it lit. Restore afterwards with `on` /
+  `1` in reverse order (or replug). **Then run**
+  [`eac3_acceptance.py`](../../firmware/tools/replay_samples/eac3_acceptance.py)
+  `--token <sd-auth>`: it polls until the carrier drops (the start
+  attempt is the exact guard probe), starts `eac3_id51_3s` looped,
+  samples `codec_pc` 21 / decode counters / `eac3_decode_cycles`
+  against the 8 ms budget, re-measures the AC-3 and DTS controls
+  (tables now flash-cached), stops everything and writes JSONL
+  evidence. **Residual worth one probe:** if start still refuses with
+  the RX provably dark, raw `pllLocked()` is asserting without light
   (the boot-lottery fossil family) and the start guard needs the
   runtime's debounced carrier signal instead of the raw SRPC bit —
   register that as a runtime defect.
