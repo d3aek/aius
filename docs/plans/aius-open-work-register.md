@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-08-01
+updated: 2026-08-02
 toc: true
 ---
 
@@ -574,6 +574,35 @@ where the only prior record was a plan aside.
   reopens. The bound is not weakened unilaterally
   ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
   §Acceptance).
+
+  **2026-08-02 — the U24 XL arrived and its optical self-loop passed the
+  CM6206-discriminator bracket at 44.1 kHz: no CM-class transmit fault at
+  any tested rate.** The unit (`0a92:00d1`, full-speed USB, host port 3-1;
+  the CM6206 is physically off the bus) ran the CM characterization's own
+  125 s direct-loop bracket plus stereo-identity/cadence refinement and a
+  bit-exact source comparison, via tooling committed with this entry
+  ([`source_qualification/`](../../firmware/tools/source_qualification/README.md)).
+  At 44.1 kHz — the CM's worst mode (7–9 impulses and 6.31 % unequal
+  stereo frames per 125 s run) — the U24 XL returned zero impulses, zero
+  unequal stereo frames, zero off-cadence intervals, and was bit-exact
+  against the source tone across all 5.5 M frames, a check the CM could
+  never pass. At 48 kHz a 15 s smoke was equally clean (bit-exact), but
+  the 125 s bracket was cut at 50.4 s when the device was unplugged
+  (21:26:04, bench rewiring in progress; Teensy USB appeared on port 3-2
+  at 21:23:30). The salvaged 48 kHz capture is bit-exact everywhere
+  except one bounded 103-frame episode at 2.27 s (one boundary frame,
+  ~100 frames held at a constant value, net 145-frame slip) exactly
+  coincident with a host docker-restart burst — an underrun/starvation
+  shape with L/R equal throughout, matching no CM6206 class (not a
+  high-byte impulse, not a word-phase slip); host-side attribution is
+  likely but unproven, so the rerun decides. Still owed before the
+  source is fully qualified: clean full 48 kHz and 32 kHz brackets on a
+  quiet bench (needs the operator to re-seat the U24 XL USB and optical
+  self-loop), then the ten-minute carrier observation — U24 XL TX into
+  the Teensy RX, since a self-loop cannot see carrier wander (capture is
+  slaved to the TX clock). Raw runs:
+  `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*` (7-day
+  GC; the numbers above are the complete record).
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
   convicted the DSP-runtime adapter's default ITCM placement empirically, but
   no mechanism explains how 144 B of resident cold code starves the live
