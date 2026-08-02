@@ -68,7 +68,13 @@
 #define SPX_MAX_BANDS    17
 
 /** Large enough for maximum possible frame size when the specification limit is ignored */
-#define AC3_FRAME_BUFFER_SIZE 32768
+/* AIUS FORK EDIT [input-buffer-cap]: upstream keeps 32768 so one packet copy
+ * can hold a whole superframe. Aius decodes the independent substream only
+ * (NOTICE.md [eac3-51-only]); it needs one max syncframe (11-bit frmsiz ->
+ * 2048 words -> 4096 bytes) plus 128 bytes so the following substream's
+ * header still parses for the consume-not-decode path. ac3_decode_frame
+ * clamps buf_size to this cap right after the copy. */
+#define AC3_FRAME_BUFFER_SIZE 4224
 
 typedef struct AC3DecodeContext {
     AVClass        *class;                  ///< class for AVOptions

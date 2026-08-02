@@ -22,7 +22,7 @@ deliberately not vendored.
 ## Layout
 
 - `libavcodec/`, `libavutil/` — upstream sources, byte-for-byte except the
-  five edited files below (verified by `cmp` against the extracted tarball
+  six edited files below (verified by `cmp` against the extracted tarball
   at vendoring time).
 - `shim/` — fork-owned: `config.h` / `config_components.h` replace the
   configure-generated headers (portable C paths, both decoder
@@ -48,6 +48,14 @@ deliberately not vendored.
   `libavcodec/eac3dec.c` (the 16-bit chanmap wire width is spelled `16`
   where upstream spelled it `EAC3_MAX_CHANNELS`). Owner decision
   2026-08-01: Aius decodes the independent (5.1) substream only.
+- `[input-buffer-cap]` — `libavcodec/ac3dec.h` (`AC3_FRAME_BUFFER_SIZE`
+  32,768 -> 4,224: one max legal syncframe, 2048 words, plus 128 bytes so
+  the following substream's header still parses for the consume path),
+  `libavcodec/ac3dec.c` (`buf_size` is clamped to the cap right after the
+  packet copy, keeping the frame GetBitContext, the CRC span, and the
+  following-substream header parse inside the copy). -28,544 B of context.
+  Upstream keeps a whole-superframe copy; independent-only decode needs
+  one syncframe.
 
 ## Measurements (host x86-64, -O2, at vendoring time)
 
@@ -57,18 +65,17 @@ deliberately not vendored.
 - Footprint: ~87 KB text + ~33 KB rodata; BSS ~38 KB (dominated by the
   32,800 B lazily-generated CRC tables) after the tx trims collapsed the
   upstream 16.8 MB table BSS.
-- Working set: `sizeof(AC3DecodeContext)` = 161,504 after `[eac3-51-only]`
-  (235,232 upstream); +8,672 B of one-time init allocations (tx contexts,
-  float_dsp, downmix scratch). Steady state allocates ZERO per frame
-  (20 allocs / 4 frees TOTAL across a 29-frame decode -- the scoping
-  estimate of 15 malloc/free per frame does not hold on this path).
-- Next trim rung (not yet taken): `input_buffer[AC3_FRAME_BUFFER_SIZE]`
-  is 32,832 B for superframe copies; an independent-only cap (~4.2 KB)
-  needs the superframe-consume path checked first.
+- Working set: `sizeof(AC3DecodeContext)` = 132,960 after `[eac3-51-only]`
+  and `[input-buffer-cap]` (235,232 upstream); +8,672 B of one-time init
+  allocations (tx contexts, float_dsp, downmix scratch). Steady state
+  allocates ZERO per frame (20 allocs / 4 frees TOTAL across a 29-frame
+  decode -- the scoping estimate of 15 malloc/free per frame does not hold
+  on this path). Measured adapter slot need (`eac3` suite arena pass,
+  context + handle/planes + init allocs): 179,232 B high-water.
 
-## Not yet wired
+## Consumers
 
-This tree is not referenced by any build target yet. The `aius_eac3`
-adapter (arena-backed, alloc-shim routed, `AiusPcmBlock` out) and its
-native suites arrive with E-AC-3 plan Phase 2's remaining work; target
-integration (FLASH-cold placement, arena growth) is Phase 4.
+Built by `scripts/test.sh` (`eac3` / `eac3-fuzz` suites) under the
+`aius_eac3` adapter (arena-backed, alloc-shim routed, `AiusPcmBlock` out);
+target integration (FLASH-cold placement, arena growth) is E-AC-3 plan
+Phase 4.

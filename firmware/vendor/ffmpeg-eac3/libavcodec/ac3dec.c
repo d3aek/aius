@@ -1527,6 +1527,13 @@ static int ac3_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         av_lfg_init_from_data(&s->dith_state, s->input_buffer, FFMIN(buf_size, AC3_FRAME_BUFFER_SIZE));
 
     buf = s->input_buffer;
+    /* AIUS FORK EDIT [input-buffer-cap]: with the trimmed
+     * AC3_FRAME_BUFFER_SIZE the copy above may be shorter than the packet;
+     * every read below (frame GetBitContext, CRC span, the
+     * following-substream header parse) must stay inside the copy. The cap
+     * exceeds the largest legal syncframe, so a frame this clamp truncates
+     * was oversized-invalid anyway and still fails the frame_size check. */
+    buf_size = FFMIN(buf_size, AC3_FRAME_BUFFER_SIZE);
 #if !AIUS_EAC3_51_ONLY
     /* AIUS FORK EDIT [eac3-51-only]: the only goto targeting this label was
      * the dependent-substream decode, which this fork skips. */

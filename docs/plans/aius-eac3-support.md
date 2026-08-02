@@ -74,8 +74,11 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    to upstream's own minimal build** (FNV-1a-64 `47b3267c5d527165` both
    sides). Measured (host, -O2): ~87 KB text + ~33 KB rodata; BSS 16.8 MB
    → ~38 KB via the tx table/codelet ladder trims; context 235,232 →
-   **161,504 B** via `EAC3_MAX_CHANNELS` 16→7 (5.1-only: dependent
-   substreams consumed, never decoded); +8,672 B one-time init allocs;
+   161,504 B via `EAC3_MAX_CHANNELS` 16→7 (5.1-only: dependent
+   substreams consumed, never decoded) → **132,960 B** with the
+   `input_buffer` rung taken 2026-08-02 (`[input-buffer-cap]`: one max
+   syncframe + 128 B tail-header room instead of a whole-superframe copy,
+   `buf_size` clamped to the copy); +8,672 B one-time init allocs;
    **zero per-frame heap churn** (20 allocs total over 29 frames — the
    scoping's 15-per-frame estimate refuted, so the per-AU watermark rewind
    is unnecessary; a plain create-time slot fill suffices). **Adapter +
@@ -87,13 +90,14 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    full rates), and the `eac3` suite: differential vs FFmpeg's own decode
    worst 2 LSB / 107.1 dB SNR, pinned FNV regression hashes, arena pass
    with ZERO warmup allocs and steady-state 0, malformed family under
-   ASan/UBSan. **Measured slot need: 207,776 B arena high-water**
-   (context 161,504 + adapter handle/planes ~38.7 KB + init allocs; the
-   `input_buffer` rung, 32,832 → ~4.2 KB, brings it to ~179 KB) — the
-   64 KiB Phase-1 slot constant must grow accordingly (see Phase 4).
-   Remaining in this phase: the input_buffer rung, type-21 IEC wrapping
-   through `iec_corpus` (feeds Phase 3), fuzz with E-AC-3 CRC semantics +
-   termination oracle.
+   ASan/UBSan. **Measured slot need: 179,232 B arena high-water**
+   (context 132,960 + adapter handle/planes ~38.7 KB + init allocs;
+   207,776 before the `input_buffer` rung landed 2026-08-02 with suite +
+   fuzz re-proof, 87,999 decodes clean) — the 64 KiB Phase-1 slot
+   constant must grow accordingly (see Phase 4). The fuzz suite
+   (E-AC-3 CRC semantics + defect-31 termination oracle) landed
+   2026-08-01. Remaining in this phase: type-21 IEC wrapping through
+   `iec_corpus` (feeds Phase 3).
 3. **Dispatch + classification constants** — type 21 joins `in_scope`,
    third dispatch route, `codec_pc == 21` metrics/UI decoration,
    squelch/re-type constants re-derived for the 12,288-word burst period
@@ -109,13 +113,13 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    placement (the subset cannot join the six-block ITCM budget), decode
    cycle cost measured against the 8 ms AUDIO budget, arena/slot gates
    on target, SD-replay E-AC-3 IEC fixtures played on the box. **Scope
-   revision (2026-08-01, from the Phase-2 measurements):** the slot needs 207,776 B as measured
-   (~179 KB after the `input_buffer` rung), so the 131,072 DTCM arena
-   must GROW, not merely re-partition. Ground truth from the current
+   revision (2026-08-01, from the Phase-2 measurements):** the slot needs
+   179,232 B as measured (with the `input_buffer` rung taken 2026-08-02),
+   so the 131,072 DTCM arena must GROW, not merely re-partition. Ground truth from the current
    build: RAM1 = 287,684 B variables + 6 ITCM banks, **39,996 B DTCM
    free**; OCRAM has 131,488 B free. The funded route is the
-   `input_buffer` rung plus relocating ~70–90 KB of non-audio-path DTCM
-   buffers to OCRAM (defect 26 vetoed OCRAM for *audio-path* state;
+   `input_buffer` rung (taken 2026-08-02) plus relocating ~70–90 KB of
+   non-audio-path DTCM buffers to OCRAM (defect 26 vetoed OCRAM for *audio-path* state;
    HTTP/network/scratch buffers are not that) and growing `ARENA_BYTES`
    to ~220 KB. The CRC tables (32,800 B BSS, lazily generated) are a
    further flash-const rung if DTCM stays tight.
