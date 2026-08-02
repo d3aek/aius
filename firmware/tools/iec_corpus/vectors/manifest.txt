@@ -6,10 +6,11 @@ dts_le16 | 16 | OK type=13 | same AU, LE (byte-swapped) wire -> identical payloa
 dts_14bit | 14 | OK type=13 | same AU, 14-bit packing -> identical payload
 dts51_be16 | 16 | OK type=13 | real 5.1 DTS Core AU (1884 B), BE wire
 ac3_surround51_ident | 16 | OK,OK type=1 | two real surround51_ident AC-3 AUs (2560 B), Pa spacing=3072 words
-eac3_surround51_ident | 16 | UNSUPPORTED,UNSUPPORTED type=21 | two real surround51_ident E-AC-3 AUs (1536 B), Pd BYTE count, Pa spacing=12288 words
+eac3_surround51_ident | 16 | OK,OK type=21 | two real surround51_ident E-AC-3 AUs (1536 B), Pd BYTE count, Pa spacing=12288 words
 type11 | 16 | OK type=11 | synthetic 32 B, DTS burst type I
 type12 | 16 | OK type=12 | synthetic 64 B, DTS burst type II
-unsupported_eac3 | 16 | UNSUPPORTED type=21 | E-AC-3-shaped 1792 B frame, Pd=0x0700 BYTE count
+unsupported_eac3 | 16 | OK type=21 | E-AC-3-shaped 1792 B frame (valid header, garbage payload), Pd=0x0700 BYTE count
+unsupported_type7 | 16 | UNSUPPORTED type=7 | synthetic 64 B, MPEG-2 AAC burst
 null_type | 16 | UNSUPPORTED type=0 | null-data burst, 0 B payload
 two_bursts | 16 | OK,OK type=13 | two DTS bursts, 8-word pause between; payload == dts_be16.pay
 recover | 16 | OK type=13 | garbage + false Pa, then valid burst; payload == dts_be16.pay
@@ -17,5 +18,6 @@ padded | 16 | OK type=13 | pause stuffing around one burst
 error_flag | 16 | MALFORMED type=13 | Pc error flag set
 zero_len | 16 | MALFORMED type=13 | length-code 0 on a DTS type
 zero_len_ac3 | 16 | MALFORMED type=1 | Pd=0 on an AC-3 type
+zero_len_eac3 | 16 | MALFORMED type=21 | Pd=0 on an E-AC-3 type
 overlong | 16 | NO_SPACE type=13 | Pd=0xFFFF (8192 B) > 4096 cap
 truncated | 16 | NEED_MORE then finish()->TRUNCATED type=13 | half payload only

@@ -255,6 +255,62 @@ pipeline_build() {
 		"$@" "${a52_objects[@]}"
 }
 
+# Compile the E-AC-3 adapter + FFmpeg-fork translation units to dedicated
+# objects (the a52_compile_objects shape): the fork's accommodation flags stay
+# scoped to these objects so they never weaken sanitizer or warning coverage
+# on the shared pipeline/parser/test sources. Only the `pipeline` suite links
+# these (with -DAIUS_PIPELINE_EAC3=1); pipeline_build itself stays untouched,
+# so audio-service/downmix-identity/latency keep the flag-off target shape.
+# NOTE: linking these objects requires -Wl,--gc-sections on the WHOLE binary
+# (a link flag cannot be scoped): it is what drops ac3_parser.c's AVCodecParser
+# registration struct and mathematics.c's av_add_stable instead of stubbing
+# their framework externs, exactly as eac3_build does.
+eac3_compile_objects() {
+	local out_prefix="$1"
+	local v="$fw_root/vendor/ffmpeg-eac3"
+	local eac3_inc=("-I$fw_root/lib/aius_eac3/include" \
+		"-I$fw_root/lib/aius_dts/include" "-I$inc" \
+		"-I$v/shim" "-I$v" "-I$v/libavcodec")
+	local eac3_ocflags=(-D_GNU_SOURCE -DHAVE_AV_CONFIG_H \
+		-fno-sanitize-recover=undefined \
+		-ffunction-sections -fdata-sections \
+		-Wno-unused-parameter -Wno-sign-compare \
+		-Wno-implicit-fallthrough -Wno-pointer-sign -Wno-parentheses \
+		-Wno-unused-function)
+	local sources=(
+		"$fw_root/lib/aius_eac3/src/aius_eac3.c"
+		"$v/shim/aius_avshim.c"
+		"$v/libavcodec/aius_eac3_core.c"
+		"$v/libavcodec/ac3.c"
+		"$v/libavcodec/ac3tab.c"
+		"$v/libavcodec/ac3dec_data.c"
+		"$v/libavcodec/eac3_data.c"
+		"$v/libavcodec/ac3dsp.c"
+		"$v/libavcodec/ac3_parser.c"
+		"$v/libavcodec/ac3_channel_layout_tab.c"
+		"$v/libavcodec/kbdwin.c"
+		"$v/libavcodec/fmtconvert.c"
+		"$v/libavcodec/bswapdsp.c"
+		"$v/libavutil/float_dsp.c"
+		"$v/libavutil/crc.c"
+		"$v/libavutil/lfg.c"
+		"$v/libavutil/tx.c"
+		"$v/libavutil/tx_float.c"
+		"$v/libavutil/mem.c"
+		"$v/libavutil/mathematics.c"
+		"$v/libavutil/md5.c"
+	)
+	eac3_objects=()
+	local source
+	for source in "${sources[@]}"; do
+		local object
+		object="$out_prefix-eac3-$(basename "$source" .c).o"
+		"$cc" "${cflags[@]}" "${eac3_inc[@]}" "${eac3_ocflags[@]}" \
+			-c "$source" -o "$object"
+		eac3_objects+=("$object")
+	done
+}
+
 case "$suite" in
 config)
 	# Two halves of "configuration": the build-time optical DSP header generator,
@@ -466,16 +522,25 @@ clock-target)
 	"$clock_target_out"
 	;;
 pipeline)
-	# S/PDIF pipeline: classifier + IEC 61937 parser chained into both resident
-	# decoders, end-to-end over the committed IEC corpus.
+	# S/PDIF pipeline: classifier + IEC 61937 parser chained into all three
+	# decoders, end-to-end over the committed IEC corpus. This is the ONE
+	# flag-on (-DAIUS_PIPELINE_EAC3=1) pipeline build; the other
+	# pipeline-bearing suites keep the target's flag-off shape. --gc-sections
+	# is required by the fork objects (see eac3_compile_objects) and applies
+	# to the whole binary.
 	out="$build_dir/pipeline"
+	eac3_compile_objects "$out"
 	pipeline_build "$out" \
 		-DAIUS_PIPELINE_TEST_HOOKS \
+		-DAIUS_PIPELINE_EAC3=1 \
+		-Wl,--gc-sections \
 		"-I$fw_root/lib/aius_pipeline/include" \
 		"-I$fw_root/lib/aius_iec61937/include" \
+		"-I$fw_root/lib/aius_eac3/include" \
 		"$fw_root/test/pipeline/test_pipeline.c" \
 		"$fw_root/lib/aius_pipeline/src/aius_pipeline.c" \
-		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c"
+		"$fw_root/lib/aius_iec61937/src/aius_iec61937.c" \
+		"${eac3_objects[@]}"
 	"$out" "$fw_root/tools/iec_corpus/vectors"
 	;;
 dsp)

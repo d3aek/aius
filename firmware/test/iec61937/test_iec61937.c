@@ -141,7 +141,12 @@ static const struct kav k_burst[] = {
 	{ "dts51_be16", AIUS_IEC61937_PACK_16, AIUS_OK, 13 },
 	{ "type11", AIUS_IEC61937_PACK_16, AIUS_OK, 11 },
 	{ "type12", AIUS_IEC61937_PACK_16, AIUS_OK, 12 },
-	{ "unsupported_eac3", AIUS_IEC61937_PACK_16, AIUS_UNSUPPORTED, 21 },
+	/* In scope since E-AC-3 phase 3: a valid type-21 header over garbage
+	 * completes OK here; refusing the payload is the decoder's job. */
+	{ "unsupported_eac3", AIUS_IEC61937_PACK_16, AIUS_OK, 21 },
+	/* The genuinely refused type with a non-empty payload: keeps the
+	 * published-descriptor half of the UNSUPPORTED contract byte-compared. */
+	{ "unsupported_type7", AIUS_IEC61937_PACK_16, AIUS_UNSUPPORTED, 7 },
 	{ "null_type", AIUS_IEC61937_PACK_16, AIUS_UNSUPPORTED, 0 },
 	{ "padded", AIUS_IEC61937_PACK_16, AIUS_OK, 13 },
 	{ "recover", AIUS_IEC61937_PACK_16, AIUS_OK, 13 },
@@ -211,9 +216,9 @@ static void run_ac3_period_vector(const char *dir)
 
 /* ---- E-AC-3: two real bursts at the exact 12288-word repetition period --
  *
- * Type 21 is out of dispatch scope until E-AC-3 plan phase 3, so each burst
- * completes UNSUPPORTED — but the byte-count Pd de-framing must already be
- * exact: descriptor published, payload byte-identical to the access unit. */
+ * In scope since E-AC-3 plan phase 3: each burst completes AIUS_OK with the
+ * byte-count Pd de-framed exactly — payload byte-identical to the access
+ * unit, ready for decoder dispatch. */
 
 static void run_eac3_period_vector(const char *dir)
 {
@@ -244,7 +249,7 @@ static void run_eac3_period_vector(const char *dir)
 			AiusStatus st = pump(p, w, n, chunks[ci], &pos);
 			if (st == AIUS_NEED_MORE)
 				break;
-			CHECK(st == AIUS_UNSUPPORTED,
+			CHECK(st == AIUS_OK,
 			      "eac3_surround51_ident chunk=%zu burst=%d status %s",
 			      chunks[ci], emitted, status_name(st));
 			AiusBurst b;
@@ -266,12 +271,12 @@ static void run_eac3_period_vector(const char *dir)
 		      emitted);
 		AiusIecDiag diag;
 		CHECK(aius_iec61937_get_diag(p, &diag) == AIUS_OK &&
-		          diag.bursts_ok == 0 && diag.rejects_unsupported == 2,
+		          diag.bursts_ok == 2 && diag.rejects_unsupported == 0,
 		      "eac3_surround51_ident chunk=%zu diagnostics differ",
 		      chunks[ci]);
 		aius_iec61937_parser_destroy(p);
 	}
-	printf("  %-18s UNSUPPORTED,UNSUPPORTED type=21 payload=%zu B Pa "
+	printf("  %-18s OK,OK type=21 payload=%zu B Pa "
 	       "spacing=12288 (3 chunkings)\n",
 	       "eac3_surround51_ident", plen);
 	free(w);
@@ -345,6 +350,7 @@ static const struct rejv k_reject[] = {
 	{ "error_flag", AIUS_MALFORMED },
 	{ "zero_len", AIUS_MALFORMED },
 	{ "zero_len_ac3", AIUS_MALFORMED },
+	{ "zero_len_eac3", AIUS_MALFORMED },
 	{ "overlong", AIUS_NO_SPACE },
 };
 

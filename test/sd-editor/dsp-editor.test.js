@@ -1810,6 +1810,20 @@ describe('Aius SD DSP editor — input source and transmit gate', () => {
     expect(el('input-source').textContent).toBe('input: optical carrier · bitstream (DTS) · 44100 Hz');
   });
 
+  it('names an E-AC-3 carrier by its decode state', async () => {
+    // codec_pc 21 is the type-21 (Dolby Digital Plus) decoration that arrived
+    // with the E-AC-3 plan's phase-3 dispatch.
+    await boot({
+      status: carrierStatus({
+        state: 4,
+        format: 2,
+        pipeline_diag: { codec_pc: 21 },
+      }),
+    });
+
+    expect(el('input-source').textContent).toBe('input: optical carrier · bitstream (E-AC-3) · 48000 Hz');
+  });
+
   it('leaves off a term the snapshot cannot support instead of printing "unknown"', async () => {
     // state 2 is a carrier with nothing decoded off it, and a rate of 0 is one
     // that has not been negotiated: neither is a fact worth a word.

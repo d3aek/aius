@@ -35,8 +35,10 @@ def main() -> None:
         require(source, "pipeline.codec_pc", path)
         require(source, "codecPc === 1", path)
         require(source, "codecPc === 11 || codecPc === 12 || codecPc === 13", path)
+        require(source, "codecPc === 21", path)
         require(source, "return 'AC-3'", path)
         require(source, "return 'DTS'", path)
+        require(source, "return 'E-AC-3'", path)
         require(source, "return 'unknown'", path)
         require(source, "`bitstream (${codecName(status)})`", path)
 
@@ -52,9 +54,16 @@ def main() -> None:
     )
     require(
         firmware,
+        "eac3_metrics.arena_high_water > shared_arena_high_water",
+        firmware_path,
+    )
+    require(
+        firmware,
         "(unsigned long)shared_arena_high_water",
         firmware_path,
     )
+    require(firmware, '\\"eac3_decode_cycles\\":%llu', firmware_path)
+    require(firmware, '\\"eac3_alloc_count\\":%lu', firmware_path)
 
     stale_labels = (
         "4: 'DTS'",

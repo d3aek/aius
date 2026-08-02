@@ -380,8 +380,8 @@ int main(int argc, char **argv)
 
 	/* eac3_surround51_ident — two real E-AC-3 AUs at the 12288-word type-21
 	 * repetition period (the E-AC-3 burst spans 1536 samples on a 4x-rate
-	 * link). Pc 21 uses a BYTE-count Pd. UNSUPPORTED until the phase-3
-	 * dispatch takes type 21 in scope, then OK,OK. */
+	 * link). Pc 21 uses a BYTE-count Pd. In scope since the phase-3
+	 * dispatch. */
 	add_preamble(&b, 21, 0, (uint32_t)eac3_aun, 0);
 	add_payload_16(&b, eac3_au, eac3_aun, 0);
 	pad_to_word_count(&b, 12288);
@@ -389,7 +389,7 @@ int main(int argc, char **argv)
 	add_payload_16(&b, eac3_au, eac3_aun, 0);
 	write_iec(out, "eac3_surround51_ident", &b);
 	write_pay(out, "eac3_surround51_ident", eac3_au, eac3_aun);
-	manifest("eac3_surround51_ident | 16 | UNSUPPORTED,UNSUPPORTED type=21 | "
+	manifest("eac3_surround51_ident | 16 | OK,OK type=21 | "
 	         "two real surround51_ident E-AC-3 AUs (%zu B), Pd BYTE count, "
 	         "Pa spacing=12288 words",
 	         eac3_aun);
@@ -416,8 +416,11 @@ int main(int argc, char **argv)
 	manifest("type12 | 16 | OK type=12 | synthetic 64 B, DTS burst type II");
 	wb_free(&b);
 
-	/* 8. unsupported_eac3 — a transport-shaped E-AC-3 frame. Pc 21 uses a
-	 * BYTE-count Pd, unlike the bit-count convention for AC-3 and DTS. */
+	/* 8. unsupported_eac3 — a transport-shaped E-AC-3 frame: a valid header
+	 * over synthetic garbage. Pc 21 uses a BYTE-count Pd, unlike the
+	 * bit-count convention for AC-3 and DTS. In scope since phase 3 (the
+	 * parser completes it OK; the DECODER refuses the garbage payload) --
+	 * the name records its origin as the framed-but-unsupported vector. */
 	uint8_t eac3[0x0700];
 	synth_fill(eac3, sizeof(eac3));
 	eac3[0] = 0x0B;
@@ -430,8 +433,21 @@ int main(int argc, char **argv)
 	add_payload_16(&b, eac3, sizeof(eac3), 0);
 	write_iec(out, "unsupported_eac3", &b);
 	write_pay(out, "unsupported_eac3", eac3, sizeof(eac3));
-	manifest("unsupported_eac3 | 16 | UNSUPPORTED type=21 | E-AC-3-shaped "
-	         "1792 B frame, Pd=0x0700 BYTE count");
+	manifest("unsupported_eac3 | 16 | OK type=21 | E-AC-3-shaped 1792 B frame "
+	         "(valid header, garbage payload), Pd=0x0700 BYTE count");
+	wb_free(&b);
+
+	/* 8b. unsupported_type7 — the genuinely refused type since type 21 went
+	 * in scope: data type 7 (MPEG-2 AAC), which no decoder here will ever
+	 * claim. Bit-count Pd, non-empty payload so the UNSUPPORTED path's
+	 * published de-framed descriptor keeps byte-compare coverage. */
+	synth_fill(syn, 64);
+	add_preamble(&b, 7, 0, 64 * 8, 0);
+	add_payload_16(&b, syn, 64, 0);
+	write_iec(out, "unsupported_type7", &b);
+	write_pay(out, "unsupported_type7", syn, 64);
+	manifest("unsupported_type7 | 16 | UNSUPPORTED type=7 | synthetic 64 B, "
+	         "MPEG-2 AAC burst");
 	wb_free(&b);
 
 	/* 9. null_type — data type 0, zero length => UNSUPPORTED, empty payload. */
@@ -498,6 +514,12 @@ int main(int argc, char **argv)
 	add_preamble(&b, 1, 0, 0, 0);
 	write_iec(out, "zero_len_ac3", &b);
 	manifest("zero_len_ac3 | 16 | MALFORMED type=1 | Pd=0 on an AC-3 type");
+	wb_free(&b);
+
+	/* 15b. zero_len_eac3 — the same widening for Pc 21 (phase 3). */
+	add_preamble(&b, 21, 0, 0, 0);
+	write_iec(out, "zero_len_eac3", &b);
+	manifest("zero_len_eac3 | 16 | MALFORMED type=21 | Pd=0 on an E-AC-3 type");
 	wb_free(&b);
 
 	/* 16. overlong — length-code beyond the parser buffer => NO_SPACE. */

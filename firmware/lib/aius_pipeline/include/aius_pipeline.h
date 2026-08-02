@@ -21,8 +21,10 @@ extern "C" {
  *
  *   AIUS_PIPELINE_DTS  the stream carries IEC 61937 non-linear PCM.
  *                      The pipeline drives AiusIec61937Parser to unwrap bursts
- *                      and routes Pc 1 to AiusA52Decoder and Pc 11/12/13 to
- *                      AiusDtsDecoder, emitting decoded planar AiusPcmBlocks.
+ *                      and routes Pc 1 to AiusA52Decoder, Pc 11/12/13 to
+ *                      AiusDtsDecoder, and Pc 21 to AiusEac3Decoder (compiled
+ *                      in only under AIUS_PIPELINE_EAC3 -- see the codec-slot
+ *                      notes below), emitting decoded planar AiusPcmBlocks.
  *   AIUS_PIPELINE_PCM  the stream is IEC 60958 linear PCM. The words are treated
  *                      as interleaved L,R 16-bit samples and emitted (no decode)
  *                      as 2ch blocks at the caller-supplied nominal carrier rate,
@@ -50,15 +52,22 @@ extern "C" {
  *                in real audio must not flip a live stream.
  *                ONE EXCEPTION, and it is a safety exception (defect 34): a
  *                pair whose following Pc completes a well-formed burst header
- *                naming a data type this pipeline cannot decode re-types on
- *                that single pair. A 12,288-word E-AC-3 period is wider than
- *                the maximum re-type spacing, so the two-pair rule can never
- *                fire on a DD+ link and ~96% of entry phases played its burst
- *                data as full-scale PCM noise. Acting on the single header
- *                fails SAFE (it goes dark; a false positive costs the ordinary
- *                starvation recovery), which is why it is confined to the
- *                types no decoder claims. See aius_pipeline.c
- *                §unsupported_burst_header.
+ *                naming a data type OUTSIDE {1, 11, 12, 13} re-types on that
+ *                single pair. The set is every type the two-pair rule cannot
+ *                be trusted to reach: types no decoder claims, and E-AC-3
+ *                type 21, whose worst (6-block) burst period of 12,288 words
+ *                is wider than the maximum re-type spacing -- waiting for a
+ *                second pair on such a link meant ~96% of entry phases played
+ *                burst data as full-scale PCM noise. Acting on the single
+ *                header fails SAFE: since phase 3 a true type-21 header leads
+ *                to decode (or a dark dispatch refusal where the decoder is
+ *                not compiled in / does not fit the slot), and a false
+ *                positive on genuine PCM costs the ordinary starvation
+ *                recovery -- silence, never noise. A header with the Pc ERROR
+ *                FLAG set stays excluded (the parser rejects it, so it is not
+ *                a sync): a link that asserts the error flag on every burst
+ *                still confirms PCM, the fix's documented residual. See
+ *                aius_pipeline.c §single_pair_exit_header.
  *   DTS -> PCM   words consumed by the DTS route with NO parser burst outcome
  *                (completed OR rejected -- either is framing evidence) starve
  *                the class back to UNKNOWN after
@@ -113,10 +122,13 @@ extern "C" {
 
 /* Words consumed by the DTS route with no parser burst outcome (completed or
  * rejected) before the class starves back to UNKNOWN. >= 4x the worst
- * legitimate NEED_MORE span (~2341-word 14-bit accumulation, ~4096-word
- * type-III period); ~170 ms at 48 kHz bounds the silent interval after a live
- * DTS->PCM material switch. Evaluated at push boundaries, so the observable
- * re-classification needs subsequent input. */
+ * legitimate DTS NEED_MORE span (~2341-word 14-bit accumulation, ~4096-word
+ * type-III period), and >= 1.33x the worst outcome gap on a type-21 link
+ * (12,288 words: a 6-block E-AC-3 burst completes, then stuffing until the
+ * next burst completes one full period later; 1/2/3-block streams repeat
+ * proportionally faster). ~170 ms at 48 kHz bounds the silent interval after
+ * a live DTS->PCM material switch. Evaluated at push boundaries, so the
+ * observable re-classification needs subsequent input. */
 #define AIUS_PIPELINE_DTS_STARVE_WORDS 16384u
 
 /* Frames per emitted PCM pass-through block (staged in the fixed instance). */
@@ -131,8 +143,24 @@ extern "C" {
  * DTS 5.1 core measures 62,560 B arena high-water, AC-3 27,024 B -- with the
  * remainder as margin; the pipeline suite proves each decoder fits by creating
  * it into a slot-sized arena and decoding the tallest committed corpus vector.
- * E-AC-3 re-derives this constant when its real high-water is measured. */
+ *
+ * E-AC-3 does NOT fit this slot: its measured residency need is
+ * AIUS_PIPELINE_EAC3_SLOT_BYTES below. Growing the slot (and the target's
+ * DTCM arena that funds it) is E-AC-3 plan phase 4; until then an
+ * arena-backed pipeline refuses type-21 residency with AIUS_NO_SPACE --
+ * checked BEFORE the current resident is touched, so a DD+ interlude on a
+ * DTS/AC-3 link cannot evict a healthy decoder or dirty the slot's
+ * high-water. Heap-path (libc) pipelines have no slot bound and decode
+ * E-AC-3 whenever AIUS_PIPELINE_EAC3 compiles the route in. */
 #define AIUS_PIPELINE_CODEC_SLOT_BYTES 65536u
+
+/* The slot capacity an E-AC-3 residency requires: measured 179,232 B
+ * cumulative high-water (context + adapter handle/planes + one-time init
+ * allocs, eac3 suite arena pass) rounded up to a 4 KiB boundary for margin.
+ * Phase 4 raises AIUS_PIPELINE_CODEC_SLOT_BYTES to at least this when the
+ * target arena grows; the dispatch uses it to refuse an impossible residency
+ * up front (see above). */
+#define AIUS_PIPELINE_EAC3_SLOT_BYTES 180224u
 
 /* Words of a PCM run that pass in silence before the pass-through is allowed to
  * reach the sink -- the confirmation squelch.
@@ -339,22 +367,25 @@ void aius_pipeline_destroy(AiusPipeline *p);
 AiusPipelineClass aius_pipeline_classification(const AiusPipeline *p);
 
 /* Data type (Pc) of the last successfully decoded access unit: 1 for AC-3,
- * 11/12/13 for DTS, or 0 until one succeeds. Stream discontinuities clear it;
- * a later malformed burst alone does not. NULL returns 0. */
+ * 11/12/13 for DTS, 21 for E-AC-3, or 0 until one succeeds. Stream
+ * discontinuities clear it; a later malformed burst alone does not. NULL
+ * returns 0. */
 uint16_t aius_pipeline_codec_pc(const AiusPipeline *p);
 
 /* The codec currently occupying the slot, as a canonical Pc: 1 for AC-3, 11
- * for DTS (whatever its exact 11/12/13 subtype), 0 while no decoder exists
- * (before the first completed compressed burst, only). Distinct from
- * aius_pipeline_codec_pc: residency changes at the completed burst that
- * triggers the swap, codec_pc only at the next successful decode. NULL
- * returns 0. */
+ * for DTS (whatever its exact 11/12/13 subtype), 21 for E-AC-3, 0 while no
+ * decoder exists (before the first completed compressed burst, only).
+ * Distinct from aius_pipeline_codec_pc: residency changes at the completed
+ * burst that triggers the swap, codec_pc only at the next successful decode.
+ * NULL returns 0. */
 uint16_t aius_pipeline_resident_codec(const AiusPipeline *p);
 
 /* Copy one codec's most-recent measurements into *out. Pc 1 selects AC-3;
- * Pc 11/12/13 select DTS. Other values are invalid. A codec that is NOT
- * resident reads as all-zero metrics with AIUS_OK: its state left with the
- * slot, and zero is the honest reading of a decoder that does not exist. */
+ * Pc 11/12/13 select DTS; Pc 21 selects E-AC-3 (only when AIUS_PIPELINE_EAC3
+ * compiled the route in -- otherwise 21 is invalid like any other value).
+ * Other values are invalid. A codec that is NOT resident reads as all-zero
+ * metrics with AIUS_OK: its state left with the slot, and zero is the honest
+ * reading of a decoder that does not exist. */
 AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
                                            uint16_t codec_pc,
                                            AiusMetrics *out);

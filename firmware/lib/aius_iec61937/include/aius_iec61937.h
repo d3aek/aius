@@ -31,19 +31,24 @@ extern "C" {
  * dispatch, are separate concerns; this parser only de-frames bursts and types
  * them.
  *
- * AC-3 data type 1 and DTS Core data types 11/12/13 (0x0B/0x0C/0x0D, burst
- * types I/II/III at 48 kHz) are in scope and complete with AIUS_OK; the payload
- * bytes are the raw codec access unit ready for decoder dispatch. Every other
- * well-formed type completes with AIUS_UNSUPPORTED (still de-framed, never
- * AIUS_MALFORMED). Pd is a bit count for AC-3 and DTS Core. E-AC-3 type 21,
- * though unsupported, is de-framed using its specified byte-count Pd.
+ * AC-3 data type 1, DTS Core data types 11/12/13 (0x0B/0x0C/0x0D, burst
+ * types I/II/III at 48 kHz), and E-AC-3 data type 21 are in scope and
+ * complete with AIUS_OK; the payload bytes are the raw codec access unit
+ * ready for decoder dispatch. Every other well-formed type completes with
+ * AIUS_UNSUPPORTED (still de-framed, never AIUS_MALFORMED). Pd is a bit
+ * count for AC-3 and DTS Core and a byte count for E-AC-3, per the spec.
  */
 
-/* Fixed de-framed-payload capacity. Covers AC-3 at 48 kHz and the in-scope IEC
+/* Fixed de-framed-payload capacity. Covers AC-3 at 48 kHz, the in-scope IEC
  * 61937 DTS Core burst repetition periods (through type III, the 2048-frame
- * period, ~4 KiB of 16-bit payload). A length-code demanding more than this
- * completes with AIUS_NO_SPACE (never a buffer overrun) so the caller can
- * provision more; the 16-bit Pd can express lengths beyond this buffer. */
+ * period, ~4 KiB of 16-bit payload), and exactly the largest legal E-AC-3
+ * syncframe (11-bit frmsiz -> 2048 words -> 4096 bytes) -- so a type-21
+ * burst carrying ONLY the independent substream always fits, while a burst
+ * that also carries dependent (>5.1) substreams exceeds the cap and rejects
+ * (the box decodes the independent substream only). A length-code demanding
+ * more than this completes with AIUS_NO_SPACE (never a buffer overrun) so
+ * the caller can provision more; the 16-bit Pd can express lengths beyond
+ * this buffer. */
 #define AIUS_IEC61937_MAX_PAYLOAD 4096u
 
 /* Pc (burst_info) field layout, in the NORMALIZED (big-endian) word. The one
@@ -82,8 +87,8 @@ void aius_iec61937_parser_destroy(AiusIec61937Parser *p);
  * single call emits at most one burst, so a coalesced read carrying several
  * bursts is drained by repeated calls. Return values:
  *
- *   AIUS_OK          a supported AC-3 or DTS Core burst completed; its
- *                    descriptor is available via
+ *   AIUS_OK          a supported AC-3, DTS Core, or E-AC-3 burst completed;
+ *                    its descriptor is available via
  *                    aius_iec61937_current_burst. `*consumed` stops just past
  *                    the burst's final payload word.
  *   AIUS_UNSUPPORTED a well-formed but out-of-scope burst completed; the

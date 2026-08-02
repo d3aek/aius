@@ -37,6 +37,7 @@
 
 #include "aius_a52.h"
 #include "aius_dts.h"
+#include "aius_eac3.h"
 #include "aius_pipeline.h"
 
 static int g_fail;
@@ -199,6 +200,8 @@ static int blocks_equal(const struct block_copy *a, const struct block_copy *b)
 
 static AiusPipelineClass run_pipeline(const uint16_t *w, size_t n,
                                       size_t chunk, struct capture *cap);
+static void push_chunked(AiusPipeline *p, const uint16_t *w, size_t n,
+                         size_t chunk, const char *label);
 
 static double goertzel_blocks(const struct capture *cap, int channel,
                               double frequency_hz)
@@ -678,8 +681,12 @@ static void test_no_heap_steady_state(const char *dir)
 	          m.alloc_count == 0u && m.arena_high_water == 0u &&
 	          m.last_status == AIUS_OK,
 	      "ss: metrics before any residency are not all-zero");
-	CHECK(aius_pipeline_get_codec_metrics(p, 21u, &m) == AIUS_INVALID_ARG,
+	CHECK(aius_pipeline_get_codec_metrics(p, 22u, &m) == AIUS_INVALID_ARG,
 	      "ss: unsupported codec metrics Pc accepted");
+	CHECK(aius_pipeline_get_codec_metrics(p, 21u, &m) == AIUS_OK &&
+	          m.decode_cycles == 0u && m.alloc_count == 0u &&
+	          m.arena_high_water == 0u,
+	      "ss: non-resident E-AC-3 metrics are not all-zero");
 
 	/* Warmup burst: allocates (proves the arena + alloc shim are wired). */
 	CHECK(aius_pipeline_push(p, w, n) == AIUS_OK, "ss: warmup push");
@@ -906,6 +913,187 @@ static void test_codec_slot_swap(const char *dir)
 	free(dts);
 }
 
+/* ---- E-AC-3 dispatch identity + arena-slot refusal (phase 3) -------------- */
+
+/* Wire -> pipeline -> sink must be bit-identical to the SAME two access units
+ * decoded through one adapter-owned decoder in wire order (overlap-add
+ * history carries across AUs, so AU 2's reference depends on AU 1 having
+ * decoded first). The reference decoder is destroyed before the pipeline's
+ * decoder is created: the fork's framework shim re-arms its process-global
+ * output provider per decode, so serialized decoders are safe and sequenced
+ * ones doubly so. Heap path -- the slot bound is the next test's subject. */
+static void test_eac3_dispatch_and_identity(const char *dir)
+{
+	size_t n = 0u, plen = 0u;
+	uint16_t *wire = load_wire(dir, "eac3_surround51_ident", &n);
+	uint8_t *pay = load_pay(dir, "eac3_surround51_ident", &plen);
+	CHECK(wire && pay, "eac3: corpus load");
+	if (!wire || !pay) {
+		free(wire);
+		free(pay);
+		return;
+	}
+
+	int32_t *ref[2][AIUS_MAX_CHANNELS];
+	memset(ref, 0, sizeof(ref));
+	uint32_t ref_frames = 0u;
+	{
+		AiusEac3Decoder *dec = NULL;
+		CHECK(aius_eac3_decoder_create(&dec) == AIUS_OK, "eac3: ref create");
+		for (int au = 0; au < 2 && dec; au++) {
+			AiusPcmBlock blk;
+			CHECK(aius_eac3_decode_access_unit(dec, pay, plen, &blk) ==
+			              AIUS_OK,
+			      "eac3: reference decode AU %d", au);
+			ref_frames = blk.frames;
+			for (int ch = 0;
+			     ch < blk.channels && ch < AIUS_MAX_CHANNELS; ch++) {
+				ref[au][ch] =
+					malloc((size_t)blk.frames * sizeof(int32_t));
+				memcpy(ref[au][ch], blk.planes[ch],
+				       (size_t)blk.frames * sizeof(int32_t));
+			}
+		}
+		aius_eac3_decoder_destroy(dec);
+	}
+	CHECK(ref_frames == 1536u, "eac3: reference AU frames %u != 1536",
+	      ref_frames);
+
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create(&p, NULL, &sink) == AIUS_OK, "eac3: create");
+	push_chunked(p, wire, n, 256, "eac3");
+	CHECK(aius_pipeline_finish(p) == AIUS_OK, "eac3: finish");
+	CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_DTS,
+	      "eac3: class != bitstream");
+	CHECK(aius_pipeline_codec_pc(p) == 21u &&
+	              aius_pipeline_resident_codec(p) == 21u,
+	      "eac3: codec pc %u resident %u", aius_pipeline_codec_pc(p),
+	      aius_pipeline_resident_codec(p));
+	AiusPipelineServiceDiag sd;
+	aius_pipeline_get_service_diag(p, &sd);
+	CHECK(sd.decode_units == 2u && sd.decode_rejects == 0u &&
+	              sd.codec_swaps == 0u && sd.au_abandons == 0u,
+	      "eac3: service diag (%u units, %u rejects, %u swaps, %u abandons)",
+	      sd.decode_units, sd.decode_rejects, sd.codec_swaps,
+	      sd.au_abandons);
+	aius_pipeline_destroy(p);
+
+	const uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
+	                      AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR;
+	CHECK(cap.n == 6, "eac3: %d blocks != 6 (two AUs x 3 slices)", cap.n);
+	int identical = cap.n == 6;
+	for (int b = 0; b < cap.n && identical; b++) {
+		const struct block_copy *bc = &cap.blocks[b];
+		if (bc->channels != 6u || bc->frames != 512u ||
+		    bc->sample_rate_hz != 48000u || bc->channel_mask != mask) {
+			CHECK(0, "eac3: block %d descriptor (%u,%u,%u,%08x)", b,
+			      bc->channels, bc->frames, bc->sample_rate_hz,
+			      bc->channel_mask);
+			identical = 0;
+			break;
+		}
+		const int au = b / 3;
+		const uint32_t off = (uint32_t)(b % 3) * 512u;
+		for (int ch = 0; ch < 6; ch++)
+			if (!ref[au][ch] ||
+			    memcmp(bc->planes[ch], ref[au][ch] + off,
+			           512u * sizeof(int32_t)) != 0)
+				identical = 0;
+	}
+	CHECK(identical, "eac3: pipeline output != direct adapter decode");
+	printf("  eac3-dispatch  2 AUs -> 6 x 512, bit-identical to the direct "
+	       "decode\n");
+
+	capture_free(&cap);
+	for (int au = 0; au < 2; au++)
+		for (int ch = 0; ch < AIUS_MAX_CHANNELS; ch++)
+			free(ref[au][ch]);
+	free(wire);
+	free(pay);
+}
+
+/* The arena/slot half: with the 64-KiB slot (every target until phase 4
+ * grows the DTCM arena), a type-21 burst on a live DTS link is refused
+ * BEFORE the resident is touched -- no eviction, no swap count, no slot
+ * high-water movement, and the next DTS burst decodes warm with zero
+ * allocations. */
+static void test_eac3_arena_refusal(const char *dir)
+{
+	size_t dts_n = 0u, eac3_n = 0u;
+	uint16_t *dts = load_wire(dir, "dts51_be16", &dts_n);
+	uint16_t *eac3 = load_wire(dir, "eac3_surround51_ident", &eac3_n);
+	CHECK(dts && eac3, "eac3-slot: corpus load");
+	if (!dts || !eac3) {
+		free(dts);
+		free(eac3);
+		return;
+	}
+
+	AiusArena arena;
+	CHECK(aius_arena_init(&arena, g_pipe_arena, sizeof(g_pipe_arena)) == 0,
+	      "eac3-slot: arena init");
+	struct capture cap;
+	memset(&cap, 0, sizeof(cap));
+	AiusPcmSink sink = { .ctx = &cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	CHECK(aius_pipeline_create_arena(&p, NULL, &sink, &arena) == AIUS_OK,
+	      "eac3-slot: create");
+	if (!p) {
+		free(dts);
+		free(eac3);
+		return;
+	}
+
+	CHECK(aius_pipeline_push(p, dts, dts_n) == AIUS_OK,
+	      "eac3-slot: DTS warmup");
+	CHECK(aius_pipeline_resident_codec(p) == 11u,
+	      "eac3-slot: DTS not resident");
+	const int blocks_before = cap.n;
+	AiusMetrics m0;
+	CHECK(aius_pipeline_get_metrics(p, &m0) == AIUS_OK &&
+	              m0.arena_high_water > 0u,
+	      "eac3-slot: baseline slot high-water");
+
+	CHECK(aius_pipeline_push(p, eac3, eac3_n) == AIUS_OK,
+	      "eac3-slot: type-21 push");
+	AiusPipelineServiceDiag sd;
+	aius_pipeline_get_service_diag(p, &sd);
+	AiusMetrics m1;
+	CHECK(aius_pipeline_get_metrics(p, &m1) == AIUS_OK, "eac3-slot: metrics");
+	CHECK(sd.decode_rejects == 2u && sd.last_failure == AIUS_NO_SPACE,
+	      "eac3-slot: refusal diag (%u rejects, last %d)",
+	      sd.decode_rejects, (int)sd.last_failure);
+	CHECK(sd.codec_swaps == 0u, "eac3-slot: %u swaps across a refusal",
+	      sd.codec_swaps);
+	CHECK(aius_pipeline_resident_codec(p) == 11u,
+	      "eac3-slot: refusal evicted the DTS resident (%u)",
+	      aius_pipeline_resident_codec(p));
+	CHECK(m1.arena_high_water == m0.arena_high_water,
+	      "eac3-slot: slot high-water moved %u -> %u across a refusal",
+	      m0.arena_high_water, m1.arena_high_water);
+	CHECK(cap.n == blocks_before,
+	      "eac3-slot: a refused burst emitted blocks");
+
+	CHECK(aius_pipeline_push(p, dts, dts_n) == AIUS_OK,
+	      "eac3-slot: DTS resumes");
+	AiusMetrics dm;
+	CHECK(aius_pipeline_get_codec_metrics(p, 13u, &dm) == AIUS_OK &&
+	              dm.alloc_count == 0u,
+	      "eac3-slot: post-refusal DTS decode allocated %u (lost warmth?)",
+	      dm.alloc_count);
+	CHECK(cap.n > blocks_before, "eac3-slot: DTS did not resume");
+	printf("  eac3-slot      64-KiB slot refuses type-21 residency untouched "
+	       "(2 rejects, DTS stays warm)\n");
+
+	aius_pipeline_destroy(p);
+	capture_free(&cap);
+	free(dts);
+	free(eac3);
+}
+
 /* ---- defect-28: mid-stream re-classification ------------------------------
  *
  * The live-lottery repro (a carrier locked at random burst phase) and the
@@ -943,16 +1131,17 @@ static uint16_t *make_ramp(size_t n)
  * DECODABLE data type (DTS type III), which the defect-34 single-header rule
  * deliberately ignores.
  *
- * The word after Pb stopped being inert when a well-formed UNSUPPORTED burst
+ * The word after Pb stopped being inert when a well-formed out-of-set burst
  * header became a single-pair exit from PCM. Every leg below plants its pairs
  * into a ramp and used to inherit whatever ramp value followed; two of those
  * inherited values (a type-21 header at fp-far-pairs, a type-31 one at
- * reset-sem) happen to be valid unsupported headers, so the legs would have
- * been testing the new rule instead of the two-pair rule they are named for.
+ * reset-sem) happen to be valid single-pair-exit headers, so the legs would
+ * have been testing that rule instead of the two-pair rule they are named for.
  * Their assertions are unchanged -- only the stimulus is now fully stated. That
  * two arbitrary ramp words landed on valid headers is itself worth knowing: it
- * is why the single-header rule is confined to types no decoder claims, where
- * acting wrongly costs silence rather than a flipped live stream. */
+ * is why the single-header rule is confined to the types the two-pair rule
+ * cannot reach, where acting wrongly costs silence rather than a flipped live
+ * stream. */
 static void plant_pair(uint16_t *w, size_t at, int le)
 {
 	if (le) {
@@ -1436,13 +1625,15 @@ static void test_starve_and_recover(const char *dir)
 	free(v);
 }
 
-/* T6: framed-but-unsupported never starves. Repeated E-AC-3 bursts are framing
- * evidence, so the class must hold bitstream in silence rather than decay into
- * PCM noise. Fails if the starvation counter resets on AIUS_OK only. */
+/* T6: framed-but-unsupported never starves. Repeated type-7 (MPEG-2 AAC)
+ * bursts are framing evidence, so the class must hold bitstream in silence
+ * rather than decay into PCM noise. Fails if the starvation counter resets on
+ * AIUS_OK only. (This leg used the E-AC-3-shaped vector until type 21 went in
+ * scope in phase 3; type 7 is the genuinely refused type now.) */
 static void test_unsupported_never_starves(const char *dir)
 {
 	size_t n = 0, sn = 0;
-	uint16_t *v = load_wire(dir, "unsupported_eac3", &n);
+	uint16_t *v = load_wire(dir, "unsupported_type7", &n);
 	if (!v) {
 		CHECK(0, "unsupported: corpus load failed");
 		return;
@@ -1460,7 +1651,7 @@ static void test_unsupported_never_starves(const char *dir)
 	CHECK(d.reclassify == 0, "unsupported: reclassify_count %u != 0 (starved!)",
 	      d.reclassify);
 	CHECK(cap.n == 0, "unsupported: %d blocks != 0", cap.n);
-	printf("  unsupported    E-AC-3 bursts hold bitstream class, no starve\n");
+	printf("  unsupported    type-7 bursts hold bitstream class, no starve\n");
 	capture_free(&cap);
 	free(s);
 	free(v);
@@ -2391,15 +2582,26 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
 
 /* ---- defect 34: a type-21 carrier entered at any phase stays dark ----------
  *
- * E-AC-3's IEC 61937 repetition period is 12,288 words, wider than
- * AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (8,192): the first candidate pair
- * always expires before the second arrives, so the two-pair rule can NEVER
- * re-type a DD+ link. Every entry phase outside the 512-word classify window --
- * ~96% of them -- typed PCM, cleared the 8,192-word confirmation squelch, and
- * played compressed burst data as full-scale noise.
+ * E-AC-3's IEC 61937 repetition period is 12,288 words at the 6-block burst
+ * shape, wider than AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (8,192): the first
+ * candidate pair always expires before the second arrives, so the two-pair
+ * rule can NEVER re-type such a link. Every entry phase outside the 512-word
+ * classify window -- ~96% of them -- typed PCM, cleared the 8,192-word
+ * confirmation squelch, and played compressed burst data as full-scale noise.
  *
- * The fix leaves PCM on the FIRST pair whose Pc completes a well-formed header
- * for an undecodable data type. What that buys, and its exact limit:
+ * The fix leaves PCM on the FIRST pair whose Pc completes a well-formed
+ * header for a type outside {1,11,12,13}. Since phase 3 type 21 is decodable,
+ * so the exit's outcome forks on what dispatch can do with the burst:
+ *
+ *   - REFUSED RESIDENCY (this sweep): an ARENA-backed pipeline whose 64-KiB
+ *     slot cannot hold the E-AC-3 decoder (every target until phase 4 grows
+ *     the arena) refuses each completed burst BEFORE touching the slot --
+ *     deterministically, at dispatch, with AIUS_NO_SPACE in the service diag.
+ *     The dark guarantees below are exactly defect 34's, unchanged.
+ *   - DECODE (the following sweep): a heap-path pipeline decodes the real
+ *     carrier from every entry phase instead of going dark.
+ *
+ * What dark buys, and its exact limit:
  *
  *   - NO BURST PAYLOAD EVER REACHES THE SINK, at any entry phase. That is the
  *     harm, and it is closed outright.
@@ -2449,6 +2651,35 @@ static AiusPipeline *run_entry(const uint16_t *w, size_t n, struct capture *cap,
 	memset(d, 0, sizeof(*d));
 	if (aius_pipeline_create(&p, NULL, &sink) != AIUS_OK) {
 		CHECK(0, "%s: create", label);
+		return NULL;
+	}
+	push_chunked(p, w, n, 256, label);
+	CHECK(aius_pipeline_get_reclass_counters(p, &d->retype, &d->reclassify) ==
+	              AIUS_OK,
+	      "%s: counters", label);
+	CHECK(aius_pipeline_get_squelch_diag(p, &d->squelched_frames,
+	                                     &d->pcm_confirmed) == AIUS_OK,
+	      "%s: squelch diag", label);
+	return p;
+}
+
+/* The arena-backed variant: the target shape, whose 64-KiB codec slot cannot
+ * hold the E-AC-3 decoder -- the deterministic dispatch refusal the dark
+ * sweep needs. Reuses g_pipe_arena; callers sequence pipelines. */
+static AiusPipeline *run_entry_arena(const uint16_t *w, size_t n,
+                                     struct capture *cap,
+                                     struct reclass_diag *d, const char *label)
+{
+	AiusArena arena;
+	if (aius_arena_init(&arena, g_pipe_arena, sizeof(g_pipe_arena)) != 0) {
+		CHECK(0, "%s: arena init", label);
+		return NULL;
+	}
+	AiusPcmSink sink = { .ctx = cap, .consume = capture_consume };
+	AiusPipeline *p = NULL;
+	memset(d, 0, sizeof(*d));
+	if (aius_pipeline_create_arena(&p, NULL, &sink, &arena) != AIUS_OK) {
+		CHECK(0, "%s: create_arena", label);
 		return NULL;
 	}
 	push_chunked(p, w, n, 256, label);
@@ -2513,8 +2744,8 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 		struct capture cap;
 		memset(&cap, 0, sizeof(cap));
 		struct reclass_diag d;
-		AiusPipeline *p = run_entry(carrier + phi, carrier_n - phi, &cap, &d,
-		                            "eac3-entry");
+		AiusPipeline *p = run_entry_arena(carrier + phi, carrier_n - phi,
+		                                  &cap, &d, "eac3-entry");
 		if (!p)
 			break;
 		const AiusPipelineClass klass = aius_pipeline_classification(p);
@@ -2529,12 +2760,29 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 			      d.pcm_confirmed);
 			dark_at_every_phase = 0;
 		}
-		/* The parser must be framing the carrier's bursts and refusing
-		 * them, which is what holds the class dark without starving. */
-		CHECK(parser.rejects_unsupported >= (uint32_t)(PERIODS - 2) &&
-		              parser.bursts_ok == 0u,
-		      "eac3-entry phase %zu: parser framed %u unsupported / %u ok "
-		      "bursts", phi, parser.rejects_unsupported, parser.bursts_ok);
+		/* The parser frames the carrier's bursts (in scope since phase 3)
+		 * and DISPATCH refuses each one -- the slot cannot hold the
+		 * decoder -- which is what holds the class dark without starving.
+		 * The refusal never touches the (empty) slot: no residency, no
+		 * swap, nothing in the slot high-water. */
+		CHECK(parser.bursts_ok >= (uint32_t)(PERIODS - 2) &&
+		              parser.rejects_unsupported == 0u,
+		      "eac3-entry phase %zu: parser framed %u ok / %u unsupported "
+		      "bursts", phi, parser.bursts_ok, parser.rejects_unsupported);
+		{
+			AiusPipelineServiceDiag sd;
+			aius_pipeline_get_service_diag(p, &sd);
+			CHECK(sd.decode_rejects >= (uint32_t)(PERIODS - 2) &&
+			              sd.last_failure == AIUS_NO_SPACE &&
+			              sd.codec_swaps == 0u,
+			      "eac3-entry phase %zu: dispatch refusal diag "
+			      "(%u rejects, last %d, %u swaps)", phi,
+			      sd.decode_rejects, (int)sd.last_failure,
+			      sd.codec_swaps);
+			CHECK(aius_pipeline_resident_codec(p) == 0u,
+			      "eac3-entry phase %zu: a refused residency left a "
+			      "decoder in the slot", phi);
+		}
 		CHECK(d.reclassify == 0u,
 		      "eac3-entry phase %zu: the dark class starved back out (%u)",
 		      phi, d.reclassify);
@@ -2611,6 +2859,138 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 	free(carrier);
 }
 
+/* ---- phase 3: the same carrier geometry, now decodable ---------------------
+ *
+ * The positive half of the defect-34 story: a heap-path pipeline (no slot
+ * bound) meets a REAL type-21 carrier -- the committed eac3_surround51_ident
+ * burst tiled at its exact 12,288-word period -- at swept entry phases, and
+ * must lock and DECODE from every one of them instead of going dark. Phases
+ * that type PCM first may emit up to four blocks of confirmed inter-burst
+ * stuffing (2-ch digital silence, the sweep above's documented residual);
+ * no compressed payload may ever surface, and every decoded block is the
+ * 6-channel 512-frame 5.1 shape. */
+
+static uint16_t *make_real_eac3_carrier(const char *dir, size_t periods,
+                                        size_t *out_n)
+{
+	size_t n = 0u, plen = 0u;
+	uint16_t *wire = load_wire(dir, "eac3_surround51_ident", &n);
+	uint8_t *pay = load_pay(dir, "eac3_surround51_ident", &plen);
+	if (!wire || !pay) {
+		free(wire);
+		free(pay);
+		return NULL;
+	}
+	const size_t burst_words = 4u + (plen + 1u) / 2u;
+	CHECK(n >= burst_words && wire[0] == 0xF872u,
+	      "eac3-decode: unexpected corpus vector shape");
+	const size_t total = EAC3_PERIOD_WORDS * periods;
+	uint16_t *s = calloc(total, sizeof(uint16_t));
+	for (size_t r = 0; r < periods; r++)
+		memcpy(s + r * EAC3_PERIOD_WORDS, wire,
+		       burst_words * sizeof(uint16_t));
+	free(wire);
+	free(pay);
+	*out_n = total;
+	return s;
+}
+
+static void test_eac3_decode_entry_phase_sweep(const char *dir)
+{
+	enum { PERIODS = 4 };
+	size_t carrier_n = 0u;
+	uint16_t *carrier = make_real_eac3_carrier(dir, PERIODS, &carrier_n);
+	if (!carrier) {
+		CHECK(0, "eac3-decode: carrier build");
+		return;
+	}
+
+	static const size_t explicit_phases[] = {
+		0, 1, 2, 511, 512, 513, 771, 772, 773, 4095, 4096, 8191, 8192,
+		8193, 11776, 12287
+	};
+	size_t phases[32];
+	size_t phase_count = 0u;
+	for (size_t i = 0;
+	     i < sizeof(explicit_phases) / sizeof(explicit_phases[0]); i++)
+		phases[phase_count++] = explicit_phases[i];
+	for (size_t phi = 1024u; phi < EAC3_PERIOD_WORDS; phi += 1024u)
+		phases[phase_count++] = phi;
+
+	/* A confirmed-stuffing block boundary can land ON the next burst's
+	 * preamble: the Pa/Pb words then stage as that block's final samples
+	 * before the Pc-triggered exit drops the rest -- the same membership
+	 * the dark sweep allows. Anything else non-zero is payload. */
+	const int32_t pa_sample = pcm_expected_sample(0xF872u);
+	const int32_t pb_sample = pcm_expected_sample(0x4E1Fu);
+
+	int decoded_everywhere = 1;
+	for (size_t k = 0; k < phase_count; k++) {
+		const size_t phi = phases[k];
+		struct capture cap;
+		memset(&cap, 0, sizeof(cap));
+		struct reclass_diag d;
+		AiusPipeline *p = run_entry(carrier + phi, carrier_n - phi, &cap,
+		                            &d, "eac3-decode");
+		if (!p)
+			break;
+		CHECK(aius_pipeline_classification(p) == AIUS_PIPELINE_DTS &&
+		              d.pcm_confirmed == 0,
+		      "eac3-decode phase %zu: class %d confirmed %d", phi,
+		      (int)aius_pipeline_classification(p), d.pcm_confirmed);
+		CHECK(d.reclassify == 0u, "eac3-decode phase %zu: starved (%u)",
+		      phi, d.reclassify);
+		CHECK(aius_pipeline_codec_pc(p) == 21u &&
+		              aius_pipeline_resident_codec(p) == 21u,
+		      "eac3-decode phase %zu: codec pc %u resident %u", phi,
+		      aius_pipeline_codec_pc(p), aius_pipeline_resident_codec(p));
+
+		const uint32_t mask = AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_FC |
+		                      AIUS_CH_LFE | AIUS_CH_SL | AIUS_CH_SR;
+		int decoded = 0;
+		int in_decoded_run = 0;
+		int shape_ok = 1;
+		for (int b = 0; b < cap.n; b++) {
+			if (cap.blocks[b].channels == 2u && !in_decoded_run) {
+				/* Leading confirmed stuffing: silence, or the
+				 * boundary-straddling preamble words. */
+				for (uint32_t f = 0; f < cap.blocks[b].frames; f++) {
+					const int32_t l = cap.blocks[b].planes[0][f];
+					const int32_t r = cap.blocks[b].planes[1][f];
+					if ((l != 0 && l != pa_sample &&
+					     l != pb_sample) ||
+					    (r != 0 && r != pa_sample &&
+					     r != pb_sample))
+						shape_ok = 0;
+				}
+				continue;
+			}
+			in_decoded_run = 1;
+			if (cap.blocks[b].channels != 6u ||
+			    cap.blocks[b].frames != 512u ||
+			    cap.blocks[b].sample_rate_hz != 48000u ||
+			    cap.blocks[b].channel_mask != mask)
+				shape_ok = 0;
+			decoded++;
+		}
+		CHECK(shape_ok,
+		      "eac3-decode phase %zu: non-silent stuffing or mis-shaped "
+		      "decoded block", phi);
+		if (decoded < 3 * (PERIODS - 1)) {
+			CHECK(0, "eac3-decode phase %zu: %d decoded blocks < %d",
+			      phi, decoded, 3 * (PERIODS - 1));
+			decoded_everywhere = 0;
+		}
+		capture_free(&cap);
+		aius_pipeline_destroy(p);
+	}
+	CHECK(decoded_everywhere,
+	      "eac3-decode: some entry phase failed to decode");
+	printf("  eac3-decode    %zu entry phases over the period: every phase "
+	       "locks and decodes 5.1\n", phase_count);
+	free(carrier);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -2623,12 +3003,14 @@ int main(int argc, char **argv)
 	test_dts_equivalence(dir, "dts_be16");
 	test_dts_equivalence(dir, "dts51_be16");
 	test_ac3_dispatch_and_identity(dir);
+	test_eac3_dispatch_and_identity(dir);
 	test_pcm_passthrough();
 	test_pcm_runtime_rates();
 	test_pcm_sample_scale();
 	test_classifier(dir);
 	test_no_heap_steady_state(dir);
 	test_codec_slot_swap(dir);
+	test_eac3_arena_refusal(dir);
 	test_retype_mid_burst_entry(dir);
 	test_retype_mid_stream_switch(dir);
 	test_retype_false_positive_immunity();
@@ -2637,6 +3019,7 @@ int main(int argc, char **argv)
 	test_starve_and_recover(dir);
 	test_unsupported_never_starves(dir);
 	test_unsupported_entry_phase_sweep(dir);
+	test_eac3_decode_entry_phase_sweep(dir);
 	test_teardown_drops_partial_burst(dir, "dts_be16", 500u, 1u, 1u);
 	test_teardown_drops_partial_burst(dir, "ac3_surround51_ident", 700u, 12u,
 	                                  12u);

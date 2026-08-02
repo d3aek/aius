@@ -30,7 +30,8 @@
    * nothing on it says what the number means.
    *   state   optical_main.cpp current_state(): 2 no carrier, 3 PCM, 4 bitstream
    *   format  AiusPipelineClass: 0 unknown, 1 PCM, 2 IEC 61937 bitstream
-   *   codec   pipeline_diag.codec_pc: 0 unknown, 1 AC-3, 11/12/13 DTS
+   *   codec   pipeline_diag.codec_pc: 0 unknown, 1 AC-3, 11/12/13 DTS,
+   *           21 E-AC-3
    *   the network and checkpoint vocabularies are the ones swagger's Status
    *   schema documents for network_state, network_last_fault and
    *   last_checkpoint. */
@@ -80,6 +81,7 @@
     const codecPc = Number(pipeline.codec_pc);
     if (codecPc === 1) return 'AC-3';
     if (codecPc === 11 || codecPc === 12 || codecPc === 13) return 'DTS';
+    if (codecPc === 21) return 'E-AC-3';
     return 'unknown';
   };
 

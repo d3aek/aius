@@ -100,13 +100,47 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    phase: `eac3_surround51_ident` in the `iec_corpus` — two real 5.1
    E-AC-3 AUs, byte-count Pd, Pa spacing exactly 12,288 words —
    de-frames byte-identically under all three chunkings; the
-   known-answer expectation is UNSUPPORTED,UNSUPPORTED until Phase 3
-   takes type 21 in scope, then flips to OK,OK.
-3. **Dispatch + classification constants** — type 21 joins `in_scope`,
-   third dispatch route, `codec_pc == 21` metrics/UI decoration,
-   squelch/re-type constants re-derived for the 12,288-word burst period
-   against the shipped defect-34 stay-dark rule, T6's
-   framed-but-unsupported vector moves to a genuinely refused type.
+   known-answer expectation was UNSUPPORTED,UNSUPPORTED until Phase 3
+   took type 21 in scope (now OK,OK).
+3. **Dispatch + classification constants** — **done 2026-08-02.** Type 21
+   joined the parser's `in_scope` unconditionally (zero-Pd type 21 is now
+   MALFORMED; the 4,096 B payload cap equals the max legal syncframe, so
+   independent-substream bursts always fit). The third dispatch route is
+   compile-optional (`AIUS_PIPELINE_EAC3`, OTA-precedent, default off):
+   the ~120 KB fork must not join the gated target image before Phase 4's
+   FLASH placement, so on the target a completed type-21 burst is refused
+   at dispatch (decode_rejects, AIUS_UNSUPPORTED, dark) — proven by the
+   flag-off probe in the audio-service suite. Flag on (the `pipeline`
+   suite), E-AC-3 mirrors the DTS single-shot flow, sliced ≤512 frames.
+   **Residency is gated before the resident is touched**
+   (`residency_possible`): the 64 KiB slot cannot hold the measured
+   179,232 B need (named `AIUS_PIPELINE_EAC3_SLOT_BYTES` = 180,224), so an
+   arena-backed pipeline refuses type-21 residency AIUS_NO_SPACE without
+   evicting a warm DTS/AC-3 decoder or dirtying the slot high-water
+   (suite-proven interleave). **Classification constants: all four
+   unchanged.** The defect-34 single-pair exit SET is unchanged (every
+   type outside {1,11,12,13}); type 21 stays in it because its 12,288-word
+   worst-case period exceeds `RETYPE_MAX_SPACING_WORDS` 8,192 — the
+   re-derivation lives in `single_pair_exit_header`'s comment (the renamed
+   `unsupported_burst_header`), including the error-flagged-header
+   residual. `DTS_STARVE_WORDS` 16,384 covers the 12,288-word worst
+   type-21 outcome gap (1.33x). Decoration: `codec_pc == 21` flows through
+   the status JSON (`eac3_decode_cycles`/`eac3_alloc_count`, three-way
+   `shared_arena_high_water`) and both SD pages name `E-AC-3`; oracles
+   extended (`test_bitstream_ui.py`, dsp-editor vitest). T6 moved to the
+   new genuinely-refused `unsupported_type7` vector. Delivered evidence:
+   pipeline suite — wire-to-sink bit-identity vs the direct adapter decode
+   (2 AUs → 6×512), the 115-phase dark sweep re-proved on the arena
+   (refused-residency) path, a 27-phase decode sweep proving every entry
+   phase of a real DD+ carrier locks and decodes 5.1 on the heap path;
+   iec61937 + fuzz, audio-service, optical-app, sd-editor vitest green;
+   target image builds with memory/ITCM gates.
+   **Scope note (from the parser cap):** a burst carrying dependent
+   (>5.1) substreams exceeds the 4,096 B cap → parser NO_SPACE → dark. A
+   7.1-configured DD+ source therefore stays silent by design; the
+   adapter's 24,576 B burst headroom is unreachable through this
+   pipeline. Phase 5's live evidence should configure the TV to 5.1
+   output.
 4. **Target integration** — **GATED (owner decision 2026-08-01): no
    E-AC-3 flash stages until the boot-lottery defect is fixed**
    ([`aius-open-work-register.md`](aius-open-work-register.md) §Open
@@ -126,7 +160,14 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    non-audio-path DTCM buffers to OCRAM (defect 26 vetoed OCRAM for *audio-path* state;
    HTTP/network/scratch buffers are not that) and growing `ARENA_BYTES`
    to ~220 KB. The CRC tables (32,800 B BSS, lazily generated) are a
-   further flash-const rung if DTCM stays tight.
+   further flash-const rung if DTCM stays tight. Phase 3 left the target
+   hooks ready: define `AIUS_PIPELINE_EAC3` in the optical env, add the
+   fork + adapter sources to `build_src_filter` with FLASH-cold
+   placement, and raise `AIUS_PIPELINE_CODEC_SLOT_BYTES` to
+   `AIUS_PIPELINE_EAC3_SLOT_BYTES` (180,224 B, the measured 179,232 B
+   need rounded to 4 KiB) alongside the arena growth — the
+   `residency_possible` gate then admits type 21 on target with no
+   other dispatch change.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until

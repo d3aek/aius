@@ -37,11 +37,17 @@ real E-AC-3 payload is the first `surround51_ident` frame from
   Pa starts are exactly 3072 words apart.
 - `eac3_surround51_ident` — two real 5.1 E-AC-3 AUs, type 21 with byte-count
   Pd; Pa starts are exactly 12288 words apart (the E-AC-3 burst spans 1536
-  samples on a 4x-rate link) -> `AIUS_UNSUPPORTED` twice until the E-AC-3
-  plan's phase-3 dispatch takes type 21 in scope, then `AIUS_OK` twice.
+  samples on a 4x-rate link) -> `AIUS_OK` twice (in scope since the E-AC-3
+  plan's phase-3 dispatch).
 - `type11`, `type12` — synthetic DTS burst types I and II -> `AIUS_OK`.
-- `unsupported_eac3` — E-AC-3-shaped 1792-byte frame, data type 21 with
-  byte-count Pd `0x0700` -> `AIUS_UNSUPPORTED`.
+- `unsupported_eac3` — E-AC-3-shaped 1792-byte frame (valid header, garbage
+  payload), data type 21 with byte-count Pd `0x0700` -> `AIUS_OK` since
+  phase 3 (refusing the payload is the decoder's job; the name records its
+  origin as the framed-but-unsupported vector).
+- `unsupported_type7` — synthetic 64-byte MPEG-2 AAC burst, data type 7 ->
+  `AIUS_UNSUPPORTED` (the genuinely refused type, with a non-empty payload so
+  the published-descriptor half of the UNSUPPORTED contract stays
+  byte-compared).
 - `null_type` — data type 0, zero length -> `AIUS_UNSUPPORTED`, empty payload.
 - `two_bursts` — two DTS bursts with pause stuffing between; drains as `AIUS_OK` twice.
 - `padded` — pause stuffing around one burst -> `AIUS_OK`.
@@ -49,6 +55,7 @@ real E-AC-3 payload is the first `surround51_ident` frame from
 - `error_flag` — Pc error flag set -> `AIUS_MALFORMED`.
 - `zero_len` — length-code 0 on an in-scope DTS type -> `AIUS_MALFORMED`.
 - `zero_len_ac3` — Pd 0 on in-scope AC-3 type 1 -> `AIUS_MALFORMED`.
+- `zero_len_eac3` — Pd 0 on in-scope E-AC-3 type 21 -> `AIUS_MALFORMED`.
 - `overlong` — Pd demanding more than the parser buffer -> `AIUS_NO_SPACE`.
 - `truncated` — full header, half the payload; end-of-stream -> `AIUS_TRUNCATED` via
   `aius_iec61937_finish`.

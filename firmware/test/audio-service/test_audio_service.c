@@ -83,10 +83,11 @@ static void publish_chunk(AiusAudioIngress *ingress, const uint16_t *words,
 	      "commit ingress chunk");
 }
 
-static uint16_t *load_wire(const char *dir, size_t *word_count)
+static uint16_t *load_wire(const char *dir, const char *name,
+                           size_t *word_count)
 {
 	char path[1024];
-	snprintf(path, sizeof(path), "%s/dts_be16.iec", dir);
+	snprintf(path, sizeof(path), "%s/%s.iec", dir, name);
 	FILE *file = fopen(path, "rb");
 	if (!file)
 		return NULL;
@@ -213,7 +214,7 @@ static void test_time_quota(void)
 static void test_partial_retry_and_no_alloc(const char *dir)
 {
 	size_t word_count = 0u;
-	uint16_t *wire = load_wire(dir, &word_count);
+	uint16_t *wire = load_wire(dir, "dts_be16", &word_count);
 	CHECK(wire != NULL && word_count < 1024u, "load short DTS burst");
 	if (!wire)
 		return;
@@ -470,6 +471,43 @@ static void test_output_step_quota(void)
 	aius_pipeline_destroy(pipeline);
 }
 
+/* This suite compiles aius_pipeline.c WITHOUT AIUS_PIPELINE_EAC3 -- the
+ * target's shape until E-AC-3 plan phase 4. A completed type-21 burst must
+ * be refused at dispatch (AIUS_UNSUPPORTED, dark, nothing emitted, no
+ * residency) and Pc 21 stays outside the codec-metrics vocabulary. */
+static void test_eac3_route_absent(const char *dir)
+{
+	size_t word_count = 0u;
+	uint16_t *wire = load_wire(dir, "eac3_surround51_ident", &word_count);
+	CHECK(wire != NULL, "eac3-absent vector load");
+	if (!wire)
+		return;
+	Sink sink = { 0 };
+	AiusPipeline *pipeline = make_pipeline(&sink);
+	if (!pipeline) {
+		free(wire);
+		return;
+	}
+	AiusMetrics metrics;
+	CHECK(aius_pipeline_get_codec_metrics(pipeline, 21u, &metrics) ==
+	              AIUS_INVALID_ARG,
+	      "Pc 21 metrics accepted without the route");
+	CHECK(aius_pipeline_push(pipeline, wire, word_count) == AIUS_OK,
+	      "eac3-absent push");
+	CHECK(aius_pipeline_classification(pipeline) == AIUS_PIPELINE_DTS,
+	      "eac3-absent class holds bitstream");
+	CHECK(sink.calls == 0u, "a refused type-21 burst reached the sink");
+	AiusPipelineServiceDiag pipeline_diag;
+	aius_pipeline_get_service_diag(pipeline, &pipeline_diag);
+	CHECK(pipeline_diag.decode_rejects == 2u &&
+	              pipeline_diag.last_failure == AIUS_UNSUPPORTED,
+	      "eac3-absent refusal diag");
+	CHECK(aius_pipeline_resident_codec(pipeline) == 0u,
+	      "a refused type-21 residency left a decoder in the slot");
+	aius_pipeline_destroy(pipeline);
+	free(wire);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 2) {
@@ -479,6 +517,7 @@ int main(int argc, char **argv)
 	test_word_quota();
 	test_time_quota();
 	test_partial_retry_and_no_alloc(argv[1]);
+	test_eac3_route_absent(argv[1]);
 	test_generation_and_reset_sequence();
 	test_requested_reset_critical_section();
 	test_rejected_work_not_committed();

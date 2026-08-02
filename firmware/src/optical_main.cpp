@@ -2517,12 +2517,14 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	AiusMetrics metrics;
 	AiusMetrics dts_metrics;
 	AiusMetrics ac3_metrics;
+	AiusMetrics eac3_metrics;
 	AiusIecDiag iec;
 	AiusPipelineServiceDiag service;
 
 	memset(&metrics, 0, sizeof(metrics));
 	memset(&dts_metrics, 0, sizeof(dts_metrics));
 	memset(&ac3_metrics, 0, sizeof(ac3_metrics));
+	memset(&eac3_metrics, 0, sizeof(eac3_metrics));
 	memset(&iec, 0, sizeof(iec));
 	memset(&service, 0, sizeof(service));
 	const AiusPipelineClass klass = g_audio_processor.classification();
@@ -2530,10 +2532,17 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	const AiusStatus got = g_audio_processor.pipeline_metrics(&metrics);
 	(void)g_audio_processor.pipeline_codec_metrics(11u, &dts_metrics);
 	(void)g_audio_processor.pipeline_codec_metrics(1u, &ac3_metrics);
-	const uint32_t shared_arena_high_water =
+	/* Pc 21 (E-AC-3) is INVALID_ARG until AIUS_PIPELINE_EAC3 compiles the
+	 * route into this image (E-AC-3 plan phase 4), so eac3_metrics reads
+	 * zero today; the JSON fields are already carried so the UI seam does
+	 * not change when the decoder arrives. */
+	(void)g_audio_processor.pipeline_codec_metrics(21u, &eac3_metrics);
+	uint32_t shared_arena_high_water =
 		dts_metrics.arena_high_water > ac3_metrics.arena_high_water
 			? dts_metrics.arena_high_water
 			: ac3_metrics.arena_high_water;
+	if (eac3_metrics.arena_high_water > shared_arena_high_water)
+		shared_arena_high_water = eac3_metrics.arena_high_water;
 	(void)g_audio_processor.parser_diag(&iec);
 	g_audio_processor.pipeline_service_diag(&service);
 	/* Defect 28: lifetime re-classification counters. On a live board a
@@ -2561,6 +2570,8 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        "\"dts_alloc_count\":%lu,"
 	                        "\"ac3_decode_cycles\":%llu,"
 	                        "\"ac3_alloc_count\":%lu,"
+	                        "\"eac3_decode_cycles\":%llu,"
+	                        "\"eac3_alloc_count\":%lu,"
 	                        "\"decode_rejects\":%lu,"
 	                        "\"bursts_ok\":%lu,"
 	                        "\"rejects_no_space\":%lu,"
@@ -2585,6 +2596,8 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        (unsigned long)dts_metrics.alloc_count,
 	                        (unsigned long long)ac3_metrics.decode_cycles,
 	                        (unsigned long)ac3_metrics.alloc_count,
+	                        (unsigned long long)eac3_metrics.decode_cycles,
+	                        (unsigned long)eac3_metrics.alloc_count,
 	                        (unsigned long)service.decode_rejects,
 	                        (unsigned long)iec.bursts_ok,
 	                        (unsigned long)iec.rejects_no_space,

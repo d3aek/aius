@@ -190,9 +190,7 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 			uint16_t pd = normalize(p, words[i]);
 			i++;
 			/* IEC 61937 encodes Pd as a byte count for E-AC-3 (Pc 21);
-			 * AC-3, DTS Core and the remaining types use a bit count. Pc
-			 * 21 stays unsupported, but de-framing it with the right length
-			 * keeps the unsupported-burst path honest. */
+			 * AC-3, DTS Core and the remaining types use a bit count. */
 			uint32_t payload_bits =
 				(p->data_type == 21) ? (uint32_t)pd * 8u : (uint32_t)pd;
 
@@ -206,8 +204,8 @@ AiusStatus aius_iec61937_push(AiusIec61937Parser *p, const uint16_t *words,
 			}
 
 			p->in_scope = (p->data_type == 1 || p->data_type == 11 ||
-			               p->data_type == 12 ||
-			               p->data_type == 13);
+			               p->data_type == 12 || p->data_type == 13 ||
+			               p->data_type == 21);
 			if (p->in_scope && payload_bits == 0) {
 				p->diag.rejects_malformed++;
 				p->diag.last_reject_pc = p->hdr_pc;

@@ -12,6 +12,18 @@
 
 #include "aius_a52.h"
 
+/* The E-AC-3 route is compile-optional (OTA-precedent flag): the vendored
+ * FFmpeg fork is ~120 KB of text+rodata the gated target image must not gain
+ * before phase 4's FLASH-cold placement, and the optical build names this TU
+ * directly. Off (default), a completed type-21 burst is refused at dispatch
+ * (decode_rejects, AIUS_UNSUPPORTED) and the class stays dark. */
+#ifndef AIUS_PIPELINE_EAC3
+#define AIUS_PIPELINE_EAC3 0
+#endif
+#if AIUS_PIPELINE_EAC3
+#include "aius_eac3.h"
+#endif
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,13 +42,21 @@ typedef enum {
 	PENDING_DTS_OUTPUT,
 	PENDING_A52_AU,
 	PENDING_A52_NEXT,
-	PENDING_A52_OUTPUT
+	PENDING_A52_OUTPUT,
+	/* E-AC-3 mirrors the DTS single-shot flow (one AU in, one block out,
+	 * sliced on output). Only ever set when AIUS_PIPELINE_EAC3 compiled the
+	 * route in: dispatch refuses family 21 before staging otherwise. */
+	PENDING_EAC3_AU,
+	PENDING_EAC3_OUTPUT
 } PendingKind;
 
 struct AiusPipeline {
 	AiusIec61937Parser *parser;
 	AiusDtsDecoder *dts_decoder;   /* resident iff resident_family == 11 */
 	AiusA52Decoder *a52_decoder;   /* resident iff resident_family == 1 */
+#if AIUS_PIPELINE_EAC3
+	AiusEac3Decoder *eac3_decoder; /* resident iff resident_family == 21 */
+#endif
 	AiusPcmSink sink;
 
 	AiusPipelineClass klass;
@@ -53,7 +73,8 @@ struct AiusPipeline {
 	 * malloc'd slot would poison the alloc shim's single owned address range
 	 * (see aius_alloc_shim.h). */
 	AiusArena codec_slot;
-	uint16_t resident_family;  /* 0 none; else canonical Pc: 1 AC-3, 11 DTS */
+	uint16_t resident_family;  /* 0 none; else canonical Pc: 1 AC-3, 11 DTS,
+	                            * 21 E-AC-3 */
 	AiusCycleClock cycle_clock; /* applied to each lazily created decoder */
 
 	/* Classification staging: raw words held until the stream is typed. */
@@ -90,8 +111,8 @@ struct AiusPipeline {
 	uint32_t rt_cand_pos;      /* candidate pair's Pa position */
 
 	/* Defect 34: the word after a Pa/Pb pair is the burst_info Pc, and a Pc
-	 * naming a data type this box cannot decode is a SINGLE-PAIR exit from
-	 * PCM (see unsupported_burst_header). The pair may end a push, so the
+	 * naming a data type outside {1,11,12,13} is a SINGLE-PAIR exit from
+	 * PCM (see single_pair_exit_header). The pair may end a push, so the
 	 * look-ahead is carried in the instance like the prev-word carry is. */
 	uint16_t rt_sync_pa;
 	uint16_t rt_sync_pb;
@@ -167,30 +188,39 @@ static int is_preamble_pair(uint16_t a, uint16_t b)
 }
 
 /* Defect 34: does `pc_word`, read in the pair's own wire byte order, complete a
- * well-formed IEC 61937 burst header for a data type this pipeline cannot
- * decode?
+ * well-formed IEC 61937 burst header for a data type the two-pair rule cannot
+ * be trusted to reach?
  *
- * WHY THIS EXISTS. E-AC-3 (type 21) repeats every 12,288 words, which is wider
- * than AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (8,192): the first candidate pair
+ * WHY THIS EXISTS. E-AC-3 (type 21) repeats every 12,288 words at its worst
+ * (6-block) burst shape, which is wider than
+ * AIUS_PIPELINE_RETYPE_MAX_SPACING_WORDS (8,192): the first candidate pair
  * always expires before the second arrives, so the two-pair rule can NEVER
- * re-type a DD+ link. ~96% of entry phases therefore typed PCM, cleared the
+ * re-type such a link. ~96% of entry phases therefore typed PCM, cleared the
  * confirmation squelch and played compressed burst data as full-scale noise --
  * the exact harm the squelch exists to prevent. Raising the spacing was the
  * other candidate and was rejected: PCM_CONFIRM_WORDS must stay >= MAX, so it
  * would lengthen the confirmation mute of every genuine PCM source.
  *
- * WHY ONE PAIR IS ENOUGH HERE, when two are needed for a decodable type. A bare
- * pair is 32 bits of evidence and the two-pair rule buys the rest. A pair
- * FOLLOWED BY a burst_info that clears the error flag and names an undecodable
- * data type is stronger evidence AND it fails safe: acting on it goes DARK. A
- * false positive costs the existing starvation recovery (the bitstream class
- * finds no further burst outcome and re-classifies), which is silence, not
- * noise -- whereas failing to act plays the burst. That asymmetry is the whole
- * argument, and it is why this rule is deliberately NOT extended to the
- * decodable types: for those, acting wrongly would flip a live stream.
+ * WHY ONE PAIR IS ENOUGH HERE, when two are needed for types 1/11/12/13. A
+ * bare pair is 32 bits of evidence and the two-pair rule buys the rest. A pair
+ * FOLLOWED BY a burst_info that clears the error flag and names a type in this
+ * set is stronger evidence AND acting on it fails safe. Since E-AC-3 became
+ * decodable (phase 3) the set is no longer "types no decoder claims": type 21
+ * stays in it because the single header is its ONLY viable PCM exit (period
+ * wider than MAX), and acting now yields decode where the route is compiled
+ * in, or a dark dispatch refusal where it is not. Either way a false positive
+ * on genuine PCM costs the ordinary starvation recovery -- silence, never
+ * noise -- whereas failing to act plays the burst. The rule is still NOT
+ * extended to 1/11/12/13: their periods fit inside MAX, so the two-pair rule
+ * reaches them, and for a type it can reach, acting on one pair would trade a
+ * provably-rare false flip for no coverage gain.
+ *
+ * A header with the ERROR FLAG set stays excluded -- the parser rejects it, so
+ * it is not a sync. The documented residual: a link asserting the error flag
+ * on every burst still confirms PCM (defect 34's own exclusion, unchanged).
  *
  * Types 1/11/12/13 return 0 and fall through to the unchanged two-pair rule. */
-static int unsupported_burst_header(int form, uint16_t pc_word)
+static int single_pair_exit_header(int form, uint16_t pc_word)
 {
 	const uint16_t pc =
 		(form == 2) ? (uint16_t)((pc_word >> 8) | (pc_word << 8)) : pc_word;
@@ -314,13 +344,13 @@ static AiusStatus pcm_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 
 		/* Defect 34, ahead of everything: this word is the burst_info Pc of
 		 * the pair the previous iteration saw. A Pc that completes a
-		 * well-formed header for an undecodable data type leaves PCM on this
-		 * ONE pair -- the widest supported re-type spacing cannot reach a
-		 * 12,288-word E-AC-3 period, so waiting for a second pair means
+		 * well-formed header for a type outside {1,11,12,13} leaves PCM on
+		 * this ONE pair -- the widest supported re-type spacing cannot reach
+		 * a 12,288-word E-AC-3 period, so waiting for a second pair means
 		 * waiting forever. The sync words go to the parser with the rest. */
 		if (p->rt_await_pc) {
 			p->rt_await_pc = 0u;
-			if (unsupported_burst_header((int)p->rt_sync_form, word)) {
+			if (single_pair_exit_header((int)p->rt_sync_form, word)) {
 				const uint16_t lead[3] = { p->rt_sync_pa, p->rt_sync_pb,
 				                           word };
 				size_t rest_consumed = 0u;
@@ -424,6 +454,30 @@ static uint16_t pc_family(uint16_t pc)
 	return (pc == 11u || pc == 12u || pc == 13u) ? 11u : pc;
 }
 
+/* Can `family` ever become resident in THIS pipeline? AIUS_OK, or the refusal
+ * to record: AIUS_UNSUPPORTED when the decoder is not compiled in,
+ * AIUS_NO_SPACE when the arena slot cannot hold it (E-AC-3 needs
+ * AIUS_PIPELINE_EAC3_SLOT_BYTES; phase 4 grows the slot). Checked BEFORE the
+ * resident is touched, so an impossible residency can never evict a healthy
+ * decoder or dirty the slot's cumulative high-water -- the metric that sizes
+ * the slot. */
+static AiusStatus residency_possible(const AiusPipeline *p, uint16_t family)
+{
+	if (family == 1u || family == 11u)
+		return AIUS_OK;
+#if AIUS_PIPELINE_EAC3
+	if (family == 21u)
+		return (!p->arena_backed ||
+		        AIUS_PIPELINE_CODEC_SLOT_BYTES >=
+		            AIUS_PIPELINE_EAC3_SLOT_BYTES)
+			       ? AIUS_OK
+			       : AIUS_NO_SPACE;
+#else
+	(void)p;
+#endif
+	return AIUS_UNSUPPORTED;
+}
+
 /* Destroy whatever decoder holds the slot and reclaim its storage. The
  * decoder destroys are NULL-safe; the a52 abandon is defensive -- ingest
  * never swaps while an AU is in flight (it does not run with a work item
@@ -442,6 +496,12 @@ static void destroy_resident(AiusPipeline *p)
 		aius_a52_decoder_destroy(p->a52_decoder);
 		p->a52_decoder = NULL;
 	}
+#if AIUS_PIPELINE_EAC3
+	if (p->eac3_decoder) {
+		aius_eac3_decoder_destroy(p->eac3_decoder);
+		p->eac3_decoder = NULL;
+	}
+#endif
 	p->resident_family = 0u;
 	if (p->arena_backed)
 		aius_arena_reset(&p->codec_slot);
@@ -470,6 +530,16 @@ static AiusStatus create_resident(AiusPipeline *p, uint16_t family)
 		if (st == AIUS_OK)
 			st = aius_dts_set_cycle_clock(p->dts_decoder,
 			                              &p->cycle_clock);
+#if AIUS_PIPELINE_EAC3
+	} else if (family == 21u) {
+		st = p->arena_backed
+			? aius_eac3_decoder_create_arena(&p->eac3_decoder,
+			                                 &p->codec_slot)
+			: aius_eac3_decoder_create(&p->eac3_decoder);
+		if (st == AIUS_OK)
+			st = aius_eac3_set_cycle_clock(p->eac3_decoder,
+			                               &p->cycle_clock);
+#endif
 	} else {
 		return AIUS_UNSUPPORTED;
 	}
@@ -482,14 +552,19 @@ static AiusStatus create_resident(AiusPipeline *p, uint16_t family)
 }
 
 /* Make `family`'s decoder the slot's resident, swapping out the other
- * family's if it holds the slot. Same-family calls are free. */
+ * family's if it holds the slot. Same-family calls are free. An impossible
+ * residency (not compiled in / cannot fit the slot) refuses BEFORE the
+ * current resident is touched. */
 static AiusStatus ensure_codec_resident(AiusPipeline *p, uint16_t family)
 {
 	if (p->resident_family == family)
 		return AIUS_OK;
+	AiusStatus st = residency_possible(p, family);
+	if (st != AIUS_OK)
+		return st;
 	const int swapping = p->resident_family != 0u;
 	destroy_resident(p);
-	AiusStatus st = create_resident(p, family);
+	st = create_resident(p, family);
 	if (st == AIUS_OK && swapping)
 		p->service_diag.codec_swaps++;
 	return st;
@@ -521,21 +596,28 @@ static AiusStatus dts_ingest(AiusPipeline *p, const uint16_t *w, size_t n,
 			if (aius_iec61937_current_burst(p->parser, &b) == AIUS_OK) {
 				uint16_t family;
 				if (b.data_type == 1u || b.data_type == 11u ||
-				    b.data_type == 12u || b.data_type == 13u)
+				    b.data_type == 12u || b.data_type == 13u ||
+				    b.data_type == 21u)
 					family = pc_family(b.data_type);
 				else
 					continue; /* parser owns the unsupported-code policy */
 				AiusStatus cs = ensure_codec_resident(p, family);
 				if (cs != AIUS_OK) {
-					/* Slot-capacity/create failure: refuse this
-					 * burst and re-lock, the decode-reject shape. */
+					/* Residency-impossible / slot-capacity / create
+					 * failure: refuse this burst and re-lock, the
+					 * decode-reject shape. Type 21 lands here
+					 * whenever the E-AC-3 route is not compiled in
+					 * (AIUS_UNSUPPORTED) or the arena slot cannot
+					 * hold the decoder (AIUS_NO_SPACE, until phase 4
+					 * grows it) -- the link stays dark. */
 					p->last_status = cs;
 					p->service_diag.decode_rejects++;
 					p->service_diag.last_failure = cs;
 					continue;
 				}
-				p->pending = (family == 1u) ? PENDING_A52_AU
-				                            : PENDING_DTS_AU;
+				p->pending = (family == 1u)    ? PENDING_A52_AU
+				             : (family == 21u) ? PENDING_EAC3_AU
+				                               : PENDING_DTS_AU;
 				p->pending_pc = b.data_type;
 				*consumed_out = pos;
 				return AIUS_OK;
@@ -611,7 +693,8 @@ static void drop_staged_compressed_input(AiusPipeline *p)
 {
 	const int staged = aius_iec61937_partial_burst(p->parser) ||
 	                   p->pending == PENDING_DTS_AU ||
-	                   p->pending == PENDING_A52_AU;
+	                   p->pending == PENDING_A52_AU ||
+	                   p->pending == PENDING_EAC3_AU;
 	aius_iec61937_parser_reset(p->parser);
 	cleanup_pending(p);
 	if (staged) {
@@ -785,7 +868,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (p->pending == PENDING_NONE)
 		return AIUS_OK;
 
-	if (p->pending == PENDING_DTS_AU || p->pending == PENDING_A52_AU) {
+	if (p->pending == PENDING_DTS_AU || p->pending == PENDING_A52_AU ||
+	    p->pending == PENDING_EAC3_AU) {
 		AiusBurst b;
 		if (aius_iec61937_current_burst(p->parser, &b) != AIUS_OK) {
 			p->service_diag.au_abandons++;
@@ -799,6 +883,17 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 		if (p->pending == PENDING_DTS_AU) {
 			ds = aius_dts_decode_access_unit(p->dts_decoder, b.payload,
 			                                 b.length, &p->retained_block);
+#if AIUS_PIPELINE_EAC3
+		} else if (p->pending == PENDING_EAC3_AU) {
+			/* Single-shot like DTS: one AU in, one 256..1536-frame
+			 * block out, sliced on output. A refusal (UNSUPPORTED:
+			 * dual mono, back-centre modes, reduced rates; MALFORMED:
+			 * garbage) is a decode reject, never an abandon -- no
+			 * partial output exists. */
+			ds = aius_eac3_decode_access_unit(p->eac3_decoder,
+			                                  b.payload, b.length,
+			                                  &p->retained_block);
+#endif
 		} else {
 			ds = aius_a52_begin_access_unit(p->a52_decoder, b.payload,
 			                                b.length);
@@ -836,6 +931,9 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 		if (p->pending == PENDING_DTS_AU) {
 			p->pending = PENDING_DTS_OUTPUT;
 			p->codec_pc = p->pending_pc;
+		} else if (p->pending == PENDING_EAC3_AU) {
+			p->pending = PENDING_EAC3_OUTPUT;
+			p->codec_pc = p->pending_pc;
 		} else {
 			p->pending = PENDING_A52_OUTPUT;
 		}
@@ -872,7 +970,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (p->pending == PENDING_PCM)
 		fill_pcm_descriptor(p);
 	else if ((p->pending == PENDING_DTS_OUTPUT ||
-	          p->pending == PENDING_A52_OUTPUT) &&
+	          p->pending == PENDING_A52_OUTPUT ||
+	          p->pending == PENDING_EAC3_OUTPUT) &&
 	         !p->retained_retry) {
 		AiusStatus slice_status =
 			aius_pipeline_slice_pcm_block(&p->retained_block,
@@ -903,7 +1002,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (st != AIUS_OK && !refused) {
 		p->service_diag.output_drops++;
 		if (p->pending == PENDING_DTS_OUTPUT ||
-		    p->pending == PENDING_A52_OUTPUT)
+		    p->pending == PENDING_A52_OUTPUT ||
+		    p->pending == PENDING_EAC3_OUTPUT)
 			p->service_diag.au_abandons++;
 		p->service_diag.last_failure = st;
 		*result = AIUS_PIPELINE_SERVICE_PROGRESSED;
@@ -917,7 +1017,8 @@ AiusStatus aius_pipeline_service_one(AiusPipeline *p,
 	if (p->pending == PENDING_PCM) {
 		p->pcm_frames = 0u;
 		p->pending = PENDING_NONE;
-	} else if (p->pending == PENDING_DTS_OUTPUT) {
+	} else if (p->pending == PENDING_DTS_OUTPUT ||
+	           p->pending == PENDING_EAC3_OUTPUT) {
 		p->retained_offset += p->sink_block.frames;
 		if (p->retained_offset >= p->retained_block.frames) {
 			p->pending = PENDING_NONE;
@@ -968,7 +1069,8 @@ AiusStatus aius_pipeline_push(AiusPipeline *p, const uint16_t *words, size_t cou
 				if (st == AIUS_NO_SPACE) {
 					p->service_diag.output_drops++;
 					if (p->pending == PENDING_DTS_OUTPUT ||
-					    p->pending == PENDING_A52_OUTPUT)
+					    p->pending == PENDING_A52_OUTPUT ||
+					    p->pending == PENDING_EAC3_OUTPUT)
 						p->service_diag.au_abandons++;
 					pipeline_reset_serviced(p);
 				}
@@ -1174,7 +1276,11 @@ AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
 	if (!p || !out)
 		return AIUS_INVALID_ARG;
 	if (codec_pc != 1u && codec_pc != 11u && codec_pc != 12u &&
-	    codec_pc != 13u)
+	    codec_pc != 13u
+#if AIUS_PIPELINE_EAC3
+	    && codec_pc != 21u
+#endif
+	)
 		return AIUS_INVALID_ARG;
 	if (pc_family(codec_pc) != p->resident_family) {
 		/* Not resident: its state left with the slot. */
@@ -1183,6 +1289,10 @@ AiusStatus aius_pipeline_get_codec_metrics(const AiusPipeline *p,
 	}
 	if (codec_pc == 1u)
 		return aius_a52_get_metrics(p->a52_decoder, out);
+#if AIUS_PIPELINE_EAC3
+	if (codec_pc == 21u)
+		return aius_eac3_get_metrics(p->eac3_decoder, out);
+#endif
 	return aius_dts_get_metrics(p->dts_decoder, out);
 }
 

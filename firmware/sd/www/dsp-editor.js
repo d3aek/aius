@@ -2237,7 +2237,7 @@
    * MODEL_MAX_BYTES mirrors AIUS_DSP_MODEL_MAX_JSON_BYTES: 2 no carrier,
    * 3 PCM, 4 IEC 61937 bitstream (optical_main.cpp current_state()).
    * pipeline_diag.codec_pc decorates the generic bitstream class only after a
-   * successful decode: 1 AC-3, 11/12/13 DTS, otherwise unknown. */
+   * successful decode: 1 AC-3, 11/12/13 DTS, 21 E-AC-3, otherwise unknown. */
   const CARRIER_ENCODINGS = { 3: 'PCM' };
 
   function codecName(status) {
@@ -2245,6 +2245,7 @@
     const codecPc = Number(pipeline.codec_pc);
     if (codecPc === 1) return 'AC-3';
     if (codecPc === 11 || codecPc === 12 || codecPc === 13) return 'DTS';
+    if (codecPc === 21) return 'E-AC-3';
     return 'unknown';
   }
 
