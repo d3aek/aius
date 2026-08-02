@@ -69,18 +69,42 @@ SRPC_LOCK = 1 << 6
 SRPC_CLKSRC_SHIFT, SRPC_CLKSRC_MASK = 7, 0xF
 
 
-def run_cdc(action, port=None, timeout=30):
+def run_cdc(action, port=None, timeout=30, attempts=3):
+    """The CDC link occasionally swallows one request-reply (observed on a
+    stalling boot and sporadically otherwise), so every action gets a small
+    retry budget; the LAST attempt's result is returned either way."""
     command = [sys.executable, CDC_RUNNER]
     if port:
         command += ["--port", port]
     command.append(action)
-    return subprocess.run(command, capture_output=True, text=True,
-                          timeout=timeout)
+    result = None
+    for attempt in range(attempts):
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=timeout)
+        if result.returncode == 0:
+            break
+        if attempt + 1 < attempts:
+            time.sleep(2)
+    return result
 
 
 def loader_boot(loader):
-    return subprocess.run([loader, "--mcu=imxrt1062", "-b"],
+    # -w: HalfKay re-enumerates a moment after the CDC bootloader entry, so
+    # the loader must wait for the device rather than fail on first open.
+    return subprocess.run([loader, "--mcu=imxrt1062", "-b", "-w"],
                           capture_output=True, text=True, timeout=60)
+
+
+def http_reboot(ip, token):
+    """POST /api/reboot: the SRC software reset (SYSRESETREQ) -- the same
+    boot path the organic degraded boots (WDOG, reset-mid-write) take,
+    where the HalfKay route re-enters through the loader instead. Both
+    modes exist because the lottery odds may differ per boot path."""
+    request = urllib.request.Request(
+        "http://%s/api/reboot" % ip, data=b"", method="POST",
+        headers={"X-Aius-SD-Auth": token})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8")).get("rebooting")
 
 
 def fetch_status(ip, timeout=10):
@@ -170,7 +194,14 @@ def rate_window(ip, window_s):
 
 def sample_boot(ip, window_s):
     a, b, dt = rate_window(ip, window_s)
-    update_rate = (b["audio_update_calls"] - a["audio_update_calls"]) / dt
+    # audio_update_calls arrived with the 2026-08-01 detector; the grafted
+    # bad-odds reproducer content predates it, and tx_fills is the
+    # cross-domain rate probe either way.
+    if "audio_update_calls" in a and "audio_update_calls" in b:
+        update_rate = (b["audio_update_calls"] -
+                       a["audio_update_calls"]) / dt
+    else:
+        update_rate = None
     fills_a = int(a["clk_regs"]["tx_fills"])
     fills_b = int(b["clk_regs"]["tx_fills"])
     fill_rate = (fills_b - fills_a) / dt
@@ -184,11 +215,12 @@ def sample_boot(ip, window_s):
         return abs(rate - NOMINAL_UPDATE_HZ) <= \
             NOMINAL_UPDATE_HZ * RATE_TOLERANCE
 
-    healthy = (near_nominal(update_rate) and near_nominal(fill_rate) and
-               not reg_faults)
+    healthy = ((update_rate is None or near_nominal(update_rate)) and
+               near_nominal(fill_rate) and not reg_faults)
     return {
         "healthy": healthy,
-        "update_rate_hz": round(update_rate, 2),
+        "update_rate_hz":
+            None if update_rate is None else round(update_rate, 2),
         "tx_fill_rate_hz": round(fill_rate, 2),
         "epoch_rate_hz": round(epoch_rate, 1),
         "gap_flush_rate_hz": round(gap_rate, 2),
@@ -197,9 +229,9 @@ def sample_boot(ip, window_s):
         "clk_regs_decoded": decoded,
         "boot_generation": b["boot_generation"],
         "reset_source": b["reset_source"],
-        "audio_update_max_us": b["audio_update_max_us"],
+        "audio_update_max_us": b.get("audio_update_max_us"),
         "runtime_epoch_max_us":
-            b["audio_diag"]["runtime_epoch_max_us"],
+            b["audio_diag"].get("runtime_epoch_max_us"),
         "carrier_rate_millihz": b["clock"]["carrier_rate_millihz"],
         "clock_master": b["clock"]["master"],
         "window_s": round(dt, 2),
@@ -219,6 +251,15 @@ def main():
     parser.add_argument("--sample-seconds", type=float, default=20.0,
                         help="rate window width")
     parser.add_argument("--boot-deadline-seconds", type=float, default=90.0)
+    parser.add_argument("--reset-mode", choices=["halfkay", "http", "flash"],
+                        default="halfkay",
+                        help="halfkay: CDC bootloader + loader -b; "
+                             "http: POST /api/reboot (SRC software reset); "
+                             "flash: reflash --hex each cycle (the "
+                             "post-flash boot is the lottery's "
+                             "highest-odds roll)")
+    parser.add_argument("--hex", default=None,
+                        help="image for --reset-mode flash")
     parser.add_argument("--no-reboot", action="store_true",
                         help="sample the current boot only")
     args = parser.parse_args()
@@ -230,23 +271,55 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     records_path = os.path.join(args.out, "boots.jsonl")
 
+    token = None
+    if args.reset_mode == "http" and not args.no_reboot:
+        auth = run_cdc("auth", port=args.port)
+        if auth.returncode != 0:
+            print("cannot read auth token over CDC: %s" % auth.stderr.strip())
+            return 3
+        token = auth.stdout.strip()
+    if args.reset_mode == "flash" and not args.no_reboot:
+        if not args.hex or not os.path.isfile(args.hex):
+            print("--reset-mode flash needs --hex <image>")
+            return 3
+    flash_script = os.path.join(HERE, "..", "..", "scripts",
+                                "flash_optical.sh")
+
     degraded = 0
     lost = 0
     with open(records_path, "a") as records:
         for boot in range(args.boots):
             if not args.no_reboot:
-                entered = run_cdc("bootloader", port=args.port)
-                if entered.returncode != 0:
-                    print("boot %d: bootloader entry failed: %s"
-                          % (boot, entered.stderr.strip()))
-                    lost += 1
-                    break
-                booted = loader_boot(loader)
-                if booted.returncode != 0:
-                    print("boot %d: loader -b failed: %s"
-                          % (boot, booted.stderr.strip()))
-                    lost += 1
-                    break
+                if args.reset_mode == "flash":
+                    flashed = subprocess.run(
+                        [flash_script, args.hex],
+                        capture_output=True, text=True, timeout=300)
+                    if flashed.returncode != 0:
+                        print("boot %d: reflash failed: %s"
+                              % (boot, flashed.stderr.strip()[-200:]))
+                        lost += 1
+                        break
+                elif args.reset_mode == "http":
+                    try:
+                        http_reboot(args.ip, token)
+                    except OSError as error:
+                        print("boot %d: /api/reboot failed: %s"
+                              % (boot, error))
+                        lost += 1
+                        break
+                else:
+                    entered = run_cdc("bootloader", port=args.port)
+                    if entered.returncode != 0:
+                        print("boot %d: bootloader entry failed: %s"
+                              % (boot, entered.stderr.strip()))
+                        lost += 1
+                        break
+                    booted = loader_boot(loader)
+                    if booted.returncode != 0:
+                        print("boot %d: loader -b failed: %s"
+                              % (boot, booted.stderr.strip()))
+                        lost += 1
+                        break
                 if not wait_for_board(args.ip, args.port,
                                       args.boot_deadline_seconds):
                     print("boot %d: board never came back" % boot)

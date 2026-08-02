@@ -76,8 +76,10 @@ specified here. Strike items here in the commit that closes them.
 
 ## Open defects — runtime
 
-- **Boot-lottery epoch crawl (2026-08-01, defect open; detector shipped,
-  mechanism unpinned).** Some boots enter a degraded mode in which the
+- **Boot-lottery epoch crawl (2026-08-01; FIXED 2026-08-02 — mechanism
+  convicted, boot gate shipped, 28/28 flash-boots healthy on the
+  reproducer lineage that failed 3/3 without it; conviction chain and
+  fix at the end of this entry).** Some boots enter a degraded mode in which the
   epoch loop runs orders of magnitude slow (measured 14–130 epochs/s
   against the healthy ~7,800/s), which cascades into everything the
   epoch paces: SD write "primitives" stretching to seconds (the
@@ -227,6 +229,69 @@ specified here. Strike items here in the commit that closes them.
     healthy" gate made measurable. Next: flash the instrumented image,
     campaign until a degraded boot lands, diff its clk_regs against
     the post-flip capture of the same image.
+
+  **2026-08-02, later — CONVICTED AND FIXED. The conviction chain, from
+  three instrumented degraded specimens (the in-image-instrumentation
+  wall broke: `e6417b428`-content builds carrying the full dump still
+  degraded on their first flash-boot, three layouts out of three):**
+
+  - The campaign infrastructure first ACQUITTED, register by register,
+    everything the earlier hypotheses named: 60 warm reboots of the
+    instrumented mainline all healthy; then on the reproducer's
+    degraded boots the clk_regs dump read BYTE-IDENTICAL to a healthy
+    boot (PLL4/CDCDR/STC/SRPC nominal, DPLL LOCK set), `millis`
+    tracked wall clock exactly (21,535 ms over a 21 s gap — the CPU
+    and ARM/SYS PLL chain true), eDMA showed no errors and no
+    unserviced completions, AHB/IPG dividers nominal, and no
+    interrupt storm was active or pending across burst-sampled NVIC
+    IABR/ISPR.
+  - What remained: BOTH S/PDIF DMA channels (identified by DMAMUX
+    source) advancing IN LOCKSTEP at a junk rate that VARIES PER BOOT
+    — 1/44 of nominal on one capture, 1/158 on another, and the
+    morning live specimen's 0.768x is the same signature at a milder
+    landing point. A non-integer, boot-varying, engines-in-lockstep
+    slowdown is no divider mislatch; and SPDIF_SRFM read bit-identical
+    (0x00053EA6) across healthy and degraded boots — the "48.017 kHz
+    carrier" the clock diag reports is a FOSSIL, not a measurement,
+    which is how every in-domain surface stayed self-consistently
+    green through every earlier investigation.
+  - CONVICTION: the S/PDIF receiver DPLL comes out of some boots
+    asserting LOCK on a junk clock; SRPC_CLKSRC_SEL(1) honours LOCK
+    and hands the S/PDIF engines that junk clock; the RX DMA paces
+    the audio graph (update responsibility), so the audio path and
+    the epoch loop crawl behind it. Boot-path timing shifts the
+    acquisition race — hence layout-sensitive odds; a warm reboot
+    re-runs acquisition — hence the flip-cure; the odds concentrate
+    on the POST-FLASH boot (every graft reproduction was a
+    flash-boot; warm reboots ran 68/68 healthy across the
+    instrumented-mainline and fix-prototype layouts).
+  - THE FIX (shipped with this entry): a boot gate in
+    `begin_pipeline()` cross-checks the engine rate against the DWT
+    cycle clock — `tx_fills` over a 100 ms window, a probe no S/PDIF
+    clock state can fool — and on mismatch forces DPLL re-acquisition
+    via `spdif_engine_reacquire()` (config-preserving S/PDIF soft
+    reset, DMA requests gated across it), up to five attempts. The
+    served `clk_regs.relocks` counter is the sentinel: 0 = verified
+    first try, 1–4 = junk-locked boot cured, pinned 5 =
+    alive-but-dark and named. Evidence: the fix-bearing reproducer
+    lineage ran 28/28 flash-boots + 8 warm boots healthy (including
+    four deliberately layout-nudged variants) against 3/3 degraded
+    first flash-boots for the same content without the fix; the
+    mainline fix image ran its own flash-boot campaign healthy
+    before this landed (JSONL records under the session scratch,
+    `boot-campaign-*` / `nudge-hunt-*` / `mainline-fix-*`).
+  - Honest residual: no cured-boot (`relocks >= 1`) event has been
+    captured — with the gate aboard, no boot has junk-locked at all
+    in any roll. The gate's 100 ms settle window may be prophylactic
+    (letting acquisition finish before the heavy bring-up races it)
+    rather than curative; either way boots come out healthy, and the
+    first organic junk-lock anywhere will stamp itself on `relocks`
+    and settle the question from the field.
+  - **Gate note:** the owner's 2026-08-01 decision blocks E-AC-3
+    flash stages "until boots are deterministically healthy". The
+    fix + campaign evidence meets that condition on the bench;
+    lifting the gate is the owner's call
+    ([`aius-eac3-support.md`](aius-eac3-support.md) Phase 4).
 
 ## Recorded debt — small, none blocking
 

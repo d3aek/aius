@@ -257,6 +257,67 @@ static FLASHMEM void tx_gate_actuate(bool open);
 static FLASHMEM bool clock_output_is_master(void);
 static FLASHMEM bool clock_input_is_master(void);
 
+/* THE BOOT LOTTERY'S FIX (open-work register §Open defects — runtime,
+ * convicted 2026-08-02 on the instrumented e6417b428 reproducer). The
+ * S/PDIF receiver DPLL can come out of boot asserting LOCK on a junk
+ * clock — the junk frequency varies per boot (0.768x, 1/44, 1/158 of
+ * nominal all captured) — and SRPC_CLKSRC_SEL(1) then clocks the S/PDIF
+ * engines from it. The RX DMA paces the whole audio graph
+ * (update_responsibility), so the audio path and everything the epoch
+ * loop waits on crawl behind the junk clock, while every clock-tree
+ * REGISTER reads nominal and SRFM holds a stale measurement — which is
+ * why the register dump alone acquitted the tree and only the
+ * cross-domain rate probes (tx_fills, epoch rate vs wall clock)
+ * convicted the DPLL. Boot-path timing shifts the acquisition race, so
+ * image layout re-rolls the odds; a warm reboot re-runs acquisition,
+ * which is why it cured.
+ *
+ * spdif_engine_reacquire() forces the S/PDIF core through a soft reset
+ * to re-run DPLL acquisition, PRESERVING the proven-nominal
+ * configuration by save/restore rather than recomputation. The two
+ * S/PDIF DMA channels' requests are gated across the reset so an
+ * in-flight minor loop cannot abort into a bus error; the channels are
+ * found by DMAMUX source, never by hard-coded number. */
+static uint32_t g_clock_engine_relocks;
+
+static FLASHMEM void spdif_engine_reacquire(void)
+{
+	volatile uint32_t *const chcfg = &DMAMUX_CHCFG0;
+	uint32_t spdif_channels[2];
+	uint32_t spdif_channel_count = 0u;
+	for (uint32_t ch = 0u; ch < 16u && spdif_channel_count < 2u; ch++) {
+		const uint32_t source = chcfg[ch] & 0x7Fu;
+		if (source == DMAMUX_SOURCE_SPDIF_RX ||
+		    source == DMAMUX_SOURCE_SPDIF_TX)
+			spdif_channels[spdif_channel_count++] = ch;
+	}
+
+	const uint32_t scr = SPDIF_SCR;
+	const uint32_t srpc = SPDIF_SRPC;
+	const uint32_t srcd = SPDIF_SRCD;
+	const uint32_t stc = SPDIF_STC;
+	const uint32_t stcsch = SPDIF_STCSCH;
+	const uint32_t stcscl = SPDIF_STCSCL;
+
+	for (uint32_t index = 0u; index < spdif_channel_count; index++)
+		DMA_CERQ = (uint8_t)spdif_channels[index];
+
+	SPDIF_SCR = SPDIF_SCR_SOFT_RESET;
+	while (SPDIF_SCR & SPDIF_SCR_SOFT_RESET) {
+	}
+
+	SPDIF_SCR = scr & ~(SPDIF_SCR_DMA_RX_EN | SPDIF_SCR_DMA_TX_EN);
+	SPDIF_SRPC = srpc;
+	SPDIF_SRCD = srcd;
+	SPDIF_STC = stc;
+	SPDIF_STCSCH = stcsch;
+	SPDIF_STCSCL = stcscl;
+	SPDIF_SCR = scr;
+
+	for (uint32_t index = 0u; index < spdif_channel_count; index++)
+		DMA_SERQ = (uint8_t)spdif_channels[index];
+}
+
 static inline bool supported_program_rate(uint32_t rate_hz)
 {
 	return rate_hz == 32000u || rate_hz == 44100u || rate_hz == 48000u;
@@ -1516,6 +1577,25 @@ FLASHMEM void AiusAudioProcessor::begin_pipeline(void)
 	 * channel. */
 	aius_spdif_tx24_begin();
 	aius_audio_clock_initialize();
+	/* The boot-lottery gate: cross-check the S/PDIF engine against the
+	 * DWT clock (delayMicroseconds is cycle-counter-driven, immune to
+	 * every clock state under suspicion) and force DPLL re-acquisition
+	 * until the rates agree — see spdif_engine_reacquire() above. A
+	 * healthy boot pays one 100 ms window; a junk-locked boot pays one
+	 * window per attempt and comes out HEALTHY instead of degraded for
+	 * its whole lifetime. Five failures leave g_clock_engine_relocks
+	 * pinned at 5 with the board alive and dark — visible on clk_regs,
+	 * never a reset spiral. */
+	for (uint32_t attempt = 0u; attempt < 5u; attempt++) {
+		const uint32_t fills_before = g_aius_spdif_tx24.fills;
+		delayMicroseconds(100000u);
+		const uint32_t ticks = g_aius_spdif_tx24.fills - fills_before;
+		/* 100 ms at the 375/s block rate is 37.5 fills; ~±10%. */
+		if (ticks >= 34u && ticks <= 41u)
+			break;
+		g_clock_engine_relocks++;
+		spdif_engine_reacquire();
+	}
 	if (aius_arena_init(&g_arena, g_arena_memory, sizeof(g_arena_memory)) != 0) {
 		g_create_status = AIUS_NO_SPACE;
 		return;
@@ -2546,7 +2626,8 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		"\"ccgr5\":\"0x%08lX\","
 		"\"spdif_in_master\":%u,"
 		"\"spdif_out_master\":%u,"
-		"\"tx_fills\":%lu}",
+		"\"tx_fills\":%lu,"
+		"\"relocks\":%lu}",
 		(unsigned long)SPDIF_SCR,
 		(unsigned long)SPDIF_SRPC,
 		(unsigned long)SPDIF_SRCD,
@@ -2561,7 +2642,8 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		(unsigned long)CCM_CCGR5,
 		clock_input_is_master() ? 1u : 0u,
 		clock_output_is_master() ? 1u : 0u,
-		(unsigned long)g_aius_spdif_tx24.fills);
+		(unsigned long)g_aius_spdif_tx24.fills,
+		(unsigned long)g_clock_engine_relocks);
 }
 
 /* The pipeline's own record -- the classifier's verdict and the decode path's
