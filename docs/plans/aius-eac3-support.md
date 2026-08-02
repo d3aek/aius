@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, eac3, ddplus, dolby, decode, arena, iec61937]
-updated: 2026-08-01
+updated: 2026-08-02
 toc: true
 ---
 
@@ -64,8 +64,8 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    audio-service, a52, dts, arena suites green; target builds; memory +
    ITCM gates green. The freed headroom vs the old eager pair lands in
    the parent arena for Phase 2's slot re-derivation.
-2. **FFmpeg E-AC-3 subset + `aius_eac3` adapter + native proof** — **in
-   progress; fork landed 2026-08-01** at `firmware/vendor/ffmpeg-eac3/`
+2. **FFmpeg E-AC-3 subset + `aius_eac3` adapter + native proof** — **done
+   2026-08-02; fork landed 2026-08-01** at `firmware/vendor/ffmpeg-eac3/`
    (FFmpeg 7.1.5, Debian orig tarball; 93 av* files of which 87
    byte-for-byte, 5 edited under tagged `AIUS FORK EDIT` markers, plus the
    fork-owned core TU and framework shim — see its `NOTICE.md`). The
@@ -96,8 +96,12 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    fuzz re-proof, 87,999 decodes clean) — the 64 KiB Phase-1 slot
    constant must grow accordingly (see Phase 4). The fuzz suite
    (E-AC-3 CRC semantics + defect-31 termination oracle) landed
-   2026-08-01. Remaining in this phase: type-21 IEC wrapping through
-   `iec_corpus` (feeds Phase 3).
+   2026-08-01. Type-21 IEC wrapping landed 2026-08-02, closing the
+   phase: `eac3_surround51_ident` in the `iec_corpus` — two real 5.1
+   E-AC-3 AUs, byte-count Pd, Pa spacing exactly 12,288 words —
+   de-frames byte-identically under all three chunkings; the
+   known-answer expectation is UNSUPPORTED,UNSUPPORTED until Phase 3
+   takes type 21 in scope, then flips to OK,OK.
 3. **Dispatch + classification constants** — type 21 joins `in_scope`,
    third dispatch route, `codec_pc == 21` metrics/UI decoration,
    squelch/re-type constants re-derived for the 12,288-word burst period

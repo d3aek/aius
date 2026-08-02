@@ -23,6 +23,7 @@ cc="${CC:-gcc}"
 out="${OUT:-$here/vectors}"
 dts="$fw_root/tools/dts_vectors/vectors"
 ac3="$fw_root/tools/ac3_vectors/vectors"
+eac3="$fw_root/tools/eac3_vectors/vectors"
 
 mkdir -p "$out"
 
@@ -37,6 +38,6 @@ echo "==> compiling generator"
 	"$here/gen_iec_corpus.c" -o "$gen"
 
 echo "==> generating corpus into $out"
-"$gen" "$dts" "$ac3" "$out"
+"$gen" "$dts" "$ac3" "$eac3" "$out"
 
 echo "==> corpus written"

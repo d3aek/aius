@@ -22,7 +22,10 @@ per-vector detail below is a pointer, not a second source of truth.
 Real DTS Core payloads are the first access unit (sync `0x7FFE8001` to the next
 sync) extracted from the committed `../dts_vectors` corpus. The real AC-3
 payload is the first `surround51_ident` frame from `../ac3_vectors`; its length
-comes from `fscod`/`frmsizecod`, never a search for a second sync word.
+comes from `fscod`/`frmsizecod`, never a search for a second sync word. The
+real E-AC-3 payload is the first `surround51_ident` frame from
+`../eac3_vectors`; its length comes from the 11-bit `frmsiz` field,
+`(frmsiz + 1)` words.
 
 ## Vectors
 
@@ -32,6 +35,10 @@ comes from `fscod`/`frmsizecod`, never a search for a second sync word.
 - `dts51_be16` — real 5.1 DTS Core AU, 16-bit big-endian -> `AIUS_OK`.
 - `ac3_surround51_ident` — two real 5.1 AC-3 AUs, type 1 -> `AIUS_OK` twice;
   Pa starts are exactly 3072 words apart.
+- `eac3_surround51_ident` — two real 5.1 E-AC-3 AUs, type 21 with byte-count
+  Pd; Pa starts are exactly 12288 words apart (the E-AC-3 burst spans 1536
+  samples on a 4x-rate link) -> `AIUS_UNSUPPORTED` twice until the E-AC-3
+  plan's phase-3 dispatch takes type 21 in scope, then `AIUS_OK` twice.
 - `type11`, `type12` — synthetic DTS burst types I and II -> `AIUS_OK`.
 - `unsupported_eac3` — E-AC-3-shaped 1792-byte frame, data type 21 with
   byte-count Pd `0x0700` -> `AIUS_UNSUPPORTED`.

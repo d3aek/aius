@@ -209,6 +209,75 @@ static void run_ac3_period_vector(const char *dir)
 	free(pay);
 }
 
+/* ---- E-AC-3: two real bursts at the exact 12288-word repetition period --
+ *
+ * Type 21 is out of dispatch scope until E-AC-3 plan phase 3, so each burst
+ * completes UNSUPPORTED — but the byte-count Pd de-framing must already be
+ * exact: descriptor published, payload byte-identical to the access unit. */
+
+static void run_eac3_period_vector(const char *dir)
+{
+	size_t n = 0;
+	uint16_t *w = load_wire(dir, "eac3_surround51_ident", &n);
+	size_t plen = 0;
+	uint8_t *pay = load_pay(dir, "eac3_surround51_ident", &plen);
+	if (!w || !pay) {
+		CHECK(0, "eac3_surround51_ident: corpus load failed");
+		free(w);
+		free(pay);
+		return;
+	}
+
+	CHECK(n == 12288u + 4u + (plen + 1u) / 2u,
+	      "eac3_surround51_ident: %zu words does not encode exact period", n);
+	CHECK(n > 12288u && w[0] == 0xF872u && w[12288] == 0xF872u,
+	      "eac3_surround51_ident: Pa positions are not 0 and 12288");
+
+	const size_t chunks[] = { n ? n : 1, 1, 3 };
+	for (size_t ci = 0; ci < sizeof(chunks) / sizeof(chunks[0]); ci++) {
+		AiusIec61937Parser *p = NULL;
+		CHECK(aius_iec61937_parser_create(&p, NULL) == AIUS_OK,
+		      "eac3_surround51_ident: create");
+		size_t pos = 0;
+		int emitted = 0;
+		while (pos < n) {
+			AiusStatus st = pump(p, w, n, chunks[ci], &pos);
+			if (st == AIUS_NEED_MORE)
+				break;
+			CHECK(st == AIUS_UNSUPPORTED,
+			      "eac3_surround51_ident chunk=%zu burst=%d status %s",
+			      chunks[ci], emitted, status_name(st));
+			AiusBurst b;
+			CHECK(aius_iec61937_current_burst(p, &b) == AIUS_OK,
+			      "eac3_surround51_ident chunk=%zu burst=%d missing",
+			      chunks[ci], emitted);
+			CHECK(b.data_type == 21 && b.length == plen,
+			      "eac3_surround51_ident chunk=%zu burst=%d header differs",
+			      chunks[ci], emitted);
+			if (b.length == plen)
+				CHECK(memcmp(b.payload, pay, plen) == 0,
+				      "eac3_surround51_ident chunk=%zu burst=%d payload "
+				      "differs",
+				      chunks[ci], emitted);
+			emitted++;
+		}
+		CHECK(emitted == 2,
+		      "eac3_surround51_ident chunk=%zu emitted %d != 2", chunks[ci],
+		      emitted);
+		AiusIecDiag diag;
+		CHECK(aius_iec61937_get_diag(p, &diag) == AIUS_OK &&
+		          diag.bursts_ok == 0 && diag.rejects_unsupported == 2,
+		      "eac3_surround51_ident chunk=%zu diagnostics differ",
+		      chunks[ci]);
+		aius_iec61937_parser_destroy(p);
+	}
+	printf("  %-18s UNSUPPORTED,UNSUPPORTED type=21 payload=%zu B Pa "
+	       "spacing=12288 (3 chunkings)\n",
+	       "eac3_surround51_ident", plen);
+	free(w);
+	free(pay);
+}
+
 static void run_burst_vector(const char *dir, const struct kav *v)
 {
 	size_t n = 0;
@@ -423,6 +492,7 @@ int main(int argc, char **argv)
 	for (size_t i = 0; i < sizeof(k_burst) / sizeof(k_burst[0]); i++)
 		run_burst_vector(dir, &k_burst[i]);
 	run_ac3_period_vector(dir);
+	run_eac3_period_vector(dir);
 	for (size_t i = 0; i < sizeof(k_reject) / sizeof(k_reject[0]); i++)
 		run_reject_vector(dir, &k_reject[i]);
 	run_two_bursts(dir);

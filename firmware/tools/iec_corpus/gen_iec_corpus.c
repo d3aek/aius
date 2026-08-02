@@ -1,9 +1,9 @@
 /* Deterministically generate the IEC 61937 parser known-answer corpus.
  *
- * Wraps real DTS Core and AC-3 access units (extracted from the committed codec
- * corpora) in IEC 61937 framing, and synthesizes the edge cases the parser must
- * type correctly (unsupported types, corrupt sync, bad/over-long length,
- * truncation, padding, coalesced bursts).
+ * Wraps real DTS Core, AC-3, and E-AC-3 access units (extracted from the
+ * committed codec corpora) in IEC 61937 framing, and synthesizes the edge
+ * cases the parser must type correctly (unsupported types, corrupt sync,
+ * bad/over-long length, truncation, padding, coalesced bursts).
  *
  * Every vector is written as a `.iec` wire file (a sequence of 16-bit words, each
  * serialized big-endian on disk) plus, for vectors that complete a burst, a
@@ -13,9 +13,11 @@
  * A manifest.txt records how each vector is built and its expected parse result.
  *
  * This is the provenance record: re-running reproduces the committed corpus
- * bit-for-bit from the same dts_vectors/ac3_vectors inputs. It needs no ffmpeg.
+ * bit-for-bit from the same dts_vectors/ac3_vectors/eac3_vectors inputs. It
+ * needs no ffmpeg.
  *
- * Usage: gen_iec_corpus <dts_vectors_dir> <ac3_vectors_dir> <out_dir>
+ * Usage: gen_iec_corpus <dts_vectors_dir> <ac3_vectors_dir> <eac3_vectors_dir>
+ *                       <out_dir>
  */
 
 #include <stdarg.h>
@@ -212,6 +214,35 @@ static void first_ac3_access_unit(const uint8_t *data, size_t size,
 	*au_len = frame_bytes;
 }
 
+/* Extract the first E-AC-3 access unit: an independent-substream (strmtyp 0,
+ * substreamid 0) syncframe whose length comes from the 11-bit frmsiz field,
+ * (frmsiz + 1) 16-bit words, never from scanning for a second sync word. */
+static void first_eac3_access_unit(const uint8_t *data, size_t size,
+                                   const uint8_t **au_out, size_t *au_len)
+{
+	if (size < 6 || data[0] != 0x0B || data[1] != 0x77) {
+		fprintf(stderr, "no E-AC-3 sync at corpus start\n");
+		exit(1);
+	}
+	uint8_t strmtyp = (uint8_t)(data[2] >> 6);
+	uint8_t substreamid = (uint8_t)((data[2] >> 3) & 0x07u);
+	uint8_t bsid = (uint8_t)(data[5] >> 3);
+	if (strmtyp != 0 || substreamid != 0 || bsid != 16) {
+		fprintf(stderr, "E-AC-3 corpus does not start with an independent "
+		        "bsid-16 substream-0 frame\n");
+		exit(1);
+	}
+	size_t frmsiz = ((size_t)(data[2] & 0x07u) << 8) | data[3];
+	size_t frame_bytes = (frmsiz + 1u) * 2u;
+	if (frame_bytes > size) {
+		fprintf(stderr, "E-AC-3 frame length %zu exceeds corpus size %zu\n",
+		        frame_bytes, size);
+		exit(1);
+	}
+	*au_out = data;
+	*au_len = frame_bytes;
+}
+
 static void pad_to_word_count(struct wb *b, size_t target)
 {
 	if (b->n > target) {
@@ -243,15 +274,17 @@ static void manifest(const char *fmt, ...)
 
 int main(int argc, char **argv)
 {
-	if (argc != 4) {
+	if (argc != 5) {
 		fprintf(stderr,
-		        "usage: %s <dts_vectors_dir> <ac3_vectors_dir> <out_dir>\n",
+		        "usage: %s <dts_vectors_dir> <ac3_vectors_dir> "
+		        "<eac3_vectors_dir> <out_dir>\n",
 		        argv[0]);
 		return 2;
 	}
 	const char *dts_dir = argv[1];
 	const char *ac3_dir = argv[2];
-	const char *out = argv[3];
+	const char *eac3_dir = argv[3];
+	const char *out = argv[4];
 
 	char mpath[1024];
 	snprintf(mpath, sizeof(mpath), "%s/manifest.txt", out);
@@ -264,27 +297,31 @@ int main(int argc, char **argv)
 	manifest("(regenerate with tools/iec_corpus/generate.sh)");
 	manifest("");
 
-	/* Load real DTS Core and AC-3 access units. */
-	char p1[1024], p2[1024], p3[1024];
+	/* Load real DTS Core, AC-3, and E-AC-3 access units. */
+	char p1[1024], p2[1024], p3[1024], p4[1024];
 	snprintf(p1, sizeof(p1), "%s/stereo_tones.dts", dts_dir);
 	snprintf(p2, sizeof(p2), "%s/surround51_tones.dts", dts_dir);
 	snprintf(p3, sizeof(p3), "%s/surround51_ident.ac3", ac3_dir);
-	size_t s1 = 0, s2 = 0, s3 = 0;
+	snprintf(p4, sizeof(p4), "%s/surround51_ident.eac3", eac3_dir);
+	size_t s1 = 0, s2 = 0, s3 = 0, s4 = 0;
 	uint8_t *d1 = read_file(p1, &s1);
 	uint8_t *d2 = read_file(p2, &s2);
 	uint8_t *d3 = read_file(p3, &s3);
-	const uint8_t *au1, *au2, *ac3_au;
-	size_t au1n, au2n, ac3_aun;
+	uint8_t *d4 = read_file(p4, &s4);
+	const uint8_t *au1, *au2, *ac3_au, *eac3_au;
+	size_t au1n, au2n, ac3_aun, eac3_aun;
 	first_access_unit(d1, s1, &au1, &au1n);
 	first_access_unit(d2, s2, &au2, &au2n);
 	first_ac3_access_unit(d3, s3, &ac3_au, &ac3_aun);
+	first_eac3_access_unit(d4, s4, &eac3_au, &eac3_aun);
 	fprintf(stderr,
 	        "stereo DTS AU=%zu bytes, surround DTS AU=%zu bytes, AC-3 AU=%zu "
-	        "bytes (cap=%u)\n",
-	        au1n, au2n, ac3_aun, AIUS_IEC61937_MAX_PAYLOAD);
+	        "bytes, E-AC-3 AU=%zu bytes (cap=%u)\n",
+	        au1n, au2n, ac3_aun, eac3_aun, AIUS_IEC61937_MAX_PAYLOAD);
 	if (au1n > AIUS_IEC61937_MAX_PAYLOAD ||
 	    au2n > AIUS_IEC61937_MAX_PAYLOAD ||
-	    ac3_aun > AIUS_IEC61937_MAX_PAYLOAD) {
+	    ac3_aun > AIUS_IEC61937_MAX_PAYLOAD ||
+	    eac3_aun > AIUS_IEC61937_MAX_PAYLOAD) {
 		fprintf(stderr, "access unit exceeds parser capacity\n");
 		return 1;
 	}
@@ -339,6 +376,23 @@ int main(int argc, char **argv)
 	manifest("ac3_surround51_ident | 16 | OK,OK type=1 | two real "
 	         "surround51_ident AC-3 AUs (%zu B), Pa spacing=3072 words",
 	         ac3_aun);
+	wb_free(&b);
+
+	/* eac3_surround51_ident — two real E-AC-3 AUs at the 12288-word type-21
+	 * repetition period (the E-AC-3 burst spans 1536 samples on a 4x-rate
+	 * link). Pc 21 uses a BYTE-count Pd. UNSUPPORTED until the phase-3
+	 * dispatch takes type 21 in scope, then OK,OK. */
+	add_preamble(&b, 21, 0, (uint32_t)eac3_aun, 0);
+	add_payload_16(&b, eac3_au, eac3_aun, 0);
+	pad_to_word_count(&b, 12288);
+	add_preamble(&b, 21, 0, (uint32_t)eac3_aun, 0);
+	add_payload_16(&b, eac3_au, eac3_aun, 0);
+	write_iec(out, "eac3_surround51_ident", &b);
+	write_pay(out, "eac3_surround51_ident", eac3_au, eac3_aun);
+	manifest("eac3_surround51_ident | 16 | UNSUPPORTED,UNSUPPORTED type=21 | "
+	         "two real surround51_ident E-AC-3 AUs (%zu B), Pd BYTE count, "
+	         "Pa spacing=12288 words",
+	         eac3_aun);
 	wb_free(&b);
 
 	/* Synthetic payloads for the type / edge vectors. */
@@ -465,6 +519,7 @@ int main(int argc, char **argv)
 	free(d1);
 	free(d2);
 	free(d3);
+	free(d4);
 	fprintf(stderr, "corpus written to %s\n", out);
 	return 0;
 }
