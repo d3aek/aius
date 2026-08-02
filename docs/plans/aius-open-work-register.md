@@ -666,23 +666,47 @@ where the only prior record was a plan aside.
   never glitched (port 2 OC count 0). Onset back-extrapolation
   (7.0–7.8 pulses/s across samples) brackets 21:21–21:25, spanning
   both the Teensy reboot and the capture episode.
-  **Bench discriminator bracket, in order:** (1) unplug the U24 XL —
-  pulsing stops under every theory; if it continues the port switch
-  itself is broken; (2) after a minute, replug the same unit + cable
-  into the same port — enumerates and runs → no short, retry-lock
-  confirmed, device innocent; trips instantly from cold → device or
-  cable short (bracket the cable next); (3) if it trips: U24 XL alone
-  on the card (FTDIs/Teensy USB briefly out) — runs alone but trips
-  with all four → aggregate-transient marginality confirmed; (4)
-  check the card for an unpopulated supplemental power connector
-  (slot-only 5 V on a 4-port no-name card is the marginal profile;
-  populating it, or a powered hub for the U24 XL, is the durable
-  fix). Until localized, port 3-1 is hostile and the U24 XL's health
-  is unproven — run the owed brackets after the bracket settles. Still owed before the source is fully
-  qualified: clean full 48 kHz and 32 kHz brackets, then the ten-minute
-  carrier observation — U24 XL TX into the Teensy RX, since a self-loop
-  cannot see carrier wander (capture is slaved to the TX clock). Raw
-  runs: `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*`
+  **CONVICTED the same night by the executed bench bracket: the
+  original USB cable's power path.** (1) Unplug → pulsing stopped dead
+  (counter froze at 28,027 after ~50 min at 7.8/s). (2) Cold replug of
+  the same unit + same cable, quiet bench → instant re-trip at 7.8/s
+  with no enumeration, killing the inrush-retry-lock hypothesis. (3)
+  Second cable → zero OC pulses but repeated `-71` protocol failures
+  through a kernel-commanded port power cycle (that cable's data
+  lines are bad; noise, not signal). (4) Third cable, same port, same
+  unit → clean full-speed enumeration (full descriptors, 500 mA
+  declared, one initial `-71` retry), zero OC, and a clean unity
+  smoke bracket through the still-wired optical loop. Reconstruction:
+  cable 1 streamed bit-exact for 13.8 min, developed a resistive VBUS
+  short at 21:25:15 (the capture's brownout episode is the short
+  forming), hard-shorted at 21:26:04, and fed the switch's 7.8 Hz
+  auto-retry loop (~28k trips) until unplugged. Device, port, card
+  and aggregate draw all acquitted; the port performs normal power
+  cycles on command. RETIRE CABLE 1 (mark it faulty — its data lines
+  test fine, which makes it a trap).
+
+  **Owed brackets rerun the same night on cable 3: 48 kHz PASSED
+  pristine** — zero impulses, zero unequal stereo frames, zero
+  off-cadence intervals, bit-exact against the source over 6.0 M
+  frames, with the port-1 OC counter frozen through the full duplex
+  load (the port is definitively healthy under streaming). **32 kHz
+  FAILED with a new, non-CM signature:** the LEFT subframe arrives
+  corrupted in 8.4 % of frames (336,498 of 3,996,437) in bursts of
+  bit-inversion-family damage — residuals cluster at odd ±819
+  (one's-complement of the tone value), bits 9–15 flip together in
+  96 % of events, and rapid sign alternation puts ~218k spurious
+  crossings on channel 0 — while the RIGHT subframe is clean (5
+  boundary frames in 4.0 M). Not the CM6206 class (no isolated
+  high-byte impulses; single-rate, single-channel, dense). A
+  self-loop cannot localize TX vs RX for this; the Teensy-side
+  32 kHz observation will discriminate. **Practical standing: the
+  U24 XL is a qualified clean discriminator source at 44.1 and
+  48 kHz; 32 kHz use is blocked pending the Teensy-side check
+  (32 kHz was already long-tail by the 2026-07-31 owner decision).**
+  Remaining qualification step: the ten-minute carrier observation —
+  U24 XL TX into the Teensy RX, since a self-loop cannot see carrier
+  wander (capture is slaved to the TX clock). Raw runs:
+  `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*`
   (7-day GC; the numbers above are the complete record).
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
   convicted the DSP-runtime adapter's default ITCM placement empirically, but
