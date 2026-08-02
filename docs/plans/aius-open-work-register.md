@@ -650,13 +650,35 @@ where the only prior record was a plan aside.
   constant value, net 145-frame slip) — a brownout prodrome, not a
   data-path fault, and matching no CM6206 class in any reading (not a
   high-byte impulse, not a word-phase slip, L/R equal throughout).
-  **Bench discriminator owed: unplug the U24 XL from port 3-1.**
-  Pulsing stops → the short is in the device, cable or connector
-  (bracket the three before trusting the unit); pulsing continues →
-  the Renesas uPD720201 card's port-1 power path is at fault. Until
-  localized, port 3-1 is hostile and the U24 XL's health is unproven —
-  run the owed brackets on a different physical port once the
-  discriminator settles. Still owed before the source is fully
+  **A short is NOT required (owner challenge, same night): the
+  leading no-short mechanism is an inrush-retry lock.** One transient
+  trip of port 1's power switch (candidates: a shared-5V sag from
+  coincident peaks — the Teensy's 21:23:29 WDOG-reboot inrush, CI
+  load, the U24 XL's duplex draw — on a no-name uPD720201 card with a
+  blank subsystem ID and unknown supplemental-power provisioning),
+  after which every ~7.8 Hz automatic VBUS retry meets the U24 XL's
+  input-capacitance inrush plus boot current and re-trips before
+  enumeration. Self-sustaining, device innocent. Steady-state
+  aggregate overload is ruled out: the same four devices with heavier
+  streaming ran 13.8 min pulse-free (and the CM6206 for weeks), the
+  survivors declare only 120 mA combined (FTDIs 10 mA each, Teensy
+  100 mA), and through 25k+ pulses on port 1 the other three devices
+  never glitched (port 2 OC count 0). Onset back-extrapolation
+  (7.0–7.8 pulses/s across samples) brackets 21:21–21:25, spanning
+  both the Teensy reboot and the capture episode.
+  **Bench discriminator bracket, in order:** (1) unplug the U24 XL —
+  pulsing stops under every theory; if it continues the port switch
+  itself is broken; (2) after a minute, replug the same unit + cable
+  into the same port — enumerates and runs → no short, retry-lock
+  confirmed, device innocent; trips instantly from cold → device or
+  cable short (bracket the cable next); (3) if it trips: U24 XL alone
+  on the card (FTDIs/Teensy USB briefly out) — runs alone but trips
+  with all four → aggregate-transient marginality confirmed; (4)
+  check the card for an unpopulated supplemental power connector
+  (slot-only 5 V on a 4-port no-name card is the marginal profile;
+  populating it, or a powered hub for the U24 XL, is the durable
+  fix). Until localized, port 3-1 is hostile and the U24 XL's health
+  is unproven — run the owed brackets after the bracket settles. Still owed before the source is fully
   qualified: clean full 48 kHz and 32 kHz brackets, then the ten-minute
   carrier observation — U24 XL TX into the Teensy RX, since a self-loop
   cannot see carrier wander (capture is slaved to the TX clock). Raw
