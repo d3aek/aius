@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-07-31
+updated: 2026-08-02
 toc: true
 ---
 
@@ -880,6 +880,14 @@ source for gate 7 and encoded AC-3, while a CM-style multi-value hop
 reopens the decision (ingress-slope correction term or an owner-approved
 bound revision), tracked in
 [`aius-open-work-register.md`](aius-open-work-register.md).
+**Resolved 2026-08-02: the observation ran on arrival night — 311
+samples over 630 s under active USB playback read a single carrier
+value, 48,020,342 mHz (+424 ppm), span 0, `trim_updates` 0 — so the
+U24 XL is the gate-1 source. Its optical self-loop discriminator
+brackets also qualified it clean (bit-exact) at 44.1 and 48 kHz;
+32 kHz self-loop FAILED with left-subframe corruption (register entry
+carries the signature), so gate 3's long-tail source question stays
+open. Gate 1 reruns with the U24 XL on the final candidate image.**
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same

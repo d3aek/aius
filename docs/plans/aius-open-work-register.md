@@ -602,7 +602,8 @@ where the only prior record was a plan aside.
   CM6206 high-byte fingerprint, three near ±29.6k do not and cannot be
   waived. Raw-input-plane correlation or recurrence data is needed before
   any gate consumes that window.
-- **48 kHz gate 1 is unpassable under active CM playback; source inbound.**
+- **48 kHz gate 1 is unpassable under active CM playback; source
+  QUALIFIED 2026-08-02 (U24 XL, resolution at the end of this entry).**
   The gate's trim-cadence bound (at most two post-settle trims) assumed a
   stable source; with USB playback active this CM wanders across ten values
   spanning 6.3 Hz and produced 53 post-settle trims in 600 s while the audio
@@ -703,9 +704,18 @@ where the only prior record was a plan aside.
   U24 XL is a qualified clean discriminator source at 44.1 and
   48 kHz; 32 kHz use is blocked pending the Teensy-side check
   (32 kHz was already long-tail by the 2026-07-31 owner decision).**
-  Remaining qualification step: the ten-minute carrier observation —
-  U24 XL TX into the Teensy RX, since a self-loop cannot see carrier
-  wander (capture is slaved to the TX clock). Raw runs:
+  **Ten-minute carrier observation PASSED the same night (fibre moved
+  to U24 XL TX → Teensy RX): 311 samples over 630 s under active
+  48 kHz USB playback read ONE carrier value — 48,020,342 mHz
+  (+424 ppm, the unit's crystal signature), span 0 mHz,
+  `trim_updates` 0, `clock_faults` 0, tracking unbroken.** Against
+  the CM6206's disqualifying wander (ten values spanning 6.3 Hz, 53
+  post-settle trims in 600 s under the same active-playback
+  condition), the designated path resolves: the U24 XL IS the gate-1
+  source, and the qualified clean source for gate 7 and encoded AC-3
+  at 44.1/48 kHz
+  ([`aius-sample-rate-following.md`](aius-sample-rate-following.md)
+  §Acceptance). Raw runs:
   `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*`
   (7-day GC; the numbers above are the complete record).
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
