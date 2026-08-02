@@ -255,6 +255,7 @@ static bool g_tx_gate_replay;  /* never re-derived at request time */
 
 static FLASHMEM void tx_gate_actuate(bool open);
 static FLASHMEM bool clock_output_is_master(void);
+static FLASHMEM bool clock_input_is_master(void);
 
 static inline bool supported_program_rate(uint32_t rate_hz)
 {
@@ -2505,6 +2506,64 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)ingress.high_water_words);
 }
 
+/* Boot-lottery discriminator (aius-open-work-register.md §Open defects --
+ * runtime): the raw S/PDIF + audio-PLL clock tree, read at request time.
+ * The degraded mode's working hypothesis is a boot-latched wrong state in
+ * this chain: on the 2026-08-02 live degraded specimen the audio pacing
+ * measured 76.8% of nominal against wall clock while every in-domain
+ * surface (SRPC lock, the SRFM-derived carrier rate, the follower state)
+ * reported a healthy 48 kHz -- and set_audioClock() SILENTLY KEEPS a
+ * pre-enabled PLL4 (the !force early-out in aius_audio_clock.cpp), so a
+ * wrong tree latches for the whole boot. The diff that convicts or acquits
+ * is these words on a degraded boot vs the same board after its
+ * warm-reboot flip. Raw hex strings: the host decodes fields, the firmware
+ * stays a camera (a derived value could be fooled by the same wrong clock
+ * it is reporting on).
+ *
+ * `spdif_in_master`/`spdif_out_master` name which DMA ISR paces
+ * update_all() (they are separate per-class statics, and only the pair
+ * proves nobody or both hold it). `tx_fills` counts transmit-DMA fill
+ * passes -- one per AUDIO_BLOCK_SAMPLES wire frames -- so against wall
+ * time it is the TX bit clock measured from OUTSIDE the S/PDIF domain,
+ * the counter the self-consistent delusion cannot fool. */
+static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
+	                                      size_t *length)
+{
+	return http_json_append(
+		output, capacity, length,
+		",\"clk_regs\":{"
+		"\"spdif_scr\":\"0x%08lX\","
+		"\"spdif_srpc\":\"0x%08lX\","
+		"\"spdif_srcd\":\"0x%08lX\","
+		"\"spdif_stc\":\"0x%08lX\","
+		"\"spdif_srfm\":\"0x%08lX\","
+		"\"spdif_sis\":\"0x%08lX\","
+		"\"pll_audio\":\"0x%08lX\","
+		"\"pll_audio_num\":\"0x%08lX\","
+		"\"pll_audio_denom\":\"0x%08lX\","
+		"\"misc2\":\"0x%08lX\","
+		"\"cdcdr\":\"0x%08lX\","
+		"\"ccgr5\":\"0x%08lX\","
+		"\"spdif_in_master\":%u,"
+		"\"spdif_out_master\":%u,"
+		"\"tx_fills\":%lu}",
+		(unsigned long)SPDIF_SCR,
+		(unsigned long)SPDIF_SRPC,
+		(unsigned long)SPDIF_SRCD,
+		(unsigned long)SPDIF_STC,
+		(unsigned long)SPDIF_SRFM,
+		(unsigned long)SPDIF_SIS,
+		(unsigned long)CCM_ANALOG_PLL_AUDIO,
+		(unsigned long)CCM_ANALOG_PLL_AUDIO_NUM,
+		(unsigned long)CCM_ANALOG_PLL_AUDIO_DENOM,
+		(unsigned long)CCM_ANALOG_MISC2,
+		(unsigned long)CCM_CDCDR,
+		(unsigned long)CCM_CCGR5,
+		clock_input_is_master() ? 1u : 0u,
+		clock_output_is_master() ? 1u : 0u,
+		(unsigned long)g_aius_spdif_tx24.fills);
+}
+
 /* The pipeline's own record -- the classifier's verdict and the decode path's
  * swallowed faults. Deferred service skips a faulted burst and keeps
  * streaming (a decode error must not gap the wire), which left defect 29's
@@ -3918,6 +3977,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_audio_diag_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_clock_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_clock_regs_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
 		return 0;
@@ -6035,6 +6096,7 @@ static FLASHMEM void replay_refill_service(uint32_t now_ms)
 class AiusSpdifInputClock : private AudioInputSPDIF3 {
 public:
 	AiusSpdifInputClock(void) = delete;
+	static FLASHMEM bool is_master(void);
 	static FLASHMEM void set_master(bool master);
 };
 
@@ -6045,9 +6107,19 @@ public:
 	static FLASHMEM void set_master(bool master);
 };
 
+FLASHMEM bool AiusSpdifInputClock::is_master(void)
+{
+	return update_responsibility;
+}
+
 FLASHMEM void AiusSpdifInputClock::set_master(bool master)
 {
 	update_responsibility = master;
+}
+
+static FLASHMEM bool clock_input_is_master(void)
+{
+	return AiusSpdifInputClock::is_master();
 }
 
 FLASHMEM bool AiusSpdifOutputClock::is_master(void)

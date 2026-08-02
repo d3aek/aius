@@ -188,6 +188,46 @@ specified here. Strike items here in the commit that closes them.
     wall; if manifestation survives, this is the cheapest remaining
     conviction path, ahead of the hardware-debugger rider.
 
+  **2026-08-02 — a LIVE partial-degraded specimen quantified the beat,
+  and the discriminator shipped:**
+
+  - The bench board (image ceb1f3dbffe9, ~17 h up) was found sitting in
+    a partially degraded boot: epochs a healthy-ish ~6,000/s, but the
+    audio side showed the full syndrome live — `audio_update_calls`
+    advancing at 288.0/s against the 375/s block rate (76.8 % of
+    nominal), every ingress event a `missing_live` gap flush at exactly
+    144.0/s (half the update rate, a stable alternation held for
+    hours), `audio_update_max_us` 1,789,558 ≈ the 1,791.7 ms beat, and
+    `runtime_epoch_max_us` 5.37 s — while `clock` reported carrier
+    locked, tracking, 48,016.850 Hz. The carrier measure is
+    CROSS-DOMAIN (SRFM scaled by the 150 MHz IPG clock), so the carrier
+    reading is real: the S/PDIF ENGINE paces at 76.8 % of the rate the
+    receiver's own DPLL measures. Every in-domain surface
+    self-consistently reports 48 kHz; only cross-domain observers (CPU
+    cycle counter, wall clock) see the crawl.
+  - Mechanism candidate sharpened by source reading:
+    `set_audioClock()` (both the retained PJRC helper in
+    `aius_audio_clock.cpp` and the framework original) SILENTLY KEEPS a
+    pre-enabled PLL4 — `if (!force && ENABLE) return` — so whatever
+    frequency PLL4 carries when `config_spdif3()` runs is latched for
+    the boot. A boot-order/timing race that leaves PLL4 enabled-wrong
+    fits every observed property: per-boot odds, layout sensitivity
+    (boot-path timing), the warm-reboot flip, and in-domain
+    self-consistency.
+  - Shipped (this commit): `clk_regs` on GET /api/status — raw hex
+    SPDIF SCR/SRPC/SRCD/STC/SRFM/SIS + CCM PLL4 (CTRL/NUM/DENOM) +
+    MISC2 + CDCDR + CCGR5, plus `spdif_in_master`/`spdif_out_master`
+    (the two per-class update-responsibility statics) and `tx_fills`
+    (transmit-DMA fill passes — the TX bit clock measured from OUTSIDE
+    the S/PDIF domain). Raw words, host-decoded: the report cannot be
+    fooled by the clock it reports on. Plus
+    `tools/boot_lottery/boot_campaign.py`: button-free reboot loop
+    that samples rates + registers per boot, classifies
+    healthy/degraded, and emits JSONL — the "boots deterministically
+    healthy" gate made measurable. Next: flash the instrumented image,
+    campaign until a degraded boot lands, diff its clk_regs against
+    the post-flip capture of the same image.
+
 ## Recorded debt — small, none blocking
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response

@@ -111,6 +111,13 @@ typedef struct {
      * ran dry. The vendor path did this too -- it fell back to `block_silent`
      * -- but counted nothing, so an underflow was inaudible AND invisible. */
     volatile uint32_t underruns;
+    /* Consumer-owned: fill() invocations, one per transmit DMA interrupt --
+     * each is AUDIO_BLOCK_SAMPLES frames on the wire, so against wall time
+     * this is the TX bit-clock's rate measured from OUTSIDE the S/PDIF
+     * clock domain (boot-lottery discriminator: a clock tree that latched
+     * wrong at boot self-reports 48 kHz on every in-domain surface; this
+     * counter cannot be fooled by it). */
+    volatile uint32_t fills;
 } AiusSpdifTx24Ring;
 
 /* Put the ring in the empty state. MUST be called before the transmit interrupt
@@ -140,6 +147,7 @@ static inline void aius_spdif_tx24_reset(AiusSpdifTx24Ring *ring)
     ring->written = 0u;
     ring->consumed = 0u;
     ring->underruns = 0u;
+    ring->fills = 0u;
 }
 
 /* Empty the transition ring without erasing its lifetime underrun diagnostic.
@@ -212,6 +220,8 @@ static inline void aius_spdif_tx24_fill(AiusSpdifTx24Ring *ring,
     const uint32_t available = ring->written - consumed;
     const uint32_t take = available < frames ? available : frames;
     uint32_t index = consumed & AIUS_SPDIF_TX24_RING_MASK;
+
+    ring->fills = ring->fills + 1u;
 
     for (uint32_t i = 0; i < take; i++) {
         /* The whole point of the path: the DSP's 24-bit word, unmodified, into
