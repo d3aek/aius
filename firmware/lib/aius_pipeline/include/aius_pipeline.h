@@ -135,32 +135,35 @@ extern "C" {
 #define AIUS_PIPELINE_PCM_BLOCK_FRAMES 512u
 #define AIUS_PIPELINE_MAX_OUTPUT_FRAMES 512u
 
+/* The slot capacity an E-AC-3 residency requires: measured 179,232 B
+ * cumulative high-water (context + adapter handle/planes + one-time init
+ * allocs, eac3 suite arena pass) rounded up to a 4 KiB boundary for margin.
+ * The dispatch's residency_possible() gate compares the slot against this
+ * before touching the current resident, so a slot that ever shrinks below
+ * it refuses type-21 residency AIUS_NO_SPACE instead of evicting a healthy
+ * decoder into a doomed create. */
+#define AIUS_PIPELINE_EAC3_SLOT_BYTES 180224u
+
 /* Fixed capacity of the codec slot: the sub-arena the arena-backed pipeline
  * carves at create and lends to whichever ONE decoder the stream currently
  * needs. Exactly one decoder is resident at a time; a Pc family change resets
  * the slot and creates the other decoder into it (see
- * aius_pipeline_resident_codec). Sized to hold the largest single decoder --
- * DTS 5.1 core measures 62,560 B arena high-water, AC-3 27,024 B -- with the
- * remainder as margin; the pipeline suite proves each decoder fits by creating
- * it into a slot-sized arena and decoding the tallest committed corpus vector.
- *
- * E-AC-3 does NOT fit this slot: its measured residency need is
- * AIUS_PIPELINE_EAC3_SLOT_BYTES below. Growing the slot (and the target's
- * DTCM arena that funds it) is E-AC-3 plan phase 4; until then an
- * arena-backed pipeline refuses type-21 residency with AIUS_NO_SPACE --
- * checked BEFORE the current resident is touched, so a DD+ interlude on a
- * DTS/AC-3 link cannot evict a healthy decoder or dirty the slot's
- * high-water. Heap-path (libc) pipelines have no slot bound and decode
- * E-AC-3 whenever AIUS_PIPELINE_EAC3 compiles the route in. */
-#define AIUS_PIPELINE_CODEC_SLOT_BYTES 65536u
+ * aius_pipeline_resident_codec). Sized since E-AC-3 plan phase 4 to hold the
+ * largest of the THREE decoders -- E-AC-3 measures 179,232 B cumulative
+ * arena high-water, DTS 5.1 core 62,560 B, AC-3 27,024 B -- with the
+ * remainder as margin; the pipeline suite proves each decoder fits by
+ * creating it into a slot-sized arena and decoding the tallest committed
+ * corpus vector, and the target funds the growth from the rodata pinned to
+ * flash by link/aius_teensy41.ld's .text.aius_flashro claim. */
+#define AIUS_PIPELINE_CODEC_SLOT_BYTES AIUS_PIPELINE_EAC3_SLOT_BYTES
 
-/* The slot capacity an E-AC-3 residency requires: measured 179,232 B
- * cumulative high-water (context + adapter handle/planes + one-time init
- * allocs, eac3 suite arena pass) rounded up to a 4 KiB boundary for margin.
- * Phase 4 raises AIUS_PIPELINE_CODEC_SLOT_BYTES to at least this when the
- * target arena grows; the dispatch uses it to refuse an impossible residency
- * up front (see above). */
-#define AIUS_PIPELINE_EAC3_SLOT_BYTES 180224u
+/* Upper bound on sizeof(struct AiusPipeline), asserted inside
+ * aius_pipeline.c on every build (host and target): the arena owner sizes
+ * its arena as instance + owner carve + slot at COMPILE time, and this
+ * constant is what makes that arithmetic assertable without exposing the
+ * struct. The host (64-bit) instance measures 5,512 B and bounds the
+ * 32-bit target's. */
+#define AIUS_PIPELINE_INSTANCE_MAX_BYTES 5632u
 
 /* Words of a PCM run that pass in silence before the pass-through is allowed to
  * reach the sink -- the confirmation squelch.

@@ -141,37 +141,56 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    adapter's 24,576 B burst headroom is unreachable through this
    pipeline. Phase 5's live evidence should configure the TV to 5.1
    output.
-4. **Target integration** — **GATED (owner decision 2026-08-01): no
-   E-AC-3 flash stages until the boot-lottery defect is fixed**
-   ([`aius-open-work-register.md`](aius-open-work-register.md) §Open
-   defects — runtime): every flash re-rolls the boot lottery, and this
-   phase's deployment cadence is unsafe until boots are
-   deterministically healthy. Host-side work (Phase 3's native proof,
-   the memory-plan design) stays unblocked. Content: FLASH-cold code
-   placement (the subset cannot join the six-block ITCM budget), decode
-   cycle cost measured against the 8 ms AUDIO budget, arena/slot gates
-   on target, SD-replay E-AC-3 IEC fixtures played on the box. **Scope
-   revision (2026-08-01, from the Phase-2 measurements):** the slot needs
-   179,232 B as measured (with the `input_buffer` rung taken 2026-08-02),
-   so the 131,072 DTCM arena must GROW, not merely re-partition. Ground truth from the current
-   build: RAM1 = 287,684 B variables + 6 ITCM banks, **39,996 B DTCM
-   free**; OCRAM has 131,488 B free. The funded route is the
-   `input_buffer` rung (taken 2026-08-02) plus relocating ~70–90 KB of
-   non-audio-path DTCM buffers to OCRAM (defect 26 vetoed OCRAM for *audio-path* state;
-   HTTP/network/scratch buffers are not that) and growing `ARENA_BYTES`
-   to ~220 KB. The CRC tables (32,800 B BSS, lazily generated) are a
-   further flash-const rung if DTCM stays tight. Phase 3 left the target
-   hooks ready: define `AIUS_PIPELINE_EAC3` in the optical env, add the
-   fork + adapter sources to `build_src_filter` with FLASH-cold
-   placement, and raise `AIUS_PIPELINE_CODEC_SLOT_BYTES` to
-   `AIUS_PIPELINE_EAC3_SLOT_BYTES` (180,224 B, the measured 179,232 B
-   need rounded to 4 KiB) alongside the arena growth — the
-   `residency_possible` gate then admits type 21 on target with no
-   other dispatch change.
+4. **Target integration** — **GATE CLEARED 2026-08-02** (owner go, same
+   day): the boot-lottery defect was convicted and fixed (S/PDIF DPLL
+   junk-lock gate at bring-up, `relocks` sentinel;
+   [`aius-open-work-register.md`](aius-open-work-register.md) §Open
+   defects — runtime carries the conviction chain and the 28/28
+   flash-boot evidence), meeting the 2026-08-01 condition that boots be
+   deterministically healthy. **Build-side landed 2026-08-02** (parts
+   1–3): the funded route CHANGED from the recorded OCRAM-relocation
+   sketch — the memory gate pins OCRAM free at its 131,328 B baseline
+   (only 256 B above the defect-26 heap-floor ASSERT), so nothing
+   meaningful can move there. The route actually taken funds the arena
+   from DTCM-internal swaps: the framework ldscript copies ALL .rodata
+   into DTCM, and a new `.text.aius_flashro` claim pins the vendored
+   decoder tables (dcadec ~79 KB, liba52 ~4 KB) + two string-heavy
+   first-party objects to flash (−99,328 B of DTCM .data), the fork's
+   CRC tables went flash-const (`CONFIG_HARDCODED_TABLES`, −32,800 B of
+   would-be BSS), and a new link-time ASSERT floors the DTCM
+   stack/locals zone at 24,352 B so an unfunded growth is a link error.
+   `AIUS_PIPELINE_CODEC_SLOT_BYTES` = `AIUS_PIPELINE_EAC3_SLOT_BYTES`
+   (180,224); `ARENA_BYTES` = instance bound (5,632, published as
+   `AIUS_PIPELINE_INSTANCE_MAX_BYTES` and asserted in both builds) +
+   32,768 carve + slot + 64 = **218,688 B**, compile-time-asserted.
+   The optical env compiles the route (`AIUS_PIPELINE_EAC3=1`, the fork
+   TU set, per-source include scoping via `scripts/fork_eac3_flags.py`
+   so liba52's and the fork's `config.h` can never cross-resolve); the
+   fork's text+rodata are ldscript-pinned to flash (anchor-checked
+   post-link), the adapter is FLASHMEM + COLD_OBJECTS. Post-build:
+   DTCM free-for-locals 31,040 B (floor 24,352), ITCM +624 B for the
+   dispatch (1,364 free), OCRAM untouched, all gates green; pipeline
+   suite reworked (slot-swap now 3 families, 66 pushes / 45 swaps
+   bit-identical, capacity oracle 179,232/180,224, arena residency +
+   flipped dark sweep) — all green.
+   **Acceptance shape for the on-box evidence (recorded BEFORE
+   flashing):** the replay seam drains a fixed 96,000 words/s, but a
+   type-21 burst period is 12,288 words for 32 ms of audio — a 4×
+   shortfall by construction (real DD+ rides a 4×-rate link the replay
+   seam does not model), and no live source exists (the TX transmits
+   DSP PCM, never type 21). SD-replay therefore proves DECODE
+   structurally — codec_pc 21, decode counters advancing,
+   `eac3_decode_cycles` against the 8 ms budget — while gapless audible
+   playback is impossible and tx underruns are an artifact of the
+   source, not a defect. DTS/AC-3 decode cycles are re-measured beside
+   it (their tables moved to flash-cached reads).
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until
-   then.
+   then. Note from Phase 4: replay cannot substitute (4× link-rate
+   shortfall by construction), and the source must be configured for
+   5.1 output — dependent-substream (7.1) bursts exceed the parser cap
+   and stay dark by design (Phase 3 scope note).
 
 ## Historical scoping record (2026-07-30)
 

@@ -57,6 +57,7 @@ FLASHRO_BLOCK = """\t/* AIUS ADDITION — read-only data pinned to flash (E-AC-3
 \t * below stays byte-identical. */
 \t.text.aius_flashro : {
 \t\t*vendor/dcadec-core/*.o(.rodata*)
+\t\t*vendor/ffmpeg-eac3/*.o(.rodata*)
 \t\t*lib/aius_a52/a52/*.o(.rodata*)
 \t\t*src/aius_optical_app.cpp.o(.rodata*)
 \t\t*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
@@ -91,9 +92,15 @@ TWEETNACL_CODE_BLOCK = (
     "\t\t/* AIUS ADDITION — TweetNaCl pinned to flash; see the EXCLUDE_FILE on\n"
     "\t\t * .text.itcm and aius_ota_ed25519.c's placement note. */\n"
     "\t\t*tweetnacl.c.o(.text*)\n"
+    "\t\t/* AIUS ADDITION — the ffmpeg-eac3 fork pinned to flash (E-AC-3\n"
+    "\t\t * phase 4): ~87 KiB of decoder text against an ITCM bank with\n"
+    "\t\t * ~2 KiB free. FLASH-cold by plan; the fork's rodata rides\n"
+    "\t\t * .text.aius_flashro below. */\n"
+    "\t\t*vendor/ffmpeg-eac3/*.o(.text*)\n"
 )
 TWEETNACL_ITCM_PINNED = (
-    "\t\t*(EXCLUDE_FILE(*tweetnacl.c.o) .text*) /* AIUS: TweetNaCl -> flash */\n"
+    "\t\t*(EXCLUDE_FILE(*tweetnacl.c.o *vendor/ffmpeg-eac3/*.o) .text*)"
+    " /* AIUS: TweetNaCl + ffmpeg-eac3 -> flash */\n"
 )
 TWEETNACL_ITCM_FRAMEWORK = "\t\t*(.text*)\n"
 

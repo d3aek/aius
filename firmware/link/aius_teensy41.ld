@@ -75,6 +75,11 @@ SECTIONS
 		/* AIUS ADDITION — TweetNaCl pinned to flash; see the EXCLUDE_FILE on
 		 * .text.itcm and aius_ota_ed25519.c's placement note. */
 		*tweetnacl.c.o(.text*)
+		/* AIUS ADDITION — the ffmpeg-eac3 fork pinned to flash (E-AC-3
+		 * phase 4): ~87 KiB of decoder text against an ITCM bank with
+		 * ~2 KiB free. FLASH-cold by plan; the fork's rodata rides
+		 * .text.aius_flashro below. */
+		*vendor/ffmpeg-eac3/*.o(.text*)
 		. = ALIGN(4);
 		KEEP(*(.init))
 		__preinit_array_start = .;
@@ -104,6 +109,7 @@ SECTIONS
 	 * below stays byte-identical. */
 	.text.aius_flashro : {
 		*vendor/dcadec-core/*.o(.rodata*)
+		*vendor/ffmpeg-eac3/*.o(.rodata*)
 		*lib/aius_a52/a52/*.o(.rodata*)
 		*src/aius_optical_app.cpp.o(.rodata*)
 		*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
@@ -113,7 +119,7 @@ SECTIONS
 	.text.itcm : {
 		. = . + 32; /* MPU to trap NULL pointer deref */
 		*(.fastrun)
-		*(EXCLUDE_FILE(*tweetnacl.c.o) .text*) /* AIUS: TweetNaCl -> flash */
+		*(EXCLUDE_FILE(*tweetnacl.c.o *vendor/ffmpeg-eac3/*.o) .text*) /* AIUS: TweetNaCl + ffmpeg-eac3 -> flash */
 		. = ALIGN(16);
 	} > ITCM  AT> FLASH
 

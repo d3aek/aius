@@ -16,6 +16,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Cold code -> FLASH (the aius_http.c pattern). Nothing here runs on the
+ * audio-block ISR path -- decode runs per access unit from the epoch's AUDIO
+ * checkpoint, exactly like the fork it drives, which the ldscript pins to
+ * flash wholesale. TEENSYDUINO is a project-wide compiler -D, so the native
+ * host suites fall through to the no-op and this file keeps its portable,
+ * Arduino-free compile. The attribute must sit on each DEFINITION. Enforced
+ * post-link by test/itcm-placement/verify_target.py (COLD_OBJECTS). */
+#if defined(TEENSYDUINO)
+#include <avr/pgmspace.h>
+#endif
+#ifndef FLASHMEM
+#define FLASHMEM
+#endif
+
 #include "aius_alloc_shim.h"
 
 #include "libavcodec/ac3dec.h"
@@ -50,7 +64,7 @@ struct AiusEac3Decoder {
 	AiusMetrics metrics;
 };
 
-static uint32_t translate_mask(uint64_t av_mask)
+static FLASHMEM uint32_t translate_mask(uint64_t av_mask)
 {
 	uint32_t m = 0;
 	if (av_mask & EAC3_AV_FL)
@@ -70,7 +84,7 @@ static uint32_t translate_mask(uint64_t av_mask)
 
 /* Output-plane provider registered with the framework shim (process-global;
  * one live decoder by contract). */
-static int provide_planes(void *opaque, AVCodecContext *avctx, AVFrame *frame)
+static FLASHMEM int provide_planes(void *opaque, AVCodecContext *avctx, AVFrame *frame)
 {
 	AiusEac3Decoder *dec = opaque;
 	(void)avctx;
@@ -84,7 +98,7 @@ static int provide_planes(void *opaque, AVCodecContext *avctx, AVFrame *frame)
 	return 0;
 }
 
-static void decoder_call_start(AiusEac3Decoder *dec)
+static FLASHMEM void decoder_call_start(AiusEac3Decoder *dec)
 {
 	aius_avshim_set_get_buffer(provide_planes, dec);
 	if (dec->arena) {
@@ -93,7 +107,7 @@ static void decoder_call_start(AiusEac3Decoder *dec)
 	}
 }
 
-static AiusStatus decoder_call_end(AiusEac3Decoder *dec, AiusStatus st)
+static FLASHMEM AiusStatus decoder_call_end(AiusEac3Decoder *dec, AiusStatus st)
 {
 	if (dec->arena) {
 		dec->metrics.alloc_count = aius_alloc_shim_alloc_count();
@@ -107,7 +121,7 @@ static AiusStatus decoder_call_end(AiusEac3Decoder *dec, AiusStatus st)
 	return st;
 }
 
-static AiusStatus decoder_create(AiusEac3Decoder **out, AiusArena *arena)
+static FLASHMEM AiusStatus decoder_create(AiusEac3Decoder **out, AiusArena *arena)
 {
 	if (!out)
 		return AIUS_INVALID_ARG;
@@ -161,12 +175,12 @@ done:
 	return st;
 }
 
-AiusStatus aius_eac3_decoder_create(AiusEac3Decoder **out)
+FLASHMEM AiusStatus aius_eac3_decoder_create(AiusEac3Decoder **out)
 {
 	return decoder_create(out, NULL);
 }
 
-AiusStatus aius_eac3_decoder_create_arena(AiusEac3Decoder **out,
+FLASHMEM AiusStatus aius_eac3_decoder_create_arena(AiusEac3Decoder **out,
                                           AiusArena *arena)
 {
 	if (!arena)
@@ -174,7 +188,7 @@ AiusStatus aius_eac3_decoder_create_arena(AiusEac3Decoder **out,
 	return decoder_create(out, arena);
 }
 
-AiusStatus aius_eac3_set_cycle_clock(AiusEac3Decoder *dec,
+FLASHMEM AiusStatus aius_eac3_set_cycle_clock(AiusEac3Decoder *dec,
                                      const AiusCycleClock *clock)
 {
 	if (!dec)
@@ -190,7 +204,7 @@ AiusStatus aius_eac3_set_cycle_clock(AiusEac3Decoder *dec,
 
 /* One saturating float->int32 quantize at the AIUS_PCM_SAMPLE_BITS scale
  * (aius_a52's expression). */
-static int32_t sample_quantize(float v)
+static FLASHMEM int32_t sample_quantize(float v)
 {
 	float scaled = v * 8388608.0f; /* 2^23: full scale at 24 bits */
 	if (scaled >= (float)AIUS_PCM_SAMPLE_MAX)
@@ -200,7 +214,7 @@ static int32_t sample_quantize(float v)
 	return (int32_t)scaled;
 }
 
-static AiusStatus map_core_error(int ret)
+static FLASHMEM AiusStatus map_core_error(int ret)
 {
 	if (ret == AVERROR_PATCHWELCOME || ret == AVERROR(ENOSYS))
 		return AIUS_UNSUPPORTED;
@@ -209,7 +223,7 @@ static AiusStatus map_core_error(int ret)
 	return AIUS_MALFORMED;
 }
 
-AiusStatus aius_eac3_decode_access_unit(AiusEac3Decoder *dec,
+FLASHMEM AiusStatus aius_eac3_decode_access_unit(AiusEac3Decoder *dec,
                                         const uint8_t *data, size_t size,
                                         AiusPcmBlock *block)
 {
@@ -281,7 +295,7 @@ AiusStatus aius_eac3_decode_access_unit(AiusEac3Decoder *dec,
 	return decoder_call_end(dec, AIUS_OK);
 }
 
-AiusStatus aius_eac3_get_metrics(const AiusEac3Decoder *dec, AiusMetrics *out)
+FLASHMEM AiusStatus aius_eac3_get_metrics(const AiusEac3Decoder *dec, AiusMetrics *out)
 {
 	if (!dec || !out)
 		return AIUS_INVALID_ARG;
@@ -289,7 +303,7 @@ AiusStatus aius_eac3_get_metrics(const AiusEac3Decoder *dec, AiusMetrics *out)
 	return AIUS_OK;
 }
 
-void aius_eac3_decoder_destroy(AiusEac3Decoder *dec)
+FLASHMEM void aius_eac3_decoder_destroy(AiusEac3Decoder *dec)
 {
 	if (!dec)
 		return;

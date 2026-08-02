@@ -81,6 +81,7 @@ COLD_OBJECTS = (
     "lib/aius_audio/src/aius_audio_clock.cpp.o",
     "lib/aius_audio_service/src/aius_audio_service.c.o",
     "lib/aius_boot/src/aius_boot.c.o",
+    "lib/aius_eac3/src/aius_eac3.c.o",
     "lib/aius_http/src/aius_http.c.o",
     "lib/aius_http/src/aius_http_transaction.c.o",
     "lib/aius_net/src/aius_net.c.o",
@@ -107,6 +108,7 @@ COLD_TREES = (
     "lib/aius_clock/",
     "lib/aius_audio_service/",
     "lib/aius_boot/",
+    "lib/aius_eac3/",
     "lib/aius_http/",
     "lib/aius_net/",
     "lib/aius_runtime/",
@@ -605,6 +607,67 @@ def verify_dark_window_residency(build_dir: Path, readelf: str) -> int:
     return verify_dark_window_symbols(parse_function_symbols(result.stdout))
 
 
+# The ldscript pins whole vendored trees' .text to flash (TweetNaCl for the
+# OTA crypto, the ffmpeg-eac3 fork for E-AC-3 decode -- E-AC-3 plan phase 4).
+# An object-section check cannot see an ld-level pin (the .o still carries
+# plain .text), so the LINKED image is the oracle: each anchor below must
+# exist as a FUNC symbol and must NOT be ITCM. A regression that un-pins a
+# tree moves its anchors with it and fails here; an anchor slimmer than the
+# tree still catches the whole-tree regression, which is the only kind an
+# ldscript edit can produce.
+FLASH_PINNED_SYMBOLS = (
+    # vendor/tweetnacl (previously enforced only by the six-block ASSERT,
+    # which a <2 KiB miss could slip under). The linked name is the
+    # ed25519_tweet-suffixed one; crypto_sign_open is its wrapper macro.
+    "crypto_sign_ed25519_tweet_open",
+    # vendor/ffmpeg-eac3: the fork's entry points and its table-driven CRC.
+    "aius_eac3_core_init",
+    "aius_eac3_core_frame",
+    "av_crc",
+    # lib/aius_eac3: FLASHMEM-annotated and COLD_OBJECTS-checked besides;
+    # this anchor additionally proves the LINKED placement.
+    "aius_eac3_decode_access_unit",
+)
+
+
+def verify_flash_pinned_symbols(symbols: dict[str, int]) -> int:
+    """Every flash-pinned anchor exists and lives OUTSIDE ITCM. Pure half."""
+    missing = []
+    misplaced = []
+    for name in FLASH_PINNED_SYMBOLS:
+        value = dark_window_symbol_address(symbols, name)
+        if value is None:
+            missing.append(name)
+        elif value < ITCM_ADDRESS_LIMIT:
+            misplaced.append(f"{name} at 0x{value:08x}")
+    if missing or misplaced:
+        details = []
+        if missing:
+            details.append("absent from the link: " + ", ".join(sorted(missing)))
+        if misplaced:
+            details.append("inside ITCM: " + ", ".join(sorted(misplaced)))
+        raise VerificationError(
+            "flash-pinned residency: " + "; ".join(details) + ". The "
+            "ldscript's vendor .text pins (link/aius_teensy41.ld .text.code) "
+            "keep TweetNaCl and the ffmpeg-eac3 fork out of the six-block "
+            "ITCM budget; restore the pin or the missing source."
+        )
+    return len(FLASH_PINNED_SYMBOLS)
+
+
+def verify_flash_pinned_residency(build_dir: Path, readelf: str) -> int:
+    elf = build_dir / "firmware.elf"
+    if not elf.exists():
+        raise VerificationError(f"linked image not found: {elf}")
+    result = subprocess.run(
+        [readelf, "-sW", str(elf)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return verify_flash_pinned_symbols(parse_function_symbols(result.stdout))
+
+
 def group_ldf_objects(paths: Iterable[str]) -> dict[str, list[str]]:
     """LDF-shaped object paths grouped by library name.
 
@@ -833,6 +896,13 @@ def _dark_window_summary(checked: int) -> str:
     )
 
 
+def _flash_pinned_summary(checked: int) -> str:
+    return (
+        "flash-pinned residency: PASS "
+        f"({checked} vendor/adapter anchors in the linked image, none ITCM)"
+    )
+
+
 def _ldf_summary(libraries: int, gated: int) -> str:
     return (
         "LDF-library ITCM placement: PASS "
@@ -881,6 +951,9 @@ def verify_cold_placement(source, target, env) -> None:
     ))
     print(_dark_window_summary(
         verify_dark_window_residency(build_dir, readelf)
+    ))
+    print(_flash_pinned_summary(
+        verify_flash_pinned_residency(build_dir, readelf)
     ))
 
 

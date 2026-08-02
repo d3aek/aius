@@ -73,7 +73,7 @@ def main():
     small_arena[1] = verify.Symbol(
         small_arena[1].value, 65536, 9, small_arena[1].name
     )
-    expect_failure(sections, small_arena, "expected 131072 B")
+    expect_failure(sections, small_arena, "expected 218688 B")
 
     low_headroom = deepcopy(symbols)
     low_headroom[2] = verify.Symbol(
@@ -83,7 +83,7 @@ def main():
     expect_failure(sections, low_headroom, "below committed")
 
     parsed = verify.parse_symbols(
-        "  1: 20021720 0x20000 OBJECT GLOBAL DEFAULT 9 "
+        "  1: 20021720 0x35640 OBJECT GLOBAL DEFAULT 9 "
         "_ZN18AiusAudioProcessor14g_arena_memoryE\n"
     )
     assert parsed[0].size == verify.DECODER_ARENA_BYTES

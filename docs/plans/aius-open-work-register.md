@@ -168,12 +168,14 @@ specified here. Strike items here in the commit that closes them.
     The on-demand reproducer stays: build `e6417b428`'s firmware
     out-of-tree, flash, first boot degrades.
 
-  **GATE (owner decision 2026-08-01): this defect now blocks every
+  ~~**GATE (owner decision 2026-08-01): this defect now blocks every
   E-AC-3 flash stage** ([`aius-eac3-support.md`](aius-eac3-support.md)
   Phase 4 and beyond). Every flash re-rolls the boot lottery, so the
   deployment cadence the E-AC-3 target work needs is unsafe until boots
   are deterministically healthy. Host-side E-AC-3 work (Phase 3 native
-  proof, plan work) stays unblocked.
+  proof, plan work) stays unblocked.~~ **Gate LIFTED by owner
+  2026-08-02 after the fix below; see the gate note at the end of this
+  entry.**
 
   - Hypothesis candidate for path (2), recorded 2026-08-01 from the
     signature arithmetic: a one-block slip every 168 blocks is a
@@ -287,10 +289,11 @@ specified here. Strike items here in the commit that closes them.
     rather than curative; either way boots come out healthy, and the
     first organic junk-lock anywhere will stamp itself on `relocks`
     and settle the question from the field.
-  - **Gate note:** the owner's 2026-08-01 decision blocks E-AC-3
-    flash stages "until boots are deterministically healthy". The
-    fix + campaign evidence meets that condition on the bench;
-    lifting the gate is the owner's call
+  - **Gate note:** the owner's 2026-08-01 decision blocked E-AC-3
+    flash stages "until boots are deterministically healthy". The fix
+    + campaign evidence met that condition on the bench, and the
+    owner LIFTED the gate 2026-08-02 — E-AC-3 Phase 4 (target
+    integration) is cleared to flash
     ([`aius-eac3-support.md`](aius-eac3-support.md) Phase 4).
 
 ## Recorded debt — small, none blocking

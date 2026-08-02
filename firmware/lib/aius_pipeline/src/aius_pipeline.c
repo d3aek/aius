@@ -167,6 +167,13 @@ _Static_assert(AIUS_PIPELINE_PCM_CONFIRM_WORDS >=
 _Static_assert(AIUS_PIPELINE_PCM_CONFIRM_WORDS % 2u == 0u,
                "confirm boundary must be even so staging resumes L-first");
 
+/* The published instance bound is what lets arena owners size instance +
+ * carve + slot at compile time (optical_main's ARENA_BYTES assert). The
+ * 64-bit host instance bounds the 32-bit target's. */
+_Static_assert(sizeof(struct AiusPipeline) <= AIUS_PIPELINE_INSTANCE_MAX_BYTES,
+               "AiusPipeline outgrew AIUS_PIPELINE_INSTANCE_MAX_BYTES; "
+               "re-measure and raise the published bound");
+
 /* ---- classifier ---------------------------------------------------------- */
 
 /* 0 = not a pair; 1 = big-endian wire form; 2 = byte-swapped form. The form
@@ -456,11 +463,13 @@ static uint16_t pc_family(uint16_t pc)
 
 /* Can `family` ever become resident in THIS pipeline? AIUS_OK, or the refusal
  * to record: AIUS_UNSUPPORTED when the decoder is not compiled in,
- * AIUS_NO_SPACE when the arena slot cannot hold it (E-AC-3 needs
- * AIUS_PIPELINE_EAC3_SLOT_BYTES; phase 4 grows the slot). Checked BEFORE the
+ * AIUS_NO_SPACE when the arena slot cannot hold it. Checked BEFORE the
  * resident is touched, so an impossible residency can never evict a healthy
  * decoder or dirty the slot's cumulative high-water -- the metric that sizes
- * the slot. */
+ * the slot. Since phase 4 the slot constant IS the E-AC-3 need, so the
+ * NO_SPACE arm folds to constant-false; it stays because the comparison is
+ * the contract (a future slot shrink refuses here instead of evicting into
+ * a doomed create). */
 static AiusStatus residency_possible(const AiusPipeline *p, uint16_t family)
 {
 	if (family == 1u || family == 11u)

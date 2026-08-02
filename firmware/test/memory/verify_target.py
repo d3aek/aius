@@ -14,7 +14,11 @@ import sys
 OCRAM_START = 0x20200000
 OCRAM_END = 0x20280000
 INGRESS_BYTES = 16384
-DECODER_ARENA_BYTES = 131072
+# instance bound (5,632) + DSP double-staging carve (32,768) + codec slot
+# (180,224, the E-AC-3 residency need) + allocation-header slack (64) --
+# the same compile-time sum optical_main.cpp static_asserts (E-AC-3 plan
+# phase 4; was 131072 before the slot grew past the DTS need).
+DECODER_ARENA_BYTES = 218688
 # Regression ratchet, not the safety line. The real defect-26 guard is the
 # link-time ASSERT `_heap_end - _heap_start >= 0x20000` (128 KiB = NativeEthernet's
 # measured ~96 KiB boot mallocs plus a third headroom) in link/aius_teensy41.ld;

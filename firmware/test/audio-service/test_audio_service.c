@@ -472,9 +472,10 @@ static void test_output_step_quota(void)
 }
 
 /* This suite compiles aius_pipeline.c WITHOUT AIUS_PIPELINE_EAC3 -- the
- * target's shape until E-AC-3 plan phase 4. A completed type-21 burst must
- * be refused at dispatch (AIUS_UNSUPPORTED, dark, nothing emitted, no
- * residency) and Pc 21 stays outside the codec-metrics vocabulary. */
+ * flag-off shape (any build that leaves the route out; the optical target
+ * compiles it IN since phase 4). A completed type-21 burst must be refused
+ * at dispatch (AIUS_UNSUPPORTED, dark, nothing emitted, no residency) and
+ * Pc 21 stays outside the codec-metrics vocabulary. */
 static void test_eac3_route_absent(const char *dir)
 {
 	size_t word_count = 0u;

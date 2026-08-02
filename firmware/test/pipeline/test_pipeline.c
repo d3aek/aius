@@ -800,25 +800,25 @@ static int slot_reference_decode(const uint16_t *w, size_t n, struct capture *re
 
 static void test_codec_slot_swap(const char *dir)
 {
-	size_t dts_n = 0u;
-	size_t ac3_n = 0u;
-	uint16_t *dts = load_wire(dir, "dts51_be16", &dts_n);
-	uint16_t *ac3 = load_wire(dir, "ac3_surround51_ident", &ac3_n);
-	if (!dts || !ac3) {
+	size_t wire_n[3] = { 0u, 0u, 0u };
+	uint16_t *wire[3];
+	wire[0] = load_wire(dir, "dts51_be16", &wire_n[0]);
+	wire[1] = load_wire(dir, "ac3_surround51_ident", &wire_n[1]);
+	wire[2] = load_wire(dir, "eac3_surround51_ident", &wire_n[2]);
+	if (!wire[0] || !wire[1] || !wire[2]) {
 		CHECK(0, "slot-swap: corpus load failed");
-		free(ac3);
-		free(dts);
+		for (int f = 0; f < 3; f++)
+			free(wire[f]);
 		return;
 	}
+	static const uint16_t FAMILY[3] = { 11u, 1u, 21u };
 
 	/* References: the tallest committed vector of each family, decoded by a
 	 * fresh arena pipeline (first residency, virgin slot). */
-	struct capture ref_dts;
-	struct capture ref_ac3;
-	CHECK(slot_reference_decode(dts, dts_n, &ref_dts) == 0,
-	      "slot-swap: DTS reference decode");
-	CHECK(slot_reference_decode(ac3, ac3_n, &ref_ac3) == 0,
-	      "slot-swap: AC-3 reference decode");
+	struct capture ref[3];
+	for (int f = 0; f < 3; f++)
+		CHECK(slot_reference_decode(wire[f], wire_n[f], &ref[f]) == 0,
+		      "slot-swap: family %u reference decode", FAMILY[f]);
 
 	AiusArena arena;
 	CHECK(aius_arena_init(&arena, g_pipe_arena, sizeof(g_pipe_arena)) == 0,
@@ -830,10 +830,10 @@ static void test_codec_slot_swap(const char *dir)
 	CHECK(aius_pipeline_create_arena(&p, NULL, &sink, &arena) == AIUS_OK,
 	      "slot-swap: churn create");
 	if (!p) {
-		capture_free(&ref_dts);
-		capture_free(&ref_ac3);
-		free(ac3);
-		free(dts);
+		for (int f = 0; f < 3; f++) {
+			capture_free(&ref[f]);
+			free(wire[f]);
+		}
 		return;
 	}
 
@@ -841,21 +841,21 @@ static void test_codec_slot_swap(const char *dir)
 	uint16_t resident = 0u;
 	int identity_ok = 1;
 
-	/* Phase 1: strict alternation -- every push but the first swaps. */
-	for (int cycle = 0; cycle < 16 && identity_ok; cycle++) {
-		const int is_ac3 = cycle & 1;
-		const uint16_t family = is_ac3 ? 1u : 11u;
-		if (resident != 0u && resident != family)
+	/* Phase 1: strict three-way rotation -- every push but the first swaps,
+	 * and every residency-opening decode must be bit-identical to a fresh
+	 * arena pipeline's. */
+	for (int cycle = 0; cycle < 18 && identity_ok; cycle++) {
+		const int f = cycle % 3;
+		if (resident != 0u && resident != FAMILY[f])
 			expected_swaps++;
-		resident = family;
+		resident = FAMILY[f];
 		identity_ok =
-			aius_pipeline_push(p, is_ac3 ? ac3 : dts,
-			                   is_ac3 ? ac3_n : dts_n) == AIUS_OK &&
-			aius_pipeline_resident_codec(p) == family &&
-			captures_equal(&cap, is_ac3 ? &ref_ac3 : &ref_dts);
+			aius_pipeline_push(p, wire[f], wire_n[f]) == AIUS_OK &&
+			aius_pipeline_resident_codec(p) == FAMILY[f] &&
+			captures_equal(&cap, &ref[f]);
 		capture_free(&cap);
 	}
-	CHECK(identity_ok, "slot-swap: alternation identity broke");
+	CHECK(identity_ok, "slot-swap: rotation identity broke");
 
 	/* Phase 2: fuzz the family sequence (deterministic xorshift32). Repeats
 	 * hit the same-family fast path between swaps. Fresh-decode identity is
@@ -867,19 +867,16 @@ static void test_codec_slot_swap(const char *dir)
 		rng ^= rng << 13;
 		rng ^= rng >> 17;
 		rng ^= rng << 5;
-		const int is_ac3 = (int)(rng & 1u);
-		const uint16_t family = is_ac3 ? 1u : 11u;
-		const struct capture *ref = is_ac3 ? &ref_ac3 : &ref_dts;
-		const int fresh = resident != family;
+		const int f = (int)(rng % 3u);
+		const int fresh = resident != FAMILY[f];
 		if (resident != 0u && fresh)
 			expected_swaps++;
-		resident = family;
+		resident = FAMILY[f];
 		identity_ok =
-			aius_pipeline_push(p, is_ac3 ? ac3 : dts,
-			                   is_ac3 ? ac3_n : dts_n) == AIUS_OK &&
-			aius_pipeline_resident_codec(p) == family &&
-			(fresh ? captures_equal(&cap, ref)
-			       : cap.n == ref->n && !cap.overflow);
+			aius_pipeline_push(p, wire[f], wire_n[f]) == AIUS_OK &&
+			aius_pipeline_resident_codec(p) == FAMILY[f] &&
+			(fresh ? captures_equal(&cap, &ref[f])
+			       : cap.n == ref[f].n && !cap.overflow);
 		capture_free(&cap);
 	}
 	CHECK(identity_ok, "slot-swap: fuzz identity broke");
@@ -893,25 +890,29 @@ static void test_codec_slot_swap(const char *dir)
 	      sd.decode_rejects);
 
 	/* Capacity oracle: the cumulative slot high-water across every residency
-	 * of BOTH families' tallest vectors fits the committed slot size. */
+	 * of all THREE families' tallest vectors fits the committed slot size
+	 * (E-AC-3 is the tallest: 179,232 measured against the 180,224 slot --
+	 * a 992 B margin, deterministic because the slot is reset before every
+	 * create). */
 	AiusMetrics m;
 	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
 	          m.arena_high_water > 0u &&
 	          m.arena_high_water <= AIUS_PIPELINE_CODEC_SLOT_BYTES,
 	      "slot-swap: slot high-water %u vs capacity %u",
 	      m.arena_high_water, AIUS_PIPELINE_CODEC_SLOT_BYTES);
-	printf("  slot-swap      64 pushes, %u swaps, bit-identical; slot high-water "
-	       "%u/%u (margin %u)\n",
+	printf("  slot-swap      66 pushes over 3 families, %u swaps, "
+	       "bit-identical; slot high-water %u/%u (margin %u)\n",
 	       sd.codec_swaps, m.arena_high_water, AIUS_PIPELINE_CODEC_SLOT_BYTES,
 	       AIUS_PIPELINE_CODEC_SLOT_BYTES - m.arena_high_water);
 
 	aius_pipeline_destroy(p);
 	capture_free(&cap);
-	capture_free(&ref_dts);
-	capture_free(&ref_ac3);
-	free(ac3);
-	free(dts);
+	for (int f = 0; f < 3; f++) {
+		capture_free(&ref[f]);
+		free(wire[f]);
+	}
 }
+
 
 /* ---- E-AC-3 dispatch identity + arena-slot refusal (phase 3) -------------- */
 
@@ -1015,12 +1016,13 @@ static void test_eac3_dispatch_and_identity(const char *dir)
 	free(pay);
 }
 
-/* The arena/slot half: with the 64-KiB slot (every target until phase 4
- * grows the DTCM arena), a type-21 burst on a live DTS link is refused
- * BEFORE the resident is touched -- no eviction, no swap count, no slot
- * high-water movement, and the next DTS burst decodes warm with zero
- * allocations. */
-static void test_eac3_arena_refusal(const char *dir)
+/* The arena/slot half, since the phase-4 slot growth: E-AC-3 is a full
+ * slot citizen. A type-21 burst on a live DTS link SWAPS the slot (one
+ * counted swap; the DTS state legitimately leaves with it), decodes on the
+ * arena path bit-identically to a fresh arena pipeline, and the cumulative
+ * slot high-water -- now covering the tallest of the three families --
+ * respects the committed slot size. */
+static void test_eac3_arena_residency(const char *dir)
 {
 	size_t dts_n = 0u, eac3_n = 0u;
 	uint16_t *dts = load_wire(dir, "dts51_be16", &dts_n);
@@ -1032,6 +1034,12 @@ static void test_eac3_arena_refusal(const char *dir)
 		return;
 	}
 
+	/* Reference: the eac3 wire through a fresh arena pipeline (first
+	 * residency, virgin slot). */
+	struct capture ref;
+	CHECK(slot_reference_decode(eac3, eac3_n, &ref) == 0,
+	      "eac3-slot: reference decode");
+
 	AiusArena arena;
 	CHECK(aius_arena_init(&arena, g_pipe_arena, sizeof(g_pipe_arena)) == 0,
 	      "eac3-slot: arena init");
@@ -1042,6 +1050,7 @@ static void test_eac3_arena_refusal(const char *dir)
 	CHECK(aius_pipeline_create_arena(&p, NULL, &sink, &arena) == AIUS_OK,
 	      "eac3-slot: create");
 	if (!p) {
+		capture_free(&ref);
 		free(dts);
 		free(eac3);
 		return;
@@ -1051,45 +1060,50 @@ static void test_eac3_arena_refusal(const char *dir)
 	      "eac3-slot: DTS warmup");
 	CHECK(aius_pipeline_resident_codec(p) == 11u,
 	      "eac3-slot: DTS not resident");
-	const int blocks_before = cap.n;
-	AiusMetrics m0;
-	CHECK(aius_pipeline_get_metrics(p, &m0) == AIUS_OK &&
-	              m0.arena_high_water > 0u,
-	      "eac3-slot: baseline slot high-water");
+	capture_free(&cap);
 
 	CHECK(aius_pipeline_push(p, eac3, eac3_n) == AIUS_OK,
 	      "eac3-slot: type-21 push");
 	AiusPipelineServiceDiag sd;
 	aius_pipeline_get_service_diag(p, &sd);
-	AiusMetrics m1;
-	CHECK(aius_pipeline_get_metrics(p, &m1) == AIUS_OK, "eac3-slot: metrics");
-	CHECK(sd.decode_rejects == 2u && sd.last_failure == AIUS_NO_SPACE,
-	      "eac3-slot: refusal diag (%u rejects, last %d)",
-	      sd.decode_rejects, (int)sd.last_failure);
-	CHECK(sd.codec_swaps == 0u, "eac3-slot: %u swaps across a refusal",
-	      sd.codec_swaps);
-	CHECK(aius_pipeline_resident_codec(p) == 11u,
-	      "eac3-slot: refusal evicted the DTS resident (%u)",
-	      aius_pipeline_resident_codec(p));
-	CHECK(m1.arena_high_water == m0.arena_high_water,
-	      "eac3-slot: slot high-water moved %u -> %u across a refusal",
-	      m0.arena_high_water, m1.arena_high_water);
-	CHECK(cap.n == blocks_before,
-	      "eac3-slot: a refused burst emitted blocks");
+	CHECK(sd.codec_swaps == 1u, "eac3-slot: swaps %u != 1", sd.codec_swaps);
+	CHECK(sd.decode_rejects == 0u, "eac3-slot: %u decode rejects",
+	      sd.decode_rejects);
+	CHECK(aius_pipeline_resident_codec(p) == 21u &&
+	              aius_pipeline_codec_pc(p) == 21u,
+	      "eac3-slot: residency %u codec_pc %u after the swap",
+	      aius_pipeline_resident_codec(p), aius_pipeline_codec_pc(p));
+	CHECK(captures_equal(&cap, &ref),
+	      "eac3-slot: swap-in decode differs from a fresh arena pipeline's");
 
+	/* Capacity oracle across the residencies so far -- E-AC-3 is the
+	 * tallest, and the committed slot must hold its cumulative
+	 * high-water. */
+	AiusMetrics m;
+	CHECK(aius_pipeline_get_metrics(p, &m) == AIUS_OK &&
+	              m.arena_high_water > 0u &&
+	              m.arena_high_water <= AIUS_PIPELINE_CODEC_SLOT_BYTES,
+	      "eac3-slot: slot high-water %u vs capacity %u",
+	      m.arena_high_water, AIUS_PIPELINE_CODEC_SLOT_BYTES);
+
+	/* And back: DTS re-creates into the reclaimed slot. A fresh warmup
+	 * (non-zero alloc_count) is the contract here -- its state left with
+	 * the swap -- so only the swap count and the decode are asserted. */
+	capture_free(&cap);
 	CHECK(aius_pipeline_push(p, dts, dts_n) == AIUS_OK,
 	      "eac3-slot: DTS resumes");
-	AiusMetrics dm;
-	CHECK(aius_pipeline_get_codec_metrics(p, 13u, &dm) == AIUS_OK &&
-	              dm.alloc_count == 0u,
-	      "eac3-slot: post-refusal DTS decode allocated %u (lost warmth?)",
-	      dm.alloc_count);
-	CHECK(cap.n > blocks_before, "eac3-slot: DTS did not resume");
-	printf("  eac3-slot      64-KiB slot refuses type-21 residency untouched "
-	       "(2 rejects, DTS stays warm)\n");
+	aius_pipeline_get_service_diag(p, &sd);
+	CHECK(sd.codec_swaps == 2u && cap.n > 0,
+	      "eac3-slot: swap-back (%u swaps, %d blocks)", sd.codec_swaps,
+	      cap.n);
+	printf("  eac3-slot      E-AC-3 resident on the arena slot: swap-in "
+	       "bit-identical, high-water %u/%u (margin %u), swap-back clean\n",
+	       m.arena_high_water, AIUS_PIPELINE_CODEC_SLOT_BYTES,
+	       AIUS_PIPELINE_CODEC_SLOT_BYTES - m.arena_high_water);
 
 	aius_pipeline_destroy(p);
 	capture_free(&cap);
+	capture_free(&ref);
 	free(dts);
 	free(eac3);
 }
@@ -2591,13 +2605,15 @@ static void test_teardown_drops_partial_burst(const char *dir, const char *name,
  *
  * The fix leaves PCM on the FIRST pair whose Pc completes a well-formed
  * header for a type outside {1,11,12,13}. Since phase 3 type 21 is decodable,
- * so the exit's outcome forks on what dispatch can do with the burst:
+ * so the exit's outcome forks on what the DECODER makes of the burst:
  *
- *   - REFUSED RESIDENCY (this sweep): an ARENA-backed pipeline whose 64-KiB
- *     slot cannot hold the E-AC-3 decoder (every target until phase 4 grows
- *     the arena) refuses each completed burst BEFORE touching the slot --
- *     deterministically, at dispatch, with AIUS_NO_SPACE in the service diag.
- *     The dark guarantees below are exactly defect 34's, unchanged.
+ *   - REFUSED DECODE (this sweep): the carrier is the synthetic
+ *     unsupported_eac3 burst -- a valid 48 kHz 5.1 E-AC-3 header over
+ *     garbage -- so the arena pipeline creates the E-AC-3 residency (the
+ *     phase-4 slot holds it) and then every decode fails deterministically
+ *     at frame parse, MALFORMED in the service diag. The dark guarantees
+ *     below are exactly defect 34's, unchanged: refused-payload links
+ *     stay silent at every entry phase.
  *   - DECODE (the following sweep): a heap-path pipeline decodes the real
  *     carrier from every entry phase instead of going dark.
  *
@@ -2761,10 +2777,11 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 			dark_at_every_phase = 0;
 		}
 		/* The parser frames the carrier's bursts (in scope since phase 3)
-		 * and DISPATCH refuses each one -- the slot cannot hold the
-		 * decoder -- which is what holds the class dark without starving.
-		 * The refusal never touches the (empty) slot: no residency, no
-		 * swap, nothing in the slot high-water. */
+		 * and the DECODER refuses each one -- since the phase-4 slot
+		 * growth the arena creates the E-AC-3 residency, and this
+		 * carrier's valid-header-over-garbage payload then fails frame
+		 * parse deterministically -- which is what holds the class dark
+		 * without starving. */
 		CHECK(parser.bursts_ok >= (uint32_t)(PERIODS - 2) &&
 		              parser.rejects_unsupported == 0u,
 		      "eac3-entry phase %zu: parser framed %u ok / %u unsupported "
@@ -2773,15 +2790,16 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 			AiusPipelineServiceDiag sd;
 			aius_pipeline_get_service_diag(p, &sd);
 			CHECK(sd.decode_rejects >= (uint32_t)(PERIODS - 2) &&
-			              sd.last_failure == AIUS_NO_SPACE &&
+			              sd.last_failure == AIUS_MALFORMED &&
 			              sd.codec_swaps == 0u,
-			      "eac3-entry phase %zu: dispatch refusal diag "
+			      "eac3-entry phase %zu: decode refusal diag "
 			      "(%u rejects, last %d, %u swaps)", phi,
 			      sd.decode_rejects, (int)sd.last_failure,
 			      sd.codec_swaps);
-			CHECK(aius_pipeline_resident_codec(p) == 0u,
-			      "eac3-entry phase %zu: a refused residency left a "
-			      "decoder in the slot", phi);
+			CHECK(aius_pipeline_resident_codec(p) == 21u,
+			      "eac3-entry phase %zu: the E-AC-3 residency was not "
+			      "created (resident %u)", phi,
+			      aius_pipeline_resident_codec(p));
 		}
 		CHECK(d.reclassify == 0u,
 		      "eac3-entry phase %zu: the dark class starved back out (%u)",
@@ -3010,7 +3028,7 @@ int main(int argc, char **argv)
 	test_classifier(dir);
 	test_no_heap_steady_state(dir);
 	test_codec_slot_swap(dir);
-	test_eac3_arena_refusal(dir);
+	test_eac3_arena_residency(dir);
 	test_retype_mid_burst_entry(dir);
 	test_retype_mid_stream_switch(dir);
 	test_retype_false_positive_immunity();

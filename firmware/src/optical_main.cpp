@@ -1257,7 +1257,25 @@ protected:
 	}
 
 private:
-	static constexpr size_t ARENA_BYTES = 128u * 1024u;
+	/* THE DECODER ARENA, sized at compile time as instance + owner carve +
+	 * codec slot + allocation-header slack (E-AC-3 plan phase 4). The carve
+	 * is the DSP chain's double staging (six input planes + the stereo work
+	 * pair, 32,768 B -- see begin_pipeline); the slot is the codec
+	 * sub-arena, grown to hold the E-AC-3 decoder; the instance bound is
+	 * published and asserted by lib/aius_pipeline. The static_assert below
+	 * is what turns a slot or instance growth into a compile error here
+	 * instead of an AIUS_NO_SPACE at first boot -- and the ldscript's DTCM
+	 * stack-floor ASSERT is what turns an unfunded growth of THIS array
+	 * into a link error. */
+	static constexpr size_t DSP_CARVE_BYTES = 32u * 1024u;
+	static constexpr size_t ARENA_BYTES =
+		AIUS_PIPELINE_INSTANCE_MAX_BYTES + DSP_CARVE_BYTES +
+		AIUS_PIPELINE_CODEC_SLOT_BYTES + 64u;
+	static_assert(ARENA_BYTES >= AIUS_PIPELINE_INSTANCE_MAX_BYTES +
+	                                 32u * 1024u +
+	                                 AIUS_PIPELINE_CODEC_SLOT_BYTES,
+	              "decoder arena no longer covers instance + DSP carve + "
+	              "codec slot");
 	/* THE OUTPUT WORD WIDTH, and the one place it is chosen.
 	 *
 	 * 24 bits is the transmit register's width and the DSP's own output width,
