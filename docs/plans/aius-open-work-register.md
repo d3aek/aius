@@ -73,8 +73,17 @@ specified here. Strike items here in the commit that closes them.
   same day — the card was innocent** (owner challenged the verdict;
   the controlled A/B convicted the board's own runtime state, below).
   Keep the card.
-- **Darken the CM6206 optical feed for the E-AC-3 replay acceptance
-  run (2026-08-02).** A replay start refuses against a live carrier by
+- ~~**Darken the CM6206 optical feed for the E-AC-3 replay acceptance
+  run (2026-08-02).**~~ **RESOLVED 2026-08-02 evening without the
+  software disable: the CM6206 was physically removed from the host
+  (port 3-1 disconnect 21:11:09, absent from `lsusb`), the RX went
+  dark, and the acceptance run PASSED** — evidence in
+  [`aius-eac3-support.md`](aius-eac3-support.md) Phase 4. The residual
+  probe below is moot in the observed direction: the start guard
+  passed on its first dark attempt, so raw `pllLocked()` did not
+  assert without light on this boot. Original item retained for the
+  recipe provenance:
+  A replay start refuses against a live carrier by
   design (`replay_carrier_present`, guard `79a881f59` 2026-07-25), and
   the bench RX carrier is permanent. Confirmed replay-global on the
   E-AC-3 image: the AC-3 control (`channel_id_51_ac3`) refuses
@@ -343,6 +352,39 @@ specified here. Strike items here in the commit that closes them.
   convicting. No fix owed until it recurs; a recurrence wants a DWT
   timestamp + caller tag on the longest masked section.
 
+- **Periodic watchdog reset every ~31 min 45 s on the E-AC-3 phase-4
+  image (2026-08-02, open).** Since ~11:23 — right after the phase-4
+  image (`5151bb21f8be+teensy41-optical`, built 10:51) went on the
+  board — the idle bench board has reset on a 1,904±5 s cadence: 17
+  resets in the host kernel log through 21:23:29 (each one
+  re-enumerates the Teensy CDC, which is how the host sees it), with
+  `reset_source` 16 (WDOG) confirmed on the 21:23:30 boot. Two
+  irregular intervals (15:05:41→16:49:02 ≈103 min, 19:59:36→20:20:01
+  ≈20.4 min) say it is not a literal timer. Every observed boot is
+  otherwise healthy: epoch ~7,710/s, `relocks` 0, `nrst` 0,
+  recovery-safe never latched. Suggestive lead: ALL ELEVEN
+  `checkpoint_walltime_us` maxima on the current boot read
+  1,789,6xx µs — a recurring global stall of one audio-beat length
+  (1,791.7 ms nominal, the boot-lottery family's signature period)
+  landing in every loop segment, i.e. the interrupts-masked-stall
+  shape rather than one slow service — and
+  `runtime_epoch_budget_overruns` reached 33 in ~35 min, about one
+  stall per minute on a dark-carrier idle board. How a ~1.79 s stall
+  family escalates past the 8 s WDOG deadline once per ~1,904 s is
+  the open mechanism question. Load-sensitivity note: through a
+  ~12-minute live watch plus the E-AC-3 acceptance activity
+  (2-second status polling from 21:52), the next expected reset
+  (~21:55) had NOT fired by 22:04 — 40+ min into the cycle — so an
+  actively-polled board stretches or suppresses the cadence; the
+  clean 1,904 s period belongs to the untouched-idle state. Bench
+  impact: any single unattended run longer than ~30 min on this image
+  is invalid (four-hour gates included); short acceptance runs fit
+  inside a cycle. Distinct from the FIXED DPLL boot-lottery defect
+  (its gate holds — `relocks` 0 on every boot). Next: instrument the
+  stall (DWT timestamp + caller tag on the longest masked section, as
+  the boot-adjacent observation entry already proposed), and capture
+  one reset with the checked-in watcher pattern on an idle board.
+
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
   about them. (Recorded since the item 3 era.)
@@ -587,22 +629,39 @@ where the only prior record was a plan aside.
   unequal stereo frames, zero off-cadence intervals, and was bit-exact
   against the source tone across all 5.5 M frames, a check the CM could
   never pass. At 48 kHz a 15 s smoke was equally clean (bit-exact), but
-  the 125 s bracket was cut at 50.4 s when the device was unplugged
-  (21:26:04, bench rewiring in progress; Teensy USB appeared on port 3-2
-  at 21:23:30). The salvaged 48 kHz capture is bit-exact everywhere
-  except one bounded 103-frame episode at 2.27 s (one boundary frame,
-  ~100 frames held at a constant value, net 145-frame slip) exactly
-  coincident with a host docker-restart burst — an underrun/starvation
-  shape with L/R equal throughout, matching no CM6206 class (not a
-  high-byte impulse, not a word-phase slip); host-side attribution is
-  likely but unproven, so the rerun decides. Still owed before the
-  source is fully qualified: clean full 48 kHz and 32 kHz brackets on a
-  quiet bench (needs the operator to re-seat the U24 XL USB and optical
-  self-loop), then the ten-minute carrier observation — U24 XL TX into
-  the Teensy RX, since a self-loop cannot see carrier wander (capture is
-  slaved to the TX clock). Raw runs:
-  `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*` (7-day
-  GC; the numbers above are the complete record).
+  the 125 s bracket was cut at 50.4 s when the device dropped off the
+  bus at 21:26:04.
+
+  **Same night, the drop was root-caused as port-side VBUS overcurrent
+  (the first "operator unplug" reading was wrong — owner confirmed
+  nobody touched the bench).** With the device un-enumerated, the
+  kernel's `usb3-port1/over_current_count` was found ringing at 7.8
+  pulses/s — a power switch auto-retrying against a persistent
+  overcurrent — and back-extrapolation puts onset ≈21:25:30, inside the
+  49 s window between the capture's only glitch episode and the
+  disconnect. Everything else is acquitted: PCIe AER counters all zero,
+  no xhci errors, ports 3-2/3-3/3-4 untouched (port 2's OC count is 0),
+  not the CM-darkening deauthorize recipe (that leaves the sysfs node
+  present; 3-1's is gone). Transient OC pulses never reach the kernel
+  log (`dev_dbg` only), which is why the event train was invisible
+  until the counter was read. Reread in that light, the salvaged
+  capture is bit-exact everywhere except one bounded 103-frame episode
+  at 2.27 s (wall ≈21:25:15: one boundary frame, ~100 frames held at a
+  constant value, net 145-frame slip) — a brownout prodrome, not a
+  data-path fault, and matching no CM6206 class in any reading (not a
+  high-byte impulse, not a word-phase slip, L/R equal throughout).
+  **Bench discriminator owed: unplug the U24 XL from port 3-1.**
+  Pulsing stops → the short is in the device, cable or connector
+  (bracket the three before trusting the unit); pulsing continues →
+  the Renesas uPD720201 card's port-1 power path is at fault. Until
+  localized, port 3-1 is hostile and the U24 XL's health is unproven —
+  run the owed brackets on a different physical port once the
+  discriminator settles. Still owed before the source is fully
+  qualified: clean full 48 kHz and 32 kHz brackets, then the ten-minute
+  carrier observation — U24 XL TX into the Teensy RX, since a self-loop
+  cannot see carrier wander (capture is slaved to the TX clock). Raw
+  runs: `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/u24xl-loop-*`
+  (7-day GC; the numbers above are the complete record).
 - **ITCM ingress-regression mechanism unestablished.** The `30eeed071` A/B
   convicted the DSP-runtime adapter's default ITCM placement empirically, but
   no mechanism explains how 144 B of resident cold code starves the live

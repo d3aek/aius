@@ -192,13 +192,24 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    DPLL defect; boot gate `relocks` 0 throughout). The 3 s replay
    fixture (93 whole burst periods, 2,285,568 B) is generated,
    validated (`F872 4E1F 0015`, byte-count Pd, exact 12,288-word Pa
-   spacing) and uploaded to the card as `eac3_id51_3s`. **The
-   structural decode run is blocked on the bench loopback:** the glass
-   TX→RX loop presents a permanent live carrier and replay start
-   refuses against a carrier by design (409 `replay_carrier_present`;
-   confirmed replay-global with an AC-3 control and unwinnable by
-   timing across a reboot). The open-work register §Waiting on the
-   operator carries the unplug ask and the exact resume recipe.
+   spacing) and uploaded to the card as `eac3_id51_3s`. ~~The
+   structural decode run is blocked on the bench loopback~~ (the
+   blocking carrier turned out to be the CM6206 dongle, and its
+   physical removal from the host darkened the RX). **Structural
+   decode acceptance PASSED 2026-08-02 ~21:58**, `eac3_acceptance.py`
+   with the start guard passing on its first attempt: 45 s looped
+   `eac3_id51_3s` ran `codec_pc` 21, 345 `bursts_ok` across 3 loops,
+   zero decode/parse rejects, zero resyncs, `eac3_decode_cycles`
+   1,112,519 ≈ 1.85 ms per AU (23 % of the 8 ms budget),
+   `alloc_count` 0 with arena high water 177,608 of 218,688, replay
+   underruns and faults 0. Control re-measures beside it with the
+   flash-cached tables: AC-3 `codec_pc` 1, 735 bursts, 1,357,974
+   cycles; DTS `codec_pc` 11, 2,492 bursts, 936,466 cycles — both
+   zero-reject, within budget. Long-run caveat: the periodic
+   ~31 min 45 s watchdog reset registered the same night
+   ([`aius-open-work-register.md`](aius-open-work-register.md) §Open
+   defects — runtime) does not touch this 2-minute evidence but
+   blocks the Phase 5 four-hour gates until fixed.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until

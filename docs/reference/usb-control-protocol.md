@@ -203,8 +203,11 @@ device.
 
 ```text
 $ AIUS AUTH 3
-AIUS/1 OK 3 AUTH 6b3ff32e4c2505cc
+AIUS/1 OK 3 AUTH 0123456789abcdef
 ```
+
+(Illustrative value — the doc previously quoted a real board's token here;
+that value is burned and remains in git history.)
 
 Sixteen lowercase hexadecimal characters. Supply it to `PUT` and `DELETE` on
 `/sd/…` as the `X-Aius-SD-Auth` header, or to
