@@ -601,6 +601,17 @@ specified here. Strike items here in the commit that closes them.
     Natural EOF of the same complete 2,813-burst source is clean.
     Capture the exact transition AU, add target decode/sink substep
     timing, then drop partial compressed work on source discontinuity.
+    **Family observation 2026-08-03 (single-context image, AC-3):** an
+    ABORTED encoded latency row (its IEC stream garbled by a −20 dB
+    source-mixer fault) left the board in a PERSISTENT TX stop/stall
+    churn — `transmit_stops`/`transmit_stalls` in lockstep at ~33/s,
+    still climbing two minutes later at idle with `last_status` 3
+    latched — until one authenticated `POST /api/clear`, after which
+    output ran at nominal immediately. Whether the clear or elapsed
+    time cured it is unresolved; a clean-start run of the same row
+    ran and ended with zero stop/stall deltas, so the churn needs a
+    dirty transition precondition. Fold into 35's transition-AU
+    capture when that work runs.
   - **27**: the silence self-loop (locked carrier, validity-muted PCM
     in, silent out, TX gate held open) floods `overruns` at ~1 kHz
     sustained; found on the first-ever external-carrier input

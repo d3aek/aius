@@ -34,6 +34,13 @@ amixer -c 0 cset numid=8 1        # PCM Capture Source = IEC958 In
 amixer -c 0 cset numid=5 110,110  # PCM Playback Volume = 0 dB
 ```
 
+**Re-verify both before EVERY measurement session.** The U24XL resets its
+mixer to defaults (volume 70 = −20 dB) on any USB re-enumeration, including
+a momentary cable blink. A −20 dB digital output passes every
+amplitude-normalized PCM gate while silently destroying IEC 61937 sync
+arithmetic — the failure looks like a codec/classification fault, not a
+level fault (2026-08-03 session record in `aius-e2e-latency.md`).
+
 Run the bracket (~130 s) and the refine:
 
 ```bash

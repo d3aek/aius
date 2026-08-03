@@ -897,6 +897,39 @@ at nominal 93.8 blocks/s against the 89.6 the beats used to leave.
 These rows' measurements are therefore the first taken on an image
 whose epoch loop is stall-free.
 
+Rows re-measured 2026-08-03 on that pin through the qualified U24 XL
+(raw evidence `.scratch/f100000d-6907-42c1-8ece-ea0c38d7a786/row-*`,
+7-day GC; figures inlined as the durable record):
+
+- `pcm-production`: 24/24 accepted, raw first output EXACTLY 999
+  frames / 20.8125 ms on every probe (min = median = p95 = max),
+  affine ratio 1.0 to machine precision, residual 3e-11 frames,
+  channel skew 0 everywhere.
+- `pcm-bypass`: 24/24, exactly 2,193 frames / 45.6875 ms, restoration
+  PUT verified against the retained card model.
+- `ac3-production`: 24/24, raw 987 frames / 20.5625 ms, access-unit
+  tail 2,522 frames / 52.54 ms, residual 7e-11.
+- `dts-production` stays deferred by priority; the direct-loop rows
+  still await the self-loop rewire.
+
+The per-row ZERO jitter is new evidence: the CM-era 851–971-frame
+production envelope was source wander, not device behaviour. The
+cross-row spread (999 vs 2,193 vs 987) is transmit-ring/queue phase
+established per carrier acquisition, so the DSP incremental cost still
+needs the direct-loop baselines and queue-phase correction — the
+standing conclusion, now with clean inputs.
+
+Session cautions, recorded for the next collection: the U24 XL resets
+its MIXER on any USB re-enumeration — a momentary 22:44 blink reset
+playback volume to −20 dB, which passes every amplitude-normalized PCM
+gate while destroying IEC sync arithmetic (the first AC-3 attempt
+failed classification exactly so); verify `amixer` unity before every
+session. And an aborted encoded row's garbled tail left the board in a
+persistent TX stop/stall churn (~33/s at idle, still climbing two
+minutes later) until one authenticated `POST /api/clear`; from a clean
+start the same row ran and ended clean. Registered under the defect-35
+family in the open-work register.
+
 The three direct-loop calibrations share one temporary fibre rewire and run as
 one uninterrupted topology slice. The four Teensy rows use the normal full loop.
 Each physical topology is confirmed before collection and left unchanged until
