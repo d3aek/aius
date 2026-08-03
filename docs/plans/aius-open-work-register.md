@@ -492,6 +492,33 @@ specified here. Strike items here in the commit that closes them.
   validity is re-bounded at ~100 minutes, not 30; the four-hour
   gates stay BLOCKED.
 
+  **Two further corrections, 2026-08-03 afternoon (Phase 3 R4 data
+  plus the bracket record):**
+
+  - **DHCP is ACQUITTED entirely.** The served schedule (net_diag,
+    Phase 3 R4) reads lease 78,239 s, T1 39,119 s, T2 68,460 s —
+    HOURS, not minutes. The "T1-anchored" reconstruction
+    (1,895 s ≈ lease/2) was a coincidence fit; no renewal has ever
+    been due on any observed boot, which is also why `dhcp_updates`
+    never ticked and `dhcp_state` never left BOUND. Both death
+    anchors (~1,905 s and ~6,176 s) belong to an UNNAMED periodic
+    process; candidate hypothesis space for the next session: FNET
+    periodic services (ARP aging, TCP timers, IGMP), HTTP-layer
+    session state (both retained stamps sit in the HTTP job with
+    poll depth 0), or a firmware-side timer wrap. The probe and the
+    retained stamps accumulate evidence per death from here.
+  - **"The beat-stall family is gone" was overclaimed.** It held on
+    the `45153bb5ad43` boot lineage (zero-delta brackets, 3 ticks in
+    a 97-minute campaign) but the Phase 3 image's boots re-rolled
+    the odds: five brackets across two boots read
+    clean / 1-stall / 3-stall / 1-stall / clean, every event ~1.79 s
+    with matching committed-block deficits. The single-context
+    change REDUCED the family's rate roughly 40× at best, and the
+    rate is boot/layout-sensitive exactly as this entry originally
+    documented. The mechanism hunt (an audio-beat-length global
+    stall) remains open and is plausibly the same process behind the
+    surviving death modes.
+
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
   about them. (Recorded since the item 3 era.)

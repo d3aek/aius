@@ -1029,6 +1029,33 @@ Acceptance rides Phase 2's standards: self-validating rows, the
 ingress-health bracket pair, and raw evidence retained with figures
 inlined at the commit that ships each requirement.
 
+**Delivered 2026-08-03 (R1–R4 shipped; results and honest lever
+accounting):**
+
+- R2 PASSED decisively: three fresh sessions at target 256 read
+  940/944/947 frames raw (7-frame cross-session spread against the
+  pre-trim 1,194), each internally zero-jitter, 24/24; the ring-128
+  image then read 926. The queue-phase correction is retired.
+- R1 shipped and verified (boot trim 384→128 exact, zero row
+  underruns at target 128) — with a measured correction to its
+  design theory: the gate-open trim caps the SESSION-START level, but
+  steady occupancy re-forms through each row's own dark transitions,
+  so the target knob moved the mean only ~15 frames (256→128). The
+  trim's real deliverable is TAIL ELIMINATION: the 1,792-frame
+  excursions are impossible by construction. The dominant remaining
+  occupancy-setter is the post-transition refill equilibrium.
+- R4 shipped and immediately load-bearing: the served schedule reads
+  lease 78,239 s, T1 39,119 s, T2 68,460 s — HOURS, not minutes —
+  overturning the DHCP-anchor death theory outright (register entry
+  corrected).
+- Standing numbers: total loop 926 frames / 19.29 ms; board share
+  926 − 90 = 836 frames / 17.4 ms. The owner's ≤16 ms target (768
+  frames board) is 68 frames away. The one identified lever that
+  closes it is the limiter's 96-frame lookahead (−2 ms → ~15.4 ms), a
+  QUALITY TRADE that is the owner's call; beyond it, ingress chunking
+  and block-pipeline depth are design work with no committed
+  contract.
+
 ## Outstanding-work audit
 
 - `docs/plans/aius-ac3-support.md` — `extend`: Add physical first-output and AU-tail latency to the completed decoder evidence while its deferred four-hour gate remains pending OTA work.
