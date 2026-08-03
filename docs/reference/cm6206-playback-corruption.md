@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, cm6206, spdif, usb-audio, evidence]
-updated: 2026-07-30
+updated: 2026-08-03
 toc: true
 ---
 
@@ -200,6 +200,17 @@ marginal. A clean 125 s run only bounds the rate, so the stereo-identity
 fraction (sensitive at ~10⁵ events per run) is the stronger of the two
 checks. Either way the measurement-path posture stands: waveform-critical
 gates use a source the discriminator has shown clean.
+
+**Status 2026-08-03: the deferred discriminators (second unit, direct
+non-Icron host) were closed as overtaken by owner decision** — the CM6206
+was physically retired from the measurement path on 2026-08-02 and the
+qualified clean source is the ESI U24 XL (bit-exact optical self-loop at
+44.1/48 kHz via the committed
+[`source_qualification`](../../firmware/tools/source_qualification/README.md)
+bracket, single-value carrier over ten minutes). The single-unit-versus-
+systemic question is therefore permanently unresolved and this document is
+the durable fingerprint record: apply §Quarantine fingerprint to any future
+CM-sourced capture before trusting it.
 
 ## Quarantine fingerprint for device gates
 

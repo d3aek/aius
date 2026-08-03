@@ -640,12 +640,21 @@ e2e-latency delivery. Authoritative homes are the two plans and the CM6206
 characterization; gists plus links where a home exists, full specification
 where the only prior record was a plan aside.
 
-- **CM6206 playback corruption** — characterized parallel-datapath high-byte
-  corruption in the adapter playback path, leaning systemic. Deferred
-  discriminators: the direct non-Icron host test and the second-unit bracket.
-  Waveform-critical gates (sample-rate gate 7, encoded AC-3) require a source
-  the discriminator has shown clean. Authority:
-  [CM6206 characterization](../reference/cm6206-playback-corruption.md).
+- ~~**CM6206 playback corruption** — characterized parallel-datapath
+  high-byte corruption in the adapter playback path, leaning systemic.
+  Deferred discriminators: the direct non-Icron host test and the
+  second-unit bracket.~~ **CLOSED AS OVERTAKEN 2026-08-03 (owner
+  decision).** The discriminators existed to decide whether the CM6206
+  could be trusted as a measurement source; the CM was physically
+  retired from the bench on 2026-08-02 and the qualified clean source
+  is now the U24 XL (bit-exact self-loop at 44.1/48 kHz, single-value
+  carrier over ten minutes), so they no longer gate anything. The
+  requirement itself — waveform-critical gates use a source the
+  discriminator has shown clean — is satisfied by the U24 XL
+  qualification. The
+  [CM6206 characterization](../reference/cm6206-playback-corruption.md)
+  stays current as the fingerprint record for any future CM-sourced
+  capture.
 - ~~**Flight-recorder download header pins 48 kHz.**~~ **FIXED 2026-07-31**
   (`fecc4a0a2473`): the producer tap stamps each committed block's rate into
   the recorder, the header serves the stamped rate plus a `rate_changes`
@@ -677,11 +686,15 @@ where the only prior record was a plan aside.
   Device-verified (200 with the 676-byte card model, siblings still 404),
   and consumed the same day as the latency bypass row's restoration
   artifact.
-- **Three ±29.6k capture impulses match no fingerprint.** The 44.1 kHz PCM
-  external observation contained six impulses; three fit the characterized
-  CM6206 high-byte fingerprint, three near ±29.6k do not and cannot be
-  waived. Raw-input-plane correlation or recurrence data is needed before
-  any gate consumes that window.
+- ~~**Three ±29.6k capture impulses match no fingerprint.** The 44.1 kHz
+  PCM external observation contained six impulses; three fit the
+  characterized CM6206 high-byte fingerprint, three near ±29.6k do not
+  and cannot be waived.~~ **CLOSED AS OVERTAKEN 2026-08-03 (owner
+  decision).** The observation window belongs to a CM6206-sourced
+  44.1 kHz capture; the CM is retired and every waveform gate reruns on
+  the qualified U24 XL, so no gate will ever consume that window. If a
+  ±29.6k-class impulse appears in a U24 XL-sourced capture it is a NEW
+  observation against the new source, not a revival of this one.
 - **48 kHz gate 1 is unpassable under active CM playback; source
   QUALIFIED 2026-08-02 (U24 XL, resolution at the end of this entry).**
   The gate's trim-cadence bound (at most two post-settle trims) assumed a
