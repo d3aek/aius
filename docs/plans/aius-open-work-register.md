@@ -647,6 +647,34 @@ specified here. Strike items here in the commit that closes them.
     persist → the timing-out accesses are within fitted space and
     STS1 names the master, pointing at pad-2 marginality or a
     fitted-space wild agent.
+  - **~20:35 — BISECT VERDICT: the unfitted tail convicts,
+    strong-but-provisional.** Three consecutive ~58-minute windows
+    on the tightened-window image (boots re-rolled deliberately
+    between them) ran ZERO runtime stalls — against the wide-window
+    image's recent 2-in-4 prone rate, including a boot with 3 family
+    events inside 150 s. Honest statistics: p(three clean windows by
+    lottery alone) ≈ (1/2)^3 ≈ 12 %, so this is a strong-but-
+    provisional conviction pending a long soak, not proof. Reading:
+    the 1.79 s stalls were FlexSPI2 transactions into the UNFITTED
+    16–32 MiB tail of the core's 32 MiB MPU window — issued not by
+    the victim code the PCs sampled but by cache/AXI traffic
+    carrying wild addresses that per-boot garbage steers into or
+    away from that tail (the lottery) — and by the established
+    mechanism chain (per-exposure hazard, checkpoint-5 stamps under
+    load, no clock, no counter) the stochastic WDOG deaths are the
+    same walks outlasting the 8 s deadline. `stall_mpu_tighten()`
+    graduates from experiment to STANDING FIX with tripwire
+    semantics: the tail is background-NOACCESS, so any recurrence is
+    a named MemManage fault, and the witness + STS1 stay aboard to
+    catch a within-fitted residue if one exists. Residuals: (1) the
+    wild-address SOURCE is unnamed — the tripwire converts its next
+    firing into an attributable fault, so it names itself; (2) the
+    recorder-ring straddle onto pad-2 (0x70800000..0x70808000)
+    stands as a separate recorded risk for recording workloads —
+    clamp candidate ready if recording-load stalls ever surface;
+    (3) the four-hour gates stay blocked until one long soak on this
+    image passes (the current watch runs as that soak), then
+    unblocking is proposed to the owner.
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:
