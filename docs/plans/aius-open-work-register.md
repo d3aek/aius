@@ -432,17 +432,17 @@ specified here. Strike items here in the commit that closes them.
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
   about them. (Recorded since the item 3 era.)
-- **`AIUS ID` worst-case length "proof" is stale (2026-08-03).** The
-  `AIUS_ID_MAX_PAYLOAD` static_assert sum predates the `cw=` field and
-  the checkpoint domain's growth to 0..10, so the true worst case now
-  exceeds the 256 B dispatcher bound — a pathological counter
-  combination would fail-closed every ID answer as INTERNAL (never
-  corrupt, but dark). Found while adding the poll probe, whose `pp=`
-  field was routed to `/api/status` instead for exactly this reason.
-  Re-budget the sum (display-saturate the u32 counters or consciously
-  raise the bound) and refresh
-  [`usb-control-protocol.md`](../reference/usb-control-protocol.md)'s
-  checkpoint table (its 0..9 list predates AUDIO=9/EPOCH_COMPLETE=10).
+- ~~**`AIUS ID` worst-case length "proof" is stale (2026-08-03).**~~
+  **CLOSED same day**: the `AIUS_ID_MAX_PAYLOAD` sum now carries every
+  field including `cw=` and the 2-digit checkpoint domain, funded by
+  display-saturating `ngen`/`bgen`/`rsrc`/`nrst` at 99,999 and `cw`'s
+  microseconds at 9,999,999 (this line only; `GET /api/status` stays
+  full-width — nothing diagnostic lives above the caps, and a stall at
+  or past the 8 s WDOG deadline is a named death, not a measurement).
+  Worst case now sums to 251 of 256. The doc's checkpoint table,
+  `pv`/`fa` domains and the previously undocumented `cw` field were
+  refreshed alongside
+  ([`usb-control-protocol.md`](../reference/usb-control-protocol.md)).
 - ~~**Swagger `Status` schema incompleteness.**~~ **CLOSED 2026-07-31**:
   every served field of the status, recorder and DSP-config documents is
   now documented (~145 fields across six new sub-schemas incl. `sd_diag`,

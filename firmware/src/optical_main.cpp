@@ -4605,12 +4605,28 @@ static FLASHMEM void app_request_reboot(void *)
 /* Worst-case length of the ID payload below, summed field by field so the
  * static_assert that follows is a proof rather than an estimate. The build
  * stamps are compile-time literals, so their contribution is exact; the counters
- * are bounded by their C type; and the four small values are bounded by the
- * domains the portable status encoder validates (AiusNetState 0..5, AiusNetFault
- * 0..10, checkpoint 0..10, and two booleans). snprintf's capacity check below is
- * still the runtime backstop: an impossible value truncates, the arm returns 0,
- * and the dispatcher answers INTERNAL rather than emitting a corrupt line. */
+ * are bounded by their C type or by the display saturation the serializer
+ * applies; and the small values are bounded by the domains the portable status
+ * encoder validates (AiusNetState 0..5, AiusNetFault 0..10, checkpoint 0..10,
+ * and two booleans). snprintf's capacity check below is still the runtime
+ * backstop: an impossible value truncates, the arm returns 0, and the
+ * dispatcher answers INTERNAL rather than emitting a corrupt line.
+ *
+ * HISTORY (registered debt, closed 2026-08-03): this sum once claimed proof
+ * while omitting the cw= field entirely and pricing ckpt at one digit after
+ * the domain grew to 10 -- the sum totalled exactly 256 and the true worst
+ * case overflowed the bound into fail-closed INTERNAL answers. Four counters
+ * whose full 10-digit type range carries no diagnostic meaning are now
+ * DISPLAY-SATURATED by the serializer (values on GET /api/status stay
+ * full-width): ngen/bgen/rsrc/nrst cap at 99999, and cw's microseconds cap
+ * at 9999999 -- anything at or past the 8 s watchdog deadline is already a
+ * named death, not a measurement. loop_epoch keeps its full width: probe
+ * arithmetic divides real epoch counts. */
 static constexpr size_t AIUS_ID_U32_DIGITS = 10u;   /* 4294967295 */
+static constexpr size_t AIUS_ID_SAT_DIGITS = 5u;    /* 99999 display cap */
+static constexpr uint32_t AIUS_ID_SAT_LIMIT = 99999u;
+static constexpr size_t AIUS_ID_CW_US_DIGITS = 7u;  /* 9999999 display cap */
+static constexpr uint32_t AIUS_ID_CW_US_LIMIT = 9999999u;
 static constexpr size_t AIUS_ID_MAX_PAYLOAD =
 	(sizeof("protocol=1 revision=") - 1u) + (sizeof(AIUS_BUILD_GIT_REV) - 1u) +
 	(sizeof(" build=") - 1u) + (sizeof(AIUS_BUILD_UTC) - 1u) +
@@ -4619,19 +4635,25 @@ static constexpr size_t AIUS_ID_MAX_PAYLOAD =
 	(sizeof(" rsafe=") - 1u) + 1u +
 	(sizeof(" nstate=") - 1u) + 1u +
 	(sizeof(" nfault=") - 1u) + 2u +
-	(sizeof(" ckpt=") - 1u) + 1u +
+	(sizeof(" ckpt=") - 1u) + 2u +
 	(sizeof(" early=") - 1u) + 3u +
-	(sizeof(" ngen=") - 1u) + AIUS_ID_U32_DIGITS +
-	(sizeof(" bgen=") - 1u) + AIUS_ID_U32_DIGITS +
-	(sizeof(" rsrc=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" ngen=") - 1u) + AIUS_ID_SAT_DIGITS +
+	(sizeof(" bgen=") - 1u) + AIUS_ID_SAT_DIGITS +
+	(sizeof(" rsrc=") - 1u) + AIUS_ID_SAT_DIGITS +
 	(sizeof(" epoch=") - 1u) + AIUS_ID_U32_DIGITS +
-	(sizeof(" nrst=") - 1u) + AIUS_ID_U32_DIGITS +
+	(sizeof(" nrst=") - 1u) + AIUS_ID_SAT_DIGITS +
 	(sizeof(" ps=") - 1u) + 3u +
 	(sizeof(" pv=") - 1u) + 5u +
-	(sizeof(" fa=") - 1u) + 3u;
+	(sizeof(" fa=") - 1u) + 3u +
+	(sizeof(" cw=") - 1u) + 2u + 1u + AIUS_ID_CW_US_DIGITS;
 static_assert(AIUS_ID_MAX_PAYLOAD <= AIUS_OPTICAL_APP_USB_PAYLOAD_MAX,
 	"the ID payload must fit the dispatcher's bound, or every ID answer is "
 	"a truncation-driven INTERNAL error");
+
+static FLASHMEM uint32_t id_display_saturate(uint32_t value, uint32_t limit)
+{
+	return value > limit ? limit : value;
+}
 
 /* The legacy USB service's ID and AUTH arms. The dispatcher answers PROTOCOL
  * and BOOTLOADER itself and asks for no payload, so any other kind is a
@@ -4707,15 +4729,21 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 		(unsigned)recovery.network_last_fault,
 		(unsigned)recovery.last_checkpoint,
 		(unsigned)recovery.watchdog_early_resets,
-		(unsigned long)recovery.network_generation,
-		(unsigned long)recovery.boot_generation,
-		(unsigned long)recovery.reset_source,
+		(unsigned long)id_display_saturate(
+			recovery.network_generation, AIUS_ID_SAT_LIMIT),
+		(unsigned long)id_display_saturate(
+			recovery.boot_generation, AIUS_ID_SAT_LIMIT),
+		(unsigned long)id_display_saturate(
+			recovery.reset_source, AIUS_ID_SAT_LIMIT),
 		(unsigned long)recovery.loop_epoch,
-		(unsigned long)recovery.network_restarts,
+		(unsigned long)id_display_saturate(
+			recovery.network_restarts, AIUS_ID_SAT_LIMIT),
 		(unsigned)external_psram_size,
 		(unsigned)g_prev_boot_checkpoint,
 		(unsigned)g_prev_first_abort,
-		(unsigned)worst_id, (unsigned long)worst_us);
+		(unsigned)worst_id,
+		(unsigned long)id_display_saturate(
+			worst_us, AIUS_ID_CW_US_LIMIT));
 	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
 }
 

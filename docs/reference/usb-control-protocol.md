@@ -93,13 +93,19 @@ abbreviated only because the line has a byte bound; nothing longer fits.
 | `rsafe` | `recovery_safe` | `0` or `1` |
 | `nstate` | `network_state` | `0`–`5`, network state below |
 | `nfault` | `network_last_fault` | `0`–`10`, fault below |
-| `ckpt` | `last_checkpoint` | `0`–`9`, checkpoint below |
+| `ckpt` | `last_checkpoint` | `0`–`10`, checkpoint below |
 | `early` | `watchdog_early_resets` | `0`–`255`, saturating |
-| `ngen` | `network_generation` | unsigned 32-bit decimal |
-| `bgen` | `boot_generation` | unsigned 32-bit, saturating |
-| `rsrc` | `reset_source` | unsigned 32-bit, raw `SRC_SRSR` |
+| `ngen` | `network_generation` | display-saturates at `99999` |
+| `bgen` | `boot_generation` | display-saturates at `99999` |
+| `rsrc` | `reset_source` | raw `SRC_SRSR`, display-saturates at `99999` |
 | `epoch` | `loop_epoch` | unsigned 32-bit, completed epochs |
-| `nrst` | `network_restarts` | unsigned 32-bit, saturating |
+| `nrst` | `network_restarts` | display-saturates at `99999` |
+
+Four counters display-saturate on this line only — `GET /api/status` serves
+their full 32-bit values. The saturation is what keeps the worst-case payload
+sum (`AIUS_ID_MAX_PAYLOAD`, a compile-time proof against the 256-byte bound)
+true after the `cw=` field joined the line; nothing diagnostic lives above
+`99999` in any of the four.
 
 `rsafe` is the recovery-safe flag: `1` means the runtime selected recovery-safe
 mode, so Ethernet and SD mutation stay disabled and the only exit is a verified
@@ -127,8 +133,9 @@ lost, `3` stack start, `4` DHCP start, `5` listener, `6` UDP, `7` socket,
 [`aius_boot.h`](../../firmware/lib/aius_boot/include/aius_boot.h): `0` reset
 capture, `1` USB RX,
 `2` USB TX, `3` metrics, `4` network, `5` HTTP, `6` UDP, `7` replay, `8` SD,
-`9` epoch complete. Only `9` marks a completed epoch; any other value on a
-watchdog reset is an early reset.
+`9` audio, `10` epoch complete. Only `10` marks a completed epoch; any other
+value on a watchdog reset is an early reset. (An earlier revision of this
+table predated the audio checkpoint and listed `9` as epoch complete.)
 
 ### Boot forensics fields
 
@@ -142,15 +149,22 @@ question is what the PREVIOUS boot did.
   first chip did not answer its ID read; the probe never reaches the second
   pad when the first is silent.
 - **`pv`** — the previous boot's final persisted checkpoint, read from the
-  retained ledger before `aius_boot_init()` folds it away. Same `0`–`9` domain
+  retained ledger before `aius_boot_init()` folds it away. Same `0`–`10` domain
   as `ckpt`; `65535` when the retained ledger was invalid (first boot after
   power loss, layout change, or corruption).
 - **`fa`** — the previous boot's FIRST aborting checkpoint (defect 25's
   instrument): the checkpoint persisted before the first service that returned
   `false`, latched one-shot in retained RAM. `pv` names wherever the final
   epoch had walked to when the watchdog fired; `fa` names the service whose
-  refusal started the starvation. `0`–`9` a checkpoint, `253` out-of-domain
+  refusal started the starvation. `0`–`10` a checkpoint, `253` out-of-domain
   capture, `254` no abort, `255` the latch was invalid at boot.
+
+`cw` is live, not boot-captured: `<id>:<µs>`, the checkpoint whose wall-time
+maximum is this boot's worst, and that maximum in microseconds
+(display-saturating at `9999999` — anything at or past the 8 s watchdog
+deadline is a named death, not a measurement; the full 11-element vector is
+`checkpoint_walltime_us` on `GET /api/status`). Added with the boot-lottery
+detector so a crawling board can still name its stall over CDC.
 
 When the network is up, `GET /api/status` additionally serves `psram_mb`
 (same value as `ps`) and `psram_pad2_mb` — the best-known PSRAM on the second
