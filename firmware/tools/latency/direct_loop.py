@@ -160,8 +160,10 @@ def transport_summary(latencies: np.ndarray) -> dict:
 
 
 def analyze_iec(playback: np.ndarray, capture: np.ndarray) -> dict:
-    if np.any((capture == -32768) | (capture == 32767)):
-        raise RuntimeError("capture contains clipped S16 samples")
+    # No clipping guard here, deliberately: IEC payload words are bitstream
+    # data and legitimately take every 16-bit value, 0x8000 and 0x7FFF
+    # included. Integrity is the per-burst payload hash match, which is
+    # strictly stronger than any amplitude test.
     played = parse_iec_bursts(playback)
     received = parse_iec_bursts(capture)
     pairs = match_bursts(played, received)

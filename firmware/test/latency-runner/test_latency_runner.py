@@ -3007,6 +3007,11 @@ def synthetic_iec_stream(
         payload = rng.integers(
             0, 0x10000, size=payload_words, dtype=np.uint32
         ).astype("<u2")
+        # IEC payloads are bitstream: force both S16 rails into every
+        # burst so an amplitude guard sneaking into the IEC path fails
+        # these tests (it shipped once).
+        payload[0] = 0x8000
+        payload[1] = 0x7FFF
         header = np.array(
             [DIRECT.IEC_PA, DIRECT.IEC_PB, 21, payload_words * 16],
             dtype="<u2",

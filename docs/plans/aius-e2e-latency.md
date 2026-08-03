@@ -816,9 +816,9 @@ blockers:
     bootstrap CI; no Teensy dependency, so these rows are also
     independent of the periodic-WDOG defect
 matrix:
-  direct-loop-pcm: pending-temporary-rewire
-  direct-loop-dts-carrier: pending-temporary-rewire
-  direct-loop-ac3-carrier: pending-temporary-rewire
+  direct-loop-pcm: complete
+  direct-loop-dts-carrier: complete
+  direct-loop-ac3-carrier: complete
   pcm-bypass: complete
   pcm-production: complete
   dts-production: deferred-by-priority
@@ -918,6 +918,23 @@ cross-row spread (999 vs 2,193 vs 987) is transmit-ring/queue phase
 established per carrier acquisition, so the DSP incremental cost still
 needs the direct-loop baselines and queue-phase correction — the
 standing conclusion, now with clean inputs.
+
+The three direct-loop calibrations ran 2026-08-03 in one self-loop
+sitting (`tools/latency/direct_loop.py`, linked-start collection): PCM,
+AC-3 carrier and DTS carrier all measured EXACTLY 90 frames / 1.875 ms
+transport — min = median = p95 = max, bootstrap CI [90, 90] — with every
+IEC burst tuple (Pa, Pc, payload_bits, payload_hash) matched bit-exact
+(the analyzer's clipping guard was removed from the IEC path during the
+sitting: payload words legitimately take both S16 rails, and the hash
+match is the stronger integrity check — the host suite now pins that).
+Decomposition at the observed phases: full-loop `pcm-production` 999
+− adapter 90 = **BOARD SHARE 909 frames / 18.94 ms** (TX ring at 128
+during that row); `ac3-production` 987 − 90 = 897 frames / 18.7 ms.
+With the ring's 128 frames removed, the non-ring board path is ~781
+frames / 16.3 ms — the levers toward a ≤16 ms target are, in order:
+TX-ring gate-open normalization (also fixes the 128–1,792 per-session
+phase lottery), the limiter's 96-frame lookahead (2 ms, a quality
+trade), and block-pipeline depth (design work).
 
 Session cautions, recorded for the next collection: the U24 XL resets
 its MIXER on any USB re-enumeration — a momentary 22:44 blink reset
