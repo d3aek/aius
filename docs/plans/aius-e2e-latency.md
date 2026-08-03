@@ -885,6 +885,18 @@ defect-35/34 pipeline batch) under the same ingress-health standard: a
 counter delta zero on one boot generation, after the truncation-composite
 and type-21 device verifications recorded in the hardening ledger.
 
+The pin advanced to `45153bb5ad43` on 2026-08-03 — the single-context
+FNET fix image (open-work register, periodic-WDOG entry) — under the
+same standard: two independent 120-second brackets through the U24 XL
+carrier, every harmful counter delta zero on one boot generation,
+bounded rings. Notable in both brackets:
+`audio_diag.runtime_epoch_budget_overruns` moved ZERO times — the
+~1.79 s beat-stall family that ticked ~1.2/min on every predecessor
+image is absent under single-context polling, and committed output runs
+at nominal 93.8 blocks/s against the 89.6 the beats used to leave.
+These rows' measurements are therefore the first taken on an image
+whose epoch loop is stall-free.
+
 The three direct-loop calibrations share one temporary fibre rewire and run as
 one uninterrupted topology slice. The four Teensy rows use the normal full loop.
 Each physical topology is confirmed before collection and left unchanged until
