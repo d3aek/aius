@@ -52,6 +52,10 @@ the target adapter:
   the symptom is a retried accept rather than a lost connection. This is the one
   patch here that fixes an upstream defect rather than adapting upstream behaviour
   to the Aius lifecycle; it is confined to one initialiser.
+- `Ethernet.dhcpOptions()` exposes the FNET client's lease/T1/T2 option
+  values (host byte order, seconds) for the aius periodic-WDOG
+  investigation: the death schedule must be read from the client's own
+  state, not reconstructed from observed cadence.
 - every path into `fnet_poll()` routes through `EthernetClass::pollProbed()`
   (`src/NativeEthernet.cpp`, `src/NativeEthernetServer.cpp`), which maintains
   the retained `AiusPollProbe` (header in the firmware's

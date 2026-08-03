@@ -53,6 +53,13 @@ struct AiusNetworkTeensyDiagPrimitives {
 	uint8_t (*dhcp_state)(void);
 	bool (*frames)(uint32_t *tx, uint32_t *rx);
 	uint32_t (*uptime_ms)(void);
+	/* Optional (nullptr = unavailable): the FNET client's actual
+	 * lease/T1/T2 option values, host byte order, seconds. Load-bearing
+	 * for the reopened periodic-WDOG second death mode (open-work
+	 * register): the death schedule must be read from the client, not
+	 * reconstructed from cadence. */
+	bool (*dhcp_options)(uint32_t *lease_s, uint32_t *t1_s,
+	                     uint32_t *t2_s);
 };
 #endif
 
@@ -784,12 +791,19 @@ const AiusNetworkTeensyPrimitives kProductionPrimitives = {
 #endif
 };
 
+FLASHMEM bool dhcp_options(uint32_t *lease_s, uint32_t *t1_s,
+                           uint32_t *t2_s)
+{
+	return Ethernet.dhcpOptions(lease_s, t1_s, t2_s);
+}
+
 const AiusNetworkTeensyDiagPrimitives kProductionDiagPrimitives = {
 	netif_initialized,
 	link_live,
 	dhcp_state,
 	frames,
 	uptime_ms,
+	dhcp_options,
 };
 
 const AiusNetworkTeensyPrimitives *g_primitives = &kProductionPrimitives;
@@ -829,6 +843,14 @@ bool primitives_ready()
 FLASHMEM uint32_t diag_uptime_ms()
 {
 	return g_diag_primitives != nullptr ? g_diag_primitives->uptime_ms() : 0u;
+}
+
+FLASHMEM bool diag_dhcp_options(uint32_t *lease_s, uint32_t *t1_s,
+                                uint32_t *t2_s)
+{
+	return g_diag_primitives != nullptr &&
+	       g_diag_primitives->dhcp_options != nullptr &&
+	       g_diag_primitives->dhcp_options(lease_s, t1_s, t2_s);
 }
 
 FLASHMEM uint8_t diag_dhcp_state()
@@ -1620,6 +1642,23 @@ FLASHMEM uint8_t aius_network_teensy_dhcp_state(
 		return AIUS_NETWORK_TEENSY_DHCP_STATE_NONE;
 	}
 	return diag_dhcp_state();
+}
+
+FLASHMEM bool aius_network_teensy_dhcp_options(
+	const AiusNetworkTeensy *adapter, uint32_t *lease_s, uint32_t *t1_s,
+	uint32_t *t2_s)
+{
+	if (lease_s == nullptr || t1_s == nullptr || t2_s == nullptr) {
+		return false;
+	}
+	*lease_s = 0u;
+	*t1_s = 0u;
+	*t2_s = 0u;
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return false;
+	}
+	return diag_dhcp_options(lease_s, t1_s, t2_s);
 }
 
 FLASHMEM bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter,

@@ -250,12 +250,28 @@ const AiusNetworkTeensyPrimitives kPrimitives = {
 	stack_poll,
 };
 
+uint32_t g_diag_lease_s = 3600u;
+uint32_t g_diag_t1_s = 1800u;
+uint32_t g_diag_t2_s = 3150u;
+bool g_diag_options_available = true;
+
+bool diag_dhcp_options(uint32_t *lease_s, uint32_t *t1_s, uint32_t *t2_s)
+{
+	if (!g_diag_options_available)
+		return false;
+	*lease_s = g_diag_lease_s;
+	*t1_s = g_diag_t1_s;
+	*t2_s = g_diag_t2_s;
+	return true;
+}
+
 const AiusNetworkTeensyDiagPrimitives kDiagPrimitives = {
 	diag_netif_initialized,
 	diag_link_live,
 	diag_dhcp_state,
 	diag_frames,
 	diag_uptime_ms,
+	diag_dhcp_options,
 };
 
 AiusNetAction action(AiusNetActionKind kind, uint32_t generation = 7u)
@@ -1419,6 +1435,18 @@ void test_generation_diagnostics()
 	assert(aius_network_teensy_dhcp_state(&adapter) == 5u);
 	assert(aius_network_teensy_frames(&adapter, &tx, &rx));
 	assert(tx == 104u && rx == 207u);
+	/* The DHCP schedule reads through the optional diag primitive, and an
+	 * unavailable primitive answers false with zeroed outputs. */
+	uint32_t lease_s = 1u, t1_s = 1u, t2_s = 1u;
+	assert(aius_network_teensy_dhcp_options(&adapter, &lease_s, &t1_s,
+	                                        &t2_s));
+	assert(lease_s == 3600u && t1_s == 1800u && t2_s == 3150u);
+	g_diag_options_available = false;
+	lease_s = 1u;
+	assert(!aius_network_teensy_dhcp_options(&adapter, &lease_s, &t1_s,
+	                                         &t2_s));
+	assert(lease_s == 0u);
+	g_diag_options_available = true;
 
 	/* A link-lost callback counts as a link callback of the other polarity
 	 * and leaves the first connected timestamp alone. */

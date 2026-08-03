@@ -1727,9 +1727,37 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  * it. Routine evaluation lives in tx_gate_service() at checkpoint 7; an AUDIO
  * block whose rate contract fails closes it immediately before returning. */
 
+/* e2e-latency Phase 3 R1: the transmit-ring occupancy latched at gate-open
+ * WAS the dominant and least deterministic latency term -- measured
+ * 128..1,792 frames across otherwise identical sessions (2.7..37 ms). Every
+ * closed→open edge now trims the ring down to this target, so a session's
+ * ring residence is a design constant instead of acquisition luck. Dropping
+ * is safe by construction at this edge only: the gate was closed, the
+ * output was physically dark, and the frames dropped were never heard --
+ * what remains is the newest audio. 256 = two blocks of service-jitter
+ * margin beyond the in-flight block on the stall-free image; the
+ * gate_open_trim counters on the clock document plus the existing underrun
+ * counter are the acceptance instruments if this margin is ever wrong. */
+#ifndef AIUS_TX_GATE_OPEN_TARGET_FRAMES
+#define AIUS_TX_GATE_OPEN_TARGET_FRAMES 256u
+#endif
+static uint32_t g_tx_gate_open_trims;          /* .bss = 0 */
+static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
+
 static FLASHMEM void tx_gate_actuate(bool open)
 {
 	if (open) {
+		/* Same two-store critical-section contract as
+		 * clock_flush_ring_preserve_diag(): the TX ISR is the sole
+		 * cursor reader. */
+		noInterrupts();
+		const uint32_t dropped = aius_spdif_tx24_trim_to(
+			&g_aius_spdif_tx24, AIUS_TX_GATE_OPEN_TARGET_FRAMES);
+		interrupts();
+		if (dropped != 0u) {
+			g_tx_gate_open_trims++;
+			g_tx_gate_open_trimmed_frames += dropped;
+		}
 		CORE_PIN14_CONFIG = 3; /* SPDIF_OUT, as begin() routed it */
 		return;
 	}
@@ -2581,6 +2609,9 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"unsupported_episodes\":%lu,"
 		"\"tx_level_frames\":%lu,"
 		"\"tx_underrun_frames\":%lu,"
+		"\"gate_open_target_frames\":%lu,"
+		"\"gate_open_trims\":%lu,"
+		"\"gate_open_trimmed_frames\":%lu,"
 		"\"ingress_level_words\":%lu,"
 		"\"ingress_high_water_words\":%lu}",
 		g_tx_gate_carrier ? "true" : "false",
@@ -2601,6 +2632,9 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)g_clock_unsupported_episodes,
 		(unsigned long)aius_spdif_tx24_level(&g_aius_spdif_tx24),
 		(unsigned long)g_aius_spdif_tx24.underruns,
+		(unsigned long)AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+		(unsigned long)g_tx_gate_open_trims,
+		(unsigned long)g_tx_gate_open_trimmed_frames,
 		(unsigned long)ingress.level_words,
 		(unsigned long)ingress.high_water_words);
 }
@@ -2894,16 +2928,32 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	uint32_t tx = 0;
 	uint32_t rx = 0;
 	const bool frames = aius_network_teensy_frames(network, &tx, &rx);
+	/* The DHCP schedule as the FNET client holds it -- the reopened
+	 * periodic-WDOG second death mode (~6,176 s) made cadence-based
+	 * reconstruction untrustworthy, so the served values are the record. */
+	uint32_t lease_s = 0;
+	uint32_t t1_s = 0;
+	uint32_t t2_s = 0;
+	const bool schedule = aius_network_teensy_dhcp_options(
+		network, &lease_s, &t1_s, &t2_s);
 
 	if (!http_json_append(output, capacity, length,
 	                      ",\"net_diag\":{\"link\":%u,\"link_live\":%u,"
 	                      "\"dhcp_state\":%u,\"frames_valid\":%s,"
-	                      "\"tx_frames\":%lu,\"rx_frames\":%lu",
+	                      "\"tx_frames\":%lu,\"rx_frames\":%lu,"
+	                      "\"dhcp_schedule_valid\":%s,"
+	                      "\"dhcp_lease_s\":%lu,"
+	                      "\"dhcp_t1_s\":%lu,"
+	                      "\"dhcp_t2_s\":%lu",
 	                      (unsigned)aius_network_teensy_link(network),
 	                      (unsigned)aius_network_teensy_link_live(network),
 	                      (unsigned)aius_network_teensy_dhcp_state(network),
 	                      frames ? "true" : "false",
-	                      (unsigned long)tx, (unsigned long)rx))
+	                      (unsigned long)tx, (unsigned long)rx,
+	                      schedule ? "true" : "false",
+	                      (unsigned long)lease_s,
+	                      (unsigned long)t1_s,
+	                      (unsigned long)t2_s))
 		return false;
 	if (!http_net_diag_generation(output, capacity, length, "first",
 	                              aius_network_teensy_diag_first(network)))

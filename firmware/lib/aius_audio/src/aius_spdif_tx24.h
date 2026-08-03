@@ -160,6 +160,28 @@ static inline void aius_spdif_tx24_flush_preserve_diag(
     ring->consumed = ring->written;
 }
 
+/* Trim occupancy DOWN to `target_frames` by advancing the consumer cursor,
+ * returning the frames dropped (0 when already at or under target). Same
+ * caller contract as flush_preserve_diag: the caller masks interrupts across
+ * this one cursor rebase so fill() cannot observe a half-transitioned pair.
+ *
+ * The one legitimate caller is the TX gate's closed→open edge (e2e-latency
+ * Phase 3 R1): while the gate is closed the output is physically dark, so
+ * every dropped frame was silence nobody could hear, and the frames that
+ * REMAIN are the newest — the freshest audio starts the session. Trimming
+ * with the gate open would be an audible splice and is not what this is
+ * for. */
+static inline uint32_t aius_spdif_tx24_trim_to(AiusSpdifTx24Ring *ring,
+                                               uint32_t target_frames)
+{
+    const uint32_t level = ring->written - ring->consumed;
+    if (level <= target_frames)
+        return 0u;
+    const uint32_t drop = level - target_frames;
+    ring->consumed += drop;
+    return drop;
+}
+
 /* Committed frames not yet transmitted. This is the transmit queue occupancy
  * the meter reports; there is no other queue behind it. */
 static inline uint32_t aius_spdif_tx24_level(const AiusSpdifTx24Ring *ring)

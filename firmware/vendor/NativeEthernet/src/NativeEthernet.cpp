@@ -270,6 +270,36 @@ void EthernetClass::pollProbed(uint8_t context)
     poll_probe_flush();
 }
 
+/* fnet_dhcp_cln_options serves t1/t2/lease_time in NETWORK byte order
+ * (fnet_dhcp_cln.h:151-167). Read byte-wise so no FNET conversion helper is
+ * needed -- the host-suite fake carries the struct but not the macros. */
+static uint32_t dhcp_option_seconds(fnet_uint32_t network_order)
+{
+    const uint8_t *bytes = (const uint8_t *)&network_order;
+    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
+           ((uint32_t)bytes[2] << 8) | (uint32_t)bytes[3];
+}
+
+bool EthernetClass::dhcpOptions(uint32_t *lease_seconds,
+                                uint32_t *t1_seconds,
+                                uint32_t *t2_seconds)
+{
+    struct fnet_dhcp_cln_options options;
+
+    if (dhcp_descriptor == nullptr ||
+        !fnet_dhcp_cln_is_enabled(dhcp_descriptor))
+        return false;
+    memset(&options, 0, sizeof(options));
+    fnet_dhcp_cln_get_options(dhcp_descriptor, &options);
+    if (lease_seconds != nullptr)
+        *lease_seconds = dhcp_option_seconds(options.lease_time);
+    if (t1_seconds != nullptr)
+        *t1_seconds = dhcp_option_seconds(options.t1);
+    if (t2_seconds != nullptr)
+        *t2_seconds = dhcp_option_seconds(options.t2);
+    return true;
+}
+
 bool EthernetClass::dhcpStart(unsigned long responseTimeout)
 {
     if (!stack_initialized)

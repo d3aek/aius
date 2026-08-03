@@ -446,6 +446,13 @@ AiusNetworkTeensyLink aius_network_teensy_link_live(
  */
 uint8_t aius_network_teensy_dhcp_state(const AiusNetworkTeensy *adapter);
 
+/* The FNET client's actual lease/T1/T2 option values (host byte order,
+ * seconds); false with zeroed outputs when the stack is down or the diag
+ * primitive is unavailable. */
+bool aius_network_teensy_dhcp_options(const AiusNetworkTeensy *adapter,
+                                      uint32_t *lease_s, uint32_t *t1_s,
+                                      uint32_t *t2_s);
+
 /* The MAC's transmitted and received frame counters. Returns false and leaves
  * both zero when the driver has no statistics to give.
  */
@@ -529,6 +536,11 @@ typedef struct {
 	uint8_t (*dhcp_state)(void);
 	bool (*frames)(uint32_t *tx, uint32_t *rx);
 	uint32_t (*uptime_ms)(void);
+	/* Optional (nullptr = unavailable): FNET lease/T1/T2 option values,
+	 * host byte order, seconds. Kept in lockstep with the production
+	 * struct in aius_network_teensy.cpp. */
+	bool (*dhcp_options)(uint32_t *lease_s, uint32_t *t1_s,
+	                     uint32_t *t2_s);
 } AiusNetworkTeensyDiagPrimitives;
 
 /* Clears the diagnostic table as well, so a case that wants one installs it. */

@@ -639,6 +639,31 @@ static void test_flush_preserves_lifetime_diagnostics(void)
 	assert(ring.underruns == 0u);
 }
 
+static void test_gate_open_trim_normalizes_occupancy(void)
+{
+	AiusSpdifTx24Ring ring = {};
+
+	/* Over target: the consumer cursor advances, the newest frames stay,
+	 * and only the drop is reported. Cursor wrap is exercised the same way
+	 * the flush test above does. */
+	ring.written = UINT32_MAX - 3u;
+	ring.consumed = ring.written - 1792u;
+	ring.underruns = 77u;
+	assert(aius_spdif_tx24_trim_to(&ring, 256u) == 1536u);
+	assert(aius_spdif_tx24_level(&ring) == 256u);
+	assert(ring.written == UINT32_MAX - 3u);
+	assert(ring.underruns == 77u);
+
+	/* At target: a no-op that reports zero. */
+	assert(aius_spdif_tx24_trim_to(&ring, 256u) == 0u);
+	assert(aius_spdif_tx24_level(&ring) == 256u);
+
+	/* Under target: trimming never ADDS occupancy. */
+	ring.consumed = ring.written - 100u;
+	assert(aius_spdif_tx24_trim_to(&ring, 256u) == 0u);
+	assert(aius_spdif_tx24_level(&ring) == 100u);
+}
+
 } /* namespace */
 
 uint32_t aius_audio_clock_fake_register_read(
@@ -669,6 +694,7 @@ int main(void)
 	test_invalid_plan_writes_nothing();
 	test_srfm_integer_millihertz();
 	test_flush_preserves_lifetime_diagnostics();
+	test_gate_open_trim_normalizes_occupancy();
 	puts("clock-target tests passed");
 	return 0;
 }

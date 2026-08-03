@@ -124,6 +124,13 @@ public:
 	 * from its network job, making the whole stack single-context -- the
 	 * deployment model FNET's no-op mutexes are actually sound under. */
 	static void pollProbed(uint8_t context);
+	/* The FNET client's actual lease/T1/T2 option values, host byte order,
+	 * seconds. False when no enabled DHCP client exists. Added for the aius
+	 * periodic-WDOG investigation: the death schedule reconstruction from
+	 * observed cadence alone proved unreliable (open-work register), so the
+	 * served schedule must come from the client's own state. */
+	static bool dhcpOptions(uint32_t *lease_seconds, uint32_t *t1_seconds,
+	                        uint32_t *t2_seconds);
 	static bool dhcpStart(unsigned long responseTimeout = 4000);
 	static void dhcpStop();
 	static void end();
