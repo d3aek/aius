@@ -531,6 +531,15 @@ specified here. Strike items here in the commit that closes them.
     request-count threshold. The heap-telemetry image (`d1aefa470`)
     still flashes next regardless: the netheap decline curve convicts
     or acquits a slower per-connection leak on sight.
+  - **Fixed-time anchor refuted the same evening.** The same boot
+    crossed 6,481 s alive at 3,164 requests — past the ~6,176 s mark
+    under a 5× request rate — joining boot 330's 8,345 s survival.
+    Neither count- nor time-anchored: the death is a stochastic
+    per-exposure hazard, which is the working model's prediction
+    (every TX frame / churn burst a dice roll), and the historic
+    ~6,176 / 2× ~6,201 s cluster was sampling, not a schedule. The
+    tight clustering of those three samples remains an open oddity
+    worth one glance once the witness names the mechanism.
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:
