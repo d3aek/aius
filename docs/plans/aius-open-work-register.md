@@ -423,11 +423,25 @@ specified here. Strike items here in the commit that closes them.
     provenance manifests, NOTICE, the network-transport suite (with
     a new stack_poll primitive test) and the swagger drift gate are
     all updated and green.
-  - Morning protocol: flash the instrumented flag-0 image → confirm
+  - ~~Morning protocol: flash the instrumented flag-0 image → confirm
     live `reent` climbing and one T1 death with `wedges` ≥ 1 (ctx +
     dhcp naming the in-poll wedge) → flip the flag → campaign across
     at least three T1 windows (~100 min) for deaths-gone proof →
-    close this entry.
+    close this entry.~~ **2026-08-03 morning: the in-poll confirmation
+    was NOT obtainable — the instrumentation wall again.** The flag-0
+    image (identical split-polling model plus the probe) outlived its
+    first T1 window with `reent` 0, `wedges` 0 and no completed
+    renewal visible, where the uninstrumented image died 25+/25; the
+    probe's per-poll cache-flush serialization sits exactly at the
+    suspected race site, so the probe itself is the prime suspect for
+    masking the wedge (one survived window also has ~10 % precedent
+    as a 103-min outlier — not decisive alone, not worth hours of
+    discrimination). Acceptance standard switched to the campaign
+    delta: uninstrumented `5151bb21f8be` dies every T1 (25+
+    consecutive), the flag-1 fix image must survive ≥3 T1 windows
+    under the same conditions. The probe stays aboard as a field
+    sentinel: any future in-poll wedge stamps `wedges`/ctx/dhcp on
+    the next boot.
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
