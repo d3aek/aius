@@ -539,7 +539,23 @@ specified here. Strike items here in the commit that closes them.
     (every TX frame / churn burst a dice roll), and the historic
     ~6,176 / 2× ~6,201 s cluster was sampling, not a schedule. The
     tight clustering of those three samples remains an open oddity
-    worth one glance once the witness names the mechanism.
+    worth one glance once the witness names the mechanism. Final
+    datum: the boot ran to the discriminator's full 3 h cap —
+    10,800 s alive, 5,273 requests, 212 stalls at a stationary
+    1.18/min, zero drops/rejections.
+  - **Flash boundary 2026-08-03 ~15:36: the board runs
+    `3cbe28ef3fa1` (heap telemetry + calibrated stall witness).**
+    First flash of the witness mis-clocked GPT1 6.25× slow (CLKSRC(1)
+    is the 24 MHz-OSC perclk, not ipg) — and its two boot-stall
+    records still validated the instrument: at the true rate the tick
+    arithmetic closed to ZERO deficit with a clean IABR, correctly
+    classifying the boot-adjacent stalls as legitimate long boot work
+    rather than theft. Calibration fix committed (`3cbe28ef3`) and
+    flashed. Live watch running (`witness_watch.py`, 2 s cadence,
+    8 h cap): FNET heap settled at 60,984 B free and reads FLAT
+    against request count in early samples — the netheap-leak variant
+    is trending toward acquittal on sight; the next 1.79 s-family
+    stall on a stall-prone boot gets a calibrated verdict.
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:
