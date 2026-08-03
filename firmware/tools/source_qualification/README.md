@@ -51,9 +51,13 @@ the device under BOARD FLEX — which explains the fibre-handling
 enumeration blinks without any socket fault, the mixer resets that ride
 them, and adds a confound to the 2026-08-02 cable-1 overcurrent
 conviction (a flaky power-stage joint is a plausible intermittent
-overdraw source). Discriminator: press-test the region while enumerated,
-watching the kernel log; then reflow. Until resolved: verify the mixer
-before measuring and avoid flexing the board or connectors mid-session.
+overdraw source). Owner decision 2026-08-03: NO bench reflow — the unit goes back to the
+manufacturer for replacement when convenient. Bench posture until then:
+reassemble, restore the full loop, verify the mixer after the replug
+(re-enumeration resets it to −20 dB), confirm stability, then DO NOT
+disturb the unit or its connectors; every measurement session verifies
+the mixer first and treats any spontaneous re-enumeration as this
+unit's known fault, not a bench regression.
 
 Run the bracket (~130 s) and the refine:
 

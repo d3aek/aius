@@ -353,7 +353,9 @@ specified here. Strike items here in the commit that closes them.
   timestamp + caller tag on the longest masked section.
 
 - **Periodic watchdog reset every ~31 min 45 s on the E-AC-3 phase-4
-  image (2026-08-02, open).** Since ~11:23 — right after the phase-4
+  image (2026-08-02; FIXED 2026-08-03 — single-context FNET polling,
+  campaign-accepted; conviction chain and closure at the end of this
+  entry).** Since ~11:23 — right after the phase-4
   image (`5151bb21f8be+teensy41-optical`, built 10:51) went on the
   board — the idle bench board has reset on a 1,904±5 s cadence: 17
   resets in the host kernel log through 21:23:29 (each one
@@ -442,6 +444,28 @@ specified here. Strike items here in the commit that closes them.
     under the same conditions. The probe stays aboard as a field
     sentinel: any future in-poll wedge stamps `wedges`/ctx/dhcp on
     the next boot.
+
+  **CLOSED 2026-08-03 ~09:38 — campaign PASSED.** The fix image
+  (`45153bb5ad43`, single-context polling) survived three full T1
+  windows in one unbroken boot generation (97 min, zero generation
+  steps, zero wedges, zero in-poll depth, zero HTTP gaps), under
+  HEAVIER load than any death boot carried (the full latency row
+  session ran inside the window). Bonus, twice confirmed: the ~1.79 s
+  beat-stall family is GONE on this image — both pin-advance brackets
+  put a zero delta on `runtime_epoch_budget_overruns`, and the whole
+  97-minute campaign accumulated 3 ticks (the AC-3 row transitions)
+  against the ~1.2/min every predecessor image bled — the beats were
+  the ISR polling model too, and committed output recovered the
+  ~4.5 % they stole. Honest residuals, neither blocking: (a) the
+  in-poll wedge was never named on hardware (instrumentation wall;
+  the retained probe remains the field sentinel); (b) renewal
+  completion is not yet OBSERVED — `dhcp_updates` stayed 1 through
+  97 min while the lease demonstrably persisted, so either the update
+  callback skips some ACK path or the reconstructed T1/lease values
+  are off; one small follow-up (serve FNET's lease/T1/T2 options) or
+  a server-side capture settles it. Unattended runs longer than
+  30 minutes are valid again on this image; the four-hour gates are
+  unblocked from this defect's side.
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
