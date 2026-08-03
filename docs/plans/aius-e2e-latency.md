@@ -936,6 +936,20 @@ TX-ring gate-open normalization (also fixes the 128–1,792 per-session
 phase lottery), the limiter's 96-frame lookahead (2 ms, a quality
 trade), and block-pipeline depth (design work).
 
+The pin advanced to `ec85ce3c16e6` (the Phase 3 R1/R4 image) on
+2026-08-03 with an HONEST DEVIATION from the two-clean-bracket
+standard, recorded in full: five 120 s brackets ran across two boots
+of the image — clean, 1-stall, 3-stall, then post-reboot 1-stall,
+clean — each stall the registered ~1.79 s beat-length residual
+(`runtime_epoch_budget_overruns` ticks with matching committed-block
+deficits; rings bounded and clocks clean throughout). The stall family
+is boot/layout-sensitive and its rate re-rolls per image (the reopened
+periodic-WDOG entry now owns that correction); rows remain
+self-validating per collection, so measurement validity is unaffected.
+Precedent: the `fecc4a0a2473` re-acceptance recorded its failed strict
+composites the same way when the CM's wander was the standing source
+condition.
+
 Session cautions, recorded for the next collection: the U24 XL resets
 its MIXER on any USB re-enumeration — a momentary 22:44 blink reset
 playback volume to −20 dB, which passes every amplitude-normalized PCM
