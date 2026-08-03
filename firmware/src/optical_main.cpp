@@ -920,6 +920,8 @@ static volatile uint32_t g_http_service_overruns;
 static volatile uint32_t g_stall_witness_ticks;
 static volatile uint32_t g_stall_witness_heartbeat_us;
 static volatile uint32_t g_stall_witness_iabr[5];
+static volatile uint32_t g_stall_witness_pc;
+static volatile uint32_t g_stall_witness_lr;
 static volatile uint32_t g_stall_witness_isr_samples;
 static volatile bool g_stall_witness_episode;
 static uint32_t g_stall_events;
@@ -935,8 +937,14 @@ static constexpr uint32_t AIUS_STALL_WITNESS_THRESHOLD_US = 100000u;
 /* ITCM deliberately (no FLASHMEM): the witness must be able to run while
  * FlexSPI is busy, which is one of the thief candidates. micros() is
  * interrupt-safe on Teensy 4. The SR write-1-clear is read back so the IPS
- * write retires before exception return (double-entry otherwise). */
-static void stall_witness_isr(void)
+ * write retires before exception return (double-entry otherwise).
+ *
+ * The body receives the hardware-stacked exception frame from the naked
+ * entry below: frame[5] is the preempted context's LR, frame[6] its PC —
+ * captured on the episode's first tick, this is the exact instruction the
+ * stall was spinning at. extern "C" so the naked entry can branch to an
+ * unmangled name. */
+extern "C" void aius_stall_witness_body(uint32_t *frame)
 {
 	GPT1_SR = GPT_SR_OF1;
 	(void)GPT1_SR;
@@ -951,10 +959,22 @@ static void stall_witness_isr(void)
 				g_stall_witness_iabr[i] =
 					*(volatile uint32_t
 					          *)(0xE000E300u + 4u * i);
+			g_stall_witness_pc = frame[6];
+			g_stall_witness_lr = frame[5];
 		}
 	} else {
 		g_stall_witness_episode = false;
 	}
+}
+
+/* Naked so MSP still points at the hardware-stacked frame (no compiler
+ * pushes yet); the plain `b` keeps EXC_RETURN in LR, so the body's normal
+ * push/pop performs the exception return. Bare-metal Teensy runs MSP-only,
+ * so the frame is never on PSP. */
+__attribute__((naked)) static void stall_witness_isr(void)
+{
+	asm volatile("mrs r0, msp\n\t"
+	             "b aius_stall_witness_body");
 }
 
 /* GPT1 CLKSRC(1) is perclk_clk_root, which the Teensy core routes from the
@@ -2927,6 +2947,8 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 	for (uint32_t i = 0; i < 5u; i++)
 		iabr[i] = g_stall_witness_iabr[i];
 	const uint32_t samples = g_stall_witness_isr_samples;
+	const uint32_t pc = g_stall_witness_pc;
+	const uint32_t lr = g_stall_witness_lr;
 	interrupts();
 	return http_json_append(
 		output, capacity, length,
@@ -2934,6 +2956,7 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 		"\"last_deficit_ms\":%lu,\"max_deficit_ms\":%lu,"
 		"\"witness_ticks\":%lu,\"isr_samples\":%lu,"
 		"\"iabr\":[\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\"],"
+		"\"pc\":\"%08lx\",\"lr\":\"%08lx\","
 		"\"flexspi_intr\":\"%08lx\",\"flexspi2_intr\":\"%08lx\"}",
 		(unsigned long)g_stall_events, (unsigned long)g_stall_last_us,
 		(unsigned long)g_stall_last_deficit_ms,
@@ -2943,6 +2966,7 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 		(unsigned long)iabr[0], (unsigned long)iabr[1],
 		(unsigned long)iabr[2], (unsigned long)iabr[3],
 		(unsigned long)iabr[4],
+		(unsigned long)pc, (unsigned long)lr,
 		(unsigned long)g_stall_flexspi_intr,
 		(unsigned long)g_stall_flexspi2_intr);
 }

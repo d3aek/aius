@@ -603,6 +603,26 @@ specified here. Strike items here in the commit that closes them.
     connection (a walk long enough to out-spin the 8 s WDOG, or the
     same wild pointer corrupting further) is now the working death
     mechanism pending the same fix.
+  - **~17:25 addendum — the recorder ring STRADDLES the suspect
+    pad-2 chip, and the PC capture shipped.** `begin_pipeline()`
+    places the ring at `0x70000000 + 32 KiB` staging, and
+    `aius_recorder_ring_bytes_after_staging` sizes it to 8 MiB on a
+    16 MiB board — so the ring's FINAL 32 KiB lands on the second
+    chip (`0x70800000..0x70808000`), the pad the owner's board-level
+    investigation already flagged as marginal. Two concrete hazard
+    surfaces now exist: (a) the MPU FlexSPI2 window is 32 MiB over
+    16 MiB fitted — speculative/wild accesses into the unfitted
+    upper half time out (fits the idle Poisson stalls); (b) the ring
+    tail touches marginal pad-2 under recording load (fits the
+    activity correlation). The witness now captures the preempted
+    context's stacked PC/LR (naked GPT1 entry hands the exception
+    frame to the body; served as `stall_diag.pc`/`lr`, addr2line
+    host-side) — the next stall discriminates (a) from (b) and
+    names the walking code outright. Fix shape once named: shrink
+    the MPU window to fitted size (kills (a) structurally), and
+    keep the ring off pad-2 (end the extent at 0x70800000 or halve
+    the ring) or retire pad-2 entirely if the chip is confirmed
+    marginal.
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:

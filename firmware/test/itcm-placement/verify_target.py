@@ -134,6 +134,7 @@ HOT_SECTIONS = (
     ".text._ZL26audio_ingress_publish_livePtPK18audio_block_structS2_",
     ".text._ZN18AiusAudioProcessor6updateEv",
     ".text._ZL17stall_witness_isrv",
+    ".text.aius_stall_witness_body",
 )
 
 INGRESS_HOT_OBJECT = "lib/aius_audio_ingress/src/aius_audio_ingress.c.o"
