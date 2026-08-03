@@ -41,6 +41,15 @@ amplitude-normalized PCM gate while silently destroying IEC 61937 sync
 arithmetic — the failure looks like a codec/classification fault, not a
 level fault (2026-08-03 session record in `aius-e2e-latency.md`).
 
+**Standing hardware suspicion (owner, 2026-08-03): a bad solder joint on
+this unit's USB-B socket.** Working the adjacent TOSLINK jacks blinked the
+USB three times in ten seconds (contact-bounce shape), and a marginal
+socket joint is also a confound on the 2026-08-02 cable-1 overcurrent
+conviction (the cable swaps discriminated on the same socket). The owner
+plans to dismantle and inspect at the next replug; until then treat any
+mixer drift or enumeration blip as expected, verify before measuring, and
+avoid disturbing the rear connectors mid-session.
+
 Run the bracket (~130 s) and the refine:
 
 ```bash
