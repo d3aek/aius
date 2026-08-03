@@ -519,6 +519,84 @@ specified here. Strike items here in the commit that closes them.
     stall) remains open and is plausibly the same process behind the
     surviving death modes.
 
+  **2026-08-03 evening — the stall family characterized end-to-end on
+  a live reproducer; count-threshold death hypothesis refuted; witness
+  instrument shipped (this commit, flash pending the probe verdict):**
+
+  - **Count anchor refuted in its simple form.** The fast-rate
+    discriminator (2 s status polling on a fresh boot,
+    `count_anchor_probe.py`) carried the board past 2,500 requests /
+    5,200 s alive — 5× the ~500-connection netheap-exhaustion
+    prediction. Whatever kills at ~6,176 s, it is not a fixed
+    request-count threshold. The heap-telemetry image (`d1aefa470`)
+    still flashes next regardless: the netheap decline curve convicts
+    or acquits a slower per-connection leak on sight.
+  - **The stall is CPU theft at random epoch phase, duration
+    2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
+    77+ events) and the poll stream itself resolved per-stall timing:
+    arrivals are Poisson (inter-stall CV 0.93, no periodicity, no
+    phase-locking), and NINE of eleven `checkpoint_walltime_us`
+    maxima read 1,789,602–645 µs — every checkpoint except
+    reset-capture and usb-tx has carried the same interval. A stall
+    that lands in whatever service happens to be running is not a
+    slow service; it is the CPU being taken. The duration is
+    crystal-tight (±22 µs = 12 ppm) at ≈2^30 CPU cycles @600 MHz
+    (1,789,570 µs) — a COUNTED power-of-two of a PLL-derived clock,
+    which kills every analog candidate (flash-erase, PHY autoneg,
+    pause frames). The earlier "one audio-beat length" reading
+    (1,791.7 ms = 168 blocks) misses by 0.13 % and is retired; the
+    beat coincidence was numerology.
+  - **Acquitted by counters on the same boot:** PHY link
+    (`link_callbacks` 1 across 77 stalls — no drops, no renegotiation),
+    HTTP service (`http_service_overruns` 2 vs 77), UDP (0), audio
+    transmit (0), network restarts (0).
+  - **Community precedent:** PJRC thread 66525 "Teensy 4.1 Freeze
+    (~1786ms)" — same fixed-duration freeze family, root-caused in
+    2021 to overlapping MPU regions on FlexSPI2 (PSRAM) stalling the
+    bus fabric, fixed in Teensyduino 1.54-beta9. Our core carries
+    that fix, yet the signature is alive here — on an image that
+    reshaped the memory map (retained window, flash-pinned rodata)
+    and on a board with a known-odd PSRAM pad-2 fitment. The thread's
+    "GCC version" and "USB type" sensitivities read as the same
+    layout lottery this register already documents.
+  - **Working model, unifying stall and death:** a bus-fabric-level
+    CPU hold (FlexSPI2/speculative-access class) whose bounded form
+    is the 1.79 s stall and whose unbounded form wedges until the
+    8 s WDOG — plus the FEC driver's own unbounded TX spins
+    (`fnet_fec_output`: descriptor wait and TDAR errata loop, both
+    "blocked here forever" per upstream's comment) as a second
+    death-shaped candidate sitting exactly where all three retained
+    death stamps point (checkpoint 5, poll depth 0: the HTTP job's
+    socket sends). Under load most epoch wall-time IS the HTTP
+    interval, so uniform-phase theft also lands ckpt-5 stamps.
+    Activity correlation falls out naturally: every TX frame and
+    every memory-churn burst is a hazard exposure — no count
+    threshold, no clock.
+  - **Shipped (this commit): the `stall_diag` witness.** GPT1 at NVIC
+    priority 0 (own IRQ — deliberately not IntervalTimer: all four
+    PIT channels share IRQ_PIT, which stack_start() demotes to 224
+    every generation) ticks 1 kHz; across any ≥100 ms epoch the loop
+    latches the witness's tick deficit, and the witness itself
+    snapshots NVIC_IABR the first tick it survives inside a stale
+    heartbeat window. Deficit ≈ duration → interrupts-masked section
+    or bus-level hold; deficit ≈ 0 → a named ISR spin (IABR carries
+    the culprit). FLEXSPI/FLEXSPI2 INTR words (AHBBUSTIMEOUT bit 10,
+    SEQTIMEOUT bit 11) are read after every stalled epoch. Served on
+    `GET /api/status`, swagger + drift gate green, ITCM hot-set pin
+    justified (a FLASHMEM witness would stall on the very FlexSPI
+    holds it exists to witness).
+  - **Next, in order:** (1) probe verdict at/past the 6,176 s mark →
+    flash the heap+witness image; (2) first witnessed stall names the
+    thief class; (3) if bus-hold: tighten the MPU at runtime —
+    FlexSPI2 NOACCESS is safe-by-construction here (extmem heap is
+    banned and test-enforced; only boot probes touch PSRAM) and doubles
+    as a tripwire (any genuine toucher faults with an attributable
+    PC); SEMC region likewise. If ISR-spin: the IABR word names the
+    handler and the fix goes where it points. (4) The FEC TX spins
+    want bounding regardless (drop + counter beats a WDOG death);
+    that patch needs FNET vendored or overridden — decision deferred
+    until the witness verdict says whether it is the death mechanism.
+
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
   about them. (Recorded since the item 3 era.)

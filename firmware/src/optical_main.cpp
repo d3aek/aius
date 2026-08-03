@@ -906,6 +906,76 @@ static uint64_t g_ckpt_total_us[16];
 static uint32_t g_http_checkpoint_entered_us;
 static volatile uint32_t g_http_service_overruns;
 
+/* Stall witness: GPT1 ticking at 1 kHz on NVIC priority 0, plus a per-pass
+ * heartbeat stamp from loop(). The ~1.79 s global stall lands mid-checkpoint
+ * at a uniformly random epoch phase (2026-08-03: nine of eleven cw maxima
+ * within ±22 µs of 2^30 CPU cycles = 1,789,570 µs), so it is CPU theft, not a
+ * slow service, and the open question is which thief class: an ISR spinning
+ * below priority 0 (the witness keeps ticking and its NVIC_IABR snapshot
+ * names the active IRQ), or an interrupts-masked section / bus-level hold
+ * (both freeze the witness, so the tick deficit itself is the verdict and no
+ * snapshot exists). GPT1 rather than IntervalTimer because all four PIT
+ * channels share IRQ_PIT, whose priority stack_start() demotes to 224 on
+ * every network generation. */
+static volatile uint32_t g_stall_witness_ticks;
+static volatile uint32_t g_stall_witness_heartbeat_us;
+static volatile uint32_t g_stall_witness_iabr[5];
+static volatile uint32_t g_stall_witness_isr_samples;
+static volatile bool g_stall_witness_episode;
+static uint32_t g_stall_events;
+static uint32_t g_stall_last_us;
+static uint32_t g_stall_last_deficit_ms;
+static uint32_t g_stall_max_deficit_ms;
+static uint32_t g_stall_flexspi_intr;
+static uint32_t g_stall_flexspi2_intr;
+/* 100 ms: above every legitimate epoch (25 ms budget) and far below the
+ * 1.79 s family this instrument exists to classify. */
+static constexpr uint32_t AIUS_STALL_WITNESS_THRESHOLD_US = 100000u;
+
+/* ITCM deliberately (no FLASHMEM): the witness must be able to run while
+ * FlexSPI is busy, which is one of the thief candidates. micros() is
+ * interrupt-safe on Teensy 4. The SR write-1-clear is read back so the IPS
+ * write retires before exception return (double-entry otherwise). */
+static void stall_witness_isr(void)
+{
+	GPT1_SR = GPT_SR_OF1;
+	(void)GPT1_SR;
+	g_stall_witness_ticks = g_stall_witness_ticks + 1u;
+	if ((uint32_t)(micros() - g_stall_witness_heartbeat_us) >
+	    AIUS_STALL_WITNESS_THRESHOLD_US) {
+		if (!g_stall_witness_episode) {
+			g_stall_witness_episode = true;
+			g_stall_witness_isr_samples =
+				g_stall_witness_isr_samples + 1u;
+			for (uint32_t i = 0; i < 5u; i++)
+				g_stall_witness_iabr[i] =
+					*(volatile uint32_t
+					          *)(0xE000E300u + 4u * i);
+		}
+	} else {
+		g_stall_witness_episode = false;
+	}
+}
+
+/* GPT1 from ipg_clk (150 MHz) / 150 -> 1 MHz, restart mode, OCR1 999 ->
+ * 1 kHz. Clock choice does not affect the verdict: the deficit counts missed
+ * ISR runs, and a pended OF1 fires once on unmask however long the mask. */
+static FLASHMEM void stall_witness_arm(void)
+{
+	CCM_CCGR1 |= CCM_CCGR1_GPT1_BUS(CCM_CCGR_ON) |
+		     CCM_CCGR1_GPT1_SERIAL(CCM_CCGR_ON);
+	GPT1_CR = 0;
+	GPT1_PR = GPT_PR_PRESCALER(149);
+	GPT1_SR = 0x3Fu;
+	GPT1_IR = GPT_IR_OF1IE;
+	GPT1_OCR1 = 999u;
+	attachInterruptVector(IRQ_GPT1, stall_witness_isr);
+	NVIC_SET_PRIORITY(IRQ_GPT1, 0);
+	NVIC_ENABLE_IRQ(IRQ_GPT1);
+	g_stall_witness_heartbeat_us = micros();
+	GPT1_CR = GPT_CR_EN | GPT_CR_CLKSRC(1) | GPT_CR_ENMOD;
+}
+
 static FLASHMEM uint8_t current_state(void);
 
 /* The legacy watchdog pair is gone. The pinned 8 s interval is armed once from
@@ -2839,6 +2909,40 @@ static FLASHMEM bool http_pipeline_diag_json(char *output, size_t capacity,
 	                        (unsigned)(pcm_confirmed ? 1 : 0));
 }
 
+/* The stall witness verdict object. deficit ~= duration says nothing below
+ * NVIC priority 0 ran (interrupts-masked section or bus-level hold); deficit
+ * ~0 with isr_samples advancing says the witness lived through the stall and
+ * its NVIC_IABR snapshot names the spinning ISR. flexspi*_intr are the raw
+ * INTR words read after the last stalled epoch (AHBBUSTIMEOUT is bit 10,
+ * SEQTIMEOUT bit 11) -- raw hex, host-decoded, on the clk_regs pattern. */
+static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
+	                                      size_t *length)
+{
+	uint32_t iabr[5];
+	noInterrupts();
+	for (uint32_t i = 0; i < 5u; i++)
+		iabr[i] = g_stall_witness_iabr[i];
+	const uint32_t samples = g_stall_witness_isr_samples;
+	interrupts();
+	return http_json_append(
+		output, capacity, length,
+		",\"stall_diag\":{\"events\":%lu,\"last_us\":%lu,"
+		"\"last_deficit_ms\":%lu,\"max_deficit_ms\":%lu,"
+		"\"witness_ticks\":%lu,\"isr_samples\":%lu,"
+		"\"iabr\":[\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\"],"
+		"\"flexspi_intr\":\"%08lx\",\"flexspi2_intr\":\"%08lx\"}",
+		(unsigned long)g_stall_events, (unsigned long)g_stall_last_us,
+		(unsigned long)g_stall_last_deficit_ms,
+		(unsigned long)g_stall_max_deficit_ms,
+		(unsigned long)g_stall_witness_ticks,
+		(unsigned long)samples,
+		(unsigned long)iabr[0], (unsigned long)iabr[1],
+		(unsigned long)iabr[2], (unsigned long)iabr[3],
+		(unsigned long)iabr[4],
+		(unsigned long)g_stall_flexspi_intr,
+		(unsigned long)g_stall_flexspi2_intr);
+}
+
 static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
 	                                       size_t *length)
 {
@@ -4181,6 +4285,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_poll_probe_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
+		return 0;
+	if (!http_stall_diag_json((char *)body, capacity, &length))
 		return 0;
 	/* Last, and a plain register read rather than a latched counter: the
 	 * OCOTP shadow is loaded once by the boot ROM and never changes, so
@@ -7113,6 +7219,11 @@ FLASHMEM void setup(void)
 		nullptr,
 		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_RESET_CAPTURE),
 		millis(), &g_runtime.boot_status);
+	/* Arm the stall witness last: everything above is construction, and
+	 * arming after it keeps boot-time flash waits (the known ~1.84 s
+	 * boot-adjacent masked stall) out of the witness's first heartbeat
+	 * window. */
+	stall_witness_arm();
 	g_boot_healthy_at_ms = millis() + AIUS_BOOT_HEALTHY_MS;
 }
 
@@ -7604,9 +7715,28 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 FLASHMEM void loop(void)
 {
 	const uint32_t now_ms = millis();
+	g_stall_witness_heartbeat_us = micros();
+	const uint32_t witness_before = g_stall_witness_ticks;
 	const uint32_t epoch_started_us = micros();
 	const bool completed = aius_runtime_teensy_epoch(&g_runtime, now_ms);
 	const uint32_t epoch_us = micros() - epoch_started_us;
+	g_stall_witness_heartbeat_us = micros();
+	if (epoch_us > AIUS_STALL_WITNESS_THRESHOLD_US) {
+		/* Classify the stall the epoch just carried: ticks the
+		 * priority-0 witness missed ~= how long nothing below priority
+		 * 0 could run. Recorded before the overrun bookkeeping so an
+		 * aborted stalled epoch still records. */
+		const uint32_t ticks = g_stall_witness_ticks - witness_before;
+		const uint32_t expected_ms = epoch_us / 1000u;
+		g_stall_events++;
+		g_stall_last_us = epoch_us;
+		g_stall_last_deficit_ms =
+			expected_ms > ticks ? expected_ms - ticks : 0u;
+		if (g_stall_last_deficit_ms > g_stall_max_deficit_ms)
+			g_stall_max_deficit_ms = g_stall_last_deficit_ms;
+		g_stall_flexspi_intr = FLEXSPI_INTR;
+		g_stall_flexspi2_intr = FLEXSPI2_INTR;
+	}
 	if (completed && !g_runtime.recovery_safe) {
 		if (epoch_us > g_runtime_epoch_max_us)
 			g_runtime_epoch_max_us = epoch_us;

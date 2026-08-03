@@ -125,10 +125,15 @@ HOT_OBJECT = "src/optical_main.cpp.o"
 #    adding flash-call latency to every measurement. Decode, DSP, metering,
 #    recording and the transmit-ring producer run from the epoch's AUDIO
 #    checkpoint and carry FLASHMEM, so they no longer consume the ISR-hot bank.
+#    `stall_witness_isr` is not per-block but must be ITCM anyway: it is the
+#    priority-0 GPT1 heartbeat that classifies the ~1.79 s global-stall family,
+#    and a FLASHMEM witness would itself stall on the FlexSPI bus holds it
+#    exists to witness, corrupting the verdict.
 HOT_SECTIONS = (
     ".text._ZL17codec_cycle_clockPv",
     ".text._ZL26audio_ingress_publish_livePtPK18audio_block_structS2_",
     ".text._ZN18AiusAudioProcessor6updateEv",
+    ".text._ZL17stall_witness_isrv",
 )
 
 INGRESS_HOT_OBJECT = "lib/aius_audio_ingress/src/aius_audio_ingress.c.o"
