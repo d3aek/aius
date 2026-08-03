@@ -556,6 +556,53 @@ specified here. Strike items here in the commit that closes them.
     against request count in early samples — the netheap-leak variant
     is trending toward acquittal on sight; the next 1.79 s-family
     stall on a stall-prone boot gets a calibrated verdict.
+
+  **2026-08-03 ~16:10 — THE WITNESS CONVICTED ON ITS FIRST RUNTIME
+  CATCH. The 1.79 s stall spins inside the S/PDIF audio-DMA ISR
+  walking 4,096 timed-out PSRAM-space accesses:**
+
+  - The calibrated witness caught a textbook family member at
+    1,861 s: `last_us` 1,789,722 with **tick deficit 0** — the
+    priority-0 witness ran at full 1 kHz through the whole stall, so
+    bus-fabric hold and interrupts-masked theories are REFUTED — and
+    `isr_samples` advanced with IABR words `00000001 / — / — /
+    00000010`: **IRQ 0 (eDMA channel 0) active** beneath the witness
+    for the stall's duration. The S/PDIF driver attaches its hook
+    via DMAChannel there (`aius_spdif_sources.cpp`
+    `dma.attachInterrupt`); the thief is the audio-update DMA ISR.
+  - `flexspi2_intr` latched **0x440 — AHBBUSTIMEOUT (bit 10)** on
+    the PSRAM controller, absent from every pre-stall read (0x40
+    baseline). The arithmetic then closes exactly: the FlexSPI AHB
+    timeout is 0xFFFF bus cycles @150 MHz = 437 µs = 262,144 CPU
+    cycles, and 2^30 / 262,144 = **4,096 accesses** — the stall is a
+    4,096-iteration walk through FlexSPI2 address space that times
+    out per access (fitted PSRAM answers fast; the 16–32 MB tail of
+    the MPU window, or a wedged chip, does not). Each access stalls
+    the core under one witness tick, so ticks all land (deficit 0)
+    while the ISR crawls — and 4,096 dwords is one 8,192-halfword
+    ingress-ring's worth, a suspicious shape. A wild/corrupt walk
+    pointer landing in 0x71xxxxxx per-boot explains the lottery:
+    garbage varies per boot, and most boots' garbage lands in benign
+    space.
+  - **Heap ACQUITTED formally:** `fnet_heap_free_b` flat at
+    ~61,000 B across 1,462 requests on the calibrated boot. No
+    netheap leak exists; the count-anchored leak death variant is
+    closed.
+  - **Next: name the line.** Two convergent paths, either suffices:
+    (1) witness increment — capture the preempted context's stacked
+    PC (exception-frame walk from the GPT1 ISR) on episode-first
+    sample: the next stall hands over the exact spinning
+    instruction; (2) code-read `AiusSpdifTx24Hook::isr` /
+    `audio_ingress_publish_live` and every walk the ch-0 ISR chain
+    performs for a pointer that can go wild into FlexSPI2 space.
+    Then fix the pointer bug, and as defence-in-depth tighten the
+    MPU FlexSPI2 region to the fitted 16 MB (extmem heap is banned
+    and test-enforced, so NOACCESS beyond the probes is
+    safe-by-construction and turns any recurrence into a named
+    MemManage fault instead of a silent 1.79 s crawl). The death
+    connection (a walk long enough to out-spin the 8 s WDOG, or the
+    same wild pointer corrupting further) is now the working death
+    mechanism pending the same fix.
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:
