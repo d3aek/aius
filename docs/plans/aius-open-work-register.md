@@ -623,6 +623,30 @@ specified here. Strike items here in the commit that closes them.
     keep the ring off pad-2 (end the extent at 0x70800000 or halve
     the ring) or retire pad-2 entirely if the chip is confirmed
     marginal.
+  - **~17:35 — the PC capture fired twice on a prone boot and turned
+    the "walking code" theory inside out; MPU bisect + STS1 shipped.**
+    Boot 338 rolled stall-prone (3 family events inside 150 s) and
+    both runtime PCs landed at 0x4764/0x4768 — adjacent instructions
+    in `AiusSpdifTx24Hook::isr`'s inlined fill loop, IRQ1 (the other
+    S/PDIF DMA channel) active, AHBBUSTIMEOUT latched each time. The
+    disassembly acquits the loop itself: its load is masked to an
+    11-bit ring cursor and its store bounded to the DMA half-buffer —
+    structurally OCRAM-only, incapable of addressing FlexSPI2. (The
+    other captured PC, `SdioCard::readData`, was the boot-adjacent SD
+    class.) So the fill loop is a VICTIM: its accesses queue at the
+    AXI/cache interface behind FlexSPI2 transactions that some OTHER
+    agent issues — cache eviction/linefill traffic or another AHB
+    master — each eating the 437 µs controller timeout. Two closers
+    shipped (this commit): `stall_diag.flexspi2_sts1` (AHBCMDERRID/
+    CODE — the register that names WHO issued the erroring PSRAM
+    command) and `stall_mpu_tighten()` — the FlexSPI2 MPU window
+    shrunk at setup-end from 32 MiB to the probed fitted size, found
+    by base address not table index. Read the next prone boot as a
+    bisect: stalls gone → the unfitted 16–32 MiB tail was the
+    surface (and any future toucher faults attributably); stalls
+    persist → the timing-out accesses are within fitted space and
+    STS1 names the master, pointing at pad-2 marginality or a
+    fitted-space wild agent.
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:

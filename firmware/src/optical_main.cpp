@@ -930,6 +930,7 @@ static uint32_t g_stall_last_deficit_ms;
 static uint32_t g_stall_max_deficit_ms;
 static uint32_t g_stall_flexspi_intr;
 static uint32_t g_stall_flexspi2_intr;
+static uint32_t g_stall_flexspi2_sts1;
 /* 100 ms: above every legitimate epoch (25 ms budget) and far below the
  * 1.79 s family this instrument exists to classify. */
 static constexpr uint32_t AIUS_STALL_WITNESS_THRESHOLD_US = 100000u;
@@ -975,6 +976,41 @@ __attribute__((naked)) static void stall_witness_isr(void)
 {
 	asm volatile("mrs r0, msp\n\t"
 	             "b aius_stall_witness_body");
+}
+
+/* Address-space bisect for the 1.79 s stall family: the core maps FlexSPI2
+ * as a 32 MiB WBWA window while this board fits at most 16 MiB, so accesses
+ * into the unfitted upper half are architecturally reachable (wild pointers
+ * and cache-driven traffic alike) and time out at the controller —
+ * AHBBUSTIMEOUT latched on every witnessed stall. Shrinking the region to
+ * the probed fitted size drops the unfitted tail into the background
+ * NOACCESS region: if the stalls persist, the timing-out accesses are
+ * within fitted space (the pad-2 marginality thread); if they stop on
+ * stall-prone boots, the unfitted tail was the surface — and any future
+ * toucher faults with an attributable PC instead of crawling. The region
+ * is found by base address rather than table index so a reordered core
+ * configure_cache() cannot silently retarget this. */
+static FLASHMEM void stall_mpu_tighten(void)
+{
+	uint32_t size_field;
+	if (external_psram_size >= 16u)
+		size_field = SCB_MPU_RASR_SIZE(23); /* 16 MiB */
+	else if (external_psram_size >= 8u)
+		size_field = SCB_MPU_RASR_SIZE(22); /* 8 MiB */
+	else
+		return; /* bare board: the core's map stands */
+	__disable_irq();
+	for (uint32_t region = 0; region < 16u; region++) {
+		SCB_MPU_RNR = region;
+		if ((SCB_MPU_RBAR & 0xFFFFFFE0u) != 0x70000000u)
+			continue;
+		SCB_MPU_RASR =
+			(SCB_MPU_RASR & ~SCB_MPU_RASR_SIZE(31)) | size_field;
+		asm volatile("dsb");
+		asm volatile("isb");
+		break;
+	}
+	__enable_irq();
 }
 
 /* GPT1 CLKSRC(1) is perclk_clk_root, which the Teensy core routes from the
@@ -2957,7 +2993,8 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 		"\"witness_ticks\":%lu,\"isr_samples\":%lu,"
 		"\"iabr\":[\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\",\"%08lx\"],"
 		"\"pc\":\"%08lx\",\"lr\":\"%08lx\","
-		"\"flexspi_intr\":\"%08lx\",\"flexspi2_intr\":\"%08lx\"}",
+		"\"flexspi_intr\":\"%08lx\",\"flexspi2_intr\":\"%08lx\","
+		"\"flexspi2_sts1\":\"%08lx\"}",
 		(unsigned long)g_stall_events, (unsigned long)g_stall_last_us,
 		(unsigned long)g_stall_last_deficit_ms,
 		(unsigned long)g_stall_max_deficit_ms,
@@ -2968,7 +3005,8 @@ static FLASHMEM bool http_stall_diag_json(char *output, size_t capacity,
 		(unsigned long)iabr[4],
 		(unsigned long)pc, (unsigned long)lr,
 		(unsigned long)g_stall_flexspi_intr,
-		(unsigned long)g_stall_flexspi2_intr);
+		(unsigned long)g_stall_flexspi2_intr,
+		(unsigned long)g_stall_flexspi2_sts1);
 }
 
 static FLASHMEM bool http_replay_diag_json(char *output, size_t capacity,
@@ -7247,6 +7285,10 @@ FLASHMEM void setup(void)
 		nullptr,
 		aius_runtime_budget(AIUS_BOOT_CHECKPOINT_RESET_CAPTURE),
 		millis(), &g_runtime.boot_status);
+	/* Tighten the FlexSPI2 MPU window to the fitted size AFTER every
+	 * PSRAM probe above has run (core probe, pad-2 ID probe, recorder
+	 * placement all touch the space this shrinks around). */
+	stall_mpu_tighten();
 	/* Arm the stall witness last: everything above is construction, and
 	 * arming after it keeps boot-time flash waits (the known ~1.84 s
 	 * boot-adjacent masked stall) out of the witness's first heartbeat
@@ -7764,6 +7806,7 @@ FLASHMEM void loop(void)
 			g_stall_max_deficit_ms = g_stall_last_deficit_ms;
 		g_stall_flexspi_intr = FLEXSPI_INTR;
 		g_stall_flexspi2_intr = FLEXSPI2_INTR;
+		g_stall_flexspi2_sts1 = FLEXSPI2_STS1;
 	}
 	if (completed && !g_runtime.recovery_safe) {
 		if (epoch_us > g_runtime_epoch_max_us)
