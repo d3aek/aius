@@ -957,15 +957,19 @@ static void stall_witness_isr(void)
 	}
 }
 
-/* GPT1 from ipg_clk (150 MHz) / 150 -> 1 MHz, restart mode, OCR1 999 ->
- * 1 kHz. Clock choice does not affect the verdict: the deficit counts missed
- * ISR runs, and a pended OF1 fires once on unmask however long the mask. */
+/* GPT1 CLKSRC(1) is perclk_clk_root, which the Teensy core routes from the
+ * 24 MHz OSC for PIT/GPT (not ipg): /24 -> 1 MHz, restart mode, OCR1 999 ->
+ * 1 kHz. Field-calibrated: the first flash ran PR 149 assuming 150 MHz ipg
+ * and ticked at exactly 160 Hz (24 MHz/150/1000), which the two boot-stall
+ * events' arithmetic confirmed to the tick. Clock choice does not affect the
+ * verdict: the deficit counts missed ISR runs, and a pended OF1 fires once
+ * on unmask however long the mask. */
 static FLASHMEM void stall_witness_arm(void)
 {
 	CCM_CCGR1 |= CCM_CCGR1_GPT1_BUS(CCM_CCGR_ON) |
 		     CCM_CCGR1_GPT1_SERIAL(CCM_CCGR_ON);
 	GPT1_CR = 0;
-	GPT1_PR = GPT_PR_PRESCALER(149);
+	GPT1_PR = GPT_PR_PRESCALER(23);
 	GPT1_SR = 0x3Fu;
 	GPT1_IR = GPT_IR_OF1IE;
 	GPT1_OCR1 = 999u;
