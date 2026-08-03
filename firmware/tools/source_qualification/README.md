@@ -41,14 +41,19 @@ amplitude-normalized PCM gate while silently destroying IEC 61937 sync
 arithmetic — the failure looks like a codec/classification fault, not a
 level fault (2026-08-03 session record in `aius-e2e-latency.md`).
 
-**Standing hardware suspicion (owner, 2026-08-03): a bad solder joint on
-this unit's USB-B socket.** Working the adjacent TOSLINK jacks blinked the
-USB three times in ten seconds (contact-bounce shape), and a marginal
-socket joint is also a confound on the 2026-08-02 cable-1 overcurrent
-conviction (the cable swaps discriminated on the same socket). The owner
-plans to dismantle and inspect at the next replug; until then treat any
-mixer drift or enumeration blip as expected, verify before measuring, and
-avoid disturbing the rear connectors mid-session.
+**Standing hardware suspicion (owner inspection, 2026-08-03): a reworked
+small IC + adjacent capacitors, marking `OCF S036` (partially occluded),
+suspected power-regulation region.** The dismantle found NO rework on the
+USB-B socket, factory hand-touch-up on the TOSLINK jacks (under the
+conformal layer), and post-manufacture resolder evidence concentrated at
+this IC and its caps. Working hypothesis: a marginal joint there resets
+the device under BOARD FLEX — which explains the fibre-handling
+enumeration blinks without any socket fault, the mixer resets that ride
+them, and adds a confound to the 2026-08-02 cable-1 overcurrent
+conviction (a flaky power-stage joint is a plausible intermittent
+overdraw source). Discriminator: press-test the region while enumerated,
+watching the kernel log; then reflow. Until resolved: verify the mixer
+before measuring and avoid flexing the board or connectors mid-session.
 
 Run the bracket (~130 s) and the refine:
 
