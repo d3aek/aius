@@ -353,9 +353,10 @@ specified here. Strike items here in the commit that closes them.
   timestamp + caller tag on the longest masked section.
 
 - **Periodic watchdog reset every ~31 min 45 s on the E-AC-3 phase-4
-  image (2026-08-02; FIXED 2026-08-03 — single-context FNET polling,
-  campaign-accepted; conviction chain and closure at the end of this
-  entry).** Since ~11:23 — right after the phase-4
+  image (2026-08-02; ~~FIXED 2026-08-03~~ REOPENED the same morning —
+  the single-context fix eliminated the ~1,905 s T1-anchored mode but
+  a SECOND death mode at ~6,176 s survives it; chain, premature
+  closure, and the reopening evidence at the end of this entry).** Since ~11:23 — right after the phase-4
   image (`5151bb21f8be+teensy41-optical`, built 10:51) went on the
   board — the idle bench board has reset on a 1,904±5 s cadence: 17
   resets in the host kernel log through 21:23:29 (each one
@@ -466,6 +467,30 @@ specified here. Strike items here in the commit that closes them.
   a server-side capture settles it. Unattended runs longer than
   30 minutes are valid again on this image; the four-hour gates are
   unblocked from this defect's side.
+
+  **REOPENED 2026-08-03 ~11:25 — the closure above was premature.**
+  Boot 329 watchdog-died at 09:40:40, two minutes after the campaign
+  summary printed, at 6,176 s of age — the "103-minute outlier"
+  interval of the historical record (2× ~6,201 s), now revealed as a
+  SECOND death mode rather than an outlier of the first. The
+  campaign criterion (three 1,905 s windows ≈ 95 min) was sized
+  against the T1-anchored mode and missed this one by three minutes.
+  What stands from the fix: the ~1,905 s mode IS gone (three T1
+  windows survived where the predecessor died 25+/25), the
+  beat-stall family IS gone, and every latency/bracket result on the
+  image remains valid. What does not stand: "deaths eliminated". New
+  evidence from the retained probe's first field catch: the 6,176 s
+  death stamped checkpoint 5 (HTTP) with `wedges` 0 and `depth` 0 —
+  the fatal wedge is NOT inside `fnet_poll` on the single-context
+  image; it died in HTTP-job code outside the poll. The DHCP
+  schedule question above is now load-bearing for naming what
+  happens at ~6,176 s: serving FNET's actual lease/T1/T2 options is
+  the next instrumentation, riding the next flash alongside the ring
+  normalization. Boot 330 outlived a per-boot 6,176 s anchor
+  (watched past it), so the second mode's schedule has jitter or a
+  different anchor; a longer observation names it. Unattended-run
+  validity is re-bounded at ~100 minutes, not 30; the four-hour
+  gates stay BLOCKED.
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing

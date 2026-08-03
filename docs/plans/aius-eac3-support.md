@@ -205,14 +205,14 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    underruns and faults 0. Control re-measures beside it with the
    flash-cached tables: AC-3 `codec_pc` 1, 735 bursts, 1,357,974
    cycles; DTS `codec_pc` 11, 2,492 bursts, 936,466 cycles — both
-   zero-reject, within budget. Long-run caveat: ~~the periodic
-   ~31 min 45 s watchdog reset registered the same night does not
-   touch this 2-minute evidence but blocks the Phase 5 four-hour
-   gates until fixed~~ — FIXED 2026-08-03 (single-context FNET
-   polling, campaign-accepted;
-   [`aius-open-work-register.md`](aius-open-work-register.md) §Open
-   defects — runtime carries the closure); the four-hour gates are
-   unblocked from that defect's side.
+   zero-reject, within budget. Long-run caveat: the periodic watchdog-death defect blocks the
+   Phase 5 four-hour gates. The single-context FNET fix (2026-08-03)
+   eliminated the ~1,905 s T1-anchored mode and the beat-stall
+   family, but a SECOND death mode at ~6,176 s survives it and the
+   entry was reopened the same morning
+   ([`aius-open-work-register.md`](aius-open-work-register.md) §Open
+   defects — runtime). Runs up to ~100 minutes are valid; the
+   four-hour gates stay blocked until the second mode is fixed.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until
