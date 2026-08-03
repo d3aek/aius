@@ -808,7 +808,13 @@ status: production-rows-complete-baselines-blocked
 unit: parent-only
 depends-on: [phase-1]
 blockers:
-  - direct-loop rows await the temporary fibre rewire (operator)
+  - direct-loop rows await the temporary fibre rewire (operator);
+    runner support landed 2026-08-03 (tools/latency/direct_loop.py,
+    host-proven in the latency-runner suite) - PCM rows reuse the
+    bench analyzer, encoded rows one-to-one match IEC
+    (Pa, Pc, payload_bits, payload_hash) tuples with a seeded
+    bootstrap CI; no Teensy dependency, so these rows are also
+    independent of the periodic-WDOG defect
 matrix:
   direct-loop-pcm: pending-temporary-rewire
   direct-loop-dts-carrier: pending-temporary-rewire

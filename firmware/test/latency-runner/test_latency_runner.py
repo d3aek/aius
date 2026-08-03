@@ -2990,5 +2990,126 @@ class CollectorContractTests(unittest.TestCase):
             )
 
 
+DIRECT_SPEC = importlib.util.spec_from_file_location(
+    "aius_latency_direct_loop", TOOLS / "direct_loop.py"
+)
+DIRECT = importlib.util.module_from_spec(DIRECT_SPEC)
+DIRECT_SPEC.loader.exec_module(DIRECT)
+
+
+def synthetic_iec_stream(
+    burst_count: int, gap_words: int = 3000, payload_words: int = 96
+) -> np.ndarray:
+    """A stereo S16 stream carrying `burst_count` distinct IEC bursts."""
+    words = [np.zeros(512, dtype="<u2")]
+    for index in range(burst_count):
+        rng = np.random.default_rng(1000 + index)
+        payload = rng.integers(
+            0, 0x10000, size=payload_words, dtype=np.uint32
+        ).astype("<u2")
+        header = np.array(
+            [DIRECT.IEC_PA, DIRECT.IEC_PB, 21, payload_words * 16],
+            dtype="<u2",
+        )
+        words.append(header)
+        words.append(payload)
+        words.append(np.zeros(gap_words, dtype="<u2"))
+    stream = np.concatenate(words)
+    if stream.size % 2:
+        stream = np.concatenate([stream, np.zeros(1, dtype="<u2")])
+    return stream.view("<i2").reshape(-1, 2)
+
+
+class DirectLoopAnalysis(unittest.TestCase):
+    def test_iec_round_trip_reports_exact_shift(self):
+        playback = synthetic_iec_stream(8)
+        shift = 421
+        capture = np.vstack([
+            np.zeros((shift, 2), dtype="<i2"), playback
+        ])
+        summary = DIRECT.analyze_iec(playback, capture)
+        self.assertEqual(summary["bursts"], 8)
+        latencies = [
+            pair["latency_frames"] for pair in summary["pairs"]
+        ]
+        self.assertEqual(latencies, [shift] * 8)
+        transport = summary["transport"]
+        self.assertEqual(transport["median_frames"], float(shift))
+        self.assertEqual(
+            transport["bootstrap"]["ci95_low_frames"], float(shift)
+        )
+        self.assertEqual(
+            transport["bootstrap"]["ci95_high_frames"], float(shift)
+        )
+        self.assertAlmostEqual(
+            summary["affine"]["capture_per_playback_ratio"], 1.0
+        )
+
+    def test_iec_payload_corruption_is_a_hard_failure(self):
+        playback = synthetic_iec_stream(4)
+        capture = playback.copy()
+        words = capture.view("<u2").reshape(-1)
+        bursts = DIRECT.parse_iec_bursts(playback)
+        target = bursts[2]["frame"] * 2 + 6
+        words[target] ^= 0x0100
+        with self.assertRaisesRegex(RuntimeError, "payload_sha256"):
+            DIRECT.analyze_iec(playback, capture)
+
+    def test_iec_dropped_burst_is_a_hard_failure(self):
+        playback = synthetic_iec_stream(4)
+        bursts = DIRECT.parse_iec_bursts(playback)
+        third = bursts[2]["frame"] * 2
+        words = playback.view("<u2").reshape(-1).copy()
+        words[third] = 0
+        words[third + 1] = 0
+        capture = words.view("<i2").reshape(-1, 2)
+        with self.assertRaisesRegex(RuntimeError, "count mismatch"):
+            DIRECT.analyze_iec(playback, capture)
+
+    def test_iec_truncated_payload_is_a_hard_failure(self):
+        playback = synthetic_iec_stream(2)
+        bursts = DIRECT.parse_iec_bursts(playback)
+        cut_frame = bursts[1]["frame"] + 2
+        with self.assertRaisesRegex(RuntimeError, "past the capture end"):
+            DIRECT.parse_iec_bursts(playback[:cut_frame])
+
+    def test_pcm_direct_loop_reports_exact_shift(self):
+        probe_codes = BENCH.codes("pcm")
+        with tempfile.TemporaryDirectory() as scratch:
+            stimulus = pathlib.Path(scratch) / "stimulus.raw"
+            positions = BENCH.make_pcm(
+                stimulus, probe_codes, warmup_frames=8192,
+                guard_frames=BENCH.PCM_PROBE_GAP_FRAMES,
+                tail_frames=8192,
+            )
+            playback = np.fromfile(
+                stimulus, dtype="<i2"
+            ).reshape(-1, 2)
+        shift = 500
+        capture = np.vstack([
+            np.zeros((shift, 2), dtype="<i2"), playback
+        ])
+        summary = DIRECT.analyze_pcm(playback, positions, capture)
+        transport = summary["transport"]
+        self.assertEqual(transport["min_frames"], float(shift))
+        self.assertEqual(transport["max_frames"], float(shift))
+        self.assertEqual(
+            transport["bootstrap"]["median_frames"], float(shift)
+        )
+        self.assertEqual(summary["accepted_occurrences"], 24)
+
+    def test_bootstrap_interval_brackets_a_spread(self):
+        latencies = np.array(
+            [400.0] * 20 + [404.0] * 4, dtype=np.float64
+        )
+        interval = DIRECT.bootstrap_median_ci(latencies)
+        self.assertLessEqual(
+            interval["ci95_low_frames"], interval["median_frames"]
+        )
+        self.assertLessEqual(
+            interval["median_frames"], interval["ci95_high_frames"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
