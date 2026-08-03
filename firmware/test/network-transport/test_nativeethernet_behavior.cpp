@@ -1953,6 +1953,19 @@ void fnet_dhcp_cln_get_options(
     std::memset(options, 0, sizeof(*options));
 }
 
+/* Netheap telemetry, faked flat: the count-anchor investigation reads these
+ * through Ethernet.stackHeapStatus() (open-work register, ~6,176 s death
+ * mode). */
+fnet_size_t fnet_free_mem_status(void)
+{
+    return 65536u;
+}
+
+fnet_size_t fnet_malloc_max(void)
+{
+    return 32768u;
+}
+
 /* The two diagnostic readers, faked at the same seam as the rest of FNET.
  * fnet_dhcp_cln_get_state() asserts its descriptor rather than tolerating a
  * null: the real one dereferences without checking, so a caller that reaches it

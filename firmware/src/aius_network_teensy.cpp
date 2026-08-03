@@ -60,6 +60,9 @@ struct AiusNetworkTeensyDiagPrimitives {
 	 * reconstructed from cadence. */
 	bool (*dhcp_options)(uint32_t *lease_s, uint32_t *t1_s,
 	                     uint32_t *t2_s);
+	/* Optional (nullptr = unavailable): FNET netheap telemetry -- the
+	 * count-anchor hypothesis's conviction instrument. */
+	bool (*stack_heap)(uint32_t *free_bytes, uint32_t *largest_block);
 };
 #endif
 
@@ -797,6 +800,11 @@ FLASHMEM bool dhcp_options(uint32_t *lease_s, uint32_t *t1_s,
 	return Ethernet.dhcpOptions(lease_s, t1_s, t2_s);
 }
 
+FLASHMEM bool stack_heap(uint32_t *free_bytes, uint32_t *largest_block)
+{
+	return Ethernet.stackHeapStatus(free_bytes, largest_block);
+}
+
 const AiusNetworkTeensyDiagPrimitives kProductionDiagPrimitives = {
 	netif_initialized,
 	link_live,
@@ -804,6 +812,7 @@ const AiusNetworkTeensyDiagPrimitives kProductionDiagPrimitives = {
 	frames,
 	uptime_ms,
 	dhcp_options,
+	stack_heap,
 };
 
 const AiusNetworkTeensyPrimitives *g_primitives = &kProductionPrimitives;
@@ -851,6 +860,13 @@ FLASHMEM bool diag_dhcp_options(uint32_t *lease_s, uint32_t *t1_s,
 	return g_diag_primitives != nullptr &&
 	       g_diag_primitives->dhcp_options != nullptr &&
 	       g_diag_primitives->dhcp_options(lease_s, t1_s, t2_s);
+}
+
+FLASHMEM bool diag_stack_heap(uint32_t *free_bytes, uint32_t *largest_block)
+{
+	return g_diag_primitives != nullptr &&
+	       g_diag_primitives->stack_heap != nullptr &&
+	       g_diag_primitives->stack_heap(free_bytes, largest_block);
 }
 
 FLASHMEM uint8_t diag_dhcp_state()
@@ -1659,6 +1675,22 @@ FLASHMEM bool aius_network_teensy_dhcp_options(
 		return false;
 	}
 	return diag_dhcp_options(lease_s, t1_s, t2_s);
+}
+
+FLASHMEM bool aius_network_teensy_stack_heap(
+	const AiusNetworkTeensy *adapter, uint32_t *free_bytes,
+	uint32_t *largest_block)
+{
+	if (free_bytes == nullptr || largest_block == nullptr) {
+		return false;
+	}
+	*free_bytes = 0u;
+	*largest_block = 0u;
+	if (adapter == nullptr || !adapter->stack_started ||
+	    !primitives_ready()) {
+		return false;
+	}
+	return diag_stack_heap(free_bytes, largest_block);
 }
 
 FLASHMEM bool aius_network_teensy_frames(const AiusNetworkTeensy *adapter,

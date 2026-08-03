@@ -488,6 +488,11 @@ fnet_ssize_t fnet_socket_recvfrom(
 /* fnet_socket.h:1433 -- fnet_size_t (a count of ready sockets), not
  * fnet_return_t. */
 fnet_size_t fnet_socket_poll(fnet_socket_poll_t *, fnet_size_t);
+
+/* stack/fnet_netbuf.h:33-34 -- the netheap telemetry pair the count-anchor
+ * investigation serves (current free bytes; largest allocatable block). */
+fnet_size_t fnet_free_mem_status(void);
+fnet_size_t fnet_malloc_max(void);
 fnet_return_t fnet_socket_setopt(
     fnet_socket_t, fnet_protocol_t, fnet_socket_options_t, const void *,
     fnet_size_t);

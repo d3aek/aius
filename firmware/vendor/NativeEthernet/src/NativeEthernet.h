@@ -131,6 +131,12 @@ public:
 	 * served schedule must come from the client's own state. */
 	static bool dhcpOptions(uint32_t *lease_seconds, uint32_t *t1_seconds,
 	                        uint32_t *t2_seconds);
+	/* FNET netheap telemetry (current free bytes; largest allocatable
+	 * block). False before fnet_init(). Added for the count-anchor death
+	 * investigation: a per-connection netheap leak is the standing
+	 * hypothesis, and the served decline curve is its conviction. */
+	static bool stackHeapStatus(uint32_t *free_bytes,
+	                            uint32_t *largest_block);
 	static bool dhcpStart(unsigned long responseTimeout = 4000);
 	static void dhcpStop();
 	static void end();

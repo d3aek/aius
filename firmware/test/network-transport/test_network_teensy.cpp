@@ -265,6 +265,13 @@ bool diag_dhcp_options(uint32_t *lease_s, uint32_t *t1_s, uint32_t *t2_s)
 	return true;
 }
 
+bool diag_stack_heap(uint32_t *free_bytes, uint32_t *largest_block)
+{
+	*free_bytes = 61234u;
+	*largest_block = 30000u;
+	return true;
+}
+
 const AiusNetworkTeensyDiagPrimitives kDiagPrimitives = {
 	diag_netif_initialized,
 	diag_link_live,
@@ -272,6 +279,7 @@ const AiusNetworkTeensyDiagPrimitives kDiagPrimitives = {
 	diag_frames,
 	diag_uptime_ms,
 	diag_dhcp_options,
+	diag_stack_heap,
 };
 
 AiusNetAction action(AiusNetActionKind kind, uint32_t generation = 7u)
@@ -1447,6 +1455,10 @@ void test_generation_diagnostics()
 	                                         &t2_s));
 	assert(lease_s == 0u);
 	g_diag_options_available = true;
+	uint32_t heap_free = 0u, heap_largest = 0u;
+	assert(aius_network_teensy_stack_heap(&adapter, &heap_free,
+	                                      &heap_largest));
+	assert(heap_free == 61234u && heap_largest == 30000u);
 
 	/* A link-lost callback counts as a link callback of the other polarity
 	 * and leaves the first connected timestamp alone. */

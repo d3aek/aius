@@ -56,6 +56,10 @@ the target adapter:
   values (host byte order, seconds) for the aius periodic-WDOG
   investigation: the death schedule must be read from the client's own
   state, not reconstructed from observed cadence.
+- `Ethernet.stackHeapStatus()` exposes the FNET netheap telemetry pair
+  (free bytes; largest allocatable block) for the same investigation's
+  count-anchor hypothesis: a per-connection netheap leak convicts or
+  acquits on the served decline curve.
 - every path into `fnet_poll()` routes through `EthernetClass::pollProbed()`
   (`src/NativeEthernet.cpp`, `src/NativeEthernetServer.cpp`), which maintains
   the retained `AiusPollProbe` (header in the firmware's

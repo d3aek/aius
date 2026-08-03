@@ -300,6 +300,18 @@ bool EthernetClass::dhcpOptions(uint32_t *lease_seconds,
     return true;
 }
 
+bool EthernetClass::stackHeapStatus(uint32_t *free_bytes,
+                                    uint32_t *largest_block)
+{
+    if (!fnet_initialized)
+        return false;
+    if (free_bytes != nullptr)
+        *free_bytes = (uint32_t)fnet_free_mem_status();
+    if (largest_block != nullptr)
+        *largest_block = (uint32_t)fnet_malloc_max();
+    return true;
+}
+
 bool EthernetClass::dhcpStart(unsigned long responseTimeout)
 {
     if (!stack_initialized)

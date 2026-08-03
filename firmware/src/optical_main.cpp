@@ -2936,6 +2936,14 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	uint32_t t2_s = 0;
 	const bool schedule = aius_network_teensy_dhcp_options(
 		network, &lease_s, &t1_s, &t2_s);
+	/* The netheap decline curve is the count-anchor hypothesis's
+	 * conviction instrument (~6,176 s death mode, open-work register):
+	 * a per-connection leak shows as free bytes falling linearly with
+	 * http_requests. */
+	uint32_t heap_free = 0;
+	uint32_t heap_largest = 0;
+	const bool heap = aius_network_teensy_stack_heap(
+		network, &heap_free, &heap_largest);
 
 	if (!http_json_append(output, capacity, length,
 	                      ",\"net_diag\":{\"link\":%u,\"link_live\":%u,"
@@ -2944,7 +2952,10 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	                      "\"dhcp_schedule_valid\":%s,"
 	                      "\"dhcp_lease_s\":%lu,"
 	                      "\"dhcp_t1_s\":%lu,"
-	                      "\"dhcp_t2_s\":%lu",
+	                      "\"dhcp_t2_s\":%lu,"
+	                      "\"fnet_heap_valid\":%s,"
+	                      "\"fnet_heap_free_b\":%lu,"
+	                      "\"fnet_heap_largest_b\":%lu",
 	                      (unsigned)aius_network_teensy_link(network),
 	                      (unsigned)aius_network_teensy_link_live(network),
 	                      (unsigned)aius_network_teensy_dhcp_state(network),
@@ -2953,7 +2964,10 @@ static FLASHMEM bool http_net_diag_json(char *output, size_t capacity,
 	                      schedule ? "true" : "false",
 	                      (unsigned long)lease_s,
 	                      (unsigned long)t1_s,
-	                      (unsigned long)t2_s))
+	                      (unsigned long)t2_s,
+	                      heap ? "true" : "false",
+	                      (unsigned long)heap_free,
+	                      (unsigned long)heap_largest))
 		return false;
 	if (!http_net_diag_generation(output, capacity, length, "first",
 	                              aius_network_teensy_diag_first(network)))

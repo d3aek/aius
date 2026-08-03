@@ -453,6 +453,13 @@ bool aius_network_teensy_dhcp_options(const AiusNetworkTeensy *adapter,
                                       uint32_t *lease_s, uint32_t *t1_s,
                                       uint32_t *t2_s);
 
+/* FNET netheap telemetry (current free bytes; largest allocatable block);
+ * false with zeroed outputs when the stack is down or the primitive is
+ * unavailable. */
+bool aius_network_teensy_stack_heap(const AiusNetworkTeensy *adapter,
+                                    uint32_t *free_bytes,
+                                    uint32_t *largest_block);
+
 /* The MAC's transmitted and received frame counters. Returns false and leaves
  * both zero when the driver has no statistics to give.
  */
@@ -541,6 +548,8 @@ typedef struct {
 	 * struct in aius_network_teensy.cpp. */
 	bool (*dhcp_options)(uint32_t *lease_s, uint32_t *t1_s,
 	                     uint32_t *t2_s);
+	/* Optional (nullptr = unavailable): FNET netheap telemetry. */
+	bool (*stack_heap)(uint32_t *free_bytes, uint32_t *largest_block);
 } AiusNetworkTeensyDiagPrimitives;
 
 /* Clears the diagnostic table as well, so a case that wants one installs it. */
