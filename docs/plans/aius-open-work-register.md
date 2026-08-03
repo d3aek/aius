@@ -741,9 +741,16 @@ specified here. Strike items here in the commit that closes them.
     that patch needs FNET vendored or overridden — decision deferred
     until the witness verdict says whether it is the death mechanism.
 
-- **Replay schemas absent from swagger.** `/api/replays*` request/response
-  bodies are served but undocumented; the contract suite asserts nothing
-  about them. (Recorded since the item 3 era.)
+- ~~**Replay schemas absent from swagger.**~~ **CLOSED 2026-08-03:** all
+  five `/api/replays*` routes documented (listing with its truncation
+  contract, start/stop/delete with their strict bodies and per-token
+  refusals, status with full vocabulary). The status document joined
+  the drift gate's emitter table; the listing's row shape — a loop
+  with a raw-character tail the extractor cannot assemble — is pinned
+  against the row format literal directly, so a renamed row key still
+  fails the suite. (Originally: `/api/replays*` request/response
+  bodies served but undocumented; the contract suite asserted nothing
+  about them.)
 - ~~**`AIUS ID` worst-case length "proof" is stale (2026-08-03).**~~
   **CLOSED same day**: the `AIUS_ID_MAX_PAYLOAD` sum now carries every
   field including `cw=` and the 2-digit checkpoint domain, funded by
@@ -800,12 +807,24 @@ specified here. Strike items here in the commit that closes them.
   in-scope gates on one exact image;
   [`aius-e2e-latency.md`](aius-e2e-latency.md) was deliberately interleaved
   ahead of them by owner priority.
-- **OTA investigation verdict, then implementation** — **owner decision
-  2026-07-31: OTA is the next key feature**, ahead of E-AC-3, which is
+- ~~**OTA investigation verdict, then implementation**~~ — **COMPLETE,
+  owner-confirmed 2026-08-03.** The investigation gate closed and the
+  implementation shipped ([`aius-ota-upgrade.md`](aius-ota-upgrade.md)
+  `status: shipped`; the signed end-to-end upgrade completed on
+  hardware, `67c44a381`, after the staging path, operator-latched
+  activation, PSRAM dark-window activation and both rehearsal arms
+  landed). Verified live on the current bench image (`249894edb20c`):
+  `ota_diag` serves idle with key fingerprint `78cafee9c5728f06`,
+  PSRAM staging available. Standing note, not a blocker: the image
+  runs with `test_key: true` — the production-key cutover remains the
+  documented security-posture follow-up in the plan. Historic
+  sequencing riders below are preserved for the record.
+  (Original entry: owner decision
+  2026-07-31: OTA is the next key feature, ahead of E-AC-3, which is
   considered only after OTA lands. Complete the finite investigation gate in
   [`aius-ota-upgrade.md`](aius-ota-upgrade.md) first (no OTP fuse burn
   implied). By owner decision 2026-07-29, the AC-3 four-hour and by-ear
-  gates run only after this verdict as well as sample-rate following.
+  gates run only after this verdict as well as sample-rate following.)
   Sequencing rider, same 2026-07-31 decision: close the easy-to-prove open
   defects first (30, 18, 10, 19, 20, 35, 2 and 34 dispatched or queued
   2026-07-31, plus B9); anything hard to prove or diagnose waits for the ESI
