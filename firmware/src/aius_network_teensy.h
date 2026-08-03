@@ -502,6 +502,11 @@ typedef struct {
 	AiusIoEvent (*close_once)(void);
 	AiusIoEvent (*udp_receive_once)(uint8_t *buffer, size_t capacity);
 	AiusIoEvent (*udp_send_once)(const uint8_t *buffer, size_t length);
+	/* Optional (nullptr = skip): the network job's FNET service poll under
+	 * AIUS_NET_POLL_SINGLE_CONTEXT=1. Kept in lockstep with the production
+	 * struct in aius_network_teensy.cpp. Fakes that leave it null exercise
+	 * the socket surface exactly as before. */
+	void (*stack_poll)(uint32_t now_ms);
 } AiusNetworkTeensyPrimitives;
 
 /* The measurement readers, deliberately a second table rather than five more

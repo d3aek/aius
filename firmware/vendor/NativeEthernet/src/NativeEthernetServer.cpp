@@ -180,7 +180,7 @@ EthernetClient EthernetServer::available()
 			   
 			   
 			   do{
-                   fnet_poll();
+                   EthernetClass::pollProbed(AIUS_POLL_CTX_SERVER_SPIN);
                    if(fnet_socket_getopt(Ethernet.socket_ptr[i], SOL_SOCKET, SO_RCVNUM, &_pending, &_pending_size) == FNET_ERR){
                        fnet_ssize_t error_handler = fnet_error_get();
                        Serial.print("SRVAvailErr: ");

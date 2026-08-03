@@ -52,6 +52,18 @@ the target adapter:
   the symptom is a retried accept rather than a lost connection. This is the one
   patch here that fixes an upstream defect rather than adapting upstream behaviour
   to the Aius lifecycle; it is confined to one initialiser.
+- every path into `fnet_poll()` routes through `EthernetClass::pollProbed()`
+  (`src/NativeEthernet.cpp`, `src/NativeEthernetServer.cpp`), which maintains
+  the retained `AiusPollProbe` (header in the firmware's
+  `lib/aius_boot/include`, storage in the ldscript's `.aius_retained` window):
+  fnet_poll is not reentrant, the port's FNET mutexes are no-ops, and upstream
+  ran the whole service stack from a 1 kHz IntervalTimer ISR while main-loop
+  server code also polled inline — convicted as the periodic DHCP-T1 renewal
+  watchdog wedge (aius open-work register). With
+  `AIUS_NET_POLL_SINGLE_CONTEXT=1` `beginNoWait()` arms no IntervalTimer at
+  all and the application's network job drives the poll, making the stack
+  single-context; at `0` the historic ISR model is preserved (instrumented)
+  for on-device confirmation.
 
 The native `network-transport` suite guards these source contracts and the
 single temporary legacy FNET-include exception recorded there.

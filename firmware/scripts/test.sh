@@ -855,6 +855,7 @@ network-transport)
 		"-I$fw_root/test/network-transport/fake" \
 		"-I$fw_root/vendor/NativeEthernet/src" \
 		"-I$fw_root/lib/aius_net/include" \
+		"-I$fw_root/lib/aius_boot/include" \
 		"-I$fw_root/src" \
 		"$fw_root/test/network-transport/test_nativeethernet_behavior.cpp" \
 		"$fw_root/src/aius_network_teensy.cpp" \

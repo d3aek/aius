@@ -40,6 +40,11 @@ struct AiusNetworkTeensyPrimitives {
 	AiusIoEvent (*close_once)(void);
 	AiusIoEvent (*udp_receive_once)(uint8_t *buffer, size_t capacity);
 	AiusIoEvent (*udp_send_once)(const uint8_t *buffer, size_t length);
+	/* Optional (nullptr = skip): drives the FNET service poll from the
+	 * network job when AIUS_NET_POLL_SINGLE_CONTEXT=1. Optional rather
+	 * than required so the host-suite fakes, which model the socket
+	 * surface and not the stack's polling contract, need no change. */
+	void (*stack_poll)(uint32_t now_ms);
 };
 
 struct AiusNetworkTeensyDiagPrimitives {
@@ -737,6 +742,24 @@ FLASHMEM uint32_t uptime_ms()
 	return (uint32_t)millis();
 }
 
+/* Single-context FNET: with AIUS_NET_POLL_SINGLE_CONTEXT=1 no IntervalTimer
+ * is armed (vendor/NativeEthernet), and this is the only steady-state driver
+ * of the service poll -- main-loop context, once per millisecond. The server
+ * spin inside NativeEthernetServer still polls inline, but from this same
+ * context, so fnet_poll can no longer re-enter: the no-op FNET mutexes are
+ * sound again. Conviction chain: open-work register, periodic-WDOG entry. */
+#if AIUS_NET_POLL_SINGLE_CONTEXT
+void stack_poll(uint32_t now_ms)
+{
+	static uint32_t last_poll_ms;
+
+	if (now_ms == last_poll_ms)
+		return;
+	last_poll_ms = now_ms;
+	EthernetClass::pollProbed(AIUS_POLL_CTX_NETWORK_JOB);
+}
+#endif
+
 const AiusNetworkTeensyPrimitives kProductionPrimitives = {
 	callbacks_install,
 	callbacks_clear,
@@ -754,6 +777,11 @@ const AiusNetworkTeensyPrimitives kProductionPrimitives = {
 	close_once,
 	udp_receive_once,
 	udp_send_once,
+#if AIUS_NET_POLL_SINGLE_CONTEXT
+	stack_poll,
+#else
+	nullptr,
+#endif
 };
 
 const AiusNetworkTeensyDiagPrimitives kProductionDiagPrimitives = {
@@ -1312,6 +1340,9 @@ void aius_network_teensy_poll(AiusNetworkTeensy *adapter, uint32_t now_ms,
 	if (!primitives_ready()) {
 		protocol_fault(adapter, event);
 		return;
+	}
+	if (g_primitives->stack_poll != nullptr) {
+		g_primitives->stack_poll(now_ms);
 	}
 	if (adapter->callback_overflow) {
 		adapter->callback_overflow = false;

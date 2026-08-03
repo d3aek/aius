@@ -221,6 +221,15 @@ AiusIoEvent close_once()
 	return g_fake.io[3];
 }
 
+uint32_t g_stack_polls;
+uint32_t g_stack_poll_last_ms;
+
+void stack_poll(uint32_t now_ms)
+{
+	g_stack_polls++;
+	g_stack_poll_last_ms = now_ms;
+}
+
 const AiusNetworkTeensyPrimitives kPrimitives = {
 	callbacks_install,
 	callbacks_clear,
@@ -238,6 +247,7 @@ const AiusNetworkTeensyPrimitives kPrimitives = {
 	close_once,
 	udp_receive_once,
 	udp_send_once,
+	stack_poll,
 };
 
 const AiusNetworkTeensyDiagPrimitives kDiagPrimitives = {
@@ -563,8 +573,13 @@ void test_callback_fifo_stale_duplicate_overflow_and_health()
 		&adapter, 7u, AIUS_NET_EVENT_STACK_STARTED, AIUS_NET_FAULT_NONE);
 	aius_network_teensy_test_callback(
 		&adapter, 7u, AIUS_NET_EVENT_STACK_STARTED, AIUS_NET_FAULT_NONE);
+	const uint32_t polls_before = g_stack_polls;
 	aius_network_teensy_poll(&adapter, 1u, &event);
 	expect_event(event, AIUS_NET_EVENT_NONE, 0u, AIUS_NET_FAULT_NONE);
+	/* The optional stack_poll primitive runs once per adapter poll, with
+	 * the caller's clock. */
+	assert(g_stack_polls == polls_before + 1u);
+	assert(g_stack_poll_last_ms == 1u);
 	assert(aius_network_teensy_test_stale_callbacks() == 1u);
 	assert(adapter.pending_count == 0u);
 	assert(g_fake.log_count == 1u);

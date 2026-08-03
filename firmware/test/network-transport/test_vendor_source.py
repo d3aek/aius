@@ -191,6 +191,7 @@ def test_provenance_and_snapshot_shape():
 
     assert "framework-arduinoteensy` version\n`1.162.0`" in notice
     assert "teensy@5.2.0" in notice
+    assert "AIUS_NET_POLL_SINGLE_CONTEXT" in notice
     assert "MIT License" in license_text
     assert "Permission is hereby granted, free of charge" in license_text
     assert "name=AiusNativeEthernet" in properties

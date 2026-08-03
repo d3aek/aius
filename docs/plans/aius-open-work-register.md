@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-08-02
+updated: 2026-08-03
 toc: true
 ---
 
@@ -374,20 +374,75 @@ specified here. Strike items here in the commit that closes them.
   the open mechanism question. Load-sensitivity note: through a
   ~12-minute live watch plus the E-AC-3 acceptance activity
   (2-second status polling from 21:52), the next expected reset
-  (~21:55) had NOT fired by 22:04 — 40+ min into the cycle — so an
-  actively-polled board stretches or suppresses the cadence; the
-  clean 1,904 s period belongs to the untouched-idle state. Bench
-  impact: any single unattended run longer than ~30 min on this image
-  is invalid (four-hour gates included); short acceptance runs fit
-  inside a cycle. Distinct from the FIXED DPLL boot-lottery defect
-  (its gate holds — `relocks` 0 on every boot). Next: instrument the
-  stall (DWT timestamp + caller tag on the longest masked section, as
-  the boot-adjacent observation entry already proposed), and capture
-  one reset with the checked-in watcher pattern on an idle board.
+  (~21:55) had NOT fired by 22:04 — 40+ min into the cycle. ~~So an
+  actively-polled board stretches or suppresses the cadence~~ —
+  REFUTED overnight: four consecutive deaths under continuous 10 s
+  polling landed within seconds of their boot-anchored predictions,
+  so the two ~103-minute outlier intervals have some other cause
+  (unpinned; both tolerated). Bench impact: any single unattended run
+  longer than ~30 min on this image is invalid (four-hour gates
+  included); short acceptance runs fit inside a cycle. Distinct from
+  the FIXED DPLL boot-lottery defect (its gate holds — `relocks` 0 on
+  every boot).
+
+  **2026-08-03 overnight — mechanism convicted at source, fix
+  authored (device confirmation pending):**
+
+  - The death is anchored to the first DHCP T1 renewal. Every boot
+    dies at boot+~1,895 s against a lease granted at boot+10.3 s;
+    four consecutive deaths landed within seconds of prediction
+    (23:38:2x, 00:10:1x, ~00:42:2x, ~01:14); `dhcp_updates` never
+    reaches 2 (the renewal never completes); and the retained ledger
+    stamps checkpoint 5 (HTTP) on both stamped deaths so far.
+  - Source conviction: the vendored NativeEthernet registers NO-OP
+    FNET mutexes while FNET compiles with `FNET_CFG_MULTITHREADING`,
+    and the whole service stack (DHCP client included) runs inside a
+    1 kHz PIT ISR (`fnet_poll` IntervalTimer, NVIC 224) while
+    NativeEthernetServer's main-loop receive path ALSO spin-calls
+    `fnet_poll()` for up to 10 ms per empty-socket check — a
+    non-reentrant poll entered from two unsynchronized contexts,
+    colliding constantly. The T1 renewal is the ISR side's only
+    socket-layer transmit+ACK cascade holding multi-tick DHCP client
+    state through those collisions; the wedge follows within seconds
+    (both retained stamps sit in the HTTP job, where the main-loop
+    spin lives) and the 8 s WDOG reaps it.
+  - THE FIX (authored, both images built, host suites green; the
+    committed flag default preserves the historic model until
+    on-device confirmation): single-context FNET.
+    `AIUS_NET_POLL_SINGLE_CONTEXT=1` arms no IntervalTimer and the
+    network job drives the poll once per millisecond from the epoch
+    loop — the deployment model FNET's no-op mutexes are actually
+    sound under. Every fnet_poll caller now routes through
+    `EthernetClass::pollProbed()`, which maintains a RETAINED probe
+    (`AiusPollProbe`, 64 B in the ldscript's ROM-safe
+    `.aius_retained` window; OCRAM baseline consciously moved
+    131,328→131,264, still 192 B above the defect-26 floor) served
+    as `poll_probe` on `/api/status`: live reentry counters
+    (minutes-fast confirmation on the old model) plus the dying
+    boot's in-poll context and DHCP state after a wedge. Vendor
+    provenance manifests, NOTICE, the network-transport suite (with
+    a new stack_poll primitive test) and the swagger drift gate are
+    all updated and green.
+  - Morning protocol: flash the instrumented flag-0 image → confirm
+    live `reent` climbing and one T1 death with `wedges` ≥ 1 (ctx +
+    dhcp naming the in-poll wedge) → flip the flag → campaign across
+    at least three T1 windows (~100 min) for deaths-gone proof →
+    close this entry.
 
 - **Replay schemas absent from swagger.** `/api/replays*` request/response
   bodies are served but undocumented; the contract suite asserts nothing
   about them. (Recorded since the item 3 era.)
+- **`AIUS ID` worst-case length "proof" is stale (2026-08-03).** The
+  `AIUS_ID_MAX_PAYLOAD` static_assert sum predates the `cw=` field and
+  the checkpoint domain's growth to 0..10, so the true worst case now
+  exceeds the 256 B dispatcher bound — a pathological counter
+  combination would fail-closed every ID answer as INTERNAL (never
+  corrupt, but dark). Found while adding the poll probe, whose `pp=`
+  field was routed to `/api/status` instead for exactly this reason.
+  Re-budget the sum (display-saturate the u32 counters or consciously
+  raise the bound) and refresh
+  [`usb-control-protocol.md`](../reference/usb-control-protocol.md)'s
+  checkpoint table (its 0..9 list predates AUDIO=9/EPOCH_COMPLETE=10).
 - ~~**Swagger `Status` schema incompleteness.**~~ **CLOSED 2026-07-31**:
   every served field of the status, recorder and DSP-config documents is
   now documented (~145 fields across six new sub-schemas incl. `sd_diag`,

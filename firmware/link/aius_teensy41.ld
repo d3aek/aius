@@ -150,6 +150,11 @@ SECTIONS
 		__aius_retained_start = .;
 		KEEP(*(.aius_retained))
 		KEEP(*(.aius_retained_latch))
+		/* The fnet_poll probe (vendor/NativeEthernet/src/AiusPollProbe.h):
+		 * its own input section, placed third, for the same reason the
+		 * latch has its own -- explicit order is a contract, shared input
+		 * sections are a toolchain habit. */
+		KEEP(*(.aius_retained_probe))
 		. = ALIGN(32);
 		__aius_retained_end = .;
 	} > RAM

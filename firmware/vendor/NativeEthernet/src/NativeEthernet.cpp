@@ -21,7 +21,75 @@
 #include <Arduino.h>
 #include <fnet.h>
 #include "NativeEthernet.h"
+#include "AiusPollProbe.h"
 #include "utility/NativeW5100.h"
+
+#ifndef AIUS_NET_POLL_SINGLE_CONTEXT
+#define AIUS_NET_POLL_SINGLE_CONTEXT 0
+#endif
+
+/* Retained across watchdog resets: lives in the ldscript's pinned
+ * `.aius_retained` window at ORIGIN(RAM), the one OCRAM range the i.MX
+ * RT1062 boot ROM provably does not clobber (link/aius_teensy41.ld). A
+ * DMAMEM/.dmabuffers placement would float with object order and retain
+ * only by luck -- the exact bug the boot ledger already paid for.
+ * Validity is gated on the magic (garbage after power-on). */
+__attribute__((section(".aius_retained_probe"), used, aligned(32)))
+AiusPollProbe aius_poll_probe;
+
+namespace {
+
+void poll_probe_flush(void)
+{
+#if defined(__IMXRT1062__)
+	/* A watchdog reset does not write back dirty dcache, so every probe
+	 * update must reach OCRAM before it counts as retained. Host builds
+	 * (network-transport suite) have no cache to flush. */
+	arm_dcache_flush_delete((void *)&aius_poll_probe,
+	                        sizeof(aius_poll_probe));
+#endif
+}
+
+uint32_t poll_probe_cycles(void)
+{
+#if defined(__IMXRT1062__)
+	return ARM_DWT_CYCCNT;
+#else
+	return 0u;
+#endif
+}
+
+/* Decode the previous boot's live fields into the sticky wedge record,
+ * then reset the live fields for this boot. Runs once from beginNoWait,
+ * before any poll can execute. */
+void poll_probe_boot_decode(void)
+{
+	if (aius_poll_probe.magic == AIUS_POLL_PROBE_MAGIC) {
+		if (aius_poll_probe.depth != 0u) {
+			aius_poll_probe.wedge_seen++;
+			aius_poll_probe.wedge_context =
+				aius_poll_probe.last_context;
+			aius_poll_probe.wedge_dhcp_state =
+				aius_poll_probe.dhcp_state_at_enter;
+			aius_poll_probe.wedge_depth = aius_poll_probe.depth;
+		}
+		aius_poll_probe.prev_max_depth = aius_poll_probe.max_depth;
+		aius_poll_probe.prev_reentries = aius_poll_probe.reentries;
+	} else {
+		memset((void *)&aius_poll_probe, 0, sizeof(aius_poll_probe));
+		aius_poll_probe.magic = AIUS_POLL_PROBE_MAGIC;
+	}
+	aius_poll_probe.depth = 0u;
+	aius_poll_probe.max_depth = 0u;
+	aius_poll_probe.reentries = 0u;
+	aius_poll_probe.enters = 0u;
+	aius_poll_probe.exits = 0u;
+	aius_poll_probe.last_context = 0u;
+	aius_poll_probe.dhcp_state_at_enter = 0u;
+	poll_probe_flush();
+}
+
+} /* namespace */
 
 IPAddress EthernetClass::_dnsServerAddress;
 uint8_t* EthernetClass::stack_heap_ptr = NULL;
@@ -164,9 +232,42 @@ bool EthernetClass::beginNoWait(uint8_t *mac)
     if (link_descriptor == 0)
         return false;
     link_status = fnet_netif_is_connected(netif);
-    _fnet_poll.begin(fnet_poll, FNET_POLL_TIME);
+    poll_probe_boot_decode();
+#if !AIUS_NET_POLL_SINGLE_CONTEXT
+    /* Historic model: the whole FNET service stack (DHCP client included)
+     * runs from this 1 kHz PIT ISR while main-loop code also calls
+     * fnet_poll -- unsound with the no-op mutexes above, and convicted as
+     * the periodic T1-renewal watchdog wedge. Kept behind the flag only so
+     * the instrumented image can confirm the wedge site on hardware. */
+    _fnet_poll.begin([] { pollProbed(AIUS_POLL_CTX_TIMER_ISR); },
+                     FNET_POLL_TIME);
+#endif
     stack_initialized = true;
     return true;
+}
+
+void EthernetClass::pollProbed(uint8_t context)
+{
+    const uint32_t depth = aius_poll_probe.depth + 1u;
+    aius_poll_probe.depth = depth;
+    if (depth > aius_poll_probe.max_depth)
+        aius_poll_probe.max_depth = depth;
+    if (depth > 1u)
+        aius_poll_probe.reentries++;
+    aius_poll_probe.enters++;
+    aius_poll_probe.last_context = context;
+    aius_poll_probe.dhcp_state_at_enter =
+        (dhcp_descriptor != nullptr)
+            ? (uint8_t)fnet_dhcp_cln_get_state(dhcp_descriptor)
+            : 0xFFu;
+    aius_poll_probe.last_enter_cyccnt = poll_probe_cycles();
+    poll_probe_flush();
+
+    fnet_poll();
+
+    aius_poll_probe.depth--;
+    aius_poll_probe.exits++;
+    poll_probe_flush();
 }
 
 bool EthernetClass::dhcpStart(unsigned long responseTimeout)

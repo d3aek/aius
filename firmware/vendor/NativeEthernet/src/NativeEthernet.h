@@ -53,6 +53,7 @@
 
 #include <Arduino.h>
 #include <fnet.h>
+#include "AiusPollProbe.h"
 #include "Client.h"
 #include "Server.h"
 #include "Udp.h"
@@ -114,6 +115,15 @@ public:
     static void setSocketNum(uint8_t _socket_num); //Change allocated socket num
 	static int begin(uint8_t *mac, unsigned long timeout = 60000, unsigned long responseTimeout = 4000);
 	static bool beginNoWait(uint8_t *mac);
+	/* The sole gateway to fnet_poll(). fnet_poll is not reentrant and the
+	 * FNET mutexes on this port are no-ops, so every caller routes through
+	 * here and the retained AiusPollProbe records depth, caller context and
+	 * DHCP-client state (see AiusPollProbe.h and the aius open-work
+	 * register's periodic-WDOG entry). With AIUS_NET_POLL_SINGLE_CONTEXT=1
+	 * beginNoWait arms no IntervalTimer and the application drives this
+	 * from its network job, making the whole stack single-context -- the
+	 * deployment model FNET's no-op mutexes are actually sound under. */
+	static void pollProbed(uint8_t context);
 	static bool dhcpStart(unsigned long responseTimeout = 4000);
 	static void dhcpStop();
 	static void end();

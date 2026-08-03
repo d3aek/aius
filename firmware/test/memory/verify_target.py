@@ -34,7 +34,11 @@ DECODER_ARENA_BYTES = 218688
 # sd_transfer DMA buffer to 32-byte cache lines (aius_runtime_storage.h), so the
 # driver's cache maintenance can never straddle a neighbouring field again --
 # 64 B of padding is the price of making that placement robust instead of lucky.
-COMMITTED_OCRAM_FREE_BYTES = 131328
+# Lowered to 131264 on 2026-08-03: the retained fnet_poll probe (AiusPollProbe,
+# 64 B in `.aius_retained_probe` inside the ROM-safe ORIGIN(RAM) window) is the
+# diagnostic vector for the periodic DHCP-T1 watchdog wedge (open-work
+# register); still 192 B above the defect-26 128 KiB heap-floor link ASSERT.
+COMMITTED_OCRAM_FREE_BYTES = 131264
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"

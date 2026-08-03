@@ -38,6 +38,7 @@ extern "C" {
 	#include "aius_usb_control.h"
 	#include "aius_dsp_config.h"
 }
+#include "AiusPollProbe.h"
 #include "aius_replay.h"
 #include "aius_tx_gate.h"
 #include "aius_optical_config.h"
@@ -2664,6 +2665,39 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		(unsigned long)g_clock_engine_relocks);
 }
 
+/* The retained fnet_poll probe (lib/aius_boot/include/AiusPollProbe.h,
+ * storage in the ldscript's `.aius_retained` window): the diagnostic
+ * vector for the periodic DHCP-T1 watchdog wedge. `wedges`/`ctx`/`dhcp`/
+ * `depth` are the previous boot's died-inside-poll record (ctx 1 = timer
+ * ISR, 2 = server spin, 3 = network job; dhcp = FNET client state at the
+ * fatal entry, 5 = BOUND, 6 = RENEWING); `prev_maxd`/`prev_reent` the
+ * previous boot's reentrancy high-water and count; `maxd`/`reent` this
+ * boot's, live -- nonzero proves fnet_poll re-entered under the historic
+ * split polling model (AIUS_NET_POLL_SINGLE_CONTEXT=0). */
+static FLASHMEM bool http_poll_probe_json(char *output, size_t capacity,
+	                                      size_t *length)
+{
+	return http_json_append(
+		output, capacity, length,
+		",\"poll_probe\":{"
+		"\"wedges\":%lu,"
+		"\"ctx\":%u,"
+		"\"dhcp\":%u,"
+		"\"depth\":%lu,"
+		"\"prev_maxd\":%lu,"
+		"\"prev_reent\":%lu,"
+		"\"maxd\":%lu,"
+		"\"reent\":%lu}",
+		(unsigned long)aius_poll_probe.wedge_seen,
+		(unsigned)aius_poll_probe.wedge_context,
+		(unsigned)aius_poll_probe.wedge_dhcp_state,
+		(unsigned long)aius_poll_probe.wedge_depth,
+		(unsigned long)aius_poll_probe.prev_max_depth,
+		(unsigned long)aius_poll_probe.prev_reentries,
+		(unsigned long)aius_poll_probe.max_depth,
+		(unsigned long)aius_poll_probe.reentries);
+}
+
 /* The pipeline's own record -- the classifier's verdict and the decode path's
  * swallowed faults. Deferred service skips a faulted burst and keeps
  * streaming (a decode error must not gap the wire), which left defect 29's
@@ -4079,6 +4113,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	if (!http_clock_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_clock_regs_json((char *)body, capacity, &length))
+		return false;
+	if (!http_poll_probe_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
 		return 0;
