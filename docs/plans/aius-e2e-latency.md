@@ -975,6 +975,46 @@ route carve-out for `/aius/dsp.json`, or an operator-provided copy of the
 card file) and the misleading `source` label are tracked in
 [`aius-open-work-register.md`](aius-open-work-register.md).
 
+### Phase 3: TX-ring gate-open normalization and DHCP schedule visibility
+
+```yaml
+phase: 3
+status: draft
+unit: parent-only
+depends-on: [phase-2]
+owner-target: board share at or under 16 ms e2e (owner, 2026-08-03)
+```
+
+Two riders on one image, contracted 2026-08-03 after the Phase 2
+decomposition (board share 909 frames / 18.94 ms at TX ring 128; ring
+phase is a 128–1,792-frame per-session lottery) and the same-morning
+reopening of the periodic-WDOG defect (second death mode at ~6,176 s;
+DHCP schedule reconstruction now provably unreliable).
+
+- **R1 — gate-open trim.** When the TX gate transitions closed→open,
+  the tx24 ring is trimmed to `AIUS_TX_GATE_OPEN_TARGET_FRAMES`
+  (initial value 256, compile-time) by advancing the consumer cursor.
+  Dropping is safe by construction: the gate was closed, so the
+  dropped frames were dark. Trim events and trimmed frames are served
+  on the clock document.
+- **R2 — determinism.** Ten fresh carrier sessions land the first
+  open-gate `tx_level_frames` within target ± one block, and
+  `pcm-production` repeated across three fresh sessions reads raw
+  latency within one block of itself. The 851–971-era queue-phase
+  correction becomes unnecessary going forward: cross-row deltas
+  become DSP-cost-meaningful directly.
+- **R3 — no harm.** Both ingress-health brackets pass on the image;
+  no new underruns at target under bracket + row load; the replay
+  prebuffer/handover path is untouched or its exemption recorded.
+- **R4 — DHCP visibility.** `net_diag` serves the FNET client's
+  actual lease/T1/T2 option values; swagger updated through the drift
+  gate; at least one full ~6,176 s second-mode window observed with
+  the values in hand before that defect's next hypothesis is written.
+
+Acceptance rides Phase 2's standards: self-validating rows, the
+ingress-health bracket pair, and raw evidence retained with figures
+inlined at the commit that ships each requirement.
+
 ## Outstanding-work audit
 
 - `docs/plans/aius-ac3-support.md` — `extend`: Add physical first-output and AU-tail latency to the completed decoder evidence while its deferred four-hour gate remains pending OTA work.
