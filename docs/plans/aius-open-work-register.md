@@ -794,6 +794,34 @@ specified here. Strike items here in the commit that closes them.
     recorded (clamp looks unnecessary on the soak evidence), the FEC
     TX-spin bounding decision is unrecorded, and the formal AC-3
     four-hour acceptance run is still to be scheduled.
+  - **8.00 h witness + heap watch on `930f003c6e6e+teensy41-optical`,
+    2026-08-04 14:13–22:13 (boot generation 346 held throughout).**
+    Zero deaths, zero resets: the generation never stepped, so this is
+    the longest clean unattended run recorded on this bench and it
+    clears the four-hour bar twice over. Three findings.
+    - **The FNET heap-decline hypothesis this watch existed to test did
+      not reproduce.** Free heap is flat across 13,866 served requests:
+      first-half mean 61,075 B against second-half mean 61,099 B, a
+      +24 B drift over eight hours. The 63,744 B opening sample is a
+      pre-settle boot transient, not the top of a slope. Steady state
+      sits at ~61,000 B with a 59,008 B transient minimum and the
+      largest free block tracking free space (60,648 B at exit), so
+      there is no fragmentation trend either.
+    - **One stall in eight hours, at age 188.7 s: 121.4 ms, with
+      `last_deficit_ms` and `max_deficit_ms` both 0.** That is the
+      accepted ~118.8 ms residual class (defect 35, `e33022292`), not
+      the convicted 1.79 s family — no 1.79 s-class event occurred at
+      all. `flexspi2_sts1` read clean (`00000000`); the sample carries
+      `pc 0001f3e2` / `lr 0001f3d7`. Epoch-budget overruns moved 2 → 3
+      over the same window, consistent with that single event.
+    - **New observation, not previously recorded: 336 of 13,851 status
+      polls (2.4 %) drew no HTTP response inside the 4 s client
+      timeout while the board stayed alive** (generation unchanged
+      across every one). First at age 4,289 s, then spread to
+      28,755 s. Whether this is poll-probe cache-flush serialization,
+      an FNET service-window transient, or a client-side artifact is
+      unnamed; it costs nothing at audio and did not precede the stall.
+      Raw log retained at `.scratch/<session>/witness-watch-d35.jsonl`.
 
 - ~~**Replay schemas absent from swagger.**~~ **CLOSED 2026-08-03:** all
   five `/api/replays*` routes documented (listing with its truncation
