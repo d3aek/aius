@@ -206,8 +206,16 @@ static void test_time_quota(void)
 	      "8ms check stops after first atomic ingest");
 	AiusAudioServiceDiag diag;
 	aius_audio_service_get_diag(&service, &diag);
-	CHECK(diag.max_service_us == 12000u && diag.budget_overruns == 1u,
+	/* The 4 ms-per-read fake clock counts READS: started(0), loop-top(4),
+	 * ingest-bracket end(8) -- the defect-35 substep read -- then the
+	 * second loop-top(12) breaks over budget and the final total reads 16.
+	 * The ingest bracket spans loop-top to bracket-end: 4 ms. */
+	CHECK(diag.max_service_us == 16000u && diag.budget_overruns == 1u,
 	      "over-budget unit counted once");
+	CHECK(diag.max_ingest_us == 4000u,
+	      "the ingest substep max records the bracketed span");
+	CHECK(diag.max_step_us == 0u,
+	      "no pipeline step ran, so the step max stays zero");
 	aius_pipeline_destroy(pipeline);
 }
 

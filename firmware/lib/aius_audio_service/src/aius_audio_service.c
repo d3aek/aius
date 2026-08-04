@@ -119,6 +119,10 @@ FLASHMEM AiusStatus aius_audio_service_run(AiusAudioService *service,
 			AiusStatus st =
 				aius_pipeline_service_one(service->pipeline, &result);
 			aius_pipeline_get_service_diag(service->pipeline, &after);
+			const uint32_t step_us = elapsed_us(
+				now, service->clock_us(service->clock_ctx));
+			if (step_us > service->diag.max_step_us)
+				service->diag.max_step_us = step_us;
 			steps++;
 			service->diag.service_steps_attempted++;
 			if (after.committed_blocks != before.committed_blocks)
@@ -149,6 +153,10 @@ FLASHMEM AiusStatus aius_audio_service_run(AiusAudioService *service,
 		size_t consumed = 0u;
 		AiusStatus st =
 			aius_pipeline_ingest(service->pipeline, chunk, offered, &consumed);
+		const uint32_t ingest_us = elapsed_us(
+			now, service->clock_us(service->clock_ctx));
+		if (ingest_us > service->diag.max_ingest_us)
+			service->diag.max_ingest_us = ingest_us;
 		if (st != AIUS_OK) {
 			service->diag.last_failure = st;
 			aius_pipeline_reset(service->pipeline);

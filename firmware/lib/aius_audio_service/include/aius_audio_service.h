@@ -27,6 +27,12 @@ typedef struct {
 	uint32_t requested_resets;
 	uint32_t max_service_us;
 	uint32_t budget_overruns;
+	/* Defect-35 substep attribution: the budget check at the loop top
+	 * cannot preempt a step in flight, so a long service is ONE long
+	 * aius_pipeline_service_one (decode/DSP/commit) or ONE long
+	 * aius_pipeline_ingest (IEC parse). These maxima say which. */
+	uint32_t max_step_us;
+	uint32_t max_ingest_us;
 	AiusStatus last_failure;
 } AiusAudioServiceDiag;
 

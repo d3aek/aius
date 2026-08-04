@@ -2629,6 +2629,8 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		"\"service_generation_resets\":%lu,"
 		"\"service_requested_resets\":%lu,"
 		"\"service_max_us\":%lu,"
+		"\"service_max_step_us\":%lu,"
+		"\"service_max_ingest_us\":%lu,"
 		"\"service_max_cycles\":%lu,"
 		"\"service_budget_overruns\":%lu,"
 		"\"service_last_failure\":%d,"
@@ -2670,6 +2672,12 @@ static FLASHMEM bool http_audio_diag_json(char *output, size_t capacity,
 		(unsigned long)service.generation_resets,
 		(unsigned long)service.requested_resets,
 		(unsigned long)service.max_service_us,
+		/* Defect-35 substep attribution: a blown budget is ONE long
+		 * pipeline step (decode/DSP/commit) or ONE long IEC ingest --
+		 * the loop cannot preempt a step in flight -- and these maxima
+		 * say which. */
+		(unsigned long)service.max_step_us,
+		(unsigned long)service.max_ingest_us,
 		(unsigned long)g_audio_checkpoint_max_cycles,
 		(unsigned long)service.budget_overruns,
 		(int)service.last_failure,
