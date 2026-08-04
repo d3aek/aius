@@ -74,17 +74,17 @@
 <text x="348" y="506" font-size="9" fill="#3c7a3c" text-anchor="middle">microSD + native Ethernet pins on the Teensy stay accessible</text>
 <text x="708.0" y="98" font-size="14" font-weight="700" fill="#1a2430">Placed blocks</text>
 <rect x="708.0" y="109" width="11" height="11" rx="2" fill="#4C9BE8"/>
-<text x="726.0" y="118" font-size="11" fill="#26313d"><tspan font-weight="700">1.</tspan> TOSLINK optical receiver <tspan fill="#8a95a1">&#8212; Cliff ORJ5 / FCR684205R</tspan></text>
+<text x="726.0" y="118" font-size="11" fill="#26313d"><tspan font-weight="700">1.</tspan> TOSLINK optical receiver <tspan fill="#8a95a1">&#8212; RS PRO ORJ-5 (805-1671)</tspan></text>
 <rect x="708.0" y="127" width="11" height="11" rx="2" fill="#4C9BE8"/>
-<text x="726.0" y="136" font-size="11" fill="#26313d"><tspan font-weight="700">2.</tspan> TOSLINK optical transmitter <tspan fill="#8a95a1">&#8212; Cliff OTJ5 / FCR684205T</tspan></text>
+<text x="726.0" y="136" font-size="11" fill="#26313d"><tspan font-weight="700">2.</tspan> TOSLINK optical transmitter <tspan fill="#8a95a1">&#8212; RS PRO OTJ-5 (805-1680)</tspan></text>
 <rect x="708.0" y="145" width="11" height="11" rx="2" fill="#E8804C"/>
-<text x="726.0" y="154" font-size="11" fill="#26313d"><tspan font-weight="700">3.</tspan> Rear USB-C sink (sole 5V + data) <tspan fill="#8a95a1">&#8212; Wurth 629722000214 (candidate)</tspan></text>
+<text x="726.0" y="154" font-size="11" fill="#26313d"><tspan font-weight="700">3.</tspan> Rear USB-C sink (sole 5V + data) <tspan fill="#8a95a1">&#8212; GCT USB4105-GF-A</tspan></text>
 <rect x="708.0" y="163" width="11" height="11" rx="2" fill="#5BAF6A"/>
 <text x="726.0" y="172" font-size="11" fill="#26313d"><tspan font-weight="700">4.</tspan> Ethernet magjack (Teensy native PHY) <tspan fill="#8a95a1">&#8212; Pulse J0011D21BNL</tspan></text>
 <rect x="708.0" y="181" width="11" height="11" rx="2" fill="#8A8F98"/>
 <text x="726.0" y="190" font-size="11" fill="#26313d"><tspan font-weight="700">5.</tspan> Remote Program + RTC header <tspan fill="#8a95a1">&#8212; JST GH</tspan></text>
 <rect x="708.0" y="199" width="11" height="11" rx="2" fill="#B07AD1"/>
-<text x="726.0" y="208" font-size="11" fill="#26313d"><tspan font-weight="700">6.</tspan> S/PDIF TX gate (reset-safe disable) <tspan fill="#8a95a1">&#8212; TI SN74LVC1G125DBVR</tspan></text>
+<text x="726.0" y="208" font-size="11" fill="#26313d"><tspan font-weight="700">6.</tspan> S/PDIF TX gate (reset-safe disable) <tspan fill="#8a95a1">&#8212; TI SN74LVC1G126DBVR</tspan></text>
 <rect x="708.0" y="217" width="11" height="11" rx="2" fill="#B07AD1"/>
 <text x="726.0" y="226" font-size="11" fill="#26313d"><tspan font-weight="700">7.</tspan> Diagnostic raw-bypass mux <tspan fill="#8a95a1">&#8212; TI SN74LVC1G3157DBVR</tspan></text>
 <rect x="708.0" y="235" width="11" height="11" rx="2" fill="#B07AD1"/>

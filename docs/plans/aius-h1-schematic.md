@@ -52,7 +52,8 @@ Four hierarchical sheets, each a self-contained review unit:
    rail. Sole power entry; no second VIN/VUSB.
 2. **optical-spdif** — Cliff ORJ5 receiver → S/PDIF-RX to Teensy pin 15; Teensy
    S/PDIF-TX (pin 14) and the raw RX bypass into the mux (`SN74LVC1G3157`),
-   through the TX gate (`SN74LVC1G125`), to the Cliff OTJ5 transmitter. Hardware
+   through the TX gate (`SN74LVC1G126`, simplified at review — see below), to the
+   Cliff-class OTJ5 transmitter. Hardware
    defaults: processed path selected, TX held disabled. Decoupling.
 3. **ethernet** — the Pulse magjack wired to the Teensy's post-PHY 6-pin MDI
    header (RX±/TX±/LED/GND) plus the 100 nF centre-tap cap. The DP83825 PHY is on

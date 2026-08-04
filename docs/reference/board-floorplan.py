@@ -26,12 +26,12 @@ PAL = {
 
 # n, x, y, w, h, category, short label, description (for the legend), MPN/note.
 PARTS = [
-    (1, 6, 2, 15, 12, "optical", "RX", "TOSLINK optical receiver", "Cliff ORJ5 / FCR684205R"),
-    (2, 23, 2, 15, 12, "optical", "TX", "TOSLINK optical transmitter", "Cliff OTJ5 / FCR684205T"),
-    (3, 45, 1, 9, 8, "usb", "USB-C", "Rear USB-C sink (sole 5V + data)", "Wurth 629722000214 (candidate)"),
+    (1, 6, 2, 15, 12, "optical", "RX", "TOSLINK optical receiver", "RS PRO ORJ-5 (805-1671)"),
+    (2, 23, 2, 15, 12, "optical", "TX", "TOSLINK optical transmitter", "RS PRO OTJ-5 (805-1680)"),
+    (3, 45, 1, 9, 8, "usb", "USB-C", "Rear USB-C sink (sole 5V + data)", "GCT USB4105-GF-A"),
     (4, 60, 2, 16, 12, "eth", "RJ45", "Ethernet magjack (Teensy native PHY)", "Pulse J0011D21BNL"),
     (5, 82, 2, 11, 6, "service", "PROG", "Remote Program + RTC header", "JST GH"),
-    (6, 9, 18, 7, 5, "ic", "GATE", "S/PDIF TX gate (reset-safe disable)", "TI SN74LVC1G125DBVR"),
+    (6, 9, 18, 7, 5, "ic", "GATE", "S/PDIF TX gate (reset-safe disable)", "TI SN74LVC1G126DBVR"),
     (7, 27, 18, 7, 5, "ic", "MUX", "Diagnostic raw-bypass mux", "TI SN74LVC1G3157DBVR"),
     (8, 44, 12, 6, 4, "ic", "ESD", "USB high-speed ESD", "TI TPD2EUSB30ADRTR"),
     (9, 52, 12, 6, 4, "power", "PWR", "USB 5V load switch / protection", "TI TPS2553DBVR"),

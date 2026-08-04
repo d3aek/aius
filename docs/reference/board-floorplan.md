@@ -57,8 +57,8 @@ Turning this into an orderable PCB is the gated hardware work:
 See the [hardware spec](../plans/aius-hardware-spec.md) for the full gate order.
 Regenerate this figure with `python3 board-floorplan.py`.
 
-**Known label drift (2026-08-04), figure not yet regenerated:** the H1 review
-simplified the TX gate to a single `SN74LVC1G126` (active-high OE, no inverter)
-and the purchased optical modules are RS PRO ORJ-5/OTJ-5; the figure still
-labels the gate `SN74LVC1G125` and the jacks Cliff `FCR684205R/T`. Placement is
-unaffected — the parts are pin-compatible drop-ins in the same positions.
+Labels were re-synchronised with `evidence/design/provisional-components.csv` on
+2026-08-04: the TX gate is a single `SN74LVC1G126` (active-high OE, no inverter)
+after the H1 review, the optical modules are the purchased RS PRO ORJ-5/OTJ-5,
+and the USB-C receptacle is the GCT `USB4105-GF-A`. Placement is unchanged — the
+substituted parts are pin-compatible drop-ins in the same positions.

@@ -52,10 +52,14 @@ connectivity/aius-carrier.json  (project manifest: sheet list)
   `Teensy41` (the socketed module, drawn as the carrier-used pads with correct
   electrical types), `TCA9517A` (I2C level-translating buffer/isolator), the
   generic `Conn_1x02..06` connectors (JST GH headers, pin headers, Tag-Connect),
-  the Cliff `Cliff_ORJ5` / `Cliff_OTJ5` TOSLINK optical modules, the
-  `SN74LVC1G3157` bypass mux, `SN74LVC1G04` inverter and `SN74LVC1G125` TX gate
-  (single-unit, pin numbers verified against the datasheets and the stock KiCad
-  symbols), and the Pulse `Pulse_J0011D21BNL` RJ45 magjack.
+  the `Cliff_ORJ5` / `Cliff_OTJ5` TOSLINK optical module footprint-class symbols
+  (the purchased parts are the RS PRO ORJ-5/OTJ-5 drop-ins), the
+  `SN74LVC1G3157` bypass mux and the `SN74LVC1G126` TX gate (single-unit, pin
+  numbers verified against the datasheets and the stock KiCad symbols), and the
+  Pulse `Pulse_J0011D21BNL` RJ45 magjack. The library also retains
+  `SN74LVC1G125` and `SN74LVC1G04` symbols from the pre-review TX gate
+  (active-low OE plus an inverter); no sheet instantiates them since the H1
+  review collapsed that pair into the single active-high-OE `SN74LVC1G126`.
 - **`lib/standard-cache.kicad_sym`** — verbatim copies of the stock KiCad symbols
   the generator uses (`R`, `C`, `USB_C_Receptacle_USB2.0_16P`, `USB_A`,
   `PWR_FLAG`), taken from KiCad 10.0.4 (`/usr/share/kicad/symbols`, digest pinned
