@@ -647,6 +647,25 @@ specified here. Strike items here in the commit that closes them.
     persist → the timing-out accesses are within fitted space and
     STS1 names the master, pointing at pad-2 marginality or a
     fitted-space wild agent.
+  - **2026-08-04 morning — LOADED SOAK PASS, FIRST OBSERVED DHCP
+    RENEWAL, GATES UNBLOCKED.** The bisect boot ran a 10.0 h watch to
+    cap on one generation: zero stalls, zero deaths, FNET heap flat
+    across 17,936 requests — with ~8 h of continuous production DTS
+    decode (2,842 + 460+ aplay passes, zero failures, ~96 bursts/s,
+    zero rejects) driving the flight-recorder ring through ~1,300
+    clean pad-2-tail cycles. The same boot then crossed T1 alive and
+    `dhcp_updates` ticked 1→2 with a fresh 24 h lease (86,400 /
+    43,200 / 75,600), no restart, IP intact: the renewal path works;
+    the single-context closure's residual (b) is CLOSED — no boot
+    had ever lived long enough to see it. **Owner decision
+    2026-08-04: the four-hour gates are UNBLOCKED** — the validity
+    blocker (unattended-run deaths) is gone and this single run
+    exceeds gate length 2.5× under heavier-than-gate load; the
+    formal AC-3 four-hour acceptance run remains to be scheduled as
+    its own protocol, and the by-ear gate waits on the owner.
+    Decision-queue evidence: the pad-2 ring clamp looks UNNECESSARY
+    (~1,300 clean tail cycles under load); the OTA `test_key`
+    production cutover and a formal `dts` bench mode remain queued.
   - **~20:35 — BISECT VERDICT: the unfitted tail convicts,
     strong-but-provisional.** Three consecutive ~58-minute windows
     on the tightened-window image (boots re-rolled deliberately
