@@ -3,9 +3,9 @@ title: Aius prototype cost model
 type: plans
 scope: component
 component: aius
-status: draft
+status: in-progress
 tags: [aius, hardware, pcb, cost, prototype]
-updated: 2026-07-15
+updated: 2026-08-04
 toc: true
 ---
 
@@ -76,7 +76,14 @@ These are provisional catalogue anchors, not a released BOM:
 | Optical receiver | Cliff FCR684205R / ORJ-5 class, [DigiKey](https://www.digikey.co.uk/en/products/detail/cliff-electronic-components-ltd/FCR684205R/15283094) | £3.67 ex VAT at quantity one | Included in PCBA line |
 | Optional processor module | Teensy 4.1, [DigiKey](https://www.digikey.co.uk/en/products/filter/evaluation-boards/embedded-mcu-dsp-evaluation-boards/teensy-4-1/786) | £23.88 ex VAT | Separate approximately £29 inc-VAT option |
 
-Archive current supplier pages or quotations under `docs/reference/datasheets.md` before using them as a release decision. Record stock state, currency, price breaks, retrieval time, VAT basis, and source URL in the evidence manifest.
+**Optical-part substitution (2026-07-27):** the purchased modules are the RS PRO
+ORJ-5 (RS `805-1671`) and OTJ-5 (RS `805-1680`), chosen for availability over
+the unavailable Cliff parts
+([sourcing record](aius-optical-prototype.md#objective)). The anchor rows above
+still carry the old Cliff quotes; replace them with RS PRO pricing at the next
+refresh.
+
+Archive current supplier pages or quotations under `docs/reference/datasheets.md` before using them as a release decision. Record stock state, currency, price breaks, retrieval time, VAT basis, and source URL in the doc that cites them.
 
 ## Costed functional BOM requirements
 
@@ -98,7 +105,7 @@ machine-validated schema. Every BOM line records:
 - VAT, duty, and freight treatment;
 - confidence level and refresh trigger;
 - customer-supplied and optional status;
-- evidence artifact and SHA-256 where the source is saved.
+- evidence artifact where the source is saved.
 
 Functional groups include:
 

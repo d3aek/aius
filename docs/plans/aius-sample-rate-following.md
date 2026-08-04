@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, teensy, audio, clocking, spdif]
-updated: 2026-08-02
+updated: 2026-08-04
 toc: true
 ---
 
@@ -818,8 +818,12 @@ order:
 Steps 1, 2 and 4 are complete. The clean external-source capture means step 3
 was not triggered. The one-fibre playback-only test also reproduced corruption,
 excluding the physical return and simultaneous USB capture. The direct,
-non-Icron host discriminator is deferred; it remains the next CM6206 diagnostic
-but no longer blocks firmware tests. Continue step 5 with strict firmware
+non-Icron host discriminator is deferred; ~~it remains the next CM6206
+diagnostic
+but no longer blocks firmware tests~~ — CLOSED AS OVERTAKEN 2026-08-03
+(owner decision, register entry): the CM6206 was physically retired from
+the bench 2026-08-02 and the qualified clean source is the ESI U24 XL, so
+the discriminator no longer gates anything. Continue step 5 with strict firmware
 counters. A known isolated one-frame PCM source impulse may be counted and
 quarantined only when recorder evidence shows no gap, counter delta, lock/rate
 transition or multi-frame corruption, and the corrupt sample fits the
@@ -852,7 +856,12 @@ pending when source corruption cannot be correlated at the raw input plane.
    transitions on a fresh event ring, then the exact trim-boundary waveform.
    Repeat encoded AC-3 with a source path that does not corrupt words. Gate 7
    must use a measurement path that the discriminator has shown does not
-   independently create discontinuities.
+   independently create discontinuities. (Scope update: the 32 kHz legs
+   were deferred to the long tail 2026-07-31 — gates 3/4 above — and the
+   clean source/measurement path exists since 2026-08-02: the qualified
+   U24 XL. Remaining in scope: 48→44.1→48 plus loss→replay transitions,
+   the trim-boundary waveform, clean-source encoded AC-3, and the gate-1
+   rerun, all on one exact image.)
 6. Sequencing was deliberately re-scoped on 2026-07-30/31: the e2e-latency
    preliminary and Phase 1 work, including its PCM and AC-3 production rows,
    ran ahead of the remaining device gates by owner priority (PCM and AC-3
@@ -862,7 +871,9 @@ pending when source corruption cannot be correlated at the raw input plane.
    long tail). Once they pass, update this plan, commit
    that device-evidence boundary, and continue `aius-e2e-latency.md` Phase 2.
    The four-hour AC-3 gate remains deferred until the OTA investigation is
-   complete.
+   complete. (OTA complete 2026-08-01, `67c44a381`; the owner unblocked
+   the four-hour gates 2026-08-04 after the WDOG-defect soak — the run now
+   waits only on this plan's in-scope device gates and scheduling.)
 
 Two acceptance realities are recorded rather than implied. First, the
 in-scope gates must clear on one exact committed image: the passes so far
@@ -888,6 +899,10 @@ brackets also qualified it clean (bit-exact) at 44.1 and 48 kHz;
 32 kHz self-loop FAILED with left-subframe corruption (register entry
 carries the signature), so gate 3's long-tail source question stays
 open. Gate 1 reruns with the U24 XL on the final candidate image.**
+(The CM6206 was physically retired from the bench 2026-08-02 and the
+CM-era discriminators closed as overtaken 2026-08-03 — register entry.
+Where gates 2, 5 and 7 above name the CM6206, the source is now the
+qualified U24 XL.)
 
 If the 48 kHz slope exceeds 0.25 words/s, Phase 2 is not complete. The next
 mechanism is a slow correction term driven by ingress slope into the same

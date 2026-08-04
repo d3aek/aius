@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-08-03
+updated: 2026-08-04
 toc: true
 ---
 
@@ -68,6 +68,10 @@ specified here. Strike items here in the commit that closes them.
   (`tx_gate` on `/api/status`). Runs when the jacks are soldered. Its step
   5 (glass loopback re-running item 3 across real fibre) also owns the
   clock/content-ratio residue recorded in `signal-path.md` §Open.
+  **State 2026-08-04: the jacks ARE soldered and the glass loopback
+  locked 2026-07-28** (resolved entry above); what remains of this test
+  is the measure flow across glass and the steps needing an EXTERNAL
+  source or sink (steps 2–4, 6), as that entry records.
 - ~~**The bench SD card needs service (check on a PC, reformat, or swap)
   before the full-size OTA end-to-end (2026-08-01).**~~ **RETRACTED the
   same day — the card was innocent** (owner challenged the verdict;
@@ -356,7 +360,12 @@ specified here. Strike items here in the commit that closes them.
   image (2026-08-02; ~~FIXED 2026-08-03~~ REOPENED the same morning —
   the single-context fix eliminated the ~1,905 s T1-anchored mode but
   a SECOND death mode at ~6,176 s survives it; chain, premature
-  closure, and the reopening evidence at the end of this entry).** Since ~11:23 — right after the phase-4
+  closure, and the reopening evidence at the end of this entry.
+  2026-08-03 evening: the surviving stall/death family CONVICTED as
+  FlexSPI2 unfitted-tail bus holds, `stall_mpu_tighten()` standing
+  tripwire fix. 2026-08-04: 10.0 h loaded soak clean, four-hour gates
+  UNBLOCKED by owner — see the standing-state note at the end of this
+  entry).** Since ~11:23 — right after the phase-4
   image (`5151bb21f8be+teensy41-optical`, built 10:51) went on the
   board — the idle bench board has reset on a 1,904±5 s cadence: 17
   resets in the host kernel log through 21:23:29 (each one
@@ -464,7 +473,10 @@ specified here. Strike items here in the commit that closes them.
   97 min while the lease demonstrably persisted, so either the update
   callback skips some ACK path or the reconstructed T1/lease values
   are off; one small follow-up (serve FNET's lease/T1/T2 options) or
-  a server-side capture settles it. Unattended runs longer than
+  a server-side capture settles it. (Residual (b) CLOSED 2026-08-04:
+  the first observed renewal completed — `dhcp_updates` 1→2 — see the
+  2026-08-04 bullet below. No boot had ever lived long enough to see
+  it.) Unattended runs longer than
   30 minutes are valid again on this image; the four-hour gates are
   unblocked from this defect's side.
 
@@ -488,9 +500,11 @@ specified here. Strike items here in the commit that closes them.
   the next instrumentation, riding the next flash alongside the ring
   normalization. Boot 330 outlived a per-boot 6,176 s anchor
   (watched past it), so the second mode's schedule has jitter or a
-  different anchor; a longer observation names it. Unattended-run
+  different anchor; a longer observation names it. ~~Unattended-run
   validity is re-bounded at ~100 minutes, not 30; the four-hour
-  gates stay BLOCKED.
+  gates stay BLOCKED.~~ (Superseded 2026-08-04: the 10.0 h loaded
+  soak passed and the owner unblocked the gates — see the 2026-08-04
+  bullet below.)
 
   **Two further corrections, 2026-08-03 afternoon (Phase 3 R4 data
   plus the bracket record):**
@@ -693,7 +707,9 @@ specified here. Strike items here in the commit that closes them.
     clamp candidate ready if recording-load stalls ever surface;
     (3) the four-hour gates stay blocked until one long soak on this
     image passes (the current watch runs as that soak), then
-    unblocking is proposed to the owner.
+    unblocking is proposed to the owner. (Satisfied 2026-08-04: that
+    soak ran 10.0 h clean and the owner unblocked the gates — the
+    2026-08-04 bullet above.)
   - **The stall is CPU theft at random epoch phase, duration
     2^30 cycles.** This boot is a strong reproducer (~1.3 stalls/min,
     77+ events) and the poll stream itself resolved per-stall timing:
@@ -759,6 +775,25 @@ specified here. Strike items here in the commit that closes them.
     want bounding regardless (drop + counter beats a WDOG death);
     that patch needs FNET vendored or overridden — decision deferred
     until the witness verdict says whether it is the death mechanism.
+    (This list is a 2026-08-03 13:59 record, overtaken same day:
+    steps 1–3 executed — flash boundary ~15:36, witness verdict
+    ~16:10, MPU tighten ~17:35 and its ~20:35 graduation to standing
+    fix, all timestamped bullets above. Step 4's verdict input
+    arrived — the bisect convicts the FlexSPI2 bus-hold class — but
+    the FEC-bounding decision itself remains unrecorded.)
+  - **Standing state as of 2026-08-04 (audit note).** The ~1,905 s
+    T1-anchored mode is gone (single-context FNET polling,
+    `45153bb5a`); the 1.79 s stall family is convicted as FlexSPI2
+    unfitted-tail bus holds with `stall_mpu_tighten()` the standing
+    tripwire fix (`58596243d`); the 10.0 h loaded soak passed with
+    zero stalls and zero deaths and the first DHCP renewal was
+    observed (`6950202b7`); **the owner unblocked the four-hour
+    gates 2026-08-04.** Open residuals: the wild-address source is
+    unnamed (the tripwire converts a recurrence into a named
+    MemManage fault), the recorder-ring pad-2 straddle stands
+    recorded (clamp looks unnecessary on the soak evidence), the FEC
+    TX-spin bounding decision is unrecorded, and the formal AC-3
+    four-hour acceptance run is still to be scheduled.
 
 - ~~**Replay schemas absent from swagger.**~~ **CLOSED 2026-08-03:** all
   five `/api/replays*` routes documented (listing with its truncation
@@ -791,7 +826,9 @@ specified here. Strike items here in the commit that closes them.
   proof. The gate found and closed further drift beyond this entry
   (`NetDiagGeneration` keys, recorder `rate_changes`). Scope note: the
   `/api/replays*` documents are still outside the gate — the sibling debt
-  entry above remains open.
+  entry above remains open. (That sibling closed 2026-08-03,
+  `623ecc942`: all five `/api/replays*` routes are now documented and
+  gated — see its entry above.)
 - ~~**DSP editor does not surface the live source type / channel count /
   rate.**~~ **CLOSED 2026-07-28** (operator-directed UI batch): the
   editor's input line now names the encoding and rate from `status.state`
@@ -836,7 +873,10 @@ specified here. Strike items here in the commit that closes them.
   `ota_diag` serves idle with key fingerprint `78cafee9c5728f06`,
   PSRAM staging available. Standing note, not a blocker: the image
   runs with `test_key: true` — the production-key cutover remains the
-  documented security-posture follow-up in the plan. Historic
+  documented security-posture follow-up in the plan. (Superseded by
+  the 2026-08-04 home-key rotation below: `test_key` is now false;
+  the off-repo production-key cycle stays the queued later step.)
+  Historic
   sequencing riders below are preserved for the record.
   **2026-08-04 — HOME KEY ROTATION, owner-directed.** The standing
   device key is now the repo-committed home pair
@@ -875,8 +915,13 @@ specified here. Strike items here in the commit that closes them.
   pre-feature fold; details in
   [`aius-dsp-config-api.md` §Accepted order](aius-dsp-config-api.md#accepted-order-for-the-next-level)).
   The audible on/off choice and delay-time voicing belong to the owner's
-  ears round; the loop measurement (impulse-vector arrival shift) rides
-  the next characterization pass. Related finding recorded the same day:
+  ears round; ~~the loop measurement (impulse-vector arrival shift) rides
+  the next characterization pass~~ — loop measurement DONE later the
+  same day (`5efdce47d`): differential impulse run on the flashed
+  `fd65a530347b` shifted exactly the two SL-in-L/SR-in-R arrivals by
+  exactly +384 samples = the commanded 8 ms, every other channel
+  unmoved. Remaining: the ears round (on/off + voicing, plus the
+  lfe_gain A/B below). Related finding recorded the same day:
   the LFE −8.9 dB observation was the TEST VECTOR (ffmpeg's DTS encoder
   stores LFE ~9.8 dB down; our decode chain is exact), so an lfe_gain
   A/B (0.316 vs 1.0) joins the ears-round queue for convention-encoded

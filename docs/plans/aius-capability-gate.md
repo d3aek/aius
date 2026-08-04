@@ -3,9 +3,9 @@ title: Aius DTS capability gate
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 tags: [aius, hardware, teensy, dts, spdif, platformio]
-updated: 2026-07-18
+updated: 2026-08-04
 toc: true
 ---
 
@@ -105,12 +105,23 @@ Measured, not asserted. The gate passes when, at 600 MHz release build:
 ## Phases
 
 Each phase is a normal commit: green host tests (and, from P5, a reproducible
-target build) plus a diff review. No verdict schemas. **P1–P4 and the P5 host
-side and P6 are done** (P6 physical validation 2026-07-21); P7 still needs the
-soak run. The
+target build) plus a diff review. No verdict schemas. **P1–P6 are done** (P6
+physical validation 2026-07-21, evidence
+[`p6-hidraw-validated.md`](../../evidence/capability-results/p6-hidraw-validated.md));
+**P7's USB-harness soak was overtaken — closed 2026-08-04**, see the phase
+entry. The
 product signal chain beyond this gate — PCM/DTS classifier + end-to-end pipeline
 (`lib/aius_pipeline`) and the 5.1→stereo downmix + EQ (`lib/aius_dsp`) — also
 landed host-tested during the board-free window.
+
+**Gate verdict (recorded 2026-08-04): PASS.** The pass authorised optical
+bench work, and that work shipped: the Phase 14 optical cutover made
+`teensy41-optical` the live runtime, and the decoder this gate benchmarked
+now runs in production well inside its budgets — 936,466 cycles per DTS AU
+≈ 1.56 ms against the 8 ms AUDIO service budget on the E-AC-3-era image
+([`aius-eac3-support.md`](aius-eac3-support.md) Phase 4 acceptance),
+steady-state no-heap decode from the 128 KB DTCM arena proven on hardware
+(62.5 KB peak; register defects 14/29).
 
 1. **P1 — Portable codec contracts.** *Done.* The C headers (`aius_codec.h`,
    `aius_arena.h`), a tested arena allocator, and the native harness
@@ -151,9 +162,23 @@ landed host-tested during the board-free window.
    individual VID/PID hostdevs and hub passthrough do not follow Teensy
    re-enumeration. `scripts/flash_and_run.sh` supplies bounded loader and
    application-interface discovery once that topology is in place.
-7. **P7 — Soak.** Eight-hour run on the recorded firmware/cable/port. Any reset,
+7. **P7 — Soak.** *Closed as overtaken 2026-08-04.* As specified — an
+   eight-hour run over the P6 USB harness — it never ran: the first long
+   RawHID run was invalidated by a transport stall, the fragment-retry fix
+   was validated at 100 iterations / 4,000 frames, and the runtime then cut
+   over to the optical image
+   ([`aius-optical-prototype.md`](aius-optical-prototype.md) §RawHID soak
+   investigation), retiring the USB harness as a bring-up tool. The
+   sustained-decode question P7 existed to answer was settled on the
+   production lineage with strictly stronger evidence: a 1,857 s live
+   optical DTS soak under recorder/HTTP load with zero drops or resets
+   (defect-31 closure, [`aius-ac3-support.md`](aius-ac3-support.md) Slice
+   2b), and on 2026-08-04 a 10.0 h loaded watch with ~8 h of continuous
+   production DTS decode — 2,842+ passes, zero failures, zero resets
+   (`6950202b7`; [`aius-open-work-register.md`](aius-open-work-register.md)
+   periodic-WDOG entry, 2026-08-04 bullet). Any reset,
    protocol error, PCM mismatch, deadline miss, allocation, memory high-water
-   growth, or crash fails it; retry cannot turn a failure green.
+   growth, or crash would have failed it; none occurred.
 
 ## Deferred
 

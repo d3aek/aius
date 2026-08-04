@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, firmware, teensy, audio, dsp, signal-path, dither, limiter]
-updated: 2026-07-29
+updated: 2026-08-04
 toc: true
 ---
 
@@ -29,7 +29,10 @@ ships the change.**
 **Every claim carries a `path:line` citation, and every number says where it came
 from.** Firmware paths are relative to `firmware/` unless the path
 says otherwise. Line numbers are correct as of this revision; the cited symbol name
-is the durable handle.
+is the durable handle. The 2026-08-04 audit re-verified the structural claims against
+the then-current tree (E-AC-3 route, one-quantize chain, LFE fold, decorrelator,
+gate-open trim); ELF-measured byte and cycle figures still name the link they were
+read from and have not been re-measured since.
 
 **Numbers come from one of three places, and the text always says which:**
 
@@ -57,37 +60,50 @@ without reading the whole document.
 ## The three things called a block
 
 **Conflating these is how the 44.1 kHz defect hid for months**, so they are stated
-first. `optical_main.cpp:637` carries the same distinction beside the code.
+first. `optical_main.cpp:1160` carries the same distinction beside the code.
 
 - **128 frames — the engine block.** `AUDIO_BLOCK_SAMPLES`, the Teensy core default,
   which this build does not override. It sizes both DMA buffers, the `audio_block_t`
   pool, the exact ingress chunk and the transmit interrupt's drain of the 24-bit
   ring. `AiusAudioProcessor::update()` therefore runs at the active rate divided
-  by 128, **375 times a second at 48 kHz** (`src/optical_main.cpp:998`), and
+  by 128, **375 times a second at 48 kHz** (`src/optical_main.cpp:1321`), and
   publishes 256 IEC words = 512 bytes each time
   (`lib/aius_replay/include/aius_replay.h:44`).
 - **512 frames — the decoded block, and the one the budget belongs to.** A DTS Core
   access unit with `npcmblocks = 16` reconstructs to 16 × 32 = 512 samples per channel
   (`vendor/dcadec-core/core_decoder.c:962`), and PCM passthrough stages the same 512
-  (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`, `lib/aius_pipeline/include/aius_pipeline.h:45`).
+  (`AIUS_PIPELINE_PCM_BLOCK_FRAMES`, `lib/aius_pipeline/include/aius_pipeline.h:135`).
   On a continuous stream the AUDIO service therefore reaches `enqueue()` once per
   four published chunks, at the active rate divided by 512 (**93.75 blocks per
   second at 48 kHz**). This is what the
-  `blocks` counter counts and what the DWT bracket measures
-  (`src/optical_main.cpp:1126`).
+  `blocks` counter counts and what the DWT bracket measures. The two newer
+  compressed routes divide differently: an AC-3 access unit is emitted as six
+  independent 256-frame blocks (`AIUS_A52_BLOCK_SAMPLES`,
+  `lib/aius_a52/include/aius_a52.h:55`), and an E-AC-3 access unit
+  (1–6 × 256 frames) is sliced on output to at most
+  `AIUS_PIPELINE_MAX_OUTPUT_FRAMES` = 512
+  (`lib/aius_pipeline/include/aius_pipeline.h:136`), so `blocks` counts 512-frame
+  units on DTS/PCM and smaller units on the Dolby routes.
 - **`queue_frames` in the meters — neither of the above.** It is
-  `aius_spdif_tx24_level()`, the transmit ring's occupancy at the publish instant
-  (`src/optical_main.cpp:974`), which sits near 512 because one decode fills the ring
-  by 512 and the four following transmit interrupts drain it by 128 each.
+  `aius_spdif_tx24_level()`, the transmit ring's occupancy at the publish instant.
+  Since the e2e-latency Phase 3 gate-open trim (2026-08-03), every closed→open TX-gate
+  edge trims the ring down to `AIUS_TX_GATE_OPEN_TARGET_FRAMES`
+  (`src/optical_main.cpp:1872`; code default 256, **the shipped image pins 128** via
+  `platformio.ini:310`), and steady occupancy then re-forms through each session's own
+  refill equilibrium — the measured mean moved only ~15 frames when the target halved,
+  but the old 1,792-frame excursions are impossible by construction
+  ([`aius-e2e-latency.md` §Phase 3](../plans/aius-e2e-latency.md#phase-3-tx-ring-gate-open-normalization-and-dhcp-schedule-visibility)).
 
-**Only IEC 61937 burst type I is supported end to end.** `enqueue()` rejects
-`block->frames > AUDIO_BLOCK_SAMPLES * 4` with `AIUS_INVALID_ARG`
-(`src/optical_main.cpp:882`), and that cap is exactly 512. The parser accepts DTS Core
-data types 11/12/13 — burst types I/II/III — and hands all three back as
-`AIUS_OK` (`lib/aius_iec61937/include/aius_iec61937.h:33`), but a type II or III burst
-decodes to 1,024 or 2,048 samples per channel and is therefore refused one stage
-later. The two constants are coupled: changing the engine block changes the decoder
-block this file will accept.
+**Three IEC 61937 families are supported end to end: DTS Core burst type I, AC-3, and
+E-AC-3.** `enqueue()` rejects `block->frames > AUDIO_BLOCK_SAMPLES * 4` with
+`AIUS_INVALID_ARG` (`src/optical_main.cpp:1467`), and that cap is exactly 512. The
+parser de-frames data types 1 (AC-3), 11/12/13 (DTS Core burst types I/II/III) and 21
+(E-AC-3) (`lib/aius_iec61937/include/aius_iec61937.h:34`); the pipeline routes Pc
+family 1 to the AC-3 decoder, 11 to dcadec and 21 to the vendored E-AC-3 fork
+(`lib/aius_pipeline/src/aius_pipeline.c:55`). A DTS type II or III burst decodes to
+1,024 or 2,048 samples per channel and is still refused one stage later. The two
+constants remain coupled: changing the engine block changes the decoder block this
+file will accept.
 
 ## The chain
 
@@ -100,32 +116,40 @@ flowchart TD
     RPL["Replay word ring<br/>aius_replay_service_pop_words"]
     ING["Audio ingress SPSC<br/>8192 words / 16 KiB OCRAM"]
     AUD["Runtime AUDIO checkpoint 9<br/>reset/flush + bounded drain/service"]
-    CLS{"aius_pipeline_classify<br/>Pa/Pb preamble in 512 words?"}
-    IEC["IEC 61937 de-frame<br/>aius_iec61937_push"]
-    DTS["DTS Core decode<br/>aius_dts_decode_access_unit<br/>24-bit planar, up to 6 planes"]
+    CLS{"aius_pipeline_classify<br/>Pa/Pb preamble in 512 words?<br/>+ mid-flight re-type and starvation re-classify"}
+    IEC["IEC 61937 de-frame<br/>aius_iec61937_push<br/>data types 1, 11/12/13, 21"]
+    DTS["DTS Core decode<br/>aius_dts_decode_access_unit<br/>512-frame AU, 24-bit planar, up to 6 planes"]
+    A52["AC-3 decode<br/>aius_a52 (identity-only liba52 fork)<br/>6 x 256-frame blocks per AU"]
+    EAC3["E-AC-3 decode<br/>aius_eac3 (ffmpeg fork, flash-pinned)<br/>AU sliced to &le;512 frames"]
     PCM["PCM passthrough<br/>pcm_feed, 16 left-aligned onto 24-bit"]
-    ENQ["AiusAudioProcessor::enqueue<br/>fs/512, 512 frames<br/>DWT bracket opens"]
-    IN["Input stage: trim + EQ per channel<br/>aius_dsp_input_run"]
-    DMX["Downmix matrix, 6 to 2<br/>aius_dsp_downmix<br/>headroom 0.5 on summing layouts,<br/>1.0 on mono and FL|FR"]
-    OEQ["Output EQ cascade, L and R<br/>aius_dsp_eq_run"]
-    LIM["True-peak safety limiter<br/>aius_dsp_limiter_run<br/>4x oversampled, 2 ms lookahead"]
+    ENQ["AiusAudioProcessor::enqueue<br/>&le;512 frames per block<br/>DWT bracket opens"]
+    STG["Stage to double scratch<br/>the one int32-to-double conversion<br/>+ input trim/EQ when configured"]
+    DMX["Downmix matrix, 6 to 2, double accumulator<br/>aius_dsp_downmix<br/>LFE fold via 120 Hz LR4 low-pass<br/>surround decorrelation delay (config, default 0 ms)<br/>headroom 0.5 on summing layouts, 1.0 on mono and FL|FR"]
+    OEQ["Output EQ cascade, L and R, double<br/>aius_dsp_eq_run"]
+    LIM["True-peak safety limiter, double<br/>aius_dsp_limiter_run<br/>4x oversampled, 2 ms lookahead"]
+    QNT["THE final quantize<br/>aius_quantize: round + saturate<br/>the chain's only rounding and clamp"]
     OUT["Output word width<br/>aius_out_stage_run<br/>24-bit: copy. 16-bit: TPDF dither"]
-    RING["g_aius_spdif_tx24<br/>2 x 2048 int32, 16396 B DMAMEM"]
+    RING["g_aius_spdif_tx24<br/>2 x 2048 int32, 16396 B DMAMEM<br/>trimmed to 128 frames at gate-open (shipped image)"]
     TXI["AiusSpdifTx24Hook::isr<br/>transmit DMA, fs/128"]
     TXB["SPDIF_tx_buffer, int32<br/>2048 B OCRAM, double-buffered"]
     WIRE["SPDIF_STL / SPDIF_STR<br/>CORE_PIN14, 24-bit<br/>live 32/44.1/48 kHz; replay 48 kHz"]
     MET["AiusMeter taps<br/>accumulate + publish at 20 Hz<br/>never alters audio"]
+    REC["PSRAM flight recorder + measure taps<br/>committed planes, PSRAM-fitted boards only"]
 
     OPT --> RX --> BLK --> UPD --> ING --> AUD
     RPL -.->|"replay selected"| UPD
     AUD --> CLS
-    CLS -->|DTS| IEC --> DTS --> ENQ
+    CLS -->|"non-linear"| IEC
+    IEC -->|"Pc 11"| DTS --> ENQ
+    IEC -->|"Pc 1"| A52 --> ENQ
+    IEC -->|"Pc 21"| EAC3 --> ENQ
     CLS -->|PCM| PCM --> ENQ
-    ENQ --> IN --> DMX --> OEQ --> LIM --> OUT --> RING
+    ENQ --> STG --> DMX --> OEQ --> LIM --> QNT --> OUT --> RING
     RING --> TXI --> TXB --> WIRE
-    IN -.-> MET
+    STG -.-> MET
     LIM -.-> MET
     OUT -.-> MET
+    OUT -.-> REC
 ```
 
 The dotted edges are diagnostic taps, not audio. There is exactly one output — the
@@ -140,21 +164,27 @@ the hardware does not carry, and the wire is the last stage the firmware owns.
 | 1 | Optical receive | `AudioInputSPDIF3::isr` | int32 subframe → int16 | `spdif_rx_buffer` 2,048 B OCRAM |
 | 2a | Engine ingress publish | `AiusAudioProcessor::update` | int16 → uint16 words | direct to `g_audio_ingress_words`, 16,384 B OCRAM |
 | 2b | Deferred audio service | `aius_audio_service_run` | integer control | bounded AUDIO checkpoint, cold service object |
-| 3 | Classify | `aius_pipeline_classify` | integer compare | `clsbuf[512]` 1,024 B, DTCM arena |
+| 3 | Classify + re-type | `aius_pipeline_classify`, re-type/starve counters | integer compare | `clsbuf[512]` 1,024 B, DTCM arena |
 | 4a | IEC 61937 de-frame | `aius_iec61937_push` | integer | 4,096 B payload, DTCM arena |
-| 4b | DTS Core decode | `aius_dts_decode_access_unit` | fixed point → int32 | dcadec `ta` tree, DTCM arena |
+| 4b | Compressed decode (one resident) | `aius_dts_decode_access_unit` / `aius_a52_*` / `aius_eac3_*` | codec-native → int32, 24-bit scale | 180,224 B codec slot, DTCM arena |
 | 4c | PCM passthrough | `pcm_feed` | int16 → int32, left-aligned onto 24-bit | `pcm_l`/`pcm_r` 4,096 B, DTCM arena |
-| 5 | Input trim + EQ | `aius_dsp_input_run` → `run_cascade` | int32 → double → int32 | `g_input_scratch` 12,288 B DTCM |
-| 6 | Downmix matrix | `aius_dsp_downmix` | int32 → double → int32 | writes caller planes |
-| 7 | Output EQ | `aius_dsp_eq_run` → `run_cascade` | int32 → double → int32 | `g_eq_state` 128 B DTCM |
-| 8 | True-peak limiter | `aius_dsp_limiter_run` | int32 → double → int32 | `AiusLimiter` ≈2,264 B DTCM |
-| 9 | Output word width | `aius_out_stage_run` | int32 copy (24-bit arm) | writes the ring in place |
-| 10 | Transmit ring | `aius_spdif_tx24_stage`/`_commit` | int32, no arithmetic | `g_aius_spdif_tx24` 16,396 B OCRAM |
-| 11 | Transmit interrupt | `AiusSpdifTx24Hook::isr` | int32 copy | `SPDIF_tx_buffer` 2,048 B OCRAM |
+| 5 | Stage to double + input trim/EQ | `stage_input` → `aius_dsp_input_run` → `run_cascade` | int32 → double, then double | arena double staging, 32,768 B DTCM carve |
+| 6 | Downmix matrix + LFE fold + decorrelation | `aius_dsp_downmix` | double | `AiusLfeFold` + `AiusSurroundDelay` state in `g_dsp_runtime` |
+| 7 | Output EQ | `aius_dsp_eq_run` → `run_cascade` | double | `g_eq_state` in `g_dsp_runtime`, DTCM |
+| 8 | True-peak limiter | `aius_dsp_limiter_run` | double | `AiusLimiter` ≈4,200 B DTCM (*derived*) |
+| 9 | Final quantize | `aius_dsp_process` tail, `aius_quantize` | double → int32, round + saturate | writes the caller's output planes |
+| 10 | Output word width | `aius_out_stage_run` | int32 copy (24-bit arm) | writes the ring in place |
+| 11 | Transmit ring | `aius_spdif_tx24_stage`/`_commit` | int32, no arithmetic | `g_aius_spdif_tx24` 16,396 B OCRAM |
+| 12 | Transmit interrupt | `AiusSpdifTx24Hook::isr` | int32 copy | `SPDIF_tx_buffer` 2,048 B OCRAM |
 
-`run_cascade` is the shared core of stages 5 and 7 (`lib/aius_dsp/src/aius_dsp.c:285`);
-`aius_dsp_eq_run` is a thin wrapper the compiler inlined into `aius_dsp_process`, so it
-has no symbol of its own in the linked image.
+`run_cascade` is the shared core of stages 5 and 7, and `biquad_step`
+(`lib/aius_dsp/src/aius_dsp.c:61`) is the one biquad recurrence shared by the input
+EQ, the output EQ and the LFE crossover, so the three cannot diverge in arithmetic
+order. **Stages 5 through 9 form the one-quantize chain (fixed 2026-07-28):** samples
+travel as double from `stage_input`'s conversion until the single `aius_quantize`
+after the limiter (`lib/aius_dsp/src/aius_dsp.c:1401`); no stage in between rounds or
+clamps, so the limiter sees true unclipped peaks and the 24-bit wire ceiling exists
+only at stage 9.
 
 ### Stage 1 — optical receive and the IEC 60958 words
 
@@ -180,7 +210,7 @@ and released per engine block pass.
 
 ### Stage 2 — ingress publish and deferred AUDIO service
 
-`AiusAudioProcessor::update()` (`src/optical_main.cpp:998`, **280 B of ITCM** in the
+`AiusAudioProcessor::update()` (`src/optical_main.cpp:1321`, **280 B of ITCM** in the
 2026-07-29 target link) reserves one exact 256-word ingress slot and interleaves the
 two `int16` planes directly into it. There is no intermediate stack array and no
 classify, decode, DSP, meter, recorder or transmit-ring production in the software
@@ -206,13 +236,27 @@ the committed ring independently.
 
 `aius_pipeline_classify` scans up to `AIUS_PIPELINE_CLASSIFY_MAX_WORDS` = 512 words for
 the IEC 61937 preamble pair `Pa` = `0xF872`, `Pb` = `0x4E1F` in either wire byte order
-(`lib/aius_pipeline/include/aius_pipeline.h:42`, `src/aius_pipeline.c:53`). A preamble
-within the window means DTS; 512 words with no preamble means linear PCM; fewer than 512
-words and none found yet stays `AIUS_PIPELINE_UNKNOWN`. Staging is the instance's
-`clsbuf[512]` (1,024 B).
+(`lib/aius_pipeline/include/aius_pipeline.h:102`, `src/aius_pipeline.c:242`). A
+preamble within the window means non-linear (`AIUS_PIPELINE_DTS`, which since the AC-3
+and E-AC-3 routes names the whole IEC 61937 class); 512 words with no preamble means
+linear PCM; fewer than 512 words and none found yet stays `AIUS_PIPELINE_UNKNOWN`.
+Staging is the instance's `clsbuf[512]` (1,024 B).
+
+**Classification is no longer once-per-lock; the pipeline self-heals both ways.** A
+PCM-classified stream that starts carrying bursts re-types to non-linear when two
+same-form preamble pairs arrive with plausible burst spacing
+(`AIUS_PIPELINE_RETYPE_MIN/MAX_SPACING_WORDS`, 512–8,192,
+`lib/aius_pipeline/include/aius_pipeline.h:120`); staged pass-through frames are
+dropped at that instant so raw burst words never continue to the wire. The reverse
+transition is starvation-driven: 16,384 words consumed by the non-linear route with no
+parser burst outcome (`AIUS_PIPELINE_DTS_STARVE_WORDS`, `:132`) re-classifies the next
+words. PCM emission is deliberately withheld for the first
+`AIUS_PIPELINE_PCM_CONFIRM_WORDS` = 8,192 words while the re-type detector runs
+(`:191`). Both transitions are counted (`retype_count`, `reclassify_count`, served as
+`retype_count`/`reclassify_count` on `GET /api/status`).
 
 The classification is what `GET /api/status`'s `state` renders: 2 unlocked or
-unclassified, 3 PCM, 4 DTS (`src/optical_main.cpp:1100`).
+unclassified, 3 PCM, 4 non-linear (`src/optical_main.cpp:1900`).
 
 ### Stage 4a — IEC 61937 de-framing
 
@@ -221,48 +265,59 @@ unclassified, 3 PCM, 4 DTS (`src/optical_main.cpp:1100`).
 big-endian bytes regardless of wire byte order
 (`lib/aius_iec61937/include/aius_iec61937.h:44`). Wire byte order is auto-detected per
 burst from `Pa`; payload packing is create-time configuration and the optical image
-selects `AIUS_IEC61937_PACK_16` (`src/optical_main.cpp:711`).
+selects `AIUS_IEC61937_PACK_16` (`src/optical_main.cpp:1782`).
 
 A per-burst fault — error flag, invalid length, an over-long length code — is
 non-fatal: the burst is skipped, the stream re-locks and the status is recorded
 (`lib/aius_pipeline/include/aius_pipeline.h:105`). Nothing in the audio path stalls on
 a corrupt burst.
 
-### Stage 4b — DTS Core decode
+### Stage 4b — compressed decode: DTS Core, AC-3, E-AC-3
 
-`aius_dts_decode_access_unit` (`lib/aius_dts/src/aius_dts.c:53`) drives the vendored
-dcadec core with `DCADEC_FLAG_CORE_ONLY | DCADEC_FLAG_CORE_BIT_EXACT` (`:215`) and
-publishes decoder-owned planar PCM: `block->frames = core->npcmsamples` (`:230`),
-`block->sample_rate_hz = core->output_rate` (`:231`), planes populated in `AIUS_CH_*`
-order and tightly packed to `channels` (`:242`). Layouts wider than 5.1 are refused
-with `AIUS_UNSUPPORTED` (`:222`).
+**One decoder is resident at a time**, created lazily from the codec sub-arena on a
+burst family's first completed burst and swapped on a family change
+(`lib/aius_pipeline/src/aius_pipeline.c:55`, `:76`):
 
-**The emitted samples carry the DTS Core's native 24-bit range, sign-extended into
-`int32`** (`lib/aius_dts/include/aius_dts.h:31`). That is the unit every later stage's
-magnitudes, thresholds and meter values are expressed in.
+- **DTS Core (Pc 11/12/13).** `aius_dts_decode_access_unit`
+  (`lib/aius_dts/src/aius_dts.c:53`) drives the vendored dcadec core with
+  `DCADEC_FLAG_CORE_ONLY | DCADEC_FLAG_CORE_BIT_EXACT` and publishes decoder-owned
+  planar PCM: `block->frames = core->npcmsamples`,
+  `block->sample_rate_hz = core->output_rate`, planes in `AIUS_CH_*` order, tightly
+  packed to `channels`. Layouts wider than 5.1 are refused with `AIUS_UNSUPPORTED`.
+- **AC-3 (Pc 1).** `aius_a52_*` (`lib/aius_a52/include/aius_a52.h:21`) drives the
+  identity-only liba52 fork: one call arms an access unit, six next-calls emit its
+  256-frame blocks, all stamped with the accepted AU rate.
+- **E-AC-3 (Pc 21, `-DAIUS_PIPELINE_EAC3=1`).** `aius_eac3_*`
+  (`lib/aius_eac3/include/aius_eac3.h:20`) drives the vendored ffmpeg-eac3 fork
+  (text and rodata flash-pinned by `link/aius_teensy41.ld`); an AU decodes to
+  1–6 × 256 frames and the pipeline slices output to ≤ 512
+  (`PENDING_EAC3_OUTPUT`, `lib/aius_pipeline/src/aius_pipeline.c:49`).
 
-**The decoder's memory lives where the design intended — since 2026-07-28.** The image
-reserves `AiusAudioProcessor::g_arena_memory` — **131,072 B, 40 % of the whole DTCM
-bank**, measured in the ELF — and `begin_pipeline()` creates the pipeline through
-`aius_pipeline_create_arena` (`src/optical_main.cpp:712`). Routing dcadec's allocation
-into that arena depends on the `--wrap` link-time shim
-(`lib/aius_dts/src/aius_alloc_shim.c:95`), and that flag is now live for
-`[env:teensy41-optical]` (`platformio.ini:102`), so the decoder handle, its input
-scratch and the entire dcadec `ta` tree come from the DTCM arena rather than the newlib
-OCRAM heap.
+**All three emit the same unit: 24-bit range sign-extended into `int32`**
+(`AIUS_PCM_SAMPLE_BITS`, `lib/aius_codec_api/include/aius_codec.h`). That is the unit
+every later stage's magnitudes, thresholds and meter values are expressed in.
 
-**Until that date the flag was `build_unflags`'d**, the linked image contained plain
-`malloc`/`calloc`/`realloc`/`free` and no `__wrap_malloc` at all (measured with
-`arm-none-eabi-nm`), only the ~5.2 kB `AiusPipeline` instance was arena-allocated
-(`lib/aius_pipeline/src/aius_pipeline.c:326`), and ~126 kB of the reserved arena was
-never touched. Any measurement or reasoning predating 2026-07-28 rests on that older
-state.
+**The decoder's memory lives in the DTCM arena — since 2026-07-28, grown for E-AC-3.**
+`AiusAudioProcessor::g_arena_memory` is now **218,688 B** (*derived*: instance bound
+5,632 + 32,768 B DSP staging carve + `AIUS_PIPELINE_CODEC_SLOT_BYTES` = 180,224 + 64
+slack, `src/optical_main.cpp:1402`), roughly two thirds of the DTCM bank;
+`begin_pipeline()` creates the pipeline through `aius_pipeline_create_arena`. The
+codec slot is sized by the E-AC-3 decoder's measured 179,232 B cumulative arena
+high-water rounded up to a 4 KiB boundary; DTS 5.1 core high-water is 62,560 B and
+AC-3 27,024 B inside the same slot
+(`lib/aius_pipeline/include/aius_pipeline.h:138`–`:158`). The growth was funded
+DTCM-internally by pinning the fork's text and cold rodata to flash (−99,328 B of
+DTCM `.data`), with a link-time `ASSERT` flooring the stack/locals zone at 24,352 B
+(`link/aius_teensy41.ld:266`) — [`aius-eac3-support.md`](../plans/aius-eac3-support.md)
+phase 4 carries the funding arithmetic. Routing the vendored decoders' allocation into
+the arena depends on the `--wrap` link-time shim (`lib/aius_dts/src/aius_alloc_shim.c`),
+live for `[env:teensy41-optical]` (`platformio.ini:104`).
 
-The arena is now a budget rather than dead weight: dcadec 62,560 B plus a 32,768 B DSP
-staging carve, with the AC-3 decoder joining at ~27 kB after
-[`aius-ac3-support.md`](../plans/aius-ac3-support.md) phase 2a. That plan's §Phase 2
-contract carries the residency arithmetic and, importantly, why growing or relocating
-this arena is not the free move it looks like.
+**Until 2026-07-28 the wrap set was `build_unflags`'d**, the linked image contained
+plain `malloc`/`calloc`/`realloc`/`free` and no `__wrap_malloc` at all (measured with
+`arm-none-eabi-nm`), only the ~5.2 kB `AiusPipeline` instance was arena-allocated, and
+~126 kB of the then-131,072 B arena was never touched. Any measurement or reasoning
+predating 2026-07-28 rests on that older state.
 
 ### Stage 4c — PCM passthrough
 
@@ -303,70 +358,94 @@ a full-scale wire word must reach full scale, with no mention of 16 bits, of a s
 count, or of the producer's expression. Reverting the fix leaves the original check green
 and fails only the new one, reporting the measured −48.16 dB.
 
-### Stage 5 — input trim and EQ
+### Stage 5 — staging to double, input trim and EQ
 
-`aius_dsp_input_run` (`lib/aius_dsp/src/aius_dsp.c:333`, **56 B of ITCM**) applies one
-input channel's linear trim then its EQ cascade, with a **single** saturating quantize
-per sample — the trim is folded into the biquad input as `run_cascade`'s `pregain`, so
-there is no intermediate double-rounding (`:285`). `input_stage_apply` (`:363`) copies
-each decoded plane into the stage's scratch first, because the downmix reads a `const`
-input and the decoder owns its planes.
+`stage_input` (`lib/aius_dsp/src/aius_dsp.c:631`) is **the one int32 → double boundary
+of the chain**: every present plane is convert-copied into the caller's double scratch
+unconditionally — staging *is* the conversion, not part of the optional trim/EQ — and
+`aius_dsp_input_run` (`:599`) then applies that channel's linear trim and EQ cascade
+over the staged plane, in double, with **no quantize at all**: the trim is folded into
+the biquad input as `run_cascade`'s `pregain`, and rounding waits for the chain's
+single final quantize ([stage 9](#stage-9--the-final-quantize)).
 
-Buffers: `g_input_scratch[6][512]` `int32`, **12,288 B in DTCM**
-(`src/optical_main.cpp:843`), sized to the largest block `enqueue()` accepts across all
-`AIUS_MAX_CHANNELS` planes. Coefficients and state are `g_input_eq[6][2]` (480 B) and
-`g_input_eq_state[6][2]` (384 B), both *derived* from the struct sizes.
+Buffers: the scratch is the arena's 32,768 B DSP staging carve — six 512-frame double
+input planes plus the stereo work pair, carved from `g_arena_memory` in
+`begin_pipeline()` (`src/optical_main.cpp:1440`, `DSP_CARVE_BYTES` at `:1402`); the
+old `g_input_scratch[6][512]` `int32` array it replaced no longer exists. Coefficient
+and state storage lives in `AiusDspRuntimeConfig`
+(`lib/aius_dsp_runtime_config/include/aius_dsp_runtime_config.h`).
 
-**With the shipped default this stage is skipped, and until 2026-07-26 it was not.**
-`config/optical_dsp.json` sets `features.input_eq: true` with every channel at
-`gain_db: 0` and `eq: []`. That used to leave `g_input_stage_active` true, so every
-present plane was `memcpy`'d to scratch and run through `run_cascade(1.0, NULL, 0, …)`
-— an int-to-double convert and an `aius_quantize` per sample for an exact identity, at
-six channels **3,072 quantizes per 512-frame block** to reproduce the input.
+**With the shipped default the trim/EQ pass is skipped, and until 2026-07-26 it was
+not.** `config/optical_dsp.json` sets `features.input_eq: true` with every channel at
+`gain_db: 0` and `eq: []`. The model resolution — now in
+`aius_dsp_runtime_config_apply` (`lib/aius_dsp_runtime_config/src/aius_dsp_runtime_config.c:116`)
+— requires that some channel would actually change a sample: unity gain with no
+sections is an identity and `dsp.input` binds null, so `stage_input` performs only the
+convert-copy. Unity is tested exactly because `aius_db_to_linear(0.0)` is
+`pow(10, 0) == 1.0`, the value the conversion produces rather than a tolerance. A
+present-but-*bypassed* EQ section is deliberately not an identity: `eq_sections`
+counts what the cascade walks, and the config distinguishes "no section" from "a
+bypass section".
 
-`apply_config()` now also requires that some channel would actually change a sample:
-unity gain with no sections is an identity and the stage does not run. Skipping is
-behaviourally identical rather than an approximation — the downmix reads
-`block->planes` when `dsp.input` is null, and the stage's only effect in that state was
-to hand it a verbatim copy of those same planes. Unity is tested exactly because
-`aius_db_to_linear(0.0)` is `pow(10, 0) == 1.0`, the value the conversion produces
-rather than a tolerance. A present-but-*bypassed* EQ section is deliberately not an
-identity: `eq_sections` counts what the cascade walks, and the config distinguishes "no
-section" from "a bypass section".
+### Stage 6 — the downmix matrix, LFE fold-in and surround decorrelation
 
-**The saving is arithmetic, not measured.** `blocks` is 0 with no carrier, so
-`dsp_cycles_last` cannot show it yet; re-measure with the first real signal.
+`aius_dsp_downmix` (`lib/aius_dsp/src/aius_dsp.c:307`; the pre-change link measured it
+at 1,254 B of ITCM, the largest single function in the DSP) is mask-driven rather than
+mode-driven: routing follows `in->channel_mask`, so mono, stereo, 3.0, 4.0, 5.0 and
+5.1 are all handled without a layout flag. **The headroom pad is mask-driven too**,
+resolved once per block by `resolve_headroom` (`:295`) rather than per sample. It
+consumes and produces double planes; nothing here rounds or clamps.
 
-### Stage 6 — the downmix matrix
+Two sub-stages live inside the matrix accumulation, both shipped since the last
+revision of this document:
 
-`aius_dsp_downmix` (`lib/aius_dsp/src/aius_dsp.c:78`, **1,254 B of ITCM** as
-`aius_dsp_downmix.part.0`, the largest single function in the DSP) is mask-driven
-rather than mode-driven: routing follows `in->channel_mask`, so mono, stereo, 3.0, 4.0,
-5.0 and 5.1 are all handled without a layout flag (`:113`–`:154`). **The headroom pad is
-mask-driven too**, resolved once per block by `resolve_headroom` rather than per sample.
-The rules are stated authoritatively once in
+- **The LFE fold-in (audio-quality item 2).** The LFE plane is low-passed by a
+  4th-order Linkwitz-Riley crossover — two cascaded Butterworth biquads through the
+  shared `biquad_step` recurrence — at the configured corner (shipped 120 Hz), then
+  scaled by `lfe` (shipped −10 dB) and summed into both L and R
+  (`lfe_fold_sample`, `lib/aius_dsp/src/aius_dsp.c:127`; design rationale at
+  `lib/aius_dsp/include/aius_dsp.h:190`). The fold is one term in the same
+  accumulator, so it adds no requantisation and no latency. Misconfiguration fails
+  *closed* (a missing state pointer skips the LFE, landing on BS.775's own default;
+  an unfiltered fold is never reachable by omission, `aius_dsp.h:384`).
+- **The surround decorrelation delay (audio-quality item 4).** SL and SR are delayed
+  symmetrically by `surround_delay_ms` before their fold gain
+  (`surround_delay_step`, `lib/aius_dsp/src/aius_dsp.c:210`), bounded at 12 ms / 576
+  samples per side (`AIUS_DSP_SURROUND_DELAY_MAX_MS`, `aius_dsp.h:271`); the ring is
+  float deliberately (24-bit-origin content fits a float mantissa; error floor
+  ≈ −150 dBFS, far beneath the fold gain that follows). **The shipped config sets
+  `surround_delay_ms: 0`** (`config/optical_dsp.json:29`), which is the pre-feature
+  path bit for bit — the ring is never touched. Misconfiguration fails *open*
+  (a null ring folds the surrounds undelayed — yesterday's correct output, not
+  missing content, `aius_dsp.h:421`). Landed and verified sample-exact on hardware
+  2026-08-04 (`fd65a5303`, `5efdce47d`).
+
+The routing rules are stated authoritatively once in
 [§Channel layout and downmix rules](#channel-layout-and-downmix-rules).
 
 ### Stage 7 — output EQ
 
 `aius_dsp_eq_run` runs the same `run_cascade` over L and then R with channel-major
-state — all L section states, then all R (`lib/aius_dsp/include/aius_dsp.h:759`,
-`src/aius_dsp.c:1032`). Sections are Direct Form I biquads with `a0` normalised to 1
-and coefficients from the standard RBJ audio-EQ-cookbook math (`:179`–`:269`). State is
-`g_eq_state[4]`, 128 B DTCM, advanced across blocks so section boundaries are seamless.
+state — all L section states, then all R (`src/aius_dsp.c:572`) — in double, over the
+work planes, with no per-stage quantize. Sections are Direct Form I biquads with `a0`
+normalised to 1 and coefficients from the standard RBJ audio-EQ-cookbook math. State
+lives in `AiusDspRuntimeConfig.output_eq_state`, advanced across blocks so section
+boundaries are seamless.
 
 **The shipped default runs no output EQ at all.** `output_eq` is empty in
-`config/optical_dsp.json`, so `g_eq_count` is 0 and `aius_dsp_process` skips the stage
-entirely (`src/aius_dsp.c:1032`). RBJ biquads are minimum-phase, so group delay varies
+`config/optical_dsp.json`, so `eq_sections` is 0 and `aius_dsp_process` skips the
+stage entirely (`src/aius_dsp.c:1388`). RBJ biquads are minimum-phase, so group delay varies
 with frequency; a linear-phase FIR alternative is recorded as deliberately unscheduled
 in [`aius-dsp-config-api.md` §Noted for later](../plans/aius-dsp-config-api.md#noted-for-later-deliberately-not-scheduled).
 
 ### Stage 8 — the true-peak safety limiter
 
-`aius_dsp_limiter_run` (`lib/aius_dsp/src/aius_dsp.c:504`, **764 B of ITCM** as
-`.part.0`, plus `truepeak_push` at 156 B). Shipped defaults, from
-`config/optical_dsp.json` and pinned in `lib/aius_dsp/include/aius_dsp.h:369`: enabled,
-threshold −1.0 dBFS, attack 0.5 ms, release 100 ms, lookahead 2.0 ms.
+`aius_dsp_limiter_run` (`lib/aius_dsp/src/aius_dsp.c:796`; the pre-change link
+measured 764 B of ITCM as `.part.0`, plus `truepeak_push` at 156 B). It consumes and
+produces the double work planes — the last processing stage before the final
+quantize. Shipped defaults, from `config/optical_dsp.json` and pinned in
+`lib/aius_dsp/include/aius_dsp.h`: enabled, threshold −1.0 dBFS, attack 0.5 ms,
+release 100 ms, lookahead 2.0 ms.
 
 **It is genuinely true-peak, per ITU-R BS.1770-4 Annex 2.** The detector 4×-oversamples
 with the standard's 4-phase, 12-tap polyphase FIR; every coefficient is an exact
@@ -401,7 +480,8 @@ on it (`lib/aius_dsp/include/aius_dsp.h:341`).
 **The FIR history is primed rather than zeroed into service.** A history zeroed at
 reset makes the first sample look like a step from silence, and a step has a genuine
 inter-sample overshoot of about +0.6 dB. Since limiter state is zeroed on every config
-apply (`src/optical_main.cpp:1044`), a naive detector would have put a spurious ~0.6 dB
+apply (`lib/aius_dsp_runtime_config/src/aius_dsp_runtime_config.c:48`), a naive
+detector would have put a spurious ~0.6 dB
 gain dip — decaying over a whole release constant — into the audio every time a control
 changed. The detector contributes only `|x[n]|` until the 12-sample window has filled
 since the reset, 229 µs at 48 kHz (`lib/aius_dsp/include/aius_dsp.h:305`).
@@ -415,9 +495,10 @@ computed for is emitted. The residual is a bounded overshoot, not zero: a peak 3
 over threshold emerges about 0.065 dB over it, landing near −0.93 dBFS, and the final
 quantize saturation remains the last-ditch clamp.
 
-Buffers: `AiusLimiter` ≈ **2,264 B in DTCM** (*derived* from the struct — config 40 B,
-`buf_l`/`buf_r` 240 `int32` each at 1,920 B, `tp_l`/`tp_r` 16 doubles each at 256 B,
-scalars). The lookahead lines are fixed at `AIUS_DSP_LIMITER_MAX_LOOKAHEAD` = 240
+Buffers: `AiusLimiter` ≈ **4,200 B in DTCM** (*derived* from the struct — config 40 B,
+`buf_l`/`buf_r` 240 doubles each at 3,840 B since the one-quantize chain made the
+lookahead lines double (`lib/aius_dsp/include/aius_dsp.h:887`), `tp_l`/`tp_r` 16
+doubles each at 256 B, scalars). The lookahead lines are fixed at `AIUS_DSP_LIMITER_MAX_LOOKAHEAD` = 240
 samples — 5 ms at 48 kHz — so the process path never allocates
 (`lib/aius_dsp/include/aius_dsp.h:281`). The configured unit is milliseconds and the
 sample count is always derived from the `fs` passed in, so nothing here assumes a rate.
@@ -430,16 +511,29 @@ AUDIO checkpoint
 **Latency added: 2 ms, or 96 samples at 48 kHz** (*derived*). Output frame count equals
 input; the last `delay` samples stay in the ring as bounded latency.
 
-### Stage 9 — the output word width
+### Stage 9 — the final quantize
 
-`aius_out_stage_run` (`lib/aius_dsp/src/aius_dsp.c:755`, **192 B of ITCM**) is the one
-boundary that cares about the transmit word, and it is deliberately not part of
-`aius_dsp_process`: the 24-bit block is the DSP module's output, and word width belongs
-to whichever engine consumes it (`lib/aius_dsp/include/aius_dsp.h:34`).
+The tail of `aius_dsp_process` (`lib/aius_dsp/src/aius_dsp.c:1401`) is **the chain's
+only rounding and its only clamp**: one `aius_quantize` per output sample — round to
+nearest, ties away from zero, then saturate (`:76`) — converting the double work
+planes into the caller's 24-bit `int32` output planes. Everything upstream of this
+point has carried unclamped double since `stage_input`'s conversion (defect:
+inter-stage clipping, fixed 2026-07-28 — `aius_dsp.h:34` §ONE QUANTIZE); an input-EQ
+boost that overshoots full scale inter-stage is absorbed by the downmix headroom pad
+instead of hard-clipping at a cascade boundary, and the limiter sees true unclipped
+peaks.
+
+### Stage 10 — the output word width
+
+`aius_out_stage_run` (`lib/aius_dsp/src/aius_dsp.c:1059`; 192 B of ITCM in the
+pre-change link) is the one boundary that cares about the transmit word, and it is
+deliberately not part of `aius_dsp_process`: the 24-bit block is the DSP module's
+output, and word width belongs to whichever engine consumes it
+(`lib/aius_dsp/include/aius_dsp.h:45`).
 
 - **`AIUS_DSP_OUT_WIDTH_24` — the shipped selection.** A plain copy: no dither, no
-  rounding, no saturation, because the input is already in range by contract
-  (`src/aius_dsp.c:762`). The width test is hoisted out of the sample loop, so this
+  rounding, no saturation, because the input is already in range by contract — the
+  final quantize just wrote it. The width test is hoisted out of the sample loop, so this
   costs one branch per call and then a straight copy.
 - **`AIUS_DSP_OUT_WIDTH_16` — a real selection, not a shim.** `aius_out16_sample()` per
   sample — TPDF dither, round to nearest ties away from zero, saturate — scaled back up
@@ -449,7 +543,7 @@ to whichever engine consumes it (`lib/aius_dsp/include/aius_dsp.h:34`).
   reproduces the wire words the board shipped before the 24-bit path existed, exactly.
 
 The selection is `AiusAudioProcessor::OUTPUT_WIDTH_BITS`, a `constexpr` rather than a
-config field (`src/optical_main.cpp:814`), because nothing on the device has a reason to
+config field (`src/optical_main.cpp:1421`), because nothing on the device has a reason to
 ask for 16 bits: the sink is a 24-bit register either way. `aius_out_stage_run` is not
 inlined across translation units, so the 16-bit arm and `aius_out16_sample` (188 B of
 ITCM, measured) are **linked but never executed** on the shipped image.
@@ -466,19 +560,28 @@ repetition to become tonal. Both uniform draws come from the high and low halves
 word. L and R are independent streams seeded from eight consecutive SplitMix32 outputs,
 because correlated dither across the pair would image as a phantom-centre hiss. The
 streams are seeded **once** in `begin_pipeline()` and deliberately not in
-`apply_config()` (`src/optical_main.cpp:697`), so the output is a function of the sample
+`apply_config()` (`src/optical_main.cpp:1691`), so the output is a function of the sample
 index rather than of config-change history.
 
-### Stages 10 and 11 — the transmit ring and the wire
+### Stages 11 and 12 — the transmit ring and the wire
 
 `g_aius_spdif_tx24` is an `AiusSpdifTx24Ring`: 2 × 2,048 `int32` planes plus three
 cursors, **16,396 B in `DMAMEM`** (measured at `0x20200000`, defined at
 `lib/aius_audio/src/aius_spdif_sources.cpp:30`). `enqueue()` stages into it with at most
 one wrap and publishes the whole block with a single `aius_spdif_tx24_commit()`
-(`src/optical_main.cpp:944`–`:957`). `AiusSpdifTx24Hook::isr` (**228 B of ITCM**,
+(`src/optical_main.cpp:1582`–`:1595`). `AiusSpdifTx24Hook::isr` (**228 B of ITCM**,
 `lib/aius_audio/src/aius_spdif_sources.cpp:57`) drains 128 frames per interrupt into the
 half of `SPDIF_tx_buffer` the DMA is not reading, flushes that half once, and then
 pends the graph if it holds `update_responsibility`.
+
+**Every closed→open TX-gate edge trims the ring to `AIUS_TX_GATE_OPEN_TARGET_FRAMES`**
+by advancing the consumer cursor (`src/optical_main.cpp:1885`) — safe by construction
+because the gate was closed, so the dropped frames were dark. The code default is 256
+(`:1873`); **the shipped image pins 128** (`-DAIUS_TX_GATE_OPEN_TARGET_FRAMES=128`,
+`platformio.ini:310`, tuned 2026-08-03). Trim events and trimmed frames are served on
+the clock document; the measured effect is tail elimination (the old 128–1,792-frame
+per-session ring lottery is gone) rather than a large mean shift —
+[`aius-e2e-latency.md` §Phase 3](../plans/aius-e2e-latency.md#phase-3-tx-ring-gate-open-normalization-and-dhcp-schedule-visibility).
 
 The buffer sizes, the placement argument, the cache-maintenance argument, the
 priority-inversion argument and the underrun counter are all covered in
@@ -601,24 +704,28 @@ Channel order is `AIUS_CH_*` bit order throughout — FL, FR, FC, LFE, SL, SR
 stage's per-channel config and the meter's per-input arrays.
 
 The matrix, per ITU-R BS.775 / ATSC A/52 "Lo/Ro"
-(`lib/aius_dsp/include/aius_dsp.h:87`):
+(`lib/aius_dsp/include/aius_dsp.h:107`):
 
 ```text
-L' = pad * (FL + center*FC + surround*SL + lfe*LFE)
-R' = pad * (FR + center*FC + surround*SR + lfe*LFE)
+L' = pad * (FL + center*FC + surround*delay(SL) + lfe*LR4(LFE))
+R' = pad * (FR + center*FC + surround*delay(SR) + lfe*LR4(LFE))
 
-pad = headroom  when the layout SUMS  (channels > 1 and any of FC, LFE, SL, SR)
-pad = 1.0       otherwise             (mono, and stereo FL|FR)
+LR4  = 4th-order Linkwitz-Riley low-pass at lfe_crossover_hz (identity when lfe = 0)
+delay = surround_delay_ms pre-fold delay (identity at the shipped 0 ms)
+pad  = headroom  when the layout SUMS  (channels > 1 and any of FC, LFE, SL, SR)
+pad  = 1.0       otherwise             (mono, and stereo FL|FR)
 ```
 
 | Coefficient | Shipped value | Source |
 |---|---|---|
-| `center` | 0.70710678118654752440 (1/√2, −3.01 dB) | `aius_dsp.h:94`, `optical_dsp.json:22` |
-| `surround` | 0.70710678118654752440 (1/√2, −3.01 dB) | `aius_dsp.h:95`, `optical_dsp.json:23` |
-| `lfe` | 0.316228 (−10 dB) — **folded in through the 120 Hz LR4 low-pass** (0.0 was the pre-fold-in shipping value; stale here since the fold landed) | `aius_dsp.h` §LFE, `optical_dsp.json:24` |
-| `headroom` | 0.5 (−6.02 dB) **on summing layouts only**; 1.0 elsewhere | `aius_dsp.h:143`, `optical_dsp.json:26` |
+| `center` | 0.70710678118654752440 (1/√2, −3.01 dB) | `aius_dsp.h:111`, `optical_dsp.json:22` |
+| `surround` | 0.70710678118654752440 (1/√2, −3.01 dB) | `aius_dsp.h:111`, `optical_dsp.json:23` |
+| `lfe` | 0.316228 (−10 dB), folded in through the LR4 low-pass | `aius_dsp.h:186`, `optical_dsp.json:24` |
+| `lfe_crossover_hz` | 120 (LR4 corner; config-bounded to [20, 500]) | `aius_dsp.h:242`, `optical_dsp.json:25` |
+| `headroom` | 0.5 (−6.02 dB) **on summing layouts only**; 1.0 elsewhere | `aius_dsp.h:354`, `optical_dsp.json:26` |
 | `clipfree` | false | `optical_dsp.json:27` |
-| `layout_aware` | true (absent in a PUT body also reads true) | `optical_dsp.json:28`, `aius_dsp_config.h:59` |
+| `layout_aware` | true (absent in a PUT body also reads true) | `optical_dsp.json:28`, `aius_dsp_config.h:60` |
+| `surround_delay_ms` | 0 (decorrelation off — the bit-exact pre-feature fold) | `optical_dsp.json:29`, `aius_dsp_config.h:68` |
 
 - **1/√2 on centre and surround is the standard default**, not a taste choice: mixing FC
   and each surround down 3 dB preserves acoustic power when the two summed sources are
@@ -626,18 +733,18 @@ pad = 1.0       otherwise             (mono, and stereo FL|FR)
 - **The coefficients are symmetric by design.** `center` is the shared FC-to-L/R
   coefficient and `surround` the shared SL-to-L / SR-to-R coefficient. Independent SL/SR
   gains are excluded because they would shift image balance rather than control blend.
-- **LFE at 0.0 follows BS.775 and A/52**, which exclude LFE from the default stereo
-  downmix. `AIUS_DSP_LFE_GAIN_MINUS10DB` = 0.31622776601683793320 is provided for the
-  common small-stereo alternative. **An LFE fold-in with a low-pass around 120 Hz and
-  level compensation is item 2 of the accepted roadmap and is in flight at this
-  revision** ([`aius-dsp-config-api.md` §Accepted order for the next level](../plans/aius-dsp-config-api.md#accepted-order-for-the-next-level));
-  what is committed today is `lfe = 0.0`. Related and wholly absent: there is no
-  crossover or bass management — the generic biquad EQ is not a Linkwitz-Riley
-  crossover.
+- **LFE at −10 dB through a 120 Hz LR4 is the shipped fold-in** (audio-quality item 2,
+  landed 2026-07-26, `72bb041a5`). BS.775 and A/52 exclude LFE from the default stereo
+  downmix; on a two-speaker system that throws the bottom octave of film content away,
+  so the fold ships at `AIUS_DSP_LFE_GAIN_MINUS10DB` — 20 dB below BS.775's +10 dB
+  reference, the standard small-stereo compromise — band-limited by the crossover
+  because the DTS core does not band-limit its LFE plane
+  (`aius_dsp.h:117`–`:255` carries the full level and filter-shape rationale).
+  `lfe = 0.0` remains the exact negative control. This is the LFE's own bass
+  management only; there is still no main-channel crossover.
 - **Narrower inputs need no mode flag.** Mono copies the lone plane to both channels at
   unity — **and takes no headroom pad**, whichever mask bit it carries; stereo FL|FR is an
-  exact passthrough at unity and takes no pad either; absent channels contribute nothing
-  (`lib/aius_dsp/include/aius_dsp.h:162`).
+  exact passthrough at unity and takes no pad either; absent channels contribute nothing.
 - **The headroom pad applies only to layouts that sum**, resolved per block from the input
   mask alone (`aius_dsp.c`'s `resolve_headroom`). FC and the LFE fold land on both outputs
   and SL/SR land on one each, so a layout carrying any of them can overshoot and pays the
@@ -650,38 +757,44 @@ pad = 1.0       otherwise             (mono, and stereo FL|FR)
   included.
 - **Headroom 0.5 is an evidenced product decision** *for the summing case*, and the
   evidence is in [§Decisions recorded](#decisions-recorded-with-their-alternatives).
-  `aius_downmix_clipfree_headroom()` returns the theoretical `1/(1 + center + surround +
-  |lfe|)` = 0.414214 (−7.66 dB) and is selectable via `clipfree`, at which point a
-  caller may reasonably turn the limiter off. Both describe the summing matrix; neither
-  applies to a pass-through layout.
+  It was re-measured after the LFE fold-in obliged the same evidence again: 0.5 still
+  clears the whole corpus, with the binding vector (`surround51_impulse`) at
+  −0.790 dBFS — 0.79 dB of spare margin surviving the fold intact
+  (`aius_dsp.h:317`–`:338`). `aius_downmix_clipfree_headroom()` returns the
+  theoretical `1/(1 + center + surround + |lfe|)`, which at the shipped fold is
+  1/2.730335 = 0.366 (−8.72 dB; it was 0.414214 / −7.66 dB before the fold), and is
+  selectable via `clipfree`, at which point a caller may reasonably turn the limiter
+  off. Both describe the summing matrix; neither applies to a pass-through layout.
 
 The two sensible configurations are **(modest headroom + limiter on)** and **(clip-free
 headroom + limiter off)**. The shipped one is the first.
 
 ## Fixed-point and floating-point boundaries
 
-**The chain is 24-bit signed integer *between* stages and IEEE-754 double *within*
-them.** There is exactly one integer sample unit in the system — the DTS Core's 24-bit
-range, `AIUS_DSP_SAMPLE_MAX` = 2²³−1 and `AIUS_DSP_SAMPLE_MIN` = −2²³
-(`lib/aius_dsp/include/aius_dsp.h:84`) — and every magnitude, threshold, peak and RMS
-value in the DSP and in `GET /api/meters` is expressed in it. A reader converts to dBFS
-with `20*log10(v / AIUS_DSP_SAMPLE_MAX)`.
+**The chain enters as 24-bit signed integer, travels the DSP as IEEE-754 double, and
+is quantized exactly once at the end** (defect: inter-stage clipping, fixed
+2026-07-28). There is exactly one integer sample unit in the system — the decoders'
+24-bit range, `AIUS_DSP_SAMPLE_MAX` = 2²³−1 and `AIUS_DSP_SAMPLE_MIN` = −2²³, derived
+from `AIUS_PCM_SAMPLE_BITS` (`lib/aius_dsp/include/aius_dsp.h:104`) — and every
+magnitude, threshold, peak and RMS value in the DSP and in `GET /api/meters` is
+expressed in it. A reader converts to dBFS with `20*log10(v / AIUS_DSP_SAMPLE_MAX)`.
 
 Where each conversion happens:
 
 | Boundary | Direction | Function | Note |
 |---|---|---|---|
 | Receiver → engine | int32 subframe → int16 | `input_spdif3.cpp:118` | `>> 8`, truncating; the input ceiling |
-| Engine → pipeline | int16 → uint16 words | `optical_main.cpp:785` | reinterpret, no arithmetic |
-| DTS decode → DSP | dcadec fixed point → int32 | `aius_dts.c:242` | 24-bit range, sign-extended |
+| Engine → pipeline | int16 → uint16 words | `AiusAudioProcessor::update` | reinterpret, no arithmetic |
+| DTS decode → DSP | dcadec fixed point → int32 | `aius_dts.c` | 24-bit range, sign-extended |
+| AC-3 decode → DSP | liba52 float → int32 | `aius_a52.c` | same 24-bit scale |
+| E-AC-3 decode → DSP | fork float → int32 | `aius_eac3.c` | same 24-bit scale |
 | PCM → DSP | int16 → int32 | `pcm_wire_to_sample` | sign-extend then left-align onto `AIUS_PCM_SAMPLE_BITS` |
-| Input stage | int32 → double → int32 | `aius_dsp.c:285` | one quantize per sample |
-| Downmix | int32 → double → int32 | `aius_dsp.c:152` | one quantize per sample |
-| Output EQ | int32 → double → int32 | `aius_dsp.c:302` | one quantize per sample |
-| Limiter | int32 → double → int32 | `aius_dsp.c:615` | one quantize per sample |
-| Output stage, 24-bit | int32 → int32 | `aius_dsp.c:767` | **no conversion at all** |
-| Output stage, 16-bit | int32 → double → int32 | `aius_dsp.c:783` | dither, round, saturate, × 256 |
-| Ring → wire | int32 → int32 | `aius_spdif_tx24.h:178` | copy into `SPDIF_STL`/`STR` |
+| Staging | int32 → double | `stage_input`, `aius_dsp.c:631` | the one widening conversion |
+| Input stage, downmix, EQ, limiter | double → double | `aius_dsp.c` | **no rounding, no clamping** |
+| Final quantize | double → int32 | `aius_dsp.c:1401` | the chain's only rounding and clamp |
+| Output stage, 24-bit | int32 → int32 | `aius_dsp.c:1059` | **no conversion at all** |
+| Output stage, 16-bit | int32 → double → int32 | `aius_dsp.c:1013` | dither, round, saturate, × 256 |
+| Ring → wire | int32 → int32 | `aius_spdif_tx24.h` | copy into `SPDIF_STL`/`STR` |
 
 **Double was chosen over fixed point deliberately.** A biquad's feedback path is
 precision sensitive, double keeps the design headroom trivial, and every 24-bit input
@@ -689,18 +802,19 @@ sample is represented exactly (`lib/aius_dsp/include/aius_dsp.h:47`). The Cortex
 a hardware double-precision FPU, so this is not an emulation cost.
 
 **The one quantizer rule is `aius_quantize`: round to nearest, ties away from zero, then
-saturate** (`lib/aius_dsp/src/aius_dsp.c:41`, 112 B of ITCM). `aius_out16_sample` uses
+saturate** (`lib/aius_dsp/src/aius_dsp.c:76`). `aius_out16_sample` uses
 the identical rule, so the module's two quantizers cannot disagree about a boundary
-(`:731`).
+(`:1013`).
 
-**Each stage requantises to 24-bit integer on the way out, and that is a known
-inefficiency rather than a design requirement.** At 24 bits each step's error is around
-−140 dBFS so it is inaudible, but carrying double end to end and quantising once would
-be both cleaner and marginally faster; it is recorded as unscheduled in
-[`aius-dsp-config-api.md` §Noted for later](../plans/aius-dsp-config-api.md#noted-for-later-deliberately-not-scheduled).
-It also has a *correctness* consequence that shaped the headroom choice: the downmix and
-EQ **saturate upstream of the limiter**, so the limiter never sees an unclamped
-intermediate.
+**Inter-stage requantisation was removed on 2026-07-28** — the "carry double end to
+end and quantise once" item the config-API plan recorded as unscheduled shipped as
+part of the inter-stage-clipping fix. Until then each stage rounded and *saturated*
+on the way out (error ≈ −140 dBFS per step, inaudible, but the saturation was a
+correctness problem: the downmix and EQ clamped upstream of the limiter, so the
+limiter could never see the over it exists to catch). Now no stage between the
+staging conversion and the final quantize rounds or clamps, the limiter sees true
+unclipped peaks, and the 24-bit wire ceiling exists only at the final quantize
+(`aius_dsp.h:34` §ONE QUANTIZE).
 
 ### `-ffp-contract=off` is load-bearing, not cosmetic
 
@@ -724,9 +838,10 @@ One contraction was benign by construction and is worth knowing so nobody chases
 `vfma` in `aius_out16_sample` multiplies an exact integer by a power of two, so fused and
 unfused agree bit-for-bit.
 
-**The header's own comment block is stale on this point** and still reads as though the
-flag is missing (`lib/aius_dsp/include/aius_dsp.h:58`) — see
-[§Contradictions](#contradictions-found-against-the-plans).
+**The header's comment block has since been corrected** and now reads "THAT
+PRECONDITION IS NOW MET ON BOTH SIDES" (`lib/aius_dsp/include/aius_dsp.h:75`) — the
+contradiction recorded at
+[§Contradictions](#contradictions-found-against-the-plans) item 1 is closed.
 
 ## The clock
 
@@ -778,29 +893,37 @@ OCRAM        392832       131456       524288   74.93%   25.1%
 
 **DTCM free-for-locals is 36,608 bytes and OCRAM free is 131,456 bytes in that
 link.** The former is the entire budget for every thread and interrupt stack. The
-post-link memory gate requires at least 131,424 B of OCRAM free, so the image clears
-the committed floor by 32 B (`test/memory/verify_target.py:18`).
+post-link memory gate's OCRAM ratchet stood at 131,424 B then; it has since been
+lowered stepwise to 131,232 B (OTA dispatcher seam, cache-line pinning, the retained
+poll probe, the decorrelator's config growth — each dated beside the constant,
+`test/memory/verify_target.py:46`).
 
 **The figure has moved repeatedly, and stale copies remain historical evidence**:
-9,280 → 17,152 → 25,376 → 43,328 → 47,552 → **36,608**. So a bare number in prose is not
-usable evidence — [`firmware-io.md`](firmware-io.md)'s table reports 9,280 (correct at
-*its* revision, pre-`FNET_CFG_TLS=0`), and this section previously reported 25,376
-then 43,328. They are snapshots, not contradictions. **Take the current value from
-`tools/memory/mem_report.py` against the linked ELF**, and state the revision beside
-any number copied out of it.
+9,280 → 17,152 → 25,376 → 43,328 → 47,552 → 36,608 → **31,040** (E-AC-3 phase 4,
+the latest committed figure, against the link-time floor of 24,352 B —
+`link/aius_teensy41.ld:266`, [`aius-eac3-support.md`](../plans/aius-eac3-support.md)).
+So a bare number in prose is not usable evidence — [`firmware-io.md`](firmware-io.md)'s
+table reports 9,280 (correct at *its* revision, pre-`FNET_CFG_TLS=0`), and this
+section previously reported 25,376 then 43,328. They are snapshots, not
+contradictions. **The whole bank table above predates E-AC-3 phase 4 (which pinned
+~99 KiB of rodata plus the fork's text to flash and grew the arena to 218,688 B), the
+OTA slices and the decorrelator; no bank table for the current image is committed.
+Take the current value from `tools/memory/mem_report.py` against the linked ELF**, and
+state the revision beside any number copied out of it.
 
 Every audio-path object, with its measured size and bank:
 
 | Object | Size | Bank | Citation |
 |---|---|---|---|
-| `AiusAudioProcessor::g_arena_memory` | 131,072 B | DTCM `.bss` | `optical_main.cpp:1063` |
-| — of which DSP scratch, six input + two work planes | 32,768 B | DTCM arena | `optical_main.cpp:1084` |
-| — of which pipeline, parser and decoder state | remainder | DTCM arena | `optical_main.cpp:1336` |
-| `g_audio_processor` | 5,784 B | DTCM `.bss` | `optical_main.cpp:1550` |
-| — of which `g_limiter` (*derived*) | ≈2,264 B | DTCM | `aius_dsp.h`, `AiusLimiter` |
+| `AiusAudioProcessor::g_arena_memory` | 218,688 B (*derived* since E-AC-3 phase 4; 131,072 B measured in the 2026-07-29 ELF) | DTCM `.bss` | `optical_main.cpp:1402` |
+| — of which DSP scratch, six input + two work double planes | 32,768 B | DTCM arena | `optical_main.cpp:1402` |
+| — of which the codec slot (one resident decoder) | 180,224 B | DTCM arena | `aius_pipeline.h:145` |
+| — of which pipeline, parser and PCM staging | ≤ 5,632 B instance bound | DTCM arena | `aius_pipeline.h:166` |
+| `g_audio_processor` | 5,784 B (2026-07-29 measurement; has since grown with the LFE fold and decorrelator state) | DTCM `.bss` | `optical_main.cpp:1810` |
+| — of which `g_limiter` (*derived*) | ≈4,200 B | DTCM | `aius_dsp.h`, `AiusLimiter` |
 | `k_truepeak` | 384 B | DTCM `.data` | `aius_dsp.c:422` |
 | `processed_left`/`_right` in `enqueue()` | 4,096 B | DTCM stack | `optical_main.cpp:1142` |
-| `g_audio_ingress_words` | 16,384 B | OCRAM `DMAMEM` | `optical_main.cpp:147` |
+| `g_audio_ingress_words` | 16,384 B | OCRAM `DMAMEM` | `optical_main.cpp:194` |
 | `g_aius_spdif_tx24` | 16,396 B | OCRAM `DMAMEM` | `aius_spdif_sources.cpp:30` |
 | `g_meter` | 9,584 B | OCRAM `DMAMEM` | `optical_main.cpp:438` |
 | `g_measure_capture_l`/`_r` | 131,072 B | OCRAM `DMAMEM` | `optical_main.cpp:472` |
@@ -867,8 +990,15 @@ per block is the entire instrumentation cost.
 The current image retains that decoded-block DWT bracket and adds a second timer around
 the whole AUDIO checkpoint. The service must drain/classify/decode/output inside 8 ms,
 and the complete normal epoch must stay inside 25 ms; status exposes both maxima and
-overrun counters (`src/optical_main.cpp:4985`). Those are the Slice 2b3 hardware-gate
-figures; the table above remains dated evidence, not proof of the cutover build.
+overrun counters (`src/optical_main.cpp:7039`). Since defect 35's substep attribution
+(`930f003c6`), `audio_diag` additionally serves `service_max_step_us` and
+`service_max_ingest_us` (`src/optical_main.cpp:2632`), which is how a single
+pathological decode step (measured 118.8 ms on a mid-burst source cut, ingest never
+above 48 µs) is attributed on sight — the bounded silent budget overrun per source
+discontinuity is an accepted residual
+([open-work register #35](../plans/aius-open-work-register.md)). Those are the
+Slice 2b3 hardware-gate figures; the table above remains dated evidence, not proof of
+the cutover build.
 
 ### There is no per-stage breakdown, and this document will not invent one
 
@@ -903,23 +1033,32 @@ consistent with cinematic material opening the true-peak gate often rather than 
 | Contributor | Frames | Time at 48 kHz | Provenance |
 |---|---|---|---|
 | Limiter lookahead | 96 | 2.00 ms | *derived* from `lookahead_ms` |
-| Transmit ring, steady state | ~512 | ~10.67 ms | device, `queue_frames` |
+| Transmit ring, gate-open trim target | 128 (shipped image; code default 256) | 2.67 ms | `platformio.ini:310`, `optical_main.cpp:1873` |
 | Transmit ring, capacity | 2,048 | 42.67 ms | *derived* from the ring size |
+| Whole physical loop, PCM (ESI U24 XL → board → U24 XL) | 926 | 19.29 ms | device, e2e-latency Phase 3 |
+| — of which board share (loop minus adapter baseline) | 836 | 17.4 ms | device, e2e-latency Phase 3 |
 
+The end-to-end decomposition, its per-session determinism (the gate-open trim removed
+the 128–1,792-frame ring lottery) and the identified levers live in
+[`aius-e2e-latency.md`](../plans/aius-e2e-latency.md); the pre-trim "~512-frame steady
+ring" figure this table used to carry described the old equilibrium and is superseded.
 `estimated_latency_us` in the meter snapshot is the ring contribution only —
 `queue_frames × 10⁶ / fs` — and does not include the limiter's lookahead or the decoder's
 own block latency.
 
 ## Decisions recorded, with their alternatives
 
-**Headroom, not the limiter, catches the downmix over.** The downmix quantises and
-saturates at the end of `aius_dsp_downmix`, and the EQ cascade saturates again, so every
-later stage — the limiter included — sees an already-clamped signal. **A limiter
-downstream of a saturating matrix cannot recover an over the matrix has already
-destroyed.** That rules out "unity headroom, let the limiter catch the overs" until the
-pipeline carries an unclamped intermediate, which is the real reason
-[§Remove inter-stage requantisation](../plans/aius-dsp-config-api.md#noted-for-later-deliberately-not-scheduled)
-is more than a tidy-up.
+**Headroom, not the limiter, caught the downmix over — historically.** When the 0.5
+default was chosen, the downmix quantised and saturated at the end of
+`aius_dsp_downmix` and the EQ cascade saturated again, so every later stage — the
+limiter included — saw an already-clamped signal, and a limiter downstream of a
+saturating matrix cannot recover an over the matrix has already destroyed. **That
+structural argument dissolved on 2026-07-28** when the chain moved to one quantize at
+the end ([§Fixed-point and floating-point boundaries](#fixed-point-and-floating-point-boundaries)):
+"unity headroom, let the limiter catch the overs" is no longer ruled out — but 0.5
+stays, because the corpus evidence below still supports it, the exact-power-of-two
+multiply is still bit-exact, and the pad is now also what gives an input-EQ boost its
+working room before the wire ceiling (`aius_dsp.h:280`).
 
 **Why 0.5 and not 1.0, and not the clip-free 0.414214.** Unity clipped: `dsp-vectors`
 reported `surround51_impulse … out_peak=8388607/8388607`, exactly
@@ -1000,7 +1139,7 @@ atomic on the Cortex-M7. Staged frames become visible only at
 **Why 24 bits is not a config field.** The sink is a 24-bit `SPDIF_STL` register either
 way, so selecting 16 could only throw away 8 bits. `OUTPUT_WIDTH_BITS` is a `constexpr`;
 promoting it to `AiusOpticalConfig` is a config-surface change and belongs with whoever
-next widens that model (`src/optical_main.cpp:804`).
+next widens that model (`src/optical_main.cpp:1421`).
 
 **Why the 16-bit arm was bypassed rather than deleted.** A 16-bit sink downstream is a
 real case, the arm reproduces the old wire words bit-exactly so it is a regression
@@ -1039,16 +1178,18 @@ the same thing on both. Retained here for the two lessons rather than the defect
 **Do not fix it by widening the limiter threshold** — recorded because that remains the
 tempting wrong answer if the symptom ever recurs on the input side.
 
-**The DTS decoder uses the DTCM arena the image reserves for it — since
-2026-07-28.** 131,072 B (40 % of DTCM) is set aside, and the `--wrap` shim that routes
-dcadec's allocation into it is live (`platformio.ini:102`; the wrap set was
-`build_unflags`'d until that date, which left the decoder allocating from the OCRAM heap
-with about 126 kB of the reserved arena never touched). The arena's occupancy is now a
-budget rather than dead weight: dcadec 62,560 B plus a 32,768 B DSP staging carve, and
-the AC-3 decoder joins it at ~27 kB after
-[`aius-ac3-support.md`](../plans/aius-ac3-support.md) phase 2a — see that plan's
-§Phase 2 contract for the residency arithmetic and why growing or relocating this arena
-is not the free move it appears to be.
+**The decoders use the DTCM arena the image reserves — since 2026-07-28, grown for
+E-AC-3.** 218,688 B is set aside (instance + 32,768 B DSP staging carve + the
+180,224 B codec slot, `src/optical_main.cpp:1402`), and the `--wrap` shim that routes
+the vendored decoders' allocation into it is live (`platformio.ini:104`; the wrap set
+was `build_unflags`'d until 2026-07-28, which left the decoder allocating from the
+OCRAM heap with most of the then-reserved arena never touched). Exactly one decoder is
+resident in the slot at a time — E-AC-3 high-water 179,232 B, DTS 5.1 core 62,560 B,
+AC-3 27,024 B — swapped on a Pc family change
+(`lib/aius_pipeline/include/aius_pipeline.h:138`);
+[`aius-eac3-support.md`](../plans/aius-eac3-support.md) phase 4 carries the funding
+arithmetic and why growing or relocating this arena is not the free move it appears to
+be.
 
 **All five bypass flags now work; two of them did nothing until 2026-07-26.**
 `features.matrix` and `features.output_eq` were parsed, stored, round-tripped through
@@ -1078,11 +1219,14 @@ the optical bench bring-up:
 [`proto-optical-wiring.md`](../guides/proto-optical-wiring.md) step 5 patches the
 OTJ-5 to the ORJ-5 across real glass and re-runs the item 3 measurement flow.
 
-**Also absent, and recorded so nobody assumes otherwise:** no DC blocker; no bass
-management or crossover; no DTS dialnorm/DRC handling (`core_decoder.h:61` parses
+**Also absent, and recorded so nobody assumes otherwise:** no DC blocker; no
+main-channel bass management or crossover (the LFE fold-in's 120 Hz LR4 band-limits
+only the LFE plane); no DTS dialnorm/DRC handling (`core_decoder.h:61` parses
 `drc_present` and the dynamic-range data is read and discarded, so loudness varies
-between sources); no surround decorrelation, so FL+FC and FR+FC comb-filter with
-correlated content and the surrounds collapse envelopment.
+between sources). ~~No surround decorrelation~~ — closed 2026-08-04 by item 4
+([stage 6](#stage-6--the-downmix-matrix-lfe-fold-in-and-surround-decorrelation)),
+though the shipped config leaves `surround_delay_ms` at 0, so the fold is undelayed
+until an operator sets it.
 
 ## Figures that are not measured
 
@@ -1091,9 +1235,10 @@ Every number in this document that is not read from the linked image or the devi
 - **Block period, 10,666.67 µs / 6,400,000 cycles** — *derived* from 512 frames,
   48,000 Hz and 600 MHz.
 - **Block rates, 375/s and 93.75/s** — *derived* the same way.
-- **`AiusLimiter` ≈ 2,264 B and input EQ + state 864 B** — *derived* from struct
-  members, not individual symbol sizes. The containing `g_audio_processor` is measured
-  at 5,784 B.
+- **`AiusLimiter` ≈ 4,200 B, the decorrelator ring 4,608 B, and the arena's 218,688 B
+  total** — *derived* from struct members and compile-time constants, not individual
+  symbol sizes. The containing `g_audio_processor`'s 5,784 B is a 2026-07-29
+  measurement that predates the LFE fold and decorrelator state.
 - **Pipeline, IEC parser and dcadec `ta` subdivision inside the 131,072-byte arena**
   — not measured individually. They are arena allocations, not heap objects;
   `aius_dts_get_metrics().arena_high_water` would report decoder use but is not
@@ -1109,10 +1254,12 @@ Every number in this document that is not read from the linked image or the devi
 - **Priming window 229 µs, lookahead 96 samples, ring capacity 42.67 ms** — *derived*
   from tap counts, milliseconds and frame counts at 48 kHz.
 - **The 48.16 dB PCM-vs-DTS level step** — *derived* as `20*log10(2^23 / 2^15)`.
-- **The −140 dB inter-stage requantisation floor** — host-proven only
-  (`scripts/test.sh --suite measure`'s pure-sine canary reads the analysis floor near
-  −140 dB on 24-bit synthesis); no 16-bit stimulus can verify it on-device, so the
-  loopback figures above bottom out at the stimulus floor instead, by design.
+- **The −140 dB inter-stage requantisation floor** — a historical figure: it described
+  the per-stage rounding the one-quantize chain removed on 2026-07-28, and was
+  host-proven only (`scripts/test.sh --suite measure`'s pure-sine canary read the
+  analysis floor near −140 dB on 24-bit synthesis); no 16-bit stimulus can verify the
+  chain's floor on-device, so the loopback figures above bottom out at the stimulus
+  floor instead, by design.
 
 Everything else — every bank figure, every object size, every ITCM function size, and
 both DWT cycle counts — comes from the ELF or the board.
@@ -1123,17 +1270,15 @@ This is the first end-to-end read of the chain since three of its stages changed
 2026-07-26. Each item below is a place where a checked-in description disagrees with the
 source, verified against the source.
 
-1. **`aius_dsp.h` still says `-ffp-contract=off` is missing.** Lines 58–73 read "THAT
-   PRECONDITION IS CURRENTLY UNMET ON THE TARGET", "platformio.ini's build_flags do not",
-   and "THE FIX IS ONE FLAG … platformio.ini is not this module's to edit; the flag is
-   owed." The flag landed in `[common] build_flags` at `platformio.ini:77`. The comment
-   is the most misleading thing in the DSP header, because it tells a reader the
-   bit-exactness contract is broken when it now holds.
-2. **`aius_downmix_config_default()`'s doc comment says "unity headroom."**
-   `lib/aius_dsp/include/aius_dsp.h:153` describes the default as "BS.775/A52 −3 dB
-   center+surround, LFE excluded, unity headroom", but the implementation returns
-   `AIUS_DSP_HEADROOM_DEFAULT` = 0.5 (`src/aius_dsp.c:61`). The comment predates the
-   headroom fix and now contradicts the constant 10 lines above it.
+1. **~~`aius_dsp.h` still says `-ffp-contract=off` is missing.~~ Closed** — the header
+   now reads "THAT PRECONDITION IS NOW MET ON BOTH SIDES"
+   (`lib/aius_dsp/include/aius_dsp.h:75`). Originally: lines 58–73 read "THAT
+   PRECONDITION IS CURRENTLY UNMET ON THE TARGET" while the flag had already landed in
+   `[common] build_flags`.
+2. **~~`aius_downmix_config_default()`'s doc comment says "unity headroom."~~ Closed** —
+   the comment now describes the shipped default in full ("the LFE folded in at −10 dB
+   through a 120 Hz LR4 low-pass, `AIUS_DSP_HEADROOM_DEFAULT`, and layout_aware ON",
+   `lib/aius_dsp/include/aius_dsp.h:433`).
 3. **`firmware-io.md` §S/PDIF input still places the playback ring in DTCM.** It says the
    processor object holds "a 2,048-frame stereo ring at 16,384 B", which its own
    §S/PDIF output then correctly describes as having moved to `DMAMEM`. The ring is not a
@@ -1152,20 +1297,18 @@ source, verified against the source.
    2026-07-26** by `e88112d82`: all five flags are live in `apply_config()`
    (`src/optical_main.cpp:1067`, `:1072`, `:1092`) — the commit that made the two
    dead bypass flags work updated §Open but left this item standing.
-7. **"No heap on the process path" holds; "the decode/DSP arena is in DTCM" does not.**
-   The DSP module genuinely allocates nothing per block. But
-   `aius-dsp-config-api.md` §Target memory strategy argues "The single-cycle,
-   deterministic DTCM access is the whole point for the decode/DSP arena", and on
-   `teensy41-optical` the decode arena is bypassed entirely — see
-   [§Open at this revision](#open-at-this-revision).
-8. **The PCM passthrough level step is undescribed anywhere.** No plan, reference or
-   test comment states that the two input branches present different full-scale
-   magnitudes to the DSP. `aius-sample-rate-following.md` §Verified inventories the two
-   branches' *rates* carefully and does not mention their *levels*.
+7. **~~"The decode/DSP arena is in DTCM" does not hold.~~ Closed 2026-07-28** — the
+   `--wrap` shim went live and every decoder allocation has come from the DTCM arena
+   since; the arena has since grown to hold the E-AC-3 slot — see
+   [§Open at this revision](#open-at-this-revision). "No heap on the process path"
+   held throughout.
+8. **~~The PCM passthrough level step is undescribed anywhere.~~ Closed 2026-07-26** —
+   the fix declared the sample scale at the contract (`aius_codec.h` §SAMPLE SCALE)
+   and [§Stage 4c](#stage-4c--pcm-passthrough) records both the defect and the lesson.
 
-Items 1, 2, 6, 7 and 8 are in source files owned by other in-flight work at this
-revision and are reported rather than changed here. Items 3, 4 and 5 are in documents
-this phase does not own.
+As of the 2026-08-04 audit only items 3, 4 and 5 remain open; all are stale
+*documents* rather than stale source, and items 3 and 4 are addressed by
+[`firmware-io.md`](firmware-io.md)'s own staleness caveats.
 
 ## What a future maintainer must update here
 

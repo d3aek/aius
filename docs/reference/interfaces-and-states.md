@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: current
 tags: [aius, hardware, interfaces, states]
-updated: 2026-07-31
+updated: 2026-08-04
 toc: true
 ---
 
@@ -14,7 +14,13 @@ toc: true
 The connectors, controls, power domains, operating states, fault scenarios, and
 transitions of the Aius carrier — the FMEA contract for schematic capture.
 Companion to [functional topology](functional-topology.md) and the
-[hardware spec](../plans/aius-hardware-spec.md).
+[hardware spec](../plans/aius-hardware-spec.md). State ids are stable contract
+handles; the notes columns carry where the shipped firmware has since widened a
+state's meaning (compressed formats beyond DTS, carrier-rate-following output,
+SD replay). The TX-gate policy both actuators share — no input carrier and no
+replay means no output carrier — is one portable predicate,
+`firmware/lib/aius_replay/include/aius_tx_gate.h`, enforced electronically on
+the carrier (`TX_ENABLE` into the 1G126's OE) and by pad-mux on the bench build.
 
 ## Connectors
 
@@ -73,9 +79,10 @@ Companion to [functional topology](functional-topology.md) and the
 | powered-reset | Power is valid while reset is asserted. | processed | disabled | none | high-impedance | Reset is released. | Hardware defaults establish safe outputs. |
 | boot-muted | Reset has been released and firmware is booting. | processed | disabled | none | current-limited | The watchdog is armed and the pipeline is ready. | TX remains disabled during boot. |
 | waiting-for-carrier | The pipeline is ready without a supported input carrier. | processed | disabled | none | active | A supported format is detected or a fault occurs. | The downstream optical-carrier trigger is preserved. |
-| pcm-active | Supported stereo PCM is detected. | processed | enabled-pcm | processed-pcm-48k | active | The carrier, format, diagnostic mode, or power state changes. | PCM processing path active. |
-| dts-active | Supported DTS core is detected. | processed | enabled-pcm | processed-pcm-48k | active | The carrier, format, diagnostic mode, or power state changes. | Decoded and processed DTS path active. |
-| unsupported-muted | An unsupported or malformed burst is detected. | processed | enabled-pcm | pcm-silence-48k | unchanged | A supported format is detected or the carrier is lost. | Compressed or malformed input never reaches the DAC. |
+| pcm-active | Supported stereo PCM is detected at an accepted 32/44.1/48 kHz rate. | processed | enabled-pcm | processed-pcm-48k | active | The carrier, format, rate, diagnostic mode, or power state changes. | PCM processing path active. Payload id retained; the output clock follows the accepted carrier nominal, not fixed 48 kHz. |
+| dts-active | A supported IEC 61937 stream (DTS Core, AC-3, or E-AC-3) is detected at an accepted rate. | processed | enabled-pcm | processed-pcm-48k | active | The carrier, format, rate, diagnostic mode, or power state changes. | State id retained; covers all three decoded compressed families since the AC-3/E-AC-3 routes shipped. Output clock follows the carrier as in pcm-active. |
+| replay-active | An operator-selected SD replay is prebuffered with no optical carrier. | processed | enabled-pcm | processed-pcm-48k | active | The replay is stopped, ends in error, or a live carrier displaces it. | Added 2026-08-04. The transmitter is clock master at exactly 48 kHz; the gate opens during prebuffer so the sink's receiver locks before audio. A drained (EOF) replay keeps a silence carrier up until stopped or displaced — an accepted residue recorded at the TX-gate predicate. |
+| unsupported-muted | An unsupported or malformed burst is detected. | processed | enabled-pcm | pcm-silence-48k | unchanged | A supported format is detected or the carrier is lost. | Compressed or malformed input never reaches the DAC. On the bench firmware a carrier that never yields an accepted decoded block (unsupported family, or an unaccepted/mismatched rate) instead holds the TX gate dark — output absent rather than silence; silence output covers the transient in-stream fault case. |
 | diagnostic-bypass | An explicit diagnostic raw-bypass request completes safely. | raw | enabled-raw | raw-spdif | unchanged | Diagnostic bypass is released or reset occurs. | Raw bypass is diagnostic-only. |
 | fault-muted | A fault requires the output path to mute. | processed | disabled | none | current-limited | The applicable recovery sequence completes. | Safe fault state. |
 
@@ -103,14 +110,17 @@ Companion to [functional topology](functional-topology.md) and the
 | reset-to-boot | powered-reset | boot-muted | reset-released | rails-valid<br>tx-disabled | clear-pipeline<br>hold-expansion-safe | processed-selected<br>tx-disabled<br>expansion-safe | Boot begins muted. |
 | boot-to-waiting | boot-muted | waiting-for-carrier | pipeline-ready | watchdog-armed<br>pipeline-primed | disable-tx | processed-selected<br>tx-disabled | The ready pipeline waits for an input carrier. |
 | waiting-to-pcm | waiting-for-carrier | pcm-active | pcm-detected | carrier-present<br>format-supported<br>pipeline-primed | enable-tx-pcm | processed-selected<br>tx-pcm-enabled | Supported PCM enables processed output. |
-| waiting-to-dts | waiting-for-carrier | dts-active | dts-detected | carrier-present<br>format-supported<br>pipeline-primed | enable-tx-pcm | processed-selected<br>tx-pcm-enabled | Supported DTS enables decoded processed output. |
+| waiting-to-dts | waiting-for-carrier | dts-active | dts-detected | carrier-present<br>format-supported<br>pipeline-primed | enable-tx-pcm | processed-selected<br>tx-pcm-enabled | A supported IEC 61937 stream enables decoded processed output. |
+| waiting-to-replay | waiting-for-carrier | replay-active | replay-start-request | carrier-absent<br>replay-plan-applied | enable-tx-pcm | processed-selected<br>tx-pcm-enabled | Added 2026-08-04: an operator replay opens the gate at prebuffer; the transmitter takes graph clock responsibility after the exact 48 kHz plan is acknowledged. |
+| replay-to-waiting | replay-active | waiting-for-carrier | replay-stop<br>replay-error | tx-pcm-enabled | disable-tx<br>clear-pipeline | processed-selected<br>tx-disabled | Added 2026-08-04: stop or decoder error returns to the muted waiting state. |
+| replay-displaced-by-carrier | replay-active | pcm-active<br>dts-active | carrier-detected | carrier-present<br>format-supported | clear-pipeline<br>enable-tx-pcm | processed-selected<br>tx-pcm-enabled | Added 2026-08-04: a live carrier displaces the replay; clock responsibility returns to the receiver. |
 | active-to-carrier-loss | pcm-active<br>dts-active<br>unsupported-muted<br>diagnostic-bypass | waiting-for-carrier | optical-carrier-loss | carrier-present | disable-tx<br>wait-muted<br>select-processed<br>clear-pipeline | processed-selected<br>tx-disabled | Carrier loss disables TX after qualification. |
 | active-to-unsupported | pcm-active<br>dts-active | unsupported-muted | unsupported-burst<br>malformed-input | carrier-present | clear-pipeline<br>prime-pcm-silence<br>enable-tx-pcm | processed-selected<br>tx-pcm-enabled | Unsupported or malformed data produces only PCM silence. |
 | unsupported-to-active | unsupported-muted | pcm-active<br>dts-active | supported-format-detected | carrier-present<br>format-supported<br>pipeline-primed | enable-tx-pcm | processed-selected<br>tx-pcm-enabled | A supported format resumes processed output. |
 | active-to-diagnostic-bypass | pcm-active<br>dts-active<br>unsupported-muted | diagnostic-bypass | raw-bypass-request | diagnostic-authorized<br>output-muted<br>tx-disabled | disable-tx<br>wait-muted<br>select-raw<br>enable-tx-raw | raw-selected<br>tx-raw-enabled | Raw selection occurs only while muted. |
 | diagnostic-bypass-to-waiting | diagnostic-bypass | waiting-for-carrier | raw-bypass-release | output-muted<br>tx-disabled | disable-tx<br>wait-muted<br>select-processed<br>clear-pipeline | processed-selected<br>tx-disabled | Release returns to the processed muted path. |
-| watchdog-to-reset | boot-muted<br>waiting-for-carrier<br>pcm-active<br>dts-active<br>unsupported-muted<br>diagnostic-bypass<br>fault-muted | powered-reset | watchdog-expired | watchdog-armed | assert-reset<br>disable-tx<br>hold-expansion-safe | processed-selected<br>tx-disabled<br>expansion-safe | Watchdog expiry returns the system to hardware reset defaults. |
-| usb-unplug-to-power-off | powered-reset<br>boot-muted<br>waiting-for-carrier<br>pcm-active<br>dts-active<br>unsupported-muted<br>diagnostic-bypass<br>fault-muted | power-off | usb-unplug |  | disable-tx<br>hold-expansion-safe | tx-disabled<br>expansion-safe | Removal of the sole supply reaches power-off without backfeed. |
+| watchdog-to-reset | boot-muted<br>waiting-for-carrier<br>pcm-active<br>dts-active<br>replay-active<br>unsupported-muted<br>diagnostic-bypass<br>fault-muted | powered-reset | watchdog-expired | watchdog-armed | assert-reset<br>disable-tx<br>hold-expansion-safe | processed-selected<br>tx-disabled<br>expansion-safe | Watchdog expiry returns the system to hardware reset defaults. |
+| usb-unplug-to-power-off | powered-reset<br>boot-muted<br>waiting-for-carrier<br>pcm-active<br>dts-active<br>replay-active<br>unsupported-muted<br>diagnostic-bypass<br>fault-muted | power-off | usb-unplug |  | disable-tx<br>hold-expansion-safe | tx-disabled<br>expansion-safe | Removal of the sole supply reaches power-off without backfeed. |
 
 ## Evidence
 

@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, ac3, dolby, decode, iec61937]
-updated: 2026-07-30
+updated: 2026-08-04
 toc: true
 ---
 
@@ -84,9 +84,18 @@ sequenced after.
   The design branch is closed. A 2026-07-30 audit found that the target
   evidence had exercised each codec on different images rather than forcing
   both lazy decoder allocations in one boot. The same-boot check below now
-  closes that residual gate at 122,448 / 131,072 B.
+  closes that residual gate at 122,448 / 131,072 B. (2026-08-01: the
+  co-residency model itself was superseded by the E-AC-3 codec-slot
+  restructure — see the note under §Current HEAD contract.)
 
 ## Current HEAD contract (2026-07-30)
+
+**Residency-model update, 2026-08-01:** the E-AC-3 codec-slot arena
+restructure ended decoder co-residency — one decoder at a time in a fixed
+slot, swapped at class time — and the optical image's arena is now
+218,688 B. The combined-residency figures below (122,448 / 131,072 B etc.)
+are the historical two-decoder record; current slot/arena arithmetic lives
+in [`aius-eac3-support.md`](aius-eac3-support.md) Phases 1 and 4.
 
 This section supersedes contrary phase-local statements retained below as
 historical implementation evidence:
@@ -114,10 +123,21 @@ historical implementation evidence:
 - Current e2e work runs image `01477755955b+teensy41-optical`, not phase 4's
   `bc05232880a5+teensy41-optical`; its evidence is recorded separately in
   `aius-e2e-latency.md`. It does not retroactively reconfirm the older image.
+  (The latency pin has since advanced repeatedly — through `fecc4a0a2473`,
+  the single-context image and the ring-128 image, 2026-08-03; that plan
+  carries the pin record.)
 - The four-hour live-TV gate still waits for the sample-rate-following plan's
-  own delivery evidence and the OTA verdict. During that gate the TV must
+  own delivery evidence ~~and the OTA verdict~~ (OTA verdict COMPLETE — the
+  plan shipped end-to-end 2026-08-01, `67c44a381`; and the unattended-run
+  validity blocker cleared 2026-08-04 when the owner unblocked the
+  four-hour gates after the 10.0 h loaded soak, `6950202b7`). ~~During that
+  gate the TV must
   remain on AC-3 / Dolby Digital output: E-AC-3 type 21 is still refused and
-  defect 34 remains a full-scale-noise hazard.
+  defect 34 remains a full-scale-noise hazard.~~ (Superseded: defect 34's
+  stay-dark fix landed 2026-07-31 and type 21 now DECODES on the optical
+  image — [`aius-eac3-support.md`](aius-eac3-support.md) Phase 4,
+  2026-08-02. AC-3 output remains the gate's content requirement, no
+  longer a safety constraint.)
 
 ## Phases (each gated per house protocol)
 
@@ -134,8 +154,11 @@ historical implementation evidence:
 4. ~~Bounded target integration: arena measurement, cycle meters, exact-image
    flash, SD replay, CM6206 optical input, and committed-wire channel
    identity.~~ **DONE 2026-07-29.** The remaining mission test is the
-   four-hour live-TV run plus by-ear dialogue validation after the OTA
-   investigation verdict. The audit-discovered same-boot mixed-codec
+   four-hour live-TV run plus by-ear dialogue validation ~~after the OTA
+   investigation verdict~~ (OTA verdict complete 2026-08-01; the owner
+   unblocked the four-hour gates 2026-08-04 — still owed: the in-scope
+   sample-rate device gates on one exact image, then scheduling the run).
+   The audit-discovered same-boot mixed-codec
    residency gap was closed on 2026-07-30.
 
 `doc-index --validate-outstanding-work` cannot validate this plan because
@@ -161,7 +184,11 @@ is therefore recorded manually below, using the same canonical grammar.
 ## The format space after AC-3 — why this is the last decoder
 
 Recorded 2026-07-28 in answer to "what else could we conceivably support,
-7.1 varieties perhaps", so the reasoning is not re-derived. **The decode
+7.1 varieties perhaps", so the reasoning is not re-derived. (2026-08-01:
+the owner took this section's one defensible exception — E-AC-3 decode was
+implemented, [`aius-eac3-support.md`](aius-eac3-support.md); defect 34's
+stay-dark fix had landed 2026-07-31. The rest of the reasoning stands.)
+**The decode
 roadmap ends with AC-3**, and one number decides most of it: optical S/PDIF
 at 48 kHz carries 2 × 16 bits per frame, so **1.536 Mbit/s of IEC 61937
 payload, total.**
@@ -2211,7 +2238,10 @@ Bench first, TV second, because the bench is scriptable and the TV is not:
   temporary clock-matched image cannot satisfy it.
 - **The owner schedules that otherwise-ready gate after the OTA investigation
   verdict** (2026-07-29). “OTA investigated” is the finite verdict gate in
-  `aius-ota-upgrade.md`; it does not mean OTA must be implemented. After both
+  `aius-ota-upgrade.md`; it does not mean OTA must be implemented. (Met
+  2026-08-01: OTA shipped end-to-end, `67c44a381`. The four-hour gates were
+  further unblocked 2026-08-04 after the WDOG-defect soak; the sample-rate
+  prerequisite below still stands.) After both
   prerequisites, run the TV for four continuous hours on an exact committed
   production image containing the decoder and clock-following changes:
   nightly AC-3 content, dialogue lifted via `center_gain_linear` plus centre
@@ -2299,7 +2329,9 @@ the mixed-codec residency stop condition with 6.6% measured arena headroom.
 The bounded Phase 4 gates are complete. Sample-rate following remains the
 technical clock prerequisite for the four-hour TV mission gate; the owner has
 additionally scheduled that gate and the by-ear checks after the OTA
-investigation verdict. This evidence does not substitute a temporary
+investigation verdict (verdict complete 2026-08-01, `67c44a381`; gates
+unblocked from the WDOG defect's side 2026-08-04). This evidence does not
+substitute a temporary
 clock-matched run for production acceptance.
 
 ### Phase boundary and exact-image proof

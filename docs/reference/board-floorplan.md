@@ -3,9 +3,9 @@ title: Aius board floorplan
 type: reference
 scope: component
 component: aius
-status: draft
+status: current
 tags: [aius, hardware, pcb, placement, mechanical]
-updated: 2026-07-18
+updated: 2026-08-04
 toc: false
 ---
 
@@ -27,9 +27,10 @@ physical arrangement of what is being built.
 
 ## What it shows
 
-- **Rear panel** carries the two Cliff TOSLINK optical jacks (RX/TX), the rear
-  USB-C (the sole 5 V + data entry), the Ethernet magjack, and the remote
-  Program/RTC service header. Rear machining is done by hand or external CNC.
+- **Rear panel** carries the two Cliff-class TOSLINK optical jacks (RX/TX; the
+  purchased parts are RS PRO ORJ-5/OTJ-5), the rear USB-C (the sole 5 V + data
+  entry), the Ethernet magjack, and the remote Program/RTC service header. Rear
+  machining is done by hand or external CNC.
 - **The socketed Teensy 4.1** sits centrally; its native Ethernet pins face the
   magjack and its microSD stays user-accessible.
 - **The reset-safe optical path**: the S/PDIF TX gate and the diagnostic
@@ -45,12 +46,19 @@ physical arrangement of what is being built.
 
 Turning this into an orderable PCB is the gated hardware work:
 
-1. **Schematic (H1)** — capture every net in KiCad against the datasheets, with a
-   power-path and fault-safe-state review.
+1. **Schematic (H1) — *done* (2026-07-19).** Captured as the generated,
+   ERC-clean project in [`electronics/`](../../electronics/README.md)
+   ([plan](../plans/aius-h1-schematic.md), shipped).
 2. **Two-layer feasibility (H2)** — prove 90 Ω USB / 100 Ω Ethernet geometry and
-   continuous return paths against the fabricator's stackup.
+   continuous return paths against the fabricator's stackup. Not started.
 3. **Layout + route (H3)** — placement, impedance-controlled routing, ERC/DRC,
-   manufacturing outputs, quote.
+   manufacturing outputs, quote. Not started.
 
 See the [hardware spec](../plans/aius-hardware-spec.md) for the full gate order.
 Regenerate this figure with `python3 board-floorplan.py`.
+
+**Known label drift (2026-08-04), figure not yet regenerated:** the H1 review
+simplified the TX gate to a single `SN74LVC1G126` (active-high OE, no inverter)
+and the purchased optical modules are RS PRO ORJ-5/OTJ-5; the figure still
+labels the gate `SN74LVC1G125` and the jacks Cliff `FCR684205R/T`. Placement is
+unaffected — the parts are pin-compatible drop-ins in the same positions.

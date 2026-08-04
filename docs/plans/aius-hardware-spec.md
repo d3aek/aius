@@ -6,15 +6,16 @@ component: aius
 subtype: design
 status: in-progress
 tags: [aius, hardware, teensy, spdif, pcb, kicad]
-updated: 2026-07-18
+updated: 2026-08-04
 toc: true
 ---
 
 # Aius hardware spec
 
 The buildable specification for the Aius carrier board: a socketed Teensy 4.1 that
-receives optical S/PDIF, classifies PCM vs IEC 61937 DTS Core, decodes DTS,
-downmixes 5.1 to stereo with EQ, and re-emits 48 kHz stereo over optical TOSLINK.
+receives optical S/PDIF, classifies PCM vs IEC 61937 bursts, decodes DTS Core /
+AC-3 / E-AC-3, downmixes 5.1 to stereo with EQ, and re-emits stereo over optical
+TOSLINK.
 
 This document is the single hardware source of truth. It supersedes the retired
 evidence/audit plans (`aius-p1-evidence-topology-cost`,
@@ -34,14 +35,20 @@ datasheets) under `evidence/source-snapshots/`.
 
 ## Signal path
 
-```
-TOSLINK RX → S/PDIF capture → PCM/DTS classification → DTS Core decode
-  → native-channel PCM → downmix/EQ → 48 kHz stereo PCM → gated TOSLINK TX
+```text
+TOSLINK RX → S/PDIF capture → PCM/IEC 61937 classification
+  → DTS Core / AC-3 / E-AC-3 decode → native-channel PCM → downmix/EQ
+  → stereo PCM → gated TOSLINK TX
 ```
 
 Five operating modes: `pcm-processed`, `dts-processed`, `diagnostic-raw-bypass`,
-`unsupported-muted`, `fault-muted`. Raw DTS never reaches the stereo DAC — the
-bypass mux defaults to the processed path and is a diagnostic aid only.
+`unsupported-muted`, `fault-muted`. Raw compressed data never reaches the stereo
+DAC — the bypass mux defaults to the processed path and is a diagnostic aid only.
+(The decoder set outgrew the original DTS-only scope: the running firmware also
+decodes AC-3 and E-AC-3 — [`aius-ac3-support.md`](aius-ac3-support.md),
+[`aius-eac3-support.md`](aius-eac3-support.md) — and live output follows the
+source rate at 32/44.1/48 kHz. The reference tables' mode ids keep their
+original DTS-era names.)
 
 ## Locked architecture decisions
 
@@ -92,7 +99,8 @@ the selected parts are in the BOM. Summary:
   ([sourcing record](aius-optical-prototype.md#hardware-prototype-scope)).
 - S/PDIF **bypass mux** TI `SN74LVC1G3157DBVR`; **TX gate** TI `SN74LVC1G126DBVR`
   (active-high OE, so `TX_ENABLE` default-low = TX disabled with no inverter — set at H1).
-- Rear USB-C receptacle (candidate GCT `USB4105-GF-A`; see [open sourcing](#open-hardware-questions)),
+- Rear USB-C receptacle GCT `USB4105-GF-A` (captured at H1; see
+  [open hardware questions](#open-hardware-questions)),
   independent CC1/CC2 5.1 kΩ pulldowns, USB ESD TI `TPD2EUSB30ADRTR`,
   power protection TI `TPS2553DBVR`, 90 Ω D+/D- to an internal USB-A receptacle
   (candidate TE `292303-1`), StarTech `UUSBHAUB6IN` internal cable to the Teensy.
@@ -120,12 +128,15 @@ while TX is muted.
 Manufacturing stays gated, but without the retired evidence/audit apparatus. The
 order is engineering-driven:
 
-1. **Software capability** — the Teensy can parse IEC 61937 and decode DTS Core
-   within time/memory budget. See [capability gate](aius-capability-gate.md). A
-   pass authorises optical bench work, not a board order.
-2. **Schematic (H1)** — draw `electronics/aius-carrier.kicad_sch` in the pinned
-   KiCad container (`scripts/kicad.sh`), pin-by-pin against the datasheets, with a
-   power-path and fault-safe-state review. Run ERC clean.
+1. **Software capability — *passed* (P6 on-device validation 2026-07-21).** The
+   Teensy parses IEC 61937 and decodes DTS Core within budget; record at
+   [`evidence/capability-results/p6-hidraw-validated.md`](../../evidence/capability-results/p6-hidraw-validated.md),
+   plan at [capability gate](aius-capability-gate.md). The authorised optical
+   bench work is now running ([optical prototype](aius-optical-prototype.md)).
+2. **Schematic (H1) — *done* (2026-07-19,
+   [plan shipped](aius-h1-schematic.md)).** `electronics/aius-carrier.kicad_sch`
+   captured as a generated four-sheet hierarchical project in the pinned KiCad
+   container, whole-project ERC 0/0, power-path and fault-safe review recorded.
 3. **Two-layer feasibility (H2)** — obtain the fabricator's stackup, compute
    90/100 Ω geometry, prove continuous return paths and placement inside the
    enclosure. Record the two-vs-four-layer verdict.
@@ -144,17 +155,17 @@ quote.
 
 ## Open hardware questions
 
-Resolve these during schematic capture (H1), not before:
+All three were resolved as planned:
 
-- **USB-A / USB-C receptacles.** The BOM still shows the original candidates
-  (`292303-1`, `USB4105-GF-A`); a later search shortlisted TE `292303-1`
-  (unchanged) and Würth `629722000214` for USB-C. Pick the final USB-C part at H1
-  from the datasheet (the Würth part's 0.8 mm PCB recommendation vs a 1.6 mm board
-  is the open point). These are freely-available datasheets — no acquisition
-  ceremony needed.
-- **DTS decoder feasibility** is proven by the software gate, not assumed here.
-- **Latency and memory budgets** are measured at the software gate and EVT, not
-  locked in this spec.
+- **USB-A / USB-C receptacles — resolved at H1.** The captured schematic uses
+  the original candidates: GCT `USB4105-GF-A` for USB-C and TE `292303-1` for
+  the internal USB-A (`electronics/connectivity/power-usb.json`); the Würth
+  `629722000214` alternative was not adopted.
+- **DTS decoder feasibility — proven** by the software gate (P6, 2026-07-21).
+- **Latency and memory budgets** are measured on the running bench prototype,
+  not locked in this spec: per-bank memory reports gate every build
+  (`firmware/scripts/build.sh`), and end-to-end latency is being measured under
+  [`aius-e2e-latency.md`](aius-e2e-latency.md).
 
 ## Provenance of this spec
 

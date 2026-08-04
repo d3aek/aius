@@ -3,7 +3,8 @@ title: Aius SD replay manager
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
+updated: 2026-08-04
 ---
 
 # Aius SD replay manager
@@ -13,6 +14,38 @@ status: in-progress
 Provide a separate SD-hosted replay page for representative IEC 61937/DTS
 captures. Replay is an independent device service: navigating between the
 replay manager and DSP editor must not stop an active replay.
+
+## Delivery state — shipped (noted 2026-08-04)
+
+All four phases are delivered and proven on hardware; this plan is a contract
+record, not open work.
+
+- **Phase 1** — route/contract tests live in the host `http` and `replay`
+  suites (`firmware/test/http/`, `firmware/test/replay/`).
+- **Phase 2** — `firmware/lib/aius_replay/` is the bounded reader/word-queue
+  service, linked into `env:teensy41-optical` (`firmware/platformio.ini`).
+- **Phase 3** — the routes, SD-job integration and source switching run live;
+  the replay refill moved onto a bounded SD job as network-hardening
+  Phase 14c. The resumable chunked `PUT /sd/replays/<id>` protocol proved
+  robust enough that [`aius-ota-upgrade.md`](aius-ota-upgrade.md) reused its
+  shape as the OTA staging transport.
+- **Phase 4** — `firmware/sd/www/replays.{html,js,css}` shipped, then were
+  reworked into the consolidated SD-page product (shared `sd-shared.js` /
+  `replays.css` layer, task #7 slice 5 in
+  [`aius-dsp-config-api.md`](aius-dsp-config-api.md)); host coverage is
+  `test/sd-editor/replays.test.js`.
+- All five `/api/replays*` routes are documented in
+  `swagger.json` since 2026-08-03 (`623ecc942`), including the
+  status vocabulary. One post-contract addition: `stop_reason`
+  (`none | request | carrier`) beside `state`, recorded in
+  [`aius-dsp-config-api.md`](aius-dsp-config-api.md) §The 409 refusal, along
+  with the `409 replay_carrier_present` start refusal against a live carrier —
+  a deliberate narrowing of this contract's start semantics.
+- Acceptance: upload / list / start / stop / loop / delete without flashing is
+  routine bench practice (measurement-vector and E-AC-3 acceptance runs drive
+  it end to end); SD stalls never blocking the callback is held by the bounded
+  job engine and proven across the soaks recorded in
+  [`aius-network-hardening.md`](aius-network-hardening.md).
 
 ## Contract
 
@@ -212,6 +245,8 @@ replay manager and DSP editor must not stop an active replay.
 
 ### Phase 1: contract and native route tests
 
+**Done** — see §Delivery state.
+
 ```yaml
 unit: test-surface
 seams: [HTTP route parser, replay JSON model, upload path contract]
@@ -225,6 +260,8 @@ Content-Range parsing, auth header extraction, and control body shapes
 ```
 
 ### Phase 2: replay service
+
+**Done** — see §Delivery state.
 
 ```yaml
 unit: component-behind-interface
@@ -240,6 +277,8 @@ byte-order, odd-byte, overflow, underrun, and EOF behavior covered
 
 ### Phase 3: optical HTTP integration
 
+**Done** — see §Delivery state.
+
 ```yaml
 unit: vertical-slice
 seams: [HTTP routes, SD jobs, replay service, status serializer]
@@ -253,6 +292,8 @@ upload resume/rename lock behavior and source switching
 ```
 
 ### Phase 4: SD pages and regression fixtures
+
+**Done** — see §Delivery state.
 
 ```yaml
 unit: component-behind-interface

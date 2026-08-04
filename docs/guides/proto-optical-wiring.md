@@ -5,16 +5,19 @@ scope: component
 component: aius
 status: current
 tags: [aius, hardware, optical-spdif, toslink, bring-up]
-updated: 2026-07-27
+updated: 2026-08-04
 ---
 
 # Proto-board optical wiring — first real signal test
 
 How to wire the purchased RS PRO optical jacks directly to the running Teensy
-4.1 on a breadboard/proto board, and what to observe for the first-ever real
-S/PDIF signal into the device. This is the bench shape only — the carrier
-board adds a bypass mux and a reset-safe TX gate that the bench deliberately
-omits (see [§What the bench omits](#what-the-bench-omits)).
+4.1 on a breadboard/proto board, and what to observe for a real S/PDIF signal
+into the device. This is the bench shape only — the carrier board adds a
+bypass mux and a reset-safe TX gate that the bench deliberately omits (see
+[§What the bench omits](#what-the-bench-omits)). This build was executed
+2026-07-27–29 (wiring, then the electrical 14→15 loopback on 2026-07-28, then
+the first full optical loop measured 2026-07-29) and is the running bench
+today; the guide remains the reference for rewiring or a second build.
 
 ## Parts
 
@@ -116,17 +119,17 @@ crashed Teensy can never emit data ([optical sheet](../../electronics/connectivi
 
 ## First real signal test
 
-The firmware side is already proven against replay; this is the first time
-`blocks` climbs from a *carrier* rather than a replay. Board reachable at
-`http://192.0.2.66` as usual.
+The firmware side was proven against replay before the first run; this test
+watches `blocks` climb from a *carrier* rather than a replay. Board reachable
+at `http://192.0.2.66` as usual.
 
 1. **Electrical bring-up, fibre unplugged:** power on; check 3.3 V at both
    jacks' Vcc pins; ORJ-5 Vout idles at a steady logic level with no fibre.
    `GET /api/status` should show the familiar no-carrier state (`blocks` 0).
 2. **Carrier:** connect a PCM source (TV/DAC at 48 kHz) into the ORJ-5.
    **`blocks` on `GET /api/status` must climb continuously from passthrough
-   alone with no replay running**, `overruns` staying at or near 0 — the
-   exact observation the plan's "Resume here" section has been waiting on.
+   alone with no replay running**, `overruns` staying at or near 0 — first
+   observed on the bench during the 2026-07-28/29 bring-up.
    `GET /api/meters` publishes non-zero input levels (`sequence` > 0).
 3. **Carrier-present refusal:** with the carrier live, `POST
    /api/replays/start` must refuse `409 replay_carrier_present`. This is the
@@ -146,6 +149,13 @@ The firmware side is already proven against replay; this is the first time
    and confirm recovery.
 
 ### CM6206 USB fixture
+
+**Retired from the bench 2026-08-02.** The qualified clean source is now the
+ESI U24 XL (bit-exact self-loop at 44.1/48 kHz; qualification in the
+[open-work register](../plans/aius-open-work-register.md)); the CM6206's
+playback-corruption fingerprint is recorded in
+[`cm6206-playback-corruption.md`](../reference/cm6206-playback-corruption.md).
+The notes and measurements below stand as the record of the CM6206 era.
 
 The StarTech ICUSBAUDIO7D bench adapter uses a C-Media CM6206. Linux may label
 USB ID `0d8c:0102` as `CM106 Like Sound Device`; the generic

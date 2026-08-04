@@ -4,9 +4,9 @@ type: plans
 scope: component
 component: aius
 subtype: experiment
-status: draft
+status: in-progress
 tags: [aius, optical-spdif, prototype, ethernet, validation]
-updated: 2026-07-27
+updated: 2026-08-04
 toc: true
 ---
 
@@ -57,6 +57,12 @@ Contracted 2026-07-27 (user-confirmed). **The bench build must hold the
 optical output dark until there is something to transmit, preserving the
 carrier board's electronically-enforced policy in firmware: no input carrier
 and no replay → no output carrier.**
+
+**Shipped 2026-07-27** (`9114418c4`): the predicate lives behind
+`firmware/lib/aius_replay/include/aius_tx_gate.h`, the `tx-gate` native suite
+covers the truth table, `tx_gate` is served on `GET /api/status`, and the
+bench guide's boot caveat was narrowed to the static-construction blip as
+contracted. The contract below is retained as the record of what was built.
 
 Prebuild-gated 2026-07-27; the contract below carries the gate's forced
 adjustments.
@@ -132,6 +138,18 @@ adjustments.
   the static-construction blip once this lands.
 
 ## PSRAM flight recorder — contracted 2026-07-27
+
+**Shipped 2026-07-27/28** (`66cff2aa1`, `0053de59e`): portable core in
+`firmware/lib/aius_recorder/`, the `recorder` native suite, the HTTP surface,
+and the committed WAV puller `firmware/tools/aius-recorder-pull.py`. The PSRAM
+chips are now fitted and the recorder took its first real capture on
+2026-07-28 (defect 27's overrun flood, caught live by the overrun trigger).
+Two contract details evolved on hardware after the gate: staging shrank to
+16 KiB after defect 26's OCRAM-heap exhaustion (recorded below), then moved
+into the fitted PSRAM entirely — the post-link memory guard now pins **zero
+OCRAM recorder staging** (`firmware/test/memory/verify_target.py`) — and the
+download header stamps the capture-time sample rate instead of pinning 48 kHz
+(fixed 2026-07-31). The contract below is retained as the record.
 
 Designed in interview 2026-07-27. **A continuous audio flight recorder in
 the 16 MB PSRAM: the ring records whenever the chips are fitted, and
@@ -472,6 +490,15 @@ flat downmix/bypass and the stretch goal is recorded as deferred.
 
 ## DSP control protocol and remote dashboard
 
+**Superseded 2026-07-31** (`c8f0c2571`, B9): the the app dashboard was
+built as planned, then retired in favour of the device's own SD-hosted control
+surface (`firmware/sd/www/` — status, DSP editor, replay manager, upgrade
+page, regression-tested under `test/sd-editor/`). `the companion dashboard app` survives as
+exactly the kept contract: `swagger.json`, its vitest suite, and the
+`web.json` mount serving the OpenAPI document. The section below is the
+record of the superseded design; the OpenAPI paragraph at its end remains
+true.
+
 The dashboard is a normal upstream repository app under `the companion dashboard app`: static frontend
 assets mounted by `web.json` and shared `mr-*` kit chrome. The frontend is
 planned to talk directly to the Teensy's bounded HTTP control surface; no .NET
@@ -514,9 +541,12 @@ firmware does not embed Swagger or OpenAPI machinery.
 ## Minimal HTTP API review and implementation plan
 
 The HTTP surface will be a transport adapter over shared command/state handlers,
-not a second DSP implementation. It is not present in the current firmware
-image; implementation is gated on the prerequisites below. The browser-facing
-contract is:
+not a second DSP implementation. **Shipped:** it is in the `teensy41-optical`
+image (`firmware/lib/aius_http/` behind the runtime's bounded HTTP checkpoint),
+and the surface has since grown well past this original table — DSP config,
+replays, SD maintenance, OTA, measure, meters, recorder. The current contract
+is `swagger.json`; the table below is the original browser-facing
+contract, kept as the record:
 
 | method and path | body | result |
 | --- | --- | --- |
@@ -561,8 +591,10 @@ The clean-room review was initially RED. Its firmware prerequisites are now
 implemented: telemetry counters are snapshotted, event retrieval is chronological
 with overflow accounting, mode/mix changes are deferred to the audio update
 boundary, UDP work is bounded, and the HTTP adapter has explicit service limits.
-The remaining gate is physical: target timing measurements and equal-duration
-control/concurrent optical soaks still require the board and source/sink.
+The physical gate has since been taken on the bench: the board runs with a real
+optical source and sink, and the 2026-08-03 loaded soak passed on the
+single-context image (`6950202b7`), with ~8 h of continuous production DTS
+decode recorded in the [open-work register](aius-open-work-register.md).
 
 ### HTTP implementation phases
 
@@ -672,11 +704,12 @@ clients share one contract artifact.
   centre-tap capacitor.
 - USB connection retained as a bring-up/programming fallback, but not required
   during source/sink validation.
-- The optional Teensy PSRAM (16 MB as two chips, not yet soldered) is
-  deliberately not used for the real-time optical path. Internal RAM is
-  sufficient for audio blocks, decoder state, Ethernet buffers, and bounded
-  telemetry; PSRAM is reserved for a later diagnostic capture feature if
-  required.
+- The Teensy PSRAM (16 MB as two chips, since fitted) is deliberately kept out
+  of the real-time audio path: EXTMEM is never touched from audio context (the
+  standing hot-path tie-breaker). Internal RAM carries audio blocks, decoder
+  state, Ethernet buffers, and bounded telemetry. The anticipated diagnostic
+  capture feature became the flight recorder above; OTA activation also stages
+  its verified image copy in PSRAM.
   **Considered and declined (2026-07-27): PSRAM as the home for www assets
   and DSP presets.** PSRAM is volatile, so the SD card stays the system of
   record for both regardless; the only defensible variant is a boot-built
@@ -701,13 +734,17 @@ clients share one contract artifact.
 
 ## Firmware phases
 
-Current implementation status: the portable UDP framing, DHCP-first Ethernet
-bring-up target, real Teensy S/PDIF input/output objects, IEC 61937 DTS/PCM
-pipeline, flat 5.1-to-stereo downmix, versioned status snapshot, and bounded
-cursor-based event retrieval are implemented and build-tested. Fixed speech and
-bass-reduced EQ presets, remote mode/test controls, and a JSONL status/event
-soak runner are also implemented. Physical optical acceptance, NTP
-synchronization, and authenticated control remain validation or follow-on work.
+Current implementation status (updated 2026-08-04): all three phases below are
+delivered and the runtime is live on bench hardware with real optical input.
+The pipeline now decodes DTS Core, AC-3 and E-AC-3, live output follows the
+source rate (32/44.1/48 kHz), and the physical acceptance this plan gated on
+has been substantially executed — electrical 14→15 loopback proven 2026-07-28,
+first full optical loop measured 2026-07-29, E-AC-3 acceptance passed,
+and the 2026-08-03 loaded soak passed with ~8 h of continuous production DTS
+decode. Still open from this plan's scope: NTP synchronization and the
+deterministic static-fallback address are unimplemented (bring-up is
+DHCP-only), the UDP protocol remains unauthenticated (SD/recorder/OTA HTTP
+writes are token-gated), and the raw-bypass test rows are carrier-board-only.
 
 ### RawHID soak investigation
 
@@ -737,6 +774,9 @@ the former failure boundary, before the optical image was restored.
 
 ### Phase 1: remote-control transport
 
+**status:** done — `lib/aius_net` UDP frame codec + network supervisor behind
+`src/aius_network_teensy.cpp`, `net`/`net-runner` native suites green
+
 **unit:** Ethernet control/telemetry adapter and protocol tests  
 **seams:** Ethernet service loop ↔ portable pipeline state interface  
 **contract-artifact:** protocol header, request/response examples, status-field definitions, identity/boot-epoch rules  
@@ -750,6 +790,10 @@ must have a deterministic protocol test that covers truncation, invalid lengths,
 unknown commands, duplicate IDs, wraparound, and stale responses.
 
 ### Phase 2: optical runtime integration
+
+**status:** done — the `teensy41-optical` image is the live runtime (Phase 14
+cutover), with real S/PDIF capture/classification/decode and the firmware TX
+gate; confirmed on hardware with a real carrier
 
 **unit:** real S/PDIF capture, classification, processing/bypass selection, and gated output  
 **seams:** Teensy S/PDIF ISR/DMA ↔ Aius pipeline; pipeline state ↔ Ethernet status snapshot  
@@ -769,6 +813,11 @@ from command traffic.
 
 ### Phase 3: remote fixture runner
 
+**status:** done except static fallback — `tools/net/aius_net_runner.py` (UDP
+discovery/status) and `tools/net/aius_http_runner.py` (HTTP soak) exercise a
+running board with JSONL evidence; the deterministic static-fallback address
+was never implemented (DHCP-only bring-up)
+
 **unit:** host-side Ethernet validation runner  
 **seams:** UDP protocol ↔ test oracle; real source/sink observation ↔ recorded evidence  
 **contract-artifact:** machine-readable test manifest and JSONL result schema  
@@ -782,6 +831,12 @@ evidence. It must remain useful with USB absent and must report loss of Ethernet
 control as a test failure rather than silently continuing.
 
 ## Representative test matrix
+
+Execution state (2026-08-04): the bench has exercised the bring-up, carrier,
+PCM, DTS and carrier-loss rows in some form — records live in the
+[open-work register](aius-open-work-register.md) and the delivery plans. Row
+5's raw bypass is carrier-board-only, and the static-fallback halves of rows
+8–9 are unimplemented.
 
 1. **Electrical bring-up:** verify 3.3 V rail, module current, ORJ-5 logic idle,
    TX gate idle, and no optical output while reset/booted.

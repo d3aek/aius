@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: implementation
 tags: [aius, firmware, audio, latency, spdif, cm6206]
-updated: 2026-07-31
+updated: 2026-08-04
 toc: true
 ---
 
@@ -24,7 +24,10 @@ The result reports both the raw host round trip and the direct-loop-corrected
 Teensy contribution. `/api/measure` is not this measurement: it captures the
 post-DSP committed-wire plane and therefore cannot include optical input,
 classifier/decoder scheduling, the transmit ring, S/PDIF output, or the
-CM6206 capture path.
+CM6206 capture path. (Source update: the CM6206 was retired from the bench
+2026-08-02; the loop adapter is now the qualified ESI U24 XL, and the
+Phase 2 rows were re-measured through it on 2026-08-03. The measurement
+model is unchanged.)
 
 ## Measurement boundaries
 
@@ -804,17 +807,10 @@ not a counter to waive in this plan.
 
 ```yaml
 phase: 2
-status: production-rows-complete-baselines-blocked
+status: complete # dts-production row deferred by priority; all other rows + baselines measured 2026-08-03
 unit: parent-only
 depends-on: [phase-1]
-blockers:
-  - direct-loop rows await the temporary fibre rewire (operator);
-    runner support landed 2026-08-03 (tools/latency/direct_loop.py,
-    host-proven in the latency-runner suite) - PCM rows reuse the
-    bench analyzer, encoded rows one-to-one match IEC
-    (Pa, Pc, payload_bits, payload_hash) tuples with a seeded
-    bootstrap CI; no Teensy dependency, so these rows are also
-    independent of the periodic-WDOG defect
+blockers: [] # resolved 2026-08-03: the self-loop rewire happened and all three direct-loop baselines ran in one sitting
 matrix:
   direct-loop-pcm: complete
   direct-loop-dts-carrier: complete
@@ -987,13 +983,16 @@ issued. The bypass row remains fail-closed until an authoritative restorable
 artifact exists. The two remediation options (a read-only authenticated
 route carve-out for `/aius/dsp.json`, or an operator-provided copy of the
 card file) and the misleading `source` label are tracked in
-[`aius-open-work-register.md`](aius-open-work-register.md).
+[`aius-open-work-register.md`](aius-open-work-register.md). (Resolved
+2026-07-31: `fecc4a0a2473` shipped the read-route carve-out and the
+`model_origin` split, the restoration artifact was retained, and the
+bypass row completed — recorded above.)
 
 ### Phase 3: TX-ring gate-open normalization and DHCP schedule visibility
 
 ```yaml
 phase: 3
-status: draft
+status: complete # R1-R4 delivered 2026-08-03; owner-target not yet met (17.4 ms board share; limiter-lookahead lever is the owner's call)
 unit: parent-only
 depends-on: [phase-2]
 owner-target: board share at or under 16 ms e2e (owner, 2026-08-03)

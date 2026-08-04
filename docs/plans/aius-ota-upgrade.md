@@ -6,7 +6,7 @@ component: aius
 status: shipped
 subtype: design
 tags: [aius, firmware, teensy, ota, http, security, recovery]
-updated: 2026-08-01
+updated: 2026-08-04
 toc: true
 ---
 
@@ -620,6 +620,23 @@ dev pair before the repo goes public or the device leaves the bench
 step, which lights whenever the operator enables activation —
 `activation_available` correctly gates it boot-by-boot.
 
+**Update 2026-08-04 — that list is closed.** The boot-lottery defect
+was convicted and fixed 2026-08-02 (S/PDIF DPLL junk-lock boot gate,
+`7b1305314`; 28/28 healthy flash-boots on the reproducer lineage that
+failed 3/3 without it — full record in
+[`aius-open-work-register.md`](aius-open-work-register.md) §Open
+defects — runtime). Key rotation happened 2026-08-04, owner-directed:
+the standing device key is the repo-committed home pair
+(`firmware/config/ota-home-signing-key.{pub,sec}`), with the compiled
+public key generated from that file resource at build time
+(`9b6d3474f`); a hardcoded `ota_diag` `test_key` serializer literal
+that missed the rotation was caught on the device and fixed
+(`17bd5d077`); and the home-key acceptance passed end to end on
+hardware — sign with the committed secret → host verify → device stage
+→ `verified` → abort, fingerprint `df29355e5a8d7b8c`, `test_key` false
+(`cd67cb3f6`). The production cycle (off-repo keygen, swap the file,
+rebuild, one signed upgrade) stays the documented later step.
+
 **Also fixed on the way to the re-proof (found live, 2026-08-01): a
 fresh staging could never start over the previous one.** The staged file
 persists across upgrades, and APPEND_PART's strict-append contract
@@ -758,6 +775,11 @@ the compiled-in public key is one swap point, `ota_diag` reports the
 active key's fingerprint plus an explicit test-key flag when it matches
 the published dev key, and the upgrade page banners TEST KEY in that
 state. Rotation is keygen + rebuild + one signed upgrade.
+
+**Rotated 2026-08-04** to the repo-committed home pair, taking exactly
+the documented shape (keygen + rebuild + one signed acceptance) — see
+the dated update under the incident section above (`9b6d3474f`,
+`17bd5d077`, `cd67cb3f6`).
 
 ## Investigation completion gate
 

@@ -6,7 +6,7 @@ component: aius
 status: draft
 subtype: design
 tags: [aius, firmware, teensy, tls, mbedtls, fnet, sd, security, http]
-updated: 2026-07-26
+updated: 2026-08-04
 toc: true
 ---
 
@@ -50,6 +50,39 @@ proposal, and both are recorded where they belong rather than only here:
 Also settled and worth not re-litigating if this is revived: the owner chose a cert
 issued from their own CA against a DNS name, and accepted an unencrypted private key
 on FAT32 as a documented risk. Those are decisions, not open questions.
+
+**Premises overtaken by events — dated note, 2026-08-04.** The plan stays parked
+and `draft`; the image still pins `FNET_CFG_TLS=0` (`firmware/platformio.ini`,
+with the image/suite-agreement rationale in its comment). But four things this
+analysis leans on have moved, and a revival must re-read them first:
+
+- **OTA shipped over plain HTTP with independent image signing.** §Sequencing
+  says "OTA should not ship over plain HTTP"; the signed end-to-end upgrade
+  completed 2026-08-01 (`67c44a381`, [`aius-ota-upgrade.md`](aius-ota-upgrade.md)
+  `status: shipped`) with Ed25519 verification over a header-binding digest —
+  that plan's own §Security recommendation (image authentication independent of
+  the transport gate) was taken instead of TLS. The per-chunk-handshake
+  constraint this plan records for OTA is moot unless TLS is revived.
+- **B6 ran and passed 2026-07-26**, and defects 12 and 17 are fixed
+  ([`aius-network-hardening.md`](aius-network-hardening.md) §Next and B6–B8 in
+  its critical path). §Sequencing's "do not put TLS in front of B6" guidance is
+  now historical.
+- **The four control routes are no longer credential-free.** `POST /api/reboot`,
+  `/api/start`, `/api/stop` and `/api/clear` (plus `POST /api/measure/start`)
+  were gated on `X-Aius-SD-Auth` 2026-07-28, ahead of the dispatch switch.
+  §Security posture's bullet claiming they take no credential is stale; the
+  token-strength caveat stands. The UDP 4242 control plane remains
+  unauthenticated as written.
+- **Defect 14 is resolved (2026-07-28) the other way round from this plan's
+  fear:** the `--wrap` flags are restored and the DTCM arena now serves every
+  decode (network-hardening entries 14/29; `platformio.ini` wrap comment). The
+  shim arms the arena only around decoder calls
+  (`lib/aius_dts/src/aius_dts.c:119-306`), so on the single-threaded epoch loop
+  a TLS allocation would still reach the OCRAM heap — §Memory's placement
+  conclusion likely survives, but its defect-14 paragraph describes a
+  configuration that no longer exists and the heap/bank numbers (including the
+  three-way DTCM figure contradiction; measured free-for-locals was 25,376 B at
+  `f76baa87c67d`) must be re-derived against the current image before any build.
 
 Companion to [`aius-network-hardening.md`](aius-network-hardening.md), whose
 §Deciding principle governs, [`aius-ota-upgrade.md`](aius-ota-upgrade.md), and

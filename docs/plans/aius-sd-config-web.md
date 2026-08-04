@@ -3,8 +3,8 @@ title: Aius SD-backed configuration and web assets
 type: plans
 scope: component
 component: aius
-status: in-progress
-updated: 2026-07-29
+status: shipped
+updated: 2026-08-04
 toc: true
 ---
 
@@ -47,9 +47,28 @@ stored but is not yet an active DSP configuration source; the build-time JSON
 continues to define the current runtime profiles until the journaled parser and
 activation phases land.
 
+**Superseded (noted 2026-08-04) — the slice above is a historical snapshot.**
+The delivered form: the SD surface is the path-confined `/aius/www/` tree
+(streamed `PUT`/`GET`/`DELETE /sd/{resource}` with the atomic
+temp/backup-replace protocol); `/aius/config.json` is the feature-flag document
+only, updated via `PUT /api/config/public`
+(`lib/aius_http/src/aius_http.c:133`), and was never made a DSP source — DSP
+configuration became `/aius/dsp.json` with its own validated
+`PUT /api/dsp/config`, owned by
+[`aius-dsp-config-api.md`](aius-dsp-config-api.md). Root-page handoff was
+resolved the other way: the flash page stays the root recovery/status surface
+(with the SD upload form and a status link), and the operator loop lives
+entirely in the SD pages, which link among themselves
+(`index.html` / `replays.html` / `status.html` / `upgrade.html`).
+
 ## Phases
 
 ### Phase 1: bounded runtime configuration
+
+**Done** — delivered as the bounded `lib/aius_config` parser (feature flags,
+safe defaults on any error). The CRC/versioned journal contract was
+superseded: persistence is plain JSON behind the atomic replace protocol, and
+the DSP model moved to [`aius-dsp-config-api.md`](aius-dsp-config-api.md).
 
 **unit:** portable config parser, validator, and journal record contract  
 **seams:** JSON bytes ↔ validated runtime config; config ↔ audio-boundary apply  
@@ -63,6 +82,12 @@ profile count, EQ sections, names, and numeric ranges at parse time.
 
 ### Phase 2: SD persistence adapter
 
+**Done, in revised form** — SD init plus `/aius/config.json` loaded through
+the bounded SD job engine at boot and on hot-reinsert
+(`firmware/src/optical_main.cpp:5816-5836`); status carries config
+validity/error state. The `/aius/config.0`/`.1` two-slot journal was dropped
+with the journal contract (Phase 1 note).
+
 **unit:** Teensy SD initialization, two-slot journal read/write, and status fields  
 **seams:** Arduino SD filesystem ↔ portable record validator  
 **contract-artifact:** `/aius/config.0`, `/aius/config.1`, generation/CRC rules  
@@ -72,6 +97,11 @@ profile count, EQ sections, names, and numeric ranges at parse time.
 
 ### Phase 3: bounded static asset server
 
+**Done** — the path-confined `/aius/www/` tree served at `/sd/{resource}` in
+bounded 512-byte slices under the one-SD-primitive-per-epoch rule
+(`lib/aius_sd/src/aius_sd.c:23`), with the directory index and the flash page
+retained as fallback.
+
 **unit:** allowlisted SD asset lookup and chunked HTTP response service  
 **seams:** HTTP path ↔ asset manifest; SD read slice ↔ Ethernet write slice  
 **contract-artifact:** `/aius/index.html`, `/aius/app.js`, `/aius/style.css`, MIME map  
@@ -80,6 +110,13 @@ profile count, EQ sections, names, and numeric ranges at parse time.
 **commit-checkpoint:** native route tests, target build, and fallback page smoke test
 
 ### Phase 4: control-surface migration
+
+**Done, in revised form** — the contracted `GET/PUT /api/config` +
+`POST /api/config/save` never shipped as such: public flags go through
+`PUT /api/config/public` (see §Adversarial review resolutions), and the full
+control surface became the SD DSP editor against `GET/PUT /api/dsp/config`
+with explicit Apply and block-boundary activation
+([`aius-dsp-config-api.md`](aius-dsp-config-api.md) Track A / task #7).
 
 **unit:** SD page controls and explicit save/reload operations  
 **seams:** browser API ↔ volatile config; save action ↔ journal writer  
@@ -386,6 +423,12 @@ firmware flash.
 
 ### Phase 5: budgeted SD service scheduling
 
+**Done** — delivered as the portable bounded SD job engine
+(`lib/aius_sd`, one job at a time, one 512-byte transfer slice per epoch,
+`validate_request()` refusing anything larger), composed into the runtime by
+the network-hardening phases (its §Bounded SD job ABI is the authoritative
+contract).
+
 **unit:** deferred SD read/write jobs and cached utilization refresh  
 **seams:** HTTP transport ↔ SD job queue; SD job completion ↔ HTTP response  
 **contract-artifact:** bounded job state, 512-byte transfer slices, status timing counters  
@@ -400,6 +443,12 @@ scans remain cached and refreshed by the SD maintenance service.
 
 ### Phase 6: SD feature-flag configuration
 
+**Done, with one contract narrowing** — the shipped `features` object carries
+three booleans, `sd_web`, `remote_control` and `telemetry`
+(`lib/aius_config/src/aius_config.c:68-70`); the contracted fourth key
+`sd_config` was not implemented. Safe defaults on missing/invalid data and
+the auth-not-toggleable rule hold as written.
+
 **unit:** bounded feature-flag loader with defaults and invalid-file fallback  
 **seams:** `/aius/config.json` bytes ↔ volatile flags; flags ↔ HTTP/DSP policy  
 **contract-artifact:** `features` object with `sd_web`, `sd_config`, `remote_control`, and `telemetry` booleans  
@@ -413,6 +462,13 @@ feature-toggleable, so a malformed or malicious config cannot disable write
 authorization for assets.
 
 ### Phase 7: physical-access SD write authorization
+
+**Done** — `AIUS AUTH` over CDC discloses the token
+(`lib/aius_auth`; honest-strength caveat recorded in
+[`aius-ota-upgrade.md`](aius-ota-upgrade.md) §Security), `X-Aius-SD-Auth`
+gates asset writes/deletes, and 2026-07-28 the gate widened to the control
+routes ahead of the dispatch switch
+([`aius-network-hardening.md`](aius-network-hardening.md) defect 12).
 
 **unit:** per-device firmware-derived token disclosure over USB and HTTP header verification  
 **seams:** USB `AIUS AUTH` command ↔ token; `X-Aius-SD-Auth` header ↔ write policy  
@@ -489,6 +545,11 @@ implementation:
   for protected configuration or filesystem paths.
 
 ### Phase 8: self-hosted maintenance tooling
+
+**Done** — the flash home page carries the token + directory-picker upload
+form with the `config.json` refusal (`firmware/src/http_home_page.cpp:34-43`),
+and `firmware/tools/aius-sd-sync.sh` is the standalone uploader (additive
+sync; its header carries the don't-clobber-presets note).
 
 **unit:** device-hosted upload form and standalone shell uploader  
 **seams:** browser/file picker ↔ authenticated asset PUT; shell file tree ↔ device API  

@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [firmware, ethernet, recovery, watchdog, testing]
-updated: 2026-07-29
+updated: 2026-08-04
 toc: true
 ---
 
@@ -79,29 +79,40 @@ on all three channels, `POST /api/reboot`, software bootloader entry, the SD
 directory index, and DHCP reaching ONLINE on generation 1 with no fault after the
 readiness gate landed.
 
-**Not yet confirmed on hardware:** anything in the audio path. There is no S/PDIF
+~~**Not yet confirmed on hardware:** anything in the audio path. There is no S/PDIF
 carrier — the optical input is unsoldered — so `blocks` is 0, the DSP has never
 run, and the meters endpoint has never published. The per-block cost in 14b is
-still a static estimate.
+still a static estimate.~~
 
-**The next flash is the interesting one**, and carries three unvalidated things
+~~**The next flash is the interesting one**, and carries three unvalidated things
 at once: the SD failure diagnostics (`0bcc32eec`), and the clock handover
 (`24ff70f7b`) which should make replay actually produce audio. What to look for,
 with the input still unsoldered: start a replay and **`blocks` on
 `GET /api/status` should climb continuously** while `overruns` stays at or near 0
 — both were frozen at 0, which is how the defect was found. Stop it and `blocks`
-should freeze with the output going digitally silent and `stop_reason:"request"`.
+should freeze with the output going digitally silent and `stop_reason:"request"`.~~
 
-That run also finally yields the **measured per-block DSP cost** from the DWT
+~~That run also finally yields the **measured per-block DSP cost** from the DWT
 counters on `GET /api/meters`, which is the last estimate standing in this plan
-and a prerequisite for Phase 14e.
+and a prerequisite for Phase 14e.~~
 
-Once the input is soldered: `blocks` must climb from passthrough alone with no
+~~Once the input is soldered: `blocks` must climb from passthrough alone with no
 replay, and **starting a replay against a live carrier must be refused with
 `409 replay_carrier_present`** — the refusal landed, so the start no longer
-reaches `stopped`. `stop_reason:"carrier"` and its type-3 event are now reachable
+reaches `stopped`.~~ `stop_reason:"carrier"` and its type-3 event are now reachable
 only when the carrier arrives *during* an already-running replay, which is the
 one case the refusal cannot cover.
+
+**All of the struck text above is overtaken (noted 2026-08-04).** The flash it
+describes happened, replay produced audio, and the optical input was soldered
+2026-07-28 (glass loopback locked the same night — see defect 27 and the
+open-work register). The audio path has since been proven extensively live:
+replay and carrier PCM, sustained live DTS decode (defect 31's closure soak),
+E-AC-3 on the target, measured per-block DSP cost
+([`aius-dsp-config-api.md`](aius-dsp-config-api.md) measurement tables), meters
+publishing, and the carrier-present 409 observed on hardware. Current bench
+state lives in [`aius-open-work-register.md`](aius-open-work-register.md), not
+here.
 
 #### What is in flight
 
@@ -135,9 +146,13 @@ the target build and the on-device pass with the input soldered.
 `stop_reason` is documented in [`aius-dsp-config-api.md`](aius-dsp-config-api.md)
 §The 409 refusal, with all three values. Its durable home is arguably
 [`aius-replay-manager.md`](aius-replay-manager.md)'s status-JSON bullet alongside
-`state`, and `swagger.json` carries no replay schemas at all —
+`state`, ~~and `swagger.json` carries no replay schemas at all —
 `input_class`, `loops_completed` and `stop_reason` are undocumented there. Both
-are follow-up work, recorded here so they are not lost.
+are follow-up work, recorded here so they are not lost.~~ **The swagger half was
+closed 2026-08-03 (`623ecc942`):** all five `/api/replays*` routes are
+documented, status vocabulary included (`stop_reason`, `input_class`,
+`loops_completed`), and the status document joined the drift gate's emitter
+table.
 
 #### Open defects, in the order they are worth taking
 
@@ -151,8 +166,9 @@ are follow-up work, recorded here so they are not lost.
    only to cross-check, and every bank where it disagrees is reported with the
    sections that account for the delta. A `memory` suite drives the CLI over a
    committed reduction of a real image and is registered in `scripts/test.sh`.
-2. **`500 sd_failure` on large SD uploads**, roughly 1 in 15, succeeds on retry.
-   Diagnostics landed (`0bcc32eec`) and are **not yet flashed**. A structural hole
+2. ~~**`500 sd_failure` on large SD uploads**, roughly 1 in 15, succeeds on retry.~~
+   **Convicted and fixed 2026-08-04 (`6816a506e`) — record at the end of this
+   entry.** Diagnostics landed (`0bcc32eec`) and are **not yet flashed**. A structural hole
    was found and is real — the root driver's yield cannot see an HTTP transaction
    admitted but whose `SD_START` has not yet been emitted, a one-epoch window — but
    the arithmetic gives ~1e-4 against an observed ~1-in-15, three orders of
@@ -215,6 +231,15 @@ are follow-up work, recorded here so they are not lost.
    test-tone toggle. Everything else observable is a counter, not an event. Closing
    this is the prerequisite to any push observability being worth having; see the
    syslog assessment.
+
+   **The census is stale (noted 2026-08-04).** `c20a03c8e` (2026-07-25) bridged
+   the counters into the event ring (overrun, network drop / budget / restart,
+   DHCP update, config error, watchdog early reset —
+   `optical_main.cpp:7412-7448`), and later work added replay-stop, clock-fault
+   and rate-change/unsupported events (`:6357`, `:6590`, `:6710`, `:6872`,
+   `:6912`). The type-3 and type-4 events cited in defects 27/28 came from
+   exactly these producers. What survives of this entry is only the push-vs-poll
+   judgment, which the declined-syslog decision already covers.
 5. ~~**The suite registry is hand-maintained with no guard.**~~ **Fixed.** The
    `registry` suite parses `scripts/test.sh` — it does not carry its own copy of
    the list — and fails on five kinds of drift: a suite directory with no arm, an
@@ -334,7 +359,7 @@ are follow-up work, recorded here so they are not lost.
    (`/* ---- Cursor primitives (mirror aius_config.c) ---- */`) — and the replay
    body reader now carries a third, a `BodyCursor` local to
    `aius_optical_app.cpp`. Three concrete consumers clears
-   [§Architectural posture](../../../../CLAUDE.md)'s seam-arity rule, so the
+   [§Architectural posture](../../../../../CLAUDE.md)'s seam-arity rule, so the
    duplication should become `lib/aius_json` (at-end / peek / skip-whitespace /
    consume / string / literal / number) with all three depending on it. It was
    deliberately **not** done in the whitespace fix: it rewrites two clean
@@ -1633,8 +1658,10 @@ are follow-up work, recorded here so they are not lost.
     pure digital silence where the defect predicted full-scale noise. A
     real E-AC-3 source would still be a welcome cross-check.
 
-35. **An abrupt DTS source stop can turn one cut burst into a 120 ms AUDIO
-    service and overflow ingress before the format transition recovers.**
+35. ~~**An abrupt DTS source stop can turn one cut burst into a 120 ms AUDIO
+    service and overflow ingress before the format transition recovers.**~~
+    **Convicted and recharacterized 2026-08-04; residual bounded and accepted —
+    closure note at the end of this entry.**
     Reproduced 2026-07-29 by terminating the gate's ALSA producer after twenty
     clean measured seconds. The cut was followed by one 120.438 ms AUDIO
     service / 120.567 ms epoch, 14 ingress overflow chunks (3,584 words), one
@@ -1689,6 +1716,28 @@ are follow-up work, recorded here so they are not lost.
     cut position takes the reject path; the CRC-less garbage-grind
     positions are host-pinned. The 120 ms unit did not fire in this
     window, consistent with it living outside these libs.
+
+    **CONVICTED AND RECHARACTERIZED 2026-08-04 (`930f003c6` substep
+    instrumentation, `e33022292` verdict) — residual bounded and accepted.**
+    The prescribed substep timing landed (`audio_diag.service_max_step_us` /
+    `service_max_ingest_us`) and an 8-round instrumented kill campaign
+    convicted the mechanism on the first try: every mid-burst cut hands the
+    decoder ONE length-complete AU whose tail is stuffing garbage (invisible
+    to length-based burst assembly), producing exactly one `decode_rejects`
+    per cut — usually a fast reject, ~1-in-8 a pathological slow parse
+    (118.8 ms measured in one decode step; ingest never exceeded 48 µs), the
+    parse cost bounded by construction at the frame's declared size. The
+    2026-07-29 collateral is GONE on the current architecture: across all 8
+    cuts, zero dropped chunks/words, zero recorder impact, zero output
+    drops — defect 31's ISR-to-checkpoint move absorbed what used to starve
+    ingress. The "drop partial compressed work" prescription is recorded as
+    not implementable at the parser (a payload-length-complete burst with a
+    garbage tail is indistinguishable from a valid one), and decoder-internal
+    early abort is vendor surgery not worth one bounded silent budget overrun
+    per channel change. Residual accepted: one >8 ms AUDIO epoch per unlucky
+    discontinuity, inaudible (the TX ring rides through), with the substep
+    maxima attributing any recurrence on sight. Full record:
+    [`aius-open-work-register.md`](aius-open-work-register.md) §Open defects.
 
 #### Decisions taken, so they are not re-opened
 
@@ -1767,7 +1816,9 @@ service unaided — a boundary that had never once executed on a real board.
   `recovery_safe 0`). Details under Phase 16b below.
 - **Open defects 22 and 23**, both raised by the passing run rather than by a
   failure, and both design calls rather than repairs.
-- **B9**, the dashboard retirement, which is independent of all of the above.
+- ~~**B9**, the dashboard retirement, which is independent of all of the
+  above.~~ **DELIVERED 2026-07-31** (`c8f0c2571`) — see the B9 row in
+  [§Critical path](#critical-path).
 
 ### Why the two strands are coupled
 
@@ -1805,7 +1856,9 @@ carries DSP behaviour it did not originally own. Everything else in the DSP stra
 
 ### Structural obstacles the cutover must clear
 
-Recorded here because they are cheap to miss and expensive to hit mid-phase:
+**Historical — the delivered Phase 14 cleared all of these; kept as the
+record.** Recorded here because they are cheap to miss and expensive to hit
+mid-phase:
 
 - **The legacy SD symbols collide with the portable header in two places.**
   `optical_main.cpp:118` declares its own `struct AiusSdJob`, unrelated to the
@@ -7242,8 +7295,11 @@ with warnings-as-errors, ASan, and UBSan, and `teensy41-optical` builds with
 every memory bank fitting and the pinned NativeEthernet linked-symbol proof
 passing. The standing regression-guard suites are `net`, `boot`,
 `network-transport`, `sd`, `sd-target`, `http`, `usb-control`, `runtime`,
-`boot-target`, and `fault-target`. `runtime-target` is **not** among them —
-`firmware/test/runtime-target/` does not exist yet and is created by Phase 12.
+`boot-target`, and `fault-target`. ~~`runtime-target` is **not** among them —
+`firmware/test/runtime-target/` does not exist yet and is created by Phase 12.~~
+(Phase 12 created `runtime-target`, and Phases 14–16 added `optical-app`,
+`optical-cutover`, `flash` and `recovery-runner`; the `registry` suite now
+polices the catalogue — see §Corrections to earlier claims and defect 5.)
 
 - The delivered modules: pure network supervisor, portable boot ledger, pinned
   one-shot NativeEthernet, Teensy network adapter, bounded SD jobs and one-shot

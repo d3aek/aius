@@ -6,7 +6,7 @@ component: aius
 subtype: design
 status: shipped
 tags: [aius, hardware, kicad, schematic, erc]
-updated: 2026-07-19
+updated: 2026-08-04
 toc: true
 ---
 
@@ -79,8 +79,8 @@ the decision:
   + cable, no PHY. So the carrier needs **only the magjack** (Pulse `J0011D21BNL`)
   + a 100 nF centre-tap cap — exactly the original BOM. The ethernet sheet wires
   the magjack to the Teensy MDI globals (`ETH_RXP/RXN/TXP/TXN/LED`); no on-carrier
-  PHY, no RMII routing. (Confirm the user's Teensy 4.1 is an Ethernet-populated
-  board.)
+  PHY, no RMII routing. (Confirmed 2026-07 on the bench: the user's Teensy 4.1
+  serves the firmware's HTTP surface over its native Ethernet.)
 - **Teensy 4.1 pin map.** Fix the exact pad each net uses (the native-Ethernet
   6-pin header signals, I2S/TDM, SPI, I2C, UART, USB-host, Program, LED, SDIO)
   from the PJRC pinout card, conflict-checked.
@@ -108,8 +108,9 @@ the decision:
 
 Remaining for H2 (not H1): footprint/land-pattern verification (the provisional
 footprints are the only full-severity ERC warnings), placement, impedance
-(90 Ω USB / 100 Ω Ethernet), routing, DRC. Open item to confirm with the user:
-the Teensy 4.1 is an Ethernet-populated board.
+(90 Ω USB / 100 Ω Ethernet), routing, DRC. The Ethernet-populated-board open
+item is closed: the board runs its HTTP surface over native Ethernet on the
+bench (confirmed 2026-07).
 
 **Optical-jack footprint gate (added 2026-07-27):** the purchased optical
 modules are the RS PRO ORJ-5 (`805-1671`) / OTJ-5 (`805-1680`), not the Cliff

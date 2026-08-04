@@ -3,9 +3,9 @@ title: Aius DSP pipeline, SD editor, and configuration API
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 tags: [firmware, dsp, audio, http-api, sd]
-updated: 2026-07-27
+updated: 2026-08-04
 toc: true
 ---
 
@@ -73,29 +73,37 @@ on all three channels, `POST /api/reboot`, software bootloader entry, the SD
 directory index, and DHCP reaching ONLINE on generation 1 with no fault after the
 readiness gate landed.
 
-**Not yet confirmed on hardware:** anything in the audio path. There is no S/PDIF
+~~**Not yet confirmed on hardware:** anything in the audio path. There is no S/PDIF
 carrier — the optical input is unsoldered — so `blocks` is 0, the DSP has never
 run, and the meters endpoint has never published. The per-block cost in 14b is
-still a static estimate.
+still a static estimate.~~
 
-**The next flash is the interesting one**, and carries three unvalidated things
+~~**The next flash is the interesting one**, and carries three unvalidated things
 at once: the SD failure diagnostics (`0bcc32eec`), and the clock handover
 (`24ff70f7b`) which should make replay actually produce audio. What to look for,
 with the input still unsoldered: start a replay and **`blocks` on
 `GET /api/status` should climb continuously** while `overruns` stays at or near 0
 — both were frozen at 0, which is how the defect was found. Stop it and `blocks`
-should freeze with the output going digitally silent and `stop_reason:"request"`.
+should freeze with the output going digitally silent and `stop_reason:"request"`.~~
 
-That run also finally yields the **measured per-block DSP cost** from the DWT
+~~That run also finally yields the **measured per-block DSP cost** from the DWT
 counters on `GET /api/meters`, which is the last estimate standing in this plan
-and a prerequisite for Phase 14e.
+and a prerequisite for Phase 14e.~~
 
-Once the input is soldered: `blocks` must climb from passthrough alone with no
+~~Once the input is soldered: `blocks` must climb from passthrough alone with no
 replay, and **starting a replay against a live carrier must be refused with
 `409 replay_carrier_present`** — the refusal landed, so the start no longer
-reaches `stopped`. `stop_reason:"carrier"` and its type-3 event are now reachable
+reaches `stopped`.~~ `stop_reason:"carrier"` and its type-3 event are now reachable
 only when the carrier arrives *during* an already-running replay, which is the
 one case the refusal cannot cover.
+
+**All of the struck text above is overtaken (noted 2026-08-04).** The flash it
+describes happened, replay produced audio, and the optical input was soldered
+2026-07-28 (glass loopback locked the same night). The audio path is proven
+extensively live — replay and carrier PCM, sustained live DTS decode, E-AC-3 on
+the target, meters publishing, and the measured per-block DSP cost in the
+measurement tables below. Current bench state lives in
+[`aius-open-work-register.md`](aius-open-work-register.md), not here.
 
 #### What is in flight
 
@@ -150,7 +158,7 @@ selection. It is cleared to `none` by every accepted start. Three values:
    difference is `NonCacheable`, now named explicitly. A `memory` suite is
    registered and green. Full account in
    [`aius-network-hardening.md`](aius-network-hardening.md#the-memory-gate-under-reports-dtcm-by-108-kb).
-2. **`500 sd_failure` on large SD uploads**, roughly 1 in 15, succeeds on retry.
+2. ~~**`500 sd_failure` on large SD uploads**, roughly 1 in 15, succeeds on retry.
    Diagnostics landed (`0bcc32eec`) and are **not yet flashed**. A structural hole
    was found and is real — the root driver's yield cannot see an HTTP transaction
    admitted but whose `SD_START` has not yet been emitted, a one-epoch window — but
@@ -158,7 +166,12 @@ selection. It is cleared to `none` by every accepted start. Three values:
    magnitude short. The one-line fix is recorded in §Phase 14f and deliberately
    **not applied**, because it would look like a resolution while possibly leaving
    the real defect. Flash, reproduce, then read `sd_diag.last_failure`; the
-   convicting values for each hypothesis are tabulated there.
+   convicting values for each hypothesis are tabulated there.~~
+   **Convicted and fixed 2026-08-04 (`6816a506e`):** a busy-window mislabel, not
+   a storage fault — mid-stream chunks colliding with a root SD job holding the
+   volume were answered `507` instead of the retryable `503 sd_busy`; the
+   Phase-14f yield fix stays unapplied. Full record:
+   [`aius-network-hardening.md`](aius-network-hardening.md) entry 2.
 3. ~~**`"source":"default"` is a hardcoded literal** in the status JSON format
    string.~~ **Fixed.** It now serves `g_dsp_source_sd ? "sd" : "default"` — the
    same fact, from the same variable, as `GET /api/dsp/config`, so the two can no
@@ -173,18 +186,23 @@ selection. It is cleared to `none` by every accepted start. Three values:
 4. **`record_event` has only two call sites** — the S/PDIF lock transition and the
    test-tone toggle. Everything else observable is a counter, not an event. Closing
    this is the prerequisite to any push observability being worth having; see the
-   syslog assessment.
+   syslog assessment. **Stale census (noted 2026-08-04):** `c20a03c8e`
+   (2026-07-25) bridged the counters into the event ring and later work added
+   replay-stop, clock-fault and rate events — see the dated correction on
+   [`aius-network-hardening.md`](aius-network-hardening.md) entry 4.
 5. ~~**The suite registry is hand-maintained with no guard.**~~ **Fixed.** The
    `registry` suite parses `scripts/test.sh` and fails on a suite directory with
    no arm, an arm naming a missing path, an entry point a registered arm never
    runs, or either catalogue disagreeing with the arms. No remaining orphans; the
    true count is **36 arms over 30 suite directories**. Detail in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
-6. **"At most one SD primitive per epoch" is false at checkpoint 5.**
+6. ~~**"At most one SD primitive per epoch" is false at checkpoint 5.**
    `http_replay_list_json` walks `/aius/replays` with `for (;;) openNextFile()`,
    uncapped and ungated, and `app_replay_delete` spends `SD.exists()` +
    `SD.remove()` ungated. The most plausible unexplained 8 s reset in the image,
-   and a live candidate for defect 2. Full detail in
+   and a live candidate for defect 2.~~ **Fixed 2026-07-26 (`5429235c1`):** both
+   walks gate on `sd_busy()` and refuse `503 sd_busy`, the listing caps at 128
+   entries with `"truncated"`. Full detail in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
 7. ~~**The FNET poll timer shares the audio ISR's interrupt priority** (both
    128).~~ **FIXED 2026-07-26, and "shares" was the wrong word — it outranked
@@ -194,14 +212,18 @@ selection. It is cleared to `none` by every accepted start. Three values:
    `IRQ_PIT` to 224 on every network generation (once at boot is undone by the
    first restart). Detail, including why 209 would have been a no-op, in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
-8. **Three JSON cursors, one seam, not hoisted.** `aius_config.c` and
+8. ~~**Three JSON cursors, one seam, not hoisted.** `aius_config.c` and
    `aius_dsp_config.c` duplicate the same recursive-descent primitives, and the
    replay body reader now carries a third. Three consumers clears the seam-arity
    rule, so this should become `lib/aius_json`; it was deliberately deferred
-   because it rewrites two libraries that do not have the defect. Detail in
+   because it rewrites two libraries that do not have the defect.~~ **Fixed
+   2026-07-26 (`751213d59`):** `lib/aius_json` exists and all three consumers
+   ride it. Detail in
    [`aius-network-hardening.md`](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
-9. **Five source comments still quote the pre-fix DTCM free figure** (~22–24 kB
-   against a measured 9,280). The README was corrected; the source was not.
+9. ~~**Five source comments still quote the pre-fix DTCM free figure** (~22–24 kB
+   against a measured 9,280). The README was corrected; the source was not.~~
+   **Closed 2026-07-31:** six comments corrected to the then-measured 25,376 B
+   ([`aius-network-hardening.md`](aius-network-hardening.md) entry 18).
 
 #### Decisions taken, so they are not re-opened
 
@@ -217,11 +239,19 @@ selection. It is cleared to `none` by every accepted start. Three values:
 
 #### Next
 
-**14f, the first flash and assumption validation**, remains the gate before 14d
+~~**14f, the first flash and assumption validation**, remains the gate before 14d
 and 14e — both are required to carry measured figures, and the memory gate above
 must be fixed first or they will document the wrong numbers. Then B6, the live
 recovery smoke, which has never run and is what proves the watchdog and recovery
-contract this whole plan exists to establish.
+contract this whole plan exists to establish.~~
+
+**All of that is delivered (noted 2026-08-04).** 14f ran, 14d and 14e shipped as
+[`firmware-io.md`](../reference/firmware-io.md) and
+[`signal-path.md`](../reference/signal-path.md), and B6 ran end to end
+2026-07-26 — with B7, B8 and B9 delivered after it. The authoritative step
+states are the critical-path table below and
+[`aius-network-hardening.md`](aius-network-hardening.md) §Next; current open
+work lives in [`aius-open-work-register.md`](aius-open-work-register.md).
 
 ### Why the two strands are coupled
 
@@ -259,7 +289,9 @@ carries DSP behaviour it did not originally own. Everything else in the DSP stra
 
 ### Structural obstacles the cutover must clear
 
-Recorded here because they are cheap to miss and expensive to hit mid-phase:
+**Historical — the delivered Phase 14 cleared all of these; kept as the
+record.** Recorded here because they are cheap to miss and expensive to hit
+mid-phase:
 
 - **The legacy SD symbols collide with the portable header in two places.**
   `optical_main.cpp:118` declares its own `struct AiusSdJob`, unrelated to the
@@ -344,7 +376,7 @@ throughout. Track B is serialized because every phase in it touches
 | Step | Work | Gate |
 |---|---|---|
 | A1 | **Done** — `firmware/sd/www/index.html` + assets: every config control mapped to the documented JSON model, meters and canvas waveform from `GET /api/meters`, matching the existing `replays.*` precedent | `test/sd-editor/`, 36 tests green |
-| A2 | Target asset smoke — the page loads and drives the real device | folded into the single on-device session (B6) |
+| A2 | **Done 2026-07-27** (`4420254a6`, editor slice 4) — the page loaded from the card and drove the real device end to end | on-device Playwright smoke; closed the Track A asset-smoke debt |
 
 **Track B — bounded runtime cutover** (strictly ordered)
 
@@ -353,17 +385,17 @@ throughout. Track B is serialized because every phase in it touches
 | B0 | **Done** (`df9ea4483`) — Phase 10a, SD job publish-capacity generalization | `sd` + `http` suites, target build |
 | B1 | **Done** — Phase 11, optical application dispatch **including the DSP routes** | `optical-app` suite green |
 | B2 | **Done** — Phase 12, Teensy runtime service composition | `runtime-target` suite green |
-| B3 | Phase 14 — optical runtime cutover **plus the DSP SD-override load port**, eleven slices after the 2026-07-25 re-scope | `optical-cutover` + all component suites |
-| B4 | Phase 14b — meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
-| B5 | OpenAPI catch-up — `PUT /api/dsp/config` **done**, `GET /api/meters` with 14b | Vitest OpenAPI contract suite |
-| B5a | Phase 14c — replay refill onto a bounded SD job, deferred out of Phase 14 | `replay` + `sd` + `runtime-target` |
-| B5b | **Phase 14f — first flash and assumption validation.** Nothing in Phase 14 has ever executed; this is where the plan's assertions become measurements | the recorded validation log, one verdict per assumption |
-| B5c | Phase 14d — the firmware I/O reference: every path, its memory, its rationale, and why it cannot disturb the audio hot path | doc-index check + a real build's bank report |
-| B5d | Phase 14e — the signal path and DSP reference: block diagram, per-stage implementation, memory, and the measured per-block budget | `dsp` suite + figures taken from the device |
-| B6 | Phase 16a — live recovery smoke on the deployed board, entered by **one accepted manual Program-button flash** | the smoke's own pass/fail per gate |
-| B7 | Phase 15 — button-free flash tooling | `flash` + `usb-control` suites |
-| B8 | Phase 16b — the zero-button-press flash gate, re-run once B7 exists | one clean button-free flash and restore |
-| B9 | Retire the the app dashboard, keeping `swagger.json` and its contract suite | `ui-contract` and Vitest suites green after removal |
+| B3 | **Done** — Phase 14, optical runtime cutover **plus the DSP SD-override load port**, all fifteen slices | `optical-cutover` + all component suites |
+| B4 | **Done** — Phase 14b, meters endpoint and accumulate wiring | `optical-app` + ITCM budget |
+| B5 | **Done** — OpenAPI catch-up: `PUT /api/dsp/config` and `GET /api/meters` both documented (`swagger.json:176`) | Vitest OpenAPI contract suite |
+| B5a | **Done** — Phase 14c, replay refill onto a bounded SD job | `replay` + `sd` + `runtime-target` |
+| B5b | **Done** — Phase 14f, first flash and assumption validation | the recorded validation log |
+| B5c | **Done** — Phase 14d shipped as [`firmware-io.md`](../reference/firmware-io.md) | doc-index check + a real build's bank report |
+| B5d | **Done** — Phase 14e shipped as [`signal-path.md`](../reference/signal-path.md) | `dsp` suite + figures taken from the device |
+| B6 | ~~Phase 16a — live recovery smoke~~ **DONE 2026-07-26** on `3576c3e3560f` | gates 2, 4, 5 PASS; gate 3 PASS on all seven recoverable checkpoints; 1 and 2 UNRESOLVED, structurally |
+| B7 | ~~Phase 15 — button-free flash tooling~~ **DONE 2026-07-26** (`7670c5e03`) | `flash` + `usb-control` suites |
+| B8 | ~~Phase 16b — the zero-button-press flash gate~~ **DONE 2026-07-26**: flash and restore, both runner-verified, zero presses | one clean button-free flash and restore |
+| B9 | ~~Retire the the app dashboard, keeping `swagger.json` and its contract suite~~ **DONE 2026-07-31** (`c8f0c2571`) — see §Unfinished mode/mix removal below | `ui-contract` and Vitest suites green after removal |
 
 Phase 13's code baseline is delivered and unchanged. Phases 1–10 and 10a are
 delivered and are not re-reviewed. Each remaining phase's gate is its green
@@ -510,7 +542,16 @@ Accepted 2026-07-26 in this order, with the reasoning that chose it.
    hop rather than fighting a dependency. **First because it is the ceiling every
    other improvement runs into**, and it demotes dither from a workaround to a
    refinement.
-2. **LFE fold-in and bass management.** `AIUS_DSP_LFE_GAIN_DEFAULT` is `0.0`.
+2. **LFE fold-in and bass management. — DELIVERED 2026-07-27 in the fold-in
+   form**: the LFE folds into L/R low-passed at `matrix.lfe_crossover_hz`
+   (bound `[20,500]`, default 120; `72bb041a5` model + `b5b1c826e` editor key
+   guard, fixture/swagger drift closed the same day; fail-closed rule
+   documented in `aius_dsp.h`, pinned by the `dts-lfe` suite). Speaker bass
+   management (a mains crossover) was not built and no requirement stands for
+   it. A related 2026-08-04 finding: the −8.9 dB LFE observation was the test
+   vector (ffmpeg's DTS encoder stores LFE ~9.8 dB down; the decode chain is
+   exact), so an `lfe_gain` A/B joins the ears round (register). The original
+   rationale, kept: `AIUS_DSP_LFE_GAIN_DEFAULT` is `0.0`.
    Discarding LFE is defensible per BS.775 when a subwoofer follows, but for
    stereo speakers it throws away the bottom octave of film content entirely.
    Fold LFE into L/R through a low-pass around 120 Hz with level compensation.
@@ -592,7 +633,9 @@ latch edge, is folded into the machine below. This is the contract the
 slices build against.
 
 **The physical TX→RX loop is not buildable today and is not what the roadmap
-needs first.** The optical input is unsoldered, so no cable can close the loop.
+needs first.** (Overtaken 2026-07-28: the jacks are soldered and the glass
+loopback locks; the physical-loop measure flow — wiring-guide step 5 — is
+tracked in the register.) The optical input is unsoldered, so no cable can close the loop.
 What item 3 exists for — making the claims of items 1, 2 and 4 *measured*
 rather than believed — is observable one step earlier: the transmit ISR's
 `aius_spdif_tx24_fill()` is a verbatim copy of the ring's 24-bit words into
@@ -879,10 +922,11 @@ bytes are the provenance record).
 ## DSP work breakdown
 
 The signal path below (steps 1–3) and the write/SD-persistence phase (PUT
-`/api/dsp/config`) are done. The remaining DSP-side work is the SD
+`/api/dsp/config`) are done. ~~The remaining DSP-side work is the SD
 control-surface editor (Track A above, unblocked now), the meters endpoint
-(B4, after the cutover), and the OpenAPI catch-up (B5). The committed sample
-vectors are the executable specifications:
+(B4, after the cutover), and the OpenAPI catch-up (B5).~~ **All three delivered
+(editor: Track A + task #7; meters: 14b; OpenAPI: B5 — noted 2026-08-04).** The
+committed sample vectors are the executable specifications:
 
 - `firmware/tools/dts_vectors/vectors/stereo_impulse.dts`;
 - `firmware/tools/dts_vectors/vectors/surround51_impulse.dts`;
@@ -1321,11 +1365,14 @@ page-level `none` (section omitted from `eq[]`) alongside the real firmware
 checked the headroom input goes read-only and displays the resolved
 `1 / (1 + centre + surround + |lfe|)`, which is what gets sent.
 
-**Remaining:** the target asset smoke — the page loading and driving the real
+~~**Remaining:** the target asset smoke — the page loading and driving the real
 device — folds into B6. The meter path is proven against authored-to-contract
 fixtures rather than captured device responses, because `GET /api/meters` does
 not exist yet; recheck it against the real endpoint once 14b lands and the wire
-shape above is settled.
+shape above is settled.~~ **Both done:** 14b shipped `GET /api/meters`, live
+meters rendered on the device (task #7 slice 4's smoke: 7.0 % load displayed
+with a replay looping), and the on-device asset smoke closed 2026-07-27
+(`4420254a6`).
 
 #### Editor enhancement — visual surface, presets, ergonomics (task #7)
 
@@ -1696,6 +1743,15 @@ scope until then: not repaired, not partially fixed, not investigated. Its
 `control-shell.json` scenario fails today and stays failing, and its mode/mix
 buttons 404 and keep doing so. Both are known and neither blocks anything.
 
+**B9 delivered 2026-07-31 (`c8f0c2571`).** The dashboard app surface, the
+`control-shell.json` scenario and the ui-contract allowlist row are removed;
+`the companion dashboard app` is slimmed to `swagger.json`, its vitest suite and a
+two-file-mount `web.json`; `AIUS.APP.SHELL/CONTROL/TELEMETRY` requirement IDs
+retired. One reconciliation with the UI-kit rollout owner remains (move
+`web.json` to the compliance catalogue's non-consumer exemptions and delete the
+retired `aius` consumer rows — the catalogue file was foreign-dirty at
+retirement time; exact recipe in the B9 commit message).
+
 Deferring it to the end is also what makes the deletion cheap, because it is not
 a local change: the aius dashboard is an enrolled participant in the ui-kit
 accessibility rollout, an active workstream owned elsewhere.
@@ -1754,13 +1810,15 @@ gate.
   (Done — serializes `g_active_model`, real `source`/`config_generation`.)
 - Authenticated `PUT /api/dsp/config` validates and commits atomically; invalid
   or stale (`base_generation`) writes leave SD and the active block-boundary
-  snapshot unchanged. (Done — native-proven; live-hardware smoke still open.)
+  snapshot unchanged. (Done — native-proven; live-hardware smoke closed by the
+  measurement sessions and task #7 slice 4's on-device apply, generation 1→2.)
 - `GET /api/meters` returns coherent bounded snapshots without audio-thread
-  allocation or unbounded sample transfer.
+  allocation or unbounded sample transfer. (Done — 14b; live meters proven on
+  the device.)
 - OpenAPI schemas and example describe every route and returned field; no
-  `mode`/`mix` selection endpoints remain. (**Partly met** — `GET` and `PUT
-  /api/dsp/config` are both documented as of step B5; `GET /api/meters` lands
-  with 14b, once its wire shape is settled.)
+  `mode`/`mix` selection endpoints remain. (Done — `GET`/`PUT /api/dsp/config`
+  at step B5; `GET /api/meters` documented with 14b,
+  `swagger.json:176`.)
 - The `/aius/dsp.json` override is loaded through the bounded SD job path, not a
   synchronous read, so the boot and hot-reinsert paths respect the
   one-SD-primitive-per-epoch contract. (Closed by step B3.)

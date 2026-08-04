@@ -4,6 +4,7 @@ type: reference
 scope: component
 component: aius
 status: current
+updated: 2026-08-04
 ---
 
 # AIUS USB application control protocol
@@ -46,7 +47,7 @@ Successful responses:
 
 ```text
 AIUS/1 OK 0 PROTOCOL 1
-AIUS/1 OK 7 ID protocol=1 revision=abc123 build=2026-07-22T12:00:00Z mode=optical ip=192.168.1.42 rsafe=0 nstate=2 nfault=0 ckpt=9 early=0 ngen=1 bgen=3 rsrc=64 epoch=48211 nrst=0 ps=16 pv=9 fa=254
+AIUS/1 OK 7 ID protocol=1 revision=abc123 build=2026-07-22T12:00:00Z mode=optical ip=192.168.1.42 rsafe=0 nstate=2 nfault=0 ckpt=9 early=0 ngen=1 bgen=3 rsrc=64 epoch=48211 nrst=0 ps=16 pv=9 fa=254 cw=9:2401
 AIUS/1 OK 8 AUTH 0123456789abcdef
 AIUS/1 OK 9 BOOTLOADER entering
 ```

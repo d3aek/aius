@@ -6,7 +6,7 @@ component: aius
 status: in-progress
 subtype: design
 tags: [aius, firmware, eac3, ddplus, dolby, decode, arena, iec61937]
-updated: 2026-08-02
+updated: 2026-08-04
 toc: true
 ---
 
@@ -141,7 +141,9 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    adapter's 24,576 B burst headroom is unreachable through this
    pipeline. Phase 5's live evidence should configure the TV to 5.1
    output.
-4. **Target integration** — **GATE CLEARED 2026-08-02** (owner go, same
+4. **Target integration** — **done 2026-08-02** (flash gate cleared and
+   the structural decode acceptance passed the same day; record below).
+   **GATE CLEARED 2026-08-02** (owner go, same
    day): the boot-lottery defect was convicted and fixed (S/PDIF DPLL
    junk-lock gate at bring-up, `relocks` sentinel;
    [`aius-open-work-register.md`](aius-open-work-register.md) §Open
@@ -205,14 +207,21 @@ day ([`aius-ota-upgrade.md`](aius-ota-upgrade.md) shipped end-to-end).
    underruns and faults 0. Control re-measures beside it with the
    flash-cached tables: AC-3 `codec_pc` 1, 735 bursts, 1,357,974
    cycles; DTS `codec_pc` 11, 2,492 bursts, 936,466 cycles — both
-   zero-reject, within budget. Long-run caveat: the periodic watchdog-death defect blocks the
+   zero-reject, within budget. ~~Long-run caveat: the periodic watchdog-death defect blocks the
    Phase 5 four-hour gates. The single-context FNET fix (2026-08-03)
    eliminated the ~1,905 s T1-anchored mode and the beat-stall
    family, but a SECOND death mode at ~6,176 s survives it and the
    entry was reopened the same morning
    ([`aius-open-work-register.md`](aius-open-work-register.md) §Open
    defects — runtime). Runs up to ~100 minutes are valid; the
-   four-hour gates stay blocked until the second mode is fixed.
+   four-hour gates stay blocked until the second mode is fixed.~~
+   **Caveat lifted 2026-08-04:** the surviving stall/death family was
+   convicted 2026-08-03 evening as FlexSPI2 unfitted-tail bus holds
+   with the MPU-tighten tripwire the standing fix (`58596243d`), a
+   10.0 h loaded soak then passed with zero stalls and zero deaths,
+   and the owner UNBLOCKED the four-hour gates (`6950202b7`; the
+   register entry's standing-state note). Phase 5 is now blocked only
+   on a real DD+ source.
 5. **Live DD+ evidence** — a real DD+ source (TV configured to pass DD+,
    or the incoming bench interface if it can emit it); the four-hour and
    by-ear mission gates extend to type 21. Blocked on hardware until

@@ -100,3 +100,9 @@ modules). Land-pattern verification is H2, not H1. The optical mux/inverter/gate
 use real KiCad `SOT-23-5/6` footprints, so they add no warnings, and the earlier
 `isolated_pin_label` warnings cleared once the optical-spdif and ethernet sheets
 connected the seven cross-sheet signal globals.
+
+The purchased optical modules (2026-07-27) are the RS PRO ORJ-5 / OTJ-5
+(`805-1671` / `805-1680`), not the Cliff parts the `aius:Cliff_ORJ5_TOSLINK` /
+`aius:Cliff_OTJ5_TOSLINK` footprints were drawn from — pin-compatible, but
+validating the Gerber against the RS PRO layout drawings is a recorded H2 gate
+([H1 plan §Milestones](../docs/plans/aius-h1-schematic.md#milestones)).
