@@ -964,23 +964,38 @@ specified here. Strike items here in the commit that closes them.
     out of the ISR; a 1,857-second live DTS soak under recorder and
     measurement/HTTP load held AUDIO to 2.401 ms and the epoch to
     3.036 ms with zero drops, gaps, generation changes or resets.
-  - **35**: terminating a live DTS source mid-burst causes one 120 ms
+  - ~~**35**: terminating a live DTS source mid-burst causes one 120 ms
     AUDIO service, 14 ingress overflow chunks / 3,584 dropped words,
-    a recorder underrun and an HTTP disconnect before PCM recovery.
-    Natural EOF of the same complete 2,813-burst source is clean.
-    Capture the exact transition AU, add target decode/sink substep
-    timing, then drop partial compressed work on source discontinuity.
-    **Family observation 2026-08-03 (single-context image, AC-3):** an
-    ABORTED encoded latency row (its IEC stream garbled by a −20 dB
-    source-mixer fault) left the board in a PERSISTENT TX stop/stall
-    churn — `transmit_stops`/`transmit_stalls` in lockstep at ~33/s,
-    still climbing two minutes later at idle with `last_status` 3
-    latched — until one authenticated `POST /api/clear`, after which
-    output ran at nominal immediately. Whether the clear or elapsed
-    time cured it is unresolved; a clean-start run of the same row
-    ran and ended with zero stop/stall deltas, so the churn needs a
-    dirty transition precondition. Fold into 35's transition-AU
-    capture when that work runs.
+    a recorder underrun and an HTTP disconnect before PCM recovery.~~
+    **CONVICTED AND RECHARACTERIZED 2026-08-04; harmful expression
+    already resolved, bounded residual accepted with permanent
+    instrumentation.** The prescribed substep timing landed
+    (`audio_diag.service_max_step_us` / `service_max_ingest_us`,
+    `930f003c6`) and an 8-round instrumented kill campaign convicted
+    the mechanism on the first try: every mid-burst cut hands the
+    decoder ONE length-complete AU whose tail is stuffing garbage
+    (the cut is invisible to length-based burst assembly), producing
+    exactly one `decode_rejects` per cut — usually a fast reject, and
+    ~1-in-8 a pathological slow parse (measured 118.8 ms in one
+    decode step; ingest never exceeded 48 µs). The parse cost is
+    bounded by construction (the core parses at most the frame's
+    declared size), and the 2026-07-29 collateral is GONE on the
+    current architecture: across all 8 cuts, ZERO dropped
+    chunks/words, zero recorder impact, zero stop/stall churn, zero
+    output drops — defect 31's ISR-to-checkpoint move absorbed what
+    used to starve ingress. The prescription's "drop partial
+    compressed work" is recorded as not implementable at the parser
+    (a payload-length-complete burst with a garbage tail is
+    indistinguishable from a valid one), and decoder-internal early
+    abort is vendor surgery not worth one bounded silent budget
+    overrun per channel change. Residual accepted: one >8 ms AUDIO
+    epoch per unlucky discontinuity, inaudible (TX ring rides
+    through). **Family churn observation:** not reproducible today
+    under either targeted trigger (8 clean cuts; one garbled-stream
+    round — a garble from the start never classifies DTS, so nothing
+    churns); stays a watch-for with its documented `POST /api/clear`
+    remedy, and the substep maxima now attribute any recurrence on
+    sight.
   - **27**: the silence self-loop (locked carrier, validity-muted PCM
     in, silent out, TX gate held open) floods `overruns` at ~1 kHz
     sustained; found on the first-ever external-carrier input
