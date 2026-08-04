@@ -46,6 +46,34 @@ in (out = in to 0.01 dB), ceiling clamped at −1.01 dBFS for −1/−0.5/0 dBFS
 inputs — a brick wall at the commanded threshold with no observed
 overshoot in the steady-state window.
 
+## Matrix round — `dsp_matrix_round.py`, 2026-08-04
+
+The 5.1 downmix is measured with the frequency-multiplexed channel-ID DTS
+vector (`channel_id_51`: FL 300 / FR 600 / FC 900 / LFE 60 / SL 1200 /
+SR 1500 Hz), so one stereo capture reads every routing weight at once —
+tones are multiples of 60 Hz, exact bins of a 1 s window. Every variant's
+PUT is built from the original document plus one override, so variants are
+absolute against the same reference.
+
+**Baseline decodes the matrix arithmetic exactly**: direct paths at
+−12.96 dBFS (source 0.45 × headroom 0.5), FC and surrounds each −3.01 dB
+below the direct paths (0.7071 gains). **Stereo separation is at the
+numerical floor: opposite-side crosstalk −89 to −104 dB.**
+
+| Variant | Commanded | Measured delta |
+| --- | --- | --- |
+| center_hot | center 0.7071 → 1.0 (+3.01 dB) | FC +3.01 both channels, rest 0 |
+| surround_cut | surround → 0.3536 (−6.02 dB) | SL/SR −6.02, rest 0 |
+| lfe_hot | lfe → 0.6325 (+6.02 dB) | LFE +5.98 both, rest 0 |
+| headroom_up | headroom 0.5 → 0.7071 (+3.01 dB) | +3.01 broadband (LFE +2.97) |
+
+Every knob moves its own path by exactly the commanded amount and nothing
+else. One observation for the record: the LFE tone's absolute level sits
+~8.9 dB below the naive `source × lfe_gain × headroom` expectation —
+consistent with a DTS LFE level convention or crossover contribution in
+the decode path, and the `lfe_gain` knob itself is exact; flagged for a
+follow-up only if absolute LFE calibration ever matters.
+
 Raw evidence (captures, results.json, original-config.json) lives in the
-running session's scratch battery directory; the numbers above are the
+running session's scratch battery directories; the numbers above are the
 durable record.
