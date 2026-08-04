@@ -3942,7 +3942,9 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		(unsigned long)staged, (unsigned long)total,
 		(unsigned)progress.fail_reason,
 		g_ota_key_fingerprint,
-		"true",
+		/* Derived at build time like the /api/ota copy: true only when the
+		 * compiled key file IS the published-seed test fixture. */
+		AIUS_OTA_PUBLIC_KEY_IS_TEST_FIXTURE ? "true" : "false",
 		/* Driven by the runtime latch, not a compile literal: false at boot,
 		 * true only after the operator flips it (POST /api/ota/enable-activation)
 		 * following the bench scratch-sector recovery proof. */
