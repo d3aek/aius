@@ -74,6 +74,22 @@ consistent with a DTS LFE level convention or crossover contribution in
 the decode path, and the `lfe_gain` knob itself is exact; flagged for a
 follow-up only if absolute LFE calibration ever matters.
 
+## Decorrelation round — 2026-08-04, image `fd65a530347b`
+
+`matrix.surround_delay_ms` measured with the channel-impulse DTS vector,
+differentially (delay 0 vs 8 ms) so base latency and its per-run buffer
+drift cancel: exactly two impulse arrivals shifted, by exactly
+**+384 samples = the commanded 8 ms** — the SL-in-L and SR-in-R paths —
+with every other channel's arrival unmoved and the config restored to the
+default 0 afterwards.
+
+Caveat recorded: `channel_impulse_51` still carries the pre-2026-07-28
+input-rotation defect (the replay_samples README documents it; only
+`channel_id_51` was regenerated), so its channel LABELS are permuted one
+slot. The differential method is immune — a shifted arrival is surround
+content whatever its label — but the pack deserves regeneration before
+any label-dependent use.
+
 Raw evidence (captures, results.json, original-config.json) lives in the
 running session's scratch battery directories; the numbers above are the
 durable record.
