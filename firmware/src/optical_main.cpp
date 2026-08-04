@@ -42,6 +42,7 @@ extern "C" {
 #include "aius_replay.h"
 #include "aius_tx_gate.h"
 #include "aius_optical_config.h"
+#include "aius_ota_public_key.h"
 #include "aius_auth.h"
 #include "aius_config.h"
 /* The portable dispatch seam, whose twenty callbacks this file implements. It
@@ -3222,20 +3223,23 @@ static_assert((int)AIUS_OPTICAL_APP_OTA_STATE_ARMED == (int)AIUS_OTA_STATE_ARMED
  * string the teensy41-optical env is, and the host signer signs against. */
 static const char g_ota_target_id[] = "teensy41-optical";
 
-/* THE COMPILED-IN Ed25519 PUBLIC KEY. Owner decision 2026-07-31: the committed
- * TEST-ONLY dev keypair (firmware/test/ota/test-only-signing-key.pub) is the
- * device key for now. It is generated from a PUBLISHED seed, so its secret half
- * is public knowledge -- it provides NO authenticity against a repo reader and
- * MUST rotate before this repo goes public or the board leaves the bench.
- * ROTATION: tools/ota/aius_ota_sign.py keygen -> replace these 32 bytes ->
- * rebuild -> one signed upgrade. While this stays the published key, ota_diag
- * and GET /api/ota report test_key true so the upgrade page banners TEST KEY. */
-static const uint8_t g_ota_public_key[AIUS_OTA_ED25519_PUBLIC_KEY_BYTES] = {
-	0xf3, 0x6f, 0xb0, 0xb8, 0x31, 0x24, 0x03, 0xee,
-	0x37, 0xb9, 0x65, 0xb6, 0x4d, 0xce, 0x11, 0x3e,
-	0xca, 0x79, 0xd4, 0x01, 0xdc, 0x68, 0x41, 0x90,
-	0xc2, 0xa0, 0x2c, 0xac, 0xa0, 0x60, 0x4d, 0x30
-};
+/* THE COMPILED-IN Ed25519 PUBLIC KEY, generated at build time from the
+ * committed file resource (config/ota-home-signing-key.pub via
+ * scripts/build_config.py): the source never carries key bytes, and rotation
+ * is a file replacement plus a rebuild. Owner decision 2026-08-04: the
+ * repo-committed HOME keypair (host-entropy random) is the standing device
+ * key -- the repository IS this home deployment's trust boundary,
+ * deliberately, and anyone who can read the secret can already push commits
+ * to the firmware it signs. It replaces the published-seed TEST fixture key
+ * that served as the device key from 2026-07-31 (fingerprint
+ * 78cafee9c5728f06); the fixture pair (test/ota/test-only-signing-key.*)
+ * remains committed for the host suites, and the generator DERIVES the
+ * served test_key flag by comparing the two files, so compiling the fixture
+ * back in cannot go unbannered. PRODUCTION rotation stays the documented
+ * later step: keygen to an off-repo path, swap the file, rebuild, one
+ * signed upgrade. */
+static const uint8_t g_ota_public_key[AIUS_OTA_ED25519_PUBLIC_KEY_BYTES] =
+	AIUS_OTA_PUBLIC_KEY_INIT;
 
 static AiusOtaSession g_ota_session;
 static AiusOtaEd25519Key g_ota_key;
@@ -3995,7 +3999,12 @@ static FLASHMEM bool app_ota_status(void *, AiusOpticalAppOtaStatus *status)
 	status->build_utc = g_ota_session.header.build_utc;
 	snprintf(status->key_fingerprint, sizeof(status->key_fingerprint), "%s",
 	         g_ota_key_fingerprint);
-	status->test_key = true;
+	/* DERIVED at build time (scripts/build_config.py compares the compiled
+	 * key file against the published-seed test fixture), so this flag
+	 * cannot be hand-maintained into a lie: false since the 2026-08-04
+	 * home-key rotation, true again only if the fixture is ever compiled
+	 * back in. The fingerprint above says WHICH key either way. */
+	status->test_key = AIUS_OTA_PUBLIC_KEY_IS_TEST_FIXTURE != 0;
 	/* The runtime activation latch, false at boot and true only after the
 	 * operator's deliberate enable act following the bench recovery proof. A
 	 * page reads it to decide whether to offer the activate step. */

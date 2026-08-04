@@ -84,13 +84,23 @@ production keys are an operator step, deliberately not automated:
     chmod 400 ~/.config/aius/ota-signing-key.sec
 
 The secret key is the only thing standing between a reachable device and
-attacker-supplied firmware; keep it off the build host and off the network. The
-public key is what a firmware build compiles in. keygen refuses to overwrite
-either file, so rotating a key is a deliberate move of the old one.
+attacker-supplied firmware; for a PRODUCTION key keep it off the build host and
+off the network. The public key is what a firmware build compiles in. keygen
+refuses to overwrite either file, so rotating a key is a deliberate move of the
+old one.
 
-test/ota/test-only-signing-key.{pub,sec} is a COMMITTED TEST KEY. It is public,
-it exists so the host suites have a real keypair, and it must never appear in a
-firmware image.
+Three tiers, owner decision 2026-08-04:
+
+- test/ota/test-only-signing-key.{pub,sec} -- the COMMITTED TEST FIXTURE. Its
+  seed is published, so its secret needs no repo access; it exists so the host
+  suites have a real keypair and must never be compiled into an image again.
+- config/ota-home-signing-key.{pub,sec} -- the STANDING HOME KEY, committed
+  deliberately: the repository is this home deployment's trust boundary, and a
+  repo reader can already push commits to the firmware the key signs. Signs
+  every home OTA for the foreseeable; ota_diag reports test_key false with its
+  fingerprint.
+- production -- the later cycle documented above: keygen to an off-repo path,
+  swap the compiled-in bytes, one signed upgrade.
 """
 
 
