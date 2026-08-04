@@ -177,6 +177,29 @@ are follow-up work, recorded here so they are not lost.
    reasoning. The in-image diagnostics make any natural recurrence
    self-documenting; reopen on the first `sd_diag.last_failure` capture.
    Evidence: session scratch `defect2-upload-soak{,-concurrent}.jsonl`.
+
+   **REOPENED AND CONVICTED 2026-08-04 — a busy-window mislabel, not a
+   storage fault; fixed.** The OTA staging acceptance (a 1.58 MB
+   container in 4,096-byte chunks) reproduced the shape naturally: three
+   refusals at random mid-file offsets across ~1,150 chunks, each
+   succeeding on one retry. Conviction is by construction: the answered
+   token was the route's own `507 ota_storage`, and the only 507 site
+   reachable mid-file is the `sd_busy()` pre-check — an arriving chunk
+   colliding with a root SD job holding the volume that instant. The
+   per-chunk rate (~1/400) times the historic upload sizes (8–32 chunks)
+   reproduces the old "~1 in 15 uploads" arithmetic, and the 2026-07-31
+   non-reproduction is consistent (root-job cadence varies by boot
+   state). Neither the yield hole nor a write fault: `sd_diag`
+   read clean through all three collisions (`http_faults` 0), and the
+   route-level refusal deliberately never reaches the job engine, which
+   is also why `sd_diag.last_failure` held a boot-time root job — the
+   capture this entry waited for could never have come from this path.
+   THE FIX: the busy case now answers `503 sd_busy`, the retryable
+   vocabulary every other SD route speaks, so a resuming client retries
+   the same offset instead of failing on a phantom storage error; 507
+   remains the genuine storage refusals. The Phase-14f one-line yield
+   fix STAYS unapplied — today's conviction points away from it, per
+   this entry's own original reasoning.
 3. ~~**`"source":"default"` is a hardcoded literal** in the status JSON format
    string.~~ **Fixed.** It now serves `g_dsp_source_sd ? "sd" : "default"` — the
    same fact, from the same variable, as `GET /api/dsp/config`, so the two can no

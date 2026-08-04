@@ -888,9 +888,17 @@ specified here. Strike items here in the commit that closes them.
 - **Open defects** — authoritative list with full context:
   [`aius-network-hardening.md` §Open defects](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
   Open as of 2026-07-27, gists only:
-  - **2**: `500 sd_failure` on large uploads ~1 in 15; diagnostics landed
+  - ~~**2**: `500 sd_failure` on large uploads ~1 in 15; diagnostics landed
     in-image; flash-reproduce-read `sd_diag.last_failure` remains, and the
-    recorded one-line fix is deliberately unapplied until convicted.
+    recorded one-line fix is deliberately unapplied until convicted.~~
+    **CONVICTED AND FIXED 2026-08-04**: a busy-window mislabel — mid-stream
+    upload chunks colliding with root SD jobs holding the volume
+    (~1/400 chunks; × 8–32 chunks/upload = the historic "~1 in 15"),
+    answered as a hard storage error instead of the retryable busy. The
+    OTA chunk route's `sd_busy()` case now answers `503 sd_busy` like
+    every other SD route; the Phase-14f yield fix stays unapplied (the
+    conviction points away from it). Full record:
+    [`aius-network-hardening.md` defect 2](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
   - **4**: `record_event` has two call sites; everything else is a
     counter — prerequisite to any push observability.
   - ~~**10**: the network-transport fake still diverges from real FNET in

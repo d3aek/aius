@@ -1632,11 +1632,18 @@ static FLASHMEM const AiusHttpApplicationResponse *ota_image_chunk(
 	    request->body_length < AIUS_OPTICAL_APP_OTA_HEADER_BYTES)
 		return http_error(dispatcher, 400, "ota_header");
 	/* 5. The card, before hashing: durable staging needs it, and a chunk it
-	 * cannot take must not advance the session's offset. */
+	 * cannot take must not advance the session's offset. A busy volume is
+	 * 503 sd_busy -- the retryable vocabulary every other SD route speaks
+	 * -- NOT 507: mid-stream chunks legitimately collide with root SD jobs
+	 * holding the volume (convicted 2026-08-04, three collisions in ~1,150
+	 * staged chunks, the defect-2 "1 in 15 large uploads" arithmetic), and
+	 * answering "the staging medium refused" for a transient hold sent
+	 * clients into failure paths a plain retry resolves. 507 remains the
+	 * genuine storage refusals below. */
 	if (!app->sd_ready(app->context))
 		return http_error(dispatcher, 503, "sd_unavailable");
 	if (app->sd_busy(app->context))
-		return http_error(dispatcher, 507, "ota_storage");
+		return http_error(dispatcher, 503, "sd_busy");
 	result = ota->chunk(ota->context, request->content_range_start,
 	                    request->body, request->body_length, &next_offset);
 	/* A range refusal is the one that carries an instruction rather than an

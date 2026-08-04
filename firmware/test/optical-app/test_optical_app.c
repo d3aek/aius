@@ -2912,8 +2912,11 @@ static void test_ota_image_chunks(void)
 	/* Durable staging needs the card, so the chunk route now checks it -- after
 	 * the request-shape rules (a malformed chunk is still 400, above) but BEFORE
 	 * the application hashes, so a chunk the card cannot take never advances the
-	 * session offset. A missing card is 503 sd_unavailable, a busy one 507
-	 * ota_storage, and neither reaches ota_chunk. */
+	 * session offset. A missing card is 503 sd_unavailable; a busy one is 503
+	 * sd_busy -- the retryable token every SD route speaks, NOT 507, because a
+	 * mid-stream chunk colliding with a root SD job is a transient hold a plain
+	 * retry resolves (the 2026-08-04 defect-2 conviction). Neither reaches
+	 * ota_chunk. */
 	{
 		static const char *const sd_refused[] = {
 			"ota_present", "auth_matches", "sd_ready"
@@ -2931,7 +2934,7 @@ static void test_ota_image_chunks(void)
 		fixture.fake.sd_busy = true;
 		expect_immediate(dispatch_ota_chunk(&fixture, scratch, sizeof(scratch),
 		                                    0u, 512u, 585728u, "token"),
-		                 507, "{\"ok\":false,\"error\":\"ota_storage\"}");
+		                 503, "{\"ok\":false,\"error\":\"sd_busy\"}");
 		expect_log(&fixture, sd_busy_refused, ARRAY_LENGTH(sd_busy_refused));
 		fixture.fake.sd_busy = false;
 		assert(fixture.fake.last_ota_length == 0u);
