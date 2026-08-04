@@ -710,6 +710,74 @@ static void test_layout_aware(void)
 #undef LAYOUT_BODY
 }
 
+/* matrix.surround_delay_ms: the SECOND optional matrix key (bit 7), the
+ * pre-fold surround decorrelation delay. Absent reads 0.0 -- the undelayed
+ * fold every config written before the field existed asks for -- and unlike
+ * layout_aware the zero default survives a memset, so only the parse-level
+ * properties need pinning: bounds, types, duplicates, and the required-mask
+ * exclusion. */
+static void test_surround_delay_ms(void)
+{
+#define SDELAY_BODY(tail)                                                          \
+	"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"     \
+	"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"      \
+	"\"limiter\":true,\"meters\":true},"                                       \
+	"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"                    \
+	"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"       \
+	"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"      \
+	"\"sr\":{\"gain_db\":0,\"eq\":[]}},\"output_eq\":[],"                      \
+	"\"matrix\":{\"center_gain_linear\":0.7071067811865475,"                   \
+	"\"surround_gain_linear\":0.7071067811865475,"                             \
+	"\"lfe_gain_linear\":0.31622776601683794,\"lfe_crossover_hz\":120,"        \
+	"\"headroom_linear\":0.5,\"clipfree\":false" tail "},"                     \
+	"\"limiter\":{\"enabled\":true,\"threshold_dbfs\":-1,\"attack_ms\":0.5,"   \
+	"\"release_ms\":100,\"lookahead_ms\":2},\"base_generation\":0}"
+
+	static const struct {
+		const char *body;
+		double expect;
+		const char *label;
+	} accepted[] = {
+		{SDELAY_BODY(""), 0.0, "absent reads 0 (the undelayed fold)"},
+		{SDELAY_BODY(",\"surround_delay_ms\":0"), 0.0, "present zero"},
+		{SDELAY_BODY(",\"surround_delay_ms\":8"), 8.0, "present mid-range"},
+		{SDELAY_BODY(",\"surround_delay_ms\":12"), 12.0, "present at the cap"},
+	};
+	for (size_t i = 0; i < sizeof accepted / sizeof accepted[0]; i++) {
+		AiusDspModel m;
+		memset(&m, 0xa5, sizeof(m));
+		AiusDspConfigErrorCode error = parse(accepted[i].body, &m);
+		check(error == AIUS_DSP_CONFIG_OK,
+		      "surround_delay_ms %s: error %d (%s)", accepted[i].label,
+		      (int)error, aius_dsp_config_error_message(error));
+		if (error != AIUS_DSP_CONFIG_OK)
+			continue;
+		check(m.matrix.surround_delay_ms == accepted[i].expect,
+		      "surround_delay_ms %s: parsed %.17g, want %.17g",
+		      accepted[i].label, m.matrix.surround_delay_ms,
+		      accepted[i].expect);
+		check(m.matrix.headroom_linear == 0.5 &&
+		          m.matrix.lfe_crossover_hz == 120.0 &&
+		          m.matrix.layout_aware == 1u,
+		      "surround_delay_ms %s: the rest of the matrix moved",
+		      accepted[i].label);
+	}
+
+	/* Optional does not mean unvalidated: bounds, type and duplicates all
+	 * still refuse. */
+	body_bound(SDELAY_BODY(",\"surround_delay_ms\":12.5"),
+	           AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "surround_delay_ms over cap");
+	body_bound(SDELAY_BODY(",\"surround_delay_ms\":-1"),
+	           AIUS_DSP_CONFIG_ERR_OUT_OF_RANGE, "surround_delay_ms negative");
+	body_bound(SDELAY_BODY(",\"surround_delay_ms\":\"8\""),
+	           AIUS_DSP_CONFIG_ERR_WRONG_TYPE, "surround_delay_ms string");
+	body_bound(SDELAY_BODY(
+	               ",\"surround_delay_ms\":8,\"surround_delay_ms\":4"),
+	           AIUS_DSP_CONFIG_ERR_DUPLICATE_KEY,
+	           "surround_delay_ms duplicated");
+#undef SDELAY_BODY
+}
+
 static void test_headroom(void)
 {
 	/* headroom_linear == 0 rejected (must be > 0). */
@@ -1115,6 +1183,7 @@ int main(void)
 	test_bounds();
 	test_lfe_crossover();
 	test_layout_aware();
+	test_surround_delay_ms();
 	test_headroom();
 	test_sample_rate();
 	test_wrong_types();

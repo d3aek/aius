@@ -38,7 +38,12 @@ DECODER_ARENA_BYTES = 218688
 # 64 B in `.aius_retained_probe` inside the ROM-safe ORIGIN(RAM) window) is the
 # diagnostic vector for the periodic DHCP-T1 watchdog wedge (open-work
 # register); still 192 B above the defect-26 128 KiB heap-floor link ASSERT.
-COMMITTED_OCRAM_FREE_BYTES = 131264
+# Lowered to 131232 on 2026-08-04: AiusDownmixConfig grew 16 B (the surround
+# decorrelation delay's value + state pointer, audio-quality roadmap item 4)
+# and two OCRAM-resident owners embed a config copy; the 4.6 KiB delay ring
+# itself is DTCM (inside AiusDspRuntimeConfig). Still 160 B above the
+# defect-26 floor.
+COMMITTED_OCRAM_FREE_BYTES = 131232
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"

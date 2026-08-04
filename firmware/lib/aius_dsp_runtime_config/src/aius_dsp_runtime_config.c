@@ -79,6 +79,17 @@ AiusStatus aius_dsp_runtime_config_apply(
 		&runtime->lfe_fold, (double)stream_rate_hz,
 		model->matrix.lfe_crossover_hz);
 	runtime->downmix.layout_aware = model->matrix.layout_aware;
+	/* Surround decorrelation: state resolved (and reset) here like the
+	 * crossover above; a failed init leaves designed_samples 0, which the
+	 * downmix reads as the undelayed fold (fail open, aius_dsp.h). The
+	 * feature gate rides `matrix` -- with the matrix feature off the delay
+	 * is forced 0 alongside the fold gains above. */
+	runtime->downmix.surround_delay_ms =
+		model->features.matrix ? model->matrix.surround_delay_ms : 0.0;
+	runtime->downmix.surround_delay = &runtime->surround_delay;
+	(void)aius_surround_delay_init(
+		&runtime->surround_delay, (double)stream_rate_hz,
+		runtime->downmix.surround_delay_ms);
 	if (!model->features.matrix)
 		runtime->downmix.headroom = 1.0;
 	else if (model->matrix.clipfree)

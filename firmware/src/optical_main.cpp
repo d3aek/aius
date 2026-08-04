@@ -2184,12 +2184,16 @@ static FLASHMEM size_t http_dsp_config_json(uint8_t *body, size_t capacity)
 	 * normalize_effective_config(), which copies every key it reads. Adding it
 	 * here is a two-file change: accept-and-ignore `model_origin` in
 	 * lib/aius_dsp_config alongside `source`, THEN emit it. */
+	/* surround_delay_ms rides the same emit-what-you-parse rule as
+	 * layout_aware: optional to the validator, always emitted, so a
+	 * GET-modify-PUT round trip cannot silently reset a hand-set value. */
 	if (!http_json_append(output, capacity, &length,
-	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s,\"layout_aware\":%s},",
+	                      ",\"matrix\":{\"center_gain_linear\":%.17g,\"surround_gain_linear\":%.17g,\"lfe_gain_linear\":%.17g,\"lfe_crossover_hz\":%.17g,\"headroom_linear\":%.17g,\"clipfree\":%s,\"layout_aware\":%s,\"surround_delay_ms\":%.17g},",
 	                      cfg.matrix.center_gain_linear, cfg.matrix.surround_gain_linear,
 	                      cfg.matrix.lfe_gain_linear, cfg.matrix.lfe_crossover_hz,
 	                      headroom, cfg.matrix.clipfree ? "true" : "false",
-	                      cfg.matrix.layout_aware ? "true" : "false"))
+	                      cfg.matrix.layout_aware ? "true" : "false",
+	                      cfg.matrix.surround_delay_ms))
 		return 0;
 	if (!http_json_append(output, capacity, &length,
 	                      "\"limiter\":{\"enabled\":%s,\"threshold_dbfs\":%.17g,\"attack_ms\":%.17g,\"release_ms\":%.17g,\"lookahead_ms\":%.17g}}",

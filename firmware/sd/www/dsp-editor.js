@@ -289,6 +289,7 @@
       headroom_linear: 0.5,
       clipfree: false,
       layout_aware: true,
+      surround_delay_ms: 0,
     },
     limiter: { enabled: true, threshold_dbfs: -1, attack_ms: 0.5, release_ms: 100, lookahead_ms: 2 },
   };
@@ -564,6 +565,21 @@
       kind: 'bool',
       label: 'Layout-aware headroom',
       absentDefault: true,
+    },
+    /* Optional to the validator like layout_aware, but a NUMBER whose absent
+     * default is 0 (the undelayed fold): a pre-feature device omits the key,
+     * render() supplies the 0 the device already means, and the form stays
+     * valid instead of blank-and-unsaveable. */
+    {
+      path: 'matrix.surround_delay_ms',
+      kind: 'number',
+      label: 'Surround delay',
+      caption: 'Surround decorrelation delay',
+      min: 0,
+      max: 12,
+      step: 0.5,
+      unit: ' ms',
+      absentDefault: 0,
     },
   ];
 
@@ -1102,7 +1118,11 @@
        * false. A present value always wins, either way. */
       if (descriptor.kind === 'bool')
         input.checked = value === undefined ? Boolean(descriptor.absentDefault) : Boolean(value);
-      else setNumberValue(input, value);
+      else
+        setNumberValue(
+          input,
+          value === undefined && descriptor.absentDefault !== undefined ? descriptor.absentDefault : value,
+        );
     }
     refreshDerived();
     validateAll();
@@ -1258,6 +1278,9 @@
          * body is the whole matrix, and omitting the box's own state would make
          * unticking it unsendable. */
         layout_aware: field('matrix.layout_aware').checked,
+        /* Optional too (absent reads 0), sent for the same whole-matrix rule;
+         * the 0 fallback is the pre-feature undelayed fold. */
+        surround_delay_ms: numberOf('matrix.surround_delay_ms', 0),
       },
       limiter: {
         enabled: field('limiter.enabled').checked,

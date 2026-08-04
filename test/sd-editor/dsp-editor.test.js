@@ -742,11 +742,11 @@ describe('Aius SD DSP editor — model to DOM', () => {
       'e:input_channels.fl.eq.0.frequency_hz',
     );
 
-    // 23 per-field resets (features, trims, matrix incl. layout_aware, limiter)
-    // + 14 per-section ones (6 channels x 2 + output x 2), all reachable by AT
-    // but out of the tab order.
+    // 24 per-field resets (features, trims, matrix incl. layout_aware and
+    // surround_delay_ms, limiter) + 14 per-section ones (6 channels x 2 +
+    // output x 2), all reachable by AT but out of the tab order.
     const resets = [...document.querySelectorAll('.field__reset')];
-    expect(resets.length).toBe(37);
+    expect(resets.length).toBe(38);
     expect(resets.every((button) => button.tabIndex === -1)).toBe(true);
     expect(document.querySelectorAll('.eq-table__reset').length).toBe(14);
   });
@@ -781,7 +781,13 @@ describe('Aius SD DSP editor — writing the model back', () => {
     expect(put.url).toBe('/api/dsp/config');
     expect(put.headers['X-Aius-SD-Auth']).toBe('0123456789abcdef');
     expect(put.headers['Content-Type']).toBe('application/json');
-    expect(JSON.parse(put.body)).toEqual({ ...loaded, base_generation: 4 });
+    // The one deliberate non-verbatim key: this fixture predates
+    // surround_delay_ms, and the editor sends the 0 the absent key means.
+    expect(JSON.parse(put.body)).toEqual({
+      ...loaded,
+      matrix: { ...loaded.matrix, surround_delay_ms: 0 },
+      base_generation: 4,
+    });
   });
 
   /* Display precision is not wire precision: the field shows 0.70711 so a human
@@ -2047,7 +2053,15 @@ describe('Aius SD DSP editor — ergonomics', () => {
 describe('Aius SD DSP editor — presets', () => {
   const fiveGroups = (name) => {
     const { features, input_channels, output_eq, matrix, limiter } = fixture(name);
-    return { features, input_channels, output_eq, matrix, limiter };
+    // The form always carries surround_delay_ms (absent reads 0), so a body
+    // collected from it holds the key even when the fixture predates it.
+    return {
+      features,
+      input_channels,
+      output_eq,
+      matrix: { surround_delay_ms: 0, ...matrix },
+      limiter,
+    };
   };
   const presetNames = () => [...document.querySelectorAll('.preset-list__name')].map((node) => node.textContent);
   const presetRowButton = (name, label) => {

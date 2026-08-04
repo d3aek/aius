@@ -119,6 +119,10 @@ static int test_every_model_field_resolves_and_state_resets(void)
 	model.matrix.headroom_linear = 0.37;
 	model.matrix.clipfree = 0u;
 	model.matrix.layout_aware = 0u;
+	/* 5 ms: 480 samples at this test's 96 kHz rate, inside the 576-sample
+	 * ring. (12 ms is a 48 kHz budget; a higher rate shrinks the usable
+	 * maximum, and an over-budget request resolves fail-open to 0.) */
+	model.matrix.surround_delay_ms = 5.0;
 	model.limiter.enabled = 0u;
 	model.limiter.threshold_dbfs = -3.5;
 	model.limiter.attack_ms = 2.25;
@@ -149,6 +153,12 @@ static int test_every_model_field_resolves_and_state_resets(void)
 	CHECK(runtime.lfe_fold.designed_hz == 87.0);
 	CHECK(all_zero(runtime.lfe_fold.state,
 	               sizeof(runtime.lfe_fold.state)));
+	CHECK(runtime.downmix.surround_delay_ms == 5.0);
+	CHECK(runtime.downmix.surround_delay == &runtime.surround_delay);
+	CHECK(runtime.surround_delay.designed_fs == 96000.0);
+	CHECK(runtime.surround_delay.designed_samples == 480u);
+	CHECK(all_zero(runtime.surround_delay.ring,
+	               sizeof(runtime.surround_delay.ring)));
 
 	CHECK(runtime.input_stage_active == 1u);
 	CHECK(runtime.input_stage.channels[0].gain_linear ==
@@ -224,6 +234,9 @@ static int test_feature_bypasses_and_clipfree_resolution(void)
 	model.features.output_eq = 0u;
 	model.features.limiter = 0u;
 	model.features.meters = 0u;
+	/* Non-vacuous gate check: the model ASKS for a delay the disabled
+	 * matrix feature must refuse. */
+	model.matrix.surround_delay_ms = 5.0;
 	CHECK(aius_dsp_runtime_config_apply(
 		&runtime, &model, 48000u, NULL) == AIUS_OK);
 	CHECK(runtime.output_eq_count == 0u);
@@ -232,6 +245,9 @@ static int test_feature_bypasses_and_clipfree_resolution(void)
 	CHECK(runtime.downmix.surround == 0.0);
 	CHECK(runtime.downmix.lfe == 0.0);
 	CHECK(runtime.downmix.headroom == 1.0);
+	/* The delay rides the matrix feature gate alongside the fold gains. */
+	CHECK(runtime.downmix.surround_delay_ms == 0.0);
+	CHECK(runtime.surround_delay.designed_samples == 0u);
 	CHECK(runtime.limiter_active == 0u);
 	CHECK(runtime.meters_active == 0u);
 

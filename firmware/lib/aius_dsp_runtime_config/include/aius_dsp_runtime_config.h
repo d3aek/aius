@@ -30,6 +30,7 @@ extern "C" {
 typedef struct {
 	AiusDownmixConfig downmix;
 	AiusLfeFold lfe_fold;
+	AiusSurroundDelay surround_delay;
 
 	AiusBiquad output_eq[AIUS_DSP_RUNTIME_OUTPUT_EQ_MAX];
 	AiusBiquadState output_eq_state[2u * AIUS_DSP_RUNTIME_OUTPUT_EQ_MAX];

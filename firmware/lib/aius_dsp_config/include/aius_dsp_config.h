@@ -57,21 +57,28 @@ typedef struct {
  * LFE unfiltered" and that is an API capability rather than a product option.
  * Disabling the fold is lfe_gain_linear = 0.
  *
- * `layout_aware` is THE ONE OPTIONAL MATRIX KEY, and the only one whose absence
- * is not an error: 1 (the default, and what a body omitting it parses to) makes
+ * `layout_aware` and `surround_delay_ms` are THE TWO OPTIONAL MATRIX KEYS,
+ * the only ones whose absence is not an error — both landed after configs
+ * existed, so absence must read as the shipped default rather than a 400.
+ * `layout_aware`: 1 (the default, and what a body omitting it parses to) makes
  * `headroom_linear` the SUMMING-layout pad, so mono and stereo FL|FR pass through
  * at unity; 0 restores the uniform pad on every layout. Absence must read TRUE
  * because every config written before 2026-07-28 omits it and none of them asked
  * for the old level, whereas a hand-set false is an explicit diagnostic choice.
+ * `surround_delay_ms`: the pre-fold surround decorrelation delay, bounded
+ * [0, AIUS_DSP_SURROUND_DELAY_MAX_MS]; absence and 0 are both the
+ * pre-feature undelayed fold, bit for bit.
  *
  * ZERO-INIT CAVEAT: aius_dsp_model_set_defaults() is a memset, so a model that
  * did not come out of aius_dsp_config_parse_put() carries layout_aware == 0, the
  * LEGACY behaviour. The default-true lives in parse_matrix's local initializer
  * (and in aius_downmix_config_default() on the DSP side) for exactly that
- * reason. */
+ * reason; the delay's zero default is the same value in both regimes, so it
+ * needs no such split home. */
 typedef struct {
 	double center_gain_linear, surround_gain_linear, lfe_gain_linear;
 	double lfe_crossover_hz, headroom_linear;
+	double surround_delay_ms;
 	uint8_t clipfree;
 	uint8_t layout_aware;
 } AiusDspModelMatrix;

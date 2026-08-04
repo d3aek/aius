@@ -851,11 +851,17 @@ specified here. Strike items here in the commit that closes them.
   both CM6206 discriminators, gate 1, the ITCM mechanism question, and
   hardening defects 25 (conditional rider) and 27 (needs the loopback rig).
   Defects 22 and 23 stay parked as recorded design calls.
-- **DSP roadmap item 4 — surround decorrelation.** The last item of the
-  accepted audio-quality order
-  ([`aius-dsp-config-api.md` §Accepted order](aius-dsp-config-api.md#accepted-order-for-the-next-level)):
-  a short allpass or few-ms delay on Ls/Rs. Now measurable via item 3's
-  loopback, and better still once the glass loop runs.
+- ~~**DSP roadmap item 4 — surround decorrelation.**~~ **DELIVERED
+  2026-08-04** as `matrix.surround_delay_ms` (default 0 = the bit-exact
+  pre-feature fold; details in
+  [`aius-dsp-config-api.md` §Accepted order](aius-dsp-config-api.md#accepted-order-for-the-next-level)).
+  The audible on/off choice and delay-time voicing belong to the owner's
+  ears round; the loop measurement (impulse-vector arrival shift) rides
+  the next characterization pass. Related finding recorded the same day:
+  the LFE −8.9 dB observation was the TEST VECTOR (ffmpeg's DTS encoder
+  stores LFE ~9.8 dB down; our decode chain is exact), so an lfe_gain
+  A/B (0.316 vs 1.0) joins the ears-round queue for convention-encoded
+  film content.
 - **B9 — the app dashboard retirement**, keeping `swagger.json` and
   its contract suite. Independent of everything above
   ([`aius-network-hardening.md`](aius-network-hardening.md), B-series

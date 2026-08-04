@@ -166,6 +166,81 @@ static AiusLfeFold *resolve_lfe_fold(const AiusDownmixConfig *cfg, double fs,
     return fold;
 }
 
+/* --- surround decorrelation delay ----------------------------------------- */
+
+void aius_surround_delay_reset(AiusSurroundDelay *delay)
+{
+    if (delay == NULL) {
+        return;
+    }
+    memset(delay->ring, 0, sizeof delay->ring);
+    delay->write = 0;
+}
+
+AiusStatus aius_surround_delay_init(AiusSurroundDelay *delay, double fs,
+                                    double delay_ms)
+{
+    if (delay == NULL) {
+        return AIUS_INVALID_ARG;
+    }
+    /* Zero first, like the crossover: an early return leaves the state RESET
+     * AND UNDESIGNED (designed_samples == 0), which the downmix reads as
+     * "fold undelayed" -- the fail-open rule. */
+    memset(delay, 0, sizeof *delay);
+    if (!(fs > 0.0) || !(delay_ms >= 0.0) ||
+        delay_ms != delay_ms /* NaN */) {
+        return AIUS_INVALID_ARG;
+    }
+    double samples = delay_ms * fs / 1000.0 + 0.5;
+    if (samples >= (double)AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES + 1.0) {
+        return AIUS_INVALID_ARG;
+    }
+    delay->designed_samples = (uint32_t)samples;
+    if (delay->designed_samples > AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES) {
+        delay->designed_samples = AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES;
+    }
+    delay->designed_ms = delay_ms;
+    delay->designed_fs = fs;
+    return AIUS_OK;
+}
+
+/* One frame through one side's ring: read the tail, write the head. The caller
+ * advances the shared cursor once per frame, after BOTH sides stepped, so the
+ * two rings stay sample-aligned whatever mix of planes a block carries. */
+static double surround_delay_step(AiusSurroundDelay *delay, int side, double x)
+{
+    float *ring = delay->ring[side];
+    double y = (double)ring[delay->write];
+    ring[delay->write] = (float)x;
+    return y;
+}
+
+/* Resolve the delay for this block, off the per-sample path -- the analogue of
+ * resolve_lfe_fold above, with the opposite failure polarity (fail OPEN, see
+ * aius_dsp.h §AiusDownmixConfig): a requested delay with no state, or one the
+ * rate cannot carry, folds the surrounds UNDELAYED, which is the pre-feature
+ * path rather than a harm. Re-derives on a corner/rate move, at most once per
+ * change. */
+static AiusSurroundDelay *resolve_surround_delay(const AiusDownmixConfig *cfg,
+                                                 double fs)
+{
+    if (cfg->surround_delay_ms <= 0.0) {
+        return NULL; /* off: the bit-exact legacy path */
+    }
+    AiusSurroundDelay *delay = cfg->surround_delay;
+    if (delay == NULL) {
+        return NULL; /* fail open: undelayed fold */
+    }
+    if (delay->designed_ms != cfg->surround_delay_ms ||
+        delay->designed_fs != fs) {
+        if (aius_surround_delay_init(delay, fs, cfg->surround_delay_ms) !=
+            AIUS_OK) {
+            return NULL; /* unusable at this rate: same fail-open rule */
+        }
+    }
+    return delay->designed_samples == 0 ? NULL : delay;
+}
+
 /* --- downmix -------------------------------------------------------------- */
 
 AiusDownmixConfig aius_downmix_config_default(void)
@@ -181,6 +256,8 @@ AiusDownmixConfig aius_downmix_config_default(void)
      * construct through here: a zeroed struct means the LEGACY uniform pad, so a
      * config assembled field by field gets the old behaviour by omission. */
     c.layout_aware = 1;
+    c.surround_delay_ms = 0.0; /* off: the bit-exact legacy fold */
+    c.surround_delay = NULL;   /* caller-owned state; see aius_dsp.h */
     return c;
 }
 
@@ -287,6 +364,12 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
             pLFE = NULL;
         }
 
+        /* Surround decorrelation, resolved once per block like the crossover.
+         * NULL is both "off" and every fail-open verdict: the branch below
+         * then folds the surrounds exactly as the pre-feature loop did. */
+        AiusSurroundDelay *sdelay =
+            resolve_surround_delay(cfg, (double)in->sample_rate_hz);
+
         for (uint32_t i = 0; i < in->frames; i++) {
             double l = 0.0;
             double r = 0.0;
@@ -314,11 +397,29 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
                 l += e;
                 r += e;
             }
-            if (pSL) {
-                l += pSL[i] * cfg->surround;
-            }
-            if (pSR) {
-                r += pSR[i] * cfg->surround;
+            if (sdelay != NULL) {
+                /* Both rings step every frame -- an absent plane writes
+                 * silence -- and the sums are unconditional so a ring tail
+                 * drains rather than truncating on a layout change. A block
+                 * that never carried surrounds reads back exact 0.0 and adds
+                 * nothing. Cursor advances once, after both sides, keeping
+                 * SL and SR sample-aligned. */
+                double sl = surround_delay_step(sdelay, 0,
+                                                pSL ? pSL[i] : 0.0);
+                double sr = surround_delay_step(sdelay, 1,
+                                                pSR ? pSR[i] : 0.0);
+                if (++sdelay->write >= sdelay->designed_samples) {
+                    sdelay->write = 0;
+                }
+                l += sl * cfg->surround;
+                r += sr * cfg->surround;
+            } else {
+                if (pSL) {
+                    l += pSL[i] * cfg->surround;
+                }
+                if (pSR) {
+                    r += pSR[i] * cfg->surround;
+                }
             }
             /* NO quantize: the pad's result stays in double for the output EQ,
              * limiter and the chain's single final quantize. */

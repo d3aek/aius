@@ -43,6 +43,10 @@
  * the range: see the AiusDspModelMatrix comment. */
 #define MATRIX_LFE_CROSSOVER_MIN_HZ 20.0
 #define MATRIX_LFE_CROSSOVER_MAX_HZ 500.0
+/* Surround decorrelation delay, mirroring aius_dsp.h's
+ * AIUS_DSP_SURROUND_DELAY_MAX_MS (the DTCM ring bound). 0 is inside the range
+ * on purpose: it IS the shipped default, the pre-feature undelayed fold. */
+#define MATRIX_SURROUND_DELAY_MAX_MS 12.0
 #define LIMITER_THRESHOLD_MIN_DBFS -24.0
 #define LIMITER_THRESHOLD_MAX_DBFS 0.0
 #define LIMITER_ATTACK_MIN_MS 0.1
@@ -654,8 +658,10 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 	/* THE HOME OF THE ABSENT-READS-ON DEFAULT for layout_aware (the trailing 1u).
 	 * It cannot live in aius_dsp_model_set_defaults(), which is a memset to zero,
 	 * and a body omitting the key must not silently ask for the legacy uniform
-	 * pad -- every config written before the field existed omits it. */
-	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0.0, 0u, 1u};
+	 * pad -- every config written before the field existed omits it.
+	 * surround_delay_ms's absent default is 0.0 (the undelayed fold), which a
+	 * memset also produces, so it has no such split home. */
+	AiusDspModelMatrix matrix = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0u, 1u};
 	if (!aius_json_consume(parser, '}')) {
 		for (;;) {
 			uint8_t key[AIUS_DSP_CONFIG_KEY_BUFFER_MAX];
@@ -681,6 +687,8 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 				field = 5u;
 			else if (aius_json_key_is(key, key_len, overflow, "layout_aware"))
 				field = 6u;
+			else if (aius_json_key_is(key, key_len, overflow, "surround_delay_ms"))
+				field = 7u;
 			else
 				return AIUS_DSP_CONFIG_ERR_UNKNOWN_KEY;
 
@@ -724,8 +732,13 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 				                     MATRIX_LFE_CROSSOVER_MAX_HZ,
 				                     &matrix.lfe_crossover_hz);
 				break;
-			default:
+			case 6u:
 				error = take_bool(parser, &matrix.layout_aware);
+				break;
+			default:
+				error = take_bounded(parser, 0.0,
+				                     MATRIX_SURROUND_DELAY_MAX_MS,
+				                     &matrix.surround_delay_ms);
 				break;
 			}
 			if (error != AIUS_DSP_CONFIG_OK)
@@ -741,11 +754,13 @@ static FLASHMEM AiusDspConfigErrorCode parse_matrix(AiusJsonCursor *parser,
 	}
 
 	/* MASK, NOT EQUALITY, and the difference is the whole point: the six legacy
-	 * keys (bits 0..5) stay REQUIRED, while layout_aware (bit 6) is optional. The
-	 * naive `seen != 0x7Fu` would reject every config that does NOT carry the new
-	 * field -- which is every config written before it existed -- and `seen !=
-	 * 0x3Fu` would reject every config that DOES, which is inverted from the
-	 * intent in the more embarrassing direction: it 400s the editor's own body. */
+	 * keys (bits 0..5) stay REQUIRED, while layout_aware (bit 6) and
+	 * surround_delay_ms (bit 7) are optional -- both landed after configs
+	 * existed. The naive full-mask equality would reject every config that does
+	 * NOT carry the new fields -- which is every config written before they
+	 * existed -- and `seen != 0x3Fu` would reject every config that DOES, which
+	 * is inverted from the intent in the more embarrassing direction: it 400s
+	 * the editor's own body. */
 	if ((seen & 0x3Fu) != 0x3Fu)
 		return AIUS_DSP_CONFIG_ERR_MISSING_KEY;
 	*out = matrix;

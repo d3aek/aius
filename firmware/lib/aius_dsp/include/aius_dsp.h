@@ -258,6 +258,23 @@ extern "C" {
  * types below. Forward-declared here because AiusDownmixConfig refers to it. */
 typedef struct AiusLfeFold AiusLfeFold;
 
+/* --- surround decorrelation delay (audio-quality roadmap item 4) ----------
+ *
+ * Surrounds summed straight onto the fronts collapse envelopment and comb
+ * with correlated content; a few milliseconds of pre-fold delay on SL/SR is
+ * what separates a downmix that sounds like a mix from one that sounds like
+ * an average. The bound is a DTCM budget decision as much as a perceptual
+ * one: 12 ms at the 48 kHz engine ceiling is 576 samples per side, and the
+ * ring is float rather than double deliberately — the planes' 24-bit-origin
+ * content fits a float mantissa, so storage costs half the scarcest bank for
+ * an error floor ~-150 dBFS, far beneath the fold gain that follows it. */
+#define AIUS_DSP_SURROUND_DELAY_MAX_MS 12.0
+#define AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES 576
+
+/* The delay's ring and cursor state, defined after the biquad types below.
+ * Forward-declared here because AiusDownmixConfig refers to it. */
+typedef struct AiusSurroundDelay AiusSurroundDelay;
+
 /* Overall post-downmix gain applied to L' and R' before the (final) clamp.
  *
  * WHY 0.5 AND NOT 1.0. When this default was chosen the downmix quantized and
@@ -394,6 +411,23 @@ typedef struct {
      * the shipped behaviour. Construct through aius_downmix_config_default(),
      * which sets it, or set it explicitly. */
     int layout_aware;
+    /* Surround decorrelation: SL and SR are delayed by this many milliseconds
+     * before their fold gain, symmetric on both sides. 0 (the default) is the
+     * pre-feature path bit for bit -- the ring is never touched. VALUE +
+     * POINTER-TO-STATE split for the same reason as the crossover above: this
+     * struct is copied by value per block, so the ring lives with the caller's
+     * long-lived DSP objects and this struct only points at it.
+     *
+     * MISCONFIGURATION FAILS OPEN, and the divergence from the LFE fold's
+     * fail-closed rule is deliberate: delay_ms > 0 with a NULL or unusable
+     * ring folds the surrounds UNDELAYED -- which is exactly the shipped
+     * pre-feature behaviour, a correct downmix rather than a harm. The LFE
+     * failed closed because its fallback (an unfiltered fold) was the mud the
+     * crossover exists to prevent; the delay's fallback is yesterday's
+     * correct output, and taking the surrounds away instead would turn a
+     * wiring mistake into missing content. */
+    double surround_delay_ms;
+    AiusSurroundDelay *surround_delay;
 } AiusDownmixConfig;
 
 /* The shipped default: BS.775/A52 -3 dB center+surround, the LFE folded in at
@@ -549,6 +583,34 @@ AiusStatus aius_lfe_fold_init(AiusLfeFold *fold, double fs, double crossover_hz)
  * discontinuity that should not re-run the coefficient math. fold == NULL is a
  * no-op. */
 void aius_lfe_fold_reset(AiusLfeFold *fold);
+
+/* The surround decorrelation delay's state: one float ring per side sharing a
+ * write cursor, so SL and SR stay sample-aligned with each other whatever mix
+ * of planes a block carries. `designed_samples == 0` is what the downmix reads
+ * as "no usable delay" (fail OPEN: surrounds fold undelayed -- see
+ * AiusDownmixConfig.surround_delay). */
+struct AiusSurroundDelay {
+    float    ring[2][AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES];
+    uint32_t write;             /* shared cursor, wraps at designed_samples */
+    uint32_t designed_samples;  /* 0 = undesigned/unusable */
+    double   designed_ms;       /* the request the samples were derived from */
+    double   designed_fs;       /* sample rate they were derived at */
+};
+
+/* Derive the sample count for `delay_ms` at `fs` and zero the rings. Returns
+ * AIUS_INVALID_ARG for a NULL delay, a non-positive rate, a negative or
+ * non-finite delay, or one whose sample count exceeds
+ * AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES; on failure the state is left RESET AND
+ * UNDESIGNED (designed_samples == 0), which the downmix reads as "fold
+ * undelayed". delay_ms == 0 designs a zero-length delay, also read as
+ * undelayed. Bounded and allocation-free -- call it cold. */
+AiusStatus aius_surround_delay_init(AiusSurroundDelay *delay, double fs,
+                                    double delay_ms);
+
+/* Zero the ring memory, keeping the designed length. For a stream
+ * discontinuity that should not re-run the derivation. delay == NULL is a
+ * no-op. */
+void aius_surround_delay_reset(AiusSurroundDelay *delay);
 
 /* BASS MANAGEMENT — what is built, what is NOT, and why the difference is a
  * recommendation rather than an omission.

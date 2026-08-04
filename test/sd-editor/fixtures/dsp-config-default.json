@@ -19,7 +19,8 @@
     "lfe_crossover_hz": 120,
     "headroom_linear": 0.5,
     "clipfree": false,
-    "layout_aware": true
+    "layout_aware": true,
+    "surround_delay_ms": 0
   },
   "limiter": { "enabled": true, "threshold_dbfs": -1, "attack_ms": 0.5, "release_ms": 100, "lookahead_ms": 2 }
 }

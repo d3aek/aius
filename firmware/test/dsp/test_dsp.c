@@ -3989,6 +3989,186 @@ static void test_chain_r5_final_quantize_still_clips(void)
            "(L %u/%u, R %u/%u of %d)\n", hi_l, lo_l, hi_r, lo_r, CHAIN_ANA);
 }
 
+/* --- surround decorrelation delay (audio-quality roadmap item 4) ---------- */
+
+#define SDELAY_N 256u
+
+static void test_surround_delay_design(void)
+{
+    AiusSurroundDelay d;
+    /* 0 ms designs a zero-length delay -- read as undelayed -- and the bound
+     * is the DTCM ring size, not a perceptual rule. */
+    assert(aius_surround_delay_init(&d, 48000.0, 0.0) == AIUS_OK);
+    assert(d.designed_samples == 0u);
+    assert(aius_surround_delay_init(&d, 48000.0, 12.0) == AIUS_OK);
+    assert(d.designed_samples == AIUS_DSP_SURROUND_DELAY_MAX_SAMPLES);
+    assert(aius_surround_delay_init(&d, 44100.0, 5.0) == AIUS_OK);
+    assert(d.designed_samples == 221u); /* round(220.5), the +0.5 rule */
+    assert(aius_surround_delay_init(&d, 48000.0, 13.0) == AIUS_INVALID_ARG);
+    assert(d.designed_samples == 0u); /* failure leaves RESET AND UNDESIGNED */
+    assert(aius_surround_delay_init(&d, 48000.0, -1.0) == AIUS_INVALID_ARG);
+    assert(aius_surround_delay_init(&d, 0.0, 5.0) == AIUS_INVALID_ARG);
+    assert(aius_surround_delay_init(NULL, 48000.0, 5.0) == AIUS_INVALID_ARG);
+    printf("ok surround delay design (bounds, rounding, fail-reset)\n");
+}
+
+/* delay_ms == 0 with state wired is the negative control, and it is exact: the
+ * ring is never touched, so the output is bit for bit the no-delay config's. */
+static void test_surround_delay_zero_is_bit_exact(void)
+{
+    double fl[SDELAY_N], fr[SDELAY_N], sl[SDELAY_N], sr[SDELAY_N];
+    layout_fill(fl, SDELAY_N, 111000);
+    layout_fill(fr, SDELAY_N, -222000);
+    layout_fill(sl, SDELAY_N, 333000);
+    layout_fill(sr, SDELAY_N, -444000);
+
+    AiusSurroundDelay d;
+    memset(&d, 0, sizeof d);
+    AiusDownmixConfig with = aius_downmix_config_default();
+    with.lfe_fold = NULL;
+    with.surround_delay_ms = 0.0;
+    with.surround_delay = &d;
+    AiusDownmixConfig without = aius_downmix_config_default();
+    without.lfe_fold = NULL;
+
+    AiusPcmBlockD in = {{fl, fr, sl, sr, 0, 0}, 4, SDELAY_N, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR};
+    double al[SDELAY_N], ar[SDELAY_N], bl[SDELAY_N], br[SDELAY_N];
+    assert(aius_dsp_downmix(&with, &in, al, ar) == AIUS_OK);
+    assert(aius_dsp_downmix(&without, &in, bl, br) == AIUS_OK);
+    for (uint32_t i = 0; i < SDELAY_N; i++) {
+        assert(al[i] == bl[i]);
+        assert(ar[i] == br[i]);
+    }
+    printf("ok surround delay 0 ms is the bit-exact legacy fold\n");
+}
+
+/* The core property: surrounds shift by the designed count, fronts do not, and
+ * the values survive the float ring exactly (float-representable markers). */
+static void test_surround_delay_shifts_surrounds_only(void)
+{
+    double fl[SDELAY_N], fr[SDELAY_N], sl[SDELAY_N], sr[SDELAY_N];
+    memset(fl, 0, sizeof fl);
+    memset(fr, 0, sizeof fr);
+    memset(sl, 0, sizeof sl);
+    memset(sr, 0, sizeof sr);
+    fl[7] = 0.25;
+    sl[3] = 0.5;
+    sr[5] = -0.375;
+
+    AiusSurroundDelay d;
+    memset(&d, 0, sizeof d);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe_fold = NULL;
+    cfg.surround_delay_ms = 1.0; /* 48 samples at 48 kHz */
+    cfg.surround_delay = &d;
+
+    AiusPcmBlockD in = {{fl, fr, sl, sr, 0, 0}, 4, SDELAY_N, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR};
+    double ol[SDELAY_N], orr[SDELAY_N];
+    assert(aius_dsp_downmix(&cfg, &in, ol, orr) == AIUS_OK);
+    assert(d.designed_samples == 48u);
+    assert(ol[7] == 0.25 * cfg.headroom);              /* front: unshifted */
+    assert(ol[3] == 0.0);                              /* SL: not at 3 */
+    assert(ol[3 + 48] == 0.5 * cfg.surround * cfg.headroom);
+    assert(orr[5] == 0.0);
+    assert(orr[5 + 48] == -0.375 * cfg.surround * cfg.headroom);
+    printf("ok surround delay shifts SL/SR by the designed count only\n");
+}
+
+/* A ring tail outliving its layout DRAINS instead of truncating: the impulse
+ * enters on a 5.1 block and emerges on the following stereo block -- at that
+ * block's own resolved headroom (unity, nothing in ITS mask sums). */
+static void test_surround_delay_tail_drains_across_layout_change(void)
+{
+    double fl[SDELAY_N], fr[SDELAY_N], sl[SDELAY_N], sr[SDELAY_N];
+    memset(fl, 0, sizeof fl);
+    memset(fr, 0, sizeof fr);
+    memset(sl, 0, sizeof sl);
+    memset(sr, 0, sizeof sr);
+    sl[3] = 0.5; /* 6 ms = 288 samples: emerges at 291, past this block */
+
+    AiusSurroundDelay d;
+    memset(&d, 0, sizeof d);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe_fold = NULL;
+    cfg.surround_delay_ms = 6.0;
+    cfg.surround_delay = &d;
+
+    AiusPcmBlockD five1 = {{fl, fr, sl, sr, 0, 0}, 4, SDELAY_N, 48000,
+                           AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR};
+    AiusPcmBlockD stereo = {{fl, fr, 0, 0, 0, 0}, 2, SDELAY_N, 48000,
+                            AIUS_CH_FL | AIUS_CH_FR};
+    double ol[SDELAY_N], orr[SDELAY_N];
+    assert(aius_dsp_downmix(&cfg, &five1, ol, orr) == AIUS_OK);
+    for (uint32_t i = 0; i < SDELAY_N; i++) {
+        assert(ol[i] == 0.0); /* still in the ring */
+    }
+    assert(aius_dsp_downmix(&cfg, &stereo, ol, orr) == AIUS_OK);
+    assert(ol[291 - SDELAY_N] == 0.5 * cfg.surround * 1.0);
+    printf("ok surround delay tail drains across a layout change\n");
+}
+
+/* Misconfiguration folds UNDELAYED -- the pre-feature output, bit for bit --
+ * unlike the LFE's fail-closed rule (see aius_dsp.h for why they differ). */
+static void test_surround_delay_missing_state_fails_open(void)
+{
+    double fl[SDELAY_N], fr[SDELAY_N], sl[SDELAY_N], sr[SDELAY_N];
+    layout_fill(fl, SDELAY_N, 511000);
+    layout_fill(fr, SDELAY_N, -611000);
+    layout_fill(sl, SDELAY_N, 711000);
+    layout_fill(sr, SDELAY_N, -811000);
+
+    AiusDownmixConfig broken = aius_downmix_config_default();
+    broken.lfe_fold = NULL;
+    broken.surround_delay_ms = 5.0;
+    broken.surround_delay = NULL; /* the wiring mistake */
+    AiusDownmixConfig reference = aius_downmix_config_default();
+    reference.lfe_fold = NULL;
+
+    AiusPcmBlockD in = {{fl, fr, sl, sr, 0, 0}, 4, SDELAY_N, 48000,
+                        AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR};
+    double al[SDELAY_N], ar[SDELAY_N], bl[SDELAY_N], br[SDELAY_N];
+    assert(aius_dsp_downmix(&broken, &in, al, ar) == AIUS_OK);
+    assert(aius_dsp_downmix(&reference, &in, bl, br) == AIUS_OK);
+    for (uint32_t i = 0; i < SDELAY_N; i++) {
+        assert(al[i] == bl[i]);
+        assert(ar[i] == br[i]);
+    }
+    printf("ok surround delay missing state fails open (undelayed fold)\n");
+}
+
+/* The per-block resolve re-derives on a rate move, like the crossover: the
+ * same 5 ms is 240 samples at 48 kHz and 221 at 44.1 kHz. */
+static void test_surround_delay_redesign_on_rate_change(void)
+{
+    double fl[SDELAY_N], fr[SDELAY_N], sl[SDELAY_N], sr[SDELAY_N];
+    memset(fl, 0, sizeof fl);
+    memset(fr, 0, sizeof fr);
+    memset(sl, 0, sizeof sl);
+    memset(sr, 0, sizeof sr);
+
+    AiusSurroundDelay d;
+    memset(&d, 0, sizeof d);
+    AiusDownmixConfig cfg = aius_downmix_config_default();
+    cfg.lfe_fold = NULL;
+    cfg.surround_delay_ms = 5.0;
+    cfg.surround_delay = &d;
+
+    AiusPcmBlockD at48 = {{fl, fr, sl, sr, 0, 0}, 4, SDELAY_N, 48000,
+                          AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR};
+    AiusPcmBlockD at441 = {{fl, fr, sl, sr, 0, 0}, 4, SDELAY_N, 44100,
+                           AIUS_CH_FL | AIUS_CH_FR | AIUS_CH_SL | AIUS_CH_SR};
+    double ol[SDELAY_N], orr[SDELAY_N];
+    assert(aius_dsp_downmix(&cfg, &at48, ol, orr) == AIUS_OK);
+    assert(d.designed_samples == 240u);
+    assert(d.designed_fs == 48000.0);
+    assert(aius_dsp_downmix(&cfg, &at441, ol, orr) == AIUS_OK);
+    assert(d.designed_samples == 221u);
+    assert(d.designed_fs == 44100.0);
+    printf("ok surround delay re-derives on a rate change (240 -> 221)\n");
+}
+
 int main(void)
 {
     test_stereo_passthrough();
@@ -4014,6 +4194,12 @@ int main(void)
     test_lfe_fold_block_boundary_seamless();
     test_lfe_fold_redesign_on_change();
     test_lfe_fold_reset();
+    test_surround_delay_design();
+    test_surround_delay_zero_is_bit_exact();
+    test_surround_delay_shifts_surrounds_only();
+    test_surround_delay_tail_drains_across_layout_change();
+    test_surround_delay_missing_state_fails_open();
+    test_surround_delay_redesign_on_rate_change();
     test_biquad_gain_bypass();
     test_biquad_feedback_recurrence();
     test_biquad_gain_scale();

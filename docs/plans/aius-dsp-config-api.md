@@ -528,13 +528,25 @@ Accepted 2026-07-26 in this order, with the reasoning that chose it.
    and 2 are the two most audible; it is what makes the rest checkable, and the
    1.4-semitone pitch error that survived on a board reporting every counter
    clean is the argument for it.
-4. **Surround decorrelation in the downmix.** The coefficients are
-   standard-correct, which is arithmetic rather than psychoacoustics. Summing
-   FL+FC and FR+FC with correlated content comb-filters, and surrounds summed
-   straight into L/R collapse envelopment. A short allpass or few-millisecond
-   delay on Ls/Rs is what separates a downmix that sounds like a mix from one
-   that sounds like an average — the largest perceptual gap between "correct"
-   and "good" in this chain.
+4. **Surround decorrelation in the downmix. — DELIVERED 2026-08-04** as
+   `matrix.surround_delay_ms`: a symmetric pre-fold delay on SL/SR (float
+   ring in the runtime-config object, 12 ms cap = 576 samples at the 48 kHz
+   ceiling, fail-OPEN to the undelayed fold — the documented divergence from
+   the LFE fold's fail-closed rule, aius_dsp.h). Optional on the wire on
+   layout_aware's absent-reads-default pattern (absent = 0 = the pre-feature
+   fold, bit for bit), REQUIRED in build_config.py's factory bake, always
+   emitted by GET, carried by the SD editor (its own key gate caught the
+   editor omission), documented in swagger, and pinned by six new dsp-suite
+   known-answer tests plus parser/runtime/editor coverage. Ships DEFAULT
+   0 (off): the audible choice belongs to the owner's ears round, with the
+   delay-time A/B one PUT away. The original rationale, kept: the
+   coefficients are standard-correct, which is arithmetic rather than
+   psychoacoustics; summing FL+FC and FR+FC with correlated content
+   comb-filters, and surrounds summed straight into L/R collapse
+   envelopment. A short allpass or few-millisecond delay on Ls/Rs is what
+   separates a downmix that sounds like a mix from one that sounds like an
+   average — the largest perceptual gap between "correct" and "good" in
+   this chain.
 
 **Noise shaping is the hedge**, not a step: if the 24-bit path proves too
 invasive, psychoacoustically weighted shaping on the 16-bit reduction buys

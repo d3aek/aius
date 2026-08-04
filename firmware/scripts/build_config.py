@@ -48,9 +48,12 @@ FEATURE_KEYS = ("input_eq", "matrix", "output_eq", "limiter", "meters")
 # is a build error rather than a default; lib/aius_dsp_config parses configs
 # written before the field existed, where a missing key must read TRUE (the
 # shipped behaviour) rather than reintroduce the uniform pad by omission.
+# `surround_delay_ms` follows the same asymmetry (optional on the wire, absent
+# reads 0; explicit here).
 MATRIX_KEYS = ("center_gain_linear", "surround_gain_linear", "lfe_gain_linear",
                "lfe_crossover_hz", "headroom_linear", "clipfree",
-               "layout_aware")
+               "layout_aware", "surround_delay_ms")
+SURROUND_DELAY_MAX_MS = 12.0
 LIMITER_KEYS = ("enabled", "threshold_dbfs", "attack_ms", "release_ms",
                 "lookahead_ms")
 
@@ -156,6 +159,8 @@ def validate_config(config):
         raise ValueError("matrix headroom_linear must be greater than 0 and at most 1")
     _require_bool(matrix["clipfree"], "matrix clipfree")
     _require_bool(matrix["layout_aware"], "matrix layout_aware")
+    _bounded_number(matrix["surround_delay_ms"], "matrix surround_delay_ms",
+                    0, SURROUND_DELAY_MAX_MS)
 
     limiter = config["limiter"]
     _require_exact_keys(limiter, LIMITER_KEYS, "limiter")
@@ -233,13 +238,14 @@ def generate_header(config):
         "\t{%s}," % ", ".join(input_initializers),
         f"\t{len(config['output_eq'])},",
         "\t%s," % _eq_initializer(config["output_eq"]),
-        "\t{%.17g, %.17g, %.17g, %.17g, %.17g, %d, %d},"
+        "\t{%.17g, %.17g, %.17g, %.17g, %.17g, %.17g, %d, %d},"
         % (
             matrix["center_gain_linear"],
             matrix["surround_gain_linear"],
             matrix["lfe_gain_linear"],
             matrix["lfe_crossover_hz"],
             matrix["headroom_linear"],
+            matrix["surround_delay_ms"],
             1 if matrix["clipfree"] else 0,
             1 if matrix["layout_aware"] else 0,
         ),
