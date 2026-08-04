@@ -838,6 +838,25 @@ specified here. Strike items here in the commit that closes them.
   runs with `test_key: true` — the production-key cutover remains the
   documented security-posture follow-up in the plan. Historic
   sequencing riders below are preserved for the record.
+  **2026-08-04 — HOME KEY ROTATION, owner-directed.** The standing
+  device key is now the repo-committed home pair
+  (`firmware/config/ota-home-signing-key.{pub,sec}`, host-entropy;
+  the repository is the deployment's declared trust boundary), the
+  compiled key is GENERATED from that file resource at build time
+  (`build_config.py` → `aius_ota_public_key.h`; the source carries no
+  key bytes and `test_key` is DERIVED by fixture comparison — a
+  hardcoded serializer literal that missed the rotation was caught on
+  the device and fixed, `17bd5d077`). Acceptance on hardware:
+  sign-with-committed-secret → host verify (ARMED) → device stage →
+  `verified` → abort; fingerprint `df29355e5a8d7b8c`, `test_key`
+  false. Production cycle stays the documented later step (off-repo
+  keygen, swap the file, rebuild, one signed upgrade). Defect-2 datum
+  from the acceptance: three intermittent 507 `ota_storage` chunk
+  faults across ~1,150 staged chunks at random offsets, each
+  transparent to a resuming client (the route's own next_offset
+  protocol); NOTE the OTA route's chunk fault does NOT latch into
+  `sd_diag.last_failure` (a boot-time root job held the latch) — a
+  diagnostic gap for defect 2's conviction read.
   (Original entry: owner decision
   2026-07-31: OTA is the next key feature, ahead of E-AC-3, which is
   considered only after OTA lands. Complete the finite investigation gate in
