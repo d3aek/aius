@@ -1,9 +1,9 @@
 # Contributing to Aius
 
-How to check out, build, test, flash and document the Aius Teensy 4.1 audio
-processor. [`README.md`](README.md) is the introduction; this file is the
-operational reference. The subtree's standing conventions are in
-[`CLAUDE.md`](CLAUDE.md).
+How to check out, build, test, flash and document the Aius Teensy 4.1
+surround-to-stereo downmixer. [`README.md`](README.md) is the introduction;
+this file is the operational reference. The subtree's standing conventions are
+in [`CLAUDE.md`](CLAUDE.md).
 
 ## Prerequisites and checkout
 

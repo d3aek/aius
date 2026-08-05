@@ -1,7 +1,7 @@
 # Aius
 
-Aius is a personal, non-commercial audio processor built on a Teensy 4.1. It
-exists to fix mumbled dialogue.
+Aius is a personal, non-commercial surround-to-stereo downmixer built on a
+Teensy 4.1. It exists to fix unintelligible dialogue.
 
 Smart TVs and streaming apps downmix 5.1 to stereo badly. Almost all the speech
 in a film or programme is on the centre channel, and when that gets folded into
