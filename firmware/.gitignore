@@ -3,3 +3,8 @@
 # Per-run recovery-smoke summaries written by tools/net/aius_recovery_smoke.py.
 # Host-local evidence of a device session, not a checked-in artifact.
 test/evidence/
+# The replay sample pack built by tools/replay_samples/generate.sh: ~66 MB of
+# WAV/DTS/AC-3/E-AC-3 and their IEC 61937 muxes, all reproducible from the
+# committed generator and its pinned FFmpeg invocation. The generator is the
+# artifact worth versioning; its output is not.
+tools/replay_samples/generated/

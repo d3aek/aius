@@ -31,6 +31,10 @@ Generate the default 30-second pack with:
 ./generate.sh
 ```
 
+The pack lands in `generated/`, which is **not committed** — roughly 66 MB of
+WAV and encoded streams, all reproducible from this generator. Regenerate it
+rather than looking for it in a fresh checkout.
+
 Upload one IEC replay, resuming an interrupted `.part` upload automatically:
 
 ```sh
