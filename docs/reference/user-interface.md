@@ -52,9 +52,10 @@ rather than captured from a live device; see
 ## DSP editor
 
 ![The Aius DSP editor in its default dashboard view: an effective configuration
-loaded from SD at generation 4, a preset list, the stacked EQ plot with a
-spectrum underlay, the downmix routing diagram, limiter gain reduction and a
-live spectrogram.](images/dsp-editor.png)
+loaded from SD at generation 4, a preset list, then the signal-flow stages as
+one column of full-width bands — input levels, the stacked EQ plot with a
+spectrum underlay, the downmix routing diagram, limiter gain reduction, output
+levels and a live spectrogram.](images/dsp-editor.png)
 
 `index.html` + `dsp-editor.js` + `dsp-editor.css`. The main page: it edits the
 single effective DSP configuration — per-channel input trim and EQ, the downmix
@@ -101,13 +102,20 @@ Non-obvious:
   could be read but never rewritten or deleted.
 
 ![The same page with the Signal flow toolbar switched from Dashboard to Editor:
-every stage's text form in one column, from input channel trim and EQ through
-the matrix values, limiter controls, output levels and the live meter
-cards.](images/dsp-editor-form.png)
+the same stages unframed and rule-separated rather than boxed into bands, from
+input channel trim and EQ through the matrix values, limiter controls, output
+levels and the live meter cards.](images/dsp-editor-form.png)
 
-The *Signal flow* toolbar switches between **Dashboard** (the default, above)
-and **Editor**, which stacks every stage's numeric form in one column. Both
-views drive the same model; *Reset layout* restores the dashboard cell sizes.
+The *Signal flow* toolbar is the whole view control, and its two buttons are the
+only thing on the strip that changes its shape. **Dashboard** (the default,
+above) gives each stage its own full-width band — input levels, EQ cascades,
+downmix matrix, limiter, output levels, live processing, in signal order, each
+band as tall as its own content. **Editor** drops the band framing and runs the
+same blocks as one continuous rule-separated column. Both views render the same
+nodes, the same forms and the same per-stage *Apply* buttons, and drive the same
+model. Nothing in either view is resizable — there are no cell handles and no
+per-panel geometry to restore — and a phone renders the same single column a
+desktop does, with the four canvases trimmed below 651 px of viewport width.
 
 ## Replay manager
 
@@ -270,6 +278,12 @@ responses are derived from the vitest fixtures and stub data in
 replay and OTA wire shapes those suites pin — cross-checked against
 [`swagger.json`](../../../../apps/aius/swagger.json) and the firmware's own
 serializers. The captures were taken only after each page's data had populated.
+
+`images/dsp-editor-hero.png` is not one of the seven page captures: it is the
+README's hero, the same dashboard captured the same way and then cut to the top
+1,400 device pixels, which holds the *Signal flow* header, the input level
+meters and the EQ cascade plot. Everything below the curve controls is cut,
+including the rest of the EQ band's forms.
 
 Four things in the images are authored rather than fixture-derived, because no
 fixture states them:

@@ -67,6 +67,16 @@ ribbon cable to an RJ45 magjack breakout for Ethernet](docs/reference/images/aiu
 - **PSRAM flight recorder** that can be triggered to capture the audio ring when
   something goes wrong.
 
+The editor is served off the device's own SD card, so shaping the mix needs
+nothing but a browser on the same network:
+
+![The Aius DSP editor: six input level meters reading a 5.1 optical carrier
+above the EQ cascade plot, where the editable response curve is drawn over a
+live spectrum of the incoming audio](docs/reference/images/dsp-editor-hero.png)
+
+More of it, page by page, in the
+[user interface reference](docs/reference/user-interface.md).
+
 ## How it is built
 
 - **The DSP is bit-identical between host and target.** The same portable C runs
