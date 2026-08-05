@@ -1,14 +1,19 @@
 # Aius
 
 Aius is a personal, non-commercial audio processor built on a Teensy 4.1. It
-takes the optical S/PDIF output of a television, decodes whatever surround
-format the broadcast happens to be in, folds it down to stereo through a
-downmix and EQ of my own choosing, and sends it back out over optical to an
-existing DAC.
+exists to fix mumbled dialogue.
 
-The problem it solves is narrow and real: a TV will happily send you DTS, Dolby
-Digital or plain stereo depending on the channel, and a stereo DAC wants none of
-it. Aius sits in between and always emits clean stereo PCM.
+Smart TVs and streaming apps downmix 5.1 to stereo badly. Almost all the speech
+in a film or programme is on the centre channel, and when that gets folded into
+a stereo pair it ends up competing with music and effects that were mixed to sit
+around it, not on top of it. You get dialogue you cannot follow and explosions
+that make you reach for the remote, and the television gives you nothing to
+correct it with beyond a volume control.
+
+Aius takes the 5.1 stream before the television touches it and does the downmix
+itself. How much centre, how much surround, how much LFE, and what EQ each gets,
+are all yours to set — so the mix can be re-engineered for your own room and
+speakers until speech is intelligible at a volume that does not hurt.
 
 ```text
 TOSLINK in → S/PDIF capture → PCM / IEC 61937 classification
@@ -21,13 +26,22 @@ firmware, so it is where the interesting parts of this repository are.
 
 ## What the firmware does
 
-Three decoders share one resident slot: DTS Core over a vendored `dcadec`, AC-3
-over a hardened liba52 fork, and E-AC-3 over an FFmpeg fork. The pipeline
-classifies each burst and swaps decoders as the broadcast changes. Output
-follows the source rate (32, 44.1 or 48 kHz), and the transmitter sits behind a
-reset-safe gate, so a booting or confused board is silent rather than noisy.
+The part that matters is the downmix. Six channels arrive and two leave, and
+every coefficient in that matrix is editable live, as is a biquad EQ cascade per
+input channel and on the output, an LFE fold with its own crossover, a surround
+decorrelation delay and a true-peak limiter on the tail. Lift the centre a
+couple of dB, pull the surrounds back, shelve the LFE where your speakers stop
+being useful, and dialogue comes back. You do that from a browser while the
+audio is playing, and hear each change at the next block boundary.
 
-Around the audio path the board serves a small web interface off its SD card,
+Getting to those six channels is what the rest of the audio path is for. Three
+decoders share one resident slot — DTS Core over a vendored `dcadec`, AC-3 over
+a hardened liba52 fork, E-AC-3 over an FFmpeg fork — and the pipeline classifies
+each burst and swaps decoders as the broadcast changes. Output follows the
+source rate (32, 44.1 or 48 kHz), and the transmitter sits behind a reset-safe
+gate, so a booting or confused board is silent rather than noisy.
+
+Around that, the board serves its editor and status pages off an SD card,
 accepts signed over-the-air firmware upgrades, and keeps a PSRAM flight recorder
 that can be triggered to capture the audio ring when something goes wrong.
 
@@ -52,10 +66,11 @@ produced them, are in [project scale](docs/reference/project-scale.md).
 
 ## Start here
 
+- [User interface](docs/reference/user-interface.md) — screenshots of the
+  editor where the mix is actually re-engineered, plus the status, replay and
+  upgrade pages the device serves off its SD card.
 - [Signal path](docs/reference/signal-path.md) — the audio chain stage by
   stage, with the buffers, budgets and rounding behaviour of each.
-- [User interface](docs/reference/user-interface.md) — the SD-hosted web pages
-  for status, DSP editing, replay management and upgrades, with screenshots.
 - [USB control protocol](docs/reference/usb-control-protocol.md), and the HTTP
   API as a committed OpenAPI document — the two
   control surfaces. HTTP is plain on port 80 with auth-gated control routes, and
