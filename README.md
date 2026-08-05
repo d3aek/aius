@@ -36,8 +36,11 @@ flowchart LR
     class MIX point
 ```
 
-The firmware runs on bench hardware today, taking a real optical source and
-driving a real optical sink. Nearly all the engineering effort went into it.
+The firmware is proven on bench hardware: a socketed Teensy 4.1 on a proto board
+([wiring guide](docs/guides/proto-optical-wiring.md)) with TOSLINK receiver and
+transmitter, native Ethernet, PSRAM and an SD card. Every measurement in this
+repository was taken on it. From there the project matures into the host carrier
+board and the enclosure engineering around it.
 
 ## What the firmware does
 
@@ -99,10 +102,6 @@ driving a real optical sink. Nearly all the engineering effort went into it.
 KiCad environment. Each directory under [`docs/`](docs/) carries its own index.
 
 ## Hardware, and what is next
-
-The bench build is a socketed Teensy 4.1 wired to purchased TOSLINK modules on a
-proto board ([wiring guide](docs/guides/proto-optical-wiring.md)). Every
-measurement in this repository was taken on it.
 
 A carrier board exists as a captured, ERC-clean KiCad schematic: Teensy socket,
 optical in and out, the transmitter gate and a diagnostic bypass mux, native
