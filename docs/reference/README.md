@@ -19,6 +19,12 @@ trusted. Future work lives in [`../plans/`](../plans/); bench procedures live in
   that none can disturb the audio path. Reach for it when adding I/O or spending
   memory; it is the companion to `signal-path.md` and states the result of
   `../plans/aius-network-hardening.md`.
+- **[Aius user interface](user-interface.md)** — the four SD-hosted pages (DSP
+  editor, device status, replay manager, firmware upgrade), with screenshots,
+  the routes each reads and writes, and how the interface is served. Reach for
+  it to see what the device looks like in use without having one. Screenshots
+  live in `images/` and are rendered from the committed page assets against
+  stubbed responses, not captured from a live device.
 - **[AIUS USB application control protocol](usb-control-protocol.md)** — the
   line-oriented ASCII protocol on the Teensy USB virtual serial port
   (`/dev/ttyACM*`): transport limits, requests, responses, error vocabulary.
