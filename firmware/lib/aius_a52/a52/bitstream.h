@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-07-29 by the Aius project: see NOTICE.md in this
+ * directory for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
  * bitstream.h
  * Copyright (C) 2000-2002 Michel Lespinasse <walken@zoy.org>
  * Copyright (C) 1999-2000 Aaron Holtzman <aholtzma@ess.engr.uvic.ca>
@@ -39,6 +43,11 @@
 
 #	else
 
+/* AIUS EDIT (NOTICE.md divergence 4). Upstream shifts each uint8_t
+ * directly, so the default promotion makes byte 0 << 24 a signed int
+ * overflow for any value above 0x7f -- undefined behaviour the a52
+ * suite's fail-fast UBSan build traps. Widening to uint32_t first is
+ * value-identical. */
 #	define swab32(x)\
 (((uint32_t)((uint8_t *)&x)[0] << 24) | \
  ((uint32_t)((uint8_t *)&x)[1] << 16) | \
@@ -70,6 +79,11 @@ static inline int32_t bitstream_get_2 (a52_state_t * state, uint32_t num_bits)
     int32_t result;
 	
     if (num_bits < state->bits_left) {
+	/* AIUS EDIT (NOTICE.md divergence 4). Upstream casts to int32_t
+	 * before the left shift, making the shift itself signed and its
+	 * overflow undefined. Casting after it keeps the deliberate
+	 * arithmetic sign extension in the right shift while leaving the
+	 * left shift unsigned. */
 	result = (int32_t)(state->current_word << (32 - state->bits_left))
 		 >> (32 - num_bits);
 	state->bits_left -= num_bits;

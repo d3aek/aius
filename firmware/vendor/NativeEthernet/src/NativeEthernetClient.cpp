@@ -1,4 +1,8 @@
-/* Copyright 2018 Paul Stoffregen
+/* Modified 2026-07-24 by the Aius project: see NOTICE.md in the root of this
+ * vendored tree for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
+ * Copyright 2018 Paul Stoffregen
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this
  * software and associated documentation files (the "Software"), to deal in the Software
@@ -182,6 +186,10 @@ size_t EthernetClient::write(uint8_t b)
 	return write(&b, 1);
 }
 
+/* Aius patch (NOTICE.md): upstream hands the caller's whole size to the send
+ * primitive and relies on that primitive's capacity spin. Aius removed the
+ * spin, so capacity is observed here exactly once, the write is truncated to
+ * it, and a full socket returns 0 instead of blocking the caller. */
 size_t EthernetClient::write(const uint8_t *buf, size_t size)
 {
     if (sockindex >= Ethernet.socket_num || buf == nullptr || size == 0)

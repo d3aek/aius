@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-08-02 by the Aius project: see NOTICE.md in the root of
+ * this vendored tree for the full list of divergences from upstream.
+ * Changes are marked inline.
+ *
  * Common code between the AC-3 and E-AC-3 decoders
  * Copyright (c) 2007 Bartlomiej Wolowiec <bartek.wolowiec@gmail.com>
  *

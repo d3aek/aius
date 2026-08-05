@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-08-02 by the Aius project: see NOTICE.md in the root of
+ * this vendored tree for the full list of divergences from upstream.
+ * Changes are marked inline.
+ *
  * AC-3 Audio Decoder
  * This code was developed as part of Google Summer of Code 2006.
  * E-AC-3 support was added as part of Google Summer of Code 2007.

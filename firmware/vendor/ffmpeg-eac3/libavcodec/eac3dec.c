@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-08-01 by the Aius project: see NOTICE.md in the root of
+ * this vendored tree for the full list of divergences from upstream.
+ * Changes are marked inline.
+ *
  * E-AC-3 decoder
  * Copyright (c) 2007 Bartlomiej Wolowiec <bartek.wolowiec@gmail.com>
  * Copyright (c) 2008 Justin Ruggles

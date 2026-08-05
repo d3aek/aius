@@ -1,4 +1,8 @@
-/* Copyright 2018 Paul Stoffregen
+/* Modified 2026-07-24 by the Aius project: see NOTICE.md in the root of this
+ * vendored tree for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
+ * Copyright 2018 Paul Stoffregen
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this
  * software and associated documentation files (the "Software"), to deal in the Software
@@ -103,6 +107,9 @@ makesocket:
     fnet_socket_setopt(socket_ptr[s], SOL_SOCKET, SO_RCVBUF, &bufsize_option, sizeof(bufsize_option));
     fnet_socket_setopt(socket_ptr[s], SOL_SOCKET, SO_SNDBUF, &bufsize_option, sizeof(bufsize_option));
     if(protocol == SnMR::TCP){
+        /* Aius patch (NOTICE.md): upstream enables SO_LINGER for 4 s, so a
+         * close blocks the caller until the peer drains or the timer expires.
+         * The Aius transport tears sockets down without waiting. */
         const struct fnet_linger linger_option =
         {
             .l_onoff = FNET_FALSE,
@@ -311,6 +318,10 @@ uint8_t EthernetClass::socketPeek(uint8_t s)
  * @brief	This function used to send the data in TCP mode
  * @return	1 for success else 0.
  */
+/* Aius patch (NOTICE.md): upstream opens this function with an unbounded spin
+ * that waits for the socket to report `len` bytes of send capacity. It is
+ * removed; the caller observes capacity once and truncates before calling, so
+ * this primitive attempts exactly one send and never waits. */
 uint16_t EthernetClass::socketSend(uint8_t s, const uint8_t * buf, uint16_t len)
 {
     fnet_ssize_t ret = -1;

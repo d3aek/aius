@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-07-29 by the Aius project: see NOTICE.md in this
+ * directory for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
  * imdct.c
  * Copyright (C) 2000-2002 Michel Lespinasse <walken@zoy.org>
  * Copyright (C) 1999-2000 Aaron Holtzman <aholtzma@ess.engr.uvic.ca>
@@ -429,6 +433,14 @@ void a52_imdct_init (uint32_t mm_accel)
     } else
 #endif
     {
+	/* AIUS EDIT (NOTICE.md divergence 4). Upstream 0.7.4 opens this
+	 * branch with an unconditional
+	 * fprintf (stderr, "No accelerated IMDCT transform found\n").
+	 * The Aius build always lands here (a52_init (0), no DJBFFT), so
+	 * the notice printed on every decoder init, and the core has no
+	 * diagnostic channel to route it to. Removing it leaves mm_accel
+	 * unread outside the LIBA52_DJBFFT branch, which is what the
+	 * (void) cast at the top of this function absorbs. */
 	ifft128 = ifft128_c;
 	ifft64 = ifft64_c;
     }

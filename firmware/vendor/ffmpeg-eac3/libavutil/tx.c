@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-08-01 by the Aius project: see NOTICE.md in the root of
+ * this vendored tree for the full list of divergences from upstream.
+ * Changes are marked inline.
+ *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or

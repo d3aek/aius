@@ -1,4 +1,8 @@
-/* Copyright 2018 Paul Stoffregen
+/* Modified 2026-08-03 by the Aius project: see NOTICE.md in the root of this
+ * vendored tree for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
+ * Copyright 2018 Paul Stoffregen
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this
  * software and associated documentation files (the "Software"), to deal in the Software

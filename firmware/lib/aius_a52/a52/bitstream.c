@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-07-29 by the Aius project: see NOTICE.md in this
+ * directory for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
  * bitstream.c
  * Copyright (C) 2000-2002 Michel Lespinasse <walken@zoy.org>
  * Copyright (C) 1999-2000 Aaron Holtzman <aholtzma@ess.engr.uvic.ca>

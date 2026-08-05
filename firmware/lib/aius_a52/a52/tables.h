@@ -1,4 +1,8 @@
 /*
+ * Modified 2026-07-29 by the Aius project: see NOTICE.md in this
+ * directory for the full list of divergences from upstream. Changes are
+ * marked inline.
+ *
  * tables.h
  * Copyright (C) 2000-2002 Michel Lespinasse <walken@zoy.org>
  * Copyright (C) 1999-2000 Aaron Holtzman <aholtzma@ess.engr.uvic.ca>
@@ -46,6 +50,13 @@ static const int8_t exp_3[128] = {
     25,25,25
 };
 
+/* AIUS EDIT (NOTICE.md divergence 4). Upstream 0.7.4 builds every
+ * quantizer constant by shifting a negative integer left by 15, which is
+ * undefined behaviour and traps under the a52 suite's fail-fast UBSan
+ * shift checking. Multiplying by 32768 yields the identical float value;
+ * the tabcheck probe reads the built tables and proves their
+ * representations unchanged. The same rewrite applies to the q_2_*, q_3,
+ * q_4_* and q_5 constants below. */
 #define Q0 ((-2 * 32768) / 3.0)
 #define Q1 (0)
 #define Q2 ((2 * 32768) / 3.0)

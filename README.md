@@ -114,9 +114,19 @@ forces it.
 What remains is two-layer feasibility against a real fabricator stackup, then
 layout, then a prototype order.
 
-## Licence and reuse
+## Licence
 
-This is a personal project, published so the work can be read. It vendors
-third-party decoder cores under their own licences — see each `NOTICE.md` under
-`firmware/vendor/`. The evidence library holds public datasheets and reference
-material retained for personal research; do not republish those bytes.
+**[GPL-3.0-or-later](LICENSE).** That is not a preference. The AC-3 decoder is a
+liba52 fork under GPL-2.0-or-later and is linked into the image, so the firmware
+must be GPL; and the FNET TCP/IP stack is Apache-2.0, which is incompatible with
+GPL-2.0 and compatible with GPL-3.0. liba52's "or later" is what lets the two
+coexist at all.
+
+[`THIRD-PARTY.md`](THIRD-PARTY.md) inventories every third-party component that
+reaches the image, its licence, and the obligations that come with it. Each
+vendored tree keeps its own `NOTICE.md` recording its upstream revision and
+every divergence, and modified files say so in their headers.
+
+The evidence library holds public datasheets and vendor reference material
+retained for personal research. It is not ours to relicense; do not republish
+those bytes.
