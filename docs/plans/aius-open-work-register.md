@@ -984,6 +984,24 @@ specified here. Strike items here in the commit that closes them.
     [`aius-network-hardening.md` defect 2](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
   - **4**: `record_event` has two call sites; everything else is a
     counter — prerequisite to any push observability.
+  - **36** (opened 2026-08-05, static analysis, NOT hardware-confirmed):
+    2.4 % of `/api/status` polls return no complete body on the current
+    image. Durations are strictly bimodal (nothing between 0.30 s and
+    1.00 s), and a three-build bisect is clean: the previous build ran
+    10.0 h with zero polls even slower than 0.30 s, while this one shows
+    550 polls over 1.0 s — one firmware commit apart (`930f003c6`, which
+    only adds two `/api/status` fields). Leading mechanism is a response
+    segment recovered by FNET's ~1.0–1.5 s first RTO. DHCP T1,
+    `micros()` rollover, TIME_WAIT pressure and CPU starvation are all
+    refuted with evidence; the 71.5 min onset is unexplained. Next step
+    is one poll-side observation of `http_client_drops`, no firmware
+    change needed.
+  - **37**: every accepted socket inherits a 2,048 B send buffer from the
+    listener, so the `fnet_user_config.h` 32 KB is dead and a ~7 KB
+    response stalls at least three times. Contributing cause of 36.
+  - **38**: `RESPONSE_TIMEOUT_MS` (100 ms) is not re-armed on
+    `WOULD_BLOCK`, so a slow peer makes the firmware truncate a response
+    whose `Content-Length` it already promised, then blame the client.
   - ~~**10**: the network-transport fake still diverges from real FNET in
     five characterized places.~~ CLOSED: fixes landed 2026-07-26, ledger
     verified stale 2026-07-31; all five have discriminating tests and

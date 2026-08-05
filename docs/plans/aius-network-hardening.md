@@ -1738,6 +1738,79 @@ table.
     discontinuity, inaudible (the TX ring rides through), with the substep
     maxima attributing any recurrence on sight. Full record:
     [`aius-open-work-register.md`](aius-open-work-register.md) §Open defects.
+36. **2.4 % of `GET /api/status` polls fail to return a complete body, on the
+    current image only.** Found in the 2026-08-04 8 h watch, diagnosed
+    2026-08-05 by static analysis; **not yet confirmed on hardware — the board
+    is disconnected, and the discriminating observation below has not run.**
+    336 of 13,851 polls failed while the board stayed alive (generation 346
+    held throughout, zero resets). The failures are not one population: request
+    duration, recoverable as `(age_s[i+1] - age_s[i]) - 2.0` from the watcher's
+    post-attempt stamp, splits into ~0.05–0.30 s (43 failures, server closed
+    early), 1.00–1.50 s (149 failures, plus 211 *successful* polls in the same
+    band) and ≥3.90 s (102, the true client timeouts). **The band is strict:
+    zero polls anywhere between 0.30 s and 1.00 s.** A gapless bimodal split is
+    a discrete timer, not network jitter.
+    - **Build bisect, three watches on the same cadence and rig.**
+      `249894edb20c` (gen 341, 10.0 h, 17,930 polls): zero failures and **zero
+      polls slower than 0.30 s at all**. `6816a506e17d` (gen 345, 4.05 h,
+      7,252 polls): 7 failures, one slow poll. `930f003c6e6e` (gen 346, 8.0 h,
+      13,851 polls): 336 failures, 550 polls over 1.0 s. The only firmware
+      commit in `6816a506e17d..930f003c6e6e` is `930f003c6`, which adds two
+      fields to the `/api/status` body and nothing else.
+    - **Leading mechanism: a response segment lost or never transmitted, then
+      recovered only by FNET's retransmission timer.** The 1.00–1.50 s band is
+      a parameter-free match to FNET's first RTO — a sub-millisecond LAN RTT
+      gives `rto = 3(round_trip+1) = 3` slow ticks, the slow tick is 500 ms,
+      and the counter decrements on the next tick edge, so elapsed time is
+      uniform on (1.0 s, 1.5 s). Backoff doubles, putting a second loss at
+      +3.0 s, past the client's 4.0 s timeout. That partitions all three
+      populations and the slow successes with no free parameters.
+    - **Why the tail is exposed** (defect 37): the accepted socket carries a
+      2,048 B send buffer against a ~7 KB body, so the response is drained in
+      many writes and its last kilobytes go out after the HTTP layer has
+      already closed, invisible to firmware telemetry.
+    - **Refuted, with evidence:** DHCP T1 (this register measures T1 at
+      39,119 s, so it cannot land at 4,289 s); `micros()` 2^32 rollover at
+      4,294.97 s despite the seductive fit (gen 341 ran 10.0 h through several
+      rollovers with zero failures, and the consumers use wrap-safe unsigned
+      differences); TIME_WAIT/PCB table pressure (a TIME_WAIT TCB holds no
+      socket descriptor, and the heap distribution before a failure is
+      statistically identical to baseline); CPU starvation (the stall witness
+      records unconditionally at a 100 µs threshold and fired once in 8 h).
+    - **Unexplained: the 71.5 minute onset.** Hour 0 had zero failures; the
+      first is at 4,289.2 s, then a steady ~50/h for the remaining 6.9 h. No
+      timer, lease, rollover or reclamation cycle with that period was found in
+      the firmware, the vendored stack or FNET. The only shape that fits is the
+      status body growing past a threshold as monotonic counters gain digits,
+      and that is **unproven** — a +66 B commit against a ~7 KB body is a 1 %
+      change producing a 25x failure-rate change.
+    - **Discriminating observation, needs no firmware change:** log
+      `http_client_drops` (already served on `/api/status`) on every poll. If it
+      increments on the failing polls, the firmware's own 100 ms response
+      deadline is aborting the response (defect 38). If it is unchanged, the
+      HTTP layer completed normally and the loss is below it, confirming the
+      retransmission mechanism. Corroborate with the `net_diag.tx_frames` delta,
+      which is larger for a retransmitting transaction, and log the body length
+      client-side against `Content-Length` to test the threshold hypothesis.
+37. **Every accepted socket silently inherits a 2,048 B send buffer.**
+    `Nativesocket.cpp` sets `SO_SNDBUF = FNET_SOCKET_DEFAULT_SIZE`
+    (`NativeEthernet.h:41`, `1024 * 2`) on the *listener*, and FNET's
+    `_fnet_socket_copy` memcpy's the whole socket struct to the accepted
+    socket, so the 32 KB figure in `fnet_user_config.h` is dead. A ~7 KB
+    `/api/status` body must therefore stall on a full buffer at least three
+    times per response. Fix: call `Ethernet.setSocketSize()` before `begin()`,
+    or re-apply `SO_SNDBUF` after accept. Contributing cause of defect 36 and
+    worth fixing on its own.
+38. **`RESPONSE_TIMEOUT_MS` is not re-armed on `WOULD_BLOCK`.**
+    `aius_http_transaction.c:1191-1196` returns on `AIUS_IO_WOULD_BLOCK`
+    without re-arming the deadline, while the completed-write path at
+    `:1232-1235` does re-arm. With the 2 KB send buffer of defect 37, a merely
+    slow or lossy peer keeps the write blocked; 100 ms of that reaches
+    `timeout_transaction`, which zeroes `response_length` and closes,
+    **truncating a response whose `Content-Length` was already promised** and
+    recording the fault against the client. 100 ms is below Linux's
+    `TCP_DELACK_MAX` of 200 ms and roughly 12x below FNET's own minimum RTO, so
+    a single mid-response loss cannot be recovered before it fires.
 
 #### Decisions taken, so they are not re-opened
 
