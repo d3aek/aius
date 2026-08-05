@@ -38,7 +38,7 @@ earlier than that: the first Codex session touching the subtree is
 
 | Measure | Value |
 |---|---|
-| Commits touching the subtree | 682 |
+| Commits touching the subtree | 683 |
 | Span, first to last commit | 20.35 days |
 | Calendar days with a commit | 21 of 22 |
 | Commits 00:00–06:59 UTC | 180 (26.4%) |
@@ -47,7 +47,7 @@ earlier than that: the first Codex session touching the subtree is
 | Commit body text | 102,487 words |
 | Mean commit body | 150 words |
 
-Commits land in all 24 hours of the clock; 2026-07-16 alone spans all 24.
+Commits land in all 24 hours; 2026-07-16 alone spans all 24.
 Busiest days by commit count: 07-16 (99), 07-24 (79), 07-25 (62), 07-22 (56).
 
 ```bash
@@ -86,9 +86,9 @@ shell.
 ### Vendored code
 
 A further 53,066 lines of C and C++ across 136 files sit under
-`firmware/vendor`. **This is third-party code and is not first-party
-authorship.** It is excluded from every figure in the table above and from the
-churn rows below that say "excluding vendored".
+`firmware/vendor`. **This is third-party code, not first-party authorship.**
+It is excluded from every figure in the table above and from the churn rows
+below that say "excluding vendored".
 
 | Vendored component | Lines |
 |---|---|
@@ -152,8 +152,7 @@ Totals over the whole subtree history: 565,135 insertions, 185,366 deletions,
 
 **142,421 of the `electronics/` insertions are machine-generated.** They are
 KiCad S-expressions emitted by [`generate.py`](../../electronics/generate.py) —
-real committed output, but not hand-authored. That is what the third row
-removes.
+real committed output, but not hand-authored. The third row removes them.
 
 ```bash
 git log --numstat --format='' -- src/hardware/aius | awk '{i+=$1; d+=$2; n++} END {print i, d, n}'
@@ -225,9 +224,8 @@ jq '[.nets | length] | add' electronics/connectivity/*.json
 Two AI toolchains worked on this subtree: Claude Code and the OpenAI Codex CLI.
 Both keep local session transcripts on this machine, so both are measured here
 by the same rule — a session counts if the string `hardware/aius` appears
-anywhere in its transcript. That rule is binary and whole-file: a session which
-merely read the path counts in full, and one that touched the subtree without
-emitting the string is missed.
+anywhere in its transcript. A session which merely read the path counts in
+full, and one that touched the subtree without emitting the string is missed.
 
 ### Claude Code
 
@@ -274,9 +272,9 @@ false-collapse rate on single-file control lineages.
 | Patch applications | 10,982 (10,981 succeeded) |
 | Human prompts typed | 1,183 (141,610 characters) |
 
-An independent corroboration exists for the token figure: `state_5.sqlite`
-records `threads.tokens_used` summing to 65,294,864,888 across the aius
-rollouts, matching the raw pre-dedup cumulative sum from the transcripts.
+Independent corroboration for the token figure: `state_5.sqlite` records
+`threads.tokens_used` summing to 65,294,864,888 across the aius rollouts,
+matching the raw pre-dedup cumulative sum from the transcripts.
 
 By API call: `gpt-5.6-sol` 100,111, `gpt-5.6-luna` 25,738, `gpt-5.6-terra`
 17,928, `gpt-5.4-mini` 443, `codex-auto-review` 105.
@@ -299,7 +297,7 @@ bundles its sub-agents inline.
 | Tool invocations | 19,012 | 136,815 | 155,827 |
 | Active hours | 94.79 | 258.04 | 303.41 |
 
-Combined active hours are lower than the sum because 49.41 h had both
+Combined active hours are lower than the sum because 49.42 h had both
 toolchains running concurrently and are counted once.
 
 ### Wall clock
@@ -313,9 +311,9 @@ project's working span starts earlier than its git history shows.
   across the merged event stream of both toolchains, so concurrent sessions
   count once.
 
-Per-session sums are materially higher (1,813.86 h span and 630.97 h active for
-Codex alone) because up to nine sessions ran in parallel. Those inflated figures
-are not used.
+Per-session sums are higher (1,813.86 h span and 630.97 h active for Codex
+alone) because up to nine sessions ran in parallel. Those inflated figures are
+not used.
 
 ### Commit attribution
 
@@ -342,12 +340,12 @@ corroborative rather than conclusive.
    and Claude's is not; combined figures normalise for this, but any comparison
    drawn from the vendors' own raw fields will not agree with the table here.
 4. **Commit attribution rests on message composition**, not a provenance
-   trailer. 34 commits (5%) resist attribution entirely.
+   trailer. 34 commits (5%) resist attribution.
 5. **Scratch is reaped at 7 days.** Flash-log counts and bench-observation hours
    are floors. Anything older than the retention window is gone.
 6. **`boot_generation` 346 is a floor.** It counts boots since the retained
    memory slot was last initialised and is lost on power loss.
-7. **Human bench time is not measured at all.** Cable swaps, probe placement,
+7. **Human bench time is not measured.** Cable swaps, probe placement,
    listening tests and power cycles appear in no figure here.
 8. **Physical lines, not SLOC.** Line counts include blanks and comments and are
    not normalised.

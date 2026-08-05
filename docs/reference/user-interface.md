@@ -12,9 +12,11 @@ toc: true
 # Aius user interface
 
 Aius serves its whole operator interface from the Teensy's SD card: four HTML
-pages that read and write the device's own HTTP routes. This document shows what
-each page looks like when the device is running, says what it reads and writes,
-and records the things about it a reader could not guess from the markup.
+pages that read and write the device's own HTTP routes. This document shows each
+page with a populated response behind it, what it reads and writes, and what a
+reader could not guess from the markup. The screenshots were rendered locally
+rather than captured from a live device; see
+[how these screenshots were made](#how-these-screenshots-were-made).
 
 ## How the interface is served
 
@@ -29,8 +31,8 @@ and records the things about it a reader could not guess from the markup.
   ([`firmware/src/http_home_page.cpp`](../../firmware/src/http_home_page.cpp))
   that links into the SD tree and reports when no card is mounted.
 - Each page is a classic script — `<page>.html`, then `sd-shared.js`, then
-  `<page>.js`, no modules, no bundler, no build step, and deliberately none of
-  the repo's `mr-*` UI kit: the device cannot reach a host application's module mounts.
+  `<page>.js`, no modules, no bundler, no build step, and none of the repo's
+  `mr-*` UI kit: the device cannot reach a host application's module mounts.
   `sd-shared.js` owns the status pills, the never-throw `fetch` wrapper, the
   number formatters, the waveform renderer and token storage.
 - The assets themselves are replaced over `PUT /sd/www/{path}` and removed with
@@ -54,10 +56,10 @@ loaded from SD at generation 4, a preset list, the stacked EQ plot with a
 spectrum underlay, the downmix routing diagram, limiter gain reduction and a
 live spectrogram.](images/dsp-editor.png)
 
-`index.html` + `dsp-editor.js` + `dsp-editor.css`. This is the main page: it
-edits the single effective DSP configuration — per-channel input trim and EQ,
-the downmix matrix, output EQ, the true-peak limiter, and the per-stage bypass
-flags — while showing the live signal path around it.
+`index.html` + `dsp-editor.js` + `dsp-editor.css`. The main page: it edits the
+single effective DSP configuration — per-channel input trim and EQ, the downmix
+matrix, output EQ, the true-peak limiter, and the per-stage bypass flags — while
+showing the live signal path around it.
 
 Reads:
 
@@ -65,7 +67,7 @@ Reads:
 - `GET /api/meters` at 10 Hz for the level bars, limiter gain reduction, DSP
   cost and the spectrogram.
 - `GET /api/status` at 1 Hz for the two ends of the signal-flow strip: what the
-  device is actually hearing, and what the transmit gate did with it.
+  device is hearing, and what the transmit gate did with it.
 - `GET /sd/www/presets/` — the firmware's own HTML directory index, parsed for
   `*.json` rows — and `GET /sd/www/presets/<name>.json` to load one.
 
@@ -90,10 +92,9 @@ Non-obvious:
 - The spectrogram and the faint underlay behind the EQ curves are driven by
   `analysis_window` in the meter snapshot — 1024 raw 24-bit samples with
   `analysis_full_scale` alongside. It is strobed, not gapless (one window per
-  100 ms poll), and when a snapshot carries no window the underlay is simply not
-  drawn.
+  100 ms poll), and when a snapshot carries no window the underlay is not drawn.
 - `sequence == 0` in a meter snapshot is the documented "never published"
-  sentinel and renders as *no data*, not as a genuine silent signal.
+  sentinel and renders as *no data*, not as a silent signal.
 - Preset names are capped at 27 characters (the SD path grammar's 32-byte
   segment minus `.json`) and any name ending in `config` is refused, because the
   firmware's write guard is a bare suffix match on `config.json` — such a file
@@ -145,11 +146,10 @@ Non-obvious:
 - The selected replay is page state, not device state, so the 5-second library
   refresh cannot wipe a choice mid-gesture. The device's active replay only ever
   seeds an empty selection.
-- The listing states its own completeness: a card holding more replays than one
-  listing can carry flips the library pill to `truncated` and says the list is
-  incomplete.
-- Underruns are the one counter here that means the audio actually broke, and
-  are highlighted once non-zero.
+- A card holding more replays than one listing can carry flips the library pill
+  to `truncated` and says the list is incomplete.
+- Underruns are the one counter here that means the audio broke, and are
+  highlighted once non-zero.
 
 ## Device status
 
@@ -159,24 +159,22 @@ network, storage and board cards, every pill reading live.](images/status.png)
 
 `status.html` + `status.js`. One whole `GET /api/status` per second, rendered
 into five cards. It is read-only and public — nothing on the page writes to the
-device, so it carries no token and has no password field at all.
+device, so it carries no token and has no password field.
 
 Reads `GET /api/status` at 1 Hz. Writes nothing.
 
 Non-obvious:
 
 - **The input source is the page's own derivation, not a device field.** The
-  device never answers "what is feeding the output"; the page derives it as
-  carrier → *optical carrier*, else the transmit gate's replay term → *replay*,
-  else *none*. That derivation is the question the page exists to answer.
+  page derives it as carrier → *optical carrier*, else the transmit gate's
+  replay term → *replay*, else *none*.
 - The wire is integers where the vocabulary matters — `state`, `carrier`,
   `format`, `link`, `network_state`, `last_checkpoint`, `reset_source`,
   `recovery_safe` and every `tx_gate` member. The page prints the name and keeps
   the number beside it (`PCM (3)`, `online (2)`, `epoch-complete (9)`).
-- A failed poll degrades honestly: every pill flips to `unreachable`, every grid
-  dims, and the last good values stay on screen rather than being blanked — a
-  frozen grid beside a confident-looking pill was the failure mode this
-  replaced.
+- On a failed poll every pill flips to `unreachable`, every grid dims, and the
+  last good values stay on screen rather than being blanked — a frozen grid
+  beside a confident-looking pill was the failure mode this replaced.
 - `tx_gate` is latched once per epoch, so the gate terms describe the epoch the
   snapshot belongs to.
 
@@ -185,8 +183,8 @@ the input source reads replay, the carrier reads absent, the sample rate is
 withheld and the gate's replay term reads running.](images/status-replay.png)
 
 The second capture is the same page against a device with no carrier and a
-replay running — the case that exercises the derivation above. Note that the
-sample rate reads `-- (no carrier)` rather than inventing a zero.
+replay running — the case that exercises the derivation above. The sample rate
+reads `-- (no carrier)` rather than inventing a zero.
 
 ## Firmware upgrade
 
@@ -258,7 +256,7 @@ button.](images/upgrade-armed.png)
 The second capture is the end of a full run. The log appends a step when it
 starts and settles it from the route's answer plus a read of `/api/ota`, so it
 never shows a step the run did not reach. The final entry stays disabled with
-its reason stated, because activation is the device-gated slice.
+its reason stated, because activation is the device-gated step.
 
 ## How these screenshots were made
 

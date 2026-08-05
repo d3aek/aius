@@ -54,9 +54,9 @@ suite's prerequisite artifact or tool is absent; any other non-zero status is th
 suite's own.
 
 Discover suite names from the `# Suites:` block in that script's header or the
-suite table in [`firmware/README.md`](firmware/README.md). Those two and the
-script's `case` arms are kept honest by the `registry` suite, which fails when
-they disagree with the directories under `firmware/test/`.
+suite table in [`firmware/README.md`](firmware/README.md). The `registry` suite
+fails when those two and the script's `case` arms disagree with the directories
+under `firmware/test/`.
 
 Every suite is host-only and self-contained except `itcm-placement`, which
 inspects the linked objects of an optical image; without a current cross-build it
@@ -81,13 +81,13 @@ firmware/scripts/build.sh teensy41-optical-fault 3
 ```
 
 **Read the per-bank report, not just the exit code.** It breaks the image down
-into FLASH, ITCM, DTCM and OCRAM — the four banks the design is actually budgeted
+into FLASH, ITCM, DTCM and OCRAM — the four banks the design is budgeted
 against — and annotates the DTCM decoder arena read straight from the ELF. FLASH
-is roomy; ITCM and DTCM are not, and a change that links today can be the change
-that leaves no stack tomorrow. The script exits 2 when a bank is over capacity,
-1 on a build failure, 3 on a missing tool, 4 on a usage error, and 75 when
-another session holds the optical build lock (optical builds are serialized by a
-`flock` so two agents sharing this tree cannot clobber `.pio/build/<env>`).
+is roomy; ITCM and DTCM are not, and a change that links today can leave no
+stack tomorrow. The script exits 2 when a bank is over capacity, 1 on a build
+failure, 3 on a missing tool, 4 on a usage error, and 75 when another session
+holds the optical build lock (optical builds are serialized by a `flock` so two
+agents sharing this tree cannot clobber `.pio/build/<env>`).
 
 Five environments are defined in
 [`firmware/platformio.ini`](firmware/platformio.ini), whose comments record why
@@ -98,8 +98,8 @@ each flag is set — read them before changing one:
   kept as a distinct binary so the release `.elf` stays measurement-clean.
 - **`teensy41-capability`** — the RawHID transport used by the P6 capability gate.
 - **`teensy41-optical`** — **the live runtime image.** Audio path, Ethernet, plain
-  HTTP, the SD control surface, signed OTA and the flight recorder; it is the one
-  that carries the custom ldscript.
+  HTTP, the SD control surface, signed OTA and the flight recorder; it carries
+  the custom ldscript.
 - **`teensy41-optical-fault`** — the production image plus one injectable stall
   checkpoint. Select it as `build.sh teensy41-optical-fault <0..9>`; the script
   refuses to run if you export `AIUS_FAULT_CHECKPOINT` yourself.
@@ -110,9 +110,9 @@ each flag is set — read them before changing one:
   the button-free route for the runtime image. With no argument it flashes
   `firmware/.pio/build/teensy41-optical/firmware.hex`. It enters HalfKay over the
   CDC control protocol and verifies the image identity after the write.
-  `--via rawhid` is the legacy handoff and **cannot verify what it wrote**, which
-  is why CDC is the default. `--port PORT` names the serial port; `TEENSY_LOADER`
-  points at `teensy_loader_cli`. When the group login is stale, wrap it:
+  `--via rawhid` is the legacy handoff and **cannot verify what it wrote**. CDC is
+  the default. `--port PORT` names the serial port; `TEENSY_LOADER` points at
+  `teensy_loader_cli`. When the group login is stale, wrap it:
 
   ```bash
   sg dialout -c "sg plugdev -c 'firmware/scripts/flash_optical.sh'"
@@ -126,15 +126,15 @@ each flag is set — read them before changing one:
   the live recovery smoke against one deployed board:
   `--target HOST [--serial PATH] [--gates reboots,stalls,soak,dsp] [--allow-mutation] [--dry-run]`.
   **Without `--allow-mutation` the run is read-only**: reboot cycles, fault images
-  and the DSP round-trip are reported unresolved (exit 3), which is not a pass.
+  and the DSP round-trip are reported unresolved (exit 3), not a pass.
   The stall gate builds and flashes fault images, so it needs the build and flash
   tools.
 
 Bench wiring for the proto board is in
 [`docs/guides/proto-optical-wiring.md`](docs/guides/proto-optical-wiring.md).
 
-**A build that fails on a bank `ASSERT` is the design working, not an obstacle.**
-The next section says why.
+**A build that fails on a bank `ASSERT` is intended behaviour.** The next section
+says why.
 
 ## Memory budgets are enforced at link time
 
@@ -146,9 +146,9 @@ names the constraint. The three that constrain everyday work:
 
 - **The OCRAM heap floor — 128 KiB.** NativeEthernet mallocs roughly 96 KiB at
   network bring-up (a 64 KiB FNET stack heap plus eight 4 KiB socket buffers). A
-  heap squeezed below that made the allocation fail, the network service abort
-  every epoch unfed, and the board watchdog into recovery-safe mode on **every
-  boot**. Turning that into a link error is the whole point of the assert.
+  heap squeezed below that made the allocation fail, which left the network
+  service aborting every epoch unfed and the watchdog dropping the board into
+  recovery-safe mode on **every boot**. The assert turns that into a link error.
 - **The ITCM six-block ceiling.** ITCM claims FlexRAM in 32 KiB blocks and moves
   `_estack` down by one block for each. Six blocks leave the DTCM stack/locals
   zone intact; a seventh would take 32 KiB straight out of the stack shared by
@@ -160,11 +160,11 @@ names the constraint. The three that constrain everyday work:
 
 **As of 2026-08-05 the optical image links with roughly 148 bytes of ITCM
 headroom, so any new function on a hot path must be placed deliberately.** That
-is not slack; it is less than one small function. Assume a new hot-path function
-does not fit until the build says otherwise, and budget for it by pinning
-something cold to flash.
+is less than one small function. Assume a new hot-path function does not fit
+until the build says otherwise, and budget for it by pinning something cold to
+flash.
 
-The remedy is placement, and it has one sharp edge:
+The remedy is placement:
 
 - **Put `FLASHMEM` on the definition of every cold function, never only on a
   forward declaration.** GCC does not merge a `section` attribute from a
