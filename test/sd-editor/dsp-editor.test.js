@@ -404,7 +404,7 @@ describe('Aius SD DSP editor — dashboard layout', () => {
   const LAYOUT_KEY = 'aius-dsp-editor-layout-v1';
   const storedLayout = () => JSON.parse(localStorage.getItem(LAYOUT_KEY));
 
-  it('starts in the six-cell Dashboard view with the contracted desktop layout', async () => {
+  it('starts in the Dashboard view with one band per stage, in signal order', async () => {
     await boot();
 
     expect(el('dashboard-surface').dataset.view).toBe('dashboard');
@@ -413,54 +413,64 @@ describe('Aius SD DSP editor — dashboard layout', () => {
     expect(
       [...document.querySelectorAll('[data-dashboard-cell]')].map((cell) => cell.dataset.dashboardCell),
     ).toEqual(['input', 'eq', 'matrix', 'limiter', 'output', 'live']);
-    expect([...document.querySelectorAll('.dashboard-resizer')]).toHaveLength(6);
-
-    expect(el('dashboard-input').style.getPropertyValue('--dashboard-span')).toBe('4');
-    expect(el('dashboard-eq').style.getPropertyValue('--dashboard-span')).toBe('8');
-    expect(el('dashboard-matrix').style.getPropertyValue('--dashboard-height')).toBe('420px');
-    expect(el('card-meters').style.getPropertyValue('--dashboard-height')).toBe('360px');
     expect(el('card-meters').closest('[data-dashboard-cell]').dataset.dashboardCell).toBe('live');
+
+    // The mode switch is the whole toolbar: with no resizable geometry left,
+    // there is nothing for a "Reset layout" button to reset.
+    expect([...document.querySelectorAll('.dashboard-toolbar button')].map((button) => button.textContent)).toEqual([
+      'Editor',
+      'Dashboard',
+    ]);
+    // A band is sized by the stylesheet alone -- the page writes no per-cell
+    // geometry onto it.
+    expect([...document.querySelectorAll('[data-dashboard-cell]')].map((cell) => cell.getAttribute('style'))).toEqual(
+      new Array(6).fill(null),
+    );
   });
 
-  it('remembers the chosen view and reset restores the Dashboard defaults without a device write', async () => {
+  it('switches to Editor and back, remembering the mode without a device write', async () => {
     await boot();
     expect(putCalls()).toHaveLength(0);
 
     await click('view-editor');
     expect(el('dashboard-surface').dataset.view).toBe('editor');
-    expect(storedLayout().mode).toBe('editor');
-    expect(el('apply-state').textContent).toBe('loaded');
-    expect(putCalls()).toHaveLength(0);
+    expect(el('view-editor').getAttribute('aria-pressed')).toBe('true');
+    expect(el('view-dashboard').getAttribute('aria-pressed')).toBe('false');
+    expect(storedLayout()).toEqual({ version: 1, mode: 'editor' });
 
-    await click('layout-reset');
+    await click('view-dashboard');
     expect(el('dashboard-surface').dataset.view).toBe('dashboard');
-    expect(storedLayout()).toEqual(maths().normalizeLayoutPreference(null));
+    expect(el('view-dashboard').getAttribute('aria-pressed')).toBe('true');
+    expect(el('view-editor').getAttribute('aria-pressed')).toBe('false');
+    expect(storedLayout()).toEqual({ version: 1, mode: 'dashboard' });
     expect(el('apply-state').textContent).toBe('loaded');
     expect(putCalls()).toHaveLength(0);
   });
 
-  it('loads a known layout, clamps unsafe values, and falls back for malformed or unknown records', async () => {
+  it('falls back to the Dashboard default for a malformed, unknown or unreadable record', async () => {
     await boot();
     const normalize = maths().normalizeLayoutPreference;
 
+    expect(normalize(null)).toEqual({ version: 1, mode: 'dashboard' });
     expect(normalize('{broken')).toEqual(normalize(null));
-    expect(normalize({ version: 2, mode: 'editor', cells: {} })).toEqual(normalize(null));
-
-    const known = normalize({
-      version: 1,
-      mode: 'editor',
-      cells: {
-        input: { span: 99, height: -10 },
-        eq: { span: 3.4, height: 9999 },
-      },
-    });
-    expect(known.mode).toBe('editor');
-    expect(known.cells.input).toEqual({ span: 4, height: 180 });
-    expect(known.cells.eq).toEqual({ span: 3, height: 480 });
-    expect(known.cells.live).toEqual({ span: 8, height: 360 });
+    expect(normalize({ version: 2, mode: 'editor' })).toEqual(normalize(null));
+    expect(normalize({ version: 1, mode: 'sideways' })).toEqual(normalize(null));
+    expect(normalize({ version: 1, mode: 'editor' })).toEqual({ version: 1, mode: 'editor' });
   });
 
-  it('restores a valid stored mode and cell size on the next boot', async () => {
+  it('restores a stored mode on the next boot', async () => {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ version: 1, mode: 'editor' }));
+
+    await boot();
+    expect(el('dashboard-surface').dataset.view).toBe('editor');
+    expect(el('view-editor').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  /* What a browser that used the resizable dashboard still has in this slot:
+   * the same key and version, plus the retired per-cell geometry. The MODE it
+   * carries is still true, so the page opens on it and drops the rest rather
+   * than throwing over a shape it no longer understands. */
+  it('reads the mode out of a stored record still carrying the retired cell geometry', async () => {
     localStorage.setItem(
       LAYOUT_KEY,
       JSON.stringify({
@@ -479,8 +489,12 @@ describe('Aius SD DSP editor — dashboard layout', () => {
 
     await boot();
     expect(el('dashboard-surface').dataset.view).toBe('editor');
-    expect(el('dashboard-input').style.getPropertyValue('--dashboard-span')).toBe('6');
-    expect(el('dashboard-input').style.getPropertyValue('--dashboard-height')).toBe('240px');
+    expect(el('dashboard-input').getAttribute('style')).toBe(null);
+    expect(el('apply-state').textContent).toBe('loaded');
+
+    // The next write rewrites the slot without the dead geometry.
+    await click('view-dashboard');
+    expect(storedLayout()).toEqual({ version: 1, mode: 'dashboard' });
   });
 
   it('keeps working when layout storage is unavailable or full', async () => {
@@ -501,54 +515,6 @@ describe('Aius SD DSP editor — dashboard layout', () => {
     } finally {
       getItem.mockRestore();
       setItem.mockRestore();
-    }
-  });
-
-  it('persists pointer and keyboard resizing, while phone arrows keep every cell full-width', async () => {
-    await boot();
-    const surface = el('dashboard-surface');
-    const cell = el('dashboard-eq');
-    const handle = cell.querySelector('.dashboard-resizer');
-    surface.getBoundingClientRect = () => ({ width: 1200 });
-    cell.getBoundingClientRect = () => ({ height: 480 });
-
-    handle.dispatchEvent(
-      new window.PointerEvent('pointerdown', {
-        pointerId: 7,
-        clientX: 0,
-        clientY: 0,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    handle.dispatchEvent(
-      new window.PointerEvent('pointermove', {
-        pointerId: 7,
-        clientX: 101,
-        clientY: 40,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    handle.dispatchEvent(
-      new window.PointerEvent('pointerup', {
-        pointerId: 7,
-        clientX: 101,
-        clientY: 40,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-    expect(storedLayout().cells.eq).toEqual({ span: 9, height: 520 });
-    expect(putCalls()).toHaveLength(0);
-
-    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true });
-    try {
-      handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-      handle.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-      expect(storedLayout().cells.eq).toEqual({ span: 9, height: 540 });
-    } finally {
-      Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
     }
   });
 

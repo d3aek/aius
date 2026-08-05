@@ -103,25 +103,14 @@
   const LIMITER_SPAN_DB = 24; /* gain-reduction bar + history full scale */
   const LIMITER_HISTORY_MAX = 128; /* ~12.8 s of history at the 10 Hz poll */
 
-  /* Dashboard layout is a per-browser VIEW preference, never device config.
-   * The versioned record is deliberately closed over the six authored cells:
-   * unknown versions fall back whole, while bad numeric values in a known
-   * record clamp to the same bounds the pointer and keyboard paths use. */
+  /* Dashboard is a per-browser VIEW preference, never device config, and the
+   * only thing left to remember is WHICH of the two modes the page opens in --
+   * the bands are full-width and content-tall, so there is no geometry to
+   * store. The key and the version are unchanged on purpose: a record written
+   * while cells were resizable still carries a mode that is still true, so it
+   * is read for that and its dead geometry ignored rather than refused. */
   const LAYOUT_STORAGE_KEY = 'aius-dsp-editor-layout-v1';
   const LAYOUT_VERSION = 1;
-  const LAYOUT_MAX_HEIGHT = 1200;
-  const LAYOUT_MIN_SPAN = 3;
-  const LAYOUT_MAX_SPAN = 12;
-  const LAYOUT_PHONE_MAX_PX = 650;
-  const LAYOUT_KEY_HEIGHT_STEP = 20;
-  const DASHBOARD_CELLS = Object.freeze({
-    input: Object.freeze({ span: 4, height: 180, minHeight: 180 }),
-    eq: Object.freeze({ span: 8, height: 480, minHeight: 480 }),
-    matrix: Object.freeze({ span: 8, height: 420, minHeight: 420 }),
-    limiter: Object.freeze({ span: 4, height: 300, minHeight: 300 }),
-    output: Object.freeze({ span: 4, height: 180, minHeight: 180 }),
-    live: Object.freeze({ span: 8, height: 360, minHeight: 360 }),
-  });
 
   /* Meter ballistics. A 10 Hz snapshot drives a bar in 100 ms steps -- a
    * staircase, not an instrument -- so BETWEEN snapshots the page runs the
@@ -335,10 +324,10 @@
     /* Page-side ring of polled limiter_gain_reduction_db values; the device
      * publishes an instant, never a history. */
     limiterHistory: [],
-    /* Browser-local dashboard preference and the one live resize gesture.
-     * Neither is part of the form model and neither dispatches input. */
+    /* Browser-local dashboard preference and the observer that refits the
+     * canvases when a band's width changes. Neither is part of the form model
+     * and neither dispatches input. */
     layout: null,
-    layoutDrag: null,
     layoutObserver: null,
     /* Ballistics. A poll writes the TARGETS -- what the device last published --
      * and the frame ticker walks each needle towards them, so what is on screen
@@ -366,17 +355,13 @@
     lastTap: null,
   };
 
-  function defaultLayoutPreference() {
-    const cells = {};
-    for (const [key, bounds] of Object.entries(DASHBOARD_CELLS)) {
-      cells[key] = { span: bounds.span, height: bounds.height };
-    }
-    return { version: LAYOUT_VERSION, mode: 'dashboard', cells };
-  }
+  const defaultLayoutPreference = () => ({ version: LAYOUT_VERSION, mode: 'dashboard' });
 
   /* Accepts a parsed value or JSON text so the storage adapter and pure tests
    * share one validator. Unknown versions and malformed shapes fall back whole;
-   * a known record keeps usable dimensions and defaults each unsafe one. */
+   * a known record is read for its mode alone -- every other key it carries is
+   * a retired geometry field, and dropping it here is what stops an old record
+   * from being a page that will not open. */
   function normalizeLayoutPreference(value) {
     let candidate = value;
     if (typeof candidate === 'string') {
@@ -390,30 +375,9 @@
       return defaultLayoutPreference();
     }
     const fallback = defaultLayoutPreference();
-    const cells = {};
-    for (const [key, bounds] of Object.entries(DASHBOARD_CELLS)) {
-      const supplied = candidate.cells && typeof candidate.cells === 'object' ? candidate.cells[key] : null;
-      const suppliedSpan = supplied ? Number(supplied.span) : NaN;
-      const suppliedHeight = supplied ? Number(supplied.height) : NaN;
-      const span =
-        Number.isFinite(suppliedSpan) && suppliedSpan >= LAYOUT_MIN_SPAN && suppliedSpan <= LAYOUT_MAX_SPAN
-          ? Math.round(suppliedSpan)
-          : bounds.span;
-      const height =
-        Number.isFinite(suppliedHeight) &&
-        suppliedHeight >= bounds.minHeight &&
-        suppliedHeight <= LAYOUT_MAX_HEIGHT
-          ? Math.round(suppliedHeight)
-          : bounds.height;
-      cells[key] = {
-        span,
-        height,
-      };
-    }
     return {
       version: LAYOUT_VERSION,
       mode: candidate.mode === 'editor' || candidate.mode === 'dashboard' ? candidate.mode : fallback.mode,
-      cells,
     };
   }
 
@@ -433,13 +397,6 @@
       /* The current session still keeps the layout in state. */
     }
   }
-
-  const dashboardCanvasHeight = (key, height) => {
-    if (key === 'eq') return clamp(Math.round(height * 0.46), 180, 360);
-    if (key === 'matrix') return clamp(Math.round(height * 0.54), 220, 420);
-    if (key === 'live') return clamp(Math.round(height * 0.55), 220, 520);
-    return 0;
-  };
 
   /* Preset name grammar, page-enforced BEFORE any PUT. The 27-char cap is the
    * SD path grammar's 32-byte segment minus ".json". The `config` suffix
@@ -2896,16 +2853,6 @@
   const labelHz = (hz) => (hz >= 1000 ? `${hz / 1000}k` : String(hz));
 
   const shortName = (base) => (base.startsWith('input_channels.') ? base.slice('input_channels.'.length) : base);
-  const dashboardCell = (key) => document.querySelector(`[data-dashboard-cell="${key}"]`);
-
-  function applyDashboardCell(key) {
-    const cell = dashboardCell(key);
-    const value = state.layout.cells[key];
-    cell.style.setProperty('--dashboard-span', String(value.span));
-    cell.style.setProperty('--dashboard-height', `${value.height}px`);
-    const canvasHeight = dashboardCanvasHeight(key, value.height);
-    if (canvasHeight > 0) cell.style.setProperty('--dashboard-canvas-height', `${canvasHeight}px`);
-  }
 
   function redrawDashboardCanvases() {
     fitCanvases();
@@ -2920,7 +2867,6 @@
     surface.dataset.view = state.layout.mode;
     $('view-editor').setAttribute('aria-pressed', state.layout.mode === 'editor' ? 'true' : 'false');
     $('view-dashboard').setAttribute('aria-pressed', state.layout.mode === 'dashboard' ? 'true' : 'false');
-    for (const key of Object.keys(DASHBOARD_CELLS)) applyDashboardCell(key);
     redrawDashboardCanvases();
   }
 
@@ -2931,107 +2877,19 @@
     storeLayoutPreference();
   }
 
-  function resetDashboardLayout() {
-    state.layout = defaultLayoutPreference();
-    applyDashboardLayout();
-    storeLayoutPreference();
-  }
-
-  function dashboardResizeGeometry(cell) {
-    const surfaceRect = $('dashboard-surface').getBoundingClientRect();
-    const cellRect = cell.getBoundingClientRect();
-    const gap = 12;
-    const column = surfaceRect.width > gap * 11 ? (surfaceRect.width - gap * 11) / 12 + gap : 1;
-    return { column, height: cellRect.height > 0 ? cellRect.height : state.layout.cells[cell.dataset.dashboardCell].height };
-  }
-
-  function resizeDashboardCell(key, span, height) {
-    const bounds = DASHBOARD_CELLS[key];
-    state.layout.cells[key] = {
-      span: clamp(Math.round(span), LAYOUT_MIN_SPAN, LAYOUT_MAX_SPAN),
-      height: clamp(Math.round(height), bounds.minHeight, LAYOUT_MAX_HEIGHT),
-    };
-    applyDashboardCell(key);
-    redrawDashboardCanvases();
-  }
-
-  function buildDashboardResizer(cell) {
-    const key = cell.dataset.dashboardCell;
-    const handle = document.createElement('button');
-    handle.type = 'button';
-    handle.className = 'dashboard-resizer';
-    handle.setAttribute('aria-label', `Resize ${key} dashboard cell`);
-
-    handle.addEventListener('pointerdown', (event) => {
-      if (state.layout.mode !== 'dashboard') return;
-      event.preventDefault();
-      const geometry = dashboardResizeGeometry(cell);
-      const current = state.layout.cells[key];
-      state.layoutDrag = {
-        key,
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        startSpan: current.span,
-        startHeight: geometry.height,
-        column: geometry.column,
-      };
-      if (typeof handle.setPointerCapture === 'function') handle.setPointerCapture(event.pointerId);
-    });
-
-    handle.addEventListener('pointermove', (event) => {
-      const drag = state.layoutDrag;
-      if (!drag || drag.key !== key || drag.pointerId !== event.pointerId) return;
-      const phone = window.innerWidth <= LAYOUT_PHONE_MAX_PX;
-      const span = phone ? drag.startSpan : drag.startSpan + Math.round((event.clientX - drag.startX) / drag.column);
-      resizeDashboardCell(key, span, drag.startHeight + event.clientY - drag.startY);
-    });
-
-    const finish = (event) => {
-      const drag = state.layoutDrag;
-      if (!drag || drag.key !== key || drag.pointerId !== event.pointerId) return;
-      state.layoutDrag = null;
-      storeLayoutPreference();
-      if (typeof handle.releasePointerCapture !== 'function') return;
-      try {
-        handle.releasePointerCapture(event.pointerId);
-      } catch (captureError) {
-        /* The browser may have released it before pointercancel arrives. */
-      }
-    };
-    handle.addEventListener('pointerup', finish);
-    handle.addEventListener('pointercancel', finish);
-
-    handle.addEventListener('keydown', (event) => {
-      if (state.layout.mode !== 'dashboard') return;
-      const current = state.layout.cells[key];
-      const phone = window.innerWidth <= LAYOUT_PHONE_MAX_PX;
-      let span = current.span;
-      let height = current.height;
-      if (!phone && event.key === 'ArrowLeft') span--;
-      else if (!phone && event.key === 'ArrowRight') span++;
-      else if (event.key === 'ArrowUp') height -= LAYOUT_KEY_HEIGHT_STEP;
-      else if (event.key === 'ArrowDown') height += LAYOUT_KEY_HEIGHT_STEP;
-      else return;
-      event.preventDefault();
-      resizeDashboardCell(key, span, height);
-      storeLayoutPreference();
-    });
-
-    cell.append(handle);
-  }
-
   function buildDashboardLayout() {
     state.layout = readLayoutPreference();
-    for (const key of Object.keys(DASHBOARD_CELLS)) buildDashboardResizer(dashboardCell(key));
     $('view-editor').addEventListener('click', () => selectDashboardMode('editor'));
     $('view-dashboard').addEventListener('click', () => selectDashboardMode('dashboard'));
-    $('layout-reset').addEventListener('click', resetDashboardLayout);
 
+    /* The bands are full-width, so a canvas changes width whenever the surface
+     * does -- a form growing, a scrollbar arriving, the mode switching -- and
+     * not only when the window is resized. The backing store is in device
+     * pixels, so every one of those has to refit or the picture goes soft. */
     const ResizeObserverConstructor = window.ResizeObserver;
     if (typeof ResizeObserverConstructor === 'function') {
       state.layoutObserver = new ResizeObserverConstructor(() => redrawDashboardCanvases());
-      for (const key of Object.keys(DASHBOARD_CELLS)) state.layoutObserver.observe(dashboardCell(key));
+      state.layoutObserver.observe($('dashboard-surface'));
     }
     applyDashboardLayout();
   }
@@ -4337,7 +4195,6 @@
     dbToY,
     dspBudgetCycles,
     dspLoadPercent,
-    dashboardCanvasHeight,
     factoryValueOf,
     fitCanvas,
     handlePoints,

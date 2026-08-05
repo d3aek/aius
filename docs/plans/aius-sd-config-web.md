@@ -4,7 +4,7 @@ type: plans
 scope: component
 component: aius
 status: shipped
-updated: 2026-08-04
+updated: 2026-08-05
 toc: true
 ---
 
@@ -143,6 +143,21 @@ flattened it to the single word "dashboard (parked)", and the task list
 carrying its detail died with a mid-day process restart. Written here so it
 is in a checked-in home rather than scratch. Not yet a contract — this is
 the agreed scope, and it needs a phase contract and a gate before build.
+
+> **Superseded 2026-08-05 — the resizing is gone.** Everything in this section
+> describing a 12-column grid, per-cell spans and heights, bottom-right resize
+> handles, arrow-key resizing, persisted cell geometry and the `Reset layout`
+> button describes what was built and shipped, and is retained as that record.
+> On the owner's call after a design review, the Dashboard is now a single
+> column of full-width bands in signal order, each as tall as its content, with
+> no resizing of any kind: freely resizable panels bought nothing, and the
+> mismatched heights within a row left dead space the drag handles existed to
+> paper over. The canvases carry explicit heights because a canvas has no
+> content height. Desktop and mobile are now the same single column, which is
+> what makes the page flow on a phone. Only the mode (Editor or Dashboard)
+> still persists in `aius-dsp-editor-layout-v1`; a stored record carrying the
+> retired geometry is read for its mode and the rest ignored. Current
+> behaviour: [`../reference/user-interface.md`](../reference/user-interface.md).
 
 **What it is: one resizable, gridded surface on the existing SD-served
 editor page** that gathers the DSP control and visualisation elements
