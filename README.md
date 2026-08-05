@@ -36,11 +36,15 @@ flowchart LR
     class MIX point
 ```
 
-The firmware is proven on bench hardware: a socketed Teensy 4.1 on a proto board
-([wiring guide](docs/guides/proto-optical-wiring.md)) with TOSLINK receiver and
-transmitter, native Ethernet, PSRAM and an SD card. Every measurement in this
+The firmware is proven on bench hardware: a Teensy 4.1 with an SD card, wired to
+a TOSLINK receiver and transmitter and to a magjack breakout for Ethernet
+([wiring guide](docs/guides/proto-optical-wiring.md)). Every measurement in this
 repository was taken on it. From there the project matures into the host carrier
 board and the enclosure engineering around it.
+
+![The Aius bench build: a heatsinked Teensy 4.1 with a microSD card, hand-wired
+to two TOSLINK optical modules carrying the grey and blue fibre leads, and by
+ribbon cable to an RJ45 magjack breakout for Ethernet](docs/reference/images/aius-workbench.jpg)
 
 ## What the firmware does
 
