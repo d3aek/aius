@@ -14,7 +14,11 @@ pinned to the digest in `compose.yaml`).
 
 Usage:
   electronics/generate.py connectivity/power-usb.json aius-carrier.kicad_sch
-  electronics/generate.py <spec.json> <out.kicad_sch> [--lib-dir electronics/lib]
+  electronics/generate.py <spec.json> <out.kicad_sch> [--lib-dir=electronics/lib]
+  electronics/generate.py --project <manifest.json> <out_dir> [--lib-dir=DIR]
+
+`--lib-dir` takes the `=DIR` form only; a space-separated value is parsed as a
+positional argument and the run fails.
 
 Coordinates: KiCad symbol libraries use Y-up; schematics use Y-down, so a
 placed pin at library (px, py) lands at schematic (X + px, Y - py). A pin's

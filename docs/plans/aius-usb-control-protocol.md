@@ -4,7 +4,9 @@ type: plans
 scope: component
 component: aius
 status: shipped
-owner: aius
+subtype: design
+tags: [aius, firmware, usb, control-protocol]
+updated: 2026-08-05
 ---
 
 # AIUS USB control protocol
