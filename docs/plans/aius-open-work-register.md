@@ -1005,6 +1005,16 @@ specified here. Strike items here in the commit that closes them.
     26's bank); measured OCRAM heap is unchanged at 131,232 B. Hosting
     the call needed ITCM the image did not have — 20 bytes of headroom —
     so `accept_once` moved to `FLASHMEM`, leaving 148 bytes free.
+  - **39** (opened 2026-08-05, static): the upgrade page reads six
+    `/api/ota` fields the firmware does not emit — `latch_armed`,
+    `image_length`, `staged_length`, `fail_reason`, `key_fingerprint`
+    and a top-level `target_id` — against the firmware's `armed`,
+    `total_bytes`, `staged_bytes`, `fault`, nested `key.*` and nested
+    `image.target_id`. Swagger's `OtaStatus` matches the firmware, so
+    the page is the stale side. Four cells read wrong on a real device;
+    the page still works. `upgrade.test.js` stubs the page's own names,
+    so the suite passes and the fixture encodes the bug — any fix must
+    re-pin it to `OtaStatus`.
   - ~~**38**: `RESPONSE_TIMEOUT_MS` (100 ms) is not re-armed on
     `WOULD_BLOCK`, so a slow peer makes the firmware truncate a response
     whose `Content-Length` it already promised, then blame the client.~~

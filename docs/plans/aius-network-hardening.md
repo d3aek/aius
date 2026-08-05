@@ -1836,6 +1836,32 @@ table.
     `TCP_DELACK_MAX` of 200 ms and roughly 12x below FNET's own minimum RTO, so
     a single mid-response loss cannot be recovered before it fires.
 
+39. **The upgrade page reads six `/api/ota` fields the firmware does not emit,
+    and its regression pins the stale contract.** Found 2026-08-05 while
+    rendering the UI screenshots; static, not observed on a device.
+    `firmware/sd/www/upgrade.js` reads `latch_armed`, `image_length`,
+    `staged_length`, `fail_reason`, `key_fingerprint` and a top-level
+    `target_id` (its own header comment at `:36-41` documents that shape).
+    `ota_status_document()` at `firmware/src/aius_optical_app.cpp:1556-1570`
+    emits `armed`, `total_bytes`, `staged_bytes`, `fault`, a nested
+    `key.{fingerprint,test_key}` and a nested `image.target_id`.
+    - **The firmware is right and the page is wrong.** Swagger's `OtaStatus`,
+      the schema `GET /api/ota` declares, requires exactly the firmware's set:
+      `armed`, `state`, `staged_bytes`, `total_bytes`, `next_offset`, `image`,
+      `key`, `activation_available`, `fault`, `verifier_fault`. The page was
+      written against the slice-3 contract and never followed the firmware when
+      it settled on the published schema.
+    - **Effect**: `state`, `next_offset`, `verifier_fault` and
+      `activation_available` agree, so the page still functions, but four cells
+      read wrong against a real device — armed shows `disarmed`, both byte
+      counts show `0.0 KiB`, the fault shows `unreported` and the key
+      fingerprint shows `unknown`.
+    - **Why no test caught it**: `test/sd-editor/upgrade.test.js:187-191` stubs
+      the page's own field names, so the suite green-lights the divergence. The
+      fixture encodes the bug. Fixing this means changing the page's reads AND
+      re-pinning that fixture to `OtaStatus`, otherwise the suite fails on the
+      corrected page.
+
 #### Decisions taken, so they are not re-opened
 
 - **Zero added audio-path latency beats transient artifacts** (operator,
