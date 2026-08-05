@@ -1792,7 +1792,10 @@ table.
       retransmission mechanism. Corroborate with the `net_diag.tx_frames` delta,
       which is larger for a retransmitting transaction, and log the body length
       client-side against `Content-Length` to test the threshold hypothesis.
-37. **Every accepted socket silently inherits a 2,048 B send buffer.**
+37. ~~**Every accepted socket silently inherits a 2,048 B send buffer.**~~
+    **FIXED 2026-08-05 (not yet flashed).** `accept_once` now raises SO_SNDBUF
+    to 8,192 B on the accepted socket
+    (`aius_network_teensy.cpp` `widen_accepted_send_buffer`). Original entry:
     `Nativesocket.cpp` sets `SO_SNDBUF = FNET_SOCKET_DEFAULT_SIZE`
     (`NativeEthernet.h:41`, `1024 * 2`) on the *listener*, and FNET's
     `_fnet_socket_copy` memcpy's the whole socket struct to the accepted
@@ -1800,8 +1803,29 @@ table.
     `/api/status` body must therefore stall on a full buffer at least three
     times per response. Fix: call `Ethernet.setSocketSize()` before `begin()`,
     or re-apply `SO_SNDBUF` after accept. Contributing cause of defect 36 and
-    worth fixing on its own.
-38. **`RESPONSE_TIMEOUT_MS` is not re-armed on `WOULD_BLOCK`.**
+    worth fixing on its own. **Chosen over `Ethernet.setSocketSize()`, which is
+    global and eager**: NativeEthernet allocates `socket_num * 2` buffers of
+    that size from the OCRAM heap at `begin()` (`MAX_SOCK_NUM` is 8), so an
+    8 KB setting would have added ~98 KB of boot-time allocation to the bank
+    whose exhaustion is defect 26. `SO_SNDBUF` sets only
+    `sock->send_buffer.count_max` — a cap, not an allocation — and the measured
+    OCRAM heap is unchanged at 131,232 B across the fix.
+    **Placement note**: hosting the call cost more ITCM than the image had.
+    The pre-change build linked with **20 bytes** of ITCM headroom (196,588 of
+    a 196,608 six-block ceiling), so the call had to move out of RAM1;
+    `accept_once` is now `FLASHMEM`, which pays for it out of the ITCM that
+    function occupied and leaves 148 bytes free.
+38. ~~**`RESPONSE_TIMEOUT_MS` is not re-armed on `WOULD_BLOCK`.**~~
+    **FIXED 2026-08-05 (not yet flashed)** by raising the deadline to 5,000 ms
+    rather than re-arming, which preserves the design (the deadline bounds lack
+    of forward progress) while making it reachable only by a peer that has
+    genuinely stopped. 5,000 ms spans two consecutive FNET RTO recoveries
+    (first at up to 1.5 s, second at +3.0 s after backoff). Regression:
+    `send.survives-would-block-past-retransmit` in the `http` suite drives
+    would-blocks at 150/500/1500/4000 ms and asserts the response is still in
+    flight and unfaulted; it fails on the old constant at the first 150 ms
+    step. Cost: a peer that vanishes mid-response holds the single connection
+    slot for 5 s rather than 100 ms. Original entry:
     `aius_http_transaction.c:1191-1196` returns on `AIUS_IO_WOULD_BLOCK`
     without re-arming the deadline, while the completed-write path at
     `:1232-1235` does re-arm. With the 2 KB send buffer of defect 37, a merely

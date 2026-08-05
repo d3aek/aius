@@ -584,19 +584,63 @@ static void test_response_timeout_progress_precedence(void)
 	static const uint8_t body[700] = { 2 };
 	AiusHttpApplicationResponse response =
 		immediate(200, "application/octet-stream", body, sizeof(body));
+	/* Mirrors RESPONSE_TIMEOUT_MS in aius_http_transaction.c. */
+	const uint32_t response_timeout_ms = 5000u;
+
 	action = call_step(&fixture, 10, application_result(&action, &response));
 	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
-	assert(fixture.transaction.deadline_ms == 110);
+	assert(fixture.transaction.deadline_ms == 10u + response_timeout_ms);
 
-	action = call_step(&fixture, 110,
+	action = call_step(&fixture, 10u + response_timeout_ms,
 	                   io_result(&action, AIUS_IO_PROGRESS, 1, 0));
 	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
-	assert(fixture.transaction.deadline_ms == 210);
-	action = call_step(&fixture, 210,
+	assert(fixture.transaction.deadline_ms ==
+	       10u + 2u * response_timeout_ms);
+	action = call_step(&fixture, 10u + 2u * response_timeout_ms,
 	                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
 	assert(action.kind == AIUS_HTTP_ACTION_CLOSE);
 	assert(fixture.transaction.last_fault == AIUS_HTTP_FAULT_RESPONSE_TIMEOUT);
 	assert(fixture.transaction.last_status == 200);
+}
+
+/* Defect 38 regression. A write that would-blocks because the peer has not
+ * ACKed yet is flow control, not a stall, and the transport cannot clear it
+ * faster than FNET's first RTO of 1.0-1.5 s. The send deadline must therefore
+ * outlast that, or one lost segment truncates a body whose Content-Length was
+ * already promised. The old 100 ms budget failed every point below. */
+static void test_send_survives_would_block_past_one_retransmit(void)
+{
+	Fixture fixture;
+	init_fixture(&fixture);
+	AiusHttpAction action =
+		feed_request(&fixture, "GET /api/status HTTP/1.0\r\n\r\n");
+	static const uint8_t body[700] = { 3 };
+	AiusHttpApplicationResponse response =
+		immediate(200, "application/octet-stream", body, sizeof(body));
+	action = call_step(&fixture, 0, application_result(&action, &response));
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+
+	/* Every one of these is past the retired 100 ms budget, and the last two
+	 * are past a full first-RTO recovery. The response must still be in
+	 * flight, unfaulted, with its promised body intact. */
+	static const uint32_t blocked_ms[] = { 150u, 500u, 1500u, 4000u };
+	for (size_t i = 0; i < sizeof(blocked_ms) / sizeof(blocked_ms[0]); ++i) {
+		action = call_step(&fixture, blocked_ms[i],
+		                   io_result(&action, AIUS_IO_WOULD_BLOCK, 0, 0));
+		assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+		assert(fixture.transaction.state == AIUS_HTTP_TX_SEND);
+		assert(fixture.transaction.last_fault !=
+		       AIUS_HTTP_FAULT_RESPONSE_TIMEOUT);
+		assert(fixture.transaction.response_length != 0u);
+	}
+
+	/* The peer finally ACKs and the drain resumes from the same offset --
+	 * nothing was dropped while it was blocked. */
+	action = call_step(&fixture, 4100u,
+	                   io_result(&action, AIUS_IO_PROGRESS, 1, 0));
+	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
+	assert(fixture.transaction.response_offset == 1u);
+	assert(fixture.transaction.last_fault != AIUS_HTTP_FAULT_RESPONSE_TIMEOUT);
 }
 
 static void test_protocol_payload_validation(void)
@@ -1633,7 +1677,8 @@ static void test_immediate_stream_body(void)
 		assert(contains_bytes(action.data, action.length,
 		                      "Content-Length: 12288"));
 		assert(fixture.transaction.deadline_active);
-		assert(fixture.transaction.deadline_ms == 100);
+		/* now is 0 here, so this is RESPONSE_TIMEOUT_MS. */
+		assert(fixture.transaction.deadline_ms == 5000);
 
 		action = call_step(&fixture, 0,
 		                   io_result(&action, AIUS_IO_PROGRESS,
@@ -1790,11 +1835,12 @@ static void test_download_stable_chunks_and_ack(void)
 	action = call_step(&fixture, 20, data);
 	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
 	assert(contains_bytes(action.data, action.length, "Content-Length: 5"));
-	if (fixture.transaction.deadline_ms != 120)
+	/* now is 20 here, so this is 20 + RESPONSE_TIMEOUT_MS. */
+	if (fixture.transaction.deadline_ms != 5020)
 		fprintf(stderr,
-		        "DOWNLOAD_DATA send deadline: expected 120, actual %u\n",
+		        "DOWNLOAD_DATA send deadline: expected 5020, actual %u\n",
 		        fixture.transaction.deadline_ms);
-	assert(fixture.transaction.deadline_ms == 120);
+	assert(fixture.transaction.deadline_ms == 5020);
 
 	action = finish_response_headers(&fixture, action);
 	assert(action.kind == AIUS_HTTP_ACTION_WRITE);
@@ -4503,6 +4549,8 @@ int main(void)
 		  test_immediate_response_reaches_idle_only_after_write_and_close },
 		{ "send.timeout-progress-precedence",
 		  test_response_timeout_progress_precedence },
+		{ "send.survives-would-block-past-retransmit",
+		  test_send_survives_would_block_past_one_retransmit },
 		{ "event.protocol-payload", test_protocol_payload_validation },
 		{ "application.validation-overflow",
 		  test_application_validation_and_overflow },
@@ -4559,7 +4607,7 @@ int main(void)
 		{ "receive.large-body-chunk-boundaries",
 		  test_receive_large_body_chunk_boundaries },
 	};
-	assert(ARRAY_LENGTH(registry) == 40);
+	assert(ARRAY_LENGTH(registry) == 41);
 	for (size_t i = 0; i < ARRAY_LENGTH(registry); ++i) {
 		assert(registry[i].key[0] != '\0');
 		for (size_t j = 0; j < i; ++j)

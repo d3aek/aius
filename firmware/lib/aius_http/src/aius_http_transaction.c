@@ -22,7 +22,32 @@
 #endif
 
 #define REQUEST_TIMEOUT_MS UINT32_C(150)
-#define RESPONSE_TIMEOUT_MS UINT32_C(100)
+/* THE SEND DEADLINE MUST OUTLAST THE TRANSPORT'S OWN RECOVERY.
+ *
+ * This bounds LACK OF FORWARD PROGRESS in TX_SEND: a completed write re-arms it
+ * (consume_io's WRITE arm), a WOULD_BLOCK deliberately does not, and expiry
+ * runs timeout_transaction, which zeroes response_length and closes -- i.e. it
+ * TRUNCATES a body whose Content-Length was already promised.
+ *
+ * At 100 ms that was unreachable for a correct peer. A write would-blocks while
+ * the socket's output buffer holds unacked data, and that buffer cannot drain
+ * until the missing segment is retransmitted. FNET's first RTO is
+ * `3(round_trip+1)` slow ticks of 500 ms, decremented on the next tick edge, so
+ * a sub-millisecond LAN recovers no faster than 1.0-1.5 s -- ten to fifteen
+ * times this budget. One lost segment therefore guaranteed a truncated reply
+ * and a RESPONSE_TIMEOUT fault recorded against the client, which is exactly
+ * the shape seen in the 2026-08-04 watch (defect 36: 2.4 % of /api/status polls
+ * incomplete, durations clustered at 1.0-1.5 s and >=4 s with nothing between
+ * 0.30 s and 1.00 s).
+ *
+ * 5,000 ms spans two consecutive RTO recoveries (first at up to 1.5 s, second
+ * at +3.0 s after the backoff doubles) with margin. The cost is that a peer
+ * that truly vanishes mid-response holds the single connection slot for 5 s
+ * instead of 100 ms; that is the right trade against corrupting good replies,
+ * and the transaction stays non-blocking throughout, so nothing else stalls.
+ * Sits between SD_TIMEOUT_MS and DOWNLOAD_TIMEOUT_MS, which are already
+ * multi-second for the same reason. */
+#define RESPONSE_TIMEOUT_MS UINT32_C(5000)
 #define SD_TIMEOUT_MS UINT32_C(2000)
 #define DOWNLOAD_TIMEOUT_MS UINT32_C(10000)
 

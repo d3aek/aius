@@ -351,7 +351,60 @@ FLASHMEM void read_local_address(uint8_t *address)
 	address[3] = local[3];
 }
 
-AiusIoEvent accept_once()
+/* Tracks AIUS_HTTP_MAX_RESPONSE (aius_http.h) -- the largest reply the HTTP
+ * layer can hold in memory -- so a maximal response queues without waiting on a
+ * round trip. Stated as a literal rather than including aius_http.h: this
+ * adapter is the transport seam and does not otherwise know the HTTP layer
+ * exists. If that constant grows, this is worth growing with it, but nothing
+ * breaks if they drift -- the cap only decides how many drains a body needs. */
+constexpr fnet_uint32_t kAcceptedSendBufferBytes = 8192u;
+
+/* THE ACCEPTED SOCKET INHERITS THE LISTENER'S 2 KB SEND BUFFER, AND 2 KB IS
+ * SMALLER THAN THE BODIES THIS SERVER SENDS.
+ *
+ * EthernetClass::socketBegin sets SO_SNDBUF = socket_size on the LISTENER
+ * (Nativesocket.cpp:71,103-104), socket_size defaults to
+ * FNET_SOCKET_DEFAULT_SIZE = 2 KB (NativeEthernet.h:41), and FNET's accept
+ * memcpy's the whole socket struct to the new socket, so the connection that
+ * actually carries a reply starts life with a 2 KB output buffer. The 32 KB in
+ * fnet_user_config.h never applies to it. /api/status is ~7 KB and
+ * AIUS_HTTP_MAX_RESPONSE is 8 KB, so every large reply had to drain through
+ * that buffer several times, and each drain waits on the peer's ACKs -- which
+ * is what put write_once() in WOULD_BLOCK often enough for a lost segment to
+ * strand it there for a full FNET RTO (defects 36-38).
+ *
+ * Raising it here rather than via Ethernet.setSocketSize() is deliberate.
+ * setSocketSize is global and eager: NativeEthernet allocates
+ * socket_num * 2 buffers of that size from the OCRAM heap at begin()
+ * (NativeEthernet.cpp:177-179, MAX_SOCK_NUM = 8), so an 8 KB setting would add
+ * ~98 KB of boot-time allocation to the bank whose exhaustion bricked every
+ * boot in defect 26 and now carries a 128 KB link-time floor ASSERT. SO_SNDBUF
+ * on the accepted socket only sets sock->send_buffer.count_max
+ * (fnet_socket.c:1430-1433) -- a CAP, not an allocation. The netbuf chain grows
+ * on demand from FNET's own 64 KB stack heap, which the 2026-08-04 watch
+ * measured flat at ~61 KB free with a ~60 KB largest block, and only one
+ * accepted socket exists at a time (backlog 1). Measured: OCRAM heap unchanged
+ * at 131,232 B across this change.
+ *
+ * Failure is deliberately non-fatal: the option only ever widens a bound, so a
+ * refusal leaves the inherited 2 KB and the connection still serves. */
+FLASHMEM void widen_accepted_send_buffer(uint8_t socket)
+{
+	if (socket >= MAX_SOCK_NUM || Ethernet.socket_ptr[socket] == nullptr) {
+		return;
+	}
+	const fnet_uint32_t sndbuf = kAcceptedSendBufferBytes;
+	(void)fnet_socket_setopt(Ethernet.socket_ptr[socket], SOL_SOCKET,
+	                         SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+}
+
+/* FLASHMEM, unlike the read/write primitives beside it. This runs once per
+ * network-job epoch and never per audio block, and RAM1 has no room for it: the
+ * pre-change image linked with 20 bytes of ITCM headroom against the ldscript's
+ * six-block ceiling (196,588 of 196,608), so hosting the setsockopt call below
+ * in ITCM fails the link outright. Moving the whole accept path to flash pays
+ * for that call out of the ITCM this function used to occupy. */
+FLASHMEM AiusIoEvent accept_once()
 {
 	if (g_client.getSocketNumber() < MAX_SOCK_NUM) {
 		return io_event(AIUS_IO_WOULD_BLOCK);
@@ -361,6 +414,7 @@ AiusIoEvent accept_once()
 		return io_event(AIUS_IO_WOULD_BLOCK);
 	}
 	g_client = candidate;
+	widen_accepted_send_buffer(candidate.getSocketNumber());
 	return io_event(AIUS_IO_PROGRESS);
 }
 

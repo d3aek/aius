@@ -996,12 +996,24 @@ specified here. Strike items here in the commit that closes them.
     refuted with evidence; the 71.5 min onset is unexplained. Next step
     is one poll-side observation of `http_client_drops`, no firmware
     change needed.
-  - **37**: every accepted socket inherits a 2,048 B send buffer from the
-    listener, so the `fnet_user_config.h` 32 KB is dead and a ~7 KB
-    response stalls at least three times. Contributing cause of 36.
-  - **38**: `RESPONSE_TIMEOUT_MS` (100 ms) is not re-armed on
+  - ~~**37**: every accepted socket inherits a 2,048 B send buffer from
+    the listener, so the `fnet_user_config.h` 32 KB is dead and a ~7 KB
+    response stalls at least three times.~~ **FIXED 2026-08-05, NOT YET
+    FLASHED**: `accept_once` raises SO_SNDBUF to 8,192 B on the accepted
+    socket. Deliberately not `setSocketSize()`, which is global and eager
+    and would have added ~98 KB of boot-time OCRAM allocation (defect
+    26's bank); measured OCRAM heap is unchanged at 131,232 B. Hosting
+    the call needed ITCM the image did not have — 20 bytes of headroom —
+    so `accept_once` moved to `FLASHMEM`, leaving 148 bytes free.
+  - ~~**38**: `RESPONSE_TIMEOUT_MS` (100 ms) is not re-armed on
     `WOULD_BLOCK`, so a slow peer makes the firmware truncate a response
-    whose `Content-Length` it already promised, then blame the client.
+    whose `Content-Length` it already promised, then blame the client.~~
+    **FIXED 2026-08-05, NOT YET FLASHED**: raised to 5,000 ms, which
+    spans two consecutive FNET RTO recoveries. The design is unchanged —
+    the deadline still bounds lack of forward progress — but is now
+    reachable only by a peer that has genuinely stopped. Regression
+    `send.survives-would-block-past-retransmit` fails on the old
+    constant.
   - ~~**10**: the network-transport fake still diverges from real FNET in
     five characterized places.~~ CLOSED: fixes landed 2026-07-26, ledger
     verified stale 2026-07-31; all five have discriminating tests and
