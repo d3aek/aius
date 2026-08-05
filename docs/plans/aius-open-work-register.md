@@ -984,7 +984,22 @@ specified here. Strike items here in the commit that closes them.
     [`aius-network-hardening.md` defect 2](aius-network-hardening.md#open-defects-in-the-order-they-are-worth-taking).
   - **4**: `record_event` has two call sites; everything else is a
     counter — prerequisite to any push observability.
-  - **36** (opened 2026-08-05, static analysis, NOT hardware-confirmed):
+  - **36 — CONVICTED ON HARDWARE 2026-08-05, cause is defect 38, fix
+    committed but NOT FLASHED.** The board came back on Ethernet running
+    the same image and the discriminating watch ran: 2.50 h, 4,481 polls,
+    3 failures, `http_client_drops` 0 → 3 incrementing exactly once per
+    failure. That counter's arm is reachable on a plain GET only via
+    `AIUS_HTTP_FAULT_RESPONSE_TIMEOUT`, so the firmware aborted its own
+    response each time; two of the three failures were `IncompleteRead`,
+    the truncation signature itself. Both hypotheses hold and compose: a
+    lost segment stalls the write for FNET's ~1.0–1.5 s first RTO (the
+    failures took 1.298/4.022/1.178 s, one slow success 1.389 s) and the
+    100 ms deadline turns that recoverable stall into a truncated reply.
+    Defect 38's fix should close it; re-running the watch on the fixed
+    image is the proof. Rate was 0.067 % today against 2.4 % on 08-04
+    with the board idle rather than under audio load, so the rate is
+    load-dependent and the "71.5 min onset" is not a fixed threshold.
+    Original static entry:
     2.4 % of `/api/status` polls return no complete body on the current
     image. Durations are strictly bimodal (nothing between 0.30 s and
     1.00 s), and a three-build bisect is clean: the previous build ran

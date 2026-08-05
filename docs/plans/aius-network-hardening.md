@@ -1792,6 +1792,37 @@ table.
       retransmission mechanism. Corroborate with the `net_diag.tx_frames` delta,
       which is larger for a retransmitting transaction, and log the body length
       client-side against `Content-Length` to test the threshold hypothesis.
+    - **CONVICTED ON HARDWARE 2026-08-05. The cause is defect 38, and the two
+      mechanisms compose.** The board returned on Ethernet running the same
+      image (`930f003c6e6e`, fresh `boot_generation` 1), and that observation
+      ran: 2.50 h, 4,481 polls, 3 failures, and `http_client_drops` moved
+      **0 → 3, incrementing exactly once per failure**. On a GET with no upload
+      and no SD download, `AIUS_HTTP_FAULT_RESPONSE_TIMEOUT` is the only
+      timeout fault reachable in that counter's arm
+      (`aius_runtime_network_http.cpp:247-252`), so the firmware aborted its own
+      response each time.
+      - **Two of the three failures were `IncompleteRead`** — the client got a
+        partial body. That is the truncation signature directly: the deadline
+        fires, `timeout_transaction` zeroes `response_length` and closes
+        mid-send, and the client is left short of the `Content-Length` it was
+        promised.
+      - **Both hypotheses were right and they compose.** The failures took
+        1.298 s, 4.022 s and 1.178 s, and the one slow success took 1.389 s —
+        the 1.0–1.5 s band is FNET's first RTO, so a lost segment is what
+        stalls the write (H1). The 100 ms deadline is what converts that
+        recoverable stall into a truncated reply (H2). Neither alone explains
+        both the timing and the counter.
+      - **Defect 38's fix should therefore close this**, and is committed but
+        NOT yet flashed. Re-running this watch on the fixed image is the proof;
+        the prediction is that `http_client_drops` stays flat and the slow polls
+        survive as ~1.3 s successes rather than becoming failures.
+      - **The "71.5 minute onset" should not be treated as a threshold.** Rate
+        today was 3 in 4,481 (0.067 %) against 336 in 13,851 (2.4 %) on
+        2026-08-04, and the first failure came at 6,033 s rather than 4,289 s.
+        The board was idle today (`carrier` 0) where the earlier run carried
+        audio and recorder load, so the rate is load-dependent. The unexplained
+        onset in the static analysis is better read as the first sample of a
+        low-rate process than as a crossing at a fixed uptime.
 37. ~~**Every accepted socket silently inherits a 2,048 B send buffer.**~~
     **FIXED 2026-08-05 (not yet flashed).** `accept_once` now raises SO_SNDBUF
     to 8,192 B on the accepted socket
