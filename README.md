@@ -36,15 +36,29 @@ flowchart LR
     class MIX point
 ```
 
+The whole processing chain is editable from a browser while the audio plays,
+served off the device's own SD card — the response curve over a live spectrum,
+the downmix matrix, the limiter, and the spectrogram of what is going out:
+
+![The Aius DSP editor from the EQ surface down to the spectrogram: the editable
+response curve drawn over a live spectrum, the per-channel and output EQ forms,
+the downmix routing diagram with its matrix values, limiter gain reduction,
+output levels, and the live spectrogram](docs/reference/images/dsp-editor-hero.png)
+
+More of it, page by page, in the
+[user interface reference](docs/reference/user-interface.md).
+
 The firmware is proven on bench hardware: a Teensy 4.1 with an SD card, wired to
 a TOSLINK receiver and transmitter and to a magjack breakout for Ethernet
 ([wiring guide](docs/guides/proto-optical-wiring.md)). Every measurement in this
 repository was taken on it. From there the project matures into the host carrier
 board and the enclosure engineering around it.
 
-![The Aius bench build: a heatsinked Teensy 4.1 with a microSD card, hand-wired
-to two TOSLINK optical modules carrying the grey and blue fibre leads, and by
-ribbon cable to an RJ45 magjack breakout for Ethernet](docs/reference/images/aius-workbench.jpg)
+<img src="docs/reference/images/aius-workbench.jpg" width="50%"
+     alt="The Aius bench build: a heatsinked Teensy 4.1 with a microSD card,
+          hand-wired to two TOSLINK optical modules carrying the grey and blue
+          fibre leads, and by ribbon cable to an RJ45 magjack breakout for
+          Ethernet">
 
 ## What the firmware does
 
@@ -66,16 +80,6 @@ ribbon cable to an RJ45 magjack breakout for Ethernet](docs/reference/images/aiu
 - **Signed OTA upgrades**, staged and Ed25519-verified on the device.
 - **PSRAM flight recorder** that can be triggered to capture the audio ring when
   something goes wrong.
-
-The editor is served off the device's own SD card, so shaping the mix needs
-nothing but a browser on the same network:
-
-![The Aius DSP editor: six input level meters reading a 5.1 optical carrier
-above the EQ cascade plot, where the editable response curve is drawn over a
-live spectrum of the incoming audio](docs/reference/images/dsp-editor-hero.png)
-
-More of it, page by page, in the
-[user interface reference](docs/reference/user-interface.md).
 
 ## How it is built
 

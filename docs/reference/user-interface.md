@@ -280,10 +280,11 @@ replay and OTA wire shapes those suites pin — cross-checked against
 serializers. The captures were taken only after each page's data had populated.
 
 `images/dsp-editor-hero.png` is not one of the seven page captures: it is the
-README's hero, the same dashboard captured the same way and then cut to the top
-1,400 device pixels, which holds the *Signal flow* header, the input level
-meters and the EQ cascade plot. Everything below the curve controls is cut,
-including the rest of the EQ band's forms.
+README's hero, the same dashboard captured the same way and clipped in the
+browser between two measured element edges — flush with the top of the `#curve`
+canvas, down to just past `#spectrogram`. It therefore opens and closes on the
+two live graphics and carries everything between them. The *Signal flow* header
+and the input level meters sit above the cut and are absent.
 
 Four things in the images are authored rather than fixture-derived, because no
 fixture states them:
