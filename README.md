@@ -11,9 +11,9 @@ that make you reach for the remote, and the television gives you nothing to
 correct it with beyond a volume control.
 
 Aius takes the 5.1 stream before the television touches it and does the downmix
-itself. How much centre, how much surround, how much LFE, and what EQ each gets,
-are all yours to set — so the mix can be re-engineered for your own room and
-speakers until speech is intelligible at a volume that does not hurt.
+itself. The centre, surround and LFE levels and the EQ on each are yours to set,
+so you can re-engineer the mix for your own room and speakers until speech is
+intelligible at a volume that does not hurt.
 
 ```mermaid
 flowchart LR
@@ -36,58 +36,52 @@ flowchart LR
     class MIX point
 ```
 
-Everything to the left of the downmix exists to hand it discrete channels to
-work with; everything to the right keeps the result honest on the wire.
-
 The firmware runs on bench hardware today, taking a real optical source and
-driving a real optical sink. Nearly all of the engineering effort is in that
-firmware, so it is where the interesting parts of this repository are.
+driving a real optical sink. Nearly all the engineering effort went into it.
 
 ## What the firmware does
 
-The part that matters is the downmix. Six channels arrive and two leave, and
-every coefficient in that matrix is editable live, as is a biquad EQ cascade per
-input channel and on the output, an LFE fold with its own crossover, a surround
-decorrelation delay and a true-peak limiter on the tail. Lift the centre a
-couple of dB, pull the surrounds back, shelve the LFE where your speakers stop
-being useful, and dialogue comes back. You do that from a browser while the
-audio is playing, and hear each change at the next block boundary.
+- **Live downmix.** Six channels in, two out, every matrix coefficient editable
+  while the audio plays. Lift the centre a few dB, pull the surrounds back, and
+  speech comes forward.
+- **Per-channel EQ.** A biquad cascade on each input channel and on the output.
+- **LFE fold** with its own crossover, **surround decorrelation delay**, and a
+  **true-peak limiter** on the output tail.
+- **Edits apply at the next block boundary**, from a browser, with no restart.
+- **Three decoders in one resident slot** — DTS Core over a vendored `dcadec`,
+  AC-3 over a hardened liba52 fork, E-AC-3 over an FFmpeg fork. The pipeline
+  classifies each burst and swaps decoders as the broadcast changes.
+- **Output follows the source rate**: 32, 44.1 or 48 kHz.
+- **Reset-safe transmitter.** A board that is booting or has faulted stays
+  silent.
+- **Served from SD** — the editor, status, replay and upgrade pages all come off
+  the card.
+- **Signed OTA upgrades**, staged and Ed25519-verified on the device.
+- **PSRAM flight recorder** that can be triggered to capture the audio ring when
+  something goes wrong.
 
-Getting to those six channels is what the rest of the audio path is for. Three
-decoders share one resident slot — DTS Core over a vendored `dcadec`, AC-3 over
-a hardened liba52 fork, E-AC-3 over an FFmpeg fork — and the pipeline classifies
-each burst and swaps decoders as the broadcast changes. Output follows the
-source rate (32, 44.1 or 48 kHz), and the transmitter sits behind a reset-safe
-gate, so a booting or confused board is silent rather than noisy.
+## How it is built
 
-Around that, the board serves its editor and status pages off an SD card,
-accepts signed over-the-air firmware upgrades, and keeps a PSRAM flight recorder
-that can be triggered to capture the audio ring when something goes wrong.
-
-Three things shaped the code more than anything else:
-
-- **The DSP is bit-identical between host and target.** The same portable C
-  runs in host tests and on the Teensy, and the target build pins
+- **The DSP is bit-identical between host and target.** The same portable C runs
+  in host tests and on the Teensy, and the target build pins
   `-ffp-contract=off` so the ARM's fused multiply-add cannot round differently
-  from the host. Every golden vector therefore means something about the
-  shipped image, not just about the test machine.
-- **Memory budgets are enforced at link time, not by discipline.** The linker
-  script asserts an OCRAM heap floor, an ITCM ceiling and a DTCM stack floor. A
-  careless addition fails the build rather than bricking a boot, which is
-  exactly what it did once before those assertions existed.
+  from the host. A golden vector that passes on a laptop also holds on the board.
+- **Memory budgets are link-time asserts.** The linker script carries an OCRAM
+  heap floor, an ITCM ceiling and a DTCM stack floor, so an addition that will
+  not fit fails the build. Before those asserts existed, one bricked every boot
+  instead.
 - **Nothing runs unbounded on the audio path.** The runtime is a scheduler of
   bounded epochs with a per-checkpoint budget table, a fed watchdog, a retained
   boot ledger that survives reset, and a sticky recovery-safe mode.
-
-There is roughly twice as much test code as library code, spread across host
-suites that need no hardware to run. Exact figures, and the commands that
-produced them, are in [project scale](docs/reference/project-scale.md).
+- **Roughly twice as much test code as library code**, across host suites that
+  need no hardware to run. Exact figures, and the commands behind them, are in
+  [project scale](docs/reference/project-scale.md).
 
 ## Start here
 
 - [User interface](docs/reference/user-interface.md) — screenshots of the
-  editor where the mix is actually re-engineered, plus the status, replay and
-  upgrade pages the device serves off its SD card.
+  editor where the mix is set, plus the status, replay and upgrade pages the
+  device serves off its SD card.
 - [Signal path](docs/reference/signal-path.md) — the audio chain stage by
   stage, with the buffers, budgets and rounding behaviour of each.
 - [USB control protocol](docs/reference/usb-control-protocol.md), and the HTTP
@@ -107,17 +101,16 @@ KiCad environment. Each directory under [`docs/`](docs/) carries its own index.
 ## Hardware, and what is next
 
 The bench build is a socketed Teensy 4.1 wired to purchased TOSLINK modules on a
-proto board ([wiring guide](docs/guides/proto-optical-wiring.md)). That is
-enough to run and measure everything above, and it is what every measurement in
-this repository was taken on.
+proto board ([wiring guide](docs/guides/proto-optical-wiring.md)). Every
+measurement in this repository was taken on it.
 
 A carrier board exists as a captured, ERC-clean KiCad schematic: Teensy socket,
 optical in and out, the transmitter gate and a diagnostic bypass mux, native
 Ethernet with a magjack, a single rear USB-C 5 V input, keyed expansion headers,
 and a stock Hammond enclosure. It has not been laid out or ordered, and **no PCB
-order is authorised by the current state of this repository**. Two layers is a
-hypothesis rather than a decision; four happen only if a documented electrical
-constraint forces it.
+order is authorised by the current state of this repository**. Two layers is
+still an assumption; it goes to four only if a documented electrical constraint
+forces it.
 
 What remains is two-layer feasibility against a real fabricator stackup, then
 layout, then a prototype order.
