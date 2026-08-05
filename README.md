@@ -15,10 +15,29 @@ itself. How much centre, how much surround, how much LFE, and what EQ each gets,
 are all yours to set — so the mix can be re-engineered for your own room and
 speakers until speech is intelligible at a volume that does not hurt.
 
-```text
-TOSLINK in → S/PDIF capture → PCM / IEC 61937 classification
-  → DTS Core / AC-3 / E-AC-3 decode → downmix + EQ → gated TOSLINK out
+```mermaid
+flowchart LR
+    TV["TV or streaming box"] -->|optical| RX["S/PDIF capture"]
+    RX --> CLS{"PCM or<br/>IEC 61937?"}
+
+    CLS -->|stereo PCM| TRIM
+    CLS -->|DTS Core| DEC["decode to 5.1"]
+    CLS -->|AC-3| DEC
+    CLS -->|E-AC-3| DEC
+    DEC --> TRIM["per-channel trim and EQ"]
+
+    TRIM --> MIX["downmix matrix<br/>LFE fold, surround delay"]
+    MIX --> OEQ["output EQ"]
+    OEQ --> LIM["true-peak limiter"]
+    LIM --> GATE["reset-safe TX gate"]
+    GATE -->|optical| DAC["stereo DAC"]
+
+    classDef point stroke-width:3px
+    class MIX point
 ```
+
+Everything to the left of the downmix exists to hand it discrete channels to
+work with; everything to the right keeps the result honest on the wire.
 
 The firmware runs on bench hardware today, taking a real optical source and
 driving a real optical sink. Nearly all of the engineering effort is in that
