@@ -807,13 +807,23 @@ specified here. Strike items here in the commit that closes them.
       sits at ~61,000 B with a 59,008 B transient minimum and the
       largest free block tracking free space (60,648 B at exit), so
       there is no fragmentation trend either.
-    - **One stall in eight hours, at age 188.7 s: 121.4 ms, with
-      `last_deficit_ms` and `max_deficit_ms` both 0.** That is the
-      accepted ~118.8 ms residual class (defect 35, `e33022292`), not
-      the convicted 1.79 s family — no 1.79 s-class event occurred at
-      all. `flexspi2_sts1` read clean (`00000000`); the sample carries
-      `pc 0001f3e2` / `lr 0001f3d7`. Epoch-budget overruns moved 2 → 3
-      over the same window, consistent with that single event.
+    - **Zero SPONTANEOUS stalls in eight hours.** The watch logged one
+      stall event, at age 188.7 s: 121.4 ms, `last_deficit_ms` and
+      `max_deficit_ms` both 0. That event was operator-induced, not a
+      residual firing on its own — the watch's age 0 is 14:13:16.9, so
+      age 188.7 s is 14:16:25.6, inside the defect-35 mid-burst kill
+      campaign that was running concurrently (`d35_reproduce.py`
+      14:15:32 → `d35-repro-1.log` final tally 14:16:56, whose round 5
+      recorded `service_max_step_us` 118,768 µs and whose closing tally
+      recorded 121,193 µs against the witness's 121,363 µs). It is
+      therefore the accepted defect-35 parse pathology being provoked
+      on purpose (`e33022292`), and the remaining 7.9 h ran with no
+      stall of any class. No 1.79 s-class event occurred at any point;
+      `flexspi2_sts1` read clean (`00000000`) on the one sample, which
+      is the expected signature for the parse pathology rather than
+      the convicted FlexSPI2 bus-hold family. Epoch-budget overruns
+      moved 2 → 3 over the same window, i.e. the single induced event
+      is the only budget overrun in eight hours.
     - **New observation, not previously recorded: 336 of 13,851 status
       polls (2.4 %) drew no HTTP response inside the 4 s client
       timeout while the board stayed alive** (generation unchanged
