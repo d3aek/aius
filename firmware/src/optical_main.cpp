@@ -623,6 +623,12 @@ static volatile bool g_dsp_apply_pending;
  * portable snapshot contract and makes any future concurrent reader retry
  * rather than accept a straddled copy. */
 DMAMEM static AiusMeter g_meter;
+/* micros() of the last meter publish, for the wall-clock publish gate in
+ * enqueue(). Plain DTCM static (control state, not DMAMEM): written and read
+ * only in the AUDIO checkpoint, same single-writer context as the accumulators
+ * it gates, so it needs no barrier. Zero at boot yields exactly one harmless
+ * publish on the first metering block. */
+static uint32_t g_meter_last_publish_us;
 
 /* ------------------------------------------------------------------ */
 /* Measurement loopback capture -- item 3 slice 3                      */
@@ -1633,8 +1639,23 @@ private:
 				millis());
 		g_blocks++;
 		if (metering) {
-			if (g_meter.out_frames >=
-			    g_dsp_runtime.meter_window_frames) {
+			/* Publish on a steady WALL-CLOCK cadence, not a frame-count
+			 * window. The decoder produces blocks in bursts (fill the elastic
+			 * TX ring, then wait for the DMA drain), so "every N output frames"
+			 * lands at uneven wall-clock intervals -- which strobes the
+			 * analyser/spectrogram sequence the SD editor consumes and samples
+			 * the TX-queue sawtooth at a drifting phase (the jumpy "estimated
+			 * latency"). Gating on micros() pins the publish to
+			 * AIUS_DSP_RUNTIME_METER_PUBLISH_HZ and evenly spaces that sequence.
+			 * This stays in the AUDIO checkpoint and fires at most once per
+			 * period -- never more often than the frame-count gate did, and in
+			 * a catch-up drain strictly less -- so no block does more work and
+			 * the audio path is untouched (meter values are diagnostic). The
+			 * unsigned delta is wrap-safe across the ~71 min micros() wrap. */
+			const uint32_t now_us = micros();
+			if ((uint32_t)(now_us - g_meter_last_publish_us) >=
+			    (UINT32_C(1000000) / AIUS_DSP_RUNTIME_METER_PUBLISH_HZ)) {
+				g_meter_last_publish_us = now_us;
 				/* Sampled once per window, not per block: the accessor takes a
 				 * libm log10, and a diagnostic field does not buy a log10 in
 				 * the block callback (§Deciding principle). The reported value
