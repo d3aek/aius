@@ -2448,6 +2448,16 @@ describe('Aius SD DSP editor — curve and geometry maths', () => {
     expect(maths().sectionMagnitudeDb(section, 1000, 48000)).toBeCloseTo(0, 2);
   });
 
+  it('rolls a lowpass off above its corner and passes it below', () => {
+    const section = { type: 'lowpass', frequency_hz: 1000, q: 0.707, gain_db: 0 };
+    // Mirror of the highpass: -3 dB Butterworth corner, then ~12 dB/octave down
+    // above it, unity well below.
+    expect(maths().sectionMagnitudeDb(section, 1000, 48000)).toBeCloseTo(-3.01, 2);
+    expect(maths().sectionMagnitudeDb(section, 2000, 48000)).toBeLessThan(-12);
+    expect(maths().sectionMagnitudeDb(section, 8000, 48000)).toBeLessThan(-27);
+    expect(maths().sectionMagnitudeDb(section, 100, 48000)).toBeCloseTo(0, 2);
+  });
+
   it('contributes nothing for bypass, none, or a half-typed section', () => {
     for (const type of ['bypass', 'none']) {
       expect(maths().sectionMagnitudeDb({ type, frequency_hz: 1000, q: 1, gain_db: 6 }, 1000, 48000)).toBe(0);

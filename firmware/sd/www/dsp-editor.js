@@ -53,7 +53,7 @@
   const CURVE_MIN_HZ = 20;
   const CURVE_MAX_HZ = 20000;
   const CURVE_SPAN_DB = 12; /* the +-12 dB gain_db input bound in eqFields() */
-  const CURVE_FLOOR_DB = -120; /* a highpass is -inf at DC; floor it so the polyline stays finite */
+  const CURVE_FLOOR_DB = -120; /* a highpass is -inf at DC and a lowpass -inf at Nyquist; floor it so the polyline stays finite */
   const CURVE_STEPS = 192; /* polyline segments across the log-frequency axis */
   const CURVE_GRID_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
   const CURVE_GRID_DB = [-12, -6, 0, 6, 12];
@@ -227,6 +227,7 @@
     ['none', 'none (no section)'],
     ['bypass', 'bypass'],
     ['highpass', 'highpass'],
+    ['lowpass', 'lowpass'],
     ['peaking', 'peaking'],
   ];
   const EQ_SEED = { frequency_hz: 1000, q: 0.707, gain_db: 0 };
@@ -1111,7 +1112,7 @@
       for (let slot = 0; slot < EQ_SLOTS; slot++) {
         const path = `${base}.eq.${slot}`;
         const type = field(`${path}.type`).value;
-        const active = type === 'highpass' || type === 'peaking';
+        const active = type === 'highpass' || type === 'lowpass' || type === 'peaking';
         field(`${path}.frequency_hz`).disabled = !active;
         field(`${path}.q`).disabled = !active;
         field(`${path}.gain_db`).disabled = type !== 'peaking';
@@ -1127,7 +1128,7 @@
       setNumberField(`${path}.frequency_hz`, EQ_SEED.frequency_hz);
     }
     if (field(`${path}.q`).value.trim() === '') setNumberField(`${path}.q`, EQ_SEED.q);
-    if (type === 'highpass') setNumberField(`${path}.gain_db`, EQ_SEED.gain_db);
+    if (type === 'highpass' || type === 'lowpass') setNumberField(`${path}.gain_db`, EQ_SEED.gain_db);
     else if (field(`${path}.gain_db`).value.trim() === '') setNumberField(`${path}.gain_db`, EQ_SEED.gain_db);
   }
 
@@ -2293,12 +2294,12 @@
 
   const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 
-  /* Only a highpass or a peaking section bends the response, and only with a
-   * usable frequency and Q -- "none" and "bypass" contribute nothing, and so
-   * does a half-typed section. */
+  /* Only a highpass, lowpass or peaking section bends the response, and only
+   * with a usable frequency and Q -- "none" and "bypass" contribute nothing,
+   * and so does a half-typed section. */
   const isActiveSection = (section) =>
     Boolean(section) &&
-    (section.type === 'highpass' || section.type === 'peaking') &&
+    (section.type === 'highpass' || section.type === 'lowpass' || section.type === 'peaking') &&
     Number.isFinite(section.frequency_hz) &&
     section.frequency_hz > 0 &&
     Number.isFinite(section.q) &&
@@ -2318,6 +2319,16 @@
         a0: 1 + alpha / a,
         a1: -2 * cos0,
         a2: 1 - alpha / a,
+      };
+    }
+    if (section.type === 'lowpass') {
+      return {
+        b0: (1 - cos0) / 2,
+        b1: 1 - cos0,
+        b2: (1 - cos0) / 2,
+        a0: 1 + alpha,
+        a1: -2 * cos0,
+        a2: 1 - alpha,
       };
     }
     return {
