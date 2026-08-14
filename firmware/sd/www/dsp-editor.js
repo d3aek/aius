@@ -748,10 +748,45 @@
     input.dispatchEvent(new Event('input'));
   }
 
+  /* Whether a field already holds the exact value its reset would write, so a
+   * reset that would do nothing can look inert and a reset that WOULD change the
+   * section can say so. Mirrors resetField()'s target selection (factory value,
+   * 'none' for an absent EQ type, empty for an absent number). */
+  function fieldIsAtFactory(input) {
+    const path = input.dataset.field;
+    const value = factoryValueOf(FACTORY_DEFAULTS, path);
+    if (input.dataset.kind === 'bool') return input.checked === Boolean(value);
+    if (input.dataset.kind === 'eq-type') return input.value === (typeof value === 'string' ? value : 'none');
+    const raw = input.value.trim();
+    if (!Number.isFinite(value)) return raw === '';
+    return raw !== '' && numberOf(path, NaN) === value;
+  }
+
+  /* data-dirty on a reset means "clicking me would change something" -- the CSS
+   * gives it the same amber the edited pill uses, so a dirty SECTION reads at a
+   * glance from its own reset. A disabled field's reset is never dirty (nothing
+   * the device reads is stranded behind it). */
   function syncResetButtons() {
     for (const input of document.querySelectorAll('[data-field]')) {
       const reset = $(`r:${input.dataset.field}`);
-      if (reset) reset.disabled = input.disabled;
+      if (reset) {
+        reset.disabled = input.disabled;
+        reset.dataset.dirty = String(!input.disabled && !fieldIsAtFactory(input));
+      }
+    }
+    /* The EQ rows carry ONE reset for the whole section (type + freq + q + gain),
+     * so it is dirty when any of that row's live fields differs from factory. */
+    for (const base of eqSlotBases()) {
+      for (let slot = 0; slot < EQ_SLOTS; slot++) {
+        const sectionReset = $(`sr:${base}.eq.${slot}`);
+        if (!sectionReset) continue;
+        sectionReset.dataset.dirty = String(
+          ['type', 'frequency_hz', 'q', 'gain_db'].some((key) => {
+            const input = field(`${base}.eq.${slot}.${key}`);
+            return !input.disabled && !fieldIsAtFactory(input);
+          }),
+        );
+      }
     }
   }
 

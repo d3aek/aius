@@ -1985,6 +1985,28 @@ describe('Aius SD DSP editor — ergonomics', () => {
     expect(el('r:matrix.center_gain_linear').disabled).toBe(false);
   });
 
+  it('flags a reset as dirty only when it would change the field or section', async () => {
+    await boot();
+    // Factory-fresh: every reset is inert.
+    expect(el('r:matrix.center_gain_linear').dataset.dirty).toBe('false');
+    expect(el('sr:input_channels.fr.eq.0').dataset.dirty).toBe('false');
+
+    // A matrix gain off factory lights its own reset.
+    await setNumber('matrix.center_gain_linear', '1.5');
+    expect(el('r:matrix.center_gain_linear').dataset.dirty).toBe('true');
+
+    // Adding a section to a factory-none row lights the row reset.
+    await setChoice('input_channels.fr.eq.0.type', 'lowpass');
+    expect(el('sr:input_channels.fr.eq.0').dataset.dirty).toBe('true');
+
+    // Resetting each returns it to inert.
+    el('r:matrix.center_gain_linear').click();
+    el('sr:input_channels.fr.eq.0').click();
+    await settle();
+    expect(el('r:matrix.center_gain_linear').dataset.dirty).toBe('false');
+    expect(el('sr:input_channels.fr.eq.0').dataset.dirty).toBe('false');
+  });
+
   /* THE defaults pin. Resetting every control and collecting the model must
    * reproduce the factory fixture's five editable groups exactly -- and the
    * fixture itself is asserted equal to firmware/config/optical_dsp.json

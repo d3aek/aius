@@ -25,6 +25,7 @@ code{color:var(--aius-accent-info)}
 .field__reset{position:absolute;top:6px;right:8px;font-size:.62rem;color:var(--aius-text-disabled);background:none;border:1px solid var(--aius-border-strong);border-radius:4px;padding:1px 5px;cursor:pointer}
 .field__reset:hover{color:var(--aius-text-secondary);border-color:var(--aius-border-emphasis)}
 .field__reset:disabled{opacity:.35;cursor:default}
+.field__reset[data-dirty="true"]{color:var(--aius-text-warning);border-color:var(--aius-accent-warning)}
 .field input,.field select{width:100%}
 /* Reserved so a validation message never reflows the form. */
 .field__error{color:var(--aius-text-danger);font-size:.72rem;min-height:1.1em}
