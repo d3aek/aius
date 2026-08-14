@@ -105,7 +105,11 @@ static int test_every_model_field_resolves_and_state_resets(void)
 
 	model.output_eq_count = 2u;
 	model.output_eq[0] = (AiusDspModelEq){1u, 90.0, 0.707, 0.0};
-	model.output_eq[1] = (AiusDspModelEq){2u, 2400.0, 1.2, 4.5};
+	/* type 3 = lowpass: like highpass it ignores gain_db (4.5 here is
+	 * validated-but-unused), proving the resolver's lowpass branch rather
+	 * than the peaking fall-through. Peaking stays covered by the input
+	 * channel section below. */
+	model.output_eq[1] = (AiusDspModelEq){3u, 2400.0, 1.2, 4.5};
 	model.input_channels[0].gain_db = -3.0;
 	model.input_channels[0].eq_count = 2u;
 	model.input_channels[0].eq[0] =
@@ -137,7 +141,7 @@ static int test_every_model_field_resolves_and_state_resets(void)
 	CHECK(runtime.output_eq_count == 2u);
 	expected = aius_biquad_highpass(96000.0, 90.0, 0.707);
 	CHECK(biquad_equal(runtime.output_eq[0], expected));
-	expected = aius_biquad_peaking(96000.0, 2400.0, 1.2, 4.5);
+	expected = aius_biquad_lowpass(96000.0, 2400.0, 1.2);
 	CHECK(biquad_equal(runtime.output_eq[1], expected));
 	CHECK(all_zero(runtime.output_eq_state,
 	               sizeof(runtime.output_eq_state)));

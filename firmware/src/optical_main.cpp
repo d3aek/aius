@@ -2072,6 +2072,7 @@ static FLASHMEM const char *http_dsp_eq_type(uint8_t type)
 	case 0: return "bypass";
 	case 1: return "highpass";
 	case 2: return "peaking";
+	case 3: return "lowpass";
 	default: return nullptr;
 	}
 }

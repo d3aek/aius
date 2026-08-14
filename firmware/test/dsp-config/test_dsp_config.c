@@ -968,6 +968,32 @@ static void test_eq_type(void)
 		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
 		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
 		AIUS_DSP_CONFIG_ERR_INVALID_EQ_TYPE, "missing eq type");
+
+	/* lowpass parses to type 3, like highpass a gain-less filter. */
+	AiusDspModel m;
+	memset(&m, 0xa5, sizeof(m));
+	AiusDspConfigErrorCode error = parse(
+		"{\"source\":\"sd\",\"config_generation\":0,\"sample_rate_hz\":48000,"
+		"\"features\":{\"input_eq\":true,\"matrix\":true,\"output_eq\":true,"
+		"\"limiter\":true,\"meters\":true},"
+		"\"input_channels\":{\"fl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"fr\":{\"gain_db\":0,\"eq\":[]},\"fc\":{\"gain_db\":0,\"eq\":[]},"
+		"\"lfe\":{\"gain_db\":0,\"eq\":[]},\"sl\":{\"gain_db\":0,\"eq\":[]},"
+		"\"sr\":{\"gain_db\":0,\"eq\":[]}},"
+		"\"output_eq\":[{\"type\":\"lowpass\",\"frequency_hz\":12000,\"q\":0.7071,"
+		"\"gain_db\":0}],"
+		"\"matrix\":{\"center_gain_linear\":0,\"surround_gain_linear\":0,"
+		"\"lfe_gain_linear\":0,\"lfe_crossover_hz\":120,"
+		"\"headroom_linear\":1,\"clipfree\":false},"
+		"\"limiter\":{\"enabled\":false,\"threshold_dbfs\":0,\"attack_ms\":1,"
+		"\"release_ms\":100,\"lookahead_ms\":0},\"base_generation\":0}",
+		&m);
+	check(error == AIUS_DSP_CONFIG_OK, "lowpass: got error %d (%s)", (int)error,
+	      aius_dsp_config_error_message(error));
+	check(error != AIUS_DSP_CONFIG_OK ||
+	          (m.output_eq_count == 1u && m.output_eq[0].type == 3u &&
+	           m.output_eq[0].frequency_hz == 12000.0),
+	      "lowpass: output_eq[0] round-trip wrong");
 }
 
 static void test_too_many_eq(void)

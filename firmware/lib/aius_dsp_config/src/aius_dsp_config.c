@@ -356,6 +356,8 @@ static FLASHMEM AiusDspConfigErrorCode parse_eq_section(AiusJsonCursor *parser,
 					type = 1u;
 				else if (aius_json_key_is(type_str, type_len, type_overflow, "peaking"))
 					type = 2u;
+				else if (aius_json_key_is(type_str, type_len, type_overflow, "lowpass"))
+					type = 3u;
 				else
 					return AIUS_DSP_CONFIG_ERR_INVALID_EQ_TYPE;
 				have_type = 1;

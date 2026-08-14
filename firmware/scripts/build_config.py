@@ -40,7 +40,7 @@ LIMITER_LOOKAHEAD_MAX_MS = 5.0
 LFE_CROSSOVER_MIN_HZ = 20.0
 LFE_CROSSOVER_MAX_HZ = 500.0
 
-EQ_TYPES = {"bypass": 0, "highpass": 1, "peaking": 2}
+EQ_TYPES = {"bypass": 0, "highpass": 1, "peaking": 2, "lowpass": 3}
 INPUT_CHANNELS = ("fl", "fr", "fc", "lfe", "sl", "sr")
 FEATURE_KEYS = ("input_eq", "matrix", "output_eq", "limiter", "meters")
 # `layout_aware` is REQUIRED here and OPTIONAL in the PUT validator, and the

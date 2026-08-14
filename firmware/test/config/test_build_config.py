@@ -56,9 +56,10 @@ def test_valid_fixture_and_model_bound():
     # SUMMING-layout pad, so the downmix resolves 1.0 for a block whose layout
     # sums nothing (mono, and stereo FL|FR pass-through, which was paying 6.02 dB
     # for protection it could not need). It is ON in the factory model; setting it
-    # false restores the uniform pad on every layout.
+    # false restores the uniform pad on every layout. The 0 before clipfree is
+    # surround_delay_ms (audio-quality item 4), appended to the matrix struct.
     assert (
-        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 1}"
+        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 0, 1}"
         in header
     )
     # The generated header reuses the parser's canonical production model
@@ -144,7 +145,7 @@ def test_eq_sections_types_bounds_and_capacity():
     expect_invalid(config, "exceeds 2 EQ sections")
 
     config = copy.deepcopy(fixture)
-    config["output_eq"] = [{"type": "lowpass", "frequency_hz": 1000, "q": 1, "gain_db": 0}]
+    config["output_eq"] = [{"type": "lowshelf", "frequency_hz": 1000, "q": 1, "gain_db": 0}]
     expect_invalid(config, "unsupported EQ type")
 
     config = copy.deepcopy(fixture)
@@ -164,6 +165,11 @@ def test_eq_sections_types_bounds_and_capacity():
         {"type": "highpass", "frequency_hz": 120, "q": 0.7071, "gain_db": 0}
     ]
     # A bounded per-input EQ section is accepted.
+    build_config.generate_header(config)
+
+    config = copy.deepcopy(fixture)
+    config["output_eq"] = [{"type": "lowpass", "frequency_hz": 12000, "q": 0.7071, "gain_db": 0}]
+    # lowpass is a bounded non-bypass type, accepted like highpass.
     build_config.generate_header(config)
 
     # A bypass section ignores the frequency/Q/gain bounds.
@@ -215,7 +221,7 @@ def test_matrix_and_limiter_bounds():
     config = copy.deepcopy(fixture)
     config["matrix"]["layout_aware"] = False
     assert (
-        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 0}"
+        "{0.70710678118654746, 0.70710678118654746, 0.31622776601683794, 120, 0.5, 0, 0, 0}"
         in build_config.generate_header(config)
     )
 

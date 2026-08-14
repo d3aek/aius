@@ -35,7 +35,7 @@ typedef enum {
 } AiusDspConfigErrorCode;
 
 typedef struct {
-	uint8_t type;          /* 0=bypass, 1=highpass, 2=peaking -- matches build_config.py EQ_TYPES */
+	uint8_t type;          /* 0=bypass, 1=highpass, 2=peaking, 3=lowpass -- matches build_config.py EQ_TYPES */
 	double frequency_hz;
 	double q;
 	double gain_db;

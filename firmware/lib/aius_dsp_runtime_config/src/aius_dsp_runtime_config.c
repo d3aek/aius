@@ -27,6 +27,9 @@ resolve_eq(const AiusDspModelEq *section, uint32_t rate)
 	if (section->type == 1u)
 		return aius_biquad_highpass(
 			(double)rate, section->frequency_hz, section->q);
+	if (section->type == 3u)
+		return aius_biquad_lowpass(
+			(double)rate, section->frequency_hz, section->q);
 	return aius_biquad_peaking(
 		(double)rate, section->frequency_hz, section->q,
 		section->gain_db);
