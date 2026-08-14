@@ -2982,21 +2982,23 @@
     $(mountId).append(row);
   }
 
-  /* What the snapshot SAID, printed, and where the needle is being driven to.
-   * The printed number is the published instant; the bar beside it is the
-   * needle, moved by the frame ticker (paintBar) rather than by this call. */
+  /* Where the needle is being driven to. Only the TARGET moves here, at the 10 Hz
+   * poll; the bar AND its adjacent number are both painted from the needle by the
+   * frame ticker (paintBar), so they advance on one 25 fps cadence rather than the
+   * number snapping 10x/sec beside a gliding bar. */
   function setBar(id, dbfs) {
     state.levelTargets.set(id, Number.isFinite(dbfs) ? dbfs : null);
-    $(`${id}-value`).textContent = formatDb(dbfs);
   }
 
   /* Where the needle IS -- or null, which is a bar with no data at all: it
    * reads as the idle zone at zero width rather than as a needle resting on the
-   * floor, which is a level. */
+   * floor, which is a level. The number beside the bar is written from the same
+   * needle value, so the two never disagree on cadence. */
   function paintBar(id, dbfs) {
     const fill = $(`${id}-fill`);
     fill.style.width = `${(levelFraction(dbfs) * 100).toFixed(1)}%`;
     fill.dataset.zone = levelZone(dbfs);
+    $(`${id}-value`).textContent = formatDb(dbfs);
   }
 
   /* ---- visual surface: canvas backing store ------------------------------
