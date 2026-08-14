@@ -102,6 +102,12 @@
   const LOAD_DANGER_PERCENT = 90;
   const LIMITER_SPAN_DB = 24; /* gain-reduction bar + history full scale */
   const LIMITER_HISTORY_MAX = 128; /* ~12.8 s of history at the 10 Hz poll */
+  /* estimated_latency_us is the transmit-ring occupancy at the publish instant --
+   * a sawtooth as the decoder's bursts land between DMA drains -- so a raw read
+   * jumps by a burst while the true delay is near-fixed. The page shows the
+   * MEDIAN of the last ~1.6 s of polls: robust to the sawtooth's peaks, and it
+   * settles on the typical occupancy rather than whichever phase this poll caught. */
+  const LATENCY_SMOOTH_SAMPLES = 16;
 
   /* Dashboard is a per-browser VIEW preference, never device config, and the
    * only thing left to remember is WHICH of the two modes the page opens in --
@@ -325,6 +331,9 @@
     /* Page-side ring of polled limiter_gain_reduction_db values; the device
      * publishes an instant, never a history. */
     limiterHistory: [],
+    /* Page-side ring of polled estimated_latency_us, median-smoothed for display
+     * (the wire value is an instantaneous queue-occupancy sawtooth). */
+    latencyHistory: [],
     /* Browser-local dashboard preference and the observer that refits the
      * canvases when a band's width changes. Neither is part of the form model
      * and neither dispatches input. */
@@ -2205,6 +2214,21 @@
     $(`${id}-rms`).textContent = formatDb(rms);
   }
 
+  /* Push one polled latency sample and return the median of the recent ring, so
+   * the readout reflects the typical delay rather than this poll's sawtooth
+   * phase. A non-finite sample leaves the ring untouched. Returns null while the
+   * ring is empty (no finite sample yet). */
+  function smoothedLatencyUs(raw) {
+    if (Number.isFinite(raw)) {
+      state.latencyHistory.push(raw);
+      if (state.latencyHistory.length > LATENCY_SMOOTH_SAMPLES) state.latencyHistory.shift();
+    }
+    if (state.latencyHistory.length === 0) return null;
+    const sorted = [...state.latencyHistory].sort((a, b) => a - b);
+    const middle = sorted.length >> 1;
+    return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
   function renderMeters(meters) {
     setMeterState('live');
     /* Six positional entries in AIUS_CH_* order; position is the identity. */
@@ -2222,9 +2246,8 @@
 
     $('meter-sequence').textContent = Number.isFinite(meters.sequence) ? String(meters.sequence) : '--';
     $('meter-queue').textContent = Number.isFinite(meters.queue_frames) ? `${meters.queue_frames} frames` : '--';
-    $('meter-latency').textContent = Number.isFinite(meters.estimated_latency_us)
-      ? shared.formatUs(meters.estimated_latency_us)
-      : '--';
+    const latencyUs = smoothedLatencyUs(meters.estimated_latency_us);
+    $('meter-latency').textContent = latencyUs === null ? '--' : shared.formatUs(latencyUs);
     const budget = dspBudgetCycles(Number.isFinite(meters.sample_rate_hz) ? meters.sample_rate_hz : 0);
     $('meter-cycles').textContent =
       Number.isFinite(meters.dsp_cycles_last) || Number.isFinite(meters.dsp_cycles_max)
@@ -3953,6 +3976,7 @@
     $('meter-load-peak').dataset.zone = 'idle';
     driveLimiter(null);
     state.limiterHistory = [];
+    state.latencyHistory = [];
     drawLimiterHistory();
     /* Every needle back to its floor, not decaying from wherever it stood: the
      * data is GONE, and a bar gliding down from a level nothing is publishing

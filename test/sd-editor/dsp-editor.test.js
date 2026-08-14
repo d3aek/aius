@@ -1551,6 +1551,20 @@ describe('Aius SD DSP editor — meters', () => {
     expect(el('meter-summary').textContent).toContain('-1.8');
   });
 
+  it('median-smooths the latency readout past a single sawtooth spike', async () => {
+    const steady = { ...fixture('meters-snapshot.json'), estimated_latency_us: 5333 };
+    await boot({ meters: steady });
+    // A run of steady polls settles the median at the typical delay.
+    await vi.advanceTimersByTimeAsync(1000);
+    const settled = el('meter-latency').textContent;
+    expect(settled).not.toBe('--');
+
+    // One poll catching a full-burst spike must not move the median.
+    device.meters = { ...steady, estimated_latency_us: 40000 };
+    await vi.advanceTimersByTimeAsync(100);
+    expect(el('meter-latency').textContent).toBe(settled);
+  });
+
   it('renders levels at the -120 dBFS floor as silence, not as a number', async () => {
     await boot({ meters: fixture('meters-silent.json') });
     await vi.advanceTimersByTimeAsync(100);
