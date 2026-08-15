@@ -143,7 +143,7 @@ S/PDIF path (3.3 V logic, ≥16 Mbit/s) is a short L1 run over L2 GND, far insid
 the FR-4 bandwidth. This is a feasibility argument; final continuity is enforced
 by DRC/pour review at H3c.
 
-### Phase H2c — mechanical and placement feasibility
+### Phase H2c — mechanical and placement feasibility ✓ SHIPPED 2026-08-15
 
 ```yaml
 outcome: A dimensioned board outline (≤100×100 mm) and connector/module placement
@@ -158,6 +158,29 @@ targeted-proof: outline + connector datums checked against the enclosure interna
   collision; rear-panel cutout positions consistent across the three rear parts.
 unit: parent-only
 ```
+
+**Result (2026-08-15).** From the filed Hammond drawing
+(`https://www.hammfg.com/part/1455N1201BK`) and STEP:
+
+- **Extrusion** 100.00 × 53.00 mm external, ~49.70 mm internal height, **designed
+  for a 100 mm-wide PC board** that slides into the side slots; 120.00 mm long.
+- **Board outline: 100 mm wide (slot dimension) × ≤100 mm long.** The width is
+  fixed by the extrusion slots; length runs along the 120 mm barrel with ~20 mm to
+  spare and stays within the spec's ≤100×100 cap and PCBWay's ≤100×100 price tier.
+  Exact width trim (typ. ~99.5 mm to clear the slots) and the slot height are
+  finalised at H3b against the STEP.
+- **Rear-panel window 97.10 × 48.70 mm** (bezel opening) is the connector budget.
+  The rear row — 2× TOSLINK (~14 mm each), RJ45 magjack (~16 mm), USB-C (~9 mm),
+  6-pin Program header (~8 mm) — sums to ~75–85 mm with gaps, inside the 97.10 mm
+  width; every connector height is well inside 48.70 mm. Fits with margin.
+- **Height stack:** placing the carrier on a lower extrusion slot leaves ~40 mm
+  above for the socketed-Teensy stack (~10 mm) and the magjack, clear of the lid.
+  microSD access and the front-edge expansion headers + Tag-Connect have reach.
+
+No connector-to-wall or module-to-lid collision at this granularity. Failure
+modes that would block regardless of layer count (outline, panel alignment,
+collision) are cleared; exact cutout coordinates and slot selection are set at
+H3b placement against the STEP assembly.
 
 ### Phase H2d — layer verdict and cost refresh (owner gate) ✓ SHIPPED 2026-08-15
 
