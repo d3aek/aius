@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-08-04
+updated: 2026-08-15
 toc: true
 ---
 
@@ -18,6 +18,42 @@ points at authoritative homes; it never duplicates their content.** An item
 with its own section in another plan carries a one-line gist and a link;
 items whose only prior record was a commit message or plan aside are fully
 specified here. Strike items here in the commit that closes them.
+
+## Deferred from the 2026-08-15 OTA session
+
+Shipped that session (context, not open items): lowpass EQ type (`6ead65709`
+firmware + `9f8234710` editor), steady wall-clock meter-publish cadence
+(`461b46552`), the biquad-designer-to-FLASHMEM ITCM fix that funds them
+(`db3f554aa`), and three DSP-editor fixes deployed to the card — level-bar
+numbers on the ballistic cadence (`6560b0f0f`), dirty-vs-factory reset markers
+(`cc8c800b0`), and median-smoothed estimated-latency (`197523cba`). Image B
+(current master + those) was OTA-flashed and is decoding cleanly. Two loose
+ends left open:
+
+- **Deployed image revision stamp is a commit behind.** The running OTA image
+  was built from the working tree just before the ITCM-funding commit
+  (`db3f554aa`) landed, so it reports `197523cbab76`, not `db3f554aa8df`. The
+  code is correct — it cannot link without the biquad-designer FLASHMEM move,
+  and lowpass + meter-cadence are in it — only the provenance stamp is wrong.
+  Fix: a clean rebuild from committed `db3f554aa` (or later) and one OTA
+  reflash. No functional issue; purely cosmetic provenance.
+
+- **`tx_underrun_frames` counts idle silence and is a `uint32_t`.**
+  `aius_spdif_tx24_fill()` counts every substituted-silence frame, including
+  during no-carrier / gate-closed idle (~48,000/s), so the counter wraps after
+  ~24.9 h of continuous idle. Confirmed **benign**: the only decision-consumer,
+  the recorder underrun trigger (`aius_recorder.c`), is wrap-safe
+  (resync-on-decrease, lines 162 & 285) AND idle-safe (qualifies only when
+  `gate_open`, line 176), so the overflow is cosmetic — the `/api/status`
+  lifetime count merely under-reports after a wrap. Surfaced 2026-08-15 when it
+  read 1,876,403,584 (≈10.9 h of silence) after a ~11 h no-source window
+  post-flash. Options, cheapest first: (a) widen
+  `AiusSpdifTx24Ring.underruns` to `uint64_t` (never wraps, keeps current
+  meaning); (b) increment only when the gate is open — a true real-glitch
+  metric that also never overflows, but it touches the transmit DMA ISR
+  (`aius_spdif_tx24_fill`) and wants the same adversarial hot-path validation
+  the meter-cadence change got. Pre-existing design, not from this session's
+  changes.
 
 ## In flight at handoff
 
