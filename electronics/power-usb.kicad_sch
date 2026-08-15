@@ -2004,15 +2004,15 @@
 			(at 251.46 104.14 0)
 			(effects (font (size 1.27 1.27)) (justify left))
 		)
-		(property "Value" "292303-1"
+		(property "Value" "292303-7"
 			(at 251.46 129.54 0)
 			(effects (font (size 1.27 1.27)) (justify left))
 		)
-		(property "Footprint" "Connector_USB:USB_A_TE_292303-1_Horizontal"
+		(property "Footprint" "Connector_USB:USB_A_TE_292303-7_Horizontal"
 			(at 261.62 116.84 0)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)
-		(property "MPN" "TE 292303-1"
+		(property "MPN" "TE 292303-7"
 			(at 261.62 116.84 0)
 			(effects (font (size 1.27 1.27)) (hide yes))
 		)

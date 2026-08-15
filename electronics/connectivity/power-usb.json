@@ -50,9 +50,9 @@
     {
       "ref": "J2",
       "lib_id": "Connector:USB_A",
-      "value": "292303-1",
-      "mpn": "TE 292303-1",
-      "footprint": "Connector_USB:USB_A_TE_292303-1_Horizontal",
+      "value": "292303-7",
+      "mpn": "TE 292303-7",
+      "footprint": "Connector_USB:USB_A_TE_292303-7_Horizontal",
       "at": [261.62, 116.84],
       "desc": "internal USB-A receptacle (protected 5V)"
     },
