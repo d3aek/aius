@@ -215,7 +215,7 @@ fabs ([aius-cost-model.md](aius-cost-model.md)).
 
 Only starts once H2d fixes the stackup and layer count.
 
-### Phase H3a — footprint library
+### Phase H3a — footprint library ✓ SHIPPED 2026-08-15
 
 ```yaml
 outcome: A complete, ERC-clean aius footprint library — .pretty with a .kicad_mod
@@ -232,8 +232,8 @@ targeted-proof: full-severity ERC (scripts/erc.sh --all) reports 0
 unit: parent-only
 ```
 
-**Progress (2026-08-15).** Full-severity ERC driven from **13 → 4**
-footprint_link_issues:
+**Result (2026-08-15): full-severity ERC 0 violations — the schematic is
+footprint-clean.** Driven from 13 → 0:
 
 - **Map-to-standard (done).** The four expansion JST GH headers → stock
   `Connector_JST:JST_GH_BM0NB-GHS-TBT_1x0N-1MP_P1.25mm_Vertical`; the Tag-Connect
@@ -243,16 +243,23 @@ footprint_link_issues:
 - **USB-A re-selected (done).** The internal USB-A moved from TE `292303-1` (no
   KiCad footprint, no filed datasheet) to the pin-identical `292303-7` variant of
   the same series, KiCad-native as `Connector_USB:USB_A_TE_292303-7_Horizontal`.
-- **Remaining: 4 custom land patterns.** `Cliff_ORJ5` / `Cliff_OTJ5` (RS PRO
-  ORJ-5/OTJ-5, 3×Ø0.8 signal @ 2.54 mm + 3×Ø2.0 pegs — verified NOT compatible
-  with KiCad's Toshiba TORX170 4-pin/2-post footprint), `Pulse_J0011D21BNL`
-  (8×Ø0.89 signal staggered + 4×Ø1.02 LED + 2×Ø3.20 posts + 2×Ø1.60 shield), and
-  the mixed-pitch `Teensy41_Sockets_...` (2×24 @ 2.54 mm + 6-pin @ 2.00 mm MMS +
-  5-pin @ 2.54 mm). Signal-pad geometry is unambiguous from the datasheets; the
-  exact peg / staggered / inter-cluster XY will be taken from the filed AP214 STEP
-  models (authoritative CAD) rather than the datasheet raster, then ERC-cleared to
-  0 and pad-by-pad verified at the recorded pre-order footprint gate
-  ([aius-h1-schematic.md](aius-h1-schematic.md#milestones)).
+- **4 custom land patterns (built).** `lib/aius.pretty/` + `fp-lib-table`:
+  `Cliff_ORJ5_TOSLINK` / `Cliff_OTJ5_TOSLINK` (RS PRO ORJ-5/OTJ-5, 3×Ø0.8 signal
+  @ 2.54 mm + 3×Ø2.0 NPTH pegs — verified NOT compatible with KiCad's Toshiba
+  TORX170 4-pin/2-post footprint), `Pulse_J0011D21BNL_TabDown` (8×Ø0.89 staggered
+  signal + 4×Ø1.02 LED + 2×Ø1.60 shield + 2×Ø3.20 NPTH posts), and the mixed-pitch
+  `Teensy41_Sockets_SSW-124_MMS-103_SSW-105` (2×24 @ 2.54 mm + 6-pin @ 2.00 mm MMS
+  Ethernet + 5-pin @ 2.54 mm USB host, generated from a reviewable pad table by
+  `lib/gen_teensy_footprint.py`, pads named to the Teensy pin ids so the partial
+  Teensy41 symbol maps by name). Signal-pad geometry is datasheet-exact and the
+  Teensy main-row order is exact from PJRC card11a; the optical peg / magjack
+  staggered / Teensy underside-cluster XY are datasheet best-estimates flagged for
+  pad-by-pad verification against the physical parts (on the bench) at the recorded
+  pre-order footprint gate ([aius-h1-schematic.md](aius-h1-schematic.md#milestones)).
+
+**Residual for H3d/pre-order:** the peg/staggered/underside XY verification above
+does not block H3b/H3c (it affects physical seating, not the netlist or routing
+topology), but it is a hard pre-order gate item.
 
 ### Phase H3b — netlist and placement
 

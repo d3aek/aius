@@ -1,0 +1,10 @@
+(fp_lib_table
+	(version 7)
+	(lib
+		(name "aius")
+		(type "KiCad")
+		(uri "${KIPRJMOD}/lib/aius.pretty")
+		(options "")
+		(descr "Aius custom PCB footprints (parts not in the stock KiCad libraries): RS PRO ORJ-5/OTJ-5 TOSLINK, Pulse J0011D21BNL magjack, Teensy 4.1 socket composite")
+	)
+)
