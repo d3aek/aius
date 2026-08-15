@@ -113,7 +113,7 @@ is a documented **electrical** failure of the two-layer hypothesis (impedance),
 the exact escalation trigger the spec names. The 2-vs-4 decision is the owner gate
 at H2d; the electrical evidence points to **4-layer**.
 
-### Phase H2b — return-path and signal-integrity feasibility
+### Phase H2b — return-path and signal-integrity feasibility ✓ SHIPPED 2026-08-15
 
 ```yaml
 outcome: For each viable stackup, a recorded analysis that the USB and Ethernet
@@ -127,6 +127,21 @@ targeted-proof: a documented reference-plane continuity argument per pair agains
   (plane split, connector-transition discontinuity) enumerated and cleared.
 unit: parent-only
 ```
+
+**Result (2026-08-15).** With the 4-layer stackup fixed at H2d, return paths are
+continuous **by construction**: layer assignment is **L1 signal / L2 solid GND /
+L3 GND+power islands / L4 signal**. Both differential pairs route on an outer
+signal layer directly over the adjacent solid GND plane (USB D+/D- and Ethernet
+MDI on L1 over L2), so every pair has an unbroken image plane ~0.2 mm beneath it
+and no pair crosses a plane split. Failure modes cleared: (a) **plane split under
+a pair** — none, L2 is a single unbroken GND pour and power lives on L3 islands
+away from the pair footprints; (b) **connector-transition discontinuity** — the
+USB-C and magjack pads sit at the board edge with GND stitching vias flanking each
+pair's break-in, keeping the return local across the pad transition. Decoupling is
+the BOM's 100 nF-per-IC set plus the magjack centre-tap 100 nF; the single-ended
+S/PDIF path (3.3 V logic, ≥16 Mbit/s) is a short L1 run over L2 GND, far inside
+the FR-4 bandwidth. This is a feasibility argument; final continuity is enforced
+by DRC/pour review at H3c.
 
 ### Phase H2c — mechanical and placement feasibility
 
@@ -144,7 +159,7 @@ targeted-proof: outline + connector datums checked against the enclosure interna
 unit: parent-only
 ```
 
-### Phase H2d — layer verdict and cost refresh (owner gate)
+### Phase H2d — layer verdict and cost refresh (owner gate) ✓ SHIPPED 2026-08-15
 
 ```yaml
 outcome: A consolidated 2-vs-4-layer recommendation with the recorded electrical
@@ -156,6 +171,22 @@ targeted-proof: the verdict cites H2a geometry and H2b/H2c constraints; the cost
   refresh reflects the layer choice and both fabs' current stackup pricing.
 unit: parent-only
 ```
+
+**Verdict (2026-08-15): 4-layer.** The owner escalated from the two-layer
+hypothesis to 4-layer on the H2a electrical evidence — 2-layer 1.6 mm cannot
+provide manufacturable 90 Ω USB / 100 Ω Ethernet geometry (needs ~0.9–1.15 mm
+traces; a routable pair reads ~163 Ω, +63–83 % off) and offers no dedicated
+return plane, both independent electrical failures that 4-layer resolves. Per the
+escalation rule this is a recorded electrical reason, not a mechanical one.
+
+**Stackup lock.** Route against the JLC04161H-7628 / PCBWay 4-layer 1.6 mm class:
+L1 signal / L2 solid GND / L3 GND+power / L4 signal, L1→L2 ≈ 0.20–0.21 mm prepreg.
+Design-target impedance geometry (from H2a, JLCPCB 0.2104 mm): **USB 90 Ω** at
+w ≈ 0.20 mm / s ≈ 0.15 mm; **Ethernet 100 Ω** at w ≈ 0.20 mm / s ≈ 0.15 mm. The
+two fabs' prepreg differs by ~0.01 mm, well inside tolerance, so one routed
+geometry quotes on both and is re-confirmed against each fab's controlled-impedance
+service at H3c. Cost model refreshed to the 4-layer pre-layout estimate on both
+fabs ([aius-cost-model.md](aius-cost-model.md)).
 
 ## Phase H3 — layout, package, quote (order-ready)
 

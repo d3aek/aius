@@ -5,7 +5,7 @@ scope: component
 component: aius
 status: in-progress
 tags: [aius, hardware, pcb, cost, prototype]
-updated: 2026-08-04
+updated: 2026-08-15
 toc: true
 ---
 
@@ -19,7 +19,7 @@ The estimate covers the carrier assembly, Hammond enclosure, internal cable, har
 
 | Item | Low per assembled unit | Central per assembled unit | High per assembled unit | Treatment |
 |---|---:|---:|---:|---|
-| Two-layer PCB, assembly setup, component procurement, and placement | £40 | £57 | £75 | Allocates three-unit share of fixed assembly/setup charges |
+| Four-layer PCB, assembly setup, component procurement, and placement | £42 | £59 | £77 | 4-layer per the H2 verdict; the bare-board surcharge over 2-layer is small (a few £ across the batch) and sits well inside contingency, since assembly/setup dominates this line |
 | Hammond 1455N1201BK enclosure | £28 | £29 | £30 | Stock enclosure; rear machining excluded |
 | Internal USB cable and mechanical hardware | £5 | £7 | £10 | Includes approximately 100 mm USB-A to Micro-B cable and retention hardware |
 | Freight, VAT, duty, and prototype contingency | £20 | £32 | £40 | Allocation remains provisional until a landed quote exists |
@@ -45,7 +45,15 @@ The preferred quantity is three because it supplies a rework unit, a regression/
 
 ## Two-layer versus four-layer decision
 
-Two layers are the cost baseline. The [hardware spec](aius-hardware-spec.md) requires a placement, impedance, and return-path feasibility proof before that choice becomes final.
+**Resolved 2026-08-15: four layers.** The H2a impedance feasibility gate showed
+2-layer 1.6 mm cannot hold manufacturable 90 Ω USB / 100 Ω Ethernet geometry
+(needs ~0.9–1.15 mm traces; a routable pair reads ~163 Ω, +63–83 % off target)
+and offers no dedicated return plane — a documented electrical escalation, not a
+mechanical one. The owner escalated to 4-layer; the design routes against the
+JLC04161H-7628 / PCBWay 4-layer 1.6 mm class. See
+[aius-h2-h3-manufacturing.md §H2d](aius-h2-h3-manufacturing.md#phase-h2d--layer-verdict-and-cost-refresh-owner-gate).
+Two layers were the original cost baseline; the paragraphs below are retained for
+the escalation record.
 
 Planning price anchors from PCBWay's published prototype pages are approximately:
 
@@ -164,6 +172,6 @@ A quote outside the envelope is not automatically rejected. It requires an expli
 - Three assembled carriers are the target; vendor-minimum surplus boards are bare.
 - Rear-panel machining and CNC work are customer-supplied and excluded.
 - Teensy modules are optional and excluded from the headline carrier total.
-- Two layers and a board no larger than 100 x 100 mm are the planning baseline.
+- Four layers (H2 verdict, 2026-08-15) and a board no larger than 100 x 100 mm are the planning baseline.
 - Licensing work is documentation-only for this personal, non-commercial project.
 - No manufacturing order occurs from this should-cost estimate alone.
