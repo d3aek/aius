@@ -12,6 +12,21 @@
 #include <math.h>
 #include <string.h>
 
+/* Biquad DESIGN runs at config-apply, never per audio block, so the designers
+ * are cold code that belongs in flash rather than the hot ITCM bank. On target
+ * this pins them there (the ldscript routes .flashmem* to FLASH); on host it is
+ * a no-op. aius_biquad_lowpass in particular: it was inlined at its sole in-TU
+ * call site (the LFE fold) with its out-of-line copy dead-code-eliminated, so
+ * when aius_dsp_runtime_config's resolver gained a cross-TU call to it the copy
+ * came back -- into ITCM, 192 bytes against a 148-byte ceiling margin. Cold in
+ * flash is both correct and what keeps that margin. The per-sample biquad_step
+ * stays in ITCM; only the designers move. */
+#if defined(ARDUINO_TEENSY41)
+#define AIUS_DSP_COLD __attribute__((section(".flashmem")))
+#else
+#define AIUS_DSP_COLD
+#endif
+
 /* The saturation range and the declared sample width must describe the same
  * format. Retargeting AIUS_PCM_SAMPLE_BITS without its MAX/MIN (or vice versa)
  * would leave the DSP saturating to one width while every producer left-aligns to
@@ -433,7 +448,7 @@ AiusStatus aius_dsp_downmix(const AiusDownmixConfig *cfg,
 
 /* --- biquad coefficient math (RBJ audio EQ cookbook) ---------------------- */
 
-AiusBiquad aius_biquad_bypass(void)
+AIUS_DSP_COLD AiusBiquad aius_biquad_bypass(void)
 {
     AiusBiquad q;
     q.b0 = 1.0;
@@ -446,7 +461,7 @@ AiusBiquad aius_biquad_bypass(void)
 
 /* Normalize by a0 and store into an AiusBiquad (negating the feedback taps so
  * the run loop subtracts them). */
-static AiusBiquad aius_biquad_norm(double b0, double b1, double b2,
+static AIUS_DSP_COLD AiusBiquad aius_biquad_norm(double b0, double b1, double b2,
                                    double a0, double a1, double a2)
 {
     AiusBiquad q;
@@ -458,7 +473,7 @@ static AiusBiquad aius_biquad_norm(double b0, double b1, double b2,
     return q;
 }
 
-AiusBiquad aius_biquad_lowpass(double fs, double f0, double q)
+AIUS_DSP_COLD AiusBiquad aius_biquad_lowpass(double fs, double f0, double q)
 {
     double w0 = 2.0 * M_PI * f0 / fs;
     double cw = cos(w0);
@@ -473,7 +488,7 @@ AiusBiquad aius_biquad_lowpass(double fs, double f0, double q)
     return aius_biquad_norm(b0, b1, b2, a0, a1, a2);
 }
 
-AiusBiquad aius_biquad_highpass(double fs, double f0, double q)
+AIUS_DSP_COLD AiusBiquad aius_biquad_highpass(double fs, double f0, double q)
 {
     double w0 = 2.0 * M_PI * f0 / fs;
     double cw = cos(w0);
@@ -488,7 +503,7 @@ AiusBiquad aius_biquad_highpass(double fs, double f0, double q)
     return aius_biquad_norm(b0, b1, b2, a0, a1, a2);
 }
 
-AiusBiquad aius_biquad_peaking(double fs, double f0, double q, double gain_db)
+AIUS_DSP_COLD AiusBiquad aius_biquad_peaking(double fs, double f0, double q, double gain_db)
 {
     double A = pow(10.0, gain_db / 40.0);
     double w0 = 2.0 * M_PI * f0 / fs;
@@ -504,7 +519,7 @@ AiusBiquad aius_biquad_peaking(double fs, double f0, double q, double gain_db)
     return aius_biquad_norm(b0, b1, b2, a0, a1, a2);
 }
 
-AiusBiquad aius_biquad_lowshelf(double fs, double f0, double q, double gain_db)
+AIUS_DSP_COLD AiusBiquad aius_biquad_lowshelf(double fs, double f0, double q, double gain_db)
 {
     double A = pow(10.0, gain_db / 40.0);
     double w0 = 2.0 * M_PI * f0 / fs;
@@ -521,7 +536,7 @@ AiusBiquad aius_biquad_lowshelf(double fs, double f0, double q, double gain_db)
     return aius_biquad_norm(b0, b1, b2, a0, a1, a2);
 }
 
-AiusBiquad aius_biquad_highshelf(double fs, double f0, double q, double gain_db)
+AIUS_DSP_COLD AiusBiquad aius_biquad_highshelf(double fs, double f0, double q, double gain_db)
 {
     double A = pow(10.0, gain_db / 40.0);
     double w0 = 2.0 * M_PI * f0 / fs;
