@@ -232,6 +232,28 @@ targeted-proof: full-severity ERC (scripts/erc.sh --all) reports 0
 unit: parent-only
 ```
 
+**Progress (2026-08-15).** Full-severity ERC driven from **13 → 4**
+footprint_link_issues:
+
+- **Map-to-standard (done).** The four expansion JST GH headers → stock
+  `Connector_JST:JST_GH_BM0NB-GHS-TBT_1x0N-1MP_P1.25mm_Vertical`; the Tag-Connect
+  → `Connector:Tag-Connect_TC2030-IDC-NL_2x03_P1.27mm_Vertical`. The GCT `USB4105`
+  USB-C resolves in the pinned 10.0.4 container (only kicad-footprints master
+  lacked it), so it needs no custom build.
+- **USB-A re-selected (done).** The internal USB-A moved from TE `292303-1` (no
+  KiCad footprint, no filed datasheet) to the pin-identical `292303-7` variant of
+  the same series, KiCad-native as `Connector_USB:USB_A_TE_292303-7_Horizontal`.
+- **Remaining: 4 custom land patterns.** `Cliff_ORJ5` / `Cliff_OTJ5` (RS PRO
+  ORJ-5/OTJ-5, 3×Ø0.8 signal @ 2.54 mm + 3×Ø2.0 pegs — verified NOT compatible
+  with KiCad's Toshiba TORX170 4-pin/2-post footprint), `Pulse_J0011D21BNL`
+  (8×Ø0.89 signal staggered + 4×Ø1.02 LED + 2×Ø3.20 posts + 2×Ø1.60 shield), and
+  the mixed-pitch `Teensy41_Sockets_...` (2×24 @ 2.54 mm + 6-pin @ 2.00 mm MMS +
+  5-pin @ 2.54 mm). Signal-pad geometry is unambiguous from the datasheets; the
+  exact peg / staggered / inter-cluster XY will be taken from the filed AP214 STEP
+  models (authoritative CAD) rather than the datasheet raster, then ERC-cleared to
+  0 and pad-by-pad verified at the recorded pre-order footprint gate
+  ([aius-h1-schematic.md](aius-h1-schematic.md#milestones)).
+
 ### Phase H3b — netlist and placement
 
 ```yaml
