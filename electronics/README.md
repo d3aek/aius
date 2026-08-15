@@ -96,14 +96,19 @@ are driven by the power-usb `PWR_FLAG` / `TPS2553` output through the global
 labels, `+3V3` is driven by the Teensy 3.3 V `power_out`, and the optical logic
 `VCC` pins ride that same `+3V3`.
 
-Full-severity ERC (`scripts/erc.sh --all`) leaves 13 `footprint_link_issues` and
-nothing else. All are provisional footprints — the power-usb `J2` TE `292303-1`
-plus the custom `aius:` land patterns (Teensy sockets, JST GH headers,
-Tag-Connect, and the new `Cliff_ORJ5` / `Cliff_OTJ5` / `Pulse_J0011D21BNL`
-modules). Land-pattern verification is H2, not H1. The optical mux/inverter/gate
-use real KiCad `SOT-23-5/6` footprints, so they add no warnings, and the earlier
-`isolated_pin_label` warnings cleared once the optical-spdif and ethernet sheets
-connected the seven cross-sheet signal globals.
+Full-severity ERC (`scripts/erc.sh --all`) leaves **5** `footprint_link_issues`
+and nothing else, down from 13 after the H3a map-to-standard renames
+([aius-h2-h3-manufacturing.md](../docs/plans/aius-h2-h3-manufacturing.md) §H3a).
+The four expansion JST GH headers and the Tag-Connect now use stock KiCad
+`Connector_JST:` / `Connector:` footprints, and the GCT `USB4105` USB-C resolves
+in the pinned 10.0.4 container's `Connector_USB` library. The 5 remaining are the
+four custom `aius:` land patterns still to build (`Cliff_ORJ5`, `Cliff_OTJ5`,
+`Pulse_J0011D21BNL`, `Teensy41_Sockets_...` — awaiting `lib/aius.pretty` +
+`fp-lib-table`) and the internal USB-A `J2` (`USB_A_TE_292303-1_Horizontal`,
+absent from KiCad's `Connector_USB` — re-select or build-custom at H3a). The
+optical mux/gate use real KiCad `SOT-23-5/6` footprints, so they add no warnings,
+and the earlier `isolated_pin_label` warnings cleared once the optical-spdif and
+ethernet sheets connected the seven cross-sheet signal globals.
 
 The purchased optical modules (2026-07-27) are the RS PRO ORJ-5 / OTJ-5
 (`805-1671` / `805-1680`), not the Cliff parts the `aius:Cliff_ORJ5_TOSLINK` /

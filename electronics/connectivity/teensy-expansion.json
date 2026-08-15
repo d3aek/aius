@@ -67,7 +67,7 @@
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Vertical",
       "at": [389.89, 54.61],
       "desc": "expansion I2C header (isolated B-side): 3V3/SCL/SDA/GND"
     },
@@ -76,7 +76,7 @@
       "lib_id": "aius:Conn_1x06",
       "value": "BM06B-GHS-TBT",
       "mpn": "JST BM06B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM06B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM06B-GHS-TBT_1x06-1MP_P1.25mm_Vertical",
       "at": [389.89, 110.49],
       "desc": "expansion SPI header: 3V3/SCK/MOSI/MISO/CS/GND"
     },
@@ -85,7 +85,7 @@
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Vertical",
       "at": [389.89, 165.1],
       "desc": "expansion UART/debug header: 3V3/TX/RX/GND"
     },
@@ -94,7 +94,7 @@
       "lib_id": "aius:Conn_1x05",
       "value": "BM05B-GHS-TBT",
       "mpn": "JST BM05B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM05B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM05B-GHS-TBT_1x05-1MP_P1.25mm_Vertical",
       "at": [389.89, 214.63],
       "desc": "expansion I2S/TDM header: BCLK/LRCLK/TXD/RXD/GND"
     },
@@ -103,7 +103,7 @@
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Vertical",
       "at": [389.89, 265.43],
       "desc": "expansion USB-host header: VBUS/D+/D-/GND"
     },
@@ -112,7 +112,7 @@
       "lib_id": "aius:Conn_1x04",
       "value": "BM04B-GHS-TBT",
       "mpn": "JST BM04B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM04B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Vertical",
       "at": [389.89, 314.96],
       "desc": "expansion GPIO/ADC header: 3V3/GPIO/ADC/GND"
     },
@@ -121,7 +121,7 @@
       "lib_id": "aius:Conn_1x03",
       "value": "BM03B-GHS-TBT",
       "mpn": "JST BM03B-GHS-TBT",
-      "footprint": "aius:JST_GH_BM03B-GHS-TBT",
+      "footprint": "Connector_JST:JST_GH_BM03B-GHS-TBT_1x03-1MP_P1.25mm_Vertical",
       "at": [49.53, 110.49],
       "desc": "remote Program/RTC service header: PROGRAM/VBAT/GND"
     },
@@ -130,7 +130,7 @@
       "lib_id": "aius:Conn_1x06",
       "value": "TC2030-IDC",
       "mpn": "Tag-Connect TC2030-IDC",
-      "footprint": "aius:Tag-Connect_TC2030-IDC-NL",
+      "footprint": "Connector:Tag-Connect_TC2030-IDC-NL_2x03_P1.27mm_Vertical",
       "at": [49.53, 209.55],
       "desc": "Tag-Connect bring-up/test point: 3V3/PROGRAM/GND/ON_OFF/dbgTX/dbgRX"
     },
