@@ -663,7 +663,10 @@ static const AiusNetworkTeensyPrimitives kNetPrimitives = {
 	net_listener_close,    net_udp_close,         net_stack_close,
 	net_link_status,       net_accept_once,       net_read_once,
 	net_write_once,        net_close_once,        net_udp_receive_once,
-	net_udp_send_once
+	net_udp_send_once,
+	/* stack_poll: null exercises the socket surface exactly as before
+	 * (the struct's own contract for fakes). */
+	nullptr
 };
 
 /* ------------------------------------------------------------------ */
@@ -1665,10 +1668,12 @@ static void test_service_budget_selectivity(void)
 	CHECK(g_platform.metrics_calls == 1u);
 	CHECK(g_platform.udp_calls == 1u);
 	CHECK(g_platform.replay_calls == 1u);
-	CHECK(g_platform.audio_calls == 1u);
+	/* Two AUDIO dispatches per epoch since output-jitter Phase B
+	 * (f7e770cf0): the ring is topped up on BOTH sides of SD. */
+	CHECK(g_platform.audio_calls == 2u);
 	/* record_budget() asserts pointer identity with aius_runtime_budget()
 	 * for each platform checkpoint; here we pin the exact set and order. */
-	CHECK(g_platform.budget_count == 5u);
+	CHECK(g_platform.budget_count == 6u);
 	CHECK(g_platform.budget_checkpoints[0] ==
 	      AIUS_BOOT_CHECKPOINT_RESET_CAPTURE);
 	CHECK(g_platform.budget_checkpoints[1] ==
@@ -1676,6 +1681,7 @@ static void test_service_budget_selectivity(void)
 	CHECK(g_platform.budget_checkpoints[2] == AIUS_BOOT_CHECKPOINT_UDP);
 	CHECK(g_platform.budget_checkpoints[3] == AIUS_BOOT_CHECKPOINT_REPLAY);
 	CHECK(g_platform.budget_checkpoints[4] == AIUS_BOOT_CHECKPOINT_AUDIO);
+	CHECK(g_platform.budget_checkpoints[5] == AIUS_BOOT_CHECKPOINT_AUDIO);
 	CHECK(g_platform.budgets[0]->service_budget_ms == 250u);
 	CHECK(g_platform.budgets[2]->max_rx_bytes == 532u);
 	CHECK(g_platform.budgets[3]->max_rx_bytes == 2048u);
@@ -3594,19 +3600,22 @@ static void test_epoch_traces(void)
 	current_key = "epoch.normal-trace";
 	reset_world(false);
 	CHECK(run_epoch(now_ms++));
-	CHECK(g_platform.checkpoint_count == 11u);
+	/* The Phase B order (f7e770cf0): 0-7, AUDIO, SD, AUDIO, COMPLETE --
+	 * the SD primitive sits alone in its inter-audio gap. */
+	CHECK(g_platform.checkpoint_count == 12u);
 	for (size_t i = 0; i < 8u; ++i)
 		CHECK(g_platform.checkpoints[i] == (uint16_t)i);
 	CHECK(g_platform.checkpoints[8] == AIUS_BOOT_CHECKPOINT_AUDIO);
 	CHECK(g_platform.checkpoints[9] == AIUS_BOOT_CHECKPOINT_SD);
-	CHECK(g_platform.checkpoints[10] ==
+	CHECK(g_platform.checkpoints[10] == AIUS_BOOT_CHECKPOINT_AUDIO);
+	CHECK(g_platform.checkpoints[11] ==
 	      AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
 	CHECK(g_platform.feeds == 1u);
 	CHECK(g_platform.reset_capture_calls == 1u);
 	CHECK(g_platform.metrics_calls == 1u);
 	CHECK(g_platform.udp_calls == 1u);
 	CHECK(g_platform.replay_calls == 1u);
-	CHECK(g_platform.audio_calls == 1u);
+	CHECK(g_platform.audio_calls == 2u);
 	CHECK(g_runtime.last_checkpoint ==
 	      AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE);
 	CHECK(g_runtime.completed_epochs == 1u);

@@ -3,7 +3,7 @@ title: Aius OTA resilience — A/B slots and dark-window hardening
 type: plans
 scope: component
 component: aius
-status: draft
+status: in-progress
 tags: [aius, firmware, ota, flash, reliability]
 updated: 2026-08-16
 toc: true
@@ -22,14 +22,15 @@ standing requirement is remote upgrade with no physical-access failure mode.
 
 ## State — resume here
 
-**Status:** scoped 2026-08-16, UNSTARTED. No code exists for any phase. The
-device runs `d5dab0618f4c` (recovered via HalfKay the same night) and its
-OTA surface is idle with the poisoned-session evidence cleared.
+**Status:** IN-PROGRESS 2026-08-16. The forensic thread is RESOLVED from
+source (below — no bench read needed or possible), Phase 1 is implemented
+with its host proof green, and the device still runs `d5dab0618f4c`; nothing
+new has been flashed. Phase 1's hardware half (rehearsal fault-stamp
+survives a reboot) waits on bench access with the other hardware proofs.
 
-**Next action:** the open forensic thread below — one bench read of the
-persisted health record (whether the pre-window in-progress mark survived
-the HalfKay reflash and names the reached phase) before Phase 1's design
-locks. Then Phase 1.
+**Next action:** Phase 2, then Phase 4 (which folds in the register's
+2026-08-16 SD bring-up starvation fix). Phase 3 needs the owner's flash-map
+decision before 3a lands.
 
 **Evidence that lives only in session scratch (7-day GC from 2026-08-16):**
 the working uploader script (`ota_flash.py` — Phase 4b promotes a corrected
@@ -71,6 +72,25 @@ no-remote-activation rule stands until Phase 3 ships.
 ## Phases
 
 ### Phase 1 — name the next failure: retained dark-window forensics
+
+Code + host proof landed 2026-08-16; the hardware half of the proof (a
+fault-injected rehearsal's stamp read back after a reboot) waits on bench
+access and rides the next bench session. As built: the sequencer gained an
+optional `dark_stamp` primitive called on window entry, BEFORE every step
+(so a wedged primitive names itself — the incident's exact gap), and at the
+FAULTED/COMPLETED terminal; fault sites latch `fault_address` +
+`fault_compare_offset` (first mismatching byte, image-absolute); the record
+is `lib/aius_ota/aius_ota_dark_stamp.{h,c}` (64 B, CRC'd, layout-independent
+across images), stored in the new `.aius_retained_ota` input section (last
+in the retained window) and dcache-flushed per write; served as `ota_dark`
+on `/api/status` and `od=state:phase:fault:hexaddr` on the `AIUS ID` line.
+Pre-window refusals deliberately never stamp — a refusal must not overwrite
+a prior window's evidence. Rehearsals stamp with a REHEARSAL flag.
+Funding note: the ID line's `od=` outgrew the USB payload bound — widened
+256→280 (frame-fit static assert added); the stamp's FASTRUN additions
+outgrew ITCM — funded by FLASHMEM-annotating `aius_usb_control` (now under
+the itcm-placement gate) and flash-pinning its and `http_home_page`'s
+rodata.
 
 - outcome: an in-window fault stamps phase, step address, compare offset and
   fault code into the retained-RAM window (`.aius_retained`, survives WDOG
@@ -163,9 +183,22 @@ ROM-level A/B for this boot medium, so the scheme is application-owned:
 arming are always safe; `POST /api/ota/activate` is the commitment point. The
 2026-08-16 incident is the cost baseline for ignoring this.
 
-## Open forensic thread
+## Forensic thread — RESOLVED 2026-08-16, from source
 
-The health record's in-progress mark was written pre-window to injected
-storage; whether it survived the HalfKay reflash (and names the reached
-phase) has not been read back — worth one bench read before Phase 1 design
-locks, since it may already convict or acquit the compare phase.
+**The pre-window mark categorically could not have survived; there is
+nothing to read on the bench.** The deployed image's health-record
+"persistence" is a plain `.bss` RAM buffer — `g_ota_health_bytes` in
+`optical_main.cpp`, whose own comment records that durable storage was "a
+later concern" deferred at bench bring-up. Three independent destructions,
+any one sufficient: the recovery involved a cold power cycle (RAM lost);
+the reflashed image's startup zeroes `.bss` regardless; and no surface ever
+served the buffer anyway. The record can neither convict nor acquit the
+compare phase — the incident's in-window evidence is simply gone, which is
+itself the finding: it is exactly the gap Phase 1's retained stamp closes
+(retained OCRAM survives the WDOG reset the halt policy takes, and a
+HalfKay rescue performed without a power cycle).
+
+Consequence recorded for Phase 3c: the health record's power-loss interlock
+(activate-begin rule 8) currently only works within one powered session for
+the same reason; genuinely persistent health storage lands with 3c's
+commit/rollback protocol, which subsumes the health-mark machinery.

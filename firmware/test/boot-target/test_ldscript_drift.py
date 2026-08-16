@@ -31,6 +31,11 @@ DEFAULT_FRAMEWORK = Path(
 # hide an edit by moving it: the marker text is part of what must match.
 HEADER_END = " * contract post-link against the full measured map. */\n\n"
 
+# NOTE 2026-08-16: this literal previously stopped at .aius_retained_latch —
+# it predated the poll probe's input section, so the guard could only ever
+# report drift once the framework package was present. Refreshed to the live
+# block when the OTA dark-stamp section landed (aius-ota-resilience.md
+# Phase 1); the probe and stamp lines are now part of what must match.
 SECTION_BLOCK = """\t/* AIUS ADDITION — retained across reset, pinned to ORIGIN(RAM). See the
 \t * header. Must stay immediately before .bss.dma: that is what fixes the
 \t * address, and .bss.dma then simply starts after it. */
@@ -38,6 +43,17 @@ SECTION_BLOCK = """\t/* AIUS ADDITION — retained across reset, pinned to ORIGI
 \t\t__aius_retained_start = .;
 \t\tKEEP(*(.aius_retained))
 \t\tKEEP(*(.aius_retained_latch))
+\t\t/* The fnet_poll probe (vendor/NativeEthernet/src/AiusPollProbe.h):
+\t\t * its own input section, placed third, for the same reason the
+\t\t * latch has its own -- explicit order is a contract, shared input
+\t\t * sections are a toolchain habit. */
+\t\tKEEP(*(.aius_retained_probe))
+\t\t/* The OTA dark-window forensic stamp (lib/aius_ota/
+\t\t * aius_ota_dark_stamp.h), placed LAST: it exists only in AIUS_OTA
+\t\t * builds, and last is the one position where its absence cannot
+\t\t * move the three records above -- which other images read across
+\t\t * a reflash. */
+\t\tKEEP(*(.aius_retained_ota))
 \t\t. = ALIGN(32);
 \t\t__aius_retained_end = .;
 \t} > RAM
@@ -60,7 +76,9 @@ FLASHRO_BLOCK = """\t/* AIUS ADDITION — read-only data pinned to flash (E-AC-3
 \t\t*vendor/ffmpeg-eac3/*.o(.rodata*)
 \t\t*lib/aius_a52/a52/*.o(.rodata*)
 \t\t*src/aius_optical_app.cpp.o(.rodata*)
+\t\t*src/http_home_page.cpp.o(.rodata*)
 \t\t*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
+\t\t*aius_usb_control.c.o(.rodata*)
 \t\t. = ALIGN(4);
 \t} > FLASH
 

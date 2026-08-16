@@ -221,7 +221,9 @@ ITCM_ALLOWED_LDF_LIBS = {
     "aius_dts": "DTS adapter; unannotated",
     "aius_recorder": "flight-recorder producer path is legitimately hot; its one "
                      "bring-up-only helper is pinned cold separately below",
-    "aius_usb_control": "USB control parser; unannotated",
+    # aius_usb_control left this table 2026-08-16: every definition is now
+    # FLASHMEM (funding the OTA dark-stamp's FASTRUN additions,
+    # aius-ota-resilience.md Phase 1), so the library is under the gate.
 }
 
 # 2. The dynamic-initialization thunk GCC emits for the file's statics. It has

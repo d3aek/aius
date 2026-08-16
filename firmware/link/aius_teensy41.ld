@@ -112,7 +112,9 @@ SECTIONS
 		*vendor/ffmpeg-eac3/*.o(.rodata*)
 		*lib/aius_a52/a52/*.o(.rodata*)
 		*src/aius_optical_app.cpp.o(.rodata*)
+		*src/http_home_page.cpp.o(.rodata*)
 		*lib/aius_http/src/aius_http_transaction.c.o(.rodata*)
+		*aius_usb_control.c.o(.rodata*)
 		. = ALIGN(4);
 	} > FLASH
 
@@ -155,6 +157,12 @@ SECTIONS
 		 * latch has its own -- explicit order is a contract, shared input
 		 * sections are a toolchain habit. */
 		KEEP(*(.aius_retained_probe))
+		/* The OTA dark-window forensic stamp (lib/aius_ota/
+		 * aius_ota_dark_stamp.h), placed LAST: it exists only in AIUS_OTA
+		 * builds, and last is the one position where its absence cannot
+		 * move the three records above -- which other images read across
+		 * a reflash. */
+		KEEP(*(.aius_retained_ota))
 		. = ALIGN(32);
 		__aius_retained_end = .;
 	} > RAM

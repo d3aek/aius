@@ -3,12 +3,37 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Every definition is FLASHMEM, on the definition rather than a prototype
+ * (GCC does not inherit a `section` attribute from a forward declaration):
+ * USB control parses CDC lines at human timescales and nothing here is on
+ * the audio path, so it reads through the cached XIP path like the other
+ * portable engines (aius_sd.c, aius_http*.c). Annotated 2026-08-16, which
+ * is also when the library left the itcm-placement guard's allowlist --
+ * the "unit of work that brings a library under the gate". On the host the
+ * macro expands to nothing. */
+#ifndef FLASHMEM
+#if defined(__IMXRT1062__)
+#define FLASHMEM __attribute__((section(".flashmem")))
+#else
+#define FLASHMEM
+#endif
+#endif
+
+/* The frame-fit proof behind AIUS_USB_RUNTIME_MAX_PAYLOAD: the widest success
+ * frame is "AIUS/1 OK " + 10-digit request id + " " + 10-byte verb + " " +
+ * payload + "\n" + NUL. A payload the validator accepts must be formattable,
+ * or runtime_success_valid and the writer disagree about what "fits". */
+_Static_assert((sizeof("AIUS/1 OK ") - 1u) + 10u + 1u + 10u + 1u +
+	               AIUS_USB_RUNTIME_MAX_PAYLOAD + 1u + 1u <=
+	               AIUS_USB_RUNTIME_MAX_RESPONSE,
+               "the maximum payload must fit the maximum response frame");
+
 typedef struct {
 	char *output;
 	size_t length;
 } AiusUsbResponseWriter;
 
-static void clear_event(AiusUsbEvent *event)
+FLASHMEM static void clear_event(AiusUsbEvent *event)
 {
 	event->type = AIUS_USB_EVENT_NONE;
 	event->command.kind = AIUS_USB_COMMAND_NONE;
@@ -16,7 +41,7 @@ static void clear_event(AiusUsbEvent *event)
 	event->error = AIUS_USB_ERROR_NONE;
 }
 
-static int token(const char **cursor, const char *end, const char **start, size_t *length)
+FLASHMEM static int token(const char **cursor, const char *end, const char **start, size_t *length)
 {
 	while (*cursor < end && **cursor == ' ')
 		(*cursor)++;
@@ -29,13 +54,13 @@ static int token(const char **cursor, const char *end, const char **start, size_
 	return 1;
 }
 
-static int token_is(const char *start, size_t length, const char *value)
+FLASHMEM static int token_is(const char *start, size_t length, const char *value)
 {
 	size_t value_length = strlen(value);
 	return length == value_length && memcmp(start, value, length) == 0;
 }
 
-static int parse_id(const char *start, size_t length, uint32_t *result)
+FLASHMEM static int parse_id(const char *start, size_t length, uint32_t *result)
 {
 	uint32_t value = 0;
 	if (length == 0 || length > 10)
@@ -54,7 +79,7 @@ static int parse_id(const char *start, size_t length, uint32_t *result)
 	return 1;
 }
 
-static AiusUsbError parse_line(const char *line, size_t length, AiusUsbCommand *command)
+FLASHMEM static AiusUsbError parse_line(const char *line, size_t length, AiusUsbCommand *command)
 {
 	const char *cursor = line;
 	const char *end = line + length;
@@ -99,7 +124,7 @@ static AiusUsbError parse_line(const char *line, size_t length, AiusUsbCommand *
 	return AIUS_USB_ERROR_NONE;
 }
 
-static void finish(AiusUsbParser *parser, AiusUsbEvent *event)
+FLASHMEM static void finish(AiusUsbParser *parser, AiusUsbEvent *event)
 {
 	AiusUsbError error;
 	clear_event(event);
@@ -127,12 +152,12 @@ static void finish(AiusUsbParser *parser, AiusUsbEvent *event)
 	parser->invalid = 0;
 }
 
-void aius_usb_control_init(AiusUsbParser *parser)
+FLASHMEM void aius_usb_control_init(AiusUsbParser *parser)
 {
 	memset(parser, 0, sizeof(*parser));
 }
 
-int aius_usb_control_feed(AiusUsbParser *parser, uint8_t byte, AiusUsbEvent *event)
+FLASHMEM int aius_usb_control_feed(AiusUsbParser *parser, uint8_t byte, AiusUsbEvent *event)
 {
 	clear_event(event);
 	if (byte == '\n') {
@@ -166,13 +191,13 @@ int aius_usb_control_feed(AiusUsbParser *parser, uint8_t byte, AiusUsbEvent *eve
 	return 0;
 }
 
-size_t aius_usb_control_write_ok(char *output, size_t capacity, uint32_t request_id, const char *verb, const char *payload)
+FLASHMEM size_t aius_usb_control_write_ok(char *output, size_t capacity, uint32_t request_id, const char *verb, const char *payload)
 {
 	int length = snprintf(output, capacity, "AIUS/1 OK %lu %s%s%s\n", (unsigned long)request_id, verb, payload != NULL && payload[0] != '\0' ? " " : "", payload != NULL ? payload : "");
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
-size_t aius_usb_control_write_error(char *output, size_t capacity, uint32_t request_id, AiusUsbError error)
+FLASHMEM size_t aius_usb_control_write_error(char *output, size_t capacity, uint32_t request_id, AiusUsbError error)
 {
 	static const char *const names[] = {"NONE", "BAD_VERSION", "BAD_COMMAND", "BAD_ARGUMENT", "LINE_TOO_LONG", "BUSY", "INTERNAL"};
 	const char *name = error <= AIUS_USB_ERROR_INTERNAL ? names[error] : "INTERNAL";
@@ -180,7 +205,7 @@ size_t aius_usb_control_write_error(char *output, size_t capacity, uint32_t requ
 	return length < 0 || (size_t)length >= capacity ? 0u : (size_t)length;
 }
 
-static void runtime_action_clear(AiusUsbRuntimeAction *action)
+FLASHMEM static void runtime_action_clear(AiusUsbRuntimeAction *action)
 {
 	action->kind = AIUS_USB_ACTION_NONE;
 	action->request = NULL;
@@ -189,13 +214,13 @@ static void runtime_action_clear(AiusUsbRuntimeAction *action)
 	action->rx_consumed = 0;
 }
 
-static void runtime_fault(AiusUsbRuntime *runtime)
+FLASHMEM static void runtime_fault(AiusUsbRuntime *runtime)
 {
 	if (runtime->protocol_faults != UINT32_MAX)
 		runtime->protocol_faults++;
 }
 
-static size_t decimal_length(uint32_t value)
+FLASHMEM static size_t decimal_length(uint32_t value)
 {
 	size_t length = 1;
 	while (value >= 10u) {
@@ -205,7 +230,7 @@ static size_t decimal_length(uint32_t value)
 	return length;
 }
 
-static void writer_append(
+FLASHMEM static void writer_append(
 	AiusUsbResponseWriter *writer,
 	const char *value,
 	size_t length)
@@ -214,7 +239,7 @@ static void writer_append(
 	writer->length += length;
 }
 
-static void writer_append_id(AiusUsbResponseWriter *writer, uint32_t value)
+FLASHMEM static void writer_append_id(AiusUsbResponseWriter *writer, uint32_t value)
 {
 	char digits[10];
 	size_t length = 0;
@@ -228,7 +253,7 @@ static void writer_append_id(AiusUsbResponseWriter *writer, uint32_t value)
 	}
 }
 
-static bool runtime_format_ok(
+FLASHMEM static bool runtime_format_ok(
 	AiusUsbRuntime *runtime,
 	uint32_t request_id,
 	const char *verb,
@@ -260,7 +285,7 @@ static bool runtime_format_ok(
 	return true;
 }
 
-static const char *runtime_error_name(
+FLASHMEM static const char *runtime_error_name(
 	AiusUsbError error,
 	size_t *length)
 {
@@ -287,7 +312,7 @@ static const char *runtime_error_name(
 	}
 }
 
-static void runtime_format_error(
+FLASHMEM static void runtime_format_error(
 	AiusUsbRuntime *runtime,
 	uint32_t request_id,
 	AiusUsbError error)
@@ -308,7 +333,7 @@ static void runtime_format_error(
 	runtime->response_offset = 0;
 }
 
-static bool span_overlaps_response(
+FLASHMEM static bool span_overlaps_response(
 	const AiusUsbRuntime *runtime,
 	const void *span,
 	size_t length)
@@ -328,7 +353,7 @@ static bool span_overlaps_response(
 	return span_start <= response_last && response_start <= span_last;
 }
 
-static bool printable_ascii_chunk(
+FLASHMEM static bool printable_ascii_chunk(
 	const char *payload,
 	size_t offset,
 	size_t length)
@@ -342,7 +367,7 @@ static bool printable_ascii_chunk(
 	return true;
 }
 
-static bool printable_ascii(const char *payload, size_t length)
+FLASHMEM static bool printable_ascii(const char *payload, size_t length)
 {
 	const size_t first = length < 64u ? length : 64u;
 	const size_t second = length - first < 64u ? length - first : 64u;
@@ -355,7 +380,7 @@ static bool printable_ascii(const char *payload, size_t length)
 		printable_ascii_chunk(payload, first + second + third, fourth);
 }
 
-static const char *runtime_command_verb(
+FLASHMEM static const char *runtime_command_verb(
 	AiusUsbCommandKind command,
 	size_t *length)
 {
@@ -379,7 +404,7 @@ static const char *runtime_command_verb(
 	}
 }
 
-static bool runtime_success_valid(
+FLASHMEM static bool runtime_success_valid(
 	const AiusUsbRuntime *runtime,
 	const AiusUsbApplicationResponse *response)
 {
@@ -393,7 +418,7 @@ static bool runtime_success_valid(
 		memcmp(response->verb, expected, expected_length) != 0)
 		return false;
 	if ((response->payload == NULL) != (response->payload_length == 0u) ||
-		response->payload_length > 256u)
+		response->payload_length > AIUS_USB_RUNTIME_MAX_PAYLOAD)
 		return false;
 	if (response->payload_length != 0u &&
 		(span_overlaps_response(
@@ -406,7 +431,7 @@ static bool runtime_success_valid(
 		response->payload_length == 0u;
 }
 
-static bool runtime_error_valid(
+FLASHMEM static bool runtime_error_valid(
 	const AiusUsbApplicationResponse *response)
 {
 	return response->error >= AIUS_USB_ERROR_BAD_VERSION &&
@@ -415,7 +440,7 @@ static bool runtime_error_valid(
 		response->payload == NULL && response->payload_length == 0u;
 }
 
-static void runtime_clear_transaction(
+FLASHMEM static void runtime_clear_transaction(
 	AiusUsbRuntime *runtime,
 	bool clear_parser)
 {
@@ -434,7 +459,7 @@ static void runtime_clear_transaction(
 	runtime->enter_emitted = false;
 }
 
-static void runtime_select_bootloader(
+FLASHMEM static void runtime_select_bootloader(
 	AiusUsbRuntime *runtime,
 	AiusUsbRuntimeAction *action)
 {
@@ -447,7 +472,7 @@ static void runtime_select_bootloader(
 	}
 }
 
-static bool tx_event_valid(
+FLASHMEM static bool tx_event_valid(
 	const AiusIoEvent *event,
 	size_t outstanding_length)
 {
@@ -466,7 +491,7 @@ static bool tx_event_valid(
 	}
 }
 
-static void runtime_handle_tx_event(
+FLASHMEM static void runtime_handle_tx_event(
 	AiusUsbRuntime *runtime,
 	bool event_present,
 	const AiusIoEvent *event,
@@ -511,7 +536,7 @@ static void runtime_handle_tx_event(
 	}
 }
 
-static void runtime_handle_application_response(
+FLASHMEM static void runtime_handle_application_response(
 	AiusUsbRuntime *runtime,
 	uint32_t now_ms,
 	const AiusUsbApplicationResponse *response)
@@ -563,7 +588,7 @@ static void runtime_handle_application_response(
 	runtime->pending_request.command.request_id = 0;
 }
 
-static void runtime_emit_write(
+FLASHMEM static void runtime_emit_write(
 	AiusUsbRuntime *runtime,
 	size_t tx_capacity,
 	AiusUsbRuntimeAction *action)
@@ -591,7 +616,7 @@ static void runtime_emit_write(
 		runtime->state = AIUS_USB_RUNTIME_ACK_PENDING;
 }
 
-void aius_usb_runtime_init(
+FLASHMEM void aius_usb_runtime_init(
 	AiusUsbRuntime *runtime,
 	char *response,
 	size_t response_capacity)
@@ -607,7 +632,7 @@ void aius_usb_runtime_init(
 		response_capacity <= AIUS_USB_RUNTIME_MAX_RESPONSE;
 }
 
-void aius_usb_runtime_step(
+FLASHMEM void aius_usb_runtime_step(
 	AiusUsbRuntime *runtime,
 	uint32_t now_ms,
 	AiusUsbRuntimeInput input,

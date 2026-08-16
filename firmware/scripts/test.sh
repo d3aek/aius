@@ -957,6 +957,7 @@ ota)
 		"$fw_root/test/ota/test_ota_activate.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota_activate.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota_dark_stamp.c" \
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
 		-o "$ota_activate_out"
 	"$ota_activate_out"

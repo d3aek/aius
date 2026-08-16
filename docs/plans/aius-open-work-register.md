@@ -189,6 +189,16 @@ ends left open:
   requirement now justifies the second-slot/boot-health-revert design the
   descope rejected, or an operational rule (activate only with USB in
   reach) suffices.
+  **2026-08-16, later: the chase is now the resilience plan**
+  ([`aius-ota-resilience.md`](aius-ota-resilience.md)). The health-mark
+  question is RESOLVED from source — the mark was a plain `.bss` buffer and
+  could not have survived (the plan's forensic-thread section has the full
+  verdict); Phase 1 (retained dark-window stamp: phase, step address,
+  compare offset, fault code, served on `AIUS ID` as `od=` and
+  `/api/status` as `ota_dark`) is implemented with host proof green, so the
+  NEXT in-window failure names itself. The PSRAM-staging and
+  reproducibility questions become Phase 2's bench soak; the queued owner
+  decision is the plan's Phase 3 flash-map decision.
 - **Phase C probe guard starves SD bring-up when a carrier is lit at boot
   (2026-08-16, found in post-incident re-review; fix owed).** The
   output-jitter Phase C guard defers the SD probe on

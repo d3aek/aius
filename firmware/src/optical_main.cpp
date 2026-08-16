@@ -68,6 +68,7 @@ extern "C" {
 #include "aius_ota.h"
 #include "aius_ota_ed25519.h"
 #include "aius_ota_activate.h"
+#include "aius_ota_dark_stamp.h"
 
 /* The Teensy core's FlexSPI-1 boot-flash erase/program driver (cores/teensy4/
  * eeprom.c). Exported for LittleFS_Program; the plan (§Self-flashing is
@@ -3271,6 +3272,65 @@ static bool g_ota_rehearsal_ran_injected;      /* which arm the verdict is for *
 static uint32_t g_ota_rehearsal_dark_us;       /* the plan's dark-window evidence */
 static uint32_t g_ota_rehearsal_max_step_us;
 
+/* ------------------------------------------------------------------ */
+/* The dark-window forensic stamp (aius-ota-resilience.md Phase 1)     */
+/* ------------------------------------------------------------------ */
+
+/* The retained bytes the sequencer's stamp primitive writes: the ldscript's
+ * `.aius_retained_ota` input section, LAST in the retained region so a
+ * non-OTA build's missing symbol cannot move the boot slots, latch or poll
+ * probe. Survives a WDOG/SYSRESETREQ reset (the halt policy's exact path) and
+ * a HalfKay reflash performed without a power cycle; a cold power cycle
+ * clears it, which the CRC turns into an honest "no stamp". */
+__attribute__((section(".aius_retained_ota"), used, aligned(32)))
+static uint8_t g_ota_dark_stamp_retained[AIUS_OTA_DARK_STAMP_BYTES];
+
+/* The boot-time decode of whatever the retained slot carried into this boot,
+ * kept in plain RAM for the serializers: the stamp is STICKY -- it stands
+ * until the next entered window overwrites it -- so a field brick names
+ * itself on every boot after the rescue until the next upgrade. */
+static AiusOtaDarkStampView g_ota_dark_report;
+static bool g_ota_dark_report_valid;
+
+/* The stamp writer behind the sequencer's optional primitive. FASTRUN end to
+ * end: encode is table-free and RAM-resident, and the dcache flush is what
+ * makes the write survive a reset that does not write back dirty lines (the
+ * AiusPollProbe lesson). Runs per step inside the dark window -- ~microseconds
+ * against a multi-millisecond erase. */
+FASTRUN static void ota_dark_stamp_write(void *, const AiusOtaDarkStampView *view)
+{
+	if (!aius_ota_dark_stamp_encode(view, g_ota_dark_stamp_retained,
+	                                sizeof(g_ota_dark_stamp_retained)))
+		return;
+	arm_dcache_flush_delete(g_ota_dark_stamp_retained,
+	                        sizeof(g_ota_dark_stamp_retained));
+}
+
+/* The rehearsal's stamp writer: the SAME retained slot and encode path -- the
+ * rehearsal exists to prove the real mechanics, stamp survival included (the
+ * plan's hardware proof reads a rehearsal fault stamp back after a reboot) --
+ * with the REHEARSAL flag set so a reader can never mistake a scratch-window
+ * fault for a field brick. */
+FASTRUN static void ota_rehearsal_dark_stamp_write(
+	void *, const AiusOtaDarkStampView *view)
+{
+	AiusOtaDarkStampView flagged = *view;
+
+	flagged.flags |= AIUS_OTA_DARK_STAMP_FLAG_REHEARSAL;
+	ota_dark_stamp_write(nullptr, &flagged);
+}
+
+/* Boot-time decode, called once from ota_compose(). Fail-closed: a fresh
+ * board, a power-cycled board or another layout's bytes all read "no stamp".
+ * The retained bytes are left standing either way -- the slot is only ever
+ * overwritten by the next entered window. */
+static FLASHMEM void ota_dark_stamp_boot_decode(void)
+{
+	g_ota_dark_report_valid = aius_ota_dark_stamp_decode(
+		&g_ota_dark_report, g_ota_dark_stamp_retained,
+		sizeof(g_ota_dark_stamp_retained));
+}
+
 /* True iff PSRAM is fitted somewhere the composition can stage into: the pad-1
  * chip the core mapped (external_psram_size) OR the pad-2 chip the probe found
  * (g_psram_pad2_mb). The presence gate; ota_psram_staging() derives the actual
@@ -3684,6 +3744,7 @@ static FLASHMEM AiusOtaActivatePrimitives ota_activate_primitives(void)
 	primitives.cycles = ota_flash_cycles;
 	primitives.health_read = ota_health_read;
 	primitives.health_write = ota_health_write;
+	primitives.dark_stamp = ota_dark_stamp_write;
 	return primitives;
 }
 
@@ -3701,6 +3762,7 @@ static FLASHMEM AiusOtaActivatePrimitives ota_rehearsal_primitives(
 		primitives.flash_read = ota_flash_read_inject_head_fault;
 	primitives.health_read = ota_rehearsal_health_read;
 	primitives.health_write = ota_rehearsal_health_write;
+	primitives.dark_stamp = ota_rehearsal_dark_stamp_write;
 	return primitives;
 }
 
@@ -3931,6 +3993,50 @@ static FLASHMEM bool http_ota_diag_json(char *output, size_t capacity,
 		(unsigned long)g_ota_rehearsal_max_step_us);
 }
 
+/* The ota_dark object on GET /api/status: the RETAINED dark-window stamp the
+ * previous entered window left (aius-ota-resilience.md Phase 1), decoded once
+ * at boot and sticky until the next window overwrites it. null when the
+ * retained slot carries no valid stamp -- a fresh or power-cycled board.
+ * compare_offset 4294967295 spells "no compare fault" (the record's own
+ * sentinel); dark_window_cycles is raw DWT cycles at 600 MHz, unconverted so
+ * the record's numbers reach the reader untouched. */
+static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
+	                                    size_t *length)
+{
+	if (!g_ota_dark_report_valid)
+		return http_json_append(output, capacity, length,
+		                        ",\"ota_dark\":null");
+	return http_json_append(output, capacity, length,
+		",\"ota_dark\":{\"state\":%u,\"phase\":%u,\"fault\":%u,"
+		"\"rehearsal\":%s,\"primitive_fault\":%ld,"
+		"\"step_address\":%lu,\"compare_offset\":%lu,"
+		"\"programmed_bytes\":%lu,\"verified_bytes\":%lu,"
+		"\"steps_taken\":%lu,\"steps_total\":%lu,"
+		"\"image_digest_prefix\":\"%02x%02x%02x%02x%02x%02x%02x%02x\","
+		"\"dark_window_cycles\":%llu}",
+		(unsigned)g_ota_dark_report.state,
+		(unsigned)g_ota_dark_report.phase,
+		(unsigned)g_ota_dark_report.fault,
+		(g_ota_dark_report.flags & AIUS_OTA_DARK_STAMP_FLAG_REHEARSAL)
+			? "true" : "false",
+		(long)g_ota_dark_report.primitive_fault,
+		(unsigned long)g_ota_dark_report.step_address,
+		(unsigned long)g_ota_dark_report.compare_offset,
+		(unsigned long)g_ota_dark_report.programmed_bytes,
+		(unsigned long)g_ota_dark_report.verified_bytes,
+		(unsigned long)g_ota_dark_report.steps_taken,
+		(unsigned long)g_ota_dark_report.steps_total,
+		(unsigned)g_ota_dark_report.digest_prefix[0],
+		(unsigned)g_ota_dark_report.digest_prefix[1],
+		(unsigned)g_ota_dark_report.digest_prefix[2],
+		(unsigned)g_ota_dark_report.digest_prefix[3],
+		(unsigned)g_ota_dark_report.digest_prefix[4],
+		(unsigned)g_ota_dark_report.digest_prefix[5],
+		(unsigned)g_ota_dark_report.digest_prefix[6],
+		(unsigned)g_ota_dark_report.digest_prefix[7],
+		(unsigned long long)g_ota_dark_report.dark_window_cycles);
+}
+
 /* present: this build carries OTA and the seam is installed. */
 static FLASHMEM bool app_ota_present(void *)
 {
@@ -4159,6 +4265,7 @@ static FLASHMEM void ota_compose(void)
 	(void)aius_ota_ed25519_verifier(&g_ota_verifier, &g_ota_key);
 	(void)aius_ota_latch_arm(&g_ota_session);
 	(void)aius_optical_app_set_ota(&g_runtime.app, &g_ota_seam);
+	ota_dark_stamp_boot_decode();
 }
 #endif /* AIUS_OTA */
 
@@ -4385,6 +4492,10 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	 * and a separate route would be a second snapshot that moves between
 	 * requests. Absent when OTA is compiled out. */
 	if (!http_ota_diag_json((char *)body, capacity, &length))
+		return 0;
+	/* The retained dark-window forensic stamp, or null when none stands.
+	 * Absent when OTA is compiled out, like ota_diag. */
+	if (!http_ota_dark_json((char *)body, capacity, &length))
 		return 0;
 #endif
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
@@ -4856,7 +4967,13 @@ static constexpr size_t AIUS_ID_MAX_PAYLOAD =
 	(sizeof(" ps=") - 1u) + 3u +
 	(sizeof(" pv=") - 1u) + 5u +
 	(sizeof(" fa=") - 1u) + 3u +
-	(sizeof(" cw=") - 1u) + 2u + 1u + AIUS_ID_CW_US_DIGITS;
+	(sizeof(" cw=") - 1u) + 2u + 1u + AIUS_ID_CW_US_DIGITS +
+	/* od= is the retained dark-window stamp's headline
+	 * (state:phase:fault:hex-address), emitted only when a stamp stands;
+	 * the budget prices it unconditionally. The full record rides
+	 * /api/status ota_dark; the one question a bricked-then-rescued board
+	 * must answer over CDC is "where did the window die". */
+	(sizeof(" od=") - 1u) + 1u + 1u + 1u + 1u + 2u + 1u + 8u;
 static_assert(AIUS_ID_MAX_PAYLOAD <= AIUS_OPTICAL_APP_USB_PAYLOAD_MAX,
 	"the ID payload must fit the dispatcher's bound, or every ID answer is "
 	"a truncation-driven INTERNAL error");
@@ -4955,7 +5072,27 @@ static FLASHMEM size_t app_write_usb_payload(void *, AiusUsbCommandKind kind,
 		(unsigned)worst_id,
 		(unsigned long)id_display_saturate(
 			worst_us, AIUS_ID_CW_US_LIMIT));
-	return written > 0 && (size_t)written < capacity ? (size_t)written : 0u;
+	if (written <= 0 || (size_t)written >= capacity)
+		return 0u;
+#if AIUS_OTA
+	/* The retained dark-window stamp's headline, only when one stands: a
+	 * board rescued over HalfKay answers "where did the window die" on the
+	 * first CDC ID even with HTTP down. Address in hex to match the flash
+	 * map the operator reads it against. */
+	if (g_ota_dark_report_valid) {
+		int extra = snprintf(payload + written,
+		                     capacity - (size_t)written,
+		                     " od=%u:%u:%u:%lx",
+		                     (unsigned)g_ota_dark_report.state,
+		                     (unsigned)g_ota_dark_report.phase,
+		                     (unsigned)g_ota_dark_report.fault,
+		                     (unsigned long)g_ota_dark_report.step_address);
+		if (extra <= 0 || (size_t)(written + extra) >= capacity)
+			return 0u;
+		written += extra;
+	}
+#endif
+	return (size_t)written;
 }
 
 /* The dispatcher combines this with its own per-dispatch sequence to name the

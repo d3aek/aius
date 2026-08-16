@@ -43,7 +43,12 @@ DECODER_ARENA_BYTES = 218688
 # and two OCRAM-resident owners embed a config copy; the 4.6 KiB delay ring
 # itself is DTCM (inside AiusDspRuntimeConfig). Still 160 B above the
 # defect-26 floor.
-COMMITTED_OCRAM_FREE_BYTES = 131232
+# Lowered to 131136 on 2026-08-16: the retained OTA dark-window forensic
+# stamp (64 B in `.aius_retained_ota`, last in the ROM-safe ORIGIN(RAM)
+# window, plus 32 B of section alignment measured post-link) -- the record a
+# bricked window carries into its WDOG reset (aius-ota-resilience.md
+# Phase 1). Still 64 B above the defect-26 floor.
+COMMITTED_OCRAM_FREE_BYTES = 131136
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"

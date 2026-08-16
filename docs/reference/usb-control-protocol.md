@@ -104,9 +104,22 @@ abbreviated only because the line has a byte bound; nothing longer fits.
 
 Four counters display-saturate on this line only — `GET /api/status` serves
 their full 32-bit values. The saturation is what keeps the worst-case payload
-sum (`AIUS_ID_MAX_PAYLOAD`, a compile-time proof against the 256-byte bound)
+sum (`AIUS_ID_MAX_PAYLOAD`, a compile-time proof against the payload bound)
 true after the `cw=` field joined the line; nothing diagnostic lives above
 `99999` in any of the four.
+
+### The dark-window field
+
+**`od=<state>:<phase>:<fault>:<hex-address>`** joins the line only when the
+retained OTA dark-window stamp holds a valid record
+([`aius-ota-resilience.md`](../plans/aius-ota-resilience.md) Phase 1): a board
+rescued over HalfKay answers "where did the activation window die" on its
+first `ID` line, before HTTP is up. State `1` entered / `2` step in flight /
+`3` faulted / `4` completed; phase and fault are the sequencer's
+`AiusOtaActivatePhase` / `AiusOtaActivateFault` values; the address is the
+flash address of the operation the stamp describes, in lowercase hex. The
+full record — compare offset, byte counts, digest prefix, dark-window cycles
+— rides `GET /api/status` as `ota_dark`.
 
 `rsafe` is the recovery-safe flag: `1` means the runtime selected recovery-safe
 mode, so Ethernet and SD mutation stay disabled and the only exit is a verified
@@ -196,8 +209,12 @@ always read zero.
 
 ### Bound and failure mode
 
-**The `ID` payload is bounded at 256 bytes and fails closed rather than
-truncating.** The bound is the dispatcher's `AIUS_OPTICAL_APP_USB_PAYLOAD_MAX`.
+**The `ID` payload is bounded at 280 bytes and fails closed rather than
+truncating.** The bound is the control library's `AIUS_USB_RUNTIME_MAX_PAYLOAD`
+(mirrored as the dispatcher's `AIUS_OPTICAL_APP_USB_PAYLOAD_MAX`); it was 256
+until 2026-08-16, widened for the retained dark-window stamp's `od=` field
+once the field-by-field worst case outgrew it, and it remains bounded by the
+320-byte response frame via a `_Static_assert` in `aius_usb_control.c`.
 The firmware's worst-case payload length is summed field by field from the
 domains above and checked by a compile-time `static_assert`, so overrunning the
 bound is a build failure, not a wire event. At runtime, a payload that does not

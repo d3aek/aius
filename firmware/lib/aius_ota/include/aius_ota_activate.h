@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include "aius_ota.h"
+#include "aius_ota_dark_stamp.h"
 #include "aius_ota_health.h"
 #include "aius_sha256.h"
 
@@ -224,6 +225,34 @@ typedef int (*AiusOtaActivateHealthReadFn)(void *ctx, uint8_t *bytes,
 typedef int (*AiusOtaActivateHealthWriteFn)(void *ctx, const uint8_t *bytes,
 	                                    uint32_t length);
 
+/* Writes the dark-window forensic stamp (aius_ota_dark_stamp.h): the retained
+ * record that names the window's phase, step address, compare offset and fault
+ * code across the reset that follows a halt. OPTIONAL -- NULL runs the
+ * sequence unstamped -- because the stamp is observability, and a board whose
+ * retained slot is unavailable must still be able to upgrade.
+ *
+ * CALLED INSIDE THE DARK WINDOW: the target implementation and everything it
+ * reaches (aius_ota_dark_stamp_encode(), the retained write, the dcache
+ * flush) must be RAM-resident. No return value: a stamp that cannot be
+ * written changes nothing about what the flash sequence must do next, and the
+ * halt policy must not gain a second failure mode from its own black box.
+ *
+ * WHEN the sequencer calls it -- the contract the host suite pins:
+ *   - begin() success: state ENTERED (mark written, nothing erased);
+ *   - every step, BEFORE the operation runs: state STEP with the address the
+ *     operation is about to touch, so a primitive that wedges and rides the
+ *     watchdog down still names itself -- the exact 2026-08-16 gap;
+ *   - a step that halts: state FAULTED with the typed fault, the primitive's
+ *     own code, and the compare offset when the fault is a readback mismatch;
+ *   - the step that reaches READY_TO_RESET: state COMPLETED with the
+ *     dark-window cycle evidence.
+ * Pre-window refusals (begin()'s rules) never stamp: the board still serves,
+ * the session's own fault surface reports them, and overwriting a prior
+ * window's forensics with a refusal would destroy exactly the evidence the
+ * stamp exists to keep. */
+typedef void (*AiusOtaActivateStampFn)(void *ctx,
+	                               const AiusOtaDarkStampView *view);
+
 typedef struct {
 	void *ctx;
 	AiusOtaActivateEraseFn erase_sector;
@@ -233,6 +262,7 @@ typedef struct {
 	AiusOtaActivateCyclesFn cycles;
 	AiusOtaActivateHealthReadFn health_read;
 	AiusOtaActivateHealthWriteFn health_write;
+	AiusOtaActivateStampFn dark_stamp; /* optional; NULL = no stamping */
 } AiusOtaActivatePrimitives;
 
 /* --------------------------------------------------------------------------
@@ -292,6 +322,15 @@ typedef struct {
 	AiusOtaActivatePhase phase;
 	AiusOtaActivateFault fault;
 	int primitive_fault;
+	/* WHERE the fault landed. `fault_address` is the absolute flash address
+	 * of the refusing or refused operation (zero when the fault has no
+	 * address: session, internal, health and the pre-window verify faults);
+	 * `fault_compare_offset` is the absolute IMAGE offset of the first
+	 * mismatching byte for a VERIFY fault, and
+	 * AIUS_OTA_DARK_STAMP_NO_COMPARE_OFFSET for every other fault. Both
+	 * feed the dark stamp and stand alone as live diagnostics. */
+	uint32_t fault_address;
+	uint32_t fault_compare_offset;
 	bool dark; /* the sequence is inside the dark window */
 	uint32_t image_length;
 	/* Both count flash operations, not staged reads, and both land on
@@ -316,6 +355,8 @@ typedef struct {
 	AiusOtaActivatePhase phase;
 	AiusOtaActivateFault fault;
 	int primitive_fault;
+	uint32_t fault_address;        /* see AiusOtaActivateProgress */
+	uint32_t fault_compare_offset; /* see AiusOtaActivateProgress */
 	/* Borrowed, not owned. Held so every step can re-check that the session
 	 * is still the one that authorized this activation. */
 	AiusOtaSession *session;

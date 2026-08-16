@@ -32,7 +32,7 @@ typedef struct {
 	uint8_t rx[AIUS_USB_RUNTIME_RX_QUOTA + 1u];
 	AiusUsbApplicationResponse application_response;
 	char verb[11];
-	char payload[257];
+	char payload[AIUS_USB_RUNTIME_MAX_PAYLOAD + 1u];
 	AiusUsbRuntimeAction action;
 } DisjointLayout;
 
@@ -52,7 +52,8 @@ _Static_assert(offsetof(DisjointLayout, payload) >=
 		offsetof(DisjointLayout, verb) + 11u,
 	"verb and payload storage overlap");
 _Static_assert(offsetof(DisjointLayout, action) >=
-		offsetof(DisjointLayout, payload) + 257u,
+		offsetof(DisjointLayout, payload) +
+			AIUS_USB_RUNTIME_MAX_PAYLOAD + 1u,
 	"payload and action storage overlap");
 
 static AiusUsbRuntimeInput input_connected(void)
@@ -1222,7 +1223,7 @@ static void test_invalid_response_variant(unsigned variant)
 	AiusUsbRuntimeAction action;
 	char too_long_verb[11];
 	char bad_payload[2] = {'x', '\x1f'};
-	char overlong_payload[257];
+	char overlong_payload[AIUS_USB_RUNTIME_MAX_PAYLOAD + 1u];
 	uint32_t before_faults;
 
 	fixture_init(&fixture);

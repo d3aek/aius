@@ -66,6 +66,9 @@ _Static_assert(UINT32_MAX - AIUS_OTA_FLASH_BASE >= AIUS_OTA_FLASH_USABLE_BYTES,
  * assert is what stops the two bounds drifting apart. */
 _Static_assert(AIUS_OTA_MAX_IMAGE_BYTES <= AIUS_OTA_FLASH_USABLE_BYTES,
                "the container cannot admit an image the flash cannot hold");
+_Static_assert(AIUS_OTA_DARK_STAMP_DIGEST_PREFIX_BYTES <=
+	               AIUS_OTA_DIGEST_BYTES,
+               "the stamp's digest prefix is a prefix of the payload digest");
 
 /* --------------------------------------------------------------------------
  * Byte primitives
@@ -87,6 +90,22 @@ static FASTRUN bool blocks_differ(const uint8_t *left, const uint8_t *right,
 	for (index = 0u; index < length; index++)
 		accumulator |= (uint8_t)(left[index] ^ right[index]);
 	return accumulator != 0u;
+}
+
+/* The index of the first differing byte, for the forensic stamp -- called only
+ * AFTER blocks_differ() has said the blocks differ, and only on a flash
+ * readback (nothing secret-shaped), so the early exit that blocks_differ
+ * deliberately avoids is fine here. `length` if the blocks are equal. */
+static FASTRUN uint32_t first_difference(const uint8_t *left,
+	                                 const uint8_t *right, uint32_t length)
+{
+	uint32_t index;
+
+	for (index = 0u; index < length; index++) {
+		if (left[index] != right[index])
+			break;
+	}
+	return index;
 }
 
 static FLASHMEM bool block_is_zero(const uint8_t *bytes, uint32_t length)
@@ -264,6 +283,37 @@ static FASTRUN void feed(AiusOtaActivator *activator)
 	activator->primitives.watchdog_feed(activator->primitives.ctx);
 }
 
+/* One stamp, through the optional primitive. The view is rebuilt from the
+ * activator on every call rather than kept incrementally, so a stamp can
+ * never describe a state the activator has already left. The digest prefix is
+ * copied by loop, not memcpy: this runs mid-erase and must not depend on
+ * which library memcpy the target linked where. */
+static FASTRUN void stamp(AiusOtaActivator *activator, uint8_t state,
+	                  uint32_t step_address)
+{
+	AiusOtaDarkStampView view;
+	uint32_t index;
+
+	if (activator->primitives.dark_stamp == NULL)
+		return;
+	view.state = state;
+	view.phase = (uint8_t)activator->phase;
+	view.fault = (uint8_t)activator->fault;
+	view.flags = 0u;
+	view.primitive_fault = (int32_t)activator->primitive_fault;
+	view.step_address = step_address;
+	view.compare_offset = activator->fault_compare_offset;
+	view.programmed_bytes = activator->programmed_bytes;
+	view.verified_bytes = activator->verified_bytes;
+	view.steps_taken = activator->steps_taken;
+	view.steps_total = activator->steps_total;
+	for (index = 0u; index < AIUS_OTA_DARK_STAMP_DIGEST_PREFIX_BYTES;
+	     index++)
+		view.digest_prefix[index] = activator->image_digest[index];
+	view.dark_window_cycles = activator->dark_window_cycles;
+	activator->primitives.dark_stamp(activator->primitives.ctx, &view);
+}
+
 static FASTRUN AiusOtaStatus do_erase(AiusOtaActivator *activator,
 	                              uint32_t address)
 {
@@ -271,15 +321,18 @@ static FASTRUN AiusOtaStatus do_erase(AiusOtaActivator *activator,
 		aius_ota_activate_check_erase_in(&activator->window, address);
 	int fault;
 
-	if (status != AIUS_OTA_OK)
+	if (status != AIUS_OTA_OK) {
+		activator->fault_address = address;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_GEOMETRY,
 		            status);
+	}
 
 	feed(activator);
 	fault = activator->primitives.erase_sector(activator->primitives.ctx,
 	                                           address);
 	if (fault != 0) {
 		activator->primitive_fault = fault;
+		activator->fault_address = address;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_ERASE,
 		            AIUS_OTA_PRIMITIVE);
 	}
@@ -294,15 +347,18 @@ static FASTRUN AiusOtaStatus do_program(AiusOtaActivator *activator,
 		&activator->window, address, length);
 	int fault;
 
-	if (status != AIUS_OTA_OK)
+	if (status != AIUS_OTA_OK) {
+		activator->fault_address = address;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_GEOMETRY,
 		            status);
+	}
 
 	feed(activator);
 	fault = activator->primitives.program(activator->primitives.ctx,
 	                                      address, data, length);
 	if (fault != 0) {
 		activator->primitive_fault = fault;
+		activator->fault_address = address;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_PROGRAM,
 		            AIUS_OTA_PRIMITIVE);
 	}
@@ -316,9 +372,11 @@ static FASTRUN AiusOtaStatus do_flash_read(AiusOtaActivator *activator,
 		&activator->window, address, length);
 	int fault;
 
-	if (status != AIUS_OTA_OK)
+	if (status != AIUS_OTA_OK) {
+		activator->fault_address = address;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_GEOMETRY,
 		            status);
+	}
 
 	feed(activator);
 	fault = activator->primitives.flash_read(activator->primitives.ctx,
@@ -326,6 +384,7 @@ static FASTRUN AiusOtaStatus do_flash_read(AiusOtaActivator *activator,
 	                                         length);
 	if (fault != 0) {
 		activator->primitive_fault = fault;
+		activator->fault_address = address;
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_FLASH_READ,
 		            AIUS_OTA_PRIMITIVE);
 	}
@@ -368,9 +427,19 @@ static FASTRUN AiusOtaStatus program_and_compare(AiusOtaActivator *activator,
 	                       length);
 	if (status != AIUS_OTA_OK)
 		return status;
-	if (blocks_differ(source, activator->readback, length))
+	if (blocks_differ(source, activator->readback, length)) {
+		/* The forensic pair the 2026-08-16 incident had nobody to ask
+		 * for: WHERE the flash disagreed with the staged view. The
+		 * offset is image-absolute (window-relative equals image-
+		 * relative for every programmed chunk), so a reader needs no
+		 * geometry to place it. */
+		activator->fault_address = activator->window.base + offset;
+		activator->fault_compare_offset =
+			offset + first_difference(source, activator->readback,
+			                          length);
 		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_VERIFY,
 		            AIUS_OTA_VERIFY);
+	}
 
 	activator->programmed_bytes += length;
 	activator->verified_bytes += length;
@@ -578,6 +647,7 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 	/* Zeroed first, so a refused begin() leaves an activator that refuses
 	 * every step rather than one holding half a setup. */
 	memset(activator, 0, sizeof(*activator));
+	activator->fault_compare_offset = AIUS_OTA_DARK_STAMP_NO_COMPARE_OFFSET;
 	aius_ota_health_init(&activator->health);
 
 	if (session == NULL || primitives == NULL || verifier == NULL ||
@@ -667,7 +737,31 @@ FLASHMEM AiusOtaStatus aius_ota_activate_begin(
 		return status;
 
 	activator->phase = AIUS_OTA_ACTIVATE_ERASE_HEAD;
+	/* The window is entered: the first retained evidence a dark board can
+	 * offer. Stamped AFTER the phase move so the record reads ERASE_HEAD,
+	 * the operation a death-before-the-first-step would have been in. */
+	stamp(activator, (uint8_t)AIUS_OTA_DARK_STAMP_ENTERED,
+	      activator->window.base);
 	return AIUS_OTA_OK;
+}
+
+/* The absolute flash address the NEXT operation of the current phase touches:
+ * what the pre-operation stamp records, so a primitive that wedges names the
+ * exact erase, program or readback it wedged in. */
+static FASTRUN uint32_t step_address_of(const AiusOtaActivator *activator)
+{
+	switch (activator->phase) {
+	case AIUS_OTA_ACTIVATE_ERASE_HEAD:
+		return activator->window.base;
+	case AIUS_OTA_ACTIVATE_BODY:
+	case AIUS_OTA_ACTIVATE_PROGRAM_HEAD:
+		return activator->window.base + activator->cursor;
+	case AIUS_OTA_ACTIVATE_IDLE:
+	case AIUS_OTA_ACTIVATE_READY_TO_RESET:
+	case AIUS_OTA_ACTIVATE_FAULTED:
+	default:
+		return 0u;
+	}
 }
 
 FASTRUN AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
@@ -689,18 +783,29 @@ FASTRUN AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
 	 * struct field, NOT through aius_ota_state(), which is FLASHMEM and would
 	 * fault while the flash is erased. */
 	if (activator->session == NULL ||
-	    activator->session->state != AIUS_OTA_STATE_ACTIVATION_REQUESTED)
-		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_SESSION,
-		            AIUS_OTA_STATE);
+	    activator->session->state != AIUS_OTA_STATE_ACTIVATION_REQUESTED) {
+		status = halt(activator, AIUS_OTA_ACTIVATE_FAULT_SESSION,
+		              AIUS_OTA_STATE);
+		stamp(activator, (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED, 0u);
+		return status;
+	}
 	/* Unreachable while the step machine and step_bound() agree, which the
 	 * suite asserts exactly. It exists because the run-to-completion loop
 	 * runs with the device quiesced and a non-advancing step there would
 	 * hang the board with no watchdog to save it. */
-	if (activator->steps_taken >= activator->steps_total)
-		return halt(activator, AIUS_OTA_ACTIVATE_FAULT_INTERNAL,
-		            AIUS_OTA_STATE);
+	if (activator->steps_taken >= activator->steps_total) {
+		status = halt(activator, AIUS_OTA_ACTIVATE_FAULT_INTERNAL,
+		              AIUS_OTA_STATE);
+		stamp(activator, (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED, 0u);
+		return status;
+	}
 
 	dark = aius_ota_activate_is_dark(activator);
+	/* BEFORE the operation runs: a wedged primitive rides the watchdog down
+	 * with this stamp standing, which is the 2026-08-16 gap -- the reset
+	 * then names the phase and address the window died in. */
+	stamp(activator, (uint8_t)AIUS_OTA_DARK_STAMP_STEP,
+	      step_address_of(activator));
 	started = activator->primitives.cycles(activator->primitives.ctx);
 
 	switch (activator->phase) {
@@ -731,6 +836,14 @@ FASTRUN AiusOtaStatus aius_ota_activate_step(AiusOtaActivator *activator)
 		activator->max_step_cycles = elapsed;
 	if (dark)
 		activator->dark_window_cycles += elapsed;
+	/* Terminal stamps, after the cycle accounting so the record carries the
+	 * final dark-window evidence. A FAULTED stamp repeats the address the
+	 * fault site latched; COMPLETED has no pending operation to name. */
+	if (activator->phase == AIUS_OTA_ACTIVATE_FAULTED)
+		stamp(activator, (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED,
+		      activator->fault_address);
+	else if (activator->phase == AIUS_OTA_ACTIVATE_READY_TO_RESET)
+		stamp(activator, (uint8_t)AIUS_OTA_DARK_STAMP_COMPLETED, 0u);
 	return status;
 }
 
@@ -775,6 +888,8 @@ FLASHMEM AiusOtaStatus aius_ota_activate_progress(
 	progress->phase = activator->phase;
 	progress->fault = activator->fault;
 	progress->primitive_fault = activator->primitive_fault;
+	progress->fault_address = activator->fault_address;
+	progress->fault_compare_offset = activator->fault_compare_offset;
 	progress->dark = aius_ota_activate_is_dark(activator);
 	progress->image_length = activator->image_length;
 	progress->programmed_bytes = activator->programmed_bytes;

@@ -15,6 +15,15 @@ extern "C" {
 #define AIUS_USB_CONTROL_LINE_STORAGE 128u
 #define AIUS_USB_RUNTIME_MIN_RESPONSE 48u
 #define AIUS_USB_RUNTIME_MAX_RESPONSE 320u
+/* Longest application payload a success response may carry. Was 256 until
+ * 2026-08-16; widened for the ID line's `od=` dark-window field
+ * (aius-ota-resilience.md Phase 1) once the field-by-field worst case
+ * outgrew it. Bounded by the response frame, not by taste: the widest frame
+ * is "AIUS/1 OK " + a 10-digit request id + " " + a 10-byte verb + " " +
+ * payload + "\n" + NUL = 34 bytes of overhead, and the static assert below
+ * keeps payload + overhead inside AIUS_USB_RUNTIME_MAX_RESPONSE so a valid
+ * payload can never produce an unformattable response. */
+#define AIUS_USB_RUNTIME_MAX_PAYLOAD 280u
 #define AIUS_USB_RUNTIME_RX_QUOTA 64u
 #define AIUS_USB_RUNTIME_TX_QUOTA 64u
 /* How long an authorized BOOTLOADER transaction keeps trying to place its

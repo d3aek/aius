@@ -30,6 +30,7 @@
 
 #include "aius_ota.h"
 #include "aius_ota_activate.h"
+#include "aius_ota_dark_stamp.h"
 #include "aius_ota_health.h"
 #include "aius_sha256.h"
 
@@ -132,6 +133,17 @@ typedef struct {
 	 * cell that did not take, indistinguishable from success at the driver. */
 	bool corrupt_enabled;
 	uint32_t corrupt_offset;
+
+	/* The dark-stamp seam: every view the sequencer hands the primitive,
+	 * counted by state, with the first and last kept whole -- plus the last
+	 * view round-tripped through the real encode, exactly as the target's
+	 * retained writer does, so the byte layout is exercised in-flow rather
+	 * than only by the dedicated encode/decode rows. */
+	uint32_t stamps;
+	uint32_t stamps_by_state[AIUS_OTA_DARK_STAMP_COMPLETED + 1u];
+	AiusOtaDarkStampView stamp_first;
+	AiusOtaDarkStampView stamp_last;
+	uint8_t stamp_bytes[AIUS_OTA_DARK_STAMP_BYTES];
 } FakeDevice;
 
 static FakeDevice g_dev;
@@ -286,6 +298,20 @@ static int fake_health_write(void *ctx, const uint8_t *bytes, uint32_t length)
 	return 0;
 }
 
+static void fake_dark_stamp(void *ctx, const AiusOtaDarkStampView *view)
+{
+	FakeDevice *dev = (FakeDevice *)ctx;
+
+	if (dev->stamps == 0u)
+		dev->stamp_first = *view;
+	dev->stamp_last = *view;
+	CHECK(view->state <= (uint8_t)AIUS_OTA_DARK_STAMP_COMPLETED);
+	dev->stamps_by_state[view->state]++;
+	dev->stamps++;
+	CHECK(aius_ota_dark_stamp_encode(view, dev->stamp_bytes,
+	                                 sizeof(dev->stamp_bytes)));
+}
+
 static AiusOtaActivatePrimitives primitives_over(FakeDevice *dev)
 {
 	AiusOtaActivatePrimitives primitives;
@@ -298,7 +324,37 @@ static AiusOtaActivatePrimitives primitives_over(FakeDevice *dev)
 	primitives.cycles = fake_cycles;
 	primitives.health_read = fake_health_read;
 	primitives.health_write = fake_health_write;
+	primitives.dark_stamp = fake_dark_stamp;
 	return primitives;
+}
+
+/* The last stamp, decoded back off the encoded bytes the fake kept -- so every
+ * assertion below also proves the byte layout round-trips what the sequencer
+ * said, which is exactly what the boot-side reader will depend on. */
+static void assert_last_stamp(const FakeDevice *dev, uint8_t state,
+	                      uint8_t fault, uint32_t step_address,
+	                      uint32_t compare_offset)
+{
+	AiusOtaDarkStampView decoded;
+
+	CHECK(dev->stamps > 0u);
+	CHECK(dev->stamp_last.state == state);
+	CHECK(dev->stamp_last.fault == fault);
+	CHECK(dev->stamp_last.step_address == step_address);
+	CHECK(dev->stamp_last.compare_offset == compare_offset);
+	CHECK(aius_ota_dark_stamp_decode(&decoded, dev->stamp_bytes,
+	                                 sizeof(dev->stamp_bytes)));
+	CHECK(decoded.state == state);
+	CHECK(decoded.fault == fault);
+	CHECK(decoded.step_address == step_address);
+	CHECK(decoded.compare_offset == compare_offset);
+	CHECK(decoded.phase == dev->stamp_last.phase);
+	CHECK(decoded.primitive_fault == dev->stamp_last.primitive_fault);
+	CHECK(decoded.steps_taken == dev->stamp_last.steps_taken);
+	CHECK(decoded.steps_total == dev->stamp_last.steps_total);
+	CHECK(memcmp(decoded.digest_prefix, dev->stamp_last.digest_prefix,
+	             AIUS_OTA_DARK_STAMP_DIGEST_PREFIX_BYTES) == 0);
+	CHECK(decoded.dark_window_cycles == dev->stamp_last.dark_window_cycles);
 }
 
 /* -------------------------------------------------------------------------
@@ -786,6 +842,30 @@ static void test_happy_path_to_ready_to_reset(void)
 	      (uint64_t)TEST_CYCLES_PER_CALL * 55u);
 	CHECK(g_dev.cycles < TEST_CYCLES_START); /* it really did wrap */
 
+	current_key = "happy.stamps";
+	/* The stamp lifecycle: one ENTERED from begin(), one STEP before every
+	 * operation (the wedge-forensics guarantee), one COMPLETED after the
+	 * last -- and the first stamp already names the window and the image. */
+	CHECK(g_dev.stamps_by_state[AIUS_OTA_DARK_STAMP_ENTERED] == 1u);
+	CHECK(g_dev.stamps_by_state[AIUS_OTA_DARK_STAMP_STEP] == 55u);
+	CHECK(g_dev.stamps_by_state[AIUS_OTA_DARK_STAMP_COMPLETED] == 1u);
+	CHECK(g_dev.stamps_by_state[AIUS_OTA_DARK_STAMP_FAULTED] == 0u);
+	CHECK(g_dev.stamps == 57u);
+	CHECK(g_dev.stamp_first.state == (uint8_t)AIUS_OTA_DARK_STAMP_ENTERED);
+	CHECK(g_dev.stamp_first.phase == (uint8_t)AIUS_OTA_ACTIVATE_ERASE_HEAD);
+	CHECK(g_dev.stamp_first.step_address == AIUS_OTA_FLASH_BASE);
+	CHECK(memcmp(g_dev.stamp_first.digest_prefix, g_new_digest,
+	             AIUS_OTA_DARK_STAMP_DIGEST_PREFIX_BYTES) == 0);
+	assert_last_stamp(&g_dev, (uint8_t)AIUS_OTA_DARK_STAMP_COMPLETED,
+	                  (uint8_t)AIUS_OTA_ACTIVATE_FAULT_NONE, 0u,
+	                  AIUS_OTA_DARK_STAMP_NO_COMPARE_OFFSET);
+	CHECK(g_dev.stamp_last.programmed_bytes == TEST_IMAGE_BYTES);
+	CHECK(g_dev.stamp_last.verified_bytes == TEST_IMAGE_BYTES);
+	CHECK(g_dev.stamp_last.steps_taken == 55u);
+	CHECK(g_dev.stamp_last.steps_total == 55u);
+	CHECK(g_dev.stamp_last.dark_window_cycles ==
+	      (uint64_t)TEST_CYCLES_PER_CALL * 55u);
+
 	current_key = "happy.flash";
 	assert_flash_holds_image(&g_dev, g_new_image, TEST_IMAGE_BYTES);
 	CHECK(g_dev.dirty_programs == 0u);
@@ -1005,6 +1085,11 @@ typedef struct {
 	 * leaves the record standing. */
 	bool expect_health_written;
 	uint32_t expect_health_write_ops;
+	/* The forensic stamp: in-window faults stamp FAULTED with the failing
+	 * address; pre-window faults (both health cases) never stamp, so a
+	 * refusal cannot overwrite a prior window's evidence. */
+	bool expect_stamp;
+	uint32_t expect_stamp_address;
 } FaultCase;
 
 static void test_primitive_fault_paths(void)
@@ -1037,6 +1122,8 @@ static void test_primitive_fault_paths(void)
 		cases[0].expect_flash_touched = false;
 		cases[0].expect_health_written = false;
 		cases[0].expect_health_write_ops = 0u;
+		cases[0].expect_stamp = false;
+		cases[0].expect_stamp_address = 0u;
 
 		cases[1].key = "fault.health-write";
 		cases[1].injection_site = &g_dev.fail_health_write_at;
@@ -1046,6 +1133,8 @@ static void test_primitive_fault_paths(void)
 		cases[1].expect_flash_touched = false;
 		cases[1].expect_health_written = false;
 		cases[1].expect_health_write_ops = 1u;
+		cases[1].expect_stamp = false;
+		cases[1].expect_stamp_address = 0u;
 
 		cases[2].key = "fault.erase";
 		cases[2].injection_site = &g_dev.fail_erase_at;
@@ -1055,6 +1144,9 @@ static void test_primitive_fault_paths(void)
 		cases[2].expect_flash_touched = true;
 		cases[2].expect_health_written = true;
 		cases[2].expect_health_write_ops = 1u;
+		cases[2].expect_stamp = true;
+		cases[2].expect_stamp_address =
+			AIUS_OTA_FLASH_BASE + AIUS_OTA_FLASH_SECTOR_BYTES;
 
 		cases[3].key = "fault.program";
 		cases[3].injection_site = &g_dev.fail_program_at;
@@ -1064,6 +1156,9 @@ static void test_primitive_fault_paths(void)
 		cases[3].expect_flash_touched = true;
 		cases[3].expect_health_written = true;
 		cases[3].expect_health_write_ops = 1u;
+		cases[3].expect_stamp = true;
+		cases[3].expect_stamp_address =
+			AIUS_OTA_FLASH_BASE + AIUS_OTA_FLASH_HEAD_BYTES;
 
 		cases[4].key = "fault.flash-read";
 		cases[4].injection_site = &g_dev.fail_flash_read_at;
@@ -1073,6 +1168,9 @@ static void test_primitive_fault_paths(void)
 		cases[4].expect_flash_touched = true;
 		cases[4].expect_health_written = true;
 		cases[4].expect_health_write_ops = 1u;
+		cases[4].expect_stamp = true;
+		cases[4].expect_stamp_address =
+			AIUS_OTA_FLASH_BASE + AIUS_OTA_FLASH_HEAD_BYTES;
 
 		item = &cases[index];
 		current_key = item->key;
@@ -1110,6 +1208,18 @@ static void test_primitive_fault_paths(void)
 			CHECK(count_of(&g_dev, OP_PROGRAM) == 0u);
 			CHECK(memcmp(g_dev.flash, g_old_image,
 			             FAKE_FLASH_BYTES) == 0);
+		}
+
+		if (item->expect_stamp) {
+			assert_last_stamp(&g_dev,
+			                  (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED,
+			                  (uint8_t)item->expect_fault,
+			                  item->expect_stamp_address,
+			                  AIUS_OTA_DARK_STAMP_NO_COMPARE_OFFSET);
+			CHECK(g_dev.stamp_last.primitive_fault ==
+			      item->expect_primitive_fault);
+		} else {
+			CHECK(g_dev.stamps == 0u);
 		}
 
 		load_health(&g_dev, &health);
@@ -1165,6 +1275,17 @@ static void test_in_window_compare_catches_a_flash_cell_that_did_not_take(void)
 	CHECK(first_in_range(&g_dev, OP_PROGRAM, AIUS_OTA_FLASH_BASE,
 	                     AIUS_OTA_FLASH_BASE + AIUS_OTA_FLASH_HEAD_BYTES) ==
 	      g_dev.ops);
+
+	current_key = "verify.body-readback-forensics";
+	/* The pair the incident had nobody to ask for: the chunk address the
+	 * compare failed at (9000 lands in the 256-byte chunk at 8960) and the
+	 * exact image offset of the first mismatching byte. Live progress and
+	 * the retained stamp agree byte for byte. */
+	CHECK(progress.fault_address == AIUS_OTA_FLASH_BASE + 8960u);
+	CHECK(progress.fault_compare_offset == 9000u);
+	assert_last_stamp(&g_dev, (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED,
+	                  (uint8_t)AIUS_OTA_ACTIVATE_FAULT_VERIFY,
+	                  AIUS_OTA_FLASH_BASE + 8960u, 9000u);
 }
 
 static void test_head_compare_catches_a_bad_fcb(void)
@@ -1193,6 +1314,13 @@ static void test_head_compare_catches_a_bad_fcb(void)
 	CHECK(first_in_range(&g_dev, OP_PROGRAM, AIUS_OTA_FLASH_BASE,
 	                     AIUS_OTA_FLASH_BASE + AIUS_OTA_FLASH_HEAD_BYTES) <
 	      g_dev.ops);
+	/* Offset 100 is inside the FCB's first chunk, programmed last. */
+	CHECK(progress.fault_address == AIUS_OTA_FLASH_BASE);
+	CHECK(progress.fault_compare_offset == 100u);
+	assert_last_stamp(&g_dev, (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED,
+	                  (uint8_t)AIUS_OTA_ACTIVATE_FAULT_VERIFY,
+	                  AIUS_OTA_FLASH_BASE, 100u);
+	CHECK(g_dev.stamp_last.phase == (uint8_t)AIUS_OTA_ACTIVATE_FAULTED);
 }
 
 static void test_digest_mismatch_aborts_before_any_flash(void)
@@ -1221,6 +1349,9 @@ static void test_digest_mismatch_aborts_before_any_flash(void)
 	CHECK(count_of(&g_dev, OP_ERASE) == 0u);
 	CHECK(count_of(&g_dev, OP_HEALTH_WRITE) == 0u);
 	CHECK(memcmp(g_dev.flash, g_old_image, FAKE_FLASH_BYTES) == 0);
+	/* Pre-window: no stamp -- a refusal that leaves the board serving must
+	 * not overwrite a prior window's retained forensics. */
+	CHECK(g_dev.stamps == 0u);
 }
 
 static void test_signature_refusal_aborts_before_any_flash(void)
@@ -1251,6 +1382,7 @@ static void test_signature_refusal_aborts_before_any_flash(void)
 	CHECK(count_of(&g_dev, OP_ERASE) == 0u);
 	CHECK(count_of(&g_dev, OP_HEALTH_WRITE) == 0u);
 	CHECK(memcmp(g_dev.flash, g_old_image, FAKE_FLASH_BYTES) == 0);
+	CHECK(g_dev.stamps == 0u); /* pre-window: no stamp */
 }
 
 /* -------------------------------------------------------------------------
@@ -1402,6 +1534,11 @@ static void test_session_withdrawn_mid_window(void)
 	CHECK(progress.fault == AIUS_OTA_ACTIVATE_FAULT_SESSION);
 	CHECK(progress.phase == AIUS_OTA_ACTIVATE_FAULTED);
 	CHECK(g_dev.ops == ops_at_withdrawal);
+	/* An in-window halt with no operation address still stamps: the retained
+	 * record is what a WDOG-halted board carries into its reset. */
+	assert_last_stamp(&g_dev, (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED,
+	                  (uint8_t)AIUS_OTA_ACTIVATE_FAULT_SESSION, 0u,
+	                  AIUS_OTA_DARK_STAMP_NO_COMPARE_OFFSET);
 }
 
 static void test_abandon_activation_is_the_only_exit(void)
@@ -1645,6 +1782,87 @@ static void test_windowed_begin_refuses_a_malformed_window(void)
 	CHECK(g_dev.ops == 0u);
 }
 
+/* -------------------------------------------------------------------------
+ * The dark stamp record itself
+ * ---------------------------------------------------------------------- */
+
+static void test_dark_stamp_record_rules(void)
+{
+	AiusOtaDarkStampView view;
+	AiusOtaDarkStampView decoded;
+	uint8_t bytes[AIUS_OTA_DARK_STAMP_BYTES];
+	uint8_t mutated[AIUS_OTA_DARK_STAMP_BYTES];
+	unsigned int index;
+
+	current_key = "stamp.roundtrip";
+	memset(&view, 0, sizeof(view));
+	view.state = (uint8_t)AIUS_OTA_DARK_STAMP_FAULTED;
+	view.phase = (uint8_t)AIUS_OTA_ACTIVATE_FAULTED;
+	view.fault = (uint8_t)AIUS_OTA_ACTIVATE_FAULT_VERIFY;
+	view.flags = AIUS_OTA_DARK_STAMP_FLAG_REHEARSAL;
+	view.primitive_fault = -1234567;
+	view.step_address = AIUS_OTA_FLASH_BASE + 8960u;
+	view.compare_offset = 9000u;
+	view.programmed_bytes = 9216u;
+	view.verified_bytes = 8960u;
+	view.steps_taken = 42u;
+	view.steps_total = 55u;
+	for (index = 0u; index < AIUS_OTA_DARK_STAMP_DIGEST_PREFIX_BYTES;
+	     index++)
+		view.digest_prefix[index] = (uint8_t)(0xc0u + index);
+	view.dark_window_cycles = UINT64_C(0x123456789ab);
+	CHECK(aius_ota_dark_stamp_encode(&view, bytes, sizeof(bytes)));
+	CHECK(aius_ota_dark_stamp_decode(&decoded, bytes, sizeof(bytes)));
+	CHECK(memcmp(&decoded, &view, sizeof(view)) == 0);
+
+	current_key = "stamp.arguments";
+	CHECK(!aius_ota_dark_stamp_encode(NULL, bytes, sizeof(bytes)));
+	CHECK(!aius_ota_dark_stamp_encode(&view, NULL, sizeof(bytes)));
+	CHECK(!aius_ota_dark_stamp_encode(&view, bytes, sizeof(bytes) - 1u));
+	CHECK(!aius_ota_dark_stamp_decode(NULL, bytes, sizeof(bytes)));
+	CHECK(!aius_ota_dark_stamp_decode(&decoded, NULL, sizeof(bytes)));
+	CHECK(!aius_ota_dark_stamp_decode(&decoded, bytes, sizeof(bytes) + 1u));
+
+	current_key = "stamp.fail-closed";
+	/* Any single-byte corruption of the CRC'd prefix is refused, and a
+	 * refused decode leaves the view reading NONE -- the honest state of a
+	 * board with no stamp. The CRC bytes themselves are covered by the CRC
+	 * check directly. */
+	for (index = 0u; index < AIUS_OTA_DARK_STAMP_BYTES; index++) {
+		memcpy(mutated, bytes, sizeof(mutated));
+		mutated[index] ^= 0x01u;
+		CHECK(!aius_ota_dark_stamp_decode(&decoded, mutated,
+		                                  sizeof(mutated)));
+		CHECK(decoded.state == (uint8_t)AIUS_OTA_DARK_STAMP_NONE);
+		CHECK(decoded.compare_offset ==
+		      AIUS_OTA_DARK_STAMP_NO_COMPARE_OFFSET);
+	}
+	/* All-zero bytes -- the fresh retained window -- decode to NONE. */
+	memset(mutated, 0, sizeof(mutated));
+	CHECK(!aius_ota_dark_stamp_decode(&decoded, mutated, sizeof(mutated)));
+	CHECK(decoded.state == (uint8_t)AIUS_OTA_DARK_STAMP_NONE);
+}
+
+static void test_stamp_primitive_is_optional(void)
+{
+	AiusOtaSession session;
+	AiusOtaActivator activator;
+	AiusOtaActivatePrimitives primitives;
+
+	/* A NULL dark_stamp runs the identical sequence unstamped: the stamp is
+	 * observability, never a precondition for upgrading. */
+	current_key = "stamp.optional";
+	device_reset(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+	primitives = primitives_over(&g_dev);
+	primitives.dark_stamp = NULL;
+	request_activation(&session, g_new_image, TEST_IMAGE_BYTES);
+	CHECK(begin_over(&activator, &session, &primitives, TEST_IMAGE_BYTES,
+	                 g_old_digest) == AIUS_OTA_OK);
+	CHECK(aius_ota_activate_run(&activator) == AIUS_OTA_OK);
+	CHECK(g_dev.stamps == 0u);
+	assert_flash_holds_image(&g_dev, g_new_image, TEST_IMAGE_BYTES);
+}
+
 int main(void)
 {
 	fill_pattern(g_new_image, TEST_IMAGE_BYTES, 0x11u);
@@ -1673,6 +1891,8 @@ int main(void)
 	test_windowed_run_is_the_same_sequence_shifted();
 	test_windowed_head_compare_still_halts();
 	test_windowed_begin_refuses_a_malformed_window();
+	test_dark_stamp_record_rules();
+	test_stamp_primitive_is_optional();
 	puts("ota activation tests passed");
 	return 0;
 }

@@ -30,8 +30,8 @@ extern "C" {
 #endif
 
 /* Longest USB payload the control runtime accepts (aius_usb_control.c
- * runtime_success_valid). */
-#define AIUS_OPTICAL_APP_USB_PAYLOAD_MAX 256u
+ * runtime_success_valid). One authority: the control library's own bound. */
+#define AIUS_OPTICAL_APP_USB_PAYLOAD_MAX AIUS_USB_RUNTIME_MAX_PAYLOAD
 #define AIUS_OPTICAL_APP_USB_PAYLOAD_STORAGE (AIUS_OPTICAL_APP_USB_PAYLOAD_MAX + 1u)
 #define AIUS_OPTICAL_APP_REPLAY_ID_STORAGE (AIUS_HTTP_MAX_REPLAY_ID + 1u)
 
