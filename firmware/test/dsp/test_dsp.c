@@ -2489,9 +2489,11 @@ static void test_tx24_reset_empties_a_ring_that_was_never_zeroed(void)
     assert(ring.underruns == 0u);
 
     /* THE AUDIBLE ASSERTION. A fill straight after reset must emit digital
-     * silence and count the substitution, not leak the samples still sitting in
-     * the buffer -- that burst is what the defect actually produced at every
-     * boot, bounded and inaudible to the test suite but not to a listener. */
+     * silence, not leak the samples still sitting in the buffer -- that burst
+     * is what the defect actually produced at every boot, bounded and
+     * inaudible to the test suite but not to a listener. The substitution is
+     * NOT counted: reset leaves the gate closed, and closed-gate silence is
+     * idle by definition (open-work register 2026-08-15, option b). */
     enum { N = 64 };
     static int32_t tx[N * 2];
     for (int i = 0; i < N * 2; i++) tx[i] = 0x123456; /* must be overwritten */
@@ -2499,9 +2501,9 @@ static void test_tx24_reset_empties_a_ring_that_was_never_zeroed(void)
     for (int i = 0; i < N * 2; i++) {
         assert(tx[i] == 0);
     }
-    assert(ring.underruns == (uint32_t)N);
-    printf("ok tx24 reset empties a ring the boot ROM left dirty (silence, %u underruns)\n",
-           ring.underruns);
+    assert(ring.underruns == 0u);
+    assert(ring.gate_open == 0u);
+    printf("ok tx24 reset empties a ring the boot ROM left dirty (silence, idle uncounted)\n");
 }
 
 static void test_tx24_ring_wraps_and_counts_underruns(void)
@@ -2544,10 +2546,12 @@ static void test_tx24_ring_wraps_and_counts_underruns(void)
     assert(aius_spdif_tx24_level(&ring) == 0);
     assert(ring.underruns == 0);
 
-    /* Underrun: 50 frames committed, a 128-frame interrupt. The first 50 are the
-     * audio, the remaining 78 are digital silence, and -- unlike the vendor
-     * path's block_silent substitution -- they are COUNTED. */
+    /* Underrun with the gate OPEN: 50 frames committed, a 128-frame interrupt.
+     * The first 50 are the audio, the remaining 78 are digital silence, and --
+     * unlike the vendor path's block_silent substitution -- they are COUNTED,
+     * because an open gate makes them an audible glitch. */
     memset(&ring, 0, sizeof ring);
+    ring.gate_open = 1u;
     first = aius_spdif_tx24_stage(&ring, 0, &sl, &sr);
     assert(first >= 50u);
     aius_out_stage_run(NULL, AIUS_DSP_OUT_WIDTH_24, l24, r24, sl, sr, 50u);
@@ -2572,7 +2576,19 @@ static void test_tx24_ring_wraps_and_counts_underruns(void)
     assert(ring.underruns == 78u + 128u);
     assert(aius_spdif_tx24_level(&ring) == 0);
 
-    printf("ok 24-bit ring wraps mid-block and counts substituted silence\n");
+    /* Same drought with the gate CLOSED substitutes the same silence but
+     * counts nothing: the counter is a gate-open glitch metric, and idle
+     * accumulation (~48 k/s, uint32 wrap at ~24.9 h) is the defect the
+     * gating removes. */
+    ring.gate_open = 0u;
+    aius_spdif_tx24_fill(&ring, short_tx, 128u);
+    for (int i = 0; i < 128; i++) {
+        assert(short_tx[2 * i] == 0);
+        assert(short_tx[2 * i + 1] == 0);
+    }
+    assert(ring.underruns == 78u + 128u);
+
+    printf("ok 24-bit ring wraps mid-block, counts open-gate silence, ignores idle\n");
 }
 
 /* --- coherent meter snapshot ---------------------------------------------- */

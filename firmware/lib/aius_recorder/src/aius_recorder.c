@@ -271,11 +271,14 @@ void aius_recorder_epoch(AiusRecorder *r, bool carrier_locked, bool gate_open,
 	uint32_t state = r->state;
 	if (state == AIUS_RECORDER_ABSENT)
 		return;
-	/* Latch the gate for the producer's underrun qualification. The underrun
-	 * counter FREE-RUNS as silence substitution while the gate is dark, so
-	 * a closed -> open transition re-adopts every baseline (controller and producer
-	 * alike) rather than reading the dark-era growth as an edge. Costs at
-	 * most one missed real edge per transition, never a spurious freeze. */
+	/* Latch the gate for the producer's underrun qualification. The counter
+	 * is gate-open-only since output-jitter Phase D (it used to FREE-RUN as
+	 * dark-gate silence substitution), so the closed -> open baseline
+	 * re-adoption below is defensive rather than load-bearing: it existed to
+	 * keep dark-era growth from reading as an edge, and it stays because it
+	 * still costs at most one missed real edge per transition, never a
+	 * spurious freeze, and keeps this core correct against any counter the
+	 * caller feeds it. */
 	uint32_t prev_gate = r->gate_open;
 	r->gate_open = gate_open ? 1u : 0u;
 	if (gate_open && !prev_gate)

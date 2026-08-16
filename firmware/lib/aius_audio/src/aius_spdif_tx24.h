@@ -108,8 +108,12 @@ typedef struct {
     /* Consumer-owned: frames ever transmitted. */
     volatile uint32_t consumed;
     /* Consumer-owned: frames of digital silence substituted for a ring that
-     * ran dry. The vendor path did this too -- it fell back to `block_silent`
-     * -- but counted nothing, so an underflow was inaudible AND invisible. */
+     * ran dry WHILE THE TX GATE WAS OPEN. The vendor path substituted too --
+     * it fell back to `block_silent` -- but counted nothing, so an underflow
+     * was inaudible AND invisible. Idle substitution into a dark pad is
+     * deliberately NOT counted (open-work register 2026-08-15, option b): the
+     * free-running form advanced at ~48 k/s through every no-carrier hour,
+     * wrapped after ~24.9 h, and buried real gate-open glitches in idle noise. */
     volatile uint32_t underruns;
     /* Consumer-owned: fill() invocations, one per transmit DMA interrupt --
      * each is AUDIO_BLOCK_SAMPLES frames on the wire, so against wall time
@@ -118,6 +122,12 @@ typedef struct {
      * wrong at boot self-reports 48 kHz on every in-domain surface; this
      * counter cannot be fooled by it). */
     volatile uint32_t fills;
+    /* Producer-owned, consumer-read: nonzero while the TX gate is open. The
+     * runtime writers are tx_gate_actuate() at gate edges (the open edge
+     * inside the same masked section as its trim) and boot-only reset()
+     * below; fill() reads it once per underrun event (not per frame), so the
+     * ISR cost is one load on the already-cold substitution path. */
+    volatile uint32_t gate_open;
 } AiusSpdifTx24Ring;
 
 /* Put the ring in the empty state. MUST be called before the transmit interrupt
@@ -148,12 +158,14 @@ static inline void aius_spdif_tx24_reset(AiusSpdifTx24Ring *ring)
     ring->consumed = 0u;
     ring->underruns = 0u;
     ring->fills = 0u;
+    ring->gate_open = 0u;
 }
 
 /* Empty the transition ring without erasing its lifetime underrun diagnostic.
  * The checkpoint caller masks the TX DMA interrupt across this one cursor
  * rebase, so fill() cannot observe a half-transitioned pair. Boot-only reset()
- * above remains the only operation that clears all three counters. */
+ * above remains the only operation that clears every counter and the gate
+ * flag together. */
 static inline void aius_spdif_tx24_flush_preserve_diag(
     AiusSpdifTx24Ring *ring)
 {
@@ -232,9 +244,11 @@ static inline void aius_spdif_tx24_commit(AiusSpdifTx24Ring *ring,
  * indices, right at odd, 2 * `frames` words in all. `dest` is one half of
  * SPDIF_tx_buffer.
  *
- * A short ring is not an error: the remainder is digital silence and
- * `underruns` advances by the number of frames substituted. Bounded, branchless
- * per sample, and allocation-free -- this runs in the transmit DMA ISR. */
+ * A short ring is not an error: the remainder is digital silence, and when the
+ * TX gate is open `underruns` advances by the number of frames substituted --
+ * a closed gate substitutes uncounted idle silence into a dark pad. Bounded,
+ * branchless per sample, and allocation-free -- this runs in the transmit DMA
+ * ISR. */
 static inline void aius_spdif_tx24_fill(AiusSpdifTx24Ring *ring,
                                         int32_t *dest, uint32_t frames)
 {
@@ -259,7 +273,9 @@ static inline void aius_spdif_tx24_fill(AiusSpdifTx24Ring *ring,
             *dest++ = 0;
             *dest++ = 0;
         }
-        ring->underruns = ring->underruns + (frames - take);
+        if (ring->gate_open != 0u) {
+            ring->underruns = ring->underruns + (frames - take);
+        }
     }
 }
 

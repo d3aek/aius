@@ -38,7 +38,15 @@ ends left open:
   Fix: a clean rebuild from committed `db3f554aa` (or later) and one OTA
   reflash. No functional issue; purely cosmetic provenance.
 
-- **`tx_underrun_frames` counts idle silence and is a `uint32_t`.**
+- ~~**`tx_underrun_frames` counts idle silence and is a `uint32_t`.**~~
+  **CLOSED 2026-08-16 via option (b)**: the fill ISR now counts substituted
+  frames only while the TX gate is open (`gate_open` flag on the ring, set at
+  gate edges inside the existing masked trim section), making the counter a
+  true glitch metric that neither wraps in idle nor buries real dropouts —
+  the 2026-08-16 dropout evening was uncountable precisely because of this
+  defect. Hot-path validation rode the output-jitter plan's adversarial
+  review ([`aius-output-jitter.md`](aius-output-jitter.md) Phase D).
+  Original entry:
   `aius_spdif_tx24_fill()` counts every substituted-silence frame, including
   during no-carrier / gate-closed idle (~48,000/s), so the counter wraps after
   ~24.9 h of continuous idle. Confirmed **benign**: the only decision-consumer,

@@ -1901,10 +1901,13 @@ static FLASHMEM void tx_gate_actuate(bool open)
 	if (open) {
 		/* Same two-store critical-section contract as
 		 * clock_flush_ring_preserve_diag(): the TX ISR is the sole
-		 * cursor reader. */
+		 * cursor reader. The underrun-count arm rides the same masked
+		 * section, so no fill() can observe an open gate before the
+		 * trim has set the session's ring residence. */
 		noInterrupts();
 		const uint32_t dropped = aius_spdif_tx24_trim_to(
 			&g_aius_spdif_tx24, AIUS_TX_GATE_OPEN_TARGET_FRAMES);
+		g_aius_spdif_tx24.gate_open = 1u;
 		interrupts();
 		if (dropped != 0u) {
 			g_tx_gate_open_trims++;
@@ -1913,6 +1916,10 @@ static FLASHMEM void tx_gate_actuate(bool open)
 		CORE_PIN14_CONFIG = 3; /* SPDIF_OUT, as begin() routed it */
 		return;
 	}
+	/* Close: stop counting before the pad goes dark, so post-close idle
+	 * substitution never lands in the glitch metric. A single volatile
+	 * store; no masking needed. */
+	g_aius_spdif_tx24.gate_open = 0u;
 	CORE_PIN14_PORTCLEAR = CORE_PIN14_BITMASK;
 	CORE_PIN14_DDRREG |= CORE_PIN14_BITMASK;
 	CORE_PIN14_CONFIG = 5; /* ALT5 GPIO, now driving low */
@@ -2262,35 +2269,14 @@ static constexpr uint32_t AIUS_METERS_WAVEFORM_FULL_SCALE = 1000u;
  *                                                                 ----
  *                                                                 1472
  *
- * The raw-sample analysis window adds the rest. A sample is at worst
- * "-8388608" -- 8 characters, because the window carries 24-bit sample units,
- * NOT int32 -- and the separators are one fewer than the count:
- *
- *   ,"analysis_window":[                                            20
- *   1024 x 8 characters + 1023 separators                          9215
- *   ],"analysis_full_scale":8388607                                  31
- *                                                                 -----
- *                                                                  9266
- *
- * 1472 + 9266 = 10,738 against the 12,288-byte AIUS_RUNTIME_TEENSY_APP_BODY,
- * so the full window fits on the existing route with ~1.5 kB spare and needs
- * neither a shorter window nor a second endpoint. AIUS_METER_ANALYSIS_WINDOW
- * is pinned below because that headroom is the reason it can be 1024: at 2048
- * the body would be ~20 kB and the arithmetic stops working.
- *
- * Rounded up for the NUL and for arithmetic drift. Every append is still
- * capacity-checked, so exceeding it would be a deterministic 0 (-> 500), never
- * an overrun. */
-static constexpr size_t AIUS_METERS_MAX_JSON_BYTES = 10880u;
+ * The raw-sample analysis window is no longer served (output-jitter plan
+ * Phase A): its ~9.3 kB share was the dominant recurring single-epoch HTTP
+ * cost. The budget keeps modest headroom over the 1472-byte remainder for
+ * arithmetic drift; every append is still capacity-checked, so exceeding it
+ * would be a deterministic 0 (-> 500), never an overrun. */
+static constexpr size_t AIUS_METERS_MAX_JSON_BYTES = 2048u;
 static_assert(AIUS_METERS_MAX_JSON_BYTES <= AIUS_RUNTIME_TEENSY_APP_BODY,
 	"the meters body must fit the runtime's application response buffer");
-static_assert(AIUS_METER_ANALYSIS_WINDOW == 1024u,
-	"the meters body arithmetic above is computed for a 1024-sample window");
-/* 9 bytes is the widest one sample can serialize to: a separator plus
- * "-8388608". The window's own share of the body, checked against the total. */
-static_assert(1472u + 20u + AIUS_METER_ANALYSIS_WINDOW * 9u + 31u <=
-		AIUS_METERS_MAX_JSON_BYTES,
-	"the analysis window does not fit the meters body budget");
 
 /* 20*log10(v / AIUS_DSP_SAMPLE_MAX), floored. The `!(v > 0)` test also takes
  * NaN to the floor, so no non-finite value can reach the wire. */
@@ -2316,51 +2302,6 @@ static FLASHMEM uint32_t meter_permille(int32_t point)
 		? AIUS_METERS_WAVEFORM_FULL_SCALE : (uint32_t)scaled;
 }
 
-/* One analysis-window sample, optionally comma-separated, appended as a plain
- * decimal integer. Same contract as http_json_append(): false on capacity
- * exhaustion, and the body stays NUL-terminated either way.
- *
- * WHY NOT http_json_append(). It is one vsnprintf() per call, and this array
- * is 1024 elements against the HTTP checkpoint's 2 ms service_budget_ms --
- * enough to spend the whole budget on formatting alone and tick
- * http_service_overruns on every poll of a route the SD editor polls at 10 Hz.
- * Emitting the digits directly is a few tens of instructions per sample. The
- * envelope loop below is left on http_json_append(): 128 points is not worth
- * a second spelling. */
-static FLASHMEM bool meter_append_sample(char *body, size_t capacity,
-                                         size_t *length, int32_t sample,
-                                         bool separator)
-{
-	/* Widest output: ',' + '-' + the 10 digits of any uint32. */
-	char text[12];
-	size_t written = 0;
-	if (separator)
-		text[written++] = ',';
-	/* Widened before the negation so INT32_MIN has no undefined behaviour. */
-	uint32_t magnitude;
-	if (sample < 0) {
-		text[written++] = '-';
-		magnitude = (uint32_t)-(int64_t)sample;
-	} else {
-		magnitude = (uint32_t)sample;
-	}
-	char digits[10];
-	size_t count = 0;
-	do {
-		digits[count++] = (char)('0' + (magnitude % 10u));
-		magnitude /= 10u;
-	} while (magnitude != 0u);
-	while (count > 0)
-		text[written++] = digits[--count];
-	/* +1 for the NUL, so the body a caller may still printf into is valid. */
-	if (*length + written + 1u > capacity)
-		return false;
-	memcpy(body + *length, text, written);
-	*length += written;
-	body[*length] = '\0';
-	return true;
-}
-
 /* Serialize the last complete snapshot. sequence == 0 is not special-cased: a
  * board that has never published serves an ordinary 200 whose levels are all
  * at the floor and whose waveform is empty, which is exactly what "no data"
@@ -2374,22 +2315,19 @@ static FLASHMEM bool meter_append_sample(char *body, size_t capacity,
  * snapshot copies to happen at all -- against a writer that publishes 20 times
  * a second and completes in about a microsecond.
  *
- * The raw-sample analysis window rides on this same response rather than a
- * second route: it fits the body budget (see the arithmetic above), it is the
- * same snapshot at the same instant as the levels beside it, and a separate
- * GET would let a client pair a window with levels from a different publish.
- * It is FEATURE-DETECTED by its consumer, so a board that has never published
- * serves "analysis_window":[] and the analyser simply does not light up --
- * which is also exactly what features.meters false produces, with no
- * special case anywhere on this path. */
+ * The analysis window the SD editor's analyser used to read from this route
+ * was dropped in output-jitter Phase A; the editor FEATURE-DETECTS it, so its
+ * spectrum underlay and spectrogram simply do not light up, the same
+ * degraded shape features.meters false always produced. */
 static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 {
-	/* STATIC, not automatic: the snapshot is ~4.7 kB now that it carries the
-	 * analysis window, and the DTCM free-for-locals zone is 25,376 bytes. Safe
-	 * because this runs only from app_write_meters() on the main thread, one
-	 * request at a time and never reentrantly; DMAMEM keeps it off DTCM for
-	 * the reason g_meter is there, and it needs no startup zeroing because
-	 * aius_meter_read() overwrites it before any read. */
+	/* STATIC, not automatic: the snapshot still carries the (unserved)
+	 * analysis window, so it is ~4.7 kB against a DTCM free-for-locals zone
+	 * of 25,376 bytes. Safe because this runs only from app_write_meters()
+	 * on the main thread, one request at a time and never reentrantly;
+	 * DMAMEM keeps it off DTCM for the reason g_meter is there, and it needs
+	 * no startup zeroing because aius_meter_read() overwrites it before any
+	 * read. */
 	DMAMEM static AiusMeterSnapshot snapshot;
 	if (!aius_meter_read(&g_meter, &snapshot))
 		return 0;
@@ -2434,26 +2372,18 @@ static FLASHMEM size_t http_meters_json(uint8_t *body, size_t capacity)
 		                      (unsigned long)meter_permille(snapshot.waveform[point])))
 			return 0;
 	}
-	/* The raw mono window, oldest first, in 24-bit sample units -- unscaled
-	 * and unconverted, because a client that wants a spectrum needs the
-	 * signal, not a rendering of it. analysis_full_scale states what "0 dBFS"
-	 * is for these integers; without it a consumer would have to guess, and
-	 * the obvious guess is int16. */
-	if (!http_json_append(output, capacity, &length, "],\"analysis_window\":["))
-		return 0;
-	uint32_t samples = snapshot.analysis_count;
-	if (samples > AIUS_METER_ANALYSIS_WINDOW)
-		samples = AIUS_METER_ANALYSIS_WINDOW;
-	for (uint32_t sample = 0; sample < samples; sample++) {
-		if (!meter_append_sample(output, capacity, &length,
-		                         snapshot.analysis_window[sample], sample != 0))
-			return 0;
-	}
+	/* The raw analysis window is deliberately NOT served (output-jitter plan
+	 * Phase A, owner decision 2026-08-16). Its 1024 samples were ~7-10 KB of
+	 * body formatted and sent inside one HTTP epoch at the SD editor's 10 Hz
+	 * poll -- the dominant recurring single-epoch cost on the loop, against a
+	 * 2.67 ms open-gate transmit cushion -- and the swagger Meters schema
+	 * (additionalProperties: false) never documented it. The capture core in
+	 * aius_dsp stays intact and host-tested; re-serving it is one loop here
+	 * if a bench instrument ever wants it back. */
 	return http_json_append(output, capacity, &length,
-	                        "],\"analysis_full_scale\":%ld,"
+	                        "],"
 	                        "\"queue_frames\":%lu,\"estimated_latency_us\":%lu,"
 	                        "\"dsp_cycles_last\":%lu,\"dsp_cycles_max\":%lu}",
-	                        (long)AIUS_DSP_SAMPLE_MAX,
 	                        (unsigned long)snapshot.queue_frames,
 	                        (unsigned long)snapshot.estimated_latency_us,
 	                        (unsigned long)snapshot.dsp_cycles_last,
@@ -6114,6 +6044,38 @@ static FLASHMEM void sd_lifecycle_service(uint32_t now_ms)
 	if (g_sd_step == SD_STEP_NONE) {
 		if ((int32_t)(now_ms - g_sd_probe_at_ms) < 0)
 			return;
+		/* No routine card touch while live audio is on the wire: every
+		 * probe is one SdioCard primitive at checkpoint 8, and a card
+		 * that wanders into internal wear-leveling holds that primitive
+		 * for an unbounded time (582 ms witnessed 2026-08-16) -- longer
+		 * than the whole gate-open transmit cushion. Hot insert/removal
+		 * detection resumes on the next epoch after gate close; the
+		 * expired timer makes that immediate. sd_present, sd usage
+		 * figures and the card-swap config reload may therefore be
+		 * stale for the duration of playback, by design
+		 * (aius-output-jitter.md Phase C). Owner-initiated SD traffic
+		 * (HTTP routes, OTA, recorder pulls) is deliberately NOT gated.
+		 *
+		 * TWO predicates, because the latch alone loses the open edge:
+		 * g_tx_gate_open is the PREVIOUS pass's decision (this runs
+		 * before tx_gate_service() in the same checkpoint-7 callback),
+		 * so on the epoch the gate opens, the latch still reads closed
+		 * and a probe started here would run its primitives under the
+		 * newly opened gate -- an audible dropout risk at every session
+		 * start. pllLocked() is the current-instant carrier signal and
+		 * precedes every carrier-driven open by at least the classify
+		 * window (tens of ms), while a probe started against a dark
+		 * carrier finishes its two primitives within ~2 epochs. A
+		 * replay-driven open at the start edge CAN coincide with a
+		 * just-started probe, harmlessly: the probe's root job blocks
+		 * the first refill (sd_storage_idle()), so the replay is
+		 * necessarily still in its PREBUFFERING silence-carrier phase
+		 * while any probe primitive runs -- no program material is at
+		 * risk -- and once open, the gate latch defers all subsequent
+		 * probes. (Delivery-audit finding, aius-output-jitter.md
+		 * Phase C.) */
+		if (g_tx_gate_open || AudioInputSPDIF3::pllLocked())
+			return;
 		g_sd_step = SD_STEP_PROBE;
 	}
 	if (!sd_storage_idle())
@@ -6519,9 +6481,11 @@ static FLASHMEM void replay_refill_service(uint32_t now_ms)
 /* nothing to pass through. Nothing leaks across the transition -- the */
 /* ring holds only committed frames and AudioInputSPDIF3::update()     */
 /* releases the pair it allocates each pass while block_offset stays 0.*/
-/* The silence is now COUNTED as well as heard: the substituted frames */
-/* advance g_aius_spdif_tx24.underruns, where the vendor path's        */
-/* block_silent substitution advanced nothing at all.                 */
+/* The drain-to-idle silence is heard but NOT counted: the stop closes */
+/* the TX gate in the same epoch, and since output-jitter Phase D the  */
+/* underrun counter is a gate-open glitch metric -- closed-gate        */
+/* substitution is idle by definition. (The vendor path's block_silent */
+/* substitution counted nothing under any gate.)                       */
 /* ------------------------------------------------------------------ */
 
 /* update_responsibility is `protected static` on both peripherals
@@ -7803,10 +7767,11 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 
 /* Exactly one runtime epoch, then the three things the epoch itself must not do.
  *
- * The normal epoch runs checkpoints 0..7, AUDIO 9, then SD 8, records
- * EPOCH_COMPLETE 10 and feeds the watchdog once; an incomplete epoch returns
- * false without that feed, which is what makes a wedged service a bounded
- * reset rather than a hang.
+ * The normal epoch runs checkpoints 0..7, AUDIO 9, SD 8, AUDIO 9 again
+ * (output-jitter Phase B: the ring is topped up on both sides of the SD
+ * primitive), records EPOCH_COMPLETE 10 and feeds the watchdog once; an
+ * incomplete epoch returns false without that feed, which is what makes a
+ * wedged service a bounded reset rather than a hang.
  *
  * request_reboot() only records (aius_optical_app.cpp), because the dispatcher
  * never resets or delays, so the reset happens here -- but NOT at the end of the
