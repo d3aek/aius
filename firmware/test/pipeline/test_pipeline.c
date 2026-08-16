@@ -2824,9 +2824,18 @@ static void test_unsupported_entry_phase_sweep(const char *dir)
 			if (cap.n == 0)
 				silent_entry_phases++;
 		} else {
-			CHECK(cap.n <= 4,
-			      "eac3-entry phase %zu: %d stuffing blocks emitted before "
-			      "the preamble at run word %zu", phi, cap.n, first_sync);
+			/* The bound is a FRAME budget (how much stuffing silence may
+			 * reach the sink before the preamble re-types the run), not a
+			 * block count: at the historical 512-frame PCM block the limit
+			 * was 4 blocks = 2048 frames, and shrinking the block
+			 * (output-jitter Phase E) slices the same span into more,
+			 * smaller blocks without widening the leak. */
+			CHECK((uint32_t)cap.n * AIUS_PIPELINE_PCM_BLOCK_FRAMES <=
+			              2048u,
+			      "eac3-entry phase %zu: %d stuffing blocks (%u frames) "
+			      "emitted before the preamble at run word %zu", phi, cap.n,
+			      (uint32_t)cap.n * AIUS_PIPELINE_PCM_BLOCK_FRAMES,
+			      first_sync);
 		}
 		capture_free(&cap);
 		aius_pipeline_destroy(p);

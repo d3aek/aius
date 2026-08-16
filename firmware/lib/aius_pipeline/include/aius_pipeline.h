@@ -131,7 +131,21 @@ extern "C" {
  * observable re-classification needs subsequent input. */
 #define AIUS_PIPELINE_DTS_STARVE_WORDS 16384u
 
-/* Frames per emitted PCM pass-through block (staged in the fixed instance). */
+/* Frames per emitted PCM pass-through block (staged in the fixed instance).
+ *
+ * 512 is LOAD-BEARING for re-type containment, not just a buffer size
+ * (established by the output-jitter Phase E attempt, 2026-08-16): a
+ * PCM->compressed program switch is detected one burst period (~1024 words
+ * for 512-sample DTS) after the first preamble, and a block that completes
+ * inside that window carries IEC burst data to the sink as "PCM" -- loud
+ * digital noise at every TV bitstream transition. At 512 frames (1024
+ * words) the block boundary and the worst validation point coincide, so the
+ * staged burst tail is dropped instead of played (retype-switch row). A
+ * smaller quantum leaks (frames-budget row in test_pipeline.c); shrinking
+ * this constant requires a candidate-pending emission hold or equivalent
+ * containment first. The quantum's cost is display-invisible PCM staging
+ * latency (~5.3 ms mean), NOT the transmit-ring occupancy the meters
+ * estimate reports. */
 #define AIUS_PIPELINE_PCM_BLOCK_FRAMES 512u
 #define AIUS_PIPELINE_MAX_OUTPUT_FRAMES 512u
 
