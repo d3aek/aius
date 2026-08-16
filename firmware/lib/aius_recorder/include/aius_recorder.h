@@ -323,6 +323,20 @@ AiusStatus aius_recorder_read(const AiusRecorder *r, uint32_t offset_bytes,
                               uint32_t length_bytes, uint32_t generation,
                               const uint8_t **out, uint32_t *out_length);
 
+/* Cold, ONE-WAY: surrender the storage. Any state -> ABSENT; the producer's
+ * next block sees ABSENT and no-ops, every other entry point refuses, and
+ * nothing in this library touches the ring or the staging slots again -- a
+ * reset is the only way back to RECORDING (init runs again at boot).
+ *
+ * This exists for the OTA activation session (aius-ota-resilience.md
+ * Phase 2): the staged image is placed over the pad-1 region the ring
+ * normally owns, which is sound precisely because this call makes the ring
+ * ownerless BEFORE the SD->PSRAM copy begins. The one-way shape matches the
+ * activation quiesce it precedes -- a real activation ends in a reset, and a
+ * rehearsal deliberately leaves audio (and now the recorder) down until the
+ * reboot the operator already owes. Refuses only a null argument. */
+AiusStatus aius_recorder_park(AiusRecorder *r);
+
 /* Epoch: coherent status snapshot for the serializer. */
 void aius_recorder_snapshot(const AiusRecorder *r, AiusRecorderSnapshot *out);
 

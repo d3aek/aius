@@ -12,6 +12,7 @@
 
 #include "aius_ota.h"
 #include "aius_ota_health.h"
+#include "aius_ota_staging.h"
 #include "aius_sha256.h"
 
 #include <stdio.h>
@@ -1910,6 +1911,60 @@ static void test_end_to_end_upgrade(void)
 	CHECK(health.rollback_count == 0u);
 }
 
+/* -------------------------------------------------------------------------
+ * Activation staging placement (aius-ota-resilience.md Phase 2)
+ * ---------------------------------------------------------------------- */
+
+static void test_staging_placement_per_fitment(void)
+{
+	AiusOtaStagingPlacement placement;
+	const uint32_t mb = 1048576u;
+	const uint32_t carve = 32768u; /* RECORDER_STAGING_BYTES on target */
+
+	/* 16 MB board (both pads): staging claims the pad-1 region the ring
+	 * normally owns -- entirely BELOW the 8 MiB pad boundary, so the
+	 * marginal pad-2 chip is never in the activation read path. */
+	current_key = "staging.16mb";
+	CHECK(aius_ota_staging_place(16u * mb, 0u, carve, &placement));
+	CHECK(!placement.on_pad2);
+	CHECK(placement.offset == carve);
+	CHECK(placement.capacity == 8u * mb - carve);
+	CHECK(placement.offset + placement.capacity <=
+	      AIUS_OTA_STAGING_PAD_BYTES);
+	/* And a maximum image still fits -- the fix must not shrink the
+	 * largest deliverable image. */
+	CHECK(placement.capacity >= AIUS_OTA_MAX_IMAGE_BYTES);
+
+	/* 8 MB board (pad 1 only): identical placement -- the ring region is
+	 * smaller but the pad is the same. */
+	current_key = "staging.8mb";
+	CHECK(aius_ota_staging_place(8u * mb, 0u, carve, &placement));
+	CHECK(!placement.on_pad2);
+	CHECK(placement.offset == carve);
+	CHECK(placement.capacity == 8u * mb - carve);
+	CHECK(placement.capacity >= AIUS_OTA_MAX_IMAGE_BYTES);
+
+	/* 0 MB mapped, one chip on the silkscreened-FLASH pad-2 socket (the
+	 * bench fitment): the whole chip at its XIP window, flagged. */
+	current_key = "staging.pad2-only";
+	CHECK(aius_ota_staging_place(0u, 8u * mb, carve, &placement));
+	CHECK(placement.on_pad2);
+	CHECK(placement.offset == AIUS_OTA_STAGING_PAD2_OFFSET);
+	CHECK(placement.capacity == 8u * mb);
+
+	/* Bare board: refused -- the ota_no_psram arm. */
+	current_key = "staging.bare";
+	CHECK(!aius_ota_staging_place(0u, 0u, carve, &placement));
+	CHECK(placement.capacity == 0u);
+
+	/* A carve that consumes the whole pad leaves nothing to stage into:
+	 * refused rather than a zero-length or wrapped region. */
+	current_key = "staging.carve-consumes-pad";
+	CHECK(!aius_ota_staging_place(8u * mb, 0u, 8u * mb, &placement));
+	CHECK(!aius_ota_staging_place(4u * mb, 0u, 4u * mb, &placement));
+	CHECK(!aius_ota_staging_place(0u, 0u, 0u, NULL));
+}
+
 int main(void)
 {
 	fill_payload(g_payload, TEST_IMAGE_BYTES, 0x00u);
@@ -1936,6 +1991,7 @@ int main(void)
 	test_health_trial_budget_and_rollback();
 	test_health_record_round_trip();
 	test_end_to_end_upgrade();
+	test_staging_placement_per_fitment();
 	puts("ota core tests passed");
 	return 0;
 }

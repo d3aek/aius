@@ -108,6 +108,22 @@ rodata.
 
 ### Phase 2 — take the marginal chip out of the activation path
 
+Code + host proof landed 2026-08-16; the bench half (a full activation with
+the recorder previously armed, plus a rehearsal soak at the new placement)
+rides the next bench session. As built: placement is the pure
+`aius_ota_staging_place()` (`lib/aius_ota/aius_ota_staging.{h,c}`,
+host-pinned for the 16/8/0 MB fitments) — pad-1 base + the 32 KiB producer
+carve, capacity to the 8 MiB pad boundary, which a static assert proves
+still holds a maximum image; the pad-2-only bench fitment stays on pad 2
+(the only storage there is) and reports `on_pad2`. The recorder gained the
+one-way `aius_recorder_park()` (any state → ABSENT, same epoch context as
+the producer), called by BOTH deferred flash services before the SD→PSRAM
+copy; `ota_psram_staging()` refuses a pad-1 placement while the recorder is
+unparked, so mis-ordering is structurally an `ota_no_psram` refusal rather
+than a copy racing a live producer. Deliberate cost, recorded: a REFUSED
+activation leaves the recorder parked until the next reboot — the same
+down-until-reboot posture a rehearsal already leaves audio in.
+
 - outcome: the activation staging view never touches pad 2: the recorder is
   quiesced for the activation session and the staged image is placed in the
   pad-1 region the ring normally owns (the ring's content is expendable by

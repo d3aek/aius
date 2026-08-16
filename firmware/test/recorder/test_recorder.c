@@ -110,6 +110,56 @@ static void test_absent_is_first_class(void)
 	assert(s.rate_changes == 0u);
 }
 
+/* Park (aius-ota-resilience.md Phase 2): one-way surrender of the storage so
+ * the OTA activation may stage over the ring. From every state, park lands in
+ * ABSENT and every later touch is the absent board's cheap refusal. */
+static void test_park_is_one_way_from_every_state(void)
+{
+	Fixture f;
+
+	assert(aius_recorder_park(NULL) == AIUS_INVALID_ARG);
+
+	/* RECORDING -> parked: the next producer block is a no-op, so the ring
+	 * and staging are ownerless the moment park returns. */
+	fixture_init(&f);
+	assert(aius_recorder_park(&f.r) == AIUS_OK);
+	assert(f.r.state == AIUS_RECORDER_ABSENT);
+	feed_block(&f, 4u, 100, 0u, 0u);
+	assert(f.r.frames_staged == 0u);
+	assert(aius_recorder_drain(&f.r, 65536u) == 0u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_INVALID_ARG);
+	assert(aius_recorder_thaw(&f.r) == AIUS_INVALID_ARG);
+
+	/* Mid-capture states park too: an activation request must not wait on
+	 * a post-roll or a drain it is about to overwrite anyway. */
+	fixture_init(&f);
+	feed_block(&f, 4u, 100, 0u, 0u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block(&f, 4u, 200, 0u, 0u); /* token ack -> POSTROLL */
+	assert(f.r.state == AIUS_RECORDER_POSTROLL);
+	assert(aius_recorder_park(&f.r) == AIUS_OK);
+	assert(f.r.state == AIUS_RECORDER_ABSENT);
+
+	/* FROZEN -> parked: a held capture is expendable by the same rule the
+	 * ring is -- the activation was acknowledged. Two-block post-roll, the
+	 * operator-freeze suite's recipe. */
+	fixture_init(&f);
+	assert(aius_recorder_set_config(&f.r, AIUS_RECORDER_MASK_DEFAULT, 0.0f,
+	                                1u, 2u) == AIUS_OK);
+	feed_block(&f, 8u, 100, 0u, 0u);
+	assert(aius_recorder_freeze(&f.r) == AIUS_OK);
+	feed_block(&f, 8u, 200, 0u, 0u); /* token ack -> POSTROLL */
+	feed_block(&f, 8u, 300, 0u, 0u); /* post-roll ends -> DRAINING */
+	drain_all(&f);
+	assert(f.r.state == AIUS_RECORDER_FROZEN);
+	assert(aius_recorder_park(&f.r) == AIUS_OK);
+	assert(f.r.state == AIUS_RECORDER_ABSENT);
+
+	/* ABSENT parks idempotently -- the bare board and the double park. */
+	assert(aius_recorder_park(&f.r) == AIUS_OK);
+	assert(f.r.state == AIUS_RECORDER_ABSENT);
+}
+
 static void test_init_geometry(void)
 {
 	AiusRecorder r;
@@ -703,6 +753,7 @@ static void test_config_validation(void)
 int main(void)
 {
 	test_absent_is_first_class();
+	test_park_is_one_way_from_every_state();
 	test_init_geometry();
 	test_target_psram_geometry();
 	test_eight_step_audio_burst_is_gap_free();

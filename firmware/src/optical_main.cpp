@@ -69,6 +69,7 @@ extern "C" {
 #include "aius_ota_ed25519.h"
 #include "aius_ota_activate.h"
 #include "aius_ota_dark_stamp.h"
+#include "aius_ota_staging.h"
 
 /* The Teensy core's FlexSPI-1 boot-flash erase/program driver (cores/teensy4/
  * eeprom.c). Exported for LittleFS_Program; the plan (§Self-flashing is
@@ -3638,65 +3639,58 @@ FASTRUN static int ota_flash_read_inject_head_fault(void *ctx, uint32_t address,
 	return fault;
 }
 
-/* THE PSRAM STAGING REGION -- disjoint from the recorder ring by construction.
+/* THE PSRAM STAGING REGION -- the PAD-1 region the recorder ring normally
+ * owns (aius-ota-resilience.md Phase 2).
  *
  * The reworked sequencer reads the staged image from a caller-provided LINEAR
  * byte view (aius_ota_activate.h), not a chunked SD reader, and the composition
  * puts that view in PSRAM: FlexSPI2 is independent of the boot flash on
- * FlexSPI1, so a RAM-resident reader reads it throughout the erase. The region
- * must never overlap the flight recorder's ring. The recorder claims the first
- * RECORDER_STAGING_BYTES (32 KiB producer slots) plus the largest power-of-two
- * ring that fits after it (begin_pipeline(); the ring formula is the same
- * aius_recorder_ring_bytes_after_staging()), so OTA staging begins where the
- * recorder ends and runs to the top of PSRAM. DISJOINTNESS CHOICE: partition,
- * do not alias -- quiesce stops the recorder, but the SD->PSRAM copy runs
- * BEFORE quiesce while the recorder is live, so the regions must not overlap at
- * copy time either, and beginning at the recorder's end guarantees that. The
- * runtime asserts in ota_psram_staging() prove it; the static_asserts below pin
- * the constant part.
+ * FlexSPI1, so a RAM-resident reader reads it throughout the erase.
  *
- * When no pad-1 PSRAM is fitted (external_psram_size == 0) but a chip sits on
- * the silkscreened-FLASH pad-2 socket (g_psram_pad2_mb != 0, the 2026-07-27
- * bench state), that chip is XIP-mapped at pad 2's window (64 MiB into the
- * FlexSPI2 space) and no recorder ring lives there, so the whole chip is OTA
- * staging. With neither, activation is refused (ota_no_psram) and this returns
- * false. */
-static_assert(RECORDER_STAGING_BYTES < 8u * 1048576u,
-              "the recorder staging carve must leave room in an 8 MiB PSRAM");
-/* The pad-2 XIP window base: FlexSPI2's AMBA space begins at 0x70000000 and,
- * with no pad-1 chip, chip-select A1 holds its 64 MiB reset default, so A2
- * (pad 2) begins 64 MiB in. Same derivation as AIUS_PSRAM_PAD2_PROBE_BASE. */
-#define AIUS_OTA_PSRAM_PAD2_XIP_BASE 0x74000000u
+ * PLACEMENT CHANGED 2026-08-16, after the dark-window brick. The old rule --
+ * staging begins where the recorder region ends -- put the image ABOVE the
+ * 8 MiB ring, which on a 16 MiB board is entirely the PAD-2 chip, the one the
+ * board-level investigation flagged as marginal; one marginal in-window
+ * readback fails the byte-compare and the halt policy converts that transient
+ * into a brick. The placement (aius_ota_staging_place(), host-pinned per
+ * fitment) now claims the pad-1 region the ring normally owns: the ring's
+ * content is expendable by definition once an activation is acknowledged, and
+ * every in-window read comes from the known-good chip. The pad-2-only bench
+ * fitment still stages on pad 2 -- the only storage there is -- and reports
+ * on_pad2 so the evidence names the chip.
+ *
+ * ALIAS, DO NOT PARTITION -- SAFE BY ORDERING, NOT BY DISJOINTNESS: the
+ * caller PARKS the recorder (aius_recorder_park(), one-way to ABSENT, same
+ * epoch context as the producer) BEFORE the SD->PSRAM copy, so nothing
+ * touches the ring while staging owns it. ota_psram_staging() asserts the
+ * park happened rather than trusting the call order. */
+static_assert(RECORDER_STAGING_BYTES < AIUS_OTA_STAGING_PAD_BYTES,
+              "the recorder staging carve must leave room in an 8 MiB pad");
+/* A max-length image must fit the pad-1 placement, or the marginal-chip fix
+ * would silently shrink the largest deliverable image. */
+static_assert(AIUS_OTA_STAGING_PAD_BYTES - RECORDER_STAGING_BYTES >=
+	              AIUS_OTA_MAX_IMAGE_BYTES,
+              "pad 1 minus the staging carve must hold a maximum image");
 
 static FLASHMEM bool ota_psram_staging(uint8_t **base, uint32_t *capacity)
 {
 	uint8_t *const psram = reinterpret_cast<uint8_t *>(0x70000000u);
+	AiusOtaStagingPlacement placement;
 
-	if (external_psram_size != 0u) {
-		const uint32_t psram_bytes =
-			(uint32_t)external_psram_size * 1048576u;
-		const uint32_t ring = aius_recorder_ring_bytes_after_staging(
-			psram_bytes, RECORDER_STAGING_BYTES);
-		const uint32_t reserved = RECORDER_STAGING_BYTES + ring;
-		if (reserved >= psram_bytes)
-			return false;
-		/* DISJOINTNESS, proven at runtime: OTA staging begins exactly at
-		 * the recorder region's end, so [base, base+capacity) cannot
-		 * alias [psram, psram+reserved). */
-		uint8_t *const recorder_end = psram + reserved;
-		uint8_t *const ota_base = recorder_end;
-		if (ota_base < recorder_end)
-			return false; /* address arithmetic overflow: refuse */
-		*base = ota_base;
-		*capacity = psram_bytes - reserved;
-		return true;
-	}
-	if (g_psram_pad2_mb != 0u) {
-		*base = reinterpret_cast<uint8_t *>(AIUS_OTA_PSRAM_PAD2_XIP_BASE);
-		*capacity = (uint32_t)g_psram_pad2_mb * 1048576u;
-		return true;
-	}
-	return false; /* no PSRAM fitted anywhere: ota_no_psram */
+	if (!aius_ota_staging_place((uint32_t)external_psram_size * 1048576u,
+	                            (uint32_t)g_psram_pad2_mb * 1048576u,
+	                            RECORDER_STAGING_BYTES, &placement))
+		return false; /* no PSRAM fitted anywhere: ota_no_psram */
+	/* The ordering assert: pad-1 staging aliases the ring, so the recorder
+	 * must already be parked (or never have had a ring at all). Refusing
+	 * here turns a mis-ordered caller into an ota_no_psram refusal instead
+	 * of a copy racing a live producer. */
+	if (!placement.on_pad2 &&
+	    g_recorder.state != AIUS_RECORDER_ABSENT)
+		return false;
+	*base = psram + placement.offset;
+	*capacity = placement.capacity;
+	return true;
 }
 
 /* Copies the whole staged image from /aius/ota-staged.img into `dest`, skipping
@@ -7709,9 +7703,18 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	uint32_t image_length;
 	memset(running_digest, 0, sizeof(running_digest));
 
-	/* 1. The PSRAM region, disjoint from the recorder ring. No PSRAM ->
-	 * ota_no_psram (the same gate app_ota_activate() applies synchronously;
-	 * re-checked here so this path never touches flash without it). */
+	/* 1. Surrender the ring, then resolve the PSRAM region -- the staged
+	 * image lands in the pad-1 region the ring normally owns
+	 * (aius-ota-resilience.md Phase 2), so the park must precede the
+	 * placement and ota_psram_staging() asserts it did. One-way: a
+	 * REFUSED activation below leaves the recorder parked until the next
+	 * reboot -- the same down-until-reboot posture a rehearsal leaves
+	 * audio in, and the deliberate price of keeping the marginal pad-2
+	 * chip out of the dark window. No PSRAM -> ota_no_psram (the same
+	 * gate app_ota_activate() applies synchronously; re-checked here so
+	 * this path never touches flash without it). */
+	(void)aius_recorder_park(&g_recorder);
+	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
 		ota_activation_recover();
@@ -7725,7 +7728,7 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 	image_length = ota_progress.image_length;
 	if (image_length == 0u || image_length > psram_capacity) {
 		/* The staged image will not fit the PSRAM region: refuse rather
-		 * than overrun it into the recorder ring or off the chip. */
+		 * than overrun past the pad or off the chip. */
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
 		ota_activation_recover();
 		return;
@@ -7829,8 +7832,12 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 		return;
 	}
 
-	/* 1-2. PSRAM region and the SD->PSRAM copy: identical to activation --
-	 * the rehearsal proves the real pre-window path, not a stand-in. */
+	/* 1-2. Park, PSRAM region and the SD->PSRAM copy: identical to
+	 * activation -- the rehearsal proves the real pre-window path, park
+	 * included, not a stand-in. The recorder stays parked until the
+	 * reboot the rehearsal already owes for audio. */
+	(void)aius_recorder_park(&g_recorder);
+	g_recorder_present = false;
 	if (!ota_psram_staging(&psram_base, &psram_capacity)) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_NO_PSRAM;
 		ota_rehearsal_finish(OTA_REHEARSAL_FAIL);

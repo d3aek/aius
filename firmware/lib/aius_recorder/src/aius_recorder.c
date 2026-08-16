@@ -402,6 +402,19 @@ AiusStatus aius_recorder_thaw(AiusRecorder *r)
 	return AIUS_OK;
 }
 
+AiusStatus aius_recorder_park(AiusRecorder *r)
+{
+	if (r == NULL)
+		return AIUS_INVALID_ARG;
+	/* One store, one way. ABSENT is already the state every entry point
+	 * refuses and the producer no-ops on, so parking needs no unbinding:
+	 * the storage pointers stay, and nothing reaches through them again.
+	 * Called from the epoch context that also drives the producer, so no
+	 * in-flight block can interleave with the store. */
+	r->state = AIUS_RECORDER_ABSENT;
+	return AIUS_OK;
+}
+
 AiusStatus aius_recorder_set_config(AiusRecorder *r, uint32_t mask,
                                     float gr_threshold_db,
                                     uint32_t gr_hold_blocks,

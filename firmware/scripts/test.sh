@@ -943,6 +943,7 @@ ota)
 	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ota/include" \
 		"$fw_root/test/ota/test_ota.c" \
 		"$fw_root/lib/aius_ota/src/aius_ota.c" \
+		"$fw_root/lib/aius_ota/src/aius_ota_staging.c" \
 		"$fw_root/lib/aius_ota/src/aius_sha256.c" \
 		-o "$ota_out"
 	"$ota_out"
