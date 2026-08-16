@@ -49,11 +49,12 @@ programme (21.8 s, loud program to the cut) lives in session scratch only
 `electronics/*` and `compose.yaml` belong to the H3a
 electronics session — foreign, untouched.
 
-**Next action:** deploy the Phase E governor image over remote OTA (slot B —
-the device runs slot A), then live-verify: induce an SD-traffic stall during
-playback and watch one `clock.governor_trims` increment return
-`estimated_latency_us` to the ~14–16 ms band; flip Phase E to SHIPPED in the
-verifying commit. Then the acceptance evening.
+**Next action:** deploy the instrumented image (governor compiled but HELD
+— `AIUS_TX_GOVERNOR_ENABLED=0` — by operator decision after the pop
+diagnosis; see the Phase E diagnosis note) over remote OTA to slot B, wait
+for the next pop, and read `input_diag` to attribute it. The attribution
+verdict decides the governor's target policy; only then is the governor
+enabled and Phase E's live verify run.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
@@ -317,6 +318,33 @@ UNTOUCHED, so the re-type containment above is not reopened. Served as
 **Still open in this phase after the governor:** the stall itself (the pop).
 The governor bounds the aftermath, not the event; the acceptance run below
 and the SD-tail residual risk carry that thread.
+
+**Pop diagnosis, 2026-08-16 evening (operator gate: diagnose before any
+deploy).** A live pop advanced `tx_underrun_frames` by exactly
+1536 − (measured ring level) twice (+896 at the 640-frame steady phase,
++384 ratcheted) — the arithmetic signature of ONE lost 32 ms AC-3 sync
+frame. Firmware exonerated at every counter: no epoch budget overrun, no
+checkpoint walltime movement, SD idle (a controlled 189 KB SD-served read
+and even an HTTP outage moved nothing), pipeline/clock counters clean, and
+the re-armed flight recorder shows continuous program audio to the final
+committed frame. `SPDIF_SIS` read `0x0093C404`: BITERR + SYMERR + LOCKLOSS
+latched — the receiver HAS taken physical-layer errors this boot, though
+the sticky bits cannot be timestamped from HTTP. The operator does not
+accept the cable attribution; **the governor is HELD**
+(`AIUS_TX_GOVERNOR_ENABLED=0`, compiled but tap off, counters serving
+zeros) and the image instead ships three input-fault instruments served as
+`input_diag`: a per-epoch-windowed SIS error latch (count + stamp + W1C via
+`SPDIF_SIC`, so the next error is attributable to its window), a
+production-gap watermark in `enqueue()` (any ≥40 ms hole alerts, whatever
+its cause), and an update-ISR cadence watermark (convicts or acquits the
+in-firmware RX-overwrite path). The next pop pairs one
+`production_gap_over_count` increment with either a same-window SIS error
+(input-side) or an ISR-cadence spike (firmware-side) — that verdict decides
+the governor's target policy (class-aware cushion vs 16 ms everywhere).
+Two incidental finds, both registered: the flight recorder's underrun
+trigger spends its one-shot freeze on the boot bring-up underrun (blind
+witness every boot until thawed by hand), and rapid recorder-data reads can
+wedge HTTP for a few seconds (server recovered unaided, audio unaffected).
 
 ## Acceptance
 

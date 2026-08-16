@@ -166,6 +166,23 @@ ends left open:
 
 ## Open defects — runtime
 
+- **Flight recorder freezes on the boot bring-up underrun, spending its
+  one-shot trigger before the session exists (2026-08-16).** Field
+  observation on `1dc7cbb80397` slot A: `/api/recorder` reported
+  `state: frozen`, trigger `underrun` at `at_ms 3289`, `at_block 1`, 512
+  valid frames, `postroll_captured 0` — the recorder froze on the trivial
+  first-block underrun ~3.3 s after power-on and was therefore blind to
+  every real dropout of the session (an audible pop that advanced
+  `tx_underrun_frames` by 384 left no capture). The armed-witness premise
+  of the output-jitter acceptance run is void on every boot until the
+  operator thaws by hand. Fix shape: suppress the underrun trigger until
+  the session settles — e.g. arm it only after the TX gate's first
+  closed→open edge (the same settling boundary the gate-open trim owns),
+  or after N clean committed blocks. Until fixed: thaw after boot
+  (`POST /api/recorder/thaw`, SD-auth) as part of bring-up. Found while
+  diagnosing the 2026-08-16 listening-room pop (see
+  [`aius-output-jitter.md`](aius-output-jitter.md) Phase E).
+
 - ~~**OTA activation dark window can brick: erase completed, no valid image
   programmed (2026-08-16).**~~ **CLOSED 2026-08-16, the same day, by the
   whole [`aius-ota-resilience.md`](aius-ota-resilience.md) plan shipping

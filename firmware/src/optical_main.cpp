@@ -1263,6 +1263,50 @@ static AiusTxGovernor g_tx_governor;         /* .bss; the zero window_min can
 static uint32_t g_tx_governor_trims;          /* .bss = 0 */
 static uint32_t g_tx_governor_trimmed_frames; /* .bss = 0 */
 
+/* HELD by operator decision (2026-08-16, in chat): the governor is compiled
+ * and its counters/JSON stay live (serving zeros), but the enqueue() tap is
+ * off until the input-fault instruments below deliver a verdict on the pop
+ * mechanism -- a trimmed cushion re-exposes any real input hole the ratchet
+ * was accidentally absorbing. Enable with -DAIUS_TX_GOVERNOR_ENABLED=1. */
+#ifndef AIUS_TX_GOVERNOR_ENABLED
+#define AIUS_TX_GOVERNOR_ENABLED 0
+#endif
+
+/* Input-fault instruments (pop diagnosis 2026-08-16). Three independent
+ * watermarks that between them attribute an audible underrun burst:
+ *
+ * - SIS error latch: the SPDIF peripheral's sticky BITERR/SYMERR/LOCKLOSS/
+ *   RxFIFO flags, polled once per REPLAY epoch, counted per class, stamped,
+ *   and W1C-cleared (write to SPDIF_SIC, the clear view at the same offset)
+ *   so each event is attributable to its poll window instead of "since
+ *   boot". A field pop with a same-window BITERR/SYMERR is physical-layer;
+ *   one without is not -- that is the whole point of clearing.
+ * - Production-gap watermark: micros() between ACCEPTED enqueue() blocks
+ *   while the gate is open. Any 32 ms hole -- lost burst, decoder pause,
+ *   starved loop -- shows here regardless of cause. Reset at every stream
+ *   gate close so source switches never count.
+ * - Update-ISR cadence watermark: micros() between update() calls. A gap
+ *   here approaching the RX buffering depth is the in-firmware loss path
+ *   (DMA ring overwrite during ISR starvation); its absence at a pop
+ *   acquits the firmware side.
+ *
+ * All lifetime (not cleared by clear_counters()), served as `input_diag`. */
+#ifndef AIUS_INPUT_GAP_ALERT_US
+#define AIUS_INPUT_GAP_ALERT_US 40000u
+#endif
+static uint32_t g_sis_biterr_events;    /* .bss = 0 */
+static uint32_t g_sis_symerr_events;    /* .bss = 0 */
+static uint32_t g_sis_lockloss_events;  /* .bss = 0 */
+static uint32_t g_sis_rxfifo_events;    /* UNOV | RESYN */
+static uint32_t g_sis_last_error_ms;    /* millis() of last latched error */
+static uint32_t g_enqueue_gap_max_us;
+static uint32_t g_enqueue_gap_over_count;
+static uint32_t g_enqueue_gap_last_us;
+static uint32_t g_enqueue_gap_last_at_ms;
+static uint32_t g_enqueue_last_us;      /* 0 = no accepted block since reset */
+static volatile uint32_t g_update_gap_max_us; /* ISR-written watermark */
+static volatile uint32_t g_update_last_us;    /* 0 = first call */
+
 /* The boot-lottery padding-sweep knob: the degraded mode's per-boot odds are
  * a function of the image's exact layout, so hunting a reproducing layout of
  * an INSTRUMENTED build means nudging flash placement by N bytes per variant
@@ -1399,6 +1443,20 @@ protected:
 		 * cycle maximum. DWT differences, wrap-correct. */
 		const uint32_t entered_cycles = ARM_DWT_CYCCNT;
 		g_audio_update_calls++;
+		/* Input-fault instrument: the cadence watermark. Nominal is the
+		 * 128-frame block period (~2.67 ms); a maximum near the RX DMA
+		 * buffering depth means input was overwritten unserviced. The
+		 * |1u keeps the "first call" sentinel unambiguous. */
+		{
+			const uint32_t now_us = micros();
+			if (g_update_last_us != 0u) {
+				const uint32_t cadence_gap =
+					now_us - g_update_last_us;
+				if (cadence_gap > g_update_gap_max_us)
+					g_update_gap_max_us = cadence_gap;
+			}
+			g_update_last_us = now_us | 1u;
+		}
 		audio_block_t *left = receiveReadOnly(0);
 		audio_block_t *right = receiveReadOnly(1);
 		const AiusReplaySource source =
@@ -1634,6 +1692,35 @@ private:
 			aius_meter_accumulate_output(&g_meter, processed_left,
 			                             processed_right, block->frames);
 		}
+		/* Input-fault instrument: the production-gap watermark. micros()
+		 * between accepted blocks with the gate open; any hole -- lost
+		 * input burst, decoder pause, starved loop -- widens it whatever
+		 * the cause. An enqueue that observes the gate closed resets the
+		 * sentinel, so a source/rate switch never spans a bogus gap. */
+		{
+			const uint32_t now_us = micros();
+			if (g_aius_spdif_tx24.gate_open == 0u) {
+				g_enqueue_last_us = 0u;
+			} else {
+				if (g_enqueue_last_us != 0u) {
+					const uint32_t production_gap =
+						now_us - g_enqueue_last_us;
+					if (production_gap > g_enqueue_gap_max_us)
+						g_enqueue_gap_max_us =
+							production_gap;
+					if (production_gap >
+					    AIUS_INPUT_GAP_ALERT_US) {
+						g_enqueue_gap_over_count++;
+						g_enqueue_gap_last_us =
+							production_gap;
+						g_enqueue_gap_last_at_ms =
+							millis();
+					}
+				}
+				g_enqueue_last_us = now_us | 1u;
+			}
+		}
+#if AIUS_TX_GOVERNOR_ENABLED
 		/* Latency-governor tap (aius-output-jitter Phase E): the ring level
 		 * BEFORE this block is staged is the standing floor sample the
 		 * window-minimum estimator wants; post-commit it would carry this
@@ -1665,6 +1752,7 @@ private:
 				g_tx_governor_trimmed_frames += dropped;
 			}
 		}
+#endif /* AIUS_TX_GOVERNOR_ENABLED */
 		/* Into the transmit ring, at OUTPUT_WIDTH_BITS.
 		 *
 		 * At 24 bits -- the shipped selection -- this is a copy and nothing else:
@@ -2893,6 +2981,42 @@ static FLASHMEM bool http_clock_regs_json(char *output, size_t capacity,
 		clock_output_is_master() ? 1u : 0u,
 		(unsigned long)g_aius_spdif_tx24.fills,
 		(unsigned long)g_clock_engine_relocks);
+}
+
+/* The input-fault instruments (pop diagnosis 2026-08-16): windowed SPDIF
+ * error-latch counts, the production-gap watermark and the update-ISR
+ * cadence watermark. NOTE this service is why clk_regs' raw spdif_sis no
+ * longer accumulates error bits since boot -- input_fault_service() clears
+ * the error subset each epoch after counting it here, which is what makes
+ * an error attributable to its window. */
+static FLASHMEM bool http_input_diag_json(char *output, size_t capacity,
+                                          size_t *length)
+{
+	return http_json_append(
+		output, capacity, length,
+		",\"input_diag\":{"
+		"\"sis_biterr_events\":%lu,"
+		"\"sis_symerr_events\":%lu,"
+		"\"sis_lockloss_events\":%lu,"
+		"\"sis_rxfifo_events\":%lu,"
+		"\"sis_last_error_ms\":%lu,"
+		"\"production_gap_max_us\":%lu,"
+		"\"production_gap_alert_us\":%lu,"
+		"\"production_gap_over_count\":%lu,"
+		"\"production_gap_last_us\":%lu,"
+		"\"production_gap_last_at_ms\":%lu,"
+		"\"update_gap_max_us\":%lu}",
+		(unsigned long)g_sis_biterr_events,
+		(unsigned long)g_sis_symerr_events,
+		(unsigned long)g_sis_lockloss_events,
+		(unsigned long)g_sis_rxfifo_events,
+		(unsigned long)g_sis_last_error_ms,
+		(unsigned long)g_enqueue_gap_max_us,
+		(unsigned long)AIUS_INPUT_GAP_ALERT_US,
+		(unsigned long)g_enqueue_gap_over_count,
+		(unsigned long)g_enqueue_gap_last_us,
+		(unsigned long)g_enqueue_gap_last_at_ms,
+		(unsigned long)g_update_gap_max_us);
 }
 
 /* The retained fnet_poll probe (lib/aius_boot/include/AiusPollProbe.h,
@@ -4789,6 +4913,8 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 		return 0;
 	if (!http_clock_regs_json((char *)body, capacity, &length))
 		return false;
+	if (!http_input_diag_json((char *)body, capacity, &length))
+		return 0;
 	if (!http_poll_probe_json((char *)body, capacity, &length))
 		return 0;
 	if (!http_pipeline_diag_json((char *)body, capacity, &length))
@@ -7507,6 +7633,34 @@ static FLASHMEM void tx_gate_service(void)
  * refusal cannot starve replay, whereas the reverse could starve the probe that
  * makes a hot card removal observable. Each yields to the other's running job,
  * so the epoch still spends at most one SD primitive between them. */
+/* Input-fault instrument: poll the SPDIF peripheral's sticky error flags,
+ * count per class, stamp, and clear (SPDIF_SIC is the W1C view at the same
+ * offset as SIS). Clearing is what turns "an error happened since boot" into
+ * "an error happened in THIS window", which is the attribution a field pop
+ * needs. One volatile read per epoch; the write happens only when an error
+ * bit is actually set. URXFUL/QRX housekeeping noise is deliberately not
+ * latched -- unread U/Q FIFOs fill as a matter of course. */
+static FLASHMEM void input_fault_service(uint32_t now_ms)
+{
+	const uint32_t sis = SPDIF_SIS;
+	const uint32_t errors =
+		sis & (SPDIF_SIS_BITERR | SPDIF_SIS_SYMERR |
+		       SPDIF_SIS_LOCKLOSS | SPDIF_SIS_RXFIFOUNOV |
+		       SPDIF_SIS_RXFIFORESYN);
+	if (errors == 0u)
+		return;
+	if (errors & SPDIF_SIS_BITERR)
+		g_sis_biterr_events++;
+	if (errors & SPDIF_SIS_SYMERR)
+		g_sis_symerr_events++;
+	if (errors & SPDIF_SIS_LOCKLOSS)
+		g_sis_lockloss_events++;
+	if (errors & (SPDIF_SIS_RXFIFOUNOV | SPDIF_SIS_RXFIFORESYN))
+		g_sis_rxfifo_events++;
+	g_sis_last_error_ms = now_ms;
+	SPDIF_SIC = errors;
+}
+
 static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
                                      uint32_t now_ms)
 {
@@ -7527,6 +7681,7 @@ static FLASHMEM bool platform_replay(void *, const AiusRuntimeBudget *budget,
 	 * must judge this epoch's settled source and carrier, not the previous
 	 * one's. A boolean and at most three register stores; no budget row. */
 	tx_gate_service();
+	input_fault_service(now_ms);
 	/* Flight recorder, after tx_gate_service() by contract: the epoch
 	 * trigger evaluation consumes this epoch's LATCHED gate and carrier
 	 * (underrun qualification at both ends of the delta; carrier falling
