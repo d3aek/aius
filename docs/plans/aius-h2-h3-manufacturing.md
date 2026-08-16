@@ -310,15 +310,20 @@ imports the session, applies fab-capable DRC minimums, and fills the L2/L3 GND
 planes; the persisted net class lives in `aius-carrier.kicad_pro`.
 
 Result: **160/160 nets routed** (0 unrouted), 880 track segments, both GND planes
-filled. DRC against the fab rule set fell 607 → **22 violations + 3 GND-stitch
-unconnected**, the genuine autoroute punch-list for H3e cleanup:
+filled. DRC against the fab rule set fell 607 → 22, then a bounded post-route
+cleanup pass (`route_cleanup.py`: widen sub-0.15 mm necked tracks to 0.20 mm; set
+the GND planes to a solid pad connection; refill) brought it to **15 violations +
+3 GND-stitch unconnected**. That is the deliberate stopping point for the scripted
+grind (owner guidance: bounded iterations, stop at diminishing returns, do not
+fixate on 0). The residual is interactive-judgment cleanup for the H3e pass:
 
-- 4 `track_width` — Freerouting necked 4 tracks to 0.10 mm at SMD entries; widen.
-- 4 `clearance` — sub-0.15 mm spots (Freerouting's own 8 residuals); nudge.
-- 4 `courtyards_overlap` — a few initial-placement collisions to space out.
-- 4 `hole_clearance` + 3 `starved_thermal` + 3 GND unconnected — GND pads on the
-  plane needing stitching vias / more thermal spokes (all GND-connectivity).
-- 2 `via_dangling` + 1 `silk_over_copper` — trivial.
+- 4 `clearance` + 4 `courtyards_overlap` + 4 `hole_clearance` — congestion in the
+  USB cluster (J1/J2/U1/U2) and the dense Teensy area (U10); needs a placement
+  nudge + local reroute, best done interactively (a scripted reroute re-rolls the
+  whole board and risks whack-a-mole against the fixes above).
+- 3 GND unconnected + 2 `via_dangling` — a few Freerouting GND stubs on an outer
+  layer not tied to the plane; add stitching vias / drop the dangling ends.
+- 1 `silk_over_copper` — trivial.
 
 A footprint bug surfaced and was fixed here: the magjack (J20) estimated LED/post/
 shield positions self-overlapped (70 proximity items) — respaced so no holes
