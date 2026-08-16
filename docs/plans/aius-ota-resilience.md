@@ -20,6 +20,29 @@ Program button on a device whose deployed location has no USB reach. The
 image was innocent (identical hex booted first try via HalfKay). The owner's
 standing requirement is remote upgrade with no physical-access failure mode.
 
+## State — resume here
+
+**Status:** scoped 2026-08-16, UNSTARTED. No code exists for any phase. The
+device runs `d5dab0618f4c` (recovered via HalfKay the same night) and its
+OTA surface is idle with the poisoned-session evidence cleared.
+
+**Next action:** the open forensic thread below — one bench read of the
+persisted health record (whether the pre-window in-progress mark survived
+the HalfKay reflash and names the reached phase) before Phase 1's design
+locks. Then Phase 1.
+
+**Evidence that lives only in session scratch (7-day GC from 2026-08-16):**
+the working uploader script (`ota_flash.py` — Phase 4b promotes a corrected
+descendant into `firmware/tools/ota/`) and the staged-session fault
+transcript (chunk 500 at offset 1,454,080; post-abort clean restage in
+11.6 s / 387 chunks). The durable facts are all in this plan and the
+open-work register entry.
+
+**Decisions taken at scoping (owner, in chat):** remote upgrade without a
+physical-access failure mode is the requirement ("the whole point of OTA
+was a watchdog and fallback to the prior image"); the interim
+no-remote-activation rule stands until Phase 3 ships.
+
 ## What is established
 
 - **The failure is environmental to the window, not the offered image.** The
