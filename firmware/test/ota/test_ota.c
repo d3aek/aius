@@ -429,9 +429,29 @@ static void test_header_rejects_wire_fields(void)
 	uint8_t wire[AIUS_OTA_HEADER_BYTES];
 	AiusOtaImageHeader parsed;
 
-	current_key = "header.reserved0";
+	current_key = "header.slot-tag";
+	/* reserved0's LOW byte became the slot tag (Phase 3b): 0/1/2 parse to
+	 * the slot identity, anything else is MALFORMED, and the high byte is
+	 * still reserved-must-be-zero. */
 	build_wire(wire, g_payload, TEST_IMAGE_BYTES);
-	wire[AIUS_OTA_HEADER_OFFSET_RESERVED0] = 1u;
+	wire[AIUS_OTA_HEADER_OFFSET_RESERVED0] = AIUS_OTA_SLOT_A;
+	reseal(wire);
+	CHECK(aius_ota_header_parse(&parsed, wire, sizeof(wire)) ==
+	      AIUS_OTA_OK);
+	CHECK(parsed.slot_id == AIUS_OTA_SLOT_A);
+	wire[AIUS_OTA_HEADER_OFFSET_RESERVED0] = AIUS_OTA_SLOT_B;
+	reseal(wire);
+	CHECK(aius_ota_header_parse(&parsed, wire, sizeof(wire)) ==
+	      AIUS_OTA_OK);
+	CHECK(parsed.slot_id == AIUS_OTA_SLOT_B);
+	wire[AIUS_OTA_HEADER_OFFSET_RESERVED0] = AIUS_OTA_SLOT_B + 1u;
+	reseal(wire);
+	CHECK(aius_ota_header_parse(&parsed, wire, sizeof(wire)) ==
+	      AIUS_OTA_MALFORMED);
+
+	current_key = "header.reserved0-high";
+	build_wire(wire, g_payload, TEST_IMAGE_BYTES);
+	wire[AIUS_OTA_HEADER_OFFSET_RESERVED0 + 1u] = 1u;
 	reseal(wire);
 	CHECK(aius_ota_header_parse(&parsed, wire, sizeof(wire)) ==
 	      AIUS_OTA_MALFORMED);
@@ -1912,6 +1932,83 @@ static void test_end_to_end_upgrade(void)
 }
 
 /* -------------------------------------------------------------------------
+ * The slot gate (aius-ota-resilience.md Phase 3b)
+ * ---------------------------------------------------------------------- */
+
+static void build_wire_slot(uint8_t *wire, const uint8_t *payload,
+	                    uint32_t image_length, uint8_t slot)
+{
+	AiusOtaImageHeader header = valid_header_struct(payload, image_length);
+
+	header.slot_id = slot;
+	CHECK(aius_ota_header_serialize(&header, wire,
+	                                AIUS_OTA_HEADER_BYTES) == AIUS_OTA_OK);
+}
+
+static void test_offer_slot_gate(void)
+{
+	AiusOtaSession session;
+	uint8_t untagged[AIUS_OTA_HEADER_BYTES];
+	uint8_t tagged_a[AIUS_OTA_HEADER_BYTES];
+	uint8_t tagged_b[AIUS_OTA_HEADER_BYTES];
+	uint8_t record[AIUS_OTA_RECORD_BYTES];
+
+	build_wire(untagged, g_payload, TEST_IMAGE_BYTES);
+	build_wire_slot(tagged_a, g_payload, TEST_IMAGE_BYTES, AIUS_OTA_SLOT_A);
+	build_wire_slot(tagged_b, g_payload, TEST_IMAGE_BYTES, AIUS_OTA_SLOT_B);
+
+	current_key = "slot.default-none";
+	/* The construction default is the single-image posture: only untagged
+	 * containers are for this board -- which is also every PRE-A/B
+	 * device's behaviour, since to them the tag byte is a reserved-field
+	 * violation. */
+	armed_session(&session);
+	CHECK(aius_ota_offer(&session, tagged_a, sizeof(tagged_a)) ==
+	      AIUS_OTA_UNSUPPORTED);
+	CHECK(aius_ota_offer(&session, untagged, sizeof(untagged)) ==
+	      AIUS_OTA_OK);
+
+	current_key = "slot.expected-match";
+	armed_session(&session);
+	CHECK(aius_ota_set_expected_slot(NULL, AIUS_OTA_SLOT_A) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_set_expected_slot(&session, AIUS_OTA_SLOT_B + 1u) ==
+	      AIUS_OTA_INVALID_ARG);
+	CHECK(aius_ota_set_expected_slot(&session, AIUS_OTA_SLOT_A) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_offer(&session, untagged, sizeof(untagged)) ==
+	      AIUS_OTA_UNSUPPORTED);
+	CHECK(aius_ota_offer(&session, tagged_b, sizeof(tagged_b)) ==
+	      AIUS_OTA_UNSUPPORTED);
+	CHECK(aius_ota_offer_check(&session, tagged_b, sizeof(tagged_b),
+	                           NULL) == AIUS_OTA_UNSUPPORTED);
+	CHECK(aius_ota_offer(&session, tagged_a, sizeof(tagged_a)) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_offer_check(&session, tagged_a, sizeof(tagged_a),
+	                           NULL) == AIUS_OTA_OK);
+
+	current_key = "slot.restore-refuses-flipped-expectation";
+	/* A persisted staging record for slot A must not resume once the
+	 * composition expects slot B (the active slot flipped between the
+	 * save and the restore): fail-closed to IDLE, like every other
+	 * restore refusal. */
+	CHECK(aius_ota_absorb(&session, 0u, g_payload, 512u) == AIUS_OTA_OK);
+	CHECK(aius_ota_record_save(&session, record, sizeof(record)) ==
+	      AIUS_OTA_OK);
+	armed_session(&session);
+	CHECK(aius_ota_set_expected_slot(&session, AIUS_OTA_SLOT_B) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
+	      AIUS_OTA_CORRUPT);
+	CHECK(aius_ota_state(&session) == AIUS_OTA_STATE_IDLE);
+	CHECK(aius_ota_set_expected_slot(&session, AIUS_OTA_SLOT_A) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_record_load(&session, record, sizeof(record)) ==
+	      AIUS_OTA_OK);
+	CHECK(aius_ota_state(&session) == AIUS_OTA_STATE_STAGING);
+}
+
+/* -------------------------------------------------------------------------
  * The pure chunk prechecks (aius-ota-resilience.md Phase 4a)
  *
  * The deferred-absorb route promises a chunk's acceptance from these and
@@ -2094,6 +2191,7 @@ int main(void)
 	test_health_trial_budget_and_rollback();
 	test_health_record_round_trip();
 	test_end_to_end_upgrade();
+	test_offer_slot_gate();
 	test_chunk_prechecks_mirror_the_mutators();
 	test_staging_placement_per_fitment();
 	puts("ota core tests passed");

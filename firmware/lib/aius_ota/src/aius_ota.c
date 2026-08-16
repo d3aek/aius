@@ -220,7 +220,16 @@ FLASHMEM AiusOtaStatus aius_ota_header_parse(AiusOtaImageHeader *header,
 	if (parsed.signature_scheme != AIUS_OTA_SIGSCHEME_ED25519)
 		return AIUS_OTA_UNSUPPORTED;
 
-	if (get_u16(&bytes[AIUS_OTA_HEADER_OFFSET_RESERVED0]) != 0u)
+	/* reserved0's LOW byte became the slot identity with the A/B scheme
+	 * (aius-ota-resilience.md Phase 3b): 0 = no slot (the single-image
+	 * container every pre-A/B device requires, because to them the whole
+	 * field was reserved-must-be-zero), 1 = slot A, 2 = slot B. The high
+	 * byte stays reserved. Inside the authenticated prefix, so a signed
+	 * slot tag cannot be rewritten. */
+	parsed.slot_id = bytes[AIUS_OTA_HEADER_OFFSET_RESERVED0];
+	if (parsed.slot_id > AIUS_OTA_SLOT_B)
+		return AIUS_OTA_MALFORMED;
+	if (bytes[AIUS_OTA_HEADER_OFFSET_RESERVED0 + 1u] != 0u)
 		return AIUS_OTA_MALFORMED;
 	if (!block_is_zero(&bytes[AIUS_OTA_HEADER_OFFSET_RESERVED1],
 	                   AIUS_OTA_HEADER_RESERVED1_BYTES))
@@ -297,6 +306,7 @@ FLASHMEM AiusOtaStatus aius_ota_header_serialize(
 	        header->image_length);
 	put_u16(&bytes[AIUS_OTA_HEADER_OFFSET_SIGNATURE_SCHEME],
 	        header->signature_scheme);
+	bytes[AIUS_OTA_HEADER_OFFSET_RESERVED0] = header->slot_id;
 	put_u64(&bytes[AIUS_OTA_HEADER_OFFSET_BUILD_UTC], header->build_utc);
 	memcpy(&bytes[AIUS_OTA_HEADER_OFFSET_TARGET_ID], header->target_id,
 	       target_length);
@@ -417,6 +427,11 @@ FLASHMEM AiusOtaStatus aius_ota_offer(AiusOtaSession *session,
 		return status;
 	if (strcmp(header.target_id, session->target_id) != 0)
 		return AIUS_OTA_UNSUPPORTED;
+	/* The slot gate (Phase 3b): an image linked for the wrong hole would
+	 * program addresses that are lies. Same verdict as a wrong target --
+	 * well-formed, just not for this board's inactive slot. */
+	if (header.slot_id != session->expected_slot)
+		return AIUS_OTA_UNSUPPORTED;
 
 	session_clear(session);
 	memcpy(session->header_bytes, bytes, AIUS_OTA_HEADER_BYTES);
@@ -448,8 +463,19 @@ FLASHMEM AiusOtaStatus aius_ota_offer_check(const AiusOtaSession *session,
 		return status;
 	if (strcmp(header.target_id, session->target_id) != 0)
 		return AIUS_OTA_UNSUPPORTED;
+	if (header.slot_id != session->expected_slot)
+		return AIUS_OTA_UNSUPPORTED;
 	if (parsed != NULL)
 		*parsed = header;
+	return AIUS_OTA_OK;
+}
+
+FLASHMEM AiusOtaStatus aius_ota_set_expected_slot(AiusOtaSession *session,
+	                                          uint8_t slot)
+{
+	if (session == NULL || slot > AIUS_OTA_SLOT_B)
+		return AIUS_OTA_INVALID_ARG;
+	session->expected_slot = slot;
 	return AIUS_OTA_OK;
 }
 
@@ -770,6 +796,12 @@ FLASHMEM AiusOtaStatus aius_ota_record_load(AiusOtaSession *session,
 	if (status != AIUS_OTA_OK)
 		return AIUS_OTA_CORRUPT;
 	if (strcmp(header.target_id, session->target_id) != 0)
+		return AIUS_OTA_CORRUPT;
+	/* A restored session must still target the slot the composition now
+	 * expects: the active slot may have flipped since the record was
+	 * saved, and resuming a stage for the RUNNING slot would be exactly
+	 * the wrong-hole program the offer gate exists to refuse. */
+	if (header.slot_id != session->expected_slot)
 		return AIUS_OTA_CORRUPT;
 
 	if (!record_lengths_agree(state, staged_length, header.image_length))

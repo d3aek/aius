@@ -363,6 +363,7 @@ Suites (all build with `-Wall -Wextra -Werror` + ASan/UBSan):
 
 | Suite | Covers |
 | --- | --- |
+| `ab` | A/B boot state (`lib/aius_ab`): flash map arithmetic, boot-record + trial-ledger codecs, ping-pong pick, the chooser decision rule and slot IVT sanity. |
 | `arena`, `codec-api-contract` | The allocator and ABI contract. |
 | `audio-ingress` | Exact 256-word SPSC publish, wrap, gaps, flush and diagnostics. |
 | `audio-service` | Deferred ingress/service quotas, suffix retry, resets and backpressure. |

@@ -7,7 +7,7 @@
 #
 #   scripts/test.sh --environment native --suite <suite>
 #
-# Suites: arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
+# Suites: ab, arena, audio-ingress, audio-service, auth, clock, clock-target, codec-api-contract, config, dsp-config, json, dts, dts-arena,
 #         dts-fuzz, dts-lfe, a52, a52-fuzz, eac3, eac3-fuzz, iec61937, iec61937-fuzz, capability-protocol,
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, latency-runner,
@@ -784,6 +784,18 @@ recorder)
 		-lm -o "$recorder_out"
 	"$recorder_out"
 	python3 "$fw_root/test/recorder/test_no_extmem_heap.py" "$fw_root"
+	;;
+ab)
+	# The A/B boot state (lib/aius_ab): flash map arithmetic, the boot-record
+	# and trial-ledger codecs, the ping-pong pick, the chooser decision rule
+	# and the slot IVT sanity rule -- the logic the first-stage chooser, the
+	# slot application and the tooling all share verbatim.
+	ab_out="$build_dir/ab"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_ab/include" \
+		"$fw_root/test/ab/test_ab.c" \
+		"$fw_root/lib/aius_ab/src/aius_ab.c" \
+		-o "$ab_out"
+	"$ab_out"
 	;;
 boot)
 	boot_out="$build_dir/boot"

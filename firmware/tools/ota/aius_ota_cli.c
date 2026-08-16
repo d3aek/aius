@@ -434,12 +434,28 @@ static int command_sign(int argc, char **argv)
 	char *end = NULL;
 	int status;
 
-	if (argc != 8) {
+	uint8_t slot_id = AIUS_OTA_SLOT_NONE;
+
+	if (argc != 8 && argc != 9) {
 		fprintf(stderr,
 		        "usage: aius-ota-cli sign <image> <secret-key> "
 		        "<target-id> <build-revision> <build-utc> "
-		        "<container-out>\n");
+		        "<container-out> [a|b]\n");
 		return 1;
+	}
+	if (argc == 9) {
+		/* The A/B slot tag (aius-ota-resilience.md Phase 3b): which hole
+		 * this image was LINKED for. Omitted = the untagged single-image
+		 * container. */
+		if (strcmp(argv[8], "a") == 0) {
+			slot_id = AIUS_OTA_SLOT_A;
+		} else if (strcmp(argv[8], "b") == 0) {
+			slot_id = AIUS_OTA_SLOT_B;
+		} else {
+			fprintf(stderr,
+			        "aius-ota-cli: slot must be 'a' or 'b'\n");
+			return 1;
+		}
 	}
 	if (read_whole_file(argv[2], &image, &image_length) != 0)
 		return 1;
@@ -470,6 +486,7 @@ static int command_sign(int argc, char **argv)
 	header.header_length = (uint16_t)AIUS_OTA_HEADER_BYTES;
 	header.image_length = (uint32_t)image_length;
 	header.signature_scheme = (uint16_t)AIUS_OTA_SIGSCHEME_ED25519;
+	header.slot_id = slot_id;
 	header.build_utc = (uint64_t)build_utc;
 	if (copy_text_field(header.target_id, sizeof(header.target_id), argv[4],
 	                    "target-id") != 0 ||

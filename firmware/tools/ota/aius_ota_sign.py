@@ -226,11 +226,12 @@ def command_sign(args, cli: Path) -> int:
     if build_utc is None:
         return fail("--build-utc must be Unix seconds or an ISO-8601 date")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
-        [str(cli), "sign", str(args.image), str(args.secret), args.target_id,
-         args.build_revision, str(build_utc), str(args.output)],
-        text=True, capture_output=True,
-    )
+    argv = [str(cli), "sign", str(args.image), str(args.secret),
+            args.target_id, args.build_revision, str(build_utc),
+            str(args.output)]
+    if args.slot:
+        argv.append(args.slot)
+    completed = subprocess.run(argv, text=True, capture_output=True)
     return relay(completed)
 
 
@@ -287,6 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
     sign.add_argument(
         "--build-utc",
         help="Unix seconds or an ISO-8601 date (default: the image's mtime)",
+    )
+    sign.add_argument(
+        "--slot", choices=("a", "b"),
+        help="A/B slot this image was LINKED for (the signed slot tag; omit "
+             "for the untagged single-image container)",
     )
 
     verify = commands.add_parser(

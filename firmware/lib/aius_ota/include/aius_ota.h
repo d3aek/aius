@@ -186,6 +186,17 @@ typedef enum {
 #define AIUS_OTA_MIN_BUILD_UTC UINT64_C(1577836800)
 #define AIUS_OTA_MAX_BUILD_UTC UINT64_C(4102444800)
 
+/* Slot identities in the container's slot tag (the low byte of the former
+ * reserved0 field, aius-ota-resilience.md Phase 3b): NONE is the untagged
+ * single-image container -- byte-identical to a pre-A/B header, which is
+ * what lets old devices keep refusing tagged containers as reserved-field
+ * violations and new devices keep accepting old containers where the
+ * composition allows. Values mirror lib/aius_ab's AIUS_AB_SLOT_*; the tag
+ * sits inside the authenticated prefix, so it is signed. */
+#define AIUS_OTA_SLOT_NONE 0u
+#define AIUS_OTA_SLOT_A 1u
+#define AIUS_OTA_SLOT_B 2u
+
 /* The parsed header. Strings arrive NUL-padded on the wire and are stored
  * NUL-TERMINATED here (hence the +1), so a caller can print or strcmp them
  * without carrying a length alongside. */
@@ -195,6 +206,7 @@ typedef struct {
 	uint16_t header_length;
 	uint32_t image_length;
 	uint16_t signature_scheme;
+	uint8_t slot_id; /* AIUS_OTA_SLOT_*; the image's linked-for slot */
 	uint64_t build_utc;
 	char target_id[AIUS_OTA_TARGET_ID_BYTES + 1u];
 	char build_revision[AIUS_OTA_BUILD_REVISION_BYTES + 1u];
@@ -335,6 +347,12 @@ typedef struct {
 	 * every offered header's target_id. The core cannot know its own board;
 	 * the composition root does. */
 	char target_id[AIUS_OTA_TARGET_ID_BYTES + 1u];
+	/* The slot tag every offered container must carry
+	 * (aius_ota_set_expected_slot): NONE for the single-image posture,
+	 * else the slot the composition will activate into -- its INACTIVE
+	 * slot. Like target_id, the session cannot know it; the composition
+	 * root does, and re-states it whenever the active slot changes. */
+	uint8_t expected_slot;
 	/* The offered header, kept as wire bytes AND parsed. The bytes are what
 	 * the record persists and what the authentication digest is computed
 	 * over, so restoring re-runs the one validator rather than trusting a
@@ -375,6 +393,16 @@ typedef struct {
  * session is zeroed (and therefore refuses everything) either way. */
 AiusOtaStatus aius_ota_init(AiusOtaSession *session, const char *target_id,
 	                    size_t target_id_length);
+
+/* States which slot tag an offered container must carry from here on:
+ * NONE accepts only untagged containers (the single-image posture and the
+ * construction default), A or B accepts only that slot's. UNSUPPORTED at
+ * offer on a mismatch -- the image is well-formed, just not for this hole,
+ * the same verdict a wrong target_id earns. Callable in any state; it
+ * guards future offers, never a session already staged. INVALID_ARG for a
+ * value outside the slot domain. */
+AiusOtaStatus aius_ota_set_expected_slot(AiusOtaSession *session,
+	                                 uint8_t slot);
 
 /* The deliberate act. Arming does not start an upgrade; it makes one
  * possible. */
