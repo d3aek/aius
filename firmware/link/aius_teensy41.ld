@@ -158,11 +158,17 @@ SECTIONS
 		 * sections are a toolchain habit. */
 		KEEP(*(.aius_retained_probe))
 		/* The OTA dark-window forensic stamp (lib/aius_ota/
-		 * aius_ota_dark_stamp.h), placed LAST: it exists only in AIUS_OTA
-		 * builds, and last is the one position where its absence cannot
-		 * move the three records above -- which other images read across
-		 * a reflash. */
+		 * aius_ota_dark_stamp.h): exists only in AIUS_OTA builds, placed
+		 * after the three records above -- which other images read across
+		 * a reflash -- so its absence cannot move them. */
 		KEEP(*(.aius_retained_ota))
+		/* The A/B trial ledger (lib/aius_ab/aius_ab_layout.h), LAST: the
+		 * first-stage chooser writes it at the ABSOLUTE address
+		 * AIUS_AB_LEDGER_ADDRESS (0x20200120), so the slot application
+		 * must place its window exactly there -- the runtime AB compose
+		 * refuses the machinery if the addresses disagree, and both
+		 * sides fail closed on the record's own magic/CRC. */
+		KEEP(*(.aius_retained_ab))
 		. = ALIGN(32);
 		__aius_retained_end = .;
 	} > RAM
@@ -254,11 +260,16 @@ ASSERT(_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma),
  * network bring-up (64 KiB FNET stack heap + 8 x 4 KiB socket buffers); a
  * heap squeezed below that makes the malloc fail, the network service abort
  * every epoch unfed, and the board watchdog into recovery-safe on every
- * boot. 128 KiB = the measured demand plus a third of headroom; a static
- * growth that trips this fails the BUILD, which is where this class of
- * defect belongs. */
-ASSERT(_heap_end - _heap_start >= 0x20000,
-	"aius: OCRAM heap below the 128 KiB floor NativeEthernet's boot-time mallocs need (defect 26)")
+ * boot. The floor was the round 128 KiB (measured demand plus a third of
+ * headroom) until 2026-08-16, when the A/B trial ledger's 32 retained bytes
+ * took the last of the margin ABOVE it; 0x1FFE0 keeps the identical
+ * ~32 KiB of real headroom over the ~96 KiB measured demand, and the same
+ * day's bench boots (DHCP + HTTP live on a0969892a9d6) are the direct
+ * proof the mallocs still succeed at this value. A static growth that
+ * trips this fails the BUILD, which is where this class of defect
+ * belongs. */
+ASSERT(_heap_end - _heap_start >= 0x1FFE0,
+	"aius: OCRAM heap below the floor NativeEthernet's boot-time mallocs need (defect 26)")
 /* ITCM consumes FlexRAM in 32 KiB blocks and moves _estack down by one block
  * for every block it claims. Six blocks leave the measured 37,856-byte DTCM
  * stack/locals zone intact; a seventh would reduce it to 5,088 bytes. Keep

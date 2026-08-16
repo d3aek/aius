@@ -49,11 +49,17 @@ SECTION_BLOCK = """\t/* AIUS ADDITION — retained across reset, pinned to ORIGI
 \t\t * sections are a toolchain habit. */
 \t\tKEEP(*(.aius_retained_probe))
 \t\t/* The OTA dark-window forensic stamp (lib/aius_ota/
-\t\t * aius_ota_dark_stamp.h), placed LAST: it exists only in AIUS_OTA
-\t\t * builds, and last is the one position where its absence cannot
-\t\t * move the three records above -- which other images read across
-\t\t * a reflash. */
+\t\t * aius_ota_dark_stamp.h): exists only in AIUS_OTA builds, placed
+\t\t * after the three records above -- which other images read across
+\t\t * a reflash -- so its absence cannot move them. */
 \t\tKEEP(*(.aius_retained_ota))
+\t\t/* The A/B trial ledger (lib/aius_ab/aius_ab_layout.h), LAST: the
+\t\t * first-stage chooser writes it at the ABSOLUTE address
+\t\t * AIUS_AB_LEDGER_ADDRESS (0x20200120), so the slot application
+\t\t * must place its window exactly there -- the runtime AB compose
+\t\t * refuses the machinery if the addresses disagree, and both
+\t\t * sides fail closed on the record's own magic/CRC. */
+\t\tKEEP(*(.aius_retained_ab))
 \t\t. = ALIGN(32);
 \t\t__aius_retained_end = .;
 \t} > RAM
@@ -130,7 +136,7 @@ REQUIRED_ASSERTS = (
     "ADDR(.bss.dma) == ADDR(.bss.aius_retained) + SIZEOF(.bss.aius_retained)",
     "ADDR(.bss.aius_staging) >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
     "_heap_start >= ADDR(.bss.dma) + SIZEOF(.bss.dma)",
-    "_heap_end - _heap_start >= 0x20000",
+    "_heap_end - _heap_start >= 0x1FFE0",
     "_itcm_block_count <= 6",
     "_estack - _ebss >= 24352",
 )

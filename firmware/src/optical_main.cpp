@@ -70,6 +70,26 @@ extern "C" {
 #include "aius_ota_activate.h"
 #include "aius_ota_dark_stamp.h"
 #include "aius_ota_staging.h"
+#include "aius_ab.h"
+
+/* The slot identity of THIS build (aius-ota-resilience.md Phase 3): 0 is the
+ * single-image posture, 1/2 the A/B slot envs' -DAIUS_AB_SLOT. Everything
+ * A/B-shaped -- the boot record machinery, the inactive-slot activation
+ * window, the expected container tag, the ab status object's non-null arm --
+ * keys on it, so the plain optical env keeps the pre-A/B behaviour to the
+ * byte. */
+#ifndef AIUS_AB_SLOT
+#define AIUS_AB_SLOT 0
+#endif
+
+#if AIUS_AB_SLOT
+/* The slot this build upgrades INTO: the other hole. */
+#define AIUS_AB_INACTIVE_SLOT \
+	(AIUS_AB_SLOT == AIUS_AB_SLOT_A ? AIUS_AB_SLOT_B : AIUS_AB_SLOT_A)
+#define AIUS_AB_INACTIVE_BASE \
+	(AIUS_AB_INACTIVE_SLOT == AIUS_AB_SLOT_A ? AIUS_AB_SLOT_A_BASE \
+	                                         : AIUS_AB_SLOT_B_BASE)
+#endif
 
 /* The Teensy core's FlexSPI-1 boot-flash erase/program driver (cores/teensy4/
  * eeprom.c). Exported for LittleFS_Program; the plan (§Self-flashing is
@@ -3339,6 +3359,174 @@ static FLASHMEM void ota_dark_stamp_boot_decode(void)
 		sizeof(g_ota_dark_stamp_retained));
 }
 
+/* ------------------------------------------------------------------ */
+/* A/B slots (aius-ota-resilience.md Phase 3)                          */
+/* ------------------------------------------------------------------ */
+
+#if AIUS_AB_SLOT
+/* The RAM-resident flash primitives, defined below with the activation
+ * wiring; declared here because the record writer reuses them (placement
+ * attributes live on the definitions). */
+static int ota_flash_erase(void *ctx, uint32_t address);
+static int ota_flash_program(void *ctx, uint32_t address, const uint8_t *data,
+                             uint32_t length);
+static int ota_flash_read(void *ctx, uint32_t address, uint8_t *destination,
+                          uint32_t length);
+
+/* The retained trial ledger: the chooser's writable state, at the ABSOLUTE
+ * address both images hardcode (aius_ab_layout.h). ab_compose() verifies the
+ * link placed this window exactly there and refuses the machinery if not --
+ * fail-closed to single-image behaviour rather than a chooser and an
+ * application disagreeing about 32 bytes of OCRAM. */
+__attribute__((section(".aius_retained_ab"), used, aligned(32)))
+static uint8_t g_ab_ledger_retained[AIUS_AB_LEDGER_BYTES];
+
+static bool g_ab_enabled;        /* the address contract held at compose */
+static AiusAbRecord g_ab_record; /* the picked flash record */
+static bool g_ab_record_valid;
+static int g_ab_record_sector;   /* winning ping-pong sector, -1 none */
+static AiusAbLedger g_ab_ledger; /* the chooser's ledger, as booted */
+static bool g_ab_ledger_valid;
+static bool g_ab_rollback_observed; /* this boot persisted a failed trial */
+static bool g_ab_committed_this_boot;
+
+/* Writes `record` into the ping-pong sector the current winner does NOT
+ * occupy, through the same bounds-checked RAM-resident primitives the
+ * activation uses (the record sectors are inside the boot window), and
+ * read-back verifies it. FLASHMEM: every caller runs with flash idle --
+ * setup, the healthy mark, and the POST-window finalize. */
+static FLASHMEM bool ab_record_write(const AiusAbRecord *record)
+{
+	uint8_t bytes[AIUS_AB_RECORD_BYTES];
+	uint8_t verify[AIUS_AB_RECORD_BYTES];
+	const int target =
+		(g_ab_record_valid && g_ab_record_sector == 0) ? 1 : 0;
+	const uint32_t address = target == 0 ? AIUS_AB_RECORD_SECTOR_0
+	                                     : AIUS_AB_RECORD_SECTOR_1;
+
+	if (!aius_ab_record_encode(record, bytes, sizeof(bytes)))
+		return false;
+	if (ota_flash_erase(nullptr, address) != 0)
+		return false;
+	if (ota_flash_program(nullptr, address, bytes, sizeof(bytes)) != 0)
+		return false;
+	if (ota_flash_read(nullptr, address, verify, sizeof(verify)) != 0)
+		return false;
+	if (memcmp(verify, bytes, sizeof(verify)) != 0)
+		return false;
+	g_ab_record = *record;
+	g_ab_record_valid = true;
+	g_ab_record_sector = target;
+	return true;
+}
+
+/* Boot-time A/B reconciliation, called from ota_compose(). Reads the record
+ * pair and the chooser's ledger, points the OTA session at the inactive
+ * slot's container tag, and persists the one fact only a BOOTED image can
+ * know: which slot is actually running.
+ *
+ *   - trial pending for THIS slot: leave it; the healthy mark commits.
+ *   - trial pending for the OTHER slot, yet this one is running: the trial
+ *     failed (the chooser fell back, or the pending slot's IVT was insane)
+ *     -- persist the rollback and surface it.
+ *   - no trial but the record's active is not this slot: the chooser's
+ *     insane-fallback path -- persist reality.
+ *   - no valid record at all: the fresh migration; the healthy mark writes
+ *     the first record so a boot-looping fresh flash cannot commit itself. */
+static FLASHMEM void ab_compose(void)
+{
+	if ((uintptr_t)g_ab_ledger_retained != AIUS_AB_LEDGER_ADDRESS) {
+		g_ab_enabled = false;
+		return;
+	}
+	g_ab_enabled = true;
+	g_ab_record_sector = aius_ab_record_pick(
+		(const uint8_t *)AIUS_AB_RECORD_SECTOR_0,
+		(const uint8_t *)AIUS_AB_RECORD_SECTOR_1,
+		AIUS_AB_RECORD_BYTES, &g_ab_record);
+	g_ab_record_valid = g_ab_record_sector >= 0;
+	g_ab_ledger_valid = aius_ab_ledger_decode(
+		&g_ab_ledger, g_ab_ledger_retained, AIUS_AB_LEDGER_BYTES);
+	(void)aius_ota_set_expected_slot(&g_ota_session,
+	                                 AIUS_AB_INACTIVE_SLOT);
+
+	if (!g_ab_record_valid)
+		return;
+	if (g_ab_record.pending_slot != AIUS_AB_SLOT_NONE &&
+	    g_ab_record.pending_slot != AIUS_AB_SLOT) {
+		AiusAbRecord next = g_ab_record;
+		next.sequence++;
+		next.active_slot = AIUS_AB_SLOT;
+		next.pending_slot = AIUS_AB_SLOT_NONE;
+		next.trial_budget = 0u;
+		if (ab_record_write(&next))
+			g_ab_rollback_observed = true;
+		return;
+	}
+	if (g_ab_record.pending_slot == AIUS_AB_SLOT_NONE &&
+	    g_ab_record.active_slot != AIUS_AB_SLOT) {
+		AiusAbRecord next = g_ab_record;
+		next.sequence++;
+		next.active_slot = AIUS_AB_SLOT;
+		(void)ab_record_write(&next);
+	}
+}
+
+/* The healthy-boot commit, called at the same moment the boot ledger marks
+ * healthy (EPOCH_COMPLETE reached and held): a trial image vouches for
+ * itself exactly once, and the fresh migration writes its first record here
+ * rather than at setup so a boot-looping flash cannot self-commit. */
+static FLASHMEM void ab_mark_healthy(void)
+{
+	if (!g_ab_enabled || g_ab_committed_this_boot)
+		return;
+	g_ab_committed_this_boot = true;
+	if (!g_ab_record_valid) {
+		AiusAbRecord initial;
+		memset(&initial, 0, sizeof(initial));
+		initial.sequence = 1u;
+		initial.active_slot = AIUS_AB_SLOT;
+		initial.pending_slot = AIUS_AB_SLOT_NONE;
+		initial.trial_budget = 0u;
+		(void)ab_record_write(&initial);
+		return;
+	}
+	if (g_ab_record.pending_slot == AIUS_AB_SLOT) {
+		AiusAbRecord committed = g_ab_record;
+		committed.sequence++;
+		committed.active_slot = AIUS_AB_SLOT;
+		committed.pending_slot = AIUS_AB_SLOT_NONE;
+		committed.trial_budget = 0u;
+		(void)ab_record_write(&committed);
+	}
+}
+
+/* The activation's boot-pending mark, written AFTER the window completes
+ * (flash idle again -- under A/B the running slot and the head were never
+ * touched, so FLASHMEM code executes) and BEFORE the reset. A failed write
+ * leaves the freshly-programmed slot INERT: the chooser keeps booting the
+ * active slot, which is the safe direction to fail in. */
+static FLASHMEM bool ab_activation_mark_pending(void)
+{
+	AiusAbRecord next;
+
+	if (!g_ab_enabled)
+		return false;
+	if (g_ab_record_valid) {
+		next = g_ab_record;
+	} else {
+		memset(&next, 0, sizeof(next));
+		next.sequence = 0u;
+		next.active_slot = AIUS_AB_SLOT;
+	}
+	next.sequence++;
+	next.active_slot = AIUS_AB_SLOT;
+	next.pending_slot = AIUS_AB_INACTIVE_SLOT;
+	next.trial_budget = AIUS_AB_DEFAULT_TRIAL_BOOTS;
+	return ab_record_write(&next);
+}
+#endif /* AIUS_AB_SLOT */
+
 /* True iff PSRAM is fitted somewhere the composition can stage into: the pad-1
  * chip the core mapped (external_psram_size) OR the pad-2 chip the probe found
  * (g_psram_pad2_mb). The presence gate; ota_psram_staging() derives the actual
@@ -3375,13 +3563,21 @@ static FLASHMEM const char *ota_rehearsal_result_name(OtaRehearsalResult result)
  * whose stack shares DTCM is parked during the one window this is used. */
 static AiusOtaActivator g_ota_activator;
 
-/* The scratch sector the item-5 self-test erases: 4 MiB into the 8 MiB flash,
- * far above the ~585 KiB image and far below the card region. Sector-aligned by
- * construction (4 MiB is a multiple of the 4 KiB sector); that it is above the
- * running image is a RUNTIME assert in the self-test, because _flashimagelen is
- * a linker symbol, not a compile constant. */
+/* The scratch sector the item-5 self-test erases. Single-image: 4 MiB into
+ * the 8 MiB flash, far above the ~585 KiB image and far below the card
+ * region; that it is above the running image is a RUNTIME assert in the
+ * self-test, because _flashimagelen is a linker symbol. Under A/B the old
+ * 4 MiB point sits INSIDE slot B, so the scratch moves to the INACTIVE
+ * slot's last sector -- storage the next activation erases anyway, and
+ * structurally never the running image's. */
+#if AIUS_AB_SLOT
+#define AIUS_OTA_SELF_TEST_ADDRESS \
+	(AIUS_AB_INACTIVE_BASE + AIUS_AB_SLOT_BYTES - AIUS_OTA_FLASH_SECTOR_BYTES)
+#define AIUS_OTA_SELF_TEST_OFFSET (AIUS_OTA_SELF_TEST_ADDRESS - AIUS_OTA_FLASH_BASE)
+#else
 #define AIUS_OTA_SELF_TEST_OFFSET UINT32_C(0x00400000)
 #define AIUS_OTA_SELF_TEST_ADDRESS (AIUS_OTA_FLASH_BASE + AIUS_OTA_SELF_TEST_OFFSET)
+#endif
 static_assert((AIUS_OTA_SELF_TEST_OFFSET % AIUS_OTA_FLASH_SECTOR_BYTES) == 0u,
               "the scratch sector must be sector-aligned");
 
@@ -3799,9 +3995,27 @@ AIUS_OTA_DARK_WINDOW_FN void ota_activate_run_and_finalize(void)
 			break;
 	}
 	if (aius_ota_activate_phase(&g_ota_activator) ==
-	    AIUS_OTA_ACTIVATE_READY_TO_RESET)
+	    AIUS_OTA_ACTIVATE_READY_TO_RESET) {
+#if AIUS_AB_SLOT
+		/* THE BOOT-PENDING MARK (Phase 3c), after the window and before
+		 * the reset. The window only touched the INACTIVE slot, so the
+		 * flash is whole and idle again and FLASHMEM code executes. A
+		 * failed write leaves the freshly-programmed slot INERT -- the
+		 * chooser keeps booting this slot, which is the safe failure --
+		 * and the halt below hands the evidence to the retained stamp's
+		 * reset path rather than resetting into a silent non-upgrade. */
+		if (!ab_activation_mark_pending()) {
+			__disable_irq();
+			for (;;)
+				asm volatile("wfi");
+		}
+#endif
 		reset_application();
-	/* FAULTED: dark board, HalfKay rescue. Halt without feeding the watchdog. */
+	}
+	/* FAULTED: halt without feeding the watchdog. Single-image: a dark
+	 * board, HalfKay rescue. Under A/B the running slot and the head were
+	 * never touched, so the WDOG reset lands in the CHOOSER, which boots
+	 * the still-active old slot -- the brick this plan exists to end. */
 	__disable_irq();
 	for (;;)
 		asm volatile("wfi");
@@ -4036,6 +4250,35 @@ static FLASHMEM bool http_ota_dark_json(char *output, size_t capacity,
 		(unsigned)g_ota_dark_report.digest_prefix[6],
 		(unsigned)g_ota_dark_report.digest_prefix[7],
 		(unsigned long long)g_ota_dark_report.dark_window_cycles);
+}
+
+/* The ab object on GET /api/status (aius-ota-resilience.md Phase 3): which
+ * slot is running, what the boot record says, and what the chooser's ledger
+ * carried into this boot. null on the single-image build (AIUS_AB_SLOT 0)
+ * and on a slot build whose retained-ledger address contract failed. */
+static FLASHMEM bool http_ab_json(char *output, size_t capacity,
+	                              size_t *length)
+{
+#if AIUS_AB_SLOT
+	if (g_ab_enabled)
+		return http_json_append(output, capacity, length,
+			",\"ab\":{\"slot\":%u,\"record_valid\":%s,"
+			"\"active_slot\":%u,\"pending_slot\":%u,"
+			"\"sequence\":%lu,\"trial_budget\":%u,"
+			"\"ledger_valid\":%s,\"ledger_boots\":%lu,"
+			"\"ledger_fell_back\":%s,\"rollback_observed\":%s}",
+			(unsigned)AIUS_AB_SLOT,
+			g_ab_record_valid ? "true" : "false",
+			(unsigned)g_ab_record.active_slot,
+			(unsigned)g_ab_record.pending_slot,
+			(unsigned long)g_ab_record.sequence,
+			(unsigned)g_ab_record.trial_budget,
+			g_ab_ledger_valid ? "true" : "false",
+			(unsigned long)g_ab_ledger.boots_attempted,
+			g_ab_ledger.fell_back != 0u ? "true" : "false",
+			g_ab_rollback_observed ? "true" : "false");
+#endif
+	return http_json_append(output, capacity, length, ",\"ab\":null");
 }
 
 /* present: this build carries OTA and the seam is installed. */
@@ -4307,6 +4550,9 @@ static FLASHMEM void ota_compose(void)
 	(void)aius_ota_latch_arm(&g_ota_session);
 	(void)aius_optical_app_set_ota(&g_runtime.app, &g_ota_seam);
 	ota_dark_stamp_boot_decode();
+#if AIUS_AB_SLOT
+	ab_compose();
+#endif
 }
 #endif /* AIUS_OTA */
 
@@ -4537,6 +4783,9 @@ static FLASHMEM size_t http_status_json(uint8_t *body, size_t capacity)
 	/* The retained dark-window forensic stamp, or null when none stands.
 	 * Absent when OTA is compiled out, like ota_diag. */
 	if (!http_ota_dark_json((char *)body, capacity, &length))
+		return 0;
+	/* The A/B slot state, or null on a single-image build. */
+	if (!http_ab_json((char *)body, capacity, &length))
 		return 0;
 #endif
 	return http_json_append((char *)body, capacity, &length, "}") ? length : 0;
@@ -7814,11 +8063,28 @@ static FLASHMEM void service_ota_activation(uint32_t now_ms)
 
 	/* 3. The whole verification runs here, over the PSRAM copy, BEFORE the
 	 * dark window. A refusal leaves nothing flashed and the board serving.
-	 * NULL window: the boot window -- this is the real activation. */
+	 * Single-image: NULL window = the boot window. Under A/B the window is
+	 * the INACTIVE SLOT -- the head region and the running slot are never
+	 * touched, which is the whole scheme: an in-window failure of any kind
+	 * leaves the board bootable and the chooser boots the active slot. */
+#if AIUS_AB_SLOT
+	AiusOtaActivateWindow ab_window;
+	ab_window.base = AIUS_AB_INACTIVE_BASE;
+	ab_window.usable_bytes = AIUS_AB_SLOT_BYTES;
+	const AiusOtaActivateWindow *activation_window = &ab_window;
+	/* Re-bound the RAM-resident primitive wrappers to the slot window too
+	 * (the rehearsal's own discipline): the head region and the running
+	 * slot become structurally unreachable at BOTH layers. The window is a
+	 * local, but this call never returns -- run_and_finalize ends in a
+	 * reset or a halt -- so the borrow outlives every use. */
+	primitives.ctx = &ab_window;
+#else
+	const AiusOtaActivateWindow *activation_window = NULL;
+#endif
 	if (aius_ota_activate_begin(&g_ota_activator, &g_ota_session,
-	                            &primitives, &g_ota_verifier, NULL,
-	                            psram_base, image_length, running_digest) !=
-	    AIUS_OTA_OK) {
+	                            &primitives, &g_ota_verifier,
+	                            activation_window, psram_base, image_length,
+	                            running_digest) != AIUS_OTA_OK) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_VERIFY;
 		ota_activation_recover();
 		return;
@@ -7883,6 +8149,15 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	g_ota_rehearsal_dark_us = 0u;
 	g_ota_rehearsal_max_step_us = 0u;
 
+#if AIUS_AB_SLOT
+	/* The scratch window under A/B is the whole INACTIVE slot: the old
+	 * fixed 4 MiB point sits inside slot B, and the one thing a rehearsal
+	 * must never erase is the RUNNING image -- which the inactive slot
+	 * structurally is not. Any staged-but-unactivated content there is
+	 * expendable rehearsal fuel; the next activation erases it anyway. */
+	g_ota_rehearsal_window.base = AIUS_AB_INACTIVE_BASE;
+	g_ota_rehearsal_window.usable_bytes = AIUS_AB_SLOT_BYTES;
+#else
 	/* The scratch window: the self-test's offset to the top of the usable
 	 * region. The image must end BELOW the scratch base -- the same runtime
 	 * guard the self-test applies, because _flashimagelen is a linker
@@ -7896,6 +8171,7 @@ static FLASHMEM void service_ota_rehearsal(uint32_t now_ms)
 	g_ota_rehearsal_window.base = AIUS_OTA_SELF_TEST_ADDRESS;
 	g_ota_rehearsal_window.usable_bytes =
 		AIUS_OTA_FLASH_USABLE_BYTES - AIUS_OTA_SELF_TEST_OFFSET;
+#endif
 	if (aius_ota_activate_check_window(&g_ota_rehearsal_window) !=
 	    AIUS_OTA_OK) {
 		g_ota_activation_fault = OTA_ACTIVATION_FAULT_GEOMETRY;
@@ -8053,6 +8329,13 @@ FLASHMEM void loop(void)
 		/* Persisted by the next checkpoint, which commits the ledger. */
 		aius_boot_mark_healthy(&g_boot_ledger);
 		g_boot_marked_healthy = true;
+#if AIUS_AB_SLOT
+		/* The A/B commit rides the SAME healthy moment: a trial image
+		 * vouches for itself here (the chooser's fallback budget covers
+		 * every boot that never got this far), and the fresh migration
+		 * writes its first boot record here for the same reason. */
+		ab_mark_healthy();
+#endif
 	}
 	if (g_reboot_requested)
 		service_reboot_request(now_ms);

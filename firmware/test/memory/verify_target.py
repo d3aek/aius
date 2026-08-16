@@ -55,7 +55,12 @@ DECODER_ARENA_BYTES = 218688
 # ZERO, and the next OCRAM byte must be funded (move something to DTCM/flash
 # or widen the floor with fresh NativeEthernet headroom measurements), not
 # ratcheted past.
-COMMITTED_OCRAM_FREE_BYTES = 131072
+# Lowered to 131040 on 2026-08-16, latest: the A/B trial ledger (32 B in
+# `.aius_retained_ab`, the chooser/application contract at 0x20200120,
+# aius-ota-resilience.md Phase 3). Funded by lowering the defect-26 link
+# floor to 0x1FFE0 with the same-day bench boot as proof (~32 KiB of real
+# headroom over the ~96 KiB measured NativeEthernet demand remains).
+COMMITTED_OCRAM_FREE_BYTES = 131040
 
 SECTION_RE = re.compile(
     r"^\s*\[\s*(\d+)\]\s+(\S+)\s+\S+\s+"
