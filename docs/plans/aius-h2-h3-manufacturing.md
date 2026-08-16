@@ -370,6 +370,49 @@ targeted-proof: the review finds no order-blocking defect (or all are resolved);
 unit: parent-only
 ```
 
+**First review pass (2026-08-16): NOT order-ready — findings, most-severe first.**
+An adversarial independent review of the routed board found one systemic routing
+defect that resets H3c to a re-route, plus deferred verification gates that are
+real order-blockers. It also *cleared* the items previously flagged as highest
+risk. Consolidated punch-list (supersedes the earlier 15+3 DRC list):
+
+- **B1 (blocker) — signals routed through the inner GND planes.** All four copper
+  layers are declared `signal` and the board carries no `stackup` block, so
+  Freerouting routed hundreds of segments on In1.Cu/In2.Cu (the L2/L3 GND pours)
+  and split diff pairs across layers (ETH_TXP on In2.Cu, ETH_TXN on F.Cu). The
+  return-path/impedance guarantees are void as routed. Fix: set In1/In2 as plane
+  layers + a no-route keepout, then re-route with diff pairs coupled on one outer
+  layer over solid L2 GND. A full re-route, not a cleanup.
+- **B2 (blocker) — no board stackup.** Add the JLC04161H-7628 / PCBWay 4-layer
+  1.6 mm stackup to the board; select each fab's controlled-impedance service at
+  quote (a priced add-on).
+- **B3 (blocker) — rear connectors mis-placed.** Optical modules are at 180° while
+  USB-C/magjack are at 0° (opposite facings); bodies sit 8–23 mm inside the edge,
+  not bezel-aligned; and the board-width vs Hammond slot/insertion axis is
+  unresolved (96 mm width vs the end-plate 95.02 mm datum). Re-orient consistent,
+  edge-align, confirm the slot width.
+- **B4 (blocker) — magjack + USB-C pinouts unverified.** `J403.pdf` has no internal
+  schematic, so the MDI pin mapping in `ethernet.json` is unconfirmed and magjack
+  pin 7 floats (`unconnected-(J20-NC-Pad7)`); the GCT USB4105 USB-C has no filed
+  datasheet. Obtain the Pulse J0011D21BNL + GCT schematics and confirm before
+  order (needs external evidence — operator or datasheet fetch).
+- **M1** Teensy footprint self-clearance (VBAT vs main-row pad 30, 0.14 mm) — fix
+  the service-cluster spacing in the footprint. **M2** power traces undersized
+  (0.2 mm for ~1 A VBUS) — widen VBUS_RAW/VBUS_5V/EXP_USBH_VBUS to ≥0.5 mm.
+  **M3** CHASSIS↔GND single-point tie asserted in `nets.md` but not implemented —
+  add the net-tie (or document deliberate isolation). **M4** magjack + Teensy
+  underside-cluster XY still bench-verify. **M5** placement congestion + GND stubs
+  (resolve in the re-route).
+- **Verified correct (were the top worries):** Teensy main-row pin order (no
+  transposition), optical footprint geometry vs datasheets, S/PDIF reset-safe
+  default path. DFM otherwise comfortable at both fabs except controlled impedance.
+
+The scripted placement-nudge iteration (owner option 1) was tried and bottomed
+out (reroll → 17+3 with a newly unrouted net, worse than 15+3), confirming the
+residual is not a scripted-placement problem — consistent with B1/B3 being the
+real issues. Rework sequence: B4/M3 schematic → B3/M1 placement+footprint →
+B1/B2 planes+stackup → re-route → M2 power widen → DRC/DFM → re-review.
+
 ## Not in this plan
 
 EVT bring-up (H4) and full-path integration (H5) are separate gates in the
