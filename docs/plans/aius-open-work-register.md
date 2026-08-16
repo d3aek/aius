@@ -86,22 +86,36 @@ ends left open:
 
 ## Waiting on the operator
 
-- **Two deploys owed for the 2026-08-16 status-page rework** (entry in §Open
-  defects — runtime; neither blocks anything else):
-  - **Sync the SD web tree to the card.** The pages are served off the card, so
-    nothing of the rework is visible until it runs:
-    `firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 --www
-    firmware/sd/www --token <token>`. The token is the 16 hex
-    characters the physical USB `AIUS AUTH` command prints — an agent cannot
-    obtain it. The script is additive only and retries the device's
-    one-client-at-a-time window.
-  - **Flash the forensics image.** The running slot-B build `fd9d35fd3f95`
-    (17:51) predates `b92d97d3c` (18:21), which is the ONLY firmware-source
-    commit after it, so `fault_record` and `prev_boot` are absent from the live
-    document and the page says so honestly. A session note asserting the board
-    ran the latest image was true of the newest FLASHED image and stale for the
-    tree; the device-side proof is that both keys are missing from
-    `GET /api/status`.
+- ~~**Two deploys owed for the 2026-08-16 status-page rework.**~~ **BOTH DONE
+  the same evening, owner-directed ("sync and flash"), with audio playing and
+  the interruption accepted after it was costed.**
+  - **Card synced** (12 files, all 200) and the board serves the reworked page.
+  - **`ceffc20dae6c` built for slot A, signed, staged, verified, armed and
+    activated over HTTP; the board came back on it and COMMITTED THE TRIAL
+    UNAIDED** — `ab` went slot 1 / active 2 / pending 1 / budget 2 on the trial
+    boot, then active 1 / pending 0 / sequence 11, `ledger_fell_back` false,
+    `rollback_observed` false. This is the second unaided A/B upgrade cycle on
+    hardware and the first one nobody was watching for its own sake. The dark
+    window stamped `completed`, 2,368 of 2,368 steps, 570,368 B programmed and
+    verified, image `9edc29d1c7fd6afe`, 6.36 s dark. `fault_record` and
+    `prev_boot` are now live: the first reading is `null` and `final checkpoint
+    epoch-complete (10) · first aborting checkpoint none`, i.e. the deliberate
+    activation reboot, and checkpoint **10** is a value the page's old
+    vocabulary could not name at all.
+  - **Two costs recorded, both predicted and both real.** The sync cost ~59 ms
+    of `tx_underrun_frames` with a 1.55 s HTTP-checkpoint epoch; staging added
+    ~24 ms more across its 140 chunks with the ingress high-water at 5,134
+    words (the loop-stall signature). Owner-initiated card traffic is not gated
+    behind the transmit gate by design, so this is the standing price of any
+    deploy during playback — now stated in
+    [`../../CLAUDE.md`](../../CLAUDE.md) §Device access and OTA.
+  - **Gotcha worth its own line: sign A/B containers with `--slot`.** The first
+    activation attempt was refused at chunk 0 with `400 ota_unsupported`,
+    because `aius_ota_sign.py sign` without `--slot` emits a slot-0
+    single-image container and the A/B firmware gates the signed slot tag
+    against its own inactive slot — the same verdict a wrong target id gets,
+    which reads like a broken image rather than a missing flag. Re-signed with
+    `--slot a` and it staged first time.
 - ~~**First PSRAM chip: on the FLASH pad, and VERIFIED WORKING there
   (2026-07-27, late).**~~ **RESOLVED 2026-07-28: chip 2 soldered on the
   PSRAM pad, `ps=16`, recorder armed on the full 16 MB ring; capture,
