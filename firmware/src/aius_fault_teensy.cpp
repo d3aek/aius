@@ -2,8 +2,9 @@
 
 #include "aius_boot.h"
 
-/* Cold code -> FLASH. This runs once per checkpoint, eleven times per normal
- * epoch, and never on the audio block path, so it must not occupy ITCM. In a
+/* Cold code -> FLASH. This runs once per checkpoint visit, twelve times per
+ * normal epoch (the AUDIO checkpoint is visited twice since output-jitter
+ * Phase B), and never on the audio block path, so it must not occupy ITCM. In a
  * production image it compiles to a plain return; in a fault image it stalls
  * and never comes back. FLASHMEM is Teensyduino's
  * __attribute__((section(".flashmem"))); TEENSYDUINO is a project-wide compiler

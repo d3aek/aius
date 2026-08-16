@@ -138,6 +138,14 @@ capture, `1` USB RX,
 value on a watchdog reset is an early reset. (An earlier revision of this
 table predated the audio checkpoint and listed `9` as epoch complete.)
 
+The service order within an epoch is `0`–`7`, then `9` (audio), then `8`
+(SD), then `9` again: the audio checkpoint runs **twice** per epoch, on both
+sides of the SD primitive, so the transmit ring cannot see an SD stall and
+the next epoch's HTTP job in one starvation gap
+([output-jitter Phase B](../plans/aius-output-jitter.md)). A `pv`/`ckpt` of
+`9` therefore does not say which of the two audio passes stalled; the
+`cw=`/`checkpoint_walltime_us` maxima aggregate both passes under domain 9.
+
 ### Boot forensics fields
 
 **`ps`, `pv`, and `fa` are not part of the recovery snapshot: they are captured

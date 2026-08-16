@@ -8,7 +8,7 @@
 #include <string.h>
 
 #define ARRAY_COUNT(values) (sizeof(values) / sizeof((values)[0]))
-#define MAX_TRACE_EVENTS 22u
+#define MAX_TRACE_EVENTS 24u
 
 static const char *current_key = "startup";
 
@@ -176,6 +176,10 @@ static const uint16_t normal_order[] = {
 	AIUS_BOOT_CHECKPOINT_REPLAY,
 	AIUS_BOOT_CHECKPOINT_AUDIO,
 	AIUS_BOOT_CHECKPOINT_SD,
+	/* Second AUDIO pass after SD (output-jitter Phase B): the transmit ring
+	 * is topped up on both sides of the SD primitive, so SD and HTTP can no
+	 * longer stack into one inter-audio gap. */
+	AIUS_BOOT_CHECKPOINT_AUDIO,
 };
 
 static const uint16_t recovery_safe_order[] = {
@@ -368,7 +372,7 @@ typedef struct {
 
 static const CompleteTraceCase complete_trace_cases[] = {
 	{"trace.complete.normal", false, normal_order,
-	 ARRAY_COUNT(normal_order), 22u},
+	 ARRAY_COUNT(normal_order), 24u},
 	{"trace.complete.recovery-safe", true, recovery_safe_order,
 	 ARRAY_COUNT(recovery_safe_order), 6u},
 };
@@ -431,6 +435,8 @@ static const FailureTraceCase failure_trace_cases[] = {
 	 ARRAY_COUNT(normal_order), 9u, 18u},
 	{"trace.fail.normal.9", false, normal_order,
 	 ARRAY_COUNT(normal_order), 10u, 20u},
+	{"trace.fail.normal.10", false, normal_order,
+	 ARRAY_COUNT(normal_order), 11u, 22u},
 	{"trace.fail.recovery-safe.0", true, recovery_safe_order,
 	 ARRAY_COUNT(recovery_safe_order), 1u, 2u},
 	{"trace.fail.recovery-safe.1", true, recovery_safe_order,
@@ -444,7 +450,7 @@ static void test_failure_trace_registry(void)
 		keys[i] = failure_trace_cases[i].key;
 	validate_unique_keys(
 		"registry.failure-traces", keys,
-		ARRAY_COUNT(failure_trace_cases), 12u);
+		ARRAY_COUNT(failure_trace_cases), 13u);
 
 	for (size_t i = 0; i < ARRAY_COUNT(failure_trace_cases); ++i) {
 		const FailureTraceCase *test = &failure_trace_cases[i];
@@ -487,8 +493,8 @@ static const OpsValidityCase ops_validity_cases[] = {
 	{"ops.callbacks.100", false, true, false, false, false, false, 0u},
 	{"ops.callbacks.101", false, true, false, true, false, false, 0u},
 	{"ops.callbacks.110", false, true, true, false, false, false, 0u},
-	{"ops.callbacks.111", false, true, true, true, false, true, 22u},
-	{"ops.null-context", false, true, true, true, true, true, 22u},
+	{"ops.callbacks.111", false, true, true, true, false, true, 24u},
+	{"ops.null-context", false, true, true, true, true, true, 24u},
 };
 
 static void test_ops_validity_registry(void)
@@ -636,7 +642,7 @@ static void test_alias_mutation_registry(void)
 		CHECK(ops.service == poison_service);
 		CHECK(ops.checkpoint == poison_checkpoint);
 		CHECK(ops.feed_watchdog == poison_feed);
-		verify_complete_trace(&trace, 22u);
+		verify_complete_trace(&trace, 24u);
 	}
 	active_mutation = NULL;
 	active_trace = NULL;
@@ -654,7 +660,7 @@ static void test_sequential_calls(void)
 		0u, &context_marker);
 	active_trace = &trace;
 	CHECK(aius_runtime_epoch(&ops, false));
-	verify_complete_trace(&trace, 22u);
+	verify_complete_trace(&trace, 24u);
 
 	current_key = "calls.sequential.recovery-safe";
 	trace_init(
@@ -718,7 +724,7 @@ static void test_distinct_context_reentry(void)
 	CHECK(reentry.inner_called);
 	CHECK(reentry.inner_result);
 	verify_complete_trace(&reentry.inner, 6u);
-	verify_complete_trace(&reentry.outer, 22u);
+	verify_complete_trace(&reentry.outer, 24u);
 	active_trace = NULL;
 	active_reentry = NULL;
 }

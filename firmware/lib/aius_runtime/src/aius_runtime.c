@@ -54,8 +54,11 @@ static const AiusRuntimeBudget runtime_budgets[] = {
 	 * plan's rejection of a 12 KB per-primitive slice is this number. */
 	{AIUS_BOOT_CHECKPOINT_SD, 1u, 512u, 512u, 0u},
 	/* Audio's transport byte quotas are zero because its word and output-step
-	 * limits belong to the audio service seam. This row only grants one
-	 * callback and its scheduler-visible wall allowance. */
+	 * limits belong to the audio service seam. This row grants one callback
+	 * PER VISIT and its scheduler-visible wall allowance; the epoch visits
+	 * the AUDIO checkpoint twice (before and after SD, output-jitter Phase
+	 * B), so the audio seam's per-epoch ceilings are two of everything this
+	 * row and its seam constants name per pass. */
 	{AIUS_BOOT_CHECKPOINT_AUDIO, 1u, 0u, 0u, 8u},
 	{AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE, 0u, 0u, 0u, 0u},
 };
@@ -111,6 +114,19 @@ FLASHMEM bool aius_runtime_epoch(
 		if (!runtime_service(&snapshot, AIUS_BOOT_CHECKPOINT_AUDIO))
 			return false;
 		if (!runtime_service(&snapshot, AIUS_BOOT_CHECKPOINT_SD))
+			return false;
+		/* Second AUDIO pass, so the transmit ring is topped up on BOTH
+		 * sides of the SD checkpoint (output-jitter plan Phase B). With a
+		 * single pass, one inter-audio gap carried every other service --
+		 * an SD primitive and the next epoch's HTTP job could stack into
+		 * the same gap against a 128-frame (2.67 ms) open-gate cushion.
+		 * With this pass the SD primitive sits alone in its gap and HTTP
+		 * heads the other, so worst-case pipeline absence is ONE heavy
+		 * segment plus light checkpoints, not their sum. The audio
+		 * service is pending-work-driven and returns in microseconds
+		 * when the first pass drained everything, so the steady-state
+		 * cost is one extra dispatch per epoch. */
+		if (!runtime_service(&snapshot, AIUS_BOOT_CHECKPOINT_AUDIO))
 			return false;
 	}
 

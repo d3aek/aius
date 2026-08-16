@@ -10,7 +10,10 @@
 extern "C" {
 #endif
 
-/* One checkpoint's per-epoch work allowance.
+/* One checkpoint's PER-VISIT work allowance. Every checkpoint is visited
+ * once per epoch except AUDIO, which the scheduler visits twice (both sides
+ * of the SD primitive, output-jitter Phase B) -- a per-epoch reading of an
+ * AUDIO quota is therefore half the true ceiling.
  *
  * UNITS, STATED BECAUSE THEY WERE ONCE ASSUMED. `max_rx_bytes` and
  * `max_tx_bytes` are BYTES MOVED OVER A TRANSPORT in one visit to the
