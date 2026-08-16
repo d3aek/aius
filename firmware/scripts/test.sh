@@ -12,7 +12,7 @@
 #         capability, pipeline, dsp, dsp-vectors, downmix-identity, measure, net, net-runner,
 #         rate-runner, latency-runner,
 #         recovery-runner, flash, http,
-#         usb-control, replay, replay-samples, tx-gate, recorder, boot, boot-target, fault-target, ota,
+#         usb-control, replay, replay-samples, tx-gate, tx-governor, recorder, boot, boot-target, fault-target, ota,
 #         build-metadata, runtime, network-transport, sd, sd-target, optical-app,
 #         optical-cutover, runtime-target, memory, itcm-placement, fake-fidelity,
 #         registry.
@@ -771,6 +771,16 @@ tx-gate)
 		"$fw_root/test/tx-gate/test_tx_gate.c" \
 		-o "$tx_gate_out"
 	"$tx_gate_out"
+	;;
+tx-governor)
+	# Header-only decision rule: the latency governor's window-minimum floor
+	# estimator and trim decision (aius-output-jitter Phase E). Pure stdint
+	# header, no implementation linked.
+	tx_governor_out="$build_dir/tx-governor"
+	"$cc" "${cflags[@]}" "-I$fw_root/lib/aius_audio/src" \
+		"$fw_root/test/tx-governor/test_tx_governor.c" \
+		-o "$tx_governor_out"
+	"$tx_governor_out"
 	;;
 recorder)
 	# The flight recorder's portable core (state machine, triggers, staging

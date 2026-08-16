@@ -3394,7 +3394,7 @@
        * the section it grabbed. Clicking a handle DOES select it. */
       event.preventDefault();
       state.activeSlot = handle.slot;
-      beginSurfaceEdit(selectedEntity());
+      const adopted = beginSurfaceEdit(selectedEntity());
       const entity = selectedEntity();
       const qDrag = event.shiftKey === true;
       state.drag = {
@@ -3406,7 +3406,16 @@
         startQ: numberOf(`${entity.bases[0]}.eq.${handle.slot}.q`, EQ_SEED.q),
         pointerId: event.pointerId,
       };
+      /* Say how to reach Q at the exact moment a plain drag starts: the Q
+       * gestures (Shift-drag, wheel) are invisible affordances, and the static
+       * hint below the plot went unread in practice (owner report 2026-08-16).
+       * The Shift branch already announced itself; this is its mirror. The
+       * pair-adoption disclosure outranks it -- never overwrite that. */
       if (qDrag) setCurveStatus('Q drag: vertical movement changes Q while frequency and gain stay fixed.');
+      else if (!adopted)
+        setCurveStatus(
+          `Dragging ${entity.label} section ${handle.slot + 1}: horizontal sets frequency, vertical sets gain. For Q, hold Shift and drag vertically, or scroll on the plot while the handle is grabbed.`,
+        );
       /* Suppress panning for the duration of the drag ONLY: an unconditional
        * touch-action:none made the whole plot a scroll trap (UX finding E1). */
       canvas.style.touchAction = 'none';

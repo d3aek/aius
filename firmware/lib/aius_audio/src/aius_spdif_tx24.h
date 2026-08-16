@@ -177,12 +177,18 @@ static inline void aius_spdif_tx24_flush_preserve_diag(
  * caller contract as flush_preserve_diag: the caller masks interrupts across
  * this one cursor rebase so fill() cannot observe a half-transitioned pair.
  *
- * The one legitimate caller is the TX gate's closed→open edge (e2e-latency
- * Phase 3 R1): while the gate is closed the output is physically dark, so
- * every dropped frame was silence nobody could hear, and the frames that
- * REMAIN are the newest — the freshest audio starts the session. Trimming
- * with the gate open would be an audible splice and is not what this is
- * for. */
+ * Two legitimate callers:
+ *
+ * - The TX gate's closed→open edge (e2e-latency Phase 3 R1): while the gate
+ *   is closed the output is physically dark, so every dropped frame was
+ *   silence nobody could hear, and the frames that REMAIN are the newest —
+ *   the freshest audio starts the session.
+ * - The latency governor's ratchet trim (aius-output-jitter Phase E, decision
+ *   rule in aius_tx_governor.h): with the gate OPEN, after a stall backlog
+ *   has parked the standing floor a sustained window above the gate-open
+ *   target. This one IS an audible splice — one skip forward — accepted by
+ *   contract in preference to a standing multi-tens-of-ms lag for the rest
+ *   of the session. No other gate-open caller is legitimate. */
 static inline uint32_t aius_spdif_tx24_trim_to(AiusSpdifTx24Ring *ring,
                                                uint32_t target_frames)
 {

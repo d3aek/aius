@@ -22,11 +22,13 @@ transmit cushion.
 (`d5dab0618f4c+teensy41-optical`, flashed 2026-08-16 via HalfKay after the
 OTA dark-window brick — see
 [`aius-ota-resilience.md`](aius-ota-resilience.md) for that incident and its
-plan). Phase E BLOCKED on a live PCM measurement. The acceptance run (one
-5.1 evening, dashboard open, gate-open underrun delta 0) has NOT happened
-yet. One shipped-phase defect is open: the Phase C guard starves first SD
-bring-up when a carrier is lit at boot (register entry 2026-08-16; fix
-shape in resilience Phase 4c).
+plan). The device has since migrated to the A/B layout and runs slot A of
+`1dc7cbb80397` (resilience plan, all shipped). Phase E is decomposed and its
+governor is BUILT (2026-08-16, host-proven); live verify on the deployed
+image is the one owed step. The acceptance run (one 5.1 evening, dashboard
+open, gate-open underrun delta 0) has NOT happened yet. The Phase C
+lit-carrier SD-bring-up defect is FIXED (resilience Phase 4c) and
+field-confirmed.
 
 | Commit | Contents | Proof |
 |---|---|---|
@@ -47,12 +49,11 @@ programme (21.8 s, loud program to the cut) lives in session scratch only
 `electronics/*` and `compose.yaml` belong to the H3a
 electronics session — foreign, untouched.
 
-**Next action:** implement the Phase C bring-up exemption — in
-`sd_lifecycle_service()` (`firmware/src/optical_main.cpp`), latch a
-`g_sd_ready`-style "first bring-up completed" bool and apply the
-`g_tx_gate_open || pllLocked()` deferral only after it; host row per
-resilience Phase 4c; then flash together with the next image (device needs
-USB or a fixed OTA for that — see the interim rule in the resilience plan).
+**Next action:** deploy the Phase E governor image over remote OTA (slot B —
+the device runs slot A), then live-verify: induce an SD-traffic stall during
+playback and watch one `clock.governor_trims` increment return
+`estimated_latency_us` to the ~14–16 ms band; flip Phase E to SHIPPED in the
+verifying commit. Then the acceptance evening.
 
 **Decisions taken this session (owner, in chat):**
 - Jitter is fixed by removing sources, never by widening the transmit
@@ -243,7 +244,7 @@ the tuning to 128 even landed.
   adversarial hot-path review together with Phase B.
 - unit: parent-only
 
-### Phase E — PCM latency decomposition (BLOCKED on live data; 512→128 attempted and reverted)
+### Phase E — PCM latency decomposition + ratchet governor IN-PROGRESS (decomposed + governor built 2026-08-16; live verify owed)
 
 **Finding, 2026-08-16 (the attempt's value):** `AIUS_PIPELINE_PCM_BLOCK_FRAMES`
 at 512 is **load-bearing for re-type containment**, not just a buffer size. A
@@ -261,21 +262,61 @@ audio time, not block count.
 cannot explain the observed 2× PCM display. The observed 26 ms is real ring
 residence with an unexplained regulator.
 
-- outcome: the PCM 2× display number is decomposed from live data: a 60 s
-  poll of `tx_level_frames` / `estimated_latency_us` / `queue_frames` during
-  genuine PCM playback names where the extra ~13 ms of ring residence comes
-  from (gate-open trim not firing on the PCM path, commit lumping, or clock
-  regulator behaviour). Only then is a latency cut designed — with a
-  containment story (candidate-pending emission hold or equivalent) if it
-  touches the quantum.
-- seams: none yet (measurement first); candidate seams recorded above.
-- targeted-proof: the live decomposition itself; any later change re-runs
-  `retype-switch` and the `eac3-entry` frame-budget row as its containment
-  gate.
+**Decomposition, 2026-08-16 (live, 86 × 1 s samples during field PCM
+playback; poll script archived in session scratch):** the standing number has
+two independent terms and the "unexplained regulator" does not exist — that
+was the finding.
+
+1. **Structural ~14–16 ms**: the 512-frame PCM quantum + the 128-frame
+   gate-open target + the in-flight block put the publish-instant queue at
+   640–768 frames (13.3–16.0 ms) in a clean session. `tx_level_frames`
+   sampled at random HTTP instants sawtooths 512–1,792 purely by phase —
+   any governor must therefore read a window MINIMUM or a fixed-phase
+   sample, never raw level samples.
+2. **Episodic ratchet, unbounded and unregulated**: a producer stall (SD
+   contention class; 3,968 substituted frames that boot, ingress high-water
+   5,376 words ≈ 56 ms) plays silence, then commits its backlog late and
+   parks the ring floor up to ~2,048 frames — the operator-observed 42.7 ms
+   — with NOTHING to bring it back down: the only trim in the image fires at
+   the gate's closed→open edge. The 26/42 ms readings were real standing
+   residence, an artefact of stall history, not of the quantum.
+
+Same day, live: a further +384-frame underrun burst (an audible pop) did NOT
+ratchet the floor — small stalls pop without parking a backlog, confirming
+the two phenomena are separate. The pop's root cause (what starves the
+producer) remains open below; the ratchet is what this phase now fixes.
+
+**Design cut (built 2026-08-16, operator-selected "trim to target"):** a
+latency governor — pure decision rule in
+`firmware/lib/aius_audio/src/aius_tx_governor.h`, wired in `enqueue()` —
+keeps the window minimum of the pre-commit ring level over 4 s of committed
+frames; when a full window's floor stays above target + 256-frame deadband,
+one masked trim (the gate-open edge's own cursor-rebase contract, its
+contract comment reopened for this named second caller) drops exactly the
+excess: back to the ~16 ms structural baseline in one audible skip, accepted
+by the operator over a standing 40 ms lag. An underrun voids the window (the
+floor was demonstrably not elevated); a closed gate resets it. The quantum is
+UNTOUCHED, so the re-type containment above is not reopened. Served as
+`clock.governor_trims` / `clock.governor_trimmed_frames` (swagger'd).
+
+- outcome: ✓ decomposed (above); the governor removes the episodic term; the
+  structural ~14–16 ms term is accepted as the cost of the load-bearing
+  512-frame quantum. Remaining: live verify on the deployed image — induce
+  an SD-traffic stall during playback, watch one `governor_trims` increment
+  return `estimated_latency_us` to the baseline band.
+- seams: `aius_tx_governor.h` (pure decision) / `enqueue()` tap + masked
+  trim / clock JSON + swagger.
+- targeted-proof: `tx-governor` host suite (8 rows: clean floor, deadband
+  tolerance, exact-excess trim, min-not-mean veto, underrun void, gate
+  reset, post-trim fresh state, window-close arithmetic) — green;
+  `runtime-target`, `memory`, `itcm-placement`, `http`, swagger vitest —
+  green 2026-08-16. Quantum untouched: `retype-switch` / `eac3-entry`
+  containment gates not reopened.
 - unit: parent-only
 
-§ACTION REQUIRED (when convenient): play a genuine PCM source (TV menu /
-stereo content) for ~2 minutes so the decomposition poll can run.
+**Still open in this phase after the governor:** the stall itself (the pop).
+The governor bounds the aftermath, not the event; the acceptance run below
+and the SD-tail residual risk carry that thread.
 
 ## Acceptance
 

@@ -121,6 +121,7 @@ extern "C" const uint8_t _flashimagelen;
  * which holds the retained snapshot's own headers and is not ours to add to;
  * the path is relative for the same reason aius_spdif_sources.cpp's is. */
 #include "../lib/aius_audio/src/aius_spdif_tx24.h"
+#include "../lib/aius_audio/src/aius_tx_governor.h"
 #include "aius_boot_teensy.h"
 #include "aius_cdc_teensy.h"
 #include "aius_fault_teensy.h"
@@ -1225,6 +1226,43 @@ static FLASHMEM void record_state(void)
 static volatile uint32_t g_audio_update_calls;
 static volatile uint32_t g_audio_update_max_cycles;
 
+/* Latency governor (aius-output-jitter Phase E). The gate-open trim re-bases
+ * the ring's standing occupancy once, at the closed→open edge; a stall that
+ * plays silence then commits its backlog late parks the floor above the
+ * target for the rest of the session with nothing to bring it back (observed
+ * live: 42.7 ms standing where the structural PCM baseline is ~14-16 ms).
+ * The decision rule -- window-minimum floor estimator, one-skip trim of the
+ * sustained excess -- is pure in aius_tx_governor.h; enqueue() feeds it each
+ * accepted block's pre-commit level and executes its decision through the
+ * same masked trim the gate-open edge uses.
+ *
+ * The gate-open target macro's #ifndef default lives here (not at the gate
+ * actuator below) because the governor in enqueue() is its second, earlier
+ * consumer; the build sets the real value (-D...=128) in platformio.ini.
+ * Window = 4 s at 48 kHz -- long enough that the minimum aliases across
+ * every sawtooth/burst phase, short enough that a ratchet is gone within
+ * seconds. Deadband 256 = two service-jitter blocks over the target, same
+ * margin rationale as the gate-open constant: the governor kills ratchets,
+ * it does not servo the sawtooth. Counters are lifetime (not cleared by
+ * clear_counters()), matching the gate-open trim pair they sit beside in the
+ * clock document. */
+#ifndef AIUS_TX_GATE_OPEN_TARGET_FRAMES
+#define AIUS_TX_GATE_OPEN_TARGET_FRAMES 256u
+#endif
+#ifndef AIUS_TX_GOVERNOR_WINDOW_FRAMES
+#define AIUS_TX_GOVERNOR_WINDOW_FRAMES 192000u
+#endif
+#ifndef AIUS_TX_GOVERNOR_DEADBAND_FRAMES
+#define AIUS_TX_GOVERNOR_DEADBAND_FRAMES 256u
+#endif
+static AiusTxGovernor g_tx_governor;         /* .bss; the zero window_min can
+                                              * only make the FIRST window
+                                              * decide "no trim" -- harmless,
+                                              * the gate-open edge already
+                                              * re-based the boot session */
+static uint32_t g_tx_governor_trims;          /* .bss = 0 */
+static uint32_t g_tx_governor_trimmed_frames; /* .bss = 0 */
+
 /* The boot-lottery padding-sweep knob: the degraded mode's per-boot odds are
  * a function of the image's exact layout, so hunting a reproducing layout of
  * an INSTRUMENTED build means nudging flash placement by N bytes per variant
@@ -1596,6 +1634,37 @@ private:
 			aius_meter_accumulate_output(&g_meter, processed_left,
 			                             processed_right, block->frames);
 		}
+		/* Latency-governor tap (aius-output-jitter Phase E): the ring level
+		 * BEFORE this block is staged is the standing floor sample the
+		 * window-minimum estimator wants; post-commit it would carry this
+		 * block's own frames. The decision executes here too -- same masked
+		 * cursor-rebase contract as the gate-open edge, and doing it before
+		 * staging means a backlogged decision also frees producer space.
+		 * Cost per block when no trim fires: one level read and the pure
+		 * step's few compares. The skip is audible by contract (one splice,
+		 * accepted over a standing multi-tens-of-ms lag); the counters on
+		 * the clock document are the acceptance instruments. */
+		const uint32_t governor_excess = aius_tx_governor_step(
+			&g_tx_governor, AIUS_TX_GATE_OPEN_TARGET_FRAMES,
+			AIUS_TX_GOVERNOR_DEADBAND_FRAMES,
+			AIUS_TX_GOVERNOR_WINDOW_FRAMES,
+			aius_spdif_tx24_level(&g_aius_spdif_tx24),
+			block->frames, g_aius_spdif_tx24.underruns,
+			g_aius_spdif_tx24.gate_open != 0u);
+		if (governor_excess != 0u) {
+			noInterrupts();
+			const uint32_t level_now =
+				aius_spdif_tx24_level(&g_aius_spdif_tx24);
+			const uint32_t dropped = level_now > governor_excess
+				? aius_spdif_tx24_trim_to(&g_aius_spdif_tx24,
+				                          level_now - governor_excess)
+				: 0u;
+			interrupts();
+			if (dropped != 0u) {
+				g_tx_governor_trims++;
+				g_tx_governor_trimmed_frames += dropped;
+			}
+		}
 		/* Into the transmit ring, at OUTPUT_WIDTH_BITS.
 		 *
 		 * At 24 bits -- the shipped selection -- this is a copy and nothing else:
@@ -1918,10 +1987,9 @@ static AudioConnection g_spdif_right(g_spdif_in, 1, g_audio_processor, 1);
  * what remains is the newest audio. 256 = two blocks of service-jitter
  * margin beyond the in-flight block on the stall-free image; the
  * gate_open_trim counters on the clock document plus the existing underrun
- * counter are the acceptance instruments if this margin is ever wrong. */
-#ifndef AIUS_TX_GATE_OPEN_TARGET_FRAMES
-#define AIUS_TX_GATE_OPEN_TARGET_FRAMES 256u
-#endif
+ * counter are the acceptance instruments if this margin is ever wrong.
+ * (The target macro's default lives with the governor block above the audio
+ * processor class, where both of its consumers can see it.) */
 static uint32_t g_tx_gate_open_trims;          /* .bss = 0 */
 static uint32_t g_tx_gate_open_trimmed_frames; /* .bss = 0 */
 
@@ -2736,6 +2804,8 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		"\"gate_open_target_frames\":%lu,"
 		"\"gate_open_trims\":%lu,"
 		"\"gate_open_trimmed_frames\":%lu,"
+		"\"governor_trims\":%lu,"
+		"\"governor_trimmed_frames\":%lu,"
 		"\"ingress_level_words\":%lu,"
 		"\"ingress_high_water_words\":%lu}",
 		g_tx_gate_carrier ? "true" : "false",
@@ -2759,6 +2829,8 @@ static FLASHMEM bool http_clock_json(char *output, size_t capacity,
 		(unsigned long)AIUS_TX_GATE_OPEN_TARGET_FRAMES,
 		(unsigned long)g_tx_gate_open_trims,
 		(unsigned long)g_tx_gate_open_trimmed_frames,
+		(unsigned long)g_tx_governor_trims,
+		(unsigned long)g_tx_governor_trimmed_frames,
 		(unsigned long)ingress.level_words,
 		(unsigned long)ingress.high_water_words);
 }
