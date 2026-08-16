@@ -301,6 +301,33 @@ targeted-proof: pair geometry matches the H2a table on the chosen stackup;
 unit: parent-only
 ```
 
+**Progress (2026-08-16): board fully routed by Freerouting.** Toolchain (all
+reproducible, in `electronics/scripts/` + the `freerouting` service in
+`compose.yaml`): `route_export_dsn.py` sets the net class (0.20 mm track / 0.15 mm
+clearance / 0.60/0.30 mm via) and exports Specctra DSN → Freerouting v2.3.0
+(`ghcr.io/freerouting/freerouting`, 20 passes, headless) → `route_import_ses.py`
+imports the session, applies fab-capable DRC minimums, and fills the L2/L3 GND
+planes; the persisted net class lives in `aius-carrier.kicad_pro`.
+
+Result: **160/160 nets routed** (0 unrouted), 880 track segments, both GND planes
+filled. DRC against the fab rule set fell 607 → **22 violations + 3 GND-stitch
+unconnected**, the genuine autoroute punch-list for H3e cleanup:
+
+- 4 `track_width` — Freerouting necked 4 tracks to 0.10 mm at SMD entries; widen.
+- 4 `clearance` — sub-0.15 mm spots (Freerouting's own 8 residuals); nudge.
+- 4 `courtyards_overlap` — a few initial-placement collisions to space out.
+- 4 `hole_clearance` + 3 `starved_thermal` + 3 GND unconnected — GND pads on the
+  plane needing stitching vias / more thermal spokes (all GND-connectivity).
+- 2 `via_dangling` + 1 `silk_over_copper` — trivial.
+
+A footprint bug surfaced and was fixed here: the magjack (J20) estimated LED/post/
+shield positions self-overlapped (70 proximity items) — respaced so no holes
+collide (signal pitches kept datasheet-exact; secondary XY still a pre-order
+verify item). Diff-pair coupling/length-matching is an H3e review refinement (the
+autorouter routes pairs single-ended at class width over the solid L2 plane).
+**Remaining in H3c:** clear the 22+3 punch-list (placement/GND polish) — the
+interactive cleanup, done with the H3e review.
+
 ### Phase H3d — DRC/DFM clean + manufacturing package
 
 ```yaml
@@ -314,6 +341,14 @@ targeted-proof: kicad-cli DRC exits clean; the package passes the fab's DFM
   and match the board.
 unit: parent-only
 ```
+
+**Progress (2026-08-16): export tooling ready.** `electronics/scripts/export_fab.sh`
+runs DRC then exports the full package — Gerbers (all 4 copper layers incl. the
+In1/In2 GND planes), drill, BOM, CPL, STEP — via `kicad-cli` into
+`electronics/manufacturing/` (regenerable, not committed). Proven end to end on
+the routed board. **Gate not yet met:** the package is a review/quote snapshot,
+not order-ready, until the H3c punch-list (22+3) is cleared to DRC 0 and DFM is
+checked against each fab's rules.
 
 ### Phase H3e — independent review, quote, order-ready
 

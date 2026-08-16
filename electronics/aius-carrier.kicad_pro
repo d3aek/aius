@@ -1,7 +1,15 @@
 {
   "board": {
     "design_settings": {
-      "defaults": {}
+      "defaults": {},
+      "rules": {
+        "min_clearance": 0.127,
+        "min_track_width": 0.127,
+        "min_through_hole_diameter": 0.3,
+        "min_via_annular_width": 0.13,
+        "min_via_diameter": 0.45,
+        "min_hole_to_hole": 0.45
+      }
     }
   },
   "boards": [],
@@ -17,7 +25,12 @@
     "classes": [
       {
         "name": "Default",
-        "clearance": 0.2
+        "clearance": 0.15,
+        "track_width": 0.15,
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "diff_pair_gap": 0.15,
+        "diff_pair_width": 0.2
       }
     ]
   },

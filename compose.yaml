@@ -14,6 +14,23 @@ services:
         source: aius-kicad-cache
         target: /home/kicad
 
+  # H3c autorouter. Reads the Specctra .dsn exported by pcbnew and writes the
+  # routed .ses back into the tree. Override the command with the -de/-do/-mp
+  # args, e.g.:
+  #   docker compose -f compose.yaml run --rm --entrypoint java \
+  #     freerouting -jar /app/freerouting-executable.jar --gui-enabled=false \
+  #     --user_data_path=/workspace/.scratch/freerouting \
+  #     -de electronics/aius-carrier.dsn -do electronics/aius-carrier.ses -mp 20
+  freerouting:
+    image: ghcr.io/freerouting/freerouting:latest
+    user: "1000:1000"
+    network_mode: none
+    working_dir: /workspace/src/hardware/aius
+    volumes:
+      - type: bind
+        source: ${AIUS_REPO_ROOT:-../../..}
+        target: /workspace
+
 volumes:
   aius-kicad-cache:
     name: aius-kicad-cache

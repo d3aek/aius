@@ -8,6 +8,14 @@ _autosave-*
 *-erc.rpt
 *.net
 *.xml
+# Routing + manufacturing intermediates (regenerate via scripts/route_*.py +
+# scripts/export_fab.sh). The routed board (.kicad_pcb) + project (.kicad_pro)
+# ARE source; the DSN/SES exchange files, DRC reports, and the fab package output
+# are not.
+*.dsn
+*.ses
+*-drc.json
+manufacturing/
 # The PDF render is regenerable via scripts/render.sh; keep the SVG as the
 # committed viewable snapshot (renders in a git web viewer, diffs as text).
 *.pdf
