@@ -1106,8 +1106,23 @@ ends left open:
     empty spelling — because merging them would invent a clean bill of health.
   Proof: 33 rows in `test/sd-editor/status.test.js` (up from 20) plus a browser
   probe against the live device document and both doc captures re-rendered.
-- **Unverified: does a DSP editor apply land on the deployed board?
-  (2026-08-16, OPEN.)** Raised by the owner alongside the card confusion above
+- ~~**Unverified: does a DSP editor apply land on the deployed board?
+  (2026-08-16.)**~~ **CLOSED the same evening: THE APPLY PATH IS SOUND.** The
+  discriminating test below was run against the deployed board (slot A,
+  `ceffc20dae6c`, AC-3 playing): `PUT /api/dsp/config` with the device's own
+  model and its `base_generation` answered `200 {"ok":true}`,
+  `config_generation` went 1 → 2, and `model_origin` flipped `sd` → `put`.
+  Audio never broke — `overruns` 0 with blocks climbing across the apply. So
+  the editor's write, the SD commit and the block-boundary swap all work on the
+  deployed device, and the report that prompted this was the status card
+  showing an unrelated file's "not loaded" verdict in warning colour beside the
+  DSP model. Note for the next reader: **`model_origin` is the field that
+  answers this question and it resets to `sd` on every reboot**, because the
+  boot load re-applies the same file through the SD stager — so "no apply has
+  landed" and "the board has rebooted since the apply" are indistinguishable
+  from a cold reading, which is exactly why the live counters could not settle
+  it before the test. Original entry: raised by the owner alongside the card
+  confusion above
   ("I think there is an issue with the dsp editor apply to device if there is no
   config, this has been clicked more than once"). What the live board says, and
   it does not settle it either way: `source` `sd` with `model_origin` `sd` means
