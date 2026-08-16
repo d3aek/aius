@@ -66,6 +66,7 @@ const SNAPSHOT = {
   sd_total_bytes: 31914983424,
   sd_used_bytes: 1073741824,
   sd_free_bytes: 30841241600,
+  model_origin: 'put',
   config_valid: 1,
   config_error_code: 0,
   config_error: '',
@@ -102,6 +103,62 @@ const SNAPSHOT = {
   watchdog_early_resets: 0,
   loop_epoch: 48211,
   tx_gate: { open: 1, carrier_locked: 1, replay_running: 0 },
+  /* The forensic objects, in the shapes swagger's AbState / PrevBoot /
+   * FaultRecord / OtaDark / StallDiag schemas pin. A healthy board: slot B
+   * committed with no trial open, the previous boot ended without aborting,
+   * no crash record, the last activation window completed, no stall. */
+  ab: {
+    slot: 2,
+    record_valid: true,
+    active_slot: 2,
+    pending_slot: 0,
+    sequence: 9,
+    trial_budget: 0,
+    ledger_valid: true,
+    ledger_boots: 1,
+    ledger_fell_back: false,
+    rollback_observed: false,
+  },
+  prev_boot: { final_checkpoint: 5, first_abort: 254 },
+  fault_record: null,
+  ota_dark: {
+    state: 4,
+    phase: 4,
+    fault: 0,
+    rehearsal: false,
+    primitive_fault: 0,
+    step_address: 0,
+    compare_offset: 4294967295,
+    programmed_bytes: 570368,
+    verified_bytes: 570368,
+    steps_taken: 2368,
+    steps_total: 2368,
+    image_digest_prefix: 'f1a4e7960f17aa77',
+    dark_window_cycles: 3540837738,
+  },
+  stall_diag: {
+    events: 0,
+    last_us: 0,
+    last_deficit_ms: 0,
+    max_deficit_ms: 0,
+    witness_ticks: 830318,
+    isr_samples: 0,
+    iabr: ['00000000', '00000000', '00000000', '00000000', '00000000'],
+    pc: '00000000',
+    lr: '00000000',
+    flexspi_intr: '00000040',
+    flexspi2_intr: '00000040',
+    flexspi2_sts1: '00000000',
+  },
+};
+
+/* Deleting a key is how an OLDER image is spelled -- `undefined` (the image
+ * predates the key) and `null` (the image says there is nothing to report) are
+ * different answers and the page must not merge them. */
+const without = (...keys) => {
+  const body = snapshot();
+  for (const key of keys) delete body[key];
+  return body;
 };
 
 const snapshot = (overrides = {}) => Object.assign({}, SNAPSHOT, overrides);
@@ -231,25 +288,49 @@ describe('Aius SD device status — audio path', () => {
 });
 
 describe('Aius SD device status — configuration, network, storage, board', () => {
-  it('renders the effective DSP source and a clean configuration', async () => {
+  it('names the DSP model and the stager that applied it, beside a loaded boot config', async () => {
     await boot();
 
-    expect(text('dsp-source')).toBe('sd');
-    expect(text('config-valid')).toBe('yes');
-    expect(text('config-error')).toBe('none');
+    expect(text('dsp-source')).toBe('loaded from card');
+    expect(text('dsp-origin')).toBe('DSP editor apply (PUT)');
+    expect(text('config-file')).toBe('loaded');
     expect(text('config-errors')).toBe('0');
-    expect(el('config-valid').dataset.tone).toBeUndefined();
+    expect(el('config-file').dataset.tone).toBeUndefined();
   });
 
-  it('surfaces a configuration fault with its code and marks it', async () => {
+  /* The defect this card shipped with: a device with no /aius/config.json --
+   * every device, since nothing writes one -- read "Configuration valid: no /
+   * not loaded (code 10) / 1 error" in warning colour forever, next to the DSP
+   * model source. Operators read it as a verdict on their DSP editor apply,
+   * which writes a different file entirely and cannot change this one. */
+  it('reads an absent boot config as the normal state, not a standing fault', async () => {
     await boot({
-      status: snapshot({ config_valid: 0, config_error_code: 7, config_error: 'matrix_bounds', config_error_count: 2 }),
+      status: snapshot({ config_valid: 0, config_error_code: 10, config_error: 'not loaded', config_error_count: 1 }),
     });
 
-    expect(text('config-valid')).toBe('no');
-    expect(el('config-valid').dataset.tone).toBe('warn');
-    expect(text('config-error')).toBe('matrix_bounds (code 7)');
+    expect(text('config-file')).toContain('absent');
+    expect(text('config-file')).toContain('normal state');
+    expect(el('config-file').dataset.tone).toBeUndefined();
+    expect(text('config-errors')).toBe('1 (the absent file above)');
+    expect(el('config-errors').dataset.tone).toBeUndefined();
+  });
+
+  it('surfaces a refused boot config with its code and marks it', async () => {
+    await boot({
+      status: snapshot({ config_valid: 0, config_error_code: 4, config_error: 'malformed JSON', config_error_count: 2 }),
+    });
+
+    expect(text('config-file')).toContain('malformed JSON (code 4)');
+    expect(el('config-file').dataset.tone).toBe('warn');
     expect(text('config-errors')).toBe('2');
+    expect(el('config-errors').dataset.tone).toBe('warn');
+  });
+
+  it('says a boot-loaded model came from the card rather than from an apply', async () => {
+    await boot({ status: snapshot({ source: 'sd', model_origin: 'sd' }) });
+
+    expect(text('dsp-source')).toBe('loaded from card');
+    expect(text('dsp-origin')).toBe('boot load of /aius/dsp.json');
   });
 
   it('names the network supervisor state and fault rather than serving raw integers alone', async () => {
@@ -302,7 +383,11 @@ describe('Aius SD device status — configuration, network, storage, board', () 
     expect(text('reset-source')).toBe('64 (0x40)');
     expect(text('watchdog-early')).toBe('0');
     expect(text('recovery-safe')).toBe('no');
-    expect(text('last-checkpoint')).toBe('epoch-complete (9)');
+    /* 9 is the AUDIO checkpoint, not epoch-complete: output-jitter Phase B
+     * inserted it and only 10 now means the epoch finished. This page's list
+     * kept the pre-audio vocabulary and renamed every value from 9 up, so a
+     * board that stalled in audio reported the one word meaning it had not. */
+    expect(text('last-checkpoint')).toBe('audio (9)');
     expect(text('loop-epoch')).toBe('48211');
     expect(text('cpu-temp')).toBe('47.3 °C');
     expect(text('cpu-temp-max')).toBe('52.5 °C');
@@ -329,6 +414,189 @@ describe('Aius SD device status — configuration, network, storage, board', () 
     expect(text('last-checkpoint')).toBe('http (5)');
     expect(text('cpu-temp')).toBe('not sampled');
     expect(text('cpu-temp-max')).toBe('not sampled');
+  });
+
+  it('names a completed epoch as the only value that means one', async () => {
+    await boot({ status: snapshot({ last_checkpoint: 10 }) });
+
+    expect(text('last-checkpoint')).toBe('epoch-complete (10)');
+  });
+});
+
+describe('Aius SD device status — firmware slot and forensics', () => {
+  it('names the running slot, the committed boot record and the trial ledger', async () => {
+    await boot();
+
+    expect(text('fw-slot')).toBe('B (2)');
+    expect(el('fw-slot').dataset.tone).toBeUndefined();
+    expect(text('fw-record')).toBe('committed slot B (2) · no trial open · sequence 9');
+    expect(text('fw-ledger')).toBe('1 trial boots launched for this record');
+    expect(el('fw-ledger').dataset.tone).toBeUndefined();
+  });
+
+  /* The state the whole A/B design exists for: this boot is the probation
+   * boot, and nothing on the page said so before. */
+  it('marks a slot running on trial against the committed one', async () => {
+    await boot({
+      status: snapshot({
+        ab: Object.assign({}, SNAPSHOT.ab, { slot: 1, active_slot: 2, pending_slot: 1, trial_budget: 3, sequence: 10 }),
+      }),
+    });
+
+    expect(text('fw-slot')).toBe('A (1) -- on trial, not yet committed');
+    expect(el('fw-slot').dataset.tone).toBe('warn');
+    expect(text('fw-record')).toBe('committed slot B (2) · trial slot A (1) · sequence 10 · trial budget 3 boots');
+    expect(el('fw-record').dataset.tone).toBe('warn');
+  });
+
+  it('marks a spent trial budget and a persisted rollback', async () => {
+    await boot({
+      status: snapshot({
+        ab: Object.assign({}, SNAPSHOT.ab, { ledger_boots: 3, ledger_fell_back: true, rollback_observed: true }),
+      }),
+    });
+
+    expect(text('fw-ledger')).toContain('the chooser booted the committed slot');
+    expect(text('fw-ledger')).toContain('this boot persisted a failed trial rollback');
+    expect(el('fw-ledger').dataset.tone).toBe('warn');
+  });
+
+  it('renders the previous boot ledger and marks a first aborting checkpoint', async () => {
+    await boot();
+    expect(text('prev-boot')).toBe('final checkpoint http (5) · first aborting checkpoint none');
+    expect(el('prev-boot').dataset.tone).toBeUndefined();
+
+    await boot({ status: snapshot({ prev_boot: { final_checkpoint: 8, first_abort: 8 } }) });
+    expect(text('prev-boot')).toBe('final checkpoint sd (8) · first aborting checkpoint sd (8)');
+    expect(el('prev-boot').dataset.tone).toBe('warn');
+  });
+
+  it('spells an undecodable previous-boot ledger rather than printing 65535', async () => {
+    await boot({ status: snapshot({ prev_boot: { final_checkpoint: 65535, first_abort: 255 } }) });
+
+    expect(text('prev-boot')).toContain('retained ledger invalid');
+    expect(text('prev-boot')).toContain('latch invalid');
+  });
+
+  it('renders a retained crash record with its addr2line input, and dates it honestly', async () => {
+    await boot({
+      status: snapshot({
+        fault_record: {
+          ipsr: 0,
+          cfsr: '0x00000082',
+          hfsr: '0x40000000',
+          mmfar: '0x00000004',
+          bfar: '0xE000ED38',
+          return_address: '0x0000A17C',
+          xpsr: '0x61000000',
+          temp_c: 48.5,
+          uptime_s: 1204,
+        },
+      }),
+    });
+
+    expect(text('fault-record')).toContain('return 0x0000A17C');
+    expect(text('fault-record')).toContain('CFSR 0x00000082');
+    expect(text('fault-record')).toContain('thread mode');
+    expect(text('fault-record')).toContain('48.5 °C at 1,204 s uptime');
+    expect(text('fault-record')).toContain('never cleared, so it may predate this image');
+    expect(el('fault-record').dataset.tone).toBe('warn');
+  });
+
+  it('reads a null crash record as no fault, and an absent key as an older image', async () => {
+    await boot();
+    expect(text('fault-record')).toContain('none recorded');
+    expect(el('fault-record').dataset.tone).toBeUndefined();
+
+    /* The deployed slot-B image (fd9d35fd3f95) predates both forensic keys:
+     * "not reported by this image" and "none recorded" are different facts and
+     * printing the second here would invent a clean bill of health. */
+    await boot({ status: without('fault_record', 'prev_boot') });
+    expect(text('fault-record')).toBe('not reported by this image');
+    expect(text('prev-boot')).toBe('not reported by this image');
+    expect(el('fault-record').dataset.tone).toBeUndefined();
+  });
+
+  it('renders a completed dark window with its image identity and duration', async () => {
+    await boot();
+
+    expect(text('ota-dark')).toContain('completed (4)');
+    expect(text('ota-dark')).toContain('phase ready-to-reset (4)');
+    expect(text('ota-dark')).toContain('2,368 of 2,368 steps');
+    expect(text('ota-dark')).toContain('570,368 B programmed, 570,368 verified');
+    expect(text('ota-dark')).toContain('image f1a4e7960f17aa77');
+    expect(text('ota-dark')).toContain('5.90 s dark');
+    expect(el('ota-dark').dataset.tone).toBeUndefined();
+  });
+
+  it('marks a faulted dark window and names the compare offset that convicted it', async () => {
+    await boot({
+      status: snapshot({
+        ota_dark: Object.assign({}, SNAPSHOT.ota_dark, {
+          state: 3,
+          phase: 5,
+          fault: 7,
+          primitive_fault: 2,
+          step_address: 1638400,
+          compare_offset: 4096,
+          verified_bytes: 4096,
+        }),
+      }),
+    });
+
+    expect(text('ota-dark')).toContain('faulted (3)');
+    expect(text('ota-dark')).toContain('fault 7 (primitive 2) at 0x190000');
+    expect(text('ota-dark')).toContain('first bad compare at image offset 4,096');
+    expect(el('ota-dark').dataset.tone).toBe('warn');
+  });
+
+  it('says a rehearsal stamp is a rehearsal', async () => {
+    await boot({ status: snapshot({ ota_dark: Object.assign({}, SNAPSHOT.ota_dark, { rehearsal: true }) }) });
+
+    expect(text('ota-dark')).toContain('REHEARSAL');
+    expect(text('ota-dark')).toContain('the boot region was never touched');
+  });
+
+  it('renders the stall witness quietly at zero and marks any real stall', async () => {
+    await boot();
+    expect(text('stall-witness')).toBe('no epoch over 100 ms · 830,318 witness ticks');
+    expect(el('stall-witness').dataset.tone).toBeUndefined();
+
+    await boot({
+      status: snapshot({
+        stall_diag: Object.assign({}, SNAPSHOT.stall_diag, {
+          events: 2,
+          last_us: 581987,
+          last_deficit_ms: 0,
+          max_deficit_ms: 0,
+          pc: '00022bac',
+          lr: '2004937c',
+        }),
+      }),
+    });
+    expect(text('stall-witness')).toContain('2 epochs over 100 ms');
+    expect(text('stall-witness')).toContain('last 582.0 ms');
+    expect(text('stall-witness')).toContain('tick deficit 0 ms, worst 0 ms');
+    expect(text('stall-witness')).toContain('PC 0x00022bac');
+    expect(el('stall-witness').dataset.tone).toBe('warn');
+  });
+
+  it('reads a single-image build as having no slots at all', async () => {
+    await boot({ status: snapshot({ ab: null }) });
+
+    expect(text('fw-slot')).toBe('single-image build -- no slots');
+    expect(text('fw-record')).toBe('single-image build -- no slots');
+    expect(text('fw-ledger')).toBe('single-image build -- no slots');
+    expect(el('fw-slot').dataset.tone).toBeUndefined();
+  });
+
+  it('degrades every forensic row on an image that serves none of them', async () => {
+    await boot({ status: without('ab', 'prev_boot', 'fault_record', 'ota_dark', 'stall_diag') });
+
+    for (const id of ['fw-slot', 'fw-record', 'fw-ledger', 'prev-boot', 'fault-record', 'ota-dark', 'stall-witness']) {
+      expect(text(id)).toBe('not reported by this image');
+      expect(el(id).dataset.tone).toBeUndefined();
+    }
   });
 });
 

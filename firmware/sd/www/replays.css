@@ -122,6 +122,13 @@ button.danger{background:var(--aius-surface-danger);border-color:var(--aius-acce
 .upload-progress progress{flex:1;accent-color:var(--aius-accent-primary)}
 .upload-progress span{color:var(--aius-text-muted);font-size:.78rem;font-variant-numeric:tabular-nums;min-width:5ch}
 
+/* Forensic rows on the status page (A/B slot record, previous-boot ledger,
+   crash record, dark-window stamp, stall witness) carry a composite sentence
+   rather than one number, so they take the whole grid width instead of
+   wrapping to five lines inside a 150px auto-fit column. */
+.status-grid .status-grid__wide{grid-column:1/-1}
+.status-grid .status-grid__wide strong{font-variant-numeric:tabular-nums}
+
 /* The transmit gate as a signal-flow line on the status page:
    input -> DSP -> gate -> output. */
 .flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:14px;font-size:.8rem;color:var(--aius-text-muted)}

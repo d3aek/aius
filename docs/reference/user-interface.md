@@ -176,10 +176,37 @@ Non-obvious:
 - **The input source is the page's own derivation, not a device field.** The
   page derives it as carrier → *optical carrier*, else the transmit gate's
   replay term → *replay*, else *none*.
+- **The configuration card is two unrelated files, and saying so is the point.**
+  The first two rows are `/aius/dsp.json` — the model the DSP editor writes,
+  plus `model_origin`, which is the only field that separates an editor apply
+  from a boot load of the same file. The boot config row is `/aius/config.json`,
+  an optional file of three feature flags with **no firmware consumer today**;
+  nothing writes it, so *absent* is every device's normal state and is rendered
+  without a warning tone. Only a file the parser refused is marked. Until
+  2026-08-16 the card showed `Configuration valid: no / not loaded (code 10) /
+  1 error` in warning colour beside the DSP model source on every board, which
+  reads as a verdict on the editor's *Apply* — a different file the editor
+  cannot create.
+- **The board card's forensic rows are absent in two different ways and the
+  page never merges them.** A key the running image does not serve at all reads
+  *not reported by this image*; a key the image serves as `null` reads what its
+  emptiness means (*none recorded*, *no stamp retained*, *single-image build*).
+  Reporting the second when the first is true would invent a clean bill of
+  health nobody asked the board for. `fault_record` and `prev_boot` landed after
+  the deployed slot-B image was built, so they read the first form until the
+  next flash.
 - The wire is integers where the vocabulary matters — `state`, `carrier`,
   `format`, `link`, `network_state`, `last_checkpoint`, `reset_source`,
-  `recovery_safe` and every `tx_gate` member. The page prints the name and keeps
-  the number beside it (`PCM (3)`, `online (2)`, `epoch-complete (9)`).
+  `recovery_safe`, the A/B slot fields, the dark-window state and phase, and
+  every `tx_gate` member. The page prints the name and keeps the number beside
+  it (`PCM (3)`, `online (2)`, `audio (9)`).
+- **`last_checkpoint` 9 is the audio checkpoint, and only 10 means the epoch
+  completed.** This page carried the pre-audio ten-name vocabulary until
+  2026-08-16 and rendered every value from 9 up one name early, so a board that
+  starved in audio reported `epoch-complete (9)` — the one word meaning it had
+  not. `swagger.json` carried the same stale list and bounded the field at 9.
+  The canonical table is
+  [`usb-control-protocol.md`](usb-control-protocol.md), which was always right.
 - On a failed poll every pill flips to `unreachable`, every grid dims, and the
   last good values stay on screen rather than being blanked — a frozen grid
   beside a confident-looking pill was the failure mode this replaced.
@@ -192,7 +219,10 @@ withheld and the gate's replay term reads running.](images/status-replay.png)
 
 The second capture is the same page against a device with no carrier and a
 replay running — the case that exercises the derivation above. The sample rate
-reads `-- (no carrier)` rather than inventing a zero.
+reads `-- (no carrier)` rather than inventing a zero. It also carries the states
+the first capture cannot show at the same time: a boot config file that is
+absent, a slot A image running **on trial** against committed slot B with three
+boots of budget, and a previous boot whose first aborting checkpoint was `sd`.
 
 ## Firmware upgrade
 
@@ -278,6 +308,12 @@ responses are derived from the vitest fixtures and stub data in
 replay and OTA wire shapes those suites pin — cross-checked against
 [`swagger.json`](../../../../apps/aius/swagger.json) and the firmware's own
 serializers. The captures were taken only after each page's data had populated.
+
+The two **status** captures were re-rendered the same way on 2026-08-16 for the
+configuration and board rework above, from `status.test.js`'s `SNAPSHOT`
+verbatim (the replay one additionally overriding the carrier, gate, boot-config
+and A/B fields named beside it). The other five captures predate that session
+and are unaffected by it — the rework touched no other page.
 
 `images/dsp-editor-hero.png` is not one of the seven page captures: it is the
 README's hero, the same dashboard captured the same way and clipped in the

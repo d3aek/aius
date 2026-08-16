@@ -6,7 +6,7 @@ component: aius
 subtype: backlog
 status: in-progress
 tags: [aius, backlog, debt, defects]
-updated: 2026-08-15
+updated: 2026-08-16
 toc: true
 ---
 
@@ -86,6 +86,22 @@ ends left open:
 
 ## Waiting on the operator
 
+- **Two deploys owed for the 2026-08-16 status-page rework** (entry in §Open
+  defects — runtime; neither blocks anything else):
+  - **Sync the SD web tree to the card.** The pages are served off the card, so
+    nothing of the rework is visible until it runs:
+    `firmware/tools/aius-sd-sync.sh --device http://192.0.2.66 --www
+    firmware/sd/www --token <token>`. The token is the 16 hex
+    characters the physical USB `AIUS AUTH` command prints — an agent cannot
+    obtain it. The script is additive only and retries the device's
+    one-client-at-a-time window.
+  - **Flash the forensics image.** The running slot-B build `fd9d35fd3f95`
+    (17:51) predates `b92d97d3c` (18:21), which is the ONLY firmware-source
+    commit after it, so `fault_record` and `prev_boot` are absent from the live
+    document and the page says so honestly. A session note asserting the board
+    ran the latest image was true of the newest FLASHED image and stale for the
+    tree; the device-side proof is that both keys are missing from
+    `GET /api/status`.
 - ~~**First PSRAM chip: on the FLASH pad, and VERIFIED WORKING there
   (2026-07-27, late).**~~ **RESOLVED 2026-07-28: chip 2 soldered on the
   PSRAM pad, `ps=16`, recorder armed on the full 16 MB ring; capture,
@@ -1041,6 +1057,55 @@ ends left open:
 - **Cost-model rows carry the old Cliff quotes** for the optical jacks
   (`aius-cost-model.md`); the purchased parts are RS PRO 805-1671/805-1680.
   Update when the cost model is next touched.
+- ~~**Status page misreported the checkpoint vocabulary and read the boot
+  config as a standing fault (2026-08-16).**~~ **CLOSED the same day**, owner
+  report ("the status html always shows configuration valid no / configuration
+  error not loaded (code 10) / errors since boot 1 — I don't think this
+  reflects the state"), three defects found from one live `/api/status`
+  capture:
+  - **Checkpoint off-by-one.** `status.js`'s `CHECKPOINTS` list carried the
+    pre-audio ten-name vocabulary, so every value from 9 up rendered one name
+    early: a board that starved in the AUDIO checkpoint reported
+    `epoch-complete (9)`, the one word meaning the epoch finished. `swagger.json`
+    carried the same stale list and bounded `last_checkpoint` at 9, where
+    `aius_net.c` has always bounded it against
+    `AIUS_BOOT_CHECKPOINT_EPOCH_COMPLETE` = 10. Both corrected;
+    [`usb-control-protocol.md`](../reference/usb-control-protocol.md) already
+    carried the right table and its own note that an earlier revision predated
+    the audio checkpoint — so the fix was available in-repo the whole time and
+    two consumers had drifted from it independently.
+  - **The configuration card conflated two unrelated files.** It put "DSP model
+    source" beside "Configuration valid: no / not loaded (code 10) / 1 error" in
+    warning colour, on every device: nothing writes `/aius/config.json`, and its
+    three feature flags (`sd_web`, `remote_control`, `telemetry`) have **no
+    firmware consumer** — grep finds only `aius_config.c`'s own defaults. Read
+    together the card looked like a verdict on the DSP editor's *Apply*, which
+    writes `/aius/dsp.json` and cannot create the other file. The card now names
+    both files, renders an absent boot config as the normal state with no warn
+    tone (only a parser-refused file is marked), and adds a `model_origin` row
+    that distinguishes an editor apply from a boot load.
+  - **Neither the firmware slot nor the new forensics were on the page at all.**
+    The board card now carries the running slot, the ping-pong boot record, the
+    chooser trial ledger, `prev_boot`, `fault_record`, `ota_dark` and
+    `stall_diag`. Absence is rendered in its two distinct forms — *not reported
+    by this image* for a key the build does not serve, versus the record's own
+    empty spelling — because merging them would invent a clean bill of health.
+  Proof: 33 rows in `test/sd-editor/status.test.js` (up from 20) plus a browser
+  probe against the live device document and both doc captures re-rendered.
+- **Unverified: does a DSP editor apply land on the deployed board?
+  (2026-08-16, OPEN.)** Raised by the owner alongside the card confusion above
+  ("I think there is an issue with the dsp editor apply to device if there is no
+  config, this has been clicked more than once"). What the live board says, and
+  it does not settle it either way: `source` `sd` with `model_origin` `sd` means
+  `/aius/dsp.json` EXISTS and was loaded at boot, so an apply has committed at
+  some point; but `config_generation` is 1 and the board was ~14 minutes into
+  `boot_generation` 3 at the reading, so no PUT has landed *this boot* and the
+  counters carry no evidence about the clicks. The card defect above is
+  sufficient on its own to explain the report. Discriminating test, cheap and
+  owed: with audio idle, `GET /api/dsp/config`, PUT the same model back with its
+  `base_generation`, and watch `config_generation` increment and `model_origin`
+  flip to `put`. Needs the SD auth token (physical USB `AIUS AUTH`) and a quiet
+  moment — the apply rebuilds the biquads at the next audio block boundary.
 
 ## Larger backlog
 

@@ -41,12 +41,12 @@
 
     <section class="card">
       <div class="section-title"><h2>Configuration</h2><span id="config-pill" class="pill">loading</span></div>
-      <p class="hint">The effective DSP model's source and the boot configuration's validity. Edit the model on the <a href="index.html">DSP editor</a> page.</p>
+      <p class="hint">Two unrelated files. The <a href="index.html">DSP editor</a> writes the audio model to <code>/aius/dsp.json</code> — that is the first two rows. <code>/aius/config.json</code> is a separate optional boot file whose feature flags no firmware path reads today; its absence is the normal state, not a fault, and applying a DSP model never creates it.</p>
       <div id="config-grid" class="status-grid">
-        <div><span>DSP model source</span><strong id="dsp-source">--</strong></div>
-        <div><span>Configuration valid</span><strong id="config-valid">--</strong></div>
-        <div><span>Configuration error</span><strong id="config-error">--</strong></div>
-        <div><span>Errors since boot</span><strong id="config-errors">--</strong></div>
+        <div><span>DSP model</span><strong id="dsp-source">--</strong></div>
+        <div><span>Applied by</span><strong id="dsp-origin">--</strong></div>
+        <div class="status-grid__wide"><span>Boot config file (/aius/config.json)</span><strong id="config-file">--</strong></div>
+        <div><span>Config load errors</span><strong id="config-errors">--</strong></div>
       </div>
     </section>
 
@@ -77,7 +77,7 @@
 
     <section class="card">
       <div class="section-title"><h2>Board</h2><span id="board-pill" class="pill">loading</span></div>
-      <p class="hint">The retained boot ledger, the watchdog's account of the last resets, and the running image.</p>
+      <p class="hint">The retained boot ledger, the watchdog's account of the last resets, the running image and which firmware slot it came from, then the forensic records the device keeps for the failure it cannot report while it is happening.</p>
       <div id="board-grid" class="status-grid">
         <div><span>Boot generation</span><strong id="boot-generation">--</strong></div>
         <div><span>Reset source</span><strong id="reset-source">--</strong></div>
@@ -87,8 +87,18 @@
         <div><span>Loop epochs</span><strong id="loop-epoch">--</strong></div>
         <div><span>CPU temperature</span><strong id="cpu-temp">--</strong></div>
         <div><span>Peak CPU temperature</span><strong id="cpu-temp-max">--</strong></div>
-        <div><span>Build revision</span><strong id="build-revision">--</strong></div>
         <div><span>Built (UTC)</span><strong id="build-utc">--</strong></div>
+        <div><span>Firmware slot</span><strong id="fw-slot">--</strong></div>
+        <!-- Wide because a slot build's revision carries the environment suffix
+             (`<sha>+teensy41-optical-slot-b`) and a 150px column ellipsised it
+             mid-string, which reads as a complete revision that it is not. -->
+        <div class="status-grid__wide"><span>Build revision</span><strong id="build-revision">--</strong></div>
+        <div class="status-grid__wide"><span>Slot boot record</span><strong id="fw-record">--</strong></div>
+        <div class="status-grid__wide"><span>Chooser trial ledger</span><strong id="fw-ledger">--</strong></div>
+        <div class="status-grid__wide"><span>Previous boot</span><strong id="prev-boot">--</strong></div>
+        <div class="status-grid__wide"><span>Last CPU fault</span><strong id="fault-record">--</strong></div>
+        <div class="status-grid__wide"><span>OTA dark window</span><strong id="ota-dark">--</strong></div>
+        <div class="status-grid__wide"><span>Stall witness</span><strong id="stall-witness">--</strong></div>
       </div>
     </section>
   </main>
