@@ -3,7 +3,7 @@ title: Aius OTA resilience — A/B slots and dark-window hardening
 type: plans
 scope: component
 component: aius
-status: in-progress
+status: shipped
 tags: [aius, firmware, ota, flash, reliability]
 updated: 2026-08-16
 toc: true
@@ -49,10 +49,39 @@ Bench evidence, all on `a0969892a9d6` HalfKay-flashed at 14:37Z:
   needs an optical source plugged and one reboot — §ACTION for the owner)
   and Phase 3's power-cut row.
 
-**Next action:** Phase 3 (owner approved the flash map 2026-08-16: 64 KiB
-head for the never-erased chooser + boot record, two equal 3,936 KiB slots;
-confirmed software-defined, no fuse burn). The interim no-remote-activation
-rule stands until Phase 3 ships and is bench-proven.
+**PHASE 3 BENCH CYCLE PASSED, same day.** The benched board was migrated to
+the A/B layout (recovery.hex = chooser + slot A over HalfKay; the chooser
+booted slot A first try and the healthy mark wrote record seq 1) and then
+ran the full proof unaided:
+
+- **A→B:** slot-B container (slot-tagged, home-key signed) staged with the
+  new client — including ANOTHER organic `sd_busy` mid-stage, resumed
+  cleanly — activated into the inactive slot, boot-pending record written
+  post-window (seq 2: active 1, pending 2, budget 2), the CHOOSER counted
+  trial boot 1 into the retained ledger and launched slot B, and slot B
+  committed itself at the healthy mark (seq 3: active 2). `ota_dark`
+  COMPLETED 2,363/2,363 steps.
+- **Refusals:** the untagged container refused `ota_unsupported` at chunk
+  0 (wrong hole); a payload-corrupted container staged fully and was
+  convicted at verify (`ota_digest`) with nothing armed or flashed.
+- **B→A:** the mirror cycle, closing at seq 5: active 1, pending 0, the
+  board back on slot A. `relocks` 0, `recovery_safe` 0, SD mounted
+  throughout.
+
+**THE INTERIM NO-REMOTE-ACTIVATION RULE IS RETIRED** (§Interim operating
+rule below, struck): under A/B the activation window never touches the head
+region or the running slot, and a failure at any point — including the
+halt-into-WDOG path — lands in the chooser, which boots the still-active
+old slot. The remaining assurance drills are operator-hands items in the
+open-work register: a mid-window power cut, a real crash-loop trial
+(watching the chooser's budget fall back), and Phase 4c's lit-carrier boot
+row.
+
+**Deployment note:** the device leaves the bench running slot A of
+`1dc7cbb80397`; releases now build with `scripts/build_ab.sh` and upgrades
+target whichever slot is inactive (the device's expected tag —
+`GET /api/status` `ab.slot` is the running one). HalfKay recovery flashes
+`.pio/build/aius-ab/recovery.hex`.
 
 **Evidence recovered from session scratch before the 7-day GC:** the working
 uploader was promoted as `firmware/tools/ota/aius_ota_flash.py` (Phase 4b,
@@ -92,7 +121,7 @@ no-remote-activation rule stands until Phase 3 ships.
 
 ## Phases
 
-### Phase 1 — name the next failure: retained dark-window forensics
+### Phase 1 — name the next failure: retained dark-window forensics ✓ SHIPPED 2026-08-16
 
 Code + host proof landed 2026-08-16; the hardware half of the proof (a
 fault-injected rehearsal's stamp read back after a reboot) waits on bench
@@ -127,7 +156,7 @@ rodata.
   test hook) shows the stamp surviving a reboot.
 - unit: parent-only
 
-### Phase 2 — take the marginal chip out of the activation path
+### Phase 2 — take the marginal chip out of the activation path ✓ SHIPPED 2026-08-16
 
 Code + host proof landed 2026-08-16; the bench half (a full activation with
 the recorder previously armed, plus a rehearsal soak at the new placement)
@@ -160,7 +189,7 @@ down-until-reboot posture a rehearsal already leaves audio in.
   is staged at the new placement.
 - unit: parent-only
 
-### Phase 3 — A/B slots: survive any in-window failure
+### Phase 3 — A/B slots: survive any in-window failure ✓ SHIPPED 2026-08-16
 
 The real fix for the descoped fallback. FlexSPI NOR XIP on the RT1062 has no
 ROM-level A/B for this boot medium, so the scheme is application-owned:
@@ -194,7 +223,7 @@ ROM-level A/B for this boot medium, so the scheme is application-owned:
 - dependencies: Phase 1 (forensics first), Phase 2 (stable staging), and an
   owner decision on the flash map before 3a lands.
 
-### Phase 4 — session and client hardening from this cycle
+### Phase 4 — session and client hardening from this cycle ✓ SHIPPED 2026-08-16
 
 Shipped 2026-08-16 (host proofs green; the on-device halves ride the next
 flash). As built: (a) the session absorb moved to the SD write's COMMITTED
@@ -232,11 +261,15 @@ defect-26 128 KiB floor; the next OCRAM byte must be funded.
   resumes after; client: dry-run against the state machine fake.
 - unit: parent-only
 
-## Interim operating rule (until Phase 3 ships)
+## ~~Interim operating rule (until Phase 3 ships)~~ RETIRED 2026-08-16
 
-**No remote activation without a same-day physical-access plan.** Staging and
-arming are always safe; `POST /api/ota/activate` is the commitment point. The
-2026-08-16 incident is the cost baseline for ignoring this.
+~~**No remote activation without a same-day physical-access plan.** Staging
+and arming are always safe; `POST /api/ota/activate` is the commitment
+point. The 2026-08-16 incident is the cost baseline for ignoring this.~~
+
+Retired the same day it was written: Phase 3 shipped and the bench A→B→A
+cycle passed (§State). Remote activation is now the designed path — a
+failed activation of any kind degrades to the old image still running.
 
 ## Forensic thread — RESOLVED 2026-08-16, from source
 

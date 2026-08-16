@@ -352,6 +352,14 @@ static int drive_session(const uint8_t *container, size_t container_length,
 		fprintf(stderr, "aius-ota-cli: cannot arm the session\n");
 		return 1;
 	}
+	/* Expect whatever slot the container declares: this drive verifies the
+	 * container against a device CONFIGURED FOR IT -- the wrong-hole
+	 * refusal is the device's per-fitment judgment, not the signer's. */
+	if (aius_ota_set_expected_slot(&session, header.slot_id) !=
+	    AIUS_OTA_OK) {
+		fprintf(stderr, "aius-ota-cli: cannot set the expected slot\n");
+		return 1;
+	}
 
 	status = aius_ota_offer(&session, container, AIUS_OTA_HEADER_BYTES);
 	if (status != AIUS_OTA_OK) {

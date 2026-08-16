@@ -166,8 +166,27 @@ ends left open:
 
 ## Open defects — runtime
 
-- **OTA activation dark window can brick: erase completed, no valid image
-  programmed (2026-08-16).** First field failure of the staged upgrade: the
+- ~~**OTA activation dark window can brick: erase completed, no valid image
+  programmed (2026-08-16).**~~ **CLOSED 2026-08-16, the same day, by the
+  whole [`aius-ota-resilience.md`](aius-ota-resilience.md) plan shipping
+  and bench-proving on the device:** retained dark-window forensics
+  (Phase 1, fault-injected stamp read back across a reboot), pad-1-only
+  activation staging (Phase 2, full activation with the recorder armed),
+  A/B slots with a never-erased first-stage chooser + automatic fallback
+  (Phase 3, migrated on the bench and a full unaided A→B→A upgrade cycle,
+  wrong-slot + corrupted-container refusals), and the deferred-absorb
+  session fix + promoted client (Phase 4, which caught and survived two
+  organic mid-stage SD faults during the bench proofs). The queued owner
+  decision resolved as: build the second-slot design; flash map 64 KiB
+  head + two 3,936 KiB slots, software-defined, no fuse. The interim
+  no-remote-activation rule is RETIRED. **Remaining assurance drills
+  (operator hands, non-blocking):** (a) a mid-window power cut during an
+  activation, expecting the chooser to boot the old slot unaided; (b) a
+  real crash-loop trial image, watching `ab.ledger_boots` spend the budget
+  and `rollback_observed` persist; (c) Phase 4c's lit-carrier boot row —
+  plug an optical source, reboot, confirm the SD dashboard mounts under
+  the lit carrier. Original entry:
+  First field failure of the staged upgrade: the
   `d5dab0618f4c` container staged clean (387 chunks, one transient 500 whose
   poisoned session was aborted and restaged fresh), device-verified,
   armed, activation acknowledged — then the board never returned. Forensics:
